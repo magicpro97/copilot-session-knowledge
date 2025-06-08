@@ -40,28 +40,41 @@ MISTAKE_INDICATORS = [
     r"(?:mistake|error|bug|wrong|incorrect|broken|fail|crash|fix(?:ed)?)\b",
     r"(?:should\s+(?:have|not)|shouldn't|don't|avoid|never|careful)",
     r"(?:root\s+cause|caused\s+by|problem\s+was|issue\s+was)",
+    # Vietnamese
     r"(?:lỗi|sai|sửa|tránh|không\s+nên|nguyên\s+nhân)",
+    # Japanese
+    r"(?:エラー|バグ|不具合|障害|修正|原因|間違い|注意)",
 ]
 
 PATTERN_INDICATORS = [
     r"(?:always|must|should|convention|pattern|best\s+practice|rule)\b",
     r"(?:use\s+\w+\s+instead\s+of|prefer|recommend)",
     r"(?:standard|template|reusable|common\s+(?:pattern|style|approach))",
+    # Vietnamese
     r"(?:luôn|nên|quy\s+tắc|mẫu|chuẩn)",
+    # Japanese
+    r"(?:パターン|ルール|規約|推奨|必須|ベストプラクティス|テンプレート)",
 ]
 
 DECISION_INDICATORS = [
     r"(?:chose|decided|selected|picked|went\s+with|opted)\b",
     r"(?:because|reason|rationale|trade-off|tradeoff)",
     r"(?:option\s+[A-C]|alternative|compared|versus|vs\.?)\b",
+    # Vietnamese
     r"(?:chọn|quyết\s+định|lý\s+do|so\s+sánh)",
+    # Japanese
+    r"(?:決定|選択|理由|比較|トレードオフ|代替案|方針)",
 ]
 
 TOOL_INDICATORS = [
     r"(?:install|configure|setup|version|upgrade|dependency)\b",
     r"(?:gradle|maven|docker|redis|postgres|spring\s+boot)\b",
-    r"(?:JDK|SDK|IDE|VSCode|extension)\b",
+    r"(?:yarn|npm|cdk|playwright|jest|eslint|prettier)\b",
+    r"(?:JDK|SDK|IDE|VSCode|extension|plugin|MCP)\b",
+    # Vietnamese
     r"(?:cài|cấu\s+hình|phiên\s+bản|nâng\s+cấp)",
+    # Japanese
+    r"(?:インストール|設定|バージョン|依存関係|ツール|環境構築)",
 ]
 
 
@@ -132,6 +145,8 @@ _NOISE_PATTERNS = [
     r"(?:đáp\s*án|mong\s*đợi|tiêu\s*chí|ghi\s*điểm)",
     r"(?:bảng\s*đánh\s*giá|evaluation\s*rubric)",
     r"(?:trọng\s*số|scoring|rubric|interviewer)",
+    # Japanese noise
+    r"(?:面接|インタビュー|採点|評価基準)",
 ]
 
 # Strong noise — single match is enough to discard
@@ -141,6 +156,9 @@ _STRONG_NOISE_PATTERNS = [
     r"câu\s*hỏi\s*phỏng\s*vấn",
     r"interview\s*question",
     r"nội\s*dung\s*cần\s*đề\s*cập",
+    # Japanese strong noise
+    r"面接\s*質問",
+    r"採点\s*基準",
 ]
 
 
@@ -210,26 +228,71 @@ def extract_title(text: str, max_len: int = 100) -> str:
 def extract_tags(text: str) -> str:
     """Extract relevant tags from text."""
     tag_patterns = [
-        (r"\b(?:Spring\s+Boot|SpringBoot)\b", "spring-boot"),
-        (r"\b(?:Thymeleaf)\b", "thymeleaf"),
-        (r"\b(?:JPQL|JPA|Hibernate)\b", "jpa"),
-        (r"\b(?:PostgreSQL|Postgres|PG)\b", "postgresql"),
+        # Cloud & Infrastructure
+        (r"\b(?:AWS|Amazon\s+Web\s+Services)\b", "aws"),
+        (r"\b(?:AWS\s+CDK|CDK\s+(?:stack|construct|deploy|app))\b", "aws-cdk"),
+        (r"\b(?:AWS\s+Lambda|Lambda\s+(?:function|handler|layer))\b", "lambda"),
+        (r"\b(?:DynamoDB|dynamo)\b", "dynamodb"),
+        (r"\b(?:S3|s3\s+bucket)\b", "s3"),
+        (r"\b(?:SQS|Simple\s+Queue)\b", "sqs"),
+        (r"\b(?:SNS|Simple\s+Notification)\b", "sns"),
+        (r"\b(?:Cognito)\b", "cognito"),
+        (r"\b(?:CloudWatch)\b", "cloudwatch"),
+        (r"\b(?:API\s+Gateway|APIGW)\b", "api-gateway"),
+        (r"\b(?:EventBridge)\b", "eventbridge"),
+        (r"\b(?:CloudFormation|CFN)\b", "cloudformation"),
+        (r"\b(?:Step\s+Functions?)\b", "step-functions"),
+        (r"\b(?:X-Ray|XRay)\b", "xray"),
+        (r"\b(?:WebSocket|wss?://)\b", "websocket"),
         (r"\b(?:Docker|docker-compose)\b", "docker"),
-        (r"\b(?:Redis)\b", "redis"),
-        (r"\b(?:Gradle)\b", "gradle"),
-        (r"\b(?:CSRF)\b", "csrf"),
-        (r"\b(?:Liquibase)\b", "liquibase"),
+        (r"\b(?:VPC|subnet|security\s+group)\b", "vpc"),
+        # Languages & Runtimes
+        (r"\b(?:TypeScript)\b", "typescript"),
         (r"\b(?:JavaScript|jQuery|JS)\b", "javascript"),
-        (r"\b(?:CSS|styles?\.css)\b", "css"),
-        (r"\b(?:i18n|internationalization|messages\.properties)\b", "i18n"),
+        (r"\b(?:Python)\b", "python"),
+        (r"\b(?:Node\.?js)\b", "nodejs"),
         (r"\b(?:JDK|Java\s+\d+)\b", "java"),
-        (r"\b(?:Git|git\s+hook)\b", "git"),
+        # Frontend
+        (r"\b(?:React\s+Native|RN)\b", "react-native"),
+        (r"\b(?:Expo)\b", "expo"),
+        (r"\b(?:React)\b", "react"),
+        (r"\b(?:Thymeleaf)\b", "thymeleaf"),
+        (r"\b(?:CSS|styles?\.css)\b", "css"),
+        (r"\b(?:modal|dialog)\b", "ui"),
+        # Testing
+        (r"\b(?:Jest)\b", "jest"),
+        (r"\b(?:Playwright)\b", "playwright"),
+        (r"\b(?:E2E|end-to-end)\b", "e2e"),
+        (r"\b(?:TDD|test-driven)\b", "tdd"),
+        # Build & Tools
+        (r"\b(?:ESLint|eslint)\b", "eslint"),
+        (r"\b(?:Prettier)\b", "prettier"),
+        (r"\b(?:yarn|npm)\b", "package-manager"),
+        (r"\b(?:Gradle)\b", "gradle"),
+        (r"\b(?:Maven)\b", "maven"),
+        (r"\b(?:Git|git\s+hook|git\s+worktree)\b", "git"),
         (r"\b(?:VSCode|VS\s+Code)\b", "vscode"),
+        (r"\b(?:GitHub\s+Copilot|Copilot\s+(?:CLI|chat|skill))\b", "copilot"),
+        # Data & Formats
         (r"\b(?:Excel|xlsx)\b", "excel"),
+        (r"\b(?:csv|tsv)\b", "spreadsheet"),
+        (r"\b(?:OpenAPI|Swagger)\b", "openapi"),
+        (r"\b(?:Mermaid)\b", "mermaid"),
+        # Patterns & Concepts
+        (r"\b(?:i18n|internationalization|messages\.properties|locales?)\b", "i18n"),
         (r"\b(?:CRUD)\b", "crud"),
         (r"\b(?:pagination)\b", "pagination"),
-        (r"\b(?:modal|dialog)\b", "ui"),
         (r"\b(?:SQL|native\s+SQL)\b", "sql"),
+        (r"\b(?:TLS|SSL|certificate|cert)\b", "tls"),
+        (r"\b(?:proxy|MITM)\b", "proxy"),
+        (r"\b(?:SAML|OAuth2?|JWT|bearer\s+token)\b", "auth"),
+        (r"\b(?:CSRF)\b", "csrf"),
+        # Database & ORM
+        (r"\b(?:Spring\s+Boot|SpringBoot)\b", "spring-boot"),
+        (r"\b(?:PostgreSQL|Postgres|PG)\b", "postgresql"),
+        (r"\b(?:Redis)\b", "redis"),
+        (r"\b(?:JPQL|JPA|Hibernate)\b", "jpa"),
+        (r"\b(?:Liquibase)\b", "liquibase"),
     ]
 
     tags = set()

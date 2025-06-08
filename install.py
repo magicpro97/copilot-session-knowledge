@@ -36,7 +36,12 @@ TOOL_FILES = [
     "embed.py",
     "briefing.py",
     "learn.py",
+    "setup-project.py",
     "install.py",
+]
+
+TEMPLATE_FILES = [
+    ("templates", "SKILL.md"),
 ]
 
 
@@ -107,6 +112,16 @@ def install():
                 print(f"  ✓ Installed {f}")
             else:
                 print(f"  ⚠ {f} not found in source directory")
+
+        # Copy templates
+        templates_dst = TOOLS_DIR / "templates"
+        templates_dst.mkdir(parents=True, exist_ok=True)
+        for subdir, fname in TEMPLATE_FILES:
+            src = source_dir / subdir / fname
+            dst = templates_dst / fname
+            if src.exists():
+                shutil.copy2(str(src), str(dst))
+                print(f"  ✓ Installed templates/{fname}")
     else:
         print(f"  ✓ Scripts already in place")
 
@@ -142,7 +157,27 @@ def install():
     else:
         print(f"  ⚠ No session-state directory found. Index will be built on first use.")
 
-    # 5. Check optional dependencies
+    # 5. Auto-setup project integration (if in a git repo)
+    try:
+        import subprocess as _sp
+        git_root = _sp.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5
+        ).stdout.strip()
+        if git_root:
+            setup_script = TOOLS_DIR / "setup-project.py"
+            if setup_script.exists():
+                print(f"\nSetting up project integration...")
+                result = _sp.run(
+                    [sys.executable, str(setup_script), git_root],
+                    capture_output=True, text=True
+                )
+                for line in result.stdout.splitlines():
+                    print(f"  {line}")
+    except Exception:
+        pass
+
+    # 6. Check optional dependencies
     print(f"\nOptional dependencies:")
     try:
         import sklearn  # noqa: F401
