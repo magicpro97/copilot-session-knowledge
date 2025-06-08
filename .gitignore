@@ -1,0 +1,31 @@
+# Sensitive files
+embedding-config.json
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Session data (user-specific)
+KNOWLEDGE.md
+.watch-state.json
+
+# One-time publish scripts
+publish.ps1
+publish.sh
