@@ -52,7 +52,15 @@ user_quote_samples = [
     'User wants to add dark mode support',
 ]
 
-for sample in user_quote_samples:
+# 1a-extra. Extended user narration patterns
+user_narration_extras = [
+    'User clarified dependency philosophy: USE existing npm libraries',
+    'User provided OpenRouter API key, asked to continue',
+    'User applied revision edits themselves, asked for review',
+    'User selected option B for the architecture',
+]
+
+for sample in user_quote_samples + user_narration_extras:
     result = ek._is_noise(sample)
     test(f"User quote detected as noise: {sample[:50]}...", result,
          f"_is_noise returned {result}")
@@ -86,7 +94,16 @@ real_mistakes = [
     "Always use --no-cache when debugging build issues.",
 ]
 
-for sample in real_mistakes:
+# 1c-extra. Legitimate user feedback should NOT be filtered
+legitimate_feedback = [
+    "User pointed out the banner bug on CVs page — it showed 'Chưa có mô tả' even though description exists.",
+    "User noticed top-K selection wasn't working in evaluation results.",
+    "User called out: bạn tự sửa mà không cần stitch, bỏ qua quy trình bắt buộc",
+    "User criticized quality control approach — tests were passing but UI was visually broken.",
+    "User demanded builds on BOTH emulators before anything else.",
+]
+
+for sample in real_mistakes + legitimate_feedback:
     result = ek._is_noise(sample)
     test(f"Real mistake NOT filtered: {sample[:50]}...", not result,
          f"_is_noise returned {result}, should be False")
@@ -221,14 +238,16 @@ if db_path.exists():
 
     user_quotes = db.execute("""
         SELECT COUNT(*) FROM knowledge_entries WHERE category = 'mistake'
-        AND (title LIKE 'User said%' OR title LIKE 'User reported%'
-             OR title LIKE 'User asked%' OR title LIKE 'User requested%'
+        AND (title LIKE 'User said%' OR title LIKE 'User asked%'
              OR title LIKE 'User mentioned%' OR title LIKE 'User wants%'
-             OR title LIKE 'User confirmed%')
+             OR title LIKE 'User confirmed%' OR title LIKE 'User clarified%'
+             OR title LIKE 'User provided%' OR title LIKE 'User applied%'
+             OR title LIKE 'User selected%')
     """).fetchone()[0]
 
     action_summaries = db.execute("""
         SELECT COUNT(*) FROM knowledge_entries WHERE category = 'mistake'
+        AND LENGTH(content) < 200
         AND (title LIKE 'Fixed %' OR title LIKE 'Implemented %'
              OR title LIKE 'Launched %' OR title LIKE 'Created %'
              OR title LIKE 'Updated %' OR title LIKE 'Added %'
@@ -238,6 +257,26 @@ if db_path.exists():
     false_positive_rate = (user_quotes + action_summaries) / max(total_mistakes, 1)
     print(f"  📊 Current DB: {total_mistakes} mistakes, {user_quotes} user-quotes, "
           f"{action_summaries} action-summaries ({false_positive_rate:.0%} FP)")
+
+    test(f"FP rate below 5% (was 40%)",
+         false_positive_rate < 0.05,
+         f"FP rate is {false_positive_rate:.0%}")
+
+    # Check no stale embeddings
+    stale = db.execute("""
+        SELECT COUNT(*) FROM embeddings WHERE
+        (source_type = 'knowledge' AND source_id NOT IN (SELECT id FROM knowledge_entries)) OR
+        (source_type = 'section' AND source_id NOT IN (SELECT id FROM sections))
+    """).fetchone()[0]
+    test("No stale embeddings", stale == 0, f"Found {stale} stale embeddings")
+
+    # Check no orphan relations
+    orphans = db.execute("""
+        SELECT COUNT(*) FROM knowledge_relations WHERE
+        source_id NOT IN (SELECT id FROM knowledge_entries) OR
+        target_id NOT IN (SELECT id FROM knowledge_entries)
+    """).fetchone()[0]
+    test("No orphan relations", orphans == 0, f"Found {orphans} orphan relations")
 
     # Verify the noise filter would catch these
     # Sample some titles and verify _is_noise works on them

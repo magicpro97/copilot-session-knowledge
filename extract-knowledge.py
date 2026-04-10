@@ -174,9 +174,12 @@ _STRONG_NOISE_PATTERNS = [
 ]
 
 # User-quote patterns — checkpoint summaries quoting the user, not real mistakes
+# KEEP: "User pointed out", "User noticed", "User called out", "User criticized",
+#        "User demanded" — these are real bug reports / legitimate feedback
 _USER_QUOTE_PATTERNS = [
     r"^(?:\d+\.\s*)?user\s+(?:said|asked|reported|requested|mentioned|noted)\b",
     r"^(?:\d+\.\s*)?user\s+(?:wants?|confirmed|approved|rejected)\b",
+    r"^(?:\d+\.\s*)?user\s+(?:clarified|provided|applied|selected|chose)\b",
     r'^(?:\d+\.\s*)?user\s+said\s*[:"]',
     r'^(?:\d+\.\s*)?user\s+reported\s*[:"]',
 ]

@@ -19,44 +19,60 @@ All tools are Python scripts in `~/.copilot/tools/` (cross-platform: `~` = home 
 ### 1. Briefing (recommended first step)
 
 ```bash
-python ~/.copilot/tools/briefing.py "your task description"    # Compact ~500 tokens
-python ~/.copilot/tools/briefing.py "your task" --full         # Full detail ~3K tokens
-python ~/.copilot/tools/briefing.py --auto                     # Auto-detect from git/plan
+python3 ~/.copilot/tools/briefing.py "your task description"    # Compact ~500 tokens
+python3 ~/.copilot/tools/briefing.py "your task" --full         # Full detail ~3K tokens
+python3 ~/.copilot/tools/briefing.py --auto                     # Auto-detect from git/plan
 ```
 
 Output includes: relevant mistakes to avoid, patterns to follow, related past work.
 **Read entry IDs in the output** — use them to drill down.
 
+### 1b. Sub-agent Context Injection
+
+When launching sub-agents (explore, task, general-purpose) for complex tasks,
+inject knowledge context into their prompts:
+
+```bash
+python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
+```
+
+This outputs a compact `[KNOWLEDGE CONTEXT]` block (~200 tokens) designed to be
+embedded directly into sub-agent prompts. Example workflow:
+
+1. Run `briefing.py "fix Docker networking" --for-subagent` → get context block
+2. Prepend the context block to the sub-agent's prompt
+3. Sub-agent now knows past mistakes/patterns without querying KB directly
+
 ### 2. Search
 
 ```bash
-python ~/.copilot/tools/query-session.py "search terms"              # Compact results
-python ~/.copilot/tools/query-session.py "docker error" --verbose    # Full content
-python ~/.copilot/tools/query-session.py "spring" --source copilot   # Filter by agent
-python ~/.copilot/tools/query-session.py "gradle" --type research    # Filter by doc type
+python3 ~/.copilot/tools/query-session.py "search terms"              # Compact results
+python3 ~/.copilot/tools/query-session.py "docker error" --verbose    # Full content
+python3 ~/.copilot/tools/query-session.py "spring" --source copilot   # Filter by agent
+python3 ~/.copilot/tools/query-session.py "gradle" --type research    # Filter by doc type
 ```
 
 ### 3. Drill Down (use entry IDs from search/briefing results)
 
 ```bash
-python ~/.copilot/tools/query-session.py --detail <id>     # Full content of one entry
-python ~/.copilot/tools/query-session.py --context <id>    # Entry + same-session entries
-python ~/.copilot/tools/query-session.py --related <id>    # Entry + graph connections
+python3 ~/.copilot/tools/query-session.py --detail <id>     # Full content of one entry
+python3 ~/.copilot/tools/query-session.py --context <id>    # Entry + same-session entries
+python3 ~/.copilot/tools/query-session.py --related <id>    # Entry + graph connections
 ```
 
 ### 4. Browse by Category
 
 ```bash
-python ~/.copilot/tools/query-session.py --mistakes    # Past errors and how they were fixed
-python ~/.copilot/tools/query-session.py --patterns    # Reusable best practices
-python ~/.copilot/tools/query-session.py --decisions   # Architecture/design choices
-python ~/.copilot/tools/query-session.py --tools       # Tool configs and usage notes
+python3 ~/.copilot/tools/query-session.py --mistakes    # Past errors and how they were fixed
+python3 ~/.copilot/tools/query-session.py --patterns    # Reusable best practices
+python3 ~/.copilot/tools/query-session.py --decisions   # Architecture/design choices
+python3 ~/.copilot/tools/query-session.py --tools       # Tool configs and usage notes
 ```
 
 ### 5. Knowledge Graph
 
 ```bash
-python ~/.copilot/tools/query-session.py --graph "topic"   # Visual: entries + connections
+python3 ~/.copilot/tools/query-session.py --graph "topic"   # Visual: entries + connections
 ```
 
 Shows how knowledge entries relate to each other:
@@ -89,7 +105,7 @@ Shows how knowledge entries relate to each other:
 ## Semantic Search (if embeddings configured)
 
 ```bash
-python ~/.copilot/tools/query-session.py "deployment error" --semantic
+python3 ~/.copilot/tools/query-session.py "deployment error" --semantic
 ```
 
 Works with meaning, not just keywords. Requires API key setup via `embed.py --setup`.
