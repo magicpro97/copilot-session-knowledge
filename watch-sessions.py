@@ -2,14 +2,17 @@
 """
 watch-sessions.py — Auto-index Copilot session-state on changes
 
-Polls ~/.copilot/session-state/ for new or modified .md files and
-triggers incremental indexing automatically.
+Polls ~/.copilot/session-state/ and ~/.claude/projects/ for new or
+modified .md, .txt, and .jsonl files and triggers incremental indexing
+automatically.
 
 Usage:
     python watch-sessions.py                  # Run in foreground (Ctrl+C to stop)
     python watch-sessions.py --interval 30    # Custom poll interval (seconds)
     python watch-sessions.py --once           # Single check then exit
     python watch-sessions.py --daemon         # Run as background process
+    python watch-sessions.py --changed-only   # Print changed files, full re-extract
+    python watch-sessions.py --install-hint   # Print auto-start setup instructions
 
 Cross-platform: Windows, macOS, Linux. Pure Python stdlib.
 """
@@ -18,37 +21,94 @@ import os
 import sys
 import time
 import signal
+import atexit
 import hashlib
 import sqlite3
 from pathlib import Path
 from datetime import datetime
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
+CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 DB_PATH = SESSION_STATE / "knowledge.db"
 TOOLS_DIR = Path(__file__).parent
 STATE_FILE = SESSION_STATE / ".watch-state.json"
+LOCK_FILE = SESSION_STATE / ".watcher.lock"
 
 DEFAULT_INTERVAL = 60  # seconds
 
 
-def get_file_signatures(base_dir: Path) -> dict[str, tuple[float, int]]:
-    """Get modification time + size for all indexable files."""
+def _is_pid_running(pid: int) -> bool:
+    """Check if a process with the given PID is still running."""
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+        )
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # process exists but we lack permission
+
+
+def acquire_lock() -> bool:
+    """Acquire the watcher lock file. Returns True if lock acquired."""
+    if LOCK_FILE.exists():
+        try:
+            stored_pid = int(LOCK_FILE.read_text(encoding="utf-8").strip())
+            if _is_pid_running(stored_pid):
+                print(
+                    f"[watch] Error: another watcher is already running "
+                    f"(PID {stored_pid}). Remove {LOCK_FILE} if this is stale."
+                )
+                return False
+            # Stale lock — previous watcher crashed
+            print(f"[watch] Removing stale lock (PID {stored_pid} no longer running)")
+            LOCK_FILE.unlink(missing_ok=True)
+        except (ValueError, OSError):
+            LOCK_FILE.unlink(missing_ok=True)
+
+    LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    atexit.register(release_lock)
+    return True
+
+
+def release_lock():
+    """Release the watcher lock file."""
+    try:
+        if LOCK_FILE.exists():
+            stored_pid = int(LOCK_FILE.read_text(encoding="utf-8").strip())
+            if stored_pid == os.getpid():
+                LOCK_FILE.unlink(missing_ok=True)
+    except (ValueError, OSError):
+        pass
+
+
+def get_file_signatures(dirs: list[Path]) -> dict[str, tuple[float, int]]:
+    """Get modification time + size for all indexable files across dirs."""
     sigs = {}
-    for session_dir in base_dir.iterdir():
-        if not session_dir.is_dir() or session_dir.name.startswith("."):
+    extensions = ("*.md", "*.txt", "*.jsonl")
+    for base_dir in dirs:
+        if not base_dir.exists():
             continue
-        for f in session_dir.rglob("*.md"):
-            try:
-                st = f.stat()
-                sigs[str(f)] = (st.st_mtime, st.st_size)
-            except OSError:
+        for session_dir in base_dir.iterdir():
+            if not session_dir.is_dir() or session_dir.name.startswith("."):
                 continue
-        for f in session_dir.rglob("*.txt"):
-            try:
-                st = f.stat()
-                sigs[str(f)] = (st.st_mtime, st.st_size)
-            except OSError:
-                continue
+            for ext in extensions:
+                for f in session_dir.rglob(ext):
+                    try:
+                        st = f.stat()
+                        sigs[str(f)] = (st.st_mtime, st.st_size)
+                    except OSError:
+                        continue
     return sigs
 
 
@@ -99,12 +159,23 @@ def run_indexer(incremental: bool = True):
         return False
 
 
-def run_extractor():
-    """Run the extract-knowledge.py script if it exists."""
+def run_extractor(changed_files: list[str] | None = None):
+    """Run the extract-knowledge.py script if it exists.
+
+    If changed_files is provided, prints the changed paths before running
+    full extraction (incremental optimization placeholder).
+    """
     import subprocess
     extractor = TOOLS_DIR / "extract-knowledge.py"
     if not extractor.exists():
         return True  # Optional — skip if not installed
+
+    if changed_files:
+        print(f"[watch] Changed files ({len(changed_files)}):")
+        for fp in changed_files[:20]:
+            print(f"[watch]   {fp}")
+        if len(changed_files) > 20:
+            print(f"[watch]   ... and {len(changed_files) - 20} more")
 
     try:
         result = subprocess.run(
@@ -124,9 +195,10 @@ def run_extractor():
         return False
 
 
-def check_and_index(prev_sigs: dict) -> dict:
+def check_and_index(prev_sigs: dict, watch_dirs: list[Path],
+                    changed_only: bool = False) -> dict:
     """Compare current files with previous state, index if changed."""
-    current_sigs = get_file_signatures(SESSION_STATE)
+    current_sigs = get_file_signatures(watch_dirs)
 
     # Find changes
     new_files = set(current_sigs.keys()) - set(prev_sigs.keys())
@@ -136,19 +208,47 @@ def check_and_index(prev_sigs: dict) -> dict:
     }
 
     if new_files or changed_files:
-        total = len(new_files) + len(changed_files)
+        all_changed = sorted(new_files | changed_files)
+        total = len(all_changed)
         now = datetime.now().strftime("%H:%M:%S")
         print(f"[watch] {now} — {total} file(s) changed, re-indexing...")
         run_indexer(incremental=True)
-        run_extractor()
+        run_extractor(changed_files=all_changed if changed_only else None)
 
     return current_sigs
+
+
+def print_install_hint():
+    """Print platform-specific auto-start instructions."""
+    script = Path(__file__).resolve()
+    if os.name == "nt":
+        print("# Windows — Task Scheduler (run in elevated cmd):")
+        print(f'schtasks /create /tn "CopilotSessionWatcher" '
+              f'/tr "python {script} --daemon" /sc onlogon')
+        print()
+        print("# To remove:")
+        print('schtasks /delete /tn "CopilotSessionWatcher" /f')
+    else:
+        print("# Linux/macOS — add to crontab (`crontab -e`):")
+        print(f"@reboot python3 {script} --daemon")
+        print()
+        print("# Or create a systemd user service:")
+        print(f"# ~/.config/systemd/user/copilot-watcher.service")
+        print("[Unit]")
+        print("Description=Copilot Session Watcher")
+        print("[Service]")
+        print(f"ExecStart=python3 {script} --daemon")
+        print("Restart=on-failure")
+        print("[Install]")
+        print("WantedBy=default.target")
 
 
 def main():
     interval = DEFAULT_INTERVAL
     once = False
     daemon = False
+    changed_only = False
+    install_hint = False
 
     # Parse args
     args = sys.argv[1:]
@@ -163,15 +263,34 @@ def main():
         elif args[i] == "--daemon":
             daemon = True
             i += 1
+        elif args[i] == "--changed-only":
+            changed_only = True
+            i += 1
+        elif args[i] == "--install-hint":
+            install_hint = True
+            i += 1
         elif args[i] in ("--help", "-h"):
             print(__doc__)
             return
         else:
             i += 1
 
+    if install_hint:
+        print_install_hint()
+        return
+
     if not SESSION_STATE.exists():
         print(f"Error: Session state directory not found: {SESSION_STATE}")
         sys.exit(1)
+
+    # Acquire lock — prevent multiple watchers
+    if not acquire_lock():
+        sys.exit(1)
+
+    # Directories to watch
+    watch_dirs = [SESSION_STATE]
+    if CLAUDE_PROJECTS.exists():
+        watch_dirs.append(CLAUDE_PROJECTS)
 
     # Daemonize on Unix if requested
     if daemon and os.name != "nt":
@@ -180,6 +299,8 @@ def main():
             print(f"[watch] Daemon started (PID {pid})")
             sys.exit(0)
         os.setsid()
+        # Re-acquire lock with new PID after fork
+        LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
         # Redirect stdout/stderr to log file
         log_path = SESSION_STATE / ".watch.log"
         sys.stdout = open(log_path, "a", encoding="utf-8")
@@ -201,33 +322,37 @@ def main():
     prev_sigs = state.get("signatures", {})
 
     now = datetime.now().strftime("%H:%M:%S")
-    print(f"[watch] {now} — Watching {SESSION_STATE}")
+    dirs_str = ", ".join(str(d) for d in watch_dirs)
+    print(f"[watch] {now} — Watching {dirs_str}")
     print(f"[watch] Poll interval: {interval}s | Ctrl+C to stop")
 
-    if once:
-        new_sigs = check_and_index(prev_sigs)
-        state["signatures"] = {k: list(v) for k, v in new_sigs.items()}
-        state["last_index"] = datetime.now().isoformat()
-        save_state(state)
-        return
-
-    while running:
-        try:
-            new_sigs = check_and_index(prev_sigs)
-            prev_sigs = new_sigs
+    try:
+        if once:
+            new_sigs = check_and_index(prev_sigs, watch_dirs, changed_only)
             state["signatures"] = {k: list(v) for k, v in new_sigs.items()}
             state["last_index"] = datetime.now().isoformat()
             save_state(state)
-        except Exception as e:
-            print(f"[watch] Error: {e}")
+            return
 
-        # Sleep in small increments for responsive shutdown
-        for _ in range(interval):
-            if not running:
-                break
-            time.sleep(1)
+        while running:
+            try:
+                new_sigs = check_and_index(prev_sigs, watch_dirs, changed_only)
+                prev_sigs = new_sigs
+                state["signatures"] = {k: list(v) for k, v in new_sigs.items()}
+                state["last_index"] = datetime.now().isoformat()
+                save_state(state)
+            except Exception as e:
+                print(f"[watch] Error: {e}")
 
-    print("[watch] Stopped.")
+            # Sleep in small increments for responsive shutdown
+            for _ in range(interval):
+                if not running:
+                    break
+                time.sleep(1)
+
+        print("[watch] Stopped.")
+    finally:
+        release_lock()
 
 
 if __name__ == "__main__":

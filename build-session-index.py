@@ -103,11 +103,15 @@ def create_db(db_path: Path) -> sqlite3.Connection:
 
 
 def _migrate_add_source(db: sqlite3.Connection):
-    """Add 'source' column to existing tables (safe, idempotent)."""
+    """Add 'source' column and Phase 6 columns to existing tables (safe, idempotent)."""
     migrations = [
         ("sessions", "source", "TEXT DEFAULT 'copilot'"),
         ("documents", "source", "TEXT DEFAULT 'copilot'"),
         ("knowledge_entries", "source", "TEXT DEFAULT 'copilot'"),
+        # Phase 6B: topic key, dedup, revision tracking
+        ("knowledge_entries", "topic_key", "TEXT"),
+        ("knowledge_entries", "revision_count", "INTEGER DEFAULT 1"),
+        ("knowledge_entries", "content_hash", "TEXT"),
     ]
     for table, col, col_def in migrations:
         try:
@@ -120,8 +124,28 @@ def _migrate_add_source(db: sqlite3.Connection):
         db.execute("CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_ke_source ON knowledge_entries(source)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_ke_topic ON knowledge_entries(topic_key)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_ke_hash ON knowledge_entries(content_hash)")
     except sqlite3.OperationalError:
         pass  # Table might not exist yet
+
+    # Phase 6C: knowledge relations table
+    try:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS knowledge_relations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER REFERENCES knowledge_entries(id),
+                target_id INTEGER REFERENCES knowledge_entries(id),
+                relation_type TEXT NOT NULL,
+                confidence REAL DEFAULT 0.8,
+                created_at TEXT,
+                UNIQUE(source_id, target_id, relation_type)
+            )
+        """)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_kr_source ON knowledge_relations(source_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_kr_target ON knowledge_relations(target_id)")
+    except sqlite3.OperationalError:
+        pass
 
 
 def file_hash(path: Path) -> str:

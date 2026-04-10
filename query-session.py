@@ -16,6 +16,10 @@ Usage:
     python query-session.py --mistakes                         # Show past mistakes
     python query-session.py --patterns                         # Show learned patterns
     python query-session.py --decisions                        # Show tech decisions
+    python query-session.py --detail <id>                      # Full detail of entry
+    python query-session.py --context <id>                     # Entry + related context
+    python query-session.py --related <id>                     # Show knowledge graph relations
+    python query-session.py --graph "spring boot"              # Mini knowledge graph for topic
     python query-session.py "search" --export json             # Export as JSON
     python query-session.py "search" --export markdown         # Export as Markdown
 
@@ -144,22 +148,29 @@ def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = Fa
                       "plan": MAGENTA, "claude-session": CYAN}.get(r["doc_type"], "")
         source_badge = f" {DIM}[{doc_source}]{RESET}" if doc_source != "copilot" else ""
 
-        print(f"{BOLD}{i}. {r['title']}{RESET}{source_badge}")
-        print(f"   {DIM}Session:{RESET} {sid}...  "
-              f"{type_color}{r['doc_type']}{RESET}  "
-              f"{DIM}Section:{RESET} {r['section_name']}  "
-              f"{DIM}Size:{RESET} {r['size_bytes'] // 1024}KB")
-
-        # Format excerpt - highlight matches
-        excerpt = r["excerpt"]
-        excerpt = excerpt.replace(">>>", f"{BOLD}{YELLOW}").replace("<<<", f"{RESET}")
-        wrapped = textwrap.fill(excerpt, width=90, initial_indent="   ", subsequent_indent="   ")
-        print(wrapped)
-
         if verbose:
-            print(f"   {DIM}Path: {r['file_path']}{RESET}")
+            print(f"{BOLD}{i}. {r['title']}{RESET}{source_badge}")
+            print(f"   {DIM}Session:{RESET} {sid}...  "
+                  f"{type_color}{r['doc_type']}{RESET}  "
+                  f"{DIM}Section:{RESET} {r['section_name']}  "
+                  f"{DIM}Size:{RESET} {r['size_bytes'] // 1024}KB")
 
-        print()
+            excerpt = r["excerpt"]
+            excerpt = excerpt.replace(">>>", f"{BOLD}{YELLOW}").replace("<<<", f"{RESET}")
+            wrapped = textwrap.fill(excerpt, width=90, initial_indent="   ", subsequent_indent="   ")
+            print(wrapped)
+            print(f"   {DIM}Path: {r['file_path']}{RESET}")
+            print()
+        else:
+            # Compact: title + type + short excerpt
+            excerpt_text = r["excerpt"].replace(">>>", "").replace("<<<", "")
+            short = excerpt_text[:80].replace("\n", " ").strip()
+            print(f"  {BOLD}{i}.{RESET} {r['title'][:55]} "
+                  f"{type_color}{r['doc_type']}{RESET}{source_badge}")
+            print(f"     {DIM}{short}{RESET}")
+
+    if not verbose:
+        print(f"\n{DIM}Use --verbose for full excerpts{RESET}")
 
     db.close()
 
@@ -255,7 +266,7 @@ def show_recent(limit: int = 10):
 
 
 def show_knowledge(category: str, limit: int = 20, export_fmt: str = None,
-                   source_filter: str = None):
+                   source_filter: str = None, verbose: bool = False):
     """Show extracted knowledge entries by category."""
     db = get_db()
 
@@ -298,21 +309,271 @@ def show_knowledge(category: str, limit: int = 20, export_fmt: str = None,
 
     for i, r in enumerate(rows, 1):
         sid = r["session_id"][:8]
-        tags = f" [{r['tags']}]" if r["tags"] else ""
         conf = f"{r['confidence']:.1f}"
-        count = f" ×{r['occurrence_count']}" if r["occurrence_count"] > 1 else ""
+        count = f" x{r['occurrence_count']}" if r["occurrence_count"] > 1 else ""
 
-        print(f"{BOLD}{i}. {r['title']}{RESET}")
-        print(f"   {DIM}Session:{RESET} {sid}..  "
-              f"{DIM}Confidence:{RESET} {conf}{count}  "
-              f"{DIM}Tags:{RESET}{tags}")
+        if verbose:
+            tags = f" [{r['tags']}]" if r["tags"] else ""
+            print(f"{BOLD}{i}. {r['title']}{RESET}")
+            print(f"   {DIM}ID:{RESET} #{r['id']}  "
+                  f"{DIM}Session:{RESET} {sid}..  "
+                  f"{DIM}Confidence:{RESET} {conf}{count}  "
+                  f"{DIM}Tags:{RESET}{tags}")
+            content_preview = r["content"][:300].replace("\n", "\n   ")
+            print(f"   {content_preview}")
+            if len(r["content"]) > 300:
+                print(f"   {DIM}... ({len(r['content'])} chars total){RESET}")
+            print()
+        else:
+            # Compact: one line per entry with ID
+            first_line = r["content"].split("\n")[0][:80] if r["content"] else ""
+            print(f"  {DIM}#{r['id']:>4d}{RESET} {BOLD}{r['title'][:60]}{RESET} "
+                  f"{DIM}[conf:{conf}{count}]{RESET}")
+            if first_line:
+                print(f"        {DIM}{first_line}{RESET}")
 
-        content_preview = r["content"][:300].replace("\n", "\n   ")
-        print(f"   {content_preview}")
-        if len(r["content"]) > 300:
-            print(f"   {DIM}... ({len(r['content'])} chars total){RESET}")
-        print()
+    if not verbose:
+        print(f"\n{DIM}Use --detail <id> for full content, --verbose for expanded view{RESET}")
 
+    db.close()
+
+
+def show_detail(entry_id: int):
+    """Show full detail of a specific knowledge entry by ID."""
+    db = get_db()
+    row = db.execute("""
+        SELECT ke.*, COALESCE(ke.source, 'copilot') as src,
+               d.title as doc_title, d.doc_type, d.file_path
+        FROM knowledge_entries ke
+        LEFT JOIN documents d ON ke.document_id = d.id
+        WHERE ke.id = ?
+    """, (entry_id,)).fetchone()
+
+    if not row:
+        print(f"No knowledge entry with ID {entry_id}")
+        db.close()
+        return
+
+    print(f"\n{BOLD}Knowledge Entry #{entry_id}{RESET}")
+    print(f"{'='*60}")
+    print(f"{BOLD}Category:{RESET} {row['category'].upper()}")
+    print(f"{BOLD}Title:{RESET} {row['title']}")
+    print(f"{BOLD}Source:{RESET} {row['src']}")
+    print(f"{BOLD}Session:{RESET} {row['session_id'][:12]}...")
+    print(f"{BOLD}Confidence:{RESET} {row['confidence']:.2f}  "
+          f"{DIM}Occurrences:{RESET} {row['occurrence_count']}")
+    if row['tags']:
+        print(f"{BOLD}Tags:{RESET} {row['tags']}")
+    if row['doc_title']:
+        print(f"{BOLD}Document:{RESET} {row['doc_title']} ({row['doc_type']})")
+    if row['first_seen']:
+        print(f"{BOLD}First seen:{RESET} {row['first_seen']}")
+    if row['last_seen']:
+        print(f"{BOLD}Last seen:{RESET} {row['last_seen']}")
+
+    print(f"\n{BOLD}Content:{RESET}")
+    print(f"{'-'*60}")
+    print(row['content'])
+    print(f"{'-'*60}")
+
+    db.close()
+
+
+def show_context(entry_id: int):
+    """Show a knowledge entry plus related entries from same session/category."""
+    db = get_db()
+    row = db.execute("""
+        SELECT ke.*, COALESCE(ke.source, 'copilot') as src
+        FROM knowledge_entries ke WHERE ke.id = ?
+    """, (entry_id,)).fetchone()
+
+    if not row:
+        print(f"No knowledge entry with ID {entry_id}")
+        db.close()
+        return
+
+    # Show the main entry (compact)
+    print(f"\n{BOLD}Context for: {row['title']}{RESET}")
+    print(f"{DIM}Category: {row['category']} | Session: {row['session_id'][:12]}...{RESET}")
+    print(f"\n{row['content'][:500]}")
+    if len(row['content']) > 500:
+        print(f"{DIM}... ({len(row['content'])} chars, use --detail {entry_id} for full){RESET}")
+
+    # Find related: same session
+    same_session = db.execute("""
+        SELECT id, category, title, confidence
+        FROM knowledge_entries
+        WHERE session_id = ? AND id != ?
+        ORDER BY confidence DESC LIMIT 10
+    """, (row['session_id'], entry_id)).fetchall()
+
+    if same_session:
+        print(f"\n{BOLD}Same session entries:{RESET}")
+        for r in same_session:
+            print(f"  {DIM}#{r['id']}{RESET} [{r['category']}] {r['title']} "
+                  f"{DIM}(conf: {r['confidence']:.1f}){RESET}")
+
+    # Find related: same category, different session
+    same_category = db.execute("""
+        SELECT id, category, title, confidence, session_id
+        FROM knowledge_entries
+        WHERE category = ? AND session_id != ? AND id != ?
+        ORDER BY confidence DESC LIMIT 5
+    """, (row['category'], row['session_id'], entry_id)).fetchall()
+
+    if same_category:
+        print(f"\n{BOLD}Related {row['category']} entries (other sessions):{RESET}")
+        for r in same_category:
+            sid = r['session_id'][:8]
+            print(f"  {DIM}#{r['id']}{RESET} {r['title']} "
+                  f"{DIM}(session: {sid}.. conf: {r['confidence']:.1f}){RESET}")
+
+    # Check knowledge_relations table if it exists
+    try:
+        relations = db.execute("""
+            SELECT kr.relation_type, kr.confidence as rel_conf,
+                   ke.id as rel_id, ke.category, ke.title
+            FROM knowledge_relations kr
+            JOIN knowledge_entries ke ON ke.id = CASE
+                WHEN kr.source_id = ? THEN kr.target_id
+                ELSE kr.source_id END
+            WHERE kr.source_id = ? OR kr.target_id = ?
+            ORDER BY kr.confidence DESC LIMIT 10
+        """, (entry_id, entry_id, entry_id)).fetchall()
+        if relations:
+            print(f"\n{BOLD}Linked entries:{RESET}")
+            for r in relations:
+                print(f"  {DIM}#{r['rel_id']}{RESET} --{r['relation_type']}--> "
+                      f"[{r['category']}] {r['title']} "
+                      f"{DIM}(conf: {r['rel_conf']:.1f}){RESET}")
+    except sqlite3.OperationalError:
+        pass  # knowledge_relations table doesn't exist yet
+
+    db.close()
+
+
+def show_related(entry_id: int):
+    """Show entries related to the given entry via knowledge graph."""
+    db = get_db()
+    entry = db.execute(
+        "SELECT id, category, title, content, session_id FROM knowledge_entries WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    if not entry:
+        print(f"No knowledge entry with ID {entry_id}")
+        db.close()
+        return
+
+    print(f"\n{BOLD}Relations for: {entry['title'][:80]}{RESET}")
+    print(f"{DIM}Category: {entry['category']} | Session: {entry['session_id'][:12]}...{RESET}\n")
+
+    try:
+        outgoing = db.execute("""
+            SELECT kr.relation_type, kr.confidence, ke.id, ke.category, ke.title
+            FROM knowledge_relations kr
+            JOIN knowledge_entries ke ON kr.target_id = ke.id
+            WHERE kr.source_id = ?
+            ORDER BY kr.confidence DESC
+        """, (entry_id,)).fetchall()
+
+        incoming = db.execute("""
+            SELECT kr.relation_type, kr.confidence, ke.id, ke.category, ke.title
+            FROM knowledge_relations kr
+            JOIN knowledge_entries ke ON kr.source_id = ke.id
+            WHERE kr.target_id = ?
+            ORDER BY kr.confidence DESC
+        """, (entry_id,)).fetchall()
+    except sqlite3.OperationalError:
+        print("No relations found. Run extract-knowledge.py to generate relations.")
+        db.close()
+        return
+
+    if not outgoing and not incoming:
+        print("No relations found. Run extract-knowledge.py to generate relations.")
+        db.close()
+        return
+
+    if outgoing:
+        print(f"{BOLD}\u2192 Outgoing ({len(outgoing)}):{RESET}")
+        for r in outgoing[:15]:
+            print(f"  [{r['relation_type']}] {DIM}#{r['id']}{RESET} [{r['category']}] "
+                  f"{r['title'][:60]} {DIM}(conf: {r['confidence']:.1f}){RESET}")
+
+    if incoming:
+        print(f"\n{BOLD}\u2190 Incoming ({len(incoming)}):{RESET}")
+        for r in incoming[:15]:
+            print(f"  [{r['relation_type']}] {DIM}#{r['id']}{RESET} [{r['category']}] "
+                  f"{r['title'][:60]} {DIM}(conf: {r['confidence']:.1f}){RESET}")
+
+    db.close()
+
+
+def show_graph(topic: str):
+    """Show a mini knowledge graph around a topic."""
+    db = get_db()
+
+    fts_query = topic.strip()
+    if not any(c in fts_query for c in ['"', "*", "OR", "AND", "NOT", "NEAR"]):
+        terms = fts_query.split()
+        fts_query = " ".join(f'"{t}"*' for t in terms)
+
+    try:
+        matches = db.execute("""
+            SELECT ke.id, ke.category, ke.title, ke.confidence
+            FROM ke_fts fts
+            JOIN knowledge_entries ke ON fts.rowid = ke.id
+            WHERE ke_fts MATCH ?
+            ORDER BY rank
+            LIMIT 5
+        """, (fts_query,)).fetchall()
+    except sqlite3.OperationalError:
+        print(f"No knowledge entries matching '{topic}'")
+        db.close()
+        return
+
+    if not matches:
+        print(f"No knowledge entries matching '{topic}'")
+        db.close()
+        return
+
+    print(f"\n{BOLD}Knowledge Graph: {topic}{RESET}")
+    print("=" * 60)
+
+    entry_ids = [m['id'] for m in matches]
+
+    for m in matches:
+        eid = m['id']
+        print(f"\n{BOLD}\u25cf #{eid} [{m['category']}] {m['title'][:60]}{RESET} "
+              f"{DIM}(conf: {m['confidence']:.1f}){RESET}")
+
+        try:
+            relations = db.execute("""
+                SELECT kr.relation_type, kr.confidence,
+                       CASE WHEN kr.source_id = ? THEN kr.target_id ELSE kr.source_id END as other_id,
+                       ke.category, ke.title
+                FROM knowledge_relations kr
+                JOIN knowledge_entries ke ON ke.id = CASE WHEN kr.source_id = ? THEN kr.target_id ELSE kr.source_id END
+                WHERE kr.source_id = ? OR kr.target_id = ?
+                ORDER BY kr.confidence DESC
+                LIMIT 8
+            """, (eid, eid, eid, eid)).fetchall()
+
+            for r in relations:
+                marker = "\u2194" if r['other_id'] in entry_ids else "\u2192"
+                print(f"  {marker} [{r['relation_type']}] {DIM}#{r['other_id']}{RESET} "
+                      f"[{r['category']}] {r['title'][:50]}")
+        except sqlite3.OperationalError:
+            pass  # knowledge_relations table doesn't exist yet
+
+    try:
+        ids_str = ",".join(str(i) for i in entry_ids)
+        total_rels = db.execute(
+            f"SELECT COUNT(*) FROM knowledge_relations WHERE source_id IN ({ids_str}) OR target_id IN ({ids_str})"
+        ).fetchone()[0]
+    except sqlite3.OperationalError:
+        total_rels = 0
+
+    print(f"\n--- {len(matches)} entries, {total_rels} relations ---")
     db.close()
 
 
@@ -527,6 +788,38 @@ def main():
             print("Error: --session requires a session ID prefix")
         return
 
+    if "--detail" in args:
+        idx = args.index("--detail")
+        if idx + 1 < len(args):
+            show_detail(int(args[idx + 1]))
+        else:
+            print("Error: --detail requires an entry ID")
+        return
+
+    if "--context" in args:
+        idx = args.index("--context")
+        if idx + 1 < len(args):
+            show_context(int(args[idx + 1]))
+        else:
+            print("Error: --context requires an entry ID")
+        return
+
+    if "--related" in args:
+        idx = args.index("--related")
+        if idx + 1 < len(args):
+            show_related(int(args[idx + 1]))
+        else:
+            print("Error: --related requires an entry ID")
+        return
+
+    if "--graph" in args:
+        idx = args.index("--graph")
+        if idx + 1 < len(args):
+            show_graph(args[idx + 1])
+        else:
+            print("Error: --graph requires a topic")
+        return
+
     # Knowledge category shortcuts
     export_fmt = None
     if "--export" in args:
@@ -538,10 +831,12 @@ def main():
         idx = args.index("--limit")
         limit = int(args[idx + 1]) if idx + 1 < len(args) else 10
 
+    verbose = "--verbose" in args or "-v" in args
+
     for shortcut, category in [("--mistakes", "mistake"), ("--patterns", "pattern"),
                                 ("--decisions", "decision"), ("--tools", "tool")]:
         if shortcut in args:
-            show_knowledge(category, limit, export_fmt, source_filter)
+            show_knowledge(category, limit, export_fmt, source_filter, verbose)
             return
 
     # Check for semantic mode

@@ -6,14 +6,16 @@ Before starting any task, run this to get relevant past experience injected as c
 AI agents can call this automatically to avoid repeating past mistakes.
 
 Usage:
-    python briefing.py "implement user CRUD"              # Full markdown briefing
-    python briefing.py "fix Docker compose" --compact     # Compact for AI context
+    python briefing.py "implement user CRUD"              # Compact briefing (default)
+    python briefing.py "implement user CRUD" --full       # Full markdown briefing
+    python briefing.py "fix Docker compose" --compact     # XML compact for AI context
     python briefing.py "fix Docker compose" --json        # JSON output
     python briefing.py "spring boot migration" --limit 5  # More results per category
     python briefing.py --auto                             # Auto-detect from git/plan
-    python briefing.py --auto --compact                   # Best for AI agents
+    python briefing.py --auto --full                      # Full briefing with auto-detect
 
-Output: structured briefing with relevant mistakes, patterns, decisions, and past work.
+Default output is compact (~500 tokens): titles + 1-line summaries with entry IDs.
+Use --full for complete content with tags, confidence scores, and full text.
 """
 
 import json
@@ -60,12 +62,9 @@ def auto_detect_context() -> str:
         ).stdout.strip()
         if branch and branch != "HEAD":
             # "feature/model-management" → "model management"
-            # "dev/feature/5022-copy-to-group" → "5022 copy to group"
             parts = branch.replace("/", "-").replace("_", "-").split("-")
             keywords.update(p for p in parts if len(p) > 2
-                           and p not in ("feature", "fix", "chore", "update", "and",
-                                         "dev", "bug", "refactor", "docs",
-                                         "release", "hotfix", "main", "master"))
+                           and p not in ("feature", "fix", "chore", "update", "and"))
     except Exception:
         pass
 
@@ -82,9 +81,7 @@ def auto_detect_context() -> str:
                 words = msg.split()
                 keywords.update(w for w in words if len(w) > 2
                                and w.lower() not in ("the", "and", "for", "add", "fix",
-                                                      "update", "with", "from", "that",
-                                                      "use", "refactor", "feat", "chore",
-                                                      "docs", "style", "test", "build"))
+                                                      "update", "with", "from", "that"))
     except Exception:
         pass
 
@@ -244,7 +241,8 @@ def search_past_work(db: sqlite3.Connection, query: str, limit: int = 3) -> list
     return results
 
 
-def generate_briefing(query: str, limit: int = 3, fmt: str = "md") -> str:
+def generate_briefing(query: str, limit: int = 3, fmt: str = "md",
+                      full: bool = False) -> str:
     """Generate a structured briefing from the knowledge base."""
     db = get_db()
 
@@ -295,8 +293,63 @@ def generate_briefing(query: str, limit: int = 3, fmt: str = "md") -> str:
         return _format_json(query, briefing_data, past_work, categories)
     elif fmt == "compact":
         return _format_compact(query, briefing_data, past_work, categories)
-    else:
+    elif full:
         return _format_markdown(query, briefing_data, past_work, categories)
+    else:
+        return _format_default(query, briefing_data, past_work, categories)
+
+
+def _format_default(query: str, data: dict, past_work: list, categories: dict) -> str:
+    """Compact default format: titles + 1-line summaries (~500 tokens)."""
+    lines = []
+    lines.append(f"📋 Briefing: {query}")
+    lines.append("")
+
+    for cat, meta in categories.items():
+        entries = data.get(cat, [])
+        if not entries:
+            continue
+
+        lines.append(f"{meta['emoji']} {meta['title']}")
+        for entry in entries:
+            eid = entry.get("id", "?")
+            title = entry.get("title", "Untitled")
+            if len(title) > 80:
+                title = title[:77] + "..."
+            # Extract 1-line summary from content
+            content = entry.get("content", "")
+            summary = ""
+            for ln in content.split("\n"):
+                ln = ln.strip().lstrip("-").lstrip("*").lstrip("0123456789.").strip()
+                if (ln and len(ln) > 15
+                        and not ln.startswith("#")
+                        and not ln.startswith("|")
+                        and not ln.startswith(">")
+                        and not ln.startswith("```")):
+                    summary = ln[:80]
+                    break
+            if summary:
+                lines.append(f"  #{eid} {title} — {summary}")
+            else:
+                lines.append(f"  #{eid} {title}")
+        lines.append("")
+
+    if past_work:
+        lines.append("📚 Related Past Work")
+        for w in past_work:
+            sid = w.get("session_id", "?")[:8]
+            title = w.get("title", "?")
+            if len(title) > 80:
+                title = title[:77] + "..."
+            lines.append(f"  [{w.get('doc_type', '?')}] {title} (session {sid})")
+        lines.append("")
+
+    total = sum(len(v) for v in data.values()) + len(past_work)
+    lines.append(f"({total} entries) "
+                 f"Use --full for complete content, "
+                 f"or query-session.py --detail <id> for specific entry")
+
+    return "\n".join(lines)
 
 
 def _format_markdown(query: str, data: dict, past_work: list, categories: dict) -> str:
@@ -459,6 +512,7 @@ def main():
     fmt = "md"
     limit = 3
     auto_mode = "--auto" in args
+    full_mode = "--full" in args
 
     if "--format" in args:
         idx = args.index("--format")
@@ -492,7 +546,7 @@ def main():
         print("Error: Provide a task description or use --auto")
         return
 
-    output = generate_briefing(query, limit=limit, fmt=fmt)
+    output = generate_briefing(query, limit=limit, fmt=fmt, full=full_mode)
     print(output)
 
 

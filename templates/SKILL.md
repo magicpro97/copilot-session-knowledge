@@ -1,105 +1,89 @@
----
-name: session-knowledge
-description: Search past session knowledge, get pre-task briefings, and record learnings. Use at session start, before new tasks, and after completing work.
----
+# Session Knowledge — Copilot CLI Skill
 
-# Session Knowledge Tools
+Search past Copilot and Claude sessions before starting any task.
+This avoids repeating mistakes and leverages proven patterns.
 
-> **Source**: [copilot-session-knowledge](https://github.com/magicpro97/copilot-session-knowledge)
-> **Location**: `~/.copilot/tools/`
-> **Data**: `~/.copilot/session-state/knowledge.db` (SQLite FTS5)
-
-Tools that index all Copilot and Claude Code sessions into a searchable knowledge base.
-
-## When to Use
-
-### 🟢 MUST Use (Mandatory)
-
-| Trigger | Tool | Command |
-|---------|------|---------|
-| **Starting a new task/feature** | `briefing.py` | `python3 ~/.copilot/tools/briefing.py --auto --compact` |
-| **After fixing a non-trivial bug** | `learn.py` | `python3 ~/.copilot/tools/learn.py --mistake "Title" "What happened and fix"` |
-| **After discovering a useful pattern** | `learn.py` | `python3 ~/.copilot/tools/learn.py --pattern "Title" "What works well"` |
-| **After making architecture decision** | `learn.py` | `python3 ~/.copilot/tools/learn.py --decision "Title" "Why this approach"` |
-
-### 🟡 Should Use (Recommended)
-
-| Trigger | Tool | Command |
-|---------|------|---------|
-| **Investigating unfamiliar code area** | `query-session.py` | `python3 ~/.copilot/tools/query-session.py "search terms"` |
-| **Before repeating a task done before** | `query-session.py` | `python3 ~/.copilot/tools/query-session.py "task description"` |
-| **Reviewing past mistakes in an area** | `query-session.py` | `python3 ~/.copilot/tools/query-session.py --mistakes` |
-| **Checking what patterns were established** | `query-session.py` | `python3 ~/.copilot/tools/query-session.py --patterns` |
-
-### 🔴 Do NOT Use
-
-- For simple/obvious tasks (e.g., formatting, typo fix)
-- When task is completely new with no past sessions
-- To replace reading actual source code — this is supplementary context
-
-## Tools Reference
-
-### `briefing.py` — Pre-task Context
+## Quick Start
 
 ```bash
-# Auto-detect from git branch + recent commits (BEST for AI agents)
-python3 ~/.copilot/tools/briefing.py --auto --compact
+# Get a compact briefing before starting work (~500 tokens)
+python ~/.copilot/tools/briefing.py "your task description"
 
-# Manual topic
-python3 ~/.copilot/tools/briefing.py "database migration" --compact
+# Full briefing with complete content
+python ~/.copilot/tools/briefing.py "your task description" --full
 
-# Full markdown output (for human reading)
-python3 ~/.copilot/tools/briefing.py "user authentication flow"
+# Auto-detect context from git state / plan.md
+python ~/.copilot/tools/briefing.py --auto
 ```
 
-### `query-session.py` — Search Knowledge Base
+## Search Commands
+
+### Compact Search (default — ~50 tokens/entry)
 
 ```bash
-# Full-text search
-python3 ~/.copilot/tools/query-session.py "API rate limiting"
-
-# Knowledge categories
-python3 ~/.copilot/tools/query-session.py --mistakes     # Past bugs and fixes
-python3 ~/.copilot/tools/query-session.py --patterns     # Established patterns
-python3 ~/.copilot/tools/query-session.py --decisions    # Architecture decisions
-
-# Filter by source (copilot, claude, all)
-python3 ~/.copilot/tools/query-session.py "search" --source claude
-python3 ~/.copilot/tools/query-session.py --list --source copilot
-
-# Filter and format
-python3 ~/.copilot/tools/query-session.py "search" --limit 5
-python3 ~/.copilot/tools/query-session.py "search" --verbose
-
-# Session management
-python3 ~/.copilot/tools/query-session.py --list         # All sessions
-python3 ~/.copilot/tools/query-session.py --recent       # Recent activity
+python ~/.copilot/tools/query-session.py "search terms"
+python ~/.copilot/tools/query-session.py "docker" --type research
+python ~/.copilot/tools/query-session.py "spring" --source copilot
 ```
 
-### `learn.py` — Record Knowledge
+### Full Content
 
 ```bash
-# Record a mistake (bug fix, wrong approach)
-python3 ~/.copilot/tools/learn.py --mistake "Title" "What happened and fix" --tags "relevant,tags"
-
-# Record a pattern (best practice, convention)
-python3 ~/.copilot/tools/learn.py --pattern "Title" "What works well" --tags "tags"
-
-# Record a decision (architecture choice)
-python3 ~/.copilot/tools/learn.py --decision "Title" "Why this approach" --tags "tags"
-
-# Record a tool discovery
-python3 ~/.copilot/tools/learn.py --tool "Title" "Tool/config that was useful" --tags "tags"
-
-# View stats
-python3 ~/.copilot/tools/learn.py --stats
+python ~/.copilot/tools/query-session.py "search terms" --verbose    # All results expanded
 ```
 
-## Re-indexing
+### Progressive Disclosure (drill-down by entry ID)
 
 ```bash
-python3 ~/.copilot/tools/build-session-index.py          # Rebuild Copilot index
-python3 ~/.copilot/tools/build-session-index.py --all    # Copilot + Claude Code
-python3 ~/.copilot/tools/extract-knowledge.py             # Re-extract knowledge entries
-python3 ~/.copilot/tools/sync-knowledge.py --auto         # Sync DBs across Win/WSL
+python ~/.copilot/tools/query-session.py --detail <id>     # Full detail of one entry
+python ~/.copilot/tools/query-session.py --context <id>    # Entry + related entries
 ```
+
+### Knowledge Categories
+
+```bash
+python ~/.copilot/tools/query-session.py --mistakes    # Past errors + fixes
+python ~/.copilot/tools/query-session.py --patterns    # Reusable best practices
+python ~/.copilot/tools/query-session.py --decisions   # Architecture choices
+python ~/.copilot/tools/query-session.py --tools       # Tool configs
+```
+
+### Knowledge Graph
+
+```bash
+python ~/.copilot/tools/query-session.py --related <id>        # Graph connections for an entry
+python ~/.copilot/tools/query-session.py --graph "spring boot"  # Mini knowledge graph for a topic
+```
+
+Relation types: SAME_SESSION, TAG_OVERLAP, RESOLVED_BY, SAME_TOPIC.
+
+### Semantic / Hybrid Search
+
+```bash
+python ~/.copilot/tools/query-session.py "deployment error" --semantic
+python ~/.copilot/tools/query-session.py "how to fix Docker" --semantic --verbose
+```
+
+## Briefing Formats
+
+| Flag | Output | Token Budget |
+|------|--------|-------------|
+| *(default)* | Compact titles + 1-line summaries with entry IDs | ~500 tokens |
+| `--full` | Complete content with tags, confidence, full text | ~3000 tokens |
+| `--compact` | XML compact for AI context injection | ~500 tokens |
+| `--json` | JSON structured output | varies |
+
+## Token Budget
+
+Default compact output uses ~6x fewer tokens than previous versions:
+- Search results: ~50 tokens/entry (was ~300)
+- Briefing: ~500 tokens total (was ~3000)
+- Use `--verbose` or `--full` only when you need deep detail
+
+## Workflow
+
+1. **Before any task**: `briefing.py "task description"` or `briefing.py --auto`
+2. **If briefing mentions relevant entries**: `query-session.py --detail <id>` to drill down
+3. **To explore connections**: `query-session.py --related <id>` or `--graph "topic"`
+4. **During work**: search for specific errors or patterns as needed
+5. **Export for sharing**: `query-session.py "query" --export json`

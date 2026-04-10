@@ -81,29 +81,45 @@ def ensure_tables(db: sqlite3.Connection):
             first_seen TEXT,
             last_seen TEXT,
             source TEXT DEFAULT 'copilot',
+            topic_key TEXT,
+            revision_count INTEGER DEFAULT 1,
+            content_hash TEXT,
             UNIQUE(category, title, session_id)
         );
 
         CREATE INDEX IF NOT EXISTS idx_ke_category ON knowledge_entries(category);
         CREATE INDEX IF NOT EXISTS idx_ke_session ON knowledge_entries(session_id);
         CREATE INDEX IF NOT EXISTS idx_ke_source ON knowledge_entries(source);
+        CREATE INDEX IF NOT EXISTS idx_ke_topic ON knowledge_entries(topic_key);
+        CREATE INDEX IF NOT EXISTS idx_ke_hash ON knowledge_entries(content_hash);
+
+        CREATE TABLE IF NOT EXISTS knowledge_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER REFERENCES knowledge_entries(id),
+            target_id INTEGER REFERENCES knowledge_entries(id),
+            relation_type TEXT NOT NULL,
+            confidence REAL DEFAULT 0.8,
+            created_at TEXT,
+            UNIQUE(source_id, target_id, relation_type)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_kr_source ON knowledge_relations(source_id);
+        CREATE INDEX IF NOT EXISTS idx_kr_target ON knowledge_relations(target_id);
     """)
 
-    # Migrate existing databases: add source column if missing
-    try:
-        db.execute("ALTER TABLE knowledge_entries ADD COLUMN source TEXT DEFAULT 'copilot'")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-    try:
-        db.execute("CREATE INDEX IF NOT EXISTS idx_ke_source ON knowledge_entries(source)")
-    except sqlite3.OperationalError:
-        pass
+    # Migrate existing databases: add new columns if missing
+    for col, col_def in [
+        ("source", "TEXT DEFAULT 'copilot'"),
+        ("topic_key", "TEXT"),
+        ("revision_count", "INTEGER DEFAULT 1"),
+        ("content_hash", "TEXT"),
+    ]:
+        try:
+            db.execute(f"ALTER TABLE knowledge_entries ADD COLUMN {col} {col_def}")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
-    # Recreate FTS table (standalone, no content= sync issues)
-    try:
-        db.execute("DROP TABLE IF EXISTS ke_fts")
-    except Exception:
-        pass
+    # Create FTS table if needed (standalone, no content= sync issues)
     db.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
             title, content, tags, category,
@@ -274,23 +290,69 @@ def split_into_knowledge_chunks(content: str) -> list[str]:
     return chunks
 
 
-def extract_from_sections(db: sqlite3.Connection):
-    """Extract knowledge entries from all indexed sections."""
+def _slugify(text: str) -> str:
+    """Convert text to URL-friendly slug for topic keys."""
+    text = text.lower().strip()
+    text = re.sub(r"[^\w\s-]", "", text)
+    text = re.sub(r"[\s_]+", "-", text)
+    text = re.sub(r"-+", "-", text).strip("-")
+    return text[:60]
+
+
+def _compute_content_hash(category: str, title: str, content: str) -> str:
+    """Compute dedup hash from normalized category + title + key content."""
+    import hashlib
+    normalized = (
+        category.lower().strip() + "|" +
+        re.sub(r"\s+", " ", title.lower().strip()) + "|" +
+        re.sub(r"\s+", " ", content[:200].lower().strip())
+    )
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _generate_topic_key(category: str, title: str) -> str:
+    """Generate a topic key like 'decision/auth-jwt-approach'."""
+    return f"{category}/{_slugify(title)}"
+
+
+def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
+    """Extract knowledge entries from indexed sections.
+    
+    Args:
+        session_ids: If provided, only extract from these sessions (selective mode).
+    """
     now = datetime.now().isoformat()
     extracted = 0
     skipped = 0
+    deduped = 0
 
     # Focus on the most knowledge-rich sections
     target_sections = ["technical_details", "history", "work_done", "next_steps", "full", "conversation"]
 
-    rows = db.execute("""
+    base_query = """
         SELECT s.id, s.document_id, s.section_name, s.content, d.session_id,
                COALESCE(d.source, 'copilot') as source
         FROM sections s
         JOIN documents d ON s.document_id = d.id
         WHERE s.section_name IN ({})
-        ORDER BY d.session_id, d.seq
-    """.format(",".join(f"'{s}'" for s in target_sections))).fetchall()
+    """.format(",".join(f"'{s}'" for s in target_sections))
+
+    if session_ids:
+        placeholders = ",".join("?" for _ in session_ids)
+        base_query += f" AND d.session_id IN ({placeholders})"
+        base_query += " ORDER BY d.session_id, d.seq"
+        rows = db.execute(base_query, session_ids).fetchall()
+    else:
+        base_query += " ORDER BY d.session_id, d.seq"
+        rows = db.execute(base_query).fetchall()
+
+    # Pre-load existing content hashes for fast dedup
+    existing_hashes = set()
+    try:
+        for row in db.execute("SELECT content_hash FROM knowledge_entries WHERE content_hash IS NOT NULL"):
+            existing_hashes.add(row[0])
+    except sqlite3.OperationalError:
+        pass
 
     for section_id, doc_id, section_name, content, session_id, source in rows:
         chunks = split_into_knowledge_chunks(content)
@@ -301,20 +363,62 @@ def extract_from_sections(db: sqlite3.Connection):
             for category, confidence in classifications:
                 title = extract_title(chunk)
                 tags = extract_tags(chunk)
+                content_hash = _compute_content_hash(category, title, chunk)
+                topic_key = _generate_topic_key(category, title)
+
+                # Hash-based dedup: skip if exact content already exists
+                if content_hash in existing_hashes:
+                    deduped += 1
+                    continue
+
+                # Topic key upsert: if same topic exists, update instead of insert
+                existing = db.execute(
+                    "SELECT id, revision_count FROM knowledge_entries WHERE topic_key = ? AND session_id != ?",
+                    (topic_key, session_id)
+                ).fetchone()
+
+                if existing:
+                    # Upsert: update existing entry with newer content
+                    db.execute("""
+                        UPDATE knowledge_entries
+                        SET content = ?, confidence = MAX(confidence, ?),
+                            revision_count = revision_count + 1,
+                            last_seen = ?, content_hash = ?, tags = ?
+                        WHERE id = ?
+                    """, (chunk[:3000], confidence, now, content_hash, tags, existing[0]))
+                    existing_hashes.add(content_hash)
+                    extracted += 1
+                    continue
 
                 try:
                     db.execute("""
                         INSERT INTO knowledge_entries
-                        (session_id, document_id, category, title, content, tags, confidence, first_seen, last_seen, source)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (session_id, document_id, category, title, content, tags,
+                         confidence, first_seen, last_seen, source, topic_key,
+                         revision_count, content_hash)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                         ON CONFLICT(category, title, session_id) DO UPDATE SET
                             confidence = MAX(knowledge_entries.confidence, excluded.confidence),
                             occurrence_count = knowledge_entries.occurrence_count + 1,
-                            last_seen = excluded.last_seen
-                    """, (session_id, doc_id, category, title, chunk[:3000], tags, confidence, now, now, source))
+                            last_seen = excluded.last_seen,
+                            content_hash = excluded.content_hash,
+                            topic_key = excluded.topic_key
+                    """, (session_id, doc_id, category, title, chunk[:3000], tags,
+                          confidence, now, now, source, topic_key, content_hash))
+                    existing_hashes.add(content_hash)
                     extracted += 1
                 except sqlite3.IntegrityError:
                     skipped += 1
+
+    # Confidence decay: entries not seen recently get slightly lower confidence
+    try:
+        db.execute("""
+            UPDATE knowledge_entries
+            SET confidence = MAX(0.3, confidence * 0.95)
+            WHERE last_seen < ? AND confidence > 0.3
+        """, (now[:10],))  # Compare date portion only
+    except sqlite3.OperationalError:
+        pass
 
     # Rebuild FTS
     db.execute("DELETE FROM ke_fts")
@@ -323,8 +427,149 @@ def extract_from_sections(db: sqlite3.Connection):
         SELECT id, title, content, tags, category FROM knowledge_entries
     """)
 
+    # Extract relations between knowledge entries
+    relations_count = extract_relations(db)
+
     db.commit()
-    return extracted, skipped
+    return extracted, skipped, deduped, relations_count
+
+
+def extract_relations(db: sqlite3.Connection) -> int:
+    """Detect and insert relationships between knowledge entries.
+
+    Relation types:
+      SAME_SESSION  — entries from same session but different categories (0.7)
+      SAME_TOPIC    — entries with same topic_key from different sessions (0.9)
+      TAG_OVERLAP   — entries sharing 2+ tags (0.5 + 0.1 * shared_count)
+      RESOLVED_BY   — mistake paired with pattern/tool in same session (0.8)
+    """
+    now = datetime.now().isoformat()
+    MAX_PER_TYPE = 1500  # budget per relation type
+    MAX_RELATIONS = 5000
+
+    try:
+        db.execute("DELETE FROM knowledge_relations")
+    except sqlite3.OperationalError:
+        pass
+
+    # Ensure unique constraint index exists
+    db.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_relations_unique
+        ON knowledge_relations(source_id, target_id, relation_type)
+    """)
+
+    # Load all entries needed for relation detection
+    entries = db.execute("""
+        SELECT id, session_id, category, tags, topic_key
+        FROM knowledge_entries
+    """).fetchall()
+
+    if not entries:
+        return 0
+
+    relations: list[tuple] = []  # (source_id, target_id, relation_type, confidence, created_at)
+
+    # Build indexes for efficient lookups
+    by_session: dict[str, list[tuple]] = {}
+    by_topic: dict[str, list[tuple]] = {}
+    for e in entries:
+        eid, sid, cat, tags, topic = e
+        by_session.setdefault(sid, []).append(e)
+        if topic:
+            by_topic.setdefault(topic, []).append(e)
+
+    seen = set()  # (source_id, target_id, relation_type)
+    type_counts = {}  # track count per relation type
+
+    def _add(src: int, tgt: int, rtype: str, conf: float) -> bool:
+        if src == tgt:
+            return False
+        key = (min(src, tgt), max(src, tgt), rtype)
+        if key not in seen:
+            cnt = type_counts.get(rtype, 0)
+            if cnt >= MAX_PER_TYPE or len(relations) >= MAX_RELATIONS:
+                return True  # signal budget exhausted
+            seen.add(key)
+            relations.append((key[0], key[1], rtype, round(conf, 2), now))
+            type_counts[rtype] = cnt + 1
+        return False
+
+    # 1. SAME_SESSION — different categories within same session
+    for sid, group in by_session.items():
+        if len(group) < 2:
+            continue
+        done = False
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                if a[2] != b[2]:  # different category
+                    if _add(a[0], b[0], "SAME_SESSION", 0.7):
+                        done = True
+                        break
+            if done:
+                break
+        if done:
+            break
+
+    # 2. SAME_TOPIC — same topic_key, different sessions
+    for topic, group in by_topic.items():
+        if len(group) < 2:
+            continue
+        done = False
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                if a[1] != b[1]:  # different session_id
+                    if _add(a[0], b[0], "SAME_TOPIC", 0.9):
+                        done = True
+                        break
+            if done:
+                break
+        if done:
+            break
+
+    # 3. TAG_OVERLAP — entries sharing 2+ tags
+    entry_tags = []
+    for e in entries:
+        tags_str = e[3] or ""
+        tag_set = frozenset(t.strip() for t in tags_str.split(",") if t.strip())
+        if len(tag_set) >= 2:
+            entry_tags.append((e[0], tag_set))
+
+    for i, (aid, atags) in enumerate(entry_tags):
+        done = False
+        for bid, btags in entry_tags[i + 1:]:
+            shared = len(atags & btags)
+            if shared >= 2:
+                conf = min(1.0, 0.5 + 0.1 * min(shared, 5))
+                if _add(aid, bid, "TAG_OVERLAP", conf):
+                    done = True
+                    break
+        if done:
+            break
+
+    # 4. RESOLVED_BY — mistake + pattern/tool in same session
+    for sid, group in by_session.items():
+        mistakes = [e for e in group if e[2] == "mistake"]
+        resolvers = [e for e in group if e[2] in ("pattern", "tool")]
+        done = False
+        for m in mistakes:
+            for r in resolvers:
+                if _add(m[0], r[0], "RESOLVED_BY", 0.8):
+                    done = True
+                    break
+            if done:
+                break
+        if done:
+            break
+
+    # Batch insert all relations
+    if relations:
+        db.executemany("""
+            INSERT OR IGNORE INTO knowledge_relations
+            (source_id, target_id, relation_type, confidence, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, relations)
+
+    return len(relations)
 
 
 def show_stats(db: sqlite3.Connection):
@@ -417,10 +662,36 @@ def main():
         db.close()
         return
 
+    if "--relations" in args:
+        try:
+            total = db.execute("SELECT COUNT(*) FROM knowledge_relations").fetchone()[0]
+            print(f"\n{'='*50}")
+            print(f"  Knowledge Relations Statistics")
+            print(f"{'='*50}")
+            print(f"  Total relations: {total}")
+            print("\n  By type:")
+            for row in db.execute("""
+                SELECT relation_type, COUNT(*), ROUND(AVG(confidence), 2)
+                FROM knowledge_relations GROUP BY relation_type ORDER BY COUNT(*) DESC
+            """):
+                print(f"    {row[0]:15s}: {row[1]:4d} relations (avg confidence: {row[2]})")
+        except sqlite3.OperationalError:
+            print("  No relations found. Run extraction first.")
+        db.close()
+        return
+
     # Default: run extraction
-    print("Extracting knowledge from indexed sessions...")
-    extracted, skipped = extract_from_sections(db)
-    print(f"Extracted {extracted} entries ({skipped} duplicates skipped)")
+    session_ids = None
+    if "--sessions" in args:
+        idx = args.index("--sessions")
+        session_ids = [s.strip() for s in args[idx + 1].split(",") if s.strip()] if idx + 1 < len(args) else None
+        if session_ids:
+            print(f"Selective extraction for {len(session_ids)} session(s)...")
+    else:
+        print("Extracting knowledge from indexed sessions...")
+    extracted, skipped, deduped, relations_count = extract_from_sections(db, session_ids=session_ids)
+    print(f"Extracted {extracted} entries ({skipped} duplicates skipped, {deduped} deduped by hash)")
+    print(f"Extracted {relations_count} relations")
     show_stats(db)
     db.close()
 
