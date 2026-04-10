@@ -6,8 +6,9 @@
 
 ## Demo
 
-```
-$ python query-session.py "docker networking"
+```bash
+# macOS/Linux: python3 | Windows: python hoặc py
+$ python3 query-session.py "docker networking"
 
 Found 5 result(s) for: docker networking
   1. [tool] Docker compose network config — Use bridge network with...
@@ -23,7 +24,7 @@ Use --detail <id> for full content
 ```
 
 ```
-$ python briefing.py "fix docker compose"
+$ python3 briefing.py "fix docker compose"
 
 📋 Briefing: fix docker compose
 ⚠️ Past Mistakes to Avoid
@@ -41,6 +42,9 @@ $ python briefing.py "fix docker compose"
 - Python 3.10+ (no pip packages needed)
 - Copilot CLI (`~/.copilot/session-state/` directory must exist) and/or Claude Code
 
+> **Note:** Dùng `python3` trên macOS/Linux, `python` hoặc `py` trên Windows.
+> Tất cả commands trong README dùng `python3` — thay bằng `python` nếu trên Windows.
+
 ### Install
 
 **macOS / Linux:**
@@ -49,10 +53,10 @@ git clone https://github.com/magicpro97/copilot-session-knowledge.git
 cd copilot-session-knowledge
 mkdir -p ~/.copilot/tools && cp *.py ~/.copilot/tools/
 
-# First run
-python ~/.copilot/tools/build-session-index.py
-python ~/.copilot/tools/extract-knowledge.py
-python ~/.copilot/tools/install.py --test
+# First run — index sessions + extract knowledge
+python3 ~/.copilot/tools/build-session-index.py
+python3 ~/.copilot/tools/extract-knowledge.py
+python3 ~/.copilot/tools/install.py --test
 ```
 
 **Windows (PowerShell):**
@@ -67,10 +71,10 @@ python "$env:USERPROFILE\.copilot\tools\extract-knowledge.py"
 python "$env:USERPROFILE\.copilot\tools\install.py" --test
 ```
 
-**Tip:** Thêm alias cho tiện (bash):
+**Tip:** Thêm alias cho tiện (bash/zsh):
 ```bash
-alias qs='python ~/.copilot/tools/query-session.py'
-alias brief='python ~/.copilot/tools/briefing.py'
+alias qs='python3 ~/.copilot/tools/query-session.py'
+alias brief='python3 ~/.copilot/tools/briefing.py'
 # Dùng: qs "docker error" | brief "fix login"
 ```
 
@@ -82,6 +86,9 @@ alias brief='python ~/.copilot/tools/briefing.py'
 brief "implement user CRUD"          # Compact ~500 tokens
 brief "implement user CRUD" --full   # Full detail ~3K tokens
 brief --auto                         # Auto-detect từ git state
+brief "task" --min-confidence 0.7    # Chỉ high-quality entries
+brief "task" --all                   # Xem tất cả (bao gồm low-confidence)
+brief "task" --for-subagent          # Compact context block để inject vào sub-agent prompts
 ```
 
 ### Search
@@ -109,7 +116,7 @@ qs --graph "spring boot"             # Mini knowledge graph theo topic
 
 ```bash
 qs "deployment error" --semantic     # Search theo nghĩa, không chỉ keyword
-python ~/.copilot/tools/embed.py --setup   # Setup API key
+python3 ~/.copilot/tools/embed.py --setup   # Setup API key (Windows: python)
 ```
 
 ## Architecture
@@ -149,11 +156,58 @@ flowchart TD
 ## Maintenance
 
 ```bash
-python ~/.copilot/tools/build-session-index.py --incremental   # Update only changed files
-python ~/.copilot/tools/extract-knowledge.py --stats           # Xem thống kê knowledge
-python ~/.copilot/tools/extract-knowledge.py --relations       # Xem thống kê relations
-python ~/.copilot/tools/watch-sessions.py --daemon             # Chạy nền, tự index
-python ~/.copilot/tools/install.py --deploy-skill              # Deploy SKILL.md vào project
+python3 ~/.copilot/tools/build-session-index.py --incremental   # Update only changed files
+python3 ~/.copilot/tools/extract-knowledge.py --stats           # Xem thống kê knowledge
+python3 ~/.copilot/tools/extract-knowledge.py --relations       # Xem thống kê relations
+python3 ~/.copilot/tools/watch-sessions.py --daemon             # Chạy nền, tự index
+python3 ~/.copilot/tools/install.py --deploy-skill              # Deploy SKILL.md
+# Windows: thay python3 → python
+```
+
+### Auto-start Watcher (khỏi chạy thủ công sau reboot)
+
+**macOS** — LaunchAgent:
+```bash
+cp templates/com.copilot.watch-sessions.plist ~/Library/LaunchAgents/
+# ⚠️ Sửa YOUR_USERNAME và đường dẫn python3 trong plist trước khi load
+sed -i '' "s|YOUR_USERNAME|$(whoami)|g" ~/Library/LaunchAgents/com.copilot.watch-sessions.plist
+launchctl load ~/Library/LaunchAgents/com.copilot.watch-sessions.plist
+```
+
+**Windows** — Task Scheduler:
+```powershell
+$action = New-ScheduledTaskAction `
+    -Execute "python" `
+    -Argument "$env:USERPROFILE\.copilot\tools\watch-sessions.py --daemon" `
+    -WorkingDirectory "$env:USERPROFILE\.copilot"
+
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+
+Register-ScheduledTask -TaskName "CopilotWatchSessions" `
+    -Action $action -Trigger $trigger -Settings $settings `
+    -Description "Auto-index Copilot session knowledge"
+```
+
+**Linux** — systemd user service:
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/copilot-watch.service << 'EOF'
+[Unit]
+Description=Copilot Session Knowledge Watcher
+
+[Service]
+ExecStart=/usr/bin/python3 %h/.copilot/tools/watch-sessions.py --daemon
+WorkingDirectory=%h/.copilot
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user enable --now copilot-watch.service
 ```
 
 ## AI Agent Integration
@@ -161,12 +215,47 @@ python ~/.copilot/tools/install.py --deploy-skill              # Deploy SKILL.md
 Để agent tự động dùng knowledge base, deploy skill vào project:
 
 ```bash
-python ~/.copilot/tools/install.py --deploy-skill
+python3 ~/.copilot/tools/install.py --deploy-skill
 # → Tạo .github/skills/session-knowledge/SKILL.md (Copilot CLI)
 # → Tạo .claude/skills/session-knowledge.md (Claude Code)
 ```
 
 Sau đó agent sẽ tự chạy `briefing.py` trước mỗi task và search khi cần.
+
+### Sub-agent Context Injection
+
+Sub-agents (explore, task, general-purpose) không truy cập knowledge base trực tiếp.
+Main agent inject context vào prompt của chúng:
+
+```bash
+python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
+```
+
+Output là block `[KNOWLEDGE CONTEXT]` compact (~200 tokens) để embed vào sub-agent prompt:
+```
+[KNOWLEDGE CONTEXT — from past sessions]
+  [AVOID] Port conflicts — check docker ps before starting
+  [USE] Docker bridge network for service-to-service communication
+  [CONFIG] DockerfileBrainApp — JVM flag fix for containers
+[END KNOWLEDGE CONTEXT]
+```
+
+## Security
+
+- **No pickle** — tất cả serialization dùng JSON (backward-compat: detect pickle magic bytes, warn, fallback)
+- **Parameterized SQL** — zero SQL injection vectors
+- **FTS5 sanitization** — strips operators (`OR`, `AND`, `NOT`, `NEAR`, `*`, `"`)
+- **Atomic lock** — `O_CREAT | O_EXCL` eliminates TOCTOU race conditions
+- **API key protection** — config files chmod `0o600`, env vars ưu tiên hơn file
+- **Path validation** — WSL path traversal protection
+- **Input limits** — title 200 chars, content 10K chars, filter 256 chars
+
+## Testing
+
+```bash
+python3 test_security.py    # 9 security tests (injection, pickle, locks, paths)
+python3 test_fixes.py       # 65 tests (noise filter, sub-agent, launchd, DB health)
+```
 
 ## Requirements
 
