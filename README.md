@@ -1,17 +1,15 @@
 # Copilot Session Knowledge Tools
 
-Instant search across all Copilot CLI and Claude session-state data.  
-Turns ~80MB of raw checkpoints into a queryable SQLite knowledge base.
-Supports **hybrid search**: FTS5 keyword + semantic vector (multi-provider API).
+Instant search across all Copilot CLI and Claude Code session data.  
+Turns raw checkpoints into a queryable SQLite knowledge base with **hybrid search** (FTS5 + semantic vector), **knowledge graph**, and **auto-deduplication**.
 
-### Phase 6 Highlights
-
-- **Progressive Disclosure** — Default compact output (~50 tokens/entry vs ~300 before). Use `--verbose` for full content, `--detail <id>` for a single entry, `--context <id>` for entry + related.
-- **Knowledge Dedup** — Hash-based deduplication prevents re-extracting the same content. Topic keys group entries across sessions.
-- **Knowledge Graph** — 4500+ auto-detected relations (SAME_SESSION, TAG_OVERLAP, RESOLVED_BY, SAME_TOPIC). Query with `--related <id>` or `--graph "<topic>"`.
-- **Compact Briefing** — Default ~500 token briefing. Use `--full` for complete output.
-- **Robust Watcher** — Lock file prevents multiple instances. Watches both Copilot and Claude sessions. `--install-hint` for auto-start setup.
-- **Smart Installer** — `install.py` with auto-detect, self-test, skill deployment, and uninstall.
+**Key features:**
+- 🔍 Hybrid search — keyword (FTS5 BM25) + semantic vector (multi-provider API)
+- 🧠 Knowledge extraction — patterns, mistakes, decisions, tools from session history
+- 🕸️ Knowledge graph — auto-detected relations between entries (4 relation types)
+- 📋 Agent briefing — inject past experience into AI context (~500 tokens)
+- ⚡ Progressive disclosure — compact by default, drill down with `--detail`/`--context`
+- 🔄 Hash-based dedup — re-extraction skips already-seen content
 
 ## Architecture
 
@@ -43,9 +41,10 @@ Supports **hybrid search**: FTS5 keyword + semantic vector (multi-provider API).
 ## Setup
 
 ```bash
-python ~/.copilot/tools/install.py              # Install + build index + self-test + skill deploy
-python ~/.copilot/tools/install.py --check      # Check installation status
-python ~/.copilot/tools/install.py --uninstall  # Remove tools (keeps knowledge.db)
+python ~/.copilot/tools/install.py                 # Auto-detect agents + show status
+python ~/.copilot/tools/install.py --test          # Run self-test (DB, FTS, imports)
+python ~/.copilot/tools/install.py --deploy-skill  # Deploy SKILL.md to current project
+python ~/.copilot/tools/install.py --uninstall     # Remove tools (keeps session data)
 ```
 
 ### Embedding Setup (optional, enables semantic search)
