@@ -44,10 +44,47 @@ graph LR
 
 ## Setup
 
+### Installation
+
 ```bash
-python ~/.copilot/tools/install.py                 # Auto-detect agents + show status
-python ~/.copilot/tools/install.py --test          # Run self-test (DB, FTS, imports)
-python ~/.copilot/tools/install.py --deploy-skill  # Deploy SKILL.md to current project
+# Clone the repo
+git clone https://github.com/magicpro97/copilot-session-knowledge.git
+cd copilot-session-knowledge
+
+# Copy tools to ~/.copilot/tools/
+mkdir -p ~/.copilot/tools
+cp *.py ~/.copilot/tools/
+cp embedding-config.example.json ~/.copilot/tools/
+
+# Build the index (first run)
+python ~/.copilot/tools/build-session-index.py
+
+# Extract knowledge entries
+python ~/.copilot/tools/extract-knowledge.py
+
+# Verify installation
+python ~/.copilot/tools/install.py --test
+```
+
+On Windows (PowerShell):
+```powershell
+git clone https://github.com/magicpro97/copilot-session-knowledge.git
+cd copilot-session-knowledge
+
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.copilot\tools"
+Copy-Item *.py "$env:USERPROFILE\.copilot\tools\"
+Copy-Item embedding-config.example.json "$env:USERPROFILE\.copilot\tools\"
+
+python "$env:USERPROFILE\.copilot\tools\build-session-index.py"
+python "$env:USERPROFILE\.copilot\tools\extract-knowledge.py"
+python "$env:USERPROFILE\.copilot\tools\install.py" --test
+```
+
+### Post-Install
+
+```bash
+python ~/.copilot/tools/install.py                 # Show status
+python ~/.copilot/tools/install.py --deploy-skill  # Add SKILL.md to current project
 python ~/.copilot/tools/install.py --uninstall     # Remove tools (keeps session data)
 ```
 
