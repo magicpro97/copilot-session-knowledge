@@ -173,6 +173,21 @@ _STRONG_NOISE_PATTERNS = [
     r"nội\s*dung\s*cần\s*đề\s*cập",
 ]
 
+# User-quote patterns — checkpoint summaries quoting the user, not real mistakes
+_USER_QUOTE_PATTERNS = [
+    r"^(?:\d+\.\s*)?user\s+(?:said|asked|reported|requested|mentioned|noted)\b",
+    r"^(?:\d+\.\s*)?user\s+(?:wants?|confirmed|approved|rejected)\b",
+    r'^(?:\d+\.\s*)?user\s+said\s*[:"]',
+    r'^(?:\d+\.\s*)?user\s+reported\s*[:"]',
+]
+
+# Action-summary patterns — past-tense descriptions of completed work
+_ACTION_SUMMARY_PATTERNS = [
+    r"^(?:\d+\.\s*)?(?:fixed|implemented|launched|created|updated|added|deployed|"
+    r"committed|pushed|merged|resolved|completed|refactored|migrated|upgraded|"
+    r"configured|installed|removed|deleted|replaced|renamed|moved)\s",
+]
+
 
 def _is_noise(text: str) -> bool:
     """Check if text is interview Q&A, scoring rubric, or other noise."""
@@ -182,6 +197,19 @@ def _is_noise(text: str) -> bool:
     for pattern in _STRONG_NOISE_PATTERNS:
         if re.search(pattern, text_lower):
             return True
+
+    # User quotes — checkpoint summaries that quote what user said
+    first_line = text_lower.strip().split("\n")[0].strip()
+    for pattern in _USER_QUOTE_PATTERNS:
+        if re.search(pattern, first_line):
+            return True
+
+    # Action summaries — past-tense descriptions of completed work
+    # Only filter short entries (< 200 chars) that are just action log lines
+    if len(text.strip()) < 200:
+        for pattern in _ACTION_SUMMARY_PATTERNS:
+            if re.search(pattern, first_line):
+                return True
 
     # Weak noise — need 2+ matches
     noise_score = 0

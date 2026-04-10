@@ -253,6 +253,47 @@ def search_past_work(db: sqlite3.Connection, query: str, limit: int = 3) -> list
     return results
 
 
+def generate_subagent_context(query: str, limit: int = 3,
+                              min_confidence: float = 0.5) -> str:
+    """Generate compact context block for injecting into sub-agent prompts.
+
+    Output is ~200-400 tokens — minimal overhead for sub-agent context windows.
+    Format: plain text with no markdown formatting for easy prompt embedding.
+    """
+    db = get_db()
+    lines = ["[KNOWLEDGE CONTEXT — from past sessions]"]
+
+    for cat, label in [("mistake", "AVOID"), ("pattern", "USE"),
+                       ("decision", "NOTE"), ("tool", "CONFIG")]:
+        fts = search_knowledge_entries(db, query, cat, limit,
+                                       min_confidence=min_confidence)
+        sem = search_semantic(db, query, cat, limit,
+                              min_confidence=min_confidence)
+        # Merge and dedup by id
+        seen = set()
+        entries = []
+        for e in fts + sem:
+            eid = e[0] if isinstance(e, (list, tuple)) else e.get("id", id(e))
+            if eid not in seen:
+                seen.add(eid)
+                entries.append(e)
+
+        for e in entries[:limit]:
+            if isinstance(e, (list, tuple)):
+                title = e[1] if len(e) > 1 else str(e)
+            else:
+                title = e.get("title", str(e))
+            # Truncate title for compactness
+            title_short = str(title)[:120]
+            lines.append(f"  [{label}] {title_short}")
+
+    if len(lines) == 1:
+        return ""  # No relevant context found
+
+    lines.append("[END KNOWLEDGE CONTEXT]")
+    return "\n".join(lines)
+
+
 def generate_briefing(query: str, limit: int = 3, fmt: str = "md",
                       full: bool = False, min_confidence: float = 0.5) -> str:
     """Generate a structured briefing from the knowledge base."""
@@ -549,6 +590,8 @@ def main():
     if "--all" in args:
         min_confidence = 0.0  # Show everything including low-confidence
 
+    subagent_mode = "--for-subagent" in args
+
     if auto_mode:
         query = auto_detect_context()
         print(f"[briefing] auto-detected: {query}", file=sys.stderr)
@@ -567,8 +610,12 @@ def main():
         print("Error: Provide a task description or use --auto")
         return
 
-    output = generate_briefing(query, limit=limit, fmt=fmt, full=full_mode,
-                              min_confidence=min_confidence)
+    if subagent_mode:
+        output = generate_subagent_context(query, limit=limit,
+                                           min_confidence=min_confidence)
+    else:
+        output = generate_briefing(query, limit=limit, fmt=fmt, full=full_mode,
+                                  min_confidence=min_confidence)
     print(output)
 
 
