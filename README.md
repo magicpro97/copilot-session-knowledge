@@ -164,7 +164,7 @@ python ~/.copilot/tools/watch-sessions.py --install-hint      # Print auto-start
 
 ```mermaid
 flowchart TD
-  Q["🔍 Query: &lt;i&gt;lỗi deploy Docker&lt;/i&gt;"]
+  Q["🔍 Query: lỗi deploy Docker"]
 
   Q --> FTS["FTS5 Keyword<br/>BM25 ranking"]
   Q --> VEC["Vector / TF-IDF<br/>Cosine similarity"]
