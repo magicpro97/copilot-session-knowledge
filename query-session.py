@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-query-session.py — Search the Copilot session knowledge base
+query-session.py — Search the Copilot/Claude session knowledge base
 
 Usage:
     python query-session.py "search terms"                     # Full-text search
     python query-session.py "search terms" --semantic          # Hybrid: FTS5 + vector
     python query-session.py "search terms" --type checkpoint   # Filter by doc type
+    python query-session.py "search terms" --source claude     # Filter by source
     python query-session.py --list                             # List all sessions
+    python query-session.py --list --source copilot            # List only Copilot sessions
     python query-session.py --session <uuid>                   # Show session details
     python query-session.py --recent                           # Show recent activity
     python query-session.py "search" --limit 5                 # Limit results
@@ -17,8 +19,9 @@ Usage:
     python query-session.py "search" --export json             # Export as JSON
     python query-session.py "search" --export markdown         # Export as Markdown
 
-Doc types: checkpoint, research, artifact, plan
+Doc types: checkpoint, research, artifact, plan, claude-session
 Knowledge categories: mistake, pattern, decision, tool
+Sources: copilot, claude, all (default: all)
 Semantic search requires: python embed.py --setup && python embed.py --build
 """
 
@@ -78,7 +81,8 @@ def get_db() -> sqlite3.Connection:
     return db
 
 
-def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = False):
+def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = False,
+           source_filter: str = None):
     """Full-text search across all indexed content."""
     db = get_db()
 
@@ -99,6 +103,7 @@ def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = Fa
             snippet(knowledge_fts, 2, '>>>', '<<<', '...', 64) as excerpt,
             d.file_path,
             d.size_bytes,
+            COALESCE(d.source, 'copilot') as doc_source,
             rank
         FROM knowledge_fts fts
         JOIN documents d ON fts.document_id = d.id
@@ -109,6 +114,10 @@ def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = Fa
     if doc_type:
         sql += " AND fts.doc_type = ?"
         params.append(doc_type)
+
+    if source_filter and source_filter != "all":
+        sql += " AND COALESCE(d.source, 'copilot') = ?"
+        params.append(source_filter)
 
     sql += f" ORDER BY rank LIMIT {limit}"
 
@@ -130,9 +139,12 @@ def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = Fa
 
     for i, r in enumerate(results, 1):
         sid = r["session_id"][:8]
-        type_color = {"checkpoint": CYAN, "research": GREEN, "artifact": YELLOW, "plan": MAGENTA}.get(r["doc_type"], "")
+        doc_source = r["doc_source"] if "doc_source" in r.keys() else "copilot"
+        type_color = {"checkpoint": CYAN, "research": GREEN, "artifact": YELLOW,
+                      "plan": MAGENTA, "claude-session": CYAN}.get(r["doc_type"], "")
+        source_badge = f" {DIM}[{doc_source}]{RESET}" if doc_source != "copilot" else ""
 
-        print(f"{BOLD}{i}. {r['title']}{RESET}")
+        print(f"{BOLD}{i}. {r['title']}{RESET}{source_badge}")
         print(f"   {DIM}Session:{RESET} {sid}...  "
               f"{type_color}{r['doc_type']}{RESET}  "
               f"{DIM}Section:{RESET} {r['section_name']}  "
@@ -152,23 +164,35 @@ def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = Fa
     db.close()
 
 
-def list_sessions():
+def list_sessions(source_filter: str = None):
     """List all indexed sessions."""
     db = get_db()
 
-    print(f"\n{BOLD}Indexed Sessions{RESET}\n")
-    print(f"{'ID':10s} {'CP':>3s} {'Res':>4s} {'Files':>5s} {'Plan':>4s}  Summary")
-    print(f"{'-'*10} {'-'*3} {'-'*4} {'-'*5} {'-'*4}  {'-'*50}")
+    print(f"\n{BOLD}Indexed Sessions{RESET}")
+    if source_filter and source_filter != "all":
+        print(f"{DIM}(filtered: source={source_filter}){RESET}")
+    print()
+    print(f"{'ID':10s} {'Src':>7s} {'CP':>3s} {'Res':>4s} {'Files':>5s} {'Plan':>4s}  Summary")
+    print(f"{'-'*10} {'-'*7} {'-'*3} {'-'*4} {'-'*5} {'-'*4}  {'-'*50}")
 
-    for row in db.execute("""
+    sql = """
         SELECT id, total_checkpoints, total_research, total_files, has_plan,
-               SUBSTR(summary, 1, 80) as summary
-        FROM sessions ORDER BY indexed_at DESC
-    """):
+               SUBSTR(summary, 1, 80) as summary,
+               COALESCE(source, 'copilot') as source
+        FROM sessions
+    """
+    params = []
+    if source_filter and source_filter != "all":
+        sql += " WHERE COALESCE(source, 'copilot') = ?"
+        params.append(source_filter)
+    sql += " ORDER BY indexed_at DESC"
+
+    for row in db.execute(sql, params):
         sid = row["id"][:8] + ".."
         plan = "Yes" if row["has_plan"] else "-"
         summary = (row["summary"] or "(no summary)")[:50]
-        print(f"{sid:10s} {row['total_checkpoints']:3d} {row['total_research']:4d} "
+        src = row["source"][:7]
+        print(f"{sid:10s} {src:>7s} {row['total_checkpoints']:3d} {row['total_research']:4d} "
               f"{row['total_files']:5d} {plan:>4s}  {summary}")
 
     total = db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
@@ -230,19 +254,27 @@ def show_recent(limit: int = 10):
     db.close()
 
 
-def show_knowledge(category: str, limit: int = 20, export_fmt: str = None):
+def show_knowledge(category: str, limit: int = 20, export_fmt: str = None,
+                   source_filter: str = None):
     """Show extracted knowledge entries by category."""
     db = get_db()
 
+    sql = """
+        SELECT ke.id, ke.category, ke.title, ke.content, ke.tags,
+               ke.confidence, ke.session_id, ke.occurrence_count,
+               COALESCE(ke.source, 'copilot') as source
+        FROM knowledge_entries ke
+        WHERE ke.category = ?
+    """
+    params = [category]
+    if source_filter and source_filter != "all":
+        sql += " AND COALESCE(ke.source, 'copilot') = ?"
+        params.append(source_filter)
+    sql += " ORDER BY ke.confidence DESC, ke.occurrence_count DESC LIMIT ?"
+    params.append(limit)
+
     try:
-        rows = db.execute("""
-            SELECT ke.id, ke.category, ke.title, ke.content, ke.tags,
-                   ke.confidence, ke.session_id, ke.occurrence_count
-            FROM knowledge_entries ke
-            WHERE ke.category = ?
-            ORDER BY ke.confidence DESC, ke.occurrence_count DESC
-            LIMIT ?
-        """, (category, limit)).fetchall()
+        rows = db.execute(sql, params).fetchall()
     except sqlite3.OperationalError:
         print(f"No knowledge entries found. Run 'python extract-knowledge.py' first.")
         db.close()
@@ -468,8 +500,15 @@ def main():
         print_usage()
         return
 
+    # Parse --source filter (copilot, claude, all)
+    source_filter = None
+    if "--source" in args:
+        idx = args.index("--source")
+        if idx + 1 < len(args):
+            source_filter = args[idx + 1]
+
     if "--list" in args:
-        list_sessions()
+        list_sessions(source_filter)
         return
 
     if "--recent" in args:
@@ -502,7 +541,7 @@ def main():
     for shortcut, category in [("--mistakes", "mistake"), ("--patterns", "pattern"),
                                 ("--decisions", "decision"), ("--tools", "tool")]:
         if shortcut in args:
-            show_knowledge(category, limit, export_fmt)
+            show_knowledge(category, limit, export_fmt, source_filter)
             return
 
     # Check for semantic mode
@@ -518,7 +557,7 @@ def main():
         if args[i] == "--type" and i + 1 < len(args):
             doc_type = args[i + 1]
             i += 2
-        elif args[i] in ("--limit", "--export"):
+        elif args[i] in ("--limit", "--export", "--source"):
             i += 2  # skip flag + value (already parsed)
         elif args[i] in ("--verbose", "-v"):
             verbose = True
@@ -540,9 +579,9 @@ def main():
     if use_semantic:
         semantic_search(query, limit, verbose)
     elif export_fmt:
-        search(query, doc_type, limit, verbose)
+        search(query, doc_type, limit, verbose, source_filter)
     else:
-        search(query, doc_type, limit, verbose)
+        search(query, doc_type, limit, verbose, source_filter)
         # Also search knowledge entries
         search_knowledge(query, limit=5)
 

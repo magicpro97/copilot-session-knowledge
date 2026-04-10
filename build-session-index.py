@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-build-session-index.py — Index all Copilot session-state into SQLite FTS5
+build-session-index.py — Index all Copilot/Claude session-state into SQLite FTS5
 
-Parses checkpoints, research docs, files/artifacts, and plan.md from all sessions
-into a searchable knowledge database.
+Parses checkpoints, research docs, files/artifacts, plan.md, and Claude Code JSONL
+sessions into a searchable knowledge database.
 
 Usage:
-    python build-session-index.py                    # Full rebuild
+    python build-session-index.py                    # Full rebuild (Copilot only)
     python build-session-index.py --incremental      # Only new/changed files
     python build-session-index.py --stats            # Show index statistics
     python build-session-index.py --embed            # Also generate embeddings
+    python build-session-index.py --claude           # Index Claude Code sessions only
+    python build-session-index.py --all              # Index both Copilot + Claude
 """
 
 import sqlite3
@@ -19,6 +21,14 @@ import sys
 import hashlib
 from pathlib import Path
 from datetime import datetime
+
+# Fix Windows console encoding for Unicode output
+if os.name == "nt":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
@@ -44,19 +54,21 @@ def create_db(db_path: Path) -> sqlite3.Connection:
             total_research INTEGER DEFAULT 0,
             total_files INTEGER DEFAULT 0,
             has_plan INTEGER DEFAULT 0,
+            source TEXT DEFAULT 'copilot',
             indexed_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS documents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL REFERENCES sessions(id),
-            doc_type TEXT NOT NULL,        -- 'checkpoint', 'research', 'artifact', 'plan'
+            doc_type TEXT NOT NULL,        -- 'checkpoint', 'research', 'artifact', 'plan', 'claude-session'
             seq INTEGER DEFAULT 0,         -- checkpoint sequence number
             title TEXT NOT NULL,
             file_path TEXT NOT NULL UNIQUE,
             file_hash TEXT,                -- MD5 for incremental updates
             size_bytes INTEGER DEFAULT 0,
             content_preview TEXT DEFAULT '',-- first 500 chars of content
+            source TEXT DEFAULT 'copilot',
             indexed_at TEXT
         );
 
@@ -83,7 +95,33 @@ def create_db(db_path: Path) -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_documents_type ON documents(doc_type);
         CREATE INDEX IF NOT EXISTS idx_sections_doc ON sections(document_id);
     """)
+
+    # Migrate existing databases: add source column if missing, then create indexes
+    _migrate_add_source(db)
+
     return db
+
+
+def _migrate_add_source(db: sqlite3.Connection):
+    """Add 'source' column to existing tables (safe, idempotent)."""
+    migrations = [
+        ("sessions", "source", "TEXT DEFAULT 'copilot'"),
+        ("documents", "source", "TEXT DEFAULT 'copilot'"),
+        ("knowledge_entries", "source", "TEXT DEFAULT 'copilot'"),
+    ]
+    for table, col, col_def in migrations:
+        try:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+    # Add indexes (safe with IF NOT EXISTS)
+    try:
+        db.execute("CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_ke_source ON knowledge_entries(source)")
+    except sqlite3.OperationalError:
+        pass  # Table might not exist yet
 
 
 def file_hash(path: Path) -> str:
@@ -329,6 +367,8 @@ def main():
     incremental = "--incremental" in sys.argv
     stats_only = "--stats" in sys.argv
     with_embeddings = "--embed" in sys.argv
+    with_claude = "--claude" in sys.argv
+    all_sources = "--all" in sys.argv
 
     if not SESSION_STATE.exists():
         print(f"Error: Session state directory not found: {SESSION_STATE}")
@@ -342,39 +382,76 @@ def main():
         return
 
     mode = "incremental" if incremental else "full rebuild"
-    print(f"Building knowledge index ({mode})...")
-    print(f"Source: {SESSION_STATE}")
-    print(f"Output: {DB_PATH}")
-    print()
 
-    total_stats = {"checkpoints": 0, "research": 0, "files": 0, "plan": 0}
+    # Index Copilot sessions (default unless --claude-only)
+    if not with_claude or all_sources:
+        print(f"Building Copilot knowledge index ({mode})...")
+        print(f"Source: {SESSION_STATE}")
+        print(f"Output: {DB_PATH}")
+        print()
 
-    for session_dir in sorted(SESSION_STATE.iterdir()):
-        if not session_dir.is_dir():
-            continue
-        # Skip non-UUID directories (like the DB file itself)
-        if not re.match(r"^[0-9a-f]{8}-", session_dir.name):
-            continue
+        total_stats = {"checkpoints": 0, "research": 0, "files": 0, "plan": 0}
 
-        stats = index_session(db, session_dir, incremental)
-        indexed = sum(stats.values())
-        if indexed > 0:
-            print(f"  {session_dir.name[:8]}... indexed {indexed} docs "
-                  f"(cp:{stats['checkpoints']} res:{stats['research']} "
-                  f"files:{stats['files']} plan:{stats['plan']})")
-        else:
-            print(f"  {session_dir.name[:8]}... (no changes)" if incremental else
-                  f"  {session_dir.name[:8]}... (no indexable content)")
+        for session_dir in sorted(SESSION_STATE.iterdir()):
+            if not session_dir.is_dir():
+                continue
+            if not re.match(r"^[0-9a-f]{8}-", session_dir.name):
+                continue
 
-        for k in total_stats:
-            total_stats[k] += stats[k]
+            stats = index_session(db, session_dir, incremental)
+            indexed = sum(stats.values())
+            if indexed > 0:
+                print(f"  {session_dir.name[:8]}... indexed {indexed} docs "
+                      f"(cp:{stats['checkpoints']} res:{stats['research']} "
+                      f"files:{stats['files']} plan:{stats['plan']})")
+            else:
+                print(f"  {session_dir.name[:8]}... (no changes)" if incremental else
+                      f"  {session_dir.name[:8]}... (no indexable content)")
 
-    db.commit()
+            for k in total_stats:
+                total_stats[k] += stats[k]
 
-    total = sum(total_stats.values())
-    print(f"\nIndexed {total} documents total "
-          f"(cp:{total_stats['checkpoints']} res:{total_stats['research']} "
-          f"files:{total_stats['files']} plan:{total_stats['plan']})")
+        db.commit()
+
+        total = sum(total_stats.values())
+        print(f"\nCopilot: Indexed {total} documents total "
+              f"(cp:{total_stats['checkpoints']} res:{total_stats['research']} "
+              f"files:{total_stats['files']} plan:{total_stats['plan']})")
+
+    # Index Claude Code sessions (--claude or --all)
+    if with_claude or all_sources:
+        print(f"\n── Indexing Claude Code sessions ({mode}) ──")
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "claude_adapter",
+                Path(__file__).parent / "claude-adapter.py"
+            )
+            ca = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(ca)
+
+            sessions = ca.find_claude_sessions()
+            if sessions:
+                indexed_count = 0
+                for session_info in sessions:
+                    short_id = session_info["session_id"][:8]
+                    try:
+                        entries = ca.parse_jsonl(session_info["path"])
+                        parsed = ca.parse_session(entries)
+                        if parsed["conversations"] and ca.index_claude_session(db, session_info, parsed, incremental):
+                            print(f"  {short_id}... indexed {len(parsed['conversations'])} messages")
+                            indexed_count += 1
+                        else:
+                            print(f"  {short_id}... (no changes)" if incremental else
+                                  f"  {short_id}... (skipped)")
+                    except Exception as e:
+                        print(f"  {short_id}... ERROR: {e}")
+                db.commit()
+                print(f"Claude: Indexed {indexed_count} sessions")
+            else:
+                print("  No Claude Code sessions found.")
+        except Exception as e:
+            print(f"  Claude adapter error: {e}")
 
     show_stats(db)
     db.close()
