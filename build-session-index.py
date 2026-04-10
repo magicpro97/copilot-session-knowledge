@@ -44,6 +44,11 @@ def create_db(db_path: Path) -> sqlite3.Connection:
     db = sqlite3.connect(str(db_path))
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA foreign_keys=ON")
+    # Quick integrity check on existing databases
+    if db_path.exists():
+        result = db.execute("PRAGMA quick_check").fetchone()
+        if result[0] != "ok":
+            print(f"⚠ Database integrity issue: {result[0]}", file=sys.stderr)
 
     db.executescript("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -113,7 +118,9 @@ def _migrate_add_source(db: sqlite3.Connection):
         ("knowledge_entries", "revision_count", "INTEGER DEFAULT 1"),
         ("knowledge_entries", "content_hash", "TEXT"),
     ]
+    _ALLOWED_TABLES = {"sessions", "documents", "knowledge_entries"}
     for table, col, col_def in migrations:
+        assert table in _ALLOWED_TABLES, f"Unexpected table: {table}"
         try:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
         except sqlite3.OperationalError:

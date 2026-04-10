@@ -108,28 +108,48 @@ def load_config() -> dict:
                     config[key] = user_config[key]
         except (json.JSONDecodeError, KeyError):
             pass
+    _check_config_permissions()
     return config
 
 
+def _check_config_permissions():
+    """Warn if config file has overly permissive permissions."""
+    if os.name == "nt" or not CONFIG_PATH.exists():
+        return
+    try:
+        mode = CONFIG_PATH.stat().st_mode & 0o777
+        if mode & 0o077:  # group or other has access
+            print(f"⚠ {CONFIG_PATH} has permissive permissions ({oct(mode)}). "
+                  f"Fixing to 0o600...", file=sys.stderr)
+            os.chmod(CONFIG_PATH, 0o600)
+    except OSError:
+        pass
+
+
 def save_config(config: dict):
-    """Save config to file."""
+    """Save config to file with restrictive permissions."""
     TOOLS_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(
         json.dumps(config, indent=2, ensure_ascii=False),
         encoding="utf-8"
     )
+    # Restrict file permissions to owner-only (not world-readable)
+    if os.name != "nt":
+        os.chmod(CONFIG_PATH, 0o600)
 
 
 def get_api_key(provider_config: dict) -> str:
-    """Get API key from config or environment variable."""
-    # Config file key takes priority
+    """Get API key from environment variable or config file."""
+    # Prefer environment variable (more secure than config file)
+    env_key = provider_config.get("env_key", "")
+    if env_key:
+        env_val = os.environ.get(env_key, "")
+        if env_val:
+            return env_val
+    # Fall back to config file key
     key = provider_config.get("api_key", "")
     if key:
         return key
-    # Fall back to environment variable
-    env_key = provider_config.get("env_key", "")
-    if env_key:
-        return os.environ.get(env_key, "")
     return ""
 
 
@@ -234,9 +254,9 @@ def tfidf_available() -> bool:
 
 
 def build_tfidf(texts: list[str], doc_ids: list[int]) -> bytes:
-    """Build TF-IDF model and return pickled (vectorizer, matrix, doc_ids)."""
-    import pickle
+    """Build TF-IDF model and return serialized (vectorizer params, matrix, doc_ids)."""
     from sklearn.feature_extraction.text import TfidfVectorizer
+    from scipy.sparse import coo_matrix
 
     vectorizer = TfidfVectorizer(
         max_features=8000,
@@ -247,15 +267,77 @@ def build_tfidf(texts: list[str], doc_ids: list[int]) -> bytes:
         max_df=0.95,
     )
     matrix = vectorizer.fit_transform(texts)
-    return pickle.dumps((vectorizer, matrix, doc_ids))
+    coo = coo_matrix(matrix)
+
+    model = {
+        "vocabulary": vectorizer.vocabulary_,
+        "idf": vectorizer.idf_.tolist(),
+        "matrix_row": coo.row.tolist(),
+        "matrix_col": coo.col.tolist(),
+        "matrix_data": coo.data.tolist(),
+        "matrix_shape": list(coo.shape),
+        "doc_ids": doc_ids,
+        "params": {
+            "max_features": 8000,
+            "ngram_range": [1, 2],
+            "sublinear_tf": True,
+            "strip_accents": "unicode",
+            "min_df": 1,
+            "max_df": 0.95,
+        },
+    }
+    return json.dumps(model).encode("utf-8")
 
 
 def search_tfidf(query: str, model_blob: bytes, limit: int = 10) -> list[tuple]:
     """Search TF-IDF model. Returns [(doc_id, score), ...]."""
-    import pickle
+    from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.metrics.pairwise import cosine_similarity
 
-    vectorizer, matrix, doc_ids = pickle.loads(model_blob)
+    # Backward compatibility: detect old pickle format
+    if model_blob[:2] == b'\x80\x04' or model_blob[:2] == b'\x80\x05':
+        print("⚠ TF-IDF model uses deprecated pickle format. "
+              "Re-run embedding to upgrade: python embed.py --rebuild-tfidf",
+              file=sys.stderr)
+        import pickle
+        vectorizer, matrix, doc_ids = pickle.loads(model_blob)
+        query_vec = vectorizer.transform([query])
+        scores = cosine_similarity(query_vec, matrix).flatten()
+        top_idx = scores.argsort()[::-1][:limit]
+        return [(doc_ids[i], float(scores[i])) for i in top_idx if scores[i] > 0.01]
+
+    # New JSON format
+    from scipy.sparse import csr_matrix
+    import numpy as np
+
+    model = json.loads(model_blob.decode("utf-8"))
+
+    # Validate required keys
+    required = {"vocabulary", "idf", "matrix_row", "matrix_col", "matrix_data", "matrix_shape", "doc_ids"}
+    if not required.issubset(model.keys()):
+        raise ValueError("Invalid TF-IDF model format")
+
+    # Reconstruct vectorizer
+    vectorizer = TfidfVectorizer(
+        max_features=model.get("params", {}).get("max_features", 8000),
+        ngram_range=tuple(model.get("params", {}).get("ngram_range", [1, 2])),
+        sublinear_tf=model.get("params", {}).get("sublinear_tf", True),
+        strip_accents=model.get("params", {}).get("strip_accents", "unicode"),
+        min_df=model.get("params", {}).get("min_df", 1),
+        max_df=model.get("params", {}).get("max_df", 0.95),
+    )
+    vectorizer.vocabulary_ = model["vocabulary"]
+    vectorizer.idf_ = np.array(model["idf"])
+    vectorizer._tfidf._idf_diag = csr_matrix(np.diag(vectorizer.idf_))
+
+    # Reconstruct matrix
+    shape = tuple(model["matrix_shape"])
+    matrix = csr_matrix(
+        (model["matrix_data"], (model["matrix_row"], model["matrix_col"])),
+        shape=shape
+    )
+
+    doc_ids = model["doc_ids"]
     query_vec = vectorizer.transform([query])
     scores = cosine_similarity(query_vec, matrix).flatten()
     top_idx = scores.argsort()[::-1][:limit]

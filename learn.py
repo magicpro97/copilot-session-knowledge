@@ -64,8 +64,8 @@ def detect_session_id() -> str:
                 try:
                     mtime = max(f.stat().st_mtime for f in d.rglob("*") if f.is_file())
                     sessions.append((mtime, d.name))
-                except (ValueError, OSError):
-                    pass
+                except (ValueError, OSError) as e:
+                    print(f"⚠ Error reading session dir: {e}", file=sys.stderr)
         if sessions:
             sessions.sort(reverse=True)
             return sessions[0][1]
@@ -366,8 +366,8 @@ def main():
         print(f'  python learn.py --{category} "Title" "Description"')
         return
 
-    title = positional[0]
-    content = " ".join(positional[1:])
+    title = positional[0][:200]  # Limit title length
+    content = " ".join(positional[1:])[:10000]  # Limit content to 10KB
 
     print(f"Recording {category}...")
     add_entry(category, title, content, tags=tags,

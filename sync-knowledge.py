@@ -55,11 +55,15 @@ def auto_detect_sources() -> list[Path]:
             )
             if result.returncode == 0:
                 wsl_home = result.stdout.strip()
-                # Convert WSL path to Windows UNC path
-                wsl_db = Path(r"\\wsl$\Ubuntu" + wsl_home) / ".copilot" / "session-state" / "knowledge.db"
-                candidates.append(wsl_db)
-        except Exception:
-            pass
+                # Validate WSL home path: must start with /home/ and contain no traversal
+                if (wsl_home.startswith("/home/") and ".." not in wsl_home
+                        and "\n" not in wsl_home and len(wsl_home) < 256):
+                    wsl_db = Path(r"\\wsl$\Ubuntu" + wsl_home) / ".copilot" / "session-state" / "knowledge.db"
+                    candidates.append(wsl_db)
+                else:
+                    print(f"⚠ Ignoring suspicious WSL home path: {wsl_home!r}", file=sys.stderr)
+        except Exception as e:
+            print(f"⚠ WSL detection failed: {e}", file=sys.stderr)
         candidates.extend(wsl_paths)
 
     # Windows paths accessible from WSL
@@ -84,10 +88,17 @@ def auto_detect_sources() -> list[Path]:
 
 
 def backup_db(db_path: Path) -> Path:
-    """Create timestamped backup of the database."""
+    """Create a verified backup of the database."""
+    import hashlib
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = db_path.with_suffix(f".backup_{timestamp}.db")
     shutil.copy2(db_path, backup_path)
+    # Verify backup integrity
+    src_hash = hashlib.sha256(db_path.read_bytes()).hexdigest()
+    dst_hash = hashlib.sha256(backup_path.read_bytes()).hexdigest()
+    if src_hash != dst_hash:
+        backup_path.unlink(missing_ok=True)
+        raise RuntimeError(f"Backup verification failed: hash mismatch for {db_path}")
     return backup_path
 
 
@@ -151,6 +162,8 @@ def sync_from_source(target_db: sqlite3.Connection, source_path: Path,
         actual_path = temp_copy
 
     # Attach source database
+    # SECURITY NOTE: source_alias is a hardcoded constant, never from user input.
+    # SQLite requires table-qualifier syntax for ATTACH'd databases which cannot use ? params.
     source_alias = "src"
     try:
         target_db.execute(f"ATTACH DATABASE ? AS {source_alias}", (str(actual_path),))
@@ -322,8 +335,8 @@ def sync_from_source(target_db: sqlite3.Connection, source_path: Path,
         # Commit any pending operations before DETACH
         try:
             target_db.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠ Merge error: {e}", file=sys.stderr)
         try:
             target_db.execute(f"DETACH DATABASE {source_alias}")
         except sqlite3.OperationalError:

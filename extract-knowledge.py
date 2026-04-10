@@ -108,12 +108,14 @@ def ensure_tables(db: sqlite3.Connection):
     """)
 
     # Migrate existing databases: add new columns if missing
+    _ALLOWED_COLUMNS = {"source", "topic_key", "revision_count", "content_hash"}
     for col, col_def in [
         ("source", "TEXT DEFAULT 'copilot'"),
         ("topic_key", "TEXT"),
         ("revision_count", "INTEGER DEFAULT 1"),
         ("content_hash", "TEXT"),
     ]:
+        assert col in _ALLOWED_COLUMNS, f"Unexpected column: {col}"
         try:
             db.execute(f"ALTER TABLE knowledge_entries ADD COLUMN {col} {col_def}")
         except sqlite3.OperationalError:
@@ -407,7 +409,8 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
                           confidence, now, now, source, topic_key, content_hash))
                     existing_hashes.add(content_hash)
                     extracted += 1
-                except sqlite3.IntegrityError:
+                except sqlite3.IntegrityError as e:
+                    print(f"⚠ Duplicate entry skipped: {e}", file=sys.stderr)
                     skipped += 1
 
     # Confidence decay: entries not seen recently get slightly lower confidence

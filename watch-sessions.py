@@ -60,25 +60,42 @@ def _is_pid_running(pid: int) -> bool:
 
 
 def acquire_lock() -> bool:
-    """Acquire the watcher lock file. Returns True if lock acquired."""
-    if LOCK_FILE.exists():
-        try:
-            stored_pid = int(LOCK_FILE.read_text(encoding="utf-8").strip())
-            if _is_pid_running(stored_pid):
-                print(
-                    f"[watch] Error: another watcher is already running "
-                    f"(PID {stored_pid}). Remove {LOCK_FILE} if this is stale."
-                )
-                return False
-            # Stale lock — previous watcher crashed
-            print(f"[watch] Removing stale lock (PID {stored_pid} no longer running)")
-            LOCK_FILE.unlink(missing_ok=True)
-        except (ValueError, OSError):
-            LOCK_FILE.unlink(missing_ok=True)
+    """Acquire the watcher lock file atomically. Returns True if lock acquired."""
+    # Try exclusive create (atomic on all platforms)
+    try:
+        fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode("utf-8"))
+        os.close(fd)
+        atexit.register(release_lock)
+        return True
+    except FileExistsError:
+        pass
 
-    LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
-    atexit.register(release_lock)
-    return True
+    # Lock file exists — check if holder is still alive
+    try:
+        stored_pid = int(LOCK_FILE.read_text(encoding="utf-8").strip())
+        if _is_pid_running(stored_pid):
+            print(
+                f"[watch] Error: another watcher is already running "
+                f"(PID {stored_pid}). Remove {LOCK_FILE} if this is stale."
+            )
+            return False
+        # Stale lock — previous watcher crashed. Try to replace it.
+        print(f"[watch] Removing stale lock (PID {stored_pid} no longer running)")
+    except (ValueError, OSError):
+        pass
+
+    # Remove stale lock and retry once
+    try:
+        LOCK_FILE.unlink(missing_ok=True)
+        fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode("utf-8"))
+        os.close(fd)
+        atexit.register(release_lock)
+        return True
+    except (FileExistsError, OSError):
+        print("[watch] Error: could not acquire lock (another process won the race)")
+        return False
 
 
 def release_lock():
@@ -300,7 +317,14 @@ def main():
             sys.exit(0)
         os.setsid()
         # Re-acquire lock with new PID after fork
-        LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
+        # Re-acquire lock atomically with new PID after fork
+        try:
+            LOCK_FILE.unlink(missing_ok=True)
+            fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("utf-8"))
+            os.close(fd)
+        except OSError as e:
+            print(f"[watch] Warning: could not re-acquire lock after fork: {e}", file=sys.stderr)
         # Redirect stdout/stderr to log file
         log_path = SESSION_STATE / ".watch.log"
         sys.stdout = open(log_path, "a", encoding="utf-8")

@@ -405,7 +405,7 @@ def main():
     if "--project" in sys.argv:
         idx = sys.argv.index("--project")
         if idx + 1 < len(sys.argv):
-            project_filter = sys.argv[idx + 1]
+            project_filter = sys.argv[idx + 1][:256]  # Limit filter length
 
     if stats_only:
         show_stats()

@@ -85,17 +85,30 @@ def get_db() -> sqlite3.Connection:
     return db
 
 
+def _sanitize_fts_query(query: str, max_length: int = 500) -> str:
+    """Sanitize user input for FTS5 MATCH queries."""
+    query = query.strip()[:max_length]
+    # Strip FTS5 special operators and syntax characters
+    fts_special = set('"*(){}:^')
+    cleaned = "".join(c if c not in fts_special else " " for c in query)
+    # Remove FTS5 boolean operators used as standalone words
+    terms = []
+    for t in cleaned.split():
+        if t.upper() not in ("OR", "AND", "NOT", "NEAR"):
+            terms.append(t)
+    if not terms:
+        return '""'
+    # Wrap each term in quotes for safe prefix matching
+    return " ".join(f'"{t}"*' for t in terms)
+
+
 def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = False,
            source_filter: str = None):
     """Full-text search across all indexed content."""
     db = get_db()
 
-    # Build FTS5 query - wrap terms for prefix matching
-    fts_query = query.strip()
-    if not any(c in fts_query for c in ['"', "*", "OR", "AND", "NOT", "NEAR"]):
-        # Simple query - add prefix matching
-        terms = fts_query.split()
-        fts_query = " ".join(f'"{t}"*' for t in terms)
+    # Build FTS5 query - sanitize and wrap terms for prefix matching
+    fts_query = _sanitize_fts_query(query)
 
     sql = """
         SELECT
@@ -447,9 +460,7 @@ def show_context(entry_id: int):
                       f"[{r['category']}] {r['title']} "
                       f"{DIM}(conf: {r['rel_conf']:.1f}){RESET}")
     except sqlite3.OperationalError:
-        pass  # knowledge_relations table doesn't exist yet
-
-    db.close()
+        print("⚠ knowledge_relations table not found; skipping linked entries", file=sys.stderr)
 
 
 def show_related(entry_id: int):
@@ -512,10 +523,7 @@ def show_graph(topic: str):
     """Show a mini knowledge graph around a topic."""
     db = get_db()
 
-    fts_query = topic.strip()
-    if not any(c in fts_query for c in ['"', "*", "OR", "AND", "NOT", "NEAR"]):
-        terms = fts_query.split()
-        fts_query = " ".join(f'"{t}"*' for t in terms)
+    fts_query = _sanitize_fts_query(topic)
 
     try:
         matches = db.execute("""
@@ -563,12 +571,13 @@ def show_graph(topic: str):
                 print(f"  {marker} [{r['relation_type']}] {DIM}#{r['other_id']}{RESET} "
                       f"[{r['category']}] {r['title'][:50]}")
         except sqlite3.OperationalError:
-            pass  # knowledge_relations table doesn't exist yet
+            print(f"⚠ knowledge_relations table not found; skipping relations for #{eid}", file=sys.stderr)
 
     try:
-        ids_str = ",".join(str(i) for i in entry_ids)
+        placeholders = ",".join("?" * len(entry_ids))
         total_rels = db.execute(
-            f"SELECT COUNT(*) FROM knowledge_relations WHERE source_id IN ({ids_str}) OR target_id IN ({ids_str})"
+            f"SELECT COUNT(*) FROM knowledge_relations WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})",
+            entry_ids + entry_ids
         ).fetchone()[0]
     except sqlite3.OperationalError:
         total_rels = 0
@@ -581,10 +590,7 @@ def search_knowledge(query: str, limit: int = 10, export_fmt: str = None):
     """Search knowledge entries with FTS5."""
     db = get_db()
 
-    fts_query = query.strip()
-    if not any(c in fts_query for c in ['"', "*", "OR", "AND", "NOT", "NEAR"]):
-        terms = fts_query.split()
-        fts_query = " ".join(f'"{t}"*' for t in terms)
+    fts_query = _sanitize_fts_query(query)
 
     try:
         rows = db.execute("""

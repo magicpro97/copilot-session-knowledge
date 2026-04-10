@@ -65,8 +65,8 @@ def auto_detect_context() -> str:
             parts = branch.replace("/", "-").replace("_", "-").split("-")
             keywords.update(p for p in parts if len(p) > 2
                            and p not in ("feature", "fix", "chore", "update", "and"))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠ Git branch detection failed: {e}", file=sys.stderr)
 
     # Git recent commit messages → extract subject words
     try:
@@ -82,8 +82,8 @@ def auto_detect_context() -> str:
                 keywords.update(w for w in words if len(w) > 2
                                and w.lower() not in ("the", "and", "for", "add", "fix",
                                                       "update", "with", "from", "that"))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠ Git log parsing failed: {e}", file=sys.stderr)
 
     # Plan.md title/first meaningful line
     for session_dir in sorted(SESSION_STATE.iterdir(), reverse=True):
@@ -95,8 +95,8 @@ def auto_detect_context() -> str:
                     if line and not line.startswith("|") and len(line) > 5:
                         keywords.update(w for w in line.split() if len(w) > 2)
                         break
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"⚠ Plan file parsing failed: {e}", file=sys.stderr)
             break
 
     # Git modified file paths → extract module/feature names
@@ -110,20 +110,28 @@ def auto_detect_context() -> str:
                 parts = Path(fpath).parts
                 keywords.update(p for p in parts if len(p) > 3
                                and not p.startswith(".") and "." not in p)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠ Git status parsing failed: {e}", file=sys.stderr)
 
-    query = " ".join(sorted(keywords)[:15]) if keywords else "general development"
+    query = " ".join(sorted(keywords)[:15])if keywords else "general development"
     return query
+
+
+def _sanitize_fts_query(query: str, max_length: int = 500) -> str:
+    """Sanitize user input for FTS5 MATCH queries."""
+    query = query.strip()[:max_length]
+    fts_special = set('"*(){}:^')
+    cleaned = "".join(c if c not in fts_special else " " for c in query)
+    terms = [t for t in cleaned.split() if t.upper() not in ("OR", "AND", "NOT", "NEAR")]
+    if not terms:
+        return '""'
+    return " ".join(f'"{t}"*' for t in terms)
 
 
 def search_knowledge_entries(db: sqlite3.Connection, query: str,
                              category: str, limit: int = 3) -> list[dict]:
     """Search knowledge entries by category using FTS5."""
-    fts_query = query.strip()
-    if not any(c in fts_query for c in ['"', "*", "OR", "AND", "NOT", "NEAR"]):
-        terms = fts_query.split()
-        fts_query = " ".join(f'"{t}"*' for t in terms)
+    fts_query = _sanitize_fts_query(query)
 
     results = []
     try:
@@ -163,8 +171,8 @@ def search_semantic(db: sqlite3.Connection, query: str,
             try:
                 vecs = call_embedding_api([query], provider_config)
                 query_vector = vecs[0]
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"⚠ Embedding API call failed: {e}", file=sys.stderr)
 
         if query_vector:
             vec_results = vector_search(db, query_vector,

@@ -97,12 +97,14 @@ def _db_counts() -> dict:
         return result
     try:
         db = sqlite3.connect(str(DB_PATH))
+        _ALLOWED_TABLES = {"documents", "knowledge_entries", "knowledge_relations", "sessions"}
         for table, key in [
             ("documents", "documents"),
             ("knowledge_entries", "entries"),
             ("knowledge_relations", "relations"),
             ("sessions", "sessions"),
         ]:
+            assert table in _ALLOWED_TABLES, f"Unexpected table: {table}"
             try:
                 result[key] = db.execute(
                     f"SELECT COUNT(*) FROM {table}"
