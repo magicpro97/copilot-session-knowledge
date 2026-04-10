@@ -1,277 +1,176 @@
 # Copilot Session Knowledge Tools
 
-Instant search across all Copilot CLI and Claude Code session data.  
-Turns raw checkpoints into a queryable SQLite knowledge base with **hybrid search** (FTS5 + semantic vector), **knowledge graph**, and **auto-deduplication**.
+> **Vấn đề:** Mỗi session Copilot CLI / Claude Code tích lũy kinh nghiệm quý (lỗi đã gặp, pattern đã dùng, quyết định đã chọn) — nhưng session mới bắt đầu từ zero, lặp lại sai lầm cũ.
+>
+> **Giải pháp:** Tool này index tất cả session data vào SQLite, tự trích xuất knowledge, và cho phép search + briefing trước mỗi task.
 
-**Key features:**
-- 🔍 Hybrid search — keyword (FTS5 BM25) + semantic vector (multi-provider API)
-- 🧠 Knowledge extraction — patterns, mistakes, decisions, tools from session history
-- 🕸️ Knowledge graph — auto-detected relations between entries (4 relation types)
-- 📋 Agent briefing — inject past experience into AI context (~500 tokens)
-- ⚡ Progressive disclosure — compact by default, drill down with `--detail`/`--context`
-- 🔄 Hash-based dedup — re-extraction skips already-seen content
+## Demo
 
-## Architecture
+```
+$ python query-session.py "docker networking"
 
-```mermaid
-graph LR
-  subgraph "~/.copilot/session-state/"
-    RAW["📁 {uuid}/<br/>plan.md, checkpoints/, research/"]
-    DB[("🗄️ knowledge.db<br/>FTS5 + vectors + graph")]
-    WATCH[".watch-state.json"]
-  end
+Found 5 result(s) for: docker networking
+  1. [tool] Docker compose network config — Use bridge network with...
+  2. [mistake] DNS resolution failed in container — Fixed by adding...
+  3. [pattern] Docker/WSL architecture — On Windows, Docker Engine...
 
-  subgraph "~/.copilot/tools/"
-    IDX["build-session-index.py"]
-    EXT["extract-knowledge.py"]
-    QRY["query-session.py"]
-    BRF["briefing.py"]
-    EMB["embed.py"]
-    WCH["watch-sessions.py"]
-    CLA["claude-adapter.py"]
-    INS["install.py"]
-  end
+Knowledge entries matching: docker networking (3 results)
+  #1970 [tool] brain/docker/DockerfileBrainApp (conf: 0.8)
+  #2045 [mistake] Port conflicts in docker compose (conf: 0.7)
+  #1977 [pattern] Docker/WSL bridge networking (conf: 0.6)
 
-  RAW -->|index| IDX --> DB
-  DB -->|extract| EXT --> DB
-  DB -->|search| QRY
-  DB -->|briefing| BRF
-  DB -->|embed| EMB --> DB
-  WCH -->|poll| RAW
-  WCH -->|trigger| IDX
-  CLA -->|import| RAW
+Use --detail <id> for full content
+```
+
+```
+$ python briefing.py "fix docker compose"
+
+📋 Briefing: fix docker compose
+⚠️ Past Mistakes to Avoid
+  #2045 Port conflicts — check docker ps before starting
+🔧 Relevant Tools & Configs
+  #1970 DockerfileBrainApp — JVM flag fix for containers
+📚 Related Past Work
+  [checkpoint] Docker networking and WSL setup (session de828552)
 ```
 
 ## Setup
 
-### Installation
+### Prerequisites
 
+- Python 3.10+ (no pip packages needed)
+- Copilot CLI (`~/.copilot/session-state/` directory must exist) and/or Claude Code
+
+### Install
+
+**macOS / Linux:**
 ```bash
-# Clone the repo
 git clone https://github.com/magicpro97/copilot-session-knowledge.git
 cd copilot-session-knowledge
+mkdir -p ~/.copilot/tools && cp *.py ~/.copilot/tools/
 
-# Copy tools to ~/.copilot/tools/
-mkdir -p ~/.copilot/tools
-cp *.py ~/.copilot/tools/
-cp embedding-config.example.json ~/.copilot/tools/
-
-# Build the index (first run)
+# First run
 python ~/.copilot/tools/build-session-index.py
-
-# Extract knowledge entries
 python ~/.copilot/tools/extract-knowledge.py
-
-# Verify installation
 python ~/.copilot/tools/install.py --test
 ```
 
-On Windows (PowerShell):
+**Windows (PowerShell):**
 ```powershell
 git clone https://github.com/magicpro97/copilot-session-knowledge.git
 cd copilot-session-knowledge
-
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.copilot\tools"
 Copy-Item *.py "$env:USERPROFILE\.copilot\tools\"
-Copy-Item embedding-config.example.json "$env:USERPROFILE\.copilot\tools\"
 
 python "$env:USERPROFILE\.copilot\tools\build-session-index.py"
 python "$env:USERPROFILE\.copilot\tools\extract-knowledge.py"
 python "$env:USERPROFILE\.copilot\tools\install.py" --test
 ```
 
-### Post-Install
-
+**Tip:** Thêm alias cho tiện (bash):
 ```bash
-python ~/.copilot/tools/install.py                 # Show status
-python ~/.copilot/tools/install.py --deploy-skill  # Add SKILL.md to current project
-python ~/.copilot/tools/install.py --uninstall     # Remove tools (keeps session data)
+alias qs='python ~/.copilot/tools/query-session.py'
+alias brief='python ~/.copilot/tools/briefing.py'
+# Dùng: qs "docker error" | brief "fix login"
 ```
-
-### Embedding Setup (optional, enables semantic search)
-
-```bash
-python ~/.copilot/tools/embed.py --setup    # Interactive provider config
-python ~/.copilot/tools/embed.py --build    # Generate embeddings
-python ~/.copilot/tools/embed.py --test     # Test provider connectivity
-python ~/.copilot/tools/embed.py --status   # Show embedding stats
-```
-
-**Supported providers** (all OpenAI-compatible):
-| Provider | Model | Cost | Env Variable |
-|---|---|---|---|
-| Fireworks AI | nomic-embed-text-v1.5 | $0.008/1M tokens | `FIREWORKS_API_KEY` |
-| OpenAI | text-embedding-3-small | $0.02/1M tokens | `OPENAI_API_KEY` |
-| OpenRouter | (routes to providers) | varies | `OPENROUTER_API_KEY` |
-| Custom | any | any | `EMBEDDING_API_KEY` |
-
-**Fallback**: TF-IDF (requires `pip install scikit-learn`). Works without any API key.
 
 ## Usage
 
-### Keyword Search (default, compact output)
+### Briefing (khuyến khích chạy trước mỗi task lớn)
 
 ```bash
-python ~/.copilot/tools/query-session.py "search terms"              # Compact results (~50 tokens/entry)
-python ~/.copilot/tools/query-session.py "search terms" --verbose    # Full content per entry
-python ~/.copilot/tools/query-session.py "docker" --type research
-python ~/.copilot/tools/query-session.py "docker" --source claude    # Filter by source (copilot/claude/all)
-python ~/.copilot/tools/query-session.py --list
-python ~/.copilot/tools/query-session.py --list --source copilot     # List only Copilot sessions
-python ~/.copilot/tools/query-session.py --session de828552
-python ~/.copilot/tools/query-session.py --recent                    # Show recent activity
+brief "implement user CRUD"          # Compact ~500 tokens
+brief "implement user CRUD" --full   # Full detail ~3K tokens
+brief --auto                         # Auto-detect từ git state
 ```
 
-### Semantic / Hybrid Search
+### Search
 
 ```bash
-python ~/.copilot/tools/query-session.py "lỗi triển khai" --semantic
-python ~/.copilot/tools/query-session.py "how to fix Docker" --semantic -v
-python ~/.copilot/tools/embed.py --search "deployment error"
+qs "search terms"                    # Compact results
+qs "search terms" --verbose          # Full content
+qs "docker" --type research          # Filter theo doc type
+qs "spring" --source copilot         # Filter theo agent source
+qs --mistakes                        # Xem lỗi đã gặp
+qs --patterns                        # Xem best practices
+qs --decisions                       # Xem quyết định kiến trúc
 ```
 
-### Knowledge Categories
+### Drill Down (dùng entry ID từ kết quả search)
 
 ```bash
-python ~/.copilot/tools/query-session.py --mistakes    # Past errors + fixes (compact)
-python ~/.copilot/tools/query-session.py --patterns    # Best practices (compact)
-python ~/.copilot/tools/query-session.py --decisions   # Architecture choices (compact)
-python ~/.copilot/tools/query-session.py --tools       # Tool configs (compact)
-python ~/.copilot/tools/query-session.py --mistakes --verbose  # Full content
+qs --detail 2045                     # Xem chi tiết 1 entry
+qs --context 2045                    # Entry + các entry cùng session
+qs --related 2045                    # Entry + knowledge graph connections
+qs --graph "spring boot"             # Mini knowledge graph theo topic
 ```
 
-### Progressive Disclosure (drill-down)
+### Semantic Search (cần embedding API key)
 
 ```bash
-python ~/.copilot/tools/query-session.py --detail <id>    # Full detail of a single entry
-python ~/.copilot/tools/query-session.py --context <id>   # Entry + related entries (same session/category)
+qs "deployment error" --semantic     # Search theo nghĩa, không chỉ keyword
+python ~/.copilot/tools/embed.py --setup   # Setup API key
 ```
 
-### Knowledge Graph
-
-```bash
-python ~/.copilot/tools/query-session.py --related <id>      # Show graph connections for an entry
-python ~/.copilot/tools/query-session.py --graph "spring boot"  # Mini knowledge graph for a topic
-```
-
-Relation types (auto-detected during extraction):
-- **SAME_SESSION** — entries from the same session
-- **TAG_OVERLAP** — entries sharing tags
-- **RESOLVED_BY** — mistakes linked to patterns that fix them
-- **SAME_TOPIC** — entries with the same topic key across sessions
-
-### Briefing (context injection for AI agents)
-
-```bash
-python ~/.copilot/tools/briefing.py "implement user CRUD"          # Compact briefing (~500 tokens)
-python ~/.copilot/tools/briefing.py "implement user CRUD" --full   # Full markdown briefing
-python ~/.copilot/tools/briefing.py "fix Docker compose" --compact # XML compact for AI context
-python ~/.copilot/tools/briefing.py "fix Docker compose" --json    # JSON output
-python ~/.copilot/tools/briefing.py "spring boot" --limit 5        # More results per category
-python ~/.copilot/tools/briefing.py --auto                         # Auto-detect from git/plan
-python ~/.copilot/tools/briefing.py --auto --full                  # Full briefing with auto-detect
-```
-
-### Export
-
-```bash
-python ~/.copilot/tools/query-session.py "spring" --export json
-python ~/.copilot/tools/query-session.py --mistakes --export markdown
-```
-
-### Maintenance
-
-```bash
-python ~/.copilot/tools/build-session-index.py                # Full rebuild
-python ~/.copilot/tools/build-session-index.py --incremental  # Update only
-python ~/.copilot/tools/build-session-index.py --embed        # Rebuild + embeddings
-python ~/.copilot/tools/build-session-index.py --stats        # Show stats
-python ~/.copilot/tools/extract-knowledge.py                  # Re-extract (with dedup)
-python ~/.copilot/tools/extract-knowledge.py --stats          # Show extraction stats
-python ~/.copilot/tools/extract-knowledge.py --list           # List all extracted entries
-python ~/.copilot/tools/extract-knowledge.py --category mistakes  # Show specific category
-python ~/.copilot/tools/watch-sessions.py                     # Auto-index daemon (lock-file protected)
-python ~/.copilot/tools/watch-sessions.py --interval 30       # Custom poll interval (seconds)
-python ~/.copilot/tools/watch-sessions.py --once              # Single check then exit
-python ~/.copilot/tools/watch-sessions.py --daemon            # Run as background process
-python ~/.copilot/tools/watch-sessions.py --install-hint      # Print auto-start setup instructions
-```
-
-## Search Modes
+## Architecture
 
 ```mermaid
 flowchart TD
-  Q["🔍 Query: lỗi deploy Docker"]
+  subgraph Data["📁 ~/.copilot/session-state/"]
+    RAW["Session checkpoints<br/>plan.md, research/, files/"]
+    DB[("knowledge.db<br/>FTS5 + vectors + graph")]
+  end
 
-  Q --> FTS["FTS5 Keyword<br/>BM25 ranking"]
-  Q --> VEC["Vector / TF-IDF<br/>Cosine similarity"]
+  subgraph Tools["🔧 ~/.copilot/tools/"]
+    IDX[build-session-index.py]
+    EXT[extract-knowledge.py]
+    QRY[query-session.py]
+    BRF[briefing.py]
+    WCH[watch-sessions.py]
+  end
 
-  FTS --> RRF["Reciprocal Rank Fusion<br/>(merge + deduplicate)"]
-  VEC --> RRF
+  RAW -->|index| IDX -->|write| DB
+  DB -->|extract| EXT -->|relations + dedup| DB
+  DB -->|search| QRY
+  DB -->|briefing| BRF
+  WCH -->|auto-trigger| IDX
 
-  RRF --> RES["Top-K Hybrid Results"]
-
-  style Q fill:#4a9eff,color:#fff
-  style RRF fill:#f59e0b,color:#fff
-  style RES fill:#10b981,color:#fff
+  style DB fill:#f59e0b,color:#000
 ```
 
-## Database Schema
+### How it works
 
-```mermaid
-erDiagram
-    sessions ||--o{ documents : contains
-    documents ||--o{ sections : has
-    documents ||--o{ knowledge_fts : indexed_in
-    sections ||--o{ knowledge_entries : extracted_to
+1. **Index** — `build-session-index.py` scans all session `.md` files → SQLite FTS5
+2. **Extract** — `extract-knowledge.py` phân loại thành mistakes/patterns/decisions/tools, dedup bằng content hash
+3. **Graph** — Tự detect relations: cùng session, cùng tag, mistake→fix, cùng topic
+4. **Search** — FTS5 keyword + optional semantic vector (Reciprocal Rank Fusion)
+5. **Watch** — `watch-sessions.py` poll thay đổi, tự re-index (lock file chống chạy trùng)
 
-    knowledge_entries ||--o{ ke_fts : indexed_in
-    knowledge_entries ||--o{ knowledge_relations : source
-    knowledge_entries ||--o{ knowledge_relations : target
-    knowledge_entries ||--o{ embeddings : has
+## Maintenance
 
-    sessions {
-        text id PK "UUID"
-        text source "copilot | claude"
-        text created_at
-    }
-    documents {
-        int id PK
-        text session_id FK
-        text doc_type "checkpoint | research | plan"
-        text title
-    }
-    knowledge_entries {
-        int id PK
-        text category "mistake | pattern | decision | tool"
-        text topic_key "category/slug for dedup"
-        text content_hash "SHA256 16-char"
-        real confidence
-        int revision_count
-    }
-    knowledge_relations {
-        int source_id FK
-        int target_id FK
-        text relation_type "SAME_SESSION | TAG_OVERLAP | RESOLVED_BY | SAME_TOPIC"
-        real confidence
-    }
+```bash
+python ~/.copilot/tools/build-session-index.py --incremental   # Update only changed files
+python ~/.copilot/tools/extract-knowledge.py --stats           # Xem thống kê knowledge
+python ~/.copilot/tools/extract-knowledge.py --relations       # Xem thống kê relations
+python ~/.copilot/tools/watch-sessions.py --daemon             # Chạy nền, tự index
+python ~/.copilot/tools/install.py --deploy-skill              # Deploy SKILL.md vào project
 ```
-
-## Requirements
-
-**Core** (zero external dependencies):
-- Python 3.10+
-- SQLite with FTS5 (included in Python)
-- Cross-platform: Windows, macOS, Linux
-
-**Optional** (for enhanced features):
-- `scikit-learn` — TF-IDF fallback (`pip install scikit-learn`)
-- Any API key above — Vector embeddings for true semantic search
 
 ## AI Agent Integration
 
-Skills that teach agents to use these tools:
-- **Copilot CLI**: `.github/skills/session-knowledge/SKILL.md`
-- **Claude Code**: `.claude/skills/session-knowledge.md`
+Để agent tự động dùng knowledge base, deploy skill vào project:
 
-Agents can search the knowledge base before starting tasks to leverage past experience.
+```bash
+python ~/.copilot/tools/install.py --deploy-skill
+# → Tạo .github/skills/session-knowledge/SKILL.md (Copilot CLI)
+# → Tạo .claude/skills/session-knowledge.md (Claude Code)
+```
+
+Sau đó agent sẽ tự chạy `briefing.py` trước mỗi task và search khi cần.
+
+## Requirements
+
+- **Python 3.10+** — pure stdlib, zero pip packages
+- **SQLite FTS5** — included in Python
+- **Cross-platform** — Windows, macOS, Linux
+- **Optional:** `scikit-learn` (TF-IDF fallback), embedding API key (semantic search)
