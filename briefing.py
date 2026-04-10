@@ -129,7 +129,8 @@ def _sanitize_fts_query(query: str, max_length: int = 500) -> str:
 
 
 def search_knowledge_entries(db: sqlite3.Connection, query: str,
-                             category: str, limit: int = 3) -> list[dict]:
+                             category: str, limit: int = 3,
+                             min_confidence: float = 0.0) -> list[dict]:
     """Search knowledge entries by category using FTS5."""
     fts_query = _sanitize_fts_query(query)
 
@@ -142,9 +143,10 @@ def search_knowledge_entries(db: sqlite3.Connection, query: str,
             JOIN knowledge_entries ke ON fts.rowid = ke.id
             WHERE ke_fts MATCH ?
             AND ke.category = ?
-            ORDER BY rank
+            AND ke.confidence >= ?
+            ORDER BY ke.confidence DESC, rank
             LIMIT ?
-        """, (fts_query, category, limit)).fetchall()
+        """, (fts_query, category, min_confidence, limit)).fetchall()
         results.extend([dict(r) for r in rows])
     except sqlite3.OperationalError:
         pass
@@ -153,7 +155,8 @@ def search_knowledge_entries(db: sqlite3.Connection, query: str,
 
 
 def search_semantic(db: sqlite3.Connection, query: str,
-                    category: str, limit: int = 3) -> list[dict]:
+                    category: str, limit: int = 3,
+                    min_confidence: float = 0.0) -> list[dict]:
     """Search knowledge entries using vector embeddings."""
     try:
         sys.path.insert(0, str(TOOLS_DIR))
@@ -185,7 +188,8 @@ def search_semantic(db: sqlite3.Connection, query: str,
                     SELECT id, title, content, tags, confidence,
                            session_id, occurrence_count, category
                     FROM knowledge_entries WHERE id = ? AND category = ?
-                """, (sid, category)).fetchone()
+                    AND confidence >= ?
+                """, (sid, category, min_confidence)).fetchone()
                 if row:
                     results.append(dict(row))
                 if len(results) >= limit:
@@ -250,7 +254,7 @@ def search_past_work(db: sqlite3.Connection, query: str, limit: int = 3) -> list
 
 
 def generate_briefing(query: str, limit: int = 3, fmt: str = "md",
-                      full: bool = False) -> str:
+                      full: bool = False, min_confidence: float = 0.5) -> str:
     """Generate a structured briefing from the knowledge base."""
     db = get_db()
 
@@ -271,8 +275,10 @@ def generate_briefing(query: str, limit: int = 3, fmt: str = "md",
 
     for cat, meta in categories.items():
         # Combine FTS5 + semantic results, deduplicate
-        fts_results = search_knowledge_entries(db, query, cat, limit)
-        sem_results = search_semantic(db, query, cat, limit)
+        fts_results = search_knowledge_entries(db, query, cat, limit,
+                                                min_confidence=min_confidence)
+        sem_results = search_semantic(db, query, cat, limit,
+                                      min_confidence=min_confidence)
 
         merged = []
         for r in fts_results + sem_results:
@@ -536,6 +542,13 @@ def main():
         idx = args.index("--limit")
         limit = int(args[idx + 1]) if idx + 1 < len(args) else 3
 
+    min_confidence = 0.5  # Default: filter out low-quality entries
+    if "--min-confidence" in args:
+        idx = args.index("--min-confidence")
+        min_confidence = float(args[idx + 1]) if idx + 1 < len(args) else 0.5
+    if "--all" in args:
+        min_confidence = 0.0  # Show everything including low-confidence
+
     if auto_mode:
         query = auto_detect_context()
         print(f"[briefing] auto-detected: {query}", file=sys.stderr)
@@ -545,7 +558,7 @@ def main():
         # Filter out values that follow flags
         flag_values = set()
         for i, a in enumerate(args):
-            if a in ("--format", "--limit") and i + 1 < len(args):
+            if a in ("--format", "--limit", "--min-confidence") and i + 1 < len(args):
                 flag_values.add(args[i + 1])
         query_parts = [a for a in query_parts if a not in flag_values]
         query = " ".join(query_parts)
@@ -554,7 +567,8 @@ def main():
         print("Error: Provide a task description or use --auto")
         return
 
-    output = generate_briefing(query, limit=limit, fmt=fmt, full=full_mode)
+    output = generate_briefing(query, limit=limit, fmt=fmt, full=full_mode,
+                              min_confidence=min_confidence)
     print(output)
 
 
