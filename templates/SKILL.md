@@ -1,89 +1,95 @@
-# Session Knowledge — Copilot CLI Skill
+# Session Knowledge
 
-Search past Copilot and Claude sessions before starting any task.
-This avoids repeating mistakes and leverages proven patterns.
+You have access to a knowledge base built from past Copilot and Claude sessions.
+Use it to avoid repeating mistakes, reuse proven patterns, and recall past decisions.
 
-## Quick Start
+All tools are Python scripts in `~/.copilot/tools/` (cross-platform: `~` = home directory).
+
+## When to Use
+
+- **Starting a complex task** → run `briefing.py` to check for relevant past experience
+- **Hitting an error** → search for the error message, someone may have solved it before
+- **Making a design decision** → check `--decisions` for past architectural choices
+- **Unsure about a tool/config** → search for the tool name
+
+**Skip** when the task is trivial (renaming a variable, formatting code, etc.)
+
+## Core Commands
+
+### 1. Briefing (recommended first step)
 
 ```bash
-# Get a compact briefing before starting work (~500 tokens)
-python ~/.copilot/tools/briefing.py "your task description"
-
-# Full briefing with complete content
-python ~/.copilot/tools/briefing.py "your task description" --full
-
-# Auto-detect context from git state / plan.md
-python ~/.copilot/tools/briefing.py --auto
+python ~/.copilot/tools/briefing.py "your task description"    # Compact ~500 tokens
+python ~/.copilot/tools/briefing.py "your task" --full         # Full detail ~3K tokens
+python ~/.copilot/tools/briefing.py --auto                     # Auto-detect from git/plan
 ```
 
-## Search Commands
+Output includes: relevant mistakes to avoid, patterns to follow, related past work.
+**Read entry IDs in the output** — use them to drill down.
 
-### Compact Search (default — ~50 tokens/entry)
+### 2. Search
 
 ```bash
-python ~/.copilot/tools/query-session.py "search terms"
-python ~/.copilot/tools/query-session.py "docker" --type research
-python ~/.copilot/tools/query-session.py "spring" --source copilot
+python ~/.copilot/tools/query-session.py "search terms"              # Compact results
+python ~/.copilot/tools/query-session.py "docker error" --verbose    # Full content
+python ~/.copilot/tools/query-session.py "spring" --source copilot   # Filter by agent
+python ~/.copilot/tools/query-session.py "gradle" --type research    # Filter by doc type
 ```
 
-### Full Content
+### 3. Drill Down (use entry IDs from search/briefing results)
 
 ```bash
-python ~/.copilot/tools/query-session.py "search terms" --verbose    # All results expanded
+python ~/.copilot/tools/query-session.py --detail <id>     # Full content of one entry
+python ~/.copilot/tools/query-session.py --context <id>    # Entry + same-session entries
+python ~/.copilot/tools/query-session.py --related <id>    # Entry + graph connections
 ```
 
-### Progressive Disclosure (drill-down by entry ID)
+### 4. Browse by Category
 
 ```bash
-python ~/.copilot/tools/query-session.py --detail <id>     # Full detail of one entry
-python ~/.copilot/tools/query-session.py --context <id>    # Entry + related entries
-```
-
-### Knowledge Categories
-
-```bash
-python ~/.copilot/tools/query-session.py --mistakes    # Past errors + fixes
+python ~/.copilot/tools/query-session.py --mistakes    # Past errors and how they were fixed
 python ~/.copilot/tools/query-session.py --patterns    # Reusable best practices
-python ~/.copilot/tools/query-session.py --decisions   # Architecture choices
-python ~/.copilot/tools/query-session.py --tools       # Tool configs
+python ~/.copilot/tools/query-session.py --decisions   # Architecture/design choices
+python ~/.copilot/tools/query-session.py --tools       # Tool configs and usage notes
 ```
 
-### Knowledge Graph
+### 5. Knowledge Graph
 
 ```bash
-python ~/.copilot/tools/query-session.py --related <id>        # Graph connections for an entry
-python ~/.copilot/tools/query-session.py --graph "spring boot"  # Mini knowledge graph for a topic
+python ~/.copilot/tools/query-session.py --graph "topic"   # Visual: entries + connections
 ```
 
-Relation types: SAME_SESSION, TAG_OVERLAP, RESOLVED_BY, SAME_TOPIC.
+Shows how knowledge entries relate to each other:
+- **RESOLVED_BY** — a mistake linked to the pattern/tool that fixed it
+- **TAG_OVERLAP** — entries sharing similar tags (related domain)
+- **SAME_SESSION** — entries discovered together in one session
+- **SAME_TOPIC** — same topic tracked across multiple sessions
 
-### Semantic / Hybrid Search
+## Interpreting Results
+
+- **`[mistake]`** entries = things that went wrong → read carefully to avoid repeating
+- **`[pattern]`** entries = proven solutions → consider applying directly
+- **`[decision]`** entries = past choices with rationale → check if still valid
+- **`[tool]`** entries = configurations, commands → copy-paste ready
+- **Confidence score** (0.3–1.0) = how reliable the entry is. Below 0.5 = verify before using.
+- **Entry ID `#1234`** = use with `--detail 1234` to see full content
+
+## Workflow Example
+
+```
+1. briefing.py "fix Docker compose networking"
+   → shows 2 past mistakes about Docker DNS, 1 pattern about compose networks
+
+2. query-session.py --detail 2045
+   → reads the full mistake: was using wrong network driver
+
+3. Apply the fix using the pattern from the briefing
+```
+
+## Semantic Search (if embeddings configured)
 
 ```bash
 python ~/.copilot/tools/query-session.py "deployment error" --semantic
-python ~/.copilot/tools/query-session.py "how to fix Docker" --semantic --verbose
 ```
 
-## Briefing Formats
-
-| Flag | Output | Token Budget |
-|------|--------|-------------|
-| *(default)* | Compact titles + 1-line summaries with entry IDs | ~500 tokens |
-| `--full` | Complete content with tags, confidence, full text | ~3000 tokens |
-| `--compact` | XML compact for AI context injection | ~500 tokens |
-| `--json` | JSON structured output | varies |
-
-## Token Budget
-
-Default compact output uses ~6x fewer tokens than previous versions:
-- Search results: ~50 tokens/entry (was ~300)
-- Briefing: ~500 tokens total (was ~3000)
-- Use `--verbose` or `--full` only when you need deep detail
-
-## Workflow
-
-1. **Before any task**: `briefing.py "task description"` or `briefing.py --auto`
-2. **If briefing mentions relevant entries**: `query-session.py --detail <id>` to drill down
-3. **To explore connections**: `query-session.py --related <id>` or `--graph "topic"`
-4. **During work**: search for specific errors or patterns as needed
-5. **Export for sharing**: `query-session.py "query" --export json`
+Works with meaning, not just keywords. Requires API key setup via `embed.py --setup`.
