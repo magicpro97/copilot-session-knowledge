@@ -237,8 +237,12 @@ def main():
         print(f"✓ Done! {changes} change(s) applied.")
         print()
         print("Next steps:")
-        print("  1. Run: python3 ~/.copilot/tools/build-session-index.py")
+        print("  1. Run: python3 ~/.copilot/tools/build-session-index.py --all")
         print("  2. AI agents will now auto-brief before tasks and record learnings.")
+        print()
+        print("Optional:")
+        print("  - Index Claude Code sessions: python3 ~/.copilot/tools/claude-adapter.py")
+        print("  - Sync Win/WSL DBs: python3 ~/.copilot/tools/sync-knowledge.py --auto")
 
 
 if __name__ == "__main__":

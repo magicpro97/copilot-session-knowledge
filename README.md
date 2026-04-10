@@ -2,7 +2,7 @@
 
 > Turn your AI coding sessions into a searchable knowledge base.
 
-**Copilot Session Knowledge** indexes all your [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) session-state data — checkpoints, plans, research, artifacts — into a fast SQLite database with **full-text search**, **semantic vector search**, and **knowledge extraction**.
+**Copilot Session Knowledge** indexes all your [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) session data — checkpoints, plans, research, JSONL conversations — into a fast SQLite database with **full-text search**, **semantic vector search**, and **knowledge extraction**.
 
 Every mistake you've fixed, every pattern you've learned, every decision you've made — instantly searchable. AI agents can self-brief before starting tasks, avoiding repeated mistakes and leveraging past experience.
 
@@ -22,7 +22,9 @@ Every mistake you've fixed, every pattern you've learned, every decision you've 
 | 📤 **Export** | JSON and Markdown export for any search results |
 | 🌍 **Multilingual** | Trilingual support: English, Vietnamese, Japanese indicators & noise filters |
 | ☁️ **Multi-Stack Tags** | AWS, TypeScript, React Native, Python, Java, and 50+ technology tags |
-| 🖥️ **Cross-Platform** | Works on Windows, macOS, and Linux |
+| 🖥️ **Cross-Platform** | Works on Windows, macOS, and Linux (WSL) |
+| 🤖 **Multi-Agent** | Supports both GitHub Copilot CLI and Claude Code sessions |
+| 🔄 **DB Sync** | Merge knowledge databases across Windows ↔ WSL ↔ machines |
 
 ---
 
@@ -103,6 +105,11 @@ python ~/.copilot/tools/query-session.py --patterns    # Best practices
 python ~/.copilot/tools/query-session.py --decisions   # Architecture choices
 python ~/.copilot/tools/query-session.py --tools       # Tool configurations
 
+# Filter by source (copilot, claude, or all)
+python ~/.copilot/tools/query-session.py "spring" --source copilot
+python ~/.copilot/tools/query-session.py "deployment" --source claude
+python ~/.copilot/tools/query-session.py --list --source claude
+
 # Filter by session or type
 python ~/.copilot/tools/query-session.py "spring" --type research
 python ~/.copilot/tools/query-session.py --session abc123 --list
@@ -147,8 +154,14 @@ python ~/.copilot/tools/learn.py --decision "Use Fireworks AI for embeddings" \
 ### Maintenance
 
 ```bash
-# Rebuild index from scratch
+# Rebuild index from scratch (Copilot sessions only)
 python ~/.copilot/tools/build-session-index.py
+
+# Index Claude Code sessions
+python ~/.copilot/tools/build-session-index.py --claude
+
+# Index both Copilot + Claude Code
+python ~/.copilot/tools/build-session-index.py --all
 
 # Incremental update (faster)
 python ~/.copilot/tools/build-session-index.py --incremental
@@ -165,6 +178,48 @@ python ~/.copilot/tools/extract-knowledge.py
 # Auto-index daemon (watches for new sessions)
 python ~/.copilot/tools/watch-sessions.py
 ```
+
+### Claude Code Sessions
+
+Index Claude Code JSONL sessions alongside Copilot sessions:
+
+```bash
+# Preview available Claude sessions
+python ~/.copilot/tools/claude-adapter.py --stats
+
+# Index Claude sessions (standalone)
+python ~/.copilot/tools/claude-adapter.py
+
+# Or via build-session-index
+python ~/.copilot/tools/build-session-index.py --claude
+python ~/.copilot/tools/build-session-index.py --all    # Copilot + Claude
+```
+
+Claude Code stores sessions at `~/.claude/projects/<hash>/*.jsonl`. The adapter parses JSONL conversations, extracts text + tool usage, and creates documents/sections in the same format as Copilot sessions.
+
+### Cross-Environment DB Sync
+
+Merge knowledge databases across Windows, WSL, and multiple machines:
+
+```bash
+# Auto-detect and preview (dry-run)
+python ~/.copilot/tools/sync-knowledge.py --auto --dry-run
+
+# Auto-detect and sync
+python ~/.copilot/tools/sync-knowledge.py --auto
+
+# Sync from specific source
+python ~/.copilot/tools/sync-knowledge.py --sources /path/to/other/knowledge.db
+
+# Show sync info (what DBs are detectable)
+python ~/.copilot/tools/sync-knowledge.py --stats
+```
+
+The sync script:
+- Auto-detects WSL ↔ Windows knowledge.db files
+- Uses `INSERT OR IGNORE` with composite key dedup (no duplicates)
+- Auto-backs up target DB before merge
+- Rebuilds FTS5 indexes after sync
 
 ---
 
@@ -232,24 +287,32 @@ python ~/.copilot/tools/embed.py --build  # Uses TF-IDF automatically
 ```
 ~/.copilot/
 ├── session-state/
-│   ├── {uuid}/                     # Raw session data (read-only)
+│   ├── {uuid}/                     # Copilot raw session data (read-only)
 │   │   ├── plan.md
 │   │   ├── checkpoints/*.md        # AI context snapshots
 │   │   ├── research/*.md           # AI research output
 │   │   └── files/*                 # Artifacts
-│   ├── knowledge.db                # ← SQLite FTS5 + vector index
+│   ├── knowledge.db                # ← Unified SQLite FTS5 + vector index
 │   └── .watch-state.json           # Watcher state
-└── tools/
-    ├── install.py                  # Setup & management
-    ├── build-session-index.py      # Indexer: sessions → SQLite
-    ├── query-session.py            # Search CLI (keyword + semantic)
-    ├── extract-knowledge.py        # Knowledge extraction pipeline
-    ├── embed.py                    # Multi-provider embedding engine
-    ├── briefing.py                 # Pre-task context generator
-    ├── learn.py                    # Knowledge recording API
-    ├── watch-sessions.py           # Auto-index daemon
-    ├── generate-summary.py         # KNOWLEDGE.md generator
-    └── embedding-config.json       # Provider config (gitignored)
+├── tools/
+│   ├── install.py                  # Setup & management
+│   ├── build-session-index.py      # Indexer: sessions → SQLite (--claude, --all)
+│   ├── claude-adapter.py           # Claude Code JSONL → knowledge.db
+│   ├── sync-knowledge.py           # Merge DBs across Win/WSL/machines
+│   ├── query-session.py            # Search CLI (--source copilot|claude|all)
+│   ├── extract-knowledge.py        # Knowledge extraction pipeline
+│   ├── embed.py                    # Multi-provider embedding engine
+│   ├── briefing.py                 # Pre-task context generator
+│   ├── learn.py                    # Knowledge recording API
+│   ├── watch-sessions.py           # Auto-index daemon
+│   ├── generate-summary.py         # KNOWLEDGE.md generator
+│   └── embedding-config.json       # Provider config (gitignored)
+
+~/.claude/
+└── projects/
+    └── <project-hash>/             # Claude Code session data
+        ├── {uuid}.jsonl            # JSONL conversations (parsed by claude-adapter)
+        └── {uuid}/subagents/*.jsonl
 ```
 
 ### Search Flow
@@ -278,11 +341,11 @@ Query: "deployment error"
 
 | Table | Purpose |
 |---|---|
-| `sessions` | 1 row per session UUID |
-| `documents` | 1 row per .md/.txt file |
+| `sessions` | 1 row per session UUID, `source` column: copilot/claude |
+| `documents` | 1 row per .md/.txt/JSONL file, `source` column |
 | `sections` | 1 row per content section |
 | `knowledge_fts` | FTS5 index over documents + sections |
-| `knowledge_entries` | Extracted mistakes, patterns, decisions |
+| `knowledge_entries` | Extracted mistakes, patterns, decisions, `source` column |
 | `ke_fts` | FTS5 index over knowledge entries |
 | `embeddings` | Vector blobs for semantic search |
 | `tfidf_model` | Pickled TF-IDF model (fallback) |
@@ -352,7 +415,15 @@ python ~/.copilot/tools/learn.py --pattern "Title" "Description"
 
 ### For Claude Code
 
-Create `.claude/skills/session-knowledge.md` with similar content.
+Add to `CLAUDE.md` or `.claude/settings.json`:
+
+```bash
+# Index Claude Code sessions into the shared knowledge.db
+python ~/.copilot/tools/build-session-index.py --all
+
+# Or standalone
+python ~/.copilot/tools/claude-adapter.py
+```
 
 ### Agent Workflow
 
@@ -384,16 +455,18 @@ Create `.claude/skills/session-knowledge.md` with similar content.
 
 ## 📊 Performance
 
-Tested with real-world data: 12 sessions, 24 checkpoints, 730K characters.
+Tested with real-world data across multiple environments.
 
 | Operation | Time | Notes |
 |---|---|---|
-| Full index build | ~5s | Parses all sessions |
+| Full index build | ~5s | All Copilot sessions |
+| Claude JSONL indexing | ~3s | Parse + index JSONL conversations |
+| DB sync (Win↔WSL) | ~2s | Copy + merge + FTS rebuild |
 | Keyword search | <50ms | FTS5 BM25 |
 | Semantic search | ~200ms | Vector cosine similarity |
 | Hybrid search | ~300ms | FTS5 + Vector + RRF merge |
 | Briefing (compact) | <1s | Auto-detect + search |
-| Embedding generation | ~2min | 732 items via API |
+| Embedding generation | ~2min | Via API |
 
 ---
 

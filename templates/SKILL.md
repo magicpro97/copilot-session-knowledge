@@ -9,7 +9,7 @@ description: Search past session knowledge, get pre-task briefings, and record l
 > **Location**: `~/.copilot/tools/`
 > **Data**: `~/.copilot/session-state/knowledge.db` (SQLite FTS5)
 
-Tools that index all Copilot session checkpoints, plans, and artifacts into a searchable knowledge base.
+Tools that index all Copilot and Claude Code sessions into a searchable knowledge base.
 
 ## When to Use
 
@@ -63,6 +63,10 @@ python3 ~/.copilot/tools/query-session.py --mistakes     # Past bugs and fixes
 python3 ~/.copilot/tools/query-session.py --patterns     # Established patterns
 python3 ~/.copilot/tools/query-session.py --decisions    # Architecture decisions
 
+# Filter by source (copilot, claude, all)
+python3 ~/.copilot/tools/query-session.py "search" --source claude
+python3 ~/.copilot/tools/query-session.py --list --source copilot
+
 # Filter and format
 python3 ~/.copilot/tools/query-session.py "search" --limit 5
 python3 ~/.copilot/tools/query-session.py "search" --verbose
@@ -94,6 +98,8 @@ python3 ~/.copilot/tools/learn.py --stats
 ## Re-indexing
 
 ```bash
-python3 ~/.copilot/tools/build-session-index.py    # Rebuild document index
-python3 ~/.copilot/tools/extract-knowledge.py       # Re-extract knowledge entries
+python3 ~/.copilot/tools/build-session-index.py          # Rebuild Copilot index
+python3 ~/.copilot/tools/build-session-index.py --all    # Copilot + Claude Code
+python3 ~/.copilot/tools/extract-knowledge.py             # Re-extract knowledge entries
+python3 ~/.copilot/tools/sync-knowledge.py --auto         # Sync DBs across Win/WSL
 ```
