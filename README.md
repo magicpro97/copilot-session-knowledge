@@ -20,6 +20,8 @@ Every mistake you've fixed, every pattern you've learned, every decision you've 
 | 📝 **Knowledge Recording** | Agents record new learnings as they work |
 | 👀 **Watch Mode** | Auto-index new sessions in real-time |
 | 📤 **Export** | JSON and Markdown export for any search results |
+| 🌍 **Multilingual** | Trilingual support: English, Vietnamese, Japanese indicators & noise filters |
+| ☁️ **Multi-Stack Tags** | AWS, TypeScript, React Native, Python, Java, and 50+ technology tags |
 | 🖥️ **Cross-Platform** | Works on Windows, macOS, and Linux |
 
 ---
@@ -264,6 +266,45 @@ Query: "deployment error"
 | `embeddings` | Vector blobs for semantic search |
 | `tfidf_model` | Pickled TF-IDF model (fallback) |
 | `embedding_meta` | Embedding provider metadata |
+
+---
+
+## 🌍 Multilingual & Multi-Stack Support
+
+Knowledge extraction and classification work across **three languages** and **multiple technology stacks**.
+
+### Supported Languages
+
+| Language | Indicators | Noise Filters | Example |
+|---|---|---|---|
+| 🇬🇧 **English** | ✅ Full | ✅ Full | "root cause", "best practice", "chose X because" |
+| 🇻🇳 **Vietnamese** | ✅ Full | ✅ Full | "lỗi", "quy tắc", "quyết định", "cấu hình" |
+| 🇯🇵 **Japanese** | ✅ Full | ✅ Full | "エラー", "パターン", "決定", "環境構築" |
+
+### Supported Technology Tags (50+)
+
+| Category | Tags |
+|---|---|
+| **Cloud & Infra** | `aws`, `aws-cdk`, `lambda`, `dynamodb`, `s3`, `sqs`, `sns`, `cognito`, `cloudwatch`, `api-gateway`, `eventbridge`, `cloudformation`, `step-functions`, `xray`, `websocket`, `docker`, `vpc` |
+| **Languages** | `typescript`, `javascript`, `python`, `nodejs`, `java` |
+| **Frontend** | `react-native`, `expo`, `react`, `thymeleaf`, `css`, `ui` |
+| **Testing** | `jest`, `playwright`, `e2e`, `tdd` |
+| **Build Tools** | `eslint`, `prettier`, `package-manager`, `gradle`, `maven`, `git`, `vscode`, `copilot` |
+| **Data** | `excel`, `spreadsheet`, `openapi`, `mermaid`, `sql` |
+| **Security** | `tls`, `proxy`, `auth`, `csrf` |
+| **Database & ORM** | `spring-boot`, `postgresql`, `redis`, `jpa`, `liquibase` |
+
+### Branch Name Parsing
+
+Auto-detect understands common branch naming conventions:
+
+```
+dev/feature/5022-copy-to-group      →  keywords: "5022", "copy", "group"
+feature/audit-export-websocket      →  keywords: "audit", "export", "websocket"
+fix/4699-patient-search-pagination  →  keywords: "4699", "patient", "search", "pagination"
+```
+
+Filtered stopwords: `dev`, `feature`, `fix`, `bug`, `refactor`, `docs`, `chore`, `release`, `hotfix`, `main`, `master`
 
 ---
 
