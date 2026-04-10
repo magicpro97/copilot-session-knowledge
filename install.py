@@ -245,6 +245,14 @@ def show_status() -> bool:
 # ===================================================================
 
 MINIMAL_SKILL_MD = textwrap.dedent("""\
+    ---
+    name: session-knowledge
+    description: >-
+      Search past Copilot/Claude session knowledge before complex tasks. Run briefing.py
+      for relevant mistakes, patterns, decisions. Use query-session.py to search errors,
+      tools, architecture choices. Supports semantic search with embeddings.
+    ---
+
     # Session Knowledge Tools — Agent Skill
 
     Before starting any task, query the shared knowledge base for relevant past
@@ -253,21 +261,24 @@ MINIMAL_SKILL_MD = textwrap.dedent("""\
     ## Available Tools
 
     ```bash
-    # Search the knowledge base
-    python ~/.copilot/tools/query-session.py "search terms"
+    # Search the knowledge base (Windows: python instead of python3)
+    python3 ~/.copilot/tools/query-session.py "search terms"
 
     # Get a context briefing for your current task
-    python ~/.copilot/tools/briefing.py "task description"
+    python3 ~/.copilot/tools/briefing.py "task description"
+
+    # Compact context for sub-agent prompts
+    python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
 
     # Record new learnings
-    python ~/.copilot/tools/learn.py --mistake "Title" "What went wrong and fix"
-    python ~/.copilot/tools/learn.py --pattern "Title" "What works well"
-    python ~/.copilot/tools/learn.py --decision "Title" "Choice and rationale"
+    python3 ~/.copilot/tools/learn.py --mistake "Title" "What went wrong and fix"
+    python3 ~/.copilot/tools/learn.py --pattern "Title" "What works well"
+    python3 ~/.copilot/tools/learn.py --decision "Title" "Choice and rationale"
 
     # Show past mistakes and patterns
-    python ~/.copilot/tools/query-session.py --mistakes
-    python ~/.copilot/tools/query-session.py --patterns
-    python ~/.copilot/tools/query-session.py --decisions
+    python3 ~/.copilot/tools/query-session.py --mistakes
+    python3 ~/.copilot/tools/query-session.py --patterns
+    python3 ~/.copilot/tools/query-session.py --decisions
     ```
 
     ## Workflow
@@ -276,6 +287,8 @@ MINIMAL_SKILL_MD = textwrap.dedent("""\
     2. **During work**: if you hit an issue, search for similar past problems.
     3. **After finishing**: record any new mistakes, patterns, or decisions
        with `learn.py`.
+    4. **Sub-agents**: run `briefing.py --for-subagent` and inject output into
+       sub-agent prompts.
 """)
 
 
