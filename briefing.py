@@ -60,9 +60,12 @@ def auto_detect_context() -> str:
         ).stdout.strip()
         if branch and branch != "HEAD":
             # "feature/model-management" → "model management"
+            # "dev/fpt/feature/5022-copy-to-group" → "5022 copy to group"
             parts = branch.replace("/", "-").replace("_", "-").split("-")
             keywords.update(p for p in parts if len(p) > 2
-                           and p not in ("feature", "fix", "chore", "update", "and"))
+                           and p not in ("feature", "fix", "chore", "update", "and",
+                                         "dev", "fpt", "bug", "refactor", "docs",
+                                         "release", "hotfix", "main", "master"))
     except Exception:
         pass
 
@@ -79,7 +82,9 @@ def auto_detect_context() -> str:
                 words = msg.split()
                 keywords.update(w for w in words if len(w) > 2
                                and w.lower() not in ("the", "and", "for", "add", "fix",
-                                                      "update", "with", "from", "that"))
+                                                      "update", "with", "from", "that",
+                                                      "use", "refactor", "feat", "chore",
+                                                      "docs", "style", "test", "build"))
     except Exception:
         pass
 
