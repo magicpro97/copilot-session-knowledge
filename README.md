@@ -13,29 +13,33 @@ Turns raw checkpoints into a queryable SQLite knowledge base with **hybrid searc
 
 ## Architecture
 
-```
-~/.copilot/
-├── session-state/
-│   ├── {uuid}/                    # Raw session data (read-only)
-│   │   ├── plan.md
-│   │   ├── checkpoints/*.md       # AI context snapshots
-│   │   ├── research/*.md          # AI research output
-│   │   └── files/*                # Artifacts
-│   ├── knowledge.db               # ← SQLite FTS5 + vector index + knowledge graph
-│   └── .watch-state.json          # Watcher state (auto-generated)
-└── tools/
-    ├── build-session-index.py     # Indexer: sessions → SQLite
-    ├── query-session.py           # Search CLI (keyword + semantic + graph)
-    ├── embed.py                   # Multi-provider embedding engine
-    ├── watch-sessions.py          # Auto-index daemon (lock-file protected)
-    ├── extract-knowledge.py       # Knowledge extraction + dedup + graph builder
-    ├── briefing.py                # Compact context briefing generator
-    ├── learn.py                   # Manual knowledge capture
-    ├── claude-adapter.py          # Claude session importer
-    ├── sync-knowledge.py          # Cross-tool sync
-    ├── install.py                 # Setup, self-test, skill deploy, uninstall
-    ├── embedding-config.json      # Provider config (auto-generated)
-    └── README.md                  # This file
+```mermaid
+graph LR
+  subgraph "~/.copilot/session-state/"
+    RAW["📁 {uuid}/<br/>plan.md, checkpoints/, research/"]
+    DB[("🗄️ knowledge.db<br/>FTS5 + vectors + graph")]
+    WATCH[".watch-state.json"]
+  end
+
+  subgraph "~/.copilot/tools/"
+    IDX["build-session-index.py"]
+    EXT["extract-knowledge.py"]
+    QRY["query-session.py"]
+    BRF["briefing.py"]
+    EMB["embed.py"]
+    WCH["watch-sessions.py"]
+    CLA["claude-adapter.py"]
+    INS["install.py"]
+  end
+
+  RAW -->|index| IDX --> DB
+  DB -->|extract| EXT --> DB
+  DB -->|search| QRY
+  DB -->|briefing| BRF
+  DB -->|embed| EMB --> DB
+  WCH -->|poll| RAW
+  WCH -->|trigger| IDX
+  CLA -->|import| RAW
 ```
 
 ## Setup
@@ -158,42 +162,62 @@ python ~/.copilot/tools/watch-sessions.py --install-hint      # Print auto-start
 
 ## Search Modes
 
-```
-Query: "lỗi deploy Docker"
+```mermaid
+flowchart TD
+  Q["🔍 Query: &lt;i&gt;lỗi deploy Docker&lt;/i&gt;"]
 
-┌─────────────────────────────────────────────────────────┐
-│                 Hybrid Search Engine                     │
-│                                                          │
-│  ┌──────────────┐    ┌────────────────────────────────┐  │
-│  │   FTS5       │    │  Vector / TF-IDF               │  │
-│  │ (keyword)    │    │  (semantic meaning)             │  │
-│  │              │    │                                 │  │
-│  │ BM25 rank    │    │ cosine similarity               │  │
-│  └──────┬───────┘    └──────────┬─────────────────────┘  │
-│         │                       │                         │
-│         └───────────┬───────────┘                         │
-│                     ↓                                     │
-│         Reciprocal Rank Fusion (RRF)                      │
-│              (merge + deduplicate)                         │
-│                     ↓                                     │
-│            Top-K Hybrid Results                           │
-└─────────────────────────────────────────────────────────┘
+  Q --> FTS["FTS5 Keyword<br/>BM25 ranking"]
+  Q --> VEC["Vector / TF-IDF<br/>Cosine similarity"]
+
+  FTS --> RRF["Reciprocal Rank Fusion<br/>(merge + deduplicate)"]
+  VEC --> RRF
+
+  RRF --> RES["Top-K Hybrid Results"]
+
+  style Q fill:#4a9eff,color:#fff
+  style RRF fill:#f59e0b,color:#fff
+  style RES fill:#10b981,color:#fff
 ```
 
 ## Database Schema
 
-```
-sessions            → 1 row per session UUID
-documents           → 1 row per .md/.txt file (checkpoint, research, artifact, plan)
-sections            → 1 row per XML section (<overview>, <history>, etc.)
-knowledge_fts       → FTS5 index over documents + sections
-knowledge_entries   → Extracted patterns, mistakes, decisions, tools
-                      (with content_hash for dedup, topic_key for cross-session grouping)
-ke_fts              → FTS5 index over knowledge entries
-knowledge_relations → Graph edges: SAME_SESSION, TAG_OVERLAP, RESOLVED_BY, SAME_TOPIC
-embeddings          → Vector blobs for semantic search
-tfidf_model         → Pickled TF-IDF model (fallback)
-embedding_meta      → Embedding metadata (provider, timestamps)
+```mermaid
+erDiagram
+    sessions ||--o{ documents : contains
+    documents ||--o{ sections : has
+    documents ||--o{ knowledge_fts : indexed_in
+    sections ||--o{ knowledge_entries : extracted_to
+
+    knowledge_entries ||--o{ ke_fts : indexed_in
+    knowledge_entries ||--o{ knowledge_relations : source
+    knowledge_entries ||--o{ knowledge_relations : target
+    knowledge_entries ||--o{ embeddings : has
+
+    sessions {
+        text id PK "UUID"
+        text source "copilot | claude"
+        text created_at
+    }
+    documents {
+        int id PK
+        text session_id FK
+        text doc_type "checkpoint | research | plan"
+        text title
+    }
+    knowledge_entries {
+        int id PK
+        text category "mistake | pattern | decision | tool"
+        text topic_key "category/slug for dedup"
+        text content_hash "SHA256 16-char"
+        real confidence
+        int revision_count
+    }
+    knowledge_relations {
+        int source_id FK
+        int target_id FK
+        text relation_type "SAME_SESSION | TAG_OVERLAP | RESOLVED_BY | SAME_TOPIC"
+        real confidence
+    }
 ```
 
 ## Requirements
