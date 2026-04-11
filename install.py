@@ -5,6 +5,7 @@ install.py — Smart installer for session knowledge tools
 Usage:
     python install.py                    # Auto-detect and show status
     python install.py --deploy-skill     # Deploy SKILL.md to current project
+    python install.py --inject-global    # Add session-knowledge to global copilot-instructions
     python install.py --test             # Run self-test
     python install.py --uninstall        # Remove installed files
     python install.py --help             # Show this help
@@ -41,7 +42,11 @@ TOOLS_DIR = COPILOT_DIR / "tools"
 SESSION_STATE = COPILOT_DIR / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
 SKILLS_SRC = COPILOT_DIR / "skills" / "session-knowledge" / "SKILL.md"
+GLOBAL_INSTRUCTIONS = HOME / ".github" / "copilot-instructions.md"
 LOCK_FILE = SESSION_STATE / ".watcher.lock"
+# Resolve the repo's templates/ directory (works when run from repo or ~/.copilot/tools/)
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_REPO_SKILL_MD = _SCRIPT_DIR / "templates" / "SKILL.md"
 
 TOOL_FILES = [
     "build-session-index.py",
@@ -122,8 +127,18 @@ def _watcher_running() -> bool:
     if not LOCK_FILE.is_file():
         return False
     try:
-        data = json.loads(LOCK_FILE.read_text(encoding="utf-8"))
-        pid = data.get("pid")
+        raw = LOCK_FILE.read_text(encoding="utf-8").strip()
+        # Handle both formats: bare PID ("9119") and JSON ({"pid": 9119})
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return False
+        if isinstance(data, int):
+            pid = data
+        elif isinstance(data, dict):
+            pid = data.get("pid")
+        else:
+            return False
         if pid is None:
             return False
         if os.name == "nt":
@@ -137,7 +152,7 @@ def _watcher_running() -> bool:
         else:
             os.kill(int(pid), 0)
             return True
-    except (json.JSONDecodeError, OSError, ValueError, PermissionError):
+    except (OSError, ValueError, PermissionError, TypeError):
         return False
 
 
@@ -298,10 +313,13 @@ def deploy_skill():
     print(f"\nSkill Deployment")
     print(f"  Project: {project_root}")
 
-    # Read source skill content
+    # Read source skill content (priority: installed > repo template > minimal)
     if SKILLS_SRC.is_file():
         skill_content = SKILLS_SRC.read_text(encoding="utf-8")
         print(f"  {OK} Source: {_tilde(SKILLS_SRC)}")
+    elif _REPO_SKILL_MD.is_file():
+        skill_content = _REPO_SKILL_MD.read_text(encoding="utf-8")
+        print(f"  {OK} Source: {_REPO_SKILL_MD}")
     else:
         skill_content = MINIMAL_SKILL_MD
         print(
@@ -339,6 +357,113 @@ def deploy_skill():
         return
 
     print(f"\n  Deployed {len(deployed)} skill file(s).")
+
+
+# ===================================================================
+# 2b. Global Instructions Injection
+# ===================================================================
+
+_INJECT_MARKER_START = "<!-- SESSION-KNOWLEDGE-START -->"
+_INJECT_MARKER_END = "<!-- SESSION-KNOWLEDGE-END -->"
+
+GLOBAL_INJECT_BLOCK = textwrap.dedent(f"""\
+{_INJECT_MARKER_START}
+## 🧠 Session Knowledge — BẮT BUỘC
+
+**TRƯỚC KHI bắt đầu bất kỳ task phức tạp nào**, AI agent PHẢI chạy briefing:
+
+```bash
+python3 ~/.copilot/tools/briefing.py "mô tả task" --full
+```
+
+**Khi dispatch sub-agents**, inject context vào prompt:
+```bash
+python3 ~/.copilot/tools/briefing.py "task cho sub-agent" --for-subagent
+```
+
+**Khi gặp lỗi**, search knowledge base trước khi debug từ đầu:
+```bash
+python3 ~/.copilot/tools/query-session.py "error message" --verbose
+```
+
+**Sau khi giải quyết xong vấn đề phức tạp**, ghi nhận kinh nghiệm:
+```bash
+python3 ~/.copilot/tools/learn.py --mistake "Tiêu đề" "Mô tả lỗi và cách fix"
+python3 ~/.copilot/tools/learn.py --pattern "Tiêu đề" "Pattern hiệu quả"
+python3 ~/.copilot/tools/learn.py --decision "Tiêu đề" "Quyết định và lý do"
+```
+
+### Quy tắc
+- ✅ **Luôn chạy** `briefing.py` trước task phức tạp (debug, refactor, migration, E2E test)
+- ✅ **Luôn search** knowledge khi gặp lỗi lạ hoặc cần quyết định kiến trúc
+- ✅ **Luôn inject** `--for-subagent` context khi dispatch explore/task/general-purpose agents
+- ✅ **Luôn ghi nhận** mistakes/patterns/decisions sau khi giải quyết vấn đề mới
+- ❌ **KHÔNG ĐƯỢC** bỏ qua briefing rồi lặp lại sai lầm đã ghi nhận
+- ❌ **KHÔNG ĐƯỢC** debug từ đầu khi knowledge DB đã có solution
+{_INJECT_MARKER_END}
+""")
+
+
+def inject_global():
+    """Inject session-knowledge section into global copilot-instructions.md."""
+    print("\nGlobal Instructions Injection")
+    print(f"  Target: {_tilde(GLOBAL_INSTRUCTIONS)}")
+
+    # Ensure ~/.github/ exists
+    GLOBAL_INSTRUCTIONS.parent.mkdir(parents=True, exist_ok=True)
+
+    if GLOBAL_INSTRUCTIONS.is_file():
+        content = GLOBAL_INSTRUCTIONS.read_text(encoding="utf-8")
+
+        # Check if already injected
+        if _INJECT_MARKER_START in content:
+            # Replace existing block
+            import re
+            pattern = re.escape(_INJECT_MARKER_START) + r".*?" + re.escape(_INJECT_MARKER_END)
+            new_content = re.sub(pattern, GLOBAL_INJECT_BLOCK.strip(), content, flags=re.DOTALL)
+            if new_content != content:
+                GLOBAL_INSTRUCTIONS.write_text(new_content, encoding="utf-8")
+                print(f"  {OK} Updated existing session-knowledge section")
+            else:
+                print(f"  {INFO} Already up to date")
+            return
+
+        # Find insertion point: after the mandatory section header
+        # Look for the numbered list in "BẮT BUỘC" section and insert after it
+        lines = content.split("\n")
+        insert_idx = None
+
+        # Strategy: insert after the "KHÔNG ĐƯỢC:" block ends (first blank line after it)
+        in_mandatory = False
+        found_khong_duoc = False
+        for i, line in enumerate(lines):
+            if "BẮT BUỘC" in line:
+                in_mandatory = True
+            if in_mandatory and "KHÔNG ĐƯỢC" in line:
+                found_khong_duoc = True
+            if found_khong_duoc and line.strip() == "" and i > 0 and lines[i - 1].strip().startswith("- "):
+                insert_idx = i + 1
+                break
+
+        if insert_idx is None:
+            # Fallback: insert after the "---" separator or at position 2 (after title)
+            for i, line in enumerate(lines):
+                if line.strip() == "---" and i > 5:
+                    insert_idx = i
+                    break
+            if insert_idx is None:
+                insert_idx = 2  # After title
+
+        lines.insert(insert_idx, "\n" + GLOBAL_INJECT_BLOCK)
+        GLOBAL_INSTRUCTIONS.write_text("\n".join(lines), encoding="utf-8")
+        print(f"  {OK} Injected session-knowledge section at line {insert_idx}")
+    else:
+        # Create new file with just the injection block
+        header = "# Global Copilot Instructions\n\n"
+        GLOBAL_INSTRUCTIONS.write_text(header + GLOBAL_INJECT_BLOCK, encoding="utf-8")
+        print(f"  {OK} Created {_tilde(GLOBAL_INSTRUCTIONS)} with session-knowledge section")
+
+    print(f"  {INFO} AI agents will now be required to run briefing.py before complex tasks")
 
 
 # ===================================================================
@@ -578,9 +703,10 @@ def _show_usage_hints():
     print(f"    python {br} \"your task\"       # Context briefing")
     print(f"    python {ws}                    # Start watcher daemon")
     print(f"\n  Management:")
-    print(f"    python {inst} --deploy-skill  # Add skill to project")
-    print(f"    python {inst} --test          # Run self-test")
-    print(f"    python {inst} --uninstall     # Remove tools")
+    print(f"    python {inst} --deploy-skill   # Add skill to project")
+    print(f"    python {inst} --inject-global  # Add to global copilot-instructions")
+    print(f"    python {inst} --test           # Run self-test")
+    print(f"    python {inst} --uninstall      # Remove tools")
 
 
 # ===================================================================
@@ -596,6 +722,10 @@ def main():
 
     if "--deploy-skill" in args:
         deploy_skill()
+        return
+
+    if "--inject-global" in args:
+        inject_global()
         return
 
     if "--test" in args:
