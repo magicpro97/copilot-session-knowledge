@@ -161,6 +161,7 @@ python3 ~/.copilot/tools/extract-knowledge.py --stats           # Xem thống k�
 python3 ~/.copilot/tools/extract-knowledge.py --relations       # Xem thống kê relations
 python3 ~/.copilot/tools/watch-sessions.py --daemon             # Chạy nền, tự index
 python3 ~/.copilot/tools/install.py --deploy-skill              # Deploy SKILL.md
+python3 ~/.copilot/tools/install.py --inject-global             # Inject vào global copilot-instructions
 # Windows: thay python3 → python
 ```
 
@@ -221,6 +222,28 @@ python3 ~/.copilot/tools/install.py --deploy-skill
 ```
 
 Sau đó agent sẽ tự chạy `briefing.py` trước mỗi task và search khi cần.
+
+### Enforce AI Usage (bắt buộc dùng, không bỏ qua)
+
+Skill chỉ là gợi ý — AI agent vẫn có thể bỏ qua. Để **bắt buộc**, inject vào global instructions:
+
+```bash
+python3 ~/.copilot/tools/install.py --inject-global
+```
+
+Lệnh này tự động:
+1. Thêm section `🧠 Session Knowledge — BẮT BUỘC` vào `~/.github/copilot-instructions.md`
+2. Dùng HTML markers (`<!-- SESSION-KNOWLEDGE-START/END -->`) để update idempotent
+3. Đặt ở vị trí cao nhất (ngay sau "BẮT BUỘC" checklist) để AI đọc đầu tiên
+
+Chạy lại khi cần update nội dung — markers đảm bảo chỉ thay thế, không duplicate.
+
+**Full setup (1 lần):**
+```bash
+cd your-project
+python3 ~/.copilot/tools/install.py --deploy-skill    # Skill cho project
+python3 ~/.copilot/tools/install.py --inject-global   # Enforce qua global instructions
+```
 
 ### Sub-agent Context Injection
 
