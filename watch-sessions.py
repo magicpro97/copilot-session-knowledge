@@ -33,8 +33,20 @@ DB_PATH = SESSION_STATE / "knowledge.db"
 TOOLS_DIR = Path(__file__).parent
 STATE_FILE = SESSION_STATE / ".watch-state.json"
 LOCK_FILE = SESSION_STATE / ".watcher.lock"
+LOG_FILE = SESSION_STATE / "watcher.log"
 
 DEFAULT_INTERVAL = 60  # seconds
+
+
+def _setup_logging():
+    """Redirect stdout/stderr to log file when running headless (pythonw.exe)."""
+    if sys.executable.lower().endswith("pythonw.exe") or "--service" in sys.argv:
+        try:
+            log = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
+            sys.stdout = log
+            sys.stderr = log
+        except OSError:
+            pass
 
 
 def _is_pid_running(pid: int) -> bool:
@@ -240,12 +252,19 @@ def check_and_index(prev_sigs: dict, watch_dirs: list[Path],
 def print_install_hint():
     """Print platform-specific auto-start instructions."""
     script = Path(__file__).resolve()
+    pythonw = Path(sys.executable).parent / "pythonw.exe"
     if os.name == "nt":
-        print("# Windows — Task Scheduler (run in elevated cmd):")
+        print("# Windows — Task Scheduler (hidden background, no terminal):")
         print(f'schtasks /create /tn "CopilotSessionWatcher" '
-              f'/tr "python {script} --daemon" /sc onlogon')
+              f'/tr "\\"{pythonw}\\" \\"{script}\\" --service" /sc onlogon /f')
+        print()
+        print("# Start now:")
+        print('schtasks /run /tn "CopilotSessionWatcher"')
+        print()
+        print(f"# Log file: {SESSION_STATE / 'watcher.log'}")
         print()
         print("# To remove:")
+        print('schtasks /end /tn "CopilotSessionWatcher"')
         print('schtasks /delete /tn "CopilotSessionWatcher" /f')
     else:
         print("# Linux/macOS — add to crontab (`crontab -e`):")
@@ -263,6 +282,8 @@ def print_install_hint():
 
 
 def main():
+    _setup_logging()
+
     interval = DEFAULT_INTERVAL
     once = False
     daemon = False
@@ -279,7 +300,7 @@ def main():
         elif args[i] == "--once":
             once = True
             i += 1
-        elif args[i] == "--daemon":
+        elif args[i] in ("--daemon", "--service"):
             daemon = True
             i += 1
         elif args[i] == "--changed-only":
@@ -333,7 +354,7 @@ def main():
         sys.stderr = sys.stdout
     elif daemon and os.name == "nt":
         print("[watch] Note: --daemon on Windows starts in foreground.")
-        print("[watch] Use 'start /B python watch-sessions.py' for background.")
+        print("[watch] Use 'pythonw.exe watch-sessions.py --service' for hidden background.")
 
     # Graceful shutdown
     running = True
