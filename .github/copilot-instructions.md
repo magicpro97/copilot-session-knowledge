@@ -1,5 +1,75 @@
 # Copilot Instructions — copilot-session-knowledge
 
+## Agent Rules (MANDATORY)
+
+> **⚠️ These rules are NON-NEGOTIABLE.** Every agent (main, sub-agent, explore, task, general-purpose) MUST follow them. Violations = shipping broken code.
+
+### 1. Investigate Before Acting
+
+**NEVER modify code without reading it first.** Before any edit:
+
+1. Use `grep`/`glob`/`view`/`lsp` tools to read the target file(s)
+2. Understand the existing logic, dependencies, and callers
+3. Check related files that may be affected by your change
+4. Only then make your edit
+
+```
+❌ BAD:  User says "fix the search" → immediately edit query-session.py
+✅ GOOD: User says "fix the search" → grep for search functions → view the code → check callers → edit
+```
+
+### 2. Briefing Before Complex Tasks
+
+Before starting any task that touches >1 file or involves unfamiliar code:
+
+```bash
+python3 ~/.copilot/tools/briefing.py "your task description"
+```
+
+This surfaces past mistakes, proven patterns, and relevant decisions. Skip only for trivial changes (typo fix, renaming, formatting).
+
+### 3. Test After Every Change
+
+After modifying any Python file, run the relevant tests:
+
+```bash
+python3 test_security.py    # If touching: embed.py, sync-knowledge.py, watch-sessions.py, learn.py
+python3 test_fixes.py       # If touching: any script
+```
+
+Do NOT mark a task complete until tests pass. Pre-existing failures (7 in test_fixes.py) are acceptable — new failures are not.
+
+### 4. Verify Before Committing
+
+Before `git commit`:
+1. `python3 -c "import ast; ast.parse(open('file.py').read())"` for every modified `.py` file
+2. Run test suite (rule 3)
+3. `git diff --stat` to review what you're about to commit
+
+### 5. Sub-Agent Model Selection
+
+When dispatching sub-agents via the `task` tool:
+
+| Task type | Minimum model | Example |
+|-----------|--------------|---------|
+| Code generation | `claude-sonnet-4.6` | Writing/modifying Python scripts |
+| Code review | `claude-sonnet-4.6` | Reviewing changes for bugs |
+| Security audit | `claude-opus-4.6` | Auth, data handling, injection risks |
+| Exploration | `claude-haiku-4.5` (default OK) | Finding files, reading code |
+| Documentation | `claude-sonnet-4` or `haiku` | Writing docs, README |
+
+```
+❌ task(agent_type="general-purpose", prompt="fix the search bug...")  # default haiku!
+✅ task(agent_type="general-purpose", model="claude-sonnet-4.6", prompt="fix the search bug...")
+```
+
+### 6. No Guessing
+
+- Don't assume table names — check with `sqlite3 ... ".tables"` or read `migrate.py`
+- Don't assume function signatures — use `grep` or `lsp` to verify
+- Don't assume file paths — use `glob` to find them
+- If unsure about behavior, write a small test or read the source
+
 ## Testing
 
 ```bash
