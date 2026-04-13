@@ -160,7 +160,8 @@ def run_indexer(incremental: bool = True):
 
     try:
         result = subprocess.run(
-            args, capture_output=True, text=True, timeout=120
+            args, capture_output=True, text=True, timeout=120,
+            encoding="utf-8", errors="replace"
         )
         if result.returncode == 0:
             # Only show output if something was indexed
@@ -197,7 +198,8 @@ def run_extractor(changed_files: list[str] | None = None):
     try:
         result = subprocess.run(
             [sys.executable, str(extractor)],
-            capture_output=True, text=True, timeout=120
+            capture_output=True, text=True, timeout=120,
+            encoding="utf-8", errors="replace"
         )
         if result.returncode == 0:
             for line in result.stdout.splitlines():
