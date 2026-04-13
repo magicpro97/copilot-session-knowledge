@@ -29,3 +29,11 @@ KNOWLEDGE.md
 # One-time publish scripts
 publish.ps1
 publish.sh
+
+# Auto-update local state
+.update-state.json
+.last-update-check
+.version
+.backup/
+.upstream/
+migrate-knowledge-v2.py

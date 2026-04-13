@@ -132,7 +132,7 @@ show_status() {
         echo "  Not a git clone (run sk-update --force to setup)"
     fi
     echo "  Source:  ${SOURCE_REPO}"
-    echo "  Files:   $(find "$TOOLS_DIR" -maxdepth 1 -name '*.py' | wc -l) Python scripts"
+    echo "  Files:   $(ls "$TOOLS_DIR"/*.py 2>/dev/null | wc -l) Python scripts"
 }
 
 # --- Check cooldown ---
