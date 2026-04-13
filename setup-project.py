@@ -80,8 +80,19 @@ def install_skill(project_root: Path, template: Path, dry_run: bool) -> bool:
     target_file = target_dir / "SKILL.md"
 
     if target_file.exists():
-        print(f"  ⏭ SKILL.md already exists at {target_file}")
-        return False
+        import hashlib
+        src_hash = hashlib.md5(template.read_bytes()).hexdigest()
+        dst_hash = hashlib.md5(target_file.read_bytes()).hexdigest()
+        if src_hash == dst_hash:
+            print(f"  ⏭ SKILL.md already up to date at {target_file}")
+            return False
+        else:
+            if dry_run:
+                print(f"  [dry-run] Would update {target_file} (content changed)")
+                return True
+            shutil.copy2(template, target_file)
+            print(f"  ✓ Updated {SKILL_RELATIVE} (content changed)")
+            return True
 
     if dry_run:
         print(f"  [dry-run] Would create {target_file}")

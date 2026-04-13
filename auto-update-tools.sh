@@ -90,6 +90,35 @@ run_migrations() {
     fi
 }
 
+# --- Deploy SKILL.md to projects ---
+deploy_skills() {
+    local template="${TOOLS_DIR}/templates/SKILL.md"
+    [[ ! -f "$template" ]] && return 0
+    
+    # Find git root of current directory (if in a project)
+    local project_root
+    project_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    [[ -z "$project_root" ]] && return 0
+
+    # Deploy to Copilot CLI skill path
+    local copilot_skill="${project_root}/.github/skills/session-knowledge/SKILL.md"
+    if [[ -f "$copilot_skill" ]]; then
+        if ! diff -q "$template" "$copilot_skill" &>/dev/null; then
+            cp "$template" "$copilot_skill"
+            ok "Updated SKILL.md in ${project_root##*/}"
+        fi
+    fi
+
+    # Deploy to Claude Code skill path
+    local claude_skill="${project_root}/.claude/skills/session-knowledge/SKILL.md"
+    if [[ -f "$claude_skill" ]]; then
+        if ! diff -q "$template" "$claude_skill" &>/dev/null; then
+            cp "$template" "$claude_skill"
+            ok "Updated Claude SKILL.md in ${project_root##*/}"
+        fi
+    fi
+}
+
 # --- Restart processes ---
 restart_processes() {
     local pids
@@ -177,6 +206,7 @@ main() {
             return 0
         fi
         run_migrations
+        deploy_skills
         restart_processes
         ok "Done"
     fi

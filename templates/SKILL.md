@@ -30,6 +30,11 @@ All tools are Python scripts in `~/.copilot/tools/` (cross-platform: `~` = home 
 python3 ~/.copilot/tools/briefing.py "your task description"    # Compact ~500 tokens
 python3 ~/.copilot/tools/briefing.py "your task" --full         # Full detail ~3K tokens
 python3 ~/.copilot/tools/briefing.py --auto                     # Auto-detect from git/plan
+python3 ~/.copilot/tools/briefing.py --wakeup                   # Ultra-compact ~170 tokens for session start
+python3 ~/.copilot/tools/briefing.py --titles-only              # Index only ~10 tok/entry — progressive disclosure
+python3 ~/.copilot/tools/briefing.py --titles-only "topic"      # Filtered titles
+python3 ~/.copilot/tools/briefing.py "task" --wing ui --room settings  # Filter by wing/room
+python3 ~/.copilot/tools/briefing.py "task" --min-confidence 0.7       # High-quality entries only
 ```
 
 Output includes: relevant mistakes to avoid, patterns to follow, related past work.
@@ -89,12 +94,53 @@ Shows how knowledge entries relate to each other:
 - **SAME_SESSION** — entries discovered together in one session
 - **SAME_TOPIC** — same topic tracked across multiple sessions
 
+### 6. Record Knowledge (learn.py)
+
+```bash
+# 7 observation types
+python3 ~/.copilot/tools/learn.py --mistake "Title"   "What went wrong and fix"         --tags "tag1,tag2"
+python3 ~/.copilot/tools/learn.py --pattern "Title"   "What works well / best practice" --tags "tag1"
+python3 ~/.copilot/tools/learn.py --decision "Title"  "Architecture decision rationale" --tags "tag1"
+python3 ~/.copilot/tools/learn.py --tool "Title"      "Tool/config that was useful"     --tags "tag1"
+python3 ~/.copilot/tools/learn.py --feature "Title"   "New feature implementation"      --tags "tag1"
+python3 ~/.copilot/tools/learn.py --refactor "Title"  "Code improvement description"    --tags "tag1"
+python3 ~/.copilot/tools/learn.py --discovery "Title" "Codebase finding or insight"     --tags "tag1"
+
+# Structured facts (discrete, verifiable statements)
+python3 ~/.copilot/tools/learn.py --pattern "Title" "Description" \
+  --fact "max retries is 3" --fact "timeout is 30s"
+
+# Palace categorization (wing/room)
+python3 ~/.copilot/tools/learn.py --mistake "Title" "Description" --wing ui --room settings
+
+# Knowledge graph relations
+python3 ~/.copilot/tools/learn.py --relate "ScreenA" "navigates_to" "ScreenB"
+python3 ~/.copilot/tools/learn.py --relate "ComponentX" "uses" "ThemeToken"
+
+# Bulk import / view
+python3 ~/.copilot/tools/learn.py --from-file notes.md    # Bulk import from markdown
+python3 ~/.copilot/tools/learn.py --list                   # List recent entries
+python3 ~/.copilot/tools/learn.py --stats                  # Knowledge base statistics
+```
+
+### 7. Auto-Update Tools
+
+```bash
+bash ~/.copilot/tools/auto-update-tools.sh              # Auto-update (24h cooldown)
+bash ~/.copilot/tools/auto-update-tools.sh --force       # Force update now
+bash ~/.copilot/tools/auto-update-tools.sh --status      # Show version info
+bash ~/.copilot/tools/auto-update-tools.sh --doctor      # Health check
+```
+
 ## Interpreting Results
 
 - **`[mistake]`** entries = things that went wrong → read carefully to avoid repeating
 - **`[pattern]`** entries = proven solutions → consider applying directly
 - **`[decision]`** entries = past choices with rationale → check if still valid
 - **`[tool]`** entries = configurations, commands → copy-paste ready
+- **`[feature]`** entries = feature implementation details → reference for similar work
+- **`[refactor]`** entries = code improvements → reuse approach
+- **`[discovery]`** entries = codebase insights → context for decisions
 - **Confidence score** (0.3–1.0) = how reliable the entry is. Below 0.5 = verify before using.
 - **Entry ID `#1234`** = use with `--detail 1234` to see full content
 
@@ -108,6 +154,9 @@ Shows how knowledge entries relate to each other:
    → reads the full mistake: was using wrong network driver
 
 3. Apply the fix using the pattern from the briefing
+
+4. learn.py --pattern "Docker DNS Fix" "Use bridge network with explicit DNS" \
+     --fact "compose DNS uses service names" --wing infrastructure --room docker
 ```
 
 ## Semantic Search (if embeddings configured)
