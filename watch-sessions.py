@@ -339,13 +339,15 @@ def main():
             print(f"[watch] Daemon started (PID {pid})")
             sys.exit(0)
         os.setsid()
-        # Re-acquire lock with new PID after fork
         # Re-acquire lock atomically with new PID after fork
+        # Write new PID to temp file, then atomic rename to avoid TOCTOU
         try:
-            LOCK_FILE.unlink(missing_ok=True)
-            fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            import tempfile
+            lock_dir = LOCK_FILE.parent
+            fd, tmp_lock = tempfile.mkstemp(dir=str(lock_dir), prefix=".watcher.lock.tmp.")
             os.write(fd, str(os.getpid()).encode("utf-8"))
             os.close(fd)
+            os.replace(tmp_lock, str(LOCK_FILE))
         except OSError as e:
             print(f"[watch] Warning: could not re-acquire lock after fork: {e}", file=sys.stderr)
         # Redirect stdout/stderr to log file

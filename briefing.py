@@ -214,14 +214,27 @@ def search_semantic(db: sqlite3.Connection, query: str,
                 for section_id, score in tfidf_results:
                     if score < 0.05:
                         continue
-                    # Map section to knowledge entries from same session
-                    ke_row = db.execute("""
+                    # Map TF-IDF section match to knowledge entries from the same session
+                    ke_rows = db.execute("""
                         SELECT ke.* FROM knowledge_entries ke
                         WHERE ke.category = ?
+                          AND ke.session_id IN (
+                              SELECT d.session_id FROM sections s
+                              JOIN documents d ON s.document_id = d.id
+                              WHERE s.id = ?
+                          )
                         ORDER BY ke.confidence DESC
                         LIMIT ?
-                    """, (category, limit)).fetchall()
-                    for r in ke_row:
+                    """, (category, section_id, limit)).fetchall()
+                    if not ke_rows:
+                        # Fallback: get top entries by confidence for this category
+                        ke_rows = db.execute("""
+                            SELECT ke.* FROM knowledge_entries ke
+                            WHERE ke.category = ?
+                            ORDER BY ke.confidence DESC
+                            LIMIT ?
+                        """, (category, limit)).fetchall()
+                    for r in ke_rows:
                         d = dict(r)
                         if d not in results:
                             results.append(d)
@@ -229,8 +242,10 @@ def search_semantic(db: sqlite3.Connection, query: str,
                         break
                 return results[:limit]
 
-    except (ImportError, Exception):
-        pass
+    except ImportError:
+        pass  # embed.py or scikit-learn not available
+    except sqlite3.OperationalError:
+        pass  # embedding tables don't exist yet
 
     return []
 

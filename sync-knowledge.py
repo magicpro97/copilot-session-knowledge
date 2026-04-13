@@ -156,7 +156,9 @@ def sync_from_source(target_db: sqlite3.Connection, source_path: Path,
     actual_path = source_path
     source_str = str(source_path)
     if source_str.startswith("\\\\") or source_str.startswith("//") or "wsl$" in source_str.lower():
-        temp_copy = Path(tempfile.mktemp(suffix=".db", prefix="sync_src_"))
+        fd, tmp_name = tempfile.mkstemp(suffix=".db", prefix="sync_src_")
+        os.close(fd)
+        temp_copy = Path(tmp_name)
         print(f"    Copying to temp (UNC path)...")
         shutil.copy2(source_path, temp_copy)
         actual_path = temp_copy
@@ -325,7 +327,11 @@ def sync_from_source(target_db: sqlite3.Connection, source_path: Path,
                 else:
                     target_db.execute(f"""
                         INSERT OR IGNORE INTO embeddings
-                        SELECT * FROM {source_alias}.embeddings
+                            (source_type, source_id, provider, model,
+                             dimensions, vector, text_preview, created_at)
+                        SELECT source_type, source_id, provider, model,
+                               dimensions, vector, text_preview, created_at
+                        FROM {source_alias}.embeddings
                     """)
                     results["embeddings"] = target_db.execute("SELECT changes()").fetchone()[0]
             except sqlite3.OperationalError:
@@ -370,8 +376,10 @@ def rebuild_fts(db: sqlite3.Connection):
     try:
         db.execute("DELETE FROM ke_fts")
         db.execute("""
-            INSERT INTO ke_fts (rowid, title, content, tags, category)
-            SELECT id, title, content, tags, category FROM knowledge_entries
+            INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts)
+            SELECT id, title, content, tags, category,
+                   COALESCE(wing,''), COALESCE(room,''), COALESCE(facts,'[]')
+            FROM knowledge_entries
         """)
         ke_count = db.execute("SELECT COUNT(*) FROM ke_fts").fetchone()[0]
         print(f"    ke_fts: {ke_count} entries")

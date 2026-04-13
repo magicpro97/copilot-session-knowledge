@@ -294,17 +294,12 @@ def search_tfidf(query: str, model_blob: bytes, limit: int = 10) -> list[tuple]:
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.metrics.pairwise import cosine_similarity
 
-    # Backward compatibility: detect old pickle format
-    if model_blob[:2] == b'\x80\x04' or model_blob[:2] == b'\x80\x05':
-        print("⚠ TF-IDF model uses deprecated pickle format. "
+    # Reject old pickle format — unsafe deserialization
+    if model_blob[:2] in (b'\x80\x04', b'\x80\x05'):
+        print("⚠ TF-IDF model uses deprecated pickle format (unsafe). "
               "Re-run embedding to upgrade: python embed.py --rebuild-tfidf",
               file=sys.stderr)
-        import pickle
-        vectorizer, matrix, doc_ids = pickle.loads(model_blob)
-        query_vec = vectorizer.transform([query])
-        scores = cosine_similarity(query_vec, matrix).flatten()
-        top_idx = scores.argsort()[::-1][:limit]
-        return [(doc_ids[i], float(scores[i])) for i in top_idx if scores[i] > 0.01]
+        return []
 
     # New JSON format
     from scipy.sparse import csr_matrix
@@ -361,6 +356,8 @@ def deserialize_vector(blob: bytes) -> list[float]:
 
 def cosine_similarity_vectors(a: list[float], b: list[float]) -> float:
     """Compute cosine similarity between two vectors (pure Python)."""
+    if len(a) != len(b):
+        return 0.0
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = sqrt(sum(x * x for x in a))
     norm_b = sqrt(sum(x * x for x in b))

@@ -503,12 +503,37 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
                     skipped += 1
 
     # Confidence decay: entries not seen recently get slightly lower confidence
+    # Apply at most once per day to prevent compounding from repeated runs
     try:
-        db.execute("""
-            UPDATE knowledge_entries
-            SET confidence = MAX(0.3, confidence * 0.95)
-            WHERE last_seen < ? AND confidence > 0.3
-        """, (now[:10],))  # Compare date portion only
+        today = now[:10]
+        last_decay = None
+        try:
+            row = db.execute(
+                "SELECT value FROM embedding_meta WHERE key = 'last_decay_date'"
+            ).fetchone()
+            if row:
+                last_decay = row[0]
+        except sqlite3.OperationalError:
+            pass  # embedding_meta table may not exist
+
+        if last_decay != today:
+            db.execute("""
+                UPDATE knowledge_entries
+                SET confidence = MAX(0.3, confidence * 0.95)
+                WHERE last_seen < ? AND confidence > 0.3
+            """, (today,))
+            try:
+                db.execute("""
+                    CREATE TABLE IF NOT EXISTS embedding_meta (
+                        key TEXT PRIMARY KEY, value TEXT
+                    )
+                """)
+                db.execute("""
+                    INSERT OR REPLACE INTO embedding_meta (key, value)
+                    VALUES ('last_decay_date', ?)
+                """, (today,))
+            except sqlite3.OperationalError:
+                pass
     except sqlite3.OperationalError:
         pass
 
