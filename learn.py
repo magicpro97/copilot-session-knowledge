@@ -10,11 +10,15 @@ Usage:
     python learn.py --pattern "Title" "Description of what works well"
     python learn.py --decision "Title" "Architecture decision and rationale"
     python learn.py --tool "Title" "Tool/config that was useful"
+    python learn.py --feature "Title" "New feature implementation details"
+    python learn.py --refactor "Title" "Code improvement description"
+    python learn.py --discovery "Title" "Codebase finding or insight"
 
     python learn.py --mistake "Title" "Description" --tags "docker,compose"
     python learn.py --mistake "Title" "Description" --session abc123
     python learn.py --mistake "Title" "Description" --confidence 0.8
     python learn.py --mistake "Title" "Description" --wing backend --room dynamodb
+    python learn.py --pattern "Title" "Description" --fact "batch limit is 25" --fact "GSI eventual"
 
     python learn.py --relate "copyToGroup" "reads_from" "patient-dynamic-form.json"
     python learn.py --relate "addPatient Lambda" "writes_to" "dataTable"
@@ -138,7 +142,8 @@ def detect_session_id() -> str:
 def add_entry(category: str, title: str, content: str,
               tags: str = "", session_id: str = None,
               confidence: float = None,
-              wing: str = "", room: str = "") -> int:
+              wing: str = "", room: str = "",
+              facts: list = None) -> int:
     """Add a knowledge entry to the database. Returns entry ID."""
     db = get_db()
 
@@ -147,13 +152,21 @@ def add_entry(category: str, title: str, content: str,
 
     if confidence is None:
         confidence = {"mistake": 0.7, "pattern": 0.6,
-                      "decision": 0.8, "tool": 0.5}.get(category, 0.5)
+                      "decision": 0.8, "tool": 0.5,
+                      "feature": 0.7, "refactor": 0.6,
+                      "discovery": 0.6}.get(category, 0.5)
 
     # Auto-detect wing/room if not provided
     if not wing:
         wing = _detect_wing(tags, title, content)
     if not room:
         room = _detect_room(tags, title, content)
+
+    # Serialize facts to JSON
+    facts_json = json.dumps(facts or [], ensure_ascii=False)
+
+    # Estimate token cost
+    est_tokens = len(f"{title} {content}") // 4
 
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -175,10 +188,13 @@ def add_entry(category: str, title: str, content: str,
             SET content = ?, occurrence_count = ?, confidence = ?,
                 last_seen = ?, tags = CASE WHEN ? != '' THEN ? ELSE tags END,
                 wing = CASE WHEN ? != '' THEN ? ELSE wing END,
-                room = CASE WHEN ? != '' THEN ? ELSE room END
+                room = CASE WHEN ? != '' THEN ? ELSE room END,
+                facts = CASE WHEN ? != '[]' THEN ? ELSE facts END,
+                est_tokens = ?
             WHERE id = ?
         """, (new_content, new_count, new_confidence, now,
-              tags, tags, wing, wing, room, room, existing["id"]))
+              tags, tags, wing, wing, room, room,
+              facts_json, facts_json, est_tokens, existing["id"]))
         entry_id = existing["id"]
         loc = f" [{wing}/{room}]" if wing or room else ""
         print(f"  Updated existing entry #{entry_id} (seen {new_count}x, "
@@ -188,16 +204,17 @@ def add_entry(category: str, title: str, content: str,
         db.execute("""
             INSERT INTO knowledge_entries
                 (category, title, content, tags, confidence, session_id,
-                 occurrence_count, first_seen, last_seen, wing, room)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                 occurrence_count, first_seen, last_seen, wing, room,
+                 facts, est_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
         """, (category, title, content, tags, confidence,
-              session_id, now, now, wing, room))
+              session_id, now, now, wing, room, facts_json, est_tokens))
         entry_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
         loc = f" [{wing}/{room}]" if wing or room else ""
         print(f"  Added new {category} #{entry_id}{loc}")
 
     # Update FTS index
-    _update_fts(db, entry_id, title, content, tags, category, wing, room)
+    _update_fts(db, entry_id, title, content, tags, category, wing, room, facts_json)
 
     # Generate embedding for the new entry
     _embed_entry(db, entry_id, title, content)
@@ -209,14 +226,14 @@ def add_entry(category: str, title: str, content: str,
 
 def _update_fts(db: sqlite3.Connection, entry_id: int,
                 title: str, content: str, tags: str, category: str,
-                wing: str = "", room: str = ""):
+                wing: str = "", room: str = "", facts_json: str = "[]"):
     """Update the standalone FTS5 table for this entry."""
     try:
         db.execute("DELETE FROM ke_fts WHERE rowid = ?", (entry_id,))
         db.execute("""
-            INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (entry_id, title, content, tags, category, wing, room))
+            INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (entry_id, title, content, tags, category, wing, room, facts_json))
     except sqlite3.OperationalError:
         pass  # ke_fts might not exist yet
 
@@ -454,13 +471,15 @@ def main():
     # Parse category flag
     category = None
     for flag, cat in [("--mistake", "mistake"), ("--pattern", "pattern"),
-                      ("--decision", "decision"), ("--tool", "tool")]:
+                      ("--decision", "decision"), ("--tool", "tool"),
+                      ("--feature", "feature"), ("--refactor", "refactor"),
+                      ("--discovery", "discovery")]:
         if flag in args:
             category = cat
             break
 
     if not category:
-        print("Error: Specify a category: --mistake, --pattern, --decision, --tool")
+        print("Error: Specify a category: --mistake, --pattern, --decision, --tool, --feature, --refactor, --discovery")
         print("Or use --relate for knowledge graph. Run --help for usage.")
         return
 
@@ -470,6 +489,7 @@ def main():
     confidence = None
     wing = ""
     room = ""
+    facts = []
 
     if "--tags" in args:
         idx = args.index("--tags")
@@ -491,6 +511,11 @@ def main():
         idx = args.index("--room")
         room = args[idx + 1] if idx + 1 < len(args) else ""
 
+    # Collect all --fact values (repeatable flag)
+    for i, a in enumerate(args):
+        if a == "--fact" and i + 1 < len(args):
+            facts.append(args[i + 1])
+
     # Extract title and content (positional args after flag)
     positional = []
     skip_next = False
@@ -498,10 +523,11 @@ def main():
         if skip_next:
             skip_next = False
             continue
-        if a in ("--mistake", "--pattern", "--decision", "--tool"):
+        if a in ("--mistake", "--pattern", "--decision", "--tool",
+                 "--feature", "--refactor", "--discovery"):
             continue
         if a in ("--tags", "--session", "--confidence", "--limit",
-                 "--wing", "--room"):
+                 "--wing", "--room", "--fact"):
             skip_next = True
             continue
         if a.startswith("--"):
@@ -519,7 +545,9 @@ def main():
     print(f"Recording {category}...")
     add_entry(category, title, content, tags=tags,
               session_id=session_id, confidence=confidence,
-              wing=wing, room=room)
+              wing=wing, room=room, facts=facts)
+    if facts:
+        print(f"  With {len(facts)} fact(s)")
     print("Done.")
 
 

@@ -64,6 +64,27 @@ TOOL_INDICATORS = [
     r"(?:cài|cấu\s+hình|phiên\s+bản|nâng\s+cấp)",
 ]
 
+FEATURE_INDICATORS = [
+    r"(?:implement|implemented|add(?:ed)?|create(?:d)?|build|built|develop)\b",
+    r"(?:new\s+(?:feature|endpoint|handler|screen|component|API))\b",
+    r"(?:feature|functionality|capability|user\s+story)\b",
+    r"(?:thêm|tạo|xây\s+dựng|tính\s+năng|chức\s+năng)\b",
+]
+
+REFACTOR_INDICATORS = [
+    r"(?:refactor|restructur|simplif|clean\s*up|extract|reorganiz)\b",
+    r"(?:rename|move|split|merge|consolidat|dedup)\b",
+    r"(?:improve|improv(?:ed|ing)|optimiz|reduc)\b",
+    r"(?:tái\s+cấu\s+trúc|đơn\s+giản\s+hóa|tối\s+ưu)\b",
+]
+
+DISCOVERY_INDICATORS = [
+    r"(?:discover|found|learn|realiz|notic|observ)\b",
+    r"(?:turns\s+out|apparently|actually|interesting)\b",
+    r"(?:TIL|insight|understanding|revelation)\b",
+    r"(?:phát\s+hiện|nhận\s+ra|hiểu|thấy\s+rằng)\b",
+]
+
 
 def ensure_tables(db: sqlite3.Connection):
     """Create knowledge_entries table if not exists."""
@@ -152,7 +173,7 @@ def ensure_tables(db: sqlite3.Connection):
     # Create FTS table if needed (standalone, no content= sync issues)
     db.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
-            title, content, tags, category, wing, room,
+            title, content, tags, category, wing, room, facts,
             tokenize='unicode61 remove_diacritics 2'
         )
     """)
@@ -172,6 +193,9 @@ def classify_paragraph(text: str) -> list[tuple[str, float]]:
         ("pattern", PATTERN_INDICATORS),
         ("decision", DECISION_INDICATORS),
         ("tool", TOOL_INDICATORS),
+        ("feature", FEATURE_INDICATORS),
+        ("refactor", REFACTOR_INDICATORS),
+        ("discovery", DISCOVERY_INDICATORS),
     ]:
         score = 0
         for pattern in indicators:
@@ -452,20 +476,23 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
                     continue
 
                 try:
+                    est_tokens = len(f"{title} {chunk[:3000]}") // 4
                     db.execute("""
                         INSERT INTO knowledge_entries
                         (session_id, document_id, category, title, content, tags,
                          confidence, first_seen, last_seen, source, topic_key,
-                         revision_count, content_hash)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                         revision_count, content_hash, est_tokens)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                         ON CONFLICT(category, title, session_id) DO UPDATE SET
                             confidence = MAX(knowledge_entries.confidence, excluded.confidence),
                             occurrence_count = knowledge_entries.occurrence_count + 1,
                             last_seen = excluded.last_seen,
                             content_hash = excluded.content_hash,
-                            topic_key = excluded.topic_key
+                            topic_key = excluded.topic_key,
+                            est_tokens = excluded.est_tokens
                     """, (session_id, doc_id, category, title, chunk[:3000], tags,
-                          confidence, now, now, source, topic_key, content_hash))
+                          confidence, now, now, source, topic_key, content_hash,
+                          est_tokens))
                     existing_hashes.add(content_hash)
                     extracted += 1
                 except sqlite3.IntegrityError as e:
@@ -485,8 +512,10 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
     # Rebuild FTS
     db.execute("DELETE FROM ke_fts")
     db.execute("""
-        INSERT INTO ke_fts (rowid, title, content, tags, category)
-        SELECT id, title, content, tags, category FROM knowledge_entries
+        INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts)
+        SELECT id, title, content, tags, category,
+               COALESCE(wing,''), COALESCE(room,''), COALESCE(facts,'[]')
+        FROM knowledge_entries
     """)
 
     # Extract relations between knowledge entries

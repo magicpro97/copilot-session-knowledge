@@ -25,6 +25,13 @@ MIGRATIONS = [
     (4, "wakeup_config", [
         "CREATE TABLE IF NOT EXISTS wakeup_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')))",
     ]),
+    (5, "add_facts_column", [
+        "ALTER TABLE knowledge_entries ADD COLUMN facts TEXT DEFAULT '[]'",
+    ]),
+    (6, "add_est_tokens_column", [
+        "ALTER TABLE knowledge_entries ADD COLUMN est_tokens INTEGER DEFAULT 0",
+        "UPDATE knowledge_entries SET est_tokens = LENGTH(COALESCE(title,'') || ' ' || COALESCE(content,'')) / 4 WHERE est_tokens = 0",
+    ]),
 ]
 applied = 0
 for ver, name, stmts in MIGRATIONS:
@@ -42,12 +49,17 @@ for ver, name, stmts in MIGRATIONS:
         print(f"  [migrate] v{ver} {name}: {e}", file=sys.stderr)
 try:
     fts_sql = db.execute("SELECT sql FROM sqlite_master WHERE name='ke_fts'").fetchone()
-    if fts_sql and 'wing' not in (fts_sql[0] or ''):
-        print("  [migrate] Rebuilding FTS5...")
+    needs_rebuild = False
+    if fts_sql:
+        fts_def = fts_sql[0] or ''
+        if 'wing' not in fts_def or 'facts' not in fts_def:
+            needs_rebuild = True
+    if needs_rebuild:
+        print("  [migrate] Rebuilding FTS5 (adding facts column)...")
         db.execute("DROP TABLE IF EXISTS ke_fts")
-        db.execute("CREATE VIRTUAL TABLE ke_fts USING fts5(title, content, tags, category, wing, room, content='knowledge_entries', content_rowid='id')")
-        db.execute("INSERT INTO ke_fts(rowid, title, content, tags, category, wing, room) SELECT id, title, content, tags, category, COALESCE(wing,''), COALESCE(room,'') FROM knowledge_entries")
-        db.commit(); print("  [migrate] FTS5 rebuilt")
+        db.execute("CREATE VIRTUAL TABLE ke_fts USING fts5(title, content, tags, category, wing, room, facts, tokenize='unicode61 remove_diacritics 2')")
+        db.execute("INSERT INTO ke_fts(rowid, title, content, tags, category, wing, room, facts) SELECT id, title, content, tags, category, COALESCE(wing,''), COALESCE(room,''), COALESCE(facts,'[]') FROM knowledge_entries")
+        db.commit(); print("  [migrate] FTS5 rebuilt with facts column")
 except Exception as e:
     print(f"  [migrate] FTS5: {e}", file=sys.stderr)
 if applied == 0: print(f"  [migrate] Schema up to date (v{current})")

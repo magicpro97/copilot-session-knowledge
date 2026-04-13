@@ -47,16 +47,23 @@ $ python3 briefing.py "fix docker compose"
 
 ### Install
 
-**macOS / Linux:**
+**Recommended (auto-update enabled):**
+```bash
+# Clone as ~/.copilot/tools/ — auto-update keeps it current
+git clone https://github.com/magicpro97/copilot-session-knowledge.git ~/.copilot/tools
+
+# First run — index sessions + extract knowledge + run migrations
+python3 ~/.copilot/tools/build-session-index.py
+python3 ~/.copilot/tools/extract-knowledge.py
+python3 ~/.copilot/tools/migrate.py
+python3 ~/.copilot/tools/install.py --test
+```
+
+**Alternative (manual copy):**
 ```bash
 git clone https://github.com/magicpro97/copilot-session-knowledge.git
 cd copilot-session-knowledge
-mkdir -p ~/.copilot/tools && cp *.py ~/.copilot/tools/
-
-# First run — index sessions + extract knowledge
-python3 ~/.copilot/tools/build-session-index.py
-python3 ~/.copilot/tools/extract-knowledge.py
-python3 ~/.copilot/tools/install.py --test
+mkdir -p ~/.copilot/tools && cp *.py *.sh ~/.copilot/tools/
 ```
 
 **Windows (PowerShell):**
@@ -64,18 +71,19 @@ python3 ~/.copilot/tools/install.py --test
 git clone https://github.com/magicpro97/copilot-session-knowledge.git
 cd copilot-session-knowledge
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.copilot\tools"
-Copy-Item *.py "$env:USERPROFILE\.copilot\tools\"
+Copy-Item *.py,*.sh "$env:USERPROFILE\.copilot\tools\"
 
 python "$env:USERPROFILE\.copilot\tools\build-session-index.py"
 python "$env:USERPROFILE\.copilot\tools\extract-knowledge.py"
-python "$env:USERPROFILE\.copilot\tools\install.py" --test
+python "$env:USERPROFILE\.copilot\tools\migrate.py"
 ```
 
 **Tip:** Thêm alias cho tiện (bash/zsh):
 ```bash
 alias qs='python3 ~/.copilot/tools/query-session.py'
 alias brief='python3 ~/.copilot/tools/briefing.py'
-# Dùng: qs "docker error" | brief "fix login"
+alias learn='python3 ~/.copilot/tools/learn.py'
+# Dùng: qs "docker error" | brief "fix login" | learn --pattern "Title" "Desc"
 ```
 
 ## Usage
@@ -86,9 +94,12 @@ alias brief='python3 ~/.copilot/tools/briefing.py'
 brief "implement user CRUD"          # Compact ~500 tokens
 brief "implement user CRUD" --full   # Full detail ~3K tokens
 brief --auto                         # Auto-detect từ git state
+brief --wakeup                       # Ultra-compact (~170 tokens) cho session start
+brief --titles-only                  # Index only (~10 tok/entry) — progressive disclosure
+brief --titles-only "DynamoDB"       # Filtered titles
+brief --wing backend --room patient  # Filter by wing/room (palace-style)
 brief "task" --min-confidence 0.7    # Chỉ high-quality entries
-brief "task" --all                   # Xem tất cả (bao gồm low-confidence)
-brief "task" --for-subagent          # Compact context block để inject vào sub-agent prompts
+brief "task" --for-subagent          # Compact context block cho sub-agent prompts
 ```
 
 ### Search
@@ -117,6 +128,68 @@ qs --graph "spring boot"             # Mini knowledge graph theo topic
 ```bash
 qs "deployment error" --semantic     # Search theo nghĩa, không chỉ keyword
 python3 ~/.copilot/tools/embed.py --setup   # Setup API key (Windows: python)
+```
+
+### Record Knowledge (learn.py)
+
+```bash
+# 7 observation types
+learn --mistake "Title"   "What went wrong and fix"         --tags "docker,compose"
+learn --pattern "Title"   "What works well / best practice" --tags "lambda"
+learn --decision "Title"  "Architecture decision rationale" --tags "cdk"
+learn --tool "Title"      "Useful tool/config details"      --tags "vscode"
+learn --feature "Title"   "New feature implementation"      --tags "api"
+learn --refactor "Title"  "Code improvement description"    --tags "cleanup"
+learn --discovery "Title" "Codebase finding or insight"     --tags "dynamodb"
+
+# Structured facts (discrete, verifiable statements)
+learn --pattern "DynamoDB Batch Ops" "How to use batch writes" \
+  --fact "batch write limit is 25 items" \
+  --fact "GSI eventually consistent"
+
+# Palace categorization
+learn --mistake "Auth bug" "Description" --wing backend --room auth
+
+# Knowledge graph relations
+learn --relate "copyToGroup" "reads_from" "patient-dynamic-form.json"
+learn --relate "addPatient Lambda" "writes_to" "dataTable"
+
+# Bulk import
+learn --from-file notes.md  # Format: ## category: Title
+
+# View
+learn --list               # Recent entries
+learn --stats              # Knowledge base statistics
+```
+
+### Palace Concepts (Wing/Room)
+
+Organize knowledge hierarchically:
+
+| Wing | Description | Example Rooms |
+|------|-------------|---------------|
+| `backend` | Lambda, DynamoDB, SQS, API | patient, websocket, auth, dynamodb |
+| `frontend` | Expo, React Native, screens | navigation, components, hooks |
+| `testing` | Jest, Playwright, E2E | e2e, unit-test |
+| `infrastructure` | CDK, VPC, CloudWatch | cdk, vpc, cloudwatch |
+| `devops` | Git, CI/CD, Docker | git, pipeline, proxy |
+| `shared` | TypeScript, ESLint, i18n | typescript, openapi |
+
+Wings and rooms are **auto-detected** from tags/title. Override with `--wing`/`--room`.
+
+### Auto-Update
+
+```bash
+bash ~/.copilot/tools/auto-update-tools.sh           # Auto-update (24h cooldown)
+bash ~/.copilot/tools/auto-update-tools.sh --force    # Force update now
+bash ~/.copilot/tools/auto-update-tools.sh --status   # Show version info
+bash ~/.copilot/tools/auto-update-tools.sh --doctor   # Health check
+```
+
+Add to `~/.zshrc` or `~/.bashrc` for auto-start:
+```bash
+# Auto-update session-knowledge tools (background, 24h cooldown)
+(bash ~/.copilot/tools/auto-update-tools.sh &) 2>/dev/null
 ```
 
 ## Architecture
@@ -148,10 +221,12 @@ flowchart TD
 ### How it works
 
 1. **Index** — `build-session-index.py` scans all session `.md` files → SQLite FTS5
-2. **Extract** — `extract-knowledge.py` phân loại thành mistakes/patterns/decisions/tools, dedup bằng content hash
-3. **Graph** — Tự detect relations: cùng session, cùng tag, mistake→fix, cùng topic
-4. **Search** — FTS5 keyword + optional semantic vector (Reciprocal Rank Fusion)
-5. **Watch** — `watch-sessions.py` poll thay đổi, tự re-index (lock file chống chạy trùng)
+2. **Extract** — `extract-knowledge.py` classifies into 7 types (mistake/pattern/decision/tool/feature/refactor/discovery), dedup by content hash
+3. **Graph** — Auto-detect relations: same session, same tag, mistake→fix, same topic
+4. **Palace** — Wing/room auto-categorization from tags/title for hierarchical browsing
+5. **Search** — FTS5 keyword + optional semantic vector (Reciprocal Rank Fusion)
+6. **Watch** — `watch-sessions.py` polls for changes, auto re-indexes
+7. **Update** — `auto-update-tools.sh` git-based auto-update with DB migration
 
 ## Maintenance
 

@@ -16,8 +16,11 @@ Usage:
     python briefing.py --wakeup                           # Ultra-compact wake-up (~170 tokens)
     python briefing.py --room copyToGroup                 # Filter by room
     python briefing.py --wing backend                     # Filter by wing
+    python briefing.py --titles-only                      # Progressive disclosure layer 1 (~10 tok/entry)
+    python briefing.py --titles-only --limit 20           # More entries in titles mode
 
 Default output is compact (~500 tokens): titles + 1-line summaries with entry IDs.
+Use --titles-only for ultra-compact index (~10 tokens/entry). Then --detail <id> for full.
 Use --wakeup for ultra-compact AI wake-up context (~170 tokens).
 Use --full for complete content with tags, confidence scores, and full text.
 """
@@ -560,6 +563,66 @@ def _format_compact(query: str, data: dict, past_work: list, categories: dict) -
     return "\n".join(lines)
 
 
+def generate_titles_only(query: str = "", limit: int = 20,
+                         min_confidence: float = 0.3) -> str:
+    """Progressive disclosure layer 1: titles + type + token cost only.
+
+    Ultra-compact index (~10 tokens/entry) for scanning before drill-down.
+    Use query-session.py --detail <id> for full content.
+    """
+    db = get_db()
+    lines = []
+
+    if query:
+        # Search mode
+        safe_query = _sanitize_fts_query(query)
+        if safe_query:
+            rows = db.execute("""
+                SELECT ke.id, ke.category, ke.title, ke.est_tokens, ke.wing, ke.room
+                FROM ke_fts fts
+                JOIN knowledge_entries ke ON fts.rowid = ke.id
+                WHERE ke_fts MATCH ?
+                  AND ke.confidence >= ?
+                ORDER BY rank
+                LIMIT ?
+            """, (safe_query, min_confidence, limit)).fetchall()
+        else:
+            rows = []
+    else:
+        # Recent mode (no query)
+        rows = db.execute("""
+            SELECT id, category, title, est_tokens, wing, room
+            FROM knowledge_entries
+            WHERE confidence >= ?
+            ORDER BY last_seen DESC
+            LIMIT ?
+        """, (min_confidence, limit)).fetchall()
+
+    if not rows:
+        db.close()
+        return "No entries found." + (" Try a different query." if query else "")
+
+    header = f"📋 {len(rows)} entries"
+    if query:
+        header += f" matching '{query}'"
+    lines.append(header)
+    lines.append("")
+
+    for r in rows:
+        tok = f"~{r['est_tokens']}tok" if r['est_tokens'] else ""
+        loc = ""
+        if r['wing'] or r['room']:
+            parts = [r['wing'], r['room']]
+            loc = f" [{'/'.join(p for p in parts if p)}]"
+        lines.append(f"  #{r['id']:4d} [{r['category']:9s}] {r['title'][:60]} {tok}{loc}")
+
+    lines.append("")
+    lines.append("→ query-session.py --detail <ID> for full content")
+
+    db.close()
+    return "\n".join(lines)
+
+
 def generate_wakeup() -> str:
     """Ultra-compact wake-up summary (~170 tokens) for session start.
 
@@ -635,8 +698,85 @@ def generate_wakeup() -> str:
     except sqlite3.OperationalError:
         pass
 
+    # Last session summary (from most recent plan.md)
+    try:
+        _add_session_summary(lines)
+    except Exception:
+        pass
+
     db.close()
     return "\n".join(lines)
+
+
+def _add_session_summary(lines: list) -> None:
+    """Extract summary from the most recent session's plan.md."""
+    import subprocess as _sp
+
+    session_state = Path.home() / ".copilot" / "session-state"
+    if not session_state.exists():
+        return
+
+    # Find most recently modified session directory
+    sessions = []
+    for d in session_state.iterdir():
+        if d.is_dir() and len(d.name) > 8 and "-" in d.name:
+            plan = d / "plan.md"
+            if plan.exists():
+                try:
+                    sessions.append((plan.stat().st_mtime, plan))
+                except OSError:
+                    pass
+
+    if not sessions:
+        return
+
+    sessions.sort(reverse=True)
+    plan_path = sessions[0][1]
+
+    try:
+        content = plan_path.read_text(encoding="utf-8", errors="replace")[:3000]
+    except Exception:
+        return
+
+    summary_parts = []
+
+    # Extract problem/task statement (first ## heading or "## Problem" section)
+    for marker in ["## Problem", "## Task", "# Plan:"]:
+        if marker in content:
+            start = content.index(marker) + len(marker)
+            # Get the first paragraph after the heading
+            rest = content[start:start + 500].strip()
+            first_para = rest.split("\n\n")[0].replace("\n", " ").strip()
+            if first_para and len(first_para) > 10:
+                summary_parts.append(f"LAST-TASK: {first_para[:120]}")
+                break
+
+    # Extract completed items from SQL todos or plan checkboxes
+    # Try to find [x] items
+    done_items = []
+    for line in content.split("\n"):
+        line = line.strip()
+        if line.startswith("- [x]") or line.startswith("* [x]"):
+            item = line[5:].strip()[:60]
+            if item:
+                done_items.append(item)
+
+    if done_items:
+        summary_parts.append(f"DONE: {' | '.join(done_items[:3])}")
+
+    # Extract next steps / remaining items
+    pending_items = []
+    for line in content.split("\n"):
+        line = line.strip()
+        if line.startswith("- [ ]") or line.startswith("* [ ]"):
+            item = line[5:].strip()[:60]
+            if item:
+                pending_items.append(item)
+
+    if pending_items:
+        summary_parts.append(f"NEXT: {' | '.join(pending_items[:3])}")
+
+    lines.extend(summary_parts)
 
 
 def search_by_wing_room(wing: str = "", room: str = "",
@@ -691,6 +831,18 @@ def main():
     # Handle --wakeup mode (ultra-compact, no query needed)
     if "--wakeup" in args:
         print(generate_wakeup())
+        return
+
+    # Handle --titles-only mode (progressive disclosure layer 1)
+    if "--titles-only" in args:
+        limit = 20
+        if "--limit" in args:
+            idx = args.index("--limit")
+            limit = int(args[idx + 1]) if idx + 1 < len(args) else 20
+        query_parts = [a for a in args if not a.startswith("--")
+                       and a != str(limit)]
+        query = " ".join(query_parts)
+        print(generate_titles_only(query=query, limit=limit))
         return
 
     # Handle --wing/--room search
