@@ -65,24 +65,24 @@ TOOL_INDICATORS = [
 ]
 
 FEATURE_INDICATORS = [
-    r"(?:implement|implemented|add(?:ed)?|create(?:d)?|build|built|develop)\b",
+    r"\b(?:implement(?:ed|ing)?|add(?:ed|ing)?|create(?:d|ing)?|build|built|develop(?:ed|ing)?)\b",
     r"(?:new\s+(?:feature|endpoint|handler|screen|component|API))\b",
-    r"(?:feature|functionality|capability|user\s+story)\b",
+    r"\b(?:feature|functionality|capability|user\s+story)\b",
     r"(?:thêm|tạo|xây\s+dựng|tính\s+năng|chức\s+năng)\b",
 ]
 
 REFACTOR_INDICATORS = [
-    r"(?:refactor|restructur|simplif|clean\s*up|extract|reorganiz)\b",
-    r"(?:rename|move|split|merge|consolidat|dedup)\b",
-    r"(?:improve|improv(?:ed|ing)|optimiz|reduc)\b",
-    r"(?:tái\s+cấu\s+trúc|đơn\s+giản\s+hóa|tối\s+ưu)\b",
+    r"\b(?:refactor|restructur|simplif|clean\s*up|extract|reorganiz)",
+    r"\b(?:rename[ds]?|move[ds]?|split|merge[ds]?|consolidat|dedup)",
+    r"\b(?:improv(?:e[ds]?|ing)|optimiz|reduc)",
+    r"(?:tái\s+cấu\s+trúc|đơn\s+giản\s+hóa|tối\s+ưu)",
 ]
 
 DISCOVERY_INDICATORS = [
-    r"(?:discover|found|learn|realiz|notic|observ)\b",
-    r"(?:turns\s+out|apparently|actually|interesting)\b",
-    r"(?:TIL|insight|understanding|revelation)\b",
-    r"(?:phát\s+hiện|nhận\s+ra|hiểu|thấy\s+rằng)\b",
+    r"\b(?:discover|found|learn|realiz|notic|observ)",
+    r"\b(?:turns\s+out|apparently|actually|interesting)\b",
+    r"\b(?:TIL|insight|understanding|revelation)\b",
+    r"(?:phát\s+hiện|nhận\s+ra|hiểu|thấy\s+rằng)",
 ]
 
 
@@ -155,7 +155,7 @@ def ensure_tables(db: sqlite3.Connection):
 
     # Migrate existing databases: add new columns if missing
     _ALLOWED_COLUMNS = {"source", "topic_key", "revision_count", "content_hash",
-                        "wing", "room"}
+                        "wing", "room", "facts", "est_tokens"}
     for col, col_def in [
         ("source", "TEXT DEFAULT 'copilot'"),
         ("topic_key", "TEXT"),
@@ -163,6 +163,8 @@ def ensure_tables(db: sqlite3.Connection):
         ("content_hash", "TEXT"),
         ("wing", "TEXT DEFAULT ''"),
         ("room", "TEXT DEFAULT ''"),
+        ("facts", "TEXT DEFAULT '[]'"),
+        ("est_tokens", "INTEGER DEFAULT 0"),
     ]:
         assert col in _ALLOWED_COLUMNS, f"Unexpected column: {col}"
         try:
@@ -414,22 +416,23 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
     # Focus on the most knowledge-rich sections
     target_sections = ["technical_details", "history", "work_done", "next_steps", "full", "conversation"]
 
-    base_query = """
+    section_placeholders = ",".join("?" for _ in target_sections)
+    base_query = f"""
         SELECT s.id, s.document_id, s.section_name, s.content, d.session_id,
                COALESCE(d.source, 'copilot') as source
         FROM sections s
         JOIN documents d ON s.document_id = d.id
-        WHERE s.section_name IN ({})
-    """.format(",".join(f"'{s}'" for s in target_sections))
+        WHERE s.section_name IN ({section_placeholders})
+    """
+    query_params = list(target_sections)
 
     if session_ids:
-        placeholders = ",".join("?" for _ in session_ids)
-        base_query += f" AND d.session_id IN ({placeholders})"
-        base_query += " ORDER BY d.session_id, d.seq"
-        rows = db.execute(base_query, session_ids).fetchall()
-    else:
-        base_query += " ORDER BY d.session_id, d.seq"
-        rows = db.execute(base_query).fetchall()
+        session_placeholders = ",".join("?" for _ in session_ids)
+        base_query += f" AND d.session_id IN ({session_placeholders})"
+        query_params.extend(session_ids)
+
+    base_query += " ORDER BY d.session_id, d.seq"
+    rows = db.execute(base_query, query_params).fetchall()
 
     # Pre-load existing content hashes for fast dedup
     existing_hashes = set()

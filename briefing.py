@@ -689,7 +689,7 @@ def generate_wakeup() -> str:
         rows = db.execute("""
             SELECT title FROM knowledge_entries
             WHERE category = 'decision'
-            ORDER BY noted_at DESC
+            ORDER BY last_seen DESC
             LIMIT 3
         """).fetchall()
         if rows:

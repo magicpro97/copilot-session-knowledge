@@ -165,9 +165,6 @@ def add_entry(category: str, title: str, content: str,
     # Serialize facts to JSON
     facts_json = json.dumps(facts or [], ensure_ascii=False)
 
-    # Estimate token cost
-    est_tokens = len(f"{title} {content}") // 4
-
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
 
     # Check for existing entry with same title in same category
@@ -182,6 +179,9 @@ def add_entry(category: str, title: str, content: str,
         new_count = existing["occurrence_count"] + 1
         new_content = content if len(content) > len(existing["content"]) else existing["content"]
         new_confidence = min(1.0, confidence + 0.05 * (new_count - 1))
+
+        # Estimate token cost from the content that will actually be stored
+        est_tokens = len(f"{title} {new_content}") // 4
 
         db.execute("""
             UPDATE knowledge_entries
@@ -200,6 +200,9 @@ def add_entry(category: str, title: str, content: str,
         print(f"  Updated existing entry #{entry_id} (seen {new_count}x, "
               f"confidence → {new_confidence:.2f}){loc}")
     else:
+        # Estimate token cost for new entry
+        est_tokens = len(f"{title} {content}") // 4
+
         # Insert new entry
         db.execute("""
             INSERT INTO knowledge_entries
@@ -300,7 +303,8 @@ def import_from_file(filepath: str):
             if ":" in rest:
                 cat, title = rest.split(":", 1)
                 cat = cat.strip().lower()
-                if cat in ("mistake", "pattern", "decision", "tool"):
+                if cat in ("mistake", "pattern", "decision", "tool",
+                           "feature", "refactor", "discovery"):
                     current = {"category": cat, "title": title.strip(), "lines": []}
                 else:
                     current = None

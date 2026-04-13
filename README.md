@@ -346,7 +346,7 @@ Output là block `[KNOWLEDGE CONTEXT]` compact (~200 tokens) để embed vào su
 - **Atomic lock** — `O_CREAT | O_EXCL` eliminates TOCTOU race conditions
 - **API key protection** — config files chmod `0o600`, env vars ưu tiên hơn file
 - **Path validation** — WSL path traversal protection
-- **Input limits** — title 200 chars, content 10K chars, filter 256 chars
+- **Input limits** — title 200 chars, content 10K chars, FTS query 500 chars
 
 ## Testing
 
