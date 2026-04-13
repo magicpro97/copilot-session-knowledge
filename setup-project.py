@@ -44,6 +44,31 @@ python3 ~/.copilot/tools/learn.py --pattern "Title" "What works well" --tags "ta
 
 SKILLS_TABLE_ROW = "| Pre-task briefing & record learnings | [session-knowledge](./skills/session-knowledge/) |"
 
+# Snippet to add to AGENTS.md
+AGENTS_SNIPPET = """
+## Pre-Task Briefing (BẮT BUỘC)
+
+> **⚠️ MANDATORY**: Before starting a new task, run briefing to get context from past sessions.
+> After fixing bugs or completing tasks, record learnings with proper categorization.
+> Details: `.github/skills/session-knowledge/SKILL.md`
+
+```bash
+# Before task — get context
+python3 ~/.copilot/tools/briefing.py "<task>" --full
+
+# Before delegating to sub-agent — inject context
+python3 ~/.copilot/tools/briefing.py "<sub-agent task>" --for-subagent
+
+# During task — search for errors/topics
+python3 ~/.copilot/tools/query-session.py "<error or topic>" --verbose
+
+# After task — record with full metadata
+python3 ~/.copilot/tools/learn.py --mistake "Title" "Description" --tags "t1,t2" --wing <wing> --room <room> --fact "key detail"
+python3 ~/.copilot/tools/learn.py --pattern "Title" "Description" --tags "t1,t2" --wing <wing> --room <room>
+python3 ~/.copilot/tools/learn.py --relate "#id1" "resolved_by" "#id2"
+```
+"""
+
 
 def find_git_root() -> Path | None:
     """Find the git repository root from cwd."""
@@ -185,6 +210,41 @@ def patch_copilot_instructions(project_root: Path, dry_run: bool) -> bool:
     return False
 
 
+def patch_agents_md(project_root: Path, dry_run: bool) -> bool:
+    """Add Pre-Task Briefing section to AGENTS.md if not present."""
+    agents_md = project_root / "AGENTS.md"
+    if not agents_md.exists():
+        print("  ⏭ No AGENTS.md found, skipping")
+        return False
+
+    content = agents_md.read_text()
+    if "session-knowledge" in content or "briefing.py" in content:
+        print("  ⏭ AGENTS.md already references session-knowledge")
+        return False
+
+    if dry_run:
+        print("  [dry-run] Would add Pre-Task Briefing section to AGENTS.md")
+        return True
+
+    # Insert before "## Code Navigation" or "## Commands" or at end
+    lines = content.split("\n")
+    insert_idx = None
+
+    for i, line in enumerate(lines):
+        if line.startswith("## Code Navigation") or line.startswith("## Commands"):
+            insert_idx = i
+            break
+
+    if insert_idx is None:
+        insert_idx = len(lines)
+
+    snippet_lines = AGENTS_SNIPPET.strip().split("\n")
+    lines = lines[:insert_idx] + [""] + snippet_lines + [""] + lines[insert_idx:]
+    agents_md.write_text("\n".join(lines))
+    print("  ✓ Added Pre-Task Briefing section to AGENTS.md")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Integrate session-knowledge skill into a project"
@@ -237,6 +297,11 @@ def main():
     # 3. Patch copilot-instructions.md
     if not args.skill_only:
         if patch_copilot_instructions(project_root, args.dry_run):
+            changes += 1
+
+    # 4. Patch AGENTS.md
+    if not args.skill_only:
+        if patch_agents_md(project_root, args.dry_run):
             changes += 1
 
     print()
