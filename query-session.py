@@ -20,6 +20,11 @@ Usage:
     python query-session.py --context <id>                     # Entry + related context
     python query-session.py --related <id>                     # Show knowledge graph relations
     python query-session.py --graph "spring boot"              # Mini knowledge graph for topic
+    python query-session.py --relate "entity"                   # Query entity relations (new graph)
+    python query-session.py --wings                             # List wings with counts
+    python query-session.py --rooms                             # List rooms with counts
+    python query-session.py --rooms backend                     # Rooms in a specific wing
+    python query-session.py --graph-stats                       # Knowledge graph statistics
     python query-session.py "search" --export json             # Export as JSON
     python query-session.py "search" --export markdown         # Export as Markdown
 
@@ -756,6 +761,134 @@ def semantic_search(query: str, limit: int = 10, verbose: bool = False):
     db.close()
 
 
+def query_entity_relations(entity: str):
+    """Query entity_relations for a specific entity (subject or object)."""
+    db = get_db()
+    try:
+        rows = db.execute("""
+            SELECT subject, predicate, object, noted_at
+            FROM entity_relations
+            WHERE subject = ? OR object = ?
+            ORDER BY noted_at DESC
+        """, (entity, entity)).fetchall()
+    except sqlite3.OperationalError:
+        print("⚠ entity_relations table not found")
+        db.close()
+        return
+
+    if not rows:
+        print(f"No relations found for entity '{entity}'")
+        db.close()
+        return
+
+    print(f"\n{BOLD}Entity Relations: {entity}{RESET}")
+    print("=" * 60)
+    for r in rows:
+        noted = f" ({r['noted_at'][:10]})" if r['noted_at'] else ""
+        print(f"  {r['subject']}  --[{r['predicate']}]-->  {r['object']}{DIM}{noted}{RESET}")
+    print(f"\n--- {len(rows)} relations ---")
+    db.close()
+
+
+def list_wings():
+    """Show all wings with entry counts."""
+    db = get_db()
+    rows = db.execute("""
+        SELECT wing, COUNT(*) as cnt
+        FROM knowledge_entries
+        WHERE wing != ''
+        GROUP BY wing
+        ORDER BY cnt DESC
+    """).fetchall()
+
+    if not rows:
+        print("No wings found. Use learn.py --wing to categorize entries.")
+        db.close()
+        return
+
+    print(f"\n{BOLD}Wings{RESET}")
+    print("=" * 40)
+    for r in rows:
+        bar = "█" * min(r['cnt'] // 5, 30)
+        print(f"  {r['wing']:<20} {r['cnt']:>4}  {DIM}{bar}{RESET}")
+    total = sum(r['cnt'] for r in rows)
+    print(f"\n  {'Total':<20} {total:>4}")
+    db.close()
+
+
+def list_rooms(wing: str = ""):
+    """Show rooms, optionally filtered by wing."""
+    db = get_db()
+    if wing:
+        rows = db.execute("""
+            SELECT room, COUNT(*) as cnt
+            FROM knowledge_entries
+            WHERE room != '' AND wing = ?
+            GROUP BY room
+            ORDER BY cnt DESC
+        """, (wing,)).fetchall()
+    else:
+        rows = db.execute("""
+            SELECT room, wing, COUNT(*) as cnt
+            FROM knowledge_entries
+            WHERE room != ''
+            GROUP BY room, wing
+            ORDER BY cnt DESC
+        """).fetchall()
+
+    if not rows:
+        msg = f" in wing '{wing}'" if wing else ""
+        print(f"No rooms found{msg}.")
+        db.close()
+        return
+
+    title = f"Rooms in '{wing}'" if wing else "All Rooms"
+    print(f"\n{BOLD}{title}{RESET}")
+    print("=" * 50)
+    for r in rows:
+        wing_label = f" [{r['wing']}]" if not wing and 'wing' in r.keys() else ""
+        bar = "█" * min(r['cnt'] // 3, 30)
+        print(f"  {r['room']:<20}{wing_label:<12} {r['cnt']:>4}  {DIM}{bar}{RESET}")
+    db.close()
+
+
+def show_graph_stats():
+    """Show knowledge graph statistics."""
+    db = get_db()
+    stats = []
+
+    try:
+        total = db.execute("SELECT COUNT(*) FROM entity_relations").fetchone()[0]
+        stats.append(f"  Relations: {total}")
+
+        predicates = db.execute("""
+            SELECT predicate, COUNT(*) as cnt
+            FROM entity_relations
+            GROUP BY predicate
+            ORDER BY cnt DESC
+        """).fetchall()
+        if predicates:
+            stats.append("  Predicates:")
+            for p in predicates:
+                stats.append(f"    {p['predicate']}: {p['cnt']}")
+
+        subjects = db.execute(
+            "SELECT COUNT(DISTINCT subject) FROM entity_relations"
+        ).fetchone()[0]
+        objects = db.execute(
+            "SELECT COUNT(DISTINCT object) FROM entity_relations"
+        ).fetchone()[0]
+        stats.append(f"  Unique subjects: {subjects}")
+        stats.append(f"  Unique objects: {objects}")
+    except sqlite3.OperationalError:
+        stats.append("  ⚠ entity_relations table not found")
+
+    print(f"\n{BOLD}Knowledge Graph Stats{RESET}")
+    print("=" * 40)
+    print("\n".join(stats))
+    db.close()
+
+
 def print_usage():
     print(__doc__)
 
@@ -824,6 +957,28 @@ def main():
             show_graph(args[idx + 1])
         else:
             print("Error: --graph requires a topic")
+        return
+
+    if "--relate" in args:
+        idx = args.index("--relate")
+        if idx + 1 < len(args):
+            query_entity_relations(args[idx + 1])
+        else:
+            print("Error: --relate requires an entity name")
+        return
+
+    if "--wings" in args:
+        list_wings()
+        return
+
+    if "--rooms" in args:
+        idx = args.index("--rooms")
+        wing = args[idx + 1] if idx + 1 < len(args) and not args[idx + 1].startswith("--") else ""
+        list_rooms(wing)
+        return
+
+    if "--graph-stats" in args:
+        show_graph_stats()
         return
 
     # Knowledge category shortcuts

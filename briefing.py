@@ -13,8 +13,12 @@ Usage:
     python briefing.py "spring boot migration" --limit 5  # More results per category
     python briefing.py --auto                             # Auto-detect from git/plan
     python briefing.py --auto --full                      # Full briefing with auto-detect
+    python briefing.py --wakeup                           # Ultra-compact wake-up (~170 tokens)
+    python briefing.py --room copyToGroup                 # Filter by room
+    python briefing.py --wing backend                     # Filter by wing
 
 Default output is compact (~500 tokens): titles + 1-line summaries with entry IDs.
+Use --wakeup for ultra-compact AI wake-up context (~170 tokens).
 Use --full for complete content with tags, confidence scores, and full text.
 """
 
@@ -556,11 +560,156 @@ def _format_compact(query: str, data: dict, past_work: list, categories: dict) -
     return "\n".join(lines)
 
 
+def generate_wakeup() -> str:
+    """Ultra-compact wake-up summary (~170 tokens) for session start.
+
+    Outputs key project context, current branch, top mistakes/patterns,
+    and recent decisions in a terse format designed for AI consumption.
+    """
+    db = get_db()
+    lines = []
+
+    # Team & project info (static)
+    lines.append("TEAM: linhnt102-fpt | NES (Nhật) | NEC (customer)")
+    lines.append("PROJECT: NEO-MATCH 救急搬送 | CDK+Lambda+Expo | dev2")
+
+    # Current branch
+    try:
+        import subprocess
+        branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            stderr=subprocess.DEVNULL, text=True).strip()
+        lines.append(f"BRANCH: {branch}")
+    except Exception:
+        lines.append("BRANCH: (unknown)")
+
+    # Wakeup config overrides
+    try:
+        rows = db.execute(
+            "SELECT key, value FROM wakeup_config ORDER BY key"
+        ).fetchall()
+        for r in rows:
+            lines.append(f"{r['key'].upper()}: {r['value']}")
+    except sqlite3.OperationalError:
+        pass
+
+    # Top mistakes (3)
+    try:
+        rows = db.execute("""
+            SELECT title FROM knowledge_entries
+            WHERE category = 'mistake' AND confidence >= 0.5
+            ORDER BY occurrence_count DESC, confidence DESC
+            LIMIT 3
+        """).fetchall()
+        if rows:
+            items = " | ".join(f"({i+1}) {r['title'][:50]}" for i, r in enumerate(rows))
+            lines.append(f"TOP-MISTAKES: {items}")
+    except sqlite3.OperationalError:
+        pass
+
+    # Top patterns (3)
+    try:
+        rows = db.execute("""
+            SELECT title FROM knowledge_entries
+            WHERE category = 'pattern' AND confidence >= 0.5
+            ORDER BY occurrence_count DESC, confidence DESC
+            LIMIT 3
+        """).fetchall()
+        if rows:
+            items = " | ".join(f"({i+1}) {r['title'][:50]}" for i, r in enumerate(rows))
+            lines.append(f"TOP-PATTERNS: {items}")
+    except sqlite3.OperationalError:
+        pass
+
+    # Recent decisions (3)
+    try:
+        rows = db.execute("""
+            SELECT title FROM knowledge_entries
+            WHERE category = 'decision'
+            ORDER BY noted_at DESC
+            LIMIT 3
+        """).fetchall()
+        if rows:
+            items = " | ".join(f"({i+1}) {r['title'][:50]}" for i, r in enumerate(rows))
+            lines.append(f"RECENT-DECISIONS: {items}")
+    except sqlite3.OperationalError:
+        pass
+
+    db.close()
+    return "\n".join(lines)
+
+
+def search_by_wing_room(wing: str = "", room: str = "",
+                        limit: int = 10) -> str:
+    """Search knowledge entries filtered by wing and/or room."""
+    db = get_db()
+    conditions = []
+    params = []
+
+    if wing:
+        conditions.append("wing = ?")
+        params.append(wing)
+    if room:
+        conditions.append("room = ?")
+        params.append(room)
+
+    if not conditions:
+        db.close()
+        return "Error: specify --wing and/or --room"
+
+    where = " AND ".join(conditions)
+    params.append(limit)
+
+    rows = db.execute(f"""
+        SELECT id, category, title, content, tags, wing, room, confidence
+        FROM knowledge_entries
+        WHERE {where}
+        ORDER BY confidence DESC, occurrence_count DESC
+        LIMIT ?
+    """, params).fetchall()
+
+    if not rows:
+        db.close()
+        return f"No entries found for wing={wing!r} room={room!r}"
+
+    lines = [f"Found {len(rows)} entries (wing={wing!r} room={room!r}):\n"]
+    for r in rows:
+        first_line = r["content"].split("\n")[0][:120] if r["content"] else ""
+        lines.append(f"  [{r['category']}] #{r['id']} {r['title']}")
+        lines.append(f"    {first_line}")
+    db.close()
+    return "\n".join(lines)
+
+
 def main():
     args = sys.argv[1:]
 
     if not args or "--help" in args or "-h" in args:
         print(__doc__)
+        return
+
+    # Handle --wakeup mode (ultra-compact, no query needed)
+    if "--wakeup" in args:
+        print(generate_wakeup())
+        return
+
+    # Handle --wing/--room search
+    wing_filter = ""
+    room_filter = ""
+    if "--wing" in args:
+        idx = args.index("--wing")
+        wing_filter = args[idx + 1] if idx + 1 < len(args) else ""
+    if "--room" in args:
+        idx = args.index("--room")
+        room_filter = args[idx + 1] if idx + 1 < len(args) else ""
+
+    if wing_filter or room_filter:
+        limit = 10
+        if "--limit" in args:
+            idx = args.index("--limit")
+            limit = int(args[idx + 1]) if idx + 1 < len(args) else 10
+        print(search_by_wing_room(wing=wing_filter, room=room_filter,
+                                  limit=limit))
         return
 
     # Parse arguments

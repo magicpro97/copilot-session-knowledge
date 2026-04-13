@@ -105,15 +105,43 @@ def ensure_tables(db: sqlite3.Connection):
 
         CREATE INDEX IF NOT EXISTS idx_kr_source ON knowledge_relations(source_id);
         CREATE INDEX IF NOT EXISTS idx_kr_target ON knowledge_relations(target_id);
+
+        CREATE TABLE IF NOT EXISTS entity_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject TEXT NOT NULL,
+            predicate TEXT NOT NULL,
+            object TEXT NOT NULL,
+            noted_at TEXT DEFAULT (datetime('now')),
+            session_id TEXT DEFAULT '',
+            UNIQUE(subject, predicate, object)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_er_subject ON entity_relations(subject);
+        CREATE INDEX IF NOT EXISTS idx_er_object ON entity_relations(object);
+
+        CREATE TABLE IF NOT EXISTS wakeup_config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT DEFAULT (datetime('now'))
+        );
     """)
 
     # Migrate existing databases: add new columns if missing
-    _ALLOWED_COLUMNS = {"source", "topic_key", "revision_count", "content_hash"}
+    _ALLOWED_COLUMNS = {"source", "topic_key", "revision_count", "content_hash",
+                        "wing", "room"}
     for col, col_def in [
         ("source", "TEXT DEFAULT 'copilot'"),
         ("topic_key", "TEXT"),
         ("revision_count", "INTEGER DEFAULT 1"),
         ("content_hash", "TEXT"),
+        ("wing", "TEXT DEFAULT ''"),
+        ("room", "TEXT DEFAULT ''"),
     ]:
         assert col in _ALLOWED_COLUMNS, f"Unexpected column: {col}"
         try:
@@ -124,7 +152,7 @@ def ensure_tables(db: sqlite3.Connection):
     # Create FTS table if needed (standalone, no content= sync issues)
     db.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
-            title, content, tags, category,
+            title, content, tags, category, wing, room,
             tokenize='unicode61 remove_diacritics 2'
         )
     """)

@@ -14,6 +14,10 @@ Usage:
     python learn.py --mistake "Title" "Description" --tags "docker,compose"
     python learn.py --mistake "Title" "Description" --session abc123
     python learn.py --mistake "Title" "Description" --confidence 0.8
+    python learn.py --mistake "Title" "Description" --wing backend --room dynamodb
+
+    python learn.py --relate "copyToGroup" "reads_from" "patient-dynamic-form.json"
+    python learn.py --relate "addPatient Lambda" "writes_to" "dataTable"
 
     python learn.py --from-file notes.md          # Bulk import from markdown
     python learn.py --list                        # List recent entries
@@ -37,6 +41,64 @@ if os.name == "nt":
 TOOLS_DIR = Path(__file__).parent
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
+
+# Wing auto-detection rules: tag patterns → wing
+_WING_RULES = [
+    ({"lambda", "dynamodb", "sqs", "cdk", "api", "cognito", "s3",
+      "eventbridge", "cloudwatch", "sns", "websocket", "nefoap"}, "backend"),
+    ({"expo", "react", "react-native", "screen", "component", "css",
+      "ui", "navigation", "hook"}, "frontend"),
+    ({"jest", "playwright", "e2e", "test", "testing", "coverage"}, "testing"),
+    ({"vpc", "cloudwatch", "cdk", "cloudformation", "infrastructure",
+      "deploy", "pipeline"}, "infrastructure"),
+    ({"git", "ci", "cd", "docker", "devops", "proxy", "tls", "npm",
+      "yarn", "package-manager"}, "devops"),
+    ({"typescript", "javascript", "eslint", "prettier", "i18n",
+      "mermaid", "openapi"}, "shared"),
+]
+
+# Room auto-detection rules: tag/title patterns → room
+_ROOM_RULES = [
+    ({"patient", "patient-search", "傷病者"}, "patient"),
+    ({"hospital", "病院"}, "hospital"),
+    ({"copytogroup", "copy-to-group", "傷病者追加"}, "copyToGroup"),
+    ({"websocket", "ws"}, "websocket"),
+    ({"dynamodb", "dao", "repository"}, "dynamodb"),
+    ({"auth", "cognito", "login"}, "auth"),
+    ({"s3", "media", "upload", "presigned"}, "s3-media"),
+    ({"sqs", "queue", "consumer"}, "sqs"),
+    ({"notification", "通知"}, "notification"),
+    ({"audit", "audit-log"}, "audit-log"),
+    ({"nefoap", "指令"}, "nefoap"),
+    ({"lambda", "handler"}, "lambda"),
+    ({"playwright", "e2e"}, "e2e"),
+    ({"excel", "spreadsheet", "tsv", "csv"}, "data-export"),
+    ({"cdk", "cloudformation", "stack"}, "cdk"),
+]
+
+
+def _detect_wing(tags: str, title: str, content: str) -> str:
+    """Auto-detect wing from tags/title/content."""
+    tag_set = {t.strip().lower() for t in tags.split(",") if t.strip()}
+    text_lower = f"{title} {content[:200]}".lower()
+    for patterns, wing in _WING_RULES:
+        if tag_set & patterns:
+            return wing
+        if any(p in text_lower for p in patterns):
+            return wing
+    return ""
+
+
+def _detect_room(tags: str, title: str, content: str) -> str:
+    """Auto-detect room from tags/title/content."""
+    tag_set = {t.strip().lower() for t in tags.split(",") if t.strip()}
+    text_lower = f"{title} {content[:300]}".lower()
+    for patterns, room in _ROOM_RULES:
+        if tag_set & patterns:
+            return room
+        if any(p in text_lower for p in patterns):
+            return room
+    return ""
 
 
 def get_db() -> sqlite3.Connection:
@@ -75,7 +137,8 @@ def detect_session_id() -> str:
 
 def add_entry(category: str, title: str, content: str,
               tags: str = "", session_id: str = None,
-              confidence: float = None) -> int:
+              confidence: float = None,
+              wing: str = "", room: str = "") -> int:
     """Add a knowledge entry to the database. Returns entry ID."""
     db = get_db()
 
@@ -85,6 +148,12 @@ def add_entry(category: str, title: str, content: str,
     if confidence is None:
         confidence = {"mistake": 0.7, "pattern": 0.6,
                       "decision": 0.8, "tool": 0.5}.get(category, 0.5)
+
+    # Auto-detect wing/room if not provided
+    if not wing:
+        wing = _detect_wing(tags, title, content)
+    if not room:
+        room = _detect_room(tags, title, content)
 
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -104,27 +173,31 @@ def add_entry(category: str, title: str, content: str,
         db.execute("""
             UPDATE knowledge_entries
             SET content = ?, occurrence_count = ?, confidence = ?,
-                last_seen = ?, tags = CASE WHEN ? != '' THEN ? ELSE tags END
+                last_seen = ?, tags = CASE WHEN ? != '' THEN ? ELSE tags END,
+                wing = CASE WHEN ? != '' THEN ? ELSE wing END,
+                room = CASE WHEN ? != '' THEN ? ELSE room END
             WHERE id = ?
         """, (new_content, new_count, new_confidence, now,
-              tags, tags, existing["id"]))
+              tags, tags, wing, wing, room, room, existing["id"]))
         entry_id = existing["id"]
+        loc = f" [{wing}/{room}]" if wing or room else ""
         print(f"  Updated existing entry #{entry_id} (seen {new_count}x, "
-              f"confidence → {new_confidence:.2f})")
+              f"confidence → {new_confidence:.2f}){loc}")
     else:
         # Insert new entry
         db.execute("""
             INSERT INTO knowledge_entries
                 (category, title, content, tags, confidence, session_id,
-                 occurrence_count, first_seen, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                 occurrence_count, first_seen, last_seen, wing, room)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
         """, (category, title, content, tags, confidence,
-              session_id, now, now))
+              session_id, now, now, wing, room))
         entry_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        print(f"  Added new {category} #{entry_id}")
+        loc = f" [{wing}/{room}]" if wing or room else ""
+        print(f"  Added new {category} #{entry_id}{loc}")
 
     # Update FTS index
-    _update_fts(db, entry_id, title, content, tags, category)
+    _update_fts(db, entry_id, title, content, tags, category, wing, room)
 
     # Generate embedding for the new entry
     _embed_entry(db, entry_id, title, content)
@@ -135,14 +208,15 @@ def add_entry(category: str, title: str, content: str,
 
 
 def _update_fts(db: sqlite3.Connection, entry_id: int,
-                title: str, content: str, tags: str, category: str):
+                title: str, content: str, tags: str, category: str,
+                wing: str = "", room: str = ""):
     """Update the standalone FTS5 table for this entry."""
     try:
         db.execute("DELETE FROM ke_fts WHERE rowid = ?", (entry_id,))
         db.execute("""
-            INSERT INTO ke_fts (rowid, title, content, tags, category)
-            VALUES (?, ?, ?, ?, ?)
-        """, (entry_id, title, content, tags, category))
+            INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (entry_id, title, content, tags, category, wing, room))
     except sqlite3.OperationalError:
         pass  # ke_fts might not exist yet
 
@@ -276,15 +350,66 @@ def show_stats():
         print(f"  {row['category']:10s}: {row['cnt']:3d} entries  "
               f"avg_conf={row['avg_conf']}  total_seen={row['total_seen']}")
 
+    # Wing breakdown
+    wings = db.execute("""
+        SELECT wing, COUNT(*) as cnt FROM knowledge_entries
+        WHERE wing != '' GROUP BY wing ORDER BY cnt DESC
+    """).fetchall()
+    if wings:
+        print(f"\nWings:")
+        for w in wings:
+            print(f"  {w['wing']:15s}: {w['cnt']:3d}")
+
+    # Room breakdown (top 10)
+    rooms = db.execute("""
+        SELECT room, COUNT(*) as cnt FROM knowledge_entries
+        WHERE room != '' GROUP BY room ORDER BY cnt DESC LIMIT 10
+    """).fetchall()
+    if rooms:
+        print(f"\nTop rooms:")
+        for r in rooms:
+            print(f"  {r['room']:15s}: {r['cnt']:3d}")
+
+    # Knowledge graph stats
+    try:
+        rel_count = db.execute("SELECT COUNT(*) FROM entity_relations").fetchone()[0]
+        print(f"\nKnowledge graph: {rel_count} relations")
+    except sqlite3.OperationalError:
+        pass
+
     # Embedding coverage
     try:
         emb_count = db.execute(
             "SELECT COUNT(*) FROM embeddings WHERE source_type='knowledge'"
         ).fetchone()[0]
-        print(f"\nEmbedded: {emb_count}/{total}")
+        print(f"Embedded: {emb_count}/{total}")
     except sqlite3.OperationalError:
         pass
 
+    db.close()
+
+
+def add_relation(subject: str, predicate: str, obj: str,
+                 session_id: str = None):
+    """Add a knowledge relation (lightweight knowledge graph)."""
+    db = get_db()
+    if not session_id:
+        session_id = detect_session_id()
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+    try:
+        db.execute("""
+            INSERT OR IGNORE INTO entity_relations
+                (subject, predicate, object, noted_at, session_id)
+            VALUES (?, ?, ?, ?, ?)
+        """, (subject, predicate, obj, now, session_id))
+        db.commit()
+        if db.total_changes:
+            print(f"  ✅ Relation: {subject} --[{predicate}]--> {obj}")
+        else:
+            print(f"  — Relation already exists")
+    except sqlite3.OperationalError as e:
+        print(f"  ❌ Error: {e}. Run migrate-knowledge-v2.py first.")
     db.close()
 
 
@@ -315,6 +440,17 @@ def main():
             print("Error: --from-file requires a filepath")
         return
 
+    # Handle --relate command
+    if "--relate" in args:
+        idx = args.index("--relate")
+        positional = [a for a in args[idx + 1:] if not a.startswith("--")]
+        if len(positional) < 3:
+            print('Error: --relate needs 3 args: subject predicate object')
+            print('  Example: python learn.py --relate "copyToGroup" "reads_from" "config.json"')
+            return
+        add_relation(positional[0], positional[1], positional[2])
+        return
+
     # Parse category flag
     category = None
     for flag, cat in [("--mistake", "mistake"), ("--pattern", "pattern"),
@@ -324,14 +460,16 @@ def main():
             break
 
     if not category:
-        print("Error: Specify a category: --mistake, --pattern, --decision, or --tool")
-        print("Run --help for usage.")
+        print("Error: Specify a category: --mistake, --pattern, --decision, --tool")
+        print("Or use --relate for knowledge graph. Run --help for usage.")
         return
 
     # Parse optional flags
     tags = ""
     session_id = None
     confidence = None
+    wing = ""
+    room = ""
 
     if "--tags" in args:
         idx = args.index("--tags")
@@ -345,6 +483,14 @@ def main():
         idx = args.index("--confidence")
         confidence = float(args[idx + 1]) if idx + 1 < len(args) else None
 
+    if "--wing" in args:
+        idx = args.index("--wing")
+        wing = args[idx + 1] if idx + 1 < len(args) else ""
+
+    if "--room" in args:
+        idx = args.index("--room")
+        room = args[idx + 1] if idx + 1 < len(args) else ""
+
     # Extract title and content (positional args after flag)
     positional = []
     skip_next = False
@@ -354,7 +500,8 @@ def main():
             continue
         if a in ("--mistake", "--pattern", "--decision", "--tool"):
             continue
-        if a in ("--tags", "--session", "--confidence", "--limit"):
+        if a in ("--tags", "--session", "--confidence", "--limit",
+                 "--wing", "--room"):
             skip_next = True
             continue
         if a.startswith("--"):
@@ -371,7 +518,8 @@ def main():
 
     print(f"Recording {category}...")
     add_entry(category, title, content, tags=tags,
-              session_id=session_id, confidence=confidence)
+              session_id=session_id, confidence=confidence,
+              wing=wing, room=room)
     print("Done.")
 
 
