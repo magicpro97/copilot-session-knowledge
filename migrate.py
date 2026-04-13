@@ -5,7 +5,12 @@ import sqlite3, sys, os
 if len(sys.argv) < 2:
     sys.argv.append(os.path.expanduser("~/.copilot/session-state/knowledge.db"))
 db = sqlite3.connect(sys.argv[1])
-db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT DEFAULT (datetime('now')))" )
+db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, migrated_at TEXT DEFAULT (datetime('now')))")
+# Add name column if missing (compat with old schema)
+try:
+    db.execute("ALTER TABLE schema_version ADD COLUMN name TEXT DEFAULT ''")
+except sqlite3.OperationalError:
+    pass
 current = db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] or 0
 MIGRATIONS = [
     (2, "add_wing_room", [
@@ -30,7 +35,7 @@ for ver, name, stmts in MIGRATIONS:
             except sqlite3.OperationalError as e:
                 if "duplicate" in str(e).lower() or "already exists" in str(e).lower(): pass
                 else: raise
-        db.execute("INSERT INTO schema_version (version, name) VALUES (?, ?)", (ver, name))
+        db.execute("INSERT OR IGNORE INTO schema_version (version, name) VALUES (?, ?)", (ver, name))
         db.commit(); applied += 1
         print(f"  [migrate] v{ver}: {name}")
     except Exception as e:
