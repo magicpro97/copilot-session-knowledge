@@ -561,7 +561,7 @@ def install_services():
     platform = _detect_platform()
     python = _find_python()
     watcher_script = str(TOOLS_DIR / "watch-sessions.py")
-    updater_script = str(TOOLS_DIR / "auto-update-tools.sh")
+    updater_script = str(TOOLS_DIR / "auto-update-tools.py")
     log_dir = SESSION_STATE
 
     print(f"\nInstalling Services ({platform})")
@@ -623,7 +623,7 @@ def _install_systemd(python: str, watcher: str, updater: str, log_dir: Path):
 
         [Service]
         Type=oneshot
-        ExecStart=/bin/bash {updater} --force
+        ExecStart={python} {updater} --force
         WorkingDirectory={TOOLS_DIR}
         StandardOutput=append:{log_dir}/auto-update.log
         StandardError=append:{log_dir}/auto-update.error.log
@@ -744,7 +744,7 @@ def _install_launchd(python: str, watcher: str, updater: str, log_dir: Path):
 
             <key>ProgramArguments</key>
             <array>
-                <string>/bin/bash</string>
+                <string>{python}</string>
                 <string>{updater}</string>
                 <string>--force</string>
             </array>
@@ -822,10 +822,7 @@ def _install_task_scheduler(python: str, watcher: str, updater: str):
     updater_bat.write_text(
         f'@echo off\r\n'
         f'cd /d "{TOOLS_DIR}"\r\n'
-        f'bash "{updater}" --force\r\n'
-        f'if errorlevel 1 (\r\n'
-        f'  "{python}" "{TOOLS_DIR / "auto-update-tools.sh"}" --force 2>nul\r\n'
-        f')\r\n',
+        f'"{python}" "{updater}" --force\r\n',
         encoding="utf-8",
     )
 

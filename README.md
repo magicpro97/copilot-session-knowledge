@@ -180,16 +180,16 @@ Wings and rooms are **auto-detected** from tags/title. Override with `--wing`/`-
 ### Auto-Update
 
 ```bash
-bash ~/.copilot/tools/auto-update-tools.sh           # Auto-update (24h cooldown)
-bash ~/.copilot/tools/auto-update-tools.sh --force    # Force update now
-bash ~/.copilot/tools/auto-update-tools.sh --status   # Show version info
-bash ~/.copilot/tools/auto-update-tools.sh --doctor   # Health check
+python3 ~/.copilot/tools/auto-update-tools.py           # Auto-update (24h cooldown)
+python3 ~/.copilot/tools/auto-update-tools.py --force    # Force update now
+python3 ~/.copilot/tools/auto-update-tools.py --status   # Show version info
+python3 ~/.copilot/tools/auto-update-tools.py --doctor   # Health check
 ```
 
 Add to `~/.zshrc` or `~/.bashrc` for auto-start:
 ```bash
 # Auto-update session-knowledge tools (background, 24h cooldown)
-(bash ~/.copilot/tools/auto-update-tools.sh &) 2>/dev/null
+(python3 ~/.copilot/tools/auto-update-tools.py &) 2>/dev/null
 ```
 
 ## Architecture
@@ -226,7 +226,7 @@ flowchart TD
 4. **Palace** — Wing/room auto-categorization from tags/title for hierarchical browsing
 5. **Search** — FTS5 keyword + optional semantic vector (Reciprocal Rank Fusion)
 6. **Watch** — `watch-sessions.py` polls for changes, auto re-indexes
-7. **Update** — `auto-update-tools.sh` git-based auto-update with DB migration
+7. **Update** — `auto-update-tools.py` cross-platform git-based auto-update with DB migration
 
 ## Maintenance
 

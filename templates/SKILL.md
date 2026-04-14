@@ -126,10 +126,10 @@ python3 ~/.copilot/tools/learn.py --stats                  # Knowledge base stat
 ### 7. Auto-Update Tools
 
 ```bash
-bash ~/.copilot/tools/auto-update-tools.sh              # Auto-update (24h cooldown)
-bash ~/.copilot/tools/auto-update-tools.sh --force       # Force update now
-bash ~/.copilot/tools/auto-update-tools.sh --status      # Show version info
-bash ~/.copilot/tools/auto-update-tools.sh --doctor      # Health check
+python3 ~/.copilot/tools/auto-update-tools.py              # Auto-update (24h cooldown)
+python3 ~/.copilot/tools/auto-update-tools.py --force       # Force update now
+python3 ~/.copilot/tools/auto-update-tools.py --status      # Show version info
+python3 ~/.copilot/tools/auto-update-tools.py --doctor      # Health check
 ```
 
 ## Interpreting Results
