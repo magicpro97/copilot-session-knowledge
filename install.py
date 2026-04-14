@@ -3,12 +3,15 @@
 install.py — Smart installer for session knowledge tools
 
 Usage:
-    python install.py                    # Auto-detect and show status
-    python install.py --deploy-skill     # Deploy SKILL.md to current project
-    python install.py --inject-global    # Add session-knowledge to global copilot-instructions
-    python install.py --test             # Run self-test
-    python install.py --uninstall        # Remove installed files
-    python install.py --help             # Show this help
+    python install.py                        # Auto-detect and show status
+    python install.py --deploy-skill         # Deploy SKILL.md to current project
+    python install.py --inject-global        # Add session-knowledge to global copilot-instructions
+    python install.py --install-services     # Install auto-start services (systemd/launchd/Task Scheduler)
+    python install.py --uninstall-services   # Remove auto-start services
+    python install.py --service-status       # Show service status
+    python install.py --test                 # Run self-test
+    python install.py --uninstall            # Remove installed files
+    python install.py --help                 # Show this help
 """
 
 import importlib.util
@@ -252,6 +255,15 @@ def show_status() -> bool:
     else:
         print(f"  {FAIL} Watcher:     not running")
 
+    # Services
+    svc = _service_status()
+    if svc["watcher"] == "active":
+        print(f"  {OK} Services:    installed ({svc['platform']})")
+    elif svc["watcher"] is not None:
+        print(f"  {INFO} Services:    {svc['watcher']} ({svc['platform']})")
+    else:
+        print(f"  {FAIL} Services:    not installed (run --install-services)")
+
     return installed
 
 
@@ -464,6 +476,575 @@ def inject_global():
         print(f"  {OK} Created {_tilde(GLOBAL_INSTRUCTIONS)} with session-knowledge section")
 
     print(f"  {INFO} AI agents will now be required to run briefing.py before complex tasks")
+
+
+# ===================================================================
+# 3a. Service Installation (systemd / launchd / Task Scheduler)
+# ===================================================================
+
+def _detect_platform() -> str:
+    """Detect platform: 'linux', 'macos', or 'windows'."""
+    if sys.platform == "darwin":
+        return "macos"
+    if os.name == "nt":
+        return "windows"
+    return "linux"
+
+
+def _find_python() -> str:
+    """Find the best python3 path for service definitions."""
+    # Use the currently running interpreter
+    exe = sys.executable
+    if exe:
+        return exe
+    # Fallback
+    for p in ["/home/linuxbrew/.linuxbrew/bin/python3",
+              "/opt/homebrew/bin/python3",
+              "/usr/local/bin/python3",
+              "/usr/bin/python3"]:
+        if Path(p).exists():
+            return p
+    return "python3"
+
+
+def _service_status() -> dict:
+    """Check status of installed services across platforms."""
+    platform = _detect_platform()
+    result = {"platform": platform, "watcher": None, "updater": None}
+
+    if platform == "linux":
+        for svc, key in [("copilot-watch-sessions.service", "watcher"),
+                         ("copilot-auto-update.timer", "updater")]:
+            try:
+                r = subprocess.run(
+                    ["systemctl", "--user", "is-active", svc],
+                    capture_output=True, text=True, timeout=5,
+                )
+                result[key] = r.stdout.strip()  # "active", "inactive", "failed"
+            except Exception:
+                pass
+
+    elif platform == "macos":
+        for label, key in [("com.copilot.watch-sessions", "watcher"),
+                           ("com.copilot.auto-update", "updater")]:
+            plist = HOME / "Library" / "LaunchAgents" / f"{label}.plist"
+            if plist.exists():
+                try:
+                    r = subprocess.run(
+                        ["launchctl", "list", label],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    result[key] = "active" if r.returncode == 0 else "loaded"
+                except Exception:
+                    result[key] = "installed"
+            else:
+                result[key] = None
+
+    elif platform == "windows":
+        for task_name, key in [("CopilotWatchSessions", "watcher"),
+                               ("CopilotAutoUpdate", "updater")]:
+            try:
+                r = subprocess.run(
+                    ["schtasks", "/Query", "/TN", task_name, "/FO", "CSV", "/NH"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if r.returncode == 0 and task_name in r.stdout:
+                    result[key] = "active"
+            except Exception:
+                pass
+
+    return result
+
+
+def install_services():
+    """Install auto-start services for watcher and auto-update."""
+    platform = _detect_platform()
+    python = _find_python()
+    watcher_script = str(TOOLS_DIR / "watch-sessions.py")
+    updater_script = str(TOOLS_DIR / "auto-update-tools.sh")
+    log_dir = SESSION_STATE
+
+    print(f"\nInstalling Services ({platform})")
+    print(f"  Python:  {python}")
+    print(f"  Watcher: {_tilde(Path(watcher_script))}")
+    print(f"  Updater: {_tilde(Path(updater_script))}")
+
+    if platform == "linux":
+        _install_systemd(python, watcher_script, updater_script, log_dir)
+    elif platform == "macos":
+        _install_launchd(python, watcher_script, updater_script, log_dir)
+    elif platform == "windows":
+        _install_task_scheduler(python, watcher_script, updater_script)
+    else:
+        print(f"  {FAIL} Unsupported platform: {platform}")
+        return
+
+    print(f"\n  {OK} Services installed successfully!")
+    print(f"  Run: python {_tilde(TOOLS_DIR / 'install.py')} --service-status")
+
+
+def _install_systemd(python: str, watcher: str, updater: str, log_dir: Path):
+    """Install systemd user services (Linux)."""
+    unit_dir = HOME / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- watch-sessions.service ---
+    watcher_unit = unit_dir / "copilot-watch-sessions.service"
+    watcher_content = textwrap.dedent(f"""\
+        [Unit]
+        Description=Copilot Session Knowledge Watcher
+        After=default.target
+        StartLimitIntervalSec=300
+        StartLimitBurst=5
+
+        [Service]
+        Type=simple
+        ExecStart={python} {watcher} --interval 60
+        WorkingDirectory={TOOLS_DIR}
+        Restart=always
+        RestartSec=10
+        StandardOutput=append:{log_dir}/watch-sessions.log
+        StandardError=append:{log_dir}/watch-sessions.error.log
+        Environment="PATH={Path(python).parent}:/usr/local/bin:/usr/bin:/bin"
+        Environment="PYTHONUNBUFFERED=1"
+
+        [Install]
+        WantedBy=default.target
+    """)
+    watcher_unit.write_text(watcher_content, encoding="utf-8")
+    print(f"  {OK} Created {_tilde(watcher_unit)}")
+
+    # --- auto-update.service (oneshot) ---
+    updater_unit = unit_dir / "copilot-auto-update.service"
+    updater_content = textwrap.dedent(f"""\
+        [Unit]
+        Description=Copilot Session Knowledge Auto-Update
+        After=network.target
+
+        [Service]
+        Type=oneshot
+        ExecStart=/bin/bash {updater} --force
+        WorkingDirectory={TOOLS_DIR}
+        StandardOutput=append:{log_dir}/auto-update.log
+        StandardError=append:{log_dir}/auto-update.error.log
+        Environment="PATH={Path(python).parent}:/usr/local/bin:/usr/bin:/bin"
+        Environment="HOME={HOME}"
+    """)
+    updater_unit.write_text(updater_content, encoding="utf-8")
+    print(f"  {OK} Created {_tilde(updater_unit)}")
+
+    # --- auto-update.timer ---
+    timer_unit = unit_dir / "copilot-auto-update.timer"
+    timer_content = textwrap.dedent("""\
+        [Unit]
+        Description=Copilot Session Knowledge Auto-Update Timer
+
+        [Timer]
+        OnBootSec=5min
+        OnUnitActiveSec=24h
+        Persistent=true
+
+        [Install]
+        WantedBy=timers.target
+    """)
+    timer_unit.write_text(timer_content, encoding="utf-8")
+    print(f"  {OK} Created {_tilde(timer_unit)}")
+
+    # Reload, enable, start
+    cmds = [
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", "--now", "copilot-watch-sessions.service"],
+        ["systemctl", "--user", "enable", "--now", "copilot-auto-update.timer"],
+    ]
+    for cmd in cmds:
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        except Exception as e:
+            print(f"  {FAIL} {' '.join(cmd)}: {e}")
+            return
+    print(f"  {OK} Services enabled and started")
+
+    # Enable linger (survive logout)
+    try:
+        subprocess.run(
+            ["loginctl", "enable-linger", os.environ.get("USER", "")],
+            capture_output=True, text=True, timeout=10,
+        )
+        print(f"  {OK} Linger enabled (services persist after logout)")
+    except Exception:
+        print(f"  {INFO} Could not enable linger — services may stop on logout")
+
+
+def _install_launchd(python: str, watcher: str, updater: str, log_dir: Path):
+    """Install launchd agents (macOS)."""
+    agents_dir = HOME / "Library" / "LaunchAgents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- Watch Sessions ---
+    watcher_plist = agents_dir / "com.copilot.watch-sessions.plist"
+    watcher_content = textwrap.dedent(f"""\
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+          "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key>
+            <string>com.copilot.watch-sessions</string>
+
+            <key>ProgramArguments</key>
+            <array>
+                <string>{python}</string>
+                <string>{watcher}</string>
+                <string>--interval</string>
+                <string>60</string>
+            </array>
+
+            <key>WorkingDirectory</key>
+            <string>{TOOLS_DIR}</string>
+
+            <key>RunAtLoad</key>
+            <true/>
+
+            <key>KeepAlive</key>
+            <dict>
+                <key>SuccessfulExit</key>
+                <false/>
+            </dict>
+
+            <key>StandardOutPath</key>
+            <string>{log_dir}/watch-sessions.log</string>
+
+            <key>StandardErrorPath</key>
+            <string>{log_dir}/watch-sessions.error.log</string>
+
+            <key>ThrottleInterval</key>
+            <integer>30</integer>
+
+            <key>EnvironmentVariables</key>
+            <dict>
+                <key>PYTHONUNBUFFERED</key>
+                <string>1</string>
+            </dict>
+        </dict>
+        </plist>
+    """)
+    watcher_plist.write_text(watcher_content, encoding="utf-8")
+    print(f"  {OK} Created {_tilde(watcher_plist)}")
+
+    # --- Auto-Update (runs every 24h) ---
+    updater_plist = agents_dir / "com.copilot.auto-update.plist"
+    updater_content = textwrap.dedent(f"""\
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+          "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key>
+            <string>com.copilot.auto-update</string>
+
+            <key>ProgramArguments</key>
+            <array>
+                <string>/bin/bash</string>
+                <string>{updater}</string>
+                <string>--force</string>
+            </array>
+
+            <key>WorkingDirectory</key>
+            <string>{TOOLS_DIR}</string>
+
+            <key>StartInterval</key>
+            <integer>86400</integer>
+
+            <key>RunAtLoad</key>
+            <true/>
+
+            <key>StandardOutPath</key>
+            <string>{log_dir}/auto-update.log</string>
+
+            <key>StandardErrorPath</key>
+            <string>{log_dir}/auto-update.error.log</string>
+
+            <key>EnvironmentVariables</key>
+            <dict>
+                <key>PATH</key>
+                <string>{Path(python).parent}:/usr/local/bin:/usr/bin:/bin</string>
+            </dict>
+        </dict>
+        </plist>
+    """)
+    updater_plist.write_text(updater_content, encoding="utf-8")
+    print(f"  {OK} Created {_tilde(updater_plist)}")
+
+    # Load agents
+    for label, plist in [("com.copilot.watch-sessions", watcher_plist),
+                         ("com.copilot.auto-update", updater_plist)]:
+        try:
+            # Unload first if already loaded
+            subprocess.run(
+                ["launchctl", "bootout", f"gui/{os.getuid()}", str(plist)],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(
+                ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                print(f"  {OK} Loaded {label}")
+            else:
+                # Fallback for older macOS
+                subprocess.run(
+                    ["launchctl", "load", "-w", str(plist)],
+                    capture_output=True, text=True, timeout=10,
+                )
+                print(f"  {OK} Loaded {label} (legacy)")
+        except Exception as e:
+            print(f"  {FAIL} Could not load {label}: {e}")
+
+
+def _install_task_scheduler(python: str, watcher: str, updater: str):
+    """Install Windows Task Scheduler tasks."""
+    # --- Watch Sessions (runs at logon, restarts on failure) ---
+    # Create a wrapper .bat that restarts python if it crashes
+    bat_dir = TOOLS_DIR / "scripts"
+    bat_dir.mkdir(parents=True, exist_ok=True)
+
+    watcher_bat = bat_dir / "watch-sessions.bat"
+    watcher_bat.write_text(
+        f'@echo off\r\n'
+        f'"{python}" "{watcher}" --interval 60\r\n',
+        encoding="utf-8",
+    )
+
+    updater_bat = bat_dir / "auto-update.bat"
+    updater_bat.write_text(
+        f'@echo off\r\n'
+        f'cd /d "{TOOLS_DIR}"\r\n'
+        f'bash "{updater}" --force\r\n'
+        f'if errorlevel 1 (\r\n'
+        f'  "{python}" "{TOOLS_DIR / "auto-update-tools.sh"}" --force 2>nul\r\n'
+        f')\r\n',
+        encoding="utf-8",
+    )
+
+    # Use PowerShell to create scheduled tasks (more reliable than schtasks for complex configs)
+    ps_script = textwrap.dedent(f"""\
+        # Watch Sessions — runs at logon, restarts on failure
+        $watchAction = New-ScheduledTaskAction `
+            -Execute '"{python}"' `
+            -Argument '"{watcher}" --interval 60' `
+            -WorkingDirectory '"{TOOLS_DIR}"'
+
+        $watchTrigger = New-ScheduledTaskTrigger -AtLogOn
+        $watchSettings = New-ScheduledTaskSettingsSet `
+            -AllowStartIfOnBatteries `
+            -DontStopIfGoingOnBatteries `
+            -RestartInterval (New-TimeSpan -Minutes 1) `
+            -RestartCount 999 `
+            -ExecutionTimeLimit (New-TimeSpan -Days 365)
+
+        Unregister-ScheduledTask -TaskName 'CopilotWatchSessions' -Confirm:$false -ErrorAction SilentlyContinue
+        Register-ScheduledTask `
+            -TaskName 'CopilotWatchSessions' `
+            -Description 'Copilot Session Knowledge Watcher' `
+            -Action $watchAction `
+            -Trigger $watchTrigger `
+            -Settings $watchSettings `
+            -RunLevel Limited
+
+        # Auto-Update — runs daily
+        $updateAction = New-ScheduledTaskAction `
+            -Execute '"{python}"' `
+            -Argument '-c "import subprocess,sys; subprocess.run([\\\"bash\\\", \\\"{updater}\\\", \\\"--force\\\"])"' `
+            -WorkingDirectory '"{TOOLS_DIR}"'
+
+        $updateTrigger = New-ScheduledTaskTrigger -Daily -At '03:00AM'
+        $updateSettings = New-ScheduledTaskSettingsSet `
+            -AllowStartIfOnBatteries `
+            -DontStopIfGoingOnBatteries `
+            -StartWhenAvailable
+
+        Unregister-ScheduledTask -TaskName 'CopilotAutoUpdate' -Confirm:$false -ErrorAction SilentlyContinue
+        Register-ScheduledTask `
+            -TaskName 'CopilotAutoUpdate' `
+            -Description 'Copilot Session Knowledge Auto-Update (daily)' `
+            -Action $updateAction `
+            -Trigger $updateTrigger `
+            -Settings $updateSettings `
+            -RunLevel Limited
+
+        # Start watcher now
+        Start-ScheduledTask -TaskName 'CopilotWatchSessions'
+    """)
+
+    ps_file = bat_dir / "install-tasks.ps1"
+    ps_file.write_text(ps_script, encoding="utf-8")
+
+    try:
+        r = subprocess.run(
+            ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(ps_file)],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode == 0:
+            print(f"  {OK} Created Task: CopilotWatchSessions (runs at logon)")
+            print(f"  {OK} Created Task: CopilotAutoUpdate (daily at 3:00 AM)")
+            print(f"  {OK} Watcher started")
+        else:
+            # Fallback to schtasks.exe
+            print(f"  {INFO} PowerShell failed, trying schtasks...")
+            _install_schtasks_fallback(python, watcher, updater)
+    except FileNotFoundError:
+        # No PowerShell, use schtasks
+        _install_schtasks_fallback(python, watcher, updater)
+    except Exception as e:
+        print(f"  {FAIL} Task Scheduler error: {e}")
+
+
+def _install_schtasks_fallback(python: str, watcher: str, updater: str):
+    """Fallback: use schtasks.exe directly (less features but more compatible)."""
+    try:
+        # Watcher: run at logon
+        subprocess.run([
+            "schtasks", "/Create", "/F",
+            "/TN", "CopilotWatchSessions",
+            "/TR", f'"{python}" "{watcher}" --interval 60',
+            "/SC", "ONLOGON",
+            "/RL", "LIMITED",
+        ], capture_output=True, text=True, timeout=15, check=True)
+        print(f"  {OK} Created CopilotWatchSessions (schtasks)")
+
+        # Updater: daily at 3 AM
+        subprocess.run([
+            "schtasks", "/Create", "/F",
+            "/TN", "CopilotAutoUpdate",
+            "/TR", f'"{python}" -c "import subprocess; subprocess.run([\'bash\', \'{updater}\', \'--force\'])"',
+            "/SC", "DAILY",
+            "/ST", "03:00",
+            "/RL", "LIMITED",
+        ], capture_output=True, text=True, timeout=15, check=True)
+        print(f"  {OK} Created CopilotAutoUpdate (schtasks)")
+
+        # Start watcher now
+        subprocess.run(
+            ["schtasks", "/Run", "/TN", "CopilotWatchSessions"],
+            capture_output=True, text=True, timeout=10,
+        )
+        print(f"  {OK} Watcher started")
+    except Exception as e:
+        print(f"  {FAIL} schtasks error: {e}")
+
+
+def uninstall_services():
+    """Remove auto-start services from the current platform."""
+    platform = _detect_platform()
+    print(f"\nUninstalling Services ({platform})")
+
+    if platform == "linux":
+        cmds = [
+            ["systemctl", "--user", "disable", "--now", "copilot-watch-sessions.service"],
+            ["systemctl", "--user", "disable", "--now", "copilot-auto-update.timer"],
+            ["systemctl", "--user", "stop", "copilot-auto-update.service"],
+        ]
+        for cmd in cmds:
+            try:
+                subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            except Exception:
+                pass
+
+        unit_dir = HOME / ".config" / "systemd" / "user"
+        for name in ["copilot-watch-sessions.service",
+                      "copilot-auto-update.service",
+                      "copilot-auto-update.timer"]:
+            f = unit_dir / name
+            if f.exists():
+                f.unlink()
+                print(f"  {OK} Removed {_tilde(f)}")
+
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "daemon-reload"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception:
+            pass
+
+    elif platform == "macos":
+        agents_dir = HOME / "Library" / "LaunchAgents"
+        for label in ["com.copilot.watch-sessions", "com.copilot.auto-update"]:
+            plist = agents_dir / f"{label}.plist"
+            if plist.exists():
+                try:
+                    subprocess.run(
+                        ["launchctl", "bootout", f"gui/{os.getuid()}", str(plist)],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                except Exception:
+                    try:
+                        subprocess.run(
+                            ["launchctl", "unload", str(plist)],
+                            capture_output=True, text=True, timeout=10,
+                        )
+                    except Exception:
+                        pass
+                plist.unlink()
+                print(f"  {OK} Removed {_tilde(plist)}")
+
+    elif platform == "windows":
+        for task_name in ["CopilotWatchSessions", "CopilotAutoUpdate"]:
+            try:
+                r = subprocess.run(
+                    ["schtasks", "/Delete", "/TN", task_name, "/F"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if r.returncode == 0:
+                    print(f"  {OK} Removed {task_name}")
+            except Exception:
+                pass
+
+        # Clean up bat/ps1 scripts
+        scripts_dir = TOOLS_DIR / "scripts"
+        if scripts_dir.is_dir():
+            shutil.rmtree(str(scripts_dir), ignore_errors=True)
+            print(f"  {OK} Removed {_tilde(scripts_dir)}")
+
+    print(f"  {OK} Services uninstalled")
+
+
+def show_service_status():
+    """Show status of installed services."""
+    status = _service_status()
+    platform = status["platform"]
+    print(f"\nService Status ({platform})")
+
+    labels = {"watcher": "Watch Sessions", "updater": "Auto-Update"}
+    for key in ["watcher", "updater"]:
+        state = status[key]
+        label = labels[key]
+        if state == "active":
+            print(f"  {OK} {label}: running")
+        elif state is None:
+            print(f"  {FAIL} {label}: not installed")
+        else:
+            print(f"  {INFO} {label}: {state}")
+
+    # Platform-specific details
+    if platform == "linux":
+        print(f"\n  Commands:")
+        print(f"    systemctl --user status copilot-watch-sessions")
+        print(f"    systemctl --user restart copilot-watch-sessions")
+        print(f"    journalctl --user -u copilot-watch-sessions -f")
+        print(f"    systemctl --user list-timers")
+    elif platform == "macos":
+        print(f"\n  Commands:")
+        print(f"    launchctl list | grep copilot")
+        print(f"    tail -f ~/.copilot/session-state/watch-sessions.log")
+    elif platform == "windows":
+        print(f"\n  Commands:")
+        print(f"    schtasks /Query /TN CopilotWatchSessions")
+        print(f"    schtasks /Query /TN CopilotAutoUpdate")
+        print(f"    Get-ScheduledTask -TaskName Copilot*  (PowerShell)")
 
 
 # ===================================================================
@@ -696,17 +1277,17 @@ def _show_usage_hints():
     """Print helpful next-step commands."""
     qs = _tilde(TOOLS_DIR / "query-session.py")
     br = _tilde(TOOLS_DIR / "briefing.py")
-    ws = _tilde(TOOLS_DIR / "watch-sessions.py")
     inst = _tilde(TOOLS_DIR / "install.py")
     print(f"\n  Quick start:")
     print(f"    python {qs} \"search terms\"   # Search knowledge base")
     print(f"    python {br} \"your task\"       # Context briefing")
-    print(f"    python {ws}                    # Start watcher daemon")
     print(f"\n  Management:")
-    print(f"    python {inst} --deploy-skill   # Add skill to project")
-    print(f"    python {inst} --inject-global  # Add to global copilot-instructions")
-    print(f"    python {inst} --test           # Run self-test")
-    print(f"    python {inst} --uninstall      # Remove tools")
+    print(f"    python {inst} --install-services    # Auto-start watcher + updater")
+    print(f"    python {inst} --service-status      # Check service status")
+    print(f"    python {inst} --deploy-skill        # Add skill to project")
+    print(f"    python {inst} --inject-global       # Add to global copilot-instructions")
+    print(f"    python {inst} --test                # Run self-test")
+    print(f"    python {inst} --uninstall           # Remove tools")
 
 
 # ===================================================================
@@ -726,6 +1307,18 @@ def main():
 
     if "--inject-global" in args:
         inject_global()
+        return
+
+    if "--install-services" in args:
+        install_services()
+        return
+
+    if "--uninstall-services" in args:
+        uninstall_services()
+        return
+
+    if "--service-status" in args:
+        show_service_status()
         return
 
     if "--test" in args:
