@@ -854,7 +854,7 @@ def _install_task_scheduler(python: str, watcher: str, updater: str):
         # Auto-Update — runs daily
         $updateAction = New-ScheduledTaskAction `
             -Execute '"{python}"' `
-            -Argument '-c "import subprocess,sys; subprocess.run([\\\"bash\\\", \\\"{updater}\\\", \\\"--force\\\"])"' `
+            -Argument '"{updater}" --force' `
             -WorkingDirectory '"{TOOLS_DIR}"'
 
         $updateTrigger = New-ScheduledTaskTrigger -Daily -At '03:00AM'
