@@ -121,6 +121,15 @@ deploy_skills() {
 
 # --- Restart processes ---
 restart_processes() {
+    # Prefer systemd if the service exists
+    if systemctl --user is-enabled copilot-watch-sessions.service &>/dev/null; then
+        log "Restarting watch-sessions via systemd..."
+        systemctl --user restart copilot-watch-sessions.service
+        ok "watch-sessions restarted (systemd)"
+        return
+    fi
+
+    # Fallback: manual restart
     local pids
     pids=$(pgrep -f "watch-sessions.py" 2>/dev/null || true)
     if [[ -n "$pids" ]]; then
