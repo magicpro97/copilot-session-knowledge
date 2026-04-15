@@ -342,6 +342,7 @@ Pre-built Copilot CLI hook scripts — customize and install per project:
 | `commit-gate.sh` | preToolUse | Blocks commit until verification requirements met |
 | `test-reminder.sh` | postToolUse | Reminds to write tests when creating source files |
 | `build-reminder.sh` | postToolUse | Reminds to verify build after N source file edits |
+| `docs-reminder.sh/.py` | postToolUse | Warns after 3+ code edits without doc updates (cross-platform) |
 | `session-banner.sh` | postToolUse | Shows session start checklist |
 
 ### Project Setup
