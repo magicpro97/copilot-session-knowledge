@@ -105,6 +105,39 @@ def _detect_room(tags: str, title: str, content: str) -> str:
     return ""
 
 
+# Injection scanning patterns (inspired by Hermes Agent memory security)
+# Block prompt injection, role hijacking, credential exfiltration, invisible Unicode
+import re
+
+_INJECTION_PATTERNS = [
+    (re.compile(r"(?i)\bignore\s+(all\s+)?previous\s+instructions?\b"), "prompt injection: 'ignore previous instructions'"),
+    (re.compile(r"(?i)\byou\s+are\s+now\b"), "role hijacking: 'you are now'"),
+    (re.compile(r"(?i)\bsystem\s*:\s*"), "role injection: 'system:' prefix"),
+    (re.compile(r"(?i)\b(assistant|user|human)\s*:\s*"), "role injection: fake role prefix"),
+    (re.compile(r"(?i)\bforget\s+(everything|all|your)\b"), "memory manipulation: 'forget everything'"),
+    (re.compile(r"(?i)\bdo\s+not\s+follow\b"), "instruction override: 'do not follow'"),
+    (re.compile(r"(?i)\b(api[_-]?key|secret[_-]?key|password|token)\s*[:=]\s*\S+"), "credential leak: API key/password/token"),
+    (re.compile(r"(?i)ssh-rsa\s+AAAA"), "credential leak: SSH public key"),
+    (re.compile(r"(?i)-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----"), "credential leak: private key"),
+    (re.compile(r"(?i)\beval\s*\("), "code injection: eval()"),
+    (re.compile(r"(?i)\bexec\s*\("), "code injection: exec()"),
+    (re.compile(r"[\u200b\u200c\u200d\u2060\ufeff]"), "invisible Unicode characters (zero-width)"),
+    (re.compile(r"(?i)\bACT\s+AS\b"), "role hijacking: 'act as'"),
+    (re.compile(r"(?i)\bpretend\s+(you\s+are|to\s+be)\b"), "role hijacking: 'pretend to be'"),
+    (re.compile(r"(?i)\b(curl|wget|nc|ncat)\s+.*\|\s*(ba)?sh\b"), "remote code execution pattern"),
+]
+
+
+def scan_content_for_injection(title: str, content: str) -> list:
+    """Scan title + content for injection patterns. Returns list of warnings."""
+    warnings = []
+    text = f"{title}\n{content}"
+    for pattern, description in _INJECTION_PATTERNS:
+        if pattern.search(text):
+            warnings.append(description)
+    return warnings
+
+
 def get_db() -> sqlite3.Connection:
     if not DB_PATH.exists():
         print("Error: Knowledge DB not found. Run build-session-index.py first.",
@@ -153,8 +186,22 @@ def add_entry(category: str, title: str, content: str,
     
     Gate is auto-skipped for decision/tool/feature/refactor (always worth recording)
     and for bulk imports (--from-file). Use --skip-gate to bypass manually.
+    
+    Injection scanning: All entries are scanned for prompt injection, role hijacking,
+    credential leaks, and invisible Unicode. Matching entries are REJECTED unless
+    --skip-scan is passed (for documenting injection patterns themselves).
     """
     db = get_db()
+
+    # Injection scanning (before any DB writes)
+    if not skip_gate:  # skip_gate also skips injection scan (for meta-entries about injection)
+        injection_warnings = scan_content_for_injection(title, content)
+        if injection_warnings:
+            print(f"  ⚠ REJECTED — injection pattern detected:", file=sys.stderr)
+            for w in injection_warnings:
+                print(f"    ✗ {w}", file=sys.stderr)
+            print(f"  Use --skip-gate to bypass (only for documenting injection patterns)", file=sys.stderr)
+            return -1
 
     if not session_id:
         session_id = detect_session_id()

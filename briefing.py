@@ -18,6 +18,7 @@ Usage:
     python briefing.py --wing backend                     # Filter by wing
     python briefing.py --titles-only                      # Progressive disclosure layer 1 (~10 tok/entry)
     python briefing.py --titles-only --limit 20           # More entries in titles mode
+    python briefing.py "task desc" --budget 3000           # Cap output to 3000 chars (frozen snapshot)
 
 Default output is compact (~500 tokens): titles + 1-line summaries with entry IDs.
 Use --titles-only for ultra-compact index (~10 tokens/entry). Then --detail <id> for full.
@@ -933,12 +934,23 @@ def main():
         print("Error: Provide a task description or use --auto")
         return
 
+    # Memory budget: cap output to N chars (Hermes frozen snapshot pattern)
+    budget = 0
+    if "--budget" in args:
+        idx = args.index("--budget")
+        budget = int(args[idx + 1]) if idx + 1 < len(args) else 3000
+
     if subagent_mode:
         output = generate_subagent_context(query, limit=limit,
                                            min_confidence=min_confidence)
     else:
         output = generate_briefing(query, limit=limit, fmt=fmt, full=full_mode,
                                   min_confidence=min_confidence)
+
+    if budget > 0 and len(output) > budget:
+        output = output[:budget].rsplit("\n", 1)[0]
+        output += f"\n\n[TRUNCATED — budget {budget} chars. Use --budget {budget * 2} for more]"
+
     print(output)
 
 
