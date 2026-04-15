@@ -1,6 +1,6 @@
 ---
 name: tentacle-orchestration
-description: Clarify specs, then break complex tasks into scoped, parallel work units for multi-agent execution. Use when receiving a new feature spec to analyze for ambiguities and risks, or when a task touches multiple modules that can be worked on independently. Also use when someone says "clarify spec", "is this spec clear", "orchestrate", "multi-agent", "parallel agents", "tentacle", or "swarm". Starts with iterative Q&A to make specs implementation-ready before any coding begins.
+description: Break complex tasks into scoped parallel work units for multi-agent execution. Use when a task spans multiple modules or layers (API + DB + UI). Each tentacle runs strict-tdd-workflow internally. Not for simple single-module tasks — use strict-tdd-workflow directly instead. Trigger words — "orchestrate", "multi-agent", "parallel agents", "tentacle", "swarm", or any task touching 3+ files across different modules.
 ---
 
 # Tentacle Orchestration
@@ -8,6 +8,8 @@ description: Clarify specs, then break complex tasks into scoped, parallel work 
 Break a complex task into scoped work units ("tentacles"), enrich each with context, then dispatch agents in parallel. Results persist in files so nothing is lost between agent boundaries.
 
 Adapted from the [OctoGent](https://github.com/hesamsheikh/octogent) tentacle pattern.
+
+> **Relationship with strict-tdd-workflow**: Tentacle is the **orchestrator** (splits work), strict-tdd is the **executor** (runs inside each tentacle). For single-module tasks, skip tentacle and use strict-tdd directly.
 
 ## When to use
 
