@@ -935,6 +935,7 @@ def main():
         return
 
     # Memory budget: cap output to N chars (Hermes frozen snapshot pattern)
+    # Budget-aware: reduce limit progressively to fit, rather than dumb truncation
     budget = 0
     if "--budget" in args:
         idx = args.index("--budget")
@@ -948,8 +949,24 @@ def main():
                                   min_confidence=min_confidence)
 
     if budget > 0 and len(output) > budget:
-        output = output[:budget].rsplit("\n", 1)[0]
-        output += f"\n\n[TRUNCATED — budget {budget} chars. Use --budget {budget * 2} for more]"
+        # Smart budget: re-generate with progressively fewer entries until it fits.
+        # This ensures we keep COMPLETE entries (not half-cut ones) and the most
+        # relevant entries are preserved (search is ordered by confidence + relevance).
+        for reduced_limit in range(max(1, limit - 1), 0, -1):
+            if subagent_mode:
+                output = generate_subagent_context(query, limit=reduced_limit,
+                                                   min_confidence=min_confidence)
+            else:
+                output = generate_briefing(query, limit=reduced_limit, fmt=fmt,
+                                          full=full_mode,
+                                          min_confidence=min_confidence)
+            if len(output) <= budget:
+                break
+
+        # If still over budget after limit=1, truncate at last complete line
+        if len(output) > budget:
+            output = output[:budget].rsplit("\n", 1)[0]
+            output += f"\n[BUDGET {budget} chars — showing highest-confidence entries only]"
 
     print(output)
 
