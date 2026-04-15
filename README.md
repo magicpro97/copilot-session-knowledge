@@ -53,10 +53,13 @@ $ python3 briefing.py "fix docker compose"
 git clone https://github.com/magicpro97/copilot-session-knowledge.git ~/.copilot/tools
 
 # First run — index sessions + extract knowledge + run migrations
-python3 ~/.copilot/tools/build-session-index.py
+python3 ~/.copilot/tools/build-session-index.py    # indexes + auto-embeds
 python3 ~/.copilot/tools/extract-knowledge.py
 python3 ~/.copilot/tools/migrate.py
 python3 ~/.copilot/tools/install.py --test
+
+# macOS: install LaunchAgents (auto-start watcher + daily auto-update)
+bash ~/.copilot/tools/launchd/install-launchd.sh
 ```
 
 **Alternative (manual copy):**
@@ -98,6 +101,7 @@ brief --wakeup                       # Ultra-compact (~170 tokens) for session s
 brief --titles-only                  # Index only (~10 tok/entry) — progressive disclosure
 brief --titles-only "DynamoDB"       # Filtered titles
 brief --wing backend --room patient  # Filter by wing/room (palace-style)
+brief "task" --for-subagent --budget 3000  # Capped output for sub-agent injection
 brief "task" --min-confidence 0.7    # High-quality entries only
 brief "task" --for-subagent          # Compact context block for sub-agent prompts
 ```
@@ -180,16 +184,18 @@ Wings and rooms are **auto-detected** from tags/title. Override with `--wing`/`-
 ### Auto-Update
 
 ```bash
-bash ~/.copilot/tools/auto-update-tools.sh           # Auto-update (24h cooldown)
-bash ~/.copilot/tools/auto-update-tools.sh --force    # Force update now
-bash ~/.copilot/tools/auto-update-tools.sh --status   # Show version info
-bash ~/.copilot/tools/auto-update-tools.sh --doctor   # Health check
+python3 ~/.copilot/tools/auto-update-tools.py           # Auto-update (24h cooldown)
+python3 ~/.copilot/tools/auto-update-tools.py --force    # Force update now
+python3 ~/.copilot/tools/auto-update-tools.py --status   # Show version info
+python3 ~/.copilot/tools/auto-update-tools.py --doctor   # Health check
 ```
 
-Add to `~/.zshrc` or `~/.bashrc` for auto-start:
+**macOS:** Auto-update runs daily at 9 AM via LaunchAgent (installed by `install-launchd.sh`).
+
+**Manual shell auto-start** (if not using LaunchAgents):
 ```bash
-# Auto-update session-knowledge tools (background, 24h cooldown)
-(bash ~/.copilot/tools/auto-update-tools.sh &) 2>/dev/null
+# Add to ~/.zshrc or ~/.bashrc
+(python3 ~/.copilot/tools/auto-update-tools.py &) 2>/dev/null
 ```
 
 ## Architecture
@@ -231,22 +237,31 @@ flowchart TD
 ## Maintenance
 
 ```bash
-python3 ~/.copilot/tools/build-session-index.py --incremental   # Update only changed files
+python3 ~/.copilot/tools/build-session-index.py --incremental   # Update changed files + auto-embed
+python3 ~/.copilot/tools/build-session-index.py --no-embed      # Index only, skip embeddings
 python3 ~/.copilot/tools/extract-knowledge.py --stats           # View knowledge statistics
 python3 ~/.copilot/tools/extract-knowledge.py --relations       # View relation statistics
 python3 ~/.copilot/tools/watch-sessions.py --daemon             # Run in background, auto-index
+python3 ~/.copilot/tools/embed.py --status                      # Embedding coverage stats
+python3 ~/.copilot/tools/embed.py --build                       # Rebuild all embeddings
 python3 ~/.copilot/tools/install.py --deploy-skill              # Deploy SKILL.md
 python3 ~/.copilot/tools/install.py --inject-global             # Inject into global copilot-instructions
 # Windows: thay python3 → python
 ```
 
-### Auto-start Watcher (no manual restart after reboot)
+### Auto-start (no manual restart after reboot)
 
-**macOS** — LaunchAgent:
+**macOS** — LaunchAgents (recommended):
 ```bash
-cp templates/com.copilot.watch-sessions.plist ~/Library/LaunchAgents/
-# ⚠️ Edit YOUR_USERNAME and python3 path in the plist before loading
-sed -i '' "s|YOUR_USERNAME|$(whoami)|g" ~/Library/LaunchAgents/com.copilot.watch-sessions.plist
+bash ~/.copilot/tools/launchd/install-launchd.sh           # Install both agents
+bash ~/.copilot/tools/launchd/install-launchd.sh --remove   # Uninstall
+
+# Installs two LaunchAgents:
+#   com.copilot.watch-sessions  — daemon, auto-indexes sessions + auto-embeds
+#   com.copilot.auto-update     — daily 9 AM, git pulls tool updates + migrates DB
+
+# Restart after code changes:
+launchctl unload ~/Library/LaunchAgents/com.copilot.watch-sessions.plist
 launchctl load ~/Library/LaunchAgents/com.copilot.watch-sessions.plist
 ```
 
@@ -403,6 +418,7 @@ Output is a compact `[KNOWLEDGE CONTEXT]` block (~200 tokens) to embed in sub-ag
 - **API key protection** — config files chmod `0o600`, env vars preferred over files
 - **Path validation** — WSL path traversal protection
 - **Input limits** — title 200 chars, content 10K chars, FTS query 500 chars
+- **Injection scanning** — `learn.py` scans all entries against 15 regex patterns (prompt injection, SSH backdoors, credential exfiltration). Matching entries are REJECTED. Bypass with `--skip-gate`
 
 ## Testing
 
