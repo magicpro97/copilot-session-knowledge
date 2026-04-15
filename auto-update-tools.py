@@ -2,14 +2,21 @@
 """
 auto-update-tools.py — Auto-update session-knowledge tools (cross-platform)
 
-~/.copilot/tools/ IS the git clone. Update = git pull + migrate + restart.
+~/.copilot/tools/ IS the git clone. Update = git pull + smart pipeline + restart.
+
+Features:
+  - Smart diff: only updates what actually changed (services, plists, skills, etc.)
+  - Self-exec: re-executes with new code if this script itself was updated
+  - Version manifest: tracks component versions for verification
+  - Post-merge hook: auto-triggers pipeline on manual `git pull`
 
 Usage:
     python auto-update-tools.py              # Update (24h cooldown)
     python auto-update-tools.py --force      # Force update now
     python auto-update-tools.py --check      # Check only
     python auto-update-tools.py --status     # Show state
-    python auto-update-tools.py --doctor     # Verify health
+    python auto-update-tools.py --doctor     # Verify health (includes manifest check)
+    python auto-update-tools.py --skip-pull  # Run pipeline without pulling (used by self-exec)
 """
 
 import json
@@ -44,6 +51,7 @@ SOURCE_REPO = "magicpro97/copilot-session-knowledge"
 CLONE_URL = f"https://github.com/{SOURCE_REPO}.git"
 COOLDOWN = 86400  # 24 hours
 STATE_FILE = TOOLS_DIR / ".update-state.json"
+MANIFEST_FILE = TOOLS_DIR / ".update-manifest.json"
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +148,9 @@ def ensure_clone() -> bool:
 # ---------------------------------------------------------------------------
 # Pull latest
 # ---------------------------------------------------------------------------
-def pull_latest() -> bool:
-    """Pull latest changes. Returns True if updated, False if already up to date."""
-    old_sha = _git_output("rev-parse", "--short=8", "HEAD")
+def pull_latest() -> tuple[bool, str, str]:
+    """Pull latest changes. Returns (updated, old_sha, new_sha)."""
+    old_sha = _git_output("rev-parse", "HEAD")
 
     # Stash local changes, pull, re-apply
     _git("stash", "--quiet")
@@ -155,17 +163,231 @@ def pull_latest() -> bool:
 
     _git("stash", "pop", "--quiet")
 
-    new_sha = _git_output("rev-parse", "--short=8", "HEAD")
+    new_sha = _git_output("rev-parse", "HEAD")
+    short_old = old_sha[:8] if old_sha else "unknown"
+    short_new = new_sha[:8] if new_sha else "unknown"
 
     if old_sha == new_sha:
-        ok(f"Already up to date ({old_sha})")
-        return False
+        ok(f"Already up to date ({short_old})")
+        return False, old_sha, new_sha
 
-    log(f"Updated: {old_sha} → {new_sha}")
-    _state_set("current_version", new_sha)
-    _state_set("previous_version", old_sha)
+    log(f"Updated: {short_old} → {short_new}")
+    _state_set("current_version", short_new)
+    _state_set("previous_version", short_old)
     _state_set("last_update", datetime.now().isoformat())
-    return True
+    return True, old_sha, new_sha
+
+
+# ---------------------------------------------------------------------------
+# Smart diff: classify what changed between two commits
+# ---------------------------------------------------------------------------
+def classify_changes(old_sha: str, new_sha: str) -> dict:
+    """Analyze git diff and classify changed files into categories."""
+    diff_output = _git_output("diff", "--name-only", old_sha, new_sha)
+    if not diff_output:
+        return {}
+
+    changed = diff_output.splitlines()
+    return {
+        "all": changed,
+        "py_scripts": [f for f in changed if f.endswith(".py")],
+        "launchd": [f for f in changed if f.startswith("launchd/")],
+        "templates": [f for f in changed if f.startswith("templates/")],
+        "skills": [f for f in changed if f.startswith("skills/")],
+        "hooks": [f for f in changed if f.startswith("hooks/")],
+        "embed": [f for f in changed if "embed" in f.lower() and f.endswith(".py")],
+        "migrate": "migrate.py" in changed,
+        "self_update": "auto-update-tools.py" in changed,
+        "watch_sessions": "watch-sessions.py" in changed,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Post-pull pipeline: run targeted updates based on what changed
+# ---------------------------------------------------------------------------
+def post_pull_pipeline(old_sha: str, new_sha: str):
+    """Smart pipeline: only update components whose source files changed."""
+    changes = classify_changes(old_sha, new_sha)
+    if not changes:
+        ok("No changes to process")
+        return
+
+    changed_files = changes.get("all", [])
+    log(f"Changed files: {len(changed_files)}")
+
+    # 1. Self-exec: if this script changed, re-exec with new code
+    if changes.get("self_update") and "--skip-pull" not in sys.argv:
+        log("auto-update-tools.py changed — re-executing with new code...")
+        _state_set("self_exec_from", old_sha[:8])
+        args = [sys.executable, str(TOOLS_DIR / "auto-update-tools.py"), "--skip-pull",
+                f"--old-sha={old_sha}", f"--new-sha={new_sha}"]
+        # Add original flags
+        for a in sys.argv[1:]:
+            if a not in ("--force", "--skip-pull") and not a.startswith("--old-sha") and not a.startswith("--new-sha"):
+                args.append(a)
+        if "--force" in sys.argv:
+            args.append("--force")
+        if platform.system() == "Windows":
+            # os.execl behaves differently on Windows
+            subprocess.Popen(args)
+            sys.exit(0)
+        else:
+            os.execl(sys.executable, *args)
+
+    # 2. DB migrations (always — idempotent and safe)
+    run_migrations()
+
+    # 3. LaunchAgent templates changed → reinstall
+    if changes.get("launchd"):
+        reinstall_launchagents()
+
+    # 4. Template/SKILL.md changed → redeploy
+    if changes.get("templates") or changes.get("skills"):
+        deploy_skills()
+
+    # 5. Python scripts changed → restart watcher service
+    if changes.get("py_scripts"):
+        restart_processes()
+
+    # 6. Embedding logic changed → trigger rebuild (async, non-blocking)
+    if changes.get("embed"):
+        trigger_embedding_rebuild()
+
+    # 7. Install/update post-merge hook
+    ensure_post_merge_hook()
+
+    # 8. Write version manifest
+    write_manifest(new_sha, changes)
+
+    ok("Pipeline complete")
+
+
+# ---------------------------------------------------------------------------
+# Reinstall LaunchAgents (macOS only)
+# ---------------------------------------------------------------------------
+def reinstall_launchagents():
+    if platform.system() != "Darwin":
+        return
+    installer = TOOLS_DIR / "launchd" / "install-launchd.sh"
+    if installer.exists():
+        log("LaunchAgent templates changed — reinstalling...")
+        r = subprocess.run(
+            ["bash", str(installer)],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode == 0:
+            ok("LaunchAgents reinstalled")
+        else:
+            warn(f"LaunchAgent reinstall failed: {r.stderr[:200]}")
+    else:
+        warn("install-launchd.sh not found — skipping LaunchAgent update")
+
+
+# ---------------------------------------------------------------------------
+# Trigger embedding rebuild (non-blocking)
+# ---------------------------------------------------------------------------
+def trigger_embedding_rebuild():
+    embed_script = TOOLS_DIR / "embed.py"
+    config = TOOLS_DIR / "embedding-config.json"
+    if not embed_script.exists() or not config.exists():
+        return
+    log("Embedding logic changed — triggering rebuild...")
+    subprocess.Popen(
+        [sys.executable, str(embed_script), "--build"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True if platform.system() != "Windows" else False,
+        **({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW}
+           if platform.system() == "Windows" else {}),
+    )
+    ok("Embedding rebuild triggered (background)")
+
+
+# ---------------------------------------------------------------------------
+# Ensure git post-merge hook (auto-pipeline on manual git pull)
+# ---------------------------------------------------------------------------
+def ensure_post_merge_hook():
+    hook_path = TOOLS_DIR / ".git" / "hooks" / "post-merge"
+    hook_content = f"""#!/bin/bash
+# Auto-generated by auto-update-tools.py — triggers pipeline after git pull
+# Re-created on each update; do not edit manually.
+
+TOOLS_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+OLD_SHA="$(git -C "$TOOLS_DIR" rev-parse HEAD@{{1}} 2>/dev/null || echo "")"
+NEW_SHA="$(git -C "$TOOLS_DIR" rev-parse HEAD)"
+
+if [ "$OLD_SHA" = "$NEW_SHA" ]; then exit 0; fi
+
+echo "[post-merge] Tools updated: ${{OLD_SHA:0:8}} → ${{NEW_SHA:0:8}}"
+
+# Run pipeline with --skip-pull (pull already done by git)
+python3 "$TOOLS_DIR/auto-update-tools.py" --skip-pull --old-sha="$OLD_SHA" --new-sha="$NEW_SHA" --force &
+"""
+    try:
+        hook_path.parent.mkdir(parents=True, exist_ok=True)
+        # Only update if content changed
+        if hook_path.exists() and hook_path.read_text(encoding="utf-8") == hook_content:
+            return
+        hook_path.write_text(hook_content, encoding="utf-8")
+        hook_path.chmod(0o755)
+        ok("Post-merge hook installed")
+    except Exception as e:
+        warn(f"Could not install post-merge hook: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Version manifest
+# ---------------------------------------------------------------------------
+def write_manifest(sha: str, changes: dict):
+    """Write .update-manifest.json for verification."""
+    short_sha = sha[:8] if sha else "unknown"
+    manifest = {
+        "version": short_sha,
+        "full_sha": sha,
+        "updated_at": datetime.now().isoformat(),
+        "changed_files": len(changes.get("all", [])),
+        "pipeline_actions": [],
+    }
+
+    actions = manifest["pipeline_actions"]
+    if changes.get("self_update"):
+        actions.append("self-exec")
+    actions.append("migrate")  # always runs
+    if changes.get("launchd"):
+        actions.append("reinstall-launchagents")
+    if changes.get("templates") or changes.get("skills"):
+        actions.append("deploy-skills")
+    if changes.get("py_scripts"):
+        actions.append("restart-services")
+    if changes.get("embed"):
+        actions.append("rebuild-embeddings")
+    actions.append("post-merge-hook")
+
+    # Service status
+    manifest["services"] = {}
+    system = platform.system()
+    if system == "Darwin":
+        r = subprocess.run(
+            ["launchctl", "list", "com.copilot.watch-sessions"],
+            capture_output=True, text=True,
+        )
+        manifest["services"]["watch-sessions"] = {
+            "managed_by": "launchd",
+            "running": r.returncode == 0,
+        }
+    elif system == "Linux":
+        r = subprocess.run(
+            ["systemctl", "--user", "is-active", "copilot-watch-sessions.service"],
+            capture_output=True, text=True,
+        )
+        manifest["services"]["watch-sessions"] = {
+            "managed_by": "systemd",
+            "running": r.stdout.strip() == "active",
+        }
+
+    try:
+        MANIFEST_FILE.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    except Exception as e:
+        warn(f"Could not write manifest: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +597,54 @@ def doctor():
     else:
         warn("Not a git clone")
 
+    # Version manifest
+    if MANIFEST_FILE.exists():
+        try:
+            manifest = json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
+            head_sha = _git_output("rev-parse", "--short=8", "HEAD")
+            m_ver = manifest.get("version", "?")
+            m_time = manifest.get("updated_at", "?")
+            if m_ver == head_sha:
+                ok(f"Manifest: {m_ver} ({m_time})")
+            else:
+                warn(f"Manifest stale: {m_ver} != HEAD {head_sha} — run update")
+                issues += 1
+
+            # Check services
+            services = manifest.get("services", {})
+            for name, info in services.items():
+                if info.get("running"):
+                    ok(f"Service {name}: running ({info.get('managed_by', '?')})")
+                else:
+                    warn(f"Service {name}: not running")
+                    issues += 1
+        except Exception as e:
+            warn(f"Manifest: {e}")
+    else:
+        warn("No manifest — run update to create")
+
+    # Post-merge hook
+    hook = TOOLS_DIR / ".git" / "hooks" / "post-merge"
+    if hook.exists():
+        ok("Post-merge hook: installed")
+    else:
+        warn("Post-merge hook: missing — run update to install")
+        issues += 1
+
+    # LaunchAgents (macOS)
+    if platform.system() == "Darwin":
+        for agent in ["com.copilot.watch-sessions", "com.copilot.auto-update"]:
+            plist = HOME / "Library" / "LaunchAgents" / f"{agent}.plist"
+            if plist.exists():
+                r = subprocess.run(["launchctl", "list", agent], capture_output=True, text=True)
+                if r.returncode == 0:
+                    ok(f"LaunchAgent {agent}: loaded")
+                else:
+                    warn(f"LaunchAgent {agent}: plist exists but not loaded")
+                    issues += 1
+            else:
+                warn(f"LaunchAgent {agent}: not installed")
+
     if issues == 0:
         ok("All good")
     else:
@@ -419,12 +689,21 @@ def check_cooldown() -> bool:
 def main():
     force = False
     check_only = False
+    skip_pull = False
+    old_sha_arg = ""
+    new_sha_arg = ""
 
     for arg in sys.argv[1:]:
         if arg == "--force":
             force = True
         elif arg == "--check":
             check_only = True
+        elif arg == "--skip-pull":
+            skip_pull = True
+        elif arg.startswith("--old-sha="):
+            old_sha_arg = arg.split("=", 1)[1]
+        elif arg.startswith("--new-sha="):
+            new_sha_arg = arg.split("=", 1)[1]
         elif arg == "--status":
             show_status()
             return
@@ -434,6 +713,22 @@ def main():
         elif arg in ("--help", "-h"):
             print(__doc__)
             return
+
+    # --skip-pull mode: pipeline only (used by self-exec and post-merge hook)
+    if skip_pull:
+        old_sha = old_sha_arg
+        new_sha = new_sha_arg or _git_output("rev-parse", "HEAD")
+        if old_sha and new_sha:
+            log("Running post-pull pipeline (skip-pull mode)...")
+            post_pull_pipeline(old_sha, new_sha)
+        else:
+            # No SHAs available — run full pipeline as fallback
+            run_migrations()
+            deploy_skills()
+            restart_processes()
+            ensure_post_merge_hook()
+            ok("Fallback pipeline complete")
+        return
 
     # Cooldown
     if not force and not check_only:
@@ -447,14 +742,15 @@ def main():
         sys.exit(1)
 
     # Pull
-    if pull_latest():
+    updated, old_sha, new_sha = pull_latest()
+    if updated:
         if check_only:
             log("Update available")
             return
-        run_migrations()
-        deploy_skills()
-        restart_processes()
-        ok("Done")
+        post_pull_pipeline(old_sha, new_sha)
+    else:
+        # Even if no update, ensure post-merge hook exists
+        ensure_post_merge_hook()
 
 
 if __name__ == "__main__":

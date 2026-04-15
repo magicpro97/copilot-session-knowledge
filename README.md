@@ -186,9 +186,21 @@ Wings and rooms are **auto-detected** from tags/title. Override with `--wing`/`-
 ```bash
 python3 ~/.copilot/tools/auto-update-tools.py           # Auto-update (24h cooldown)
 python3 ~/.copilot/tools/auto-update-tools.py --force    # Force update now
+python3 ~/.copilot/tools/auto-update-tools.py --check    # Check only (no apply)
 python3 ~/.copilot/tools/auto-update-tools.py --status   # Show version info
-python3 ~/.copilot/tools/auto-update-tools.py --doctor   # Health check
+python3 ~/.copilot/tools/auto-update-tools.py --doctor   # Health check + manifest verify
+python3 ~/.copilot/tools/auto-update-tools.py --skip-pull # Run pipeline only (used by post-merge hook)
 ```
+
+**Smart pipeline:** After `git pull`, auto-update analyzes `git diff` to run only what changed:
+- Python scripts changed → restart services
+- LaunchAgent templates changed → reinstall LaunchAgents
+- SKILL.md templates changed → redeploy to projects
+- Embedding logic changed → rebuild embeddings (background)
+- `auto-update-tools.py` itself changed → self-exec with new code before continuing
+
+**Post-merge hook:** Automatically installed in `.git/hooks/post-merge` — triggers the pipeline
+on manual `git pull` too. No need to remember to restart services.
 
 **macOS:** Auto-update runs daily at 9 AM via LaunchAgent (installed by `install-launchd.sh`).
 
@@ -232,7 +244,7 @@ flowchart TD
 4. **Palace** — Wing/room auto-categorization from tags/title for hierarchical browsing
 5. **Search** — FTS5 keyword + optional semantic vector (Reciprocal Rank Fusion)
 6. **Watch** — `watch-sessions.py` polls for changes, auto re-indexes
-7. **Update** — `auto-update-tools.sh` git-based auto-update with DB migration
+7. **Update** — `auto-update-tools.py` smart pipeline: git pull → diff-based targeted update → manifest verify
 
 ## Maintenance
 
@@ -260,9 +272,8 @@ bash ~/.copilot/tools/launchd/install-launchd.sh --remove   # Uninstall
 #   com.copilot.watch-sessions  — daemon, auto-indexes sessions + auto-embeds
 #   com.copilot.auto-update     — daily 9 AM, git pulls tool updates + migrates DB
 
-# Restart after code changes:
-launchctl unload ~/Library/LaunchAgents/com.copilot.watch-sessions.plist
-launchctl load ~/Library/LaunchAgents/com.copilot.watch-sessions.plist
+# Restart after code changes (auto-handled by post-merge hook):
+# Manual git pull → post-merge hook triggers pipeline → services restarted automatically
 ```
 
 **Windows** — Task Scheduler:
