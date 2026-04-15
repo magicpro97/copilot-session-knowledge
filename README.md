@@ -1,363 +1,305 @@
-# Copilot Session Knowledge Tools
+# Copilot Session Knowledge & Orchestration Tools
 
-> **Vấn đề:** Mỗi session Copilot CLI / Claude Code tích lũy kinh nghiệm quý (lỗi đã gặp, pattern đã dùng, quyết định đã chọn) — nhưng session mới bắt đầu từ zero, lặp lại sai lầm cũ.
+> **Problem:** Each Copilot CLI / Claude Code session accumulates valuable experience (bugs fixed, patterns learned, architectural decisions) — but new sessions start from zero, repeating past mistakes.
 >
-> **Giải pháp:** Tool này index tất cả session data vào SQLite, tự trích xuất knowledge, và cho phép search + briefing trước mỗi task.
+> **Solution:** This toolkit indexes all session data into SQLite, auto-extracts knowledge, enables search + briefing before each task, and provides multi-agent orchestration via the tentacle pattern.
 
-## Demo
+## Quick Start
 
 ```bash
-# macOS/Linux: python3 | Windows: python hoặc py
-$ python3 query-session.py "docker networking"
-
-Found 5 result(s) for: docker networking
-  1. [tool] Docker compose network config — Use bridge network with...
-  2. [mistake] DNS resolution failed in container — Fixed by adding...
-  3. [pattern] Docker/WSL architecture — On Windows, Docker Engine...
-
-Knowledge entries matching: docker networking (3 results)
-  #1970 [tool] brain/docker/DockerfileBrainApp (conf: 0.8)
-  #2045 [mistake] Port conflicts in docker compose (conf: 0.7)
-  #1977 [pattern] Docker/WSL bridge networking (conf: 0.6)
-
-Use --detail <id> for full content
-```
-
-```
-$ python3 briefing.py "fix docker compose"
-
-📋 Briefing: fix docker compose
-⚠️ Past Mistakes to Avoid
-  #2045 Port conflicts — check docker ps before starting
-🔧 Relevant Tools & Configs
-  #1970 DockerfileBrainApp — JVM flag fix for containers
-📚 Related Past Work
-  [checkpoint] Docker networking and WSL setup (session de828552)
-```
-
-## Setup
-
-### Prerequisites
-
-- Python 3.10+ (no pip packages needed)
-- Copilot CLI (`~/.copilot/session-state/` directory must exist) and/or Claude Code
-
-> **Note:** Dùng `python3` trên macOS/Linux, `python` hoặc `py` trên Windows.
-> Tất cả commands trong README dùng `python3` — thay bằng `python` nếu trên Windows.
-
-### Install
-
-**Recommended (auto-update enabled):**
-```bash
-# Clone as ~/.copilot/tools/ — auto-update keeps it current
+# 1. Clone tools (one-time)
 git clone https://github.com/magicpro97/copilot-session-knowledge.git ~/.copilot/tools
 
-# First run — index sessions + extract knowledge + run migrations
+# 2. Index your sessions (first run)
 python3 ~/.copilot/tools/build-session-index.py
 python3 ~/.copilot/tools/extract-knowledge.py
 python3 ~/.copilot/tools/migrate.py
-python3 ~/.copilot/tools/install.py --test
+
+# 3. Setup a project (run from project root)
+cd your-project
+python3 ~/.copilot/tools/setup-project.py
+
+# 4. Customize for your project (optional — run inside AI session)
+#    /session-knowledge-creator   → AI analyzes project → generates customized knowledge skill
+#    /tentacle-creator            → AI analyzes project → generates customized tentacle skill
 ```
 
-**Alternative (manual copy):**
+### What `setup-project.py` installs
+
+```
+.github/
+├── skills/
+│   ├── session-knowledge/SKILL.md           — Knowledge workflow reference
+│   ├── session-knowledge-creator/SKILL.md   — Meta-skill: customize for project
+│   ├── tentacle-creator/SKILL.md            — Meta-skill: customize tentacle
+│   └── tentacle-orchestration/SKILL.md      — Multi-agent orchestration reference
+├── instructions/
+│   └── session-knowledge.instructions.md    — ⚡ Auto-injected enforcement
+CLAUDE.md                                    — Patched with briefing section
+.gitignore                                   — .octogent/ entry added
+```
+
+**Key insight:** `.instructions.md` files with `applyTo: "**/*"` are **auto-injected into EVERY AI context** — this is real enforcement. Without it, AI agents treat skills as optional and often skip them.
+
+## Core Components
+
+### 1. Session Knowledge (learn → index → brief)
+
+```mermaid
+flowchart LR
+  A[AI works on task] -->|learn.py| B[(knowledge.db)]
+  B -->|briefing.py| C[Next session/task]
+  C -->|"avoid past mistakes<br/>reuse patterns"| A
+```
+
+**Record knowledge after each task:**
 ```bash
-git clone https://github.com/magicpro97/copilot-session-knowledge.git
-cd copilot-session-knowledge
-mkdir -p ~/.copilot/tools && cp *.py *.sh ~/.copilot/tools/
-```
-
-**Windows (PowerShell):**
-```powershell
-git clone https://github.com/magicpro97/copilot-session-knowledge.git
-cd copilot-session-knowledge
-New-Item -ItemType Directory -Force "$env:USERPROFILE\.copilot\tools"
-Copy-Item *.py,*.sh "$env:USERPROFILE\.copilot\tools\"
-
-python "$env:USERPROFILE\.copilot\tools\build-session-index.py"
-python "$env:USERPROFILE\.copilot\tools\extract-knowledge.py"
-python "$env:USERPROFILE\.copilot\tools\migrate.py"
-```
-
-**Tip:** Thêm alias cho tiện (bash/zsh):
-```bash
-alias qs='python3 ~/.copilot/tools/query-session.py'
-alias brief='python3 ~/.copilot/tools/briefing.py'
-alias learn='python3 ~/.copilot/tools/learn.py'
-# Dùng: qs "docker error" | brief "fix login" | learn --pattern "Title" "Desc"
-```
-
-## Usage
-
-### Briefing (khuyến khích chạy trước mỗi task lớn)
-
-```bash
-brief "implement user CRUD"          # Compact ~500 tokens
-brief "implement user CRUD" --full   # Full detail ~3K tokens
-brief --auto                         # Auto-detect từ git state
-brief --wakeup                       # Ultra-compact (~170 tokens) cho session start
-brief --titles-only                  # Index only (~10 tok/entry) — progressive disclosure
-brief --titles-only "DynamoDB"       # Filtered titles
-brief --wing backend --room patient  # Filter by wing/room (palace-style)
-brief "task" --min-confidence 0.7    # Chỉ high-quality entries
-brief "task" --for-subagent          # Compact context block cho sub-agent prompts
-```
-
-### Search
-
-```bash
-qs "search terms"                    # Compact results
-qs "search terms" --verbose          # Full content
-qs "docker" --type research          # Filter theo doc type
-qs "spring" --source copilot         # Filter theo agent source
-qs --mistakes                        # Xem lỗi đã gặp
-qs --patterns                        # Xem best practices
-qs --decisions                       # Xem quyết định kiến trúc
-```
-
-### Drill Down (dùng entry ID từ kết quả search)
-
-```bash
-qs --detail 2045                     # Xem chi tiết 1 entry
-qs --context 2045                    # Entry + các entry cùng session
-qs --related 2045                    # Entry + knowledge graph connections
-qs --graph "spring boot"             # Mini knowledge graph theo topic
-```
-
-### Semantic Search (cần embedding API key)
-
-```bash
-qs "deployment error" --semantic     # Search theo nghĩa, không chỉ keyword
-python3 ~/.copilot/tools/embed.py --setup   # Setup API key (Windows: python)
-```
-
-### Record Knowledge (learn.py)
-
-```bash
-# 7 observation types
 learn --mistake "Title"   "What went wrong and fix"         --tags "docker,compose"
 learn --pattern "Title"   "What works well / best practice" --tags "lambda"
 learn --decision "Title"  "Architecture decision rationale" --tags "cdk"
-learn --tool "Title"      "Useful tool/config details"      --tags "vscode"
-learn --feature "Title"   "New feature implementation"      --tags "api"
-learn --refactor "Title"  "Code improvement description"    --tags "cleanup"
-learn --discovery "Title" "Codebase finding or insight"     --tags "dynamodb"
-
-# Structured facts (discrete, verifiable statements)
-learn --pattern "DynamoDB Batch Ops" "How to use batch writes" \
-  --fact "batch write limit is 25 items" \
-  --fact "GSI eventually consistent"
-
-# Palace categorization
-learn --mistake "Auth bug" "Description" --wing backend --room auth
-
-# Knowledge graph relations
-learn --relate "copyToGroup" "reads_from" "patient-dynamic-form.json"
-learn --relate "addPatient Lambda" "writes_to" "dataTable"
-
-# Bulk import
-learn --from-file notes.md  # Format: ## category: Title
-
-# View
-learn --list               # Recent entries
-learn --stats              # Knowledge base statistics
+learn --discovery "Title" "Codebase finding"                --tags "dynamodb" \
+  --fact "Discrete verifiable fact 1" --fact "Fact 2"
 ```
 
-### Palace Concepts (Wing/Room)
+**Brief before next task:**
+```bash
+brief --wakeup                       # Ultra-compact (~170 tokens) session start
+brief --auto --compact               # Auto-detect from git state (~500 tokens)
+brief "implement user CRUD"          # Topic-specific briefing
+brief "task" --for-subagent          # Compact block for sub-agent prompts
+```
 
-Organize knowledge hierarchically:
+**Search knowledge:**
+```bash
+qs "docker networking"               # Keyword search
+qs --mistakes                        # All past mistakes
+qs --patterns                        # All best practices
+qs --detail 2045                     # Full entry details
+```
 
-| Wing | Description | Example Rooms |
-|------|-------------|---------------|
-| `backend` | Lambda, DynamoDB, SQS, API | patient, websocket, auth, dynamodb |
-| `frontend` | Expo, React Native, screens | navigation, components, hooks |
-| `testing` | Jest, Playwright, E2E | e2e, unit-test |
-| `infrastructure` | CDK, VPC, CloudWatch | cdk, vpc, cloudwatch |
-| `devops` | Git, CI/CD, Docker | git, pipeline, proxy |
-| `shared` | TypeScript, ESLint, i18n | typescript, openapi |
+### 2. Tentacle Orchestration (multi-agent pattern)
 
-Wings and rooms are **auto-detected** from tags/title. Override with `--wing`/`--room`.
-
-### Auto-Update
+Based on the [OctoGent](https://github.com/hesamsheikh/octogent) architecture. Each "tentacle" is a scoped work context with its own CONTEXT.md, todo list, notes, and handoff file.
 
 ```bash
-python3 ~/.copilot/tools/auto-update-tools.py           # Auto-update (24h cooldown)
-python3 ~/.copilot/tools/auto-update-tools.py --force    # Force update now
-python3 ~/.copilot/tools/auto-update-tools.py --status   # Show version info
-python3 ~/.copilot/tools/auto-update-tools.py --doctor   # Health check
+# Create scoped work contexts
+python3 ~/.copilot/tools/tentacle.py create api-export \
+  --scope "backend/lambda/internal-api/v1/export*" \
+  --goal "Implement patient data export API" \
+  --briefing   # ← auto-inject past knowledge from briefing.py
+
+# Add tasks
+python3 ~/.copilot/tools/tentacle.py todo api-export add "Implement GET handler"
+python3 ~/.copilot/tools/tentacle.py todo api-export add "Add SQS consumer"
+
+# Generate agent dispatch prompts
+python3 ~/.copilot/tools/tentacle.py swarm api-export
+# → Outputs ready-to-copy task() call with full context
+
+# Record results and learn
+python3 ~/.copilot/tools/tentacle.py complete api-export
+# → Marks done + auto-records to knowledge base via learn.py
 ```
 
-Add to `~/.zshrc` or `~/.bashrc` for auto-start:
+**Status dashboard:**
 ```bash
-# Auto-update session-knowledge tools (background, 24h cooldown)
-(python3 ~/.copilot/tools/auto-update-tools.py &) 2>/dev/null
+python3 ~/.copilot/tools/tentacle.py status
+# ┌─────────────────────────────────────────────────────┐
+# │ 🐙 Tentacles Dashboard                              │
+# ├───────────────┬────────┬───────┬────────────────────┤
+# │ Name          │ Status │ Todos │ Scope              │
+# ├───────────────┼────────┼───────┼────────────────────┤
+# │ api-export    │ ✅ done │ 3/3   │ backend/lambda/... │
+# │ fe-export     │ 🔄 wip │ 1/2   │ frontend/src/...   │
+# └───────────────┴────────┴───────┴────────────────────┘
 ```
+
+### 3. Creator Skills (meta-skills)
+
+Generic skills work everywhere but lack project-specific context. **Creator skills** analyze your project and generate customized skills:
+
+| Creator Skill | What it does |
+|---|---|
+| `session-knowledge-creator` | Analyzes project → generates SKILL.md + .instructions.md + CLAUDE.md patch |
+| `tentacle-creator` | Analyzes project → generates SKILL.md with project-specific agent mappings |
+
+**Usage (inside AI session):**
+```
+/session-knowledge-creator   ← AI reads project, generates 3 customized files
+/tentacle-creator            ← AI reads project, generates customized tentacle skill
+```
+
+The creator analyzes: language, framework, folder structure, existing agents, test patterns, and generates skills that reference YOUR project's conventions.
+
+## Setup Options
+
+```bash
+# Full setup (recommended)
+python3 ~/.copilot/tools/setup-project.py
+
+# Skills only, no config patching
+python3 ~/.copilot/tools/setup-project.py --skill-only
+
+# Skip tentacle orchestration
+python3 ~/.copilot/tools/setup-project.py --no-tentacle
+
+# Preview changes
+python3 ~/.copilot/tools/setup-project.py --dry-run
+
+# Explicit project root
+python3 ~/.copilot/tools/setup-project.py /path/to/project
+```
+
+**Idempotent** — run multiple times safely. Only updates files when content changes.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-  subgraph Data["📁 ~/.copilot/session-state/"]
-    RAW["Session checkpoints<br/>plan.md, research/, files/"]
-    DB[("knowledge.db<br/>FTS5 + vectors + graph")]
+  subgraph Project["📁 Your Project"]
+    SK[".github/skills/<br/>session-knowledge/"]
+    INS[".github/instructions/<br/>session-knowledge.instructions.md"]
+    TENT[".octogent/tentacles/<br/>(gitignored)"]
   end
 
   subgraph Tools["🔧 ~/.copilot/tools/"]
-    IDX[build-session-index.py]
-    EXT[extract-knowledge.py]
-    QRY[query-session.py]
     BRF[briefing.py]
-    WCH[watch-sessions.py]
+    LRN[learn.py]
+    QRY[query-session.py]
+    TCL[tentacle.py]
+    SETUP[setup-project.py]
+    CREATORS["skills/<br/>*-creator/"]
   end
 
-  RAW -->|index| IDX -->|write| DB
-  DB -->|extract| EXT -->|relations + dedup| DB
-  DB -->|search| QRY
-  DB -->|briefing| BRF
-  WCH -->|auto-trigger| IDX
+  subgraph Data["📁 ~/.copilot/session-state/"]
+    DB[("knowledge.db<br/>FTS5 + graph")]
+  end
 
-  style DB fill:#f59e0b,color:#000
+  INS -->|"⚡ auto-inject<br/>into AI context"| AI((AI Agent))
+  SK -->|"📖 reference"| AI
+  AI -->|"learn.py"| LRN --> DB
+  DB -->|"briefing.py"| BRF --> AI
+  AI -->|"tentacle.py"| TCL --> TENT
+  SETUP -->|"install"| Project
+  CREATORS -->|"customize"| SK
 ```
 
-### How it works
+### Three-Layer Enforcement
 
-1. **Index** — `build-session-index.py` scans all session `.md` files → SQLite FTS5
-2. **Extract** — `extract-knowledge.py` classifies into 7 types (mistake/pattern/decision/tool/feature/refactor/discovery), dedup by content hash
-3. **Graph** — Auto-detect relations: same session, same tag, mistake→fix, same topic
-4. **Palace** — Wing/room auto-categorization from tags/title for hierarchical browsing
-5. **Search** — FTS5 keyword + optional semantic vector (Reciprocal Rank Fusion)
-6. **Watch** — `watch-sessions.py` polls for changes, auto re-indexes
-7. **Update** — `auto-update-tools.py` cross-platform git-based auto-update with DB migration
+Why AI agents actually USE these tools (instead of ignoring them):
+
+| Layer | File | Mechanism |
+|---|---|---|
+| **1. Auto-inject** | `.github/instructions/*.instructions.md` | Copilot CLI auto-loads into EVERY context |
+| **2. Config** | `CLAUDE.md` / `copilot-instructions.md` | Agent reads at session start |
+| **3. Reference** | `.github/skills/*/SKILL.md` | Detailed docs, invoked on demand |
+
+Layer 1 is the **enforcement** — short imperative rules auto-injected into context. Without it, AI treats everything as optional.
+
+## Detailed Usage
+
+### briefing.py
+
+```bash
+brief "implement user CRUD"          # Topic-specific (~500 tokens)
+brief "implement user CRUD" --full   # Full detail (~3K tokens)
+brief --auto                         # Auto-detect from git state
+brief --wakeup                       # Ultra-compact (~170 tokens) session start
+brief --titles-only                  # Index only (~10 tok/entry)
+brief --titles-only "DynamoDB"       # Filtered titles
+brief --wing backend --room patient  # Filter by palace wing/room
+brief "task" --min-confidence 0.7    # High-quality entries only
+brief "task" --for-subagent          # Compact block for sub-agent prompts
+```
+
+### learn.py
+
+```bash
+# 7 observation types
+learn --mistake "Title"   "What went wrong and fix"         --tags "tag1,tag2"
+learn --pattern "Title"   "What works well"                 --tags "tag1"
+learn --decision "Title"  "Architecture decision"           --tags "tag1"
+learn --tool "Title"      "Useful tool/config"              --tags "tag1"
+learn --feature "Title"   "New feature built"               --tags "tag1"
+learn --refactor "Title"  "Code improvement"                --tags "tag1"
+learn --discovery "Title" "Codebase insight"                --tags "tag1" \
+  --fact "Discrete verifiable fact 1" --fact "Fact 2"
+
+# Relations (knowledge graph)
+learn --relate "copyToGroup" "reads_from" "patient-form.json"
+
+# View
+learn --list              # Recent entries
+learn --stats             # Knowledge base statistics
+```
+
+### query-session.py
+
+```bash
+qs "search terms"                    # Compact results
+qs "search terms" --verbose          # Full content
+qs "docker" --type research          # Filter by doc type
+qs --mistakes                        # Past mistakes
+qs --patterns                        # Best practices
+qs --decisions                       # Architecture decisions
+qs --detail 2045                     # Full entry details
+qs --context 2045                    # Entry + same-session entries
+qs --related 2045                    # Entry + knowledge graph connections
+qs --graph "spring boot"             # Mini knowledge graph
+qs "deployment error" --semantic     # Semantic search (needs API key)
+```
+
+### tentacle.py
+
+```bash
+# Lifecycle
+tentacle create <name> --scope "paths" --goal "description" [--briefing]
+tentacle list
+tentacle status
+tentacle delete <name>
+
+# Tasks
+tentacle todo <name> add "task description"
+tentacle todo <name> done <index>
+tentacle todo <name> list
+
+# Orchestration
+tentacle swarm <name>          # Generate dispatch prompts from pending todos
+tentacle handoff <name> "msg"  # Record agent output [--learn]
+tentacle complete <name>       # Mark done + auto-learn
+```
 
 ## Maintenance
 
 ```bash
-python3 ~/.copilot/tools/build-session-index.py --incremental   # Update only changed files
-python3 ~/.copilot/tools/extract-knowledge.py --stats           # Xem thống kê knowledge
-python3 ~/.copilot/tools/extract-knowledge.py --relations       # Xem thống kê relations
-python3 ~/.copilot/tools/watch-sessions.py --daemon             # Chạy nền, tự index
-python3 ~/.copilot/tools/install.py --deploy-skill              # Deploy SKILL.md
-python3 ~/.copilot/tools/install.py --inject-global             # Inject vào global copilot-instructions
-# Windows: thay python3 → python
+python3 ~/.copilot/tools/build-session-index.py --incremental   # Index changed files
+python3 ~/.copilot/tools/extract-knowledge.py --stats           # Knowledge stats
+python3 ~/.copilot/tools/watch-sessions.py --daemon             # Auto-index on change
+python3 ~/.copilot/tools/auto-update-tools.py                   # Auto-update (24h cooldown)
+python3 ~/.copilot/tools/auto-update-tools.py --doctor          # Health check
 ```
 
-### Auto-start Watcher (khỏi chạy thủ công sau reboot)
-
-**macOS** — LaunchAgent:
-```bash
-cp templates/com.copilot.watch-sessions.plist ~/Library/LaunchAgents/
-# ⚠️ Sửa YOUR_USERNAME và đường dẫn python3 trong plist trước khi load
-sed -i '' "s|YOUR_USERNAME|$(whoami)|g" ~/Library/LaunchAgents/com.copilot.watch-sessions.plist
-launchctl load ~/Library/LaunchAgents/com.copilot.watch-sessions.plist
-```
-
-**Windows** — Task Scheduler:
-```powershell
-$action = New-ScheduledTaskAction `
-    -Execute "python" `
-    -Argument "$env:USERPROFILE\.copilot\tools\watch-sessions.py --daemon" `
-    -WorkingDirectory "$env:USERPROFILE\.copilot"
-
-$trigger = New-ScheduledTaskTrigger -AtLogOn
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-
-Register-ScheduledTask -TaskName "CopilotWatchSessions" `
-    -Action $action -Trigger $trigger -Settings $settings `
-    -Description "Auto-index Copilot session knowledge"
-```
-
-**Linux** — systemd user service:
-```bash
-mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/copilot-watch.service << 'EOF'
-[Unit]
-Description=Copilot Session Knowledge Watcher
-
-[Service]
-ExecStart=/usr/bin/python3 %h/.copilot/tools/watch-sessions.py --daemon
-WorkingDirectory=%h/.copilot
-Restart=on-failure
-RestartSec=30
-
-[Install]
-WantedBy=default.target
-EOF
-
-systemctl --user enable --now copilot-watch.service
-```
-
-## AI Agent Integration
-
-Để agent tự động dùng knowledge base, deploy skill vào project:
+### Aliases (optional)
 
 ```bash
-python3 ~/.copilot/tools/install.py --deploy-skill
-# → Tạo .github/skills/session-knowledge/SKILL.md (Copilot CLI)
-# → Tạo .claude/skills/session-knowledge.md (Claude Code)
-```
-
-Sau đó agent sẽ tự chạy `briefing.py` trước mỗi task và search khi cần.
-
-### Enforce AI Usage (bắt buộc dùng, không bỏ qua)
-
-Skill chỉ là gợi ý — AI agent vẫn có thể bỏ qua. Để **bắt buộc**, inject vào global instructions:
-
-```bash
-python3 ~/.copilot/tools/install.py --inject-global
-```
-
-Lệnh này tự động:
-1. Thêm section `🧠 Session Knowledge — BẮT BUỘC` vào `~/.github/copilot-instructions.md`
-2. Dùng HTML markers (`<!-- SESSION-KNOWLEDGE-START/END -->`) để update idempotent
-3. Đặt ở vị trí cao nhất (ngay sau "BẮT BUỘC" checklist) để AI đọc đầu tiên
-
-Chạy lại khi cần update nội dung — markers đảm bảo chỉ thay thế, không duplicate.
-
-**Full setup (1 lần):**
-```bash
-cd your-project
-python3 ~/.copilot/tools/install.py --deploy-skill    # Skill cho project
-python3 ~/.copilot/tools/install.py --inject-global   # Enforce qua global instructions
-```
-
-### Sub-agent Context Injection
-
-Sub-agents (explore, task, general-purpose) không truy cập knowledge base trực tiếp.
-Main agent inject context vào prompt của chúng:
-
-```bash
-python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
-```
-
-Output là block `[KNOWLEDGE CONTEXT]` compact (~200 tokens) để embed vào sub-agent prompt:
-```
-[KNOWLEDGE CONTEXT — from past sessions]
-  [AVOID] Port conflicts — check docker ps before starting
-  [USE] Docker bridge network for service-to-service communication
-  [CONFIG] DockerfileBrainApp — JVM flag fix for containers
-[END KNOWLEDGE CONTEXT]
+alias qs='python3 ~/.copilot/tools/query-session.py'
+alias brief='python3 ~/.copilot/tools/briefing.py'
+alias learn='python3 ~/.copilot/tools/learn.py'
+alias tentacle='python3 ~/.copilot/tools/tentacle.py'
 ```
 
 ## Security
 
-- **No pickle** — tất cả serialization dùng JSON (backward-compat: detect pickle magic bytes, warn, fallback)
-- **Parameterized SQL** — zero SQL injection vectors
-- **FTS5 sanitization** — strips operators (`OR`, `AND`, `NOT`, `NEAR`, `*`, `"`)
-- **Atomic lock** — `O_CREAT | O_EXCL` eliminates TOCTOU race conditions
-- **API key protection** — config files chmod `0o600`, env vars ưu tiên hơn file
-- **Path validation** — WSL path traversal protection
+- **No pickle** — all serialization uses JSON
+- **Parameterized SQL** — zero injection vectors
+- **FTS5 sanitization** — strips operators (`OR`, `AND`, `NOT`, `NEAR`)
+- **Atomic lock** — `O_CREAT | O_EXCL` eliminates TOCTOU
+- **API key protection** — config files chmod `0o600`
 - **Input limits** — title 200 chars, content 10K chars, FTS query 500 chars
-
-## Testing
-
-```bash
-python3 test_security.py    # 9 security tests (injection, pickle, locks, paths)
-python3 test_fixes.py       # 65 tests (noise filter, sub-agent, launchd, DB health)
-```
 
 ## Requirements
 
 - **Python 3.10+** — pure stdlib, zero pip packages
 - **SQLite FTS5** — included in Python
 - **Cross-platform** — Windows, macOS, Linux
-- **Optional:** `scikit-learn` (TF-IDF fallback), embedding API key (semantic search)
+- **Optional:** embedding API key (semantic search)

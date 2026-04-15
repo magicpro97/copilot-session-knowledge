@@ -647,9 +647,16 @@ def generate_wakeup() -> str:
     db = get_db()
     lines = []
 
-    # Team & project info (static)
-    lines.append("TEAM: linhnt102-fpt | NES (Nhật) | NEC (customer)")
-    lines.append("PROJECT: NEO-MATCH 救急搬送 | CDK+Lambda+Expo | dev2")
+    # Team & project info (from wakeup_config if available)
+    try:
+        row = db.execute("SELECT value FROM wakeup_config WHERE key='team'").fetchone()
+        if row:
+            lines.append(f"TEAM: {row[0]}")
+        row = db.execute("SELECT value FROM wakeup_config WHERE key='project'").fetchone()
+        if row:
+            lines.append(f"PROJECT: {row[0]}")
+    except Exception:
+        pass  # wakeup_config may not exist yet
 
     # Current branch
     try:
