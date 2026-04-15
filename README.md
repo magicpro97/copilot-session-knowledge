@@ -1,13 +1,13 @@
 # Copilot Session Knowledge Tools
 
-> **Vấn đề:** Mỗi session Copilot CLI / Claude Code tích lũy kinh nghiệm quý (lỗi đã gặp, pattern đã dùng, quyết định đã chọn) — nhưng session mới bắt đầu từ zero, lặp lại sai lầm cũ.
+> **Problem:** Each Copilot CLI / Claude Code session accumulates valuable experience (bugs encountered, patterns used, decisions made) — but new sessions start from zero, repeating past mistakes.
 >
-> **Giải pháp:** Tool này index tất cả session data vào SQLite, tự trích xuất knowledge, và cho phép search + briefing trước mỗi task.
+> **Solution:** This tool indexes all session data into SQLite, auto-extracts knowledge, and enables search + briefing before every task.
 
 ## Demo
 
 ```bash
-# macOS/Linux: python3 | Windows: python hoặc py
+# macOS/Linux: python3 | Windows: python or py
 $ python3 query-session.py "docker networking"
 
 Found 5 result(s) for: docker networking
@@ -42,8 +42,8 @@ $ python3 briefing.py "fix docker compose"
 - Python 3.10+ (no pip packages needed)
 - Copilot CLI (`~/.copilot/session-state/` directory must exist) and/or Claude Code
 
-> **Note:** Dùng `python3` trên macOS/Linux, `python` hoặc `py` trên Windows.
-> Tất cả commands trong README dùng `python3` — thay bằng `python` nếu trên Windows.
+> **Note:** Use `python3` on macOS/Linux, `python` or `py` on Windows.
+> All commands in this README use `python3` — substitute `python` on Windows.
 
 ### Install
 
@@ -78,28 +78,28 @@ python "$env:USERPROFILE\.copilot\tools\extract-knowledge.py"
 python "$env:USERPROFILE\.copilot\tools\migrate.py"
 ```
 
-**Tip:** Thêm alias cho tiện (bash/zsh):
+**Tip:** Add aliases for convenience (bash/zsh):
 ```bash
 alias qs='python3 ~/.copilot/tools/query-session.py'
 alias brief='python3 ~/.copilot/tools/briefing.py'
 alias learn='python3 ~/.copilot/tools/learn.py'
-# Dùng: qs "docker error" | brief "fix login" | learn --pattern "Title" "Desc"
+# Usage: qs "docker error" | brief "fix login" | learn --pattern "Title" "Desc"
 ```
 
 ## Usage
 
-### Briefing (khuyến khích chạy trước mỗi task lớn)
+### Briefing (recommended before every major task)
 
 ```bash
 brief "implement user CRUD"          # Compact ~500 tokens
 brief "implement user CRUD" --full   # Full detail ~3K tokens
-brief --auto                         # Auto-detect từ git state
-brief --wakeup                       # Ultra-compact (~170 tokens) cho session start
+brief --auto                         # Auto-detect from git state
+brief --wakeup                       # Ultra-compact (~170 tokens) for session start
 brief --titles-only                  # Index only (~10 tok/entry) — progressive disclosure
 brief --titles-only "DynamoDB"       # Filtered titles
 brief --wing backend --room patient  # Filter by wing/room (palace-style)
-brief "task" --min-confidence 0.7    # Chỉ high-quality entries
-brief "task" --for-subagent          # Compact context block cho sub-agent prompts
+brief "task" --min-confidence 0.7    # High-quality entries only
+brief "task" --for-subagent          # Compact context block for sub-agent prompts
 ```
 
 ### Search
@@ -107,26 +107,26 @@ brief "task" --for-subagent          # Compact context block cho sub-agent promp
 ```bash
 qs "search terms"                    # Compact results
 qs "search terms" --verbose          # Full content
-qs "docker" --type research          # Filter theo doc type
-qs "spring" --source copilot         # Filter theo agent source
-qs --mistakes                        # Xem lỗi đã gặp
-qs --patterns                        # Xem best practices
-qs --decisions                       # Xem quyết định kiến trúc
+qs "docker" --type research          # Filter by doc type
+qs "spring" --source copilot         # Filter by agent source
+qs --mistakes                        # View past errors
+qs --patterns                        # View best practices
+qs --decisions                       # View architecture decisions
 ```
 
-### Drill Down (dùng entry ID từ kết quả search)
+### Drill Down (use entry ID from search results)
 
 ```bash
-qs --detail 2045                     # Xem chi tiết 1 entry
-qs --context 2045                    # Entry + các entry cùng session
+qs --detail 2045                     # View full entry details
+qs --context 2045                    # Entry + entries from same session
 qs --related 2045                    # Entry + knowledge graph connections
-qs --graph "spring boot"             # Mini knowledge graph theo topic
+qs --graph "spring boot"             # Mini knowledge graph by topic
 ```
 
-### Semantic Search (cần embedding API key)
+### Semantic Search (requires embedding API key)
 
 ```bash
-qs "deployment error" --semantic     # Search theo nghĩa, không chỉ keyword
+qs "deployment error" --semantic     # Search by meaning, not just keywords
 python3 ~/.copilot/tools/embed.py --setup   # Setup API key (Windows: python)
 ```
 
@@ -232,20 +232,20 @@ flowchart TD
 
 ```bash
 python3 ~/.copilot/tools/build-session-index.py --incremental   # Update only changed files
-python3 ~/.copilot/tools/extract-knowledge.py --stats           # Xem thống kê knowledge
-python3 ~/.copilot/tools/extract-knowledge.py --relations       # Xem thống kê relations
-python3 ~/.copilot/tools/watch-sessions.py --daemon             # Chạy nền, tự index
+python3 ~/.copilot/tools/extract-knowledge.py --stats           # View knowledge statistics
+python3 ~/.copilot/tools/extract-knowledge.py --relations       # View relation statistics
+python3 ~/.copilot/tools/watch-sessions.py --daemon             # Run in background, auto-index
 python3 ~/.copilot/tools/install.py --deploy-skill              # Deploy SKILL.md
-python3 ~/.copilot/tools/install.py --inject-global             # Inject vào global copilot-instructions
+python3 ~/.copilot/tools/install.py --inject-global             # Inject into global copilot-instructions
 # Windows: thay python3 → python
 ```
 
-### Auto-start Watcher (khỏi chạy thủ công sau reboot)
+### Auto-start Watcher (no manual restart after reboot)
 
 **macOS** — LaunchAgent:
 ```bash
 cp templates/com.copilot.watch-sessions.plist ~/Library/LaunchAgents/
-# ⚠️ Sửa YOUR_USERNAME và đường dẫn python3 trong plist trước khi load
+# ⚠️ Edit YOUR_USERNAME and python3 path in the plist before loading
 sed -i '' "s|YOUR_USERNAME|$(whoami)|g" ~/Library/LaunchAgents/com.copilot.watch-sessions.plist
 launchctl load ~/Library/LaunchAgents/com.copilot.watch-sessions.plist
 ```
@@ -344,48 +344,48 @@ python3 ~/.copilot/tools/setup-project.py --dry-run
 
 ## AI Agent Integration
 
-Để agent tự động dùng knowledge base, deploy skill vào project:
+To have agents automatically use the knowledge base, deploy the skill into your project:
 
 ```bash
 python3 ~/.copilot/tools/install.py --deploy-skill
-# → Tạo .github/skills/session-knowledge/SKILL.md (Copilot CLI)
-# → Tạo .claude/skills/session-knowledge.md (Claude Code)
+# → Creates .github/skills/session-knowledge/SKILL.md (Copilot CLI)
+# → Creates .claude/skills/session-knowledge.md (Claude Code)
 ```
 
-Sau đó agent sẽ tự chạy `briefing.py` trước mỗi task và search khi cần.
+After deployment, agents will automatically run `briefing.py` before tasks and search when needed.
 
-### Enforce AI Usage (bắt buộc dùng, không bỏ qua)
+### Enforce AI Usage (mandatory, not optional)
 
-Skill chỉ là gợi ý — AI agent vẫn có thể bỏ qua. Để **bắt buộc**, inject vào global instructions:
+Skills are suggestions — AI agents can still skip them. To **enforce** usage, inject into global instructions:
 
 ```bash
 python3 ~/.copilot/tools/install.py --inject-global
 ```
 
-Lệnh này tự động:
-1. Thêm section `🧠 Session Knowledge — BẮT BUỘC` vào `~/.github/copilot-instructions.md`
-2. Dùng HTML markers (`<!-- SESSION-KNOWLEDGE-START/END -->`) để update idempotent
-3. Đặt ở vị trí cao nhất (ngay sau "BẮT BUỘC" checklist) để AI đọc đầu tiên
+This automatically:
+1. Adds a `🧠 Session Knowledge — MANDATORY` section to `~/.github/copilot-instructions.md`
+2. Uses HTML markers (`<!-- SESSION-KNOWLEDGE-START/END -->`) for idempotent updates
+3. Places it at the highest position so the AI reads it first
 
-Chạy lại khi cần update nội dung — markers đảm bảo chỉ thay thế, không duplicate.
+Re-run when content needs updating — markers ensure replacement, not duplication.
 
-**Full setup (1 lần):**
+**Full setup (one time):**
 ```bash
 cd your-project
-python3 ~/.copilot/tools/install.py --deploy-skill    # Skill cho project
-python3 ~/.copilot/tools/install.py --inject-global   # Enforce qua global instructions
+python3 ~/.copilot/tools/install.py --deploy-skill    # Skill for the project
+python3 ~/.copilot/tools/install.py --inject-global   # Enforce via global instructions
 ```
 
 ### Sub-agent Context Injection
 
-Sub-agents (explore, task, general-purpose) không truy cập knowledge base trực tiếp.
-Main agent inject context vào prompt của chúng:
+Sub-agents (explore, task, general-purpose) don't access the knowledge base directly.
+The main agent injects context into their prompts:
 
 ```bash
 python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
 ```
 
-Output là block `[KNOWLEDGE CONTEXT]` compact (~200 tokens) để embed vào sub-agent prompt:
+Output is a compact `[KNOWLEDGE CONTEXT]` block (~200 tokens) to embed in sub-agent prompts:
 ```
 [KNOWLEDGE CONTEXT — from past sessions]
   [AVOID] Port conflicts — check docker ps before starting
@@ -396,11 +396,11 @@ Output là block `[KNOWLEDGE CONTEXT]` compact (~200 tokens) để embed vào su
 
 ## Security
 
-- **No pickle** — tất cả serialization dùng JSON (backward-compat: detect pickle magic bytes, warn, fallback)
+- **No pickle** — all serialization uses JSON (backward-compat: detect pickle magic bytes, warn, fallback)
 - **Parameterized SQL** — zero SQL injection vectors
 - **FTS5 sanitization** — strips operators (`OR`, `AND`, `NOT`, `NEAR`, `*`, `"`)
 - **Atomic lock** — `O_CREAT | O_EXCL` eliminates TOCTOU race conditions
-- **API key protection** — config files chmod `0o600`, env vars ưu tiên hơn file
+- **API key protection** — config files chmod `0o600`, env vars preferred over files
 - **Path validation** — WSL path traversal protection
 - **Input limits** — title 200 chars, content 10K chars, FTS query 500 chars
 
