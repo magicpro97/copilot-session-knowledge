@@ -89,13 +89,13 @@ python3 ~/.copilot/tools/tentacle.py status
 python3 ~/.copilot/tools/tentacle.py show <name>
 ```
 
-### Phase 3: Verify (Steps 7–10)
+### Phase 3: Verify (Steps 7–12)
 
 This is the critical phase. Every step here catches a different class of agent error.
 
 #### Step 7: Build gate
 
-Run the project's compiler/linter on all changed files. Do not trust agent claims that "it compiles."
+Run the project's compiler on all changed files. Do not trust agent claims that "it compiles."
 
 ```bash
 # Examples — use whatever your project uses:
@@ -107,7 +107,22 @@ python -m py_compile <file>         # Python
 
 **Gate**: If build fails → fix before proceeding. Either fix yourself or re-dispatch the responsible tentacle agent with the error output.
 
-#### Step 8: Test gate
+#### Step 8: Lint gate
+
+Run the project's linter and formatter. Agents frequently produce code that compiles but violates project style rules (unused imports, missing JSDoc, inconsistent formatting).
+
+```bash
+# Examples — use whatever your project uses:
+npx eslint <changed-files>          # JavaScript/TypeScript
+npx prettier --check <changed-files>
+cargo clippy                        # Rust
+golangci-lint run                   # Go
+ruff check <changed-files>          # Python
+```
+
+**Gate**: If lint fails → fix before proceeding. Most lint issues are auto-fixable (`--fix`), so fix them directly rather than re-dispatching an agent.
+
+#### Step 9: Test gate
 
 Run actual tests. Agents often claim "all tests pass" without running them, or write tests that don't actually assert anything meaningful.
 
@@ -120,7 +135,7 @@ go test ./...
 
 **Gate**: If tests fail → fix before proceeding. Check whether the agent wrote the tests — agents sometimes write tests that are trivially correct (e.g., testing that `true === true`).
 
-#### Step 9: Code review
+#### Step 10: Code review
 
 Dispatch a code-review agent (in a separate context — never let code review itself) to review all changes across tentacles.
 
@@ -135,7 +150,33 @@ task(
 
 **Gate**: If review finds issues → fix → re-review → loop until verdict is CLEAN (max 5 rounds).
 
-#### Step 10: QA audit (high-risk changes only)
+#### Step 11: Docs gate
+
+Check whether changed code has documentation that needs updating. Agents change function signatures, add parameters, alter behavior — but almost never update the corresponding docs. This gate catches stale documentation before it reaches production.
+
+Look for:
+- **README / docs/** — Do feature descriptions still match the code?
+- **API docs** (OpenAPI, Swagger) — Do endpoints, parameters, and response schemas reflect changes?
+- **JSDoc / docstrings** — Do changed functions have accurate descriptions, `@param`, `@returns`?
+- **CHANGELOG** — Does it mention the change (if project uses one)?
+- **Inline comments** — Do comments near changed code still describe what the code does?
+
+```bash
+# Find docs near changed files
+git diff --name-only | while read f; do
+  dir=$(dirname "$f")
+  ls "$dir"/README* "$dir"/*.md 2>/dev/null
+done | sort -u
+
+# Check for outdated JSDoc on changed functions
+git diff --unified=0 | grep -E '^\+.*function |^\+.*export ' | head -20
+```
+
+**Gate**: If docs are stale → update them. This gate is auto-fixable — update the docs yourself rather than re-dispatching an agent.
+
+**Skip when**: Changes are purely internal refactors with no public API or behavior change.
+
+#### Step 12: QA audit (high-risk changes only)
 
 For changes touching auth, data integrity, financial logic, or infrastructure, add a cross-check by a different agent. This catches errors that code-review misses because the reviewer may share the same blind spots as the author.
 
@@ -153,9 +194,9 @@ task(
 
 Skip this step for low-risk changes (documentation, formatting, simple refactors).
 
-### Phase 4: Close (Steps 11–12)
+### Phase 4: Close (Steps 13–14)
 
-#### Step 11: Complete and learn
+#### Step 13: Complete and learn
 
 ```bash
 python3 ~/.copilot/tools/tentacle.py complete <name>
@@ -163,7 +204,7 @@ python3 ~/.copilot/tools/tentacle.py complete <name>
 
 Only call `complete` after all verification gates pass. This marks all todos done and auto-extracts learnings from handoff.md into long-term knowledge.
 
-#### Step 12: Cleanup
+#### Step 14: Cleanup
 
 ```bash
 python3 ~/.copilot/tools/tentacle.py delete <name>
@@ -174,11 +215,13 @@ python3 ~/.copilot/tools/tentacle.py delete <name>
 | Gate | What it catches | Skip when |
 |------|----------------|-----------|
 | **Build** | Syntax errors, type mismatches, import failures | Never skip |
+| **Lint** | Style violations, unused imports, formatting | Never skip |
 | **Test** | Logic bugs, regressions, broken contracts | Never skip |
-| **Review** | Security issues, style violations, scope creep | Never skip |
+| **Review** | Security issues, design flaws, scope creep | Never skip |
+| **Docs** | Stale README, outdated JSDoc, missing CHANGELOG | Internal refactors only |
 | **QA audit** | Hallucinated tests, spec mismatches, blind spots | Low-risk changes only |
 
-The first 3 gates are mandatory. Skipping any of them means you don't know if the agent output is correct — you're just hoping it is.
+The first 4 gates are mandatory. Skipping any of them means you don't know if the agent output is correct — you're just hoping it is.
 
 ## CLI reference
 
