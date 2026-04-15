@@ -49,7 +49,7 @@ DB_PATH = SESSION_STATE / "knowledge.db"
 # Wing auto-detection rules: tag patterns → wing
 _WING_RULES = [
     ({"lambda", "dynamodb", "sqs", "cdk", "api", "cognito", "s3",
-      "eventbridge", "cloudwatch", "sns", "websocket", "nefoap"}, "backend"),
+      "eventbridge", "cloudwatch", "sns", "websocket"}, "backend"),
     ({"expo", "react", "react-native", "screen", "component", "css",
       "ui", "navigation", "hook"}, "frontend"),
     ({"jest", "playwright", "e2e", "test", "testing", "coverage"}, "testing"),
@@ -63,17 +63,15 @@ _WING_RULES = [
 
 # Room auto-detection rules: tag/title patterns → room
 _ROOM_RULES = [
-    ({"patient", "patient-search", "傷病者"}, "patient"),
-    ({"hospital", "病院"}, "hospital"),
-    ({"copytogroup", "copy-to-group", "傷病者追加"}, "copyToGroup"),
+    ({"patient", "patient-search"}, "patient"),
+    ({"hospital"}, "hospital"),
     ({"websocket", "ws"}, "websocket"),
     ({"dynamodb", "dao", "repository"}, "dynamodb"),
     ({"auth", "cognito", "login"}, "auth"),
     ({"s3", "media", "upload", "presigned"}, "s3-media"),
     ({"sqs", "queue", "consumer"}, "sqs"),
-    ({"notification", "通知"}, "notification"),
+    ({"notification"}, "notification"),
     ({"audit", "audit-log"}, "audit-log"),
-    ({"nefoap", "指令"}, "nefoap"),
     ({"lambda", "handler"}, "lambda"),
     ({"playwright", "e2e"}, "e2e"),
     ({"excel", "spreadsheet", "tsv", "csv"}, "data-export"),

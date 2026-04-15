@@ -1,26 +1,52 @@
 #!/usr/bin/env python3
 """
-setup-project.py — Integrate session-knowledge into a project's AI instructions.
+setup-project.py — Integrate session-knowledge + tentacle orchestration into a project.
 
-Copies the SKILL.md template into the project's .github/skills/ directory and
-optionally patches CLAUDE.md / copilot-instructions.md with a reference.
+Installs skills, instructions (enforcement), and optionally patches CLAUDE.md.
+Single entry point for setting up all AI knowledge tools in any project.
 
 Usage:
     python setup-project.py                        # Auto-detect project root (git root)
     python setup-project.py /path/to/project       # Explicit project root
-    python setup-project.py --skill-only            # Only install SKILL.md, skip patching
+    python setup-project.py --skill-only            # Only install skills, skip patching
+    python setup-project.py --no-tentacle           # Skip tentacle orchestration
     python setup-project.py --dry-run               # Show what would be done
 """
 
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-SKILL_DIR_NAME = "session-knowledge"
-SKILL_RELATIVE = f".github/skills/{SKILL_DIR_NAME}/SKILL.md"
+SCRIPT_DIR = Path(__file__).resolve().parent
+TEMPLATES_DIR = SCRIPT_DIR / "templates"
+SKILLS_DIR = SCRIPT_DIR / "skills"
+
+# What to install
+INSTALL_ITEMS = {
+    # Skills (from tools/skills/ → .github/skills/)
+    "skills": [
+        {"src": "session-knowledge-creator", "label": "Session Knowledge Creator (meta-skill)"},
+        {"src": "tentacle-creator", "label": "Tentacle Creator (meta-skill)"},
+        {"src": "tentacle-orchestration", "label": "Tentacle Orchestration"},
+    ],
+    # Templates (from tools/templates/ → .github/skills/ or .github/instructions/)
+    "templates": [
+        {
+            "src": "SKILL.md",
+            "dst": ".github/skills/session-knowledge/SKILL.md",
+            "label": "Session Knowledge Skill",
+        },
+        {
+            "src": "session-knowledge.instructions.md",
+            "dst": ".github/instructions/session-knowledge.instructions.md",
+            "label": "Session Knowledge Instructions (enforcement)",
+        },
+    ],
+}
 
 # Snippet to add to CLAUDE.md
 CLAUDE_SNIPPET = """
@@ -84,49 +110,84 @@ def find_git_root() -> Path | None:
     return None
 
 
-def find_template() -> Path:
-    """Find SKILL.md template relative to this script."""
-    script_dir = Path(__file__).parent
-    template = script_dir / "templates" / "SKILL.md"
-    if template.exists():
-        return template
-    # Fallback: check if we're running from installed location
-    repo_dir = script_dir.parent
-    template = repo_dir / "templates" / "SKILL.md"
-    if template.exists():
-        return template
-    print(f"  ✗ Template not found at {template}")
-    sys.exit(1)
+def copy_if_changed(src: Path, dst: Path, dry_run: bool, label: str) -> bool:
+    """Copy src to dst if content differs. Returns True if changed."""
+    if not src.exists():
+        print(f"  ⚠ Source not found: {src}")
+        return False
 
-
-def install_skill(project_root: Path, template: Path, dry_run: bool) -> bool:
-    """Copy SKILL.md to project's .github/skills/session-knowledge/."""
-    target_dir = project_root / ".github" / "skills" / SKILL_DIR_NAME
-    target_file = target_dir / "SKILL.md"
-
-    if target_file.exists():
-        import hashlib
-        src_hash = hashlib.md5(template.read_bytes()).hexdigest()
-        dst_hash = hashlib.md5(target_file.read_bytes()).hexdigest()
+    if dst.exists():
+        src_hash = hashlib.md5(src.read_bytes()).hexdigest()
+        dst_hash = hashlib.md5(dst.read_bytes()).hexdigest()
         if src_hash == dst_hash:
-            print(f"  ⏭ SKILL.md already up to date at {target_file}")
+            print(f"  ⏭ {label} — already up to date")
             return False
-        else:
-            if dry_run:
-                print(f"  [dry-run] Would update {target_file} (content changed)")
-                return True
-            shutil.copy2(template, target_file)
-            print(f"  ✓ Updated {SKILL_RELATIVE} (content changed)")
+        if dry_run:
+            print(f"  [dry-run] Would update: {label}")
             return True
-
-    if dry_run:
-        print(f"  [dry-run] Would create {target_file}")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        print(f"  ✓ Updated: {label}")
         return True
 
-    target_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(template, target_file)
-    print(f"  ✓ Installed {SKILL_RELATIVE}")
+    if dry_run:
+        print(f"  [dry-run] Would create: {label}")
+        return True
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    print(f"  ✓ Installed: {label}")
     return True
+
+
+def install_skills(project_root: Path, dry_run: bool) -> int:
+    """Install creator skills from tools/skills/ → .github/skills/."""
+    changes = 0
+    for item in INSTALL_ITEMS["skills"]:
+        src = SKILLS_DIR / item["src"] / "SKILL.md"
+        dst = project_root / ".github" / "skills" / item["src"] / "SKILL.md"
+        if copy_if_changed(src, dst, dry_run, item["label"]):
+            changes += 1
+    return changes
+
+
+def install_templates(project_root: Path, dry_run: bool) -> int:
+    """Install template files (SKILL.md, instructions) from tools/templates/."""
+    changes = 0
+    for item in INSTALL_ITEMS["templates"]:
+        src = TEMPLATES_DIR / item["src"]
+        dst = project_root / item["dst"]
+        if copy_if_changed(src, dst, dry_run, item["label"]):
+            changes += 1
+    return changes
+
+
+def install_tentacle(project_root: Path, dry_run: bool) -> int:
+    """Install tentacle orchestration: .gitignore entry."""
+    changes = 0
+    gitignore = project_root / ".gitignore"
+
+    if gitignore.exists():
+        content = gitignore.read_text()
+        if ".octogent/" not in content:
+            if dry_run:
+                print("  [dry-run] Would add .octogent/ to .gitignore")
+            else:
+                with open(gitignore, "a") as f:
+                    f.write("\n# Tentacle orchestration (local work contexts)\n.octogent/\n")
+                print("  ✓ Added .octogent/ to .gitignore")
+            changes += 1
+        else:
+            print("  ⏭ .octogent/ already in .gitignore")
+    else:
+        if dry_run:
+            print("  [dry-run] Would create .gitignore with .octogent/")
+        else:
+            gitignore.write_text("# Tentacle orchestration (local work contexts)\n.octogent/\n")
+            print("  ✓ Created .gitignore with .octogent/")
+        changes += 1
+
+    return changes
 
 
 def patch_claude_md(project_root: Path, dry_run: bool) -> bool:
@@ -247,7 +308,25 @@ def patch_agents_md(project_root: Path, dry_run: bool) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Integrate session-knowledge skill into a project"
+        description="Integrate session-knowledge + tentacle orchestration into a project",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Examples:
+  python setup-project.py                    # Full setup (auto-detect git root)
+  python setup-project.py /path/to/project   # Explicit project root
+  python setup-project.py --skill-only       # Skills only, no CLAUDE.md patching
+  python setup-project.py --no-tentacle      # Skip tentacle orchestration
+  python setup-project.py --dry-run          # Preview changes
+
+What gets installed:
+  .github/skills/session-knowledge/SKILL.md          — Knowledge skill reference
+  .github/skills/session-knowledge-creator/SKILL.md  — Meta-skill: customize for project
+  .github/skills/tentacle-creator/SKILL.md           — Meta-skill: customize tentacle
+  .github/skills/tentacle-orchestration/SKILL.md     — Tentacle workflow skill
+  .github/instructions/session-knowledge.instructions.md — Enforcement (auto-inject)
+  .gitignore                                         — Add .octogent/ entry
+  CLAUDE.md / copilot-instructions.md / AGENTS.md    — Patched with references
+"""
     )
     parser.add_argument(
         "project_root", nargs="?", default=None,
@@ -255,7 +334,11 @@ def main():
     )
     parser.add_argument(
         "--skill-only", action="store_true",
-        help="Only install SKILL.md, don't patch CLAUDE.md or copilot-instructions.md"
+        help="Only install skills and instructions, don't patch CLAUDE.md etc."
+    )
+    parser.add_argument(
+        "--no-tentacle", action="store_true",
+        help="Skip tentacle orchestration setup"
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -276,49 +359,61 @@ def main():
         print(f"✗ Project root does not exist: {project_root}")
         sys.exit(1)
 
-    template = find_template()
-
-    print(f"Setting up session-knowledge for: {project_root}")
+    project_name = project_root.name
+    print(f"🧠 Setting up AI knowledge tools for: {project_name}")
+    print(f"   Path: {project_root}")
     if args.dry_run:
-        print("(dry-run mode)\n")
+        print("   (dry-run mode)")
     print()
 
     changes = 0
 
-    # 1. Install SKILL.md
-    if install_skill(project_root, template, args.dry_run):
-        changes += 1
+    # 1. Install session-knowledge skill + instructions
+    print("📋 Session Knowledge:")
+    changes += install_templates(project_root, args.dry_run)
 
-    # 2. Patch CLAUDE.md
+    # 2. Install creator skills (meta-skills)
+    print("\n🔧 Creator Skills:")
+    changes += install_skills(project_root, args.dry_run)
+
+    # 3. Tentacle orchestration
+    if not args.no_tentacle:
+        print("\n🐙 Tentacle Orchestration:")
+        changes += install_tentacle(project_root, args.dry_run)
+
+    # 4. Patch config files
     if not args.skill_only:
+        print("\n📝 Config Files:")
         if patch_claude_md(project_root, args.dry_run):
             changes += 1
-
-    # 3. Patch copilot-instructions.md
-    if not args.skill_only:
         if patch_copilot_instructions(project_root, args.dry_run):
             changes += 1
-
-    # 4. Patch AGENTS.md
-    if not args.skill_only:
         if patch_agents_md(project_root, args.dry_run):
             changes += 1
 
+    # Summary
     print()
     if changes == 0:
-        print("✓ Already set up — no changes needed.")
+        print("✅ Already set up — no changes needed.")
     elif args.dry_run:
         print(f"Would make {changes} change(s). Run without --dry-run to apply.")
     else:
-        print(f"✓ Done! {changes} change(s) applied.")
+        print(f"✅ Done! {changes} change(s) applied.")
         print()
         print("Next steps:")
         print("  1. Run: python3 ~/.copilot/tools/build-session-index.py --all")
-        print("  2. AI agents will now auto-brief before tasks and record learnings.")
+        print("  2. Customize for your project:")
+        print("     /session-knowledge-creator   — Generate project-specific knowledge skill")
+        if not args.no_tentacle:
+            print("     /tentacle-creator            — Generate project-specific tentacle skill")
         print()
-        print("Optional:")
-        print("  - Index Claude Code sessions: python3 ~/.copilot/tools/claude-adapter.py")
-        print("  - Sync Win/WSL DBs: python3 ~/.copilot/tools/sync-knowledge.py --auto")
+        print("How it works:")
+        print("  📋 .instructions.md → auto-injected into EVERY AI context (enforcement)")
+        print("  🔧 Creator skills  → run once to customize skills for your project")
+        print("  🧠 briefing.py     → AI runs before each task (past mistakes/patterns)")
+        print("  📝 learn.py        → AI records after each task (accumulate knowledge)")
+        if not args.no_tentacle:
+            print("  🐙 tentacle.py     → Multi-agent orchestration with scoped contexts")
 
 
 if __name__ == "__main__":
