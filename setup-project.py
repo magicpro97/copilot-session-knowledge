@@ -33,6 +33,8 @@ INSTALL_ITEMS = {
         {"src": "tentacle-creator", "label": "Tentacle Creator (meta-skill)"},
         {"src": "tentacle-orchestration", "label": "Tentacle Orchestration"},
         {"src": "agent-creator", "label": "Agent Creator (generates .agent.md files)"},
+        {"src": "hook-creator", "label": "Hook Creator (quality enforcement hooks)"},
+        {"src": "workflow-creator", "label": "Workflow Creator (phased development lifecycle)"},
     ],
     # Templates (from tools/templates/ → .github/skills/ or .github/instructions/)
     "templates": [
