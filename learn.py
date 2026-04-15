@@ -143,8 +143,17 @@ def add_entry(category: str, title: str, content: str,
               tags: str = "", session_id: str = None,
               confidence: float = None,
               wing: str = "", room: str = "",
-              facts: list = None) -> int:
-    """Add a knowledge entry to the database. Returns entry ID."""
+              facts: list = None, skip_gate: bool = False) -> int:
+    """Add a knowledge entry to the database. Returns entry ID.
+    
+    Quality gate (for mistake/pattern/discovery): 3 questions must all be YES:
+    1. "Could someone Google this in 5 minutes?" → NO (otherwise not worth recording)
+    2. "Is this specific to THIS codebase?" → YES (generic knowledge doesn't belong)
+    3. "Did this require real debugging/investigation?" → YES (trivial findings = noise)
+    
+    Gate is auto-skipped for decision/tool/feature/refactor (always worth recording)
+    and for bulk imports (--from-file). Use --skip-gate to bypass manually.
+    """
     db = get_db()
 
     if not session_id:
@@ -546,10 +555,22 @@ def main():
     title = positional[0][:200]  # Limit title length
     content = " ".join(positional[1:])[:10000]  # Limit content to 10KB
 
-    print(f"Recording {category}...")
+    # Quality gate for mistake/pattern/discovery
+    skip_gate = "--skip-gate" in args
+    gate_categories = {"mistake", "pattern", "discovery"}
+    if category in gate_categories and not skip_gate:
+        print(f"Recording {category}...")
+        print(f"  ℹ Quality gate (bypass with --skip-gate):")
+        print(f"    ✓ Could someone Google this in 5 min? → Must be NO")
+        print(f"    ✓ Specific to THIS codebase/project? → Must be YES")
+        print(f"    ✓ Required real debugging/investigation? → Must be YES")
+        print(f"  Gate passed (agent responsibility — record honestly)")
+    else:
+        print(f"Recording {category}...")
+
     add_entry(category, title, content, tags=tags,
               session_id=session_id, confidence=confidence,
-              wing=wing, room=room, facts=facts)
+              wing=wing, room=room, facts=facts, skip_gate=skip_gate)
     if facts:
         print(f"  With {len(facts)} fact(s)")
     print("Done.")
