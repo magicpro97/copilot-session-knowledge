@@ -56,19 +56,34 @@ From the analysis, determine:
 | Custom agents | From AGENTS.md (if any) |
 | Folder patterns | `src/app/api/*`, `backend/handlers/*`, `tests/**/*` |
 
-### Step 3: Generate the skill file
+### Step 3: Generate agents (if missing)
+
+If the project has no custom agents in AGENTS.md or `.github/agents/`, use the `agent-creator` skill to generate `.agent.md` files first. Tentacle orchestration works best when agents are domain-specific (e.g., `backend-dev`, `test-writer`) rather than generic `general-purpose`.
+
+Run the agent-creator skill, or read `~/.copilot/tools/skills/agent-creator/SKILL.md` and follow its workflow to generate agents from the curated templates in `references/`.
+
+### Step 4: Generate the skill file
 
 Create `.github/skills/tentacle-orchestration/SKILL.md` customized for the project.
 
-The generated skill needs these sections:
+Base it on the reference at `~/.copilot/tools/skills/tentacle-orchestration/SKILL.md` — it defines the canonical 4-phase, 12-step workflow:
 
-**Agent mapping table** — Map module types to agent types. If the project has custom agents (from AGENTS.md), use those. Otherwise, fall back to `general-purpose`:
+| Phase | Steps | Purpose |
+|-------|-------|---------|
+| **Plan** | 1–4 | Decompose → create tentacles → add todos → enrich CONTEXT.md |
+| **Execute** | 5–6 | Dispatch agents (swarm) → monitor progress |
+| **Verify** | 7–10 | Build gate → Test gate → Code review → QA audit |
+| **Close** | 11–12 | Complete (auto-learn) → cleanup |
+
+Customize these sections for the project:
+
+**Agent mapping table** — Map module types to the agents detected in Step 2 or generated in Step 3. Use project-specific agent names, not generic `general-purpose`:
 
 ```markdown
 | Module type | agent-type | model |
 |-------------|-----------|-------|
-| Backend logic | general-purpose | claude-sonnet-4.6 |
-| Tests | general-purpose | claude-sonnet-4.6 |
+| Backend logic | backend-dev | claude-sonnet-4.6 |
+| Tests | test-writer | claude-sonnet-4.6 |
 | Code review | code-review | claude-sonnet-4.6 |
 ```
 
@@ -85,13 +100,21 @@ tentacle.py create views --scope "myapp/views/*,myapp/serializers/*" --desc "Vie
 tentacle.py create handlers --scope "internal/handler/*" --desc "HTTP handlers"
 ```
 
+**Verification commands** — Customize Phase 3 gates with the project's actual build/test/lint commands:
+
+```bash
+# Build gate (Step 7)
+npx tsc --noEmit           # or: cargo check, go build ./..., etc.
+
+# Test gate (Step 8)
+yarn test --maxWorkers=1   # or: pytest, go test ./..., etc.
+```
+
 **CONTEXT.md template** — Include project-specific conventions (linting rules, import patterns, naming conventions) so agents follow them.
 
 **Knowledge integration** — If `~/.copilot/tools/briefing.py` exists, include the `--briefing` and `--learn` flags. If not, note that session-knowledge can be installed for long-term memory.
 
-See `references/skill-template.md` for the full template with placeholders.
-
-### Step 4: Set up .gitignore
+### Step 5: Set up .gitignore
 
 ```bash
 if ! grep -qF '.octogent/' .gitignore 2>/dev/null; then
@@ -99,7 +122,7 @@ if ! grep -qF '.octogent/' .gitignore 2>/dev/null; then
 fi
 ```
 
-### Step 5: Verify tentacle.py exists
+### Step 6: Verify tentacle.py exists
 
 ```bash
 ls ~/.copilot/tools/tentacle.py && python3 ~/.copilot/tools/tentacle.py --help
@@ -111,9 +134,9 @@ tentacle.py not found at ~/.copilot/tools/tentacle.py
 Install: git clone https://github.com/magicpro97/copilot-session-knowledge.git ~/.copilot/tools
 ```
 
-### Step 6: Report
+### Step 7: Report
 
-Present a summary: project profile, files created, agent mappings detected, and example usage commands.
+Present a summary: project profile, files created, agent mappings detected, verification commands, and example usage commands.
 
 ## Compatibility
 
@@ -122,5 +145,6 @@ Present a summary: project profile, files created, agent mappings detected, and 
 | `tentacle.py` | `~/.copilot/tools/` | Prompt to install |
 | `briefing.py` | `~/.copilot/tools/` | Skip knowledge integration |
 | `learn.py` | `~/.copilot/tools/` | Skip auto-learn |
-| Custom agents | AGENTS.md | Use `general-purpose` |
+| `agent-creator` | `~/.copilot/tools/skills/` | Fall back to `general-purpose` agents |
+| Custom agents | AGENTS.md or `.github/agents/` | Generate via agent-creator, or use `general-purpose` |
 | Git repo | `.git/` | Required (tentacles stored in git root) |
