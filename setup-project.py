@@ -32,6 +32,7 @@ INSTALL_ITEMS = {
         {"src": "session-knowledge-creator", "label": "Session Knowledge Creator (meta-skill)"},
         {"src": "tentacle-creator", "label": "Tentacle Creator (meta-skill)"},
         {"src": "tentacle-orchestration", "label": "Tentacle Orchestration"},
+        {"src": "agent-creator", "label": "Agent Creator (generates .agent.md files)"},
     ],
     # Templates (from tools/templates/ → .github/skills/ or .github/instructions/)
     "templates": [
