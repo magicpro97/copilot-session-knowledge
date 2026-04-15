@@ -124,7 +124,7 @@ The spec is **CLEAN** when:
 
 If the spec cannot reach CLEAN after 3 rounds of Q&A, escalate — the problem is likely at the requirements level, not the clarification level.
 
-**Gate**: Do NOT proceed to Phase 1 (Plan) until the spec is CLEAN. Planning on an unclear spec produces incorrect decomposition, wasted agent work, and rework.
+**Gate**: Never proceed to Phase 1 (Plan) until the spec is CLEAN. Planning on an unclear spec produces incorrect decomposition, wasted agent work, and rework.
 
 ### Phase 1: Plan (Steps 1–4)
 
@@ -387,7 +387,7 @@ If the project has custom agents (e.g., `lambda-developer`, `frontend-developer`
 <!-- Read existing code and summarize -->
 
 ## Constraints
-- DO NOT modify files outside your scope
+- Avoid modifying files outside your scope — overlapping changes cause agent conflicts
 - <project-specific conventions>
 
 ## Key files

@@ -94,7 +94,7 @@ Evaluate the spec against these 8 quality attributes (based on IEEE 830 / ISO 29
 | ... | Low/Med/High | Low/Med/High | ... |
 
 ### Questions (Blocking)
-These MUST be answered before implementation starts.
+These must be answered before implementation starts.
 
 Q1. <question with context and options A/B/C>
 Q2. ...
