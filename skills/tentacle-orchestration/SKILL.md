@@ -13,12 +13,23 @@ Adapted from the [OctoGent](https://github.com/hesamsheikh/octogent) tentacle pa
 
 ## When to use
 
-| Good fit | Not a good fit |
-|----------|----------------|
-| Feature spanning multiple modules | Simple 1-2 file changes |
-| Parallel agents with clear scope boundaries | Strictly sequential tasks |
-| Multi-layer work (API + DB + Tests + UI) | Limited token budget |
-| Bug investigation with multiple hypotheses | Single-file edits |
+| Scope | Approach |
+|-------|----------|
+| 1-2 files, single concern | Direct work — no tentacle needed |
+| 3+ files, single module | Optional — tentacle helps track but not required |
+| 3+ files, multiple modules | **Tentacle required** — decompose into scoped units |
+| Multi-phase with agent delegation | **Tentacle required** — each delegated agent gets a tentacle |
+| Bug investigation, multiple hypotheses | Tentacle recommended — one tentacle per hypothesis |
+
+**Not a good fit:** strictly sequential single-file tasks, limited token budget, trivial edits.
+
+## Anti-patterns
+
+- ❌ SQL/markdown todos only for multi-agent work → agents lose scope isolation and CONTEXT.md
+- ❌ Launching sub-agents without `swarm` prompt → agent gets no scope, constraints, or key files
+- ❌ Skipping `--briefing` on create → past mistakes not injected into CONTEXT.md
+- ❌ Skipping `complete` before `delete` → learnings from handoff.md lost permanently
+- ❌ Overlapping tentacle scopes → agents overwrite each other's work
 
 ## Core concept
 
