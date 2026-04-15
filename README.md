@@ -288,7 +288,23 @@ systemctl --user enable --now copilot-watch.service
 
 ## Skills & Templates
 
-This toolkit includes meta-skills and templates for project setup:
+This toolkit includes meta-skills and templates for project setup.
+
+### Skills vs Agents — Important Distinction
+
+This repo contains both **Skills** (SKILL.md) and **Agent templates** (.agent.md). They follow different specs:
+
+| | Skills (SKILL.md) | Agents (.agent.md) |
+|---|---|---|
+| **Standard** | [Anthropic Agent Skills](https://github.com/anthropics/skills) | GitHub Copilot / Claude Code |
+| **Purpose** | Instructions for specific tasks | Specialized sub-agent persona |
+| **Frontmatter** | `name`, `description`, `license`, `allowed-tools`, `metadata`, `compatibility` | `name`, `description`, `tools`, `model` |
+| **Triggered by** | AI matching description to user intent | Explicit delegation or keyword match |
+| **Validation** | `quick_validate.py` from anthropics/skills | `agent-spec.md` from this repo |
+
+**Key rule:** Skills use `allowed-tools` (optional string). Agents use `tools` (YAML list). Don't mix them.
+
+### Available Skills
 
 | Skill | Purpose |
 |-------|---------|
@@ -299,7 +315,7 @@ This toolkit includes meta-skills and templates for project setup:
 | `hook-creator` | Generate quality enforcement hooks (preToolUse/postToolUse) |
 | `workflow-creator` | Create phased development workflows with quality gates |
 
-### Hook Templates (`hooks/references/`)
+### Hook Templates (`skills/hook-creator/references/`)
 
 Pre-built Copilot CLI hook scripts — customize and install per project:
 

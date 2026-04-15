@@ -44,89 +44,9 @@ Clarification is the most important phase. A bug found in spec costs 1x to fix. 
 
 This phase takes a raw specification and makes it implementation-ready through iterative Q&A. No planning or coding happens until the spec is CLEAN.
 
-#### Step 0.1: Analyze the specification
+For the full spec clarification process (8 quality dimensions, Spec Health Report template, iterative refinement), see `references/spec-clarification.md`.
 
-Read the spec and evaluate it against 8 quality dimensions:
-
-| Dimension | What to check |
-|-----------|--------------|
-| **Clarity** | Are terms unambiguous? Could two engineers build the same thing from this spec? |
-| **Completeness** | Are all flows covered (happy + error + edge)? Boundary conditions? Non-functional requirements? |
-| **Consistency** | Do any requirements contradict each other or conflict with existing system behavior? |
-| **Testability** | Can each requirement be verified with a concrete test? Are acceptance criteria measurable? |
-| **Feasibility** | Are there technically impossible requirements? Undeclared dependencies? |
-| **Impact** | What existing features, modules, APIs, schemas are affected? What is the blast radius? |
-| **Trade-offs** | Are there competing concerns (perf vs simplicity)? What alternatives weren't considered? |
-| **Risks** | What could go wrong? What are the unknowns? Backward compatibility? Rollback strategy? |
-
-Investigate the codebase to understand current behavior BEFORE generating questions. Use `grep`, `glob`, and `view` to find relevant code — questions backed by code evidence get faster, better answers.
-
-#### Step 0.2: Generate the Spec Health Report
-
-Produce a structured report with:
-
-```markdown
-## Spec Health Report: <feature name>
-
-### Summary
-- **Clarity**: 🟢 Clear / 🟡 Minor gaps / 🔴 Ambiguous
-- **Completeness**: 🟢 / 🟡 / 🔴
-- **Consistency**: 🟢 / 🟡 / 🔴
-- **Testability**: 🟢 / 🟡 / 🔴
-- **Feasibility**: 🟢 / 🟡 / 🔴
-- **Verdict**: ✅ CLEAN — ready to plan / ⚠️ BLOCKED — N questions need answers
-
-### Impact Analysis
-- **Affected modules**: <list>
-- **Affected APIs**: <list>
-- **Database changes**: <yes/no, details>
-- **Blast radius**: <low/medium/high> — <explanation>
-
-### Trade-offs
-| Decision | Option A | Option B | Recommendation |
-|----------|----------|----------|----------------|
-
-### Risks
-| Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|------------|
-
-### Blocking Questions
-Q1. <question with context, code evidence, and A/B/C options>
-
-### Non-blocking Questions (have reasonable defaults)
-Q2. <question> — Default: <recommended option>
-```
-
-Question writing rules:
-- **Closed-form** — provide A/B/C options, never open-ended "how should we handle this?"
-- **Context-rich** — quote the spec, show the code, explain your reasoning
-- **Code-backed** — investigate the codebase FIRST, then ask for confirmation of what you found
-- **Prioritized** — blocking questions first, non-blocking second
-
-#### Step 0.3: Iterative refinement (N+1 rounds)
-
-After receiving answers to your questions:
-
-1. Re-evaluate the spec with the new information
-2. Check if the answers introduced NEW ambiguities or conflicts
-3. Generate follow-up questions if needed
-4. Update the Spec Health Report
-5. Repeat until all blocking questions are resolved
-
-Each round should produce fewer questions — if questions are increasing, you're asking the wrong questions or the spec has fundamental design issues that need escalation.
-
-#### Step 0.4: Declare CLEAN or escalate
-
-The spec is **CLEAN** when:
-- Zero blocking questions remain
-- All 8 dimensions are 🟢 or 🟡 (no 🔴)
-- Impact analysis is complete with blast radius assessed
-- At least one risk mitigation exists for each high-impact risk
-- Trade-offs are documented with explicit decisions
-
-If the spec cannot reach CLEAN after 3 rounds of Q&A, escalate — the problem is likely at the requirements level, not the clarification level.
-
-**Gate**: Never proceed to Phase 1 (Plan) until the spec is CLEAN. Planning on an unclear spec produces incorrect decomposition, wasted agent work, and rework.
+**Gate**: Planning on an unclear spec produces incorrect decomposition, wasted agent work, and rework. Never proceed to Phase 1 until the spec is CLEAN.
 
 ### Phase 1: Plan (Steps 1–4)
 
@@ -183,108 +103,20 @@ python3 ~/.copilot/tools/tentacle.py show <name>
 
 ### Phase 3: Verify (Steps 7–12)
 
-This is the critical phase. Every step here catches a different class of agent error.
+Every step here catches a different class of agent error. For detailed gate descriptions (build, lint, test, review, docs, QA audit), see `references/verification-gates.md`.
 
-#### Step 7: Build gate
+Summary:
 
-Run the project's compiler on all changed files. Do not trust agent claims that "it compiles."
+| Gate | What it catches | Skip when |
+|------|----------------|-----------|
+| **Build** | Syntax errors, type mismatches, import failures | Never skip |
+| **Lint** | Style violations, unused imports, formatting | Never skip |
+| **Test** | Logic bugs, regressions, broken contracts | Never skip |
+| **Review** | Security issues, design flaws, scope creep | Never skip |
+| **Docs** | Stale README, outdated JSDoc, missing CHANGELOG | Internal refactors only |
+| **QA audit** | Hallucinated tests, spec mismatches, blind spots | Low-risk changes only |
 
-```bash
-# Examples — use whatever your project uses:
-npx tsc --noEmit                    # TypeScript
-cargo check                         # Rust
-go build ./...                      # Go
-python -m py_compile <file>         # Python
-```
-
-**Gate**: If build fails → fix before proceeding. Either fix yourself or re-dispatch the responsible tentacle agent with the error output.
-
-#### Step 8: Lint gate
-
-Run the project's linter and formatter. Agents frequently produce code that compiles but violates project style rules (unused imports, missing JSDoc, inconsistent formatting).
-
-```bash
-# Examples — use whatever your project uses:
-npx eslint <changed-files>          # JavaScript/TypeScript
-npx prettier --check <changed-files>
-cargo clippy                        # Rust
-golangci-lint run                   # Go
-ruff check <changed-files>          # Python
-```
-
-**Gate**: If lint fails → fix before proceeding. Most lint issues are auto-fixable (`--fix`), so fix them directly rather than re-dispatching an agent.
-
-#### Step 9: Test gate
-
-Run actual tests. Agents often claim "all tests pass" without running them, or write tests that don't actually assert anything meaningful.
-
-```bash
-# Run tests for the affected modules
-yarn test <changed-files> --maxWorkers=1
-pytest <changed-files>
-go test ./...
-```
-
-**Gate**: If tests fail → fix before proceeding. Check whether the agent wrote the tests — agents sometimes write tests that are trivially correct (e.g., testing that `true === true`).
-
-#### Step 10: Code review
-
-Dispatch a code-review agent (in a separate context — never let code review itself) to review all changes across tentacles.
-
-```python
-task(
-    agent_type="code-review",
-    model="claude-sonnet-4.6",
-    prompt="Review all files changed by tentacle agents: <file list>. "
-           "Focus on: correctness, security, scope violations, and missed edge cases."
-)
-```
-
-**Gate**: If review finds issues → fix → re-review → loop until verdict is CLEAN (max 5 rounds).
-
-#### Step 11: Docs gate
-
-Check whether changed code has documentation that needs updating. Agents change function signatures, add parameters, alter behavior — but almost never update the corresponding docs. This gate catches stale documentation before it reaches production.
-
-Look for:
-- **README / docs/** — Do feature descriptions still match the code?
-- **API docs** (OpenAPI, Swagger) — Do endpoints, parameters, and response schemas reflect changes?
-- **JSDoc / docstrings** — Do changed functions have accurate descriptions, `@param`, `@returns`?
-- **CHANGELOG** — Does it mention the change (if project uses one)?
-- **Inline comments** — Do comments near changed code still describe what the code does?
-
-```bash
-# Find docs near changed files
-git diff --name-only | while read f; do
-  dir=$(dirname "$f")
-  ls "$dir"/README* "$dir"/*.md 2>/dev/null
-done | sort -u
-
-# Check for outdated JSDoc on changed functions
-git diff --unified=0 | grep -E '^\+.*function |^\+.*export ' | head -20
-```
-
-**Gate**: If docs are stale → update them. This gate is auto-fixable — update the docs yourself rather than re-dispatching an agent.
-
-**Skip when**: Changes are purely internal refactors with no public API or behavior change.
-
-#### Step 12: QA audit (high-risk changes only)
-
-For changes touching auth, data integrity, financial logic, or infrastructure, add a cross-check by a different agent. This catches errors that code-review misses because the reviewer may share the same blind spots as the author.
-
-```python
-task(
-    agent_type="general-purpose",  # or qa-auditor if available
-    model="claude-sonnet-4.6",
-    prompt="Audit these changes as a QA engineer. Verify: "
-           "1. Do the tests actually test the stated requirements? "
-           "2. Are there untested edge cases? "
-           "3. Does the code match the spec/task description? "
-           "Task was: <original task description>"
-)
-```
-
-Skip this step for low-risk changes (documentation, formatting, simple refactors).
+The first 4 gates are mandatory. Skipping any of them means you don't know if the agent output is correct.
 
 ### Phase 4: Close (Steps 13–14)
 
@@ -317,83 +149,17 @@ The first 4 gates are mandatory. Skipping any of them means you don't know if th
 
 ## CLI reference
 
+See `references/cli-reference.md` for the full command reference, CONTEXT.md template, and agent selection guidance.
+
+Quick reference:
+
 ```bash
-# Create a tentacle (--briefing injects past knowledge into CONTEXT.md)
-python3 ~/.copilot/tools/tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing
-
-# Add todo items
-python3 ~/.copilot/tools/tentacle.py todo <name> add "<task>"
-
-# View all tentacles
-python3 ~/.copilot/tools/tentacle.py status
-
-# View one tentacle in detail
-python3 ~/.copilot/tools/tentacle.py show <name>
-
-# Mark a todo done
-python3 ~/.copilot/tools/tentacle.py todo <name> done <index>
-
-# Record agent output (--learn saves to long-term knowledge)
-python3 ~/.copilot/tools/tentacle.py handoff <name> "<message>" --learn
-
-# Generate dispatch prompt for an agent
-python3 ~/.copilot/tools/tentacle.py swarm <name> --agent-type <type> --model <model>
-
-# Generate parallel dispatch (one agent per todo)
-python3 ~/.copilot/tools/tentacle.py swarm <name> --output parallel
-
-# Complete tentacle (auto-learn from handoff)
-python3 ~/.copilot/tools/tentacle.py complete <name>
-
-# Delete a tentacle
-python3 ~/.copilot/tools/tentacle.py delete <name>
-```
-
-## Session-knowledge integration
-
-The tentacle pattern integrates with `briefing.py` / `learn.py` for long-term memory:
-
-| Flag | When | Effect |
-|------|------|--------|
-| `create --briefing` | Creating tentacle | Fetches past mistakes/patterns → injects into CONTEXT.md |
-| `handoff --learn` | Agent finishes | Saves handoff to long-term knowledge base |
-| `complete` | Closing tentacle | Marks done + auto-extracts learnings from handoff.md |
-
-Lifecycle: `briefing → create → dispatch → handoff --learn → complete → delete`
-
-## Agent selection guidance
-
-Map module types to agent types based on what's available in your project (check AGENTS.md). Default mapping if no custom agents exist:
-
-| Module type | agent-type | model |
-|-------------|-----------|-------|
-| Backend logic | `general-purpose` | `claude-sonnet-4.6` |
-| Frontend UI | `general-purpose` | `claude-sonnet-4.6` |
-| Tests | `general-purpose` | `claude-sonnet-4.6` |
-| Code review | `code-review` | `claude-sonnet-4.6` |
-
-If the project has custom agents (e.g., `lambda-developer`, `frontend-developer`), prefer those — they carry domain knowledge.
-
-## CONTEXT.md template
-
-```markdown
-# <module-name>
-
-<one-line description>
-
-## Scope
-- `<file-pattern-1>`
-- `<file-pattern-2>`
-
-## What exists
-<!-- Read existing code and summarize -->
-
-## Constraints
-- Avoid modifying files outside your scope — overlapping changes cause agent conflicts
-- <project-specific conventions>
-
-## Key files
-- `<path/to/reference-file>` — <why it matters>
+tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing
+tentacle.py todo <name> add "<task>"
+tentacle.py swarm <name> --agent-type <type> --model <model>
+tentacle.py status
+tentacle.py complete <name>
+tentacle.py delete <name>
 ```
 
 ## Tips

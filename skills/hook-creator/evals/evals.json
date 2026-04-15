@@ -1,0 +1,39 @@
+{
+  "skill": "hook-creator",
+  "version": "1.0",
+  "evals": [
+    {
+      "id": "create-valid-hook",
+      "description": "Agent should create a valid hook script with proper structure",
+      "prompt": "Create a hook that blocks commits containing TODO comments in production code",
+      "expected_behaviors": [
+        "Creates a .sh file with executable permissions",
+        "Includes proper shebang line (#!/bin/bash or #!/usr/bin/env bash)",
+        "Reads input from environment variables (TOOL_NAME, FILE_PATH, FILE_CONTENT)",
+        "Outputs valid JSON with result (accept/reject) and message",
+        "Handles edge cases (empty input, missing variables)"
+      ],
+      "unexpected_behaviors": [
+        "Creates a Python or Node.js hook instead of shell script",
+        "Missing JSON output format",
+        "No error handling for missing environment variables",
+        "Uses hardcoded file paths instead of environment variables"
+      ]
+    },
+    {
+      "id": "select-template",
+      "description": "Agent should select an appropriate reference template",
+      "prompt": "Create a hook that prevents API keys from being committed to the repository",
+      "expected_behaviors": [
+        "Reads secret-detector.sh from references/ as starting template",
+        "Adapts the template patterns for API key detection",
+        "Includes common API key patterns (AWS, GCP, GitHub, etc.)",
+        "Tests against sample files to verify detection"
+      ],
+      "unexpected_behaviors": [
+        "Creates hook from scratch ignoring available templates",
+        "Uses wrong template (e.g., build-reminder for a security hook)"
+      ]
+    }
+  ]
+}

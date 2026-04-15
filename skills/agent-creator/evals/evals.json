@@ -1,0 +1,38 @@
+{
+  "skill": "agent-creator",
+  "version": "1.0",
+  "evals": [
+    {
+      "id": "create-valid-agent",
+      "description": "Agent should create an .agent.md file with valid frontmatter",
+      "prompt": "Create a new agent for database migration tasks in this KMP project",
+      "expected_behaviors": [
+        "Creates a file with .agent.md extension",
+        "Uses kebab-case name in frontmatter",
+        "Includes description with trigger keywords",
+        "Lists tools as a YAML array",
+        "Uses valid model ID if specified"
+      ],
+      "unexpected_behaviors": [
+        "Uses camelCase or PascalCase for agent name",
+        "Missing description or tools in frontmatter",
+        "Uses tools: as comma-separated string instead of list",
+        "Includes non-standard frontmatter keys like 'version' or 'author'"
+      ]
+    },
+    {
+      "id": "description-has-triggers",
+      "description": "Generated agent description should include trigger keywords",
+      "prompt": "Create an agent that handles i18n string extraction and validation",
+      "expected_behaviors": [
+        "Description includes 'Use when' or 'Trigger:' clause",
+        "Lists specific user phrases that should activate the agent",
+        "Description is comprehensive but under 1024 characters"
+      ],
+      "unexpected_behaviors": [
+        "Description only describes what the agent does, not when to use it",
+        "Description is one vague sentence"
+      ]
+    }
+  ]
+}
