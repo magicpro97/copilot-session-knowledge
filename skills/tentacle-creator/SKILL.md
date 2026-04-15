@@ -66,7 +66,7 @@ Run the agent-creator skill, or read `~/.copilot/tools/skills/agent-creator/SKIL
 
 Create `.github/skills/tentacle-orchestration/SKILL.md` customized for the project.
 
-Base it on the reference at `~/.copilot/tools/skills/tentacle-orchestration/SKILL.md` — it defines the canonical 4-phase, 12-step workflow:
+Base it on the reference at `~/.copilot/tools/skills/tentacle-orchestration/SKILL.md` — it defines the canonical 5-phase workflow:
 
 | Phase | Steps | Purpose |
 |-------|-------|---------|
