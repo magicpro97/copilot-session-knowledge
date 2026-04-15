@@ -54,6 +54,7 @@ Choose from the bundled templates based on project needs:
 
 | Template | Best For | Read From |
 |----------|----------|-----------|
+| `spec-clarifier.agent.md` | Every project — analyze specs for ambiguities, risks, trade-offs before coding | `references/spec-clarifier.agent.md` |
 | `plan.agent.md` | Every project — strategic planning before implementation | `references/plan.agent.md` |
 | `tdd-red.agent.md` | Projects with test infrastructure — write failing tests first | `references/tdd-red.agent.md` |
 | `tdd-green.agent.md` | Companion to tdd-red — minimal implementation | `references/tdd-green.agent.md` |
@@ -62,7 +63,7 @@ Choose from the bundled templates based on project needs:
 | `doublecheck.agent.md` | Projects needing verification — fact-check AI output | `references/doublecheck.agent.md` |
 | `research-spike.agent.md` | Technical exploration — exhaustive spike research | `references/research-spike.agent.md` |
 
-For most projects, start with **plan + debug + tdd-red/green/refactor** (5 agents).
+For most projects, start with **spec-clarifier + plan + debug + tdd-red/green/refactor** (6 agents).
 Add doublecheck and research-spike for teams that value verification rigor.
 
 ### Step 3: Customize Each Template

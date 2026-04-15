@@ -70,6 +70,7 @@ Base it on the reference at `~/.copilot/tools/skills/tentacle-orchestration/SKIL
 
 | Phase | Steps | Purpose |
 |-------|-------|---------|
+| **Clarify** | 0.1–0.4 | Analyze spec → generate Q&A → iterate until CLEAN |
 | **Plan** | 1–4 | Decompose → create tentacles → add todos → enrich CONTEXT.md |
 | **Execute** | 5–6 | Dispatch agents (swarm) → monitor progress |
 | **Verify** | 7–12 | Build → Lint → Test → Code review → Docs → QA audit |

@@ -144,6 +144,7 @@ Each creator analyzes: language, framework, folder structure, existing agents, t
 
 | Template | Purpose |
 |---|---|
+| `spec-clarifier.agent.md` | Analyze specs for ambiguities, risks, trade-offs (Phase 0) |
 | `plan.agent.md` | Strategic planning before implementation |
 | `tdd-red.agent.md` | Write failing tests first (Red phase) |
 | `tdd-green.agent.md` | Minimal implementation (Green phase) |
