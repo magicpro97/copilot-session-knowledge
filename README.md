@@ -88,6 +88,67 @@ qs --detail 2045                     # Full entry details
 
 Based on the [OctoGent](https://github.com/hesamsheikh/octogent) architecture. Each "tentacle" is a scoped work context with its own CONTEXT.md, todo list, notes, and handoff file.
 
+#### Workflow Overview
+
+```mermaid
+flowchart TD
+  START([📋 New Task]) --> P0
+
+  subgraph P0["Phase 0: Clarify Spec"]
+    direction TB
+    A1[0.1 Analyze spec<br/>8 quality dimensions] --> A2[0.2 Spec Health Report<br/>🟢🟡🔴 per dimension]
+    A2 --> A3{Blocking<br/>questions?}
+    A3 -->|Yes| A4[0.3 Q&A with stakeholder]
+    A4 --> A1
+    A3 -->|No| A5[0.4 Declare CLEAN ✅]
+  end
+
+  A5 --> P1
+
+  subgraph P1["Phase 1: Plan"]
+    direction TB
+    B1[1. Decompose into modules] --> B2[2. Create tentacles<br/>with --briefing]
+    B2 --> B3[3. Add atomic todos]
+    B3 --> B4[4. Enrich CONTEXT.md<br/>key files + constraints]
+  end
+
+  B4 --> P2
+
+  subgraph P2["Phase 2: Execute"]
+    direction TB
+    C1[5. Dispatch agents<br/>tentacle swarm] --> C2[6. Monitor progress<br/>tentacle status]
+  end
+
+  C2 --> P3
+
+  subgraph P3["Phase 3: Verify"]
+    direction TB
+    D1[7. Build gate] --> D2[8. Lint gate]
+    D2 --> D3[9. Test gate]
+    D3 --> D4[10. Review gate<br/>code-reviewer agent]
+    D4 --> D5[11. Docs gate]
+    D5 --> D6[12. QA audit gate]
+    D6 --> D7{All gates<br/>pass?}
+    D7 -->|No| D8[Fix + re-verify]
+    D8 --> D1
+  end
+
+  D7 -->|Yes| P4
+
+  subgraph P4["Phase 4: Close"]
+    direction TB
+    E1[13. Complete tentacles<br/>auto-learn to knowledge.db] --> E2[14. Cleanup<br/>.octogent/ files]
+  end
+
+  E2 --> DONE([✅ Task Complete])
+
+  style P0 fill:#e8f5e9,stroke:#2e7d32
+  style P1 fill:#e3f2fd,stroke:#1565c0
+  style P2 fill:#fff3e0,stroke:#e65100
+  style P3 fill:#fce4ec,stroke:#c62828
+  style P4 fill:#f3e5f5,stroke:#6a1b9a
+```
+
 ```bash
 # Create scoped work contexts
 python3 ~/.copilot/tools/tentacle.py create api-export \
