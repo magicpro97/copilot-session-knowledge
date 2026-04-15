@@ -72,8 +72,8 @@ Base it on the reference at `~/.copilot/tools/skills/tentacle-orchestration/SKIL
 |-------|-------|---------|
 | **Plan** | 1–4 | Decompose → create tentacles → add todos → enrich CONTEXT.md |
 | **Execute** | 5–6 | Dispatch agents (swarm) → monitor progress |
-| **Verify** | 7–10 | Build gate → Test gate → Code review → QA audit |
-| **Close** | 11–12 | Complete (auto-learn) → cleanup |
+| **Verify** | 7–12 | Build → Lint → Test → Code review → Docs → QA audit |
+| **Close** | 13–14 | Complete (auto-learn) → cleanup |
 
 Customize these sections for the project:
 
@@ -106,7 +106,10 @@ tentacle.py create handlers --scope "internal/handler/*" --desc "HTTP handlers"
 # Build gate (Step 7)
 npx tsc --noEmit           # or: cargo check, go build ./..., etc.
 
-# Test gate (Step 8)
+# Lint gate (Step 8)
+npx eslint .               # or: ruff check, golangci-lint run, etc.
+
+# Test gate (Step 9)
 yarn test --maxWorkers=1   # or: pytest, go test ./..., etc.
 ```
 
