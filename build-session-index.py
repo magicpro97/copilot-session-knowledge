@@ -9,7 +9,7 @@ Usage:
     python build-session-index.py                    # Full rebuild (Copilot only)
     python build-session-index.py --incremental      # Only new/changed files
     python build-session-index.py --stats            # Show index statistics
-    python build-session-index.py --embed            # Also generate embeddings
+    python build-session-index.py --no-embed         # Skip embedding generation
     python build-session-index.py --claude           # Index Claude Code sessions only
     python build-session-index.py --all              # Index both Copilot + Claude
 """
@@ -397,7 +397,7 @@ def show_stats(db: sqlite3.Connection):
 def main():
     incremental = "--incremental" in sys.argv
     stats_only = "--stats" in sys.argv
-    with_embeddings = "--embed" in sys.argv
+    with_embeddings = "--no-embed" not in sys.argv  # Auto-embed by default
     with_claude = "--claude" in sys.argv
     all_sources = "--all" in sys.argv
 
@@ -487,16 +487,22 @@ def main():
     show_stats(db)
     db.close()
 
-    # Optionally build embeddings
+    # Build embeddings (default: auto, skip with --no-embed)
     if with_embeddings:
-        print("\n── Generating embeddings ──")
         try:
             tools_dir = Path(__file__).parent
             sys.path.insert(0, str(tools_dir))
-            from embed import build_embeddings
-            build_embeddings()
+            from embed import build_embeddings, load_config, resolve_provider
+            config = load_config()
+            provider_config = resolve_provider(config)
+            if provider_config:
+                print("\n── Generating embeddings (auto) ──")
+                build_embeddings()
+            else:
+                print("\n── Skipping embeddings (no API key configured) ──")
+                print("  Run: python embed.py --setup")
         except ImportError:
-            print("  embed.py not found, skipping embeddings.")
+            pass  # embed.py not available, silently skip
         except Exception as e:
             print(f"  Embedding error: {e}")
 
