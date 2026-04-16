@@ -1,7 +1,7 @@
 ---
 name: 'Debug — Systematic Bug Investigation'
 description: 'Systematically find and fix bugs through structured investigation. Use when something is broken, tests are failing unexpectedly, behavior differs from expectations, or when the user says "debug", "fix this bug", "why is this failing", or "investigate".'
-tools: ['search/codebase', 'search/usages', 'edit/editFiles', 'execute/runTests', 'read/problems']
+tools: ['grep', 'glob', 'read', 'edit', 'bash']
 ---
 
 # Debug — Systematic Bug Investigation

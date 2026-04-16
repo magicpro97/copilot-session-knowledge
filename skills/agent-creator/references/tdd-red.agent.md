@@ -1,7 +1,7 @@
 ---
 name: 'TDD Red — Write Failing Tests'
 description: 'Write failing tests that describe desired behavior before implementation exists. Use for test-first development, when starting a new feature from a GitHub issue, or when the user says "write tests first", "TDD", "red phase", or "test-driven".'
-tools: ['search/codebase', 'edit/editFiles', 'execute/runTests', 'read/readFile']
+tools: ['grep', 'glob', 'read', 'edit', 'bash']
 ---
 
 # TDD Red — Write Failing Tests

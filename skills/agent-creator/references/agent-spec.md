@@ -20,8 +20,36 @@ model: 'Claude Sonnet 4'       # optional — specify for consistency
 |-------|----------|---------|
 | `name` | Yes | Human-readable display name |
 | `description` | Yes | Trigger mechanism — be broad and keyword-rich |
-| `tools` | Recommended | Available tool categories for this agent |
+| `tools` | Recommended | Available tool categories (array) |
 | `model` | Optional | Pin a specific model for consistent behavior |
+| `user-invocable` | Optional | Whether user can invoke directly (default: true) |
+| `disable-model-invocation` | Optional | Prevent AI from auto-triggering (default: false) |
+| `mcp-servers` | Optional | MCP server configurations |
+| `github` | Optional | GitHub-specific settings |
+| `skills` | Optional | Skills this agent can use |
+
+> **⚠️ Deprecated:** `infer` is deprecated. Use `user-invocable` + `disable-model-invocation` instead.
+
+### Valid Tool Names (Copilot CLI)
+
+Use these names in the `tools` array:
+
+| Category | Maps to |
+|----------|---------|
+| `bash`, `execute`, `shell` | Shell execution |
+| `read`, `view` | File reading |
+| `edit` | File editing |
+| `grep`, `search` | Code search |
+| `glob` | File pattern matching |
+| `task`, `agent` | Sub-agent dispatch |
+| `web_search` | Web search |
+| `web_fetch` | Web fetching |
+| `ask_user` | User interaction |
+| `lsp` | Language server |
+| `sql` | Database queries |
+
+> **⚠️ Cross-platform:** VS Code tool names (`search/codebase`, `edit/editFiles`) and
+> Claude Code names (`Bash`, `Read`, `Edit`) are NOT valid in Copilot CLI.
 
 ### Description Best Practices
 
