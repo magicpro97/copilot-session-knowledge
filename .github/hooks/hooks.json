@@ -4,7 +4,8 @@
     "sessionStart": [
       {
         "type": "command",
-        "bash": "/Users/linhn/.copilot/tools/hooks/auto-briefing.sh",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/auto-briefing.py\"",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\auto-briefing.py\"",
         "comment": "[GLOBAL] Auto-run briefing.py at session start",
         "timeoutSec": 15
       }
@@ -12,15 +13,17 @@
     "sessionEnd": [
       {
         "type": "command",
-        "bash": "/Users/linhn/.copilot/tools/hooks/session-end.sh",
-        "comment": "[GLOBAL] Cleanup temp markers on session end",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/session-end.py\"",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\session-end.py\"",
+        "comment": "[GLOBAL] Cleanup markers on session end",
         "timeoutSec": 5
       }
     ],
     "preToolUse": [
       {
         "type": "command",
-        "bash": "/Users/linhn/.copilot/tools/hooks/enforce-briefing.sh",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/enforce-briefing.py\"",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\enforce-briefing.py\"",
         "comment": "[GLOBAL] Block edit/create until briefing is done",
         "timeoutSec": 5
       }
@@ -28,25 +31,22 @@
     "postToolUse": [
       {
         "type": "command",
-        "bash": "/Users/linhn/.copilot/tools/hooks/learn-reminder.sh",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/learn-reminder.py\"",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\learn-reminder.py\"",
         "comment": "[GLOBAL] Remind to record learnings after task_complete",
         "timeoutSec": 5
       },
       {
         "type": "command",
-        "bash": "python3 /Users/linhn/.copilot/tools/hooks/references/docs-reminder.py",
-        "comment": "[GLOBAL] Remind to update docs after 3+ code edits",
-        "timeoutSec": 5
-      },
-      {
-        "type": "command",
-        "bash": "/Users/linhn/.copilot/tools/hooks/test-after-edit.sh",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/test-after-edit.py\"",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\test-after-edit.py\"",
         "comment": "[GLOBAL] Remind to run tests after 3+ Python file edits",
         "timeoutSec": 5
       },
       {
         "type": "command",
-        "bash": "/Users/linhn/.copilot/tools/hooks/tentacle-suggest.sh",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/tentacle-suggest.py\"",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\tentacle-suggest.py\"",
         "comment": "[GLOBAL] Suggest tentacle-orchestration when edits span 3+ files across 2+ modules",
         "timeoutSec": 5
       }
@@ -54,7 +54,8 @@
     "errorOccurred": [
       {
         "type": "command",
-        "bash": "/Users/linhn/.copilot/tools/hooks/error-search-kb.sh",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/error-search-kb.py\"",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\error-search-kb.py\"",
         "comment": "[GLOBAL] Auto-search knowledge base when errors occur",
         "timeoutSec": 10
       }
