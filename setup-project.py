@@ -35,6 +35,9 @@ INSTALL_ITEMS = {
         {"src": "agent-creator", "label": "Agent Creator (generates .agent.md files)"},
         {"src": "hook-creator", "label": "Hook Creator (quality enforcement hooks)"},
         {"src": "workflow-creator", "label": "Workflow Creator (phased development lifecycle)"},
+        {"src": "find-skills", "label": "Find Skills (discover & install from skills.sh)"},
+        {"src": "agent-instructions-auditor", "label": "Instructions Auditor (token budget, cache safety, quality)"},
+        {"src": "forge-ecosystem", "label": "Forge Ecosystem (10 CLI tools for game & app dev)"},
     ],
     # Templates (from tools/templates/ → .github/skills/ or .github/instructions/)
     "templates": [
