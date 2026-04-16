@@ -35,10 +35,6 @@ if [ -n "$RECENT" ]; then
     exit 0
 fi
 
-echo ""
-echo "  ⚠️  BRIEFING REQUIRED: Run briefing.py before editing code."
-echo "  python3 ~/.copilot/tools/briefing.py \"your task\""
-echo ""
-
-# Don't block — just warn. Exit 0 so the edit proceeds.
+# Block the edit — output permissionDecision deny
+echo '{"permissionDecision":"deny","permissionDecisionReason":"⚠️ BRIEFING REQUIRED: Run briefing.py before editing code. Command: python3 ~/.copilot/tools/briefing.py \"your task\""}'
 exit 0

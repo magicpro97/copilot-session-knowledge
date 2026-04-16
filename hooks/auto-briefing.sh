@@ -26,7 +26,7 @@ echo "  📋 Session briefing for: $PROJECT"
 echo "  ─────────────────────────────────"
 
 # Run briefing with project context, timeout after 10s
-timeout 10 python3 "$BRIEFING" "$PROJECT" --budget 500 2>/dev/null || true
+perl -e 'alarm 10; exec @ARGV' python3 "$BRIEFING" "$PROJECT" --budget 500 2>/dev/null || true
 
 # Create marker so enforce-briefing.sh knows briefing already ran
 touch /tmp/copilot-briefing-done

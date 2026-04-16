@@ -9,6 +9,14 @@
         "timeoutSec": 15
       }
     ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": "/Users/linhn/.copilot/tools/hooks/session-end.sh",
+        "comment": "[GLOBAL] Cleanup temp markers on session end",
+        "timeoutSec": 5
+      }
+    ],
     "preToolUse": [
       {
         "type": "command",
@@ -35,6 +43,14 @@
         "bash": "/Users/linhn/.copilot/tools/hooks/test-after-edit.sh",
         "comment": "[GLOBAL] Remind to run tests after 3+ Python file edits",
         "timeoutSec": 5
+      }
+    ],
+    "errorOccurred": [
+      {
+        "type": "command",
+        "bash": "/Users/linhn/.copilot/tools/hooks/error-search-kb.sh",
+        "comment": "[GLOBAL] Auto-search knowledge base when errors occur",
+        "timeoutSec": 10
       }
     ]
   }
