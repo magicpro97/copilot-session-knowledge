@@ -1,7 +1,7 @@
 ---
 name: 'Research Spike — Technical Investigation'
 description: 'Exhaustive technical spike research through systematic investigation and controlled experimentation. Use when evaluating new technologies, validating architectural decisions, exploring unfamiliar APIs, or when the user says "research", "spike", "investigate options", or "technical exploration".'
-tools: ['search/codebase', 'web/fetch', 'edit/editFiles', 'execute/runInTerminal']
+tools: ['grep', 'glob', 'read', 'edit', 'bash', 'web_fetch', 'web_search']
 ---
 
 # Research Spike — Technical Investigation

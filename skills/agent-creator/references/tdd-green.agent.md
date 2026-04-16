@@ -1,7 +1,7 @@
 ---
 name: 'TDD Green — Make Tests Pass'
 description: 'Implement minimal code to make failing tests pass without over-engineering. Use after the Red phase, when tests exist but implementation is missing, or when the user says "make it pass", "green phase", or "implement minimally".'
-tools: ['search/codebase', 'edit/editFiles', 'execute/runTests', 'read/readFile']
+tools: ['grep', 'glob', 'read', 'edit', 'bash']
 ---
 
 # TDD Green — Make Tests Pass

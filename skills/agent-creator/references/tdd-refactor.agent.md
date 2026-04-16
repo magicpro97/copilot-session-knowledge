@@ -1,7 +1,7 @@
 ---
 name: 'TDD Refactor — Improve Quality & Security'
 description: 'Clean up code, apply security best practices, and improve design while keeping all tests green. Use after the Green phase, when code works but needs polish, or when the user says "refactor", "clean up", "improve quality", or "security hardening".'
-tools: ['search/codebase', 'edit/editFiles', 'execute/runTests', 'read/problems']
+tools: ['grep', 'glob', 'read', 'edit', 'bash']
 ---
 
 # TDD Refactor — Improve Quality & Security

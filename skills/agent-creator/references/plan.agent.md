@@ -1,7 +1,7 @@
 ---
 name: 'Plan Mode — Strategic Planning'
 description: 'Strategic planning and architecture analysis before implementation. Use when starting a new feature, evaluating approaches, breaking down complex requirements, or when the user says "plan", "analyze", "how should I", or "what approach".'
-tools: ['search/codebase', 'web/fetch', 'read/problems', 'search/usages']
+tools: ['grep', 'glob', 'read', 'web_fetch', 'web_search']
 ---
 
 # Plan Mode — Strategic Planning
