@@ -14,6 +14,8 @@ rm -f /tmp/copilot-briefing-done-*
 rm -f /tmp/copilot-py-edit-count
 rm -f /tmp/copilot-tests-ran
 rm -f /tmp/copilot-docs-tracker
+rm -f /tmp/copilot-tentacle-edits
+rm -f /tmp/copilot-tentacle-suggested
 
 # Log session end
 echo "Session ended: ${REASON:-unknown}" >> /tmp/copilot-session.log 2>/dev/null || true

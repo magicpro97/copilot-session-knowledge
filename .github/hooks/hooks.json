@@ -43,6 +43,12 @@
         "bash": "/Users/linhn/.copilot/tools/hooks/test-after-edit.sh",
         "comment": "[GLOBAL] Remind to run tests after 3+ Python file edits",
         "timeoutSec": 5
+      },
+      {
+        "type": "command",
+        "bash": "/Users/linhn/.copilot/tools/hooks/tentacle-suggest.sh",
+        "comment": "[GLOBAL] Suggest tentacle-orchestration when edits span 3+ files across 2+ modules",
+        "timeoutSec": 5
       }
     ],
     "errorOccurred": [
