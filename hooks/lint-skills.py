@@ -244,11 +244,22 @@ def parse_frontmatter(content: str) -> tuple[dict, int]:
             end_line = i
             break
 
-        # Skip continuation lines of multiline values
+        # Skip continuation lines of multiline scalar values (|, >, >-)
         if in_multiline:
             if line.startswith("  ") or line.startswith("\t"):
                 continue
             in_multiline = False
+
+        # Collect YAML block sequence items (  - value)
+        if current_key and re.match(r"^\s+-\s+", line):
+            item = re.sub(r"^\s+-\s+", "", line).strip().strip("'\"")
+            if item:
+                prev = fields[current_key]["value"]
+                if prev:
+                    fields[current_key]["value"] = prev + ", " + item
+                else:
+                    fields[current_key]["value"] = item
+            continue
 
         # Parse key: value
         match = re.match(r"^([a-zA-Z_-]+)\s*:\s*(.*)", line)
@@ -259,6 +270,8 @@ def parse_frontmatter(content: str) -> tuple[dict, int]:
             current_key = key
             if value in ("|", ">", ">-"):
                 in_multiline = True
+        else:
+            current_key = None
 
     return fields, end_line
 
@@ -425,11 +438,6 @@ def lint_skill_file(filepath: Path, content: str) -> list[Issue]:
         issues.append(Issue("error", str(filepath), fields["tools"]["line"], "SK-008",
                             "'tools' is an AGENT field — skills use 'allowed-tools' (string, comma-separated)",
                             "Rename 'tools' to 'allowed-tools' and use comma-separated string"))
-
-    if "model" in fields:
-        issues.append(Issue("warning", str(filepath), fields["model"]["line"], "SK-009",
-                            "'model' is an AGENT field — not supported in skill schema",
-                            "Remove 'model' or move to an .agent.md file"))
 
     return issues
 

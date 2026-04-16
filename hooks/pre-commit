@@ -25,25 +25,9 @@ fi
 
 echo "🔍 Validating skill/agent files..."
 
-# Lint staged files specifically
-LINT_EXIT=0
-for f in $STAGED_SKILLS; do
-    FULL_PATH="$TOOLS_DIR/$f"
-    if [ -f "$FULL_PATH" ]; then
-        python3 "$HOOK_SCRIPT" "$FULL_PATH" --fix
-        CODE=$?
-        if [ $CODE -eq 1 ]; then
-            LINT_EXIT=1
-        fi
-    fi
-done
-
-# Also run full scan to catch cross-file issues
+# Run full scan (covers staged files + catches cross-file issues)
 python3 "$HOOK_SCRIPT" --all --fix
-CODE=$?
-if [ $CODE -eq 1 ]; then
-    LINT_EXIT=1
-fi
+LINT_EXIT=$?
 
 if [ $LINT_EXIT -eq 1 ]; then
     echo ""
