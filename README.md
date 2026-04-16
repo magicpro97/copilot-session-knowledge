@@ -349,6 +349,8 @@ Pre-built Copilot CLI hook scripts — customize and install per project:
 |------|------|-------------|
 | `dangerous-blocker.sh` | preToolUse | Blocks sudo, rm -rf /, force push, DB drops |
 | `secret-detector.sh` | preToolUse | Blocks hardcoded API keys, tokens, private keys |
+| `enforce-coding-standards.sh` | preToolUse | Blocks coding standard violations (2-tier: regex + optional linter). Language-agnostic — configure for TS/Python/Go/etc. |
+| `enforce-tdd-pipeline.sh` | preToolUse | Blocks task_complete without valid TDD evidence. Git-aware, tamper-resistant, configurable phases |
 | `architecture-guard.sh` | preToolUse | Enforces layer boundaries (clean arch, KMP, etc.) |
 | `commit-gate.sh` | preToolUse | Blocks commit until verification requirements met |
 | `test-reminder.sh` | postToolUse | Reminds to write tests when creating source files |

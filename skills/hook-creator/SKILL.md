@@ -4,7 +4,9 @@ description: >
   Generate project-specific Copilot CLI hooks (.github/hooks/) for quality enforcement.
   Use when setting up a new project, onboarding a codebase, or when the user mentions
   "create hooks", "setup guards", "enforce rules", "quality gates", "preToolUse",
-  "postToolUse", or wants automated safety rails for AI coding sessions.
+  "postToolUse", or wants automated safety rails for AI coding sessions. Also use when
+  the user wants to enforce coding standards, block dangerous commands, protect secrets,
+  gate commits, enforce TDD pipelines, or add any form of automated guardrails.
 ---
 
 # Hook Creator
@@ -34,50 +36,166 @@ Create hooks when:
 - Architecture rules are being violated repeatedly
 - Sensitive operations need blocking (secrets, destructive commands)
 - Workflow compliance needs enforcement (test before commit, build after edit)
+- Coding standards need real-time enforcement during AI edits
+- A TDD/quality pipeline must be completed before task completion
 
 ## Creation Workflow
 
 ### Step 1: Analyze the Project
 
-Examine the codebase to understand its architecture layers, language, framework,
-existing hooks, and import rules.
+Examine the codebase to understand:
+- Language(s) and framework(s)
+- Architecture layers and import rules
+- Existing hooks in `.github/hooks/`
+- Available linters/formatters (eslint, ruff, golangci-lint, etc.)
+- Workflow requirements (TDD phases, review gates)
 
 ### Step 2: Select Applicable Hooks
 
-Choose from the curated templates in `references/`:
+Choose from the curated templates in `references/`. Templates are organized by
+concern — pick the ones relevant to the project, then customize.
 
-| Template | Type | Best For | Risk Level |
-|----------|------|----------|------------|
-| `dangerous-blocker.sh` | preToolUse | **Every project** — blocks sudo, rm -rf /, force push | Critical |
-| `secret-detector.sh` | preToolUse | **Every project** — blocks credentials in code | Critical |
-| `architecture-guard.sh` | preToolUse | Projects with layer boundaries (clean arch, hexagonal) | High |
-| `commit-gate.sh` | preToolUse | Projects requiring verification before commit | High |
-| `test-reminder.sh` | postToolUse | Projects with test infrastructure | Medium |
-| `build-reminder.sh` | postToolUse | Compiled language projects | Medium |
-| `docs-reminder.sh/.py` | postToolUse | Projects with docs that must stay in sync with code | Medium |
-| `session-banner.sh` | postToolUse | Projects with onboarding checklists | Low |
+**Security hooks** (recommended for every project):
+
+| Template | Type | Purpose |
+|----------|------|---------|
+| `dangerous-blocker.sh` | preToolUse | Blocks sudo, rm -rf /, force push, DB drops |
+| `secret-detector.sh` | preToolUse | Blocks hardcoded API keys, tokens, private keys |
+
+**Quality enforcement hooks**:
+
+| Template | Type | Purpose |
+|----------|------|---------|
+| `enforce-coding-standards.sh` | preToolUse | Blocks coding standard violations with 2-tier detection (regex + optional linter) |
+| `enforce-tdd-pipeline.sh` | preToolUse | Blocks task_complete without valid evidence from quality pipeline |
+| `architecture-guard.sh` | preToolUse | Enforces layer boundaries (clean arch, hexagonal, KMP) |
+| `commit-gate.sh` | preToolUse | Blocks commit until verification requirements are met |
+
+**Reminder hooks**:
+
+| Template | Type | Purpose |
+|----------|------|---------|
+| `test-reminder.sh` | postToolUse | Reminds to write/run tests after source file edits |
+| `build-reminder.sh` | postToolUse | Reminds to verify build after N source file edits |
+| `docs-reminder.sh/.py` | postToolUse | Warns after 3+ code edits without doc updates |
+| `session-banner.sh` | postToolUse | Shows session start checklist |
 
 > **Cross-platform:** Each `.sh` hook has a `.py` equivalent for Windows (no bash/jq needed).
-> In `review-policy.json`, register both: `"bash": "./scripts/hook.sh"` + `"powershell": "python scripts/hook.py"`
+> Register both: `"bash": "./scripts/hook.sh"` + `"powershell": "python scripts/hook.py"`
 
 ### Step 3: Customize Each Template
 
-Read the selected template from `references/`, then adapt:
+Read the selected template from `references/`, then adapt. Each template has a clearly
+marked `CONFIGURATION` section at the top. Key customizations:
 
-1. **Architecture rules** — map the project's actual layer names and import boundaries
-2. **Secret patterns** — add project-specific credential patterns
-3. **Build commands** — replace generic commands with actual ones
-4. **File patterns** — reference actual directory structure
-5. **Commit gates** — define what verification is needed before commit
+1. **Language/file extensions** — set which files the hook applies to
+2. **Rules** — add/remove/edit rules for the project's conventions
+3. **Linter integration** — uncomment and configure the project's linter for AST-level checks
+4. **Architecture rules** — map the project's actual layer names and import boundaries
+5. **Pipeline phases** — define quality gates and evidence requirements
+6. **Secret patterns** — add project-specific credential patterns
+
+#### Customizing `enforce-coding-standards.sh`
+
+This template uses a two-tier detection strategy:
+
+**Tier 1: Regex rules (~5ms)** — always runs, catches common violations instantly.
+Edit the `REGEX RULES` section to add project-specific patterns.
+
+**Tier 2: Linter integration (~200ms-2s)** — optional, AST-level analysis.
+Uncomment ONE linter block matching the project's stack:
+
+| Language | Linter | Speed | Config |
+|----------|--------|-------|--------|
+| TypeScript/JS | espree (AST) | ~35ms | Option B in template |
+| TypeScript/JS | eslint (full) | ~1-2s | Option A in template |
+| Python | ruff | ~50ms | Option C in template |
+| Go | golangci-lint | ~500ms | Option D in template |
+
+**Example: Adapting for a Python project:**
+```bash
+# 1. Change file extensions
+FILE_EXTENSIONS="py"
+
+# 2. Replace JS rules with Python rules
+echo "$NEW_STR" | grep -qP '^\s*from\s+\S+\s+import\s+\*' && \
+  deny "No wildcard imports."
+echo "$NEW_STR" | grep -qP '^\s*except\s*:' && \
+  deny "No bare except. Catch specific exceptions."
+
+# 3. Uncomment ruff integration (Option C)
+run_ruff_check  # ~50ms, uses project's ruff.toml
+```
+
+#### Customizing `enforce-tdd-pipeline.sh`
+
+This template validates evidence files from a quality pipeline before allowing
+task_complete. Customize the `PHASES` array for your workflow:
+
+```bash
+# Strict 5-phase TDD:
+PHASES=(
+  "phase1-red:test-output.log:validate_red"
+  "phase2-green:test-output.log:validate_green"
+  "phase3-review:review-report.md:validate_review"
+  "phase4-execution:test-output.log:validate_execution"
+  "phase5-qa-audit:audit-report.md:validate_audit"
+)
+
+# Standard 3-phase:
+PHASES=(
+  "tests:test-output.log:validate_green"
+  "review:review-report.md:validate_review"
+  "verify:test-output.log:validate_execution"
+)
+
+# Minimal 2-phase:
+PHASES=(
+  "tests:test-output.log:validate_green"
+  "review:review-report.md:validate_review"
+)
+```
+
+Key protections built in:
+- **Freshness**: evidence expires after `MAX_EVIDENCE_AGE_HOURS` (default 48h)
+- **Content validation**: checks file contents, not just existence
+- **Git SHA linking**: evidence must match current branch/commits
+- **Anti-tamper**: structured verdict parsing prevents appending "APPROVED" to a "REJECTED" report
+- **Branch matching**: tries to match evidence dir to current git branch name
 
 ### Step 4: Install Hooks
 
-Place scripts in `.github/hooks/scripts/` and configure hooks in the project's
-copilot config or settings file.
+Place scripts in `.github/hooks/scripts/` and register in `hooks.json`:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": ".github/hooks/scripts/enforce-coding-standards.sh",
+        "comment": "Block coding standard violations",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}
+```
 
 ### Step 5: Verify
 
-Test each hook by piping mock JSON input and checking for correct allow/deny behavior.
+Test each hook by piping mock JSON input and checking for correct allow/deny behavior:
+
+```bash
+# Test that a violation is denied
+echo '{"toolName":"edit","toolArgs":{"path":"src/app.ts","new_str":"import _ from '\''lodash'\''"}}' \
+  | bash .github/hooks/scripts/enforce-coding-standards.sh
+
+# Test that clean code is allowed
+echo '{"toolName":"edit","toolArgs":{"path":"src/app.ts","new_str":"import { map } from '\''es-toolkit'\''"}}' \
+  | bash .github/hooks/scripts/enforce-coding-standards.sh
+```
 
 ## Hook Script Format
 
