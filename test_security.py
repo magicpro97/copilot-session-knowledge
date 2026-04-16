@@ -17,36 +17,40 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 def test_fts5_sanitization():
     """Test that FTS5 special characters and operators are stripped."""
-    from query_session_sanitizer import _sanitize_fts_query
+    sanitize_fn = _extract_sanitize_function()
 
     # Normal queries pass through
-    result = _sanitize_fts_query("docker networking")
+    result = sanitize_fn("docker networking")
     assert '"docker"*' in result and '"networking"*' in result
 
     # FTS5 operators removed
-    result = _sanitize_fts_query("test OR admin AND root NOT safe")
+    result = sanitize_fn("test OR admin AND root NOT safe")
     assert "OR" not in result
     assert "AND" not in result
     assert "NOT" not in result
 
     # Special characters stripped
-    result = _sanitize_fts_query('test" OR 1 OR "x')
-    assert '"' not in result.replace('"', '').replace('*', '')  # only wrapping quotes
+    result = sanitize_fn('test" OR 1 OR "x')
+    # Verify no unescaped quotes remain: strip wrapping "term"* patterns, check for stray quotes
+    stripped = result
+    import re as _re
+    stripped = _re.sub(r'"[^"]*"\*?', '', stripped)  # remove valid "term"* patterns
+    assert '"' not in stripped, f"Stray quotes in sanitized result: {result}"
 
     # NEAR operator removed
-    result = _sanitize_fts_query("docker NEAR networking")
+    result = sanitize_fn("docker NEAR networking")
     assert "NEAR" not in result
 
     # Length limit enforced
     long_query = "a" * 1000
-    result = _sanitize_fts_query(long_query, max_length=500)
+    result = sanitize_fn(long_query, max_length=500)
     assert len(result) <= 510  # 500 + wrapping quotes/asterisk
 
     # Empty query returns safe default
-    result = _sanitize_fts_query("")
+    result = sanitize_fn("")
     assert result == '""'
 
-    result = _sanitize_fts_query("OR AND NOT")
+    result = sanitize_fn("OR AND NOT")
     assert result == '""'
 
     print("  ✓ FTS5 sanitization tests passed")
@@ -58,8 +62,6 @@ def test_fts5_sanitization():
 
 def test_sql_parameterized_queries():
     """Test that SQL queries use parameterized placeholders."""
-    import query_session_source as qs_src
-
     # Read query-session.py source and verify no f-string IN clauses with user data
     source = Path(__file__).parent / "query-session.py"
     content = source.read_text(encoding="utf-8")
@@ -252,6 +254,8 @@ def main():
         test_input_validation,
         test_db_integrity_check,
         test_sql_whitelist,
+        test_fts5_sanitization,
+        test_sql_parameterized_queries,
     ]
 
     for test in tests:
@@ -261,42 +265,6 @@ def main():
         except (AssertionError, Exception) as e:
             print(f"  ✗ {test.__name__}: {e}")
             failed += 1
-
-    # FTS5 sanitization test (needs function extraction)
-    try:
-        sanitize_fn = _extract_sanitize_function()
-        # Monkey-patch for test
-        globals()["_sanitize_fts_query"] = sanitize_fn
-
-        # Run FTS5 tests inline
-        result = sanitize_fn("docker networking")
-        assert '"docker"*' in result and '"networking"*' in result
-
-        result = sanitize_fn("test OR admin AND root NOT safe")
-        assert "OR" not in result.split('"')[0]  # OR not outside quotes
-
-        result = sanitize_fn("")
-        assert result == '""'
-
-        result = sanitize_fn("OR AND NOT")
-        assert result == '""'
-
-        print("  ✓ FTS5 sanitization tests passed")
-        passed += 1
-    except Exception as e:
-        print(f"  ✗ FTS5 sanitization: {e}")
-        failed += 1
-
-    # SQL parameterized query check
-    try:
-        source = Path(__file__).parent / "query-session.py"
-        content = source.read_text(encoding="utf-8")
-        assert 'ids_str' not in content or 'placeholders' in content
-        print("  ✓ SQL parameterized query tests passed")
-        passed += 1
-    except Exception as e:
-        print(f"  ✗ SQL parameterized: {e}")
-        failed += 1
 
     print(f"\n{'='*40}")
     print(f"Results: {passed} passed, {failed} failed")

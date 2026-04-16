@@ -622,7 +622,7 @@ def hybrid_search(db: sqlite3.Connection, query: str, config: dict,
 
 def build_embeddings(config: dict = None, force: bool = False):
     """Generate embeddings for all indexed content."""
-    if not config:
+    if config is None:
         config = load_config()
 
     if not DB_PATH.exists():
@@ -809,7 +809,7 @@ def cmd_setup():
 
 def cmd_test(config: dict = None):
     """Test embedding provider connectivity."""
-    if not config:
+    if config is None:
         config = load_config()
 
     name, prov = resolve_provider(config)

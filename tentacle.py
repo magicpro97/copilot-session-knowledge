@@ -157,10 +157,26 @@ def _run_learn(category: str, title: str, content: str, tags: str = "") -> bool:
         return False
 
 
+def _validate_tentacle_name(name: str, tentacles: Path) -> Path:
+    """Validate tentacle name is safe and resolve the directory path."""
+    # Reject names with path separators or traversal components
+    if '/' in name or '\\' in name or '..' in name:
+        print(f"ERROR: Invalid tentacle name '{name}' — must not contain '/', '\\', or '..'", file=sys.stderr)
+        sys.exit(1)
+    tentacle_dir = tentacles / name
+    # Verify resolved path is inside tentacles directory
+    try:
+        tentacle_dir.resolve().relative_to(tentacles.resolve())
+    except ValueError:
+        print(f"ERROR: Tentacle name '{name}' resolves outside tentacles directory.", file=sys.stderr)
+        sys.exit(1)
+    return tentacle_dir
+
+
 def cmd_create(args):
     """Create a new tentacle with CONTEXT.md and todo.md."""
     tentacles = get_tentacles_dir(args.session_dir)
-    tentacle_dir = tentacles / args.name
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
 
     if tentacle_dir.exists():
         print(f"ERROR: Tentacle '{args.name}' already exists.", file=sys.stderr)
@@ -325,7 +341,7 @@ def cmd_status(args):
 def cmd_show(args):
     """Show details of a specific tentacle."""
     tentacles = get_tentacles_dir(args.session_dir)
-    tentacle_dir = tentacles / args.name
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
 
     if not tentacle_dir.exists():
         print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
@@ -357,7 +373,7 @@ def cmd_show(args):
 def cmd_todo(args):
     """Manage todo items in a tentacle."""
     tentacles = get_tentacles_dir(args.session_dir)
-    tentacle_dir = tentacles / args.name
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
     todo_path = tentacle_dir / "todo.md"
 
     if not tentacle_dir.exists():
@@ -404,7 +420,7 @@ def cmd_todo(args):
 def cmd_handoff(args):
     """Write a handoff message for a tentacle (agent output)."""
     tentacles = get_tentacles_dir(args.session_dir)
-    tentacle_dir = tentacles / args.name
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
 
     if not tentacle_dir.exists():
         print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
@@ -438,7 +454,7 @@ def cmd_handoff(args):
 def cmd_complete(args):
     """Complete a tentacle: mark all done, auto-learn from handoff, update status."""
     tentacles = get_tentacles_dir(args.session_dir)
-    tentacle_dir = tentacles / args.name
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
 
     if not tentacle_dir.exists():
         print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
@@ -493,7 +509,7 @@ def cmd_complete(args):
 def cmd_swarm(args):
     """Generate dispatch instructions from pending todos (swarm mode)."""
     tentacles = get_tentacles_dir(args.session_dir)
-    tentacle_dir = tentacles / args.name
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
 
     if not tentacle_dir.exists():
         print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
@@ -598,7 +614,7 @@ def cmd_swarm(args):
 def cmd_delete(args):
     """Delete a tentacle."""
     tentacles = get_tentacles_dir(args.session_dir)
-    tentacle_dir = tentacles / args.name
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
 
     if not tentacle_dir.exists():
         print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)

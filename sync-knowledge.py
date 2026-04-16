@@ -88,17 +88,26 @@ def auto_detect_sources() -> list[Path]:
 
 
 def backup_db(db_path: Path) -> Path:
-    """Create a verified backup of the database."""
-    import hashlib
+    """Create a WAL-safe backup of the database using sqlite3 backup API."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = db_path.with_suffix(f".backup_{timestamp}.db")
-    shutil.copy2(db_path, backup_path)
-    # Verify backup integrity
-    src_hash = hashlib.sha256(db_path.read_bytes()).hexdigest()
-    dst_hash = hashlib.sha256(backup_path.read_bytes()).hexdigest()
-    if src_hash != dst_hash:
+    # Use sqlite3 online backup API — safe even with WAL journal mode
+    src_conn = sqlite3.connect(str(db_path))
+    dst_conn = sqlite3.connect(str(backup_path))
+    try:
+        src_conn.backup(dst_conn)
+    finally:
+        dst_conn.close()
+        src_conn.close()
+    # Verify backup is readable
+    verify_conn = sqlite3.connect(str(backup_path))
+    try:
+        verify_conn.execute("PRAGMA quick_check")
+    except Exception:
         backup_path.unlink(missing_ok=True)
-        raise RuntimeError(f"Backup verification failed: hash mismatch for {db_path}")
+        raise RuntimeError(f"Backup verification failed: integrity check failed for {db_path}")
+    finally:
+        verify_conn.close()
     return backup_path
 
 

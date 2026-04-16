@@ -334,10 +334,17 @@ def main():
 
     # Daemonize on Unix if requested
     if daemon and os.name != "nt":
+        # Create a pipe so child can signal parent after lock re-acquisition
+        read_fd, write_fd = os.pipe()
         pid = os.fork()
         if pid > 0:
+            os.close(write_fd)
+            # Wait for child to re-acquire lock before exiting (avoids atexit race)
+            os.read(read_fd, 1)  # blocks until child writes or pipe closes
+            os.close(read_fd)
             print(f"[watch] Daemon started (PID {pid})")
-            sys.exit(0)
+            os._exit(0)  # use _exit to skip atexit handlers in parent
+        os.close(read_fd)
         os.setsid()
         # Re-acquire lock atomically with new PID after fork
         # Write new PID to temp file, then atomic rename to avoid TOCTOU
@@ -350,6 +357,9 @@ def main():
             os.replace(tmp_lock, str(LOCK_FILE))
         except OSError as e:
             print(f"[watch] Warning: could not re-acquire lock after fork: {e}", file=sys.stderr)
+        # Signal parent that lock is updated
+        os.write(write_fd, b"1")
+        os.close(write_fd)
         # Redirect stdout/stderr to log file
         log_path = SESSION_STATE / ".watch.log"
         sys.stdout = open(log_path, "a", encoding="utf-8")

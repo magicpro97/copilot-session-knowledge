@@ -63,10 +63,17 @@ pull_latest() {
     git -C "$TOOLS_DIR" stash --quiet 2>/dev/null || true
     if ! git -C "$TOOLS_DIR" pull --ff-only --quiet origin main 2>/dev/null; then
         # ff-only failed → reset hard (source repo is authoritative)
+        # Local changes in stash will be lost — warn the user
         git -C "$TOOLS_DIR" fetch --quiet origin 2>/dev/null
         git -C "$TOOLS_DIR" reset --hard origin/main --quiet 2>/dev/null
+        # Drop the stash since it will conflict with hard-reset state
+        git -C "$TOOLS_DIR" stash drop --quiet 2>/dev/null || true
+        warn "Local changes were dropped due to diverged history (reset --hard to origin/main)"
+    else
+        git -C "$TOOLS_DIR" stash pop --quiet 2>/dev/null || {
+            warn "Stash pop failed — local changes saved in git stash. Run 'git stash pop' manually."
+        }
     fi
-    git -C "$TOOLS_DIR" stash pop --quiet 2>/dev/null || true
     
     local new_sha; new_sha=$(git -C "$TOOLS_DIR" rev-parse --short=8 HEAD 2>/dev/null)
     

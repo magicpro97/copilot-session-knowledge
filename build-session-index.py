@@ -352,7 +352,7 @@ def index_session(db: sqlite3.Connection, session_dir: Path, incremental: bool) 
         session_id, str(session_dir), summary,
         len(checkpoints),
         len(list(research_dir.glob("*.md"))) if research_dir.exists() else 0,
-        len([f for f in files_dir.iterdir() if f.is_file()]) if files_dir.exists() else 0,
+        len([f for f in files_dir.iterdir() if f.is_file() and f.suffix in (".md", ".txt")]) if files_dir.exists() else 0,
         1 if plan_path.exists() and plan_path.stat().st_size > 50 else 0,
         datetime.now().isoformat()
     ))
