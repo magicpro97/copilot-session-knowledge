@@ -31,7 +31,7 @@ from typing import NamedTuple
 AGENT_VALID_FIELDS = {
     "name", "description", "tools", "mcp-servers",
     "disable-model-invocation", "user-invocable",
-    "model", "github", "skills",
+    "model", "github", "skills", "handoffs",
     # Deprecated but still parsed:
     "infer",
 }
@@ -39,6 +39,10 @@ AGENT_VALID_FIELDS = {
 SKILL_VALID_FIELDS = {
     "name", "description", "allowed-tools",
     "user-invocable", "disable-model-invocation",
+    # Cross-platform fields (Claude Code / Kiro) — not used by Copilot CLI
+    # but harmless and intentional for multi-platform compatibility:
+    "aliases", "context", "model", "skills", "hooks",
+    "license", "metadata", "version",
 }
 
 # Copilot CLI tool category map (from T_n in app.js)
@@ -62,7 +66,10 @@ CLI_TOOL_CATEGORIES = {
     "view": ["view"],
 }
 
-VALID_CLI_TOOLS = set(CLI_TOOL_CATEGORIES.keys())
+VALID_CLI_TOOLS = set(CLI_TOOL_CATEGORIES.keys()) | {
+    # Individual tools that are valid but not category keys:
+    "create", "skill", "view",
+}
 
 # VS Code tool names (NOT valid in CLI)
 VSCODE_TOOL_PATTERNS = [
