@@ -5,6 +5,7 @@ install.py — Smart installer for session knowledge tools
 Usage:
     python install.py                        # Auto-detect and show status
     python install.py --deploy-skill         # Deploy SKILL.md to current project
+    python install.py --deploy-hooks         # Deploy hooks.json to ~/.copilot/hooks/
     python install.py --deploy-instructions  # Deploy global instructions to ~/.github/
     python install.py --inject-global        # Add session-knowledge to global copilot-instructions
     python install.py --test                 # Run self-test
@@ -409,6 +410,50 @@ _TEMPLATES_DIR = _SCRIPT_DIR / "templates"
 _INSTRUCTIONS_TEMPLATES = _TEMPLATES_DIR / "instructions"
 
 
+def deploy_hooks():
+    """Deploy hooks.json and Python hook scripts to ~/.copilot/hooks/."""
+    print("\nDeploy Hooks")
+
+    hooks_src = _SCRIPT_DIR / ".github" / "hooks" / "hooks.json"
+    hooks_dst_dir = COPILOT_DIR / "hooks"
+    hooks_dst = hooks_dst_dir / "hooks.json"
+
+    if not hooks_src.is_file():
+        print(f"  {FAIL} Source hooks.json not found: {_tilde(hooks_src)}")
+        return
+
+    hooks_dst_dir.mkdir(parents=True, exist_ok=True)
+
+    # Deploy hooks.json
+    new = hooks_src.read_text(encoding="utf-8")
+    if hooks_dst.is_file():
+        old = hooks_dst.read_text(encoding="utf-8")
+        if old == new:
+            print(f"  {INFO} hooks.json — already up to date")
+        else:
+            backup = hooks_dst.with_suffix(".json.backup")
+            shutil.copy2(str(hooks_dst), str(backup))
+            hooks_dst.write_text(new, encoding="utf-8")
+            print(f"  {OK} hooks.json — updated (backup: {backup.name})")
+    else:
+        hooks_dst.write_text(new, encoding="utf-8")
+        print(f"  {OK} hooks.json — created")
+
+    # Ensure markers directory exists
+    markers_dir = COPILOT_DIR / "markers"
+    markers_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  {OK} markers/ directory ready")
+
+    # List available hooks
+    hooks_dir = _SCRIPT_DIR / "hooks"
+    py_hooks = sorted(hooks_dir.glob("*.py")) if hooks_dir.is_dir() else []
+    print(f"\n  {len(py_hooks)} Python hook scripts available:")
+    for h in py_hooks:
+        print(f"    • {h.name}")
+
+
+
+
 def deploy_instructions():
     """Deploy global copilot-instructions.md and scope-specific instruction files."""
     print("\nDeploy Global Instructions")
@@ -798,6 +843,10 @@ def main():
 
     if "--deploy-skill" in args:
         deploy_skill()
+        return
+
+    if "--deploy-hooks" in args:
+        deploy_hooks()
         return
 
     if "--deploy-instructions" in args:
