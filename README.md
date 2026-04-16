@@ -396,6 +396,23 @@ python3 ~/.copilot/tools/hooks/lint-skills.py --all --dir /path/to/project
 cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
 ```
 
+### Enforcement Hooks (`hooks/`)
+
+Copilot CLI hooks that enforce knowledge-base usage across sessions:
+
+| Hook | Type | Description |
+|------|------|-------------|
+| `auto-briefing.sh` | sessionStart | Pre-generates briefing at session start |
+| `enforce-briefing.sh` | preToolUse | Blocks edit/create until AI runs `briefing.py` |
+| `learn-reminder.sh` | postToolUse | Reminds to record learnings after `task_complete` |
+| `pre-commit` | git pre-commit | Validates `.agent.md` / `SKILL.md` via `lint-skills.py` |
+| `install-hooks.sh` | installer | Deploys enforcement hooks into any project |
+
+```bash
+# Install enforcement hooks into a project
+bash ~/.copilot/tools/hooks/install-hooks.sh /path/to/project
+```
+
 ### Project Setup
 
 ```bash
