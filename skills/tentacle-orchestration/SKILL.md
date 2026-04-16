@@ -51,13 +51,17 @@ The workflow has 5 phases: **Clarify → Plan → Execute → Verify → Close**
 
 Clarification is the most important phase. A bug found in spec costs 1x to fix. Found in code: 10x. Found in production: 100x. Never skip this phase — time invested here prevents entire categories of downstream waste.
 
-### Phase 0: Clarify Spec (Steps 0.1–0.4)
+### Phase 0: Clarify Spec (Steps 0.0–0.5)
 
 This phase takes a raw specification and makes it implementation-ready through iterative Q&A. No planning or coding happens until the spec is CLEAN.
 
-For the full spec clarification process (8 quality dimensions, Spec Health Report template, iterative refinement), see `references/spec-clarification.md`.
+- **Step 0.0** (optional): Co-author the spec when user has no written spec — structured context gathering + iterative drafting
+- **Steps 0.1–0.4**: Analyze spec against 8 quality dimensions, generate Spec Health Report, iterative refinement until CLEAN
+- **Step 0.5**: Reader Testing — verify a fresh agent (no context) can correctly understand the spec
 
-**Gate**: Planning on an unclear spec produces incorrect decomposition, wasted agent work, and rework. Never proceed to Phase 1 until the spec is CLEAN.
+For the full process, see `references/spec-clarification.md`.
+
+**Gate**: Planning on an unclear spec produces incorrect decomposition, wasted agent work, and rework. Never proceed to Phase 1 until the spec is CLEAN and reader-tested.
 
 ### Phase 1: Plan (Steps 1–4)
 
