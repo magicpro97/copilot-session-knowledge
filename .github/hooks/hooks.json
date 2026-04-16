@@ -4,7 +4,7 @@
     "sessionStart": [
       {
         "type": "command",
-        "bash": "/home/linhnt102/.copilot/tools/hooks/auto-briefing.sh",
+        "bash": "/Users/linhn/.copilot/tools/hooks/auto-briefing.sh",
         "comment": "[GLOBAL] Auto-run briefing.py at session start",
         "timeoutSec": 15
       }
@@ -12,7 +12,7 @@
     "preToolUse": [
       {
         "type": "command",
-        "bash": "/home/linhnt102/.copilot/tools/hooks/enforce-briefing.sh",
+        "bash": "/Users/linhn/.copilot/tools/hooks/enforce-briefing.sh",
         "comment": "[GLOBAL] Block edit/create until briefing is done",
         "timeoutSec": 5
       }
@@ -20,13 +20,13 @@
     "postToolUse": [
       {
         "type": "command",
-        "bash": "/home/linhnt102/.copilot/tools/hooks/learn-reminder.sh",
+        "bash": "/Users/linhn/.copilot/tools/hooks/learn-reminder.sh",
         "comment": "[GLOBAL] Remind to record learnings after task_complete",
         "timeoutSec": 5
       },
       {
         "type": "command",
-        "bash": "python3 /home/linhnt102/.copilot/tools/hooks/references/docs-reminder.py",
+        "bash": "python3 /Users/linhn/.copilot/tools/hooks/references/docs-reminder.py",
         "comment": "[GLOBAL] Remind to update docs after 3+ code edits",
         "timeoutSec": 5
       }
