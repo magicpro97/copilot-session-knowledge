@@ -3,12 +3,13 @@
 install.py — Smart installer for session knowledge tools
 
 Usage:
-    python install.py                    # Auto-detect and show status
-    python install.py --deploy-skill     # Deploy SKILL.md to current project
-    python install.py --inject-global    # Add session-knowledge to global copilot-instructions
-    python install.py --test             # Run self-test
-    python install.py --uninstall        # Remove installed files
-    python install.py --help             # Show this help
+    python install.py                        # Auto-detect and show status
+    python install.py --deploy-skill         # Deploy SKILL.md to current project
+    python install.py --deploy-instructions  # Deploy global instructions to ~/.github/
+    python install.py --inject-global        # Add session-knowledge to global copilot-instructions
+    python install.py --test                 # Run self-test
+    python install.py --uninstall            # Remove installed files
+    python install.py --help                 # Show this help
 """
 
 import importlib.util
@@ -404,6 +405,80 @@ python3 ~/.copilot/tools/learn.py --decision "Tiêu đề" "Quyết định và 
 """)
 
 
+_TEMPLATES_DIR = _SCRIPT_DIR / "templates"
+_INSTRUCTIONS_TEMPLATES = _TEMPLATES_DIR / "instructions"
+
+
+def deploy_instructions():
+    """Deploy global copilot-instructions.md and scope-specific instruction files."""
+    print("\nDeploy Global Instructions")
+
+    github_dir = HOME / ".github"
+    instructions_dir = github_dir / "instructions"
+    github_dir.mkdir(parents=True, exist_ok=True)
+    instructions_dir.mkdir(parents=True, exist_ok=True)
+
+    deployed = 0
+
+    # 1. Core: copilot-instructions.md
+    src = _TEMPLATES_DIR / "copilot-instructions.md"
+    dst = GLOBAL_INSTRUCTIONS
+    if src.is_file():
+        if dst.is_file():
+            old = dst.read_text(encoding="utf-8")
+            new = src.read_text(encoding="utf-8")
+            if old == new:
+                print(f"  {INFO} copilot-instructions.md — already up to date")
+            else:
+                backup = dst.with_suffix(".md.backup")
+                shutil.copy2(str(dst), str(backup))
+                dst.write_text(new, encoding="utf-8")
+                print(f"  {OK} copilot-instructions.md — updated (backup: {backup.name})")
+                deployed += 1
+        else:
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"  {OK} copilot-instructions.md — created")
+            deployed += 1
+    else:
+        print(f"  {FAIL} Template not found: {_tilde(src)}")
+
+    # 2. Scope-specific instructions
+    if _INSTRUCTIONS_TEMPLATES.is_dir():
+        for src_file in sorted(_INSTRUCTIONS_TEMPLATES.glob("*.instructions.md")):
+            dst_file = instructions_dir / src_file.name
+            if dst_file.is_file():
+                old = dst_file.read_text(encoding="utf-8")
+                new = src_file.read_text(encoding="utf-8")
+                if old == new:
+                    print(f"  {INFO} {src_file.name} — already up to date")
+                else:
+                    dst_file.write_text(new, encoding="utf-8")
+                    print(f"  {OK} {src_file.name} — updated")
+                    deployed += 1
+            else:
+                dst_file.write_text(src_file.read_text(encoding="utf-8"), encoding="utf-8")
+                print(f"  {OK} {src_file.name} — created")
+                deployed += 1
+
+    # 3. session-knowledge.instructions.md (from templates root)
+    sk_src = _TEMPLATES_DIR / "session-knowledge.instructions.md"
+    sk_dst = instructions_dir / "session-knowledge.instructions.md"
+    if sk_src.is_file():
+        if sk_dst.is_file():
+            if sk_dst.read_text(encoding="utf-8") == sk_src.read_text(encoding="utf-8"):
+                print(f"  {INFO} session-knowledge.instructions.md — already up to date")
+            else:
+                sk_dst.write_text(sk_src.read_text(encoding="utf-8"), encoding="utf-8")
+                print(f"  {OK} session-knowledge.instructions.md — updated")
+                deployed += 1
+        else:
+            sk_dst.write_text(sk_src.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"  {OK} session-knowledge.instructions.md — created")
+            deployed += 1
+
+    print(f"\n  Deployed {deployed} file(s) to {_tilde(github_dir)}")
+
+
 def inject_global():
     """Inject session-knowledge section into global copilot-instructions.md."""
     print("\nGlobal Instructions Injection")
@@ -703,10 +778,11 @@ def _show_usage_hints():
     print(f"    python {br} \"your task\"       # Context briefing")
     print(f"    python {ws}                    # Start watcher daemon")
     print(f"\n  Management:")
-    print(f"    python {inst} --deploy-skill   # Add skill to project")
-    print(f"    python {inst} --inject-global  # Add to global copilot-instructions")
-    print(f"    python {inst} --test           # Run self-test")
-    print(f"    python {inst} --uninstall      # Remove tools")
+    print(f"    python {inst} --deploy-skill          # Add skill to project")
+    print(f"    python {inst} --deploy-instructions   # Deploy global instructions")
+    print(f"    python {inst} --inject-global         # Add to global copilot-instructions")
+    print(f"    python {inst} --test                  # Run self-test")
+    print(f"    python {inst} --uninstall             # Remove tools")
 
 
 # ===================================================================
@@ -722,6 +798,10 @@ def main():
 
     if "--deploy-skill" in args:
         deploy_skill()
+        return
+
+    if "--deploy-instructions" in args:
+        deploy_instructions()
         return
 
     if "--inject-global" in args:
