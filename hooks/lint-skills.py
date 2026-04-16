@@ -8,6 +8,8 @@ Catches silently-ignored issues:
   - Missing required fields
   - Schema confusion (agent vs skill field usage)
 
+Auto-detects CLI version and parses schemas from app.js when available.
+
 Exit codes:
   0 = all clean
   1 = errors found (blocks commit)
@@ -26,15 +28,167 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
-# ─── Schemas (from Copilot CLI app.js Zod schemas) ───────────────────────
 
-AGENT_VALID_FIELDS = {
+# ─── Auto-detect schemas from installed CLI ──────────────────────────────
+
+def _find_latest_app_js() -> Path | None:
+    """Find the latest Copilot CLI app.js file."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", "")) / "copilot" / "pkg"
+    else:
+        # WSL or Linux — check Windows path via /mnt/c
+        home = Path.home()
+        # Try WSL path first
+        for p in [
+            Path("/mnt/c/Users") / home.name / ".copilot" / "pkg",
+            home / ".copilot" / "pkg",
+        ]:
+            if p.exists():
+                base = p
+                break
+        else:
+            return None
+
+    universal = base / "universal"
+    if not universal.exists():
+        return None
+
+    # Find latest version directory
+    versions = []
+    for d in universal.iterdir():
+        if d.is_dir() and (d / "app.js").exists():
+            try:
+                parts = [int(x) for x in d.name.split(".")]
+                versions.append((parts, d))
+            except ValueError:
+                continue
+
+    if not versions:
+        return None
+
+    versions.sort(key=lambda x: x[0])
+    return versions[-1][1] / "app.js"
+
+
+def _parse_tool_map_from_appjs(app_js: Path) -> set[str] | None:
+    """Extract valid tool category names from T_n in app.js."""
+    try:
+        content = app_js.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+
+    # Find T_n={...} or equivalent variable holding tool categories
+    m = re.search(r'\w+=\{execute:\["bash","powershell"\]', content)
+    if not m:
+        return None
+
+    start = m.start()
+    chunk = content[start:]
+    eq_pos = chunk.index("=")
+    obj_str = chunk[eq_pos + 1:]
+
+    # Parse balanced braces
+    depth = 0
+    end = 0
+    for i, c in enumerate(obj_str):
+        if c == "{":
+            depth += 1
+        if c == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+
+    obj_text = obj_str[:end]
+
+    # Extract all keys (both quoted and unquoted)
+    keys = set()
+    for km in re.finditer(r'(?:^|,|\{)\s*"?([a-zA-Z_][a-zA-Z0-9_-]*)"?\s*:', obj_text):
+        keys.add(km.group(1))
+
+    return keys if keys else None
+
+
+def _parse_agent_fields_from_appjs(app_js: Path) -> set[str] | None:
+    """Extract valid agent frontmatter fields from Zod schema in app.js."""
+    try:
+        content = app_js.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+
+    # Agent schema has: description, tools, mcp-servers, infer, disable-model-invocation, etc.
+    m = re.search(r'description:\w+\.string\(\),tools:\w+,"mcp-servers"', content)
+    if not m:
+        return None
+
+    start = max(0, m.start() - 200)
+    chunk = content[start : m.start() + 500]
+
+    fields = set()
+    for fm in re.finditer(r'"([a-z][a-z-]*)"', chunk):
+        fields.add(fm.group(1))
+    # Also catch unquoted keys before Zod calls or variable references
+    for fm in re.finditer(r'(?:^|,|\{)\s*(\w+)\s*:', chunk):
+        key = fm.group(1)
+        if key and not key[0].isupper() and key not in ("ne", "De"):
+            fields.add(key)
+
+    return fields if fields else None
+
+
+def _detect_cli_version(app_js: Path) -> str | None:
+    """Detect CLI version from app.js path."""
+    for part in app_js.parts:
+        if re.match(r"\d+\.\d+\.\d+", part):
+            return part
+    return None
+
+
+# ─── Schemas ─────────────────────────────────────────────────────────────
+
+# Fallback hardcoded schemas (from CLI v1.0.25, updated as needed)
+_FALLBACK_AGENT_FIELDS = {
     "name", "description", "tools", "mcp-servers",
     "disable-model-invocation", "user-invocable",
     "model", "github", "skills", "handoffs",
-    # Deprecated but still parsed:
-    "infer",
+    "infer",  # deprecated but still parsed
 }
+
+_FALLBACK_TOOL_CATEGORIES = {
+    "execute", "shell", "bash", "powershell",
+    "read", "NotebookRead", "edit", "MultiEdit", "Write", "NotebookEdit",
+    "search", "Grep", "Glob", "grep",
+    "custom-agent", "agent", "task",
+    "runCommands", "runCommands-runInTerminal", "runInTerminal",
+    "edit-editFiles", "editFiles",
+    "create-createFile", "createFile", "createDirectory",
+    "search-codebase", "codebase",
+    "search-fileSearch", "fileSearch",
+    "search-textSearch", "textSearch",
+    "search-readFile", "readFile",
+    # Additional known tools not in T_n but valid:
+    "create", "skill", "view", "glob",
+    "web_search", "web_fetch", "ask_user", "sql", "lsp",
+}
+
+# Try auto-detect from installed CLI
+_APP_JS = _find_latest_app_js()
+_CLI_VERSION = _detect_cli_version(_APP_JS) if _APP_JS else None
+
+_auto_tools = _parse_tool_map_from_appjs(_APP_JS) if _APP_JS else None
+_auto_agent_fields = _parse_agent_fields_from_appjs(_APP_JS) if _APP_JS else None
+
+if _auto_tools:
+    VALID_CLI_TOOLS = _auto_tools | {"create", "skill", "view", "glob",
+                                      "web_search", "web_fetch", "ask_user",
+                                      "sql", "lsp"}
+else:
+    VALID_CLI_TOOLS = _FALLBACK_TOOL_CATEGORIES
+
+if _auto_agent_fields:
+    AGENT_VALID_FIELDS = _auto_agent_fields | {"name", "handoffs", "infer"}
+else:
+    AGENT_VALID_FIELDS = _FALLBACK_AGENT_FIELDS
 
 SKILL_VALID_FIELDS = {
     "name", "description", "allowed-tools",
@@ -43,32 +197,6 @@ SKILL_VALID_FIELDS = {
     # but harmless and intentional for multi-platform compatibility:
     "aliases", "context", "model", "skills", "hooks",
     "license", "metadata", "version",
-}
-
-# Copilot CLI tool category map (from T_n in app.js)
-CLI_TOOL_CATEGORIES = {
-    "execute": ["bash", "powershell"],
-    "shell": ["bash", "powershell"],
-    "bash": ["bash"],
-    "read": ["view"],
-    "edit": ["apply_patch", "str_replace_editor", "create", "edit"],
-    "search": ["search"],
-    "grep": ["grep", "rg", "search"],
-    "glob": ["glob"],
-    "agent": ["task"],
-    "custom-agent": ["task"],
-    "task": ["task"],
-    "web_search": ["web_search"],
-    "web_fetch": ["web_fetch"],
-    "ask_user": ["ask_user"],
-    "sql": ["sql"],
-    "lsp": ["lsp"],
-    "view": ["view"],
-}
-
-VALID_CLI_TOOLS = set(CLI_TOOL_CATEGORIES.keys()) | {
-    # Individual tools that are valid but not category keys:
-    "create", "skill", "view",
 }
 
 # VS Code tool names (NOT valid in CLI)
@@ -398,11 +526,15 @@ def main():
 
     if not all_issues:
         if not quiet:
-            print(f"✅ {files_checked} files checked — all clean")
+            ver = f" (CLI {_CLI_VERSION})" if _CLI_VERSION else ""
+            src = "auto-parsed" if _auto_tools else "fallback"
+            print(f"✅ {files_checked} files checked — all clean [{src}{ver}]")
         sys.exit(0)
 
     if not quiet:
-        print(f"\n🔍 Scanned {files_checked} files\n")
+        ver = f" (CLI {_CLI_VERSION})" if _CLI_VERSION else ""
+        src = "auto-parsed" if _auto_tools else "fallback"
+        print(f"\n🔍 Scanned {files_checked} files [{src}{ver}]\n")
 
     for issue in sorted(all_issues, key=lambda i: (i.file, i.line)):
         print(format_issue(issue, show_fix))
