@@ -130,7 +130,7 @@ print("\n🤖 Fix 2: Sub-agent Briefing Tests")
 
 # 2a. --for-subagent flag exists and produces output
 result = subprocess.run(
-    [sys.executable, str(REPO / "briefing.py"), "debug fix test", "--for-subagent"],
+    [sys.executable, str(REPO / "briefing.py"), "code review", "--for-subagent", "--min-confidence", "0"],
     capture_output=True, text=True, cwd=str(REPO)
 )
 output = result.stdout.strip()
