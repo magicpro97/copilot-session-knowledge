@@ -176,7 +176,8 @@ def add_entry(category: str, title: str, content: str,
               tags: str = "", session_id: str = None,
               confidence: float = None,
               wing: str = "", room: str = "",
-              facts: list = None, skip_gate: bool = False) -> int:
+              facts: list = None, skip_gate: bool = False,
+              skip_scan: bool = False) -> int:
     """Add a knowledge entry to the database. Returns entry ID.
     
     Quality gate (for mistake/pattern/discovery): 3 questions must all be YES:
@@ -193,14 +194,14 @@ def add_entry(category: str, title: str, content: str,
     """
     db = get_db()
 
-    # Injection scanning (before any DB writes)
-    if not skip_gate:  # skip_gate also skips injection scan (for meta-entries about injection)
+    # Injection scanning (before any DB writes) — always runs unless --skip-scan
+    if not skip_scan:
         injection_warnings = scan_content_for_injection(title, content)
         if injection_warnings:
             print(f"  ⚠ REJECTED — injection pattern detected:", file=sys.stderr)
             for w in injection_warnings:
                 print(f"    ✗ {w}", file=sys.stderr)
-            print(f"  Use --skip-gate to bypass (only for documenting injection patterns)", file=sys.stderr)
+            print(f"  Use --skip-scan to bypass (only for documenting injection patterns)", file=sys.stderr)
             return -1
 
     if not session_id:
@@ -604,6 +605,7 @@ def main():
 
     # Quality gate for mistake/pattern/discovery
     skip_gate = "--skip-gate" in args
+    skip_scan = "--skip-scan" in args
     gate_categories = {"mistake", "pattern", "discovery"}
     if category in gate_categories and not skip_gate:
         print(f"Recording {category}...")
@@ -617,7 +619,8 @@ def main():
 
     add_entry(category, title, content, tags=tags,
               session_id=session_id, confidence=confidence,
-              wing=wing, room=room, facts=facts, skip_gate=skip_gate)
+              wing=wing, room=room, facts=facts, skip_gate=skip_gate,
+              skip_scan=skip_scan)
     if facts:
         print(f"  With {len(facts)} fact(s)")
     print("Done.")

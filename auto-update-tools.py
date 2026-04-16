@@ -433,11 +433,15 @@ def run_migrations():
         return
     migrate_script = TOOLS_DIR / "migrate.py"
     if migrate_script.exists():
-        subprocess.run(
-            [sys.executable, str(migrate_script), str(DB_PATH)],
-            capture_output=True,
-            text=True,
-        )
+        try:
+            subprocess.run(
+                [sys.executable, str(migrate_script), str(DB_PATH)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            warn("Migration timed out after 30s (DB may be locked by another process)")
 
 
 # ---------------------------------------------------------------------------

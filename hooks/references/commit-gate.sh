@@ -62,17 +62,18 @@ if [ "$HAS_UI_FILES" -gt 0 ]; then
 fi
 
 # Gate 3: Check for debug artifacts left in code
-for FILE in $(echo "$STAGED" | grep -E '\.(ts|js|kt|swift|py|go|rs)$' || true); do
+while IFS= read -r FILE; do
     FULL_PATH="$REPO_ROOT/$FILE"
     if [ -f "$FULL_PATH" ]; then
         if grep -qE '(console\.log|print\(.*DEBUG|debugger;|TODO.*REMOVE)' "$FULL_PATH" 2>/dev/null; then
             deny "COMMIT BLOCKED: Debug artifacts found in $FILE. Remove console.log/debugger/TODO:REMOVE."
         fi
     fi
-done
+done <<< "$(echo "$STAGED" | grep -E '\.(ts|js|kt|swift|py|go|rs)$' || true)"
 
 # Gate 4: Ensure no large files
-for FILE in $(echo "$STAGED" || true); do
+while IFS= read -r FILE; do
+    [ -z "$FILE" ] && continue
     FULL_PATH="$REPO_ROOT/$FILE"
     if [ -f "$FULL_PATH" ]; then
         SIZE=$(wc -c < "$FULL_PATH" | tr -d ' ')
@@ -80,6 +81,6 @@ for FILE in $(echo "$STAGED" || true); do
             deny "COMMIT BLOCKED: $FILE is $(( SIZE / 1024 ))KB. Large files should use Git LFS."
         fi
     fi
-done
+done <<< "$(echo "$STAGED" || true)"
 
 exit 0

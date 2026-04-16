@@ -253,10 +253,7 @@ def search_semantic(db: sqlite3.Connection, query: str,
 
 def search_past_work(db: sqlite3.Connection, query: str, limit: int = 3) -> list[dict]:
     """Search past work/checkpoints related to query."""
-    fts_query = query.strip()
-    if not any(c in fts_query for c in ['"', "*", "OR", "AND", "NOT", "NEAR"]):
-        terms = fts_query.split()
-        fts_query = " ".join(f'"{t}"*' for t in terms)
+    fts_query = _sanitize_fts_query(query.strip())
 
     results = []
     try:
@@ -539,7 +536,9 @@ def _format_json(query: str, data: dict, past_work: list, categories: dict) -> s
 def _format_compact(query: str, data: dict, past_work: list, categories: dict) -> str:
     """Compact format optimized for AI agent context injection."""
     lines = []
-    lines.append(f"<briefing task=\"{query[:100]}\">\n")
+    # Escape query for safe XML attribute embedding
+    safe_query = query[:100].replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+    lines.append(f"<briefing task=\"{safe_query}\">\n")
 
     for cat, meta in categories.items():
         entries = data.get(cat, [])
@@ -664,9 +663,9 @@ def generate_wakeup() -> str:
         import subprocess
         branch = subprocess.check_output(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            stderr=subprocess.DEVNULL, text=True).strip()
+            stderr=subprocess.DEVNULL, text=True, timeout=5).strip()
         lines.append(f"BRANCH: {branch}")
-    except Exception:
+    except (subprocess.TimeoutExpired, Exception):
         lines.append("BRANCH: (unknown)")
 
     # Wakeup config overrides
