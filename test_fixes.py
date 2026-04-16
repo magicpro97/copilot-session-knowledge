@@ -130,7 +130,7 @@ print("\n🤖 Fix 2: Sub-agent Briefing Tests")
 
 # 2a. --for-subagent flag exists and produces output
 result = subprocess.run(
-    [sys.executable, str(REPO / "briefing.py"), "kotlin compose", "--for-subagent"],
+    [sys.executable, str(REPO / "briefing.py"), "debug fix test", "--for-subagent"],
     capture_output=True, text=True, cwd=str(REPO)
 )
 output = result.stdout.strip()
@@ -171,56 +171,60 @@ print("\n🚀 Fix 3: LaunchAgent Tests")
 
 plist_path = Path.home() / "Library/LaunchAgents/com.copilot.watch-sessions.plist"
 
-# 3a. Plist file exists
-test("Plist file exists", plist_path.exists(),
-     f"Expected at {plist_path}")
+# LaunchAgent is macOS-only — skip on Linux/WSL
+if sys.platform == "darwin":
+    # 3a. Plist file exists
+    test("Plist file exists", plist_path.exists(),
+         f"Expected at {plist_path}")
 
-if plist_path.exists():
-    # 3b. Valid XML plist
-    try:
-        with open(plist_path, "rb") as f:
-            plist_data = plistlib.load(f)
-        test("Plist is valid XML", True)
-    except Exception as e:
-        test("Plist is valid XML", False, str(e))
-        plist_data = {}
+    if plist_path.exists():
+        # 3b. Valid XML plist
+        try:
+            with open(plist_path, "rb") as f:
+                plist_data = plistlib.load(f)
+            test("Plist is valid XML", True)
+        except Exception as e:
+            test("Plist is valid XML", False, str(e))
+            plist_data = {}
 
-    # 3c. Required keys present
-    test("Has Label key", "Label" in plist_data,
-         f"Keys: {list(plist_data.keys())}")
-    test("Label is correct", plist_data.get("Label") == "com.copilot.watch-sessions")
+        # 3c. Required keys present
+        test("Has Label key", "Label" in plist_data,
+             f"Keys: {list(plist_data.keys())}")
+        test("Label is correct", plist_data.get("Label") == "com.copilot.watch-sessions")
 
-    test("Has ProgramArguments", "ProgramArguments" in plist_data)
-    prog_args = plist_data.get("ProgramArguments", [])
-    test("Uses python3", "python3" in prog_args[0] if prog_args else False,
-         f"Got: {prog_args}")
-    test("Runs watch-sessions.py", any("watch-sessions" in a for a in prog_args),
-         f"Got: {prog_args}")
-    test("Has --daemon flag", "--daemon" in prog_args,
-         f"Got: {prog_args}")
+        test("Has ProgramArguments", "ProgramArguments" in plist_data)
+        prog_args = plist_data.get("ProgramArguments", [])
+        test("Uses python3", "python3" in prog_args[0] if prog_args else False,
+             f"Got: {prog_args}")
+        test("Runs watch-sessions.py", any("watch-sessions" in a for a in prog_args),
+             f"Got: {prog_args}")
+        test("Has --daemon flag", "--daemon" in prog_args,
+             f"Got: {prog_args}")
 
-    test("RunAtLoad is true", plist_data.get("RunAtLoad") is True)
+        test("RunAtLoad is true", plist_data.get("RunAtLoad") is True)
 
-    test("Has KeepAlive", "KeepAlive" in plist_data,
-         "Daemon should restart on crash")
+        test("Has KeepAlive", "KeepAlive" in plist_data,
+             "Daemon should restart on crash")
 
-    test("WorkingDirectory is ~/.copilot",
-         plist_data.get("WorkingDirectory", "").endswith(".copilot"),
-         f"Got: {plist_data.get('WorkingDirectory')}")
+        test("WorkingDirectory is ~/.copilot",
+             plist_data.get("WorkingDirectory", "").endswith(".copilot"),
+             f"Got: {plist_data.get('WorkingDirectory')}")
 
-    # 3d. plutil validates the plist
-    plutil_result = subprocess.run(
-        ["plutil", "-lint", str(plist_path)],
-        capture_output=True, text=True
-    )
-    test("plutil lint passes",
-         plutil_result.returncode == 0,
-         plutil_result.stderr or plutil_result.stdout)
+        # 3d. plutil validates the plist
+        plutil_result = subprocess.run(
+            ["plutil", "-lint", str(plist_path)],
+            capture_output=True, text=True
+        )
+        test("plutil lint passes",
+             plutil_result.returncode == 0,
+             plutil_result.stderr or plutil_result.stdout)
 
-    # 3e. Python path exists
-    python_path = prog_args[0] if prog_args else ""
-    test("Python3 path exists", Path(python_path).exists(),
-         f"Path: {python_path}")
+        # 3e. Python path exists
+        python_path = prog_args[0] if prog_args else ""
+        test("Python3 path exists", Path(python_path).exists(),
+             f"Path: {python_path}")
+else:
+    print("  ⏭️  Skipped — LaunchAgent is macOS-only (running on Linux/WSL)")
 
 
 # ─── Fix 1 Integration: Re-extract and verify ───────────────────────────
