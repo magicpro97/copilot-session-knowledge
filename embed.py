@@ -28,6 +28,7 @@ import sys
 import time
 import urllib.request
 import urllib.error
+import ssl
 from pathlib import Path
 from math import sqrt
 
@@ -44,6 +45,9 @@ TOOLS_DIR = Path.home() / ".copilot" / "tools"
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
 CONFIG_PATH = TOOLS_DIR / "embedding-config.json"
+
+# SSL verification — disable with --no-verify-ssl flag or COPILOT_NO_VERIFY_SSL=1
+NO_VERIFY_SSL = False
 
 # ── Default provider configs ──────────────────────────────────────────
 DEFAULT_CONFIG = {
@@ -200,7 +204,12 @@ def call_embedding_api(texts: list[str], provider_config: dict) -> list[list[flo
     req.add_header("User-Agent", "copilot-session-tools/1.0")
 
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        ssl_ctx = None
+        if NO_VERIFY_SSL:
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(req, timeout=60, context=ssl_ctx) as resp:
             result = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")[:500]
@@ -270,13 +279,13 @@ def build_tfidf(texts: list[str], doc_ids: list[int]) -> bytes:
     coo = coo_matrix(matrix)
 
     model = {
-        "vocabulary": vectorizer.vocabulary_,
+        "vocabulary": {k: int(v) for k, v in vectorizer.vocabulary_.items()},
         "idf": vectorizer.idf_.tolist(),
         "matrix_row": coo.row.tolist(),
         "matrix_col": coo.col.tolist(),
         "matrix_data": coo.data.tolist(),
-        "matrix_shape": list(coo.shape),
-        "doc_ids": doc_ids,
+        "matrix_shape": [int(x) for x in coo.shape],
+        "doc_ids": [int(x) for x in doc_ids],
         "params": {
             "max_features": 8000,
             "ngram_range": [1, 2],
@@ -957,11 +966,16 @@ def cmd_search(query: str, limit: int = 10):
 
 
 def main():
+    global NO_VERIFY_SSL
     args = sys.argv[1:]
 
     if not args or "--help" in args or "-h" in args:
         print(__doc__)
         return
+
+    if "--no-verify-ssl" in args or os.environ.get("COPILOT_NO_VERIFY_SSL"):
+        NO_VERIFY_SSL = True
+        args = [a for a in args if a != "--no-verify-ssl"]
 
     if "--setup" in args:
         cmd_setup()
