@@ -53,7 +53,7 @@ NO_VERIFY_SSL = False
 DEFAULT_CONFIG = {
     "active_provider": "auto",  # "auto" tries env vars in order
     "fallback": "tfidf",        # "tfidf" or "none"
-    "batch_size": 20,           # embeddings per API call
+    "batch_size": 100,          # embeddings per API call (Fireworks supports up to 2048)
     "providers": {
         "openai": {
             "base_url": "https://api.openai.com/v1",
@@ -180,8 +180,9 @@ def resolve_provider(config: dict) -> tuple:
 #  Embedding API (OpenAI-compatible, stdlib only)
 # ═══════════════════════════════════════════════════════════════════════
 
-def call_embedding_api(texts: list[str], provider_config: dict) -> list[list[float]]:
-    """Call an OpenAI-compatible embedding API. Returns list of float vectors."""
+def call_embedding_api(texts: list[str], provider_config: dict,
+                       max_retries: int = 3) -> list[list[float]]:
+    """Call an OpenAI-compatible embedding API with retry. Returns list of float vectors."""
     base_url = provider_config["base_url"].rstrip("/")
     model = provider_config["model"]
     api_key = get_api_key(provider_config)
@@ -198,24 +199,43 @@ def call_embedding_api(texts: list[str], provider_config: dict) -> list[list[flo
 
     data = json.dumps(payload).encode("utf-8")
 
-    req = urllib.request.Request(url, data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", f"Bearer {api_key}")
-    req.add_header("User-Agent", "copilot-session-tools/1.0")
+    ssl_ctx = None
+    if NO_VERIFY_SSL:
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
 
-    try:
-        ssl_ctx = None
-        if NO_VERIFY_SSL:
-            ssl_ctx = ssl.create_default_context()
-            ssl_ctx.check_hostname = False
-            ssl_ctx.verify_mode = ssl.CERT_NONE
-        with urllib.request.urlopen(req, timeout=60, context=ssl_ctx) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(f"API error {e.code}: {body}")
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Connection error: {e.reason}")
+    last_error = None
+    for attempt in range(max_retries):
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", f"Bearer {api_key}")
+        req.add_header("User-Agent", "copilot-session-tools/1.0")
+
+        try:
+            with urllib.request.urlopen(req, timeout=120, context=ssl_ctx) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")[:500]
+            if e.code == 429 or e.code >= 500:
+                last_error = f"API error {e.code}: {body}"
+                wait = (2 ** attempt) + 1
+                print(f"    ⟳ Retry {attempt+1}/{max_retries} after {wait}s ({e.code})...",
+                      file=sys.stderr)
+                time.sleep(wait)
+                continue
+            raise RuntimeError(f"API error {e.code}: {body}")
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            reason = getattr(e, "reason", str(e))
+            last_error = f"Connection error: {reason}"
+            wait = (2 ** attempt) + 1
+            print(f"    ⟳ Retry {attempt+1}/{max_retries} after {wait}s (timeout/network)...",
+                  file=sys.stderr)
+            time.sleep(wait)
+            continue
+    else:
+        raise RuntimeError(last_error or "Max retries exceeded")
 
     # Parse OpenAI-format response
     embeddings = []
@@ -236,15 +256,20 @@ def embed_batch(texts: list[str], config: dict, provider_name: str = None,
     if not provider_config:
         raise RuntimeError("No embedding provider configured. Run: python embed.py --setup")
 
-    batch_size = config.get("batch_size", 20)
+    batch_size = config.get("batch_size", 100)
     all_embeddings = []
+    total = len(texts)
+    num_batches = (total + batch_size - 1) // batch_size
 
-    for i in range(0, len(texts), batch_size):
+    for i in range(0, total, batch_size):
         chunk = texts[i:i + batch_size]
+        batch_num = i // batch_size + 1
+        print(f"    batch {batch_num}/{num_batches} ({len(chunk)} items)...", end="", flush=True)
         embeddings = call_embedding_api(chunk, provider_config)
         all_embeddings.extend(embeddings)
-        if i + batch_size < len(texts):
-            time.sleep(0.2)  # rate limit courtesy
+        print(" ✓")
+        if i + batch_size < total:
+            time.sleep(0.3)  # rate limit courtesy
 
     return all_embeddings
 
