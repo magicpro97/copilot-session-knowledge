@@ -326,7 +326,7 @@ This repo contains both **Skills** (SKILL.md) and **Agent templates** (.agent.md
 | **Purpose** | Instructions for specific tasks | Specialized sub-agent persona |
 | **Frontmatter** | `name`, `description`, `license`, `allowed-tools`, `metadata`, `compatibility` | `name`, `description`, `tools`, `model` |
 | **Triggered by** | AI matching description to user intent | Explicit delegation or keyword match |
-| **Validation** | `quick_validate.py` from anthropics/skills | `agent-spec.md` from this repo |
+| **Validation** | `quick_validate.py` from anthropics/skills | `hooks/lint-skills.py` (14 rules, auto-parses CLI schemas) |
 
 **Key rule:** Skills use `allowed-tools` (optional string). Agents use `tools` (YAML list). Don't mix them.
 
@@ -355,6 +355,46 @@ Pre-built Copilot CLI hook scripts — customize and install per project:
 | `build-reminder.sh` | postToolUse | Reminds to verify build after N source file edits |
 | `docs-reminder.sh/.py` | postToolUse | Warns after 3+ code edits without doc updates (cross-platform) |
 | `session-banner.sh` | postToolUse | Shows session start checklist |
+
+### Skill & Agent Linter (`hooks/lint-skills.py`)
+
+Validates `.agent.md` and `SKILL.md` files against the Copilot CLI schema. Auto-parses the installed CLI's `app.js` for up-to-date field/tool definitions — falls back to hardcoded schemas if not found.
+
+```bash
+# Scan a single file
+python3 ~/.copilot/tools/hooks/lint-skills.py path/to/file.agent.md
+
+# Scan all files in a directory
+python3 ~/.copilot/tools/hooks/lint-skills.py --all
+
+# Scan a specific project
+python3 ~/.copilot/tools/hooks/lint-skills.py --all --dir /path/to/project
+```
+
+**Rules (14 total):**
+
+| Code | Severity | Checks |
+|------|----------|--------|
+| AG-001 | error | Missing required `description` field |
+| AG-002 | warning | Deprecated `infer` → use `user-invocable` |
+| AG-003 | warning | `description` exceeds 1024 chars |
+| AG-004 | warning | `name` exceeds 64 chars |
+| AG-005 | warning | Missing frontmatter (`---`) |
+| AG-006 | warning | Unknown field (silently ignored by CLI) |
+| AG-007 | error | VS Code tool name (not valid in CLI) |
+| AG-008 | error | Claude Code tool name (not valid in CLI) |
+| AG-009 | warning | Unknown tool name |
+| AG-010 | error | `allowed-tools` used in agent (skill field) |
+| SK-001 | error | Missing required `description` |
+| SK-005 | warning | Missing frontmatter |
+| SK-007 | warning | Unknown field (silently dropped) |
+| SK-008 | error | `tools` used in skill (agent field) |
+
+**Git pre-commit hook** — automatically installed at `.git/hooks/pre-commit`:
+```bash
+# Install manually
+cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+```
 
 ### Project Setup
 
