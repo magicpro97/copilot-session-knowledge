@@ -1,0 +1,55 @@
+#!/bin/sh
+# pre-commit hook — Validate .agent.md and SKILL.md files before commit
+# Catches: deprecated fields, unknown tool names, schema mismatches
+#
+# Install: cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+# Or run:  bash hooks/install-hooks.sh
+
+TOOLS_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+HOOK_SCRIPT="$TOOLS_DIR/hooks/lint-skills.py"
+
+# Only run if the lint script exists
+if [ ! -f "$HOOK_SCRIPT" ]; then
+    exit 0
+fi
+
+# Collect staged .agent.md and SKILL.md files
+STAGED_SKILLS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '(\.agent\.md$|SKILL\.md$)' || true)
+
+if [ -z "$STAGED_SKILLS" ]; then
+    # No skill/agent files staged — still do a full scan for awareness
+    # Use --quiet to suppress output when all clean, exit 0 regardless
+    python3 "$HOOK_SCRIPT" --all --quiet 2>/dev/null
+    exit 0
+fi
+
+echo "🔍 Validating skill/agent files..."
+
+# Lint staged files specifically
+LINT_EXIT=0
+for f in $STAGED_SKILLS; do
+    FULL_PATH="$TOOLS_DIR/$f"
+    if [ -f "$FULL_PATH" ]; then
+        python3 "$HOOK_SCRIPT" "$FULL_PATH" --fix
+        CODE=$?
+        if [ $CODE -eq 1 ]; then
+            LINT_EXIT=1
+        fi
+    fi
+done
+
+# Also run full scan to catch cross-file issues
+python3 "$HOOK_SCRIPT" --all --fix
+CODE=$?
+if [ $CODE -eq 1 ]; then
+    LINT_EXIT=1
+fi
+
+if [ $LINT_EXIT -eq 1 ]; then
+    echo ""
+    echo "❌ Commit blocked — fix errors above before committing."
+    echo "   Warnings are informational and don't block commits."
+    exit 1
+fi
+
+exit 0
