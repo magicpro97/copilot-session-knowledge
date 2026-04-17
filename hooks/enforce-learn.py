@@ -9,6 +9,7 @@ which catches ALL file modifications regardless of method. This hook
 only reads the counter and enforces the gate.
 """
 import json
+import re
 import os
 import sys
 from pathlib import Path
@@ -56,9 +57,12 @@ def _should_block():
 
 def main():
     try:
-        data = json.loads(sys.stdin.read())
+        raw = sys.stdin.read()
+        if not raw.strip():
+            return  # Empty stdin on non-edit tools is normal
+        data = json.loads(raw)
     except Exception:
-        return
+        return  # Non-JSON stdin is normal for some tool types
 
     tool_name = data.get("toolName", "")
     tool_args = data.get("toolArgs", {})
@@ -74,7 +78,7 @@ def main():
     # Block git commit/push
     if tool_name == "bash":
         command = tool_args.get("command", "")
-        if "git commit" not in command and "git push" not in command:
+        if not re.search(r'\bgit\b.*\b(commit|push)\b', command):
             return
         if not _should_block():
             return
@@ -85,7 +89,7 @@ def main():
                 f"🧠 LEARN REQUIRED: {count} code files edited but learn.py not called. "
                 "Record what you learned before committing:\n"
                 "  python3 ~/.copilot/tools/learn.py\n"
-                "Or mark as skipped: touch ~/.copilot/markers/learn-done"
+                
             ),
         }))
         return
@@ -101,7 +105,7 @@ def main():
                 f"🧠 LEARN REQUIRED: {count} code files edited but learn.py not called. "
                 "Record learnings before completing task:\n"
                 "  python3 ~/.copilot/tools/learn.py\n"
-                "Or mark as skipped: touch ~/.copilot/markers/learn-done"
+                
             ),
         }))
         return

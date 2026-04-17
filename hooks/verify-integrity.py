@@ -52,6 +52,17 @@ def main():
         if actual_hash != expected_hash:
             tampered.append(filename)
 
+    # Also check hooks.json hash
+    hooks_json_hash = manifest.get("hooks_json")
+    if hooks_json_hash:
+        hooks_json_path = HOOKS_DIR / "hooks.json"
+        if hooks_json_path.is_file():
+            actual = hashlib.sha256(hooks_json_path.read_bytes()).hexdigest()
+            if actual != hooks_json_hash:
+                tampered.append("hooks.json")
+        else:
+            tampered.append("hooks.json (MISSING)")
+
     if tampered or missing:
         print()
         print("  🚨 HOOK INTEGRITY ALERT 🚨")
@@ -64,7 +75,7 @@ def main():
         print()
     else:
         count = len(manifest.get("files", {}))
-        print(f"  🔒 Hook integrity verified ({count} files)")
+        print(f"  🔒 Hook integrity verified ({count} files + hooks.json)")
 
 
 if __name__ == "__main__":

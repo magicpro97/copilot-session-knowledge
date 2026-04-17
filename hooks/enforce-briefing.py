@@ -109,8 +109,15 @@ def _briefing_done():
 
 def main():
     try:
-        data = json.loads(sys.stdin.read())
-    except Exception:
+        raw = sys.stdin.read()
+        if not raw.strip():
+            print(json.dumps({"permissionDecision": "deny",
+                  "permissionDecisionReason": "Hook error: empty stdin"}))
+            return
+        data = json.loads(raw)
+    except Exception as e:
+        print(json.dumps({"permissionDecision": "deny",
+              "permissionDecisionReason": f"Hook error: {e}"}))
         return
 
     tool_name = data.get("toolName", "")
