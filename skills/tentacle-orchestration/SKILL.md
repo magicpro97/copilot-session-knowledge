@@ -45,6 +45,17 @@ A **tentacle** is a scoped work unit stored as files:
 
 The octopus metaphor: one orchestrator (you), multiple tentacles (agents), each handling a distinct code region.
 
+<example>
+**Task:** Add dark mode support to a Next.js app
+
+**Decomposition:**
+- `theme-tokens` tentacle — scope: `src/styles/tokens.css`, `tailwind.config.ts` — create CSS variables for dark/light palettes
+- `component-update` tentacle — scope: `src/components/**/*` — apply `dark:` Tailwind classes to all components
+- `test-suite` tentacle — scope: `tests/**/*` — write Playwright visual regression tests for dark mode
+
+Each tentacle is independent, non-overlapping, and completable in isolation. The orchestrator merges results after all three pass verification gates.
+</example>
+
 ## Workflow
 
 The workflow has 5 phases: **Clarify → Plan → Execute → Verify → Close**.
@@ -149,18 +160,7 @@ Only call `complete` after all verification gates pass. This marks all todos don
 python3 ~/.copilot/tools/tentacle.py delete <name>
 ```
 
-## Verification summary
-
-| Gate | What it catches | Skip when |
-|------|----------------|-----------|
-| **Build** | Syntax errors, type mismatches, import failures | Never skip |
-| **Lint** | Style violations, unused imports, formatting | Never skip |
-| **Test** | Logic bugs, regressions, broken contracts | Never skip |
-| **Review** | Security issues, design flaws, scope creep | Never skip |
-| **Docs** | Stale README, outdated JSDoc, missing CHANGELOG | Internal refactors only |
-| **QA audit** | Hallucinated tests, spec mismatches, blind spots | Low-risk changes only |
-
-The first 4 gates are mandatory. Skipping any of them means you don't know if the agent output is correct — you're just hoping it is.
+See Phase 3 above for the full verification gate table.
 
 ## CLI reference
 

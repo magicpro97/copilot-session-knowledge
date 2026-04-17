@@ -99,40 +99,15 @@ The checklist is a minimum — not an exclusive list.
 
 Layer these ON TOP of the canonical structure:
 
-**Agent mapping table** — Map module types to the agents detected in Step 2 or generated in Step 3.
-Include model tier AND model ID columns. Use project-specific agent names, not generic `general-purpose`:
+**Agent mapping table** — Map module types to agents (with model tier + ID). Use project-specific agent names:
 
-```markdown
-| Tentacle type | agent_type | Model tier | Model ID |
-|--------------|-----------|------------|----------|
-| Backend logic | backend-dev | standard | claude-sonnet-4.6 |
-| Tests | test-writer | standard | claude-sonnet-4.6 |
-| Code review | code-review | standard | claude-sonnet-4.6 |
-```
+| Tentacle type | agent_type | Model | Scope pattern |
+|--------------|-----------|-------|--------------|
+| Backend logic | backend-dev | claude-sonnet-4.6 | `src/app/api/**/*` |
+| Tests | test-writer | claude-sonnet-4.6 | `tests/**/*` |
+| Code review | code-review | claude-sonnet-4.6 | `src/**/*` |
 
-**Architecture decomposition table** — Map the project's folder structure to tentacle scope patterns:
-
-```markdown
-| Layer | Scope Pattern | Example Tentacle |
-|-------|---------------|-----------------|
-| API routes | `src/app/api/**/*` | `api-routes` |
-| Database | `src/lib/db/*` | `database` |
-| Tests | `tests/**/*` | `test-suite` |
-```
-
-**Verification commands** — Replace the reference's generic commands with the project's actual
-build/test/lint commands in the Phase 3 verification gate table:
-
-```markdown
-| Step | Gate | Command | What it catches | Skip? |
-|------|------|---------|----------------|-------|
-| 7 | Build | `npx tsc --noEmit` | Syntax errors | Never |
-| 8 | Lint | `npx eslint .` | Style violations | Never |
-| 9 | Test | `yarn test` | Logic bugs | Never |
-| 10 | Review | Dispatch code-reviewer | Design flaws | Never |
-| 11 | Docs | Check README/CHANGELOG | Stale docs | Internal refactors |
-| 12 | QA audit | Manual review | Visual bugs | Low-risk only |
-```
+**Verification commands** — Replace generic commands with the project's actual build/test/lint commands in the Phase 3 gate table (e.g., `npx tsc --noEmit`, `npx eslint .`, `yarn test`).
 
 **CONTEXT.md template** — Include project-specific conventions (linting rules, import patterns,
 naming conventions, theme tokens, i18n rules) so agents follow them.
@@ -145,21 +120,21 @@ If not, note that session-knowledge can be installed for long-term memory.
 
 #### 4c: Structural validation (MANDATORY before proceeding)
 
-After generating the file, run this self-check:
+After generating the file, run these checks:
 
-```
-1. Extract all `## ` headings from the GENERATED file
-2. Extract all `## ` headings from the REFERENCE file
-3. Every reference heading MUST have a corresponding heading in the generated file
-4. Missing heading = FAIL → add the section before proceeding
-5. Check Phase 0 contains motivation text ("costs 1x / 10x / 100x")
-6. Check Phase 1 mentions "Impact Analysis"
-7. Check Phase 2 swarm command includes `--model`
-8. Check "Core concept" section has file tree diagram
-9. Check "Reference docs" section exists with links to canonical references/
+```bash
+# Validate all canonical headings are present
+diff <(grep '^## ' ~/.copilot/tools/skills/tentacle-orchestration/SKILL.md | sort) \
+     <(grep '^## ' .github/skills/tentacle-orchestration/SKILL.md | sort)
+
+# Verify Core concept has file tree
+grep -q '\.octogent/tentacles/' .github/skills/tentacle-orchestration/SKILL.md || echo "FAIL: missing file tree"
+
+# Verify Phase 0 motivation text
+grep -q 'costs 1x' .github/skills/tentacle-orchestration/SKILL.md || echo "FAIL: missing motivation text"
 ```
 
-Only proceed to Step 5 after all checks pass.
+Any output (diff lines or FAIL messages) means the section is missing — add it before proceeding.
 
 ### Step 5: Set up .gitignore
 
@@ -184,6 +159,20 @@ Install: git clone https://github.com/magicpro97/copilot-session-knowledge.git ~
 ### Step 7: Report
 
 Present a summary: project profile, files created, agent mappings detected, verification commands, and example usage commands.
+
+<example>
+**Project:** Next.js + TypeScript monorepo with yarn workspaces
+
+**Profile:** Language: TypeScript | Framework: Next.js 14 | Test: Jest + Playwright | Agents: backend-dev, test-writer, code-review
+
+**Generated:** `.github/skills/tentacle-orchestration/SKILL.md` (customized from reference)
+
+**Agent mapping:** backend-dev → `src/app/api/**/*` | test-writer → `tests/**/*` | code-review → any PR
+
+**Verification commands:** `npx tsc --noEmit` (build) · `npx eslint .` (lint) · `yarn test` (tests)
+
+**Usage:** `python3 ~/.copilot/tools/tentacle.py create api-routes --scope "src/app/api/**/*" --desc "REST endpoint changes" --briefing`
+</example>
 
 ## Compatibility
 

@@ -79,6 +79,27 @@ Read the selected template from `references/`, then adapt:
 Keep customizations minimal — the templates are intentionally general so they adapt
 to different contexts. Only add project-specific details that meaningfully change behavior.
 
+<example>
+**Before** (generic template `tdd-red.agent.md`):
+```yaml
+tools: ['run_tests']
+```
+```markdown
+Run the test suite to confirm the test fails.
+```
+
+**After** (customized for a yarn + Jest project):
+```yaml
+tools: ['run_terminal_cmd']
+```
+```markdown
+Run `yarn test --testPathPattern=<filename> --no-coverage` to confirm the new test fails.
+The `--no-coverage` flag keeps feedback fast during the red phase.
+```
+
+Only the test command and the performance note were added — everything else stays generic.
+</example>
+
 ### Step 4: Write Agent Files
 
 Place generated agents in `.github/agents/` (GitHub Copilot convention):
@@ -98,7 +119,7 @@ Place generated agents in `.github/agents/` (GitHub Copilot convention):
 
 After creating agents, confirm:
 - Each file has valid YAML frontmatter (`name`, `description`, `tools`)
-- Descriptions are "pushy" — include trigger phrases so the agent activates reliably
+- Descriptions are "pushy" — include trigger phrases so the agent activates reliably (Copilot uses description text for trigger matching; vague descriptions cause agents to never activate)
 - Commands referenced in agents actually exist in the project
 - File paths referenced in agents match the real directory structure
 

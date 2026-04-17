@@ -49,20 +49,19 @@ Run the find command with a relevant query:
 npx skills find [query]
 ```
 
-For example:
-
+<example>
 - User asks "how do I make my React app faster?" → `npx skills find react performance`
 - User asks "can you help me with PR reviews?" → `npx skills find pr review`
 - User asks "I need to create a changelog" → `npx skills find changelog`
 
-The command will return results like:
-
+The command returns results like:
 ```
 Install with npx skills add <owner/repo@skill>
 
 vercel-labs/agent-skills@vercel-react-best-practices
 └ https://skills.sh/vercel-labs/agent-skills/vercel-react-best-practices
 ```
+</example>
 
 ### Step 3: Present Options to the User
 
@@ -72,17 +71,15 @@ When you find relevant skills, present them to the user with:
 2. The install command they can run
 3. A link to learn more at skills.sh
 
-Example response:
-
-```
+<example>
 I found a skill that might help! The "vercel-react-best-practices" skill provides
 React and Next.js performance optimization guidelines from Vercel Engineering.
 
 To install it:
-npx skills add vercel-labs/agent-skills@vercel-react-best-practices
+`npx skills add vercel-labs/agent-skills@vercel-react-best-practices`
 
 Learn more: https://skills.sh/vercel-labs/agent-skills/vercel-react-best-practices
-```
+</example>
 
 ### Step 4: Offer to Install
 
@@ -122,12 +119,10 @@ If no relevant skills exist:
 2. Offer to help with the task directly using your general capabilities
 3. Suggest the user could create their own skill with `npx skills init`
 
-Example:
-
-```
+<example>
 I searched for skills related to "xyz" but didn't find any matches.
 I can still help you with this task directly! Would you like me to proceed?
 
 If this is something you do often, you could create your own skill:
-npx skills init my-xyz-skill
-```
+`npx skills init my-xyz-skill`
+</example>
