@@ -908,16 +908,24 @@ def lock_hooks():
     files_to_lock = list(hook_files) + [hooks_dst, manifest_path]
 
     if system == "Darwin":
+        # schg = system immutable — requires sudo to set, cannot be removed without sudo
+        # Much stronger than uchg (user immutable) which same user can remove
+        is_root = os.geteuid() == 0
+        flag = "schg"
         for f in files_to_lock:
             if f.is_file():
-                result = subprocess.run(["chflags", "uchg", str(f)],
-                                       capture_output=True, text=True)
+                cmd = ["chflags", flag, str(f)] if is_root else ["sudo", "chflags", flag, str(f)]
+                result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode == 0:
                     protected += 1
                 else:
-                    print(f"  {FAIL} chflags failed: {f.name}: {result.stderr.strip()}")
-        print(f"\n  {OK} {protected} files locked (chflags uchg)")
-        print("  To unlock: python3 install.py --unlock-hooks")
+                    err = result.stderr.strip() or "unknown error"
+                    print(f"  {FAIL} chflags {flag} failed: {f.name} ({err})")
+        if protected:
+            print(f"\n  {OK} {protected} files locked (chflags {flag} — system immutable)")
+            print("  To unlock: sudo python3 install.py --unlock-hooks")
+        else:
+            print(f"\n  {WARN} chflags {flag} requires sudo. Run: sudo python3 install.py --lock-hooks")
 
     elif system == "Linux":
         # chattr +i requires root — detect if already root to avoid double-sudo
@@ -983,13 +991,21 @@ def unlock_hooks():
     unlocked = 0
 
     if system == "Darwin":
+        is_root = os.geteuid() == 0
         for f in files_to_unlock:
             if f.is_file():
-                result = subprocess.run(["chflags", "nouchg", str(f)],
-                                       capture_output=True, text=True)
+                # Try noschg first (system immutable), fallback to nouchg (user immutable)
+                cmd = ["chflags", "noschg", str(f)] if is_root else ["sudo", "chflags", "noschg", str(f)]
+                result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode == 0:
                     unlocked += 1
-        print(f"  {OK} {unlocked} files unlocked (chflags nouchg)")
+                else:
+                    # Fallback: try nouchg for legacy locks
+                    cmd2 = ["chflags", "nouchg", str(f)]
+                    result2 = subprocess.run(cmd2, capture_output=True, text=True)
+                    if result2.returncode == 0:
+                        unlocked += 1
+        print(f"  {OK} {unlocked} files unlocked")
 
     elif system == "Linux":
         is_root = os.geteuid() == 0
