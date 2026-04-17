@@ -6,6 +6,8 @@ Usage:
     python install.py                        # Auto-detect and show status
     python install.py --deploy-skill         # Deploy SKILL.md to current project
     python install.py --deploy-hooks         # Deploy hooks.json to ~/.copilot/hooks/
+    python install.py --lock-hooks           # Lock hooks with OS immutable flags
+    python install.py --unlock-hooks         # Unlock hooks for updates
     python install.py --deploy-instructions  # Deploy global instructions to ~/.github/
     python install.py --inject-global        # Add session-knowledge to global copilot-instructions
     python install.py --test                 # Run self-test
@@ -834,6 +836,154 @@ def _show_usage_hints():
 # Main
 # ===================================================================
 
+
+def lock_hooks():
+    """Lock hook files with OS-level immutable flags + SHA256 manifest.
+    
+    macOS: chflags uchg (user immutable — no sudo needed to set, needs nouchg to clear)
+    Linux: chattr +i (needs sudo/root)
+    Windows: attrib +R
+    """
+    import hashlib
+    import platform
+
+    hooks_dir = _SCRIPT_DIR / "hooks"
+    hooks_dst_dir = COPILOT_DIR / "hooks"
+    hooks_dst = hooks_dst_dir / "hooks.json"
+
+    print("\n🔒 Lock Hooks — Tamper Protection")
+
+    # Collect all hook files to protect
+    hook_files = sorted(hooks_dir.glob("*.py")) if hooks_dir.is_dir() else []
+    if not hook_files:
+        print(f"  {FAIL} No hook scripts found in {_tilde(hooks_dir)}")
+        return
+
+    # 1. Generate SHA256 manifest
+    manifest = {"files": {}, "hooks_json": None}
+    for hf in hook_files:
+        h = hashlib.sha256(hf.read_bytes()).hexdigest()
+        manifest["files"][hf.name] = h
+        print(f"  {OK} {hf.name}: {h[:16]}...")
+
+    if hooks_dst.is_file():
+        h = hashlib.sha256(hooks_dst.read_bytes()).hexdigest()
+        manifest["hooks_json"] = h
+        print(f"  {OK} hooks.json: {h[:16]}...")
+
+    # Save manifest
+    manifest_path = hooks_dst_dir / "integrity-manifest.json"
+    hooks_dst_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    print(f"\n  {OK} Manifest saved: {_tilde(manifest_path)}")
+
+    # 2. Set OS-level immutable flags
+    system = platform.system()
+    protected = 0
+
+    files_to_lock = list(hook_files) + [hooks_dst, manifest_path]
+
+    if system == "Darwin":
+        for f in files_to_lock:
+            if f.is_file():
+                result = subprocess.run(["chflags", "uchg", str(f)],
+                                       capture_output=True, text=True)
+                if result.returncode == 0:
+                    protected += 1
+                else:
+                    print(f"  {FAIL} chflags failed: {f.name}: {result.stderr.strip()}")
+        print(f"\n  {OK} {protected} files locked (chflags uchg)")
+        print("  To unlock: python3 install.py --unlock-hooks")
+
+    elif system == "Linux":
+        # chattr +i requires root
+        for f in files_to_lock:
+            if f.is_file():
+                result = subprocess.run(["sudo", "chattr", "+i", str(f)],
+                                       capture_output=True, text=True)
+                if result.returncode == 0:
+                    protected += 1
+                else:
+                    # Try without sudo
+                    result2 = subprocess.run(["chattr", "+i", str(f)],
+                                            capture_output=True, text=True)
+                    if result2.returncode == 0:
+                        protected += 1
+                    else:
+                        print(f"  {FAIL} chattr failed: {f.name} (needs root)")
+        if protected:
+            print(f"\n  {OK} {protected} files locked (chattr +i)")
+        else:
+            print(f"\n  {WARN} chattr requires root. Run: sudo python3 install.py --lock-hooks")
+
+    elif system == "Windows":
+        for f in files_to_lock:
+            if f.is_file():
+                result = subprocess.run(["attrib", "+R", str(f)],
+                                       capture_output=True, text=True)
+                if result.returncode == 0:
+                    protected += 1
+        print(f"\n  {OK} {protected} files set read-only (attrib +R)")
+        print("  Note: attrib +R is weaker than Unix immutable flags")
+
+    else:
+        print(f"\n  {WARN} Unknown OS: {system}. Manual protection needed.")
+
+    print(f"\n  Agent CANNOT modify hook files without unlocking first.")
+
+
+def unlock_hooks():
+    """Remove OS-level immutable flags from hook files."""
+    import platform
+
+    hooks_dir = _SCRIPT_DIR / "hooks"
+    hooks_dst_dir = COPILOT_DIR / "hooks"
+    hooks_dst = hooks_dst_dir / "hooks.json"
+    manifest_path = hooks_dst_dir / "integrity-manifest.json"
+
+    print("\n🔓 Unlock Hooks")
+
+    hook_files = sorted(hooks_dir.glob("*.py")) if hooks_dir.is_dir() else []
+    files_to_unlock = list(hook_files) + [hooks_dst, manifest_path]
+
+    system = platform.system()
+    unlocked = 0
+
+    if system == "Darwin":
+        for f in files_to_unlock:
+            if f.is_file():
+                result = subprocess.run(["chflags", "nouchg", str(f)],
+                                       capture_output=True, text=True)
+                if result.returncode == 0:
+                    unlocked += 1
+        print(f"  {OK} {unlocked} files unlocked (chflags nouchg)")
+
+    elif system == "Linux":
+        for f in files_to_unlock:
+            if f.is_file():
+                result = subprocess.run(["sudo", "chattr", "-i", str(f)],
+                                       capture_output=True, text=True)
+                if result.returncode == 0:
+                    unlocked += 1
+                else:
+                    result2 = subprocess.run(["chattr", "-i", str(f)],
+                                            capture_output=True, text=True)
+                    if result2.returncode == 0:
+                        unlocked += 1
+        print(f"  {OK} {unlocked} files unlocked (chattr -i)")
+
+    elif system == "Windows":
+        for f in files_to_unlock:
+            if f.is_file():
+                result = subprocess.run(["attrib", "-R", str(f)],
+                                       capture_output=True, text=True)
+                if result.returncode == 0:
+                    unlocked += 1
+        print(f"  {OK} {unlocked} files unlocked (attrib -R)")
+
+    print("  ⚠️  Re-lock after updates: python3 install.py --lock-hooks")
+
+
 def main():
     args = sys.argv[1:]
 
@@ -847,6 +997,14 @@ def main():
 
     if "--deploy-hooks" in args:
         deploy_hooks()
+        return
+
+    if "--lock-hooks" in args:
+        lock_hooks()
+        return
+
+    if "--unlock-hooks" in args:
+        unlock_hooks()
         return
 
     if "--deploy-instructions" in args:
