@@ -40,6 +40,13 @@
         "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\enforce-learn.py\"",
         "comment": "[GLOBAL] Block git commit until learn.py is called after significant edits",
         "timeoutSec": 5
+      },
+      {
+        "type": "command",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/enforce-tentacle.py\"",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\enforce-tentacle.py\"",
+        "comment": "[GLOBAL] Block edits when 3+ files across 2+ modules without tentacle",
+        "timeoutSec": 5
       }
     ],
     "postToolUse": [
