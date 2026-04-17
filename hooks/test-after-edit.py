@@ -75,6 +75,8 @@ def main():
 
     tool_name = data.get("toolName", "")
     tool_args = data.get("toolArgs", {})
+    if not isinstance(tool_args, dict):
+        tool_args = {}
 
     # Check edit/create tools
     if tool_name in ("edit", "create"):
