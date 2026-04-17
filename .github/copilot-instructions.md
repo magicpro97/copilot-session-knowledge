@@ -97,6 +97,14 @@ A set of standalone Python CLI scripts that index AI coding sessions (Copilot CL
 - `migrate.py` — Versioned schema migrations via a `schema_version` table
 - `install.py` / `setup-project.py` — Deploy SKILL.md and inject into project/global AI instructions
 
+**Enforcement hooks** (`hooks/` — cross-platform Python, deployed to `~/.copilot/hooks/`):
+- `auto-briefing.py` / `enforce-briefing.py` — sessionStart + preToolUse: auto-run briefing, block edits without it
+- `enforce-learn.py` — preToolUse: block git commit AND task_complete if ≥3 code edits without learn.py
+- `track-bash-edits.py` — postToolUse: `git status` after bash to detect ALL file modifications (language-agnostic)
+- `verify-integrity.py` — sessionStart: SHA256 manifest check for hook tamper detection
+- `tentacle-suggest.py` / `test-after-edit.py` / `learn-reminder.py` / `error-search-kb.py` — postToolUse reminders
+- Hooks are protected with OS immutable flags (`install.py --lock-hooks`)
+
 **Central database:** `~/.copilot/session-state/knowledge.db` — SQLite with FTS5, WAL journal mode, and optional vector embeddings.
 
 ## Conventions
