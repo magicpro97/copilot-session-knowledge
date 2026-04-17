@@ -2,9 +2,11 @@
 """tentacle-suggest.py — postToolUse hook (cross-platform)
 
 When ≥3 files across ≥2 modules are edited, suggest tentacle orchestration.
+Detects edits via edit/create tools AND bash file writes.
 """
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -40,20 +42,36 @@ def main():
         return
 
     tool_name = data.get("toolName", "")
-    if tool_name not in ("edit", "create"):
-        return
+    tool_args = data.get("toolArgs", {})
 
     # Already suggested this session
     if SUGGESTED_FILE.is_file():
         return
 
-    # Get edited file path
-    file_path = ""
-    if tool_name == "edit":
-        file_path = data.get("toolResult", {}).get("filePath", "")
-    elif tool_name == "create":
-        file_path = data.get("input", {}).get("filePath", "")
-    if not file_path:
+    # Get edited file paths
+    file_paths = []
+    if tool_name in ("edit", "create"):
+        fp = ""
+        if tool_name == "edit":
+            fp = data.get("toolResult", {}).get("filePath", "")
+        elif tool_name == "create":
+            fp = data.get("input", {}).get("filePath", "")
+        if fp:
+            file_paths.append(fp)
+    elif tool_name == "bash":
+        command = tool_args.get("command", "")
+        if "<<" in command and "open(" in command:
+            for m in re.finditer(r"open\(['\"]([^'\"]+)['\"]", command):
+                p = m.group(1)
+                if not p.startswith(("/tmp/", "/var/", "/dev/")):
+                    file_paths.append(p)
+        if ">" in command:
+            for m in re.finditer(r">\s*(/[^\s;|&]+)", command):
+                p = m.group(1)
+                if not p.startswith(("/tmp/", "/var/", "/dev/")):
+                    file_paths.append(p)
+
+    if not file_paths:
         return
 
     # Track edited files
@@ -64,7 +82,8 @@ def main():
             edited = set(EDITS_FILE.read_text().strip().splitlines())
     except Exception:
         pass
-    edited.add(file_path)
+    for fp in file_paths:
+        edited.add(fp)
     try:
         EDITS_FILE.write_text("\n".join(edited))
     except Exception:
