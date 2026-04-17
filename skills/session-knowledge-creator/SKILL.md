@@ -7,6 +7,13 @@ description: Generate a project-customized session-knowledge skill with enforced
 
 A meta-skill that analyzes your project and generates a customized session-knowledge integration — including the critical `.instructions.md` enforcement file that makes AI agents actually use it.
 
+## When to Use
+
+- Someone says "set up knowledge tracking", "make AI remember things", or "configure session knowledge"
+- Onboarding a new project where AI should retain context across sessions
+- AI keeps repeating past mistakes or forgetting decisions made earlier
+- A project already uses `briefing.py`/`learn.py` but has no enforcement file
+
 ## Why this exists
 
 AI agents ignore session-knowledge tools even when SKILL.md says "MANDATORY". The root cause: SKILL.md is reference-only documentation that AI must actively choose to read. Most don't. The solution is `.instructions.md` files — Copilot CLI auto-injects these into every context, so the AI has no choice but to see the rules.
@@ -102,7 +109,12 @@ python3 ~/.copilot/tools/briefing.py --wakeup
 python3 ~/.copilot/tools/learn.py --discovery "Setup test" "Session knowledge configured" --tags "setup"
 cat .github/instructions/session-knowledge.instructions.md
 head -5 .github/skills/session-knowledge/SKILL.md
+
+# Validate the generated SKILL.md meets standards
+python3 ~/.copilot/tools/validate-skill.py .github/skills/session-knowledge/SKILL.md
 ```
+
+The generated SKILL.md must comply with `~/.copilot/tools/skills/references/skill-standards.md`.
 
 ### Step 5: Report
 
@@ -113,3 +125,20 @@ Present a summary showing: project profile, files created, enforcement status, a
 Templates for generated files are in the `references/` directory:
 - `references/instructions-template.md` — `.instructions.md` template
 - `references/skill-template.md` — SKILL.md template
+
+<example>
+**Project:** Next.js e-commerce app
+
+**Profile:** TypeScript | Next.js 14 | Wings: frontend, backend, database | Rooms: auth, products, cart, payments
+
+**Generated files:**
+1. `.github/instructions/session-knowledge.instructions.md` — imperative rules, auto-injected
+2. `.github/skills/session-knowledge/SKILL.md` — full reference with e-commerce domain examples
+3. `CLAUDE.md` patch — 3-line pointer to above files
+
+**Validation:**
+```bash
+python3 ~/.copilot/tools/validate-skill.py .github/skills/session-knowledge/SKILL.md
+# → PASS  .github/skills/session-knowledge/SKILL.md
+```
+</example>
