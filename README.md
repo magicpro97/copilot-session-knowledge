@@ -257,6 +257,10 @@ python3 ~/.copilot/tools/watch-sessions.py --daemon             # Run in backgro
 python3 ~/.copilot/tools/embed.py --status                      # Embedding coverage stats
 python3 ~/.copilot/tools/embed.py --build                       # Rebuild all embeddings
 python3 ~/.copilot/tools/install.py --deploy-skill              # Deploy SKILL.md
+python3 ~/.copilot/tools/install.py --deploy-hooks              # Deploy hooks to ~/.copilot/hooks/
+python3 ~/.copilot/tools/install.py --deploy-instructions       # Deploy global instructions
+python3 ~/.copilot/tools/install.py --lock-hooks                # Lock hooks (tamper protection)
+python3 ~/.copilot/tools/install.py --unlock-hooks              # Unlock hooks for updates
 python3 ~/.copilot/tools/install.py --inject-global             # Inject into global copilot-instructions
 # Windows: thay python3 → python
 ```
@@ -400,19 +404,37 @@ cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
 
 ### Enforcement Hooks (`hooks/`)
 
-Copilot CLI hooks that enforce knowledge-base usage across sessions:
+Cross-platform Python hooks that enforce knowledge-base usage across sessions.
+All hooks are standalone Python scripts (no bash/jq/perl dependencies).
 
 | Hook | Type | Description |
 |------|------|-------------|
-| `auto-briefing.sh` | sessionStart | Pre-generates briefing at session start |
-| `enforce-briefing.sh` | preToolUse | Blocks edit/create until AI runs `briefing.py` |
-| `learn-reminder.sh` | postToolUse | Reminds to record learnings after `task_complete` |
+| `auto-briefing.py` | sessionStart | Auto-runs briefing.py, creates marker |
+| `verify-integrity.py` | sessionStart | Verifies hook files via SHA256 manifest |
+| `session-end.py` | sessionEnd | Cleans up marker files |
+| `enforce-briefing.py` | preToolUse | Blocks edit/create/bash-writes until briefing done |
+| `enforce-learn.py` | preToolUse | Blocks git commit AND task_complete without learn.py |
+| `track-bash-edits.py` | postToolUse | Detects file changes via `git status` (language-agnostic) |
+| `learn-reminder.py` | postToolUse | Reminds to record learnings after task_complete |
+| `test-after-edit.py` | postToolUse | Reminds to run tests after 3+ Python file edits |
+| `tentacle-suggest.py` | postToolUse | Suggests tentacle when ≥3 files across ≥2 modules |
+| `error-search-kb.py` | errorOccurred | Auto-searches knowledge base on errors |
 | `pre-commit` | git pre-commit | Validates `.agent.md` / `SKILL.md` via `lint-skills.py` |
-| `install-hooks.sh` | installer | Deploys enforcement hooks into any project |
+
+**Bash bypass protection:** Hooks detect file writes via bash commands (heredocs, redirects,
+`sed -i`, `tee`, `cp`, `mv`, `curl -o`, etc.) AND verify actual changes via `git status`.
+
+**Tamper protection:** Hook files are locked with OS immutable flags (`--lock-hooks`).
 
 ```bash
-# Install enforcement hooks into a project
-bash ~/.copilot/tools/hooks/install-hooks.sh /path/to/project
+# Deploy hooks to user-level
+python3 ~/.copilot/tools/install.py --deploy-hooks
+
+# Lock hooks (AI agent cannot modify)
+python3 ~/.copilot/tools/install.py --lock-hooks
+
+# Unlock for updates
+python3 ~/.copilot/tools/install.py --unlock-hooks
 ```
 
 ### Project Setup
@@ -490,6 +512,8 @@ Output is a compact `[KNOWLEDGE CONTEXT]` block (~200 tokens) to embed in sub-ag
 - **Path validation** — WSL path traversal protection
 - **Input limits** — title 200 chars, content 10K chars, FTS query 500 chars
 - **Injection scanning** — `learn.py` scans all entries against 15 regex patterns (prompt injection, SSH backdoors, credential exfiltration). Matching entries are REJECTED. Bypass with `--skip-gate`
+- **Hook tamper protection** — OS immutable flags (`chflags uchg` / `chattr +i` / `attrib +R`) prevent AI agents from modifying enforcement hooks. SHA256 manifest verified at session start
+- **Bash bypass detection** — `track-bash-edits.py` uses `git status` to detect ALL file modifications regardless of method (heredoc, redirect, cp, mv, tee, etc.)
 
 ## Testing
 

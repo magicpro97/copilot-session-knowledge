@@ -61,6 +61,33 @@ On Unix/macOS systems:
 - Backward compatibility: legacy pickle models are supported with deprecation warnings
 - Vector embeddings use `struct.pack`/`struct.unpack` (safe binary format)
 
+## Hook Integrity & Tamper Protection
+
+AI agents run as the same OS user, so they can potentially modify the hook scripts
+that enforce rules on them. To prevent this:
+
+### OS-Level Immutable Flags
+- **macOS**: `chflags uchg` — user immutable, same user cannot modify
+- **Linux**: `chattr +i` — requires root to modify
+- **Windows**: `attrib +R` — read-only (weaker protection)
+
+```bash
+python3 ~/.copilot/tools/install.py --lock-hooks    # Set immutable flags
+python3 ~/.copilot/tools/install.py --unlock-hooks   # Remove for updates
+```
+
+### SHA256 Integrity Manifest
+- `install.py --lock-hooks` generates SHA256 checksums for all hook files
+- Stored in `~/.copilot/hooks/integrity-manifest.json`
+- `verify-integrity.py` (sessionStart hook) checks hashes on every session start
+- If tampered: warns loudly with `🚨 HOOK INTEGRITY ALERT`
+
+### Bash Bypass Detection
+- `track-bash-edits.py` (postToolUse) runs `git status --porcelain` after every bash command
+- Detects ALL file modifications regardless of method (python, node, ruby, cp, mv, tee, etc.)
+- Updates edit counters used by `enforce-learn.py` to gate git commit and task_complete
+- `enforce-briefing.py` also has heuristic preToolUse detection for common write patterns
+
 ## Reporting Vulnerabilities
 
 If you discover a security vulnerability, please:

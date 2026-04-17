@@ -15,10 +15,11 @@ python3 ~/.copilot/tools/briefing.py "mô tả task" --full
 - **Gặp lỗi**: `python3 ~/.copilot/tools/query-session.py "error message" --verbose`
 - **Giữa công việc**: `python3 ~/.copilot/tools/query-session.py "pattern hoặc keyword"` — tra cứu KB khi gặp vấn đề quen hoặc cần pattern đã dùng trước
 - **Sau khi fix**: `python3 ~/.copilot/tools/learn.py --mistake "Tiêu đề" "Mô tả"`
-- **Trước commit**: `python3 ~/.copilot/tools/learn.py` — BẮT BUỘC ghi nhận nếu ≥3 file code đã sửa
+- **Trước commit/task_complete**: `python3 ~/.copilot/tools/learn.py` — BẮT BUỘC ghi nhận nếu ≥3 file code đã sửa (hook sẽ BLOCK nếu chưa gọi)
 
 ✅ Luôn briefing trước task phức tạp | ✅ Luôn search KB khi gặp lỗi | ✅ Luôn ghi nhận mistakes/patterns
-❌ KHÔNG bỏ qua briefing | ❌ KHÔNG debug từ đầu khi KB đã có solution | ❌ KHÔNG commit mà chưa learn
+❌ KHÔNG bỏ qua briefing | ❌ KHÔNG debug từ đầu khi KB đã có solution | ❌ KHÔNG commit/task_complete mà chưa learn
+⚠️ Hooks phát hiện file writes qua bash (heredoc, redirect, sed, cp...) — không bypass được
 
 ## 🛡️ Harness Engineering — 7 Nguyên tắc
 

@@ -6,13 +6,20 @@ Usage:
     python install.py                        # Auto-detect and show status
     python install.py --deploy-skill         # Deploy SKILL.md to current project
     python install.py --deploy-hooks         # Deploy hooks.json to ~/.copilot/hooks/
-    python install.py --lock-hooks           # Lock hooks with OS immutable flags
-    python install.py --unlock-hooks         # Unlock hooks for updates
     python install.py --deploy-instructions  # Deploy global instructions to ~/.github/
     python install.py --inject-global        # Add session-knowledge to global copilot-instructions
+    python install.py --lock-hooks           # Lock hooks with OS immutable flags (tamper protection)
+    python install.py --unlock-hooks         # Unlock hooks for updates
     python install.py --test                 # Run self-test
     python install.py --uninstall            # Remove installed files
     python install.py --help                 # Show this help
+
+Tamper Protection:
+    --lock-hooks sets OS-level immutable flags on all hook scripts + hooks.json:
+      macOS: chflags uchg (user immutable, no sudo needed)
+      Linux: chattr +i (requires sudo)
+      Windows: attrib +R (read-only, weaker)
+    Also generates SHA256 manifest checked by verify-integrity.py at session start.
 """
 
 import importlib.util
