@@ -204,6 +204,7 @@ def add_entry(category: str, title: str, content: str,
             print(f"  Use --skip-scan to bypass (only for documenting injection patterns)", file=sys.stderr)
             return -1
 
+
     if not session_id:
         session_id = detect_session_id()
 

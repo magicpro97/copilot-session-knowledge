@@ -47,6 +47,19 @@ if os.name == "nt":
 # ---------------------------------------------------------------------------
 HOME = Path.home()
 
+
+def _real_home():
+    """Get real user home, even under sudo (where Path.home() returns /root)."""
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user and os.name != "nt":
+        import pwd
+        try:
+            return Path(pwd.getpwnam(sudo_user).pw_dir)
+        except KeyError:
+            pass
+    return HOME
+
+
 COPILOT_DIR = HOME / ".copilot"
 CLAUDE_DIR = HOME / ".claude"
 TOOLS_DIR = COPILOT_DIR / "tools"
@@ -833,8 +846,11 @@ def _show_usage_hints():
     print(f"    python {ws}                    # Start watcher daemon")
     print(f"\n  Management:")
     print(f"    python {inst} --deploy-skill          # Add skill to project")
+    print(f"    python {inst} --deploy-hooks           # Deploy hooks")
     print(f"    python {inst} --deploy-instructions   # Deploy global instructions")
     print(f"    python {inst} --inject-global         # Add to global copilot-instructions")
+    print(f"    python {inst} --lock-hooks             # Lock hooks (tamper protection)")
+    print(f"    python {inst} --unlock-hooks           # Unlock hooks for updates")
     print(f"    python {inst} --test                  # Run self-test")
     print(f"    python {inst} --uninstall             # Remove tools")
 
@@ -855,7 +871,8 @@ def lock_hooks():
     import platform
 
     hooks_dir = _SCRIPT_DIR / "hooks"
-    hooks_dst_dir = COPILOT_DIR / "hooks"
+    real_home = _real_home()
+    hooks_dst_dir = real_home / ".copilot" / "hooks"
     hooks_dst = hooks_dst_dir / "hooks.json"
 
     print("\n🔒 Lock Hooks — Tamper Protection")
@@ -903,21 +920,17 @@ def lock_hooks():
         print("  To unlock: python3 install.py --unlock-hooks")
 
     elif system == "Linux":
-        # chattr +i requires root
+        # chattr +i requires root — detect if already root to avoid double-sudo
+        is_root = os.geteuid() == 0
         for f in files_to_lock:
             if f.is_file():
-                result = subprocess.run(["sudo", "chattr", "+i", str(f)],
-                                       capture_output=True, text=True)
+                cmd = ["chattr", "+i", str(f)] if is_root else ["sudo", "chattr", "+i", str(f)]
+                result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode == 0:
                     protected += 1
                 else:
-                    # Try without sudo
-                    result2 = subprocess.run(["chattr", "+i", str(f)],
-                                            capture_output=True, text=True)
-                    if result2.returncode == 0:
-                        protected += 1
-                    else:
-                        print(f"  {FAIL} chattr failed: {f.name} (needs root)")
+                    err = result.stderr.strip() or "unknown error"
+                    print(f"  {FAIL} chattr failed: {f.name} ({err})")
         if protected:
             print(f"\n  {OK} {protected} files locked (chattr +i)")
         else:
@@ -944,7 +957,8 @@ def unlock_hooks():
     import platform
 
     hooks_dir = _SCRIPT_DIR / "hooks"
-    hooks_dst_dir = COPILOT_DIR / "hooks"
+    real_home = _real_home()
+    hooks_dst_dir = real_home / ".copilot" / "hooks"
     hooks_dst = hooks_dst_dir / "hooks.json"
     manifest_path = hooks_dst_dir / "integrity-manifest.json"
 
@@ -966,17 +980,16 @@ def unlock_hooks():
         print(f"  {OK} {unlocked} files unlocked (chflags nouchg)")
 
     elif system == "Linux":
+        is_root = os.geteuid() == 0
         for f in files_to_unlock:
             if f.is_file():
-                result = subprocess.run(["sudo", "chattr", "-i", str(f)],
-                                       capture_output=True, text=True)
+                cmd = ["chattr", "-i", str(f)] if is_root else ["sudo", "chattr", "-i", str(f)]
+                result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode == 0:
                     unlocked += 1
                 else:
-                    result2 = subprocess.run(["chattr", "-i", str(f)],
-                                            capture_output=True, text=True)
-                    if result2.returncode == 0:
-                        unlocked += 1
+                    err = result.stderr.strip() or "unknown error"
+                    print(f"  {FAIL} chattr unlock failed: {f.name} ({err})")
         print(f"  {OK} {unlocked} files unlocked (chattr -i)")
 
     elif system == "Windows":
