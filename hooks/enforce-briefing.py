@@ -125,6 +125,8 @@ def main():
 
     tool_name = data.get("toolName", "")
     tool_args = data.get("toolArgs", {})
+    if not isinstance(tool_args, dict):
+        tool_args = {}
 
     # Kill-switch: deny if hooks tampered
     if check_tamper_marker():

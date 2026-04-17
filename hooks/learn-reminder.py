@@ -33,6 +33,8 @@ def main():
 
     tool_name = data.get("toolName", "")
     tool_args = data.get("toolArgs", {})
+    if not isinstance(tool_args, dict):
+        tool_args = {}
 
     # Track when learn.py is run → create signed marker
     if tool_name == "bash":
