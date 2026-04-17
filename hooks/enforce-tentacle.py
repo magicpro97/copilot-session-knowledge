@@ -116,9 +116,8 @@ def main():
         "permissionDecisionReason": (
             f"🐙 TENTACLE REQUIRED: {len(edited)} files across {len(modules)} modules "
             f"({', '.join(sorted(modules))}). "
-            f"Use tentacle-orchestration for multi-module tasks. "
-            f"Run: python3 ~/.copilot/tools/tentacle.py \"your task\" "
-            f"| Or create ~/.copilot/markers/tentacle-bypass to skip"
+            f"You MUST use tentacle-orchestration for multi-module tasks. "
+            f"Run: python3 ~/.copilot/tools/tentacle.py \"your task\""
         )
     }
     print(json.dumps(result))
