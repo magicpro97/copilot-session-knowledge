@@ -29,7 +29,6 @@ Adapted from the [OctoGent](https://github.com/hesamsheikh/octogent) tentacle pa
 - ❌ Launching sub-agents without `swarm` prompt → agent gets no scope, constraints, or key files
 - ❌ Skipping `--briefing` on create → past mistakes not injected into CONTEXT.md
 - ❌ Skipping `complete` before `delete` → learnings from handoff.md lost permanently
-- ❌ Treating tentacle Close as task done → return to the project's outer workflow after tentacles
 - ❌ Overlapping tentacle scopes → agents overwrite each other's work
 
 ## Core concept
@@ -57,21 +56,9 @@ The octopus metaphor: one orchestrator (you), multiple tentacles (agents), each 
 Each tentacle is independent, non-overlapping, and completable in isolation. The orchestrator merges results after all three pass verification gates.
 </example>
 
-## ⛔ Workflow integration
-
-Tentacles are a decomposition tool, not a complete workflow. If the project has its own
-workflow (e.g., WORKFLOW.md with phases like DESIGN → VERIFY → BUILD → TEST → REVIEW → QA → COMMIT),
-tentacles run INSIDE the BUILD phase only. The outer workflow gates still apply before and after.
-
-**Common violation:** AI completes tentacle's internal "Verify → Close" and marks task done,
-skipping the project's E2E testing, code review, QA, and commit phases entirely. The tentacle's
-verify phase only covers build+test — not the full quality pipeline.
-
-**Rule:** After tentacle Close, return to the project's workflow and continue from the next phase.
-
 ## Internal workflow
 
-The tentacle lifecycle has 5 phases: **Clarify → Plan → Execute → Verify → Close**.
+The workflow has 5 phases: **Clarify → Plan → Execute → Verify → Close**.
 
 Clarification is the most important phase. A bug found in spec costs 1x to fix. Found in code: 10x. Found in production: 100x. Never skip this phase — time invested here prevents entire categories of downstream waste.
 
