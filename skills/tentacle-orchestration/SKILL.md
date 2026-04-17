@@ -144,9 +144,39 @@ Summary:
 
 The first 4 gates are mandatory. Skipping any of them means you don't know if the agent output is correct.
 
-### Phase 4: Close (Steps 13–14)
+### Phase 4: Commit + Close (Steps 13–17)
 
-#### Step 13: Complete and learn
+#### Step 13: Commit after each completed phase
+
+Commit working code after completing each major phase — not just at the end.
+If a later phase fails or the session crashes, earlier work is preserved and rollback is possible.
+
+```bash
+git add -A && git commit -m "feat(<scope>): <phase description>"
+```
+
+**Commit cadence:**
+- After Phase 1 shared/foundation tentacles complete + build passes → commit
+- After each Phase 2 parallel batch completes + build passes → commit
+- After Phase 3 verification passes → commit
+- Final integration wiring → commit
+
+Never commit from parallel sub-agents — only the orchestrator commits after merging results.
+
+#### Step 14: Runtime verification
+
+Build passing ≠ app works. After all tentacles are merged, run the app:
+
+```bash
+# Desktop: ./gradlew :composeApp:jvmRun
+# Mobile: deploy to emulator/simulator
+# Web: npm run dev / python manage.py runserver
+```
+
+DI frameworks (Koin, Dagger, Spring) crash at runtime if bindings are missing — the compiler
+won't catch this. A 30-second launch test catches what build+test cannot.
+
+#### Step 15: Complete and learn
 
 ```bash
 python3 ~/.copilot/tools/tentacle.py complete <name>
@@ -154,13 +184,11 @@ python3 ~/.copilot/tools/tentacle.py complete <name>
 
 Only call `complete` after all verification gates pass. This marks all todos done and auto-extracts learnings from handoff.md into long-term knowledge.
 
-#### Step 14: Cleanup
+#### Step 16: Cleanup
 
 ```bash
 python3 ~/.copilot/tools/tentacle.py delete <name>
 ```
-
-See Phase 3 above for the full verification gate table.
 
 ## CLI reference
 
@@ -183,4 +211,6 @@ tentacle.py delete <name>
 2. **Keep todos atomic** — each item = one testable deliverable
 3. **No scope overlap** — overlapping scopes cause agents to overwrite each other
 4. **Complete before delete** — `complete` saves learnings; `delete` alone loses them
-5. **⚠️ Shared workspace** — Sub-agents share the same filesystem, git index, and build cache. Parallel mode requires strictly non-overlapping file scopes. Never `git commit` from parallel agents. Consider `git worktree` for true isolation
+5. **Commit after each phase** — uncommitted code is lost if the session crashes or compacts
+6. **Run the app** — build+test ≠ works. Launch the app to verify DI resolution and runtime behavior
+7. **⚠️ Shared workspace** — Sub-agents share the same filesystem, git index, and build cache. Parallel mode requires strictly non-overlapping file scopes. Never `git commit` from parallel agents. Consider `git worktree` for true isolation
