@@ -922,18 +922,30 @@ def lock_hooks():
     elif system == "Linux":
         # chattr +i requires root — detect if already root to avoid double-sudo
         is_root = os.geteuid() == 0
+        chmod_fallback = 0
         for f in files_to_lock:
             if f.is_file():
-                cmd = ["chattr", "+i", str(f)] if is_root else ["sudo", "chattr", "+i", str(f)]
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode == 0:
-                    protected += 1
+                # WSL: files on /mnt/ (NTFS) don't support chattr — fallback to chmod
+                on_ntfs = str(f).startswith("/mnt/")
+                if on_ntfs:
+                    try:
+                        f.chmod(0o444)
+                        chmod_fallback += 1
+                    except OSError as e:
+                        print(f"  {FAIL} chmod failed: {f.name} ({e})")
                 else:
-                    err = result.stderr.strip() or "unknown error"
-                    print(f"  {FAIL} chattr failed: {f.name} ({err})")
+                    cmd = ["chattr", "+i", str(f)] if is_root else ["sudo", "chattr", "+i", str(f)]
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    if result.returncode == 0:
+                        protected += 1
+                    else:
+                        err = result.stderr.strip() or "unknown error"
+                        print(f"  {FAIL} chattr failed: {f.name} ({err})")
         if protected:
             print(f"\n  {OK} {protected} files locked (chattr +i)")
-        else:
+        if chmod_fallback:
+            print(f"  {OK} {chmod_fallback} files set read-only (chmod 444 — WSL/NTFS fallback)")
+        if not protected and not chmod_fallback:
             print(f"\n  {WARN} chattr requires root. Run: sudo python3 install.py --lock-hooks")
 
     elif system == "Windows":
@@ -983,14 +995,22 @@ def unlock_hooks():
         is_root = os.geteuid() == 0
         for f in files_to_unlock:
             if f.is_file():
-                cmd = ["chattr", "-i", str(f)] if is_root else ["sudo", "chattr", "-i", str(f)]
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode == 0:
-                    unlocked += 1
+                on_ntfs = str(f).startswith("/mnt/")
+                if on_ntfs:
+                    try:
+                        f.chmod(0o644)
+                        unlocked += 1
+                    except OSError:
+                        pass
                 else:
-                    err = result.stderr.strip() or "unknown error"
-                    print(f"  {FAIL} chattr unlock failed: {f.name} ({err})")
-        print(f"  {OK} {unlocked} files unlocked (chattr -i)")
+                    cmd = ["chattr", "-i", str(f)] if is_root else ["sudo", "chattr", "-i", str(f)]
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    if result.returncode == 0:
+                        unlocked += 1
+                    else:
+                        err = result.stderr.strip() or "unknown error"
+                        print(f"  {FAIL} chattr unlock failed: {f.name} ({err})")
+        print(f"  {OK} {unlocked} files unlocked (chattr -i / chmod 644)")
 
     elif system == "Windows":
         for f in files_to_unlock:
