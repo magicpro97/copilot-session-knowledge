@@ -63,15 +63,31 @@ def get_module(file_path: str) -> str:
 
 def main():
     try:
-        data = json.loads(sys.stdin.read())
+        raw = sys.stdin.read()
+        if not raw.strip():
+            return
+        data = json.loads(raw)
     except Exception:
         return
 
     tool_name = data.get("toolName", "")
 
-    # Only gate edit/create tools (not bash — that's handled by enforce-briefing)
-    if tool_name not in ("edit", "create"):
+    # Gate edit/create and bash file-write commands
+    if tool_name not in ("edit", "create", "bash"):
         return
+
+    if tool_name == "bash":
+        command = data.get("toolInput", {}).get("command", "")
+        # Only block bash commands that write source files
+        source_exts = (".py", ".js", ".ts", ".kt", ".java", ".swift", ".go",
+                       ".rs", ".c", ".cpp", ".h", ".rb", ".php", ".cs", ".tsx", ".jsx")
+        writes_source = False
+        if any(ext in command for ext in source_exts):
+            if any(p in command for p in ("<<", ">>", "> ", "write_text", "open(",
+                                           "sed -i", "tee ", "cp ", "mv ")):
+                writes_source = True
+        if not writes_source:
+            return
 
     # If tentacle was already used or explicitly bypassed, allow
     if TENTACLE_DONE.is_file() or TENTACLE_BYPASS.is_file():

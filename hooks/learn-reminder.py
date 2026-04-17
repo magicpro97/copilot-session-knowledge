@@ -5,6 +5,7 @@ Remind to record learnings after task_complete is called.
 Also tracks when learn.py is run to clear the enforce-learn gate.
 """
 import json
+import re
 import os
 import sys
 from pathlib import Path
@@ -30,7 +31,7 @@ def main():
     # Track when learn.py is run → clear the gate
     if tool_name == "bash":
         command = tool_args.get("command", "")
-        if "learn.py" in command:
+        if re.search(r'python3?\s+.*learn\.py\b', command):
             try:
                 MARKERS_DIR.mkdir(parents=True, exist_ok=True)
                 LEARN_DONE.touch()
