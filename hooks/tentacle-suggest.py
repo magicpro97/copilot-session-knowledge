@@ -15,6 +15,18 @@ if os.name == "nt":
         if hasattr(s, "reconfigure"):
             s.reconfigure(encoding="utf-8", errors="replace")
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from marker_auth import sign_list_marker, verify_list_marker
+except ImportError:
+    def sign_list_marker(p, lines):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("\n".join(sorted(lines)))
+    def verify_list_marker(p):
+        if not p.is_file(): return set()
+        raw = p.read_text().strip()
+        return set(raw.splitlines()) if raw else set()
+
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 EDITS_FILE = MARKERS_DIR / "tentacle-edits"
 SUGGESTED_FILE = MARKERS_DIR / "tentacle-suggested"

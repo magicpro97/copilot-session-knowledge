@@ -26,6 +26,7 @@ Environment:
 
 import argparse
 import json
+import fcntl
 import os
 import re
 import subprocess
@@ -37,6 +38,22 @@ from pathlib import Path
 TOOLS_DIR = Path(__file__).resolve().parent
 LEARN_PY = TOOLS_DIR / "learn.py"
 BRIEFING_PY = TOOLS_DIR / "briefing.py"
+
+
+
+from contextlib import contextmanager
+
+@contextmanager
+def file_locked(lock_path):
+    """Acquire an exclusive file lock for atomic read-modify-write operations."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = open(str(lock_path) + ".lock", "w")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
 
 
 def find_git_root() -> Path | None:
@@ -380,41 +397,50 @@ def cmd_todo(args):
         print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
         sys.exit(1)
 
-    content = todo_path.read_text() if todo_path.exists() else "# Todo\n\n"
-    todos = parse_todos(content)
+    with file_locked(todo_path):
+        content = todo_path.read_text() if todo_path.exists() else "# Todo\n\n"
+        todos = parse_todos(content)
 
-    if args.action == "add":
-        todos.append({"index": len(todos), "done": False, "text": args.text})
-        todo_path.write_text(render_todos(todos))
-        print(f"✅ Added todo [{len(todos) - 1}]: {args.text}")
-
-    elif args.action == "done":
-        idx = int(args.text)
-        if 0 <= idx < len(todos):
-            todos[idx]["done"] = True
+        if args.action == "add":
+            todos.append({"index": len(todos), "done": False, "text": args.text})
             todo_path.write_text(render_todos(todos))
-            print(f"✅ Marked done [{idx}]: {todos[idx]['text']}")
-        else:
-            print(f"ERROR: Index {idx} out of range (0-{len(todos) - 1})", file=sys.stderr)
-            sys.exit(1)
+            print(f"✅ Added todo [{len(todos) - 1}]: {args.text}")
 
-    elif args.action == "undone":
-        idx = int(args.text)
-        if 0 <= idx < len(todos):
-            todos[idx]["done"] = False
-            todo_path.write_text(render_todos(todos))
-            print(f"↩️  Marked undone [{idx}]: {todos[idx]['text']}")
-        else:
-            print(f"ERROR: Index {idx} out of range (0-{len(todos) - 1})", file=sys.stderr)
-            sys.exit(1)
+        elif args.action == "done":
+            try:
+                idx = int(args.text)
+            except ValueError:
+                print(f"ERROR: '{args.text}' is not a valid index", file=sys.stderr)
+                sys.exit(1)
+            if 0 <= idx < len(todos):
+                todos[idx]["done"] = True
+                todo_path.write_text(render_todos(todos))
+                print(f"✅ Marked done [{idx}]: {todos[idx]['text']}")
+            else:
+                print(f"ERROR: Index {idx} out of range (0-{len(todos) - 1})", file=sys.stderr)
+                sys.exit(1)
 
-    elif args.action == "list":
-        if not todos:
-            print("No todos yet. Add with: tentacle.py todo <name> add \"task\"")
-            return
-        for t in todos:
-            mark = "✅" if t["done"] else "☐"
-            print(f"  [{t['index']}] {mark} {t['text']}")
+        elif args.action == "undone":
+            try:
+                idx = int(args.text)
+            except ValueError:
+                print(f"ERROR: '{args.text}' is not a valid index", file=sys.stderr)
+                sys.exit(1)
+            if 0 <= idx < len(todos):
+                todos[idx]["done"] = False
+                todo_path.write_text(render_todos(todos))
+                print(f"↩️  Marked undone [{idx}]: {todos[idx]['text']}")
+            else:
+                print(f"ERROR: Index {idx} out of range (0-{len(todos) - 1})", file=sys.stderr)
+                sys.exit(1)
+
+        elif args.action == "list":
+            if not todos:
+                print("No todos yet. Add with: tentacle.py todo <name> add \"task\"")
+                return
+            for t in todos:
+                mark = "✅" if t["done"] else "☐"
+                print(f"  [{t['index']}] {mark} {t['text']}")
 
 
 def cmd_handoff(args):
@@ -431,11 +457,12 @@ def cmd_handoff(args):
 
     entry = f"\n## [{timestamp}]\n\n{args.message}\n"
 
-    if handoff_path.exists():
-        existing = handoff_path.read_text()
-        handoff_path.write_text(existing + entry)
-    else:
-        handoff_path.write_text(f"# Handoff Notes\n{entry}")
+    with file_locked(handoff_path):
+        if handoff_path.exists():
+            existing = handoff_path.read_text()
+            handoff_path.write_text(existing + entry)
+        else:
+            handoff_path.write_text(f"# Handoff Notes\n{entry}")
 
     print(f"📨 Handoff recorded for '{args.name}'")
 
@@ -466,15 +493,16 @@ def cmd_complete(args):
 
     # 1. Mark all todos done
     if todo_path.exists():
-        todos = parse_todos(todo_path.read_text())
-        pending = [t for t in todos if not t["done"]]
-        for t in todos:
-            t["done"] = True
-        todo_path.write_text(render_todos(todos))
-        if pending:
-            print(f"✅ Marked {len(pending)} pending todos as done")
-        else:
-            print(f"✅ All {len(todos)} todos already done")
+        with file_locked(todo_path):
+            todos = parse_todos(todo_path.read_text())
+            pending = [t for t in todos if not t["done"]]
+            for t in todos:
+                t["done"] = True
+            todo_path.write_text(render_todos(todos))
+            if pending:
+                print(f"✅ Marked {len(pending)} pending todos as done")
+            else:
+                print(f"✅ All {len(todos)} todos already done")
 
     # 2. Update status
     meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
