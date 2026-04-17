@@ -38,9 +38,9 @@ ls .github/skills/ 2>/dev/null
 cat .editorconfig 2>/dev/null
 ls doc/ docs/ 2>/dev/null | head -10
 
-# Project workflow (if any)
-cat .github/WORKFLOW.md 2>/dev/null | head -30
-cat WORKFLOW.md 2>/dev/null | head -30
+# Project workflow (any source)
+cat .github/WORKFLOW.md WORKFLOW.md 2>/dev/null | head -30
+grep -i 'phase\|workflow\|pipeline\|gate' CLAUDE.md .github/copilot-instructions.md AGENTS.md 2>/dev/null | head -20
 
 # Git info
 git remote -v 2>/dev/null | head -2
@@ -59,7 +59,7 @@ From the analysis, determine:
 | Test framework | Jest, pytest, JUnit, go test |
 | Custom agents | From AGENTS.md (if any) |
 | Folder patterns | `src/app/api/*`, `backend/handlers/*`, `tests/**/*` |
-| Workflow | WORKFLOW.md phases (if any) — e.g., CLARIFY → DESIGN → BUILD → TEST → COMMIT |
+| Workflow | Development phases described anywhere (WORKFLOW.md, CLAUDE.md, AGENTS.md, copilot-instructions) |
 
 ### Step 3: Generate agents (if missing)
 
@@ -125,19 +125,13 @@ naming conventions, theme tokens, i18n rules) so agents follow them.
 `--learn` flags, `--budget 3000` for sub-agent injection, and agent timeout rules.
 If not, note that session-knowledge can be installed for long-term memory.
 
-**Workflow integration** — If the project has a WORKFLOW.md (detected in Step 1), add a
-`## ⛔ WORKFLOW INTEGRATION` section showing which outer phases must complete BEFORE tentacles
-start and which must run AFTER tentacles close. This prevents AI from treating the tentacle's
-internal lifecycle as the entire workflow. Include a diagram like:
+**Workflow integration** — If the project describes a development workflow anywhere
+(WORKFLOW.md, CLAUDE.md, AGENTS.md, copilot-instructions, or similar), add a
+`## ⛔ WORKFLOW INTEGRATION` section mapping which outer phases run before/after
+tentacle work. This prevents AI from treating the tentacle's internal lifecycle as
+the entire workflow. Extract the phase names from whatever source describes them.
 
-```
-BEFORE tentacles: [phases from WORKFLOW.md before BUILD]
-TENTACLE WORK:    [BUILD phase only]
-AFTER tentacles:  [phases from WORKFLOW.md after BUILD]
-```
-
-If the project has no WORKFLOW.md, skip this section — the tentacle's internal lifecycle
-is the entire workflow.
+If no workflow is described anywhere, skip this section.
 
 #### 4c: Structural validation (MANDATORY before proceeding)
 
