@@ -63,6 +63,8 @@ def main():
 
     tool_name = data.get("toolName", "")
     tool_args = data.get("toolArgs", {})
+    if not isinstance(tool_args, dict):
+        tool_args = {}
 
     # Already suggested this session
     if SUGGESTED_FILE.is_file():
@@ -86,7 +88,7 @@ def main():
                 if not p.startswith(("/tmp/", "/var/", "/dev/")):
                     file_paths.append(p)
         if ">" in command:
-            for m in re.finditer(r">\s*(/[^\s;|&]+)", command):
+            for m in re.finditer(r">\s*([^\s;|&]+)", command):
                 p = m.group(1)
                 if not p.startswith(("/tmp/", "/var/", "/dev/")):
                     file_paths.append(p)
@@ -94,18 +96,13 @@ def main():
     if not file_paths:
         return
 
-    # Track edited files
+    # Track edited files using HMAC-signed list markers
     MARKERS_DIR.mkdir(parents=True, exist_ok=True)
-    edited = set()
-    try:
-        if EDITS_FILE.is_file():
-            edited = set(EDITS_FILE.read_text().strip().splitlines())
-    except Exception:
-        pass
+    edited = verify_list_marker(EDITS_FILE)
     for fp in file_paths:
         edited.add(fp)
     try:
-        EDITS_FILE.write_text("\n".join(edited))
+        sign_list_marker(EDITS_FILE, edited)
     except Exception:
         pass
 

@@ -27,6 +27,16 @@ MARKER = MARKERS_DIR / "briefing-done"
 
 
 def main():
+    # Clean up stale markers from previous sessions (crash recovery)
+    if MARKERS_DIR.is_dir():
+        for f in MARKERS_DIR.iterdir():
+            try:
+                # Keep hooks-tampered (kill-switch) and session.log
+                if f.name not in ("hooks-tampered", "session.log"):
+                    f.unlink()
+            except Exception:
+                pass
+
     if not BRIEFING.is_file():
         return
 
