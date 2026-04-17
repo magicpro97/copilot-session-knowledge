@@ -20,18 +20,38 @@ EDITS_FILE = MARKERS_DIR / "tentacle-edits"
 SUGGESTED_FILE = MARKERS_DIR / "tentacle-suggested"
 
 
-def get_module(file_path):
-    """Extract top-level module from file path."""
+def get_module(file_path: str) -> str:
+    """Extract module from file path using deepest meaningful directory.
+
+    Finds the DEEPEST matching marker in the path, so KMP projects work:
+      src/commonMain/.../presentation/alarm/Foo.kt → "alarm"
+      src/commonMain/.../presentation/components/Bar.kt → "components"
+    Falls back to parent directory name if no marker matches.
+    """
     parts = Path(file_path).parts
-    for p in parts:
-        if p in ("src", "lib", "app", "pkg", "internal", "cmd",
-                  "hooks", "skills", "templates", "tests", "test"):
-            idx = parts.index(p)
-            if idx + 1 < len(parts):
-                return f"{p}/{parts[idx + 1]}"
-            return p
+    markers = ("src", "lib", "app", "pkg", "internal", "cmd",
+               "hooks", "skills", "templates", "tests", "test",
+               "components", "screens", "services", "utils", "models",
+               "views", "controllers", "routes", "pages", "features",
+               "presentation", "domain", "data", "core", "common",
+               "ui", "api", "db", "auth", "config", "settings",
+               "alarm", "timer", "stopwatch", "clock", "widget")
+
+    # Find DEEPEST marker (skip the filename itself)
+    best_module = ""
+    for i, p in enumerate(parts[:-1]):  # exclude filename
+        if p in markers:
+            if i + 1 < len(parts) - 1:  # has subdirectory after it
+                best_module = f"{p}/{parts[i + 1]}"
+            else:
+                best_module = p
+
+    if best_module:
+        return best_module
+
+    # Fallback: use parent directory
     if len(parts) >= 2:
-        return parts[0]
+        return parts[-2]
     return ""
 
 
