@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """auto-briefing.py — sessionStart hook (cross-platform)
 
-Auto-run briefing.py at session start to surface past mistakes,
-patterns, and decisions relevant to the current working directory.
+Auto-run briefing.py at session start. Creates HMAC-signed marker.
 """
 import json
 import os
@@ -15,6 +14,12 @@ if os.name == "nt":
         if hasattr(s, "reconfigure"):
             s.reconfigure(encoding="utf-8", errors="replace")
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from marker_auth import sign_marker
+except ImportError:
+    def sign_marker(p, n): p.parent.mkdir(parents=True, exist_ok=True); p.touch()
+
 TOOLS_DIR = Path(__file__).resolve().parent.parent
 BRIEFING = TOOLS_DIR / "briefing.py"
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
@@ -25,7 +30,6 @@ def main():
     if not BRIEFING.is_file():
         return
 
-    # Get project name from git or cwd
     project = ""
     try:
         result = subprocess.run(
@@ -52,12 +56,8 @@ def main():
     except Exception:
         pass
 
-    # Create marker so enforce-briefing knows briefing ran
-    try:
-        MARKERS_DIR.mkdir(parents=True, exist_ok=True)
-        MARKER.touch()
-    except Exception:
-        pass
+    # Create HMAC-signed marker
+    sign_marker(MARKER, "briefing-done")
 
 
 if __name__ == "__main__":

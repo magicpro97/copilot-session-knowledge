@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """learn-reminder.py — postToolUse hook (cross-platform)
 
-Remind to record learnings after task_complete is called.
-Also tracks when learn.py is run to clear the enforce-learn gate.
+Remind to record learnings after task_complete.
+Creates HMAC-signed learn-done marker when learn.py is run.
 """
 import json
 import re
@@ -14,6 +14,12 @@ if os.name == "nt":
     for s in (sys.stdout, sys.stderr):
         if hasattr(s, "reconfigure"):
             s.reconfigure(encoding="utf-8", errors="replace")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from marker_auth import sign_marker
+except ImportError:
+    def sign_marker(p, n): p.parent.mkdir(parents=True, exist_ok=True); p.touch()
 
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 LEARN_DONE = MARKERS_DIR / "learn-done"
@@ -28,18 +34,13 @@ def main():
     tool_name = data.get("toolName", "")
     tool_args = data.get("toolArgs", {})
 
-    # Track when learn.py is run → clear the gate
+    # Track when learn.py is run → create signed marker
     if tool_name == "bash":
         command = tool_args.get("command", "")
         if re.search(r'python3?\s+.*learn\.py\b', command):
-            try:
-                MARKERS_DIR.mkdir(parents=True, exist_ok=True)
-                LEARN_DONE.touch()
-            except Exception:
-                pass
+            sign_marker(LEARN_DONE, "learn-done")
             return
 
-    # Remind after task_complete
     if tool_name != "task_complete":
         return
 
