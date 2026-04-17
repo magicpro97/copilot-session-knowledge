@@ -25,7 +25,8 @@ except ImportError:
         p.touch()
 
 HOOKS_DIR = Path.home() / ".copilot" / "tools" / "hooks"
-MANIFEST = Path.home() / ".copilot" / "hooks" / "integrity-manifest.json"
+HOOKS_DST_DIR = Path.home() / ".copilot" / "hooks"
+MANIFEST = HOOKS_DST_DIR / "integrity-manifest.json"
 CONFIG = Path.home() / ".copilot" / "config.json"
 
 
@@ -85,7 +86,7 @@ def main():
 
     hooks_json_hash = manifest.get("hooks_json")
     if hooks_json_hash:
-        hooks_json_path = HOOKS_DIR / "hooks.json"
+        hooks_json_path = HOOKS_DST_DIR / "hooks.json"
         if hooks_json_path.is_file():
             actual = hashlib.sha256(hooks_json_path.read_bytes()).hexdigest()
             if actual != hooks_json_hash:
