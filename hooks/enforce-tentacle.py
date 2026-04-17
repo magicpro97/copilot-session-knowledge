@@ -84,7 +84,10 @@ def main():
 
     # Block bash commands accessing protected files
     if tool_name == "bash":
-        command = data.get("toolArgs", {}).get("command", "")
+        tool_args = data.get("toolArgs", {})
+        if not isinstance(tool_args, dict):
+            tool_args = {}
+        command = tool_args.get("command", "")
         if is_secret_access(command):
             print(json.dumps({
                 "permissionDecision": "deny",

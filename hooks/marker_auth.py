@@ -23,7 +23,11 @@ if os.name == "nt":
 SECRET_PATH = Path.home() / ".copilot" / "hooks" / ".marker-secret"
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 
-PROTECTED_PATTERNS = (".marker-secret", "integrity-manifest")
+PROTECTED_PATTERNS = (
+    ".marker-secret", "integrity-manifest",
+    "marker_auth.py", "marker_auth ",
+    ".copilot/hooks/.",
+)
 
 
 def _read_secret():
@@ -157,10 +161,11 @@ def create_tamper_marker():
 
 
 if __name__ == "__main__":
+    # Only gen-secret (used by install.py) and verify (diagnostics) are allowed.
+    # sign command REMOVED — agents must not forge markers.
     if len(sys.argv) < 2:
-        print("Usage: python3 marker_auth.py sign <name>")
+        print("Usage: python3 marker_auth.py gen-secret")
         print("       python3 marker_auth.py verify <name>")
-        print("       python3 marker_auth.py gen-secret")
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd == "gen-secret":
@@ -170,14 +175,14 @@ if __name__ == "__main__":
         SECRET_PATH.write_text(s)
         print(f"Secret generated: {SECRET_PATH}")
         sys.exit(0)
-    if len(sys.argv) < 3:
-        print("Need marker name"); sys.exit(1)
-    name = sys.argv[2]
-    marker = MARKERS_DIR / name
-    if cmd == "sign":
-        sign_marker(marker, name)
-        print(f"Signed: {marker}")
     elif cmd == "verify":
+        if len(sys.argv) < 3:
+            print("Need marker name"); sys.exit(1)
+        name = sys.argv[2]
+        marker = MARKERS_DIR / name
         valid = verify_marker(marker, name)
         print(f"{'Valid' if valid else 'INVALID'}: {marker}")
         sys.exit(0 if valid else 1)
+    else:
+        print(f"Unknown command: {cmd}")
+        sys.exit(1)
