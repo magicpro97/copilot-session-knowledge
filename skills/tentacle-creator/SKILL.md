@@ -66,57 +66,100 @@ Run the agent-creator skill, or read `~/.copilot/tools/skills/agent-creator/SKIL
 
 Create `.github/skills/tentacle-orchestration/SKILL.md` customized for the project.
 
-Base it on the reference at `~/.copilot/tools/skills/tentacle-orchestration/SKILL.md` — it defines the canonical 5-phase workflow:
+**IMPORTANT: Fork, don't rewrite.** Start from the canonical reference at
+`~/.copilot/tools/skills/tentacle-orchestration/SKILL.md` and customize it.
+Every section in the reference MUST appear in the output. You are ADDING
+project-specific content, not cherry-picking sections.
 
-| Phase | Steps | Purpose |
-|-------|-------|---------|
-| **Clarify** | 0.1–0.4 | Analyze spec → generate Q&A → iterate until CLEAN |
-| **Plan** | 1–4 | Decompose → create tentacles → add todos → enrich CONTEXT.md |
-| **Execute** | 5–6 | Dispatch agents (swarm) → monitor progress |
-| **Verify** | 7–12 | Build → Lint → Test → Code review → Docs → QA audit |
-| **Close** | 13–14 | Complete (auto-learn) → cleanup |
+#### 4a: Required sections (ALL must be present)
 
-Customize these sections for the project:
+Read the reference and extract its section headings (`## ` and `### `). The generated file
+MUST include ALL of these sections. Use this checklist:
 
-**Agent mapping table** — Map module types to the agents detected in Step 2 or generated in Step 3. Use project-specific agent names, not generic `general-purpose`:
+| # | Required Section | Source | Action |
+|---|-----------------|--------|--------|
+| 1 | `## When to use` | Reference | Keep table, add project-specific rows |
+| 2 | `## Anti-patterns` | Reference | Keep all items, add project-specific items |
+| 3 | `## Core concept` | Reference | **Copy verbatim** — file tree diagram, octopus metaphor |
+| 4 | `## Workflow` (or `## Internal Workflow`) | Reference | Keep 5-phase labels: Clarify → Plan → Execute → Verify → Close |
+| 5 | `### Phase 0: Clarify Spec` | Reference | Keep motivation text ("bug found in spec costs 1x..."), Steps 0.0–0.5 |
+| 6 | `### Phase 1: Plan` | Reference | Keep "Impact Analysis / Risk Assessment" mention, customize folder patterns |
+| 7 | `### Phase 2: Execute` | Reference | Keep `--model` param in swarm, customize agent mapping table |
+| 8 | `### Phase 3: Verify` | Reference | Keep 6-gate table, replace commands with project's build/lint/test |
+| 9 | `### Phase 4: Close` | Reference | Keep `complete` before `delete` warning |
+| 10 | `## Verification summary` | Reference | Keep 6-gate table (mirrors Phase 3 gates) |
+| 11 | `## CLI reference` | Reference | Keep all commands, include `--model` in swarm |
+| 12 | `## Tips` | Reference | Keep all tips, add project-specific tips |
+| 13 | `## Reference docs` | New | Link to `~/.copilot/tools/skills/tentacle-orchestration/references/` |
+
+**If a reference section exists but is not in the checklist above, include it anyway.**
+The checklist is a minimum — not an exclusive list.
+
+#### 4b: Project-specific additions
+
+Layer these ON TOP of the canonical structure:
+
+**Agent mapping table** — Map module types to the agents detected in Step 2 or generated in Step 3.
+Include model tier AND model ID columns. Use project-specific agent names, not generic `general-purpose`:
 
 ```markdown
-| Module type | agent-type | model |
-|-------------|-----------|-------|
-| Backend logic | backend-dev | claude-sonnet-4.6 |
-| Tests | test-writer | claude-sonnet-4.6 |
-| Code review | code-review | claude-sonnet-4.6 |
+| Tentacle type | agent_type | Model tier | Model ID |
+|--------------|-----------|------------|----------|
+| Backend logic | backend-dev | standard | claude-sonnet-4.6 |
+| Tests | test-writer | standard | claude-sonnet-4.6 |
+| Code review | code-review | standard | claude-sonnet-4.6 |
 ```
 
-**Workflow examples** — Use actual folder patterns from the project:
+**Architecture decomposition table** — Map the project's folder structure to tentacle scope patterns:
 
-```bash
-# Next.js example:
-tentacle.py create api-routes --scope "src/app/api/**/*" --desc "API routes"
-
-# Django example:
-tentacle.py create views --scope "myapp/views/*,myapp/serializers/*" --desc "Views layer"
-
-# Go example:
-tentacle.py create handlers --scope "internal/handler/*" --desc "HTTP handlers"
+```markdown
+| Layer | Scope Pattern | Example Tentacle |
+|-------|---------------|-----------------|
+| API routes | `src/app/api/**/*` | `api-routes` |
+| Database | `src/lib/db/*` | `database` |
+| Tests | `tests/**/*` | `test-suite` |
 ```
 
-**Verification commands** — Customize Phase 3 gates with the project's actual build/test/lint commands:
+**Verification commands** — Replace the reference's generic commands with the project's actual
+build/test/lint commands in the Phase 3 verification gate table:
 
-```bash
-# Build gate (Step 7)
-npx tsc --noEmit           # or: cargo check, go build ./..., etc.
-
-# Lint gate (Step 8)
-npx eslint .               # or: ruff check, golangci-lint run, etc.
-
-# Test gate (Step 9)
-yarn test --maxWorkers=1   # or: pytest, go test ./..., etc.
+```markdown
+| Step | Gate | Command | What it catches | Skip? |
+|------|------|---------|----------------|-------|
+| 7 | Build | `npx tsc --noEmit` | Syntax errors | Never |
+| 8 | Lint | `npx eslint .` | Style violations | Never |
+| 9 | Test | `yarn test` | Logic bugs | Never |
+| 10 | Review | Dispatch code-reviewer | Design flaws | Never |
+| 11 | Docs | Check README/CHANGELOG | Stale docs | Internal refactors |
+| 12 | QA audit | Manual review | Visual bugs | Low-risk only |
 ```
 
-**CONTEXT.md template** — Include project-specific conventions (linting rules, import patterns, naming conventions) so agents follow them.
+**CONTEXT.md template** — Include project-specific conventions (linting rules, import patterns,
+naming conventions, theme tokens, i18n rules) so agents follow them.
 
-**Knowledge integration** — If `~/.copilot/tools/briefing.py` exists, include the `--briefing` and `--learn` flags. If not, note that session-knowledge can be installed for long-term memory.
+**Shared workspace warning** — Include the warning about parallel agents sharing filesystem.
+
+**Knowledge integration** — If `~/.copilot/tools/briefing.py` exists, include `--briefing` and
+`--learn` flags, `--budget 3000` for sub-agent injection, and agent timeout rules.
+If not, note that session-knowledge can be installed for long-term memory.
+
+#### 4c: Structural validation (MANDATORY before proceeding)
+
+After generating the file, run this self-check:
+
+```
+1. Extract all `## ` headings from the GENERATED file
+2. Extract all `## ` headings from the REFERENCE file
+3. Every reference heading MUST have a corresponding heading in the generated file
+4. Missing heading = FAIL → add the section before proceeding
+5. Check Phase 0 contains motivation text ("costs 1x / 10x / 100x")
+6. Check Phase 1 mentions "Impact Analysis"
+7. Check Phase 2 swarm command includes `--model`
+8. Check "Core concept" section has file tree diagram
+9. Check "Reference docs" section exists with links to canonical references/
+```
+
+Only proceed to Step 5 after all checks pass.
 
 ### Step 5: Set up .gitignore
 
