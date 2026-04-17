@@ -1,23 +1,13 @@
 # Copilot Session Knowledge Tools
 
-<<<<<<< Updated upstream
 > **Problem:** Each Copilot CLI / Claude Code session accumulates valuable experience (bugs encountered, patterns used, decisions made) — but new sessions start from zero, repeating past mistakes.
 >
 > **Solution:** This tool indexes all session data into SQLite, auto-extracts knowledge, and enables search + briefing before every task.
-=======
-> **Vấn đề:** Mỗi session Copilot CLI / Claude Code tích lũy kinh nghiệm quý (lỗi đã gặp, pattern đã dùng, quyết định đã chọn) — nhưng session mới bắt đầu từ zero, lặp lại sai lầm cũ.
->
-> **Giải pháp:** Tool này index tất cả session data vào SQLite, tự trích xuất knowledge, và cho phép search + briefing trước mỗi task.
->>>>>>> Stashed changes
 
 ## Demo
 
 ```bash
-<<<<<<< Updated upstream
 # macOS/Linux: python3 | Windows: python or py
-=======
-# macOS/Linux: python3 | Windows: python hoặc py
->>>>>>> Stashed changes
 $ python3 query-session.py "docker networking"
 
 Found 5 result(s) for: docker networking
@@ -52,13 +42,8 @@ $ python3 briefing.py "fix docker compose"
 - Python 3.10+ (no pip packages needed)
 - Copilot CLI (`~/.copilot/session-state/` directory must exist) and/or Claude Code
 
-<<<<<<< Updated upstream
 > **Note:** Use `python3` on macOS/Linux, `python` or `py` on Windows.
 > All commands in this README use `python3` — substitute `python` on Windows.
-=======
-> **Note:** Dùng `python3` trên macOS/Linux, `python` hoặc `py` trên Windows.
-> Tất cả commands trong README dùng `python3` — thay bằng `python` nếu trên Windows.
->>>>>>> Stashed changes
 
 ### Install
 
@@ -68,7 +53,6 @@ $ python3 briefing.py "fix docker compose"
 git clone https://github.com/magicpro97/copilot-session-knowledge.git ~/.copilot/tools
 
 # First run — index sessions + extract knowledge + run migrations
-<<<<<<< Updated upstream
 python3 ~/.copilot/tools/build-session-index.py    # indexes + auto-embeds
 python3 ~/.copilot/tools/extract-knowledge.py
 python3 ~/.copilot/tools/migrate.py
@@ -76,12 +60,6 @@ python3 ~/.copilot/tools/install.py --test
 
 # macOS: install LaunchAgents (auto-start watcher + daily auto-update)
 bash ~/.copilot/tools/launchd/install-launchd.sh
-=======
-python3 ~/.copilot/tools/build-session-index.py
-python3 ~/.copilot/tools/extract-knowledge.py
-python3 ~/.copilot/tools/migrate.py
-python3 ~/.copilot/tools/install.py --test
->>>>>>> Stashed changes
 ```
 
 **Alternative (manual copy):**
@@ -103,34 +81,21 @@ python "$env:USERPROFILE\.copilot\tools\extract-knowledge.py"
 python "$env:USERPROFILE\.copilot\tools\migrate.py"
 ```
 
-<<<<<<< Updated upstream
 **Tip:** Add aliases for convenience (bash/zsh):
-=======
-**Tip:** Thêm alias cho tiện (bash/zsh):
->>>>>>> Stashed changes
 ```bash
 alias qs='python3 ~/.copilot/tools/query-session.py'
 alias brief='python3 ~/.copilot/tools/briefing.py'
 alias learn='python3 ~/.copilot/tools/learn.py'
-<<<<<<< Updated upstream
 # Usage: qs "docker error" | brief "fix login" | learn --pattern "Title" "Desc"
-=======
-# Dùng: qs "docker error" | brief "fix login" | learn --pattern "Title" "Desc"
->>>>>>> Stashed changes
 ```
 
 ## Usage
 
-<<<<<<< Updated upstream
 ### Briefing (recommended before every major task)
-=======
-### Briefing (khuyến khích chạy trước mỗi task lớn)
->>>>>>> Stashed changes
 
 ```bash
 brief "implement user CRUD"          # Compact ~500 tokens
 brief "implement user CRUD" --full   # Full detail ~3K tokens
-<<<<<<< Updated upstream
 brief --auto                         # Auto-detect from git state
 brief --wakeup                       # Ultra-compact (~170 tokens) for session start
 brief --titles-only                  # Index only (~10 tok/entry) — progressive disclosure
@@ -139,15 +104,6 @@ brief --wing backend --room patient  # Filter by wing/room (palace-style)
 brief "task" --for-subagent --budget 3000  # Capped output for sub-agent injection
 brief "task" --min-confidence 0.7    # High-quality entries only
 brief "task" --for-subagent          # Compact context block for sub-agent prompts
-=======
-brief --auto                         # Auto-detect từ git state
-brief --wakeup                       # Ultra-compact (~170 tokens) cho session start
-brief --titles-only                  # Index only (~10 tok/entry) — progressive disclosure
-brief --titles-only "DynamoDB"       # Filtered titles
-brief --wing backend --room patient  # Filter by wing/room (palace-style)
-brief "task" --min-confidence 0.7    # Chỉ high-quality entries
-brief "task" --for-subagent          # Compact context block cho sub-agent prompts
->>>>>>> Stashed changes
 ```
 
 ### Search
@@ -155,7 +111,6 @@ brief "task" --for-subagent          # Compact context block cho sub-agent promp
 ```bash
 qs "search terms"                    # Compact results
 qs "search terms" --verbose          # Full content
-<<<<<<< Updated upstream
 qs "docker" --type research          # Filter by doc type
 qs "spring" --source copilot         # Filter by agent source
 qs --mistakes                        # View past errors
@@ -176,28 +131,6 @@ qs --graph "spring boot"             # Mini knowledge graph by topic
 
 ```bash
 qs "deployment error" --semantic     # Search by meaning, not just keywords
-=======
-qs "docker" --type research          # Filter theo doc type
-qs "spring" --source copilot         # Filter theo agent source
-qs --mistakes                        # Xem lỗi đã gặp
-qs --patterns                        # Xem best practices
-qs --decisions                       # Xem quyết định kiến trúc
-```
-
-### Drill Down (dùng entry ID từ kết quả search)
-
-```bash
-qs --detail 2045                     # Xem chi tiết 1 entry
-qs --context 2045                    # Entry + các entry cùng session
-qs --related 2045                    # Entry + knowledge graph connections
-qs --graph "spring boot"             # Mini knowledge graph theo topic
-```
-
-### Semantic Search (cần embedding API key)
-
-```bash
-qs "deployment error" --semantic     # Search theo nghĩa, không chỉ keyword
->>>>>>> Stashed changes
 python3 ~/.copilot/tools/embed.py --setup   # Setup API key (Windows: python)
 ```
 
@@ -251,7 +184,6 @@ Wings and rooms are **auto-detected** from tags/title. Override with `--wing`/`-
 ### Auto-Update
 
 ```bash
-<<<<<<< Updated upstream
 python3 ~/.copilot/tools/auto-update-tools.py           # Auto-update (24h cooldown)
 python3 ~/.copilot/tools/auto-update-tools.py --force    # Force update now
 python3 ~/.copilot/tools/auto-update-tools.py --check    # Check only (no apply)
@@ -276,18 +208,6 @@ on manual `git pull` too. No need to remember to restart services.
 ```bash
 # Add to ~/.zshrc or ~/.bashrc
 (python3 ~/.copilot/tools/auto-update-tools.py &) 2>/dev/null
-=======
-bash ~/.copilot/tools/auto-update-tools.sh           # Auto-update (24h cooldown)
-bash ~/.copilot/tools/auto-update-tools.sh --force    # Force update now
-bash ~/.copilot/tools/auto-update-tools.sh --status   # Show version info
-bash ~/.copilot/tools/auto-update-tools.sh --doctor   # Health check
-```
-
-Add to `~/.zshrc` or `~/.bashrc` for auto-start:
-```bash
-# Auto-update session-knowledge tools (background, 24h cooldown)
-(bash ~/.copilot/tools/auto-update-tools.sh &) 2>/dev/null
->>>>>>> Stashed changes
 ```
 
 ## Architecture
@@ -324,16 +244,11 @@ flowchart TD
 4. **Palace** — Wing/room auto-categorization from tags/title for hierarchical browsing
 5. **Search** — FTS5 keyword + optional semantic vector (Reciprocal Rank Fusion)
 6. **Watch** — `watch-sessions.py` polls for changes, auto re-indexes
-<<<<<<< Updated upstream
 7. **Update** — `auto-update-tools.py` smart pipeline: git pull → diff-based targeted update → manifest verify
-=======
-7. **Update** — `auto-update-tools.sh` git-based auto-update with DB migration
->>>>>>> Stashed changes
 
 ## Maintenance
 
 ```bash
-<<<<<<< Updated upstream
 python3 ~/.copilot/tools/build-session-index.py --incremental   # Update changed files + auto-embed
 python3 ~/.copilot/tools/build-session-index.py --no-embed      # Index only, skip embeddings
 python3 ~/.copilot/tools/extract-knowledge.py --stats           # View knowledge statistics
@@ -363,25 +278,6 @@ bash ~/.copilot/tools/launchd/install-launchd.sh --remove   # Uninstall
 
 # Restart after code changes (auto-handled by post-merge hook):
 # Manual git pull → post-merge hook triggers pipeline → services restarted automatically
-=======
-python3 ~/.copilot/tools/build-session-index.py --incremental   # Update only changed files
-python3 ~/.copilot/tools/extract-knowledge.py --stats           # Xem thống kê knowledge
-python3 ~/.copilot/tools/extract-knowledge.py --relations       # Xem thống kê relations
-python3 ~/.copilot/tools/watch-sessions.py --daemon             # Chạy nền, tự index
-python3 ~/.copilot/tools/install.py --deploy-skill              # Deploy SKILL.md
-python3 ~/.copilot/tools/install.py --inject-global             # Inject vào global copilot-instructions
-# Windows: thay python3 → python
-```
-
-### Auto-start Watcher (khỏi chạy thủ công sau reboot)
-
-**macOS** — LaunchAgent:
-```bash
-cp templates/com.copilot.watch-sessions.plist ~/Library/LaunchAgents/
-# ⚠️ Sửa YOUR_USERNAME và đường dẫn python3 trong plist trước khi load
-sed -i '' "s|YOUR_USERNAME|$(whoami)|g" ~/Library/LaunchAgents/com.copilot.watch-sessions.plist
-launchctl load ~/Library/LaunchAgents/com.copilot.watch-sessions.plist
->>>>>>> Stashed changes
 ```
 
 **Windows** — Task Scheduler:
@@ -420,7 +316,6 @@ EOF
 systemctl --user enable --now copilot-watch.service
 ```
 
-<<<<<<< Updated upstream
 ## Skills & Templates
 
 This toolkit includes meta-skills and templates for project setup.
@@ -449,6 +344,9 @@ This repo contains both **Skills** (SKILL.md) and **Agent templates** (.agent.md
 | `tentacle-orchestration` | Map tentacles to phased workflows |
 | `hook-creator` | Generate quality enforcement hooks (preToolUse/postToolUse) |
 | `workflow-creator` | Create phased development workflows with quality gates |
+| `find-skills` | Discover and install agent skills from the registry |
+| `agent-instructions-auditor` | Audit and improve agent instruction files |
+| `forge-ecosystem` | Scaffold and manage app/game projects via forge CLI tools |
 
 ### Hook Templates (`skills/hook-creator/references/`)
 
@@ -505,6 +403,21 @@ python3 ~/.copilot/tools/hooks/lint-skills.py --all --dir /path/to/project
 ```bash
 # Install manually
 cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+```
+
+### SKILL.md Validator (`validate-skill.py`)
+
+Validates `SKILL.md` files against the [Anthropic Agent Skills](https://github.com/anthropics/skills) standard. Checks required fields, frontmatter format, description length, and compatibility metadata. Uses shared standards from `skills/references/skill-standards.md`.
+
+```bash
+# Validate a single SKILL.md
+python3 ~/.copilot/tools/validate-skill.py path/to/SKILL.md
+
+# Validate all skills in the skills/ directory
+python3 ~/.copilot/tools/validate-skill.py --all
+
+# Validate with verbose output
+python3 ~/.copilot/tools/validate-skill.py path/to/SKILL.md --verbose
 ```
 
 ### Enforcement Hooks (`hooks/`)
@@ -570,29 +483,11 @@ After deployment, agents will automatically run `briefing.py` before tasks and s
 ### Enforce AI Usage (mandatory, not optional)
 
 Skills are suggestions — AI agents can still skip them. To **enforce** usage, inject into global instructions:
-=======
-## AI Agent Integration
-
-Để agent tự động dùng knowledge base, deploy skill vào project:
-
-```bash
-python3 ~/.copilot/tools/install.py --deploy-skill
-# → Tạo .github/skills/session-knowledge/SKILL.md (Copilot CLI)
-# → Tạo .claude/skills/session-knowledge.md (Claude Code)
-```
-
-Sau đó agent sẽ tự chạy `briefing.py` trước mỗi task và search khi cần.
-
-### Enforce AI Usage (bắt buộc dùng, không bỏ qua)
-
-Skill chỉ là gợi ý — AI agent vẫn có thể bỏ qua. Để **bắt buộc**, inject vào global instructions:
->>>>>>> Stashed changes
 
 ```bash
 python3 ~/.copilot/tools/install.py --inject-global
 ```
 
-<<<<<<< Updated upstream
 This automatically:
 1. Adds a `🧠 Session Knowledge — MANDATORY` section to `~/.github/copilot-instructions.md`
 2. Uses HTML markers (`<!-- SESSION-KNOWLEDGE-START/END -->`) for idempotent updates
@@ -605,41 +500,18 @@ Re-run when content needs updating — markers ensure replacement, not duplicati
 cd your-project
 python3 ~/.copilot/tools/install.py --deploy-skill    # Skill for the project
 python3 ~/.copilot/tools/install.py --inject-global   # Enforce via global instructions
-=======
-Lệnh này tự động:
-1. Thêm section `🧠 Session Knowledge — BẮT BUỘC` vào `~/.github/copilot-instructions.md`
-2. Dùng HTML markers (`<!-- SESSION-KNOWLEDGE-START/END -->`) để update idempotent
-3. Đặt ở vị trí cao nhất (ngay sau "BẮT BUỘC" checklist) để AI đọc đầu tiên
-
-Chạy lại khi cần update nội dung — markers đảm bảo chỉ thay thế, không duplicate.
-
-**Full setup (1 lần):**
-```bash
-cd your-project
-python3 ~/.copilot/tools/install.py --deploy-skill    # Skill cho project
-python3 ~/.copilot/tools/install.py --inject-global   # Enforce qua global instructions
->>>>>>> Stashed changes
 ```
 
 ### Sub-agent Context Injection
 
-<<<<<<< Updated upstream
 Sub-agents (explore, task, general-purpose) don't access the knowledge base directly.
 The main agent injects context into their prompts:
-=======
-Sub-agents (explore, task, general-purpose) không truy cập knowledge base trực tiếp.
-Main agent inject context vào prompt của chúng:
->>>>>>> Stashed changes
 
 ```bash
 python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
 ```
 
-<<<<<<< Updated upstream
 Output is a compact `[KNOWLEDGE CONTEXT]` block (~200 tokens) to embed in sub-agent prompts:
-=======
-Output là block `[KNOWLEDGE CONTEXT]` compact (~200 tokens) để embed vào sub-agent prompt:
->>>>>>> Stashed changes
 ```
 [KNOWLEDGE CONTEXT — from past sessions]
   [AVOID] Port conflicts — check docker ps before starting
@@ -650,7 +522,6 @@ Output là block `[KNOWLEDGE CONTEXT]` compact (~200 tokens) để embed vào su
 
 ## Security
 
-<<<<<<< Updated upstream
 - **No pickle** — all serialization uses JSON (backward-compat: detect pickle magic bytes, warn, fallback)
 - **Parameterized SQL** — zero SQL injection vectors
 - **FTS5 sanitization** — strips operators (`OR`, `AND`, `NOT`, `NEAR`, `*`, `"`)
@@ -661,15 +532,6 @@ Output là block `[KNOWLEDGE CONTEXT]` compact (~200 tokens) để embed vào su
 - **Injection scanning** — `learn.py` scans all entries against 15 regex patterns (prompt injection, SSH backdoors, credential exfiltration). Matching entries are REJECTED. Bypass with `--skip-gate`
 - **Hook tamper protection** — OS immutable flags (`chflags uchg` / `chattr +i` / `attrib +R`) prevent AI agents from modifying enforcement hooks. SHA256 manifest verified at session start
 - **Bash bypass detection** — `track-bash-edits.py` uses `git status` to detect ALL file modifications regardless of method (heredoc, redirect, cp, mv, tee, etc.)
-=======
-- **No pickle** — tất cả serialization dùng JSON (backward-compat: detect pickle magic bytes, warn, fallback)
-- **Parameterized SQL** — zero SQL injection vectors
-- **FTS5 sanitization** — strips operators (`OR`, `AND`, `NOT`, `NEAR`, `*`, `"`)
-- **Atomic lock** — `O_CREAT | O_EXCL` eliminates TOCTOU race conditions
-- **API key protection** — config files chmod `0o600`, env vars ưu tiên hơn file
-- **Path validation** — WSL path traversal protection
-- **Input limits** — title 200 chars, content 10K chars, FTS query 500 chars
->>>>>>> Stashed changes
 
 ## Testing
 
