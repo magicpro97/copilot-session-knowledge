@@ -2,17 +2,14 @@
 """enforce-learn.py — preToolUse hook (cross-platform)
 
 Block git commit AND task_complete if learn.py has not been called
-after significant work. Catches both edit/create AND bash file writes.
+after significant work.
 
-Logic:
-- Tracks code file edits via edit/create tools
-- Also detects bash commands that write source files (heredocs, redirects, sed -i)
-- After ≥3 code edits, blocks git commit/push AND task_complete
-- Resets after learn.py is called (tracked by learn-reminder.py)
+Edit counting is handled by track-bash-edits.py (postToolUse, git-based)
+which catches ALL file modifications regardless of method. This hook
+only reads the counter and enforces the gate.
 """
 import json
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -27,45 +24,34 @@ LEARN_DONE = MARKERS_DIR / "learn-done"
 
 CODE_EXTENSIONS = {".py", ".kt", ".ts", ".tsx", ".js", ".jsx", ".swift", ".java", ".go", ".rs",
                    ".json", ".yaml", ".yml", ".xml", ".html", ".css", ".toml"}
-SAFE_PATH_PREFIXES = ("/tmp/", "/var/", "/dev/", "/proc/")
 EDIT_THRESHOLD = 3
 
 
-def _detect_bash_code_edits(command):
-    """Detect source file writes in bash commands. Returns list of paths."""
-    paths = []
-    if "<<" in command and "open(" in command:
-        for m in re.finditer(r"open\(['\"]([^'\"]+)['\"]", command):
-            p = m.group(1)
-            if not any(p.startswith(pfx) for pfx in SAFE_PATH_PREFIXES):
-                if Path(p).suffix.lower() in CODE_EXTENSIONS:
-                    paths.append(p)
-    for m in re.finditer(r">\s*(/[^\s;|&]+)", command):
-        p = m.group(1)
-        if not any(p.startswith(pfx) for pfx in SAFE_PATH_PREFIXES):
-            if Path(p).suffix.lower() in CODE_EXTENSIONS:
-                paths.append(p)
-    if re.search(r"\bsed\s+-i", command):
-        for m in re.finditer(r"\bsed\s+-i\b.*?(['\"]?\S+\.\w+)", command):
-            paths.append(m.group(1))
-    return paths
-
-
-def _increment_counter(count_to_add=1):
-    """Increment the code edit counter."""
-    MARKERS_DIR.mkdir(parents=True, exist_ok=True)
-    count = 0
+def _get_edit_count():
+    """Read current edit count from marker."""
     try:
         if EDIT_COUNTER.is_file():
-            count = int(EDIT_COUNTER.read_text().strip())
+            return int(EDIT_COUNTER.read_text().strip())
     except Exception:
         pass
-    count += count_to_add
+    return 0
+
+
+def _increment_counter():
+    """Increment edit counter (for edit/create tool tracking)."""
+    MARKERS_DIR.mkdir(parents=True, exist_ok=True)
+    count = _get_edit_count() + 1
     try:
         EDIT_COUNTER.write_text(str(count))
     except Exception:
         pass
-    return count
+
+
+def _should_block():
+    """Check if learn gate should block."""
+    if LEARN_DONE.is_file():
+        return False
+    return _get_edit_count() >= EDIT_THRESHOLD
 
 
 def main():
@@ -77,7 +63,7 @@ def main():
     tool_name = data.get("toolName", "")
     tool_args = data.get("toolArgs", {})
 
-    # Track code edits from edit/create tools
+    # Track code edits from edit/create tools (direct counting)
     if tool_name in ("edit", "create"):
         file_path = tool_args.get("path", "")
         suffix = Path(file_path).suffix.lower() if file_path else ""
@@ -85,33 +71,14 @@ def main():
             _increment_counter()
         return
 
-    # For bash: track file writes AND check for git commit/push
+    # Block git commit/push
     if tool_name == "bash":
         command = tool_args.get("command", "")
-
-        # Track bash file writes as code edits
-        bash_edits = _detect_bash_code_edits(command)
-        if bash_edits:
-            _increment_counter(len(bash_edits))
-
-        # Check for git commit/push
         if "git commit" not in command and "git push" not in command:
             return
-
-        # Allow if learn has been done
-        if LEARN_DONE.is_file():
+        if not _should_block():
             return
-
-        count = 0
-        try:
-            if EDIT_COUNTER.is_file():
-                count = int(EDIT_COUNTER.read_text().strip())
-        except Exception:
-            pass
-
-        if count < EDIT_THRESHOLD:
-            return
-
+        count = _get_edit_count()
         print(json.dumps({
             "permissionDecision": "deny",
             "permissionDecisionReason": (
@@ -123,21 +90,11 @@ def main():
         }))
         return
 
-    # Block task_complete if significant work done without learn.py
+    # Block task_complete
     if tool_name == "task_complete":
-        if LEARN_DONE.is_file():
+        if not _should_block():
             return
-
-        count = 0
-        try:
-            if EDIT_COUNTER.is_file():
-                count = int(EDIT_COUNTER.read_text().strip())
-        except Exception:
-            pass
-
-        if count < EDIT_THRESHOLD:
-            return
-
+        count = _get_edit_count()
         print(json.dumps({
             "permissionDecision": "deny",
             "permissionDecisionReason": (
