@@ -8,6 +8,13 @@
         "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\auto-briefing.py\"",
         "comment": "[GLOBAL] Auto-run briefing.py at session start",
         "timeoutSec": 15
+      },
+      {
+        "type": "command",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/verify-integrity.py\"",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\verify-integrity.py\"",
+        "comment": "[GLOBAL] Verify hook file integrity via SHA256 manifest",
+        "timeoutSec": 5
       }
     ],
     "sessionEnd": [
