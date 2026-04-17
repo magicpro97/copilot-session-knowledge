@@ -285,3 +285,32 @@ Register in `review-policy.json`:
   "timeoutSec": 5
 }
 ```
+
+<example>
+**Project:** Python/Django REST API
+
+**Goal:** Block wildcard imports, bare `except`, and hardcoded secrets.
+
+**Step 1 – Analyze:** Python project using ruff. No existing hooks. Architecture: views → services → models.
+
+**Step 2 – Select templates:** `secret-detector.sh` (security) + `enforce-coding-standards.sh` (quality).
+
+**Step 3 – Customize `enforce-coding-standards.sh`:**
+```bash
+FILE_EXTENSIONS="py"
+# Regex rules
+echo "$NEW_STR" | grep -qP '^\s*from\s+\S+\s+import\s+\*' && deny "No wildcard imports."
+echo "$NEW_STR" | grep -qP '^\s*except\s*:' && deny "No bare except. Catch specific exceptions."
+# Uncomment ruff (Option C)
+run_ruff_check
+```
+
+**Step 4 – Install:** Placed in `.github/hooks/scripts/`, registered in `hooks.json`.
+
+**Step 5 – Verify:**
+```bash
+echo '{"toolName":"edit","toolArgs":{"path":"api/views.py","new_str":"from utils import *"}}' \
+  | bash .github/hooks/scripts/enforce-coding-standards.sh
+# → {"permissionDecision":"deny","permissionDecisionReason":"No wildcard imports."}
+```
+</example>

@@ -74,7 +74,9 @@ project-specific content, not cherry-picking sections.
 #### 4a: Required sections (ALL must be present)
 
 Read the reference and extract its section headings (`## ` and `### `). The generated file
-MUST include ALL of these sections. Use this checklist:
+MUST include ALL of these sections. The generated file must also comply with
+`~/.copilot/tools/skills/references/skill-standards.md` (YAML frontmatter, line count,
+example blocks, description trigger words). Use this checklist:
 
 | # | Required Section | Source | Action |
 |---|-----------------|--------|--------|

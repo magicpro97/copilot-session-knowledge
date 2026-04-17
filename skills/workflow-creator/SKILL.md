@@ -12,6 +12,13 @@ description: >
 Generate a `WORKFLOW.md` file that defines a phased development lifecycle with quality gates,
 phase dependencies, and evidence requirements.
 
+## When to Use
+
+- Setting up a new project that needs a structured development process
+- User mentions "create workflow", "quality gates", "development phases", or "CI pipeline"
+- AI agents are skipping steps (testing, review) or working out of order
+- A feature involves multiple stages (design → build → test → QA) that must be gated
+
 ## Why Phased Workflows Matter
 
 Without phases, AI agents make common mistakes:
@@ -96,3 +103,24 @@ At every phase transition, verify artifacts exist and meet quality criteria.
 | Soft gates ("should") | AI rationalizes skipping |
 | No evidence requirements | "Done" without proof |
 | Phase overlap allowed | Defeats gate purpose |
+
+<example>
+**Project:** React dashboard (TypeScript + Jest + Playwright)
+
+**Selected phases:** CLARIFY → DESIGN → VERIFY → BUILD → TEST → REVIEW → QA → COMMIT
+
+**Customizations:**
+- Skipped DESIGN for bug-fix tasks (`skip_if: bug_fix: true`)
+- TEST requires both Jest (unit) and Playwright (e2e) passing
+- QA captures Playwright screenshots as visual evidence
+- COMMIT blocked by `commit-gate.sh` until QA artifact exists
+
+**Gate table (excerpt):**
+| Phase | Evidence | Command |
+|-------|---------|---------|
+| BUILD | TypeScript compiles | `npx tsc --noEmit` |
+| TEST | All tests green | `yarn test --ci` |
+| QA | Screenshot in `qa-evidence/` | Playwright visual run |
+
+**Output:** `.github/WORKFLOW.md` (referenced from `AGENTS.md`)
+</example>
