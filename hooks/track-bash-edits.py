@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
 """track-bash-edits.py — postToolUse hook (cross-platform)
 
-After ANY bash command, run `git status` to detect actual file modifications.
-Updates edit counters used by enforce-learn gate. This is language-agnostic —
-catches python, node, ruby, cp, mv, tee, curl, or ANY method of writing files.
-
-Strategy: Pattern matching can never catch all bash file writes.
-Instead, check what ACTUALLY changed on disk after the command ran.
+After ANY bash command, run git status to detect file modifications.
+Updates HMAC-signed counters and list markers.
 """
 import json
 import os
@@ -18,6 +14,19 @@ if os.name == "nt":
     for s in (sys.stdout, sys.stderr):
         if hasattr(s, "reconfigure"):
             s.reconfigure(encoding="utf-8", errors="replace")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from marker_auth import sign_counter, verify_counter, sign_list_marker, verify_list_marker
+except ImportError:
+    def sign_counter(p, v): p.parent.mkdir(parents=True, exist_ok=True); p.write_text(str(v))
+    def verify_counter(p):
+        try: return int(p.read_text().strip()) if p.is_file() else 0
+        except: return 0
+    def sign_list_marker(p, l): p.parent.mkdir(parents=True, exist_ok=True); p.write_text("\n".join(sorted(l)))
+    def verify_list_marker(p):
+        try: return set(p.read_text().strip().splitlines()) if p.is_file() else set()
+        except: return set()
 
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 CODE_EDIT_COUNTER = MARKERS_DIR / "code-edit-count"
@@ -31,7 +40,6 @@ CODE_EXTENSIONS = {".py", ".kt", ".ts", ".tsx", ".js", ".jsx", ".swift", ".java"
 
 
 def _get_git_modified():
-    """Get list of modified/added files from git status."""
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain", "-uall"],
@@ -39,17 +47,14 @@ def _get_git_modified():
         )
         if result.returncode != 0:
             return set()
-
         files = set()
         for line in result.stdout.strip().splitlines():
             if not line or len(line) < 4:
                 continue
             status = line[:2]
             filepath = line[3:].strip()
-            # Skip deleted files
             if status.strip().startswith("D"):
                 continue
-            # Handle renamed files (old -> new)
             if " -> " in filepath:
                 filepath = filepath.split(" -> ")[-1]
             files.add(filepath)
@@ -59,7 +64,7 @@ def _get_git_modified():
 
 
 def _load_seen():
-    """Load previously seen modified files."""
+    # git-modified-seen is internal tracking — plain text OK
     try:
         if SEEN_MODIFIED.is_file():
             return set(SEEN_MODIFIED.read_text().strip().splitlines())
@@ -69,40 +74,9 @@ def _load_seen():
 
 
 def _save_seen(seen):
-    """Save seen modified files."""
     try:
         MARKERS_DIR.mkdir(parents=True, exist_ok=True)
         SEEN_MODIFIED.write_text("\n".join(sorted(seen)))
-    except Exception:
-        pass
-
-
-def _increment_counter(counter_path, amount):
-    """Increment a counter marker file."""
-    if amount <= 0:
-        return
-    try:
-        MARKERS_DIR.mkdir(parents=True, exist_ok=True)
-        count = 0
-        if counter_path.is_file():
-            count = int(counter_path.read_text().strip())
-        count += amount
-        counter_path.write_text(str(count))
-    except Exception:
-        pass
-
-
-def _update_tentacle_tracker(new_files):
-    """Update tentacle edit tracker with new files."""
-    if not new_files:
-        return
-    try:
-        MARKERS_DIR.mkdir(parents=True, exist_ok=True)
-        existing = set()
-        if TENTACLE_EDITS.is_file():
-            existing = set(TENTACLE_EDITS.read_text().strip().splitlines())
-        existing.update(new_files)
-        TENTACLE_EDITS.write_text("\n".join(sorted(existing)))
     except Exception:
         pass
 
@@ -117,19 +91,16 @@ def main():
     if tool_name != "bash":
         return
 
-    # Get currently modified files from git
     current_modified = _get_git_modified()
     if not current_modified:
         return
 
-    # Compare with previously seen
     previously_seen = _load_seen()
     new_modifications = current_modified - previously_seen
 
     if not new_modifications:
         return
 
-    # Filter for code files
     new_code_files = set()
     new_py_files = set()
     for f in new_modifications:
@@ -139,18 +110,21 @@ def main():
         if suffix == ".py":
             new_py_files.add(f)
 
-    # Update counters
+    # Update signed counters
     if new_code_files:
-        _increment_counter(CODE_EDIT_COUNTER, len(new_code_files))
-        _update_tentacle_tracker(new_code_files)
+        current_count = verify_counter(CODE_EDIT_COUNTER)
+        sign_counter(CODE_EDIT_COUNTER, current_count + len(new_code_files))
+        # Update signed tentacle edit tracker
+        existing = verify_list_marker(TENTACLE_EDITS)
+        existing.update(new_code_files)
+        sign_list_marker(TENTACLE_EDITS, existing)
 
     if new_py_files:
-        _increment_counter(PY_EDIT_COUNTER, len(new_py_files))
+        py_count = verify_counter(PY_EDIT_COUNTER)
+        sign_counter(PY_EDIT_COUNTER, py_count + len(new_py_files))
 
-    # Save updated seen set
     _save_seen(previously_seen | current_modified)
 
-    # Log for visibility (agent sees this)
     if new_code_files:
         print(f"  📝 Detected {len(new_code_files)} file change(s) via bash: {', '.join(sorted(new_code_files)[:5])}")
         if len(new_code_files) > 5:

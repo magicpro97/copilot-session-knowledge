@@ -863,17 +863,21 @@ def _show_usage_hints():
 def lock_hooks():
     """Lock hook files with OS-level immutable flags + SHA256 manifest.
     
-    macOS: chflags uchg (user immutable — no sudo needed to set, needs nouchg to clear)
+    macOS: chflags schg (system immutable — requires sudo)
     Linux: chattr +i (needs sudo/root)
     Windows: attrib +R
+    Also: generates HMAC secret, sanitizes config.json, locks config.json.
     """
     import hashlib
     import platform
+    import secrets
 
     hooks_dir = _SCRIPT_DIR / "hooks"
     real_home = _real_home()
     hooks_dst_dir = real_home / ".copilot" / "hooks"
     hooks_dst = hooks_dst_dir / "hooks.json"
+    config_json = real_home / ".copilot" / "config.json"
+    secret_path = hooks_dst_dir / ".marker-secret"
 
     print("\n🔒 Lock Hooks — Tamper Protection")
 
@@ -882,6 +886,36 @@ def lock_hooks():
     if not hook_files:
         print(f"  {FAIL} No hook scripts found in {_tilde(hooks_dir)}")
         return
+
+    # 0. Generate HMAC secret if not exists
+    hooks_dst_dir.mkdir(parents=True, exist_ok=True)
+    if not secret_path.is_file():
+        secret_path.write_text(secrets.token_hex(32))
+        print(f"  {OK} HMAC secret generated: {_tilde(secret_path)}")
+    else:
+        print(f"  {OK} HMAC secret exists: {_tilde(secret_path)}")
+
+    # 0b. Sanitize config.json — remove disableAllHooks
+    if config_json.is_file():
+        try:
+            cfg = json.loads(config_json.read_text())
+            if "disableAllHooks" in cfg:
+                del cfg["disableAllHooks"]
+                config_json.write_text(json.dumps(cfg, indent=2))
+                print(f"  {WARN} Removed disableAllHooks from config.json!")
+            else:
+                print(f"  {OK} config.json clean (no disableAllHooks)")
+        except Exception as e:
+            print(f"  {WARN} Could not check config.json: {e}")
+
+    # 0c. Clear tamper marker since we're re-locking
+    tamper_marker = real_home / ".copilot" / "markers" / "hooks-tampered"
+    if tamper_marker.is_file():
+        try:
+            tamper_marker.unlink()
+            print(f"  {OK} Cleared hooks-tampered kill-switch")
+        except Exception:
+            pass
 
     # 1. Generate SHA256 manifest
     manifest = {"files": {}, "hooks_json": None}
@@ -905,7 +939,7 @@ def lock_hooks():
     system = platform.system()
     protected = 0
 
-    files_to_lock = list(hook_files) + [hooks_dst, manifest_path]
+    files_to_lock = list(hook_files) + [hooks_dst, manifest_path, secret_path, config_json]
 
     if system == "Darwin":
         # schg = system immutable — requires sudo to set, cannot be removed without sudo
@@ -973,7 +1007,7 @@ def lock_hooks():
 
 
 def unlock_hooks():
-    """Remove OS-level immutable flags from hook files."""
+    """Remove OS-level immutable flags from hook files, config.json, and secret."""
     import platform
 
     hooks_dir = _SCRIPT_DIR / "hooks"
@@ -981,11 +1015,13 @@ def unlock_hooks():
     hooks_dst_dir = real_home / ".copilot" / "hooks"
     hooks_dst = hooks_dst_dir / "hooks.json"
     manifest_path = hooks_dst_dir / "integrity-manifest.json"
+    config_json = real_home / ".copilot" / "config.json"
+    secret_path = hooks_dst_dir / ".marker-secret"
 
     print("\n🔓 Unlock Hooks")
 
     hook_files = sorted(hooks_dir.glob("*.py")) if hooks_dir.is_dir() else []
-    files_to_unlock = list(hook_files) + [hooks_dst, manifest_path]
+    files_to_unlock = list(hook_files) + [hooks_dst, manifest_path, secret_path, config_json]
 
     system = platform.system()
     unlocked = 0

@@ -2,11 +2,7 @@
 """enforce-learn.py — preToolUse hook (cross-platform)
 
 Block git commit AND task_complete if learn.py has not been called
-after significant work.
-
-Edit counting is handled by track-bash-edits.py (postToolUse, git-based)
-which catches ALL file modifications regardless of method. This hook
-only reads the counter and enforces the gate.
+after significant work. Uses HMAC-signed markers and counters.
 """
 import json
 import re
@@ -19,6 +15,17 @@ if os.name == "nt":
         if hasattr(s, "reconfigure"):
             s.reconfigure(encoding="utf-8", errors="replace")
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from marker_auth import (verify_marker, verify_counter, sign_counter,
+                             is_secret_access, check_tamper_marker)
+except ImportError:
+    def verify_marker(p, n): return False
+    def verify_counter(p): return 0
+    def sign_counter(p, v): p.parent.mkdir(parents=True, exist_ok=True); p.write_text(str(v))
+    def is_secret_access(c): return True
+    def check_tamper_marker(): return False
+
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 EDIT_COUNTER = MARKERS_DIR / "code-edit-count"
 LEARN_DONE = MARKERS_DIR / "learn-done"
@@ -29,28 +36,17 @@ EDIT_THRESHOLD = 3
 
 
 def _get_edit_count():
-    """Read current edit count from marker."""
-    try:
-        if EDIT_COUNTER.is_file():
-            return int(EDIT_COUNTER.read_text().strip())
-    except Exception:
-        pass
-    return 0
+    return verify_counter(EDIT_COUNTER)
 
 
 def _increment_counter():
-    """Increment edit counter (for edit/create tool tracking)."""
     MARKERS_DIR.mkdir(parents=True, exist_ok=True)
     count = _get_edit_count() + 1
-    try:
-        EDIT_COUNTER.write_text(str(count))
-    except Exception:
-        pass
+    sign_counter(EDIT_COUNTER, count)
 
 
 def _should_block():
-    """Check if learn gate should block."""
-    if LEARN_DONE.is_file():
+    if verify_marker(LEARN_DONE, "learn-done"):
         return False
     return _get_edit_count() >= EDIT_THRESHOLD
 
@@ -59,15 +55,27 @@ def main():
     try:
         raw = sys.stdin.read()
         if not raw.strip():
-            return  # Empty stdin on non-edit tools is normal
+            return
         data = json.loads(raw)
     except Exception:
-        return  # Non-JSON stdin is normal for some tool types
+        return
 
     tool_name = data.get("toolName", "")
     tool_args = data.get("toolArgs", {})
 
-    # Track code edits from edit/create tools (direct counting)
+    # Kill-switch
+    if check_tamper_marker():
+        if tool_name in ("edit", "create", "bash", "task_complete"):
+            print(json.dumps({
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    "🚨 HOOKS TAMPERED: All modifications blocked. "
+                    "Run: sudo python3 ~/.copilot/tools/install.py --lock-hooks"
+                )
+            }))
+        return
+
+    # Track code edits from edit/create tools
     if tool_name in ("edit", "create"):
         file_path = tool_args.get("path", "")
         suffix = Path(file_path).suffix.lower() if file_path else ""
@@ -78,6 +86,12 @@ def main():
     # Block git commit/push
     if tool_name == "bash":
         command = tool_args.get("command", "")
+        if is_secret_access(command):
+            print(json.dumps({
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "🔒 Access to protected hook files is blocked."
+            }))
+            return
         if not re.search(r'\bgit\b.*\b(commit|push)\b', command):
             return
         if not _should_block():
@@ -89,7 +103,6 @@ def main():
                 f"🧠 LEARN REQUIRED: {count} code files edited but learn.py not called. "
                 "Record what you learned before committing:\n"
                 "  python3 ~/.copilot/tools/learn.py\n"
-                
             ),
         }))
         return
@@ -105,7 +118,6 @@ def main():
                 f"🧠 LEARN REQUIRED: {count} code files edited but learn.py not called. "
                 "Record learnings before completing task:\n"
                 "  python3 ~/.copilot/tools/learn.py\n"
-                
             ),
         }))
         return
