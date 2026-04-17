@@ -183,4 +183,4 @@ tentacle.py delete <name>
 2. **Keep todos atomic** — each item = one testable deliverable
 3. **No scope overlap** — overlapping scopes cause agents to overwrite each other
 4. **Complete before delete** — `complete` saves learnings; `delete` alone loses them
-5. **No worktree needed** — Copilot CLI `task` tool already isolates agent context
+5. **⚠️ Shared workspace** — Sub-agents share the same filesystem, git index, and build cache. Parallel mode requires strictly non-overlapping file scopes. Never `git commit` from parallel agents. Consider `git worktree` for true isolation

@@ -99,8 +99,12 @@ def main():
                        ".rs", ".c", ".cpp", ".h", ".rb", ".php", ".cs", ".tsx", ".jsx")
         writes_source = False
         if any(ext in command for ext in source_exts):
-            if any(p in command for p in ("<<", ">>", "> ", "write_text", "open(",
-                                           "sed -i", "tee ", "cp ", "mv ")):
+            import re as _re
+            if any(p in command for p in ("<<", "write_text", "open(",
+                                           "sed -i", "tee ", "cp ", "mv ",
+                                           "dd ", "patch ", "rsync ", "install ")):
+                writes_source = True
+            elif _re.search(r">{1,2}\s*\S+", command):
                 writes_source = True
         if not writes_source:
             return
