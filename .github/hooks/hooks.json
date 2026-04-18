@@ -6,7 +6,7 @@
         "type": "command",
         "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" sessionStart",
         "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" sessionStart",
-        "comment": "[GLOBAL] Unified hook runner — auto-briefing + integrity check",
+        "comment": "[GLOBAL] Unified hook runner \u2014 auto-briefing + integrity check",
         "timeoutSec": 20
       }
     ],
@@ -15,7 +15,7 @@
         "type": "command",
         "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" sessionEnd",
         "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" sessionEnd",
-        "comment": "[GLOBAL] Unified hook runner — marker cleanup",
+        "comment": "[GLOBAL] Unified hook runner \u2014 marker cleanup",
         "timeoutSec": 5
       }
     ],
@@ -24,7 +24,7 @@
         "type": "command",
         "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" preToolUse",
         "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" preToolUse",
-        "comment": "[GLOBAL] Unified hook runner — briefing + learn + tentacle enforcement",
+        "comment": "[GLOBAL] Unified hook runner \u2014 briefing + learn + tentacle enforcement",
         "timeoutSec": 10
       }
     ],
@@ -33,7 +33,7 @@
         "type": "command",
         "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" postToolUse",
         "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" postToolUse",
-        "comment": "[GLOBAL] Unified hook runner — edit tracking + reminders + suggestions",
+        "comment": "[GLOBAL] Unified hook runner \u2014 edit tracking + reminders + suggestions",
         "timeoutSec": 10
       }
     ],
@@ -42,7 +42,7 @@
         "type": "command",
         "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" errorOccurred",
         "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" errorOccurred",
-        "comment": "[GLOBAL] Unified hook runner — KB error search",
+        "comment": "[GLOBAL] Unified hook runner \u2014 KB error search",
         "timeoutSec": 10
       }
     ]
