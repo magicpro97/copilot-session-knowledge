@@ -811,6 +811,25 @@ def main():
     extracted, skipped, deduped, relations_count = extract_from_sections(db, session_ids=session_ids)
     print(f"Extracted {extracted} entries ({skipped} duplicates skipped, {deduped} deduped by hash)")
     print(f"Extracted {relations_count} relations")
+
+    # Clean up stale embeddings and orphan relations
+    try:
+        stale_embeds = db.execute("""
+            DELETE FROM embeddings WHERE
+            (source_type = 'knowledge' AND source_id NOT IN (SELECT id FROM knowledge_entries))
+            OR (source_type = 'section' AND source_id NOT IN (SELECT id FROM sections))
+        """).rowcount
+        orphan_rels = db.execute("""
+            DELETE FROM knowledge_relations WHERE
+            source_id NOT IN (SELECT id FROM knowledge_entries)
+            OR target_id NOT IN (SELECT id FROM knowledge_entries)
+        """).rowcount
+        if stale_embeds or orphan_rels:
+            db.commit()
+            print(f"Cleaned up {stale_embeds} stale embeddings, {orphan_rels} orphan relations")
+    except Exception:
+        pass
+
     show_stats(db)
     db.close()
 
