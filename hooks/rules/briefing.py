@@ -46,8 +46,8 @@ class AutoBriefingRule(Rule):
                     if name.endswith(f"-{session_id}"):
                         f.unlink()
                         continue
-                    # Delete stale global markers older than 2 hours
-                    if name == "briefing-done" and f.stat().st_mtime < stale_cutoff:
+                    # Delete stale markers older than 2h (orphans from crashed sessions)
+                    if name.startswith("briefing-done") and f.stat().st_mtime < stale_cutoff:
                         f.unlink()
                 except Exception:
                     pass
