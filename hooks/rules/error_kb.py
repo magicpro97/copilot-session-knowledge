@@ -16,7 +16,13 @@ class ErrorKBRule(Rule):
     events = ["errorOccurred"]
 
     def evaluate(self, event, data):
-        error_msg = (data.get("error") or {}).get("message", "")
+        error_data = data.get("error", {})
+        if isinstance(error_data, str):
+            error_msg = error_data
+        elif isinstance(error_data, dict):
+            error_msg = error_data.get("message", "")
+        else:
+            error_msg = ""
         if not error_msg or not QUERY_SCRIPT.is_file():
             return None
 

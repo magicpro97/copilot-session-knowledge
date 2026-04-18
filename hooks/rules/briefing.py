@@ -21,6 +21,11 @@ MARKER = MARKERS_DIR / "briefing-done"
 BRIEFING_SCRIPT = TOOLS_DIR / "briefing.py"
 
 
+def _get_session_id():
+    """Get stable session ID (env var from Copilot CLI, or parent PID)."""
+    return os.environ.get("COPILOT_AGENT_SESSION_ID", str(os.getppid()))
+
+
 class AutoBriefingRule(Rule):
     """Run briefing.py at session start and create HMAC-signed marker."""
 
@@ -28,11 +33,21 @@ class AutoBriefingRule(Rule):
     events = ["sessionStart"]
 
     def evaluate(self, event, data):
-        # Clean up stale markers from previous sessions
+        # Clean up only THIS session's stale markers, not other sessions'
+        session_id = _get_session_id()
         if MARKERS_DIR.is_dir():
+            stale_cutoff = time.time() - 7200  # 2 hours
             for f in MARKERS_DIR.iterdir():
                 try:
-                    if f.name not in ("hooks-tampered", "session.log", "audit.jsonl"):
+                    name = f.name
+                    if name in ("hooks-tampered", "session.log", "audit.jsonl"):
+                        continue
+                    # Delete own session markers (will re-sign below)
+                    if name.endswith(f"-{session_id}"):
+                        f.unlink()
+                        continue
+                    # Delete stale global markers older than 2 hours
+                    if name == "briefing-done" and f.stat().st_mtime < stale_cutoff:
                         f.unlink()
                 except Exception:
                     pass
@@ -68,7 +83,10 @@ class AutoBriefingRule(Rule):
         except Exception:
             pass
 
+        # Sign both global marker (backward compat) and session-specific marker
         sign_marker(MARKER, "briefing-done")
+        session_marker = MARKERS_DIR / f"briefing-done-{session_id}"
+        sign_marker(session_marker, f"briefing-done-{session_id}")
         return info("\n".join(lines))
 
 
