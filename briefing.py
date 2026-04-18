@@ -273,6 +273,73 @@ def search_past_work(db: sqlite3.Connection, query: str, limit: int = 3) -> list
     return results
 
 
+def blast_radius(db: sqlite3.Connection, query: str) -> list[dict]:
+    """Analyze blast radius: find files mentioned in task and their risk from knowledge DB.
+
+    Returns list of dicts: {file, mistakes, patterns, decisions, risk_level, risk_emoji}
+    """
+    import re
+
+    # Extract file paths from the query (e.g., "fix src/auth.py and models/user.py")
+    file_patterns = re.findall(
+        r'(?:^|\s)((?:[\w.-]+/)*[\w.-]+\.(?:py|js|ts|jsx|tsx|kt|java|swift|rb|go|rs|sh|json|yaml|yml|toml|md|sql|css|html))\b',
+        query
+    )
+
+    if not file_patterns:
+        # Try extracting module/feature names for broader matching
+        words = [w for w in query.split() if len(w) > 3
+                 and w.lower() not in ("implement", "create", "update", "modify",
+                                        "refactor", "review", "check", "build",
+                                        "that", "this", "with", "from", "have")]
+        if not words:
+            return []
+        file_patterns = words[:5]
+
+    results = []
+    for pattern in file_patterns:
+        # Search knowledge entries mentioning this file/module
+        safe_pattern = pattern.replace("'", "''")
+        counts = {"mistake": 0, "pattern": 0, "decision": 0}
+
+        for category in counts:
+            try:
+                row = db.execute("""
+                    SELECT COUNT(*) FROM knowledge_entries
+                    WHERE category = ?
+                    AND (content LIKE ? OR title LIKE ?)
+                """, (category, f"%{safe_pattern}%", f"%{safe_pattern}%")).fetchone()
+                if row:
+                    counts[category] = row[0]
+            except sqlite3.OperationalError:
+                pass
+
+        total = counts["mistake"] + counts["pattern"] + counts["decision"]
+        if total == 0:
+            continue
+
+        if counts["mistake"] >= 3:
+            risk_level, risk_emoji = "HIGH", "🔴"
+        elif counts["mistake"] >= 1:
+            risk_level, risk_emoji = "MEDIUM", "🟡"
+        else:
+            risk_level, risk_emoji = "LOW", "🟢"
+
+        results.append({
+            "file": pattern,
+            "mistakes": counts["mistake"],
+            "patterns": counts["pattern"],
+            "decisions": counts["decision"],
+            "risk_level": risk_level,
+            "risk_emoji": risk_emoji,
+        })
+
+    # Sort by risk: HIGH first
+    risk_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+    results.sort(key=lambda x: risk_order.get(x["risk_level"], 3))
+    return results
+
+
 def generate_subagent_context(query: str, limit: int = 3,
                               min_confidence: float = 0.5) -> str:
     """Generate compact context block for injecting into sub-agent prompts.
@@ -353,6 +420,9 @@ def generate_briefing(query: str, limit: int = 3, fmt: str = "md",
     # Past related work
     past_work = search_past_work(db, query, limit)
 
+    # Blast radius analysis
+    blast = blast_radius(db, query)
+
     db.close()
 
     # Check if we have anything
@@ -365,16 +435,17 @@ def generate_briefing(query: str, limit: int = 3, fmt: str = "md",
 
     # Format output
     if fmt == "json":
-        return _format_json(query, briefing_data, past_work, categories)
+        return _format_json(query, briefing_data, past_work, categories, blast)
     elif fmt == "compact":
-        return _format_compact(query, briefing_data, past_work, categories)
+        return _format_compact(query, briefing_data, past_work, categories, blast)
     elif full:
-        return _format_markdown(query, briefing_data, past_work, categories)
+        return _format_markdown(query, briefing_data, past_work, categories, blast)
     else:
-        return _format_default(query, briefing_data, past_work, categories)
+        return _format_default(query, briefing_data, past_work, categories, blast)
 
 
-def _format_default(query: str, data: dict, past_work: list, categories: dict) -> str:
+def _format_default(query: str, data: dict, past_work: list, categories: dict,
+                    blast: list = None) -> str:
     """Compact default format: titles + 1-line summaries (~500 tokens)."""
     lines = []
     lines.append(f"📋 Briefing: {query}")
@@ -419,6 +490,13 @@ def _format_default(query: str, data: dict, past_work: list, categories: dict) -
             lines.append(f"  [{w.get('doc_type', '?')}] {title} (session {sid})")
         lines.append("")
 
+    if blast:
+        lines.append("💥 Blast Radius")
+        for b in blast:
+            parts = f"{b['mistakes']}m/{b['patterns']}p/{b['decisions']}d"
+            lines.append(f"  {b['risk_emoji']} {b['risk_level']}: {b['file']} — {parts}")
+        lines.append("")
+
     total = sum(len(v) for v in data.values()) + len(past_work)
     lines.append(f"({total} entries) "
                  f"Use --full for complete content, "
@@ -427,7 +505,8 @@ def _format_default(query: str, data: dict, past_work: list, categories: dict) -
     return "\n".join(lines)
 
 
-def _format_markdown(query: str, data: dict, past_work: list, categories: dict) -> str:
+def _format_markdown(query: str, data: dict, past_work: list, categories: dict,
+                     blast: list = None) -> str:
     """Format briefing as Markdown."""
     lines = []
     lines.append(f"# 📋 Pre-Task Briefing")
@@ -484,6 +563,16 @@ def _format_markdown(query: str, data: dict, past_work: list, categories: dict) 
                 lines.append(f"   {excerpt}")
             lines.append("")
 
+    if blast:
+        lines.append("## 💥 Blast Radius")
+        lines.append("")
+        lines.append("| File | Risk | Mistakes | Patterns | Decisions |")
+        lines.append("|------|------|----------|----------|-----------|")
+        for b in blast:
+            lines.append(f"| `{b['file']}` | {b['risk_emoji']} {b['risk_level']} "
+                         f"| {b['mistakes']} | {b['patterns']} | {b['decisions']} |")
+        lines.append("")
+
     lines.append("---")
     lines.append(f"_Briefing from knowledge.db — "
                  f"{sum(len(v) for v in data.values())} entries + "
@@ -492,7 +581,8 @@ def _format_markdown(query: str, data: dict, past_work: list, categories: dict) 
     return "\n".join(lines)
 
 
-def _format_json(query: str, data: dict, past_work: list, categories: dict) -> str:
+def _format_json(query: str, data: dict, past_work: list, categories: dict,
+                 blast: list = None) -> str:
     """Format briefing as JSON."""
     output = {
         "query": query,
@@ -530,10 +620,14 @@ def _format_json(query: str, data: dict, past_work: list, categories: dict) -> s
             ]
         }
 
+    if blast:
+        output["blast_radius"] = blast
+
     return json.dumps(output, indent=2, ensure_ascii=False)
 
 
-def _format_compact(query: str, data: dict, past_work: list, categories: dict) -> str:
+def _format_compact(query: str, data: dict, past_work: list, categories: dict,
+                    blast: list = None) -> str:
     """Compact format optimized for AI agent context injection."""
     lines = []
     # Escape query for safe XML attribute embedding
@@ -573,6 +667,13 @@ def _format_compact(query: str, data: dict, past_work: list, categories: dict) -
             lines.append(f"- [{w.get('doc_type', '?')}] {w.get('title', '?')} "
                          f"(session {sid})")
         lines.append("</past_work>\n")
+
+    if blast:
+        lines.append("<blast_radius>")
+        for b in blast:
+            lines.append(f"- {b['risk_emoji']} {b['risk_level']}: {b['file']} "
+                         f"({b['mistakes']}m/{b['patterns']}p/{b['decisions']}d)")
+        lines.append("</blast_radius>\n")
 
     lines.append("</briefing>")
     return "\n".join(lines)

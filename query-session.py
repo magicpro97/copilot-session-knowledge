@@ -151,6 +151,33 @@ def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = Fa
         db.close()
         return
 
+    # Fallback: substring LIKE search when FTS returns nothing
+    if not results:
+        like_sql = """
+            SELECT d.title, s.section_name, d.doc_type, d.session_id,
+                   d.id as document_id,
+                   SUBSTR(s.content, MAX(1, INSTR(LOWER(s.content), LOWER(?)) - 40), 128) as excerpt,
+                   d.file_path, d.size_bytes,
+                   COALESCE(d.source, 'copilot') as doc_source
+            FROM sections s
+            JOIN documents d ON s.document_id = d.id
+            WHERE LOWER(s.content) LIKE ?
+        """
+        like_params = [query, f"%{query.lower()}%"]
+        if doc_type:
+            like_sql += " AND d.doc_type = ?"
+            like_params.append(doc_type)
+        if source_filter and source_filter != "all":
+            like_sql += " AND COALESCE(d.source, 'copilot') = ?"
+            like_params.append(source_filter)
+        like_sql += f" LIMIT {limit}"
+        try:
+            results = db.execute(like_sql, like_params).fetchall()
+            if results:
+                print(f"{DIM}(FTS returned 0 — showing substring matches){RESET}")
+        except sqlite3.OperationalError:
+            pass
+
     if not results:
         print(f"No results for: {query}")
         print(f"Tip: Try broader terms or check with --list for available sessions.")
@@ -607,8 +634,23 @@ def search_knowledge(query: str, limit: int = 10, export_fmt: str = None):
             LIMIT ?
         """, (fts_query, limit)).fetchall()
     except sqlite3.OperationalError:
-        # ke_fts table doesn't exist — fall back to regular search
         rows = []
+
+    # Fallback: substring LIKE search when FTS returns nothing
+    if not rows:
+        try:
+            rows = db.execute("""
+                SELECT ke.*,
+                       SUBSTR(ke.content, MAX(1, INSTR(LOWER(ke.content), LOWER(?)) - 40), 128) as excerpt
+                FROM knowledge_entries ke
+                WHERE LOWER(ke.title) LIKE ? OR LOWER(ke.content) LIKE ?
+                ORDER BY ke.confidence DESC
+                LIMIT ?
+            """, (query, f"%{query.lower()}%", f"%{query.lower()}%", limit)).fetchall()
+            if rows:
+                print(f"{DIM}(FTS returned 0 — showing substring matches){RESET}")
+        except sqlite3.OperationalError:
+            rows = []
 
     if export_fmt == "json" and rows:
         _export_json([dict(r) for r in rows])
