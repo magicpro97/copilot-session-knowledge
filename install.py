@@ -882,8 +882,11 @@ def lock_hooks():
 
     print("\n🔒 Lock Hooks — Tamper Protection")
 
-    # Collect all hook files to protect
+    # Collect all hook files to protect (including rules/ subdirectory)
     hook_files = sorted(hooks_dir.glob("*.py")) if hooks_dir.is_dir() else []
+    rules_dir = hooks_dir / "rules"
+    if rules_dir.is_dir():
+        hook_files += sorted(rules_dir.glob("*.py"))
     if not hook_files:
         print(f"  {FAIL} No hook scripts found in {_tilde(hooks_dir)}")
         return
@@ -922,8 +925,10 @@ def lock_hooks():
     manifest = {"files": {}, "hooks_json": None}
     for hf in hook_files:
         h = hashlib.sha256(hf.read_bytes()).hexdigest()
-        manifest["files"][hf.name] = h
-        print(f"  {OK} {hf.name}: {h[:16]}...")
+        # Use relative path for subdirectory files (e.g., rules/briefing.py)
+        rel_name = hf.relative_to(hooks_dir).as_posix()
+        manifest["files"][rel_name] = h
+        print(f"  {OK} {rel_name}: {h[:16]}...")
 
     if hooks_dst.is_file():
         h = hashlib.sha256(hooks_dst.read_bytes()).hexdigest()
@@ -1022,6 +1027,9 @@ def unlock_hooks():
     print("\n🔓 Unlock Hooks")
 
     hook_files = sorted(hooks_dir.glob("*.py")) if hooks_dir.is_dir() else []
+    rules_dir = hooks_dir / "rules"
+    if rules_dir.is_dir():
+        hook_files += sorted(rules_dir.glob("*.py"))
     files_to_unlock = list(hook_files) + [hooks_dst, manifest_path, secret_path, config_json]
 
     system = platform.system()

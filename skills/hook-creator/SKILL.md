@@ -29,6 +29,48 @@ User request → AI plans tool call → preToolUse hook → ALLOW/DENY → tool 
 
 Hook scripts receive JSON on stdin with `toolName`, `toolArgs`, and (for post) `toolResult`.
 
+## Architecture: Unified Hook Runner
+
+For **global** (user-level) hooks, use the unified runner architecture in
+`~/.copilot/tools/hooks/`. Instead of standalone scripts, create rule modules:
+
+```
+hooks/
+  hook_runner.py          # Dispatcher — reads stdin once, runs matching rules
+  rules/
+    __init__.py           # Registry — ordered list of all rules
+    common.py             # Shared: get_module(), deny(), info(), constants
+    your_rule.py           # Your custom rule module
+```
+
+**Rule module template:**
+```python
+from . import Rule
+from .common import deny, info
+
+class MyRule(Rule):
+    name = "my-rule"
+    events = ["preToolUse"]           # Which events to handle
+    tools = ["edit", "create", "bash"] # Which tools to match (empty = all)
+
+    def evaluate(self, event, data):
+        tool_args = data.get("toolArgs", {})
+        # Return deny("reason") to block, info("msg") to inform, None to pass
+        return None
+```
+
+Register in `rules/__init__.py` by adding to `ALL_RULES`.
+
+**Benefits over standalone scripts:**
+- Single process per event (not N processes)
+- Shared stdin parsing, marker auth, and tamper checks
+- Fail-open: rule errors don't block the agent
+- Audit log: all decisions in `~/.copilot/markers/audit.jsonl`
+- Dry-run mode: `HOOK_DRY_RUN=1`
+
+For **project-level** hooks (`.github/hooks/`), standalone bash/Python scripts
+are still the correct approach — they're simpler and self-contained.
+
 ## When to Create Hooks
 
 Create hooks when:
