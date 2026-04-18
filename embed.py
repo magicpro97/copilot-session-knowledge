@@ -180,9 +180,39 @@ def resolve_provider(config: dict) -> tuple:
 #  Embedding API (OpenAI-compatible, stdlib only)
 # ═══════════════════════════════════════════════════════════════════════
 
+class EmbeddingAuthError(RuntimeError):
+    """Auth error — should fallback to TF-IDF, not retry."""
+    pass
+
+
+class EmbeddingRateLimitError(RuntimeError):
+    """Rate limit — should retry with backoff."""
+    pass
+
+
+class EmbeddingNetworkError(RuntimeError):
+    """Network/timeout — should retry then fallback."""
+    pass
+
+
+def _classify_api_error(e: urllib.error.HTTPError) -> tuple[str, str]:
+    """Classify HTTP error into (category, user_message). Categories: auth, rate_limit, server."""
+    body = e.read().decode("utf-8", errors="replace")[:500]
+    if e.code in (401, 403):
+        return "auth", f"🔑 Auth failed ({e.code}): API key invalid or expired. Falling back to TF-IDF."
+    elif e.code == 429:
+        return "rate_limit", f"⏳ Rate limited (429). Retrying with backoff..."
+    elif e.code >= 500:
+        return "server", f"🔥 Server error ({e.code}). Retrying..."
+    elif e.code == 404:
+        return "auth", f"🔍 Model not found (404): Check model name in config. {body[:100]}"
+    else:
+        return "server", f"❌ API error {e.code}: {body[:200]}"
+
+
 def call_embedding_api(texts: list[str], provider_config: dict,
                        max_retries: int = 3) -> list[list[float]]:
-    """Call an OpenAI-compatible embedding API with retry. Returns list of float vectors."""
+    """Call an OpenAI-compatible embedding API with classified error handling and retry."""
     base_url = provider_config["base_url"].rstrip("/")
     model = provider_config["model"]
     api_key = get_api_key(provider_config)
@@ -217,24 +247,37 @@ def call_embedding_api(texts: list[str], provider_config: dict,
                 result = json.loads(resp.read().decode("utf-8"))
             break
         except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", errors="replace")[:500]
-            if e.code == 429 or e.code >= 500:
-                last_error = f"API error {e.code}: {body}"
+            category, message = _classify_api_error(e)
+            if category == "auth":
+                # Auth errors: no retry, raise specific exception for fallback
+                print(f"    {message}", file=sys.stderr)
+                raise EmbeddingAuthError(message)
+            elif category == "rate_limit":
+                last_error = message
+                wait = min((2 ** attempt) + 1, 30)
+                print(f"    {message} ({wait}s)", file=sys.stderr)
+                time.sleep(wait)
+                continue
+            else:  # server error
+                last_error = message
                 wait = (2 ** attempt) + 1
-                print(f"    ⟳ Retry {attempt+1}/{max_retries} after {wait}s ({e.code})...",
+                print(f"    {message} Retry {attempt+1}/{max_retries} in {wait}s",
                       file=sys.stderr)
                 time.sleep(wait)
                 continue
-            raise RuntimeError(f"API error {e.code}: {body}")
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             reason = getattr(e, "reason", str(e))
-            last_error = f"Connection error: {reason}"
+            last_error = f"🌐 Network error: {reason}"
             wait = (2 ** attempt) + 1
-            print(f"    ⟳ Retry {attempt+1}/{max_retries} after {wait}s (timeout/network)...",
+            print(f"    {last_error} Retry {attempt+1}/{max_retries} in {wait}s",
                   file=sys.stderr)
             time.sleep(wait)
             continue
     else:
+        if "Rate limit" in (last_error or ""):
+            raise EmbeddingRateLimitError(last_error)
+        elif "Network" in (last_error or "") or "Connection" in (last_error or ""):
+            raise EmbeddingNetworkError(last_error or "Max retries exceeded")
         raise RuntimeError(last_error or "Max retries exceeded")
 
     # Parse OpenAI-format response
@@ -543,6 +586,10 @@ def hybrid_search(db: sqlite3.Connection, query: str, config: dict,
         try:
             vecs = call_embedding_api([query], provider_config)
             query_vector = vecs[0]
+        except EmbeddingAuthError:
+            pass  # Silent fallback — FTS results will be used
+        except (EmbeddingRateLimitError, EmbeddingNetworkError):
+            pass  # Transient — silently use FTS only
         except Exception as e:
             print(f"  [warn] Embedding API error: {e}", file=sys.stderr)
 
@@ -707,6 +754,7 @@ def build_embeddings(config: dict = None, force: bool = False):
     # Resolve provider
     provider_name, provider_config = resolve_provider(config)
 
+    api_failed = False
     if provider_name and provider_config:
         print(f"Provider: {provider_name} ({provider_config['model']})")
         dimensions = provider_config.get("dimensions", 768)
@@ -724,12 +772,17 @@ def build_embeddings(config: dict = None, force: bool = False):
                 store_embeddings(db, "section", items, provider_name,
                                  provider_config["model"], dimensions)
                 print(f"  ✓ {len(vectors)} section embeddings stored")
+            except EmbeddingAuthError:
+                print(f"  ⚠ Auth failed — skipping API embeddings, using TF-IDF fallback")
+                api_failed = True
+            except (EmbeddingRateLimitError, EmbeddingNetworkError) as e:
+                print(f"  ⚠ {e} — falling back to TF-IDF")
+                api_failed = True
             except Exception as e:
                 print(f"  ✗ Section embedding failed: {e}")
-                # Fall through to TF-IDF fallback
 
-        # Embed knowledge entries
-        if new_ke:
+        # Embed knowledge entries (skip if auth failed)
+        if new_ke and not api_failed:
             print(f"Embedding {len(new_ke)} knowledge entries...")
             texts = [f"{title}: {content[:2000]}" for _, title, content in new_ke]
             try:
@@ -741,11 +794,17 @@ def build_embeddings(config: dict = None, force: bool = False):
                 store_embeddings(db, "knowledge", items, provider_name,
                                  provider_config["model"], dimensions)
                 print(f"  ✓ {len(vectors)} knowledge embeddings stored")
+            except EmbeddingAuthError:
+                print(f"  ⚠ Auth failed — using TF-IDF fallback")
+                api_failed = True
+            except (EmbeddingRateLimitError, EmbeddingNetworkError) as e:
+                print(f"  ⚠ {e} — falling back to TF-IDF")
+                api_failed = True
             except Exception as e:
                 print(f"  ✗ Knowledge embedding failed: {e}")
 
     else:
-        print("No API provider configured.")
+        print("No API provider configured. Using TF-IDF fallback only.")
 
     # Always build TF-IDF as fallback (if available)
     if tfidf_available():
