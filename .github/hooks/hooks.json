@@ -4,87 +4,45 @@
     "sessionStart": [
       {
         "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/auto-briefing.py\"",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\auto-briefing.py\"",
-        "comment": "[GLOBAL] Auto-run briefing.py at session start",
-        "timeoutSec": 15
-      },
-      {
-        "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/verify-integrity.py\"",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\verify-integrity.py\"",
-        "comment": "[GLOBAL] Verify hook file integrity via SHA256 manifest",
-        "timeoutSec": 5
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" sessionStart",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" sessionStart",
+        "comment": "[GLOBAL] Unified hook runner — auto-briefing + integrity check",
+        "timeoutSec": 20
       }
     ],
     "sessionEnd": [
       {
         "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/session-end.py\"",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\session-end.py\"",
-        "comment": "[GLOBAL] Cleanup markers on session end",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" sessionEnd",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" sessionEnd",
+        "comment": "[GLOBAL] Unified hook runner — marker cleanup",
         "timeoutSec": 5
       }
     ],
     "preToolUse": [
       {
         "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/enforce-briefing.py\"",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\enforce-briefing.py\"",
-        "comment": "[GLOBAL] Block edit/create until briefing is done",
-        "timeoutSec": 5
-      },
-      {
-        "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/enforce-learn.py\"",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\enforce-learn.py\"",
-        "comment": "[GLOBAL] Block git commit until learn.py is called after significant edits",
-        "timeoutSec": 5
-      },
-      {
-        "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/enforce-tentacle.py\"",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\enforce-tentacle.py\"",
-        "comment": "[GLOBAL] Block edits when 3+ files across 2+ modules without tentacle",
-        "timeoutSec": 5
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" preToolUse",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" preToolUse",
+        "comment": "[GLOBAL] Unified hook runner — briefing + learn + tentacle enforcement",
+        "timeoutSec": 10
       }
     ],
     "postToolUse": [
       {
         "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/track-bash-edits.py\"",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\track-bash-edits.py\"",
-        "comment": "[GLOBAL] Track actual file changes after bash commands via git status",
-        "timeoutSec": 8
-      },
-      {
-        "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/learn-reminder.py\"",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\learn-reminder.py\"",
-        "comment": "[GLOBAL] Remind to record learnings after task_complete",
-        "timeoutSec": 5
-      },
-      {
-        "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/test-after-edit.py\"",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\test-after-edit.py\"",
-        "comment": "[GLOBAL] Remind to run tests after 3+ Python file edits",
-        "timeoutSec": 5
-      },
-      {
-        "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/tentacle-suggest.py\"",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\tentacle-suggest.py\"",
-        "comment": "[GLOBAL] Suggest tentacle-orchestration when edits span 3+ files across 2+ modules",
-        "timeoutSec": 5
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" postToolUse",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" postToolUse",
+        "comment": "[GLOBAL] Unified hook runner — edit tracking + reminders + suggestions",
+        "timeoutSec": 10
       }
     ],
     "errorOccurred": [
       {
         "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/error-search-kb.py\"",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\error-search-kb.py\"",
-        "comment": "[GLOBAL] Auto-search knowledge base when errors occur",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" errorOccurred",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" errorOccurred",
+        "comment": "[GLOBAL] Unified hook runner — KB error search",
         "timeoutSec": 10
       }
     ]
