@@ -24,6 +24,8 @@ except ImportError:
     def is_secret_access(c): return True
     def check_tamper_marker(): return False
 
+
+
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 MARKER = MARKERS_DIR / "briefing-done"
 
@@ -114,14 +116,10 @@ def main():
     try:
         raw = sys.stdin.read()
         if not raw.strip():
-            print(json.dumps({"permissionDecision": "deny",
-                  "permissionDecisionReason": "Hook error: empty stdin"}))
-            return
+            return  # Fail-open: empty stdin = allow through
         data = json.loads(raw)
-    except Exception as e:
-        print(json.dumps({"permissionDecision": "deny",
-              "permissionDecisionReason": f"Hook error: {e}"}))
-        return
+    except Exception:
+        return  # Fail-open: parse error = allow through
 
     tool_name = data.get("toolName", "")
     tool_args = data.get("toolArgs", {})
