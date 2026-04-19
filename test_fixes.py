@@ -540,8 +540,12 @@ try:
 
     _errs11, _warns11 = validate(_d11 / "SKILL.md")
     _traversal_warns = [w for w in _warns11 if "Suspicious" in w or "traversal" in w.lower() or ".." in w]
-    test("Sp11: references/../SKILL.md triggers traversal warning",
-         any("../SKILL.md" in w or ".." in w for w in _traversal_warns),
+    # Each traversal pattern must be caught individually — not via generic ".." membership.
+    test("Sp11: single-level escape references/../SKILL.md triggers traversal warning",
+         any("references/../SKILL.md" in w for w in _traversal_warns),
+         f"Got warnings: {_warns11}")
+    test("Sp11: double-level escape references/a/../../secret.md triggers traversal warning",
+         any("references/a/../../secret.md" in w for w in _traversal_warns),
          f"Got warnings: {_warns11}")
     test("Sp11: traversal path does NOT appear as a dangling reference warning",
          not any("Dangling" in w and ".." in w for w in _warns11),

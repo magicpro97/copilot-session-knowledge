@@ -138,10 +138,10 @@ def validate(path: Path) -> tuple[list[str], list[str]]:
     for ref_name in sorted(set(raw_mentions)):
         # Reject paths containing `..` traversal segments so that a crafted reference
         # like `references/../SKILL.md` cannot escape the references/ directory.
-        # Note: Path().parts normalises away single `.` segments, so we check the raw
-        # string for `..` components rather than inspecting parts.
-        raw_parts = Path(ref_name).parts  # `..` is preserved; `.` is normalised away
-        if any(p == ".." for p in raw_parts):
+        # Path().parts splits on separators and preserves `..` as a literal component
+        # while normalising away single `.` segments — making it safe to test each part.
+        path_parts = Path(ref_name).parts  # `..` is preserved; `.` is normalised away
+        if any(p == ".." for p in path_parts):
             warnings.append(
                 f"Suspicious reference path skipped: `references/{ref_name}` contains "
                 f"`..` — references must stay inside the skill's references/ directory."
