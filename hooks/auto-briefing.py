@@ -22,8 +22,28 @@ except ImportError:
 
 TOOLS_DIR = Path(__file__).resolve().parent.parent
 BRIEFING = TOOLS_DIR / "briefing.py"
+CODEBASE_MAP = TOOLS_DIR / "codebase-map.py"
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 MARKER = MARKERS_DIR / "briefing-done"
+
+
+def _try_refresh_codebase_map():
+    """Regenerate codebase-map.md in the session files/ dir.
+
+    Completely silent on failure — a missing map is never fatal.
+    Skipped when codebase-map.py is absent or the cwd is not a git repo.
+    """
+    if not CODEBASE_MAP.is_file():
+        return
+    try:
+        subprocess.run(
+            [sys.executable, str(CODEBASE_MAP)],
+            timeout=5,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
 
 
 def main():
@@ -36,6 +56,9 @@ def main():
                     f.unlink()
             except Exception:
                 pass
+
+    # Regenerate codebase map independently — attempted regardless of briefing.py
+    _try_refresh_codebase_map()
 
     if not BRIEFING.is_file():
         return

@@ -94,6 +94,24 @@ At every phase transition, verify artifacts exist and meet quality criteria.
 - Hooks enforce phases (e.g., `commit-gate.sh`)
 - Conductor agent uses workflow as playbook
 
+### Deploying via project profiles
+
+Instead of building a workflow from scratch, use `setup-project.py --profile` or `install-project-hooks.py --profile` to install a pre-built hook bundle and starter `WORKFLOW.md`:
+
+```bash
+python3 ~/.copilot/tools/setup-project.py --profile python      # Python: TDD, test-reminder, commit-gate
+python3 ~/.copilot/tools/setup-project.py --profile typescript  # TypeScript: coding-standards, test-reminder
+python3 ~/.copilot/tools/setup-project.py --profile mobile      # Mobile: architecture-guard, QA phase
+python3 ~/.copilot/tools/setup-project.py --profile fullstack   # Full-stack: architecture-guard, session-banner
+
+# Hooks only (no full project setup)
+python3 ~/.copilot/tools/install-project-hooks.py --profile python --workflow  # hooks + WORKFLOW.md
+python3 ~/.copilot/tools/install-project-hooks.py --list-profiles              # show available profiles
+```
+
+Profile bundles are defined in `presets/` (`default`, `python`, `typescript`, `mobile`, `fullstack`).
+Use `--workflow` with `install-project-hooks.py` to also generate a starter `WORKFLOW.md`.
+
 ## Anti-Patterns
 
 | Anti-Pattern | Why It Fails |

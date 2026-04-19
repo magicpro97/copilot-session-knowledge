@@ -73,7 +73,32 @@ python3 ~/.copilot/tools/validate-skill.py path/to/SKILL.md --verbose  # Verbose
 python3 ~/.copilot/tools/setup-project.py              # Full setup
 python3 ~/.copilot/tools/setup-project.py --skill-only  # Skills only
 python3 ~/.copilot/tools/setup-project.py --dry-run     # Dry run
+python3 ~/.copilot/tools/setup-project.py --profile python      # Python hooks + WORKFLOW.md
+python3 ~/.copilot/tools/setup-project.py --profile typescript  # TypeScript hooks + WORKFLOW.md
+python3 ~/.copilot/tools/setup-project.py --profile mobile      # Android/iOS/KMP hooks + WORKFLOW.md
+python3 ~/.copilot/tools/setup-project.py --profile fullstack   # Full-stack web hooks + WORKFLOW.md
 ```
+
+`--profile` installs a **preset hook bundle** and generates a starter `WORKFLOW.md`. Available
+profiles are defined in `presets/` (`default`, `python`, `typescript`, `mobile`, `fullstack`).
+
+### Installing hooks standalone
+
+Use `install-project-hooks.py` to install a hook bundle without the full project setup:
+
+```bash
+python3 ~/.copilot/tools/install-project-hooks.py --list-profiles   # List available profiles
+python3 ~/.copilot/tools/install-project-hooks.py --profile python  # Install Python hooks
+python3 ~/.copilot/tools/install-project-hooks.py --profile mobile --project /path/to/project
+python3 ~/.copilot/tools/install-project-hooks.py --profile fullstack --workflow  # + WORKFLOW.md
+python3 ~/.copilot/tools/install-project-hooks.py --dry-run         # Preview without changes
+```
+
+### Tentacle setup
+
+`setup-project.py` handles tentacle orchestration setup automatically. The legacy `tentacle-setup.sh`
+script is **deprecated** — prefer `setup-project.py` which covers tentacle setup and more in one step.
+`tentacle-setup.sh` remains for backwards compatibility and simple shell-only environments.
 
 ## AI Agent Integration
 

@@ -18,6 +18,7 @@ brief --wing backend --room patient  # Filter by wing/room (palace-style)
 brief "task" --for-subagent --budget 3000  # Capped output for sub-agent injection
 brief "task" --min-confidence 0.7    # High-quality entries only
 brief "task" --for-subagent          # Compact context block for sub-agent prompts
+brief --task "memory-surface"        # Task-scoped recall: entries tagged with this task ID
 ```
 
 ## Search
@@ -30,6 +31,10 @@ qs "spring" --source copilot         # Filter by agent source
 qs --mistakes                        # View past errors
 qs --patterns                        # View best practices
 qs --decisions                       # View architecture decisions
+qs --file src/auth.py                # Entries that touched a specific file
+qs --module auth                     # Entries for a module or directory
+qs --task memory-surface             # Entries tagged with a specific task ID
+qs --diff                            # Entries for files in the current git diff
 ```
 
 ## Drill Down
@@ -63,6 +68,9 @@ learn --tool "Title"      "Useful tool/config details"      --tags "vscode"
 learn --feature "Title"   "New feature implementation"      --tags "api"
 learn --refactor "Title"  "Code improvement description"    --tags "cleanup"
 learn --discovery "Title" "Codebase finding or insight"     --tags "dynamodb"
+
+# Tag entry with a task ID and affected files (for task-scoped recall)
+learn --mistake "Title" "Description" --task "memory-surface" --file "briefing.py" --file "learn.py"
 
 # Structured facts (discrete, verifiable statements)
 learn --pattern "DynamoDB Batch Ops" "How to use batch writes" \
@@ -98,6 +106,32 @@ Organize knowledge hierarchically:
 | `shared` | TypeScript, ESLint, i18n | typescript, openapi |
 
 Wings and rooms are **auto-detected** from tags/title. Override with `--wing`/`--room`.
+
+## Codebase Map
+
+`codebase-map.py` generates a structural snapshot of the current project (file tree, key modules) and writes it to the session `files/` directory.
+
+```bash
+python3 ~/.copilot/tools/codebase-map.py            # Refresh codebase map for current project
+```
+
+The map is **automatically refreshed at session start** by `hooks/auto-briefing.py` — no manual step needed during normal workflow.
+
+## Checkpoint Save
+
+`checkpoint-save.py` writes structured checkpoint files to `~/.copilot/session-state/<session>/checkpoints/`. Checkpoints are **never auto-written** — the agent must call this explicitly.
+
+```bash
+python3 ~/.copilot/tools/checkpoint-save.py \
+  --title "Implemented auth module" \
+  --overview "Added JWT login/logout" \
+  --next_steps "Add refresh token support"
+
+python3 ~/.copilot/tools/checkpoint-save.py --list   # List checkpoints for current session
+python3 ~/.copilot/tools/checkpoint-save.py --dry-run --title "Test" --overview "Preview only"
+```
+
+> **Session-end reminder (opt-in):** `hooks/session-end.py` is reminder-only — it never writes checkpoints automatically. Set `COPILOT_CHECKPOINT_REMIND=1` in your environment to log a reminder when a session ends without a saved checkpoint.
 
 ## Maintenance
 

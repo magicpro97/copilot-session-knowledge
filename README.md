@@ -103,6 +103,7 @@ brief "implement user CRUD"          # Compact ~500 tokens
 brief "implement user CRUD" --full   # Full detail ~3K tokens
 brief --auto                         # Auto-detect from git state
 brief "task" --for-subagent          # Compact context for sub-agents
+brief --task "memory-surface"        # Task-scoped recall by task ID
 ```
 
 ### Search
@@ -113,6 +114,10 @@ qs "docker" --type research          # Filter by doc type
 qs --mistakes                        # View past errors
 qs --detail 2045                     # Full entry by ID
 qs "deployment error" --semantic     # Semantic search (requires API key)
+qs --file src/auth.py                # Entries touching a specific file
+qs --module auth                     # Entries for a module or directory
+qs --task memory-surface             # Entries tagged with a task ID
+qs --diff                            # Entries for current git diff files
 ```
 
 ### Record Knowledge
@@ -121,6 +126,7 @@ qs "deployment error" --semantic     # Semantic search (requires API key)
 learn --mistake "Title"  "What went wrong"     --tags "docker"
 learn --pattern "Title"  "Best practice"       --tags "lambda"
 learn --decision "Title" "Architecture choice" --tags "cdk"
+learn --mistake "Title"  "Description" --task "memory-surface" --file "briefing.py"
 ```
 
 📖 **Full command reference:** [docs/USAGE.md](docs/USAGE.md)
@@ -182,7 +188,18 @@ Unified hook runner architecture — 1 Python process per event with fail-open, 
 python3 ~/.copilot/tools/install.py --deploy-skill    # Deploy skill to project
 python3 ~/.copilot/tools/install.py --deploy-hooks    # Deploy enforcement hooks
 python3 ~/.copilot/tools/install.py --lock-hooks      # Lock hooks (tamper protection)
+
+# Project setup with a workflow profile
+python3 ~/.copilot/tools/setup-project.py --profile python      # Python hook bundle + WORKFLOW.md
+python3 ~/.copilot/tools/install-project-hooks.py --profile mobile  # Mobile hooks standalone
 ```
+
+**Session-start hooks** (`hooks/auto-briefing.py`) automatically refresh the codebase map
+(`codebase-map.py`) at the start of each session — no manual step required.
+
+**Session-end hooks** (`hooks/session-end.py`) are **reminder-only**: they never auto-save checkpoints.
+Set `COPILOT_CHECKPOINT_REMIND=1` to log a reminder when a session ends without saved checkpoints.
+To save a checkpoint yourself, run `python3 ~/.copilot/tools/checkpoint-save.py`.
 
 📖 **Skills reference:** [docs/SKILLS.md](docs/SKILLS.md) · **Hooks reference:** [docs/HOOKS.md](docs/HOOKS.md)
 

@@ -1,0 +1,14 @@
+{
+  "name": "typescript",
+  "description": "TypeScript/Node project: coding standards enforcement, test reminders, build guard, and commit gate.",
+  "hooks": [
+    "dangerous-blocker.sh",
+    "secret-detector.sh",
+    "enforce-coding-standards.sh",
+    "test-reminder.sh",
+    "build-reminder.sh",
+    "commit-gate.sh"
+  ],
+  "workflow_phases": ["CLARIFY", "DESIGN", "BUILD", "TEST", "REVIEW", "COMMIT"],
+  "workflow_notes": "6-phase workflow for TypeScript/Node projects with coding standards enforcement."
+}

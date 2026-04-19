@@ -19,6 +19,7 @@ Usage:
     python learn.py --mistake "Title" "Description" --confidence 0.8
     python learn.py --mistake "Title" "Description" --wing backend --room dynamodb
     python learn.py --pattern "Title" "Description" --fact "batch limit is 25" --fact "GSI eventual"
+    python learn.py --mistake "Title" "Description" --task "memory-surface" --file "briefing.py" --file "learn.py"
 
     python learn.py --relate "copyToGroup" "reads_from" "patient-dynamic-form.json"
     python learn.py --relate "addPatient Lambda" "writes_to" "dataTable"
@@ -177,7 +178,9 @@ def add_entry(category: str, title: str, content: str,
               confidence: float = None,
               wing: str = "", room: str = "",
               facts: list = None, skip_gate: bool = False,
-              skip_scan: bool = False) -> int:
+              skip_scan: bool = False,
+              task_id: str = "",
+              affected_files: list = None) -> int:
     """Add a knowledge entry to the database. Returns entry ID.
     
     Quality gate (for mistake/pattern/discovery): 3 questions must all be YES:
@@ -220,8 +223,14 @@ def add_entry(category: str, title: str, content: str,
     if not room:
         room = _detect_room(tags, title, content)
 
-    # Serialize facts to JSON
+    # Serialize facts and affected_files to JSON
     facts_json = json.dumps(facts or [], ensure_ascii=False)
+    # Enforce path length limit for each file
+    files_list = [(f[:256] if f else "") for f in (affected_files or [])]
+    files_json = json.dumps(files_list, ensure_ascii=False)
+
+    # Enforce task_id length limit
+    task_id = (task_id or "")[:200]
 
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -248,11 +257,16 @@ def add_entry(category: str, title: str, content: str,
                 wing = CASE WHEN ? != '' THEN ? ELSE wing END,
                 room = CASE WHEN ? != '' THEN ? ELSE room END,
                 facts = CASE WHEN ? != '[]' THEN ? ELSE facts END,
+                task_id = CASE WHEN ? != '' THEN ? ELSE task_id END,
+                affected_files = CASE WHEN ? != '[]' THEN ? ELSE affected_files END,
                 est_tokens = ?
             WHERE id = ?
         """, (new_content, new_count, new_confidence, now,
               tags, tags, wing, wing, room, room,
-              facts_json, facts_json, est_tokens, existing["id"]))
+              facts_json, facts_json,
+              task_id, task_id,
+              files_json, files_json,
+              est_tokens, existing["id"]))
         entry_id = existing["id"]
         loc = f" [{wing}/{room}]" if wing or room else ""
         print(f"  Updated existing entry #{entry_id} (seen {new_count}x, "
@@ -266,13 +280,15 @@ def add_entry(category: str, title: str, content: str,
             INSERT INTO knowledge_entries
                 (category, title, content, tags, confidence, session_id,
                  occurrence_count, first_seen, last_seen, wing, room,
-                 facts, est_tokens)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+                 facts, est_tokens, task_id, affected_files)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (category, title, content, tags, confidence,
-              session_id, now, now, wing, room, facts_json, est_tokens))
+              session_id, now, now, wing, room, facts_json, est_tokens,
+              task_id, files_json))
         entry_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
         loc = f" [{wing}/{room}]" if wing or room else ""
-        print(f"  Added new {category} #{entry_id}{loc}")
+        task_note = f" task={task_id}" if task_id else ""
+        print(f"  Added new {category} #{entry_id}{loc}{task_note}")
 
     # Update FTS index
     _update_fts(db, entry_id, title, content, tags, category, wing, room, facts_json)
@@ -552,6 +568,8 @@ def main():
     wing = ""
     room = ""
     facts = []
+    task_id = ""
+    affected_files = []
 
     if "--tags" in args:
         idx = args.index("--tags")
@@ -573,10 +591,16 @@ def main():
         idx = args.index("--room")
         room = args[idx + 1] if idx + 1 < len(args) else ""
 
-    # Collect all --fact values (repeatable flag)
+    if "--task" in args:
+        idx = args.index("--task")
+        task_id = args[idx + 1] if idx + 1 < len(args) else ""
+
+    # Collect all --fact and --file values (repeatable flags)
     for i, a in enumerate(args):
         if a == "--fact" and i + 1 < len(args):
             facts.append(args[i + 1])
+        elif a == "--file" and i + 1 < len(args):
+            affected_files.append(args[i + 1])
 
     # Extract title and content (positional args after flag)
     positional = []
@@ -589,7 +613,7 @@ def main():
                  "--feature", "--refactor", "--discovery"):
             continue
         if a in ("--tags", "--session", "--confidence", "--limit",
-                 "--wing", "--room", "--fact"):
+                 "--wing", "--room", "--fact", "--task", "--file"):
             skip_next = True
             continue
         if a.startswith("--"):
@@ -621,9 +645,11 @@ def main():
     add_entry(category, title, content, tags=tags,
               session_id=session_id, confidence=confidence,
               wing=wing, room=room, facts=facts, skip_gate=skip_gate,
-              skip_scan=skip_scan)
+              skip_scan=skip_scan, task_id=task_id, affected_files=affected_files)
     if facts:
         print(f"  With {len(facts)} fact(s)")
+    if affected_files:
+        print(f"  Affecting {len(affected_files)} file(s): {', '.join(affected_files[:3])}")
     print("Done.")
 
 

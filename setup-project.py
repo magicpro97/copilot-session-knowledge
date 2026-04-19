@@ -24,6 +24,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = SCRIPT_DIR / "templates"
 SKILLS_DIR = SCRIPT_DIR / "skills"
+PRESETS_DIR = SCRIPT_DIR / "presets"
 
 # What to install
 INSTALL_ITEMS = {
@@ -322,7 +323,16 @@ Examples:
   python setup-project.py /path/to/project   # Explicit project root
   python setup-project.py --skill-only       # Skills only, no CLAUDE.md patching
   python setup-project.py --no-tentacle      # Skip tentacle orchestration
+  python setup-project.py --profile python   # Install python hook bundle + WORKFLOW.md
+  python setup-project.py --profile mobile   # Install mobile hook bundle + WORKFLOW.md
   python setup-project.py --dry-run          # Preview changes
+
+Profiles (--profile):
+  default     Minimal safe defaults (dangerous-blocker, secret-detector)
+  python      Python project: TDD, test-reminder, build-reminder, commit-gate
+  typescript  TypeScript/Node: coding-standards, test-reminder, build-reminder, commit-gate
+  mobile      Android/iOS/KMP: architecture-guard, TDD, coding-standards, QA phase
+  fullstack   Full-stack web: architecture-guard, coding-standards, session-banner
 
 What gets installed:
   .github/skills/session-knowledge/SKILL.md          — Knowledge skill reference
@@ -332,6 +342,8 @@ What gets installed:
   .github/instructions/session-knowledge.instructions.md — Enforcement (auto-inject)
   .gitignore                                         — Add .octogent/ entry
   CLAUDE.md / copilot-instructions.md / AGENTS.md    — Patched with references
+  .github/hooks/*.sh                                 — Hook bundle (when --profile used)
+  WORKFLOW.md                                        — Starter workflow (when --profile used)
 """
     )
     parser.add_argument(
@@ -345,6 +357,11 @@ What gets installed:
     parser.add_argument(
         "--no-tentacle", action="store_true",
         help="Skip tentacle orchestration setup"
+    )
+    parser.add_argument(
+        "--profile", default=None, metavar="PROFILE",
+        help="Workflow profile to install as a hook bundle + WORKFLOW.md "
+             "(default: none; choices: default, python, typescript, mobile, fullstack)"
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -397,6 +414,33 @@ What gets installed:
         if patch_agents_md(project_root, args.dry_run):
             changes += 1
 
+    # 5. Install workflow profile hook bundle (optional, only when --profile is given)
+    if args.profile:
+        import re as _re
+        print(f"\n🔩 Hook Bundle ({args.profile} profile):")
+        hook_installer = SCRIPT_DIR / "install-project-hooks.py"
+        cmd = [sys.executable, str(hook_installer),
+               "--profile", args.profile,
+               "--project", str(project_root),
+               "--workflow"]
+        if args.dry_run:
+            cmd.append("--dry-run")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        # Print installer output so the user sees progress.
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.returncode != 0:
+            if result.stderr:
+                print(result.stderr, end="")
+            print(f"  ⚠  Hook bundle install exited with code {result.returncode}")
+        else:
+            # Parse the actual change count from installer output to avoid overcounting.
+            # The installer prints "N change(s) applied." (real run) or
+            # "Would make N change(s)." (dry-run); "No changes needed." → 0.
+            m = _re.search(r"(\d+)\s+change\(s\)", result.stdout)
+            if m:
+                changes += int(m.group(1))
+
     # Summary
     print()
     if changes == 0:
@@ -412,6 +456,10 @@ What gets installed:
         print("     /session-knowledge-creator   — Generate project-specific knowledge skill")
         if not args.no_tentacle:
             print("     /tentacle-creator            — Generate project-specific tentacle skill")
+        if args.profile:
+            print(f"     Edit .github/hooks/*.sh      — Customize installed {args.profile} hooks")
+        else:
+            print("     --profile python|typescript|mobile|fullstack — Install hook bundle")
         print()
         print("How it works:")
         print("  📋 .instructions.md → auto-injected into EVERY AI context (enforcement)")
