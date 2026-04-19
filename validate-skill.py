@@ -123,11 +123,19 @@ def validate(path: Path) -> tuple[list[str], list[str]]:
         )
 
     # --- 6. Dangling references/ links ---
-    # Match relative `references/<file>` links (not full paths like ~/.../references/).
+    # Match relative `references/<path>` links (not full paths like ~/.../references/).
+    # Supports nested subdirectories (e.g. references/subdir/foo.md).
+    # Non-relative patterns (shared/references/...) are excluded by the negative
+    # lookbehind which rejects any `/` or word character immediately before `references/`.
     # Reports as WARNING: new check should not retroactively fail existing skills.
     skill_dir = path.parent
-    ref_mentions = re.findall(r"(?<![/\w])references/([^\s`)\]\"/]+\.[a-zA-Z0-9]+)", content)
-    for ref_name in ref_mentions:
+    # Allow `/` inside the capture so that nested paths like subdir/foo.md are captured.
+    raw_mentions = re.findall(
+        r"(?<![/\w])references/((?:[^\s`)\]\"]+/)*[^\s`)\]\"]+\.[a-zA-Z0-9]+)",
+        content,
+    )
+    # Deduplicate: warn once per distinct referenced path, not once per occurrence.
+    for ref_name in sorted(set(raw_mentions)):
         ref_path = skill_dir / "references" / ref_name
         if not ref_path.exists():
             warnings.append(
