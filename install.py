@@ -66,6 +66,7 @@ from host_manifest import (  # noqa: E402
     COPILOT_DIR,
     CLAUDE_DIR,
     HOST_DIRS as KNOWN_HOSTS,
+    HOST_SKILL_SUBPATHS,
 )
 
 TOOLS_DIR = COPILOT_DIR / "tools"
@@ -356,27 +357,19 @@ def deploy_skill():
 
     deployed = []
 
-    # Copilot CLI: .github/skills/session-knowledge/SKILL.md
-    if COPILOT_DIR.is_dir():
-        target = (
-            project_root / ".github" / "skills"
-            / "session-knowledge" / "SKILL.md"
-        )
+    # Iterate manifest-defined hosts so adding a new host only requires
+    # updating host_manifest.py — no changes needed here.
+    for host_name, host_dir in KNOWN_HOSTS.items():
+        if not host_dir.is_dir():
+            continue
+        subpath = HOST_SKILL_SUBPATHS.get(host_name)
+        if subpath is None:
+            continue
+        target = project_root / subpath
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(skill_content, encoding="utf-8")
-        deployed.append(("Copilot CLI", target))
-        print(f"  {OK} Copilot: {target.relative_to(project_root)}")
-
-    # Claude Code: .claude/skills/session-knowledge/SKILL.md
-    if CLAUDE_DIR.is_dir():
-        target = (
-            project_root / ".claude" / "skills"
-            / "session-knowledge" / "SKILL.md"
-        )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(skill_content, encoding="utf-8")
-        deployed.append(("Claude Code", target))
-        print(f"  {OK} Claude:  {target.relative_to(project_root)}")
+        deployed.append((host_name, target))
+        print(f"  {OK} {host_name}: {target.relative_to(project_root)}")
 
     if not deployed:
         print(f"  {FAIL} No agents detected — nothing deployed")
