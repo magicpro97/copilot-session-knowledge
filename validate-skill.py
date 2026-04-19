@@ -122,6 +122,20 @@ def validate(path: Path) -> tuple[list[str], list[str]]:
             f"First at line {heavy_patterns[0][0]}: '{heavy_patterns[0][2]}'"
         )
 
+    # --- 6. Dangling references/ links ---
+    # Match relative `references/<file>` links (not full paths like ~/.../references/).
+    # Reports as WARNING: new check should not retroactively fail existing skills.
+    skill_dir = path.parent
+    ref_mentions = re.findall(r"(?<![/\w])references/([^\s`)\]\"/]+\.[a-zA-Z0-9]+)", content)
+    for ref_name in ref_mentions:
+        ref_path = skill_dir / "references" / ref_name
+        if not ref_path.exists():
+            warnings.append(
+                f"Dangling reference: `references/{ref_name}` is mentioned but "
+                f"the file does not exist in the skill's references/ directory. "
+                f"Create the file or remove the link (setup-project.py won't deploy it)."
+            )
+
     return errors, warnings
 
 
