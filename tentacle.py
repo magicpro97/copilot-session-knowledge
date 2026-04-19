@@ -39,6 +39,7 @@ from pathlib import Path
 TOOLS_DIR = Path(__file__).resolve().parent
 LEARN_PY = TOOLS_DIR / "learn.py"
 BRIEFING_PY = TOOLS_DIR / "briefing.py"
+CHECKPOINT_RESTORE_PY = TOOLS_DIR / "checkpoint-restore.py"
 
 
 
@@ -161,28 +162,90 @@ def _run_briefing(query: str) -> str:
     return ""
 
 
-def _run_briefing_for_task(task_id: str, fallback_query: str = "") -> str:
-    """Run briefing.py with --task <task_id> for task-scoped recall.
+def _render_briefing_from_json(data: dict) -> str:
+    """Render a compact briefing text block from structured task briefing JSON."""
+    task_id = data.get("task_id", "unknown")
+    lines = [f"📋 Task recall: {task_id}", ""]
+    tagged = data.get("tagged_entries", [])
+    related = data.get("related_entries", [])
+    if tagged:
+        lines.append("🏷 Tagged entries")
+        for e in tagged[:5]:
+            lines.append(f"  #{e['id']} [{e['category']}] {e['title']}")
+        lines.append("")
+    if related:
+        lines.append("🔗 Related entries (FTS match on task name)")
+        for e in related[:5]:
+            lines.append(f"  #{e['id']} [{e['category']}] {e['title']}")
+        lines.append("")
+    total = data.get("total_entries", 0)
+    lines.append(f"({total} entries) Use query-session.py --task '{task_id}' for full detail")
+    return "\n".join(lines)
 
-    Falls back to a text query if task-scoped recall returns nothing.
+
+def _run_briefing_for_task(task_id: str, fallback_query: str = "") -> str:
+    """Load task-scoped briefing via structured JSON and render compact text.
+
+    Uses briefing.py --task <task_id> --json to avoid brittle text sniffing.
+    Falls back to a text query if the task has no entries.
     Returns empty string on failure or no results.
     """
     if not BRIEFING_PY.exists():
         return ""
     try:
         result = subprocess.run(
-            [sys.executable, str(BRIEFING_PY), "--task", task_id, "--compact", "--limit", "3"],
+            [sys.executable, str(BRIEFING_PY), "--task", task_id, "--json"],
             capture_output=True, text=True, timeout=15,
         )
-        output = result.stdout.strip()
-        if output and "No relevant" not in output and "No knowledge entries found" not in output and len(output) > 20:
-            return output
-    except (subprocess.TimeoutExpired, Exception):
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout)
+            if data.get("total_entries", 0) > 0:
+                return _render_briefing_from_json(data)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
         pass
     # Fallback to text query when task-scoped recall is empty
     if fallback_query:
         return _run_briefing(fallback_query)
     return ""
+
+
+def _render_checkpoint_context(data: dict) -> str:
+    """Render a concise checkpoint context block from checkpoint JSON.
+
+    Sources only real fields: seq, title, and a small subset of useful sections.
+    """
+    seq = data.get("seq", "?")
+    title = data.get("title", "unknown")
+    sections = data.get("sections", {})
+    lines = [f"### Latest Checkpoint (#{seq}: {title})", ""]
+    for key in ("overview", "work_done", "next_steps"):
+        text = sections.get(key, "").strip()
+        if text:
+            snippet = text[:300] + ("…" if len(text) > 300 else "")
+            label = key.replace("_", " ").title()
+            lines.append(f"**{label}:** {snippet}")
+            lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _load_latest_checkpoint_context() -> str:
+    """Load latest checkpoint and render a concise context block.
+
+    Returns empty string if no checkpoint exists or on any error.
+    """
+    if not CHECKPOINT_RESTORE_PY.exists():
+        return ""
+    try:
+        result = subprocess.run(
+            [sys.executable, str(CHECKPOINT_RESTORE_PY), "--export", "latest", "--format", "json"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return ""
+        data = json.loads(result.stdout)
+        return _render_checkpoint_context(data)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
+        return ""
 
 
 def _run_learn(category: str, title: str, content: str, tags: str = "") -> bool:
@@ -584,6 +647,7 @@ def cmd_resume(args):
 
     # 2. Live briefing injection (unless --no-briefing)
     briefing_text = ""
+    checkpoint_text = ""
     if not getattr(args, "no_briefing", False):
         fallback = meta.get("description", "") or args.name.replace("-", " ")
         print(f"🧠 Fetching fresh knowledge for '{args.name}'...")
@@ -592,6 +656,9 @@ def cmd_resume(args):
             print(f"   ✅ Got {len(briefing_text)} chars of relevant knowledge")
         else:
             print(f"   ℹ️  No relevant past knowledge found")
+        checkpoint_text = _load_latest_checkpoint_context()
+        if checkpoint_text:
+            print(f"   📌 Latest checkpoint context injected")
 
     # 3. Append a resume section to CONTEXT.md
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -601,6 +668,8 @@ def cmd_resume(args):
         resume_section += f"{briefing_text}\n"
     else:
         resume_section += "_No new briefing content available._\n"
+    if checkpoint_text:
+        resume_section += f"\n{checkpoint_text}\n"
 
     if context_path.exists():
         existing = context_path.read_text()
