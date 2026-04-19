@@ -185,7 +185,8 @@ The tools in this repo are validated and supported on **Copilot CLI** and **Clau
 | Global instruction injection | ✅ `~/.github/copilot-instructions.md` | via CLAUDE.md | ❌ not supported |
 | Session indexing | ✅ | ✅ via `claude-adapter.py` | ❌ not supported |
 
-The `KNOWN_HOSTS` list is centralised in `host_manifest.py` (the canonical host-metadata module)
-and consumed by `install.py`, `setup-project.py`, and `auto-update-tools.py`. It is intentionally
-restricted to Copilot CLI and Claude Code. Do **not** add Codex, Cursor, or other hosts without
-documented session and hook formats.
+The canonical host metadata is centralised in `host_manifest.py`, which exports `SUPPORTED_HOSTS`,
+`UNSUPPORTED_HOSTS`, and related manifest maps/tuples. It is consumed by `install.py`,
+`setup-project.py`, `watch-sessions.py`, and `auto-update-tools.py`. The supported set is
+intentionally restricted to Copilot CLI and Claude Code. Do **not** add Codex, Cursor, or other
+hosts without documented session and hook formats.
