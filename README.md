@@ -283,7 +283,7 @@ To save a checkpoint yourself, run `python3 ~/.copilot/tools/checkpoint-save.py`
 
 ```bash
 python3 test_security.py    # 9 security tests (injection, pickle, locks, paths)
-python3 test_fixes.py       # 65 tests (noise filter, sub-agent, launchd, DB health)
+python3 test_fixes.py       # noise filter, sub-agent, launchd, DB health
 ```
 
 ## FAQ
