@@ -43,6 +43,8 @@ INSTALL_ITEMS = {
         {"src": "find-skills", "label": "Find Skills (discover & install from skills.sh)"},
         {"src": "agent-instructions-auditor", "label": "Instructions Auditor (token budget, cache safety, quality)"},
         {"src": "forge-ecosystem", "label": "Forge Ecosystem (10 CLI tools for game & app dev)"},
+        {"src": "code-reviewer", "label": "Code Reviewer (skeptical, signal-over-noise code review)"},
+        {"src": "task-step-generator", "label": "Task Step Generator (structured step-file generation)"},
     ],
     # Templates (from tools/templates/ → .github/skills/ or .github/instructions/)
     "templates": [

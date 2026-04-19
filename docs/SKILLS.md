@@ -29,6 +29,8 @@ This repo contains both **Skills** (SKILL.md) and **Agent templates** (.agent.md
 | `find-skills` | Discover and install agent skills from the registry |
 | `agent-instructions-auditor` | Audit and improve agent instruction files |
 | `forge-ecosystem` | Scaffold and manage app/game projects via forge CLI tools |
+| `code-reviewer` | Skeptical, signal-over-noise code review (bugs, security, logic errors only) |
+| `task-step-generator` | Generate structured STEPS.md for tasks too complex for one prompt |
 
 ## Hook Templates (`skills/hook-creator/references/`)
 
