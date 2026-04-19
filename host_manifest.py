@@ -7,9 +7,8 @@ Supported hosts: Copilot CLI and Claude Code ONLY.
 Do NOT add Codex, Cursor, Windsurf, Cline, or any other host without
 documented hook/session formats and an explicit review of this file.
 
-This module is imported by install.py, watch-sessions.py, and
-setup-project.py to eliminate duplicated host constants.  auto-update-tools.py
-covers it automatically via its *.py classification rule.
+This module is imported by install.py, watch-sessions.py, setup-project.py,
+and auto-update-tools.py to eliminate duplicated host constants.
 """
 
 import os
