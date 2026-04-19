@@ -320,6 +320,160 @@ if skill_path.exists():
          "Should use python3, not python")
 
 
+# ─── Skill Packaging (validate-skill + setup-project references/) ────────
+
+print("\n📦 Skill Packaging Tests")
+
+# Import validate function from validate-skill.py (no package init, import by path)
+import importlib.util as _ilu
+_vs_spec = _ilu.spec_from_file_location("validate_skill", REPO / "validate-skill.py")
+_vs = _ilu.module_from_spec(_vs_spec)
+_vs_spec.loader.exec_module(_vs)
+validate = _vs.validate
+
+# Helper: create a minimal valid SKILL.md in a temp dir
+import tempfile as _tf
+
+def _make_skill_dir(skill_content: str, refs: dict[str, str] | None = None) -> Path:
+    """Write SKILL.md (and optional references/ files) into a fresh temp dir."""
+    d = Path(_tf.mkdtemp(dir=REPO))
+    (d / "SKILL.md").write_text(skill_content, encoding="utf-8")
+    if refs:
+        refs_dir = d / "references"
+        refs_dir.mkdir()
+        for name, body in refs.items():
+            # Support nested paths (e.g. "sub/file.md")
+            dest = refs_dir / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(body, encoding="utf-8")
+    return d
+
+
+MINIMAL_SKILL = """\
+---
+name: test-skill
+description: Use when testing. Invoke for unit test validation. Trigger: test.
+---
+
+# Test Skill
+
+## When to Use
+
+Use this skill for testing.
+
+## Workflow
+
+Run tests.
+
+<example>
+Example usage here.
+</example>
+"""
+
+# Sp1. No dangling references → no warnings about references/
+_d1 = _make_skill_dir(MINIMAL_SKILL)
+_errs1, _warns1 = validate(_d1 / "SKILL.md")
+test("Sp1: no spurious reference warnings when no refs mentioned",
+     not any("Dangling" in w for w in _warns1),
+     f"Got warnings: {_warns1}")
+import shutil as _shutil
+_shutil.rmtree(_d1)
+
+# Sp2. Mentioned reference exists → no dangling warning
+_SKILL_WITH_REF = MINIMAL_SKILL + "\nSee `references/guide.md` for details.\n"
+_d2 = _make_skill_dir(_SKILL_WITH_REF, refs={"guide.md": "# Guide\nContent."})
+_errs2, _warns2 = validate(_d2 / "SKILL.md")
+test("Sp2: existing references/guide.md → no dangling warning",
+     not any("guide.md" in w for w in _warns2),
+     f"Got warnings: {_warns2}")
+_shutil.rmtree(_d2)
+
+# Sp3. Mentioned reference missing → one dangling warning (positive case)
+_d3 = _make_skill_dir(_SKILL_WITH_REF)  # no refs/ created
+_errs3, _warns3 = validate(_d3 / "SKILL.md")
+test("Sp3: missing references/guide.md → dangling warning emitted",
+     any("guide.md" in w and "Dangling" in w for w in _warns3),
+     f"Got warnings: {_warns3}")
+_shutil.rmtree(_d3)
+
+# Sp4. Same reference mentioned twice → exactly ONE warning (deduplication)
+_SKILL_DOUBLE_REF = MINIMAL_SKILL + (
+    "\nSee `references/guide.md` for overview.\n"
+    "Also `references/guide.md` covers advanced topics.\n"
+)
+_d4 = _make_skill_dir(_SKILL_DOUBLE_REF)
+_errs4, _warns4 = validate(_d4 / "SKILL.md")
+dangling_count = sum(1 for w in _warns4 if "guide.md" in w and "Dangling" in w)
+test("Sp4: duplicate reference mention → exactly 1 warning (deduplication)",
+     dangling_count == 1,
+     f"Got {dangling_count} dangling warnings for guide.md")
+_shutil.rmtree(_d4)
+
+# Sp5. Non-relative path (shared/references/foo.md) does NOT trigger warning
+_SKILL_NONREL = MINIMAL_SKILL + "\nSee shared/references/guide.md elsewhere.\n"
+_d5 = _make_skill_dir(_SKILL_NONREL)
+_errs5, _warns5 = validate(_d5 / "SKILL.md")
+test("Sp5: shared/references/guide.md (non-relative) → no dangling warning",
+     not any("guide.md" in w and "Dangling" in w for w in _warns5),
+     f"Got warnings: {_warns5}")
+_shutil.rmtree(_d5)
+
+# Sp6. Nested reference exists → no dangling warning
+_SKILL_NESTED_REF = MINIMAL_SKILL + "\nSee `references/sub/deep.md` for details.\n"
+_d6 = _make_skill_dir(_SKILL_NESTED_REF, refs={"sub/deep.md": "# Deep\nContent."})
+_errs6, _warns6 = validate(_d6 / "SKILL.md")
+test("Sp6: existing references/sub/deep.md (nested) → no dangling warning",
+     not any("sub/deep.md" in w and "Dangling" in w for w in _warns6),
+     f"Got warnings: {_warns6}")
+_shutil.rmtree(_d6)
+
+# Sp7. Nested reference missing → dangling warning
+_d7 = _make_skill_dir(_SKILL_NESTED_REF)
+_errs7, _warns7 = validate(_d7 / "SKILL.md")
+test("Sp7: missing references/sub/deep.md (nested) → dangling warning",
+     any("sub/deep.md" in w and "Dangling" in w for w in _warns7),
+     f"Got warnings: {_warns7}")
+_shutil.rmtree(_d7)
+
+# Sp8. setup-project install_skills deploys nested references/ preserving structure
+_proj = Path(_tf.mkdtemp(dir=REPO))
+# Temporarily inject a nested reference into agent-creator references/
+_agent_refs = REPO / "skills" / "agent-creator" / "references"
+_nested_dir = _agent_refs / "nested_test"
+_nested_dir.mkdir(exist_ok=True)
+_nested_file = _nested_dir / "nested-ref.md"
+_nested_file.write_text("# Nested test\n")
+try:
+    import importlib as _imp
+    _sp_spec = _ilu.spec_from_file_location("setup_project", REPO / "setup-project.py")
+    _sp = _imp.util.module_from_spec(_sp_spec)
+    _sp_spec.loader.exec_module(_sp)
+    _sp.install_skills(_proj, dry_run=False)
+    _expected = _proj / ".github" / "skills" / "agent-creator" / "references" / "nested_test" / "nested-ref.md"
+    test("Sp8: nested references/nested_test/nested-ref.md deployed with relative path",
+         _expected.exists(),
+         f"Expected at {_expected}")
+finally:
+    _nested_file.unlink(missing_ok=True)
+    _nested_dir.rmdir()
+    _shutil.rmtree(_proj)
+
+# Sp9. session-knowledge-creator reference files exist in repo
+_sk_refs = REPO / "skills" / "session-knowledge-creator" / "references"
+test("Sp9: references/instructions-template.md exists in session-knowledge-creator",
+     (_sk_refs / "instructions-template.md").exists())
+test("Sp9: references/skill-template.md exists in session-knowledge-creator",
+     (_sk_refs / "skill-template.md").exists())
+
+# Sp10. Validator passes (no dangling refs) for session-knowledge-creator after fix
+_sk_path = REPO / "skills" / "session-knowledge-creator"
+_sk_errs, _sk_warns = validate(_sk_path)
+dangling_sk = [w for w in _sk_warns if "Dangling" in w]
+test("Sp10: session-knowledge-creator has no dangling reference warnings",
+     len(dangling_sk) == 0,
+     f"Dangling refs: {dangling_sk}")
+
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
 print(f"\n{'='*50}")

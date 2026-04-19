@@ -168,12 +168,15 @@ def install_skills(project_root: Path, dry_run: bool) -> int:
             changes += 1
 
         # Copy references/ subdirectory if present (avoids dangling file refs).
+        # rglob("*") descends into nested subdirs; relative_to preserves the
+        # directory structure under references/ at the destination.
         refs_src = SKILLS_DIR / skill_name / "references"
         if refs_src.is_dir():
-            for ref_file in refs_src.iterdir():
+            for ref_file in refs_src.rglob("*"):
                 if ref_file.is_file():
-                    ref_dst = project_root / ".github" / "skills" / skill_name / "references" / ref_file.name
-                    if copy_if_changed(ref_file, ref_dst, dry_run, f"{item['label']} → references/{ref_file.name}"):
+                    rel = ref_file.relative_to(refs_src)
+                    ref_dst = project_root / ".github" / "skills" / skill_name / "references" / rel
+                    if copy_if_changed(ref_file, ref_dst, dry_run, f"{item['label']} → references/{rel}"):
                         changes += 1
 
     return changes
