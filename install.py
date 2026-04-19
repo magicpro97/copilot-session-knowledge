@@ -68,6 +68,14 @@ DB_PATH = SESSION_STATE / "knowledge.db"
 SKILLS_SRC = COPILOT_DIR / "skills" / "session-knowledge" / "SKILL.md"
 GLOBAL_INSTRUCTIONS = HOME / ".github" / "copilot-instructions.md"
 LOCK_FILE = SESSION_STATE / ".watcher.lock"
+
+# Known agent hosts — Copilot CLI and Claude Code only.
+# Do NOT add Codex, Cursor, or other hosts without documented hook/session formats.
+KNOWN_HOSTS: dict[str, Path] = {
+    "Copilot CLI": COPILOT_DIR,
+    "Claude Code":  CLAUDE_DIR,
+}
+
 # Resolve the repo's templates/ directory (works when run from repo or ~/.copilot/tools/)
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_SKILL_MD = _SCRIPT_DIR / "templates" / "SKILL.md"
@@ -219,17 +227,12 @@ def show_status() -> bool:
     """Print agent detection table. Returns True if tools are installed."""
     print("\nAgent Detection:")
 
-    # Copilot CLI
-    if COPILOT_DIR.is_dir():
-        print(f"  {OK} Copilot CLI: {_tilde(COPILOT_DIR)} found")
-    else:
-        print(f"  {FAIL} Copilot CLI: {_tilde(COPILOT_DIR)} not found")
-
-    # Claude Code
-    if CLAUDE_DIR.is_dir():
-        print(f"  {OK} Claude Code: {_tilde(CLAUDE_DIR)} found")
-    else:
-        print(f"  {FAIL} Claude Code: {_tilde(CLAUDE_DIR)} not found")
+    # Iterate over KNOWN_HOSTS to keep Copilot CLI + Claude Code symmetrical.
+    for host_name, host_dir in KNOWN_HOSTS.items():
+        if host_dir.is_dir():
+            print(f"  {OK} {host_name}: {_tilde(host_dir)} found")
+        else:
+            print(f"  {FAIL} {host_name}: {_tilde(host_dir)} not found")
 
     # Tools directory
     n_scripts = _count_scripts(TOOLS_DIR)
@@ -434,8 +437,12 @@ _INSTRUCTIONS_TEMPLATES = _TEMPLATES_DIR / "instructions"
 
 
 def deploy_hooks():
-    """Deploy hooks.json and Python hook scripts to ~/.copilot/hooks/."""
-    print("\nDeploy Hooks")
+    """Deploy hooks.json and Python hook scripts to ~/.copilot/hooks/.
+
+    Hook deployment is Copilot CLI-only.  Claude Code configures hooks via
+    ~/.claude/settings.json, which uses a different format not managed here.
+    """
+    print("\nDeploy Hooks (Copilot CLI)")
 
     hooks_src = _SCRIPT_DIR / ".github" / "hooks" / "hooks.json"
     hooks_dst_dir = COPILOT_DIR / "hooks"

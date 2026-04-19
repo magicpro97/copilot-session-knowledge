@@ -26,6 +26,15 @@ TEMPLATES_DIR = SCRIPT_DIR / "templates"
 SKILLS_DIR = SCRIPT_DIR / "skills"
 PRESETS_DIR = SCRIPT_DIR / "presets"
 
+# Instruction file locations per supported host (project-relative paths).
+# Only Copilot CLI and Claude Code have real support in this repo.
+# Do NOT add Codex, Cursor, or unknown hosts without grounded documentation.
+KNOWN_HOSTS_INSTRUCTION_FILES: dict[str, str] = {
+    "Copilot CLI": ".github/copilot-instructions.md",
+    "Claude Code": "CLAUDE.md",
+    "All agents":  "AGENTS.md",  # host-agnostic; read by Claude, Codex, and others
+}
+
 # What to install
 INSTALL_ITEMS = {
     # Skills (from tools/skills/ → .github/skills/)
@@ -199,7 +208,7 @@ def install_tentacle(project_root: Path, dry_run: bool) -> int:
 
 def patch_claude_md(project_root: Path, dry_run: bool) -> bool:
     """Add Pre-Task Briefing section to CLAUDE.md if not present."""
-    claude_md = project_root / "CLAUDE.md"
+    claude_md = project_root / KNOWN_HOSTS_INSTRUCTION_FILES["Claude Code"]
     if not claude_md.exists():
         print("  ⏭ No CLAUDE.md found, skipping")
         return False
@@ -251,7 +260,7 @@ def patch_claude_md(project_root: Path, dry_run: bool) -> bool:
 
 def patch_copilot_instructions(project_root: Path, dry_run: bool) -> bool:
     """Add session-knowledge row to skills table in copilot-instructions.md."""
-    instructions = project_root / ".github" / "copilot-instructions.md"
+    instructions = project_root / KNOWN_HOSTS_INSTRUCTION_FILES["Copilot CLI"]
     if not instructions.exists():
         print("  ⏭ No .github/copilot-instructions.md found, skipping")
         return False
@@ -280,7 +289,7 @@ def patch_copilot_instructions(project_root: Path, dry_run: bool) -> bool:
 
 def patch_agents_md(project_root: Path, dry_run: bool) -> bool:
     """Add Pre-Task Briefing section to AGENTS.md if not present."""
-    agents_md = project_root / "AGENTS.md"
+    agents_md = project_root / KNOWN_HOSTS_INSTRUCTION_FILES["All agents"]
     if not agents_md.exists():
         print("  ⏭ No AGENTS.md found, skipping")
         return False

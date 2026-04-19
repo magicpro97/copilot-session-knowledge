@@ -44,8 +44,12 @@ Pre-built Copilot CLI hook scripts:
 | `commit-gate.sh` | preToolUse | Blocks commit until verification requirements met |
 | `test-reminder.sh` | postToolUse | Reminds to write tests when creating source files |
 | `build-reminder.sh` | postToolUse | Reminds to verify build after N source file edits |
-| `docs-reminder.sh/.py` | postToolUse | Warns after 3+ code edits without doc updates |
 | `session-banner.sh` | postToolUse | Shows session start checklist |
+
+> **Additional templates in `hooks/references/`:** `docs-reminder.sh` and its Windows-compatible
+> Python companion `docs-reminder.py` (warns after 3+ code edits without doc updates) live in
+> `hooks/references/`, not in `skills/hook-creator/references/`. `docs-reminder.py` is also the
+> only `.py` companion among the bundled templates — all other templates above are `.sh`-only.
 
 ## Skill & Agent Linter (`hooks/lint-skills.py`)
 
@@ -81,6 +85,38 @@ python3 ~/.copilot/tools/setup-project.py --profile fullstack   # Full-stack web
 
 `--profile` installs a **preset hook bundle** and generates a starter `WORKFLOW.md`. Available
 profiles are defined in `presets/` (`default`, `python`, `typescript`, `mobile`, `fullstack`).
+
+### Creating custom profiles
+
+Use `profile-builder.py` to build a new profile and save it to `presets/`:
+
+```bash
+python3 ~/.copilot/tools/profile-builder.py --list-hooks          # List available hook templates
+python3 ~/.copilot/tools/profile-builder.py --list-phases         # List available workflow phases
+python3 ~/.copilot/tools/profile-builder.py \
+  --name myteam \
+  --description "My team workflow" \
+  --hooks dangerous-blocker.sh commit-gate.sh \
+  --phases CLARIFY BUILD TEST COMMIT
+```
+
+### Sharing profiles (export / import)
+
+Export profiles to JSON for sharing across machines or teams:
+
+```bash
+python3 ~/.copilot/tools/profile-export.py --profile python --output python.json
+python3 ~/.copilot/tools/profile-export.py --all --output-dir ./exported/
+python3 ~/.copilot/tools/profile-export.py --all --output all.bundle.json --format bundle
+```
+
+Import profiles shared by others:
+
+```bash
+python3 ~/.copilot/tools/profile-import.py --file custom-profile.json
+python3 ~/.copilot/tools/profile-import.py --file bundle.json --name python  # one from bundle
+python3 ~/.copilot/tools/profile-import.py --file custom.json --dry-run      # validate first
+```
 
 ### Installing hooks standalone
 
@@ -129,3 +165,18 @@ python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
 ```
 
 Output is a compact `[KNOWLEDGE CONTEXT]` block (~200 tokens) for sub-agent prompts.
+
+## Host Scope
+
+The tools in this repo are validated and supported on **Copilot CLI** and **Claude Code** only.
+
+| Feature | Copilot CLI | Claude Code | Other hosts |
+|---------|------------|-------------|-------------|
+| Skill deployment (`--deploy-skill`) | ✅ `.github/skills/` | ✅ `.claude/skills/` | ❌ not supported |
+| Hook deployment (`--deploy-hooks`) | ✅ `.copilot/hooks/` | ❌ not supported | ❌ not supported |
+| Global instruction injection | ✅ `~/.github/copilot-instructions.md` | via CLAUDE.md | ❌ not supported |
+| Session indexing | ✅ | ✅ via `claude-adapter.py` | ❌ not supported |
+
+The `KNOWN_HOSTS` list in `install.py` and `setup-project.py` is intentionally restricted to
+Copilot CLI and Claude Code. Do **not** add Codex, Cursor, or other hosts without documented
+session and hook formats.

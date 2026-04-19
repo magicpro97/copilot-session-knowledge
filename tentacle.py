@@ -171,12 +171,18 @@ def _render_briefing_from_json(data: dict) -> str:
     if tagged:
         lines.append("🏷 Tagged entries")
         for e in tagged[:5]:
-            lines.append(f"  #{e['id']} [{e['category']}] {e['title']}")
+            eid = e.get("id", "?")
+            cat = e.get("category", "unknown")
+            title = e.get("title", "(no title)")
+            lines.append(f"  #{eid} [{cat}] {title}")
         lines.append("")
     if related:
         lines.append("🔗 Related entries (FTS match on task name)")
         for e in related[:5]:
-            lines.append(f"  #{e['id']} [{e['category']}] {e['title']}")
+            eid = e.get("id", "?")
+            cat = e.get("category", "unknown")
+            title = e.get("title", "(no title)")
+            lines.append(f"  #{eid} [{cat}] {title}")
         lines.append("")
     total = data.get("total_entries", 0)
     lines.append(f"({total} entries) Use query-session.py --task '{task_id}' for full detail")

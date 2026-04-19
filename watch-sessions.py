@@ -29,6 +29,16 @@ from datetime import datetime
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
+
+# Known session-state roots — Copilot CLI and Claude Code are the only two hosts
+# with documented session formats in this repo.  To add a new host its session
+# directory layout and file format must be documented and tested first.
+# Unsupported hosts (Codex, Cursor, Windsurf, etc.) are intentionally excluded.
+KNOWN_HOSTS: tuple[tuple[str, Path], ...] = (
+    ("Copilot CLI", SESSION_STATE),
+    ("Claude Code", CLAUDE_PROJECTS),
+)
+
 DB_PATH = SESSION_STATE / "knowledge.db"
 TOOLS_DIR = Path(__file__).parent
 STATE_FILE = SESSION_STATE / ".watch-state.json"
@@ -328,9 +338,9 @@ def main():
         sys.exit(1)
 
     # Directories to watch
-    watch_dirs = [SESSION_STATE]
-    if CLAUDE_PROJECTS.exists():
-        watch_dirs.append(CLAUDE_PROJECTS)
+    # Build watch list from the two grounded known hosts only.
+    # SESSION_STATE always included (DB lives there); CLAUDE_PROJECTS only when present.
+    watch_dirs = [root for _, root in KNOWN_HOSTS if root.exists()]
 
     # Daemonize on Unix if requested
     if daemon and os.name != "nt":
