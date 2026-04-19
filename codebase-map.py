@@ -20,7 +20,6 @@ import os
 import subprocess
 import sys
 from collections import defaultdict
-from datetime import datetime
 from pathlib import Path
 
 # Fix Windows console encoding
@@ -57,6 +56,24 @@ def get_session_files_dir() -> Path | None:
     files_dir = sessions[0] / "files"
     files_dir.mkdir(parents=True, exist_ok=True)
     return files_dir
+
+
+def get_git_last_commit_date(repo_root: Path) -> str:
+    """Return ISO 8601 date of the last commit; empty string on failure.
+
+    Using the commit date rather than wall-clock time keeps the artifact
+    deterministic: identical repo state → identical output.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "log", "-1", "--format=%cI"],
+            capture_output=True, text=True, timeout=5, cwd=str(repo_root),
+        )
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return ""
 
 
 # ─── File enumeration ─────────────────────────────────────────────────────────
@@ -110,18 +127,21 @@ def generate_map(repo_root: Path, files: list[str]) -> str:
     """Return the full text of a codebase-map.md for *repo_root*."""
     groups = group_files(files)
     total = len(files)
-    now = datetime.now().isoformat(timespec="seconds")
+    commit_date = get_git_last_commit_date(repo_root)
 
     lines: list[str] = [
         f"# Codebase Map — {repo_root.name}",
         "",
-        f"Generated: {now}  ",
+        f"Last commit: {commit_date}  " if commit_date else "",
         f"Repository: `{repo_root}`  ",
         f"Total tracked files: {total}",
         "",
         "## File Tree by Directory",
         "",
     ]
+    # Remove empty lines caused by optional fields
+    lines = [l for l in lines if l != ""]
+    lines.append("")
 
     for group, gfiles in groups.items():
         label = f"`{group}/`" if group != "." else "`./` (root)"
