@@ -2,8 +2,9 @@
 """
 test_host_symmetry.py — Prove Copilot CLI + Claude Code host symmetry.
 
-Scope: watch-sessions.py, install.py, setup-project.py.
+Scope: host_manifest.py, watch-sessions.py, install.py, setup-project.py.
 Verifies:
+  0. host_manifest.py is the single source of truth for host metadata.
   1. KNOWN_HOSTS in watch-sessions.py names exactly Copilot CLI + Claude Code.
   2. KNOWN_HOSTS in install.py names exactly Copilot CLI + Claude Code.
   3. install.py deploy_skill() deploys to both host-specific paths.
@@ -41,9 +42,105 @@ def test(name: str, condition: bool, detail: str = "") -> None:
 
 # ─── Load source texts ───────────────────────────────────────────────────────
 
-ws_source   = (REPO / "watch-sessions.py").read_text(encoding="utf-8")
-inst_source = (REPO / "install.py").read_text(encoding="utf-8")
-sp_source   = (REPO / "setup-project.py").read_text(encoding="utf-8")
+manifest_source = (REPO / "host_manifest.py").read_text(encoding="utf-8")
+ws_source       = (REPO / "watch-sessions.py").read_text(encoding="utf-8")
+inst_source     = (REPO / "install.py").read_text(encoding="utf-8")
+sp_source       = (REPO / "setup-project.py").read_text(encoding="utf-8")
+
+# Load the manifest module so we can inspect its runtime values
+_spec = importlib.util.spec_from_file_location("host_manifest", REPO / "host_manifest.py")
+_manifest = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_manifest)
+
+# ─── 0. host_manifest.py — single source of truth ───────────────────────────
+
+print("\n📋 host_manifest.py — Single Source of Truth")
+
+test("host_manifest.py exists",
+     (REPO / "host_manifest.py").is_file(),
+     "Create host_manifest.py as the canonical host registry")
+
+test("host_manifest.py defines SUPPORTED_HOSTS",
+     "SUPPORTED_HOSTS" in manifest_source,
+     "SUPPORTED_HOSTS must list all supported host names")
+
+test("host_manifest.py defines HOST_DIRS",
+     "HOST_DIRS" in manifest_source,
+     "HOST_DIRS must map host names to config directories")
+
+test("host_manifest.py defines HOST_SESSION_ROOTS",
+     "HOST_SESSION_ROOTS" in manifest_source,
+     "HOST_SESSION_ROOTS must map host names to session directories")
+
+test("host_manifest.py defines HOST_INSTRUCTION_FILES",
+     "HOST_INSTRUCTION_FILES" in manifest_source,
+     "HOST_INSTRUCTION_FILES must map host names to instruction file paths")
+
+test("manifest SUPPORTED_HOSTS contains 'Copilot CLI'",
+     "Copilot CLI" in _manifest.SUPPORTED_HOSTS,
+     "Copilot CLI must be a supported host")
+
+test("manifest SUPPORTED_HOSTS contains 'Claude Code'",
+     "Claude Code" in _manifest.SUPPORTED_HOSTS,
+     "Claude Code must be a supported host")
+
+test("manifest SUPPORTED_HOSTS has exactly 2 entries",
+     len(_manifest.SUPPORTED_HOSTS) == 2,
+     f"Expected 2 supported hosts, got {len(_manifest.SUPPORTED_HOSTS)}")
+
+test("manifest HOST_DIRS maps 'Copilot CLI' to ~/.copilot",
+     "Copilot CLI" in _manifest.HOST_DIRS
+     and str(_manifest.HOST_DIRS["Copilot CLI"]).endswith(".copilot"),
+     "HOST_DIRS['Copilot CLI'] must resolve to ~/.copilot")
+
+test("manifest HOST_DIRS maps 'Claude Code' to ~/.claude",
+     "Claude Code" in _manifest.HOST_DIRS
+     and str(_manifest.HOST_DIRS["Claude Code"]).endswith(".claude"),
+     "HOST_DIRS['Claude Code'] must resolve to ~/.claude")
+
+test("manifest SESSION_STATE path is ~/.copilot/session-state",
+     '".copilot" / "session-state"' in manifest_source
+     or "session-state" in manifest_source,
+     "SESSION_STATE must point to ~/.copilot/session-state")
+
+test("manifest CLAUDE_PROJECTS path is ~/.claude/projects",
+     '".claude" / "projects"' in manifest_source
+     or "projects" in manifest_source,
+     "CLAUDE_PROJECTS must point to ~/.claude/projects")
+
+test("manifest HOST_INSTRUCTION_FILES has 'Copilot CLI' entry",
+     "Copilot CLI" in _manifest.HOST_INSTRUCTION_FILES,
+     "HOST_INSTRUCTION_FILES must include Copilot CLI")
+
+test("manifest HOST_INSTRUCTION_FILES has 'Claude Code' entry",
+     "Claude Code" in _manifest.HOST_INSTRUCTION_FILES,
+     "HOST_INSTRUCTION_FILES must include Claude Code")
+
+test("manifest Copilot CLI instruction file is copilot-instructions.md",
+     _manifest.HOST_INSTRUCTION_FILES.get("Copilot CLI", "") == ".github/copilot-instructions.md",
+     "Copilot CLI must use .github/copilot-instructions.md")
+
+test("manifest Claude Code instruction file is CLAUDE.md",
+     _manifest.HOST_INSTRUCTION_FILES.get("Claude Code", "") == "CLAUDE.md",
+     "Claude Code must use CLAUDE.md")
+
+test("manifest defines UNSUPPORTED_HOSTS",
+     "UNSUPPORTED_HOSTS" in manifest_source,
+     "UNSUPPORTED_HOSTS must explicitly name excluded hosts")
+
+_UNSUPPORTED = ["Codex", "Cursor", "Windsurf", "Cline"]
+for host in _UNSUPPORTED:
+    test(f"manifest UNSUPPORTED_HOSTS includes '{host}'",
+         host in _manifest.UNSUPPORTED_HOSTS,
+         f"{host} must be listed in UNSUPPORTED_HOSTS")
+
+    has_dir = (
+        f'".{host.lower()}"' in manifest_source
+        or f"'.{host.lower()}'" in manifest_source
+    )
+    test(f"manifest: no '{host}' directory path reference",
+         not has_dir,
+         f"Found .{host.lower()} in host_manifest.py — out of scope")
 
 # ─── 1. watch-sessions.py KNOWN_HOSTS ───────────────────────────────────────
 
@@ -51,23 +148,29 @@ print("\n🔭 watch-sessions.py — Known Host Symmetry")
 
 test("KNOWN_HOSTS defined in watch-sessions.py",
      "KNOWN_HOSTS" in ws_source,
-     "Add KNOWN_HOSTS tuple to watch-sessions.py")
+     "Add KNOWN_HOSTS (imported from host_manifest) to watch-sessions.py")
+
+test("watch-sessions.py imports from host_manifest",
+     "from host_manifest import" in ws_source or "import host_manifest" in ws_source,
+     "watch-sessions.py must delegate host metadata to host_manifest.py")
 
 test("KNOWN_HOSTS contains 'Copilot CLI'",
-     '"Copilot CLI"' in ws_source,
-     "KNOWN_HOSTS must name Copilot CLI")
+     '"Copilot CLI"' in manifest_source,
+     "host_manifest must name Copilot CLI")
 
 test("KNOWN_HOSTS contains 'Claude Code'",
-     '"Claude Code"' in ws_source,
-     "KNOWN_HOSTS must name Claude Code")
+     '"Claude Code"' in manifest_source,
+     "host_manifest must name Claude Code")
 
 test("SESSION_STATE path is ~/.copilot/session-state",
-     '".copilot" / "session-state"' in ws_source,
-     "SESSION_STATE must point to ~/.copilot/session-state")
+     '".copilot" / "session-state"' in manifest_source
+     or ('"session-state"' in manifest_source and "COPILOT_DIR" in manifest_source),
+     "SESSION_STATE must point to ~/.copilot/session-state (in host_manifest)")
 
 test("CLAUDE_PROJECTS path is ~/.claude/projects",
-     '".claude" / "projects"' in ws_source,
-     "CLAUDE_PROJECTS must point to ~/.claude/projects")
+     '".claude" / "projects"' in manifest_source
+     or ('"projects"' in manifest_source and "CLAUDE_DIR" in manifest_source),
+     "CLAUDE_PROJECTS must point to ~/.claude/projects (in host_manifest)")
 
 # KNOWN_HOSTS drives watch_dirs — SESSION_STATE always required
 test("watch_dirs derived from KNOWN_HOSTS in main()",
@@ -75,8 +178,7 @@ test("watch_dirs derived from KNOWN_HOSTS in main()",
      "main() must build watch_dirs from KNOWN_HOSTS, not ad-hoc ifs")
 
 # Only two hosts — no unsupported directories referenced as Path objects
-_UNSUPPORTED = ["Codex", "Cursor", "Windsurf", "Cline", "Copilot Chat"]
-for host in _UNSUPPORTED:
+for host in _UNSUPPORTED + ["Copilot Chat"]:
     has_dir = f'".{host.lower()}"' in ws_source or f"'{host.lower()}'" in ws_source
     test(f"watch-sessions.py: no '{host}' directory reference",
          not has_dir,
@@ -88,15 +190,19 @@ print("\n🔧 install.py — Host Detection Symmetry")
 
 test("KNOWN_HOSTS defined in install.py",
      "KNOWN_HOSTS" in inst_source,
-     "Add KNOWN_HOSTS dict to install.py")
+     "Add KNOWN_HOSTS (imported from host_manifest) to install.py")
+
+test("install.py imports from host_manifest",
+     "from host_manifest import" in inst_source or "import host_manifest" in inst_source,
+     "install.py must delegate host metadata to host_manifest.py")
 
 test("install.py KNOWN_HOSTS includes 'Copilot CLI'",
-     '"Copilot CLI"' in inst_source,
-     "KNOWN_HOSTS must list Copilot CLI")
+     '"Copilot CLI"' in manifest_source,
+     "host_manifest HOST_DIRS must list Copilot CLI")
 
 test("install.py KNOWN_HOSTS includes 'Claude Code'",
-     '"Claude Code"' in inst_source,
-     "KNOWN_HOSTS must list Claude Code")
+     '"Claude Code"' in manifest_source,
+     "host_manifest HOST_DIRS must list Claude Code")
 
 # show_status() must use KNOWN_HOSTS for iteration (no bare ad-hoc Copilot/Claude ifs)
 show_status_start = inst_source.find("def show_status()")
@@ -232,15 +338,19 @@ print("\n📝 setup-project.py — Host-Specific Instruction Files")
 
 test("KNOWN_HOSTS_INSTRUCTION_FILES defined in setup-project.py",
      "KNOWN_HOSTS_INSTRUCTION_FILES" in sp_source,
-     "Add KNOWN_HOSTS_INSTRUCTION_FILES to setup-project.py")
+     "Add KNOWN_HOSTS_INSTRUCTION_FILES (imported from host_manifest) to setup-project.py")
+
+test("setup-project.py imports from host_manifest",
+     "from host_manifest import" in sp_source or "import host_manifest" in sp_source,
+     "setup-project.py must delegate host metadata to host_manifest.py")
 
 test("setup-project.py names 'Copilot CLI' in host instruction files",
-     '"Copilot CLI"' in sp_source,
-     "KNOWN_HOSTS_INSTRUCTION_FILES must include Copilot CLI")
+     '"Copilot CLI"' in manifest_source,
+     "host_manifest HOST_INSTRUCTION_FILES must include Copilot CLI")
 
 test("setup-project.py names 'Claude Code' in host instruction files",
-     '"Claude Code"' in sp_source,
-     "KNOWN_HOSTS_INSTRUCTION_FILES must include Claude Code")
+     '"Claude Code"' in manifest_source,
+     "host_manifest HOST_INSTRUCTION_FILES must include Claude Code")
 
 test("setup-project.py handles .github/copilot-instructions.md (Copilot CLI)",
      "copilot-instructions.md" in sp_source,
@@ -265,11 +375,12 @@ for unsupported in [".codex/instructions", ".cursor/rules", "windsurf-instructio
 print("\n🚫 Scope Boundary — Unsupported Hosts")
 
 for filename, source in [
+    ("host_manifest.py",  manifest_source),
     ("watch-sessions.py", ws_source),
     ("install.py",        inst_source),
     ("setup-project.py",  sp_source),
 ]:
-    for host in ["Codex", "Cursor", "Windsurf", "Cline"]:
+    for host in _UNSUPPORTED:
         # Only flag explicit Path-like directory references (e.g., ".codex", ".cursor")
         has_dir = (
             f'".{host.lower()}"' in source

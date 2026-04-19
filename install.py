@@ -60,21 +60,20 @@ def _real_home():
     return HOME
 
 
-COPILOT_DIR = HOME / ".copilot"
-CLAUDE_DIR = HOME / ".claude"
+# Host metadata is centralised in host_manifest.py — import canonical constants.
+# Do NOT add new hosts here; update host_manifest.py through the review process.
+from host_manifest import (  # noqa: E402
+    COPILOT_DIR,
+    CLAUDE_DIR,
+    HOST_DIRS as KNOWN_HOSTS,
+)
+
 TOOLS_DIR = COPILOT_DIR / "tools"
 SESSION_STATE = COPILOT_DIR / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
 SKILLS_SRC = COPILOT_DIR / "skills" / "session-knowledge" / "SKILL.md"
 GLOBAL_INSTRUCTIONS = HOME / ".github" / "copilot-instructions.md"
 LOCK_FILE = SESSION_STATE / ".watcher.lock"
-
-# Known agent hosts — Copilot CLI and Claude Code only.
-# Do NOT add Codex, Cursor, or other hosts without documented hook/session formats.
-KNOWN_HOSTS: dict[str, Path] = {
-    "Copilot CLI": COPILOT_DIR,
-    "Claude Code":  CLAUDE_DIR,
-}
 
 # Resolve the repo's templates/ directory (works when run from repo or ~/.copilot/tools/)
 _SCRIPT_DIR = Path(__file__).resolve().parent

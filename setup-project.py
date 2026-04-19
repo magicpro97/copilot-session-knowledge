@@ -26,14 +26,9 @@ TEMPLATES_DIR = SCRIPT_DIR / "templates"
 SKILLS_DIR = SCRIPT_DIR / "skills"
 PRESETS_DIR = SCRIPT_DIR / "presets"
 
-# Instruction file locations per supported host (project-relative paths).
-# Only Copilot CLI and Claude Code have real support in this repo.
-# Do NOT add Codex, Cursor, or unknown hosts without grounded documentation.
-KNOWN_HOSTS_INSTRUCTION_FILES: dict[str, str] = {
-    "Copilot CLI": ".github/copilot-instructions.md",
-    "Claude Code": "CLAUDE.md",
-    "All agents":  "AGENTS.md",  # host-agnostic; read by Claude, Codex, and others
-}
+# Host metadata is centralised in host_manifest.py — import canonical constants.
+# Do NOT add new hosts here; update host_manifest.py through the review process.
+from host_manifest import HOST_INSTRUCTION_FILES as KNOWN_HOSTS_INSTRUCTION_FILES  # noqa: E402
 
 # What to install
 INSTALL_ITEMS = {
