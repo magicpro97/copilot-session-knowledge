@@ -136,6 +136,15 @@ def validate(path: Path) -> tuple[list[str], list[str]]:
     )
     # Deduplicate: warn once per distinct referenced path, not once per occurrence.
     for ref_name in sorted(set(raw_mentions)):
+        # Reject paths containing traversal segments (. or ..) so that a crafted
+        # reference like `references/../SKILL.md` cannot escape the references/ dir.
+        ref_parts = Path(ref_name).parts
+        if any(p in (".", "..") for p in ref_parts):
+            warnings.append(
+                f"Suspicious reference path skipped: `references/{ref_name}` contains "
+                f"`.` or `..` segments — references must stay inside the skill's references/ directory."
+            )
+            continue
         ref_path = skill_dir / "references" / ref_name
         if not ref_path.exists():
             warnings.append(

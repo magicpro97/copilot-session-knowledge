@@ -436,27 +436,39 @@ test("Sp7: missing references/sub/deep.md (nested) → dangling warning",
 _shutil.rmtree(_d7)
 
 # Sp8. setup-project install_skills deploys nested references/ preserving structure
-_proj = Path(_tf.mkdtemp(dir=REPO))
-# Temporarily inject a nested reference into agent-creator references/
-_agent_refs = REPO / "skills" / "agent-creator" / "references"
-_nested_dir = _agent_refs / "nested_test"
-_nested_dir.mkdir(exist_ok=True)
-_nested_file = _nested_dir / "nested-ref.md"
-_nested_file.write_text("# Nested test\n")
+# Use fully isolated temp dirs outside the repo — no mutation of the live source tree.
+import importlib as _imp
+
+_sp8_root = Path(_tf.mkdtemp())   # isolated skills dir (acts as SKILLS_DIR)
+_proj8 = Path(_tf.mkdtemp())      # isolated install target (acts as project root)
+
+# Build a minimal fake skill: fake-skill/SKILL.md + references/nested_test/nested-ref.md
+_fake_skill_name = "fake-nested-skill"
+_fake_skill_dir = _sp8_root / _fake_skill_name
+(_fake_skill_dir / "references" / "nested_test").mkdir(parents=True)
+(_fake_skill_dir / "SKILL.md").write_text("# Fake skill\n")
+(_fake_skill_dir / "references" / "nested_test" / "nested-ref.md").write_text("# Nested test\n")
+
 try:
-    import importlib as _imp
     _sp_spec = _ilu.spec_from_file_location("setup_project", REPO / "setup-project.py")
-    _sp = _imp.util.module_from_spec(_sp_spec)
-    _sp_spec.loader.exec_module(_sp)
-    _sp.install_skills(_proj, dry_run=False)
-    _expected = _proj / ".github" / "skills" / "agent-creator" / "references" / "nested_test" / "nested-ref.md"
+    _sp8 = _imp.util.module_from_spec(_sp_spec)
+    _sp_spec.loader.exec_module(_sp8)
+
+    # Monkeypatch SKILLS_DIR and INSTALL_ITEMS so only our fake skill is processed.
+    _orig_skills_dir = _sp8.SKILLS_DIR
+    _orig_install_items = _sp8.INSTALL_ITEMS
+    _sp8.SKILLS_DIR = _sp8_root
+    _sp8.INSTALL_ITEMS = {"skills": [{"src": _fake_skill_name, "label": "fake-nested-skill"}], "templates": []}
+
+    _sp8.install_skills(_proj8, dry_run=False)
+
+    _expected = _proj8 / ".github" / "skills" / _fake_skill_name / "references" / "nested_test" / "nested-ref.md"
     test("Sp8: nested references/nested_test/nested-ref.md deployed with relative path",
          _expected.exists(),
          f"Expected at {_expected}")
 finally:
-    _nested_file.unlink(missing_ok=True)
-    _nested_dir.rmdir()
-    _shutil.rmtree(_proj)
+    _shutil.rmtree(_sp8_root, ignore_errors=True)
+    _shutil.rmtree(_proj8, ignore_errors=True)
 
 # Sp9. session-knowledge-creator reference files exist in repo
 _sk_refs = REPO / "skills" / "session-knowledge-creator" / "references"
@@ -472,6 +484,37 @@ dangling_sk = [w for w in _sk_warns if "Dangling" in w]
 test("Sp10: session-knowledge-creator has no dangling reference warnings",
      len(dangling_sk) == 0,
      f"Dangling refs: {dangling_sk}")
+
+# Sp11. Traversal guard: references/../SKILL.md and references/a/../../x.md are rejected
+_TRAVERSAL_SKILL = """\
+---
+name: traversal-test
+description: Use when testing traversal guard. Trigger: test.
+---
+
+# Traversal Test Skill
+
+## When to Use
+Testing traversal guard.
+
+## Workflow
+See references/../SKILL.md and references/a/../../secret.md.
+
+<example>
+Bad ref: references/../SKILL.md
+Nested bad ref: references/a/../../secret.md
+</example>
+"""
+_d11 = _make_skill_dir(_TRAVERSAL_SKILL)
+_errs11, _warns11 = validate(_d11 / "SKILL.md")
+_traversal_warns = [w for w in _warns11 if "Suspicious" in w or "traversal" in w.lower() or ".." in w]
+test("Sp11: references/../SKILL.md triggers traversal warning",
+     any("../SKILL.md" in w or ".." in w for w in _traversal_warns),
+     f"Got warnings: {_warns11}")
+test("Sp11: traversal path does NOT appear as a dangling reference warning",
+     not any("Dangling" in w and ".." in w for w in _warns11),
+     f"Got warnings: {_warns11}")
+_shutil.rmtree(_d11)
 
 
 # ─── Summary ────────────────────────────────────────────────────────────

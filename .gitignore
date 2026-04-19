@@ -26,6 +26,9 @@ Thumbs.db
 KNOWLEDGE.md
 .watch-state.json
 
+# Local tentacle / multi-agent orchestration artifacts
+.octogent/
+
 # One-time publish scripts
 publish.ps1
 publish.sh
