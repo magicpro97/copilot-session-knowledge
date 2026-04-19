@@ -27,16 +27,12 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime
 
-SESSION_STATE = Path.home() / ".copilot" / "session-state"
-CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
-
-# Known session-state roots — Copilot CLI and Claude Code are the only two hosts
-# with documented session formats in this repo.  To add a new host its session
-# directory layout and file format must be documented and tested first.
-# Unsupported hosts (Codex, Cursor, Windsurf, etc.) are intentionally excluded.
-KNOWN_HOSTS: tuple[tuple[str, Path], ...] = (
-    ("Copilot CLI", SESSION_STATE),
-    ("Claude Code", CLAUDE_PROJECTS),
+# Host metadata is centralised in host_manifest.py — import canonical constants.
+# Do NOT add new hosts here; update host_manifest.py through the review process.
+from host_manifest import (  # noqa: E402
+    SESSION_STATE,
+    CLAUDE_PROJECTS,
+    HOST_SESSION_ROOTS as KNOWN_HOSTS,
 )
 
 DB_PATH = SESSION_STATE / "knowledge.db"
