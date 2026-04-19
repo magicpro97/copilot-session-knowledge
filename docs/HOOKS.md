@@ -27,9 +27,9 @@ hooks/
 
 | Rule | Event | Description |
 |------|-------|-------------|
-| `auto-briefing` | sessionStart | Auto-runs briefing.py, creates HMAC-signed marker |
+| `auto-briefing` | sessionStart | Auto-runs briefing.py + refreshes codebase-map.py, creates HMAC-signed marker |
 | `integrity` | sessionStart | Verifies hook files via SHA256 manifest |
-| `session-end` | sessionEnd | Cleans up marker files (preserves audit log) |
+| `session-end` | sessionEnd | Cleans up marker files, writes session.log entry, opt-in checkpoint reminder (`COPILOT_CHECKPOINT_REMIND=1`) |
 | `enforce-briefing` | preToolUse | Blocks edit/create/bash-writes until briefing done |
 | `enforce-learn` | preToolUse | Blocks git commit AND task_complete without learn.py |
 | `tentacle-enforce` | preToolUse | Blocks edits across ≥3 files in ≥2 modules without tentacle |
