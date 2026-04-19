@@ -71,30 +71,38 @@ class TestRunBriefingForTask(unittest.TestCase):
         self.assertEqual(result, "")
 
     def test_returns_output_on_success(self):
+        json_payload = json.dumps({
+            "task_id": "my-task",
+            "generated_at": "2026-01-01T00:00:00",
+            "total_entries": 1,
+            "tagged_entries": [{"id": 1, "category": "pattern", "title": "use X not Y",
+                                 "confidence": 0.9, "affected_files": []}],
+            "related_entries": [],
+        })
         mock_result = MagicMock()
-        mock_result.stdout = "Relevant knowledge: use X not Y"
+        mock_result.stdout = json_payload
         mock_result.returncode = 0
         with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
             with patch("subprocess.run", return_value=mock_result) as mock_run:
                 result = T._run_briefing_for_task("my-task", fallback_query="something")
-        self.assertEqual(result, "Relevant knowledge: use X not Y")
-        # First call should use --task flag
+        self.assertIn("my-task", result)
+        self.assertIn("use X not Y", result)
+        # Should now use --json flag instead of --compact
         first_call_args = mock_run.call_args_list[0][0][0]
         self.assertIn("--task", first_call_args)
         self.assertIn("my-task", first_call_args)
+        self.assertIn("--json", first_call_args)
 
     def test_falls_back_to_text_query_when_task_returns_empty(self):
-        """When --task returns no results, fall back to text query.
-
-        Uses the real no-results phrasing from briefing.py so the filter
-        logic is exercised against a realistic subprocess output.
-        """
+        """When --task JSON returns total_entries=0, fall back to text query."""
         no_result = MagicMock()
-        no_result.stdout = (
-            "No knowledge entries found for task: 'unknown-task'\n"
-            "Tip: Use 'learn.py --task 'unknown-task' ...' to tag entries.\n"
-            "Or try: briefing.py 'unknown-task' for FTS-based briefing."
-        )
+        no_result.stdout = json.dumps({
+            "task_id": "unknown-task",
+            "generated_at": "2026-01-01T00:00:00",
+            "total_entries": 0,
+            "tagged_entries": [],
+            "related_entries": [],
+        })
         no_result.returncode = 0
 
         text_result = MagicMock()
@@ -119,13 +127,16 @@ class TestRunBriefingForTask(unittest.TestCase):
         self.assertEqual(result, "")
 
     def test_no_fallback_when_fallback_query_empty(self):
-        """When fallback_query is empty and task returns nothing, return ''."""
+        """When fallback_query is empty and task JSON returns no entries, return ''."""
         no_result = MagicMock()
-        no_result.stdout = (
-            "No knowledge entries found for task: 'my-task'\n"
-            "Tip: Use 'learn.py --task 'my-task' ...' to tag entries.\n"
-            "Or try: briefing.py 'my-task' for FTS-based briefing."
-        )
+        no_result.stdout = json.dumps({
+            "task_id": "my-task",
+            "generated_at": "2026-01-01T00:00:00",
+            "total_entries": 0,
+            "tagged_entries": [],
+            "related_entries": [],
+        })
+        no_result.returncode = 0
         with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
             with patch("subprocess.run", return_value=no_result) as mock_run:
                 result = T._run_briefing_for_task("my-task")
@@ -188,7 +199,8 @@ class TestCmdResume(unittest.TestCase):
         args = self._args(no_briefing=False)
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             with patch.object(T, "_run_briefing_for_task", return_value="Lesson: always test") as mock_brief:
-                T.cmd_resume(args)
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                    T.cmd_resume(args)
         mock_brief.assert_called_once()
         context = (self.tentacle_dir / "CONTEXT.md").read_text()
         self.assertIn("Lesson: always test", context)
@@ -198,7 +210,8 @@ class TestCmdResume(unittest.TestCase):
         args = self._args(no_briefing=False)
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             with patch.object(T, "_run_briefing_for_task", return_value=""):
-                T.cmd_resume(args)
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                    T.cmd_resume(args)
         context = (self.tentacle_dir / "CONTEXT.md").read_text()
         self.assertIn("No new briefing content available", context)
 
@@ -236,7 +249,8 @@ class TestCmdResume(unittest.TestCase):
         args = self._args(no_briefing=False)
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             with patch.object(T, "_run_briefing_for_task", return_value="") as mock_brief:
-                T.cmd_resume(args)
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                    T.cmd_resume(args)
         call_args = mock_brief.call_args
         self.assertEqual(call_args[0][0], "test-resume")
 
@@ -431,6 +445,240 @@ class TestExistingBehaviorUnchanged(unittest.TestCase):
             T.cmd_complete(args)
         meta = json.loads(((self.base / "complete-test") / "meta.json").read_text())
         self.assertEqual(meta["status"], "completed")
+
+
+class TestRunBriefingForTaskStructured(unittest.TestCase):
+    """Tests for the structured JSON path in _run_briefing_for_task."""
+
+    def test_structured_json_with_entries_renders_task_id_and_titles(self):
+        payload = json.dumps({
+            "task_id": "my-task",
+            "generated_at": "2026-01-01T00:00:00",
+            "total_entries": 2,
+            "tagged_entries": [{"id": 10, "category": "mistake", "title": "Do not use X",
+                                 "confidence": 1.0, "affected_files": []}],
+            "related_entries": [{"id": 11, "category": "pattern", "title": "Use Y instead",
+                                  "confidence": 0.8, "affected_files": []}],
+        })
+        mock_r = MagicMock()
+        mock_r.stdout = payload
+        mock_r.returncode = 0
+        with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
+            with patch("subprocess.run", return_value=mock_r):
+                result = T._run_briefing_for_task("my-task")
+        self.assertIn("my-task", result)
+        self.assertIn("Do not use X", result)
+        self.assertIn("Use Y instead", result)
+        self.assertIn("mistake", result)
+        self.assertIn("pattern", result)
+
+    def test_structured_json_empty_total_entries_triggers_fallback(self):
+        empty_json = json.dumps({
+            "task_id": "empty-task",
+            "generated_at": "2026-01-01T00:00:00",
+            "total_entries": 0,
+            "tagged_entries": [],
+            "related_entries": [],
+        })
+        empty_mock = MagicMock()
+        empty_mock.stdout = empty_json
+        empty_mock.returncode = 0
+        fallback_result = MagicMock()
+        fallback_result.stdout = "Pattern: always validate inputs before processing"
+        fallback_result.returncode = 0
+        with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
+            with patch("subprocess.run", side_effect=[empty_mock, fallback_result]):
+                result = T._run_briefing_for_task("empty-task", fallback_query="fallback query")
+        self.assertEqual(result, "Pattern: always validate inputs before processing")
+
+    def test_uses_json_flag_not_compact_flag(self):
+        """Structured path must use --json, not --compact."""
+        mock_r = MagicMock()
+        mock_r.stdout = json.dumps({
+            "task_id": "t", "generated_at": "2026-01-01T00:00:00",
+            "total_entries": 1,
+            "tagged_entries": [{"id": 1, "category": "tool", "title": "T",
+                                 "confidence": 1.0, "affected_files": []}],
+            "related_entries": [],
+        })
+        mock_r.returncode = 0
+        with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
+            with patch("subprocess.run", return_value=mock_r) as mock_run:
+                T._run_briefing_for_task("t")
+        call_args = mock_run.call_args_list[0][0][0]
+        self.assertIn("--json", call_args)
+        self.assertNotIn("--compact", call_args)
+
+    def test_invalid_json_response_falls_back_gracefully(self):
+        """A non-JSON subprocess response (e.g. crash output) should trigger fallback."""
+        bad_mock = MagicMock()
+        bad_mock.stdout = "Traceback (most recent call last):\n  ..."
+        bad_mock.returncode = 0
+        fallback_mock = MagicMock()
+        fallback_mock.stdout = "Pattern: always validate inputs before processing"
+        fallback_mock.returncode = 0
+        with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
+            with patch("subprocess.run", side_effect=[bad_mock, fallback_mock]):
+                result = T._run_briefing_for_task("my-task", fallback_query="something")
+        self.assertEqual(result, "Pattern: always validate inputs before processing")
+
+
+class TestLoadLatestCheckpointContext(unittest.TestCase):
+    """Tests for _load_latest_checkpoint_context and _render_checkpoint_context."""
+
+    SAMPLE_CHECKPOINT = {
+        "seq": 3,
+        "title": "Starting batch two",
+        "file": "003-starting-batch-two.md",
+        "sections": {
+            "overview": "Overview text here",
+            "work_done": "Work was done here",
+            "next_steps": "Next steps here",
+        },
+    }
+
+    def test_returns_empty_when_checkpoint_restore_missing(self):
+        with patch.object(T, "CHECKPOINT_RESTORE_PY", Path("/nonexistent/checkpoint-restore.py")):
+            result = T._load_latest_checkpoint_context()
+        self.assertEqual(result, "")
+
+    def test_returns_empty_when_subprocess_exits_nonzero(self):
+        mock_r = MagicMock()
+        mock_r.returncode = 1
+        mock_r.stdout = ""
+        with patch.object(T, "CHECKPOINT_RESTORE_PY", TOOLS_DIR / "checkpoint-restore.py"):
+            with patch("subprocess.run", return_value=mock_r):
+                result = T._load_latest_checkpoint_context()
+        self.assertEqual(result, "")
+
+    def test_returns_empty_on_empty_stdout(self):
+        mock_r = MagicMock()
+        mock_r.returncode = 0
+        mock_r.stdout = ""
+        with patch.object(T, "CHECKPOINT_RESTORE_PY", TOOLS_DIR / "checkpoint-restore.py"):
+            with patch("subprocess.run", return_value=mock_r):
+                result = T._load_latest_checkpoint_context()
+        self.assertEqual(result, "")
+
+    def test_returns_context_when_checkpoint_exists(self):
+        mock_r = MagicMock()
+        mock_r.returncode = 0
+        mock_r.stdout = json.dumps(self.SAMPLE_CHECKPOINT)
+        with patch.object(T, "CHECKPOINT_RESTORE_PY", TOOLS_DIR / "checkpoint-restore.py"):
+            with patch("subprocess.run", return_value=mock_r):
+                result = T._load_latest_checkpoint_context()
+        self.assertIn("Starting batch two", result)
+        self.assertIn("#3", result)
+        self.assertIn("Overview text here", result)
+        self.assertIn("Work Done", result)
+        self.assertIn("Next Steps", result)
+
+    def test_returns_empty_on_timeout(self):
+        with patch.object(T, "CHECKPOINT_RESTORE_PY", TOOLS_DIR / "checkpoint-restore.py"):
+            with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 15)):
+                result = T._load_latest_checkpoint_context()
+        self.assertEqual(result, "")
+
+    def test_returns_empty_on_invalid_json(self):
+        mock_r = MagicMock()
+        mock_r.returncode = 0
+        mock_r.stdout = "not valid json {{"
+        with patch.object(T, "CHECKPOINT_RESTORE_PY", TOOLS_DIR / "checkpoint-restore.py"):
+            with patch("subprocess.run", return_value=mock_r):
+                result = T._load_latest_checkpoint_context()
+        self.assertEqual(result, "")
+
+    def test_render_uses_only_present_sections(self):
+        """Rendered text must only include sections present in the JSON."""
+        data = {
+            "seq": 1,
+            "title": "My checkpoint",
+            "sections": {"overview": "brief overview"},
+        }
+        result = T._render_checkpoint_context(data)
+        self.assertIn("#1", result)
+        self.assertIn("My checkpoint", result)
+        self.assertIn("brief overview", result)
+        # work_done and next_steps not in data, must not appear
+        self.assertNotIn("Work Done", result)
+        self.assertNotIn("Next Steps", result)
+
+    def test_render_truncates_long_sections(self):
+        long_text = "x" * 500
+        data = {"seq": 1, "title": "t", "sections": {"overview": long_text}}
+        result = T._render_checkpoint_context(data)
+        # Should be truncated to 300 chars + ellipsis
+        self.assertIn("…", result)
+        self.assertLessEqual(len(result.split("Overview:**")[1].split("\n")[0].strip()), 310)
+
+    def test_checkpoint_subprocess_uses_json_format_flag(self):
+        mock_r = MagicMock()
+        mock_r.returncode = 0
+        mock_r.stdout = json.dumps(self.SAMPLE_CHECKPOINT)
+        with patch.object(T, "CHECKPOINT_RESTORE_PY", TOOLS_DIR / "checkpoint-restore.py"):
+            with patch("subprocess.run", return_value=mock_r) as mock_run:
+                T._load_latest_checkpoint_context()
+        call_args = mock_run.call_args_list[0][0][0]
+        self.assertIn("--export", call_args)
+        self.assertIn("latest", call_args)
+        self.assertIn("--format", call_args)
+        self.assertIn("json", call_args)
+
+
+class TestCmdResumeWithCheckpoint(unittest.TestCase):
+    """Tests for checkpoint-assisted resume context injection."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "resume_ckpt"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.tentacle_dir = make_tentacle("ckpt-resume", self.base)
+
+    def tearDown(self):
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def test_resume_appends_checkpoint_block_when_available(self):
+        checkpoint_ctx = "### Latest Checkpoint (#3: Starting batch two)\n\n**Overview:** Some overview"
+        args = fake_args(name="ckpt-resume", no_briefing=False)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_run_briefing_for_task", return_value=""):
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=checkpoint_ctx):
+                    T.cmd_resume(args)
+        context = (self.tentacle_dir / "CONTEXT.md").read_text()
+        self.assertIn("Starting batch two", context)
+        self.assertIn("#3", context)
+        self.assertIn("Some overview", context)
+
+    def test_resume_safe_when_no_checkpoint(self):
+        args = fake_args(name="ckpt-resume", no_briefing=False)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_run_briefing_for_task", return_value=""):
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                    T.cmd_resume(args)  # Must not raise
+        context = (self.tentacle_dir / "CONTEXT.md").read_text()
+        self.assertIn("## Resumed [", context)
+        self.assertNotIn("Latest Checkpoint", context)
+
+    def test_resume_no_briefing_skips_checkpoint_loading(self):
+        """--no-briefing should skip checkpoint loading entirely."""
+        args = fake_args(name="ckpt-resume", no_briefing=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_load_latest_checkpoint_context") as mock_ckpt:
+                T.cmd_resume(args)
+        mock_ckpt.assert_not_called()
+
+    def test_resume_checkpoint_and_briefing_both_appended(self):
+        checkpoint_ctx = "### Latest Checkpoint (#1: init)\n\n**Overview:** checkpoint overview"
+        args = fake_args(name="ckpt-resume", no_briefing=False)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_run_briefing_for_task", return_value="Lesson: test first"):
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=checkpoint_ctx):
+                    T.cmd_resume(args)
+        context = (self.tentacle_dir / "CONTEXT.md").read_text()
+        self.assertIn("Lesson: test first", context)
+        self.assertIn("Live Briefing", context)
+        self.assertIn("checkpoint overview", context)
 
 
 if __name__ == "__main__":
