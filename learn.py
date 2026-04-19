@@ -414,7 +414,7 @@ def list_recent(limit: int = 10):
     print(f"\nRecent Knowledge Entries (last {limit})\n")
     rows = db.execute("""
         SELECT id, category, title, confidence, occurrence_count,
-               last_seen, session_id
+               last_seen, session_id, est_tokens
         FROM knowledge_entries
         ORDER BY last_seen DESC
         LIMIT ?
@@ -423,8 +423,9 @@ def list_recent(limit: int = 10):
     for r in rows:
         sid = r["session_id"][:8] if r["session_id"] else "?"
         count = f" ×{r['occurrence_count']}" if r["occurrence_count"] > 1 else ""
+        tok = f"  ~{r['est_tokens']}tok" if r["est_tokens"] else ""
         print(f"  #{r['id']:3d} [{r['category']:8s}] {r['title'][:60]}")
-        print(f"       conf={r['confidence']:.2f}{count}  "
+        print(f"       conf={r['confidence']:.2f}{count}{tok}  "
               f"session={sid}..  {r['last_seen'] or '?'}")
 
     db.close()
