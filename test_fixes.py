@@ -335,8 +335,12 @@ validate = _vs.validate
 import tempfile as _tf
 
 def _make_skill_dir(skill_content: str, refs: dict[str, str] | None = None) -> Path:
-    """Write SKILL.md (and optional references/ files) into a fresh temp dir."""
-    d = Path(_tf.mkdtemp(dir=REPO))
+    """Write SKILL.md (and optional references/ files) into a fresh temp dir.
+
+    Temp dirs are created in the system temp area (not inside the repo tree)
+    so they never appear as untracked files in git status.
+    """
+    d = Path(_tf.mkdtemp())
     (d / "SKILL.md").write_text(skill_content, encoding="utf-8")
     if refs:
         refs_dir = d / "references"
@@ -370,31 +374,38 @@ Example usage here.
 </example>
 """
 
+import shutil as _shutil
+
 # Sp1. No dangling references → no warnings about references/
 _d1 = _make_skill_dir(MINIMAL_SKILL)
-_errs1, _warns1 = validate(_d1 / "SKILL.md")
-test("Sp1: no spurious reference warnings when no refs mentioned",
-     not any("Dangling" in w for w in _warns1),
-     f"Got warnings: {_warns1}")
-import shutil as _shutil
-_shutil.rmtree(_d1)
+try:
+    _errs1, _warns1 = validate(_d1 / "SKILL.md")
+    test("Sp1: no spurious reference warnings when no refs mentioned",
+         not any("Dangling" in w for w in _warns1),
+         f"Got warnings: {_warns1}")
+finally:
+    _shutil.rmtree(_d1, ignore_errors=True)
 
 # Sp2. Mentioned reference exists → no dangling warning
 _SKILL_WITH_REF = MINIMAL_SKILL + "\nSee `references/guide.md` for details.\n"
 _d2 = _make_skill_dir(_SKILL_WITH_REF, refs={"guide.md": "# Guide\nContent."})
-_errs2, _warns2 = validate(_d2 / "SKILL.md")
-test("Sp2: existing references/guide.md → no dangling warning",
-     not any("guide.md" in w for w in _warns2),
-     f"Got warnings: {_warns2}")
-_shutil.rmtree(_d2)
+try:
+    _errs2, _warns2 = validate(_d2 / "SKILL.md")
+    test("Sp2: existing references/guide.md → no dangling warning",
+         not any("guide.md" in w for w in _warns2),
+         f"Got warnings: {_warns2}")
+finally:
+    _shutil.rmtree(_d2, ignore_errors=True)
 
 # Sp3. Mentioned reference missing → one dangling warning (positive case)
 _d3 = _make_skill_dir(_SKILL_WITH_REF)  # no refs/ created
-_errs3, _warns3 = validate(_d3 / "SKILL.md")
-test("Sp3: missing references/guide.md → dangling warning emitted",
-     any("guide.md" in w and "Dangling" in w for w in _warns3),
-     f"Got warnings: {_warns3}")
-_shutil.rmtree(_d3)
+try:
+    _errs3, _warns3 = validate(_d3 / "SKILL.md")
+    test("Sp3: missing references/guide.md → dangling warning emitted",
+         any("guide.md" in w and "Dangling" in w for w in _warns3),
+         f"Got warnings: {_warns3}")
+finally:
+    _shutil.rmtree(_d3, ignore_errors=True)
 
 # Sp4. Same reference mentioned twice → exactly ONE warning (deduplication)
 _SKILL_DOUBLE_REF = MINIMAL_SKILL + (
@@ -402,38 +413,46 @@ _SKILL_DOUBLE_REF = MINIMAL_SKILL + (
     "Also `references/guide.md` covers advanced topics.\n"
 )
 _d4 = _make_skill_dir(_SKILL_DOUBLE_REF)
-_errs4, _warns4 = validate(_d4 / "SKILL.md")
-dangling_count = sum(1 for w in _warns4 if "guide.md" in w and "Dangling" in w)
-test("Sp4: duplicate reference mention → exactly 1 warning (deduplication)",
-     dangling_count == 1,
-     f"Got {dangling_count} dangling warnings for guide.md")
-_shutil.rmtree(_d4)
+try:
+    _errs4, _warns4 = validate(_d4 / "SKILL.md")
+    dangling_count = sum(1 for w in _warns4 if "guide.md" in w and "Dangling" in w)
+    test("Sp4: duplicate reference mention → exactly 1 warning (deduplication)",
+         dangling_count == 1,
+         f"Got {dangling_count} dangling warnings for guide.md")
+finally:
+    _shutil.rmtree(_d4, ignore_errors=True)
 
 # Sp5. Non-relative path (shared/references/foo.md) does NOT trigger warning
 _SKILL_NONREL = MINIMAL_SKILL + "\nSee shared/references/guide.md elsewhere.\n"
 _d5 = _make_skill_dir(_SKILL_NONREL)
-_errs5, _warns5 = validate(_d5 / "SKILL.md")
-test("Sp5: shared/references/guide.md (non-relative) → no dangling warning",
-     not any("guide.md" in w and "Dangling" in w for w in _warns5),
-     f"Got warnings: {_warns5}")
-_shutil.rmtree(_d5)
+try:
+    _errs5, _warns5 = validate(_d5 / "SKILL.md")
+    test("Sp5: shared/references/guide.md (non-relative) → no dangling warning",
+         not any("guide.md" in w and "Dangling" in w for w in _warns5),
+         f"Got warnings: {_warns5}")
+finally:
+    _shutil.rmtree(_d5, ignore_errors=True)
 
 # Sp6. Nested reference exists → no dangling warning
 _SKILL_NESTED_REF = MINIMAL_SKILL + "\nSee `references/sub/deep.md` for details.\n"
 _d6 = _make_skill_dir(_SKILL_NESTED_REF, refs={"sub/deep.md": "# Deep\nContent."})
-_errs6, _warns6 = validate(_d6 / "SKILL.md")
-test("Sp6: existing references/sub/deep.md (nested) → no dangling warning",
-     not any("sub/deep.md" in w and "Dangling" in w for w in _warns6),
-     f"Got warnings: {_warns6}")
-_shutil.rmtree(_d6)
+try:
+    _errs6, _warns6 = validate(_d6 / "SKILL.md")
+    test("Sp6: existing references/sub/deep.md (nested) → no dangling warning",
+         not any("sub/deep.md" in w and "Dangling" in w for w in _warns6),
+         f"Got warnings: {_warns6}")
+finally:
+    _shutil.rmtree(_d6, ignore_errors=True)
 
 # Sp7. Nested reference missing → dangling warning
 _d7 = _make_skill_dir(_SKILL_NESTED_REF)
-_errs7, _warns7 = validate(_d7 / "SKILL.md")
-test("Sp7: missing references/sub/deep.md (nested) → dangling warning",
-     any("sub/deep.md" in w and "Dangling" in w for w in _warns7),
-     f"Got warnings: {_warns7}")
-_shutil.rmtree(_d7)
+try:
+    _errs7, _warns7 = validate(_d7 / "SKILL.md")
+    test("Sp7: missing references/sub/deep.md (nested) → dangling warning",
+         any("sub/deep.md" in w and "Dangling" in w for w in _warns7),
+         f"Got warnings: {_warns7}")
+finally:
+    _shutil.rmtree(_d7, ignore_errors=True)
 
 # Sp8. setup-project install_skills deploys nested references/ preserving structure
 # Use fully isolated temp dirs outside the repo — no mutation of the live source tree.
@@ -486,6 +505,9 @@ test("Sp10: session-knowledge-creator has no dangling reference warnings",
      f"Dangling refs: {dangling_sk}")
 
 # Sp11. Traversal guard: references/../SKILL.md and references/a/../../x.md are rejected
+# The skill dir has a real references/ subdirectory so that `references/../SKILL.md`
+# resolves to the actual SKILL.md on disk — proving the escape IS dangerous and that
+# the guard is the only thing preventing a silent false-pass.
 _TRAVERSAL_SKILL = """\
 ---
 name: traversal-test
@@ -506,15 +528,26 @@ Nested bad ref: references/a/../../secret.md
 </example>
 """
 _d11 = _make_skill_dir(_TRAVERSAL_SKILL)
-_errs11, _warns11 = validate(_d11 / "SKILL.md")
-_traversal_warns = [w for w in _warns11 if "Suspicious" in w or "traversal" in w.lower() or ".." in w]
-test("Sp11: references/../SKILL.md triggers traversal warning",
-     any("../SKILL.md" in w or ".." in w for w in _traversal_warns),
-     f"Got warnings: {_warns11}")
-test("Sp11: traversal path does NOT appear as a dangling reference warning",
-     not any("Dangling" in w and ".." in w for w in _warns11),
-     f"Got warnings: {_warns11}")
-_shutil.rmtree(_d11)
+# Create a real references/ dir so the escape path actually resolves to an existing file.
+(_d11 / "references").mkdir(exist_ok=True)
+try:
+    # Confirm the dangerous case: without the guard, the OS would resolve
+    # `<d11>/references/../SKILL.md` → `<d11>/SKILL.md` which exists.
+    _escape_path = _d11 / "references" / ".." / "SKILL.md"
+    test("Sp11: escape path references/../SKILL.md resolves to an existing file (danger confirmed)",
+         _escape_path.exists(),
+         f"Expected {_escape_path} to exist")
+
+    _errs11, _warns11 = validate(_d11 / "SKILL.md")
+    _traversal_warns = [w for w in _warns11 if "Suspicious" in w or "traversal" in w.lower() or ".." in w]
+    test("Sp11: references/../SKILL.md triggers traversal warning",
+         any("../SKILL.md" in w or ".." in w for w in _traversal_warns),
+         f"Got warnings: {_warns11}")
+    test("Sp11: traversal path does NOT appear as a dangling reference warning",
+         not any("Dangling" in w and ".." in w for w in _warns11),
+         f"Got warnings: {_warns11}")
+finally:
+    _shutil.rmtree(_d11, ignore_errors=True)
 
 
 # ─── Summary ────────────────────────────────────────────────────────────
