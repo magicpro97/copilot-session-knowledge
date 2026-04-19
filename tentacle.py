@@ -15,8 +15,9 @@ Usage:
     python3 ~/.copilot/tools/tentacle.py todo <name> done <index>
     python3 ~/.copilot/tools/tentacle.py todo <name> undone <index>
     python3 ~/.copilot/tools/tentacle.py handoff <name> "<message>" [--learn]
-    python3 ~/.copilot/tools/tentacle.py swarm <name> [--agent-type <type>] [--model <model>]
-    python3 ~/.copilot/tools/tentacle.py dispatch <name> [--agent-type <type>] [--model <model>]
+    python3 ~/.copilot/tools/tentacle.py swarm <name> [--agent-type <type>] [--model <model>] [--briefing]
+    python3 ~/.copilot/tools/tentacle.py dispatch <name> [--agent-type <type>] [--model <model>] [--briefing]
+    python3 ~/.copilot/tools/tentacle.py resume <name> [--no-briefing]
     python3 ~/.copilot/tools/tentacle.py complete <name> [--no-learn]
     python3 ~/.copilot/tools/tentacle.py delete <name>
 
@@ -144,7 +145,7 @@ def render_todos(todos: list[dict]) -> str:
 # --- Commands ---
 
 def _run_briefing(query: str) -> str:
-    """Run briefing.py and return compact output. Returns empty string on failure."""
+    """Run briefing.py with a text query and return compact output. Returns empty string on failure."""
     if not BRIEFING_PY.exists():
         return ""
     try:
@@ -157,6 +158,30 @@ def _run_briefing(query: str) -> str:
             return output
     except (subprocess.TimeoutExpired, Exception):
         pass
+    return ""
+
+
+def _run_briefing_for_task(task_id: str, fallback_query: str = "") -> str:
+    """Run briefing.py with --task <task_id> for task-scoped recall.
+
+    Falls back to a text query if task-scoped recall returns nothing.
+    Returns empty string on failure or no results.
+    """
+    if not BRIEFING_PY.exists():
+        return ""
+    try:
+        result = subprocess.run(
+            [sys.executable, str(BRIEFING_PY), "--task", task_id, "--compact", "--limit", "3"],
+            capture_output=True, text=True, timeout=15,
+        )
+        output = result.stdout.strip()
+        if output and "No relevant" not in output and "No knowledge entries found" not in output and len(output) > 20:
+            return output
+    except (subprocess.TimeoutExpired, Exception):
+        pass
+    # Fallback to text query when task-scoped recall is empty
+    if fallback_query:
+        return _run_briefing(fallback_query)
     return ""
 
 
@@ -534,6 +559,74 @@ def cmd_complete(args):
     print(f"   💡 Run `tentacle.py delete {args.name}` to clean up when ready")
 
 
+def cmd_resume(args):
+    """Resume a tentacle: refresh briefing, update status, and show current state."""
+    tentacles = get_tentacles_dir(args.session_dir)
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
+
+    if not tentacle_dir.exists():
+        print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    meta_path = tentacle_dir / "meta.json"
+    context_path = tentacle_dir / "CONTEXT.md"
+    todo_path = tentacle_dir / "todo.md"
+    handoff_path = tentacle_dir / "handoff.md"
+
+    # 1. Load and update meta
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    prev_status = meta.get("status", "idle")
+    meta["status"] = "active"
+    meta["resumed_at"] = datetime.now(timezone.utc).isoformat()
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+
+    print(f"🔄 Resuming tentacle '{args.name}' (was: {prev_status})")
+
+    # 2. Live briefing injection (unless --no-briefing)
+    briefing_text = ""
+    if not getattr(args, "no_briefing", False):
+        fallback = meta.get("description", "") or args.name.replace("-", " ")
+        print(f"🧠 Fetching fresh knowledge for '{args.name}'...")
+        briefing_text = _run_briefing_for_task(args.name, fallback_query=fallback)
+        if briefing_text:
+            print(f"   ✅ Got {len(briefing_text)} chars of relevant knowledge")
+        else:
+            print(f"   ℹ️  No relevant past knowledge found")
+
+    # 3. Append a resume section to CONTEXT.md
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    resume_section = f"\n## Resumed [{timestamp}]\n\n"
+    if briefing_text:
+        resume_section += "### Live Briefing (fresh at dispatch)\n\n"
+        resume_section += f"{briefing_text}\n"
+    else:
+        resume_section += "_No new briefing content available._\n"
+
+    if context_path.exists():
+        existing = context_path.read_text()
+        context_path.write_text(existing + resume_section)
+    else:
+        context_path.write_text(f"# {args.name}\n{resume_section}")
+
+    # 4. Show current todo state
+    todos = parse_todos(todo_path.read_text()) if todo_path.exists() else []
+    done_count = sum(1 for t in todos if t["done"])
+    pending = [t for t in todos if not t["done"]]
+
+    print(f"\n📋 Todos: {done_count}/{len(todos)} done")
+    if pending:
+        print("   Pending:")
+        for t in pending:
+            print(f"     ☐ [{t['index']}] {t['text']}")
+    else:
+        print("   ✅ All todos done" if todos else "   (none yet)")
+
+    if handoff_path.exists():
+        print(f"\n📨 Handoff notes available — run `show {args.name}` to review")
+
+    print(f"\n✅ Tentacle '{args.name}' is active and ready")
+
+
 def cmd_swarm(args):
     """Generate dispatch instructions from pending todos (swarm mode)."""
     tentacles = get_tentacles_dir(args.session_dir)
@@ -554,6 +647,15 @@ def cmd_swarm(args):
         print(f"✅ All todos done for '{args.name}'. Nothing to swarm.")
         return
 
+    if args.output == "json" and getattr(args, "briefing", False):
+        print(
+            "ERROR: --briefing is not supported with --output json. "
+            "Briefing content cannot be represented in the JSON payload. "
+            "Use --output prompt or --output parallel to inject briefing.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     context = context_path.read_text() if context_path.exists() else ""
     meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
 
@@ -563,6 +665,21 @@ def cmd_swarm(args):
     print(f"🐙 Swarm plan for '{args.name}' — {len(pending)} pending todos\n")
     print(f"Agent: {agent_type} | Model: {model}\n")
 
+    # Live briefing injection at dispatch time
+    live_briefing_section = ""
+    if getattr(args, "briefing", False):
+        fallback = meta.get("description", "") or args.name.replace("-", " ")
+        print(f"🧠 Fetching live briefing for dispatch...")
+        briefing_text = _run_briefing_for_task(args.name, fallback_query=fallback)
+        if briefing_text:
+            live_briefing_section = (
+                "\n### Past Knowledge (live briefing at dispatch)\n\n"
+                f"{briefing_text}\n"
+            )
+            print(f"   ✅ Injected {len(briefing_text)} chars of live knowledge\n")
+        else:
+            print(f"   ℹ️  No relevant past knowledge found\n")
+
     if args.output == "prompt":
         # Output as a single dispatch prompt with all todos
         print("─── DISPATCH PROMPT ───\n")
@@ -570,7 +687,7 @@ def cmd_swarm(args):
 
 ### Context
 {context.strip()}
-
+{live_briefing_section}
 ### Your Tasks (complete ALL)
 """
         for t in pending:
@@ -617,6 +734,8 @@ def cmd_swarm(args):
             print(f'')
             print(f'### Context')
             print(f'{context.strip()[:500]}')
+            if live_briefing_section:
+                print(live_briefing_section.strip())
             print(f'')
             print(f'### Your Task')
             print(f'{t["text"]}')
@@ -662,7 +781,8 @@ def main():
               tentacle.py create api-export --scope "backend/lambda/export*" --desc "Export API" --briefing
               tentacle.py todo api-export add "Implement GET /export/patients"
               tentacle.py todo api-export done 0
-              tentacle.py swarm api-export --agent-type lambda-developer
+              tentacle.py swarm api-export --agent-type lambda-developer --briefing
+              tentacle.py resume api-export
               tentacle.py status
               tentacle.py handoff api-export "Completed handler, tests pass" --learn
               tentacle.py complete api-export
@@ -709,12 +829,22 @@ def main():
     p_swarm.add_argument("--model", default="claude-sonnet-4.6", help="Model for workers")
     p_swarm.add_argument("--output", choices=["prompt", "parallel", "json"], default="prompt",
                          help="Output format: prompt (single agent), parallel (one per todo), json")
+    p_swarm.add_argument("--briefing", action="store_true",
+                         help="Inject live briefing into the dispatch prompt at runtime")
 
     # dispatch (alias for swarm --output prompt)
     p_dispatch = sub.add_parser("dispatch", help="Generate single-agent dispatch prompt")
     p_dispatch.add_argument("name", help="Tentacle name")
     p_dispatch.add_argument("--agent-type", default="general-purpose", help="Agent type")
     p_dispatch.add_argument("--model", default="claude-sonnet-4.6", help="Model")
+    p_dispatch.add_argument("--briefing", action="store_true",
+                            help="Inject live briefing into the dispatch prompt at runtime")
+
+    # resume
+    p_resume = sub.add_parser("resume", help="Resume a tentacle: refresh briefing, set active")
+    p_resume.add_argument("name", help="Tentacle name")
+    p_resume.add_argument("--no-briefing", action="store_true",
+                          help="Skip live briefing injection on resume")
 
     # delete
     p_delete = sub.add_parser("delete", help="Delete a tentacle")
@@ -745,6 +875,8 @@ def main():
     elif args.command == "dispatch":
         args.output = "prompt"
         cmd_swarm(args)
+    elif args.command == "resume":
+        cmd_resume(args)
     elif args.command == "delete":
         cmd_delete(args)
     elif args.command == "complete":
