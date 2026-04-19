@@ -88,6 +88,12 @@ python3 ~/.copilot/tools/setup-project.py --profile fullstack   # Full-stack web
 `--profile` installs a **preset hook bundle** and generates a starter `WORKFLOW.md`. Available
 profiles are defined in `presets/` (`default`, `python`, `typescript`, `mobile`, `fullstack`).
 
+When deploying skills, `setup-project.py` copies each skill's `SKILL.md` **and** any
+`references/` subdirectory alongside it, so relative links like `references/foo.md` resolve
+correctly after deployment to `.github/skills/<skill-name>/`. For example,
+`session-knowledge-creator` ships with `references/skill-template.md` and
+`references/instructions-template.md`.
+
 ### Creating custom profiles
 
 Use `profile-builder.py` to build a new profile and save it to `presets/`:
@@ -179,6 +185,7 @@ The tools in this repo are validated and supported on **Copilot CLI** and **Clau
 | Global instruction injection | ✅ `~/.github/copilot-instructions.md` | via CLAUDE.md | ❌ not supported |
 | Session indexing | ✅ | ✅ via `claude-adapter.py` | ❌ not supported |
 
-The `KNOWN_HOSTS` list in `install.py` and `setup-project.py` is intentionally restricted to
-Copilot CLI and Claude Code. Do **not** add Codex, Cursor, or other hosts without documented
-session and hook formats.
+The `KNOWN_HOSTS` list is centralised in `host_manifest.py` (the canonical host-metadata module)
+and consumed by `install.py`, `setup-project.py`, and `auto-update-tools.py`. It is intentionally
+restricted to Copilot CLI and Claude Code. Do **not** add Codex, Cursor, or other hosts without
+documented session and hook formats.
