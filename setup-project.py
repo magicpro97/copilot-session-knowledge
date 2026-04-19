@@ -154,13 +154,28 @@ def copy_if_changed(src: Path, dst: Path, dry_run: bool, label: str) -> bool:
 
 
 def install_skills(project_root: Path, dry_run: bool) -> int:
-    """Install creator skills from tools/skills/ → .github/skills/."""
+    """Install creator skills from tools/skills/ → .github/skills/.
+
+    For each skill, copies SKILL.md and any files in a references/ subdirectory
+    so that relative references like `references/foo.md` resolve after deployment.
+    """
     changes = 0
     for item in INSTALL_ITEMS["skills"]:
-        src = SKILLS_DIR / item["src"] / "SKILL.md"
-        dst = project_root / ".github" / "skills" / item["src"] / "SKILL.md"
+        skill_name = item["src"]
+        src = SKILLS_DIR / skill_name / "SKILL.md"
+        dst = project_root / ".github" / "skills" / skill_name / "SKILL.md"
         if copy_if_changed(src, dst, dry_run, item["label"]):
             changes += 1
+
+        # Copy references/ subdirectory if present (avoids dangling file refs).
+        refs_src = SKILLS_DIR / skill_name / "references"
+        if refs_src.is_dir():
+            for ref_file in refs_src.iterdir():
+                if ref_file.is_file():
+                    ref_dst = project_root / ".github" / "skills" / skill_name / "references" / ref_file.name
+                    if copy_if_changed(ref_file, ref_dst, dry_run, f"{item['label']} → references/{ref_file.name}"):
+                        changes += 1
+
     return changes
 
 
