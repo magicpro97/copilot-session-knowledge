@@ -52,6 +52,20 @@ _spec = importlib.util.spec_from_file_location("host_manifest", REPO / "host_man
 _manifest = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_manifest)
 
+# Load consumer modules for runtime value checks (catches consumer drift from manifest).
+# These supplement source-text checks by proving the actual imported values are correct.
+_ws_spec = importlib.util.spec_from_file_location("_ws_check", REPO / "watch-sessions.py")
+_ws_mod  = importlib.util.module_from_spec(_ws_spec)
+_ws_spec.loader.exec_module(_ws_mod)
+
+_inst_spec = importlib.util.spec_from_file_location("_inst_check", REPO / "install.py")
+_inst_mod  = importlib.util.module_from_spec(_inst_spec)
+_inst_spec.loader.exec_module(_inst_mod)
+
+_sp_spec = importlib.util.spec_from_file_location("_sp_check", REPO / "setup-project.py")
+_sp_mod  = importlib.util.module_from_spec(_sp_spec)
+_sp_spec.loader.exec_module(_sp_mod)
+
 # ─── 0. host_manifest.py — single source of truth ───────────────────────────
 
 print("\n📋 host_manifest.py — Single Source of Truth")
@@ -155,12 +169,12 @@ test("watch-sessions.py imports from host_manifest",
      "watch-sessions.py must delegate host metadata to host_manifest.py")
 
 test("KNOWN_HOSTS contains 'Copilot CLI'",
-     '"Copilot CLI"' in manifest_source,
-     "host_manifest must name Copilot CLI")
+     any(name == "Copilot CLI" for name, _ in _ws_mod.KNOWN_HOSTS),
+     "watch-sessions.py KNOWN_HOSTS must include Copilot CLI at runtime")
 
 test("KNOWN_HOSTS contains 'Claude Code'",
-     '"Claude Code"' in manifest_source,
-     "host_manifest must name Claude Code")
+     any(name == "Claude Code" for name, _ in _ws_mod.KNOWN_HOSTS),
+     "watch-sessions.py KNOWN_HOSTS must include Claude Code at runtime")
 
 test("SESSION_STATE path is ~/.copilot/session-state",
      '".copilot" / "session-state"' in manifest_source
@@ -197,12 +211,12 @@ test("install.py imports from host_manifest",
      "install.py must delegate host metadata to host_manifest.py")
 
 test("install.py KNOWN_HOSTS includes 'Copilot CLI'",
-     '"Copilot CLI"' in manifest_source,
-     "host_manifest HOST_DIRS must list Copilot CLI")
+     "Copilot CLI" in _inst_mod.KNOWN_HOSTS,
+     "install.py KNOWN_HOSTS must include Copilot CLI at runtime")
 
 test("install.py KNOWN_HOSTS includes 'Claude Code'",
-     '"Claude Code"' in manifest_source,
-     "host_manifest HOST_DIRS must list Claude Code")
+     "Claude Code" in _inst_mod.KNOWN_HOSTS,
+     "install.py KNOWN_HOSTS must include Claude Code at runtime")
 
 # show_status() must use KNOWN_HOSTS for iteration (no bare ad-hoc Copilot/Claude ifs)
 show_status_start = inst_source.find("def show_status()")
@@ -212,16 +226,17 @@ test("show_status() uses KNOWN_HOSTS for agent detection",
      "KNOWN_HOSTS" in show_status_body,
      "show_status() must iterate KNOWN_HOSTS, not separate if/else per host")
 
-# deploy_skill() deploys to both COPILOT_DIR and CLAUDE_DIR
+# deploy_skill() must be driven by KNOWN_HOSTS and HOST_SKILL_SUBPATHS from
+# the manifest — not separate ad-hoc if/else per host.
 deploy_skill_start = inst_source.find("def deploy_skill()")
 deploy_skill_end   = inst_source.find("\ndef ", deploy_skill_start + 1)
 deploy_skill_body  = inst_source[deploy_skill_start:deploy_skill_end]
-test("deploy_skill() checks COPILOT_DIR for Copilot skill",
-     "COPILOT_DIR.is_dir()" in deploy_skill_body,
-     "deploy_skill() must check COPILOT_DIR")
-test("deploy_skill() checks CLAUDE_DIR for Claude skill",
-     "CLAUDE_DIR.is_dir()" in deploy_skill_body,
-     "deploy_skill() must check CLAUDE_DIR")
+test("deploy_skill() iterates KNOWN_HOSTS (manifest-driven, not ad-hoc)",
+     "KNOWN_HOSTS" in deploy_skill_body,
+     "deploy_skill() must iterate KNOWN_HOSTS, not separate if COPILOT_DIR/CLAUDE_DIR")
+test("deploy_skill() uses HOST_SKILL_SUBPATHS for path construction",
+     "HOST_SKILL_SUBPATHS" in deploy_skill_body,
+     "deploy_skill() must derive paths from HOST_SKILL_SUBPATHS, not hardcoded strings")
 
 # deploy_hooks() is Copilot CLI-only — must say so in its docstring/body
 deploy_hooks_start = inst_source.find("def deploy_hooks()")
@@ -249,21 +264,26 @@ test("no CLAUDE_DIR/markers path in install.py",
      'CLAUDE_DIR / "markers"' not in inst_source,
      "Claude Code does not use a markers/ directory in this tool")
 
-# ─── 3. Functional path symmetry for deploy_skill() ─────────────────────────
+# ─── 3. Manifest-driven path symmetry for deploy_skill() ────────────────────
 
-print("\n📦 deploy_skill() — Path Symmetry (static analysis)")
+print("\n📦 deploy_skill() — Path Symmetry (manifest runtime values)")
 
-# Copilot skill path: .github/skills/session-knowledge/SKILL.md
+# Skill paths now live in host_manifest.HOST_SKILL_SUBPATHS; check manifest values.
+test("manifest HOST_SKILL_SUBPATHS defined",
+     hasattr(_manifest, "HOST_SKILL_SUBPATHS"),
+     "host_manifest must define HOST_SKILL_SUBPATHS for deploy_skill() to use")
+
 test("Copilot skill path: .github/skills/session-knowledge/SKILL.md",
-     '.github" / "skills"' in deploy_skill_body
-     or ".github/skills" in deploy_skill_body
-     or '"skills"' in deploy_skill_body,
-     "deploy_skill() must write .github/skills/session-knowledge/SKILL.md for Copilot")
+     _manifest.HOST_SKILL_SUBPATHS.get("Copilot CLI") == ".github/skills/session-knowledge/SKILL.md",
+     "HOST_SKILL_SUBPATHS['Copilot CLI'] must be .github/skills/session-knowledge/SKILL.md")
 
-# Claude skill path: .claude/skills/session-knowledge/SKILL.md
 test("Claude skill path: .claude/skills/session-knowledge/SKILL.md",
-     '".claude"' in deploy_skill_body and '"skills"' in deploy_skill_body,
-     "deploy_skill() must write .claude/skills/session-knowledge/SKILL.md for Claude")
+     _manifest.HOST_SKILL_SUBPATHS.get("Claude Code") == ".claude/skills/session-knowledge/SKILL.md",
+     "HOST_SKILL_SUBPATHS['Claude Code'] must be .claude/skills/session-knowledge/SKILL.md")
+
+test("HOST_SKILL_SUBPATHS has exactly 2 entries (Copilot CLI + Claude Code)",
+     len(_manifest.HOST_SKILL_SUBPATHS) == 2,
+     f"Expected 2 HOST_SKILL_SUBPATHS entries, got {len(_manifest.HOST_SKILL_SUBPATHS)}")
 
 # ─── 4. Functional deploy_skill() with mock filesystem ───────────────────────
 
@@ -286,9 +306,10 @@ try:
     _mod  = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_mod)
 
-    # Patch module-level globals so deploy_skill() operates on our fake dirs
-    _mod.COPILOT_DIR = fake_copilot
-    _mod.CLAUDE_DIR  = fake_claude
+    # Patch module-level globals so deploy_skill() operates on our fake dirs.
+    # KNOWN_HOSTS (HOST_DIRS) drives the per-host iteration; HOST_SKILL_SUBPATHS
+    # is correct as-is since it maps to project-relative paths.
+    _mod.KNOWN_HOSTS = {"Copilot CLI": fake_copilot, "Claude Code": fake_claude}
     _mod.SKILLS_SRC  = fake_skill_src
     _mod._git_root   = lambda: fake_project
 
@@ -345,12 +366,12 @@ test("setup-project.py imports from host_manifest",
      "setup-project.py must delegate host metadata to host_manifest.py")
 
 test("setup-project.py names 'Copilot CLI' in host instruction files",
-     '"Copilot CLI"' in manifest_source,
-     "host_manifest HOST_INSTRUCTION_FILES must include Copilot CLI")
+     "Copilot CLI" in _sp_mod.KNOWN_HOSTS_INSTRUCTION_FILES,
+     "setup-project.py KNOWN_HOSTS_INSTRUCTION_FILES must include 'Copilot CLI' at runtime")
 
 test("setup-project.py names 'Claude Code' in host instruction files",
-     '"Claude Code"' in manifest_source,
-     "host_manifest HOST_INSTRUCTION_FILES must include Claude Code")
+     "Claude Code" in _sp_mod.KNOWN_HOSTS_INSTRUCTION_FILES,
+     "setup-project.py KNOWN_HOSTS_INSTRUCTION_FILES must include 'Claude Code' at runtime")
 
 test("setup-project.py handles .github/copilot-instructions.md (Copilot CLI)",
      "copilot-instructions.md" in sp_source,
@@ -363,6 +384,26 @@ test("setup-project.py handles CLAUDE.md (Claude Code)",
 test("setup-project.py handles AGENTS.md (all agents)",
      "AGENTS.md" in sp_source,
      "patch_agents_md() must target AGENTS.md")
+
+# ── "All agents" key — used by setup-project.py for AGENTS.md patching ──────
+# This is the host-agnostic instruction key; tests verify both the manifest
+# defines it correctly AND that setup-project.py actually uses it at runtime.
+
+test("manifest HOST_INSTRUCTION_FILES has 'All agents' key",
+     "All agents" in _manifest.HOST_INSTRUCTION_FILES,
+     "HOST_INSTRUCTION_FILES must include 'All agents' as host-agnostic instruction key")
+
+test("manifest 'All agents' instruction file resolves to AGENTS.md",
+     _manifest.HOST_INSTRUCTION_FILES.get("All agents") == "AGENTS.md",
+     "HOST_INSTRUCTION_FILES['All agents'] must equal 'AGENTS.md'")
+
+test("setup-project.py KNOWN_HOSTS_INSTRUCTION_FILES includes 'All agents' at runtime",
+     "All agents" in _sp_mod.KNOWN_HOSTS_INSTRUCTION_FILES,
+     "setup-project.py must expose 'All agents' key from HOST_INSTRUCTION_FILES at runtime")
+
+test("setup-project.py 'All agents' resolves to AGENTS.md at runtime",
+     _sp_mod.KNOWN_HOSTS_INSTRUCTION_FILES.get("All agents") == "AGENTS.md",
+     "KNOWN_HOSTS_INSTRUCTION_FILES['All agents'] must equal 'AGENTS.md' in setup-project.py")
 
 # No unsupported host instruction files
 for unsupported in [".codex/instructions", ".cursor/rules", "windsurf-instructions"]:

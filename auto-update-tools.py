@@ -464,25 +464,36 @@ def deploy_skills():
 
     template_content = template.read_text(encoding="utf-8")
 
-    # Deploy to Copilot CLI skill path
-    copilot_skill = project_root / ".github" / "skills" / "session-knowledge" / "SKILL.md"
-    if copilot_skill.exists():
-        try:
-            if copilot_skill.read_text(encoding="utf-8") != template_content:
-                copilot_skill.write_text(template_content, encoding="utf-8")
-                ok(f"Updated SKILL.md in {project_root.name}")
-        except Exception:
-            pass
+    # Import host metadata from the manifest so host paths stay centralised.
+    # TOOLS_DIR is inserted so host_manifest is importable regardless of cwd.
+    try:
+        if str(TOOLS_DIR) not in sys.path:
+            sys.path.insert(0, str(TOOLS_DIR))
+        from host_manifest import HOST_DIRS, HOST_SKILL_SUBPATHS  # noqa: PLC0415
+    except ImportError:
+        # Fallback when manifest is unavailable (broken or first-run state).
+        HOST_DIRS = {
+            "Copilot CLI": Path.home() / ".copilot",
+            "Claude Code":  Path.home() / ".claude",
+        }
+        HOST_SKILL_SUBPATHS = {
+            "Copilot CLI": ".github/skills/session-knowledge/SKILL.md",
+            "Claude Code":  ".claude/skills/session-knowledge/SKILL.md",
+        }
 
-    # Deploy to Claude Code skill path
-    claude_skill = project_root / ".claude" / "skills" / "session-knowledge" / "SKILL.md"
-    if claude_skill.exists():
-        try:
-            if claude_skill.read_text(encoding="utf-8") != template_content:
-                claude_skill.write_text(template_content, encoding="utf-8")
-                ok(f"Updated Claude SKILL.md in {project_root.name}")
-        except Exception:
-            pass
+    # Only update files that already exist; don't create new deployments here.
+    for host_name, host_dir in HOST_DIRS.items():
+        subpath = HOST_SKILL_SUBPATHS.get(host_name)
+        if subpath is None:
+            continue
+        skill_path = project_root / subpath
+        if skill_path.exists():
+            try:
+                if skill_path.read_text(encoding="utf-8") != template_content:
+                    skill_path.write_text(template_content, encoding="utf-8")
+                    ok(f"Updated {host_name} SKILL.md in {project_root.name}")
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------

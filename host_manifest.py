@@ -72,3 +72,11 @@ HOST_INSTRUCTION_FILES: dict[str, str] = {
     "Claude Code": "CLAUDE.md",
     "All agents":  "AGENTS.md",   # host-agnostic; read by Claude, Codex, and others
 }
+
+# Project-relative paths for deploying SKILL.md into a project.
+# Used by install.py deploy_skill() and auto-update-tools.py deploy_skills()
+# so both consumers stay in sync when host layouts change.
+HOST_SKILL_SUBPATHS: dict[str, str] = {
+    "Copilot CLI": ".github/skills/session-knowledge/SKILL.md",
+    "Claude Code":  ".claude/skills/session-knowledge/SKILL.md",
+}
