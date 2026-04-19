@@ -1149,7 +1149,18 @@ def main():
             idx2 = args.index("--limit")
             limit = int(args[idx2 + 1]) if idx2 + 1 < len(args) else 30
         task_fmt = "json" if "--json" in args else "text"
-        print(generate_task_briefing(task_id, limit=limit, fmt=task_fmt))
+        budget = 0
+        if "--budget" in args:
+            idx3 = args.index("--budget")
+            try:
+                budget = int(args[idx3 + 1]) if idx3 + 1 < len(args) else 3000
+            except ValueError:
+                budget = 3000
+        output = generate_task_briefing(task_id, limit=limit, fmt=task_fmt)
+        if budget > 0 and len(output) > budget and task_fmt != "json":
+            output = output[:budget].rsplit("\n", 1)[0]
+            output += f"\n[BUDGET {budget} chars — showing highest-confidence entries only]"
+        print(output)
         return
 
     # Handle --wing/--room search
@@ -1206,10 +1217,11 @@ def main():
     else:
         query_parts = [a for a in args if not a.startswith("--")
                        and a not in ("md", "json", "compact", str(limit))]
-        # Filter out values that follow flags
+        # Filter out values that follow flags (including --budget) so they
+        # don't bleed into the FTS query string.
         flag_values = set()
         for i, a in enumerate(args):
-            if a in ("--format", "--limit", "--min-confidence") and i + 1 < len(args):
+            if a in ("--format", "--limit", "--min-confidence", "--budget") and i + 1 < len(args):
                 flag_values.add(args[i + 1])
         query_parts = [a for a in query_parts if a not in flag_values]
         query = " ".join(query_parts)
@@ -1223,7 +1235,13 @@ def main():
     budget = 0
     if "--budget" in args:
         idx = args.index("--budget")
-        budget = int(args[idx + 1]) if idx + 1 < len(args) else 3000
+        if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+            try:
+                budget = int(args[idx + 1])
+            except ValueError:
+                budget = 3000  # default on non-numeric value
+        else:
+            budget = 3000
 
     if subagent_mode:
         output = generate_subagent_context(query, limit=limit,
@@ -1247,8 +1265,11 @@ def main():
             if len(output) <= budget:
                 break
 
-        # If still over budget after limit=1, truncate at last complete line
-        if len(output) > budget:
+        # If still over budget after limit=1, truncate at last complete line.
+        # JSON and subagent-context (XML-like) output are not truncated — that
+        # would corrupt their structure.  Those formats must fit within budget
+        # via the progressive-limit loop above.
+        if len(output) > budget and fmt != "json":
             output = output[:budget].rsplit("\n", 1)[0]
             output += f"\n[BUDGET {budget} chars — showing highest-confidence entries only]"
 

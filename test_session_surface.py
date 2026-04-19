@@ -662,6 +662,230 @@ def test_fts_sanitization_preserved():
         test(f"briefing/qs sanitize agree on {q!r}", r1 == r2, f"{r1!r} vs {r2!r}")
 
 
+def test_budget_and_compact_surfaces(db: sqlite3.Connection, tmp_db_path: str):
+    """7. query-session.py --budget and --compact flags work on all key surfaces."""
+    print("\n💰 Budget and compact surface tests")
+
+    original_db_path = _qs.DB_PATH
+    _qs.DB_PATH = Path(tmp_db_path)
+
+    # Insert entries with known est_tokens for this test
+    rid1 = insert_entry(db, "mistake", "Budget test mistake",
+                        "Content about budget mistake", task_id="budget-compact-test")
+    rid2 = insert_entry(db, "pattern", "Budget test pattern",
+                        "Content about budget pattern", task_id="budget-compact-test",
+                        affected_files=["src/budget.py"])
+    db.execute("UPDATE knowledge_entries SET est_tokens = 42 WHERE task_id = 'budget-compact-test'")
+    db.commit()
+
+    try:
+        import io
+
+        # --- --compact on show_by_task ---
+        buf = io.StringIO()
+        orig = sys.stdout
+        sys.stdout = buf
+        try:
+            _qs.show_by_task("budget-compact-test", limit=20, compact=True)
+        finally:
+            sys.stdout = orig
+        out = buf.getvalue()
+        test("--compact show_by_task produces output", len(out) > 0, f"out: {out[:100]}")
+        test("--compact show_by_task suppresses content preview",
+             "\n         " not in out,
+             "content preview line leaked into compact output")
+        test("--compact show_by_task shows ~tok hint", "~42tok" in out,
+             f"out: {out[:300]}")
+
+        # --- --compact on show_by_file ---
+        buf2 = io.StringIO()
+        sys.stdout = buf2
+        try:
+            _qs.show_by_file("src/budget.py", limit=10, compact=True)
+        finally:
+            sys.stdout = orig
+        out2 = buf2.getvalue()
+        test("--compact show_by_file produces output",
+             "budget" in out2.lower() or "Budget" in out2,
+             f"out: {out2[:200]}")
+        test("--compact show_by_file shows ~tok hint", "~42tok" in out2,
+             f"out: {out2[:200]}")
+
+        # --- --compact on show_knowledge ---
+        buf3 = io.StringIO()
+        sys.stdout = buf3
+        try:
+            _qs.show_knowledge("mistake", limit=5, compact=True)
+        finally:
+            sys.stdout = orig
+        out3 = buf3.getvalue()
+        test("--compact show_knowledge produces output", len(out3) > 0,
+             f"out: {out3[:100]}")
+        # Compact mode: no content-preview line (lines indented with 8 spaces)
+        lines_with_preview = [l for l in out3.splitlines() if l.startswith("        ")]
+        test("--compact show_knowledge has no content-preview lines",
+             len(lines_with_preview) == 0,
+             f"preview lines found: {lines_with_preview[:2]}")
+
+        # --- --budget caps output ---
+        buf4 = io.StringIO()
+        sys.stdout = buf4
+        try:
+            _qs.show_knowledge("mistake", limit=20, compact=False)
+        finally:
+            sys.stdout = orig
+        full_out = buf4.getvalue()
+
+        if len(full_out) > 50:
+            budget = max(10, len(full_out) // 2)
+            capped = _qs._apply_budget(full_out, budget)
+            test("_apply_budget caps output length", len(capped) <= budget + 100,
+                 f"len={len(capped)} budget={budget}")
+            test("_apply_budget adds budget marker", "BUDGET" in capped,
+                 f"out: {capped[-100:]}")
+        else:
+            test("_apply_budget caps output length", True, "(skipped — no entries)")
+            test("_apply_budget adds budget marker", True, "(skipped — no entries)")
+
+        # --- --budget via CLI main() ---
+        orig_argv = sys.argv
+        buf5 = io.StringIO()
+        sys.argv = ["query-session.py", "--mistakes", "--budget", "50"]
+        sys.stdout = buf5
+        try:
+            _qs.main()
+        finally:
+            sys.stdout = orig
+            sys.argv = orig_argv
+        budget_out = buf5.getvalue()
+        test("--budget via main() caps output", len(budget_out) <= 200,
+             f"len={len(budget_out)}")
+
+    finally:
+        _qs.DB_PATH = original_db_path
+
+
+def test_briefing_task_budget(db: sqlite3.Connection, tmp_db_path: str):
+    """8. briefing.py --task + --budget: real parsing path, not simulated."""
+    print("\n💰 briefing --task + --budget tests")
+
+    original_db_path = _briefing.DB_PATH
+    _briefing.DB_PATH = Path(tmp_db_path)
+
+    try:
+        import io as _io
+
+        # Insert a test entry so the output is non-trivial
+        insert_entry(db, "mistake", "Budget task mistake",
+                     "Content about budget task", task_id="briefing-task-budget-test")
+        db.commit()
+
+        # --- Exercise real main() path with --task + --budget ---
+        output = _briefing.generate_task_briefing("briefing-task-budget-test", limit=30)
+        if len(output) > 20:
+            budget = max(10, len(output) // 2)
+            buf = _io.StringIO()
+            orig_argv, orig_stdout = sys.argv, sys.stdout
+            sys.argv = ["briefing.py", "--task", "briefing-task-budget-test",
+                        "--budget", str(budget)]
+            sys.stdout = buf
+            try:
+                _briefing.main()
+            finally:
+                sys.stdout = orig_stdout
+                sys.argv = orig_argv
+            capped = buf.getvalue()
+            test("briefing --task --budget caps output via main()",
+                 len(capped) <= budget + 150, f"len={len(capped)} budget={budget}")
+            test("briefing --task --budget adds marker or already fits",
+                 "BUDGET" in capped or len(output) <= budget,
+                 f"out: {capped[-100:]}")
+        else:
+            test("briefing --task --budget caps output via main()", True, "(skipped — no entries)")
+            test("briefing --task --budget adds marker or already fits", True, "(skipped — no entries)")
+
+        # --- Invalid --budget value must not crash (issues 3 & 5) ---
+        result_inv = subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "briefing.py"),
+             "--task", "nonexistent-xyz-1234", "--budget", "notanumber"],
+            capture_output=True, text=True
+        )
+        test("briefing --task invalid --budget doesn't crash",
+             result_inv.returncode == 0,
+             result_inv.stderr[:200])
+
+        # --- Budget value must NOT contaminate main-path FTS query (issue 4) ---
+        result_cont = subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "briefing.py"),
+             "my special query", "--budget", "badval"],
+            capture_output=True, text=True
+        )
+        test("briefing main-path invalid --budget doesn't crash",
+             result_cont.returncode == 0,
+             result_cont.stderr[:200])
+        # "badval" should not appear in the '📋 Briefing: …' header line
+        header = next((l for l in result_cont.stdout.splitlines()
+                       if "Briefing:" in l or "briefing:" in l.lower()), "")
+        test("briefing main-path --budget value not in query header",
+             "badval" not in header,
+             f"header: {header!r}")
+
+        # --- Test via CLI subprocess (only if real DB exists) ---
+        if _REAL_DB.exists():
+            result = subprocess.run(
+                [sys.executable, str(TOOLS_DIR / "briefing.py"),
+                 "--task", "nonexistent-xyz-1234", "--budget", "100"],
+                capture_output=True, text=True
+            )
+            test("briefing --task --budget exits cleanly", result.returncode == 0,
+                 result.stderr[:100])
+            test("briefing --task --budget output within budget",
+                 len(result.stdout) <= 300,  # some slack for the marker line
+                 f"len={len(result.stdout)}")
+
+    finally:
+        _briefing.DB_PATH = original_db_path
+
+
+def test_learn_list_tokens(tmp_db_path: str):
+    """9. learn.py --list shows ~tok hint."""
+    print("\n🔢 learn.py --list token-hint tests")
+
+    original_db_path = _learn.DB_PATH
+    _learn.DB_PATH = Path(tmp_db_path)
+
+    import io
+    try:
+        # Insert an entry with a known est_tokens value
+        db = sqlite3.connect(tmp_db_path)
+        db.row_factory = sqlite3.Row
+        db.execute("""
+            UPDATE knowledge_entries SET est_tokens = 99 WHERE id IN (
+                SELECT id FROM knowledge_entries ORDER BY id DESC LIMIT 1
+            )
+        """)
+        db.commit()
+        db.close()
+
+        buf = io.StringIO()
+        orig = sys.stdout
+        sys.stdout = buf
+        try:
+            _learn.list_recent(limit=5)
+        finally:
+            sys.stdout = orig
+
+        out = buf.getvalue()
+        test("learn --list shows ~tok hint", "~99tok" in out or "tok" in out,
+             f"out: {out[:300]}")
+        test("learn --list still shows category and title",
+             any(cat in out for cat in ("mistake", "pattern", "decision", "tool",
+                                        "feature", "refactor", "discovery")),
+             f"out: {out[:200]}")
+    finally:
+        _learn.DB_PATH = original_db_path
+
+
 def main():
     print("=" * 60)
     print("test_session_surface.py — memory-surface feature tests")
@@ -686,6 +910,9 @@ def main():
         test_learn_existing_flags_regression(tmp_db_path)
         test_show_by_file_no_affected_files_col()
         test_fts_sanitization_preserved()
+        test_budget_and_compact_surfaces(db, tmp_db_path)
+        test_briefing_task_budget(db, tmp_db_path)
+        test_learn_list_tokens(tmp_db_path)
 
         db.close()
     finally:

@@ -31,6 +31,9 @@ Usage:
     python query-session.py --module auth                      # Entries for a module/directory
     python query-session.py --diff                             # Entries for current git diff files
     python query-session.py --task memory-surface              # Entries for a specific task ID
+    python query-session.py "search" --budget 2000             # Cap output to 2000 chars
+    python query-session.py --file src/auth.py --compact       # Titles-only with ~token hint
+    python query-session.py --task my-task --compact           # Compact task recall
 
 Doc types: checkpoint, research, artifact, plan, claude-session
 Knowledge categories: mistake, pattern, decision, tool
@@ -315,14 +318,15 @@ def show_recent(limit: int = 10):
 
 
 def show_knowledge(category: str, limit: int = 20, export_fmt: str = None,
-                   source_filter: str = None, verbose: bool = False):
+                   source_filter: str = None, verbose: bool = False,
+                   compact: bool = False):
     """Show extracted knowledge entries by category."""
     db = get_db()
 
     sql = """
         SELECT ke.id, ke.category, ke.title, ke.content, ke.tags,
                ke.confidence, ke.session_id, ke.occurrence_count,
-               COALESCE(ke.source, 'copilot') as source
+               ke.est_tokens, COALESCE(ke.source, 'copilot') as source
         FROM knowledge_entries ke
         WHERE ke.category = ?
     """
@@ -366,8 +370,12 @@ def show_knowledge(category: str, limit: int = 20, export_fmt: str = None,
         sid = r["session_id"][:8]
         conf = f"{r['confidence']:.1f}"
         count = f" x{r['occurrence_count']}" if r["occurrence_count"] > 1 else ""
+        tok = f" ~{r['est_tokens']}tok" if r["est_tokens"] else ""
 
-        if verbose:
+        if compact:
+            print(f"  {DIM}#{r['id']:>4d}{RESET} [{r['category']}] {r['title'][:70]}"
+                  f"{DIM}{tok}{RESET}")
+        elif verbose:
             tags = f" [{r['tags']}]" if r["tags"] else ""
             print(f"{BOLD}{i}. {r['title']}{RESET}")
             print(f"   {DIM}ID:{RESET} #{r['id']}  "
@@ -380,14 +388,14 @@ def show_knowledge(category: str, limit: int = 20, export_fmt: str = None,
                 print(f"   {DIM}... ({len(r['content'])} chars total){RESET}")
             print()
         else:
-            # Compact: one line per entry with ID
+            # Default: one-line title + first-line preview
             first_line = r["content"].split("\n")[0][:80] if r["content"] else ""
             print(f"  {DIM}#{r['id']:>4d}{RESET} {BOLD}{r['title'][:60]}{RESET} "
                   f"{DIM}[conf:{conf}{count}]{RESET}")
             if first_line:
                 print(f"        {DIM}{first_line}{RESET}")
 
-    if not verbose:
+    if not compact and not verbose:
         print(f"\n{DIM}Use --detail <id> for full content, --verbose for expanded view{RESET}")
 
     db.close()
@@ -957,14 +965,15 @@ def print_usage():
 
 
 def show_by_file(file_path: str, limit: int = 20, verbose: bool = False,
-                 export_fmt: str = None):
+                 export_fmt: str = None, compact: bool = False):
     """Show knowledge entries that recorded the given file as affected."""
     db = get_db()
     # Substring match on JSON array stored as text — safe since we control the format.
     # Parameterized queries already escape safely; no manual quote doubling needed.
     try:
         rows = db.execute("""
-            SELECT id, category, title, content, confidence, affected_files, task_id
+            SELECT id, category, title, content, confidence, affected_files, task_id,
+                   est_tokens
             FROM knowledge_entries
             WHERE affected_files LIKE ? AND affected_files != '[]'
             ORDER BY confidence DESC, occurrence_count DESC
@@ -1000,25 +1009,30 @@ def show_by_file(file_path: str, limit: int = 20, verbose: bool = False,
             "discovery": CYAN,
         }.get(r["category"], "")
         task_note = f"  {DIM}task={r['task_id']}{RESET}" if r["task_id"] else ""
-        print(f"  {DIM}#{r['id']:>4d}{RESET} {cat_color}[{r['category']}]{RESET} "
-              f"{BOLD}{r['title'][:65]}{RESET}{task_note}")
-        if verbose and r["content"]:
-            first = r["content"].split("\n")[0][:100]
-            print(f"         {DIM}{first}{RESET}")
-    if not verbose:
+        tok = f" {DIM}~{r['est_tokens']}tok{RESET}" if r["est_tokens"] else ""
+        if compact:
+            print(f"  {DIM}#{r['id']:>4d}{RESET} [{r['category']}] {r['title'][:70]}{tok}")
+        else:
+            print(f"  {DIM}#{r['id']:>4d}{RESET} {cat_color}[{r['category']}]{RESET} "
+                  f"{BOLD}{r['title'][:65]}{RESET}{task_note}{tok}")
+            if verbose and r["content"]:
+                first = r["content"].split("\n")[0][:100]
+                print(f"         {DIM}{first}{RESET}")
+    if not compact and not verbose:
         print(f"\n{DIM}Use --verbose for content preview, --detail <id> for full entry{RESET}")
     db.close()
 
 
 def show_by_module(module: str, limit: int = 20, verbose: bool = False,
-                   export_fmt: str = None):
+                   export_fmt: str = None, compact: bool = False):
     """Show knowledge entries that affect files in a given module/directory path segment."""
     db = get_db()
     # Parameterized queries already escape safely; no manual quote doubling needed.
     module_lower = module.lower()
     try:
         rows = db.execute("""
-            SELECT id, category, title, content, confidence, affected_files, task_id
+            SELECT id, category, title, content, confidence, affected_files, task_id,
+                   est_tokens
             FROM knowledge_entries
             WHERE (affected_files LIKE ? AND affected_files != '[]')
                OR LOWER(content) LIKE ?
@@ -1066,25 +1080,29 @@ def show_by_module(module: str, limit: int = 20, verbose: bool = False,
             "discovery": CYAN,
         }.get(r["category"], "")
         task_note = f"  {DIM}task={r['task_id']}{RESET}" if r["task_id"] else ""
-        print(f"  {DIM}#{r['id']:>4d}{RESET} {cat_color}[{r['category']}]{RESET} "
-              f"{BOLD}{r['title'][:65]}{RESET}{task_note}")
-        if verbose and r["content"]:
-            first = r["content"].split("\n")[0][:100]
-            print(f"         {DIM}{first}{RESET}")
-    if not verbose:
+        tok = f" {DIM}~{r['est_tokens']}tok{RESET}" if r["est_tokens"] else ""
+        if compact:
+            print(f"  {DIM}#{r['id']:>4d}{RESET} [{r['category']}] {r['title'][:70]}{tok}")
+        else:
+            print(f"  {DIM}#{r['id']:>4d}{RESET} {cat_color}[{r['category']}]{RESET} "
+                  f"{BOLD}{r['title'][:65]}{RESET}{task_note}{tok}")
+            if verbose and r["content"]:
+                first = r["content"].split("\n")[0][:100]
+                print(f"         {DIM}{first}{RESET}")
+    if not compact and not verbose:
         print(f"\n{DIM}Use --verbose for content preview, --detail <id> for full entry{RESET}")
     db.close()
 
 
 def show_by_task(task_id: str, limit: int = 30, verbose: bool = False,
-                 export_fmt: str = None):
+                 export_fmt: str = None, compact: bool = False):
     """Show knowledge entries recorded under a specific task ID."""
     db = get_db()
     safe = task_id.strip()[:200]
     try:
         rows = db.execute("""
             SELECT id, category, title, content, confidence, affected_files, task_id,
-                   occurrence_count, last_seen
+                   occurrence_count, last_seen, est_tokens
             FROM knowledge_entries
             WHERE task_id = ?
             ORDER BY confidence DESC, occurrence_count DESC
@@ -1143,25 +1161,30 @@ def show_by_task(task_id: str, limit: int = 30, verbose: bool = False,
             "tool": MAGENTA, "feature": GREEN, "refactor": DIM,
             "discovery": CYAN,
         }.get(r["category"], "")
-        files = ""
-        try:
-            import json as _json
-            fl = _json.loads(r["affected_files"] or "[]")
-            if fl:
-                files = f"  {DIM}files: {', '.join(fl[:2])}{RESET}"
-        except Exception:
-            pass
-        print(f"  {DIM}#{r['id']:>4d}{RESET} {cat_color}[{r['category']}]{RESET} "
-              f"{BOLD}{r['title'][:65]}{RESET}{files}")
-        if verbose and r["content"]:
-            first = r["content"].split("\n")[0][:100]
-            print(f"         {DIM}{first}{RESET}")
-    if not verbose:
+        tok = f" {DIM}~{r['est_tokens']}tok{RESET}" if r["est_tokens"] else ""
+        if compact:
+            print(f"  {DIM}#{r['id']:>4d}{RESET} [{r['category']}] {r['title'][:70]}{tok}")
+        else:
+            files = ""
+            try:
+                import json as _json
+                fl = _json.loads(r["affected_files"] or "[]")
+                if fl:
+                    files = f"  {DIM}files: {', '.join(fl[:2])}{RESET}"
+            except Exception:
+                pass
+            print(f"  {DIM}#{r['id']:>4d}{RESET} {cat_color}[{r['category']}]{RESET} "
+                  f"{BOLD}{r['title'][:65]}{RESET}{files}{tok}")
+            if verbose and r["content"]:
+                first = r["content"].split("\n")[0][:100]
+                print(f"         {DIM}{first}{RESET}")
+    if not compact and not verbose:
         print(f"\n{DIM}Use --verbose for content preview, --detail <id> for full entry{RESET}")
     db.close()
 
 
-def show_diff_context(limit: int = 20, verbose: bool = False, export_fmt: str = None):
+def show_diff_context(limit: int = 20, verbose: bool = False, export_fmt: str = None,
+                      compact: bool = False):
     """Surface knowledge entries relevant to the current git diff.
 
     Reads changed files from `git diff HEAD --name-only`, then queries
@@ -1220,7 +1243,7 @@ def show_diff_context(limit: int = 20, verbose: bool = False, export_fmt: str = 
         try:
             rows = db.execute("""
                 SELECT id, category, title, content, confidence,
-                       affected_files, task_id, occurrence_count
+                       affected_files, task_id, occurrence_count, est_tokens
                 FROM knowledge_entries
                 WHERE (affected_files LIKE ? AND affected_files != '[]')
                    OR LOWER(content) LIKE ?
@@ -1297,15 +1320,39 @@ def show_diff_context(limit: int = 20, verbose: bool = False, export_fmt: str = 
                 "tool": MAGENTA, "feature": GREEN, "refactor": DIM,
                 "discovery": CYAN,
             }.get(r["category"], "")
-            print(f"    {DIM}#{r['id']:>4d}{RESET} {cat_color}[{r['category']}]{RESET} "
-                  f"{r['title'][:60]}")
-            if verbose and r["content"]:
-                first = r["content"].split("\n")[0][:90]
-                print(f"           {DIM}{first}{RESET}")
+            tok = f" {DIM}~{r['est_tokens']}tok{RESET}" if r["est_tokens"] else ""
+            if compact:
+                print(f"    {DIM}#{r['id']:>4d}{RESET} [{r['category']}] {r['title'][:60]}{tok}")
+            else:
+                print(f"    {DIM}#{r['id']:>4d}{RESET} {cat_color}[{r['category']}]{RESET} "
+                      f"{r['title'][:60]}{tok}")
+                if verbose and r["content"]:
+                    first = r["content"].split("\n")[0][:90]
+                    print(f"           {DIM}{first}{RESET}")
         print()
 
-    print(f"{DIM}Use --detail <id> for full entry content{RESET}")
+    if not compact:
+        print(f"{DIM}Use --detail <id> for full entry content{RESET}")
     db.close()
+
+
+def _apply_budget(text: str, budget: int) -> str:
+    """Cap text to budget chars, truncating at the last complete line.
+
+    JSON output (leading { or [) is returned as-is — slicing would corrupt
+    its structure.  A warning is emitted to stderr instead.
+    """
+    if len(text) <= budget:
+        return text
+    if text.lstrip().startswith(("{", "[")):
+        print(
+            f"[query-session] --budget {budget}: JSON output ({len(text)} chars) "
+            "exceeds budget — returning full JSON to preserve structure",
+            file=sys.stderr,
+        )
+        return text
+    truncated = text[:budget].rsplit("\n", 1)[0]
+    return truncated + f"\n[BUDGET {budget} chars — showing highest-relevance entries only]\n"
 
 
 def main():
@@ -1315,6 +1362,39 @@ def main():
         print_usage()
         return
 
+    # Parse --budget and --compact early; strip them from args before routing.
+    budget = 0
+    if "--budget" in args:
+        idx = args.index("--budget")
+        if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+            try:
+                budget = int(args[idx + 1])
+            except ValueError:
+                budget = 3000  # default on non-numeric value
+            args = args[:idx] + args[idx + 2:]  # always strip --budget + its value
+        else:
+            budget = 3000
+            args = args[:idx] + args[idx + 1:]
+
+    compact = "--compact" in args
+
+    if budget > 0:
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                _run(args, compact)
+        except SystemExit:
+            pass  # still emit whatever was captured before the exit
+        output = _apply_budget(buf.getvalue(), budget)
+        sys.stdout.write(output)
+    else:
+        _run(args, compact)
+
+
+def _run(args: list, compact: bool = False):
+    """Main dispatch — called by main() with budget/compact already parsed."""
     # Parse --source filter (copilot, claude, all)
     source_filter = None
     if "--source" in args:
@@ -1414,7 +1494,7 @@ def main():
         idx = args.index("--file")
         if idx + 1 < len(args):
             show_by_file(args[idx + 1], limit=limit, verbose=verbose,
-                         export_fmt=export_fmt)
+                         export_fmt=export_fmt, compact=compact)
         else:
             print("Error: --file requires a file path")
         return
@@ -1423,7 +1503,7 @@ def main():
         idx = args.index("--module")
         if idx + 1 < len(args):
             show_by_module(args[idx + 1], limit=limit, verbose=verbose,
-                           export_fmt=export_fmt)
+                           export_fmt=export_fmt, compact=compact)
         else:
             print("Error: --module requires a module/directory name")
         return
@@ -1432,13 +1512,14 @@ def main():
         idx = args.index("--task")
         if idx + 1 < len(args):
             show_by_task(args[idx + 1], limit=limit, verbose=verbose,
-                         export_fmt=export_fmt)
+                         export_fmt=export_fmt, compact=compact)
         else:
             print("Error: --task requires a task ID")
         return
 
     if "--diff" in args:
-        show_diff_context(limit=limit, verbose=verbose, export_fmt=export_fmt)
+        show_diff_context(limit=limit, verbose=verbose, export_fmt=export_fmt,
+                          compact=compact)
         return
 
     # Knowledge category shortcuts (export_fmt already parsed above)
@@ -1447,7 +1528,8 @@ def main():
     for shortcut, category in [("--mistakes", "mistake"), ("--patterns", "pattern"),
                                 ("--decisions", "decision"), ("--tools", "tool")]:
         if shortcut in args:
-            show_knowledge(category, limit, export_fmt, source_filter, verbose)
+            show_knowledge(category, limit, export_fmt, source_filter, verbose,
+                           compact=compact)
             return
 
     # Check for semantic mode
@@ -1470,6 +1552,8 @@ def main():
             i += 1
         elif args[i] in ("--semantic", "-s"):
             i += 1
+        elif args[i] in ("--compact",):
+            i += 1  # already consumed by main()
         elif args[i].startswith("--"):
             i += 1  # skip unknown flags
         else:
