@@ -336,12 +336,18 @@ def show_knowledge(category: str, limit: int = 20, export_fmt: str = None,
     try:
         rows = db.execute(sql, params).fetchall()
     except sqlite3.OperationalError:
-        print(f"No knowledge entries found. Run 'python extract-knowledge.py' first.")
+        if export_fmt == "json":
+            _export_json([])
+        else:
+            print(f"No knowledge entries found. Run 'python extract-knowledge.py' first.")
         db.close()
         return
 
     if not rows:
-        print(f"No {category} entries found.")
+        if export_fmt == "json":
+            _export_json([])
+        else:
+            print(f"No {category} entries found.")
         db.close()
         return
 
@@ -675,13 +681,24 @@ def search_knowledge(query: str, limit: int = 10, export_fmt: str = None):
 
 
 def _export_json(rows: list):
-    """Export results as JSON to stdout."""
+    """Export results as JSON to stdout.
+
+    Deserializes JSON-encoded column fields (affected_files, facts) so consumers
+    receive proper arrays rather than raw JSON strings.
+    """
     import json
     import io
+    _JSON_ARRAY_FIELDS = ("affected_files", "facts")
     clean = []
     for r in rows:
         d = dict(r)
         d.pop("excerpt", None)
+        for field in _JSON_ARRAY_FIELDS:
+            if field in d and isinstance(d[field], str):
+                try:
+                    d[field] = json.loads(d[field])
+                except (ValueError, TypeError):
+                    pass
         clean.append(d)
     output = json.dumps(clean, indent=2, ensure_ascii=False, default=str)
     # Handle Windows console encoding issues
@@ -939,7 +956,8 @@ def print_usage():
     print(__doc__)
 
 
-def show_by_file(file_path: str, limit: int = 20, verbose: bool = False):
+def show_by_file(file_path: str, limit: int = 20, verbose: bool = False,
+                 export_fmt: str = None):
     """Show knowledge entries that recorded the given file as affected."""
     db = get_db()
     # Substring match on JSON array stored as text — safe since we control the format.
@@ -953,13 +971,24 @@ def show_by_file(file_path: str, limit: int = 20, verbose: bool = False):
             LIMIT ?
         """, (f"%{file_path}%", limit)).fetchall()
     except sqlite3.OperationalError:
-        print("⚠ affected_files column not found. Run build-session-index.py to migrate.")
+        if export_fmt == "json":
+            _export_json([])
+        else:
+            print("⚠ affected_files column not found. Run build-session-index.py to migrate.")
         db.close()
         return
 
     if not rows:
-        print(f"No knowledge entries recorded for file: {file_path}")
-        print(f"Tip: Use 'learn.py --file {file_path}' when recording entries that touch this file.")
+        if export_fmt == "json":
+            _export_json([])
+        else:
+            print(f"No knowledge entries recorded for file: {file_path}")
+            print(f"Tip: Use 'learn.py --file {file_path}' when recording entries that touch this file.")
+        db.close()
+        return
+
+    if export_fmt == "json":
+        _export_json([dict(r) for r in rows])
         db.close()
         return
 
@@ -981,7 +1010,8 @@ def show_by_file(file_path: str, limit: int = 20, verbose: bool = False):
     db.close()
 
 
-def show_by_module(module: str, limit: int = 20, verbose: bool = False):
+def show_by_module(module: str, limit: int = 20, verbose: bool = False,
+                   export_fmt: str = None):
     """Show knowledge entries that affect files in a given module/directory path segment."""
     db = get_db()
     # Parameterized queries already escape safely; no manual quote doubling needed.
@@ -997,12 +1027,30 @@ def show_by_module(module: str, limit: int = 20, verbose: bool = False):
             LIMIT ?
         """, (f"%{module}%", f"%{module_lower}%", f"%{module_lower}%", limit)).fetchall()
     except sqlite3.OperationalError:
-        print("⚠ affected_files column not found. Run build-session-index.py to migrate.")
+        if export_fmt == "json":
+            _export_json([])
+        else:
+            print("⚠ affected_files column not found. Run build-session-index.py to migrate.")
         db.close()
         return
 
     if not rows:
-        print(f"No knowledge entries found for module: {module}")
+        if export_fmt == "json":
+            _export_json([])
+        else:
+            print(f"No knowledge entries found for module: {module}")
+        db.close()
+        return
+
+    if export_fmt == "json":
+        # Deduplicate before export
+        seen = set()
+        deduped = []
+        for r in rows:
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                deduped.append(r)
+        _export_json([dict(r) for r in deduped])
         db.close()
         return
 
@@ -1028,7 +1076,8 @@ def show_by_module(module: str, limit: int = 20, verbose: bool = False):
     db.close()
 
 
-def show_by_task(task_id: str, limit: int = 30, verbose: bool = False):
+def show_by_task(task_id: str, limit: int = 30, verbose: bool = False,
+                 export_fmt: str = None):
     """Show knowledge entries recorded under a specific task ID."""
     db = get_db()
     safe = task_id.strip()[:200]
@@ -1042,14 +1091,48 @@ def show_by_task(task_id: str, limit: int = 30, verbose: bool = False):
             LIMIT ?
         """, (safe, limit)).fetchall()
     except sqlite3.OperationalError:
-        print("⚠ task_id column not found. Run build-session-index.py to migrate.")
+        if export_fmt == "json":
+            import json as _json
+            print(_json.dumps({"task_id": task_id, "entries": []}, indent=2))
+        else:
+            print("⚠ task_id column not found. Run build-session-index.py to migrate.")
         db.close()
         return
 
     if not rows:
         # Fallback: FTS search on the task_id as a query string
-        print(f"No entries directly tagged task_id='{task_id}'.")
-        print(f"Try: python query-session.py '{task_id}' for FTS search.")
+        if export_fmt == "json":
+            import json as _json
+            print(_json.dumps({"task_id": task_id, "entries": []}, indent=2))
+        else:
+            print(f"No entries directly tagged task_id='{task_id}'.")
+            print(f"Try: python query-session.py '{task_id}' for FTS search.")
+        db.close()
+        return
+
+    if export_fmt == "json":
+        import json as _json
+        _JSON_ARRAY_FIELDS = ("affected_files", "facts")
+        entries = []
+        for r in rows:
+            d = dict(r)
+            d.pop("excerpt", None)
+            for field in _JSON_ARRAY_FIELDS:
+                if field in d and isinstance(d[field], str):
+                    try:
+                        d[field] = _json.loads(d[field])
+                    except (ValueError, TypeError):
+                        pass
+            entries.append(d)
+        output = _json.dumps(
+            {"task_id": task_id, "entries": entries},
+            indent=2, ensure_ascii=False, default=str,
+        )
+        try:
+            print(output)
+        except UnicodeEncodeError:
+            sys.stdout.buffer.write(output.encode("utf-8"))
+            sys.stdout.buffer.write(b"\n")
         db.close()
         return
 
@@ -1078,7 +1161,7 @@ def show_by_task(task_id: str, limit: int = 30, verbose: bool = False):
     db.close()
 
 
-def show_diff_context(limit: int = 20, verbose: bool = False):
+def show_diff_context(limit: int = 20, verbose: bool = False, export_fmt: str = None):
     """Surface knowledge entries relevant to the current git diff.
 
     Reads changed files from `git diff HEAD --name-only`, then queries
@@ -1108,15 +1191,20 @@ def show_diff_context(limit: int = 20, verbose: bool = False):
         pass
 
     if not changed:
-        print("No changed files in current git diff.")
+        if export_fmt == "json":
+            import json as _json
+            print(_json.dumps({"changed_files": [], "entries": []}, indent=2))
+        else:
+            print("No changed files in current git diff.")
         return
 
-    print(f"\n{BOLD}Diff context — {len(changed)} changed file(s):{RESET}")
-    for f in changed[:10]:
-        print(f"  {DIM}  {f}{RESET}")
-    if len(changed) > 10:
-        print(f"  {DIM}  ... and {len(changed) - 10} more{RESET}")
-    print()
+    if export_fmt != "json":
+        print(f"\n{BOLD}Diff context — {len(changed)} changed file(s):{RESET}")
+        for f in changed[:10]:
+            print(f"  {DIM}  {f}{RESET}")
+        if len(changed) > 10:
+            print(f"  {DIM}  ... and {len(changed) - 10} more{RESET}")
+        print()
 
     db = get_db()
     seen_ids = set()
@@ -1142,7 +1230,11 @@ def show_diff_context(limit: int = 20, verbose: bool = False):
             """, (f"%{file_path}%", f"%{basename_lower}%",
                   f"%{basename_lower}%", limit)).fetchall()
         except sqlite3.OperationalError:
-            print("⚠ affected_files column not found. Run build-session-index.py to migrate.")
+            if export_fmt == "json":
+                import json as _json
+                print(_json.dumps({"changed_files": changed, "entries": []}, indent=2))
+            else:
+                print("⚠ affected_files column not found. Run build-session-index.py to migrate.")
             db.close()
             return
 
@@ -1152,8 +1244,39 @@ def show_diff_context(limit: int = 20, verbose: bool = False):
                 all_rows.append((file_path, r))
 
     if not all_rows:
-        print("No knowledge entries found for changed files.")
-        print("Tip: Record entries with 'learn.py --file <path>' to build this surface.")
+        if export_fmt == "json":
+            import json as _json
+            print(_json.dumps({"changed_files": changed, "entries": []}, indent=2))
+        else:
+            print("No knowledge entries found for changed files.")
+            print("Tip: Record entries with 'learn.py --file <path>' to build this surface.")
+        db.close()
+        return
+
+    if export_fmt == "json":
+        import json as _json
+        _JSON_ARRAY_FIELDS = ("affected_files", "facts")
+        entries = []
+        for matched_file, r in all_rows:
+            d = dict(r)
+            d.pop("excerpt", None)
+            for field in _JSON_ARRAY_FIELDS:
+                if field in d and isinstance(d[field], str):
+                    try:
+                        d[field] = _json.loads(d[field])
+                    except (ValueError, TypeError):
+                        pass
+            d["matched_by"] = matched_file
+            entries.append(d)
+        output = _json.dumps(
+            {"changed_files": changed, "entries": entries},
+            indent=2, ensure_ascii=False, default=str
+        )
+        try:
+            print(output)
+        except UnicodeEncodeError:
+            sys.stdout.buffer.write(output.encode("utf-8"))
+            sys.stdout.buffer.write(b"\n")
         db.close()
         return
 
@@ -1275,17 +1398,23 @@ def main():
 
     # --- New first-class surfaces ---
 
-    # Parse common flags needed by new surfaces
+    # Parse common flags needed by new surfaces (including export_fmt — must be
+    # parsed HERE so --file/--module/--task/--diff can honour --export json)
     limit = 10
     if "--limit" in args:
         idx = args.index("--limit")
         limit = int(args[idx + 1]) if idx + 1 < len(args) else 10
     verbose = "--verbose" in args or "-v" in args
+    export_fmt = None
+    if "--export" in args:
+        idx = args.index("--export")
+        export_fmt = args[idx + 1] if idx + 1 < len(args) else "json"
 
     if "--file" in args:
         idx = args.index("--file")
         if idx + 1 < len(args):
-            show_by_file(args[idx + 1], limit=limit, verbose=verbose)
+            show_by_file(args[idx + 1], limit=limit, verbose=verbose,
+                         export_fmt=export_fmt)
         else:
             print("Error: --file requires a file path")
         return
@@ -1293,7 +1422,8 @@ def main():
     if "--module" in args:
         idx = args.index("--module")
         if idx + 1 < len(args):
-            show_by_module(args[idx + 1], limit=limit, verbose=verbose)
+            show_by_module(args[idx + 1], limit=limit, verbose=verbose,
+                           export_fmt=export_fmt)
         else:
             print("Error: --module requires a module/directory name")
         return
@@ -1301,20 +1431,17 @@ def main():
     if "--task" in args:
         idx = args.index("--task")
         if idx + 1 < len(args):
-            show_by_task(args[idx + 1], limit=limit, verbose=verbose)
+            show_by_task(args[idx + 1], limit=limit, verbose=verbose,
+                         export_fmt=export_fmt)
         else:
             print("Error: --task requires a task ID")
         return
 
     if "--diff" in args:
-        show_diff_context(limit=limit, verbose=verbose)
+        show_diff_context(limit=limit, verbose=verbose, export_fmt=export_fmt)
         return
 
-    # Knowledge category shortcuts
-    export_fmt = None
-    if "--export" in args:
-        idx = args.index("--export")
-        export_fmt = args[idx + 1] if idx + 1 < len(args) else "json"
+    # Knowledge category shortcuts (export_fmt already parsed above)
 
     # limit/verbose already parsed above; re-read for semantic/search paths
     for shortcut, category in [("--mistakes", "mistake"), ("--patterns", "pattern"),

@@ -522,6 +522,28 @@ class TestRunBriefingForTaskStructured(unittest.TestCase):
                 result = T._run_briefing_for_task("my-task", fallback_query="something")
         self.assertEqual(result, "Pattern: always validate inputs before processing")
 
+    def test_render_briefing_tolerates_malformed_entries(self):
+        """_render_briefing_from_json must not raise KeyError on entries missing fields."""
+        # Entry with no 'title', no 'id', no 'category' — all fields missing
+        data = {
+            "task_id": "bad-task",
+            "total_entries": 2,
+            "tagged_entries": [
+                {},  # completely empty
+                {"id": 7},  # missing category and title
+            ],
+            "related_entries": [
+                {"category": "pattern"},  # missing id and title
+            ],
+        }
+        # Must not raise KeyError
+        result = T._render_briefing_from_json(data)
+        self.assertIn("bad-task", result)
+        # Safe defaults must appear instead of crashing
+        self.assertIn("(no title)", result)
+        self.assertIn("unknown", result)
+        self.assertIn("?", result)
+
 
 class TestLoadLatestCheckpointContext(unittest.TestCase):
     """Tests for _load_latest_checkpoint_context and _render_checkpoint_context."""

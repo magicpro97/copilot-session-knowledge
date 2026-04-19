@@ -19,6 +19,7 @@ brief "task" --for-subagent --budget 3000  # Capped output for sub-agent injecti
 brief "task" --min-confidence 0.7    # High-quality entries only
 brief "task" --for-subagent          # Compact context block for sub-agent prompts
 brief --task "memory-surface"        # Task-scoped recall: entries tagged with this task ID
+brief "fix Docker" --json            # JSON output for programmatic use
 ```
 
 ## Search
@@ -35,6 +36,8 @@ qs --file src/auth.py                # Entries that touched a specific file
 qs --module auth                     # Entries for a module or directory
 qs --task memory-surface             # Entries tagged with a specific task ID
 qs --diff                            # Entries for files in the current git diff
+qs "search" --export json            # Export results as JSON
+qs "search" --export markdown        # Export results as Markdown
 ```
 
 ## Drill Down
@@ -90,6 +93,9 @@ learn --from-file notes.md  # Format: ## category: Title
 # View
 learn --list               # Recent entries
 learn --stats              # Knowledge base statistics
+
+# JSON output (machine-readable; emits JSON object with id, title, category, tags, etc.)
+learn --mistake "Title" "Description" --json
 ```
 
 ## Palace Concepts (Wing/Room)
@@ -132,6 +138,76 @@ python3 ~/.copilot/tools/checkpoint-save.py --dry-run --title "Test" --overview 
 ```
 
 > **Session-end reminder (opt-in):** `hooks/session-end.py` is reminder-only — it never writes checkpoints automatically. Set `COPILOT_CHECKPOINT_REMIND=1` in your environment to log a reminder when a session ends without a saved checkpoint.
+
+## Checkpoint Restore (read-only)
+
+`checkpoint-restore.py` reads and displays checkpoints written by `checkpoint-save.py`. All operations are **read-only** — no session state is mutated.
+
+```bash
+python3 ~/.copilot/tools/checkpoint-restore.py --list                      # List all checkpoints
+python3 ~/.copilot/tools/checkpoint-restore.py --show latest               # Show most recent
+python3 ~/.copilot/tools/checkpoint-restore.py --show 1                    # Show by sequence number
+python3 ~/.copilot/tools/checkpoint-restore.py --export latest             # Export as text (default)
+python3 ~/.copilot/tools/checkpoint-restore.py --export latest --format md    # Markdown (indexer-compatible)
+python3 ~/.copilot/tools/checkpoint-restore.py --export latest --format json  # Machine-readable JSON
+python3 ~/.copilot/tools/checkpoint-restore.py --session SESSION_ID        # Specify a session
+```
+
+Selectors for `--show` / `--export`: `N` (sequence number), `latest`, `first`.
+
+## Checkpoint Diff
+
+`checkpoint-diff.py` compares two checkpoints and shows what changed. All operations are **read-only**.
+
+```bash
+python3 ~/.copilot/tools/checkpoint-diff.py --from 1 --to latest          # Diff checkpoint 1 vs latest
+python3 ~/.copilot/tools/checkpoint-diff.py --from 2 --to 3               # Diff two specific checkpoints
+python3 ~/.copilot/tools/checkpoint-diff.py --consecutive                  # Diff all consecutive pairs
+python3 ~/.copilot/tools/checkpoint-diff.py --summary                      # Change progression across all
+python3 ~/.copilot/tools/checkpoint-diff.py --show-unchanged               # Include unchanged sections
+python3 ~/.copilot/tools/checkpoint-diff.py --session SESSION_ID           # Specify a session
+```
+
+## Profile Builder
+
+`profile-builder.py` creates custom workflow profiles (saved to `presets/`) that can then be deployed via `setup-project.py --profile <name>` or `install-project-hooks.py --profile <name>`.
+
+```bash
+python3 ~/.copilot/tools/profile-builder.py --list-hooks                          # List available hook templates
+python3 ~/.copilot/tools/profile-builder.py --list-phases                         # List available workflow phases
+python3 ~/.copilot/tools/profile-builder.py \
+  --name myteam \
+  --description "My team workflow" \
+  --hooks dangerous-blocker.sh secret-detector.sh commit-gate.sh \
+  --phases CLARIFY BUILD TEST COMMIT                                               # Create a profile
+python3 ~/.copilot/tools/profile-builder.py --name myteam ... --dry-run           # Preview JSON without writing
+python3 ~/.copilot/tools/profile-builder.py --name myteam ... --force             # Overwrite existing profile
+```
+
+## Profile Export
+
+`profile-export.py` exports profiles from `presets/` to portable JSON files for sharing or backup.
+
+```bash
+python3 ~/.copilot/tools/profile-export.py --profile python --output python.json          # Export single profile
+python3 ~/.copilot/tools/profile-export.py --profile python --output p.bundle.json --format bundle  # With metadata wrapper
+python3 ~/.copilot/tools/profile-export.py --all --output-dir ./exported/                 # Export all profiles
+python3 ~/.copilot/tools/profile-export.py --all --output all.bundle.json --format bundle # All in one bundle
+python3 ~/.copilot/tools/profile-export.py --profile python --dry-run                     # Preview without writing
+```
+
+## Profile Import
+
+`profile-import.py` imports profiles exported by `profile-export.py` back into `presets/`.
+
+```bash
+python3 ~/.copilot/tools/profile-import.py --file custom-profile.json                     # Import a profile
+python3 ~/.copilot/tools/profile-import.py --file all-profiles.bundle.json                # Import bundle
+python3 ~/.copilot/tools/profile-import.py --file bundle.json --name python               # Import one from bundle
+python3 ~/.copilot/tools/profile-import.py --file custom.json --force                     # Overwrite existing
+python3 ~/.copilot/tools/profile-import.py --file custom.json --dry-run                   # Validate without writing
+```
+
 
 ## Maintenance
 

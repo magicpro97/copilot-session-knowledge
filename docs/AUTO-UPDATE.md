@@ -19,11 +19,18 @@ After `git pull`, auto-update analyzes `git diff` to run only what changed:
 
 | Changed Files | Action |
 |---|---|
-| Python scripts | Restart services |
-| LaunchAgent templates | Reinstall LaunchAgents |
-| SKILL.md templates | Redeploy to projects |
+| Python scripts (`*.py`) | Restart services |
+| LaunchAgent templates (`launchd/`) | Reinstall LaunchAgents |
+| SKILL.md / skill files (`skills/`, `templates/`) | Redeploy session-knowledge SKILL to projects |
 | Embedding logic | Rebuild embeddings (background) |
 | `auto-update-tools.py` itself | Self-exec with new code |
+| Hook templates (`hooks/references/`) | Detected only — no auto-deploy (templates are copied manually) |
+
+> **Batch 2 / new scripts coverage:** Any new Python scripts added to the root tools directory
+> are covered by the `*.py` detection rule — the watcher service is restarted automatically.
+> New or updated files under `skills/` trigger the SKILL.md redeploy step. Hook templates in
+> `hooks/references/` are detected under the `hooks` category but are intentionally **not**
+> auto-deployed (they are manually copied into projects at setup time via `hook-creator`).
 
 ## Post-Merge Hook
 

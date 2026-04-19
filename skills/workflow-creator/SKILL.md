@@ -107,6 +107,14 @@ python3 ~/.copilot/tools/setup-project.py --profile fullstack   # Full-stack: ar
 # Hooks only (no full project setup)
 python3 ~/.copilot/tools/install-project-hooks.py --profile python --workflow  # hooks + WORKFLOW.md
 python3 ~/.copilot/tools/install-project-hooks.py --list-profiles              # show available profiles
+
+# Build a custom profile and deploy it
+python3 ~/.copilot/tools/profile-builder.py --name myteam \
+  --hooks dangerous-blocker.sh commit-gate.sh \
+  --phases CLARIFY BUILD TEST COMMIT                             # creates presets/myteam.json
+python3 ~/.copilot/tools/profile-export.py --profile myteam --output myteam.json   # export to share
+python3 ~/.copilot/tools/profile-import.py --file myteam.json                      # import on another machine
+python3 ~/.copilot/tools/setup-project.py --profile myteam                         # deploy
 ```
 
 Profile bundles are defined in `presets/` (`default`, `python`, `typescript`, `mobile`, `fullstack`).

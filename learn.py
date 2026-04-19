@@ -180,7 +180,8 @@ def add_entry(category: str, title: str, content: str,
               facts: list = None, skip_gate: bool = False,
               skip_scan: bool = False,
               task_id: str = "",
-              affected_files: list = None) -> int:
+              affected_files: list = None,
+              quiet: bool = False) -> int:
     """Add a knowledge entry to the database. Returns entry ID.
     
     Quality gate (for mistake/pattern/discovery): 3 questions must all be YES:
@@ -269,8 +270,9 @@ def add_entry(category: str, title: str, content: str,
               est_tokens, existing["id"]))
         entry_id = existing["id"]
         loc = f" [{wing}/{room}]" if wing or room else ""
-        print(f"  Updated existing entry #{entry_id} (seen {new_count}x, "
-              f"confidence → {new_confidence:.2f}){loc}")
+        msg = (f"  Updated existing entry #{entry_id} (seen {new_count}x, "
+               f"confidence → {new_confidence:.2f}){loc}")
+        print(msg, file=sys.stderr if quiet else sys.stdout)
     else:
         # Estimate token cost for new entry
         est_tokens = len(f"{title} {content}") // 4
@@ -288,13 +290,14 @@ def add_entry(category: str, title: str, content: str,
         entry_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
         loc = f" [{wing}/{room}]" if wing or room else ""
         task_note = f" task={task_id}" if task_id else ""
-        print(f"  Added new {category} #{entry_id}{loc}{task_note}")
+        msg = f"  Added new {category} #{entry_id}{loc}{task_note}"
+        print(msg, file=sys.stderr if quiet else sys.stdout)
 
     # Update FTS index
     _update_fts(db, entry_id, title, content, tags, category, wing, room, facts_json)
 
     # Generate embedding for the new entry
-    _embed_entry(db, entry_id, title, content)
+    _embed_entry(db, entry_id, title, content, quiet=quiet)
 
     db.commit()
     db.close()
@@ -316,7 +319,7 @@ def _update_fts(db: sqlite3.Connection, entry_id: int,
 
 
 def _embed_entry(db: sqlite3.Connection, entry_id: int,
-                 title: str, content: str):
+                 title: str, content: str, quiet: bool = False):
     """Generate and store embedding for a single entry."""
     try:
         sys.path.insert(0, str(TOOLS_DIR))
@@ -344,7 +347,8 @@ def _embed_entry(db: sqlite3.Connection, entry_id: int,
             """, (entry_id, provider_name, provider_config["model"],
                   provider_config.get("dimensions", 768), blob,
                   title[:200], now))
-            print(f"  Embedded with {provider_name}")
+            print(f"  Embedded with {provider_name}",
+                  file=sys.stderr if quiet else sys.stdout)
     except Exception as e:
         print(f"  [info] Embedding skipped: {e}", file=sys.stderr)
 
@@ -631,21 +635,66 @@ def main():
     # Quality gate for mistake/pattern/discovery
     skip_gate = "--skip-gate" in args
     skip_scan = "--skip-scan" in args
+    json_mode = "--json" in args
     gate_categories = {"mistake", "pattern", "discovery"}
-    if category in gate_categories and not skip_gate:
-        print(f"Recording {category}...")
-        print(f"  ℹ Quality gate (bypass with --skip-gate):")
-        print(f"    ✓ Could someone Google this in 5 min? → Must be NO")
-        print(f"    ✓ Specific to THIS codebase/project? → Must be YES")
-        print(f"    ✓ Required real debugging/investigation? → Must be YES")
-        print(f"  Gate passed (agent responsibility — record honestly)")
-    else:
-        print(f"Recording {category}...")
+    if not json_mode:
+        if category in gate_categories and not skip_gate:
+            print(f"Recording {category}...")
+            print(f"  ℹ Quality gate (bypass with --skip-gate):")
+            print(f"    ✓ Could someone Google this in 5 min? → Must be NO")
+            print(f"    ✓ Specific to THIS codebase/project? → Must be YES")
+            print(f"    ✓ Required real debugging/investigation? → Must be YES")
+            print(f"  Gate passed (agent responsibility — record honestly)")
+        else:
+            print(f"Recording {category}...")
 
-    add_entry(category, title, content, tags=tags,
-              session_id=session_id, confidence=confidence,
-              wing=wing, room=room, facts=facts, skip_gate=skip_gate,
-              skip_scan=skip_scan, task_id=task_id, affected_files=affected_files)
+    entry_id = add_entry(category, title, content, tags=tags,
+                         session_id=session_id, confidence=confidence,
+                         wing=wing, room=room, facts=facts, skip_gate=skip_gate,
+                         skip_scan=skip_scan, task_id=task_id,
+                         affected_files=affected_files, quiet=json_mode)
+
+    if json_mode:
+        # Machine-readable output: emit structured JSON with write result
+        if entry_id < 0:
+            print(json.dumps({"status": "rejected", "reason": "injection_scan_failed"},
+                             indent=2))
+            return
+        db = get_db()
+        row = db.execute("""
+            SELECT id, category, title, confidence, session_id, task_id,
+                   affected_files, facts, occurrence_count, last_seen
+            FROM knowledge_entries WHERE id = ?
+        """, (entry_id,)).fetchone()
+        db.close()
+        if row:
+            try:
+                files = json.loads(row["affected_files"] or "[]")
+            except Exception:
+                files = []
+            try:
+                facts_out = json.loads(row["facts"] or "[]")
+            except Exception:
+                facts_out = []
+            status = "added" if row["occurrence_count"] == 1 else "updated"
+            print(json.dumps({
+                "status": status,
+                "id": row["id"],
+                "category": row["category"],
+                "title": row["title"],
+                "confidence": row["confidence"],
+                "session_id": row["session_id"],
+                "task_id": row["task_id"] or "",
+                "affected_files": files,
+                "facts": facts_out,
+                "occurrence_count": row["occurrence_count"],
+                "last_seen": row["last_seen"],
+            }, indent=2, ensure_ascii=False))
+        else:
+            print(json.dumps({"status": "error", "id": entry_id,
+                              "reason": "entry_not_found_after_write"}, indent=2))
+        return
+
     if facts:
         print(f"  With {len(facts)} fact(s)")
     if affected_files:

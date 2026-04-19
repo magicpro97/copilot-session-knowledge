@@ -104,6 +104,7 @@ brief "implement user CRUD" --full   # Full detail ~3K tokens
 brief --auto                         # Auto-detect from git state
 brief "task" --for-subagent          # Compact context for sub-agents
 brief --task "memory-surface"        # Task-scoped recall by task ID
+brief "fix Docker" --json            # JSON output for programmatic use
 ```
 
 ### Search
@@ -118,6 +119,7 @@ qs --file src/auth.py                # Entries touching a specific file
 qs --module auth                     # Entries for a module or directory
 qs --task memory-surface             # Entries tagged with a task ID
 qs --diff                            # Entries for current git diff files
+qs "search" --export json            # Export results as JSON
 ```
 
 ### Record Knowledge
@@ -127,6 +129,33 @@ learn --mistake "Title"  "What went wrong"     --tags "docker"
 learn --pattern "Title"  "Best practice"       --tags "lambda"
 learn --decision "Title" "Architecture choice" --tags "cdk"
 learn --mistake "Title"  "Description" --task "memory-surface" --file "briefing.py"
+learn --mistake "Title"  "Description" --json  # Machine-readable JSON output
+```
+
+### Checkpoint Lifecycle
+
+```bash
+# Save
+python3 ~/.copilot/tools/checkpoint-save.py --title "Auth done" --overview "JWT added"
+# Read back (read-only)
+python3 ~/.copilot/tools/checkpoint-restore.py --list
+python3 ~/.copilot/tools/checkpoint-restore.py --show latest
+python3 ~/.copilot/tools/checkpoint-restore.py --export latest --format json
+# Compare
+python3 ~/.copilot/tools/checkpoint-diff.py --from 1 --to latest
+python3 ~/.copilot/tools/checkpoint-diff.py --summary
+```
+
+### Profile Lifecycle
+
+Build, share, and deploy custom workflow profiles:
+
+```bash
+python3 ~/.copilot/tools/profile-builder.py --name myteam \
+  --hooks dangerous-blocker.sh commit-gate.sh --phases CLARIFY BUILD TEST COMMIT
+python3 ~/.copilot/tools/profile-export.py --profile myteam --output myteam.json
+python3 ~/.copilot/tools/profile-import.py --file myteam.json
+python3 ~/.copilot/tools/setup-project.py --profile myteam   # deploy
 ```
 
 📖 **Full command reference:** [docs/USAGE.md](docs/USAGE.md)
@@ -182,16 +211,21 @@ Smart pipeline analyzes `git diff` to run only what changed. Post-merge hook aut
 
 9 built-in skills (session-knowledge-creator, agent-creator, hook-creator, tentacle, workflow-creator, find-skills, and more) plus 10 hook templates for quality enforcement.
 
-Unified hook runner architecture — 1 Python process per event with fail-open, HMAC-signed markers, audit logging, and tamper protection.
+Unified hook runner architecture — 1 Python process per event with fail-open, HMAC-signed markers, audit logging, and tamper protection. Hook deployment is **Copilot CLI only**; Claude Code does not support the `hook_runner.py` format.
 
 ```bash
 python3 ~/.copilot/tools/install.py --deploy-skill    # Deploy skill to project
-python3 ~/.copilot/tools/install.py --deploy-hooks    # Deploy enforcement hooks
+python3 ~/.copilot/tools/install.py --deploy-hooks    # Deploy enforcement hooks (Copilot CLI)
 python3 ~/.copilot/tools/install.py --lock-hooks      # Lock hooks (tamper protection)
 
 # Project setup with a workflow profile
 python3 ~/.copilot/tools/setup-project.py --profile python      # Python hook bundle + WORKFLOW.md
 python3 ~/.copilot/tools/install-project-hooks.py --profile mobile  # Mobile hooks standalone
+
+# Custom profile lifecycle
+python3 ~/.copilot/tools/profile-builder.py --name myteam --hooks dangerous-blocker.sh --phases BUILD TEST COMMIT
+python3 ~/.copilot/tools/profile-export.py --profile myteam --output myteam.json
+python3 ~/.copilot/tools/profile-import.py --file myteam.json
 ```
 
 **Session-start hooks** (`hooks/auto-briefing.py`) automatically refresh the codebase map

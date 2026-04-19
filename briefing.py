@@ -430,8 +430,12 @@ def generate_briefing(query: str, limit: int = 3, fmt: str = "md",
     total_entries = sum(len(v) for v in briefing_data.values()) + len(past_work)
     if total_entries == 0:
         if fmt == "json":
-            return json.dumps({"query": query, "briefing": None,
-                               "message": "No relevant past experience found."}, indent=2)
+            return json.dumps({
+                "query": query,
+                "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "sections": {},
+                "message": "No relevant past experience found.",
+            }, indent=2)
         return f"No relevant past experience found for: {query}\n"
 
     # Format output
@@ -945,7 +949,7 @@ def search_by_wing_room(wing: str = "", room: str = "",
     return "\n".join(lines)
 
 
-def generate_task_briefing(task_id: str, limit: int = 30) -> str:
+def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text") -> str:
     """Generate a focused briefing for a specific task ID.
 
     Pulls all knowledge entries tagged with this task_id and formats them
@@ -992,6 +996,18 @@ def generate_task_briefing(task_id: str, limit: int = 30) -> str:
     db.close()
 
     if not tagged_rows and not fts_rows:
+        if fmt == "json":
+            return json.dumps(
+                {
+                    "task_id": task_id,
+                    "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "total_entries": 0,
+                    "tagged_entries": [],
+                    "related_entries": [],
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
         return (f"No knowledge entries found for task: '{task_id}'\n"
                 f"Tip: Use 'learn.py --task {task_id!r} ...' to tag entries.\n"
                 f"Or try: briefing.py '{task_id}' for FTS-based briefing.")
@@ -1050,6 +1066,50 @@ def generate_task_briefing(task_id: str, limit: int = 30) -> str:
 
     total = len(tagged_rows) + len(fts_rows)
     lines.append(f"({total} entries) Use query-session.py --task {task_id!r} for full detail")
+
+    if fmt == "json":
+        # Machine-readable: return structured JSON instead of text
+        def _parse_files(raw):
+            try:
+                return json.loads(raw or "[]")
+            except Exception:
+                return []
+
+        json_tagged = [
+            {
+                "id": r["id"],
+                "category": r["category"],
+                "title": r["title"],
+                "content": r["content"][:500] if r["content"] else "",
+                "confidence": r["confidence"],
+                "tags": r["tags"] or "",
+                "affected_files": _parse_files(r["affected_files"]),
+                "occurrence_count": r["occurrence_count"],
+            }
+            for r in tagged_rows
+        ]
+        json_related = [
+            {
+                "id": r["id"],
+                "category": r["category"],
+                "title": r["title"],
+                "confidence": r["confidence"],
+                "affected_files": _parse_files(r["affected_files"]),
+            }
+            for r in fts_rows[:5]
+        ]
+        return json.dumps(
+            {
+                "task_id": task_id,
+                "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "total_entries": total,
+                "tagged_entries": json_tagged,
+                "related_entries": json_related,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+
     return "\n".join(lines)
 
 
@@ -1088,7 +1148,8 @@ def main():
         if "--limit" in args:
             idx2 = args.index("--limit")
             limit = int(args[idx2 + 1]) if idx2 + 1 < len(args) else 30
-        print(generate_task_briefing(task_id, limit=limit))
+        task_fmt = "json" if "--json" in args else "text"
+        print(generate_task_briefing(task_id, limit=limit, fmt=task_fmt))
         return
 
     # Handle --wing/--room search

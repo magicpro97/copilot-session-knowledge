@@ -99,6 +99,7 @@ Add a brief section pointing to the other two files. Keep it short — enforceme
 
 > Enforced by `.github/instructions/session-knowledge.instructions.md` (auto-loaded).
 > Tools: `~/.copilot/tools/briefing.py`, `learn.py`, `query-session.py`
+> JSON output: `briefing.py "task" --json`, `learn.py ... --json`, `query-session.py "q" --export json`
 > Details: `.github/skills/session-knowledge/SKILL.md`
 ```
 
@@ -106,7 +107,8 @@ Add a brief section pointing to the other two files. Keep it short — enforceme
 
 ```bash
 python3 ~/.copilot/tools/briefing.py --wakeup
-python3 ~/.copilot/tools/learn.py --discovery "Setup test" "Session knowledge configured" --tags "setup"
+python3 ~/.copilot/tools/briefing.py "task description" --json    # verify JSON output works
+python3 ~/.copilot/tools/learn.py --discovery "Setup test" "Session knowledge configured" --tags "setup" --json
 cat .github/instructions/session-knowledge.instructions.md
 head -5 .github/skills/session-knowledge/SKILL.md
 

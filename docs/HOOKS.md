@@ -65,3 +65,14 @@ python3 ~/.copilot/tools/install.py --deploy-hooks   # Deploy hooks
 python3 ~/.copilot/tools/install.py --lock-hooks      # Lock (AI can't modify)
 python3 ~/.copilot/tools/install.py --unlock-hooks    # Unlock for updates
 ```
+
+## Host Scope
+
+Hook deployment is **Copilot CLI only** (`~/.copilot/hooks/`). Claude Code does not support
+the Copilot CLI hook runner format (`hook_runner.py` / `hooks.json`). The global enforcement
+hooks documented here run exclusively inside Copilot CLI sessions.
+
+For project-level hooks (`.github/hooks/`) that enforce coding standards, commit gates, and
+TDD pipelines, see [docs/SKILLS.md — Hook Templates](SKILLS.md) and the `hook-creator` skill.
+Those hooks are registered via `hooks.json` / `review-policy.json` in the project repo and
+are also **Copilot CLI only**.

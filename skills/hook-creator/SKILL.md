@@ -14,6 +14,10 @@ description: >
 Generate `.github/hooks/` preToolUse and postToolUse scripts tailored to a project's
 tech stack, architecture rules, and workflow conventions.
 
+> **Host scope:** Hooks (both global `~/.copilot/hooks/` and project-level `.github/hooks/`)
+> are supported by **Copilot CLI only**. Claude Code does not use this hook format.
+> Project-level hooks registered via `hooks.json` / `review-policy.json` are Copilot CLI only.
+
 Hooks are the strongest enforcement mechanism in Copilot CLI — they intercept EVERY tool
 call before/after execution. Unlike skills (which AI can ignore) or instructions (which
 AI can rationalize skipping), hooks physically block violations.
@@ -119,11 +123,14 @@ concern — pick the ones relevant to the project, then customize.
 |----------|------|---------|
 | `test-reminder.sh` | postToolUse | Reminds to write/run tests after source file edits |
 | `build-reminder.sh` | postToolUse | Reminds to verify build after N source file edits |
-| `docs-reminder.sh/.py` | postToolUse | Warns after 3+ code edits without doc updates |
+| `docs-reminder.sh` (`hooks/references/`) | postToolUse | Warns after 3+ code edits without doc updates |
 | `session-banner.sh` | postToolUse | Shows session start checklist |
 
-> **Cross-platform:** Each `.sh` hook has a `.py` equivalent for Windows (no bash/jq needed).
-> Register both: `"bash": "./scripts/hook.sh"` + `"powershell": "python scripts/hook.py"`
+> **Cross-platform note:** `docs-reminder.sh` is the only bundled template that ships with a
+> Python companion (`docs-reminder.py`, also in `hooks/references/`) for Windows environments
+> without bash/jq. All other templates above are `.sh`-only. To add a Python equivalent for any
+> template, use the Python Hook Template in the section below as your starting point and register
+> both: `"bash": "./scripts/hook.sh"` + `"powershell": "python scripts/hook.py"`
 
 ### Step 3: Customize Each Template
 
@@ -285,7 +292,7 @@ exit 0
 3. **Fast execution.** Under 100ms. Use grep, not Python (for bash hooks). No network calls.
 4. **Exit 0 to allow.** Only output deny JSON to block. Other output = informational.
 5. **Composable.** Each hook does ONE thing. Multiple hooks chain together.
-6. **Cross-platform.** Provide both `.sh` (bash+jq) and `.py` (pure Python) versions. Python hooks use only stdlib — no pip packages. Windows users with Git Bash can use `.sh`; native Windows uses `.py` via `powershell` field in review-policy.json.
+6. **Cross-platform.** When targeting Windows (no bash/jq), write a `.py` companion using only stdlib. See the Python Hook Template section below. Windows users with Git Bash can use `.sh`; native Windows uses `.py` via `powershell` field in review-policy.json.
 
 ## Integration with Other Skills
 
