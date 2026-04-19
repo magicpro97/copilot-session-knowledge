@@ -703,5 +703,209 @@ class TestCmdResumeWithCheckpoint(unittest.TestCase):
         self.assertIn("checkpoint overview", context)
 
 
+class TestCmdNextStep(unittest.TestCase):
+    """Tests for cmd_next_step: grounded next-step helper."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "next_step"
+        self.base.mkdir(parents=True, exist_ok=True)
+        # todo.md has "Task A" pending and "Task B" done (mirrors make_tentacle)
+        self.tentacle_dir = make_tentacle("test-next", self.base)
+
+    def tearDown(self):
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def _args(self, name="test-next", briefing=False, no_checkpoint=True, show_all=False, fmt="text"):
+        a = fake_args(name=name, briefing=briefing, no_checkpoint=no_checkpoint, format=fmt)
+        a.all = show_all
+        return a
+
+    def test_shows_first_pending_todo(self):
+        captured = []
+        args = self._args()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.cmd_next_step(args)
+        combined = "\n".join(captured)
+        # "Task A" is the first pending todo in the test fixture
+        self.assertIn("Task A", combined)
+
+    def test_does_not_show_done_todo_as_next(self):
+        captured = []
+        args = self._args()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.cmd_next_step(args)
+        combined = "\n".join(captured)
+        # "Task B" is done — should not appear as the suggested next step
+        lines_with_arrow = [l for l in combined.splitlines() if "▶" in l]
+        self.assertFalse(any("Task B" in l for l in lines_with_arrow))
+
+    def test_all_done_shows_completion_message(self):
+        (self.tentacle_dir / "todo.md").write_text("# Todo\n\n- [x] Task A\n- [x] Task B\n")
+        captured = []
+        args = self._args()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.cmd_next_step(args)
+        combined = "\n".join(captured)
+        self.assertIn("All todos done", combined)
+
+    def test_json_format_returns_valid_json_with_next_step(self):
+        captured = []
+        args = self._args(fmt="json")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.cmd_next_step(args)
+        data = json.loads("\n".join(captured))
+        self.assertEqual(data["tentacle"], "test-next")
+        self.assertEqual(data["next_step"], "Task A")
+        self.assertIn("pending", data)
+        self.assertIn("todos_done", data)
+        self.assertIn("todos_total", data)
+
+    def test_json_all_done_returns_null_next_step(self):
+        (self.tentacle_dir / "todo.md").write_text("# Todo\n\n- [x] Task A\n")
+        captured = []
+        args = self._args(fmt="json")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.cmd_next_step(args)
+        data = json.loads("\n".join(captured))
+        self.assertIsNone(data["next_step"])
+        self.assertEqual(data["pending"], [])
+
+    def test_checkpoint_context_injected_by_default(self):
+        checkpoint_ctx = "### Latest Checkpoint (#2: done stuff)\n**Overview:** step overview"
+        captured = []
+        args = self._args(no_checkpoint=False)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_load_latest_checkpoint_context", return_value=checkpoint_ctx):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.cmd_next_step(args)
+        combined = "\n".join(captured)
+        self.assertIn("done stuff", combined)
+        self.assertIn("step overview", combined)
+
+    def test_no_checkpoint_skips_loading(self):
+        args = self._args(no_checkpoint=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_load_latest_checkpoint_context") as mock_ckpt:
+                with patch("builtins.print"):
+                    T.cmd_next_step(args)
+        mock_ckpt.assert_not_called()
+
+    def test_json_includes_checkpoint_when_available(self):
+        cp_ctx = "checkpoint detail info"
+        captured = []
+        args = self._args(fmt="json", no_checkpoint=False)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_load_latest_checkpoint_context", return_value=cp_ctx):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.cmd_next_step(args)
+        data = json.loads("\n".join(captured))
+        self.assertEqual(data["checkpoint_context"], "checkpoint detail info")
+
+    def test_briefing_injected_when_flag_set(self):
+        captured = []
+        args = self._args(briefing=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                with patch.object(T, "_run_briefing_for_task", return_value="Pattern: test early") as mock_brief:
+                    with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                        T.cmd_next_step(args)
+        mock_brief.assert_called_once()
+        combined = "\n".join(captured)
+        self.assertIn("Pattern: test early", combined)
+        self.assertIn("Knowledge Briefing", combined)
+
+    def test_briefing_not_called_without_flag(self):
+        args = self._args(briefing=False)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                with patch.object(T, "_run_briefing_for_task") as mock_brief:
+                    with patch("builtins.print"):
+                        T.cmd_next_step(args)
+        mock_brief.assert_not_called()
+
+    def test_all_flag_shows_all_pending(self):
+        (self.tentacle_dir / "todo.md").write_text(
+            "# Todo\n\n- [ ] Step 1\n- [ ] Step 2\n- [ ] Step 3\n- [x] Done task\n"
+        )
+        captured = []
+        args = self._args(show_all=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.cmd_next_step(args)
+        combined = "\n".join(captured)
+        self.assertIn("Step 1", combined)
+        self.assertIn("Step 2", combined)
+        self.assertIn("Step 3", combined)
+        # Done task must not appear as pending
+        self.assertNotIn("Done task", combined)
+
+    def test_without_all_flag_only_first_todo_highlighted(self):
+        (self.tentacle_dir / "todo.md").write_text(
+            "# Todo\n\n- [ ] First\n- [ ] Second\n"
+        )
+        captured = []
+        args = self._args(show_all=False)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.cmd_next_step(args)
+        combined = "\n".join(captured)
+        # Arrow points to first only
+        arrow_lines = [l for l in combined.splitlines() if "▶" in l]
+        self.assertEqual(len(arrow_lines), 1)
+        self.assertIn("First", arrow_lines[0])
+        # Second should not appear in arrow lines
+        self.assertFalse(any("Second" in l for l in arrow_lines))
+
+    def test_nonexistent_tentacle_exits(self):
+        args = self._args(name="no-such-tentacle")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with self.assertRaises(SystemExit) as cm:
+                T.cmd_next_step(args)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_invalid_name_exits(self):
+        args = self._args(name="../evil")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with self.assertRaises(SystemExit) as cm:
+                T.cmd_next_step(args)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_read_only_does_not_mutate_meta(self):
+        """next-step must not change meta.json status."""
+        meta_before = json.loads((self.tentacle_dir / "meta.json").read_text())
+        args = self._args()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                with patch("builtins.print"):
+                    T.cmd_next_step(args)
+        meta_after = json.loads((self.tentacle_dir / "meta.json").read_text())
+        self.assertEqual(meta_before, meta_after)
+
+    def test_read_only_does_not_mutate_todo_file(self):
+        """next-step must not modify todo.md."""
+        content_before = (self.tentacle_dir / "todo.md").read_text()
+        args = self._args()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                with patch("builtins.print"):
+                    T.cmd_next_step(args)
+        content_after = (self.tentacle_dir / "todo.md").read_text()
+        self.assertEqual(content_before, content_after)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

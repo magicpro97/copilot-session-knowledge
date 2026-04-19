@@ -18,6 +18,7 @@ Usage:
     python3 ~/.copilot/tools/tentacle.py swarm <name> [--agent-type <type>] [--model <model>] [--briefing]
     python3 ~/.copilot/tools/tentacle.py dispatch <name> [--agent-type <type>] [--model <model>] [--briefing]
     python3 ~/.copilot/tools/tentacle.py resume <name> [--no-briefing]
+    python3 ~/.copilot/tools/tentacle.py next-step <name> [--briefing] [--no-checkpoint] [--all] [--format text|json]
     python3 ~/.copilot/tools/tentacle.py complete <name> [--no-learn]
     python3 ~/.copilot/tools/tentacle.py delete <name>
 
@@ -833,6 +834,82 @@ def cmd_swarm(args):
         print(json.dumps(dispatch, indent=2))
 
 
+def cmd_next_step(args):
+    """Show the grounded next step for a tentacle: first pending todo + checkpoint/briefing context.
+
+    Read-only — does not mutate tentacle state.
+    """
+    tentacles = get_tentacles_dir(args.session_dir)
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
+
+    if not tentacle_dir.exists():
+        print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    meta_path = tentacle_dir / "meta.json"
+    todo_path = tentacle_dir / "todo.md"
+
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    todos = parse_todos(todo_path.read_text()) if todo_path.exists() else []
+    pending = [t for t in todos if not t["done"]]
+    done_count = sum(1 for t in todos if t["done"])
+
+    # Load checkpoint context unless suppressed
+    checkpoint_text = ""
+    if not getattr(args, "no_checkpoint", False):
+        checkpoint_text = _load_latest_checkpoint_context()
+
+    # Load briefing only when explicitly requested
+    briefing_text = ""
+    if getattr(args, "briefing", False):
+        fallback = meta.get("description", "") or args.name.replace("-", " ")
+        briefing_text = _run_briefing_for_task(args.name, fallback_query=fallback)
+
+    fmt = getattr(args, "format", "text")
+    if fmt == "json":
+        output = {
+            "tentacle": args.name,
+            "status": meta.get("status", "idle"),
+            "todos_done": done_count,
+            "todos_total": len(todos),
+            "pending": [{"index": t["index"], "text": t["text"]} for t in pending],
+            "next_step": pending[0]["text"] if pending else None,
+            "checkpoint_context": checkpoint_text or None,
+            "briefing": briefing_text or None,
+        }
+        print(json.dumps(output, indent=2))
+        return
+
+    # Human-readable output
+    print(f"🎯 Next step for '{args.name}'")
+    print(f"   Status: {meta.get('status', 'idle')} | Progress: {done_count}/{len(todos)} done")
+    print()
+
+    if not pending:
+        print("✅ All todos done! Nothing pending.")
+        if checkpoint_text:
+            print()
+            print(checkpoint_text)
+        return
+
+    next_todo = pending[0]
+    print(f"▶  [{next_todo['index']}] {next_todo['text']}")
+
+    if getattr(args, "all", False) and len(pending) > 1:
+        print(f"\n   Also pending ({len(pending) - 1} more):")
+        for t in pending[1:]:
+            print(f"   ☐ [{t['index']}] {t['text']}")
+
+    if checkpoint_text:
+        print()
+        print(checkpoint_text)
+
+    if briefing_text:
+        print()
+        print("### Knowledge Briefing")
+        print(briefing_text)
+
+
 def cmd_delete(args):
     """Delete a tentacle."""
     tentacles = get_tentacles_dir(args.session_dir)
@@ -921,6 +998,18 @@ def main():
     p_resume.add_argument("--no-briefing", action="store_true",
                           help="Skip live briefing injection on resume")
 
+    # next-step
+    p_next = sub.add_parser("next-step", help="Show grounded next step: first pending todo + checkpoint context")
+    p_next.add_argument("name", help="Tentacle name")
+    p_next.add_argument("--briefing", action="store_true",
+                        help="Inject live knowledge briefing alongside the next step")
+    p_next.add_argument("--no-checkpoint", action="store_true",
+                        help="Skip loading latest checkpoint context")
+    p_next.add_argument("--all", action="store_true",
+                        help="Show all pending todos, not just the first")
+    p_next.add_argument("--format", choices=["text", "json"], default="text",
+                        help="Output format (default: text)")
+
     # delete
     p_delete = sub.add_parser("delete", help="Delete a tentacle")
     p_delete.add_argument("name", help="Tentacle name")
@@ -952,6 +1041,8 @@ def main():
         cmd_swarm(args)
     elif args.command == "resume":
         cmd_resume(args)
+    elif args.command == "next-step":
+        cmd_next_step(args)
     elif args.command == "delete":
         cmd_delete(args)
     elif args.command == "complete":
