@@ -21,16 +21,25 @@ After `git pull`, auto-update analyzes `git diff` to run only what changed:
 |---|---|
 | Python scripts (`*.py`) | Restart services |
 | LaunchAgent templates (`launchd/`) | Reinstall LaunchAgents |
-| SKILL.md / skill files (`skills/`, `templates/`) | Redeploy session-knowledge SKILL to projects |
+| `skills/` or `templates/` | Redeploy session-knowledge SKILL (`templates/SKILL.md`) to projects |
 | Embedding logic | Rebuild embeddings (background) |
 | `auto-update-tools.py` itself | Self-exec with new code |
 | Hook templates (`hooks/references/`) | Detected only — no auto-deploy (templates are copied manually) |
 
-> **Batch 2 / new scripts coverage:** Any new Python scripts added to the root tools directory
-> are covered by the `*.py` detection rule — the watcher service is restarted automatically.
-> New or updated files under `skills/` trigger the SKILL.md redeploy step. Hook templates in
-> `hooks/references/` are detected under the `hooks` category but are intentionally **not**
-> auto-deployed (they are manually copied into projects at setup time via `hook-creator`).
+> **New root-level scripts:** Any Python script added to the root tools directory
+> (`project-context.py`, `host_manifest.py`, `codebase-map.py`, etc.) is automatically
+> covered by the `*.py` detection rule — the watcher service is restarted when they change.
+>
+> **`skills/` changes and references/:** When files under `skills/` change, auto-update calls
+> `deploy_skills()`, which redeploys only `templates/SKILL.md` to already-deployed project
+> destinations. The full skill `SKILL.md` files and their `references/` subdirectories under
+> `skills/<name>/` are **not** individually re-deployed by auto-update. To pick up changes to
+> skill bodies or references after a git pull, run `setup-project.py` (or `--deploy-skill`)
+> manually in the target project.
+>
+> **Hook templates:** Files in `hooks/references/` are classified under the `hooks` category
+> but auto-update intentionally does **not** deploy them — they are manually copied at project
+> setup time via `hook-creator` or `setup-project.py`.
 
 ## Post-Merge Hook
 

@@ -18,9 +18,12 @@ brief --wing backend --room patient  # Filter by wing/room (palace-style)
 brief "task" --for-subagent --budget 3000  # Capped output for sub-agent injection
 brief "task" --min-confidence 0.7    # High-quality entries only
 brief "task" --for-subagent          # Compact context block for sub-agent prompts
+brief "task" --compact               # XML compact block for AI context injection
 brief --task "memory-surface"        # Task-scoped recall: entries tagged with this task ID
 brief "fix Docker" --json            # JSON output for programmatic use
 ```
+
+Token-distillation flags: `--compact` produces an XML compact block; `--budget N` hard-caps output to N characters (frozen snapshot, highest-confidence entries first); `--titles-only` gives ~10 tok/entry for progressive disclosure.
 
 ## Search
 
@@ -28,6 +31,8 @@ brief "fix Docker" --json            # JSON output for programmatic use
 qs "search terms"                    # Compact results
 qs "search terms" --verbose          # Full content
 qs "docker" --type research          # Filter by doc type
+qs "search" --budget 2000            # Cap output to 2000 chars
+qs "search" --compact                # Titles-only with ~token hint
 qs "spring" --source copilot         # Filter by agent source
 qs --mistakes                        # View past errors
 qs --patterns                        # View best practices
@@ -208,6 +213,41 @@ python3 ~/.copilot/tools/profile-import.py --file custom.json --force           
 python3 ~/.copilot/tools/profile-import.py --file custom.json --dry-run                   # Validate without writing
 ```
 
+
+## Tentacle Next Step
+
+`tentacle.py next-step` shows the grounded next step for a named tentacle — the first pending
+todo plus optional checkpoint and briefing context. **Read-only**: does not mutate tentacle state.
+
+```bash
+python3 ~/.copilot/tools/tentacle.py next-step api-export              # First pending todo + checkpoint context
+python3 ~/.copilot/tools/tentacle.py next-step api-export --all        # All pending todos (not just the first)
+python3 ~/.copilot/tools/tentacle.py next-step api-export --briefing   # + live knowledge briefing from briefing.py
+python3 ~/.copilot/tools/tentacle.py next-step api-export --no-checkpoint  # Omit checkpoint context
+python3 ~/.copilot/tools/tentacle.py next-step api-export --format json    # Machine-readable JSON output
+```
+
+JSON output includes `tentacle`, `status`, `todos_done`, `todos_total`, `pending`, `next_step`,
+`checkpoint_context`, and `briefing` fields.
+
+## Project Context
+
+`project-context.py` generates a deterministic `project-context.md` artifact from repo and
+profile facts — no AI generation, no network access. The output derives from git-tracked files,
+the active preset profile, deployed hooks metadata, and test file discovery.
+
+```bash
+python3 ~/.copilot/tools/project-context.py                  # Write to session files/ dir
+python3 ~/.copilot/tools/project-context.py --stdout         # Print to stdout only
+python3 ~/.copilot/tools/project-context.py --output PATH    # Write to an explicit file path
+python3 ~/.copilot/tools/project-context.py --repo PATH      # Use a different repo root
+python3 ~/.copilot/tools/project-context.py --profile python # Force a specific preset profile
+python3 ~/.copilot/tools/project-context.py --no-write       # Dry-run: show target path without writing
+python3 ~/.copilot/tools/project-context.py --list-profiles  # Show available preset profiles
+```
+
+The output is **deterministic**: same repo state → same output. The last-commit date (not wall-clock
+time) is used as the timestamp, so re-running without new commits produces an identical artifact.
 
 ## Maintenance
 

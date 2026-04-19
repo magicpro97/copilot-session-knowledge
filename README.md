@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)]()
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)]()
-[![Tests](https://img.shields.io/badge/tests-74%2F74%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-89%2F89%20passing-brightgreen)]()
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-success)]()
 
 ## Table of Contents
@@ -105,6 +105,8 @@ brief --auto                         # Auto-detect from git state
 brief "task" --for-subagent          # Compact context for sub-agents
 brief --task "memory-surface"        # Task-scoped recall by task ID
 brief "fix Docker" --json            # JSON output for programmatic use
+brief "task" --budget 3000           # Cap output to 3000 chars (frozen snapshot)
+brief "task" --compact               # XML compact block for AI context injection
 ```
 
 ### Search
@@ -120,6 +122,8 @@ qs --module auth                     # Entries for a module or directory
 qs --task memory-surface             # Entries tagged with a task ID
 qs --diff                            # Entries for current git diff files
 qs "search" --export json            # Export results as JSON
+qs "search" --budget 2000            # Cap output to 2000 chars
+qs "search" --compact                # Titles-only with ~token hint
 ```
 
 ### Record Knowledge
@@ -131,6 +135,30 @@ learn --decision "Title" "Architecture choice" --tags "cdk"
 learn --mistake "Title"  "Description" --task "memory-surface" --file "briefing.py"
 learn --mistake "Title"  "Description" --json  # Machine-readable JSON output
 ```
+
+### Tentacle Next Step
+
+```bash
+# Show the grounded next step for a named tentacle (read-only)
+python3 ~/.copilot/tools/tentacle.py next-step api-export         # First pending todo + checkpoint context
+python3 ~/.copilot/tools/tentacle.py next-step api-export --all   # All pending todos
+python3 ~/.copilot/tools/tentacle.py next-step api-export --briefing        # + live knowledge briefing
+python3 ~/.copilot/tools/tentacle.py next-step api-export --no-checkpoint   # Skip checkpoint context
+python3 ~/.copilot/tools/tentacle.py next-step api-export --format json     # JSON output
+```
+
+### Project Context
+
+```bash
+# Generate deterministic project-context.md (repo structure, profile, hooks, test expectations)
+python3 ~/.copilot/tools/project-context.py                # Write to session files/ dir
+python3 ~/.copilot/tools/project-context.py --stdout       # Print to stdout only
+python3 ~/.copilot/tools/project-context.py --output PATH  # Write to explicit path
+python3 ~/.copilot/tools/project-context.py --profile python  # Force a preset profile
+python3 ~/.copilot/tools/project-context.py --list-profiles   # Show available profiles
+```
+
+No AI generation, no network access. The artifact is derived purely from repo/profile facts and is deterministic for the same repo state.
 
 ### Checkpoint Lifecycle
 
@@ -194,6 +222,8 @@ flowchart TD
 4. **Search** — FTS5 keyword + optional semantic vector (Reciprocal Rank Fusion)
 5. **Watch** — `watch-sessions.py` polls for changes, auto re-indexes
 6. **Update** — `auto-update-tools.py` smart pipeline: git pull → diff-based update
+7. **Host metadata** — `host_manifest.py` is the single source of truth for supported hosts (Copilot CLI + Claude Code only) and their file-system paths; imported by `install.py`, `setup-project.py`, `watch-sessions.py`, and `auto-update-tools.py`
+8. **Tentacle workspace** — `.octogent/` stores local tentacle state and is gitignored in this repo
 
 ## Auto-Update
 
@@ -209,7 +239,7 @@ Smart pipeline analyzes `git diff` to run only what changed. Post-merge hook aut
 
 ## Skills & Hooks
 
-9 built-in skills (session-knowledge-creator, agent-creator, hook-creator, tentacle, workflow-creator, find-skills, and more) plus 10 hook templates for quality enforcement.
+11 built-in skills (session-knowledge-creator, agent-creator, hook-creator, tentacle-creator, tentacle-orchestration, workflow-creator, find-skills, agent-instructions-auditor, forge-ecosystem, code-reviewer, task-step-generator) plus 10 hook templates for quality enforcement.
 
 Unified hook runner architecture — 1 Python process per event with fail-open, HMAC-signed markers, audit logging, and tamper protection. Hook deployment is **Copilot CLI only**; Claude Code does not support the `hook_runner.py` format.
 
