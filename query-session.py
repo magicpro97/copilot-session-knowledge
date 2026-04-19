@@ -27,6 +27,10 @@ Usage:
     python query-session.py --graph-stats                       # Knowledge graph statistics
     python query-session.py "search" --export json             # Export as JSON
     python query-session.py "search" --export markdown         # Export as Markdown
+    python query-session.py --file src/auth.py                 # Entries touching a file
+    python query-session.py --module auth                      # Entries for a module/directory
+    python query-session.py --diff                             # Entries for current git diff files
+    python query-session.py --task memory-surface              # Entries for a specific task ID
 
 Doc types: checkpoint, research, artifact, plan, claude-session
 Knowledge categories: mistake, pattern, decision, tool
@@ -935,6 +939,252 @@ def print_usage():
     print(__doc__)
 
 
+def show_by_file(file_path: str, limit: int = 20, verbose: bool = False):
+    """Show knowledge entries that recorded the given file as affected."""
+    db = get_db()
+    # Substring match on JSON array stored as text — safe since we control the format.
+    # Parameterized queries already escape safely; no manual quote doubling needed.
+    try:
+        rows = db.execute("""
+            SELECT id, category, title, content, confidence, affected_files, task_id
+            FROM knowledge_entries
+            WHERE affected_files LIKE ? AND affected_files != '[]'
+            ORDER BY confidence DESC, occurrence_count DESC
+            LIMIT ?
+        """, (f"%{file_path}%", limit)).fetchall()
+    except sqlite3.OperationalError:
+        print("⚠ affected_files column not found. Run build-session-index.py to migrate.")
+        db.close()
+        return
+
+    if not rows:
+        print(f"No knowledge entries recorded for file: {file_path}")
+        print(f"Tip: Use 'learn.py --file {file_path}' when recording entries that touch this file.")
+        db.close()
+        return
+
+    print(f"\n{BOLD}Entries affecting: {file_path} ({len(rows)} results){RESET}\n")
+    for r in rows:
+        cat_color = {
+            "mistake": YELLOW, "pattern": GREEN, "decision": CYAN,
+            "tool": MAGENTA, "feature": GREEN, "refactor": DIM,
+            "discovery": CYAN,
+        }.get(r["category"], "")
+        task_note = f"  {DIM}task={r['task_id']}{RESET}" if r["task_id"] else ""
+        print(f"  {DIM}#{r['id']:>4d}{RESET} {cat_color}[{r['category']}]{RESET} "
+              f"{BOLD}{r['title'][:65]}{RESET}{task_note}")
+        if verbose and r["content"]:
+            first = r["content"].split("\n")[0][:100]
+            print(f"         {DIM}{first}{RESET}")
+    if not verbose:
+        print(f"\n{DIM}Use --verbose for content preview, --detail <id> for full entry{RESET}")
+    db.close()
+
+
+def show_by_module(module: str, limit: int = 20, verbose: bool = False):
+    """Show knowledge entries that affect files in a given module/directory path segment."""
+    db = get_db()
+    # Parameterized queries already escape safely; no manual quote doubling needed.
+    module_lower = module.lower()
+    try:
+        rows = db.execute("""
+            SELECT id, category, title, content, confidence, affected_files, task_id
+            FROM knowledge_entries
+            WHERE (affected_files LIKE ? AND affected_files != '[]')
+               OR LOWER(content) LIKE ?
+               OR LOWER(title) LIKE ?
+            ORDER BY confidence DESC, occurrence_count DESC
+            LIMIT ?
+        """, (f"%{module}%", f"%{module_lower}%", f"%{module_lower}%", limit)).fetchall()
+    except sqlite3.OperationalError:
+        print("⚠ affected_files column not found. Run build-session-index.py to migrate.")
+        db.close()
+        return
+
+    if not rows:
+        print(f"No knowledge entries found for module: {module}")
+        db.close()
+        return
+
+    print(f"\n{BOLD}Entries for module: {module} ({len(rows)} results){RESET}\n")
+    seen = set()
+    for r in rows:
+        if r["id"] in seen:
+            continue
+        seen.add(r["id"])
+        cat_color = {
+            "mistake": YELLOW, "pattern": GREEN, "decision": CYAN,
+            "tool": MAGENTA, "feature": GREEN, "refactor": DIM,
+            "discovery": CYAN,
+        }.get(r["category"], "")
+        task_note = f"  {DIM}task={r['task_id']}{RESET}" if r["task_id"] else ""
+        print(f"  {DIM}#{r['id']:>4d}{RESET} {cat_color}[{r['category']}]{RESET} "
+              f"{BOLD}{r['title'][:65]}{RESET}{task_note}")
+        if verbose and r["content"]:
+            first = r["content"].split("\n")[0][:100]
+            print(f"         {DIM}{first}{RESET}")
+    if not verbose:
+        print(f"\n{DIM}Use --verbose for content preview, --detail <id> for full entry{RESET}")
+    db.close()
+
+
+def show_by_task(task_id: str, limit: int = 30, verbose: bool = False):
+    """Show knowledge entries recorded under a specific task ID."""
+    db = get_db()
+    safe = task_id.strip()[:200]
+    try:
+        rows = db.execute("""
+            SELECT id, category, title, content, confidence, affected_files, task_id,
+                   occurrence_count, last_seen
+            FROM knowledge_entries
+            WHERE task_id = ?
+            ORDER BY confidence DESC, occurrence_count DESC
+            LIMIT ?
+        """, (safe, limit)).fetchall()
+    except sqlite3.OperationalError:
+        print("⚠ task_id column not found. Run build-session-index.py to migrate.")
+        db.close()
+        return
+
+    if not rows:
+        # Fallback: FTS search on the task_id as a query string
+        print(f"No entries directly tagged task_id='{task_id}'.")
+        print(f"Try: python query-session.py '{task_id}' for FTS search.")
+        db.close()
+        return
+
+    print(f"\n{BOLD}Task recall: {task_id} ({len(rows)} entries){RESET}\n")
+    for r in rows:
+        cat_color = {
+            "mistake": YELLOW, "pattern": GREEN, "decision": CYAN,
+            "tool": MAGENTA, "feature": GREEN, "refactor": DIM,
+            "discovery": CYAN,
+        }.get(r["category"], "")
+        files = ""
+        try:
+            import json as _json
+            fl = _json.loads(r["affected_files"] or "[]")
+            if fl:
+                files = f"  {DIM}files: {', '.join(fl[:2])}{RESET}"
+        except Exception:
+            pass
+        print(f"  {DIM}#{r['id']:>4d}{RESET} {cat_color}[{r['category']}]{RESET} "
+              f"{BOLD}{r['title'][:65]}{RESET}{files}")
+        if verbose and r["content"]:
+            first = r["content"].split("\n")[0][:100]
+            print(f"         {DIM}{first}{RESET}")
+    if not verbose:
+        print(f"\n{DIM}Use --verbose for content preview, --detail <id> for full entry{RESET}")
+    db.close()
+
+
+def show_diff_context(limit: int = 20, verbose: bool = False):
+    """Surface knowledge entries relevant to the current git diff.
+
+    Reads changed files from `git diff HEAD --name-only`, then queries
+    knowledge entries that recorded those files (via affected_files) or
+    mention them in content/title.
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "diff", "HEAD", "--name-only"],
+            capture_output=True, text=True, timeout=10
+        )
+        changed = [f.strip() for f in result.stdout.strip().splitlines() if f.strip()]
+    except Exception as e:
+        print(f"⚠ git diff failed: {e}")
+        return
+
+    # Also include staged files
+    try:
+        result2 = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            capture_output=True, text=True, timeout=10
+        )
+        staged = [f.strip() for f in result2.stdout.strip().splitlines() if f.strip()]
+        changed = list(dict.fromkeys(changed + staged))  # dedupe, preserve order
+    except Exception:
+        pass
+
+    if not changed:
+        print("No changed files in current git diff.")
+        return
+
+    print(f"\n{BOLD}Diff context — {len(changed)} changed file(s):{RESET}")
+    for f in changed[:10]:
+        print(f"  {DIM}  {f}{RESET}")
+    if len(changed) > 10:
+        print(f"  {DIM}  ... and {len(changed) - 10} more{RESET}")
+    print()
+
+    db = get_db()
+    seen_ids = set()
+    all_rows = []
+
+    for file_path in changed[:15]:  # cap at 15 files to avoid noise
+        # Match by full path in affected_files; match by basename (with extension)
+        # in content/title to avoid false positives from common stems like
+        # "main", "test", "app", "index".
+        from pathlib import Path as _Path
+        basename = _Path(file_path).name
+        basename_lower = basename.lower()
+        try:
+            rows = db.execute("""
+                SELECT id, category, title, content, confidence,
+                       affected_files, task_id, occurrence_count
+                FROM knowledge_entries
+                WHERE (affected_files LIKE ? AND affected_files != '[]')
+                   OR LOWER(content) LIKE ?
+                   OR LOWER(title) LIKE ?
+                ORDER BY confidence DESC
+                LIMIT ?
+            """, (f"%{file_path}%", f"%{basename_lower}%",
+                  f"%{basename_lower}%", limit)).fetchall()
+        except sqlite3.OperationalError:
+            print("⚠ affected_files column not found. Run build-session-index.py to migrate.")
+            db.close()
+            return
+
+        for r in rows:
+            if r["id"] not in seen_ids:
+                seen_ids.add(r["id"])
+                all_rows.append((file_path, r))
+
+    if not all_rows:
+        print("No knowledge entries found for changed files.")
+        print("Tip: Record entries with 'learn.py --file <path>' to build this surface.")
+        db.close()
+        return
+
+    # Group by file for readable output
+    by_file: dict = {}
+    for file_path, r in all_rows:
+        by_file.setdefault(file_path, []).append(r)
+
+    total = sum(len(v) for v in by_file.values())
+    print(f"{BOLD}Found {total} relevant knowledge entries{RESET}\n")
+    for file_path, rows in by_file.items():
+        if not rows:
+            continue
+        print(f"  {CYAN}{file_path}{RESET}")
+        for r in rows[:5]:
+            cat_color = {
+                "mistake": YELLOW, "pattern": GREEN, "decision": CYAN,
+                "tool": MAGENTA, "feature": GREEN, "refactor": DIM,
+                "discovery": CYAN,
+            }.get(r["category"], "")
+            print(f"    {DIM}#{r['id']:>4d}{RESET} {cat_color}[{r['category']}]{RESET} "
+                  f"{r['title'][:60]}")
+            if verbose and r["content"]:
+                first = r["content"].split("\n")[0][:90]
+                print(f"           {DIM}{first}{RESET}")
+        print()
+
+    print(f"{DIM}Use --detail <id> for full entry content{RESET}")
+    db.close()
+
+
 def main():
     args = sys.argv[1:]
 
@@ -1023,19 +1273,50 @@ def main():
         show_graph_stats()
         return
 
+    # --- New first-class surfaces ---
+
+    # Parse common flags needed by new surfaces
+    limit = 10
+    if "--limit" in args:
+        idx = args.index("--limit")
+        limit = int(args[idx + 1]) if idx + 1 < len(args) else 10
+    verbose = "--verbose" in args or "-v" in args
+
+    if "--file" in args:
+        idx = args.index("--file")
+        if idx + 1 < len(args):
+            show_by_file(args[idx + 1], limit=limit, verbose=verbose)
+        else:
+            print("Error: --file requires a file path")
+        return
+
+    if "--module" in args:
+        idx = args.index("--module")
+        if idx + 1 < len(args):
+            show_by_module(args[idx + 1], limit=limit, verbose=verbose)
+        else:
+            print("Error: --module requires a module/directory name")
+        return
+
+    if "--task" in args:
+        idx = args.index("--task")
+        if idx + 1 < len(args):
+            show_by_task(args[idx + 1], limit=limit, verbose=verbose)
+        else:
+            print("Error: --task requires a task ID")
+        return
+
+    if "--diff" in args:
+        show_diff_context(limit=limit, verbose=verbose)
+        return
+
     # Knowledge category shortcuts
     export_fmt = None
     if "--export" in args:
         idx = args.index("--export")
         export_fmt = args[idx + 1] if idx + 1 < len(args) else "json"
 
-    limit = 10
-    if "--limit" in args:
-        idx = args.index("--limit")
-        limit = int(args[idx + 1]) if idx + 1 < len(args) else 10
-
-    verbose = "--verbose" in args or "-v" in args
-
+    # limit/verbose already parsed above; re-read for semantic/search paths
     for shortcut, category in [("--mistakes", "mistake"), ("--patterns", "pattern"),
                                 ("--decisions", "decision"), ("--tools", "tool")]:
         if shortcut in args:

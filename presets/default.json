@@ -1,0 +1,10 @@
+{
+  "name": "default",
+  "description": "Minimal safe defaults for any project: dangerous command blocking and secret detection.",
+  "hooks": [
+    "dangerous-blocker.sh",
+    "secret-detector.sh"
+  ],
+  "workflow_phases": ["CLARIFY", "BUILD", "TEST", "COMMIT"],
+  "workflow_notes": "Minimal 4-phase workflow suitable for any project size."
+}

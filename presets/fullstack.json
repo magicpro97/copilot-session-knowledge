@@ -1,0 +1,15 @@
+{
+  "name": "fullstack",
+  "description": "Full-stack web project: architecture guard, coding standards, test reminders, session banner, and commit gate.",
+  "hooks": [
+    "dangerous-blocker.sh",
+    "secret-detector.sh",
+    "architecture-guard.sh",
+    "enforce-coding-standards.sh",
+    "test-reminder.sh",
+    "session-banner.sh",
+    "commit-gate.sh"
+  ],
+  "workflow_phases": ["CLARIFY", "DESIGN", "BUILD", "TEST", "REVIEW", "QA", "COMMIT"],
+  "workflow_notes": "7-phase workflow for full-stack web projects with architecture enforcement and QA phase."
+}

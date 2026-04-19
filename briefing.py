@@ -19,6 +19,7 @@ Usage:
     python briefing.py --titles-only                      # Progressive disclosure layer 1 (~10 tok/entry)
     python briefing.py --titles-only --limit 20           # More entries in titles mode
     python briefing.py "task desc" --budget 3000           # Cap output to 3000 chars (frozen snapshot)
+    python briefing.py --task "memory-surface"              # Task-scoped recall for a task ID
 
 Default output is compact (~500 tokens): titles + 1-line summaries with entry IDs.
 Use --titles-only for ultra-compact index (~10 tokens/entry). Then --detail <id> for full.
@@ -944,6 +945,114 @@ def search_by_wing_room(wing: str = "", room: str = "",
     return "\n".join(lines)
 
 
+def generate_task_briefing(task_id: str, limit: int = 30) -> str:
+    """Generate a focused briefing for a specific task ID.
+
+    Pulls all knowledge entries tagged with this task_id and formats them
+    as a compact recall surface, grouped by category.
+    Also includes FTS-based related entries using the task_id as a query.
+    """
+    db = get_db()
+    safe_task = task_id.strip()[:200]
+
+    # Primary: entries explicitly tagged with this task_id
+    try:
+        tagged_rows = db.execute("""
+            SELECT id, category, title, content, confidence,
+                   affected_files, tags, occurrence_count
+            FROM knowledge_entries
+            WHERE task_id = ?
+            ORDER BY confidence DESC, occurrence_count DESC
+            LIMIT ?
+        """, (safe_task, limit)).fetchall()
+    except sqlite3.OperationalError:
+        tagged_rows = []
+
+    # Secondary: FTS search using task_id as query terms (catches related entries)
+    fts_query = _sanitize_fts_query(task_id)
+    fts_rows = []
+    tagged_ids = {r["id"] for r in tagged_rows}
+    if fts_query and fts_query != '""':
+        try:
+            rows = db.execute("""
+                SELECT ke.id, ke.category, ke.title, ke.content, ke.confidence,
+                       ke.affected_files, ke.tags, ke.occurrence_count
+                FROM ke_fts fts
+                JOIN knowledge_entries ke ON fts.rowid = ke.id
+                WHERE ke_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+            """, (fts_query, min(limit, 10))).fetchall()
+            for r in rows:
+                if r["id"] not in tagged_ids:
+                    fts_rows.append(r)
+        except sqlite3.OperationalError:
+            pass
+
+    db.close()
+
+    if not tagged_rows and not fts_rows:
+        return (f"No knowledge entries found for task: '{task_id}'\n"
+                f"Tip: Use 'learn.py --task {task_id!r} ...' to tag entries.\n"
+                f"Or try: briefing.py '{task_id}' for FTS-based briefing.")
+
+    lines = [f"📋 Task recall: {task_id}\n"]
+
+    if tagged_rows:
+        # Group tagged entries by category
+        by_cat: dict = {}
+        for r in tagged_rows:
+            by_cat.setdefault(r["category"], []).append(r)
+
+        cat_meta = {
+            "mistake": "⚠️  Past Mistakes",
+            "pattern": "✅ Proven Patterns",
+            "decision": "🏗️  Architecture Decisions",
+            "tool": "🔧 Tools & Configs",
+            "feature": "✨ Features",
+            "refactor": "♻️  Refactors",
+            "discovery": "🔍 Discoveries",
+        }
+        for cat, label in cat_meta.items():
+            entries = by_cat.get(cat, [])
+            if not entries:
+                continue
+            lines.append(f"{label}")
+            for e in entries:
+                eid = e["id"]
+                title = e["title"][:80]
+                files = ""
+                try:
+                    fl = json.loads(e["affected_files"] or "[]")
+                    if fl:
+                        files = f"  → {', '.join(fl[:2])}"
+                except Exception:
+                    pass
+                lines.append(f"  #{eid} {title}{files}")
+            lines.append("")
+
+        # Render any categories not in the hardcoded map (e.g. custom categories)
+        unknown_cats = [c for c in by_cat if c not in cat_meta]
+        if unknown_cats:
+            lines.append("📌 Other")
+            for cat in unknown_cats:
+                for e in by_cat[cat]:
+                    eid = e["id"]
+                    title = e["title"][:80]
+                    lines.append(f"  #{eid} [{cat}] {title}")
+            lines.append("")
+
+    if fts_rows:
+        lines.append("🔗 Related entries (FTS match on task name)")
+        for r in fts_rows[:5]:
+            lines.append(f"  #{r['id']} [{r['category']}] {r['title'][:75]}")
+        lines.append("")
+
+    total = len(tagged_rows) + len(fts_rows)
+    lines.append(f"({total} entries) Use query-session.py --task {task_id!r} for full detail")
+    return "\n".join(lines)
+
+
 def main():
     args = sys.argv[1:]
 
@@ -966,6 +1075,20 @@ def main():
                        and a != str(limit)]
         query = " ".join(query_parts)
         print(generate_titles_only(query=query, limit=limit))
+        return
+
+    # Handle --task mode: task-scoped recall
+    if "--task" in args:
+        idx = args.index("--task")
+        task_id = args[idx + 1] if idx + 1 < len(args) else ""
+        if not task_id:
+            print("Error: --task requires a task ID")
+            return
+        limit = 30
+        if "--limit" in args:
+            idx2 = args.index("--limit")
+            limit = int(args[idx2 + 1]) if idx2 + 1 < len(args) else 30
+        print(generate_task_briefing(task_id, limit=limit))
         return
 
     # Handle --wing/--room search

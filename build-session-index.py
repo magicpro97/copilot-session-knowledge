@@ -117,6 +117,9 @@ def _migrate_add_source(db: sqlite3.Connection):
         ("knowledge_entries", "topic_key", "TEXT"),
         ("knowledge_entries", "revision_count", "INTEGER DEFAULT 1"),
         ("knowledge_entries", "content_hash", "TEXT"),
+        # Phase 7: task-scoped recall + file/module surface
+        ("knowledge_entries", "task_id", "TEXT DEFAULT ''"),
+        ("knowledge_entries", "affected_files", "TEXT DEFAULT '[]'"),
     ]
     _ALLOWED_TABLES = {"sessions", "documents", "knowledge_entries"}
     for table, col, col_def in migrations:
@@ -133,6 +136,7 @@ def _migrate_add_source(db: sqlite3.Connection):
         db.execute("CREATE INDEX IF NOT EXISTS idx_ke_source ON knowledge_entries(source)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_ke_topic ON knowledge_entries(topic_key)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_ke_hash ON knowledge_entries(content_hash)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_ke_task ON knowledge_entries(task_id)")
     except sqlite3.OperationalError:
         pass  # Table might not exist yet
 

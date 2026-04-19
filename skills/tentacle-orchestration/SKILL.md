@@ -30,6 +30,7 @@ Adapted from the [OctoGent](https://github.com/hesamsheikh/octogent) tentacle pa
 - ❌ Skipping `--briefing` on create → past mistakes not injected into CONTEXT.md
 - ❌ Skipping `complete` before `delete` → learnings from handoff.md lost permanently
 - ❌ Overlapping tentacle scopes → agents overwrite each other's work
+- ❌ Using `--briefing` with `--output json` → not supported; briefing content cannot be represented in JSON payload
 
 ## Core concept
 
@@ -116,7 +117,13 @@ This is the most important step. Agent quality is directly proportional to CONTE
 
 ```bash
 python3 ~/.copilot/tools/tentacle.py swarm <name> --agent-type <type> --model <model>
+python3 ~/.copilot/tools/tentacle.py swarm <name> --agent-type <type> --model <model> --briefing
 ```
+
+`--briefing` fetches live past knowledge from session-knowledge at dispatch time and injects it
+into the dispatch prompt. Use it when picking up a tentacle after a gap or when past mistakes are
+likely to be relevant. **`--briefing` is not supported with `--output json`** — use
+`--output prompt` or `--output parallel` when briefing injection is needed.
 
 Use the output as the prompt for `task()`. Launch independent tentacles in parallel.
 
@@ -184,7 +191,16 @@ python3 ~/.copilot/tools/tentacle.py complete <name>
 
 Only call `complete` after all verification gates pass. This marks all todos done and auto-extracts learnings from handoff.md into long-term knowledge.
 
-#### Step 16: Cleanup
+#### Step 16: Resume a tentacle (when picking up interrupted work)
+
+```bash
+python3 ~/.copilot/tools/tentacle.py resume <name>             # Refresh briefing, mark active
+python3 ~/.copilot/tools/tentacle.py resume <name> --no-briefing  # Skip briefing injection
+```
+
+`resume` refreshes the live briefing in CONTEXT.md and marks the tentacle active again. Use it when returning to a tentacle after an interruption or session boundary. Pass `--no-briefing` only when the briefing is already fresh and re-fetching would be wasteful.
+
+#### Step 17: Cleanup
 
 ```bash
 python3 ~/.copilot/tools/tentacle.py delete <name>
@@ -200,6 +216,12 @@ Quick reference:
 tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing
 tentacle.py todo <name> add "<task>"
 tentacle.py swarm <name> --agent-type <type> --model <model>
+tentacle.py swarm <name> --agent-type <type> --model <model> --briefing   # live knowledge injection
+# NOTE: --briefing is not compatible with --output json
+tentacle.py swarm <name> --output json                                     # JSON output (no --briefing)
+tentacle.py dispatch <name> --agent-type <type> --briefing                 # single-todo dispatch + briefing
+tentacle.py resume <name>                  # resume interrupted tentacle (refreshes briefing)
+tentacle.py resume <name> --no-briefing    # resume without re-fetching briefing
 tentacle.py status
 tentacle.py complete <name>
 tentacle.py delete <name>
