@@ -45,6 +45,8 @@ INSTALL_ITEMS = {
         {"src": "forge-ecosystem", "label": "Forge Ecosystem (10 CLI tools for game & app dev)"},
         {"src": "code-reviewer", "label": "Code Reviewer (skeptical, signal-over-noise code review)"},
         {"src": "task-step-generator", "label": "Task Step Generator (structured step-file generation)"},
+        {"src": "conductor-creator", "label": "Conductor Creator (task-router generator)"},
+        {"src": "project-onboarding", "label": "Project Onboarding (full AI ecosystem setup guide)"},
     ],
     # Templates (from tools/templates/ → .github/skills/ or .github/instructions/)
     "templates": [
@@ -156,8 +158,11 @@ def copy_if_changed(src: Path, dst: Path, dry_run: bool, label: str) -> bool:
 def install_skills(project_root: Path, dry_run: bool) -> int:
     """Install creator skills from tools/skills/ → .github/skills/.
 
-    For each skill, copies SKILL.md and any files in a references/ subdirectory
-    so that relative references like `references/foo.md` resolve after deployment.
+    For each skill, copies SKILL.md and all files found in any asset
+    subdirectory (references/, templates/, evals/, …).  The directory
+    structure under each subdirectory is preserved so that relative paths
+    inside SKILL.md (e.g. ``references/foo.md``, ``templates/bar.py``)
+    resolve correctly after deployment.
     """
     changes = 0
     for item in INSTALL_ITEMS["skills"]:
@@ -167,16 +172,20 @@ def install_skills(project_root: Path, dry_run: bool) -> int:
         if copy_if_changed(src, dst, dry_run, item["label"]):
             changes += 1
 
-        # Copy references/ subdirectory if present (avoids dangling file refs).
-        # rglob("*") descends into nested subdirs; relative_to preserves the
-        # directory structure under references/ at the destination.
-        refs_src = SKILLS_DIR / skill_name / "references"
-        if refs_src.is_dir():
-            for ref_file in refs_src.rglob("*"):
-                if ref_file.is_file():
-                    rel = ref_file.relative_to(refs_src)
-                    ref_dst = project_root / ".github" / "skills" / skill_name / "references" / rel
-                    if copy_if_changed(ref_file, ref_dst, dry_run, f"{item['label']} → references/{rel}"):
+        # Copy every asset subdirectory that lives alongside SKILL.md.
+        # This is intentionally generic so that new asset dirs (templates/,
+        # evals/, etc.) are picked up automatically without code changes.
+        # rglob("*") descends into nested subdirs; relative_to(skill_src_dir)
+        # preserves the full relative path at the destination.
+        skill_src_dir = SKILLS_DIR / skill_name
+        for subdir in sorted(skill_src_dir.iterdir()):
+            if not subdir.is_dir():
+                continue
+            for asset_file in subdir.rglob("*"):
+                if asset_file.is_file():
+                    rel = asset_file.relative_to(skill_src_dir)
+                    asset_dst = project_root / ".github" / "skills" / skill_name / rel
+                    if copy_if_changed(asset_file, asset_dst, dry_run, f"{item['label']} → {rel}"):
                         changes += 1
 
     return changes
@@ -363,11 +372,17 @@ What gets installed:
   .github/skills/session-knowledge-creator/SKILL.md  — Meta-skill: customize for project
   .github/skills/tentacle-creator/SKILL.md           — Meta-skill: customize tentacle
   .github/skills/tentacle-orchestration/SKILL.md     — Tentacle workflow skill
+  .github/skills/conductor-creator/SKILL.md          — Meta-skill: generate task router
+  .github/skills/project-onboarding/SKILL.md         — Meta-skill: full AI ecosystem setup
   .github/instructions/session-knowledge.instructions.md — Enforcement (auto-inject)
   .gitignore                                         — Add .octogent/ entry
   CLAUDE.md / copilot-instructions.md / AGENTS.md    — Patched with references
   .github/hooks/*.sh                                 — Hook bundle (when --profile used)
   WORKFLOW.md                                        — Starter workflow (when --profile used)
+
+Note: If your project already has session-knowledge installed at the user/global level
+(~/.github/instructions/session-knowledge.instructions.md), you can remove the project-level
+copy to avoid duplicate always-loaded instructions and reduce context bloat.
 """
     )
     parser.add_argument(

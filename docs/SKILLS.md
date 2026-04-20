@@ -10,9 +10,9 @@ This repo contains both **Skills** (SKILL.md) and **Agent templates** (.agent.md
 |---|---|---|
 | **Standard** | [Anthropic Agent Skills](https://github.com/anthropics/skills) | GitHub Copilot / Claude Code |
 | **Purpose** | Instructions for specific tasks | Specialized sub-agent persona |
-| **Frontmatter** | `name`, `description`, `license`, `allowed-tools`, `metadata`, `compatibility` | `name`, `description`, `tools`, `model` |
+| **Frontmatter** | `name`, `description`, `license`, `allowed-tools`, `metadata`, `version` | `name`, `description`, `tools`, `model` |
 | **Triggered by** | AI matching description to user intent | Explicit delegation or keyword match |
-| **Validation** | `quick_validate.py` from anthropics/skills | `hooks/lint-skills.py` (14 rules, auto-parses CLI schemas) |
+| **Validation** | `validate-skill.py` (local validator in this repo) | `hooks/lint-skills.py` (schema + tool-name rules, auto-parses CLI schemas) |
 
 **Key rule:** Skills use `allowed-tools` (optional string). Agents use `tools` (YAML list). Don't mix them.
 
@@ -62,7 +62,7 @@ Validates `.agent.md` and `SKILL.md` files against the Copilot CLI schema.
 ```bash
 python3 ~/.copilot/tools/hooks/lint-skills.py path/to/file.agent.md    # Single file
 python3 ~/.copilot/tools/hooks/lint-skills.py --all                     # All files
-python3 ~/.copilot/tools/hooks/lint-skills.py --all --dir /path/to/project  # Specific project
+python3 ~/.copilot/tools/hooks/lint-skills.py /path/to/project               # Specific project
 ```
 
 ## SKILL.md Validator (`validate-skill.py`)
@@ -71,8 +71,14 @@ Validates `SKILL.md` files against the [Anthropic Agent Skills](https://github.c
 
 ```bash
 python3 ~/.copilot/tools/validate-skill.py path/to/SKILL.md   # Single file
-python3 ~/.copilot/tools/validate-skill.py --all               # All skills
-python3 ~/.copilot/tools/validate-skill.py path/to/SKILL.md --verbose  # Verbose
+python3 ~/.copilot/tools/validate-skill.py path/to/skill-dir/ # Skill directory
+```
+
+To validate all agent and skill files in a project, use the agent/skill linter instead:
+
+```bash
+python3 ~/.copilot/tools/hooks/lint-skills.py --all            # All .agent.md and SKILL.md files
+python3 ~/.copilot/tools/hooks/lint-skills.py /path/to/project
 ```
 
 ## Project Setup
@@ -90,11 +96,12 @@ python3 ~/.copilot/tools/setup-project.py --profile fullstack   # Full-stack web
 `--profile` installs a **preset hook bundle** and generates a starter `WORKFLOW.md`. Available
 profiles are defined in `presets/` (`default`, `python`, `typescript`, `mobile`, `fullstack`).
 
-When deploying skills, `setup-project.py` copies each skill's `SKILL.md` **and** any
-`references/` subdirectory alongside it, so relative links like `references/foo.md` resolve
-correctly after deployment to `.github/skills/<skill-name>/`. For example,
-`session-knowledge-creator` ships with `references/skill-template.md` and
-`references/instructions-template.md`.
+When deploying skills, `setup-project.py` copies each skill's `SKILL.md` **and** all auxiliary
+asset subdirectories found alongside it (`references/`, `templates/`, `evals/`, or any other
+subdirectory). This is intentionally generic: adding a new asset directory to a skill is
+sufficient for `setup-project.py` to pick it up — no script change is needed. Relative links
+inside `SKILL.md` (e.g. `references/foo.md`, `templates/bar.py`) resolve correctly after
+deployment to `.github/skills/<skill-name>/`.
 
 ### Creating custom profiles
 
@@ -146,6 +153,16 @@ python3 ~/.copilot/tools/install-project-hooks.py --dry-run         # Preview wi
 script is **deprecated** — prefer `setup-project.py` which covers tentacle setup and more in one step.
 `tentacle-setup.sh` remains for backwards compatibility and simple shell-only environments.
 
+### Meta-skill rollout — global vs project scope
+
+`setup-project.py` deploys all 13 skills to `.github/skills/<skill-name>/SKILL.md` in the target project (project scope). The full list of skills it deploys is defined in `INSTALL_ITEMS["skills"]` in that script — `host_manifest.py` is the authoritative host-metadata source and `setup-project.py` is the authoritative skill-list source.
+
+Creator and meta-skills (session-knowledge-creator, agent-creator, hook-creator, tentacle-creator, tentacle-orchestration, workflow-creator, conductor-creator, project-onboarding, find-skills) are often promoted to **global scope** (`~/.copilot/skills/`) so they are available in every project without per-project deployment. When you do this:
+
+1. **Remove the project-local copy** — having the same skill name at both global (`~/.copilot/skills/`) and project (`.github/skills/`) scope causes the skill to appear twice in the catalog. Copilot deduplicates by name at runtime, but the extra copy adds load.
+2. **Audit after rollout** — manually inspect `~/.copilot/skills/` and `.github/skills/` to surface orphaned or duplicated entries. `hooks/lint-skills.py` is a schema linter (validates frontmatter fields), not a duplicate-surface audit tool.
+3. **Do not deploy project-specific skills globally** — skills that reference project-specific paths, tags, or conventions belong at project scope only.
+
 ## AI Agent Integration
 
 Deploy the skill into your project for automatic knowledge-base usage:
@@ -153,7 +170,7 @@ Deploy the skill into your project for automatic knowledge-base usage:
 ```bash
 python3 ~/.copilot/tools/install.py --deploy-skill
 # → Creates .github/skills/session-knowledge/SKILL.md (Copilot CLI)
-# → Creates .claude/skills/session-knowledge.md (Claude Code)
+# → Creates .claude/skills/session-knowledge/SKILL.md (Claude Code)
 ```
 
 ### Enforce AI Usage (mandatory, not optional)
@@ -175,6 +192,36 @@ python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
 ```
 
 Output is a compact `[KNOWLEDGE CONTEXT]` block (~200 tokens) for sub-agent prompts.
+
+## Context Load Guidance
+
+> **Context load** is the total tokens Copilot injects into every tool call. High load degrades response quality and increases latency. The main culprits are duplicate skills and overly broad instruction surfaces — **not** the unified hook runner (which is a single process per event).
+
+### Minimal-context-first
+
+Start narrow, then escalate:
+
+- Use `briefing.py --compact` (~500 tokens) before escalating to `--full` (~3 K tokens) for your own briefings. For sub-agent prompts, use `briefing.py --for-subagent` (~200 tokens) — it is the cheapest output mode.
+- Instruction files with `applyTo: '**/*'` are injected into **every** context — scope them to specific file patterns (e.g., `**/*.ts`) when they only apply to certain files.
+- Sub-agents should receive a focused `[KNOWLEDGE CONTEXT]` block via `briefing.py --for-subagent`, not the full KB dump.
+
+### Progressive escalation
+
+- Retrieve only what the current step needs. Full session history and semantic search are available on demand via `query-session.py` — do not inject them by default.
+- For briefings: `--for-subagent` (~200 tokens) → `--compact` (~500 tokens) → `--full` (~3 K tokens) in order of cost.
+- For searches: FTS keyword first; add `--semantic` only when keyword results are insufficient.
+
+### Propagation discipline
+
+When a skill or instruction is promoted to global scope, remove the project-local copy:
+
+| Scope change | Action |
+|---|---|
+| Skill moved to `~/.copilot/skills/` | Delete `.github/skills/<name>/` in project |
+| Instruction moved to `~/.github/instructions/` | Delete `.github/instructions/<file>` in project |
+| Instruction already at user-level | Do not create a project-level copy with identical `applyTo` |
+
+To surface stale copies, manually inspect `~/.copilot/skills/` and project `.github/skills/` directories and remove duplicates. Use `python3 ~/.copilot/tools/hooks/lint-skills.py --all` only for schema validation (frontmatter fields, deprecated flags, invalid tool names) — it does not detect duplicate or stale skill files.
 
 ## Host Scope
 

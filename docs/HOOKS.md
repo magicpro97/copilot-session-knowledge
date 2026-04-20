@@ -76,3 +76,22 @@ For project-level hooks (`.github/hooks/`) that enforce coding standards, commit
 TDD pipelines, see [docs/SKILLS.md — Hook Templates](SKILLS.md) and the `hook-creator` skill.
 Those hooks are registered via `hooks.json` / `review-policy.json` in the project repo and
 are also **Copilot CLI only**.
+
+## Load Awareness
+
+The unified hook runner (`hook_runner.py`) is **not** a significant context-load contributor: it
+runs as a single Python process per event type, outside the LLM context window, and its output
+(markers, audit log entries) does not increase prompt tokens.
+
+Context load problems come from instruction surfaces and skill duplication, not hooks:
+
+| Root cause | Effect | Remedy |
+|---|---|---|
+| Skill deployed at both `~/.copilot/skills/` and `.github/skills/` | Skill appears twice in catalog; Copilot deduplicates by name but extra copy adds noise | Remove project copy once globally deployed — see [docs/SKILLS.md](SKILLS.md#meta-skill-rollout--global-vs-project-scope) |
+| Instruction file with `applyTo: '**/*'` | File is injected into every context, including trivial ones | Narrow `applyTo` to the file patterns that actually need the instruction |
+| Same instruction deployed at both user-level and project-level | Duplicate injection on every context | Remove the project copy; keep only the user-level one |
+
+Hook rules themselves follow a **minimal-output-first** discipline: `deny()` and `info()` outputs
+are kept short; verbose details are written to `~/.copilot/markers/audit.jsonl` only, not surfaced
+as inline context. If a hook rule needs to escalate (e.g., the briefing gate hasn't fired), it
+blocks with a single concise message — it does not dump session history into the prompt.

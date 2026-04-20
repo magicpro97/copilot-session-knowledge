@@ -23,13 +23,46 @@ infrastructure. The AI has no memory across sessions, no guardrails against
 dangerous commands, no workflow phases, and picks different skills each time.
 This guide ensures every layer is in place before you write the first line of code.
 
+Equally important: **deploying too much at once is its own failure mode.**
+Over-broad instructions (`applyTo: "**/*"`) injected at every tool call, duplicate
+skills across global and project surfaces, and routing rules that drift from what
+is actually installed all compound into a bloated context that slows the AI and
+masks real errors. This guide teaches both what to install and how to keep it lean.
+
+## Staged Rollout Principles
+
+Follow these principles throughout every phase. Violating them is how projects
+end up with 100+ skills loaded simultaneously and 9 instructions firing on every
+tool call.
+
+1. **Minimal first.** Deploy only what the current phase needs. Add more only after
+   the previous layer is verified clean. Resist installing "just in case" extras.
+
+2. **Progressive escalation.** Each creator output is an input to the next. Do not
+   run conductor-creator before you have agents and workflows to route — the rules
+   it generates will be empty or wrong.
+
+3. **Verify before advancing.** Each phase has an explicit verify step. Do not move
+   on if the verify command returns errors or warnings. Fix the gap now; it compounds.
+
+4. **Load budget awareness.** Every `applyTo: "**/*"` instruction fires on every tool
+   call. Every global skill adds to the catalog the AI must scan. After setup, audit:
+   - Instruction count: aim for ≤6 always-loaded instructions.
+   - `applyTo` scope: narrow to the file types or paths that actually need the rule.
+   - Skills: remove project-local copies of any skill that exists in `~/.copilot/skills/`.
+   - Duplicates: if a skill name appears in both global and project surfaces, keep only one.
+
+5. **Single source of truth.** If a skill is deployed globally (in `~/.copilot/skills/`),
+   do not re-deploy it in `.github/skills/`. The project copy silently duplicates context
+   without adding value.
+
 ## Overview
 
 ```
 Phase 0: FOUNDATION  ->  Memory + Agents + Safety
 Phase 1: PROCESS     ->  Workflows + Orchestration
 Phase 2: ROUTING     ->  Conductor ties everything together
-Phase 3: VERIFY      ->  Confirm zero gaps
+Phase 3: VERIFY      ->  Confirm zero gaps and healthy load budget
 ```
 
 ## Phase 0: Foundation
@@ -129,13 +162,13 @@ python3 .github/skills/conductor/scripts/conductor.py --sync
 
 ## Phase 3: Verify
 
-Run these checks to confirm **zero gaps** in the setup.
+Run these checks to confirm **zero gaps** in the setup AND a healthy load budget.
 
 ```bash
-# 3.1 Sync check
+# 3.1 Sync check — routing rules match installed skills
 python3 .github/skills/conductor/scripts/conductor.py --sync
 
-# 3.2 Rule audit
+# 3.2 Rule audit — no orphan or stale references
 python3 .github/skills/conductor/scripts/conductor.py --audit
 
 # 3.3 Test suite
@@ -145,6 +178,37 @@ python3 .github/skills/conductor/scripts/test-conductor.py
 python3 .github/skills/conductor/scripts/conductor.py "implement user login" --verbose
 python3 .github/skills/conductor/scripts/conductor.py "fix crash on startup" --verbose
 ```
+
+### 3.5 Load Budget Audit
+
+After conductor passes, audit the instruction and skill surfaces to prevent
+context bloat from accumulating silently.
+
+```bash
+# Count always-loaded instructions (applyTo: **/* or no filter)
+grep -rl 'applyTo.*\*\*/\*' .github/instructions/ ~/.github/instructions/ 2>/dev/null
+
+# Find duplicate skill names across global and project
+comm -12 \
+  <(ls ~/.copilot/skills/ 2>/dev/null | sort) \
+  <(ls .github/skills/ 2>/dev/null | sort)
+# Any name printed here = duplicate. Remove the project copy if the global copy exists.
+
+# List skills that are no longer referenced in conductor routing
+# --sync reports coverage gaps; use it as the authoritative check:
+python3 .github/skills/conductor/scripts/conductor.py --sync
+# Any skill on disk not covered by a routing rule is flagged by --sync.
+# To review all rules for stale references, run --audit and inspect the output manually.
+```
+
+**Healthy targets after onboarding:**
+
+| Surface | Target |
+|---------|--------|
+| Always-loaded instructions (`applyTo: **/*`) | ≤ 6 total across global + project |
+| Duplicate skills (same name in global + project) | 0 |
+| Conductor orphans (skill on disk, not in rules) | 0 (or explicitly listed in `_meta.intentionally_unrouted`) |
+| Conductor stale refs (rule references missing skill) | 0 |
 
 ## Quick Reference
 
@@ -156,6 +220,7 @@ python3 .github/skills/conductor/scripts/conductor.py "fix crash on startup" --v
 | 1.1 | `workflow-creator` | WORKFLOW.md | File exists with phases |
 | 1.2 | `tentacle-creator` | tentacle-orchestration | SKILL.md exists |
 | 2.1 | `conductor-creator` | conductor-rules.json | `--sync` reports clean |
+| 3 | Load audit | — | ≤6 always-loaded instr., 0 duplicate skills |
 
 ## Dependency Map
 
@@ -178,12 +243,14 @@ integration point that ties the ecosystem together.
 
 | Event | Action |
 |-------|--------|
-| Added/removed a skill | `conductor.py --sync --fix` |
+| Added/removed a skill | `conductor.py --sync --fix` then re-run load audit |
 | Added a new agent | Update `agent_routing` in conductor-rules.json |
 | Changed workflow phases | Update `workflows` in conductor-rules.json |
 | New session starts | `briefing.py --auto --compact` |
 | After fixing a bug | `learn.py --mistake "Title" "Details" --tags "tags"` |
 | After completing feature | `learn.py --feature "Title" "Details" --tags "tags"` |
+| Skill installed globally | Remove project-local copy if it exists in `.github/skills/` |
+| Instruction added | Check that `applyTo` is as narrow as possible; re-run load audit |
 
 ## Platform Notes
 
@@ -200,6 +267,9 @@ integration point that ties the ecosystem together.
 | Agent uses wrong model | Model not specified | Check `.instructions.md` model rules |
 | Hook blocks valid action | Overly strict regex | Edit `.github/hooks/scripts/` |
 | Briefing returns empty | No entries recorded | Start using `learn.py` after tasks |
+| Context feels slow / bloated | Too many `applyTo: **/*` instructions | Narrow `applyTo` on each instruction file |
+| Same skill name in global + project | Old project copy not removed after global rollout | Delete `.github/skills/<name>/` when `~/.copilot/skills/<name>/` exists |
+| Conductor rules reference missing skill | Skill removed but rule not updated | `conductor.py --audit`, then remove stale rule or restore skill |
 
 <example>
 **Project:** Existing Python backend with no AI scaffolding yet
@@ -221,4 +291,9 @@ integration point that ties the ecosystem together.
 - workflow defined
 - tentacle orchestration available
 - conductor routing synced with zero gaps
+- load audit: ≤6 always-loaded instructions, 0 duplicate skill names, 0 conductor orphans
+
+**Propagation note:** If any of the above meta-skills are already installed globally
+(in `~/.copilot/skills/`), skip re-deploying them to `.github/skills/`. The project
+should extend, not duplicate, the global layer.
 </example>

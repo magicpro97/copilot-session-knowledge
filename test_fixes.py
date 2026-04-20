@@ -554,6 +554,93 @@ finally:
     _shutil.rmtree(_d11, ignore_errors=True)
 
 
+# Sp12. install_skills deploys templates/ assets from conductor-creator
+# This is the regression case: before the fix, templates/ was silently dropped.
+print("\n📦 Skill Packaging — Auxiliary Asset Dirs (Sp12 / Sp13)")
+
+_sp12_root = Path(_tf.mkdtemp())  # fake SKILLS_DIR
+_proj12 = Path(_tf.mkdtemp())     # fake project root
+
+_fake12 = _sp12_root / "conductor-creator"
+(_fake12 / "templates").mkdir(parents=True)
+(_fake12 / "references").mkdir(parents=True)
+(_fake12 / "SKILL.md").write_text("# Conductor Creator\n")
+(_fake12 / "templates" / "conductor.py").write_text("# conductor template\n")
+(_fake12 / "templates" / "test-conductor.py").write_text("# test-conductor template\n")
+(_fake12 / "references" / "guide.md").write_text("# guide\n")
+
+try:
+    _sp12_spec = _ilu.spec_from_file_location("setup_project_sp12", REPO / "setup-project.py")
+    _sp12_mod = _imp.util.module_from_spec(_sp12_spec)
+    _sp12_spec.loader.exec_module(_sp12_mod)
+
+    _sp12_mod.SKILLS_DIR = _sp12_root
+    _sp12_mod.INSTALL_ITEMS = {
+        "skills": [{"src": "conductor-creator", "label": "Conductor Creator"}],
+        "templates": [],
+    }
+    _sp12_mod.install_skills(_proj12, dry_run=False)
+
+    _skill12_base = _proj12 / ".github" / "skills" / "conductor-creator"
+    test("Sp12: conductor.py deployed under templates/",
+         (_skill12_base / "templates" / "conductor.py").exists(),
+         f"Missing {_skill12_base / 'templates' / 'conductor.py'}")
+    test("Sp12: test-conductor.py deployed under templates/",
+         (_skill12_base / "templates" / "test-conductor.py").exists(),
+         f"Missing {_skill12_base / 'templates' / 'test-conductor.py'}")
+    test("Sp12: references/guide.md still deployed (regression: references/ preserved)",
+         (_skill12_base / "references" / "guide.md").exists(),
+         f"Missing {_skill12_base / 'references' / 'guide.md'}")
+finally:
+    _shutil.rmtree(_sp12_root, ignore_errors=True)
+    _shutil.rmtree(_proj12, ignore_errors=True)
+
+# Sp13. Generic: any skill with a custom subdir has its files deployed
+_sp13_root = Path(_tf.mkdtemp())
+_proj13 = Path(_tf.mkdtemp())
+
+_fake13 = _sp13_root / "multi-asset-skill"
+(_fake13 / "templates").mkdir(parents=True)
+(_fake13 / "evals").mkdir(parents=True)
+(_fake13 / "references").mkdir(parents=True)
+(_fake13 / "SKILL.md").write_text("# Multi Asset Skill\n")
+(_fake13 / "templates" / "tmpl.py").write_text("# tmpl\n")
+(_fake13 / "evals" / "eval.json").write_text("{}\n")
+(_fake13 / "references" / "ref.md").write_text("# ref\n")
+
+try:
+    _sp13_spec = _ilu.spec_from_file_location("setup_project_sp13", REPO / "setup-project.py")
+    _sp13_mod = _imp.util.module_from_spec(_sp13_spec)
+    _sp13_spec.loader.exec_module(_sp13_mod)
+
+    _sp13_mod.SKILLS_DIR = _sp13_root
+    _sp13_mod.INSTALL_ITEMS = {
+        "skills": [{"src": "multi-asset-skill", "label": "Multi Asset Skill"}],
+        "templates": [],
+    }
+    _sp13_mod.install_skills(_proj13, dry_run=False)
+
+    _skill13_base = _proj13 / ".github" / "skills" / "multi-asset-skill"
+    test("Sp13: templates/tmpl.py deployed for skill with multiple asset subdirs",
+         (_skill13_base / "templates" / "tmpl.py").exists())
+    test("Sp13: evals/eval.json deployed for skill with multiple asset subdirs",
+         (_skill13_base / "evals" / "eval.json").exists())
+    test("Sp13: references/ref.md deployed for skill with multiple asset subdirs",
+         (_skill13_base / "references" / "ref.md").exists())
+finally:
+    _shutil.rmtree(_sp13_root, ignore_errors=True)
+    _shutil.rmtree(_proj13, ignore_errors=True)
+
+# Sp14. Live repo: conductor-creator templates/ files exist and are real files
+_cc_templates = REPO / "skills" / "conductor-creator" / "templates"
+test("Sp14: conductor-creator/templates/conductor.py exists in repo",
+     (_cc_templates / "conductor.py").exists(),
+     f"Expected at {_cc_templates / 'conductor.py'}")
+test("Sp14: conductor-creator/templates/test-conductor.py exists in repo",
+     (_cc_templates / "test-conductor.py").exists(),
+     f"Expected at {_cc_templates / 'test-conductor.py'}")
+
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
 print(f"\n{'='*50}")

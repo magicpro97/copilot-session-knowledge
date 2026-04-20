@@ -22,6 +22,20 @@ All tools are Python scripts in `~/.copilot/tools/` (cross-platform: `~` = home 
 
 **Skip** when the task is trivial (renaming a variable, formatting code, etc.)
 
+## Context Budget
+
+Always start with the lightest fetch, then escalate only when a hit is relevant:
+
+| Task complexity | Recommended command | Approx tokens |
+|----------------|---------------------|---------------|
+| Trivial / session start | `briefing.py --wakeup` | ~170 |
+| Moderate (bug fix, small feature) | `briefing.py --auto --compact` | ~500 |
+| Complex / unfamiliar area | `briefing.py "task" --full` | ~3K |
+| Drill into one entry | `query-session.py --detail <id>` | varies |
+
+**Do not load `--full` when `--compact` shows no relevant hits.** A large briefing that
+surfaces nothing useful costs tokens without benefit.
+
 ## Core Commands
 
 ### 1. Briefing (recommended first step)
@@ -158,6 +172,52 @@ python3 ~/.copilot/tools/auto-update-tools.py --doctor      # Health check
 4. learn.py --pattern "Docker DNS Fix" "Use bridge network with explicit DNS" \
      --fact "compose DNS uses service names" --wing infrastructure --room docker
 ```
+
+<example>
+User: "I need to add retry logic to the payment service. Where should I start?"
+
+1. Run briefing before touching anything:
+   ```
+   python3 ~/.copilot/tools/briefing.py "add retry logic payment service" --auto --compact
+   ```
+   → Output surfaces a past mistake: "Exponential backoff not applied to idempotent endpoints"
+   and a pattern: "Use tenacity library with max_attempts=3, wait=wait_exponential(min=1, max=10)"
+
+2. Drill into the pattern entry shown in results:
+   ```
+   python3 ~/.copilot/tools/query-session.py --detail 1842
+   ```
+   → Full entry: exact tenacity config that worked in the order service
+
+3. Implement retry logic using the pattern, avoiding the known mistake.
+
+4. Record what was learned:
+   ```
+   python3 ~/.copilot/tools/learn.py --pattern "Payment retry with tenacity" \
+     "Use tenacity with max_attempts=3, wait_exponential(min=1, max=10) on POST /charge" \
+     --fact "idempotency key required on retry" --wing backend --room payments
+   ```
+</example>
+
+<example>
+User: "Getting 'SSL: CERTIFICATE_VERIFY_FAILED' on CI — has this come up before?"
+
+1. Search for the error message:
+   ```
+   python3 ~/.copilot/tools/query-session.py "SSL CERTIFICATE_VERIFY_FAILED"
+   ```
+   → Finds a past mistake entry explaining that the corporate proxy strips certs and the fix
+   was to set `REQUESTS_CA_BUNDLE` to the internal CA bundle path.
+
+2. Apply the fix directly from the KB entry — no need to debug from scratch.
+
+3. If it was a new variant, record it:
+   ```
+   python3 ~/.copilot/tools/learn.py --mistake "SSL verify failed behind proxy" \
+     "Corporate proxy strips SSL — set REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-bundle.crt" \
+     --tags "ssl,ci,proxy" --wing devops --room ci
+   ```
+</example>
 
 ## Semantic Search (if embeddings configured)
 

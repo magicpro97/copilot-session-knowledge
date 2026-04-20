@@ -240,6 +240,8 @@ Smart pipeline analyzes `git diff` to run only what changed. Post-merge hook aut
 
 13 built-in skills (session-knowledge-creator, agent-creator, hook-creator, tentacle-creator, tentacle-orchestration, workflow-creator, find-skills, agent-instructions-auditor, forge-ecosystem, code-reviewer, task-step-generator, conductor-creator, project-onboarding) plus 10 hook templates for quality enforcement.
 
+`setup-project.py` is the canonical deployment surface: it reads the skill list from `INSTALL_ITEMS` and deploys all 13 skills to `.github/skills/<skill-name>/SKILL.md` in the **target project** (project scope only). To make skills available globally across all projects, copy them to `~/.copilot/skills/` manually — `install.py --deploy-skill` deploys to the current project only and does not support a global target; `setup-project.py` does not perform global installation either. When a skill is available globally, **do not redeploy it at project scope** — Copilot deduplicates by skill name but having the same name at both scopes adds catalog noise and increases load.
+
 Unified hook runner architecture — 1 Python process per event with fail-open, HMAC-signed markers, audit logging, and tamper protection. Hook deployment is **Copilot CLI only**; Claude Code does not support the `hook_runner.py` format.
 
 ```bash
@@ -262,6 +264,14 @@ python3 ~/.copilot/tools/profile-import.py --file myteam.json
 **Session-end hooks** (`hooks/session-end.py`) are **reminder-only**: they never auto-save checkpoints.
 Set `COPILOT_CHECKPOINT_REMIND=1` to log a reminder when a session ends without saved checkpoints.
 To save a checkpoint yourself, run `python3 ~/.copilot/tools/checkpoint-save.py`.
+
+### Context Load Management
+
+Excessive context load in Copilot sessions comes primarily from **duplicate skills** and **overly broad instruction surfaces** — not from the unified hook runner (which is a single process per event and is efficient). To keep load manageable:
+
+- **Minimal-context-first**: start with `briefing.py --compact` (~500 tokens) before escalating to `--full`. Instruction files with `applyTo: '**/*'` inject into every context — scope them narrowly (e.g., `**/*.ts`) when they apply only to specific file types.
+- **Progressive escalation**: retrieve only what the current step needs. Full session history and semantic search are available but should be requested on demand, not injected by default.
+- **Propagation discipline**: when a skill or instruction is promoted to global scope (`~/.copilot/skills/`, `~/.github/instructions/`), remove the project-local copy to prevent duplication. Audit by manually comparing `~/.copilot/skills/` against `.github/skills/` in each project and removing any skill that exists at both levels. (`hooks/lint-skills.py --all` validates schema — it does not detect cross-scope duplicates.)
 
 📖 **Skills reference:** [docs/SKILLS.md](docs/SKILLS.md) · **Hooks reference:** [docs/HOOKS.md](docs/HOOKS.md)
 
