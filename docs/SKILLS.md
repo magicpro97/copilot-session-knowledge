@@ -26,6 +26,8 @@ This repo contains both **Skills** (SKILL.md) and **Agent templates** (.agent.md
 | `tentacle-orchestration` | Map tentacles to phased workflows |
 | `hook-creator` | Generate quality enforcement hooks (preToolUse/postToolUse) |
 | `workflow-creator` | Create phased development workflows with quality gates |
+| `conductor-creator` | Generate a project-specific Conductor (task router) mapping tasks to workflows and skills |
+| `project-onboarding` | Complete guide to set up the full AI-assisted development ecosystem for any project |
 | `find-skills` | Discover and install agent skills from the registry |
 | `agent-instructions-auditor` | Audit and improve agent instruction files |
 | `forge-ecosystem` | Scaffold and manage app/game projects via forge CLI tools |

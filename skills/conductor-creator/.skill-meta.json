@@ -1,0 +1,11 @@
+{
+  "name": "conductor-creator",
+  "description": "Generate a project-specific Conductor (task router) by scanning skills, agents, and workflows. Use when setting up a new project or when the user mentions create conductor, setup task routing, or generate routing rules. Run AFTER agent-creator and workflow-creator.",
+  "whenToUse": "Generate a project-specific Conductor that routes every task to the right workflow, skills, and agents — deterministically.",
+  "categories": [
+    "meta",
+    "orchestration",
+    "setup"
+  ],
+  "installedAt": "2026-04-16T01:50:00.000Z"
+}

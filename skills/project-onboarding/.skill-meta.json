@@ -1,0 +1,14 @@
+{
+  "name": "project-onboarding",
+  "description": "Complete guide to set up the full AI-assisted development ecosystem for any project. Use when joining a new project, bootstrapping AI tools from scratch, onboarding a codebase. Covers the full creator chain: session-knowledge, agents, hooks, workflows, orchestration, and conductor in dependency order.",
+  "triggers": [
+    "onboard project",
+    "setup AI tools",
+    "bootstrap project",
+    "initialize copilot",
+    "new project setup",
+    "thiết lập dự án",
+    "onboard dự án"
+  ],
+  "whenToUse": "Set up the complete AI-assisted development ecosystem for any project. Each phase builds on the previous one. **Skipping a phase leaves a gap"
+}

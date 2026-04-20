@@ -238,7 +238,7 @@ Smart pipeline analyzes `git diff` to run only what changed. Post-merge hook aut
 
 ## Skills & Hooks
 
-11 built-in skills (session-knowledge-creator, agent-creator, hook-creator, tentacle-creator, tentacle-orchestration, workflow-creator, find-skills, agent-instructions-auditor, forge-ecosystem, code-reviewer, task-step-generator) plus 10 hook templates for quality enforcement.
+13 built-in skills (session-knowledge-creator, agent-creator, hook-creator, tentacle-creator, tentacle-orchestration, workflow-creator, find-skills, agent-instructions-auditor, forge-ecosystem, code-reviewer, task-step-generator, conductor-creator, project-onboarding) plus 10 hook templates for quality enforcement.
 
 Unified hook runner architecture — 1 Python process per event with fail-open, HMAC-signed markers, audit logging, and tamper protection. Hook deployment is **Copilot CLI only**; Claude Code does not support the `hook_runner.py` format.
 
@@ -257,8 +257,7 @@ python3 ~/.copilot/tools/profile-export.py --profile myteam --output myteam.json
 python3 ~/.copilot/tools/profile-import.py --file myteam.json
 ```
 
-**Session-start hooks** (`hooks/auto-briefing.py`) automatically refresh the codebase map
-(`codebase-map.py`) at the start of each session — no manual step required.
+**Session-start hooks** run through the unified `hook_runner.py` architecture (1 Python process per event, fail-open, HMAC-signed markers, audit logging) and automatically refresh the codebase map (`codebase-map.py`) at the start of each session — no manual step required.
 
 **Session-end hooks** (`hooks/session-end.py`) are **reminder-only**: they never auto-save checkpoints.
 Set `COPILOT_CHECKPOINT_REMIND=1` to log a reminder when a session ends without saved checkpoints.

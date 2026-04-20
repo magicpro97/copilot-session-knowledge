@@ -1,0 +1,224 @@
+---
+name: project-onboarding
+description: Complete guide to set up the full AI-assisted development ecosystem for any project. Use when joining a new project, bootstrapping AI tools, initializing Copilot, or onboarding a codebase so no creator, hook, workflow, or routing layer is missed.
+---
+
+# Project Onboarding
+
+Set up the complete AI-assisted development ecosystem for any project.
+Each phase builds on the previous one. **Skipping a phase leaves a gap
+that compounds downstream.** Follow the phases in order.
+
+## When to Use
+
+- Joining a new codebase and you want the full Copilot/agent setup done in the right order
+- User mentions "setup AI tools", "bootstrap project", "initialize copilot", or "onboard project"
+- You want to ensure memory, hooks, workflows, tentacles, and conductor are all installed
+- You need one canonical checklist instead of running creators piecemeal
+
+## Why this matters
+
+Without a structured onboarding, teams cherry-pick tools and miss critical
+infrastructure. The AI has no memory across sessions, no guardrails against
+dangerous commands, no workflow phases, and picks different skills each time.
+This guide ensures every layer is in place before you write the first line of code.
+
+## Overview
+
+```
+Phase 0: FOUNDATION  ->  Memory + Agents + Safety
+Phase 1: PROCESS     ->  Workflows + Orchestration
+Phase 2: ROUTING     ->  Conductor ties everything together
+Phase 3: VERIFY      ->  Confirm zero gaps
+```
+
+## Phase 0: Foundation
+
+Run these three creators first. Everything else depends on agents, memory,
+and guardrails being in place.
+
+### 0.1 Session Knowledge
+
+**Invoke:** `session-knowledge-creator` skill
+
+**Output:** `briefing.py`, `learn.py`, `.instructions.md`
+
+**Why it matters:** Without session knowledge, every session starts from zero.
+The AI repeats mistakes, forgets past decisions, and has no institutional memory.
+Briefing gives pre-task context; learn records post-task insights.
+
+**Verify:** `python3 ~/.copilot/tools/briefing.py --wakeup` returns output.
+
+### 0.2 Agent Creator
+
+**Invoke:** `agent-creator` skill
+
+**Output:** `.github/agents/*.agent.md`
+
+**Why it matters:** Generic agents produce generic output. Specialized agents
+encode your architecture, test framework, and domain knowledge.
+
+**Verify:** `ls .github/agents/` shows 5-8 agent files.
+
+### 0.3 Hook Creator
+
+**Invoke:** `hook-creator` skill
+
+**Output:** `.github/hooks/hooks.json` + `scripts/`
+
+**Why it matters:** Hooks are the **strongest enforcement** mechanism.
+They physically intercept and block violations before they happen. Unlike
+skills (AI can ignore) or instructions (AI can rationalize skipping), hooks
+run on every tool call. They prevent commits to protected branches, block
+credential leaks, and guard auto-generated files.
+
+**Verify:** `cat .github/hooks/hooks.json` lists preToolUse/postToolUse hooks.
+
+## Phase 1: Process
+
+With agents and safety in place, define **how work gets done.**
+
+### 1.1 Workflow Creator
+
+**Invoke:** `workflow-creator` skill
+
+**Output:** `WORKFLOW.md` or a `strict-tdd-workflow` skill
+
+**Why it matters:** Without phases, the AI jumps straight to coding before
+understanding requirements, skips testing, and produces unreviewed output.
+Workflows add blocking quality gates between phases.
+
+**Verify:** A `WORKFLOW.md` or `.github/skills/*workflow*/SKILL.md` exists.
+
+### 1.2 Tentacle Creator
+
+**Invoke:** `tentacle-creator` skill
+
+**Output:** `.github/skills/tentacle-orchestration/SKILL.md`
+
+**Why it matters:** Tasks spanning multiple modules run serially without
+orchestration. Tentacle breaks them into parallel work units with clear file
+ownership so agents do not overwrite each other.
+
+**Verify:** `.github/skills/tentacle-orchestration/SKILL.md` exists.
+
+## Phase 2: Routing
+
+The conductor connects **everything from Phase 0 and Phase 1** into a single
+deterministic router.
+
+### 2.1 Conductor Creator
+
+**Invoke:** `conductor-creator` skill
+
+**Output:**
+- `.github/skills/conductor/scripts/conductor.py` (engine)
+- `.github/skills/conductor/scripts/conductor-rules.json` (rules)
+- `.github/instructions/conductor-routing.instructions.md` (auto-load)
+
+**Why it matters:** Without a conductor, the AI re-derives routing every time,
+picking different skills and workflows for the same task across sessions.
+The conductor makes this deterministic: same input = same plan.
+
+**Verify:**
+
+```bash
+python3 .github/skills/conductor/scripts/conductor.py --sync
+# Expect: 0 new unrouted, 0 stale, 100% coverage
+```
+
+## Phase 3: Verify
+
+Run these checks to confirm **zero gaps** in the setup.
+
+```bash
+# 3.1 Sync check
+python3 .github/skills/conductor/scripts/conductor.py --sync
+
+# 3.2 Rule audit
+python3 .github/skills/conductor/scripts/conductor.py --audit
+
+# 3.3 Test suite
+python3 .github/skills/conductor/scripts/test-conductor.py
+
+# 3.4 Smoke test
+python3 .github/skills/conductor/scripts/conductor.py "implement user login" --verbose
+python3 .github/skills/conductor/scripts/conductor.py "fix crash on startup" --verbose
+```
+
+## Quick Reference
+
+| Phase | Creator | Output | Verify |
+|-------|---------|--------|--------|
+| 0.1 | `session-knowledge-creator` | briefing.py, learn.py | `briefing.py --wakeup` |
+| 0.2 | `agent-creator` | .github/agents/*.agent.md | `ls .github/agents/` |
+| 0.3 | `hook-creator` | .github/hooks/ | `cat hooks.json` |
+| 1.1 | `workflow-creator` | WORKFLOW.md | File exists with phases |
+| 1.2 | `tentacle-creator` | tentacle-orchestration | SKILL.md exists |
+| 2.1 | `conductor-creator` | conductor-rules.json | `--sync` reports clean |
+
+## Dependency Map
+
+```
+session-knowledge-creator ---+
+                             |
+agent-creator ---------------+
+                             |
+hook-creator ----------------+---> conductor-creator ---> READY
+                             |
+workflow-creator ------------+
+                             |
+tentacle-creator ------------+
+```
+
+All five creators feed into conductor-creator. The conductor is the
+integration point that ties the ecosystem together.
+
+## Ongoing Maintenance
+
+| Event | Action |
+|-------|--------|
+| Added/removed a skill | `conductor.py --sync --fix` |
+| Added a new agent | Update `agent_routing` in conductor-rules.json |
+| Changed workflow phases | Update `workflows` in conductor-rules.json |
+| New session starts | `briefing.py --auto --compact` |
+| After fixing a bug | `learn.py --mistake "Title" "Details" --tags "tags"` |
+| After completing feature | `learn.py --feature "Title" "Details" --tags "tags"` |
+
+## Platform Notes
+
+- **macOS/Linux:** Use `python3`. Paths use `/`.
+- **Windows:** Use `python` instead. All scripts are cross-platform Python.
+- **Copilot CLI:** Skills auto-discover via `.skill-meta.json`.
+  Instructions auto-inject via `.instructions.md` with `applyTo` frontmatter.
+
+## Troubleshooting
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `--sync` shows orphans | New skill added after setup | `--sync --fix` |
+| Agent uses wrong model | Model not specified | Check `.instructions.md` model rules |
+| Hook blocks valid action | Overly strict regex | Edit `.github/hooks/scripts/` |
+| Briefing returns empty | No entries recorded | Start using `learn.py` after tasks |
+
+<example>
+**Project:** Existing Python backend with no AI scaffolding yet
+
+**User asks:** "Onboard this project so future Copilot sessions have memory, hooks, workflows, and routing"
+
+**Recommended order:**
+1. `session-knowledge-creator`
+2. `agent-creator`
+3. `hook-creator`
+4. `workflow-creator`
+5. `tentacle-creator`
+6. `conductor-creator`
+
+**Expected result:**
+- session memory tools installed
+- project agents created
+- hooks deployed
+- workflow defined
+- tentacle orchestration available
+- conductor routing synced with zero gaps
+</example>
