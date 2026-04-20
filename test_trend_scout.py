@@ -1,0 +1,656 @@
+#!/usr/bin/env python3
+"""
+test_trend_scout.py — Regression tests for trend-scout.py.
+
+Tests (no network calls — all GitHub API interactions are mocked):
+  - Config loading: defaults, JSON override, deep merge
+  - repo_marker: deterministic, collision-resistant
+  - extract_markers_from_body: parsing correctness
+  - score_repo: keyword/topic/star/recency scoring
+  - shortlist_repos: filtering, dedup, max cap
+  - _derive_problem / _derive_strengths / _derive_weaknesses / _derive_learnings
+  - render_issue_body: marker included, required sections present
+  - GitHubClient: rate-limit awareness, error handling (mocked)
+  - get_existing_markers: pagination and state handling (mocked)
+  - CLI: --dry-run, --search-only, --repo, --limit (subprocess)
+  - JSON config file roundtrip
+
+Run: python3 test_trend_scout.py
+"""
+
+import io
+import json
+import os
+import subprocess
+import sys
+import time
+import unittest.mock as mock
+from pathlib import Path
+from importlib import import_module
+
+# Fix Windows console encoding (needed because this file prints emoji)
+if os.name == "nt":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+# Allow import of trend-scout (hyphenated module name requires importlib)
+REPO = Path(__file__).parent
+sys.path.insert(0, str(REPO))
+
+PASS = 0
+FAIL = 0
+SCOUT = REPO / "trend-scout.py"
+CONFIG_FILE = REPO / "trend-scout-config.json"
+
+# Scratch dir — project-local, no /tmp
+SCRATCH = REPO / ".test-scratch" / "trend-scout-tests"
+SCRATCH.mkdir(parents=True, exist_ok=True)
+
+
+def test(name: str, condition: bool, detail: str = "") -> None:
+    global PASS, FAIL
+    if condition:
+        PASS += 1
+        print(f"  ✅ {name}")
+    else:
+        FAIL += 1
+        print(f"  ❌ {name}" + (f" — {detail}" if detail else ""))
+
+
+def run_cli(*args: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
+    env = {**os.environ, **(env_extra or {})}
+    return subprocess.run(
+        [sys.executable, str(SCOUT), *args],
+        capture_output=True, text=True, env=env,
+    )
+
+
+# Import module under test
+ts = import_module("trend-scout")
+
+
+# ─── Fixtures ─────────────────────────────────────────────────────────────────
+
+REPO_FIXTURE: dict = {
+    "full_name": "someuser/ai-knowledge-base",
+    "name": "ai-knowledge-base",
+    "description": "Index your AI coding sessions into a searchable sqlite fts5 knowledge base",
+    "html_url": "https://github.com/someuser/ai-knowledge-base",
+    "created_at": "2023-01-15T10:00:00Z",
+    "pushed_at": "2024-11-01T12:00:00Z",
+    "stargazers_count": 250,
+    "forks_count": 30,
+    "watchers_count": 250,
+    "open_issues_count": 5,
+    "language": "Python",
+    "topics": ["ai-tools", "knowledge-base", "sqlite", "fts5", "python"],
+    "fork": False,
+    "archived": False,
+    "license": {"spdx_id": "MIT"},
+}
+
+REPO_ARCHIVED: dict = {**REPO_FIXTURE, "full_name": "x/archived", "archived": True, "fork": False}
+REPO_FORK: dict = {**REPO_FIXTURE, "full_name": "x/forked", "fork": True, "archived": False}
+REPO_INACTIVE: dict = {
+    **REPO_FIXTURE,
+    "full_name": "x/inactive",
+    "pushed_at": "2020-01-01T00:00:00Z",
+    "stargazers_count": 3,
+    "fork": False,
+    "archived": False,
+}
+
+
+# ─── 1. Config ────────────────────────────────────────────────────────────────
+
+print("\n📋 Config Loading")
+
+# Default config has all required keys
+cfg = ts.load_config(None)
+test("default target_repo set", cfg.get("target_repo") == "magicpro97/copilot-session-knowledge")
+test("default issue_label set", cfg.get("issue_label") == "trend-scout")
+test("default search.seed_keywords non-empty", len(cfg["search"]["seed_keywords"]) > 0)
+test("default shortlist.max_candidates > 0", cfg["shortlist"]["max_candidates"] > 0)
+test("default dedup.marker_prefix set", cfg["dedup"]["marker_prefix"])
+
+# JSON override
+override_cfg_path = SCRATCH / "override_config.json"
+override_cfg_path.write_text(json.dumps({
+    "target_repo": "myorg/myrepo",
+    "shortlist": {"max_candidates": 99},
+}))
+cfg2 = ts.load_config(override_cfg_path)
+test("override: target_repo changed", cfg2["target_repo"] == "myorg/myrepo")
+test("override: shortlist.max_candidates overridden", cfg2["shortlist"]["max_candidates"] == 99)
+test("override: nested search still has defaults", len(cfg2["search"]["seed_keywords"]) > 0)
+
+# Malformed JSON falls back to defaults gracefully
+bad_cfg_path = SCRATCH / "bad_config.json"
+bad_cfg_path.write_text("{not valid json}")
+cfg3 = ts.load_config(bad_cfg_path)
+test("malformed config falls back to defaults", cfg3["target_repo"] == "magicpro97/copilot-session-knowledge")
+
+# Config file on disk is valid JSON
+test("trend-scout-config.json exists", CONFIG_FILE.exists())
+if CONFIG_FILE.exists():
+    try:
+        disk_cfg = json.loads(CONFIG_FILE.read_text())
+        test("trend-scout-config.json is valid JSON", True)
+        test("disk config has target_repo", "target_repo" in disk_cfg)
+    except Exception as e:
+        test("trend-scout-config.json is valid JSON", False, str(e))
+
+
+# ─── 2. Markers ───────────────────────────────────────────────────────────────
+
+print("\n🔖 Deduplication Markers")
+
+m1 = ts.repo_marker("owner/repo")
+m2 = ts.repo_marker("owner/repo")
+m3 = ts.repo_marker("Owner/Repo")  # case-insensitive
+m4 = ts.repo_marker("other/repo")
+
+test("marker is deterministic", m1 == m2)
+test("marker is case-insensitive (full_name)", m1 == m3)
+test("different repos produce different markers", m1 != m4)
+test("marker contains HTML comment syntax", m1.startswith("<!--") and m1.endswith("-->"))
+test("marker contains expected prefix", "trend-scout:repo:" in m1)
+test("marker hash is 16 hex chars", bool(
+    __import__("re").search(r"trend-scout:repo:[a-f0-9]{16}", m1)
+))
+
+# extract_markers_from_body
+body_with_markers = (
+    "Some text\n"
+    "<!-- trend-scout:repo:abcdef1234567890 -->\n"
+    "More text\n"
+    "<!-- trend-scout:repo:0000111122223333 -->\n"
+)
+prefix = "trend-scout:repo:"
+found = ts.extract_markers_from_body(body_with_markers, prefix)
+test("extract finds 2 markers", len(found) == 2)
+test("extract finds correct marker 1", "<!-- trend-scout:repo:abcdef1234567890 -->" in found)
+test("extract finds correct marker 2", "<!-- trend-scout:repo:0000111122223333 -->" in found)
+
+empty_found = ts.extract_markers_from_body("no markers here", prefix)
+test("extract returns empty set on no markers", len(empty_found) == 0)
+
+# Marker roundtrip: repo_marker then extract
+rt_marker = ts.repo_marker("roundtrip/test-repo", prefix)
+rt_found = ts.extract_markers_from_body(f"body text\n{rt_marker}\nmore", prefix)
+test("marker roundtrip: generated marker is extractable", rt_marker in rt_found)
+
+
+# ─── 3. Scoring ───────────────────────────────────────────────────────────────
+
+print("\n📊 Scoring / Shortlisting")
+
+default_cfg = ts.load_config(None)
+
+# High-relevance fixture should score higher than unrelated repo
+unrelated: dict = {
+    "full_name": "someone/unrelated-project",
+    "name": "unrelated-project",
+    "description": "A web framework for building APIs",
+    "topics": ["web", "api", "rest"],
+    "stargazers_count": 50,
+    "forks_count": 5,
+    "pushed_at": "2024-10-01T00:00:00Z",
+    "fork": False,
+    "archived": False,
+    "language": "Go",
+}
+
+score_good = ts.score_repo(REPO_FIXTURE, default_cfg)
+score_bad = ts.score_repo(unrelated, default_cfg)
+test("relevant repo scores higher than unrelated", score_good > score_bad,
+     f"good={score_good}, bad={score_bad}")
+test("score is float", isinstance(score_good, float))
+test("score is non-negative", score_good >= 0)
+
+# Shortlisting
+candidates = [REPO_FIXTURE, unrelated, REPO_FORK, REPO_ARCHIVED, REPO_INACTIVE]
+sl_cfg = {**default_cfg, "shortlist": {**default_cfg["shortlist"], "max_candidates": 3, "min_score": 0.0, "exclude_forks": True}}
+shortlisted = ts.shortlist_repos(candidates, sl_cfg)
+test("shortlist caps at max_candidates", len(shortlisted) <= 3)
+test("shortlist excludes forks (exclude_forks=True)", all(not r.get("fork") for r in shortlisted))
+test("shortlist deduplicates by full_name", len({r["full_name"] for r in shortlisted}) == len(shortlisted))
+test("shortlist sorted descending by score", (
+    lambda sl: all(
+        ts.score_repo(sl[i], sl_cfg) >= ts.score_repo(sl[i+1], sl_cfg)
+        for i in range(len(sl)-1)
+    )
+)(shortlisted))
+
+# min_score filter
+high_min_cfg = {**default_cfg, "shortlist": {**default_cfg["shortlist"], "min_score": 9999.0}}
+shortlisted_none = ts.shortlist_repos(candidates, high_min_cfg)
+test("min_score=9999 yields empty shortlist", len(shortlisted_none) == 0)
+
+
+# ─── 4. Heuristic Derivation ──────────────────────────────────────────────────
+
+print("\n🧠 Heuristic Derivation")
+
+# _derive_problem
+problem_with_desc = ts._derive_problem(REPO_FIXTURE, "readme text")
+test("_derive_problem uses description when available", problem_with_desc == REPO_FIXTURE["description"])
+
+no_desc_repo: dict = {**REPO_FIXTURE, "description": ""}
+problem_from_readme = ts._derive_problem(no_desc_repo, "This is a long enough readme line to be useful here.")
+test("_derive_problem falls back to readme when no description",
+     "readme" in problem_from_readme.lower())
+
+problem_fallback = ts._derive_problem(no_desc_repo, "")
+test("_derive_problem returns fallback when no desc or readme", "(No description" in problem_fallback)
+
+# _derive_strengths
+strengths = ts._derive_strengths(REPO_FIXTURE)
+test("_derive_strengths returns non-empty list", len(strengths) > 0)
+test("_derive_strengths mentions stars", any("⭐" in s or "star" in s.lower() for s in strengths))
+
+low_star_repo: dict = {**REPO_FIXTURE, "stargazers_count": 3, "forks_count": 2, "topics": []}
+low_strengths = ts._derive_strengths(low_star_repo)
+test("_derive_strengths handles low-star repo without crashing", isinstance(low_strengths, list))
+
+# _derive_weaknesses
+risks = ts._derive_weaknesses(REPO_ARCHIVED)
+test("_derive_weaknesses flags archived repos", any("archive" in r.lower() for r in risks))
+
+fork_risks = ts._derive_weaknesses(REPO_FORK)
+test("_derive_weaknesses flags forks", any("fork" in r.lower() for r in fork_risks))
+
+inactive_risks = ts._derive_weaknesses(REPO_INACTIVE)
+test("_derive_weaknesses flags inactive repos", any("inactive" in r.lower() or "push" in r.lower() for r in inactive_risks))
+
+# _derive_learnings
+our_topics = ["ai-tools", "copilot", "fts5", "knowledge-base", "python", "sqlite"]
+learnings = ts._derive_learnings(REPO_FIXTURE, our_topics)
+test("_derive_learnings returns non-empty list", len(learnings) > 0)
+
+novel_topic_repo: dict = {**REPO_FIXTURE, "topics": ["novel-topic-xyz", "ai-tools"]}
+novel_learnings = ts._derive_learnings(novel_topic_repo, our_topics)
+test("_derive_learnings surfaces novel topics", any("novel-topic-xyz" in l for l in novel_learnings))
+
+
+# ─── 5. Render Issue Body ─────────────────────────────────────────────────────
+
+print("\n📝 Issue Body Rendering")
+
+marker = ts.repo_marker("someuser/ai-knowledge-base")
+body = ts.render_issue_body(REPO_FIXTURE, "Sample README content for testing", marker, our_topics)
+
+test("body contains marker", marker in body)
+test("body contains repo full_name", "someuser/ai-knowledge-base" in body)
+test("body contains 'What problem it solves' section", "What problem it solves" in body)
+test("body contains 'Timeline' section", "Timeline" in body)
+test("body contains 'Strengths' section", "Strengths" in body)
+test("body contains 'Weaknesses' section", "Weaknesses" in body)
+test("body contains 'What this repo can learn' section", "What this repo can learn" in body)
+test("body contains HTML link to repo", "https://github.com/someuser/ai-knowledge-base" in body)
+test("body contains 'Scouted on' date", "Scouted on" in body)
+test("body is a string", isinstance(body, str))
+test("body is non-trivial length (>500 chars)", len(body) > 500)
+
+# README excerpt appears in details block
+body_with_readme = ts.render_issue_body(REPO_FIXTURE, "x" * 2000, marker, our_topics)
+test("long readme is truncated in body", "truncated" in body_with_readme)
+
+# Marker uniqueness across two different repos
+marker2 = ts.repo_marker("otheruser/different-repo")
+body2 = ts.render_issue_body({**REPO_FIXTURE, "full_name": "otheruser/different-repo",
+                               "html_url": "https://github.com/otheruser/different-repo"},
+                              "", marker2, our_topics)
+test("different repos produce different markers in body", marker not in body2)
+
+
+# ─── 6. GitHubClient (mocked) ─────────────────────────────────────────────────
+
+print("\n🌐 GitHubClient (mocked)")
+
+# Build a minimal mock response
+def make_mock_response(data: dict | list, status: int = 200, headers: dict | None = None) -> mock.MagicMock:
+    resp = mock.MagicMock()
+    resp.read.return_value = json.dumps(data).encode()
+    resp.status = status
+    h = {"X-RateLimit-Remaining": "50", "X-RateLimit-Reset": str(int(time.time()) + 60)}
+    if headers:
+        h.update(headers)
+    resp.headers = h
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = mock.MagicMock(return_value=False)
+    return resp
+
+# GET success
+with mock.patch("urllib.request.urlopen") as mock_open:
+    mock_open.return_value = make_mock_response({"items": [REPO_FIXTURE]})
+    client = ts.GitHubClient(token="ghp_test")
+    result = client.get(f"{ts.GITHUB_API}/search/repositories", {"q": "test"})
+    test("client.get returns parsed JSON", isinstance(result, dict))
+    test("client.get returns items from search", "items" in result)
+
+# search_repos
+with mock.patch("urllib.request.urlopen") as mock_open:
+    mock_open.return_value = make_mock_response({"items": [REPO_FIXTURE, REPO_INACTIVE]})
+    client = ts.GitHubClient(token="ghp_test")
+    repos = client.search_repos("ai knowledge base sqlite", min_stars=5, max_results=10)
+    test("search_repos returns list", isinstance(repos, list))
+    test("search_repos returns repo items", len(repos) == 2)
+
+# 404 returns None gracefully
+import urllib.error as _ue
+with mock.patch("urllib.request.urlopen") as mock_open:
+    err = _ue.HTTPError(url="https://api.github.com/x", code=404, msg="Not Found",
+                        hdrs=mock.MagicMock(get=lambda k, d=None: d), fp=None)
+    mock_open.side_effect = err
+    client = ts.GitHubClient()
+    result = client.get("https://api.github.com/repos/x/y/readme")
+    test("HTTP 404 returns None gracefully", result is None)
+
+# Rate limit tracking
+with mock.patch("urllib.request.urlopen") as mock_open:
+    reset_ts = int(time.time()) + 5
+    mock_open.return_value = make_mock_response(
+        {"items": []},
+        headers={"X-RateLimit-Remaining": "1", "X-RateLimit-Reset": str(reset_ts)},
+    )
+    client = ts.GitHubClient(token="ghp_test")
+    client.get(f"{ts.GITHUB_API}/search/repositories")
+    test("rate limit remaining tracked", client._remaining == 1)
+    test("rate limit reset tracked", client._reset_at == reset_ts)
+
+# POST success
+with mock.patch("urllib.request.urlopen") as mock_open:
+    mock_open.return_value = make_mock_response(
+        {"id": 1, "html_url": "https://github.com/owner/repo/issues/1", "number": 1}
+    )
+    client = ts.GitHubClient(token="ghp_test")
+    result = client.create_issue("owner/repo", "Test Issue", "body text", ["trend-scout"])
+    test("create_issue returns dict on success", isinstance(result, dict))
+    test("create_issue returns html_url", result.get("html_url", "").startswith("https://"))
+
+# ensure_label: label already exists
+with mock.patch("urllib.request.urlopen") as mock_open:
+    mock_open.return_value = make_mock_response({"name": "trend-scout", "color": "0075ca"})
+    client = ts.GitHubClient(token="ghp_test")
+    ok = client.ensure_label("owner/repo", "trend-scout")
+    test("ensure_label returns True when label exists", ok is True)
+
+
+# ─── 7. get_existing_markers (mocked) ─────────────────────────────────────────
+
+print("\n🗂  Existing Markers (mocked)")
+
+marker_a = ts.repo_marker("first/repo")
+marker_b = ts.repo_marker("second/repo")
+issues_page1 = [
+    {"number": 1, "body": f"Some body\n{marker_a}\nmore", "pull_request": None},
+    {"number": 2, "body": f"Another issue\n{marker_b}", "pull_request": None},
+    {"number": 3, "body": "PR-like", "pull_request": {"url": "..."}},  # should be skipped
+]
+issues_page2: list = []  # empty = end of pagination
+
+def _mock_list_issues(repo, state="all", per_page=100, page=1, labels=None):
+    if page == 1:
+        return issues_page1
+    return issues_page2
+
+with mock.patch.object(ts.GitHubClient, "list_issues", side_effect=_mock_list_issues):
+    client = ts.GitHubClient(token="ghp_test")
+    found = ts.get_existing_markers(client, "owner/repo", ts.load_config(None))
+    test("get_existing_markers finds marker_a", marker_a in found)
+    test("get_existing_markers finds marker_b", marker_b in found)
+    test("get_existing_markers skips PR entries", len(found) == 2)
+
+
+# ─── 8. create_stage dry-run (mocked) ─────────────────────────────────────────
+
+print("\n🧪 create_stage dry-run (mocked)")
+
+with mock.patch.object(ts.GitHubClient, "ensure_label", return_value=True), \
+     mock.patch.object(ts.GitHubClient, "create_issue", return_value=None):
+    client = ts.GitHubClient(token="ghp_test")
+    cfg_c = ts.load_config(None)
+    enriched = [(REPO_FIXTURE, "readme text"), (REPO_INACTIVE, "")]
+    existing: set[str] = set()
+    urls = ts.create_stage(enriched, client, cfg_c, existing, dry_run=True, limit=None)
+    test("dry-run returns URLs for both repos", len(urls) == 2)
+    test("dry-run URLs contain [dry-run] tag", all("[dry-run]" in u for u in urls))
+    test("dry-run adds markers to existing set (prevents duplicates)", len(existing) == 2)
+
+# Limit parameter
+with mock.patch.object(ts.GitHubClient, "ensure_label", return_value=True), \
+     mock.patch.object(ts.GitHubClient, "create_issue", return_value=None):
+    enriched2 = [(REPO_FIXTURE, ""), (REPO_INACTIVE, ""), (unrelated, "")]
+    existing2: set[str] = set()
+    urls2 = ts.create_stage(enriched2, client, cfg_c, existing2, dry_run=True, limit=1)
+    test("limit=1 creates only 1 issue", len(urls2) == 1)
+
+# Dedup: already-seen marker skips
+with mock.patch.object(ts.GitHubClient, "ensure_label", return_value=True), \
+     mock.patch.object(ts.GitHubClient, "create_issue", return_value=None):
+    pre_existing = {ts.repo_marker(REPO_FIXTURE["full_name"])}
+    urls3 = ts.create_stage([(REPO_FIXTURE, "")], client, cfg_c, pre_existing, dry_run=True)
+    test("already-seen marker is skipped", len(urls3) == 0)
+
+
+# ─── 9. CLI subprocess tests ──────────────────────────────────────────────────
+
+print("\n💻 CLI")
+
+test("trend-scout.py exists", SCOUT.exists())
+
+# --help exits 0
+r = run_cli("--help")
+test("--help exits 0", r.returncode == 0, r.stderr)
+test("--help mentions --dry-run", "--dry-run" in r.stdout)
+test("--help mentions --search-only", "--search-only" in r.stdout)
+test("--help mentions --repo", "--repo" in r.stdout)
+test("--help mentions --limit", "--limit" in r.stdout)
+
+# Syntax check
+import ast as _ast
+try:
+    _ast.parse(SCOUT.read_text())
+    test("trend-scout.py passes AST parse", True)
+except SyntaxError as e:
+    test("trend-scout.py passes AST parse", False, str(e))
+
+# trend-scout-config.json is valid JSON
+try:
+    json.loads(CONFIG_FILE.read_text())
+    test("trend-scout-config.json valid JSON", True)
+except Exception as e:
+    test("trend-scout-config.json valid JSON", False, str(e))
+
+# --repo validation: bad format exits non-zero
+# We cannot easily test this without network, but we can at least check that
+# the CLI imports and runs without import errors via a quick --help check
+r2 = run_cli("--help")
+test("CLI --help is idempotent", r2.returncode == 0)
+
+
+# ─── 10. _deep_merge ──────────────────────────────────────────────────────────
+
+print("\n🔀 Deep Merge")
+
+base = {"a": 1, "b": {"x": 10, "y": 20}, "c": [1, 2]}
+override = {"b": {"x": 99}, "c": [3], "d": "new"}
+ts._deep_merge(base, override)
+test("deep merge updates nested key", base["b"]["x"] == 99)
+test("deep merge preserves untouched nested key", base["b"]["y"] == 20)
+test("deep merge overrides list", base["c"] == [3])
+test("deep merge adds new key", base["d"] == "new")
+test("deep merge preserves top-level key not in override", base["a"] == 1)
+
+# _comment keys are skipped
+base2 = {"_comment": "should stay", "target_repo": "a/b"}
+ts._deep_merge(base2, {"_comment": "override"})
+test("_deep_merge skips _comment keys", base2["_comment"] == "should stay")
+
+
+# ─── 11. Opus Findings Regression Tests ──────────────────────────────────────
+
+print("\n🛡  Opus Findings Regression")
+
+# --- Finding 1: Self-scouting exclusion ---
+self_repo = "magicpro97/copilot-session-knowledge"
+self_repo_dict: dict = {
+    **REPO_FIXTURE,
+    "full_name": self_repo,
+    "fork": False,
+    "archived": False,
+}
+self_scout_cfg = {
+    **default_cfg,
+    "target_repo": self_repo,
+    "shortlist": {**default_cfg["shortlist"], "min_score": 0.0, "exclude_forks": False},
+}
+candidates_with_self = [self_repo_dict, REPO_FIXTURE]
+shortlisted_self = ts.shortlist_repos(candidates_with_self, self_scout_cfg)
+test(
+    "self-scouting: target repo excluded from shortlist",
+    all(r["full_name"].lower() != self_repo.lower() for r in shortlisted_self),
+    f"shortlist still contains {self_repo}",
+)
+
+# Case-insensitive exclusion
+self_repo_upper: dict = {**self_repo_dict, "full_name": self_repo.upper()}
+shortlisted_upper = ts.shortlist_repos([self_repo_upper, REPO_FIXTURE], self_scout_cfg)
+test(
+    "self-scouting: target repo excluded case-insensitively",
+    all(r["full_name"].lower() != self_repo.lower() for r in shortlisted_upper),
+)
+
+# Other repos still shortlisted
+test(
+    "self-scouting: other repos still shortlisted normally",
+    any(r["full_name"] == REPO_FIXTURE["full_name"] for r in shortlisted_self),
+)
+
+# --- Finding 2: 403 retry recursion bound ---
+import urllib.error as _ue2
+
+# Persistent 403+Retry-After must NOT recurse past one retry
+call_count = {"n": 0}
+
+def _always_403(*args, **kwargs):
+    call_count["n"] += 1
+    err = _ue2.HTTPError(
+        url="https://api.github.com/x",
+        code=403,
+        msg="Forbidden",
+        hdrs=mock.MagicMock(get=lambda k, d=None: "1" if k == "Retry-After" else d),
+        fp=None,
+    )
+    raise err
+
+with mock.patch("urllib.request.urlopen", side_effect=_always_403), \
+     mock.patch("time.sleep"):  # don't actually sleep in tests
+    client_403 = ts.GitHubClient(token="ghp_test")
+    result_403 = client_403.get("https://api.github.com/repos/x/y")
+    test(
+        "403 retry recursion bound: returns None after bounded retries",
+        result_403 is None,
+    )
+    test(
+        "403 retry recursion bound: urlopen called at most 2 times (1 original + 1 retry)",
+        call_count["n"] <= 2,
+        f"urlopen called {call_count['n']} times",
+    )
+
+# --- Finding 3: Dedupe scan drift — label filter propagated ---
+label_calls: list[str | None] = []
+
+def _mock_list_issues_capture(repo, state="all", per_page=100, page=1, labels=None):
+    label_calls.append(labels)
+    return []
+
+with mock.patch.object(ts.GitHubClient, "list_issues", side_effect=_mock_list_issues_capture):
+    client_dedup = ts.GitHubClient(token="ghp_test")
+    ts.get_existing_markers(client_dedup, "owner/repo", ts.load_config(None))
+    test(
+        "dedupe scan: list_issues called with trend-scout label",
+        all(lbl == "trend-scout" for lbl in label_calls) and len(label_calls) > 0,
+        f"labels seen: {label_calls}",
+    )
+
+# Custom label in config is also forwarded
+label_calls2: list[str | None] = []
+
+def _mock_list_issues_capture2(repo, state="all", per_page=100, page=1, labels=None):
+    label_calls2.append(labels)
+    return []
+
+custom_label_cfg = {**ts.load_config(None), "issue_label": "my-custom-label"}
+with mock.patch.object(ts.GitHubClient, "list_issues", side_effect=_mock_list_issues_capture2):
+    client_dedup2 = ts.GitHubClient(token="ghp_test")
+    ts.get_existing_markers(client_dedup2, "owner/repo", custom_label_cfg)
+    test(
+        "dedupe scan: custom label forwarded to list_issues",
+        all(lbl == "my-custom-label" for lbl in label_calls2),
+        f"labels seen: {label_calls2}",
+    )
+
+# --- Finding 4: Marker spoofing from README excerpt ---
+real_marker = ts.repo_marker("real/repo")
+fake_marker = ts.repo_marker("fake/spoof-repo")
+
+# Body that embeds a fake marker inside a code fence (README excerpt)
+spoofed_body = (
+    f"## Issue header\n\n"
+    f"<details><summary>README excerpt</summary>\n\n"
+    f"```\n"
+    f"This README contains a fake marker:\n"
+    f"{fake_marker}\n"
+    f"```\n</details>\n\n"
+    f"---\n"
+    f"{real_marker}\n"
+)
+
+prefix = "trend-scout:repo:"
+extracted = ts.extract_markers_from_body(spoofed_body, prefix)
+test(
+    "marker spoofing: fake marker inside code fence is NOT extracted",
+    fake_marker not in extracted,
+    f"fake marker was extracted: {fake_marker}",
+)
+test(
+    "marker spoofing: real marker outside code fence IS extracted",
+    real_marker in extracted,
+    f"real marker not found; extracted={extracted}",
+)
+test(
+    "marker spoofing: exactly one marker extracted",
+    len(extracted) == 1,
+    f"extracted {len(extracted)} markers: {extracted}",
+)
+
+# Nested/multiple code fences
+multi_fence_body = (
+    f"```\n{fake_marker}\n```\nsome text\n"
+    f"```python\n# code\n{fake_marker}\n```\n"
+    f"{real_marker}\n"
+)
+multi_extracted = ts.extract_markers_from_body(multi_fence_body, prefix)
+test(
+    "marker spoofing: markers in multiple code fences all ignored",
+    fake_marker not in multi_extracted and real_marker in multi_extracted,
+    f"extracted={multi_extracted}",
+)
+
+
+# ─── Cleanup ──────────────────────────────────────────────────────────────────
+
+import shutil
+shutil.rmtree(SCRATCH, ignore_errors=True)
+
+# ─── Summary ──────────────────────────────────────────────────────────────────
+
+print(f"\n{'─' * 50}")
+print(f"  Results: {PASS} passed, {FAIL} failed")
+print(f"{'─' * 50}\n")
+sys.exit(0 if FAIL == 0 else 1)

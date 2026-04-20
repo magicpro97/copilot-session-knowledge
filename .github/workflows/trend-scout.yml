@@ -1,0 +1,74 @@
+name: Trend Scout
+
+on:
+  schedule:
+    # Run daily at 07:00 UTC
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview without creating issues"
+        type: boolean
+        default: false
+      search_only:
+        description: "Discovery + shortlist only, no issues"
+        type: boolean
+        default: false
+      repo:
+        description: "Override target repo (OWNER/REPO)"
+        type: string
+        default: ""
+      limit:
+        description: "Max number of issues to create (leave blank for config default)"
+        type: string
+        default: ""
+
+# Prevent concurrent scheduled runs from overlapping
+concurrency:
+  group: trend-scout
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  scout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run trend-scout
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_REPO: ${{ inputs.repo }}
+          INPUT_LIMIT: ${{ inputs.limit }}
+        run: |
+          ARGS=""
+
+          # workflow_dispatch overrides
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+
+          if [ "${{ inputs.search_only }}" = "true" ]; then
+            ARGS="$ARGS --search-only"
+          fi
+
+          if [ -n "$INPUT_REPO" ]; then
+            ARGS="$ARGS --repo $INPUT_REPO"
+          fi
+
+          if [ -n "$INPUT_LIMIT" ]; then
+            ARGS="$ARGS --limit $INPUT_LIMIT"
+          fi
+
+          python3 trend-scout.py $ARGS

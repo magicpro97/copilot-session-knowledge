@@ -1,0 +1,62 @@
+{
+  "_comment": "Configuration for trend-scout.py — GitHub-native daily trend scouting.",
+  "target_repo": "magicpro97/copilot-session-knowledge",
+  "issue_label": "trend-scout",
+  "issue_label_color": "0075ca",
+  "issue_label_description": "Auto-generated trend scouting report",
+  "issue_title_prefix": "[Trend Scout]",
+  "search": {
+    "seed_keywords": [
+      "AI coding session knowledge base sqlite",
+      "copilot session indexing fts5 python",
+      "LLM context memory sqlite search",
+      "AI assistant knowledge management python",
+      "semantic search coding sessions fts",
+      "github copilot knowledge base cli"
+    ],
+    "extra_topics": [
+      "ai-tools",
+      "knowledge-base",
+      "semantic-search",
+      "copilot",
+      "fts5",
+      "sqlite"
+    ],
+    "our_topics": [
+      "ai-tools",
+      "copilot",
+      "fts5",
+      "github-copilot",
+      "knowledge-base",
+      "python",
+      "semantic-search",
+      "sqlite"
+    ],
+    "min_stars": 5,
+    "max_per_query": 10,
+    "lookback_days": 730,
+    "language": "python"
+  },
+  "shortlist": {
+    "max_candidates": 5,
+    "min_score": 0.15,
+    "exclude_forks": true,
+    "exclude_archived": false,
+    "scoring": {
+      "keyword_match_weight": 2.0,
+      "topic_match_weight": 1.5,
+      "star_log_weight": 0.3,
+      "recency_weight": 0.8
+    }
+  },
+  "enrichment": {
+    "fetch_readme": true,
+    "readme_max_chars": 1500,
+    "fetch_root_contents": false
+  },
+  "dedup": {
+    "marker_prefix": "trend-scout:repo:",
+    "search_closed_issues": true,
+    "max_issues_scan": 300
+  }
+}

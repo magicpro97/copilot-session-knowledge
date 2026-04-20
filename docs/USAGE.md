@@ -299,7 +299,7 @@ regardless of issue state.
 | `search.extra_topics` | Additional topic filters |
 | `search.min_stars` | Minimum star count to consider a repo |
 | `shortlist.max_candidates` | How many repos advance to enrichment |
-| `shortlist.min_score` | Minimum composite score (0–1) |
+| `shortlist.min_score` | Minimum composite score threshold (unbounded sum; default `0.15`) |
 | `shortlist.scoring.*_weight` | Adjust keyword, topic, star, and recency weights |
 | `enrichment.readme_max_chars` | Characters of README to include in each issue |
 | `dedup.search_closed_issues` | Whether to scan closed issues for markers |
