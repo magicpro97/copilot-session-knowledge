@@ -24,6 +24,19 @@ python3 ~/.copilot/tools/briefing.py "task" --full       # Full detail ~3K token
 
 Read the output before acting. It surfaces past mistakes and proven patterns.
 
+## Sub-Agent Context Injection
+
+When dispatching sub-agents (explore / task / general-purpose), inject compact context
+into the prompt rather than loading `--full`:
+
+```bash
+# Cheapest sub-agent path — compact, injectable, no extra escalation needed
+python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
+```
+
+Include the output verbatim in the sub-agent prompt under a `## Past Knowledge` section.
+Do **not** use `--full` for sub-agent injection; it bloats the prompt unnecessarily.
+
 ## Progressive Escalation
 
 Start with `--compact` or `--wakeup`. Escalate to `--full` or `--detail <id>` only

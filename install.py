@@ -388,38 +388,26 @@ _INJECT_MARKER_END = "<!-- SESSION-KNOWLEDGE-END -->"
 
 GLOBAL_INJECT_BLOCK = textwrap.dedent(f"""\
 {_INJECT_MARKER_START}
-## 🧠 Session Knowledge — BẮT BUỘC
+## 🧠 Session Knowledge
 
-**TRƯỚC KHI bắt đầu bất kỳ task phức tạp nào**, AI agent PHẢI chạy briefing:
+> Full briefing strategy and escalation rules are in the always-loaded
+> `~/.github/instructions/session-knowledge.instructions.md`.
+> Follow the progressive escalation model defined there — start minimal,
+> escalate only when compact output reveals a relevant hit.
+
+Quick reference:
 
 ```bash
-python3 ~/.copilot/tools/briefing.py "mô tả task" --full
-```
+# Before moderate/complex tasks — start here, escalate only if needed
+python3 ~/.copilot/tools/briefing.py --auto --compact
 
-**Khi dispatch sub-agents**, inject context vào prompt:
-```bash
-python3 ~/.copilot/tools/briefing.py "task cho sub-agent" --for-subagent
-```
+# When dispatching sub-agents — cheapest context injection
+python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
 
-**Khi gặp lỗi**, search knowledge base trước khi debug từ đầu:
-```bash
-python3 ~/.copilot/tools/query-session.py "error message" --verbose
+# After resolving a non-trivial issue — record the learning
+python3 ~/.copilot/tools/learn.py --mistake "Title" "Root cause and fix"
+python3 ~/.copilot/tools/learn.py --pattern "Title" "What works well"
 ```
-
-**Sau khi giải quyết xong vấn đề phức tạp**, ghi nhận kinh nghiệm:
-```bash
-python3 ~/.copilot/tools/learn.py --mistake "Tiêu đề" "Mô tả lỗi và cách fix"
-python3 ~/.copilot/tools/learn.py --pattern "Tiêu đề" "Pattern hiệu quả"
-python3 ~/.copilot/tools/learn.py --decision "Tiêu đề" "Quyết định và lý do"
-```
-
-### Quy tắc
-- ✅ **Luôn chạy** `briefing.py` trước task phức tạp (debug, refactor, migration, E2E test)
-- ✅ **Luôn search** knowledge khi gặp lỗi lạ hoặc cần quyết định kiến trúc
-- ✅ **Luôn inject** `--for-subagent` context khi dispatch explore/task/general-purpose agents
-- ✅ **Luôn ghi nhận** mistakes/patterns/decisions sau khi giải quyết vấn đề mới
-- ❌ **KHÔNG ĐƯỢC** bỏ qua briefing rồi lặp lại sai lầm đã ghi nhận
-- ❌ **KHÔNG ĐƯỢC** debug từ đầu khi knowledge DB đã có solution
 {_INJECT_MARKER_END}
 """)
 
@@ -551,6 +539,16 @@ def inject_global():
     print("\nGlobal Instructions Injection")
     print(f"  Target: {_tilde(GLOBAL_INSTRUCTIONS)}")
 
+    # Warn if the canonical instructions target the pointer block references is missing.
+    _sk_instructions = HOME / ".github" / "instructions" / "session-knowledge.instructions.md"
+    if not _sk_instructions.is_file():
+        print(
+            f"  {WARN} session-knowledge.instructions.md not found at "
+            f"{_tilde(_sk_instructions)}.\n"
+            f"        Run `python3 install.py --deploy-instructions` first so the pointer "
+            f"block does not reference a missing file."
+        )
+
     # Ensure ~/.github/ exists
     GLOBAL_INSTRUCTIONS.parent.mkdir(parents=True, exist_ok=True)
 
@@ -605,7 +603,7 @@ def inject_global():
         GLOBAL_INSTRUCTIONS.write_text(header + GLOBAL_INJECT_BLOCK, encoding="utf-8")
         print(f"  {OK} Created {_tilde(GLOBAL_INSTRUCTIONS)} with session-knowledge section")
 
-    print(f"  {INFO} AI agents will now be required to run briefing.py before complex tasks")
+    print(f"  {INFO} Injected pointer block — full policy lives in session-knowledge.instructions.md")
 
 
 # ===================================================================

@@ -641,6 +641,62 @@ test("Sp14: conductor-creator/templates/test-conductor.py exists in repo",
      f"Expected at {_cc_templates / 'test-conductor.py'}")
 
 
+# ─── Guidance Alignment (Ga1–Ga5) ──────────────────────────────────────────
+# Verify that the injected GLOBAL_INJECT_BLOCK and the canonical
+# session-knowledge.instructions.md template do not drift on briefing strategy.
+
+print("\n🔍 Guidance Alignment Tests (Ga)")
+
+import importlib.util as _ilu
+
+# Load install.py as a module without executing its __main__ block
+_install_spec = _ilu.spec_from_file_location("install_mod", REPO / "install.py")
+_install_mod = _ilu.module_from_spec(_install_spec)
+_install_spec.loader.exec_module(_install_mod)  # type: ignore[union-attr]
+
+_inject_block: str = _install_mod.GLOBAL_INJECT_BLOCK
+_template_path = REPO / "templates" / "session-knowledge.instructions.md"
+_template_text: str = _template_path.read_text(encoding="utf-8") if _template_path.exists() else ""
+
+# Ga1. Injected block must NOT contain any line that calls briefing.py with --full.
+#      This rejects all forms: briefing.py "task" --full, briefing.py --auto --full, etc.
+test(
+    "Ga1: GLOBAL_INJECT_BLOCK does not mandate --full for complex tasks",
+    not any("briefing.py" in ln and "--full" in ln for ln in _inject_block.splitlines()),
+    "Found a line that calls briefing.py with --full — use --compact and escalate only when needed",
+)
+
+# Ga2. Injected block must contain --for-subagent (sub-agent path)
+test(
+    "Ga2: GLOBAL_INJECT_BLOCK includes --for-subagent guidance",
+    "--for-subagent" in _inject_block,
+    "GLOBAL_INJECT_BLOCK is missing --for-subagent sub-agent context injection",
+)
+
+# Ga3. Injected block must contain --compact (start-minimal signal)
+test(
+    "Ga3: GLOBAL_INJECT_BLOCK references --compact (start-minimal strategy)",
+    "--compact" in _inject_block,
+    "GLOBAL_INJECT_BLOCK missing --compact — injected guidance conflicts with start-minimal policy",
+)
+
+# Ga4. Canonical template must contain --for-subagent guidance
+test(
+    "Ga4: canonical template includes --for-subagent guidance",
+    "--for-subagent" in _template_text,
+    f"session-knowledge.instructions.md missing --for-subagent section",
+)
+
+# Ga5. Injected block must be a pointer (short) — no duplicate policy paragraphs.
+#      Heuristic: block must be <= 30 lines (a full-policy block was ~20 lines of rules)
+_inject_lines = [ln for ln in _inject_block.splitlines() if ln.strip()]
+test(
+    "Ga5: GLOBAL_INJECT_BLOCK is a lightweight pointer (≤ 30 non-blank lines)",
+    len(_inject_lines) <= 30,
+    f"Block has {len(_inject_lines)} non-blank lines — it may duplicate canonical policy",
+)
+
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
 print(f"\n{'='*50}")
