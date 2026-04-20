@@ -3,24 +3,6 @@
 > Harness Engineering principles. Project-specific rules go in `{project}/.github/copilot-instructions.md`.
 > Scope-specific details are in `~/.github/instructions/*.instructions.md`.
 
-## 🧠 Session Knowledge — BẮT BUỘC
-
-**TRƯỚC KHI bắt đầu bất kỳ task phức tạp nào**, chạy briefing:
-
-```bash
-python3 ~/.copilot/tools/briefing.py "mô tả task" --full
-```
-
-- **Sub-agents**: `python3 ~/.copilot/tools/briefing.py "task" --for-subagent` → inject vào prompt
-- **Gặp lỗi**: `python3 ~/.copilot/tools/query-session.py "error message" --verbose`
-- **Giữa công việc**: `python3 ~/.copilot/tools/query-session.py "pattern hoặc keyword"` — tra cứu KB khi gặp vấn đề quen hoặc cần pattern đã dùng trước
-- **Sau khi fix**: `python3 ~/.copilot/tools/learn.py --mistake "Tiêu đề" "Mô tả"`
-- **Trước commit/task_complete**: `python3 ~/.copilot/tools/learn.py` — BẮT BUỘC ghi nhận nếu ≥3 file code đã sửa (hook sẽ BLOCK nếu chưa gọi)
-
-✅ Luôn briefing trước task phức tạp | ✅ Luôn search KB khi gặp lỗi | ✅ Luôn ghi nhận mistakes/patterns
-❌ KHÔNG bỏ qua briefing | ❌ KHÔNG debug từ đầu khi KB đã có solution | ❌ KHÔNG commit/task_complete mà chưa learn
-⚠️ Hooks phát hiện file writes qua bash (heredoc, redirect, sed, cp...) — không bypass được
-
 ## 🛡️ Harness Engineering — 7 Nguyên tắc
 
 1. **KHÔNG ship lỗi**: CODE → COMPILE → TEST → VERIFY → COMMIT. Không compile = không commit. 100% hoặc 0%.
