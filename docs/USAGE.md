@@ -249,6 +249,84 @@ python3 ~/.copilot/tools/project-context.py --list-profiles  # Show available pr
 The output is **deterministic**: same repo state → same output. The last-commit date (not wall-clock
 time) is used as the timestamp, so re-running without new commits produces an identical artifact.
 
+## Trend Scout
+
+`trend-scout.py` queries the **GitHub Search API** (keyword + topic searches) to discover
+relevant repos, scores and deduplicates candidates, then opens structured issues in the target
+repo. There is no official GitHub Trending API; results are ranked by keyword match, topic
+overlap, star count, and recency.
+
+### Basic usage
+
+```bash
+# Full pipeline — search, shortlist, enrich, create issues
+python3 ~/.copilot/tools/trend-scout.py
+
+# Preview without writing anything
+python3 ~/.copilot/tools/trend-scout.py --dry-run
+
+# Discovery + shortlist only; skip issue creation
+python3 ~/.copilot/tools/trend-scout.py --search-only
+
+# Cap the number of issues created this run
+python3 ~/.copilot/tools/trend-scout.py --limit 3
+
+# Override the target repo
+python3 ~/.copilot/tools/trend-scout.py --repo owner/repo
+
+# Use a custom config file
+python3 ~/.copilot/tools/trend-scout.py --config /path/to/config.json
+
+# Explicit GitHub token (overrides GITHUB_TOKEN env var)
+python3 ~/.copilot/tools/trend-scout.py --token TOKEN
+```
+
+Set `GITHUB_TOKEN` in the environment, or pass `--token TOKEN`, to avoid API rate limits.
+
+### Deduplication
+
+Before creating each issue the script scans **all open and closed** `trend-scout`-labelled
+issues for a hidden deterministic marker. The marker is a 16-character truncated SHA-256
+hash of the lowercased `owner/name` embedded as an HTML comment:
+`<!-- trend-scout:repo:<16-char-hex> -->`. A repo is skipped if its marker already exists,
+regardless of issue state.
+
+### Config tuning (`trend-scout-config.json`)
+
+| Key | Effect |
+|-----|--------|
+| `search.seed_keywords` | Free-text queries sent to GitHub Search API |
+| `search.extra_topics` | Additional topic filters |
+| `search.min_stars` | Minimum star count to consider a repo |
+| `shortlist.max_candidates` | How many repos advance to enrichment |
+| `shortlist.min_score` | Minimum composite score (0–1) |
+| `shortlist.scoring.*_weight` | Adjust keyword, topic, star, and recency weights |
+| `enrichment.readme_max_chars` | Characters of README to include in each issue |
+| `dedup.search_closed_issues` | Whether to scan closed issues for markers |
+| `dedup.max_issues_scan` | Max issues scanned per dedup pass (default 300); increase on busy repos to avoid missing old markers |
+| `search.lookback_days` | Repo age window for search results (default 730 days); lower to focus on recently active repos |
+
+### Limitations
+
+- Uses GitHub Search API heuristics — not an official trending list.
+- Freshness depends on GitHub's search index; very new repos may not appear immediately.
+- Results are filtered to `language: python` by default (configurable).
+
+### GitHub Actions workflow
+
+The workflow (`.github/workflows/trend-scout.yml`) runs **daily at 07:00 UTC**. It requires
+no secrets beyond the automatic `GITHUB_TOKEN` and uses minimal permissions:
+`contents: read`, `issues: write`.
+
+**Manual dispatch inputs:**
+
+| Input | Type | Description |
+|-------|------|-------------|
+| `dry_run` | boolean | Preview without creating issues |
+| `search_only` | boolean | Discovery + shortlist only |
+| `repo` | string | Override target repo (`OWNER/REPO`) |
+| `limit` | string | Max issues to create this run |
+
 ## Maintenance
 
 ```bash

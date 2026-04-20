@@ -16,6 +16,7 @@
 - [Architecture](#architecture)
 - [Auto-Update](#auto-update)
 - [Skills & Hooks](#skills--hooks)
+- [Trend Scout](#trend-scout)
 - [Security](#security)
 - [Testing](#testing)
 - [FAQ](#faq)
@@ -275,6 +276,28 @@ Excessive context load in Copilot sessions comes primarily from **duplicate skil
 
 📖 **Skills reference:** [docs/SKILLS.md](docs/SKILLS.md) · **Hooks reference:** [docs/HOOKS.md](docs/HOOKS.md)
 
+## Trend Scout
+
+`trend-scout.py` discovers relevant GitHub repositories daily via the **GitHub Search API** (not the unofficial trending page — there is no official GitHub Trending API) and opens structured issues in the target repo for review.
+
+```bash
+python3 ~/.copilot/tools/trend-scout.py                 # Full pipeline
+python3 ~/.copilot/tools/trend-scout.py --dry-run       # Preview without creating issues
+python3 ~/.copilot/tools/trend-scout.py --search-only   # Discovery + shortlist, no issues
+python3 ~/.copilot/tools/trend-scout.py --limit 3       # Cap issues created this run
+python3 ~/.copilot/tools/trend-scout.py --repo owner/repo  # Override target repo
+python3 ~/.copilot/tools/trend-scout.py --config path.json # Custom config file
+python3 ~/.copilot/tools/trend-scout.py --token TOKEN   # Explicit GitHub token (overrides GITHUB_TOKEN env)
+```
+
+Requires a `GITHUB_TOKEN` env var (or `--token TOKEN` flag) to avoid rate limits. The tool auto-creates the `trend-scout` label and deduplicates against both open and closed issues using hidden deterministic markers — each marker is a 16-character truncated SHA-256 hash of the lowercased `owner/name`.
+
+**Tune discovery:** edit `trend-scout-config.json` to adjust seed keywords, topic filters, scoring weights, and `min_stars`.
+
+**GitHub Actions workflow** — `.github/workflows/trend-scout.yml` runs daily at 07:00 UTC with permissions `contents: read` and `issues: write`. Manual runs via `workflow_dispatch` support `dry_run`, `search_only`, `repo`, and `limit` inputs.
+
+📖 **Details:** [docs/USAGE.md#trend-scout](docs/USAGE.md#trend-scout)
+
 ## Security
 
 - **Parameterized SQL** — zero SQL injection vectors
@@ -291,8 +314,9 @@ Excessive context load in Copilot sessions comes primarily from **duplicate skil
 ## Testing
 
 ```bash
-python3 test_security.py    # security regression tests
-python3 test_fixes.py       # functional and integration regression tests
+python3 test_security.py      # security regression tests
+python3 test_fixes.py         # functional and integration regression tests
+python3 test_trend_scout.py   # trend scout unit tests
 ```
 
 ## FAQ
