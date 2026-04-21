@@ -166,6 +166,8 @@ Creator and meta-skills (session-knowledge-creator, agent-creator, hook-creator,
 2. **Audit after rollout** — manually inspect `~/.copilot/skills/` and `.github/skills/` to surface orphaned or duplicated entries. `hooks/lint-skills.py` is a schema linter (validates frontmatter fields), not a duplicate-surface audit tool.
 3. **Do not deploy project-specific skills globally** — skills that reference project-specific paths, tags, or conventions belong at project scope only.
 
+**Global auto-update for vendored skills (`karpathy-guidelines`):** if `~/.copilot/skills/karpathy-guidelines/SKILL.md` already exists (placed there manually), auto-update will keep it current whenever the source under `skills/karpathy-guidelines/` changes. This is **update-only** — it never creates a new global install from scratch; it only refreshes pre-existing files. This applies to **Copilot CLI scope only** (`~/.copilot/skills/`); a global `~/.claude/skills/` directory is not auto-updated. To opt in, copy the skill to `~/.copilot/skills/karpathy-guidelines/` once (manually or via `setup-project.py`), then auto-update handles future refreshes.
+
 ## AI Agent Integration
 
 Deploy the skill into your project for automatic knowledge-base usage:
