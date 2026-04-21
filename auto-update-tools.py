@@ -66,6 +66,10 @@ REGISTRY_PATH = HOME / ".copilot" / "session-state" / "tools-managed-projects.js
 # ---------------------------------------------------------------------------
 VENDORED_SKILLS: tuple[str, ...] = ("karpathy-guidelines",)
 
+# Global Copilot CLI skills directory.  deploy_skills() updates already-installed
+# skills here (update-only; never creates a new global install from scratch).
+GLOBAL_COPILOT_SKILLS_DIR = HOME / ".copilot" / "skills"
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -496,8 +500,7 @@ def deploy_skills():
             project_roots.append(fallback)
 
     if not project_roots:
-        return
-
+        pass  # no registered projects / git root; global update still runs below
     # Import host metadata from the manifest so host paths stay centralised.
     # TOOLS_DIR is inserted so host_manifest is importable regardless of cwd.
     try:
@@ -578,6 +581,37 @@ def deploy_skills():
                                     ok(f"Updated {host_name} {skill_name}/{rel} in {project_root.name}")
                             except Exception:
                                 pass
+
+    # --- global Copilot CLI skills (update-only; never create) ---------------
+    # Propagate vendored-skill updates to already-installed global skill dirs
+    # at ~/.copilot/skills/<name>/.  Only touches files that already exist.
+    for skill_name, (skill_content, skill_src_dir) in vendored_sources.items():
+        global_skill_dir = GLOBAL_COPILOT_SKILLS_DIR / skill_name
+        global_skill_md  = global_skill_dir / "SKILL.md"
+        if global_skill_md.exists():
+            try:
+                if global_skill_md.read_text(encoding="utf-8") != skill_content:
+                    global_skill_md.write_text(skill_content, encoding="utf-8")
+                    ok(f"Updated global Copilot CLI {skill_name}/SKILL.md")
+            except Exception:
+                pass
+            # Asset subdirs — update only, never create.
+            for subdir in sorted(skill_src_dir.iterdir()):
+                if not subdir.is_dir():
+                    continue
+                for asset_file in subdir.rglob("*"):
+                    if not asset_file.is_file():
+                        continue
+                    rel = asset_file.relative_to(skill_src_dir)
+                    asset_target = global_skill_dir / rel
+                    if asset_target.exists():
+                        try:
+                            content = asset_file.read_bytes()
+                            if asset_target.read_bytes() != content:
+                                asset_target.write_bytes(content)
+                                ok(f"Updated global Copilot CLI {skill_name}/{rel}")
+                        except Exception:
+                            pass
 
 
 # ---------------------------------------------------------------------------

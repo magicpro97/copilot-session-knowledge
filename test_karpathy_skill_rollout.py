@@ -689,6 +689,129 @@ if skill_md.exists():
             )
 
 # ---------------------------------------------------------------------------
+# 14. Global Copilot CLI skill rollout (~/.copilot/skills/<name>/)
+# ---------------------------------------------------------------------------
+print("\n🌐 14. Global Copilot CLI skill rollout (~/.copilot/skills/)")
+
+# Source guard: constant must be defined in auto-update-tools.py.
+test("GLOBAL_COPILOT_SKILLS_DIR defined in auto-update-tools.py",
+     "GLOBAL_COPILOT_SKILLS_DIR" in aut_source)
+
+if skill_md.exists():
+    from unittest.mock import patch, MagicMock  # stdlib; no new deps
+
+    import importlib.util as _ilu_14
+    _aut14_spec = _ilu_14.spec_from_file_location(
+        "auto_update_tools_s14", REPO / "auto-update-tools.py")
+    _aut14_mod = _ilu_14.module_from_spec(_aut14_spec)
+    _aut14_spec.loader.exec_module(_aut14_mod)
+
+    # ── A: update already-installed global skill ───────────────────────────
+    with tempfile.TemporaryDirectory() as _d14a:
+        _fake_global = Path(_d14a) / "dot-copilot" / "skills"
+        _fake_global.mkdir(parents=True)
+
+        # Pre-install stale SKILL.md so the update-only rule allows the write.
+        _global_skill_dir = _fake_global / "karpathy-guidelines"
+        _global_skill_dir.mkdir()
+        _global_skill_md = _global_skill_dir / "SKILL.md"
+        _global_skill_md.write_text("STALE GLOBAL", encoding="utf-8")
+
+        _orig_td14a  = _aut14_mod.TOOLS_DIR
+        _orig_gsd14a = _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR
+        _orig_rp14a  = _aut14_mod.REGISTRY_PATH
+        _aut14_mod.TOOLS_DIR               = REPO
+        _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR = _fake_global
+        _aut14_mod.REGISTRY_PATH           = Path(_d14a) / "empty-registry.json"
+
+        mock_r14a = MagicMock()
+        mock_r14a.returncode = 1  # no git root — ensures update comes from global path
+        try:
+            with patch.object(_aut14_mod, "subprocess") as _mock14a:
+                _mock14a.run.return_value = mock_r14a
+                _aut14_mod.deploy_skills()
+        finally:
+            _aut14_mod.TOOLS_DIR               = _orig_td14a
+            _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR = _orig_gsd14a
+            _aut14_mod.REGISTRY_PATH           = _orig_rp14a
+
+        _expected14 = skill_md.read_text(encoding="utf-8")
+        test("deploy_skills() updates already-installed global Copilot CLI skill",
+             _global_skill_md.read_text(encoding="utf-8") == _expected14,
+             f"Content not updated at {_global_skill_md}")
+
+    # ── B: never create a global skill that is not already installed ───────
+    with tempfile.TemporaryDirectory() as _d14b:
+        _fake_global_b = Path(_d14b) / "dot-copilot" / "skills"
+        _fake_global_b.mkdir(parents=True)
+        # Do NOT create karpathy-guidelines/ — it must not be created by deploy_skills().
+
+        _orig_td14b  = _aut14_mod.TOOLS_DIR
+        _orig_gsd14b = _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR
+        _orig_rp14b  = _aut14_mod.REGISTRY_PATH
+        _aut14_mod.TOOLS_DIR               = REPO
+        _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR = _fake_global_b
+        _aut14_mod.REGISTRY_PATH           = Path(_d14b) / "empty-registry.json"
+
+        mock_r14b = MagicMock()
+        mock_r14b.returncode = 1
+        try:
+            with patch.object(_aut14_mod, "subprocess") as _mock14b:
+                _mock14b.run.return_value = mock_r14b
+                _aut14_mod.deploy_skills()
+        finally:
+            _aut14_mod.TOOLS_DIR               = _orig_td14b
+            _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR = _orig_gsd14b
+            _aut14_mod.REGISTRY_PATH           = _orig_rp14b
+
+        test("deploy_skills() does NOT create global skill dir when not pre-installed",
+             not (_fake_global_b / "karpathy-guidelines" / "SKILL.md").exists(),
+             "update-only rule violated: new global install was created")
+
+    # ── C: asset subdir update in global skill dir ─────────────────────────
+    with tempfile.TemporaryDirectory() as _d14c_tools, \
+            tempfile.TemporaryDirectory() as _d14c_global:
+        _fake_tools14c  = Path(_d14c_tools)
+        _fake_global14c = Path(_d14c_global) / "skills"
+
+        # Build minimal fake source with references/ subdir.
+        _skill_src14c = _fake_tools14c / "skills" / "karpathy-guidelines"
+        (_skill_src14c / "references").mkdir(parents=True)
+        (_skill_src14c / "SKILL.md").write_text("SKILL CONTENT", encoding="utf-8")
+        (_skill_src14c / "references" / "guide.md").write_text("NEW REF", encoding="utf-8")
+        (_skill_src14c / "references" / "extra.md").write_text("EXTRA", encoding="utf-8")
+
+        # Pre-install only guide.md in the global skill dir (extra.md absent → no-create).
+        _global14c_skill = _fake_global14c / "karpathy-guidelines"
+        (_global14c_skill / "references").mkdir(parents=True)
+        (_global14c_skill / "SKILL.md").write_text("OLD CONTENT", encoding="utf-8")
+        (_global14c_skill / "references" / "guide.md").write_text("OLD REF", encoding="utf-8")
+
+        _orig_td14c  = _aut14_mod.TOOLS_DIR
+        _orig_gsd14c = _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR
+        _orig_rp14c  = _aut14_mod.REGISTRY_PATH
+        _aut14_mod.TOOLS_DIR               = _fake_tools14c
+        _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR = _fake_global14c
+        _aut14_mod.REGISTRY_PATH           = _fake_tools14c / "empty-registry.json"
+
+        mock_r14c = MagicMock()
+        mock_r14c.returncode = 1
+        try:
+            with patch.object(_aut14_mod, "subprocess") as _mock14c:
+                _mock14c.run.return_value = mock_r14c
+                _aut14_mod.deploy_skills()
+        finally:
+            _aut14_mod.TOOLS_DIR               = _orig_td14c
+            _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR = _orig_gsd14c
+            _aut14_mod.REGISTRY_PATH           = _orig_rp14c
+
+        test("deploy_skills() updates existing asset file in global skill dir",
+             (_global14c_skill / "references" / "guide.md")
+             .read_text(encoding="utf-8") == "NEW REF")
+        test("deploy_skills() does NOT create absent asset file in global skill dir",
+             not (_global14c_skill / "references" / "extra.md").exists())
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 total = PASS + FAIL
