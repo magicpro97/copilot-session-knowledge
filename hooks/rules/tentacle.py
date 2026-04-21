@@ -87,10 +87,13 @@ class TentacleEnforceRule(Rule):
         return deny(
             f"\U0001f419 TENTACLE REQUIRED: {len(edited)} files across {len(modules)} modules "
             f"({', '.join(sorted(modules))}). "
-            "You MUST use tentacle-orchestration for multi-module tasks. "
-            "Steps: (1) tentacle.py create <name> --scope \"<paths>\" --desc \"<desc>\" --briefing  "
+            "Multi-module edits should use tentacle-orchestration. "
+            "If you are the orchestrator: (1) tentacle.py create <name> --scope \"<paths>\" --desc \"<desc>\" --briefing  "
             "(2) tentacle.py todo <name> add \"<task>\"  "
-            "(3) tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6"
+            "(3) tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6  "
+            "If you are a dispatched sub-agent: stay within your assigned scope, write results to "
+            "handoff.md, and avoid git commit or git push — by convention the orchestrator "
+            "commits and pushes after all tentacles are verified."
         )
 
 
@@ -132,6 +135,15 @@ class TentacleSuggestRule(Rule):
                     p = m.group(1)
                     if not p.startswith(("/tmp/", "/var/", "/dev/")):
                         file_paths.append(p)
+            # Mirror enforce: also track paths written by sed -i and tee
+            for m in re.finditer(r"\bsed\s+-i[^\s]*\s+(?:'[^']*'|\"[^\"]*\")\s+(\S+)", command):
+                p = m.group(1)
+                if not p.startswith(("/tmp/", "/var/", "/dev/")):
+                    file_paths.append(p)
+            for m in re.finditer(r"\btee\s+(?:-[a-z]+\s+)?(\S+)", command):
+                p = m.group(1)
+                if not p.startswith(("/tmp/", "/var/", "/dev/")):
+                    file_paths.append(p)
 
         if not file_paths:
             return None

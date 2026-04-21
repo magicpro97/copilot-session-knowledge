@@ -663,6 +663,15 @@ try:
         test("TentacleEnforceRule deny message does not contain '\"your task\"'",
              '"your task"' not in deny_msg,
              f"Got: {deny_msg!r:.120}")
+        test("TentacleEnforceRule deny message references handoff escalation path",
+             "handoff" in deny_msg,
+             f"Deny message should guide sub-agents to write handoff.md; got: {deny_msg!r:.120}")
+        test("TentacleEnforceRule deny message mentions commit convention",
+             "commit" in deny_msg.lower(),
+             f"Deny message should clarify commit convention; got: {deny_msg!r:.120}")
+        test("TentacleEnforceRule deny message mentions git push",
+             "push" in deny_msg.lower(),
+             f"Deny message should mention git push; got: {deny_msg!r:.120}")
     else:
         test("TentacleEnforceRule returned a result for 3-file/2-module edit", False,
              "Expected deny, got None")
@@ -673,8 +682,84 @@ except Exception as e:
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Section 10 (cont): Script Syntax Validation
+#  Section 11b: TentacleSuggestRule bash-write parity
+#  Regression: suggest must track the same bash write patterns as enforce
+#  (sed -i, tee) so both rules accumulate the same file set.
 # ═══════════════════════════════════════════════════════════════════
+
+tentacle_rule_src = (REPO / "hooks" / "rules" / "tentacle.py").read_text(encoding="utf-8")
+
+test(
+    "TentacleSuggestRule tracks sed -i writes",
+    "sed" in tentacle_rule_src and "TentacleSuggestRule" in tentacle_rule_src,
+    "TentacleSuggestRule should extract file paths from 'sed -i' commands to match enforce detection"
+)
+test(
+    "TentacleSuggestRule tracks tee writes",
+    "tee" in tentacle_rule_src,
+    "TentacleSuggestRule should extract file paths from 'tee' commands to match enforce detection"
+)
+
+try:
+    sys.path.insert(0, str(REPO / "hooks"))
+    from rules.tentacle import TentacleSuggestRule  # noqa: E402
+    import rules.tentacle as _rt2
+
+    suggest_rule = TentacleSuggestRule()
+
+    _orig2_vlist = _rt2.verify_list_marker
+    _orig2_sl    = _rt2.sign_list_marker
+    _orig2_suggested = _rt2.SUGGESTED_FILE
+
+    # Simulate suggest accumulating a sed -i write
+    accumulated = set()
+    def _fake_verify_list(p):
+        return set(accumulated)
+    def _fake_sign_list(p, lines):
+        accumulated.update(lines)
+
+    _rt2.verify_list_marker = _fake_verify_list
+    _rt2.sign_list_marker = _fake_sign_list
+    # Point SUGGESTED_FILE to a non-existent path so the early-return guard doesn't fire
+    _rt2.SUGGESTED_FILE = Path("/nonexistent/tentacle-suggested-testonly")
+
+    _rt2.verify_list_marker = _fake_verify_list
+    _rt2.sign_list_marker = _fake_sign_list
+
+    # sed -i write on a .py file
+    sed_event = {
+        "toolName": "bash",
+        "toolArgs": {"command": "sed -i 's/old/new/' src/auth/login.py"}
+    }
+    suggest_rule.evaluate("postToolUse", sed_event)
+    test(
+        "TentacleSuggestRule extracts path from sed -i command",
+        any("login.py" in p for p in accumulated),
+        f"Expected 'login.py' in tracked files; got: {accumulated}"
+    )
+
+    # tee write on a .py file
+    tee_event = {
+        "toolName": "bash",
+        "toolArgs": {"command": "echo 'code' | tee src/api/routes.py"}
+    }
+    suggest_rule.evaluate("postToolUse", tee_event)
+    test(
+        "TentacleSuggestRule extracts path from tee command",
+        any("routes.py" in p for p in accumulated),
+        f"Expected 'routes.py' in tracked files; got: {accumulated}"
+    )
+
+    _rt2.verify_list_marker = _orig2_vlist
+    _rt2.sign_list_marker = _orig2_sl
+    _rt2.SUGGESTED_FILE = _orig2_suggested
+
+    test("TentacleSuggestRule bash-parity test ran without exception", True)
+except Exception as e:
+    test("TentacleSuggestRule bash-parity test ran without exception", False, str(e))
+
+
+
 
 import ast
 

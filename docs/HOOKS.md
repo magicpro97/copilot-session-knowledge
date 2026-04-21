@@ -32,11 +32,11 @@ hooks/
 | `session-end` | sessionEnd | Cleans up marker files, writes session.log entry, opt-in checkpoint reminder (`COPILOT_CHECKPOINT_REMIND=1`) |
 | `enforce-briefing` | preToolUse | Blocks edit/create/bash-writes until briefing done |
 | `enforce-learn` | preToolUse | Blocks git commit AND task_complete without learn.py |
-| `tentacle-enforce` | preToolUse | Blocks edits across ≥3 files in ≥2 modules without tentacle. When blocked, follow the runtime-bundle workflow: `tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing` → `tentacle.py todo <name> add "<task>"` → `tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6` |
+| `tentacle-enforce` | preToolUse | Blocks (deny) edits once ≥3 files across ≥2 modules are reached without tentacle setup. The deny message contains convention-level guidance: if you are the **orchestrator**, follow the runtime-bundle workflow — `tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing` → `tentacle.py todo <name> add "<task>"` → `tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6`; if you are a **dispatched sub-agent**, stay within your declared scope, write any scope gaps to `handoff.md`, and by convention avoid `git commit`/`git push`. |
 | `track-edits` | postToolUse | Detects file changes via `git status` (language-agnostic) |
 | `learn-reminder` | postToolUse | Reminds to record learnings after task_complete |
 | `test-reminder` | postToolUse | Reminds to run tests after 3+ Python file edits |
-| `tentacle-suggest` | postToolUse | Suggests tentacle when edits span multiple modules |
+| `tentacle-suggest` | postToolUse | Suggests tentacle when edits reach ≥3 files across ≥2 modules (same threshold as tentacle-enforce) |
 | `error-kb` | errorOccurred | Auto-searches knowledge base on errors |
 | `pre-commit` | git pre-commit | Validates `.agent.md` / `SKILL.md` via `lint-skills.py` |
 

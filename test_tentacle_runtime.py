@@ -1383,5 +1383,211 @@ class TestSwarmBundleFlag(unittest.TestCase):
         self.assertNotIn("### Past Knowledge (live briefing at dispatch)", content)
 
 
+class TestSwarmGuardrails(unittest.TestCase):
+    """Tests for phase-2 advisory guidance injected into swarm/dispatch output.
+
+    These tests verify that generated prompts and JSON payloads contain the
+    expected advisory text (no git commit/push, scope boundary, escalation path).
+    This is injected text guidance — NOT hook-level or runtime enforcement.
+    """
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "guardrails"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.tentacle_dir = make_tentacle("gr-test", self.base)
+
+    def tearDown(self):
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def _swarm_args(self, output="prompt"):
+        return fake_args(
+            name="gr-test",
+            agent_type="general-purpose",
+            model="claude-sonnet-4.6",
+            output=output,
+            briefing=False,
+            bundle=False,
+        )
+
+    def _capture(self, args):
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_swarm(args)
+        return "\n".join(captured)
+
+    # ── prompt output ─────────────────────────────────────────────────────────
+
+    def test_prompt_advises_against_git_commit(self):
+        """Prompt output must include advisory text mentioning git commit."""
+        combined = self._capture(self._swarm_args(output="prompt"))
+        self.assertIn("git commit", combined)
+        # Advisory text should use clear instructional language (DO NOT or equivalent)
+        self.assertTrue(
+            "DO NOT" in combined or "do not" in combined.lower(),
+            "Expected clear advisory language around git commit in prompt output",
+        )
+
+    def test_prompt_advises_against_git_push(self):
+        """Prompt output must include advisory text mentioning git push."""
+        combined = self._capture(self._swarm_args(output="prompt"))
+        self.assertIn("git push", combined)
+        self.assertTrue(
+            "DO NOT" in combined or "do not" in combined.lower(),
+            "Expected clear advisory language around git push in prompt output",
+        )
+
+    def test_prompt_has_orchestrator_owns_git_statement(self):
+        """Prompt output must state that the orchestrator owns git operations."""
+        combined = self._capture(self._swarm_args(output="prompt"))
+        self.assertIn("orchestrator", combined)
+
+    def test_prompt_has_scope_advisory(self):
+        """Prompt output must advise agents to stay within their declared scope."""
+        combined = self._capture(self._swarm_args(output="prompt"))
+        self.assertTrue(
+            "scope" in combined.lower() or "scoped files" in combined.lower(),
+            "Expected scope advisory in prompt output",
+        )
+        self.assertTrue(
+            "DO NOT" in combined or "widen" in combined,
+            "Expected scope-widening advisory in prompt output",
+        )
+
+    def test_prompt_has_escalation_guidance(self):
+        """Prompt output must include an escalation path when scope is insufficient."""
+        combined = self._capture(self._swarm_args(output="prompt"))
+        self.assertIn("escalat", combined.lower())
+
+    # ── parallel output ───────────────────────────────────────────────────────
+
+    def test_parallel_advises_against_git_commit_per_worker(self):
+        """Each parallel worker prompt must include advisory text about git commit."""
+        combined = self._capture(self._swarm_args(output="parallel"))
+        self.assertIn("git commit", combined)
+        self.assertTrue(
+            "DO NOT" in combined or "do not" in combined.lower(),
+            "Expected clear advisory language about git commit in parallel worker output",
+        )
+
+    def test_parallel_advises_against_git_push_per_worker(self):
+        """Each parallel worker prompt must include advisory text about git push."""
+        combined = self._capture(self._swarm_args(output="parallel"))
+        self.assertIn("git push", combined)
+        self.assertTrue(
+            "DO NOT" in combined or "do not" in combined.lower(),
+            "Expected clear advisory language about git push in parallel worker output",
+        )
+
+    def test_parallel_has_scope_advisory_per_worker(self):
+        """Each parallel worker prompt must include scope advisory text."""
+        combined = self._capture(self._swarm_args(output="parallel"))
+        self.assertTrue(
+            "scope" in combined.lower(),
+            "Expected scope advisory in parallel output",
+        )
+        self.assertTrue(
+            "widen" in combined.lower() or "DO NOT" in combined,
+            "Expected scope-widening advisory in parallel output",
+        )
+
+    def test_parallel_has_escalation_guidance_per_worker(self):
+        """Each parallel worker prompt must include escalation guidance."""
+        combined = self._capture(self._swarm_args(output="parallel"))
+        self.assertIn("escalat", combined.lower())
+
+    # ── json output ───────────────────────────────────────────────────────────
+
+    def _capture_json(self, args):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with redirect_stdout(buf):
+                T.cmd_swarm(args)
+        out = buf.getvalue()
+        decoder = json.JSONDecoder()
+        idx = out.find("{")
+        data, _ = decoder.raw_decode(out, idx)
+        return data
+
+    def test_json_has_execution_guidance(self):
+        """JSON dispatch output must include an execution_guidance advisory field."""
+        data = self._capture_json(self._swarm_args(output="json"))
+        self.assertIn("execution_guidance", data)
+        self.assertIsInstance(data["execution_guidance"], dict)
+
+    def test_json_execution_guidance_git_ops_key(self):
+        """execution_guidance must have a 'git_ops' advisory key."""
+        data = self._capture_json(self._swarm_args(output="json"))
+        guidance = data["execution_guidance"]
+        self.assertIn("git_ops", guidance)
+
+    def test_json_execution_guidance_git_ops_mentions_commit_and_push(self):
+        """execution_guidance.git_ops must mention both commit and push advisory."""
+        data = self._capture_json(self._swarm_args(output="json"))
+        git_ops = data["execution_guidance"]["git_ops"]
+        self.assertIn("git commit", git_ops)
+        self.assertIn("git push", git_ops)
+
+    def test_json_execution_guidance_scope_key(self):
+        """execution_guidance must have a 'scope' advisory key."""
+        data = self._capture_json(self._swarm_args(output="json"))
+        self.assertIn("scope", data["execution_guidance"])
+
+    def test_json_execution_guidance_scope_mentions_escalation(self):
+        """execution_guidance.scope must reference escalation."""
+        data = self._capture_json(self._swarm_args(output="json"))
+        self.assertIn("escalat", data["execution_guidance"]["scope"].lower())
+
+    def test_json_execution_guidance_escalation_key(self):
+        """execution_guidance must have an 'escalation' key with guidance text."""
+        data = self._capture_json(self._swarm_args(output="json"))
+        self.assertIn("escalation", data["execution_guidance"])
+
+    def test_json_existing_fields_unchanged(self):
+        """Adding execution_guidance must not break existing JSON fields."""
+        data = self._capture_json(self._swarm_args(output="json"))
+        self.assertEqual(data["tentacle"], "gr-test")
+        self.assertIn("pending_todos", data)
+        self.assertIn("agent_type", data)
+        self.assertIn("model", data)
+
+    # ── behavior-safe edge cases ──────────────────────────────────────────────
+
+    def test_advisory_text_present_even_with_single_todo(self):
+        """Advisory guidance is injected regardless of todo count."""
+        (self.tentacle_dir / "todo.md").write_text("# Todo\n\n- [ ] Only task\n")
+        combined = self._capture(self._swarm_args(output="prompt"))
+        self.assertIn("git commit", combined)
+        self.assertIn("git push", combined)
+        self.assertIn("escalat", combined.lower())
+
+    def test_advisory_text_present_with_multiple_todos(self):
+        """Advisory guidance is injected with multiple pending todos."""
+        (self.tentacle_dir / "todo.md").write_text(
+            "# Todo\n\n- [ ] Task 1\n- [ ] Task 2\n- [ ] Task 3\n"
+        )
+        combined = self._capture(self._swarm_args(output="prompt"))
+        self.assertIn("git commit", combined)
+        self.assertIn("orchestrator", combined)
+
+    def test_scope_advisory_uses_do_not_language(self):
+        """Scope advisory must use 'DO NOT' phrasing for clarity."""
+        combined = self._capture(self._swarm_args(output="prompt"))
+        self.assertIn("DO NOT", combined)
+
+    def test_parallel_advisory_section_appears_before_when_done(self):
+        """Advisory guidance section must appear before the 'When done' section in parallel output."""
+        combined = self._capture(self._swarm_args(output="parallel"))
+        guardrail_pos = combined.find("Guardrails")
+        when_done_pos = combined.find("When done")
+        self.assertGreater(guardrail_pos, -1, "'Guardrails' heading not found in parallel output")
+        self.assertGreater(when_done_pos, -1, "'When done' section not found in parallel output")
+        self.assertLess(guardrail_pos, when_done_pos, "Advisory guidance must precede 'When done'")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

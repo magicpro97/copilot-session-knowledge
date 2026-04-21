@@ -163,6 +163,11 @@ python3 ~/.copilot/tools/tentacle.py complete api-export
 > programmatic consumption. `--briefing` injects live session-knowledge at dispatch time
 > (incompatible with `--output json`).
 
+**Commit convention:** By convention, the orchestrator handles all `git commit` and `git push`
+operations, after merging and verifying tentacle results. Dispatched sub-agents write files
+and `handoff.md` only. If a sub-agent's scope is insufficient, it escalates via `handoff.md`
+rather than committing partial work or expanding scope unilaterally.
+
 ### Tentacle Next Step
 
 ```bash

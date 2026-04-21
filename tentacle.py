@@ -974,7 +974,10 @@ def cmd_swarm(args):
         prompt += """
 ### Rules
 - Complete all tasks above
-- Stay within the scoped files only
+- Stay within the scoped files only — DO NOT modify files outside your declared scope
+- **DO NOT run `git commit` or `git push`** — the orchestrator owns all git operations
+- **DO NOT widen your scope** beyond the files listed above without explicit escalation to the orchestrator
+- If a task cannot be completed within your scope, stop that task and write a scope escalation note to handoff before continuing
 - Write results to handoff: run `python3 ~/.copilot/tools/tentacle.py handoff "{name}" "<summary>"`
 - Mark todos done: run `python3 ~/.copilot/tools/tentacle.py todo "{name}" done <index>`
 - Record learnings: run `python3 ~/.copilot/tools/tentacle.py handoff "{name}" "<what you learned>" --learn`
@@ -1020,6 +1023,12 @@ def cmd_swarm(args):
             print(f'### Your Task')
             print(f'{t["text"]}')
             print(f'')
+            print(f'### Guardrails')
+            print(f'- Stay within the scoped files only — DO NOT modify files outside your declared scope')
+            print(f'- **DO NOT run `git commit` or `git push`** — the orchestrator owns all git operations')
+            print(f'- **DO NOT widen your scope** without explicit escalation to the orchestrator')
+            print(f'- If the task requires files outside your scope, stop and write a scope escalation note to handoff')
+            print(f'')
             print(f'### When done')
             print(f'python3 ~/.copilot/tools/tentacle.py todo "{args.name}" done {t["index"]}')
             print(f'python3 ~/.copilot/tools/tentacle.py handoff "{args.name}" "Completed: {t["text"]}. Key learnings: <summary>" --learn')
@@ -1034,6 +1043,11 @@ def cmd_swarm(args):
             "model": model,
             "context_file": str(context_path),
             "pending_todos": [{"index": t["index"], "text": t["text"]} for t in pending],
+            "execution_guidance": {
+                "git_ops": "Do not run git commit or git push — the orchestrator owns all git operations",
+                "scope": "Stay within declared files — do not widen scope without escalating to the orchestrator",
+                "escalation": "If scope is insufficient, stop and write a scope escalation note to handoff",
+            },
         }
         if bundle_dir is not None:
             dispatch["bundle_path"] = str(bundle_dir)

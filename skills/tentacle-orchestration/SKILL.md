@@ -23,6 +23,18 @@ Adapted from the [OctoGent](https://github.com/hesamsheikh/octogent) tentacle pa
 
 **Not a good fit:** strictly sequential single-file tasks, limited token budget, trivial edits.
 
+## Sub-agent Guardrails (conventions)
+
+These conventions apply to dispatched sub-agents. They are enforced by prompt context and hook guidance, not by hard runtime locks. Violating them is the primary failure mode in multi-agent runs.
+
+| Convention | What to do |
+|------------|-----------|
+| **Commit convention** | By convention, only the orchestrator runs `git commit` and `git push`, after verifying merged results. Sub-agents write files and `handoff.md`. Committing from a sub-agent mid-run risks corrupting the orchestrator's merge flow. |
+| **Stay in scope** | Do not edit files outside your tentacle's declared `scope`. If you discover that more files are needed, escalate — do not expand unilaterally. |
+| **Escalate, don't expand** | If your scope is insufficient to complete the task, write the gap to `handoff.md` (e.g. "blocked: need changes in `src/db/` which is outside my scope") and stop. The orchestrator decides whether to create a new tentacle or adjust scope. |
+| **No over-implementation** | Implement only what your todos specify. Do not add features, refactors, or improvements that are not in your todo list — even if they seem obvious. |
+| **Handoff before stopping** | Always write a `handoff.md` summary before marking your work done, even if the session ends early. The orchestrator reads this to decide next steps. |
+
 ## Anti-patterns
 
 - ❌ SQL/markdown todos only for multi-agent work → agents lose scope isolation and CONTEXT.md
@@ -31,6 +43,9 @@ Adapted from the [OctoGent](https://github.com/hesamsheikh/octogent) tentacle pa
 - ❌ Skipping `complete` before `delete` → learnings from handoff.md lost permanently
 - ❌ Overlapping tentacle scopes → agents overwrite each other's work
 - ❌ Using `--briefing` with `--output json` → not supported; briefing content cannot be represented in JSON payload
+- ❌ Sub-agent commits or pushes → risks corrupting the orchestrator's merge/verify flow
+- ❌ Sub-agent edits files outside declared scope → silent conflicts with other parallel agents
+- ❌ Sub-agent silently expands scope instead of escalating → orchestrator loses visibility
 
 ## Core concept
 
@@ -153,7 +168,7 @@ The first 4 gates are mandatory. Skipping any of them means you don't know if th
 
 ### Phase 4: Commit + Close (Steps 13–17)
 
-#### Step 13: Commit after each completed phase
+#### Step 13: Commit after each completed phase (orchestrator only)
 
 Commit working code after completing each major phase — not just at the end.
 If a later phase fails or the session crashes, earlier work is preserved and rollback is possible.
@@ -168,7 +183,10 @@ git add -A && git commit -m "feat(<scope>): <phase description>"
 - After Phase 3 verification passes → commit
 - Final integration wiring → commit
 
-Never commit from parallel sub-agents — only the orchestrator commits after merging results.
+**Commit convention:** By convention, only the orchestrator runs `git commit` and `git push`,
+after merging and verifying all tentacle results. Sub-agents write files and `handoff.md`.
+If a sub-agent's scope is insufficient, it escalates via `handoff.md` rather than
+committing partial work or expanding scope.
 
 #### Step 14: Runtime verification
 
@@ -235,4 +253,4 @@ tentacle.py delete <name>
 4. **Complete before delete** — `complete` saves learnings; `delete` alone loses them
 5. **Commit after each phase** — uncommitted code is lost if the session crashes or compacts
 6. **Run the app** — build+test ≠ works. Launch the app to verify DI resolution and runtime behavior
-7. **⚠️ Shared workspace** — Sub-agents share the same filesystem, git index, and build cache. Parallel mode requires strictly non-overlapping file scopes. Never `git commit` from parallel agents. Consider `git worktree` for true isolation
+7. **⚠️ Commit convention** — By convention, only the orchestrator runs `git commit`/`git push` after merging and verifying all tentacle results. Sub-agents write files and `handoff.md`. Parallel agents share the same filesystem and git index — a sub-agent commit mid-run risks corrupting the orchestrator's merge flow.

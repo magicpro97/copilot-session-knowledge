@@ -230,6 +230,37 @@ python3 ~/.copilot/tools/tentacle.py next-step api-export --format json    # Mac
 JSON output includes `tentacle`, `status`, `todos_done`, `todos_total`, `pending`, `next_step`,
 `checkpoint_context`, and `briefing` fields.
 
+### Sub-agent conventions
+
+These apply to every dispatched sub-agent. They are guidance conventions, not hard runtime locks.
+
+- **Commit convention**: By convention, only the orchestrator runs `git commit`/`git push`,
+  after merging and verifying all tentacle results. Sub-agents write files and `handoff.md`.
+  A sub-agent commit mid-run risks corrupting the orchestrator's merge flow.
+- **Stay in scope**: Avoid editing files outside your tentacle's declared scope.
+- **Escalate, don't expand**: If scope is insufficient, record the gap in `handoff.md` and stop.
+  Do not expand scope or commit partial work unilaterally.
+- **No over-implementation**: Implement only what your todos specify.
+- **Write handoff.md before stopping**: Even if your session ends early, always leave a summary so
+  the orchestrator can resume or reassign.
+
+## Tentacle Bundle
+
+`tentacle.py bundle` materializes a per-run context bundle for a tentacle subagent — a local
+`bundle/` directory containing `briefing.md`, `instructions.md`, `skills.md`,
+`session-metadata.md`, and a `manifest.json`. Useful when a sub-agent needs all context
+artifacts written to disk before execution.
+
+```bash
+python3 ~/.copilot/tools/tentacle.py bundle api-export              # Materialize bundle (fetches briefing)
+python3 ~/.copilot/tools/tentacle.py bundle api-export --no-briefing   # Skip live briefing fetch
+python3 ~/.copilot/tools/tentacle.py bundle api-export --no-checkpoint # Skip checkpoint context
+python3 ~/.copilot/tools/tentacle.py bundle api-export --output json   # JSON output (manifest + bundle_path)
+```
+
+The bundle is written under `.octogent/tentacles/<name>/bundle/`. Existing files are
+overwritten on each run. JSON output returns `manifest` and `bundle_path` fields.
+
 ## Project Context
 
 `project-context.py` generates a deterministic `project-context.md` artifact from repo and
