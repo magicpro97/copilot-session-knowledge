@@ -32,7 +32,7 @@ hooks/
 | `session-end` | sessionEnd | Cleans up marker files, writes session.log entry, opt-in checkpoint reminder (`COPILOT_CHECKPOINT_REMIND=1`) |
 | `enforce-briefing` | preToolUse | Blocks edit/create/bash-writes until briefing done |
 | `enforce-learn` | preToolUse | Blocks git commit AND task_complete without learn.py |
-| `tentacle-enforce` | preToolUse | Blocks edits across ≥3 files in ≥2 modules without tentacle |
+| `tentacle-enforce` | preToolUse | Blocks edits across ≥3 files in ≥2 modules without tentacle. When blocked, follow the runtime-bundle workflow: `tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing` → `tentacle.py todo <name> add "<task>"` → `tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6` |
 | `track-edits` | postToolUse | Detects file changes via `git status` (language-agnostic) |
 | `learn-reminder` | postToolUse | Reminds to record learnings after task_complete |
 | `test-reminder` | postToolUse | Reminds to run tests after 3+ Python file edits |

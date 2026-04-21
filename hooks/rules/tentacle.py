@@ -88,7 +88,9 @@ class TentacleEnforceRule(Rule):
             f"\U0001f419 TENTACLE REQUIRED: {len(edited)} files across {len(modules)} modules "
             f"({', '.join(sorted(modules))}). "
             "You MUST use tentacle-orchestration for multi-module tasks. "
-            'Run: python3 ~/.copilot/tools/tentacle.py "your task"'
+            "Steps: (1) tentacle.py create <name> --scope \"<paths>\" --desc \"<desc>\" --briefing  "
+            "(2) tentacle.py todo <name> add \"<task>\"  "
+            "(3) tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6"
         )
 
 

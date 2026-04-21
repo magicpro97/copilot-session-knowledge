@@ -995,5 +995,393 @@ class TestFileLocked(unittest.TestCase):
         self.assertIsNotNone(tentacle)
 
 
+
+
+# ---------------------------------------------------------------------------
+# Bundle tests
+# ---------------------------------------------------------------------------
+
+class TestBuildRuntimeBundle(unittest.TestCase):
+    """Tests for _build_runtime_bundle helper."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "bundle_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        import shutil
+        if self.base.exists():
+            shutil.rmtree(self.base)
+
+    def _make(self, name="test-bundle", desc="A test tentacle"):
+        return make_tentacle(name, self.base, desc=desc)
+
+    # ── artifact presence ────────────────────────────────────────────────────
+
+    def test_creates_bundle_directory(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        self.assertTrue(bundle_dir.exists())
+        self.assertEqual(bundle_dir.name, "bundle")
+
+    def test_creates_all_five_artifacts(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        for fname in ("briefing.md", "instructions.md", "skills.md",
+                      "session-metadata.md", "manifest.json"):
+            self.assertTrue((bundle_dir / fname).exists(), f"Missing: {fname}")
+
+    def test_manifest_is_valid_json(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        raw = (bundle_dir / "manifest.json").read_text()
+        data = json.loads(raw)
+        self.assertEqual(data["tentacle"], "test-bundle")
+        self.assertIn("created_at", data)
+        self.assertIn("artifacts", data)
+
+    def test_manifest_artifact_keys(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        for key in ("briefing", "instructions", "skills", "session_metadata"):
+            self.assertIn(key, data["artifacts"], f"Missing artifact key: {key}")
+
+    # ── briefing content ─────────────────────────────────────────────────────
+
+    def test_briefing_populated_when_text_provided(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle", briefing_text="Past learning: use X not Y")
+        content = (bundle_dir / "briefing.md").read_text()
+        self.assertIn("Past learning", content)
+
+    def test_briefing_populated_flag_in_manifest(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle", briefing_text="some text")
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        self.assertTrue(data["artifacts"]["briefing"]["populated"])
+
+    def test_briefing_placeholder_when_empty(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle", briefing_text="")
+        content = (bundle_dir / "briefing.md").read_text()
+        self.assertIn("No briefing data", content)
+
+    def test_briefing_not_populated_flag_in_manifest(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle", briefing_text="")
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        self.assertFalse(data["artifacts"]["briefing"]["populated"])
+
+    # ── absent surfaces fall back to placeholder ─────────────────────────────
+
+    def test_instructions_placeholder_when_no_git_root(self):
+        d = self._make()
+        with patch.object(T, "find_git_root", return_value=None):
+            bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "instructions.md").read_text()
+        self.assertIn("No instruction files found", content)
+
+    def test_instructions_not_populated_when_absent(self):
+        d = self._make()
+        with patch.object(T, "find_git_root", return_value=None):
+            bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        self.assertFalse(data["artifacts"]["instructions"]["populated"])
+
+    def test_skills_placeholder_when_no_git_root(self):
+        d = self._make()
+        with patch.object(T, "find_git_root", return_value=None):
+            bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "skills.md").read_text()
+        self.assertIn("No SKILL.md files found", content)
+
+    def test_skills_not_populated_when_absent(self):
+        d = self._make()
+        with patch.object(T, "find_git_root", return_value=None):
+            bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        self.assertFalse(data["artifacts"]["skills"]["populated"])
+
+    # ── session metadata ─────────────────────────────────────────────────────
+
+    def test_session_metadata_includes_context(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "session-metadata.md").read_text()
+        self.assertIn("# Session Metadata", content)
+
+    def test_session_metadata_has_context_flag(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        self.assertTrue(data["artifacts"]["session_metadata"]["has_context"])
+        self.assertTrue(data["artifacts"]["session_metadata"]["has_todos"])
+
+    def test_session_metadata_checkpoint_included(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle", checkpoint_text="## Checkpoint\n\nSome work done.")
+        content = (bundle_dir / "session-metadata.md").read_text()
+        self.assertIn("Some work done", content)
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        self.assertTrue(data["artifacts"]["session_metadata"]["has_checkpoint"])
+
+    def test_session_metadata_no_checkpoint_flag_when_absent(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle", checkpoint_text="")
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        self.assertFalse(data["artifacts"]["session_metadata"]["has_checkpoint"])
+
+    def test_session_metadata_handoff_included_when_present(self):
+        d = self._make()
+        (d / "handoff.md").write_text("# Handoff\n\nDone the thing.\n")
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "session-metadata.md").read_text()
+        self.assertIn("Done the thing", content)
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        self.assertTrue(data["artifacts"]["session_metadata"]["has_handoff"])
+
+    def test_session_metadata_no_handoff_flag_when_absent(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        self.assertFalse(data["artifacts"]["session_metadata"]["has_handoff"])
+
+    # ── skills populated when SKILL.md files present ─────────────────────────
+
+    def test_skills_populated_from_fake_git_root(self):
+        d = self._make()
+        fake_root = self.base / "fake_repo"
+        skills_dir = fake_root / ".github" / "skills" / "my-skill"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text("# My Skill\n\nDoes things.\n")
+        with patch.object(T, "find_git_root", return_value=fake_root):
+            bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "skills.md").read_text()
+        self.assertIn("my-skill", content)
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        self.assertTrue(data["artifacts"]["skills"]["populated"])
+
+    # ── instructions populated when files present ─────────────────────────────
+
+    def test_instructions_populated_from_fake_git_root(self):
+        d = self._make()
+        fake_root = self.base / "fake_repo2"
+        fake_root.mkdir(parents=True, exist_ok=True)
+        (fake_root / "CLAUDE.md").write_text("# Claude Instructions\n\nDo this.\n")
+        with patch.object(T, "find_git_root", return_value=fake_root):
+            bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "instructions.md").read_text()
+        self.assertIn("Claude Instructions", content)
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        self.assertTrue(data["artifacts"]["instructions"]["populated"])
+
+    # ── re-materialization overwrites existing bundle ─────────────────────────
+
+    def test_bundle_overwritten_on_second_call(self):
+        d = self._make()
+        T._build_runtime_bundle(d, "test-bundle", briefing_text="first run")
+        T._build_runtime_bundle(d, "test-bundle", briefing_text="second run")
+        content = (d / "bundle" / "briefing.md").read_text()
+        self.assertIn("second run", content)
+        self.assertNotIn("first run", content)
+
+
+class TestCmdBundle(unittest.TestCase):
+    """Tests for cmd_bundle standalone command."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "cmd_bundle_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        import shutil
+        if self.base.exists():
+            shutil.rmtree(self.base)
+
+    def _args(self, name, **kwargs):
+        return fake_args(
+            name=name,
+            no_briefing=kwargs.get("no_briefing", True),
+            no_checkpoint=kwargs.get("no_checkpoint", True),
+            output=kwargs.get("output", "text"),
+        )
+
+    def test_cmd_bundle_creates_bundle_dir(self):
+        d = make_tentacle("my-tentacle", self.base)
+        args = self._args("my-tentacle")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_bundle(args)
+        self.assertTrue((d / "bundle").exists())
+
+    def test_cmd_bundle_json_output_contains_bundle_path(self):
+        make_tentacle("my-tentacle", self.base)
+        args = self._args("my-tentacle", output="json")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            import io
+            from contextlib import redirect_stdout
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                T.cmd_bundle(args)
+        out = buf.getvalue()
+        data = json.loads(out.strip())
+        self.assertIn("bundle_path", data)
+        self.assertIn("artifacts", data)
+
+    def test_cmd_bundle_exits_on_missing_tentacle(self):
+        args = self._args("nonexistent")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with self.assertRaises(SystemExit):
+                T.cmd_bundle(args)
+
+    def test_cmd_bundle_no_briefing_writes_placeholder(self):
+        d = make_tentacle("my-tentacle", self.base)
+        args = self._args("my-tentacle", no_briefing=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_bundle(args)
+        content = (d / "bundle" / "briefing.md").read_text()
+        self.assertIn("No briefing data", content)
+
+    def test_cmd_bundle_with_briefing_fetches_knowledge(self):
+        make_tentacle("my-tentacle", self.base)
+        args = self._args("my-tentacle", no_briefing=False)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_run_briefing_for_task", return_value="Key pattern: always X") as mock_b:
+                T.cmd_bundle(args)
+        mock_b.assert_called_once()
+
+    def test_cmd_bundle_text_output_shows_artifacts(self):
+        make_tentacle("my-tentacle", self.base)
+        args = self._args("my-tentacle", output="text")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            import io
+            from contextlib import redirect_stdout
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                T.cmd_bundle(args)
+        out = buf.getvalue()
+        self.assertIn("Bundle materialized", out)
+        self.assertIn("manifest.json", out)
+
+
+class TestSwarmBundleFlag(unittest.TestCase):
+    """Tests for --bundle flag in swarm/dispatch."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "swarm_bundle_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        import shutil
+        if self.base.exists():
+            shutil.rmtree(self.base)
+
+    def _swarm_args(self, name, output="json", bundle=False):
+        return fake_args(
+            name=name,
+            output=output,
+            agent_type="general-purpose",
+            model="claude-sonnet-4.6",
+            briefing=False,
+            bundle=bundle,
+        )
+
+    def test_swarm_json_no_bundle_lacks_bundle_path(self):
+        make_tentacle("sw-test", self.base)
+        args = self._swarm_args("sw-test", output="json", bundle=False)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            import io
+            from contextlib import redirect_stdout
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                T.cmd_swarm(args)
+        output = buf.getvalue()
+        # Extract JSON from mixed output (header lines + JSON block)
+        decoder = json.JSONDecoder()
+        idx = output.find("{")
+        data, _ = decoder.raw_decode(output, idx)
+        self.assertNotIn("bundle_path", data)
+
+    def test_swarm_json_with_bundle_includes_bundle_path(self):
+        make_tentacle("sw-test", self.base)
+        args = self._swarm_args("sw-test", output="json", bundle=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_run_briefing_for_task", return_value=""):
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                    import io
+                    from contextlib import redirect_stdout
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        T.cmd_swarm(args)
+        output = buf.getvalue()
+        decoder = json.JSONDecoder()
+        idx = output.find("{")
+        data, _ = decoder.raw_decode(output, idx)
+        self.assertIn("bundle_path", data)
+        self.assertTrue(Path(data["bundle_path"]).exists())
+
+    def test_swarm_bundle_creates_bundle_dir(self):
+        d = make_tentacle("sw-test2", self.base)
+        args = self._swarm_args("sw-test2", output="json", bundle=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_run_briefing_for_task", return_value=""):
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                    import io
+                    from contextlib import redirect_stdout
+                    with redirect_stdout(io.StringIO()):
+                        T.cmd_swarm(args)
+        self.assertTrue((d / "bundle").exists())
+
+    def test_swarm_prompt_with_bundle_shows_bundle_path(self):
+        make_tentacle("sw-test3", self.base)
+        args = self._swarm_args("sw-test3", output="prompt", bundle=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_run_briefing_for_task", return_value=""):
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                    import io
+                    from contextlib import redirect_stdout
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        T.cmd_swarm(args)
+        out = buf.getvalue()
+        self.assertIn("Bundle Path", out)
+
+    def test_swarm_parallel_with_bundle_shows_bundle_path_per_worker(self):
+        make_tentacle("sw-test4", self.base)
+        args = self._swarm_args("sw-test4", output="parallel", bundle=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_run_briefing_for_task", return_value=""):
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                    import io
+                    from contextlib import redirect_stdout
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        T.cmd_swarm(args)
+        out = buf.getvalue()
+        self.assertIn("Bundle Path", out)
+        self.assertGreaterEqual(out.count("Bundle Path"), 1)
+
+    def test_swarm_bundle_with_briefing_uses_raw_briefing_text_in_bundle(self):
+        d = make_tentacle("sw-test5", self.base)
+        args = fake_args(
+            name="sw-test5",
+            output="prompt",
+            agent_type="general-purpose",
+            model="claude-sonnet-4.6",
+            briefing=True,
+            bundle=True,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_run_briefing_for_task", return_value="Pattern: keep raw briefing"):
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                    import io
+                    from contextlib import redirect_stdout
+                    with redirect_stdout(io.StringIO()):
+                        T.cmd_swarm(args)
+        content = (d / "bundle" / "briefing.md").read_text()
+        self.assertIn("Pattern: keep raw briefing", content)
+        self.assertNotIn("### Past Knowledge (live briefing at dispatch)", content)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

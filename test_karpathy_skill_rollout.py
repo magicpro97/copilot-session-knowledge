@@ -12,6 +12,10 @@ Verifies:
      setup-project.py and auto-update-tools.py scope.
   7. Path derivation from HOST_SKILL_SUBPATHS is consistent for both hosts.
   8. No upstream CLAUDE.md is vendored or written by setup-project.py.
+ 15. BUILTIN_PROJECT_SKILLS in auto-update-tools.py covers non-vendored built-in
+     skills; deploy_skills() refreshes them in managed projects (update-only).
+ 16. BUILTIN_PROJECT_SKILLS consistency: no overlap with VENDORED_SKILLS; all
+     skills listed are also registered in setup-project.py INSTALL_ITEMS.
 
 Run: python3 test_karpathy_skill_rollout.py
 """
@@ -905,6 +909,181 @@ if skill_md.exists():
 
     test("_windows_copilot_skills_dir_from_wsl() returns None outside WSL",
          _resolved14f is None)
+
+# ---------------------------------------------------------------------------
+# 15. BUILTIN_PROJECT_SKILLS rollout: update-only for non-vendored skills
+# ---------------------------------------------------------------------------
+print("\n🔄 15. BUILTIN_PROJECT_SKILLS rollout (non-vendored built-in skills)")
+
+import re as _re15
+
+# Source guards
+test("BUILTIN_PROJECT_SKILLS defined in auto-update-tools.py",
+     "BUILTIN_PROJECT_SKILLS" in aut_source)
+
+# Parse BUILTIN_PROJECT_SKILLS from source
+_bps_match = _re15.search(r'BUILTIN_PROJECT_SKILLS\s*(?::\s*[^\n=]+)?\s*=\s*\(([^)]*)\)',
+                           aut_source)
+_bps_set = set(_re15.findall(r'["\']([^"\']+)["\']', _bps_match.group(1))) if _bps_match else set()
+
+test("BUILTIN_PROJECT_SKILLS parseable in auto-update-tools.py",
+     bool(_bps_set), f"Could not parse — got {_bps_set!r}")
+
+# Functional tests using the real deploy_skills()
+_one_builtin = next(iter(_bps_set), None)
+if _one_builtin:
+    _builtin_skill_src = REPO / "skills" / _one_builtin / "SKILL.md"
+    if _builtin_skill_src.exists():
+        import importlib.util as _ilu_15
+        _aut15_spec = _ilu_15.spec_from_file_location(
+            "auto_update_tools_s15", REPO / "auto-update-tools.py")
+        _aut15_mod = _ilu_15.module_from_spec(_aut15_spec)
+        _aut15_spec.loader.exec_module(_aut15_mod)
+
+        from unittest.mock import patch, MagicMock
+
+        # ── A: update already-deployed non-vendored built-in skill ───────────
+        with tempfile.TemporaryDirectory() as _d15a:
+            _proj15a = Path(_d15a)
+            _deployed15a = _proj15a / ".github" / "skills" / _one_builtin / "SKILL.md"
+            _deployed15a.parent.mkdir(parents=True)
+            _deployed15a.write_text("OLD CONTENT", encoding="utf-8")
+
+            _orig_td15a = _aut15_mod.TOOLS_DIR
+            _aut15_mod.TOOLS_DIR = REPO
+            _mock15a = MagicMock()
+            _mock15a.returncode = 0
+            _mock15a.stdout = str(_proj15a) + "\n"
+            try:
+                with patch.object(_aut15_mod, "subprocess") as _mp15a, \
+                     patch.object(_aut15_mod, "_load_project_registry", return_value=[]):
+                    _mp15a.run.return_value = _mock15a
+                    _aut15_mod.deploy_skills()
+            finally:
+                _aut15_mod.TOOLS_DIR = _orig_td15a
+
+            _expected15a = _builtin_skill_src.read_text(encoding="utf-8")
+            test(
+                f"deploy_skills() updates already-deployed {_one_builtin}/SKILL.md",
+                _deployed15a.read_text(encoding="utf-8") == _expected15a,
+                "Content was not updated",
+            )
+
+        # ── B: never create new deployment when absent ───────────────────────
+        with tempfile.TemporaryDirectory() as _d15b:
+            _proj15b = Path(_d15b)
+            # Do NOT create the skill dir — it must not be created by deploy_skills().
+
+            _orig_td15b = _aut15_mod.TOOLS_DIR
+            _aut15_mod.TOOLS_DIR = REPO
+            _mock15b = MagicMock()
+            _mock15b.returncode = 0
+            _mock15b.stdout = str(_proj15b) + "\n"
+            try:
+                with patch.object(_aut15_mod, "subprocess") as _mp15b, \
+                     patch.object(_aut15_mod, "_load_project_registry", return_value=[]):
+                    _mp15b.run.return_value = _mock15b
+                    _aut15_mod.deploy_skills()
+            finally:
+                _aut15_mod.TOOLS_DIR = _orig_td15b
+
+            test(
+                f"deploy_skills() does NOT create {_one_builtin}/SKILL.md when absent",
+                not (_proj15b / ".github" / "skills" / _one_builtin / "SKILL.md").exists(),
+                "update-only rule violated: new deployment was created",
+            )
+
+        # ── C: asset subdir update for non-vendored built-in skill ───────────
+        with tempfile.TemporaryDirectory() as _d15c_tools, \
+                tempfile.TemporaryDirectory() as _d15c_proj:
+            _fake_tools15c = Path(_d15c_tools)
+            _proj15c = Path(_d15c_proj)
+
+            # Fake source with a references/ subdir.
+            _skill_dir15c = _fake_tools15c / "skills" / "test-builtin-skill"
+            (_skill_dir15c / "references").mkdir(parents=True)
+            (_skill_dir15c / "SKILL.md").write_text("SKILL BODY", encoding="utf-8")
+            (_skill_dir15c / "references" / "guide.md").write_text("NEW GUIDE", encoding="utf-8")
+            (_skill_dir15c / "references" / "extra.md").write_text("EXTRA", encoding="utf-8")
+
+            # Pre-deploy only guide.md (extra.md absent → must not be created).
+            _deployed_asset = _proj15c / ".github" / "skills" / "test-builtin-skill" / "references" / "guide.md"
+            _deployed_asset.parent.mkdir(parents=True)
+            _deployed_asset.write_text("OLD GUIDE", encoding="utf-8")
+            _deployed_md15c = _proj15c / ".github" / "skills" / "test-builtin-skill" / "SKILL.md"
+            _deployed_md15c.write_text("OLD BODY", encoding="utf-8")
+
+            # Inject "test-builtin-skill" into BUILTIN_PROJECT_SKILLS for this run.
+            _orig_bps15c = _aut15_mod.BUILTIN_PROJECT_SKILLS
+            _orig_td15c = _aut15_mod.TOOLS_DIR
+            _aut15_mod.BUILTIN_PROJECT_SKILLS = ("test-builtin-skill",)
+            _aut15_mod.TOOLS_DIR = _fake_tools15c
+            _mock15c = MagicMock()
+            _mock15c.returncode = 0
+            _mock15c.stdout = str(_proj15c) + "\n"
+            try:
+                with patch.object(_aut15_mod, "subprocess") as _mp15c, \
+                     patch.object(_aut15_mod, "_load_project_registry", return_value=[]):
+                    _mp15c.run.return_value = _mock15c
+                    _aut15_mod.deploy_skills()
+            finally:
+                _aut15_mod.BUILTIN_PROJECT_SKILLS = _orig_bps15c
+                _aut15_mod.TOOLS_DIR = _orig_td15c
+
+            test("deploy_skills() updates existing asset in non-vendored built-in skill",
+                 _deployed_asset.read_text(encoding="utf-8") == "NEW GUIDE")
+            test("deploy_skills() does NOT create absent asset in non-vendored built-in skill",
+                 not (_proj15c / ".github" / "skills" / "test-builtin-skill" / "references" / "extra.md").exists())
+    else:
+        test(f"Skipped: skills/{_one_builtin}/SKILL.md not found in repo", True)
+else:
+    test("Skipped: BUILTIN_PROJECT_SKILLS is empty (no skills to test)", True)
+
+# ---------------------------------------------------------------------------
+# 16. BUILTIN_PROJECT_SKILLS consistency: no overlap with VENDORED_SKILLS;
+#     each entry appears in setup-project.py INSTALL_ITEMS["skills"]
+# ---------------------------------------------------------------------------
+print("\n🔗 16. BUILTIN_PROJECT_SKILLS consistency")
+
+# Parse VENDORED_SKILLS for overlap check (reuse _extract_vendored_skills from section 10)
+_aut_vs16 = _extract_vendored_skills(aut_source)
+
+test("BUILTIN_PROJECT_SKILLS has no overlap with VENDORED_SKILLS",
+     not (_bps_set & _aut_vs16),
+     f"Overlap: {_bps_set & _aut_vs16!r}")
+
+# Parse INSTALL_ITEMS["skills"] src values from setup-project.py.
+# Narrow to the skills array only to avoid template "src" entries (e.g. "SKILL.md").
+_sp_skills_block16 = _re15.search(r'"skills"\s*:\s*\[([^\]]+)\]', sp_source, _re15.DOTALL)
+if not _sp_skills_block16:
+    _sp_skills_block16 = _re15.search(r"'skills'\s*:\s*\[([^\]]+)\]", sp_source, _re15.DOTALL)
+_sp_skills16 = (
+    set(_re15.findall(r'"src"\s*:\s*"([^"]+)"', _sp_skills_block16.group(1)))
+    if _sp_skills_block16 else set()
+)
+
+test("INSTALL_ITEMS skills parseable from setup-project.py",
+     bool(_sp_skills16), f"Could not parse — got {_sp_skills16!r}")
+
+if _sp_skills16 and _bps_set:
+    _missing_from_sp = _bps_set - _sp_skills16
+    test("All BUILTIN_PROJECT_SKILLS entries are registered in setup-project.py INSTALL_ITEMS",
+         not _missing_from_sp,
+         f"Missing from INSTALL_ITEMS: {_missing_from_sp!r}")
+
+    # Reverse direction: non-vendored INSTALL_ITEMS["skills"] entries must all
+    # appear in BUILTIN_PROJECT_SKILLS (prevents silent drift / forgotten entries).
+    _sp_nonvendored16 = _sp_skills16 - _aut_vs16
+    _missing_from_bps = _sp_nonvendored16 - _bps_set
+    test(
+        "All non-vendored INSTALL_ITEMS['skills'] entries are in BUILTIN_PROJECT_SKILLS",
+        not _missing_from_bps,
+        f"Missing from BUILTIN_PROJECT_SKILLS: {_missing_from_bps!r}",
+    )
+
+# Source guard: deploy_skills() loop references BUILTIN_PROJECT_SKILLS
+test("deploy_skills() iterates BUILTIN_PROJECT_SKILLS (source guard)",
+     "BUILTIN_PROJECT_SKILLS" in aut_source and "for skill_name in BUILTIN_PROJECT_SKILLS" in aut_source)
 
 # ---------------------------------------------------------------------------
 # Summary

@@ -275,6 +275,168 @@ def _load_latest_checkpoint_context() -> str:
         return ""
 
 
+def _build_runtime_bundle(
+    tentacle_dir: Path,
+    name: str,
+    briefing_text: str = "",
+    checkpoint_text: str = "",
+) -> Path:
+    """Materialize a per-run context bundle under the tentacle workspace.
+
+    Creates bundle/ inside the tentacle directory with explicit artifacts:
+      briefing.md       — session-knowledge briefing learnings (or placeholder)
+      instructions.md   — instruction-file surface (host AI config files)
+      skills.md         — skill-file surface (SKILL.md catalogue)
+      session-metadata.md — context, todos, handoff, checkpoint
+      manifest.json     — machine-readable index of all artifacts
+
+    Always writes fallback placeholder content for absent surfaces.
+    Returns the bundle directory path.
+    """
+    bundle_dir = tentacle_dir / "bundle"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.now(timezone.utc).isoformat()
+    manifest: dict = {
+        "tentacle": name,
+        "created_at": ts,
+        "artifacts": {},
+    }
+
+    # ── 1. Briefing ──────────────────────────────────────────────────────────
+    if briefing_text:
+        briefing_content = f"# Briefing: {name}\n\n{briefing_text}\n"
+    else:
+        briefing_content = (
+            f"# Briefing: {name}\n\n"
+            "<!-- No briefing data available for this tentacle. -->\n\n"
+            f"Fetch manually:  python3 ~/.copilot/tools/briefing.py \"{name}\" --compact\n"
+        )
+    (bundle_dir / "briefing.md").write_text(briefing_content)
+    manifest["artifacts"]["briefing"] = {
+        "file": "briefing.md",
+        "populated": bool(briefing_text),
+    }
+
+    # ── 2. Instruction-file surface ───────────────────────────────────────────
+    instr_lines = ["# Instruction Files\n"]
+    instr_paths: list[str] = []
+    git_root = find_git_root()
+    if git_root:
+        for rel in [
+            ".github/copilot-instructions.md",
+            "CLAUDE.md",
+            "AGENTS.md",
+        ]:
+            p = git_root / rel
+            if p.exists():
+                instr_paths.append(rel)
+                instr_lines.append(f"## {rel}\n")
+                snippet = p.read_text(encoding="utf-8", errors="replace")[:2000]
+                instr_lines.append(snippet)
+                instr_lines.append("\n---\n")
+        instr_dir = git_root / ".github" / "instructions"
+        if instr_dir.exists():
+            for md_file in sorted(instr_dir.glob("*.md")):
+                rel = str(md_file.relative_to(git_root))
+                instr_paths.append(rel)
+                instr_lines.append(f"## {rel}\n")
+                snippet = md_file.read_text(encoding="utf-8", errors="replace")[:1000]
+                instr_lines.append(snippet)
+                instr_lines.append("\n---\n")
+    if not instr_paths:
+        instr_lines.append(
+            "<!-- No instruction files found in this project. -->\n"
+            "Expected: .github/copilot-instructions.md, CLAUDE.md, AGENTS.md, "
+            ".github/instructions/*.md\n"
+        )
+    (bundle_dir / "instructions.md").write_text("\n".join(instr_lines))
+    manifest["artifacts"]["instructions"] = {
+        "file": "instructions.md",
+        "sources": instr_paths,
+        "populated": bool(instr_paths),
+    }
+
+    # ── 3. Skill-file surface ─────────────────────────────────────────────────
+    skill_lines = ["# Skill Files\n"]
+    skill_paths: list[str] = []
+    if git_root:
+        skills_dir = git_root / ".github" / "skills"
+        if skills_dir.exists():
+            for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+                rel = str(skill_md.relative_to(git_root))
+                skill_name = skill_md.parent.name
+                skill_paths.append(rel)
+                skill_lines.append(f"## {skill_name}\n")
+                snippet = skill_md.read_text(encoding="utf-8", errors="replace")[:500]
+                skill_lines.append(snippet)
+                skill_lines.append("\n---\n")
+    if not skill_paths:
+        skill_lines.append(
+            "<!-- No SKILL.md files found under .github/skills/. -->\n"
+            "Expected pattern: .github/skills/<name>/SKILL.md\n"
+        )
+    (bundle_dir / "skills.md").write_text("\n".join(skill_lines))
+    manifest["artifacts"]["skills"] = {
+        "file": "skills.md",
+        "sources": skill_paths,
+        "populated": bool(skill_paths),
+    }
+
+    # ── 4. Session metadata ───────────────────────────────────────────────────
+    meta_lines = ["# Session Metadata\n"]
+    meta_path = tentacle_dir / "meta.json"
+    context_path = tentacle_dir / "CONTEXT.md"
+    todo_path = tentacle_dir / "todo.md"
+    handoff_path = tentacle_dir / "handoff.md"
+
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+            meta_lines.append("## Tentacle Meta\n")
+            meta_lines.append(f"- Name: {meta.get('name', name)}")
+            meta_lines.append(f"- Status: {meta.get('status', 'unknown')}")
+            meta_lines.append(f"- Description: {meta.get('description', '')}")
+            meta_lines.append(f"- Created: {meta.get('created_at', '')}")
+            meta_lines.append("")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if context_path.exists():
+        meta_lines.append("## Context\n")
+        meta_lines.append(context_path.read_text())
+        meta_lines.append("")
+
+    if todo_path.exists():
+        meta_lines.append("## Todos\n")
+        meta_lines.append(todo_path.read_text())
+        meta_lines.append("")
+
+    if handoff_path.exists():
+        meta_lines.append("## Latest Handoff\n")
+        meta_lines.append(handoff_path.read_text())
+        meta_lines.append("")
+
+    if checkpoint_text:
+        meta_lines.append("## Checkpoint\n")
+        meta_lines.append(checkpoint_text)
+        meta_lines.append("")
+
+    (bundle_dir / "session-metadata.md").write_text("\n".join(meta_lines))
+    manifest["artifacts"]["session_metadata"] = {
+        "file": "session-metadata.md",
+        "has_context": context_path.exists(),
+        "has_todos": todo_path.exists(),
+        "has_handoff": handoff_path.exists(),
+        "has_checkpoint": bool(checkpoint_text),
+    }
+
+    # ── 5. Manifest ───────────────────────────────────────────────────────────
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+
+    return bundle_dir
+
+
 def _run_learn(category: str, title: str, content: str, tags: str = "") -> bool:
     """Run learn.py to record knowledge. Returns True on success."""
     if not LEARN_PY.exists():
@@ -762,6 +924,7 @@ def cmd_swarm(args):
     print(f"Agent: {agent_type} | Model: {model}\n")
 
     # Live briefing injection at dispatch time
+    briefing_text = ""
     live_briefing_section = ""
     if getattr(args, "briefing", False):
         fallback = meta.get("description", "") or args.name.replace("-", " ")
@@ -776,6 +939,25 @@ def cmd_swarm(args):
         else:
             print(f"   ℹ️  No relevant past knowledge found\n")
 
+    # Bundle materialization (--bundle flag)
+    bundle_dir: Path | None = None
+    bundle_section = ""
+    if getattr(args, "bundle", False):
+        print(f"📦 Materializing runtime bundle...")
+        b_briefing = _run_briefing_for_task(
+            args.name,
+            fallback_query=meta.get("description", "") or args.name.replace("-", " "),
+        ) if not getattr(args, "briefing", False) else briefing_text
+        b_checkpoint = _load_latest_checkpoint_context()
+        bundle_dir = _build_runtime_bundle(
+            tentacle_dir=tentacle_dir,
+            name=args.name,
+            briefing_text=b_briefing,
+            checkpoint_text=b_checkpoint,
+        )
+        bundle_section = f"\n### Bundle Path\n\n`{bundle_dir}`\n"
+        print(f"   ✅ Bundle: {bundle_dir}\n")
+
     if args.output == "prompt":
         # Output as a single dispatch prompt with all todos
         print("─── DISPATCH PROMPT ───\n")
@@ -783,7 +965,7 @@ def cmd_swarm(args):
 
 ### Context
 {context.strip()}
-{live_briefing_section}
+{live_briefing_section}{bundle_section}
 ### Your Tasks (complete ALL)
 """
         for t in pending:
@@ -832,6 +1014,8 @@ def cmd_swarm(args):
             print(f'{context.strip()[:500]}')
             if live_briefing_section:
                 print(live_briefing_section.strip())
+            if bundle_section:
+                print(bundle_section.strip())
             print(f'')
             print(f'### Your Task')
             print(f'{t["text"]}')
@@ -851,6 +1035,8 @@ def cmd_swarm(args):
             "context_file": str(context_path),
             "pending_todos": [{"index": t["index"], "text": t["text"]} for t in pending],
         }
+        if bundle_dir is not None:
+            dispatch["bundle_path"] = str(bundle_dir)
         print(json.dumps(dispatch, indent=2))
 
 
@@ -944,6 +1130,51 @@ def cmd_delete(args):
     print(f"🗑️  Tentacle '{args.name}' deleted.")
 
 
+def cmd_bundle(args):
+    """Materialize a per-run context bundle for a tentacle subagent."""
+    tentacles = get_tentacles_dir(args.session_dir)
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
+
+    if not tentacle_dir.exists():
+        print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    meta_path = tentacle_dir / "meta.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+
+    # Fetch briefing
+    briefing_text = ""
+    if not getattr(args, "no_briefing", False):
+        fallback = meta.get("description", "") or args.name.replace("-", " ")
+        print(f"🧠 Fetching briefing for '{args.name}'...")
+        briefing_text = _run_briefing_for_task(args.name, fallback_query=fallback)
+        if briefing_text:
+            print(f"   ✅ Briefing: {len(briefing_text)} chars")
+        else:
+            print(f"   ℹ️  No briefing data — placeholder will be written")
+
+    # Load checkpoint
+    checkpoint_text = ""
+    if not getattr(args, "no_checkpoint", False):
+        checkpoint_text = _load_latest_checkpoint_context()
+
+    bundle_dir = _build_runtime_bundle(
+        tentacle_dir=tentacle_dir,
+        name=args.name,
+        briefing_text=briefing_text,
+        checkpoint_text=checkpoint_text,
+    )
+
+    if getattr(args, "output", "text") == "json":
+        manifest_path = bundle_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        print(json.dumps({"bundle_path": str(bundle_dir), **manifest}, indent=2))
+    else:
+        print(f"📦 Bundle materialized: {bundle_dir}")
+        for f in sorted(bundle_dir.iterdir()):
+            print(f"   {f.name} ({f.stat().st_size} bytes)")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Tentacle Pattern Manager for Copilot CLI",
@@ -1003,6 +1234,8 @@ def main():
                          help="Output format: prompt (single agent), parallel (one per todo), json")
     p_swarm.add_argument("--briefing", action="store_true",
                          help="Inject live briefing into the dispatch prompt at runtime")
+    p_swarm.add_argument("--bundle", action="store_true",
+                         help="Materialize a runtime bundle and surface its path in the dispatch output")
 
     # dispatch (alias for swarm --output prompt)
     p_dispatch = sub.add_parser("dispatch", help="Generate single-agent dispatch prompt")
@@ -1011,6 +1244,8 @@ def main():
     p_dispatch.add_argument("--model", default="claude-sonnet-4.6", help="Model")
     p_dispatch.add_argument("--briefing", action="store_true",
                             help="Inject live briefing into the dispatch prompt at runtime")
+    p_dispatch.add_argument("--bundle", action="store_true",
+                            help="Materialize a runtime bundle and surface its path in the dispatch output")
 
     # resume
     p_resume = sub.add_parser("resume", help="Resume a tentacle: refresh briefing, set active")
@@ -1040,6 +1275,16 @@ def main():
     p_complete.add_argument("--no-learn", action="store_true",
                             help="Skip auto-learning from handoff")
 
+    # bundle (standalone command)
+    p_bundle = sub.add_parser("bundle", help="Materialize a per-run context bundle for a tentacle subagent")
+    p_bundle.add_argument("name", help="Tentacle name")
+    p_bundle.add_argument("--no-briefing", action="store_true",
+                          help="Skip live briefing fetch (placeholder written instead)")
+    p_bundle.add_argument("--no-checkpoint", action="store_true",
+                          help="Skip loading latest checkpoint context")
+    p_bundle.add_argument("--output", choices=["text", "json"], default="text",
+                          help="Output format: text (default) or json (manifest + bundle_path)")
+
     args = parser.parse_args()
 
     if args.command == "create":
@@ -1067,6 +1312,8 @@ def main():
         cmd_delete(args)
     elif args.command == "complete":
         cmd_complete(args)
+    elif args.command == "bundle":
+        cmd_bundle(args)
 
 
 if __name__ == "__main__":

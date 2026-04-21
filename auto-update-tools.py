@@ -66,6 +66,29 @@ REGISTRY_PATH = HOME / ".copilot" / "session-state" / "tools-managed-projects.js
 # ---------------------------------------------------------------------------
 VENDORED_SKILLS: tuple[str, ...] = ("karpathy-guidelines",)
 
+# ---------------------------------------------------------------------------
+# Non-vendored built-in project skills: deployed by setup-project.py to
+# .github/skills/<name>/ (Copilot CLI project path only).  deploy_skills()
+# refreshes already-deployed SKILL.md and asset files here (update-only;
+# never creates new deployments).  Keep in sync with INSTALL_ITEMS["skills"]
+# in setup-project.py (excluding VENDORED_SKILLS entries).
+# ---------------------------------------------------------------------------
+BUILTIN_PROJECT_SKILLS: tuple[str, ...] = (
+    "session-knowledge-creator",
+    "tentacle-creator",
+    "tentacle-orchestration",
+    "agent-creator",
+    "hook-creator",
+    "workflow-creator",
+    "find-skills",
+    "agent-instructions-auditor",
+    "forge-ecosystem",
+    "code-reviewer",
+    "task-step-generator",
+    "conductor-creator",
+    "project-onboarding",
+)
+
 # Global Copilot CLI skills directory.  deploy_skills() updates already-installed
 # skills here (update-only; never creates a new global install from scratch).
 GLOBAL_COPILOT_SKILLS_DIR = HOME / ".copilot" / "skills"
@@ -688,6 +711,41 @@ def deploy_skills():
                                     ok(f"Updated {host_name} {skill_name}/{rel} in {project_root.name}")
                             except Exception:
                                 pass
+
+        # --- non-vendored built-in project skills (Copilot CLI path only) ----
+        # These are deployed by setup-project.py to .github/skills/<name>/.
+        # Update-only: only refresh files that already exist at the destination.
+        for skill_name in BUILTIN_PROJECT_SKILLS:
+            skill_src = TOOLS_DIR / "skills" / skill_name / "SKILL.md"
+            if not skill_src.exists():
+                continue
+            skill_content = skill_src.read_text(encoding="utf-8")
+            skill_src_dir = TOOLS_DIR / "skills" / skill_name
+            target = project_root / ".github" / "skills" / skill_name / "SKILL.md"
+            if target.exists():
+                try:
+                    if target.read_text(encoding="utf-8") != skill_content:
+                        target.write_text(skill_content, encoding="utf-8")
+                        ok(f"Updated {skill_name}/SKILL.md in {project_root.name}")
+                except Exception:
+                    pass
+            # Asset subdirs — update only, never create.
+            for subdir in sorted(skill_src_dir.iterdir()):
+                if not subdir.is_dir():
+                    continue
+                for asset_file in subdir.rglob("*"):
+                    if not asset_file.is_file():
+                        continue
+                    rel = asset_file.relative_to(skill_src_dir)
+                    asset_target = project_root / ".github" / "skills" / skill_name / rel
+                    if asset_target.exists():
+                        try:
+                            content = asset_file.read_bytes()
+                            if asset_target.read_bytes() != content:
+                                asset_target.write_bytes(content)
+                                ok(f"Updated {skill_name}/{rel} in {project_root.name}")
+                        except Exception:
+                            pass
 
     # --- global Copilot CLI skills (update-only; never create) ---------------
     # Propagate vendored-skill updates to already-installed global skill dirs
