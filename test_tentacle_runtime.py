@@ -907,5 +907,93 @@ class TestCmdNextStep(unittest.TestCase):
         self.assertEqual(content_before, content_after)
 
 
+class TestFileLocked(unittest.TestCase):
+    """Regression tests for file_locked() — sequential reacquisition, exception release,
+    lock-file creation, and Windows import safety."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "file_locked"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.lock_path = self.base / "test_resource"
+
+    def tearDown(self):
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def test_creates_lock_file(self):
+        """file_locked must create the .lock file on disk while held."""
+        with T.file_locked(self.lock_path):
+            self.assertTrue((self.base / "test_resource.lock").exists())
+
+    def test_sequential_reacquisition(self):
+        """Lock can be re-acquired after being released."""
+        with T.file_locked(self.lock_path):
+            pass
+        # Must not raise on second acquisition
+        with T.file_locked(self.lock_path):
+            pass
+
+    def test_lock_released_on_exception(self):
+        """Lock is released even when the body raises an exception."""
+        try:
+            with T.file_locked(self.lock_path):
+                raise ValueError("simulated failure")
+        except ValueError:
+            pass
+        # Must be re-acquirable — confirms the lock was released
+        with T.file_locked(self.lock_path):
+            pass
+
+    def test_windows_acquire_failure_skips_unlock_and_closes_file(self):
+        """If Windows lock acquisition fails, do not unlock an unheld range and still close the file."""
+        calls = []
+
+        class FakeLockFile:
+            def __init__(self):
+                self.closed = False
+
+            def write(self, data):
+                return len(data)
+
+            def flush(self):
+                return None
+
+            def seek(self, offset):
+                return None
+
+            def fileno(self):
+                return 123
+
+            def close(self):
+                self.closed = True
+
+        class FakeMSVCRT:
+            LK_LOCK = 1
+            LK_UNLCK = 2
+
+            @staticmethod
+            def locking(fd, mode, size):
+                calls.append((fd, mode, size))
+                if mode == FakeMSVCRT.LK_LOCK:
+                    raise OSError("busy")
+
+        fake_lock_file = FakeLockFile()
+        with patch.object(T.os, "name", "nt"):
+            with patch.object(T, "msvcrt", FakeMSVCRT, create=True):
+                with patch("builtins.open", return_value=fake_lock_file):
+                    with self.assertRaises(OSError):
+                        with T.file_locked(self.lock_path):
+                            pass
+
+        self.assertEqual(calls, [(123, FakeMSVCRT.LK_LOCK, 1)])
+        self.assertTrue(fake_lock_file.closed)
+
+    def test_import_no_fcntl_error(self):
+        """Importing tentacle must not raise ModuleNotFoundError on any platform."""
+        import tentacle  # noqa: F401
+        self.assertIsNotNone(tentacle)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

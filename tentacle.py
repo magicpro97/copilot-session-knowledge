@@ -28,7 +28,6 @@ Environment:
 
 import argparse
 import json
-import fcntl
 import os
 import re
 import subprocess
@@ -38,6 +37,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 TOOLS_DIR = Path(__file__).resolve().parent
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
 LEARN_PY = TOOLS_DIR / "learn.py"
 BRIEFING_PY = TOOLS_DIR / "briefing.py"
 CHECKPOINT_RESTORE_PY = TOOLS_DIR / "checkpoint-restore.py"
@@ -51,12 +55,28 @@ def file_locked(lock_path):
     """Acquire an exclusive file lock for atomic read-modify-write operations."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_file = open(str(lock_path) + ".lock", "w")
+    locked = False
     try:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        if os.name == "nt":
+            # Windows: msvcrt byte-range locking on 1 byte (LK_LOCK retries for 10 s)
+            lock_file.write(" ")
+            lock_file.flush()
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        locked = True
         yield
     finally:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-        lock_file.close()
+        try:
+            if locked:
+                if os.name == "nt":
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_file.close()
 
 
 def find_git_root() -> Path | None:
