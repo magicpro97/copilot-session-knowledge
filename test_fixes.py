@@ -697,6 +697,82 @@ test(
 )
 
 
+# ─── Post-Merge Hook Newline Normalization (Pm1–Pm4) ──────────────────────
+
+print("\n🪝 Post-Merge Hook Tests (Pm)")
+
+_autoupdate_spec = _ilu.spec_from_file_location("auto_update_mod", REPO / "auto-update-tools.py")
+_autoupdate_mod = _ilu.module_from_spec(_autoupdate_spec)
+_autoupdate_spec.loader.exec_module(_autoupdate_mod)  # type: ignore[union-attr]
+
+with tempfile.TemporaryDirectory(prefix="auto-update-hook-") as _tmp:
+    _tools_dir = Path(_tmp)
+    (_tools_dir / ".git" / "hooks").mkdir(parents=True, exist_ok=True)
+    _hook_path = _tools_dir / ".git" / "hooks" / "post-merge"
+
+    _orig_tools_dir = _autoupdate_mod.TOOLS_DIR
+    _orig_platform_system = _autoupdate_mod.platform.system
+    try:
+        _autoupdate_mod.TOOLS_DIR = _tools_dir
+        _autoupdate_mod.platform.system = lambda: "Windows"
+
+        _autoupdate_mod.ensure_post_merge_hook()
+        _windows_bytes = _hook_path.read_bytes()
+
+        test(
+            "Pm1: Windows hook is written with LF line endings",
+            b"\r\n" not in _windows_bytes,
+            "Generated Windows hook contains CRLF bytes",
+        )
+        test(
+            "Pm2: Windows hook shebang has no CR",
+            _windows_bytes.startswith(b"#!/bin/sh\n"),
+            f"Got prefix: {_windows_bytes[:16]!r}",
+        )
+
+        _hook_path.write_bytes(_windows_bytes.replace(b"\n", b"\r\n"))
+        _autoupdate_mod.ensure_post_merge_hook()
+        _normalized_bytes = _hook_path.read_bytes()
+
+        test(
+            "Pm3: ensure_post_merge_hook normalizes existing CRLF hooks back to LF",
+            b"\r\n" not in _normalized_bytes,
+            "Existing CRLF hook was not rewritten",
+        )
+
+        _autoupdate_mod.platform.system = lambda: "Linux"
+        _autoupdate_mod.ensure_post_merge_hook()
+        _linux_bytes = _hook_path.read_bytes()
+
+        test(
+            "Pm4: POSIX hook (Linux/macOS) also remains LF-only",
+            _linux_bytes.startswith(b"#!/bin/bash\n") and b"\r\n" not in _linux_bytes,
+            f"Got prefix: {_linux_bytes[:18]!r}",
+        )
+    finally:
+        _autoupdate_mod.TOOLS_DIR = _orig_tools_dir
+        _autoupdate_mod.platform.system = _orig_platform_system
+
+_editorconfig_path = REPO / ".editorconfig"
+_editorconfig_text = _editorconfig_path.read_text(encoding="utf-8") if _editorconfig_path.exists() else ""
+
+test(
+    "Pm5: .editorconfig exists for editor-level line ending control",
+    _editorconfig_path.exists(),
+    "Missing .editorconfig",
+)
+test(
+    "Pm6: .editorconfig marks repo root",
+    "root = true" in _editorconfig_text,
+    "Expected root = true",
+)
+test(
+    "Pm7: .editorconfig enforces LF for all files",
+    "[*]" in _editorconfig_text and re.search(r"(?mi)^end_of_line\s*=\s*lf$", _editorconfig_text) is not None,
+    "Expected [*] section with end_of_line = lf",
+)
+
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
 print(f"\n{'='*50}")

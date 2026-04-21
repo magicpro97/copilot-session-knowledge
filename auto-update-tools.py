@@ -349,10 +349,11 @@ python3 "$TOOLS_DIR/auto-update-tools.py" --skip-pull --old-sha="$OLD_SHA" --new
 """
     try:
         hook_path.parent.mkdir(parents=True, exist_ok=True)
-        # Only update if content changed
-        if hook_path.exists() and hook_path.read_text(encoding="utf-8") == hook_content:
+        desired_bytes = hook_content.encode("utf-8")
+        # Compare exact bytes so CRLF-generated hooks get normalized back to LF.
+        if hook_path.exists() and hook_path.read_bytes() == desired_bytes:
             return
-        hook_path.write_text(hook_content, encoding="utf-8")
+        hook_path.write_text(hook_content, encoding="utf-8", newline="\n")
         if platform.system() != "Windows":
             hook_path.chmod(0o755)
         ok("Post-merge hook installed")
