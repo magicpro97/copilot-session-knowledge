@@ -51,7 +51,7 @@
   },
   "enrichment": {
     "fetch_readme": true,
-    "readme_max_chars": 1500,
+    "readme_max_chars": 3000,
     "fetch_root_contents": false
   },
   "dedup": {

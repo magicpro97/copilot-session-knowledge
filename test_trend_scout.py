@@ -377,6 +377,181 @@ test("_derive_learnings: bare 'sync' word still triggers cross-env sync bullet",
      str(cli_exact_learnings))
 
 
+# ─── Issue #3 Regression Tests ────────────────────────────────────────────────
+
+print("\n🐛 Issue #3 — Heuristic Quality Regressions")
+
+# --- Portability false positive: Python 'from x import y' must NOT fire portability bullet ---
+# Confirmed false positive from issue3-output-audit: portability heuristic matched 'import'
+# substring in 'from ai_iq import Memory' code block, producing a spurious portability bullet.
+# Fix: remove 'import' from portability keyword list; keep only 'export', 'portable', 'backup'.
+portability_fp_repo: dict = {**REPO_FIXTURE, "description": "A Python library", "topics": []}
+portability_fp_readme = (
+    "## Quick Start\n\n"
+    "```python\n"
+    "from ai_iq import Memory\n"
+    "m = Memory()\n"
+    "m.add('learning')\n"
+    "```\n"
+)
+portability_fp_learnings = ts._derive_learnings(portability_fp_repo, our_topics, portability_fp_readme)
+test(
+    "issue#3 portability FP: 'from x import y' Python import does NOT trigger portability bullet",
+    not any("portab" in l.lower() or "export/import" in l.lower() for l in portability_fp_learnings),
+    str(portability_fp_learnings),
+)
+
+# Positive: genuine portability signals ('export', 'backup', 'portable') still fire
+portability_positive_repo: dict = {**REPO_FIXTURE, "description": "Export and backup tool", "topics": []}
+portability_positive_learnings = ts._derive_learnings(portability_positive_repo, our_topics, "")
+test(
+    "issue#3 portability positive: 'export' in description still triggers portability bullet",
+    any("portab" in l.lower() or "export" in l.lower() for l in portability_positive_learnings),
+    str(portability_positive_learnings),
+)
+
+portability_backup_learnings = ts._derive_learnings(
+    {**REPO_FIXTURE, "description": "Backup and restore for knowledge", "topics": []},
+    our_topics, "",
+)
+test(
+    "issue#3 portability positive: 'backup' in description still triggers portability bullet",
+    any("portab" in l.lower() or "backup" in l.lower() for l in portability_backup_learnings),
+    str(portability_backup_learnings),
+)
+
+# --- Offline/no-cloud heuristic: README with offline posture should fire a bullet ---
+# Confirmed missing signal from issue3-output-audit (reachable within 1500-char window).
+# ai-iq README: "No cloud dependencies — Works offline, owns your data, zero API keys"
+# This directly mirrors this repo's local-SQLite-no-server design.
+offline_repo: dict = {**REPO_FIXTURE, "description": "A local knowledge tool", "topics": []}
+offline_readme_variants = [
+    "Works offline, owns your data, zero API keys",
+    "No cloud dependencies — offline first",
+    "no-cloud no cloud design zero api key",
+]
+for _offline_hint in offline_readme_variants:
+    _offline_learnings = ts._derive_learnings(offline_repo, our_topics, _offline_hint)
+    test(
+        f"issue#3 offline heuristic: '{_offline_hint[:40]}...' triggers offline/no-cloud bullet",
+        any(
+            "offline" in l.lower() or "no-cloud" in l.lower() or "no cloud" in l.lower()
+            or "cloud" in l.lower()
+            for l in _offline_learnings
+        ),
+        str(_offline_learnings),
+    )
+
+# --- README window / dead-path alignment ---
+# issue3-output-audit confirmed: _derive_learnings uses hint[:3000] internally, but
+# enrich_stage hard-caps the excerpt at readme_max_chars=1500 before passing it in.
+# The [:3000] slice in _derive_learnings is therefore dead code.
+# Fix (issue3-config-docs): readme_max_chars should be aligned with the hint window.
+
+# The config readme_max_chars should be ≥ 2000 after the fix, so the 3000-char internal
+# hint slice is no longer dead code (i.e., enrich_stage actually passes enough characters).
+_cfg_readme_max = ts.load_config(None)["enrichment"]["readme_max_chars"]
+test(
+    "issue#3 readme window alignment: readme_max_chars config is ≥2000 (dead-path fix, issue3-config-docs)",
+    _cfg_readme_max >= 2000,
+    f"readme_max_chars={_cfg_readme_max} — expected ≥2000 to activate the 3000-char hint window",
+)
+
+# Verify the binding: a signal within readme_max_chars is always detectable.
+# Build a readme where the offline signal lands right before the readme_max_chars boundary.
+_safe_padding = max(0, _cfg_readme_max - 60)
+_boundary_readme = "x" * _safe_padding + " Works offline, owns your data, zero API keys"
+_boundary_learnings = ts._derive_learnings(offline_repo, our_topics, _boundary_readme)
+test(
+    "issue#3 readme window binding: signal within readme_max_chars boundary is detectable",
+    any(
+        "offline" in l.lower() or "no-cloud" in l.lower() or "cloud" in l.lower()
+        for l in _boundary_learnings
+    ),
+    f"readme_max_chars={_cfg_readme_max}, signal at ~char {_safe_padding}: {_boundary_learnings}",
+)
+
+# --- Reflexion heuristic: Java/general reflection contexts must NOT fire structured reflexion bullet ---
+# Opus review found that the bare `\breflect\b` regex in the heuristic matches unrelated
+# Java/general reflection contexts — e.g. "java.lang.reflect" (package path) or
+# "java reflect api" (bare 'reflect' word in non-agent context).
+# Fix: narrow the heuristic so that bare 'reflect' alone is insufficient; require
+# co-occurrence with agent/AI context, OR drop the bare-word regex entirely in favour of
+# the specific keyword list ('reflexion', 'reflect-load', 'structured reflection', etc.).
+
+_reflect_base_repo: dict = {**REPO_FIXTURE, "description": "", "topics": []}
+
+
+def _fires_reflexion(learnings: list) -> bool:
+    """Return True if any learning bullet describes the structured reflexion workflow."""
+    return any("structured refle" in l.lower() or "reflexion workflow" in l.lower() for l in learnings)
+
+
+# Negative regression — Java package path containing bare 'reflect' word
+_java_pkg_learnings = ts._derive_learnings(
+    _reflect_base_repo, our_topics,
+    "Uses java.lang.reflect for runtime class inspection and method invocation",
+)
+test(
+    "issue#3 reflexion FP: 'java.lang.reflect' package path does NOT trigger structured reflexion bullet",
+    not _fires_reflexion(_java_pkg_learnings),
+    str(_java_pkg_learnings),
+)
+
+# Negative regression — bare 'reflect' word in general Java/introspection description
+_java_reflect_word_learnings = ts._derive_learnings(
+    {**_reflect_base_repo, "description": "Java reflect api for bytecode introspection"},
+    our_topics, "",
+)
+test(
+    "issue#3 reflexion FP: bare 'reflect' in Java library description does NOT trigger structured reflexion bullet",
+    not _fires_reflexion(_java_reflect_word_learnings),
+    str(_java_reflect_word_learnings),
+)
+
+# Negative regression — general programming 'reflect' context (readme only)
+_general_reflect_learnings = ts._derive_learnings(
+    _reflect_base_repo, our_topics,
+    "Provides reflect utilities to inspect Python objects at runtime",
+)
+test(
+    "issue#3 reflexion FP: generic 'reflect' introspection context does NOT trigger structured reflexion bullet",
+    not _fires_reflexion(_general_reflect_learnings),
+    str(_general_reflect_learnings),
+)
+
+# Positive control — genuine AI/agent reflexion signal: 'reflexion' keyword
+_genuine_reflexion_learnings = ts._derive_learnings(
+    _reflect_base_repo, our_topics,
+    "Implements an agent reflexion loop: pre-task memory recall and post-task structured debriefing",
+)
+test(
+    "issue#3 reflexion positive: 'reflexion' keyword in AI-agent readme DOES trigger structured reflexion bullet",
+    _fires_reflexion(_genuine_reflexion_learnings),
+    str(_genuine_reflexion_learnings),
+)
+
+# Positive control — genuine signal: 'structured reflexion' phrase
+_structured_reflexion_learnings = ts._derive_learnings(
+    _reflect_base_repo, our_topics,
+    "Structured reflexion with worked/failed/next fields for outcome-aware learning",
+)
+test(
+    "issue#3 reflexion positive: 'structured reflexion' phrase DOES trigger structured reflexion bullet",
+    _fires_reflexion(_structured_reflexion_learnings),
+    str(_structured_reflexion_learnings),
+)
+
+# Positive control — genuine signal: 'post-mortem' (no false-positive risk)
+_post_mortem_learnings = ts._derive_learnings(
+    _reflect_base_repo, our_topics,
+    "Captures post-mortem analysis after each task to feed future briefings",
+)
+test(
+    "issue#3 reflexion positive: 'post-mortem' keyword DOES trigger structured reflexion bullet",
+    _fires_reflexion(_post_mortem_learnings),
+    str(_post_mortem_learnings),
+)
 
 
 print("\n📝 Issue Body Rendering")

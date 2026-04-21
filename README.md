@@ -292,7 +292,7 @@ python3 ~/.copilot/tools/trend-scout.py --token TOKEN   # Explicit GitHub token 
 
 Requires a `GITHUB_TOKEN` env var (or `--token TOKEN` flag) to avoid rate limits. The tool auto-creates the `trend-scout` label and deduplicates against both open and closed issues using hidden deterministic markers — each marker is a 16-character truncated SHA-256 hash of the lowercased `owner/name`.
 
-**Tune discovery:** edit `trend-scout-config.json` to adjust seed keywords, topic filters, scoring weights, and `min_stars`.
+**Tune discovery:** edit `trend-scout-config.json` to adjust seed keywords, topic filters, scoring weights, `min_stars`, and `enrichment.readme_max_chars` (how much of each README the heuristic engine sees; default `3000`).
 
 **GitHub Actions workflow** — `.github/workflows/trend-scout.yml` runs daily at 07:00 UTC with permissions `contents: read` and `issues: write`. Manual runs via `workflow_dispatch` support `dry_run`, `search_only`, `repo`, and `limit` inputs.
 

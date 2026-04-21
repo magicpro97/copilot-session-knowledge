@@ -301,7 +301,7 @@ regardless of issue state.
 | `shortlist.max_candidates` | How many repos advance to enrichment |
 | `shortlist.min_score` | Minimum composite score threshold (unbounded sum; default `0.15`) |
 | `shortlist.scoring.*_weight` | Adjust keyword, topic, star, and recency weights |
-| `enrichment.readme_max_chars` | Characters of README to include in each issue |
+| `enrichment.readme_max_chars` | Characters of README to fetch and pass to the heuristic engine (default `3000`); increase for feature-dense READMEs, decrease to reduce issue size |
 | `dedup.search_closed_issues` | Whether to scan closed issues for markers |
 | `dedup.max_issues_scan` | Max issues scanned per dedup pass (default 300); increase on busy repos to avoid missing old markers |
 | `search.lookback_days` | Repo age window for search results (default 730 days); lower to focus on recently active repos |

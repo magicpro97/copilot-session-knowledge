@@ -97,7 +97,7 @@ DEFAULT_CONFIG: dict = {
     },
     "enrichment": {
         "fetch_readme": True,
-        "readme_max_chars": 1500,
+        "readme_max_chars": 3000,
         "fetch_root_contents": False,
     },
     "dedup": {
@@ -711,10 +711,34 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
         )
 
     # ── Export / portability ──────────────────────────────────────────────────
-    if any(kw in hint for kw in ("export", "import", "portable", "backup")):
+    # Note: "import" is intentionally excluded — it matches Python import statements
+    # (e.g. "from ai_iq import Memory") and produces false positives for repos that
+    # have no actual export/portability feature.
+    if any(kw in hint for kw in ("export", "portable", "backup")):
         out.append(
-            "**Knowledge portability**: the export/import flow here could complement "
+            "**Knowledge portability**: the export/backup flow here could complement "
             "`sync-knowledge.py` for cross-machine knowledge portability"
+        )
+
+    # ── Offline / no-cloud posture ────────────────────────────────────────────
+    if any(kw in hint for kw in (
+        "offline", "no cloud", "no-cloud", "owns your data", "zero api key", "zero api keys",
+    )):
+        out.append(
+            "**Offline-first design**: this repo's no-cloud/no-server posture directly mirrors "
+            "our local-SQLite approach — could validate that `knowledge.db` workflows never "
+            "require external API calls even when semantic search is enabled"
+        )
+
+    # ── Structured reflexion / reflection workflow ────────────────────────────
+    if any(kw in hint for kw in (
+        "reflexion", "reflect-load", "structured reflection", "structured refle",
+        "post-mortem", "lessons learned",
+    )):
+        out.append(
+            "**Structured reflexion workflow**: pre-task failure recall and post-task "
+            "structured reflection (worked/failed/next fields) could extend `learn.py --mistake` "
+            "and `briefing.py --auto` to support outcome-aware knowledge capture"
         )
 
     # ── Multi-agent coordination ──────────────────────────────────────────────
@@ -874,7 +898,7 @@ def enrich_stage(repos: list[dict], client: GitHubClient, config: dict) -> list[
     """Stage 3: fetch README for each shortlisted repo. Returns (repo, readme) pairs."""
     e_cfg = config.get("enrichment", {})
     fetch_readme: bool = bool(e_cfg.get("fetch_readme", True))
-    readme_max: int = int(e_cfg.get("readme_max_chars", 1500))
+    readme_max: int = int(e_cfg.get("readme_max_chars", 3000))
 
     enriched: list[tuple[dict, str]] = []
     for repo in repos:
