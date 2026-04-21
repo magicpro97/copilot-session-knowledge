@@ -275,8 +275,109 @@ novel_topic_repo: dict = {**REPO_FIXTURE, "topics": ["novel-topic-xyz", "ai-tool
 novel_learnings = ts._derive_learnings(novel_topic_repo, our_topics)
 test("_derive_learnings surfaces novel topics", any("novel-topic-xyz" in l for l in novel_learnings))
 
+# Regression: no bare "Novel topics to explore: ..." dumps
+test("_derive_learnings no longer emits bare topic-list bullets",
+     not any(l.startswith("Novel topics to explore:") for l in novel_learnings))
 
-# ─── 5. Render Issue Body ─────────────────────────────────────────────────────
+# AI-IQ-like fixture: hybrid search + graph intelligence + zero config in description
+AI_IQ_LIKE_REPO: dict = {
+    **REPO_FIXTURE,
+    "full_name": "kobie3717/ai-iq",
+    "description": (
+        "AI-IQ: Persistent context system for AI coding assistants. "
+        "Hybrid search (FTS+semantic), graph intelligence, zero config."
+    ),
+    "topics": [
+        "ai", "ai-agents", "ai-tools", "claude-code", "cursor",
+        "developer-tools", "fts5", "knowledge-graph", "llm", "memory", "sqlite",
+    ],
+}
+AI_IQ_README = (
+    "Give your AI long-term memory in 1 command.\n"
+    "memory-tool add learning \"Docker needs network_mode: host\"\n"
+    "memory-tool search \"docker networking\"\n"
+    "memory-tool dream  # Consolidate duplicates, detect conflicts\n"
+    "Hybrid search (FTS+semantic) for context recall.\n"
+)
+
+ai_iq_learnings = ts._derive_learnings(AI_IQ_LIKE_REPO, our_topics, AI_IQ_README)
+
+test("_derive_learnings emits hybrid-search bullet for hybrid-search repo",
+     any("hybrid" in l.lower() or "semantic" in l.lower() for l in ai_iq_learnings),
+     str(ai_iq_learnings))
+
+test("_derive_learnings emits graph bullet for knowledge-graph repo",
+     any("graph" in l.lower() for l in ai_iq_learnings),
+     str(ai_iq_learnings))
+
+test("_derive_learnings emits consolidation bullet from readme signal",
+     any("consolidat" in l.lower() or "dream" in l.lower() for l in ai_iq_learnings),
+     str(ai_iq_learnings))
+
+test("_derive_learnings emits CLI bullet from readme memory-tool signal",
+     any("cli" in l.lower() or "verb" in l.lower() or "memory-tool" in l.lower()
+         for l in ai_iq_learnings),
+     str(ai_iq_learnings))
+
+test("_derive_learnings emits Claude Code bullet for claude-code topic",
+     any("claude" in l.lower() for l in ai_iq_learnings),
+     str(ai_iq_learnings))
+
+test("_derive_learnings bullets are narrative (contain 'could', 'e.g.', 'would', or 'suggest')",
+     all(
+         "could" in l.lower() or "e.g." in l.lower() or "would" in l.lower() or "suggest" in l.lower()
+         for l in ai_iq_learnings
+     ),
+     str(ai_iq_learnings))
+
+test("_derive_learnings: no bare 'Novel topics to explore:' bullet for ai-iq-like repo",
+     not any(l.startswith("Novel topics to explore:") for l in ai_iq_learnings))
+
+# Readme-only signals: description is minimal, hints come solely from readme_excerpt
+readme_only_repo: dict = {**REPO_FIXTURE, "description": "A tool", "topics": []}
+readme_learnings = ts._derive_learnings(
+    readme_only_repo, our_topics,
+    "This project uses hybrid FTS + semantic search to consolidate memories and detect conflicts."
+)
+test("_derive_learnings fires on readme_excerpt signals (not just description)",
+     any("hybrid" in l.lower() or "semantic" in l.lower() or "consolidat" in l.lower()
+         for l in readme_learnings),
+     str(readme_learnings))
+
+# Fallback is concrete when no signals fire
+no_signal_repo: dict = {**REPO_FIXTURE, "description": "A simple utility", "topics": []}
+fallback_learnings = ts._derive_learnings(no_signal_repo, our_topics, "")
+test("_derive_learnings fallback is concrete (mentions FTS5 or knowledge-base)",
+     any("fts5" in l.lower() or "knowledge" in l.lower() or "session" in l.lower()
+         for l in fallback_learnings),
+     str(fallback_learnings))
+
+# Regression: substring false positives for CLI and sync detectors
+cli_fp_repo: dict = {**REPO_FIXTURE, "description": "A HTTP client using click for async operations", "topics": []}
+cli_fp_learnings = ts._derive_learnings(cli_fp_repo, our_topics, "client click async processing")
+test("_derive_learnings: 'client' does NOT trigger CLI bullet",
+     not any("cli verb" in l.lower() or "add/search/update" in l.lower() for l in cli_fp_learnings),
+     str(cli_fp_learnings))
+test("_derive_learnings: 'click' does NOT trigger CLI bullet",
+     not any("cli verb" in l.lower() or "add/search/update" in l.lower() for l in cli_fp_learnings),
+     str(cli_fp_learnings))
+test("_derive_learnings: 'async' does NOT trigger cross-env sync bullet",
+     not any("windows" in l.lower() or "wsl" in l.lower() or "cross-environment sync" in l.lower()
+             for l in cli_fp_learnings),
+     str(cli_fp_learnings))
+
+# Positive: exact word "cli" and "sync" still fire correctly
+cli_exact_repo: dict = {**REPO_FIXTURE, "description": "A cli tool with sync support for knowledge", "topics": []}
+cli_exact_learnings = ts._derive_learnings(cli_exact_repo, our_topics, "")
+test("_derive_learnings: bare 'cli' word still triggers CLI bullet",
+     any("cli verb" in l.lower() or "add/search/update" in l.lower() for l in cli_exact_learnings),
+     str(cli_exact_learnings))
+test("_derive_learnings: bare 'sync' word still triggers cross-env sync bullet",
+     any("cross-environment sync" in l.lower() or "sync-knowledge" in l.lower() for l in cli_exact_learnings),
+     str(cli_exact_learnings))
+
+
+
 
 print("\n📝 Issue Body Rendering")
 

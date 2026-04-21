@@ -607,33 +607,161 @@ def _derive_weaknesses(repo: dict) -> list[str]:
     return out or ["No significant risks identified from available metadata"]
 
 
-def _derive_learnings(repo: dict, our_topics: list[str]) -> list[str]:
+def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "") -> list[str]:
+    """Generate concrete, actionable learning bullets from a candidate repo.
+
+    Each bullet encodes: the capability/pattern, what it could help with in this
+    repo, and a specific example of where/how it could apply.
+    """
     out: list[str] = []
     repo_topics: set[str] = set(repo.get("topics", []))
     our_set: set[str] = set(our_topics)
-    novel_topics = repo_topics - our_set
-    if novel_topics:
-        out.append(f"Novel topics to explore: {', '.join(sorted(novel_topics)[:6])}")
 
     desc = (repo.get("description") or "").lower()
-    readme_hint = desc
+    # Combine description + first 3000 chars of readme for richer signal matching
+    hint = f"{desc} {readme_excerpt[:3000].lower()}"
 
-    if any(kw in readme_hint for kw in ("vector", "embedding", "ann", "faiss", "hnswlib")):
-        out.append("Vector/embedding indexing strategies to compare with our FTS5 approach")
-    if any(kw in readme_hint for kw in ("sync", "cross-platform", "wsl", "windows")):
-        out.append("Cross-environment sync patterns worth studying")
-    if any(kw in readme_hint for kw in ("cli", "command-line", "argparse", "typer")):
-        out.append("CLI UX patterns applicable to our tooling")
-    if any(kw in readme_hint for kw in ("hook", "git", "pre-commit", "workflow")):
-        out.append("Git hook / workflow enforcement patterns")
-    if any(kw in readme_hint for kw in ("export", "import", "portable", "backup")):
-        out.append("Knowledge export/portability approaches")
+    # ── Hybrid / semantic retrieval ──────────────────────────────────────────
+    if any(kw in hint for kw in (
+        "hybrid search", "fts+semantic", "fts + semantic", "semantic search",
+        "vector search", "embedding", "ann ", "faiss", "hnswlib",
+    )):
+        out.append(
+            "**Hybrid FTS+semantic retrieval**: combining keyword and embedding-based search "
+            "could improve recall in `query-session.py` / `briefing.py` — e.g., a query for "
+            "'docker networking' would also surface entries tagged 'container' or 'network_mode' "
+            "even without exact term overlap"
+        )
 
+    # ── Knowledge graph / graph intelligence ────────────────────────────────
+    if any(kw in hint for kw in (
+        "graph intelligence", "knowledge graph", "knowledge-graph", "knowledge_graph",
+    )) or "knowledge-graph" in repo_topics:
+        out.append(
+            "**Graph-based knowledge linking**: a relation graph over session entries could let "
+            "`briefing.py` surface related decisions and mistakes by topic proximity — e.g., "
+            "linking a `mistake:auth` record to `pattern:jwt` across separate session files "
+            "without requiring identical keywords"
+        )
+
+    # ── Zero-config / one-command install ────────────────────────────────────
+    if any(kw in hint for kw in (
+        "zero config", "zero-config", "one command", "1 command",
+        "plugin marketplace", "pip install ai",
+    )):
+        out.append(
+            "**Zero-config install UX**: `install.py` / `setup-project.py` could adopt a "
+            "single-command bootstrap pattern (similar to this repo's one-command install) to "
+            "lower the setup barrier when onboarding new machines or environments"
+        )
+
+    # ── Memory consolidation / dedup ─────────────────────────────────────────
+    if any(kw in hint for kw in (
+        "consolidate", "consolidat", "dream", "dedup", "deduplicate",
+        "memory consolidat", "detect conflicts", "conflicts",
+    )):
+        out.append(
+            "**Automated knowledge consolidation**: a background consolidation pass (like this "
+            "repo's `dream` command) could extend `extract-knowledge.py` to merge near-duplicate "
+            "learnings and flag contradicting patterns discovered across sessions"
+        )
+
+    # ── CLI ergonomics ────────────────────────────────────────────────────────
+    if any(kw in hint for kw in (
+        "memory-tool", "memory tool", "argparse", "typer",
+    )) or bool(re.search(r"\bcli\b", hint)):
+        out.append(
+            "**CLI verb patterns**: a clear add/search/update/delete verb model (like "
+            "`memory-tool add` / `search` / `dream`) could streamline the UX of "
+            "`query-session.py` and `learn.py`, making them easier to invoke from hooks or scripts"
+        )
+
+    # ── Claude Code integration ───────────────────────────────────────────────
+    if "claude-code" in repo_topics or any(kw in hint for kw in (
+        "claude code", "claude-code",
+    )):
+        out.append(
+            "**Claude Code session patterns**: this repo's Claude Code integration approach "
+            "could improve `claude-adapter.py`'s JSONL parsing — e.g., handling new session "
+            "event types or extracting richer metadata from Claude Code tool-use blocks"
+        )
+
+    # ── Editor integrations (Cursor, VS Code, etc.) ──────────────────────────
+    editor_topics = repo_topics & {"cursor", "vscode", "jetbrains", "neovim", "vim"}
+    if editor_topics or any(kw in hint for kw in ("cursor", "vs code", "vscode")):
+        editors = ", ".join(sorted(editor_topics)) if editor_topics else "the editor"
+        out.append(
+            f"**Editor integration ({editors})**: `watch-sessions.py` could be extended to "
+            f"detect and parse {editors} session formats natively, broadening the range of AI "
+            f"sessions indexed into `knowledge.db`"
+        )
+
+    # ── Cross-env sync ────────────────────────────────────────────────────────
+    if bool(re.search(r"\bsync\b", hint)) or any(kw in hint for kw in ("cross-platform", "wsl", "windows")):
+        out.append(
+            "**Cross-environment sync patterns**: the sync strategy here could inform "
+            "`sync-knowledge.py` for more robust Windows ↔ WSL knowledge merging"
+        )
+
+    # ── Hooks / workflow enforcement ──────────────────────────────────────────
+    if any(kw in hint for kw in ("hook", "pre-commit", "workflow enforcement")):
+        out.append(
+            "**Git hook / workflow patterns**: hook design from this repo could strengthen the "
+            "`hooks/` enforcement chain (e.g., auto-briefing, commit guards, learn reminders)"
+        )
+
+    # ── Export / portability ──────────────────────────────────────────────────
+    if any(kw in hint for kw in ("export", "import", "portable", "backup")):
+        out.append(
+            "**Knowledge portability**: the export/import flow here could complement "
+            "`sync-knowledge.py` for cross-machine knowledge portability"
+        )
+
+    # ── Multi-agent coordination ──────────────────────────────────────────────
+    if any(kw in hint for kw in (
+        "multi-agent", "multi agent", "agent commons", "agent pool",
+        "agents discover", "join rooms", "build trust",
+    )):
+        out.append(
+            "**Multi-agent coordination**: the agent commons / trust model could inform how "
+            "`learn.py` and `watch-sessions.py` handle concurrent writes from multiple "
+            "simultaneous Copilot / Claude sessions"
+        )
+
+    # ── Novel topics: contextual, not a bare list ─────────────────────────────
+    # Exclude topics that are already covered by specific bullets above, and
+    # skip overly generic labels that add no actionable signal.
+    _skip_generic = {
+        "ai", "llm", "python", "sqlite", "memory", "developer-tools", "ai-tools",
+    }
+    _already_handled = {"cursor", "vscode", "claude-code", "knowledge-graph"}
+    interesting_novel = sorted(
+        (repo_topics - our_set - _skip_generic - _already_handled)
+    )[:4]
+    if interesting_novel:
+        topic_list = ", ".join(f"`{t}`" for t in interesting_novel)
+        out.append(
+            f"**Novel topic signals** ({topic_list}): these tags suggest capabilities or "
+            f"patterns not yet in this repo — worth reviewing the source to identify "
+            f"transferable design decisions"
+        )
+
+    # ── Non-Python language ────────────────────────────────────────────────────
     lang: str = repo.get("language") or ""
     if lang and lang.lower() not in ("python",):
-        out.append(f"Alternative {lang} implementation — compare data structure choices")
+        out.append(
+            f"**Alternative {lang} implementation**: compare data structure and concurrency "
+            f"choices against our Python/SQLite stack for potential performance insights"
+        )
 
-    return out or ["Review architecture for patterns applicable to FTS5/knowledge-base workflows"]
+    # ── Fallback: concrete, architecture-specific ─────────────────────────────
+    if not out:
+        out.append(
+            "Review the source for architectural patterns applicable to FTS5 / knowledge-base "
+            "workflows — particularly around data ingestion, search recall, and session indexing"
+        )
+
+    return out
 
 
 def render_issue_body(repo: dict, readme_excerpt: str, marker: str, our_topics: list[str]) -> str:
@@ -644,7 +772,7 @@ def render_issue_body(repo: dict, readme_excerpt: str, marker: str, our_topics: 
     problem = _derive_problem(repo, readme_excerpt)
     strengths = _derive_strengths(repo)
     weaknesses = _derive_weaknesses(repo)
-    learnings = _derive_learnings(repo, our_topics)
+    learnings = _derive_learnings(repo, our_topics, readme_excerpt)
 
     license_name = (repo.get("license") or {}).get("spdx_id") or "None"
     topics_str = ", ".join(repo.get("topics", [])) or "none"
