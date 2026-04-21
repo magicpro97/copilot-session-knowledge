@@ -268,6 +268,37 @@ except SyntaxError as e:
     test("codebase-map.py parses as valid Python", False, str(e))
 
 
+# ─── Integration: artifact format is briefing-parseable ───────────────────
+
+print("\n🔗 generate_map() artifact format — briefing.py compatibility")
+
+import re as _re
+
+_compat_root = Path("/projects/compat_test")
+_compat_files = ["README.md", "src/main.py", "src/utils.py", "hooks/hook.sh"]
+_compat_content = cm.generate_map(_compat_root, _compat_files)
+
+# Use the same regex as briefing.load_codebase_map_files()
+_compat_parsed: set = set()
+for _line in _compat_content.splitlines():
+    _m = _re.match(r"^\s*-\s+`([^`]+)`\s*$", _line)
+    if _m:
+        _compat_parsed.add(_m.group(1))
+
+test("generate_map: all file entries match briefing parser pattern",
+     all(f in _compat_parsed for f in _compat_files),
+     f"missing={set(_compat_files) - _compat_parsed}")
+test("generate_map: parser finds exactly the right number of file entries",
+     len(_compat_parsed) == len(_compat_files),
+     f"parsed {len(_compat_parsed)}: {_compat_parsed}")
+test("generate_map: directory headers NOT picked up by parser",
+     not any(k.endswith("/") or k.startswith("./") for k in _compat_parsed),
+     f"suspicious items: {_compat_parsed}")
+test("generate_map: table rows NOT picked up by parser",
+     not any("|" in k for k in _compat_parsed),
+     f"suspicious items: {_compat_parsed}")
+
+
 # ─── Final summary ────────────────────────────────────────────────────────────
 
 print(f"\n{'='*50}")

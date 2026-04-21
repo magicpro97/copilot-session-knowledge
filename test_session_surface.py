@@ -268,6 +268,7 @@ def test_query_file_surface(db: sqlite3.Connection, tmp_db_path: str):
     _qs.DB_PATH = Path(tmp_db_path)
 
     try:
+        import io
         # Insert entries with affected_files
         insert_entry(db, "mistake", "Auth bug in session", "Bug in auth session handling",
                      affected_files=["src/auth.py", "middleware/session.py"])
@@ -275,11 +276,15 @@ def test_query_file_surface(db: sqlite3.Connection, tmp_db_path: str):
                      affected_files=["models/user.py"])
         insert_entry(db, "decision", "Unrelated decision", "Something about caching",
                      affected_files=[])  # no files
+        # Precision: a path that *contains* src/auth.py as a suffix must NOT match
+        # (e.g. tests/src/auth.py should be excluded when querying src/auth.py).
+        insert_entry(db, "discovery", "Deep path entry",
+                     "Entry whose file is under a deeper directory",
+                     affected_files=["tests/src/auth.py"])
 
         db.commit()
 
         # Capture stdout
-        import io
         buf = io.StringIO()
         orig_stdout = sys.stdout
         sys.stdout = buf
@@ -295,6 +300,30 @@ def test_query_file_surface(db: sqlite3.Connection, tmp_db_path: str):
         test("--file excludes entries with no matching file",
              "Unrelated decision" not in output,
              f"output: {output[:200]}")
+        # JSON-quoted exact match: tests/src/auth.py is NOT the same path as src/auth.py
+        test("--file excludes path that only shares a suffix (no false positives)",
+             "Deep path entry" not in output,
+             f"output: {output[:300]}")
+
+        # JSON export produces a valid list
+        buf2 = io.StringIO()
+        sys.stdout = buf2
+        try:
+            _qs.show_by_file("src/auth.py", limit=20, export_fmt="json")
+        finally:
+            sys.stdout = orig_stdout
+        out2 = buf2.getvalue()
+        try:
+            parsed = json.loads(out2)
+            test("--file --export json produces valid JSON list",
+                 isinstance(parsed, list) and len(parsed) >= 1,
+                 f"parsed type={type(parsed).__name__} len={len(parsed) if isinstance(parsed, list) else '?'}")
+            test("--file --export json affected_files is decoded list",
+                 all(isinstance(r.get("affected_files"), list) for r in parsed),
+                 f"types: {[type(r.get('affected_files')).__name__ for r in parsed]}")
+        except json.JSONDecodeError as e:
+            test("--file --export json produces valid JSON list", False, f"JSON error: {e}")
+            test("--file --export json affected_files is decoded list", False, "JSON invalid")
 
     finally:
         _qs.DB_PATH = original_db_path
@@ -308,12 +337,18 @@ def test_query_module_surface(db: sqlite3.Connection, tmp_db_path: str):
     _qs.DB_PATH = Path(tmp_db_path)
 
     try:
+        import io
         insert_entry(db, "mistake", "Middleware timeout issue",
                      "The middleware layer times out on high load",
                      affected_files=["middleware/session.py", "middleware/auth.py"])
+        # Precision: entry that only mentions "middleware" in its content text but
+        # has NO files in the middleware/ directory must NOT be returned when
+        # file-tagged entries exist (the old noisy OR query would have matched this).
+        insert_entry(db, "discovery", "Middleware text-only mention",
+                     "This entry mentions middleware in the content but has no middleware files",
+                     affected_files=["src/unrelated.py"])
         db.commit()
 
-        import io
         buf = io.StringIO()
         orig_stdout = sys.stdout
         sys.stdout = buf
@@ -326,6 +361,54 @@ def test_query_module_surface(db: sqlite3.Connection, tmp_db_path: str):
         test("--module returns entries for module",
              "middleware" in output.lower(),
              f"output: {output[:300]}")
+        # Tightened matching: content-only mentions must not rank when file entries exist
+        test("--module excludes content-only mention when file entries exist",
+             "Middleware text-only mention" not in output,
+             f"output: {output[:400]}")
+
+        # Fallback: with no file-tagged entries, content/title fallback activates
+        import tempfile, shutil
+        tmp2_dir = tempfile.mkdtemp(prefix="test_mod_fallback_", dir=str(TOOLS_DIR))
+        tmp2_path = str(Path(tmp2_dir) / "fallback.db")
+        try:
+            db2 = make_test_db(tmp2_path)
+            insert_entry(db2, "pattern", "API rate-limit pattern",
+                         "Use exponential backoff for api calls", affected_files=[])
+            db2.commit()
+
+            _qs.DB_PATH = Path(tmp2_path)
+            buf2 = io.StringIO()
+            sys.stdout = buf2
+            try:
+                _qs.show_by_module("api", limit=20)
+            finally:
+                sys.stdout = orig_stdout
+            out2 = buf2.getvalue()
+            test("--module fallback activates when no file-tagged entries",
+                 "API rate-limit pattern" in out2,
+                 f"output: {out2[:300]}")
+            test("--module fallback labels output as content/title match",
+                 "content/title" in out2.lower() or "no file-tagged" in out2.lower(),
+                 f"output: {out2[:300]}")
+        finally:
+            shutil.rmtree(tmp2_dir, ignore_errors=True)
+            _qs.DB_PATH = Path(tmp_db_path)
+
+        # JSON export produces a valid list
+        buf3 = io.StringIO()
+        sys.stdout = buf3
+        try:
+            _qs.show_by_module("middleware", limit=10, export_fmt="json")
+        finally:
+            sys.stdout = orig_stdout
+        out3 = buf3.getvalue()
+        try:
+            parsed3 = json.loads(out3)
+            test("--module --export json produces valid JSON list",
+                 isinstance(parsed3, list) and len(parsed3) >= 1,
+                 f"type={type(parsed3).__name__} len={len(parsed3) if isinstance(parsed3, list) else '?'}")
+        except json.JSONDecodeError as e:
+            test("--module --export json produces valid JSON list", False, f"JSON error: {e}")
 
     finally:
         _qs.DB_PATH = original_db_path
@@ -726,6 +809,55 @@ def test_budget_and_compact_surfaces(db: sqlite3.Connection, tmp_db_path: str):
         test("--compact show_knowledge has no content-preview lines",
              len(lines_with_preview) == 0,
              f"preview lines found: {lines_with_preview[:2]}")
+
+        # --- --compact on show_by_module ---
+        # Insert an entry with a file in a known module directory
+        insert_entry(db, "pattern", "Budget module pattern",
+                     "Content about module pattern", task_id="budget-compact-test",
+                     affected_files=["budget_mod/service.py"])
+        db.execute(
+            "UPDATE knowledge_entries SET est_tokens = 42 "
+            "WHERE title = 'Budget module pattern'"
+        )
+        db.commit()
+        buf_mod = io.StringIO()
+        sys.stdout = buf_mod
+        try:
+            _qs.show_by_module("budget_mod", limit=10, compact=True)
+        finally:
+            sys.stdout = orig
+        out_mod = buf_mod.getvalue()
+        test("--compact show_by_module produces output",
+             "budget_mod" in out_mod.lower() or "Budget module pattern" in out_mod,
+             f"out: {out_mod[:200]}")
+        test("--compact show_by_module shows ~tok hint when est_tokens set",
+             "tok" in out_mod,
+             f"out: {out_mod[:200]}")
+
+        # --- JSON export on show_by_task ---
+        buf_jt = io.StringIO()
+        sys.stdout = buf_jt
+        try:
+            _qs.show_by_task("budget-compact-test", limit=20, export_fmt="json")
+        finally:
+            sys.stdout = orig
+        out_jt = buf_jt.getvalue()
+        try:
+            parsed_jt = json.loads(out_jt)
+            test("--task --export json produces dict with task_id key",
+                 isinstance(parsed_jt, dict) and "task_id" in parsed_jt,
+                 f"keys={list(parsed_jt.keys()) if isinstance(parsed_jt, dict) else type(parsed_jt).__name__}")
+            test("--task --export json has entries list",
+                 isinstance(parsed_jt.get("entries"), list) and len(parsed_jt["entries"]) >= 1,
+                 f"entries={parsed_jt.get('entries')!r}")
+            test("--task --export json affected_files is decoded list in entries",
+                 all(isinstance(e.get("affected_files"), list)
+                     for e in parsed_jt.get("entries", [])),
+                 f"types: {[type(e.get('affected_files')).__name__ for e in parsed_jt.get('entries', [])]}")
+        except json.JSONDecodeError as e:
+            test("--task --export json produces dict with task_id key", False, f"JSON error: {e}")
+            test("--task --export json has entries list", False, "JSON invalid")
+            test("--task --export json affected_files is decoded list in entries", False, "JSON invalid")
 
         # --- --budget caps output ---
         buf4 = io.StringIO()

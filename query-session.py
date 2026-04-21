@@ -968,8 +968,11 @@ def show_by_file(file_path: str, limit: int = 20, verbose: bool = False,
                  export_fmt: str = None, compact: bool = False):
     """Show knowledge entries that recorded the given file as affected."""
     db = get_db()
-    # Substring match on JSON array stored as text — safe since we control the format.
-    # Parameterized queries already escape safely; no manual quote doubling needed.
+    # Use JSON-quoted exact match: files are stored as JSON arrays, so matching
+    # '"file_path"' (with double-quotes) ensures we match the full path as an array
+    # element rather than a substring of a longer path.  E.g. searching for
+    # src/auth.py won't accidentally match tests/src/auth.py or src/auth.py.bak.
+    quoted_pattern = f'%"{file_path}"%'
     try:
         rows = db.execute("""
             SELECT id, category, title, content, confidence, affected_files, task_id,
@@ -978,7 +981,7 @@ def show_by_file(file_path: str, limit: int = 20, verbose: bool = False,
             WHERE affected_files LIKE ? AND affected_files != '[]'
             ORDER BY confidence DESC, occurrence_count DESC
             LIMIT ?
-        """, (f"%{file_path}%", limit)).fetchall()
+        """, (quoted_pattern, limit)).fetchall()
     except sqlite3.OperationalError:
         if export_fmt == "json":
             _export_json([])
@@ -1025,21 +1028,43 @@ def show_by_file(file_path: str, limit: int = 20, verbose: bool = False,
 
 def show_by_module(module: str, limit: int = 20, verbose: bool = False,
                    export_fmt: str = None, compact: bool = False):
-    """Show knowledge entries that affect files in a given module/directory path segment."""
+    """Show knowledge entries that affect files in a given module/directory path segment.
+
+    Primary: matches entries whose affected_files contain the module as a path directory
+    component (e.g. ``auth`` matches ``auth/session.py`` and ``src/auth/models.py``).
+    Fallback: if no file-tagged entries are found, falls back to content/title substring
+    search (noisier, clearly labelled).
+    """
     db = get_db()
-    # Parameterized queries already escape safely; no manual quote doubling needed.
+    # Path-segment patterns: match module as a directory component.
+    # '"%module/%' matches it as the first directory in the JSON-encoded path.
+    # '%/%module/%' matches it as a middle directory.
+    pat_first = f'%"{module}/%'
+    pat_mid = f'%/{module}/%'
     module_lower = module.lower()
+    _fallback_used = False
     try:
         rows = db.execute("""
             SELECT id, category, title, content, confidence, affected_files, task_id,
                    est_tokens
             FROM knowledge_entries
-            WHERE (affected_files LIKE ? AND affected_files != '[]')
-               OR LOWER(content) LIKE ?
-               OR LOWER(title) LIKE ?
+            WHERE affected_files != '[]'
+              AND (affected_files LIKE ? OR affected_files LIKE ?)
             ORDER BY confidence DESC, occurrence_count DESC
             LIMIT ?
-        """, (f"%{module}%", f"%{module_lower}%", f"%{module_lower}%", limit)).fetchall()
+        """, (pat_first, pat_mid, limit)).fetchall()
+
+        # Fallback: content/title search when no file-tagged entries exist.
+        if not rows:
+            rows = db.execute("""
+                SELECT id, category, title, content, confidence, affected_files, task_id,
+                       est_tokens
+                FROM knowledge_entries
+                WHERE LOWER(content) LIKE ? OR LOWER(title) LIKE ?
+                ORDER BY confidence DESC, occurrence_count DESC
+                LIMIT ?
+            """, (f"%{module_lower}%", f"%{module_lower}%", limit)).fetchall()
+            _fallback_used = bool(rows)
     except sqlite3.OperationalError:
         if export_fmt == "json":
             _export_json([])
@@ -1057,23 +1082,15 @@ def show_by_module(module: str, limit: int = 20, verbose: bool = False,
         return
 
     if export_fmt == "json":
-        # Deduplicate before export
-        seen = set()
-        deduped = []
-        for r in rows:
-            if r["id"] not in seen:
-                seen.add(r["id"])
-                deduped.append(r)
-        _export_json([dict(r) for r in deduped])
+        _export_json([dict(r) for r in rows])
         db.close()
         return
 
-    print(f"\n{BOLD}Entries for module: {module} ({len(rows)} results){RESET}\n")
-    seen = set()
+    label = f"{module} (content/title match)" if _fallback_used else module
+    print(f"\n{BOLD}Entries for module: {label} ({len(rows)} results){RESET}\n")
+    if _fallback_used:
+        print(f"{DIM}(no file-tagged entries found; showing content/title matches){RESET}\n")
     for r in rows:
-        if r["id"] in seen:
-            continue
-        seen.add(r["id"])
         cat_color = {
             "mistake": YELLOW, "pattern": GREEN, "decision": CYAN,
             "tool": MAGENTA, "feature": GREEN, "refactor": DIM,
@@ -1234,12 +1251,14 @@ def show_diff_context(limit: int = 20, verbose: bool = False, export_fmt: str = 
     all_rows = []
 
     for file_path in changed[:15]:  # cap at 15 files to avoid noise
-        # Match by full path in affected_files; match by basename (with extension)
-        # in content/title to avoid false positives from common stems like
-        # "main", "test", "app", "index".
+        # Use JSON-quoted exact match for affected_files to prevent false positives
+        # from paths that share a prefix (e.g. src/auth.py vs tests/src/auth.py).
+        # Content/title matches use the full basename (with extension) to avoid
+        # stem-based false positives from common words like "main", "test", "app".
         from pathlib import Path as _Path
         basename = _Path(file_path).name
         basename_lower = basename.lower()
+        quoted_pattern = f'%"{file_path}"%'
         try:
             rows = db.execute("""
                 SELECT id, category, title, content, confidence,
@@ -1250,7 +1269,7 @@ def show_diff_context(limit: int = 20, verbose: bool = False, export_fmt: str = 
                    OR LOWER(title) LIKE ?
                 ORDER BY confidence DESC
                 LIMIT ?
-            """, (f"%{file_path}%", f"%{basename_lower}%",
+            """, (quoted_pattern, f"%{basename_lower}%",
                   f"%{basename_lower}%", limit)).fetchall()
         except sqlite3.OperationalError:
             if export_fmt == "json":

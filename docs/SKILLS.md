@@ -33,6 +33,7 @@ This repo contains both **Skills** (SKILL.md) and **Agent templates** (.agent.md
 | `forge-ecosystem` | Scaffold and manage app/game projects via forge CLI tools |
 | `code-reviewer` | Skeptical, signal-over-noise code review (bugs, security, logic errors only) |
 | `task-step-generator` | Generate structured STEPS.md for tasks too complex for one prompt |
+| `karpathy-guidelines` | Behavioral guidelines to reduce common LLM coding mistakes (anti-overcomplication, surgical changes, verifiable success criteria) — vendored from [forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills); deployed to **both** Copilot CLI and Claude Code |
 
 ## Hook Templates (`skills/hook-creator/references/`)
 
@@ -155,7 +156,9 @@ script is **deprecated** — prefer `setup-project.py` which covers tentacle set
 
 ### Meta-skill rollout — global vs project scope
 
-`setup-project.py` deploys all 13 skills to `.github/skills/<skill-name>/SKILL.md` in the target project (project scope). The full list of skills it deploys is defined in `INSTALL_ITEMS["skills"]` in that script — `host_manifest.py` is the authoritative host-metadata source and `setup-project.py` is the authoritative skill-list source.
+`setup-project.py` deploys all 14 skills to `.github/skills/<skill-name>/SKILL.md` in the target project (project scope). The full list of skills it deploys is defined in `INSTALL_ITEMS["skills"]` in that script — `host_manifest.py` is the authoritative host-metadata source and `setup-project.py` is the authoritative skill-list source.
+
+**Vendored skills** (`karpathy-guidelines`) are deployed to **both** Copilot CLI (`.github/skills/`) and Claude Code (`.claude/skills/`) by `setup-project.py`. All other skills in `INSTALL_ITEMS["skills"]` are deployed to **Copilot CLI only** (`.github/skills/`). The `VENDORED_SKILLS` tuple in both `setup-project.py` and `auto-update-tools.py` is the authoritative list of dual-host skills.
 
 Creator and meta-skills (session-knowledge-creator, agent-creator, hook-creator, tentacle-creator, tentacle-orchestration, workflow-creator, conductor-creator, project-onboarding, find-skills) are often promoted to **global scope** (`~/.copilot/skills/`) so they are available in every project without per-project deployment. When you do this:
 

@@ -21,7 +21,7 @@ After `git pull`, auto-update analyzes `git diff` to run only what changed:
 |---|---|
 | Python scripts (`*.py`) | Restart services |
 | LaunchAgent templates (`launchd/`) | Reinstall LaunchAgents |
-| `skills/` or `templates/` | Redeploy session-knowledge SKILL (`templates/SKILL.md`) to projects |
+| `skills/` or `templates/` | Redeploy session-knowledge SKILL (`templates/SKILL.md`) and update vendored skill bodies + assets (e.g. `karpathy-guidelines`) to already-deployed project destinations |
 | Embedding logic | Rebuild embeddings (background) |
 | `auto-update-tools.py` itself | Self-exec with new code |
 | Hook templates (`hooks/references/`) | Detected only — no auto-deploy (templates are copied manually) |
@@ -31,11 +31,24 @@ After `git pull`, auto-update analyzes `git diff` to run only what changed:
 > covered by the `*.py` detection rule — the watcher service is restarted when they change.
 >
 > **`skills/` changes and references/:** When files under `skills/` change, auto-update calls
-> `deploy_skills()`, which redeploys only `templates/SKILL.md` to already-deployed project
-> destinations. The full skill `SKILL.md` files and their `references/` subdirectories under
-> `skills/<name>/` are **not** individually re-deployed by auto-update. To pick up changes to
-> skill bodies or references after a git pull, run `setup-project.py` (or `--deploy-skill`)
+> `deploy_skills()`, which does two things in already-deployed project destinations:
+> (1) updates `templates/SKILL.md` (the session-knowledge skill), and
+> (2) updates vendored skill bodies and asset subdirs for skills listed in `VENDORED_SKILLS`
+> (currently `karpathy-guidelines`). Both operations follow an **update-only, don't-create** rule —
+> files are only updated if they already exist at the target location; new deployments are never
+> created automatically. Non-vendored skill `SKILL.md` files and their `references/` subdirectories
+> under `skills/<name>/` are **not** re-deployed by auto-update. To pick up changes to those skill
+> bodies or references after a git pull, run `setup-project.py` (or `install.py --deploy-skill`)
 > manually in the target project.
+>
+> **Project discovery (registry-backed):** `deploy_skills()` finds which projects to update via
+> `~/.copilot/session-state/tools-managed-projects.json`. A project is added to this registry
+> whenever `setup-project.py` **or** `install.py --deploy-skill` performs a real deployment in
+> that project. Projects that were set up by other means (manual file copies, etc.) and have never
+> been run through either of those commands are not auto-updated from the tools-repo context; in
+> that case, run `install.py --deploy-skill` once from inside the project to register it.
+> As a fallback, `deploy_skills()` also checks the current git root (handles ad-hoc installs run
+> directly from the target project).
 >
 > **Hook templates:** Files in `hooks/references/` are classified under the `hooks` category
 > but auto-update intentionally does **not** deploy them — they are manually copied at project

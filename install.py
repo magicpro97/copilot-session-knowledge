@@ -76,6 +76,39 @@ SKILLS_SRC = COPILOT_DIR / "skills" / "session-knowledge" / "SKILL.md"
 GLOBAL_INSTRUCTIONS = HOME / ".github" / "copilot-instructions.md"
 LOCK_FILE = SESSION_STATE / ".watcher.lock"
 
+# Registry of projects that have received a skill deployment via install.py
+# --deploy-skill or setup-project.py.  auto-update-tools.py reads this so
+# vendored-skill updates propagate to every registered project even when
+# auto-update runs from the tools repo or a non-project context (e.g. launchd).
+REGISTRY_PATH = SESSION_STATE / "tools-managed-projects.json"
+
+
+def _load_project_registry() -> list[str]:
+    """Return the list of registered project root paths (strings)."""
+    try:
+        if REGISTRY_PATH.exists():
+            data = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+            return [p for p in data.get("projects", []) if isinstance(p, str)]
+    except Exception:
+        pass
+    return []
+
+
+def _register_project(project_root: Path) -> None:
+    """Add *project_root* to the persistent registry (idempotent, silent on error)."""
+    try:
+        projects = _load_project_registry()
+        key = str(project_root.resolve())
+        if key not in projects:
+            projects.append(key)
+            REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            REGISTRY_PATH.write_text(
+                json.dumps({"projects": projects}, indent=2), encoding="utf-8"
+            )
+    except Exception:
+        pass
+
+
 # Resolve the repo's templates/ directory (works when run from repo or ~/.copilot/tools/)
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_SKILL_MD = _SCRIPT_DIR / "templates" / "SKILL.md"
@@ -377,6 +410,10 @@ def deploy_skill():
         return
 
     print(f"\n  Deployed {len(deployed)} skill file(s).")
+
+    # Register this project so auto-update-tools.py can propagate vendored-skill
+    # updates even when running from the tools repo / launchd / shell auto-start.
+    _register_project(project_root)
 
 
 # ===================================================================

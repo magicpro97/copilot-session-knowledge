@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -29,6 +30,12 @@ PRESETS_DIR = SCRIPT_DIR / "presets"
 # Host metadata is centralised in host_manifest.py — import canonical constants.
 # Do NOT add new hosts here; update host_manifest.py through the review process.
 from host_manifest import HOST_INSTRUCTION_FILES as KNOWN_HOSTS_INSTRUCTION_FILES  # noqa: E402
+from host_manifest import HOST_SKILL_SUBPATHS  # noqa: E402
+
+# Vendored skills that explicitly support both Copilot CLI and Claude Code.
+# These are deployed to BOTH host skill paths by install_skills().
+# All other skills in INSTALL_ITEMS["skills"] are deployed to Copilot CLI only.
+VENDORED_SKILLS: tuple[str, ...] = ("karpathy-guidelines",)
 
 # What to install
 INSTALL_ITEMS = {
@@ -47,6 +54,7 @@ INSTALL_ITEMS = {
         {"src": "task-step-generator", "label": "Task Step Generator (structured step-file generation)"},
         {"src": "conductor-creator", "label": "Conductor Creator (task-router generator)"},
         {"src": "project-onboarding", "label": "Project Onboarding (full AI ecosystem setup guide)"},
+        {"src": "karpathy-guidelines", "label": "Karpathy Guidelines (anti-overcomplication coding rules)"},
     ],
     # Templates (from tools/templates/ → .github/skills/ or .github/instructions/)
     "templates": [
@@ -84,6 +92,39 @@ python3 ~/.copilot/tools/learn.py --pattern "Title" "What works well" --tags "ta
 """
 
 SKILLS_TABLE_ROW = "| Pre-task briefing & record learnings | [session-knowledge](./skills/session-knowledge/) |"
+
+# Registry of projects that have had skills deployed via setup-project.py.
+# auto-update-tools.py reads this so vendored-skill updates propagate to every
+# registered project even when auto-update runs from the tools repo or a
+# non-project context (e.g. launchd / shell auto-start).
+REGISTRY_PATH = Path.home() / ".copilot" / "session-state" / "tools-managed-projects.json"
+
+
+def _load_project_registry() -> list[str]:
+    """Return the list of registered project root paths (strings)."""
+    try:
+        if REGISTRY_PATH.exists():
+            data = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+            return [p for p in data.get("projects", []) if isinstance(p, str)]
+    except Exception:
+        pass
+    return []
+
+
+def _register_project(project_root: Path) -> None:
+    """Add *project_root* to the persistent registry (idempotent, silent on error)."""
+    try:
+        projects = _load_project_registry()
+        key = str(project_root.resolve())
+        if key not in projects:
+            projects.append(key)
+            REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            REGISTRY_PATH.write_text(
+                json.dumps({"projects": projects}, indent=2), encoding="utf-8"
+            )
+    except Exception:
+        pass
+
 
 # Snippet to add to AGENTS.md
 AGENTS_SNIPPET = """
@@ -163,8 +204,19 @@ def install_skills(project_root: Path, dry_run: bool) -> int:
     structure under each subdirectory is preserved so that relative paths
     inside SKILL.md (e.g. ``references/foo.md``, ``templates/bar.py``)
     resolve correctly after deployment.
+
+    Vendored skills (listed in VENDORED_SKILLS) additionally support Claude Code
+    and are deployed to that host's skill path alongside the Copilot CLI path.
+    The Claude Code path is derived from HOST_SKILL_SUBPATHS to stay in sync with
+    host_manifest.py without duplicating path strings here.
     """
     changes = 0
+    # Derive Claude Code skills base once from the manifest reference path.
+    # HOST_SKILL_SUBPATHS["Claude Code"] = ".claude/skills/session-knowledge/SKILL.md"
+    # → parent.parent = ".claude/skills"
+    _claude_ref = HOST_SKILL_SUBPATHS.get("Claude Code", "")
+    _claude_skills_base = Path(_claude_ref).parent.parent if _claude_ref else None
+
     for item in INSTALL_ITEMS["skills"]:
         skill_name = item["src"]
         src = SKILLS_DIR / skill_name / "SKILL.md"
@@ -172,11 +224,18 @@ def install_skills(project_root: Path, dry_run: bool) -> int:
         if copy_if_changed(src, dst, dry_run, item["label"]):
             changes += 1
 
+        # Vendored skills also deploy to Claude Code (both supported hosts).
+        if skill_name in VENDORED_SKILLS and _claude_skills_base:
+            dst_claude = project_root / _claude_skills_base / skill_name / "SKILL.md"
+            if copy_if_changed(src, dst_claude, dry_run, f"{item['label']} (Claude Code)"):
+                changes += 1
+
         # Copy every asset subdirectory that lives alongside SKILL.md.
         # This is intentionally generic so that new asset dirs (templates/,
         # evals/, etc.) are picked up automatically without code changes.
         # rglob("*") descends into nested subdirs; relative_to(skill_src_dir)
         # preserves the full relative path at the destination.
+        # Vendored skills mirror asset subdirs to Claude Code alongside Copilot CLI.
         skill_src_dir = SKILLS_DIR / skill_name
         for subdir in sorted(skill_src_dir.iterdir()):
             if not subdir.is_dir():
@@ -187,6 +246,10 @@ def install_skills(project_root: Path, dry_run: bool) -> int:
                     asset_dst = project_root / ".github" / "skills" / skill_name / rel
                     if copy_if_changed(asset_file, asset_dst, dry_run, f"{item['label']} → {rel}"):
                         changes += 1
+                    if skill_name in VENDORED_SKILLS and _claude_skills_base:
+                        asset_claude_dst = project_root / _claude_skills_base / skill_name / rel
+                        if copy_if_changed(asset_file, asset_claude_dst, dry_run, f"{item['label']} (Claude Code) → {rel}"):
+                            changes += 1
 
     return changes
 
@@ -507,6 +570,11 @@ copy to avoid duplicate always-loaded instructions and reduce context bloat.
         print("  📝 learn.py        → AI records after each task (accumulate knowledge)")
         if not args.no_tentacle:
             print("  🐙 tentacle.py     → Multi-agent orchestration with scoped contexts")
+
+    # Register project for auto-update propagation (always, even if no changes this run).
+    # dry-run is excluded so the registry only contains projects with real deployments.
+    if not args.dry_run:
+        _register_project(project_root)
 
 
 if __name__ == "__main__":

@@ -53,6 +53,19 @@ COOLDOWN = 86400  # 24 hours
 STATE_FILE = TOOLS_DIR / ".update-state.json"
 MANIFEST_FILE = TOOLS_DIR / ".update-manifest.json"
 
+# Registry written by setup-project.py and install.py --deploy-skill; records
+# every project that has received a skill deployment so that auto-update can
+# propagate vendored-skill updates there even when the current directory is the
+# tools repo or a non-project directory (e.g. launchd / shell auto-start).
+REGISTRY_PATH = HOME / ".copilot" / "session-state" / "tools-managed-projects.json"
+
+# ---------------------------------------------------------------------------
+# Vendored skills: non-template skills whose deployed bodies should be
+# refreshed when skills/ source changes (Copilot CLI + Claude Code only).
+# Paths are derived at runtime from HOST_SKILL_SUBPATHS to avoid duplication.
+# ---------------------------------------------------------------------------
+VENDORED_SKILLS: tuple[str, ...] = ("karpathy-guidelines",)
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -97,6 +110,22 @@ def _state_set(key: str, value: str):
     state = _load_state()
     state[key] = value
     _save_state(state)
+
+
+def _load_project_registry() -> list[Path]:
+    """Return a list of registered project root Paths from the persistent registry.
+
+    Written by setup-project.py on each successful (non-dry-run) deployment so
+    that deploy_skills() can propagate vendored-skill updates to every managed
+    project even when called from the tools repo or a non-project context.
+    """
+    try:
+        if REGISTRY_PATH.exists():
+            data = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+            return [Path(p) for p in data.get("projects", []) if isinstance(p, str)]
+    except Exception:
+        pass
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -449,21 +478,25 @@ def run_migrations():
 # Deploy SKILL.md to projects
 # ---------------------------------------------------------------------------
 def deploy_skills():
-    template = TOOLS_DIR / "templates" / "SKILL.md"
-    if not template.exists():
-        return
+    # Collect all project roots to update:
+    # 1. Registered projects written by setup-project.py (primary path — works
+    #    even when called from the tools repo / launchd / shell auto-start).
+    # 2. Fallback: current git root (legacy behaviour, handles ad-hoc installs).
+    registered = _load_project_registry()
+    project_roots: list[Path] = [p for p in registered if p.is_dir()]
 
-    # Find git root of current directory
     r = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
         capture_output=True,
         text=True,
     )
-    if r.returncode != 0:
-        return
-    project_root = Path(r.stdout.strip())
+    if r.returncode == 0:
+        fallback = Path(r.stdout.strip())
+        if fallback not in project_roots:
+            project_roots.append(fallback)
 
-    template_content = template.read_text(encoding="utf-8")
+    if not project_roots:
+        return
 
     # Import host metadata from the manifest so host paths stay centralised.
     # TOOLS_DIR is inserted so host_manifest is importable regardless of cwd.
@@ -482,19 +515,69 @@ def deploy_skills():
             "Claude Code":  ".claude/skills/session-knowledge/SKILL.md",
         }
 
-    # Only update files that already exist; don't create new deployments here.
-    for host_name, host_dir in HOST_DIRS.items():
-        subpath = HOST_SKILL_SUBPATHS.get(host_name)
-        if subpath is None:
-            continue
-        skill_path = project_root / subpath
-        if skill_path.exists():
-            try:
-                if skill_path.read_text(encoding="utf-8") != template_content:
-                    skill_path.write_text(template_content, encoding="utf-8")
-                    ok(f"Updated {host_name} SKILL.md in {project_root.name}")
-            except Exception:
-                pass
+    # Pre-read skill sources once; skip if source doesn't exist.
+    template = TOOLS_DIR / "templates" / "SKILL.md"
+    template_content = template.read_text(encoding="utf-8") if template.exists() else None
+
+    vendored_sources: dict[str, tuple[str, Path]] = {}  # skill_name → (content, src_dir)
+    for skill_name in VENDORED_SKILLS:
+        skill_src = TOOLS_DIR / "skills" / skill_name / "SKILL.md"
+        if skill_src.exists():
+            vendored_sources[skill_name] = (
+                skill_src.read_text(encoding="utf-8"),
+                TOOLS_DIR / "skills" / skill_name,
+            )
+
+    for project_root in project_roots:
+        # --- session-knowledge template (guarded by its own file existence) --
+        if template_content is not None:
+            for host_name in HOST_DIRS:
+                subpath = HOST_SKILL_SUBPATHS.get(host_name)
+                if subpath is None:
+                    continue
+                skill_path = project_root / subpath
+                if skill_path.exists():
+                    try:
+                        if skill_path.read_text(encoding="utf-8") != template_content:
+                            skill_path.write_text(template_content, encoding="utf-8")
+                            ok(f"Updated {host_name} SKILL.md in {project_root.name}")
+                    except Exception:
+                        pass
+
+        # --- vendored skill bodies (independent of template existence) -------
+        # Paths derived from HOST_SKILL_SUBPATHS to avoid duplicating strings:
+        #   .github/skills/session-knowledge/SKILL.md → .github/skills/<name>/SKILL.md
+        for skill_name, (skill_content, skill_src_dir) in vendored_sources.items():
+            for host_name in HOST_DIRS:
+                ref = HOST_SKILL_SUBPATHS.get(host_name)
+                if ref is None:
+                    continue
+                skills_base = Path(ref).parent.parent  # e.g. ".github/skills"
+                target = project_root / skills_base / skill_name / "SKILL.md"
+                if target.exists():
+                    try:
+                        if target.read_text(encoding="utf-8") != skill_content:
+                            target.write_text(skill_content, encoding="utf-8")
+                            ok(f"Updated {host_name} {skill_name}/SKILL.md in {project_root.name}")
+                    except Exception:
+                        pass
+                # Asset subdirs — update only, never create.
+                for subdir in sorted(skill_src_dir.iterdir()):
+                    if not subdir.is_dir():
+                        continue
+                    for asset_file in subdir.rglob("*"):
+                        if not asset_file.is_file():
+                            continue
+                        rel = asset_file.relative_to(skill_src_dir)
+                        asset_target = project_root / skills_base / skill_name / rel
+                        if asset_target.exists():
+                            try:
+                                content = asset_file.read_bytes()
+                                if asset_target.read_bytes() != content:
+                                    asset_target.write_bytes(content)
+                                    ok(f"Updated {host_name} {skill_name}/{rel} in {project_root.name}")
+                            except Exception:
+                                pass
 
 
 # ---------------------------------------------------------------------------

@@ -274,10 +274,47 @@ def search_past_work(db: sqlite3.Connection, query: str, limit: int = 3) -> list
     return results
 
 
+def load_codebase_map_files() -> set:
+    """Return the set of git-tracked file paths from the most recent codebase-map.md.
+
+    Reads the artifact produced by codebase-map.py from the most recently
+    modified Copilot session files/ directory.  Returns an empty set on any
+    failure so callers degrade gracefully when the artifact is absent.
+    """
+    import re as _re
+    try:
+        if not SESSION_STATE.exists():
+            return set()
+        sessions = sorted(
+            (d for d in SESSION_STATE.iterdir() if d.is_dir()),
+            key=lambda d: d.stat().st_mtime,
+            reverse=True,
+        )
+        for session_dir in sessions[:3]:
+            map_path = session_dir / "files" / "codebase-map.md"
+            if map_path.exists():
+                content = map_path.read_text(encoding="utf-8", errors="replace")
+                files = set()
+                for line in content.splitlines():
+                    m = _re.match(r"^\s*-\s+`([^`]+)`\s*$", line)
+                    if m:
+                        files.add(m.group(1))
+                if files:
+                    return files
+    except Exception:
+        pass
+    return set()
+
+
 def blast_radius(db: sqlite3.Connection, query: str) -> list[dict]:
     """Analyze blast radius: find files mentioned in task and their risk from knowledge DB.
 
-    Returns list of dicts: {file, mistakes, patterns, decisions, risk_level, risk_emoji}
+    Returns list of dicts:
+        {file, mistakes, patterns, decisions, risk_level, risk_emoji, stale}
+
+    The ``stale`` flag is True when the file pattern looks like a real path but
+    does not appear in the current codebase-map.md tracked-file inventory.
+    Stale entries are shown last within the same risk tier.
     """
     import re
 
@@ -335,9 +372,25 @@ def blast_radius(db: sqlite3.Connection, query: str) -> list[dict]:
             "risk_emoji": risk_emoji,
         })
 
-    # Sort by risk: HIGH first
+    # Cross-reference with codebase-map.md to mark stale blast-radius entries.
+    # An entry is "stale" when the pattern looks like a real file path (has an
+    # extension) but does not appear in the current tracked-file inventory.
+    tracked = load_codebase_map_files()
+    for r in results:
+        fname = r["file"]
+        if tracked and "." in Path(fname).name:
+            r["stale"] = (
+                fname not in tracked
+                and not any(f.endswith("/" + fname) for f in tracked)
+            )
+        else:
+            r["stale"] = False  # keywords or no map available → no stale flag
+
+    # Sort: risk tier first (HIGH → MEDIUM → LOW); stale entries last within tier
     risk_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
-    results.sort(key=lambda x: risk_order.get(x["risk_level"], 3))
+    results.sort(
+        key=lambda x: (risk_order.get(x["risk_level"], 3), 1 if x.get("stale") else 0)
+    )
     return results
 
 
@@ -485,6 +538,14 @@ def _format_default(query: str, data: dict, past_work: list, categories: dict,
                 lines.append(f"  #{eid} {title}")
         lines.append("")
 
+    if blast:
+        lines.append("💥 Blast Radius")
+        for b in blast:
+            parts = f"{b['mistakes']}m/{b['patterns']}p/{b['decisions']}d"
+            stale_tag = " (stale)" if b.get("stale") else ""
+            lines.append(f"  {b['risk_emoji']} {b['risk_level']}: {b['file']}{stale_tag} — {parts}")
+        lines.append("")
+
     if past_work:
         lines.append("📚 Related Past Work")
         for w in past_work:
@@ -493,13 +554,6 @@ def _format_default(query: str, data: dict, past_work: list, categories: dict,
             if len(title) > 80:
                 title = title[:77] + "..."
             lines.append(f"  [{w.get('doc_type', '?')}] {title} (session {sid})")
-        lines.append("")
-
-    if blast:
-        lines.append("💥 Blast Radius")
-        for b in blast:
-            parts = f"{b['mistakes']}m/{b['patterns']}p/{b['decisions']}d"
-            lines.append(f"  {b['risk_emoji']} {b['risk_level']}: {b['file']} — {parts}")
         lines.append("")
 
     total = sum(len(v) for v in data.values()) + len(past_work)
@@ -574,7 +628,8 @@ def _format_markdown(query: str, data: dict, past_work: list, categories: dict,
         lines.append("| File | Risk | Mistakes | Patterns | Decisions |")
         lines.append("|------|------|----------|----------|-----------|")
         for b in blast:
-            lines.append(f"| `{b['file']}` | {b['risk_emoji']} {b['risk_level']} "
+            file_label = f"`{b['file']}`" + (" *(stale)*" if b.get("stale") else "")
+            lines.append(f"| {file_label} | {b['risk_emoji']} {b['risk_level']} "
                          f"| {b['mistakes']} | {b['patterns']} | {b['decisions']} |")
         lines.append("")
 
@@ -633,21 +688,25 @@ def _format_json(query: str, data: dict, past_work: list, categories: dict,
 
 def _format_compact(query: str, data: dict, past_work: list, categories: dict,
                     blast: list = None) -> str:
-    """Compact format optimized for AI agent context injection."""
+    """Compact format optimized for AI agent context injection.
+
+    Minimal-first ordering: mistakes → blast_radius → patterns/decisions/tools → past_work.
+    Mistakes and blast radius appear first so the most actionable risk context
+    is visible in the smallest token budget.
+    """
     lines = []
-    # Escape query for safe XML attribute embedding
     safe_query = query[:100].replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
     lines.append(f"<briefing task=\"{safe_query}\">\n")
 
-    for cat, meta in categories.items():
+    def _cat_block(cat: str) -> None:
+        """Append one XML-style category block to *lines*."""
         entries = data.get(cat, [])
         if not entries:
-            continue
+            return
         lines.append(f"<{cat}s>")
         for entry in entries:
             title = entry.get("title", "")[:80]
             content = entry.get("content", "")
-            # Extract first meaningful sentence/line
             first_line = ""
             for ln in content.split("\n"):
                 ln = ln.strip().lstrip("-").lstrip("*").lstrip("0123456789.").strip()
@@ -665,6 +724,25 @@ def _format_compact(query: str, data: dict, past_work: list, categories: dict,
             lines.append(f"- {title}: {first_line}")
         lines.append(f"</{cat}s>\n")
 
+    # 1. Mistakes first — highest-priority risk-avoidance signal
+    _cat_block("mistake")
+
+    # 2. Blast radius immediately after mistakes — grounded current-change risk
+    if blast:
+        lines.append("<blast_radius>")
+        for b in blast:
+            stale_tag = " (stale)" if b.get("stale") else ""
+            lines.append(
+                f"- {b['risk_emoji']} {b['risk_level']}: {b['file']}{stale_tag} "
+                f"({b['mistakes']}m/{b['patterns']}p/{b['decisions']}d)"
+            )
+        lines.append("</blast_radius>\n")
+
+    # 3. Patterns, decisions, tools — what to follow
+    for cat in ("pattern", "decision", "tool"):
+        _cat_block(cat)
+
+    # 4. Past work last — least critical for minimal-first context injection
     if past_work:
         lines.append("<past_work>")
         for w in past_work:
@@ -672,13 +750,6 @@ def _format_compact(query: str, data: dict, past_work: list, categories: dict,
             lines.append(f"- [{w.get('doc_type', '?')}] {w.get('title', '?')} "
                          f"(session {sid})")
         lines.append("</past_work>\n")
-
-    if blast:
-        lines.append("<blast_radius>")
-        for b in blast:
-            lines.append(f"- {b['risk_emoji']} {b['risk_level']}: {b['file']} "
-                         f"({b['mistakes']}m/{b['patterns']}p/{b['decisions']}d)")
-        lines.append("</blast_radius>\n")
 
     lines.append("</briefing>")
     return "\n".join(lines)
