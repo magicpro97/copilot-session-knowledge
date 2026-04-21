@@ -71,6 +71,113 @@ VENDORED_SKILLS: tuple[str, ...] = ("karpathy-guidelines",)
 GLOBAL_COPILOT_SKILLS_DIR = HOME / ".copilot" / "skills"
 
 
+def _running_in_wsl() -> bool:
+    """Return True when this process is running inside WSL."""
+    if platform.system() != "Linux":
+        return False
+    if os.environ.get("WSL_INTEROP") or os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    for probe in (Path("/proc/sys/kernel/osrelease"), Path("/proc/version")):
+        try:
+            if "microsoft" in probe.read_text(encoding="utf-8", errors="ignore").lower():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _windows_path_to_wsl_path(path_str: str) -> Path | None:
+    """Convert a Windows profile path (e.g. C:\\Users\\Name) to /mnt/<drive>/..."""
+    candidate = path_str.strip().strip('"')
+    if not candidate or len(candidate) > 256 or "\n" in candidate or "\r" in candidate:
+        return None
+
+    if candidate.startswith("/mnt/"):
+        path = Path(candidate)
+        return None if ".." in path.parts else path
+
+    if len(candidate) < 3 or not candidate[0].isalpha() or candidate[1] != ":" or candidate[2] not in ("\\", "/"):
+        return None
+
+    tail = candidate[3:].replace("\\", "/").strip("/")
+    parts = [part for part in tail.split("/") if part]
+    if not parts or any(part == ".." for part in parts):
+        return None
+
+    return Path("/mnt") / candidate[0].lower() / Path(*parts)
+
+
+def _windows_userprofile_candidates_from_wsl() -> tuple[str, ...]:
+    """Return candidate Windows user-profile strings discoverable from WSL."""
+    candidates: list[str] = []
+
+    env_profile = os.environ.get("USERPROFILE", "").strip()
+    if env_profile:
+        candidates.append(env_profile)
+
+    commands = (
+        ["powershell.exe", "-NoProfile", "-Command", "[Environment]::GetFolderPath('UserProfile')"],
+        ["cmd.exe", "/c", "echo", "%USERPROFILE%"],
+    )
+    for cmd in commands:
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        except Exception:
+            continue
+        if result.returncode == 0:
+            value = result.stdout.strip()
+            if value:
+                candidates.append(value)
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in candidates:
+        if value not in seen:
+            seen.add(value)
+            unique.append(value)
+    return tuple(unique)
+
+
+def _windows_copilot_skills_dir_from_wsl() -> Path | None:
+    """Return the current Windows user's global Copilot skills dir when on WSL."""
+    if not _running_in_wsl():
+        return None
+
+    for candidate in _windows_userprofile_candidates_from_wsl():
+        windows_home = _windows_path_to_wsl_path(candidate)
+        if windows_home is None:
+            continue
+        skills_dir = windows_home / ".copilot" / "skills"
+        try:
+            if skills_dir.exists():
+                return skills_dir
+        except OSError:
+            continue
+    return None
+
+
+def _global_copilot_skill_dirs() -> tuple[Path, ...]:
+    """Return global Copilot CLI skill roots to refresh for this environment.
+
+    On WSL, also include the current Windows user's Copilot CLI global skills
+    directory when it can be resolved and accessed from /mnt/<drive>/...
+    """
+    dirs: list[Path] = [GLOBAL_COPILOT_SKILLS_DIR]
+
+    windows_skills_dir = _windows_copilot_skills_dir_from_wsl()
+    if windows_skills_dir is not None:
+        dirs.append(windows_skills_dir)
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in dirs:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return tuple(unique)
+
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -585,33 +692,34 @@ def deploy_skills():
     # --- global Copilot CLI skills (update-only; never create) ---------------
     # Propagate vendored-skill updates to already-installed global skill dirs
     # at ~/.copilot/skills/<name>/.  Only touches files that already exist.
-    for skill_name, (skill_content, skill_src_dir) in vendored_sources.items():
-        global_skill_dir = GLOBAL_COPILOT_SKILLS_DIR / skill_name
-        global_skill_md  = global_skill_dir / "SKILL.md"
-        if global_skill_md.exists():
-            try:
-                if global_skill_md.read_text(encoding="utf-8") != skill_content:
-                    global_skill_md.write_text(skill_content, encoding="utf-8")
-                    ok(f"Updated global Copilot CLI {skill_name}/SKILL.md")
-            except Exception:
-                pass
-            # Asset subdirs — update only, never create.
-            for subdir in sorted(skill_src_dir.iterdir()):
-                if not subdir.is_dir():
-                    continue
-                for asset_file in subdir.rglob("*"):
-                    if not asset_file.is_file():
+    for global_skills_root in _global_copilot_skill_dirs():
+        for skill_name, (skill_content, skill_src_dir) in vendored_sources.items():
+            global_skill_dir = global_skills_root / skill_name
+            global_skill_md = global_skill_dir / "SKILL.md"
+            if global_skill_md.exists():
+                try:
+                    if global_skill_md.read_text(encoding="utf-8") != skill_content:
+                        global_skill_md.write_text(skill_content, encoding="utf-8")
+                        ok(f"Updated global Copilot CLI {skill_name}/SKILL.md in {global_skills_root}")
+                except Exception:
+                    pass
+                # Asset subdirs — update only, never create.
+                for subdir in sorted(skill_src_dir.iterdir()):
+                    if not subdir.is_dir():
                         continue
-                    rel = asset_file.relative_to(skill_src_dir)
-                    asset_target = global_skill_dir / rel
-                    if asset_target.exists():
-                        try:
-                            content = asset_file.read_bytes()
-                            if asset_target.read_bytes() != content:
-                                asset_target.write_bytes(content)
-                                ok(f"Updated global Copilot CLI {skill_name}/{rel}")
-                        except Exception:
-                            pass
+                    for asset_file in subdir.rglob("*"):
+                        if not asset_file.is_file():
+                            continue
+                        rel = asset_file.relative_to(skill_src_dir)
+                        asset_target = global_skill_dir / rel
+                        if asset_target.exists():
+                            try:
+                                content = asset_file.read_bytes()
+                                if asset_target.read_bytes() != content:
+                                    asset_target.write_bytes(content)
+                                    ok(f"Updated global Copilot CLI {skill_name}/{rel} in {global_skills_root}")
+                            except Exception:
+                                pass
 
 
 # ---------------------------------------------------------------------------

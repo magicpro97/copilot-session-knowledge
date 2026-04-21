@@ -36,7 +36,10 @@ After `git pull`, auto-update analyzes `git diff` to run only what changed:
 > (2) updates vendored skill bodies and asset subdirs for skills listed in `VENDORED_SKILLS`
 > (currently `karpathy-guidelines`) in already-deployed project destinations, and
 > (3) updates already-installed **global Copilot CLI** skill directories at `~/.copilot/skills/<name>/`
-> for whitelisted vendored skills (currently `karpathy-guidelines`). This is **Copilot CLI scope only** —
+> for whitelisted vendored skills (currently `karpathy-guidelines`). When auto-update runs inside WSL and
+> can resolve the current Windows user's profile, it also refreshes that Windows Copilot CLI global
+> skill directory — but only if it already exists there from a separate manual install. This is
+> **Copilot CLI scope only** —
 > `~/.claude/skills/` global installs are **not** touched by auto-update. All three operations follow an
 > **update-only, don't-create** rule — files are only updated if they already exist at the target
 > location; new deployments are never created automatically. Non-vendored skill `SKILL.md` files and

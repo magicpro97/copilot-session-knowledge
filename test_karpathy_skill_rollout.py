@@ -696,6 +696,16 @@ print("\n🌐 14. Global Copilot CLI skill rollout (~/.copilot/skills/)")
 # Source guard: constant must be defined in auto-update-tools.py.
 test("GLOBAL_COPILOT_SKILLS_DIR defined in auto-update-tools.py",
      "GLOBAL_COPILOT_SKILLS_DIR" in aut_source)
+test("_running_in_wsl() helper defined in auto-update-tools.py",
+     "def _running_in_wsl()" in aut_source)
+test("_windows_path_to_wsl_path() helper defined in auto-update-tools.py",
+     "def _windows_path_to_wsl_path(" in aut_source)
+test("_windows_userprofile_candidates_from_wsl() helper defined in auto-update-tools.py",
+     "def _windows_userprofile_candidates_from_wsl()" in aut_source)
+test("_windows_copilot_skills_dir_from_wsl() helper defined in auto-update-tools.py",
+     "def _windows_copilot_skills_dir_from_wsl()" in aut_source)
+test("_global_copilot_skill_dirs() helper defined in auto-update-tools.py",
+     "def _global_copilot_skill_dirs()" in aut_source)
 
 if skill_md.exists():
     from unittest.mock import patch, MagicMock  # stdlib; no new deps
@@ -705,6 +715,20 @@ if skill_md.exists():
         "auto_update_tools_s14", REPO / "auto-update-tools.py")
     _aut14_mod = _ilu_14.module_from_spec(_aut14_spec)
     _aut14_spec.loader.exec_module(_aut14_mod)
+
+    test("_windows_path_to_wsl_path() converts a Windows profile path",
+         str(_aut14_mod._windows_path_to_wsl_path(r"C:\Users\WinUser")) == "/mnt/c/Users/WinUser")
+    test("_windows_path_to_wsl_path() rejects traversal in Windows profile path",
+         _aut14_mod._windows_path_to_wsl_path(r"C:\Users\..\WinUser") is None)
+
+    _orig_win_helper14 = _aut14_mod._windows_copilot_skills_dir_from_wsl
+    try:
+        _aut14_mod._windows_copilot_skills_dir_from_wsl = lambda: None
+        _dirs14 = _aut14_mod._global_copilot_skill_dirs()
+    finally:
+        _aut14_mod._windows_copilot_skills_dir_from_wsl = _orig_win_helper14
+    test("_global_copilot_skill_dirs() keeps current environment only when no WSL Windows profile is resolved",
+         _dirs14 == (_aut14_mod.GLOBAL_COPILOT_SKILLS_DIR,))
 
     # ── A: update already-installed global skill ───────────────────────────
     with tempfile.TemporaryDirectory() as _d14a:
@@ -717,12 +741,12 @@ if skill_md.exists():
         _global_skill_md = _global_skill_dir / "SKILL.md"
         _global_skill_md.write_text("STALE GLOBAL", encoding="utf-8")
 
-        _orig_td14a  = _aut14_mod.TOOLS_DIR
-        _orig_gsd14a = _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR
-        _orig_rp14a  = _aut14_mod.REGISTRY_PATH
-        _aut14_mod.TOOLS_DIR               = REPO
-        _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR = _fake_global
-        _aut14_mod.REGISTRY_PATH           = Path(_d14a) / "empty-registry.json"
+        _orig_td14a   = _aut14_mod.TOOLS_DIR
+        _orig_gsds14a = _aut14_mod._global_copilot_skill_dirs
+        _orig_rp14a   = _aut14_mod.REGISTRY_PATH
+        _aut14_mod.TOOLS_DIR = REPO
+        _aut14_mod._global_copilot_skill_dirs = lambda: (_fake_global,)
+        _aut14_mod.REGISTRY_PATH = Path(_d14a) / "empty-registry.json"
 
         mock_r14a = MagicMock()
         mock_r14a.returncode = 1  # no git root — ensures update comes from global path
@@ -731,9 +755,9 @@ if skill_md.exists():
                 _mock14a.run.return_value = mock_r14a
                 _aut14_mod.deploy_skills()
         finally:
-            _aut14_mod.TOOLS_DIR               = _orig_td14a
-            _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR = _orig_gsd14a
-            _aut14_mod.REGISTRY_PATH           = _orig_rp14a
+            _aut14_mod.TOOLS_DIR = _orig_td14a
+            _aut14_mod._global_copilot_skill_dirs = _orig_gsds14a
+            _aut14_mod.REGISTRY_PATH = _orig_rp14a
 
         _expected14 = skill_md.read_text(encoding="utf-8")
         test("deploy_skills() updates already-installed global Copilot CLI skill",
@@ -746,12 +770,12 @@ if skill_md.exists():
         _fake_global_b.mkdir(parents=True)
         # Do NOT create karpathy-guidelines/ — it must not be created by deploy_skills().
 
-        _orig_td14b  = _aut14_mod.TOOLS_DIR
-        _orig_gsd14b = _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR
-        _orig_rp14b  = _aut14_mod.REGISTRY_PATH
-        _aut14_mod.TOOLS_DIR               = REPO
-        _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR = _fake_global_b
-        _aut14_mod.REGISTRY_PATH           = Path(_d14b) / "empty-registry.json"
+        _orig_td14b   = _aut14_mod.TOOLS_DIR
+        _orig_gsds14b = _aut14_mod._global_copilot_skill_dirs
+        _orig_rp14b   = _aut14_mod.REGISTRY_PATH
+        _aut14_mod.TOOLS_DIR = REPO
+        _aut14_mod._global_copilot_skill_dirs = lambda: (_fake_global_b,)
+        _aut14_mod.REGISTRY_PATH = Path(_d14b) / "empty-registry.json"
 
         mock_r14b = MagicMock()
         mock_r14b.returncode = 1
@@ -760,9 +784,9 @@ if skill_md.exists():
                 _mock14b.run.return_value = mock_r14b
                 _aut14_mod.deploy_skills()
         finally:
-            _aut14_mod.TOOLS_DIR               = _orig_td14b
-            _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR = _orig_gsd14b
-            _aut14_mod.REGISTRY_PATH           = _orig_rp14b
+            _aut14_mod.TOOLS_DIR = _orig_td14b
+            _aut14_mod._global_copilot_skill_dirs = _orig_gsds14b
+            _aut14_mod.REGISTRY_PATH = _orig_rp14b
 
         test("deploy_skills() does NOT create global skill dir when not pre-installed",
              not (_fake_global_b / "karpathy-guidelines" / "SKILL.md").exists(),
@@ -787,12 +811,12 @@ if skill_md.exists():
         (_global14c_skill / "SKILL.md").write_text("OLD CONTENT", encoding="utf-8")
         (_global14c_skill / "references" / "guide.md").write_text("OLD REF", encoding="utf-8")
 
-        _orig_td14c  = _aut14_mod.TOOLS_DIR
-        _orig_gsd14c = _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR
-        _orig_rp14c  = _aut14_mod.REGISTRY_PATH
-        _aut14_mod.TOOLS_DIR               = _fake_tools14c
-        _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR = _fake_global14c
-        _aut14_mod.REGISTRY_PATH           = _fake_tools14c / "empty-registry.json"
+        _orig_td14c   = _aut14_mod.TOOLS_DIR
+        _orig_gsds14c = _aut14_mod._global_copilot_skill_dirs
+        _orig_rp14c   = _aut14_mod.REGISTRY_PATH
+        _aut14_mod.TOOLS_DIR = _fake_tools14c
+        _aut14_mod._global_copilot_skill_dirs = lambda: (_fake_global14c,)
+        _aut14_mod.REGISTRY_PATH = _fake_tools14c / "empty-registry.json"
 
         mock_r14c = MagicMock()
         mock_r14c.returncode = 1
@@ -801,15 +825,86 @@ if skill_md.exists():
                 _mock14c.run.return_value = mock_r14c
                 _aut14_mod.deploy_skills()
         finally:
-            _aut14_mod.TOOLS_DIR               = _orig_td14c
-            _aut14_mod.GLOBAL_COPILOT_SKILLS_DIR = _orig_gsd14c
-            _aut14_mod.REGISTRY_PATH           = _orig_rp14c
+            _aut14_mod.TOOLS_DIR = _orig_td14c
+            _aut14_mod._global_copilot_skill_dirs = _orig_gsds14c
+            _aut14_mod.REGISTRY_PATH = _orig_rp14c
 
         test("deploy_skills() updates existing asset file in global skill dir",
              (_global14c_skill / "references" / "guide.md")
              .read_text(encoding="utf-8") == "NEW REF")
         test("deploy_skills() does NOT create absent asset file in global skill dir",
              not (_global14c_skill / "references" / "extra.md").exists())
+
+    # ── D: WSL-run update refreshes both WSL and Windows global skill dirs ───
+    with tempfile.TemporaryDirectory() as _d14d:
+        _fake_wsl_global = Path(_d14d) / "wsl-home" / ".copilot" / "skills"
+        _fake_win_global = Path(_d14d) / "Users" / "LinhNT102" / ".copilot" / "skills"
+        (_fake_wsl_global / "karpathy-guidelines").mkdir(parents=True)
+        (_fake_win_global / "karpathy-guidelines").mkdir(parents=True)
+        _fake_wsl_md = _fake_wsl_global / "karpathy-guidelines" / "SKILL.md"
+        _fake_win_md = _fake_win_global / "karpathy-guidelines" / "SKILL.md"
+        _fake_wsl_md.write_text("STALE WSL", encoding="utf-8")
+        _fake_win_md.write_text("STALE WIN", encoding="utf-8")
+
+        _orig_td14d = _aut14_mod.TOOLS_DIR
+        _orig_gsds14d = _aut14_mod._global_copilot_skill_dirs
+        _orig_rp14d = _aut14_mod.REGISTRY_PATH
+        _aut14_mod.TOOLS_DIR = REPO
+        _aut14_mod._global_copilot_skill_dirs = lambda: (_fake_wsl_global, _fake_win_global)
+        _aut14_mod.REGISTRY_PATH = Path(_d14d) / "empty-registry.json"
+
+        mock_r14d = MagicMock()
+        mock_r14d.returncode = 1
+        try:
+            with patch.object(_aut14_mod, "subprocess") as _mock14d:
+                _mock14d.run.return_value = mock_r14d
+                _aut14_mod.deploy_skills()
+        finally:
+            _aut14_mod.TOOLS_DIR = _orig_td14d
+            _aut14_mod._global_copilot_skill_dirs = _orig_gsds14d
+            _aut14_mod.REGISTRY_PATH = _orig_rp14d
+
+        _expected14d = skill_md.read_text(encoding="utf-8")
+        test("deploy_skills() updates WSL global skill dir when multiple global roots exist",
+             _fake_wsl_md.read_text(encoding="utf-8") == _expected14d)
+        test("deploy_skills() updates Windows global skill dir when multiple global roots exist",
+             _fake_win_md.read_text(encoding="utf-8") == _expected14d)
+
+    # ── E: WSL-only helper resolves current Windows profile, not HOME.name ───
+    with tempfile.TemporaryDirectory() as _d14e:
+        _fake_win_home = Path(_d14e) / "Users" / "WindowsUser"
+        _fake_win_skills = _fake_win_home / ".copilot" / "skills"
+        _fake_win_skills.mkdir(parents=True)
+
+        _orig_is_wsl14e = _aut14_mod._running_in_wsl
+        _orig_candidates14e = _aut14_mod._windows_userprofile_candidates_from_wsl
+        _orig_convert14e = _aut14_mod._windows_path_to_wsl_path
+        try:
+            _aut14_mod._running_in_wsl = lambda: True
+            _aut14_mod._windows_userprofile_candidates_from_wsl = lambda: (r"C:\Users\WindowsUser",)
+            _aut14_mod._windows_path_to_wsl_path = lambda _value: _fake_win_home
+            _resolved14e = _aut14_mod._windows_copilot_skills_dir_from_wsl()
+        finally:
+            _aut14_mod._running_in_wsl = _orig_is_wsl14e
+            _aut14_mod._windows_userprofile_candidates_from_wsl = _orig_candidates14e
+            _aut14_mod._windows_path_to_wsl_path = _orig_convert14e
+
+        test("_windows_copilot_skills_dir_from_wsl() resolves the current Windows profile on WSL",
+             _resolved14e == _fake_win_skills)
+
+    # ── F: WSL helper stays disabled outside WSL even if Windows paths exist ──
+    _orig_is_wsl14f = _aut14_mod._running_in_wsl
+    _orig_candidates14f = _aut14_mod._windows_userprofile_candidates_from_wsl
+    try:
+        _aut14_mod._running_in_wsl = lambda: False
+        _aut14_mod._windows_userprofile_candidates_from_wsl = lambda: (r"C:\Users\WindowsUser",)
+        _resolved14f = _aut14_mod._windows_copilot_skills_dir_from_wsl()
+    finally:
+        _aut14_mod._running_in_wsl = _orig_is_wsl14f
+        _aut14_mod._windows_userprofile_candidates_from_wsl = _orig_candidates14f
+
+    test("_windows_copilot_skills_dir_from_wsl() returns None outside WSL",
+         _resolved14f is None)
 
 # ---------------------------------------------------------------------------
 # Summary
