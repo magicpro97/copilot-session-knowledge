@@ -52,7 +52,7 @@ RUNNER = REPO / "hooks" / "hook_runner.py"
 # 1a. Empty stdin → allow (fail-open)
 r = subprocess.run(
     [sys.executable, str(RUNNER), "preToolUse"],
-    input="", capture_output=True, text=True, timeout=10,
+    input="", capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
 )
 test("Empty stdin → allow (exit 0)", r.returncode == 0)
 test("Empty stdin → no JSON output", r.stdout.strip() == "")
@@ -60,21 +60,21 @@ test("Empty stdin → no JSON output", r.stdout.strip() == "")
 # 1b. Invalid JSON → allow (fail-open)
 r = subprocess.run(
     [sys.executable, str(RUNNER), "preToolUse"],
-    input="{invalid json!!!", capture_output=True, text=True, timeout=10,
+    input="{invalid json!!!", capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
 )
 test("Invalid JSON → allow (exit 0)", r.returncode == 0)
 
 # 1c. Unknown event → allow (no matching rules)
 r = subprocess.run(
     [sys.executable, str(RUNNER), "unknownEvent"],
-    input='{"toolName":"edit"}', capture_output=True, text=True, timeout=10,
+    input='{"toolName":"edit"}', capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
 )
 test("Unknown event → allow", r.returncode == 0)
 
 # 1d. No event argument → silent exit
 r = subprocess.run(
     [sys.executable, str(RUNNER)],
-    input='{}', capture_output=True, text=True, timeout=10,
+    input='{}', capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
 )
 test("No event arg → silent exit", r.returncode == 0)
 
@@ -87,7 +87,7 @@ r = subprocess.run(
         "toolName": "bash",
         "toolArgs": {"command": "cat ~/.copilot/hooks/.marker-secret"}
     }),
-    capture_output=True, text=True, env=env, timeout=10,
+    capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=10,
 )
 test("Dry-run mode → no deny JSON", "permissionDecision" not in r.stdout)
 test("Dry-run mode → has DRY RUN label", "DRY RUN" in r.stdout or r.returncode == 0)
@@ -96,7 +96,7 @@ test("Dry-run mode → has DRY RUN label", "DRY RUN" in r.stdout or r.returncode
 r = subprocess.run(
     [sys.executable, str(RUNNER), "preToolUse"],
     input=json.dumps({"toolName": "view", "toolArgs": {"path": "/tmp/test.txt"}}),
-    capture_output=True, text=True, timeout=10,
+    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
 )
 test("View tool → allowed", r.returncode == 0 and "deny" not in r.stdout)
 
@@ -108,7 +108,7 @@ r = subprocess.run(
         "toolArgs": {"path": "/tmp/test.py"},
         "toolResult": {"success": True}
     }),
-    capture_output=True, text=True, timeout=10,
+    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
 )
 test("postToolUse → no error", r.returncode == 0)
 
@@ -116,7 +116,7 @@ test("postToolUse → no error", r.returncode == 0)
 r = subprocess.run(
     [sys.executable, str(RUNNER), "errorOccurred"],
     input=json.dumps({"error": "Something broke", "toolName": "bash"}),
-    capture_output=True, text=True, timeout=10,
+    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
 )
 test("errorOccurred → no crash", r.returncode == 0)
 
@@ -143,11 +143,15 @@ try:
     # 2a. Sign + verify marker
     m = test_dir / "test-marker"
     sign_marker(m, "test-marker")
+    secret = _read_secret()
     test("Sign marker creates file", m.exists())
     test("Verify own marker succeeds", verify_marker(m, "test-marker"))
 
     # 2b. Wrong name fails verification
-    test("Wrong name → verify fails", not verify_marker(m, "wrong-name"))
+    if secret:
+        test("Wrong name → verify fails", not verify_marker(m, "wrong-name"))
+    else:
+        test("No secret → wrong name falls back to existence check", verify_marker(m, "wrong-name"))
 
     # 2c. Non-existent marker → verify fails
     test("Non-existent marker → false", not verify_marker(test_dir / "nope", "nope"))
@@ -155,12 +159,10 @@ try:
     # 2d. Tampered marker → verify fails
     tampered = test_dir / "tampered"
     sign_marker(tampered, "tampered")
-    # Modify content
-    content = json.loads(tampered.read_text())
-    content["ts"] = "9999999999"  # Change timestamp
-    tampered.write_text(json.dumps(content))
-    secret = _read_secret()
     if secret:
+        content = json.loads(tampered.read_text(encoding="utf-8"))
+        content["ts"] = "9999999999"  # Change timestamp
+        tampered.write_text(json.dumps(content), encoding="utf-8")
         test("Tampered timestamp → verify fails", not verify_marker(tampered, "tampered"))
     else:
         test("No secret → simple existence check (tamper test skipped)", True)
@@ -190,10 +192,10 @@ try:
     # 2i. Tampered counter → 0
     c_tamper = test_dir / "tamper-count"
     sign_counter(c_tamper, 10)
-    ct_content = json.loads(c_tamper.read_text()) if secret else None
+    ct_content = json.loads(c_tamper.read_text(encoding="utf-8")) if secret else None
     if ct_content:
         ct_content["value"] = 999
-        c_tamper.write_text(json.dumps(ct_content))
+        c_tamper.write_text(json.dumps(ct_content), encoding="utf-8")
         test("Tampered counter → 0", verify_counter(c_tamper) == 0)
     else:
         test("Counter tamper test (skipped, no secret)", True)
@@ -340,7 +342,7 @@ project_hooks_path = REPO / ".github" / "hooks" / "hooks.json"
 # 5a. User-level hooks.json exists and is valid JSON
 if user_hooks_path.exists():
     try:
-        user_hooks = json.loads(user_hooks_path.read_text())
+        user_hooks = json.loads(user_hooks_path.read_text(encoding="utf-8"))
         test("User hooks.json is valid JSON", True)
         test("User hooks has version", user_hooks.get("version") == 1)
     except json.JSONDecodeError as e:
@@ -351,7 +353,7 @@ else:
 # 5b. Project-level hooks.json exists and is valid JSON
 if project_hooks_path.exists():
     try:
-        proj_hooks = json.loads(project_hooks_path.read_text())
+        proj_hooks = json.loads(project_hooks_path.read_text(encoding="utf-8"))
         test("Project hooks.json is valid JSON", True)
     except json.JSONDecodeError as e:
         test("Project hooks.json is valid JSON", False, str(e))
@@ -376,8 +378,8 @@ else:
 # 5d. User-level and project-level should be identical (both global)
 if user_hooks_path.exists() and project_hooks_path.exists():
     try:
-        uh = json.loads(user_hooks_path.read_text())
-        ph = json.loads(project_hooks_path.read_text())
+        uh = json.loads(user_hooks_path.read_text(encoding="utf-8"))
+        ph = json.loads(project_hooks_path.read_text(encoding="utf-8"))
         # Compare normalized
         test("User and project hooks.json match",
              json.dumps(uh, sort_keys=True) == json.dumps(ph, sort_keys=True),
@@ -420,7 +422,7 @@ try:
     # Run migrate.py on it
     r = subprocess.run(
         [sys.executable, str(REPO / "migrate.py"), test_db_path],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
     )
     test("migrate.py runs without error", r.returncode == 0,
          f"stderr: {r.stderr[:200]}")
@@ -465,7 +467,7 @@ try:
     db.close()
     r2 = subprocess.run(
         [sys.executable, str(REPO / "migrate.py"), test_db_path],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
     )
     test("Re-run migrate is idempotent", r2.returncode == 0)
 
@@ -489,7 +491,7 @@ auto_update = REPO / "auto-update-tools.py"
 # 7a. --status flag works
 r = subprocess.run(
     [sys.executable, str(auto_update), "--status"],
-    capture_output=True, text=True, timeout=30,
+    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
 )
 test("--status runs without error", r.returncode == 0,
      f"stderr: {r.stderr[:200]}")
@@ -497,7 +499,7 @@ test("--status runs without error", r.returncode == 0,
 # 7b. --check flag works (no changes applied)
 r = subprocess.run(
     [sys.executable, str(auto_update), "--check"],
-    capture_output=True, text=True, timeout=30,
+    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
 )
 test("--check runs without error", r.returncode == 0,
      f"stderr: {r.stderr[:200]}")
@@ -505,7 +507,7 @@ test("--check runs without error", r.returncode == 0,
 # 7c. --doctor flag works
 r = subprocess.run(
     [sys.executable, str(auto_update), "--doctor"],
-    capture_output=True, text=True, timeout=30,
+    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
 )
 test("--doctor runs without error", r.returncode == 0,
      f"stderr: {r.stderr[:200]}")
@@ -572,6 +574,107 @@ for doc in ["USAGE.md", "SKILLS.md", "HOOKS.md", "AUTO-UPDATE.md"]:
 # ═══════════════════════════════════════════════════════════════════
 
 print("\n✏️  Section 10: Script Syntax Validation")
+
+# ═══════════════════════════════════════════════════════════════════
+#  Section 11: Tentacle Hook Message Validity
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n🐙 Section 11: Tentacle Hook Message Validity")
+
+# Regression: hooks/rules/tentacle.py must not suggest the invalid bare-string
+# form `tentacle.py "your task"` — that subcommand does not exist.
+tentacle_rule_src = (REPO / "hooks" / "rules" / "tentacle.py").read_text(encoding="utf-8")
+
+test(
+    "TentacleEnforceRule does not use invalid bare-string form",
+    'tentacle.py "your task"' not in tentacle_rule_src,
+    "Remove the obsolete 'tentacle.py \"your task\"' suggestion from TentacleEnforceRule"
+)
+
+# The message must reference the correct workflow entry point (create command)
+test(
+    "TentacleEnforceRule suggests tentacle.py create",
+    "tentacle.py create" in tentacle_rule_src,
+    "TentacleEnforceRule should guide users to start with 'tentacle.py create <name>'"
+)
+
+# The message must reference swarm (the dispatch step)
+test(
+    "TentacleEnforceRule suggests tentacle.py swarm",
+    "tentacle.py swarm" in tentacle_rule_src,
+    "TentacleEnforceRule should reference 'tentacle.py swarm <name>' for dispatch"
+)
+
+# Validate the deny message can be exercised without crashing — instantiate and run
+try:
+    sys.path.insert(0, str(REPO / "hooks"))
+    from rules.tentacle import TentacleEnforceRule  # noqa: E402
+    import tempfile, pathlib
+
+    rule = TentacleEnforceRule()
+
+    # Fake an edit event that exceeds the threshold by patching the marker helper
+    class _FakeMarkers:
+        """Minimal in-memory substitute for HMAC marker helpers."""
+        def __init__(self, files):
+            self._files = files
+        def verify_list_marker(self, path):
+            return set(self._files)
+        def verify_marker(self, path, name):
+            return False
+        def sign_list_marker(self, path, lines):
+            pass
+        def is_secret_access(self, cmd):
+            return False
+        def check_tamper_marker(self):
+            return False
+
+    import rules.tentacle as _rt
+
+    _orig_vlist = _rt.verify_list_marker
+    _orig_vm    = _rt.verify_marker
+    _orig_sl    = _rt.sign_list_marker
+    _orig_isa   = _rt.is_secret_access
+    _orig_ctm   = _rt.check_tamper_marker
+
+    # 3 files across 2 modules → should trigger deny
+    _fake_files = ["src/auth/login.py", "src/api/routes.py", "tests/test_auth.py"]
+    _rt.verify_list_marker = lambda p: set(_fake_files)
+    _rt.verify_marker = lambda p, n: False
+    _rt.sign_list_marker = lambda p, lines: None
+    _rt.is_secret_access = lambda c: False
+    _rt.check_tamper_marker = lambda: False
+
+    result = rule.evaluate("preToolUse", {"toolName": "edit", "toolArgs": {"path": "x.py"}})
+
+    # Restore
+    _rt.verify_list_marker = _orig_vlist
+    _rt.verify_marker = _orig_vm
+    _rt.sign_list_marker = _orig_sl
+    _rt.is_secret_access = _orig_isa
+    _rt.check_tamper_marker = _orig_ctm
+
+    if result is not None:
+        deny_msg = result.get("permissionDecisionReason", "") if isinstance(result, dict) else str(result)
+        test("TentacleEnforceRule deny message contains 'create'", "create" in deny_msg,
+             f"Got: {deny_msg!r:.120}")
+        test("TentacleEnforceRule deny message contains 'swarm'", "swarm" in deny_msg,
+             f"Got: {deny_msg!r:.120}")
+        test("TentacleEnforceRule deny message does not contain '\"your task\"'",
+             '"your task"' not in deny_msg,
+             f"Got: {deny_msg!r:.120}")
+    else:
+        test("TentacleEnforceRule returned a result for 3-file/2-module edit", False,
+             "Expected deny, got None")
+
+    test("TentacleEnforceRule evaluates without exception", True)
+except Exception as e:
+    test("TentacleEnforceRule evaluates without exception", False, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Section 10 (cont): Script Syntax Validation
+# ═══════════════════════════════════════════════════════════════════
 
 import ast
 

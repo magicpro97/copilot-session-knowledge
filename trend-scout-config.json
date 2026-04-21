@@ -58,5 +58,16 @@
     "marker_prefix": "trend-scout:repo:",
     "search_closed_issues": true,
     "max_issues_scan": 300
+  },
+  "analysis": {
+    "_comment": "GitHub Models LLM analysis path (direction 2). Set enabled=true and export GITHUB_MODELS_TOKEN locally, or set token_env=GITHUB_TOKEN in Actions with permissions.models=read.",
+    "enabled": false,
+    "model": "openai/gpt-4o-mini",
+    "endpoint": "https://models.github.ai/inference/chat/completions",
+    "temperature": 0.2,
+    "max_tokens": 800,
+    "max_learnings": 5,
+    "timeout": 30,
+    "token_env": "GITHUB_MODELS_TOKEN"
   }
 }

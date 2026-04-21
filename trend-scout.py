@@ -52,6 +52,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = SCRIPT_DIR / "trend-scout-config.json"
 
 GITHUB_API = "https://api.github.com"
+MODELS_API_ENDPOINT = "https://models.github.ai/inference/chat/completions"
+MODELS_API_VERSION = "2022-11-28"
+DEFAULT_MODELS_MODEL = "openai/gpt-4o-mini"
 REQUEST_TIMEOUT = 30
 RATE_LIMIT_SLEEP_CAP = 120  # never sleep more than 2 min at once
 
@@ -105,6 +108,21 @@ DEFAULT_CONFIG: dict = {
         "search_closed_issues": True,
         "max_issues_scan": 300,
     },
+    "analysis": {
+        # Set enabled=true and export GITHUB_MODELS_TOKEN to activate the LLM path.
+        # Falls back to heuristic _derive_learnings() on any failure.
+        "enabled": False,
+        "model": DEFAULT_MODELS_MODEL,
+        "endpoint": MODELS_API_ENDPOINT,
+        "temperature": 0.2,
+        "max_tokens": 800,
+        "max_learnings": 5,
+        "timeout": 30,
+        # Which env var holds the models-capable token.
+        # Use GITHUB_MODELS_TOKEN locally, or set this to GITHUB_TOKEN in Actions
+        # when the workflow grants permissions: models: read.
+        "token_env": "GITHUB_MODELS_TOKEN",
+    },
 }
 
 
@@ -130,6 +148,8 @@ def _deep_merge(base: dict, override: dict) -> None:
     for k, v in override.items():
         if k.startswith("_"):
             continue  # skip comment keys
+        if v is None:
+            continue  # explicit null means "use default"
         if isinstance(v, dict) and isinstance(base.get(k), dict):
             _deep_merge(base[k], v)
         else:
@@ -351,6 +371,69 @@ class GitHubClient:
             {"name": name[:MAX_LABEL_LEN], "color": color, "description": description[:100]},
         )
         return result is not None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  GitHub Models Client (OpenAI-compatible chat completions)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ModelsClient:
+    """Minimal client for GitHub Models (OpenAI-compatible) chat completions.
+
+    Intentionally separate from GitHubClient so that inference endpoint auth and
+    REST v3 rate-limit state are never mixed.  Only constructed when the analysis
+    section is enabled and a models-capable token is available.
+    """
+
+    def __init__(self, token: str, endpoint: str, timeout: int = 30) -> None:
+        self.token = token
+        self.endpoint = endpoint
+        self.timeout = timeout
+
+    def chat_completions(
+        self,
+        messages: list[dict],
+        model: str,
+        temperature: float = 0.2,
+        max_tokens: int = 800,
+    ) -> dict | None:
+        """POST to the chat completions endpoint. Returns parsed JSON or None on error."""
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            self.endpoint,
+            data=data,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+                "X-GitHub-Api-Version": MODELS_API_VERSION,
+                "User-Agent": "trend-scout/1.0 (magicpro97/copilot-session-knowledge)",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body_bytes = b""
+            try:
+                body_bytes = e.read()
+            except Exception:
+                pass
+            print(
+                f"  ⚠ Models API HTTP {e.code}: {body_bytes[:200]}",
+                file=sys.stderr,
+            )
+            return None
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            print(f"  ⚠ Models API request failed: {e}", file=sys.stderr)
+            return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -788,15 +871,212 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
     return out
 
 
-def render_issue_body(repo: dict, readme_excerpt: str, marker: str, our_topics: list[str]) -> str:
-    """Build the structured issue body Markdown for a scouted repo."""
+# ═══════════════════════════════════════════════════════════════════════════════
+#  GitHub Models Analysis Path (direction 2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Hard cap on individual LLM-generated bullet length to bound output size.
+_MAX_LEARNING_BULLET_LEN = 600
+
+# Prompt template for structured JSON output from the model.
+_MODELS_PROMPT_TEMPLATE = (
+    "You are reviewing a GitHub repository for a developer who maintains a Python "
+    "AI coding-session knowledge base (SQLite FTS5, GitHub Copilot CLI integration, "
+    "local-first design).\n\n"
+    "Repository: {full_name}\n"
+    "Description: {description}\n"
+    "Topics: {topics}\n"
+    "Primary language: {language}\n"
+    "Stars: {stars}\n\n"
+    "README excerpt (first 2000 chars):\n{readme}\n\n"
+    "Our project's own topics: {our_topics}\n\n"
+    "Task: Generate {max_learnings} concrete, actionable learning bullets explaining "
+    "what our project can adopt or adapt from this repository. Each bullet should name "
+    "a specific pattern, technique, or design decision and describe exactly how it could "
+    "improve one of our scripts or workflows. Be specific — not generic.\n\n"
+    'Respond with ONLY valid JSON, no markdown fences, no explanation:\n'
+    '{{"learnings": ["**Pattern**: description...", "..."]}}'
+)
+
+
+def _is_valid_models_model_id(model: object) -> bool:
+    """Return True when a model id matches GitHub Models' publisher/model format."""
+    return isinstance(model, str) and bool(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", model.strip()))
+
+
+def _analysis_value(analysis_cfg: dict | None, key: str, default: object) -> object:
+    """Return an analysis setting, treating explicit null as "use default"."""
+    if not isinstance(analysis_cfg, dict):
+        return default
+    value = analysis_cfg.get(key)
+    return default if value is None else value
+
+
+def _analysis_number(
+    analysis_cfg: dict | None,
+    key: str,
+    default: int | float,
+    parser: type[int] | type[float],
+) -> int | float:
+    """Parse an analysis numeric setting with explicit fallback logging."""
+    raw = _analysis_value(analysis_cfg, key, default)
+    try:
+        return parser(raw)
+    except (TypeError, ValueError):
+        print(
+            f"   Analysis: invalid {key}={raw!r} — using default {default}",
+            flush=True,
+        )
+        return parser(default)
+
+
+def _sanitize_learning_bullet(raw: object) -> str | None:
+    """Validate and sanitise a single LLM-generated learning bullet.
+
+    Returns the cleaned string, or None if the bullet should be rejected
+    (wrong type, too short, contains HTML comment markers, etc.).
+    """
+    if not isinstance(raw, str):
+        return None
+    bullet = raw.strip()
+    bullet = re.sub(r"\s*\n+\s*", " ", bullet).strip()
+    if len(bullet) < 10:
+        return None
+    # Prevent HTML comment marker injection (could spoof dedup markers)
+    if "<!--" in bullet or "-->" in bullet:
+        return None
+    # Strip any raw HTML tags the model may include
+    bullet = re.sub(r"<[^>]+>", "", bullet)
+    bullet = re.sub(r"[ \t]{2,}", " ", bullet).strip()
+    if len(bullet) > _MAX_LEARNING_BULLET_LEN:
+        bullet = bullet[:_MAX_LEARNING_BULLET_LEN] + "…"
+    return bullet or None
+
+
+def _analyze_repo_with_models(
+    repo: dict,
+    readme_excerpt: str,
+    our_topics: list[str],
+    client: "ModelsClient",
+    model: str,
+    temperature: float,
+    max_tokens: int,
+    max_learnings: int,
+) -> list[str] | None:
+    """Call the GitHub Models chat completions API to derive repo-specific learnings.
+
+    Returns a sanitised list[str] on success, or **None** on any failure.
+    Callers MUST fall back to ``_derive_learnings()`` when None is returned.
+
+    Design notes:
+    - Low temperature (default 0.2) keeps output deterministic across re-runs.
+    - Structured JSON output is requested so parsing is explicit, not fragile.
+    - Every bullet is sanitised before use; the whole batch is rejected if empty.
+    - Markdown fences are stripped in case the model wraps its JSON anyway.
+    """
+    desc = (repo.get("description") or "").strip() or "(no description)"
+    topics_str = ", ".join(repo.get("topics", [])) or "none"
+    lang = repo.get("language") or "unknown"
+    stars = repo.get("stargazers_count", 0)
+    our_topics_str = ", ".join(our_topics) or "none"
+    readme_snip = readme_excerpt[:2000].strip() or "(no README available)"
+
+    prompt = _MODELS_PROMPT_TEMPLATE.format(
+        full_name=repo.get("full_name", ""),
+        description=desc[:300],
+        topics=topics_str,
+        language=lang,
+        stars=stars,
+        readme=readme_snip,
+        our_topics=our_topics_str,
+        max_learnings=max_learnings,
+    )
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a senior software architect. Respond only with the requested JSON. "
+                "Do not include markdown code fences or any extra text."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+
+    response = client.chat_completions(
+        messages,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    if response is None:
+        return None
+
+    # Extract text content from OpenAI-compatible response shape.
+    try:
+        content = response["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        print(f"  ⚠ Models API: unexpected response shape ({exc}) — falling back", file=sys.stderr)
+        return None
+    if not isinstance(content, str):
+        print("  ⚠ Models API: missing text content — falling back", file=sys.stderr)
+        return None
+    content = content.strip()
+    if not content:
+        print("  ⚠ Models API: empty text content — falling back", file=sys.stderr)
+        return None
+
+    # Strip accidental markdown fences the model may add despite instructions.
+    content = re.sub(r"^```[a-zA-Z]*\n?", "", content)
+    content = re.sub(r"\n?```$", "", content.strip())
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        print(f"  ⚠ Models API: JSON parse error ({exc}) — falling back", file=sys.stderr)
+        return None
+
+    if not isinstance(parsed, dict) or "learnings" not in parsed:
+        print("  ⚠ Models API: missing 'learnings' key — falling back", file=sys.stderr)
+        return None
+
+    raw_bullets = parsed["learnings"]
+    if not isinstance(raw_bullets, list):
+        print("  ⚠ Models API: 'learnings' is not a list — falling back", file=sys.stderr)
+        return None
+
+    sanitized = [
+        s for raw in raw_bullets[:max_learnings]
+        if (s := _sanitize_learning_bullet(raw))
+    ]
+
+    if not sanitized:
+        print("  ⚠ Models API: no valid bullets after sanitisation — falling back", file=sys.stderr)
+        return None
+
+    return sanitized
+
+
+def render_issue_body(
+    repo: dict,
+    readme_excerpt: str,
+    marker: str,
+    our_topics: list[str],
+    learnings: list[str] | None = None,
+) -> str:
+    """Build the structured issue body Markdown for a scouted repo.
+
+    If ``learnings`` is provided (e.g. from the LLM analysis path) it is used
+    directly; otherwise ``_derive_learnings()`` is called as the heuristic fallback.
+    """
     full_name: str = repo["full_name"]
     html_url: str = repo.get("html_url") or f"https://github.com/{full_name}"
 
     problem = _derive_problem(repo, readme_excerpt)
     strengths = _derive_strengths(repo)
     weaknesses = _derive_weaknesses(repo)
-    learnings = _derive_learnings(repo, our_topics, readme_excerpt)
+    # Use pre-computed LLM learnings if provided; fall back to heuristic engine.
+    effective_learnings = learnings if learnings is not None else _derive_learnings(repo, our_topics, readme_excerpt)
 
     license_name = (repo.get("license") or {}).get("spdx_id") or "None"
     topics_str = ", ".join(repo.get("topics", [])) or "none"
@@ -813,7 +1093,7 @@ def render_issue_body(repo: dict, readme_excerpt: str, marker: str, our_topics: 
 
     strengths_md = "".join(f"- {s}\n" for s in strengths)
     weaknesses_md = "".join(f"- {w}\n" for w in weaknesses)
-    learnings_md = "".join(f"- {l}\n" for l in learnings)
+    learnings_md = "".join(f"- {l}\n" for l in effective_learnings)
 
     scouted_on = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -919,8 +1199,15 @@ def create_stage(
     existing_markers: set[str],
     dry_run: bool = False,
     limit: int | None = None,
+    models_client: "ModelsClient | None" = None,
+    analysis_cfg: dict | None = None,
 ) -> list[str]:
-    """Stage 5: render and create issues; returns list of created issue URLs."""
+    """Stage 5: render and create issues; returns list of created issue URLs.
+
+    If ``models_client`` is provided and ``analysis_cfg`` is non-empty, attempts to
+    enrich each issue's learnings section via GitHub Models.  Falls back silently to
+    the heuristic ``_derive_learnings()`` engine on any failure.
+    """
     target_repo: str = config["target_repo"]
     label: str = config.get("issue_label", "trend-scout")
     label_color: str = config.get("issue_label_color", "0075ca")
@@ -928,6 +1215,10 @@ def create_stage(
     title_prefix: str = config.get("issue_title_prefix", "[Trend Scout]")
     marker_prefix: str = config.get("dedup", {}).get("marker_prefix", "trend-scout:repo:")
     our_topics: list[str] = config.get("search", {}).get("our_topics", [])
+    analysis_model = str(_analysis_value(analysis_cfg, "model", DEFAULT_MODELS_MODEL)).strip() or DEFAULT_MODELS_MODEL
+    analysis_temp = float(_analysis_number(analysis_cfg, "temperature", 0.2, float))
+    analysis_max_tok = int(_analysis_number(analysis_cfg, "max_tokens", 800, int))
+    analysis_max_learn = int(_analysis_number(analysis_cfg, "max_learnings", 5, int))
 
     created_urls: list[str] = []
     created_count = 0
@@ -943,8 +1234,23 @@ def create_stage(
             print(f"  ⏭  Skip (already scouted): {full_name}")
             continue
 
+        # ── Optional LLM-enhanced learnings (direction 2) ─────────────────────
+        llm_learnings: list[str] | None = None
+        if models_client is not None and analysis_cfg:
+            print(f"  🤖 Analyzing with GitHub Models ({analysis_model})…", flush=True)
+            llm_learnings = _analyze_repo_with_models(
+                repo, readme, our_topics, models_client,
+                model=analysis_model, temperature=analysis_temp,
+                max_tokens=analysis_max_tok, max_learnings=analysis_max_learn,
+            )
+            if llm_learnings:
+                print(f"  ✓ LLM learnings: {len(llm_learnings)} bullet(s)", flush=True)
+            else:
+                print("  ↩ Falling back to heuristic learnings engine", flush=True)
+
         title = f"{title_prefix} {full_name}"
-        body = render_issue_body(repo, readme, marker, our_topics)
+        # Pass llm_learnings (may be None → heuristic fallback inside render_issue_body)
+        body = render_issue_body(repo, readme, marker, our_topics, learnings=llm_learnings)
 
         if dry_run:
             print(f"\n  [dry-run] Would create issue: {title!r}")
@@ -994,6 +1300,34 @@ def run(config: dict, dry_run: bool = False, search_only: bool = False,
 
     client = GitHubClient(token=token)
 
+    # ── Optional GitHub Models client (direction 2) ───────────────────────────
+    # Constructed only when analysis.enabled=true, the configured token exists,
+    # and the model id matches GitHub Models' publisher/model format.
+    models_client: ModelsClient | None = None
+    analysis_cfg: dict = config.get("analysis", {})
+    if analysis_cfg.get("enabled", False):
+        token_env = str(_analysis_value(analysis_cfg, "token_env", "GITHUB_MODELS_TOKEN")).strip() or "GITHUB_MODELS_TOKEN"
+        models_token = os.environ.get(token_env)
+        model_name = str(_analysis_value(analysis_cfg, "model", DEFAULT_MODELS_MODEL)).strip() or DEFAULT_MODELS_MODEL
+        if models_token:
+            if not _is_valid_models_model_id(model_name):
+                print(
+                    f"   Analysis: invalid model id {model_name!r} "
+                    "(expected 'publisher/model') — skipping LLM path",
+                    flush=True,
+                )
+            else:
+                endpoint = str(_analysis_value(analysis_cfg, "endpoint", MODELS_API_ENDPOINT)).strip() or MODELS_API_ENDPOINT
+                timeout = int(_analysis_number(analysis_cfg, "timeout", 30, int))
+                models_client = ModelsClient(token=models_token, endpoint=endpoint, timeout=timeout)
+                print(f"   Analysis: GitHub Models enabled (model: {model_name})", flush=True)
+        else:
+            print(
+                f"   Analysis: enabled in config but no token found in {token_env!r} "
+                "— skipping LLM path",
+                flush=True,
+            )
+
     # Stage 1: Search
     print("\n[Stage 1/4] Searching GitHub for candidates…")
     candidates = search_stage(client, config)
@@ -1024,9 +1358,14 @@ def run(config: dict, dry_run: bool = False, search_only: bool = False,
     print("\n[Stage 4a] Enriching shortlisted repos…")
     enriched = enrich_stage(shortlisted, client, config)
 
-    # Stage 5: Create issues
+    # Stage 5: Create issues (with optional LLM analysis per-repo)
     print("\n[Stage 4b] Creating issues…")
-    created = create_stage(enriched, client, config, existing_markers, dry_run=dry_run, limit=limit)
+    created = create_stage(
+        enriched, client, config, existing_markers,
+        dry_run=dry_run, limit=limit,
+        models_client=models_client,
+        analysis_cfg=analysis_cfg if models_client else None,
+    )
 
     mode_tag = "[dry-run] " if dry_run else ""
     print(f"\n✅ Done — {mode_tag}{len(created)} issue(s) {'would be ' if dry_run else ''}created.")

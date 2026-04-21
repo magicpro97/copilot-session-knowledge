@@ -31,6 +31,7 @@ concurrency:
 permissions:
   contents: read
   issues: write
+  models: read
 
 jobs:
   scout:
@@ -49,6 +50,7 @@ jobs:
       - name: Run trend-scout
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_REPO: ${{ inputs.repo }}
           INPUT_LIMIT: ${{ inputs.limit }}
         run: |

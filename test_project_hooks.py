@@ -49,7 +49,7 @@ def run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
     """Run install-project-hooks.py with given args."""
     return subprocess.run(
         [sys.executable, str(INSTALLER), *args],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
         cwd=str(cwd) if cwd else None,
     )
 
@@ -149,7 +149,7 @@ for hook in ("dangerous-blocker.sh", "secret-detector.sh", "test-reminder.sh",
 workflow_md = py_project / "WORKFLOW.md"
 test("WORKFLOW.md generated", workflow_md.exists())
 if workflow_md.exists():
-    wf_content = workflow_md.read_text()
+    wf_content = workflow_md.read_text(encoding="utf-8")
     test("WORKFLOW.md mentions python profile", "python" in wf_content)
     test("WORKFLOW.md mentions BUILD phase", "BUILD" in wf_content)
     test("WORKFLOW.md mentions blocking wait rule", "BLOCKING" in wf_content)
@@ -180,7 +180,7 @@ test("enforce-tdd-pipeline.sh installed", (mob_hooks / "enforce-tdd-pipeline.sh"
 print("\n🐙 tentacle-setup.sh Path Fix")
 test("tentacle-setup.sh exists", TENTACLE_SETUP.exists())
 if TENTACLE_SETUP.exists():
-    content = TENTACLE_SETUP.read_text()
+    content = TENTACLE_SETUP.read_text(encoding="utf-8")
     test("uses tools/skills/ path (not ~/.copilot/skills/)",
          "tools/skills/" in content,
          "old path $HOME/.copilot/skills/ still present")
@@ -206,14 +206,14 @@ test("dangerous-blocker.sh present after first install", blocker_dst.exists())
 
 if blocker_dst.exists():
     # Simulate user editing the hook file.
-    original_content = blocker_dst.read_text()
-    blocker_dst.write_text(original_content + "\n# USER CUSTOMISATION\n")
+    original_content = blocker_dst.read_text(encoding="utf-8")
+    blocker_dst.write_text(original_content + "\n# USER CUSTOMISATION\n", encoding="utf-8")
 
     # Re-run WITHOUT --force — should skip the modified file.
     result2 = run("--profile", "default", "--project", str(preserve_project))
     test("re-run without --force exits 0", result2.returncode == 0, result2.stderr)
     test("user-modified file is preserved (content unchanged)",
-         "USER CUSTOMISATION" in blocker_dst.read_text(),
+         "USER CUSTOMISATION" in blocker_dst.read_text(encoding="utf-8"),
          "file was overwritten without --force")
     test("output warns about user-modified file",
          "user-modified" in result2.stdout or "skipping" in result2.stdout,
@@ -223,7 +223,7 @@ if blocker_dst.exists():
     result3 = run("--profile", "default", "--project", str(preserve_project), "--force")
     test("re-run with --force exits 0", result3.returncode == 0, result3.stderr)
     test("--force overwrites user-modified file (customisation gone)",
-         "USER CUSTOMISATION" not in blocker_dst.read_text(),
+         "USER CUSTOMISATION" not in blocker_dst.read_text(encoding="utf-8"),
          "file still contains user customisation after --force")
 
 # ─── Cleanup scratch directory ────────────────────────────────────────────────

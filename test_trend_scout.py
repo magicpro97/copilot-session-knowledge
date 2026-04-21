@@ -64,7 +64,7 @@ def run_cli(*args: str, env_extra: dict | None = None) -> subprocess.CompletedPr
     env = {**os.environ, **(env_extra or {})}
     return subprocess.run(
         [sys.executable, str(SCOUT), *args],
-        capture_output=True, text=True, env=env,
+        capture_output=True, text=True, env=env, encoding="utf-8", errors="replace",
     )
 
 
@@ -127,6 +127,22 @@ test("override: target_repo changed", cfg2["target_repo"] == "myorg/myrepo")
 test("override: shortlist.max_candidates overridden", cfg2["shortlist"]["max_candidates"] == 99)
 test("override: nested search still has defaults", len(cfg2["search"]["seed_keywords"]) > 0)
 
+# Explicit nulls should preserve defaults
+null_cfg_path = SCRATCH / "null_override_config.json"
+null_cfg_path.write_text(json.dumps({
+    "analysis": {
+        "model": None,
+        "endpoint": None,
+        "timeout": None,
+        "token_env": None,
+    }
+}))
+cfg_null = ts.load_config(null_cfg_path)
+test("null override keeps default analysis model", cfg_null["analysis"]["model"] == ts.DEFAULT_MODELS_MODEL)
+test("null override keeps default analysis endpoint", cfg_null["analysis"]["endpoint"] == ts.MODELS_API_ENDPOINT)
+test("null override keeps default analysis timeout", cfg_null["analysis"]["timeout"] == 30)
+test("null override keeps default analysis token env", cfg_null["analysis"]["token_env"] == "GITHUB_MODELS_TOKEN")
+
 # Malformed JSON falls back to defaults gracefully
 bad_cfg_path = SCRATCH / "bad_config.json"
 bad_cfg_path.write_text("{not valid json}")
@@ -137,9 +153,13 @@ test("malformed config falls back to defaults", cfg3["target_repo"] == "magicpro
 test("trend-scout-config.json exists", CONFIG_FILE.exists())
 if CONFIG_FILE.exists():
     try:
-        disk_cfg = json.loads(CONFIG_FILE.read_text())
+        disk_cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         test("trend-scout-config.json is valid JSON", True)
         test("disk config has target_repo", "target_repo" in disk_cfg)
+        test("disk config analysis endpoint uses models.github.ai",
+             disk_cfg.get("analysis", {}).get("endpoint", "").startswith("https://models.github.ai/"))
+        test("disk config analysis model is publisher-qualified",
+             "/" in disk_cfg.get("analysis", {}).get("model", ""))
     except Exception as e:
         test("trend-scout-config.json is valid JSON", False, str(e))
 
@@ -351,6 +371,30 @@ test("_derive_learnings fallback is concrete (mentions FTS5 or knowledge-base)",
      any("fts5" in l.lower() or "knowledge" in l.lower() or "session" in l.lower()
          for l in fallback_learnings),
      str(fallback_learnings))
+
+# GitHub Models helpers
+sanitized_bullet = ts._sanitize_learning_bullet("  **Pattern**: line 1\n\nline 2 <b>tag</b>  ")
+test("_sanitize_learning_bullet collapses embedded newlines",
+     sanitized_bullet is not None and "\n" not in sanitized_bullet,
+     str(sanitized_bullet))
+test("_sanitize_learning_bullet strips raw HTML tags",
+     sanitized_bullet is not None and "<b>" not in sanitized_bullet and "</b>" not in sanitized_bullet,
+     str(sanitized_bullet))
+
+null_content_client = mock.Mock()
+null_content_client.chat_completions.return_value = {"choices": [{"message": {"content": None}}]}
+null_content_learnings = ts._analyze_repo_with_models(
+    REPO_FIXTURE,
+    "readme text",
+    our_topics,
+    null_content_client,
+    model=ts.DEFAULT_MODELS_MODEL,
+    temperature=0.2,
+    max_tokens=800,
+    max_learnings=5,
+)
+test("_analyze_repo_with_models returns None on null content",
+     null_content_learnings is None)
 
 # Regression: substring false positives for CLI and sync detectors
 cli_fp_repo: dict = {**REPO_FIXTURE, "description": "A HTTP client using click for async operations", "topics": []}
@@ -730,14 +774,16 @@ test("--help mentions --limit", "--limit" in r.stdout)
 # Syntax check
 import ast as _ast
 try:
-    _ast.parse(SCOUT.read_text())
+    _ast.parse(SCOUT.read_text(encoding="utf-8"))
     test("trend-scout.py passes AST parse", True)
 except SyntaxError as e:
+    test("trend-scout.py passes AST parse", False, str(e))
+except UnicodeDecodeError as e:
     test("trend-scout.py passes AST parse", False, str(e))
 
 # trend-scout-config.json is valid JSON
 try:
-    json.loads(CONFIG_FILE.read_text())
+    json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
     test("trend-scout-config.json valid JSON", True)
 except Exception as e:
     test("trend-scout-config.json valid JSON", False, str(e))
@@ -869,6 +915,98 @@ with mock.patch.object(ts.GitHubClient, "list_issues", side_effect=_mock_list_is
         "dedupe scan: custom label forwarded to list_issues",
         all(lbl == "my-custom-label" for lbl in label_calls2),
         f"labels seen: {label_calls2}",
+    )
+
+# --- Finding 5: Models token selection must be explicit ---
+with mock.patch.object(ts, "search_stage", return_value=[]), \
+     mock.patch.object(ts, "shortlist_repos", return_value=[]), \
+     mock.patch.object(ts, "ModelsClient") as mock_models, \
+     mock.patch.dict(os.environ, {"GITHUB_TOKEN": "ghs_actions_token"}, clear=True):
+    explicit_token_cfg = ts.load_config(None)
+    explicit_token_cfg["analysis"]["enabled"] = True
+    explicit_token_cfg["analysis"]["token_env"] = "GITHUB_MODELS_TOKEN"
+    ts.run(explicit_token_cfg, dry_run=True, search_only=True)
+    test(
+        "models auth: missing configured token_env does not silently fall back to GITHUB_TOKEN",
+        mock_models.call_count == 0,
+        f"ModelsClient call count={mock_models.call_count}",
+    )
+
+with mock.patch.object(ts, "search_stage", return_value=[]), \
+     mock.patch.object(ts, "shortlist_repos", return_value=[]), \
+     mock.patch.object(ts, "ModelsClient") as mock_models, \
+     mock.patch.dict(os.environ, {"GITHUB_TOKEN": "ghs_actions_token"}, clear=True):
+    explicit_workflow_cfg = ts.load_config(None)
+    explicit_workflow_cfg["analysis"]["enabled"] = True
+    explicit_workflow_cfg["analysis"]["token_env"] = "GITHUB_TOKEN"
+    ts.run(explicit_workflow_cfg, dry_run=True, search_only=True)
+    test(
+        "models auth: explicit GITHUB_TOKEN token_env is accepted for Actions workflows",
+        mock_models.call_count == 1,
+        f"ModelsClient call count={mock_models.call_count}",
+    )
+    timeout_kw = mock_models.call_args.kwargs.get("timeout") if mock_models.call_args else None
+    test(
+        "models auth: explicit GITHUB_TOKEN path uses default timeout",
+        timeout_kw == 30,
+        f"timeout={timeout_kw}",
+    )
+
+with mock.patch.object(ts, "search_stage", return_value=[]), \
+     mock.patch.object(ts, "shortlist_repos", return_value=[]), \
+     mock.patch.object(ts, "ModelsClient") as mock_models, \
+     mock.patch.dict(os.environ, {"GITHUB_MODELS_TOKEN": "ghm_pat"}, clear=True):
+    invalid_model_cfg = ts.load_config(None)
+    invalid_model_cfg["analysis"]["enabled"] = True
+    invalid_model_cfg["analysis"]["model"] = "gpt-4o-mini"
+    ts.run(invalid_model_cfg, dry_run=True, search_only=True)
+    test(
+        "models config: invalid unqualified model id skips ModelsClient construction",
+        mock_models.call_count == 0,
+        f"ModelsClient call count={mock_models.call_count}",
+    )
+
+with mock.patch.object(ts, "search_stage", return_value=[]), \
+     mock.patch.object(ts, "shortlist_repos", return_value=[]), \
+     mock.patch.object(ts, "ModelsClient") as mock_models, \
+     mock.patch.dict(os.environ, {"GITHUB_MODELS_TOKEN": "ghm_pat"}, clear=True):
+    null_timeout_cfg = ts.load_config(None)
+    null_timeout_cfg["analysis"]["enabled"] = True
+    null_timeout_cfg["analysis"]["timeout"] = None
+    ts.run(null_timeout_cfg, dry_run=True, search_only=True)
+    timeout_kw = mock_models.call_args.kwargs.get("timeout") if mock_models.call_args else None
+    test(
+        "models config: null timeout falls back to default without crashing",
+        mock_models.call_count == 1 and timeout_kw == 30,
+        f"ModelsClient call count={mock_models.call_count}, timeout={timeout_kw}",
+    )
+
+analysis_cfg_nulls = {
+    "model": None,
+    "temperature": None,
+    "max_tokens": None,
+    "max_learnings": None,
+}
+with mock.patch.object(ts, "_analyze_repo_with_models", return_value=None) as mock_analyze:
+    client = ts.GitHubClient(token="ghp_test")
+    urls = ts.create_stage(
+        [(REPO_FIXTURE, "readme text")],
+        client,
+        ts.load_config(None),
+        set(),
+        dry_run=True,
+        models_client=mock.Mock(),
+        analysis_cfg=analysis_cfg_nulls,
+    )
+    analyze_kwargs = mock_analyze.call_args.kwargs if mock_analyze.call_args else {}
+    test(
+        "create_stage: null analysis values use defaults",
+        len(urls) == 1
+        and analyze_kwargs.get("temperature") == 0.2
+        and analyze_kwargs.get("max_tokens") == 800
+        and analyze_kwargs.get("max_learnings") == 5
+        and analyze_kwargs.get("model") == ts.DEFAULT_MODELS_MODEL,
+        str(analyze_kwargs),
     )
 
 # --- Finding 4: Marker spoofing from README excerpt ---

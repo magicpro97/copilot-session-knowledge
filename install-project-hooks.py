@@ -53,7 +53,7 @@ def find_git_root() -> Path | None:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
         )
         return Path(result.stdout.strip())
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -67,14 +67,14 @@ def load_profile(name: str) -> dict:
         raise FileNotFoundError(
             f"Profile '{name}' not found. Available: {', '.join(available)}"
         )
-    with open(profile_path) as f:
+    with open(profile_path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def list_profiles() -> list[dict]:
     profiles = []
     for p in sorted(PRESETS_DIR.glob("*.json")):
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             profiles.append(json.load(f))
     return profiles
 
@@ -172,7 +172,7 @@ Reference templates: `~/.copilot/tools/skills/hook-creator/references/`
         print(f"  [dry-run] Would generate WORKFLOW.md ({len(phases)} phases)")
         return True
 
-    workflow_path.write_text(content)
+    workflow_path.write_text(content, encoding="utf-8")
     print(f"  ✓  Generated WORKFLOW.md ({profile_name} profile, {len(phases)} phases)")
     return True
 

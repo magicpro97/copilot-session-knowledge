@@ -283,6 +283,25 @@ python3 ~/.copilot/tools/trend-scout.py --token TOKEN
 
 Set `GITHUB_TOKEN` in the environment, or pass `--token TOKEN`, to avoid API rate limits.
 
+### Optional GitHub Models analysis
+
+Trend Scout can replace the static learning-bullet heuristics with GitHub Models inference:
+
+```json
+{
+  "analysis": {
+    "enabled": true,
+    "model": "openai/gpt-4o-mini",
+    "endpoint": "https://models.github.ai/inference/chat/completions",
+    "token_env": "GITHUB_MODELS_TOKEN"
+  }
+}
+```
+
+- `analysis.model` must use the GitHub Models `publisher/model` format.
+- `analysis.token_env` is explicit on purpose: locally, export `GITHUB_MODELS_TOKEN`; in GitHub Actions, either set `token_env` to `GITHUB_TOKEN` or map `GITHUB_MODELS_TOKEN` from `secrets.GITHUB_TOKEN`.
+- If the token is missing, the model ID is invalid, or the response is malformed, Trend Scout logs the reason and falls back to the heuristic `_derive_learnings()` path.
+
 ### Deduplication
 
 Before creating each issue the script scans **all open and closed** `trend-scout`-labelled
@@ -305,6 +324,11 @@ regardless of issue state.
 | `dedup.search_closed_issues` | Whether to scan closed issues for markers |
 | `dedup.max_issues_scan` | Max issues scanned per dedup pass (default 300); increase on busy repos to avoid missing old markers |
 | `search.lookback_days` | Repo age window for search results (default 730 days); lower to focus on recently active repos |
+| `analysis.enabled` | Enables GitHub Models per-repo learning analysis before issue rendering |
+| `analysis.model` | GitHub Models model ID in `publisher/model` format (default `openai/gpt-4o-mini`) |
+| `analysis.token_env` | Environment variable that holds the models-capable token (default `GITHUB_MODELS_TOKEN`) |
+| `analysis.max_learnings` | Caps LLM-generated bullets per repo before rendering |
+| `analysis.temperature`, `analysis.max_tokens`, `analysis.timeout` | Controls inference determinism, output size, and request timeout |
 
 ### Limitations
 
@@ -316,7 +340,9 @@ regardless of issue state.
 
 The workflow (`.github/workflows/trend-scout.yml`) runs **daily at 07:00 UTC**. It requires
 no secrets beyond the automatic `GITHUB_TOKEN` and uses minimal permissions:
-`contents: read`, `issues: write`.
+`contents: read`, `issues: write`, `models: read`.
+
+The workflow exports both `GITHUB_TOKEN` and `GITHUB_MODELS_TOKEN` from `secrets.GITHUB_TOKEN`, so the optional `analysis.enabled` path works without extra secrets when running in GitHub Actions.
 
 **Manual dispatch inputs:**
 

@@ -136,6 +136,33 @@ learn --mistake "Title"  "Description" --task "memory-surface" --file "briefing.
 learn --mistake "Title"  "Description" --json  # Machine-readable JSON output
 ```
 
+### Tentacle Orchestration (runtime-bundle workflow)
+
+Multi-agent parallel execution via scoped work units. The runtime-bundle workflow:
+
+```bash
+# 1. Create a tentacle with scope + briefing
+python3 ~/.copilot/tools/tentacle.py create api-export \
+  --scope "src/api/*.py" --desc "Export API endpoints" --briefing
+
+# 2. Add atomic todo items (one per agent delegation unit)
+python3 ~/.copilot/tools/tentacle.py todo api-export add "Generate OpenAPI schema"
+
+# 3. Dispatch — choose output mode:
+python3 ~/.copilot/tools/tentacle.py swarm api-export \
+  --agent-type general-purpose --model claude-sonnet-4.6              # single prompt
+python3 ~/.copilot/tools/tentacle.py swarm api-export --output parallel  # one dispatch per todo
+python3 ~/.copilot/tools/tentacle.py swarm api-export --output json      # structured JSON
+
+# 4. After agents finish: record results and close
+python3 ~/.copilot/tools/tentacle.py handoff api-export "Done. Learned X" --learn
+python3 ~/.copilot/tools/tentacle.py complete api-export
+```
+
+> `--output parallel` maximises parallelism (one agent per todo). `--output json` is for
+> programmatic consumption. `--briefing` injects live session-knowledge at dispatch time
+> (incompatible with `--output json`).
+
 ### Tentacle Next Step
 
 ```bash
@@ -292,9 +319,11 @@ python3 ~/.copilot/tools/trend-scout.py --token TOKEN   # Explicit GitHub token 
 
 Requires a `GITHUB_TOKEN` env var (or `--token TOKEN` flag) to avoid rate limits. The tool auto-creates the `trend-scout` label and deduplicates against both open and closed issues using hidden deterministic markers — each marker is a 16-character truncated SHA-256 hash of the lowercased `owner/name`.
 
-**Tune discovery:** edit `trend-scout-config.json` to adjust seed keywords, topic filters, scoring weights, `min_stars`, and `enrichment.readme_max_chars` (how much of each README the heuristic engine sees; default `3000`).
+**Optional GitHub Models analysis:** set `analysis.enabled=true` in `trend-scout-config.json` to replace the repetitive heuristic learning bullets with repo-specific LLM analysis. The models path calls `https://models.github.ai/inference/chat/completions`, expects a publisher-qualified model ID such as `openai/gpt-4o-mini`, and reads its credential from `analysis.token_env` (default `GITHUB_MODELS_TOKEN`). If the token is missing, the model ID is invalid, or the response cannot be parsed, Trend Scout falls back to the heuristic engine automatically.
 
-**GitHub Actions workflow** — `.github/workflows/trend-scout.yml` runs daily at 07:00 UTC with permissions `contents: read` and `issues: write`. Manual runs via `workflow_dispatch` support `dry_run`, `search_only`, `repo`, and `limit` inputs.
+**Tune discovery:** edit `trend-scout-config.json` to adjust seed keywords, topic filters, scoring weights, `min_stars`, `enrichment.readme_max_chars`, and the optional `analysis.*` settings (`model`, `temperature`, `max_learnings`, `token_env`).
+
+**GitHub Actions workflow** — `.github/workflows/trend-scout.yml` runs daily at 07:00 UTC with permissions `contents: read`, `issues: write`, and `models: read`. It also maps `secrets.GITHUB_TOKEN` into `GITHUB_MODELS_TOKEN`, so enabling `analysis.enabled` in config works in Actions without a separate secret. Manual runs via `workflow_dispatch` support `dry_run`, `search_only`, `repo`, and `limit` inputs.
 
 📖 **Details:** [docs/USAGE.md#trend-scout](docs/USAGE.md#trend-scout)
 
