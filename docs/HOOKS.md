@@ -98,7 +98,7 @@ The marker is a JSON file with the following contract:
 | `name` | Always `"dispatched-subagent-active"` |
 | `ts` | UNIX timestamp of the most-recent write (used for HMAC + global TTL anchor) |
 | `sig` | HMAC-SHA256 over `"name:ts"` (omitted when no secret is configured) |
-| `active_tentacles` | List of per-entry objects: `{"name": "<tentacle>", "ts": "<unix>", "git_root": "<abs-path>", "tentacle_id": "<uuid>"}`. Each entry carries its own dispatch timestamp, the git root of the dispatching repo, and a stable per-instance UUID generated at `create` time. `tentacle_id` is `null` in legacy entries. Readers also accept the old string-list format for backward compatibility. **Deduplication key: `tentacle_id` (primary, phase 5) → `(name, git_root)` fallback (phase 4, legacy entries without `tentacle_id`).** Two instances with the same logical name in the same repo each produce a separate entry because their `tentacle_id` values differ. |
+| `active_tentacles` | List of per-entry objects: `{"name": "<tentacle>", "ts": "<unix>", "git_root": "<abs-path>", "tentacle_id": "<uuid>"}` where `tentacle_id` is optional for legacy entries. Each entry carries its own dispatch timestamp, the git root of the dispatching repo, and, for newer entries, a stable per-instance UUID generated at `create` time. Legacy entries may omit `tentacle_id` entirely, and some readers may also encounter `null`, so consumers should use `.get("tentacle_id")`. Readers also accept the old string-list format for backward compatibility. **Deduplication key: `tentacle_id` (primary, phase 5) → `(name, git_root)` fallback (phase 4, legacy entries without `tentacle_id`).** Two instances with the same logical name in the same repo each produce a separate entry because their `tentacle_id` values differ. |
 | `git_root` | Top-level field: absolute git root of the most-recent writer (used by the legacy path **only** for pure string-list `active_tentacles` — not for mixed-format or dict-list entries). Per-entry `git_root` is the authoritative source for all dict-list and mixed-format markers. |
 | `scope` | File-scope list from the most-recently-dispatching tentacle |
 | `dispatch_mode` | Dispatch mode of the most-recently-dispatching tentacle |
@@ -129,7 +129,7 @@ the printed slug** — `_validate_tentacle_name` resolves by exact directory nam
 name passed to `create` will find the original (other session's) directory, not the slug.
 
 **Migration cleanup:** When re-dispatching from a known git repo, `tentacle.py swarm` eagerly
-removes legacy entries whose `name` matches, `tentacle_id` is absent, and whose `git_root` is
+removes legacy entries whose `name` matches, `tentacle_id` is absent or null, and whose `git_root` is
 either `None` (old string-list artefacts with no repo identity) or equal to the current repo
 when the new dispatch carries a `tentacle_id` (crash-then-upgrade: stale phase-4 dict entry for
 the same repo that would otherwise keep blocking commits until TTL expiry).

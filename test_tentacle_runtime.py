@@ -3197,15 +3197,20 @@ class TestMigrationCleanupGap(unittest.TestCase):
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
-    def _write_phase4_entry(self, name, git_root):
-        """Directly inject a phase-4 style dict entry (no tentacle_id) into the marker."""
+    def _write_phase4_entry(self, name, git_root, tentacle_id_sentinel=...):
+        """Inject a phase-4 style dict entry into the marker.
+
+        By default the entry omits tentacle_id entirely; passing None writes an
+        explicit null to cover mixed-version/manual-marker edge cases.
+        """
+        entry = {"name": name, "ts": str(int(time.time())), "git_root": str(git_root)}
+        if tentacle_id_sentinel is not ...:
+            entry["tentacle_id"] = tentacle_id_sentinel
         self.marker_path.write_text(json.dumps({
             "name": self.MARKER_NAME,
             "ts": str(int(time.time())),
             "git_root": str(git_root),
-            "active_tentacles": [
-                {"name": name, "ts": str(int(time.time())), "git_root": str(git_root)},
-            ],
+            "active_tentacles": [entry],
         }))
 
     # ── core gap fix ──────────────────────────────────────────────────────────
@@ -3225,6 +3230,17 @@ class TestMigrationCleanupGap(unittest.TestCase):
         )
         self.assertEqual(entries[0].get("tentacle_id"), tid,
                          "The surviving entry must be the new phase-5 entry")
+
+    def test_phase5_dispatch_absorbs_same_repo_entry_with_null_tentacle_id(self):
+        """Explicit null tentacle_id must be treated as legacy identity-less state."""
+        self._write_phase4_entry("feature-x", self.repo, tentacle_id_sentinel=None)
+        tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
+        data = json.loads(self.marker_path.read_text())
+        entries = data["active_tentacles"]
+        self.assertEqual(len(entries), 1, "Null tentacle_id legacy entry must be absorbed")
+        self.assertEqual(entries[0].get("tentacle_id"), tid)
 
     def test_phase5_complete_leaves_no_stale_phase4_entry(self):
         """Full lifecycle: existing phase-4 entry → phase-5 dispatch → phase-5 complete
@@ -3263,6 +3279,23 @@ class TestMigrationCleanupGap(unittest.TestCase):
         self.assertEqual(
             len(entries), 2,
             "Phase-4 entry from a different repo must NOT be absorbed"
+        )
+        git_roots = {e.get("git_root") for e in entries}
+        self.assertIn(str(other_repo), git_roots, "Other-repo entry must survive")
+        self.assertIn(str(self.repo), git_roots, "Current-repo entry must exist")
+
+    def test_phase5_dispatch_does_not_absorb_different_repo_entry_with_null_tentacle_id(self):
+        """Explicit null tentacle_id must not allow cross-repo absorption."""
+        other_repo = self.base / "other-repo"
+        self._write_phase4_entry("feature-x", other_repo, tentacle_id_sentinel=None)
+        tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
+        data = json.loads(self.marker_path.read_text())
+        entries = data["active_tentacles"]
+        self.assertEqual(
+            len(entries), 2,
+            "Different-repo null-tentacle_id entry must not be absorbed"
         )
         git_roots = {e.get("git_root") for e in entries}
         self.assertIn(str(other_repo), git_roots, "Other-repo entry must survive")
@@ -3308,4 +3341,3 @@ class TestMigrationCleanupGap(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-

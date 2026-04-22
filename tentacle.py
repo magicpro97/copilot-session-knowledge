@@ -392,8 +392,8 @@ def _write_dispatched_subagent_marker(
                 new_entry["tentacle_id"] = tentacle_id
 
             # Migration cleanup: when dispatching from a known repo, eagerly remove
-            # legacy entries for this tentacle name that have no tentacle_id and whose
-            # git_root is either:
+            # legacy entries for this tentacle name whose tentacle_id is absent or
+            # null and whose git_root is either:
             #   - None: old string-format promotions with no repo identity; always stale.
             #   - Equal to current repo (phase-5 dispatch only): phase-4 dict entries
             #     without identity from a crash-then-upgrade scenario.  If left alive
@@ -412,7 +412,7 @@ def _write_dispatched_subagent_marker(
                     e for e in active
                     if not (
                         e.get("name") == tentacle_name
-                        and "tentacle_id" not in e
+                        and e.get("tentacle_id") is None
                         and (
                             e.get("git_root") is None
                             or (tentacle_id is not None and e.get("git_root") == current_git_root_str)
