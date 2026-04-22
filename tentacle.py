@@ -595,7 +595,9 @@ def _get_marker_state() -> dict:
             names.append(entry)
             entries.append({"name": entry, "ts": None, "git_root": None})
         elif isinstance(entry, dict):
-            name = entry.get("name", "")
+            name = entry.get("name")
+            if not isinstance(name, str) or not name:
+                continue
             names.append(name)
             entries.append(entry)
 

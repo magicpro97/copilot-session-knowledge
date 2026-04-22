@@ -218,10 +218,9 @@ Enforcement surfaces are **selectively fail-open**. The behavior differs by erro
 | Empty `active_tentacles` list (zombie marker) | allow |
 | Exception during entry processing or repo-scope check | **conservative (block)** — errors in parsing `active_tentacles` entries or the `git_root` comparison fall through to blocking to avoid accidentally unblocking an active session |
 
-> **Note:** The docstring in `is_marker_fresh()` says "Fail-open on any exception" but the
-> outer exception handlers around the zombie check and repo-scope check both use `pass`
-> (continue to block). Only structural errors before active-entries processing are fail-open.
-> `subagent_guard.py` uses `return False` on its outermost exception, so it is fully fail-open.
+> **Note:** The `is_marker_fresh()` docstring and implementation are now aligned: auth/parse
+> failures are fail-open (return `False` → allow), while repo-scope check exceptions are
+> fail-conservative (`pass` → keep blocking). See `hooks/check_subagent_marker.py`.
 
 To clear a stuck marker manually:
 
