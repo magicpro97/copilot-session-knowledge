@@ -894,6 +894,72 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
             f"sessions indexed into `knowledge.db`"
         )
 
+    # ── MCP tool server ───────────────────────────────────────────────────────
+    # Require "mcp server", "mcp-server", "model context protocol", or an explicit
+    # "mcp" topic — bare substring matches on "mcp" are too noisy.
+    if (
+        "mcp server" in hint or "mcp-server" in hint
+        or "model context protocol" in hint
+        or "mcp" in repo_topics
+    ):
+        out.append(
+            "**MCP tool-server surface**: the MCP server interface here could expose "
+            "`query-session.py` and `briefing.py` as directly callable MCP tools — "
+            "e.g., a Copilot agent could invoke the briefing lookup in-process rather "
+            "than shelling out to a subprocess, reducing latency in hook-driven workflows"
+        )
+
+    # ── Multi-source ingestion / connector adapters ───────────────────────────
+    if any(kw in hint for kw in (
+        "confluence", "jira", "multi-source", "multi source",
+        "ingestion adapter", "source connector", "data connector",
+    )):
+        out.append(
+            "**Source connector / ingestion adapter**: the multi-source ingestion "
+            "pattern here could inform a pluggable connector layer in "
+            "`build-session-index.py` — e.g., separate adapters for Confluence pages, "
+            "JIRA tickets, or Git history so external knowledge sources can be indexed "
+            "into `knowledge.db` without changing core indexing logic"
+        )
+
+    # ── Frontmatter-aware markdown indexing ──────────────────────────────────
+    if any(kw in hint for kw in (
+        "frontmatter", "front matter", "front-matter", "obsidian",
+    )):
+        out.append(
+            "**Frontmatter-aware indexing**: parsing YAML frontmatter in session "
+            "markdown files could extend `build-session-index.py` and "
+            "`extract-knowledge.py` to use structured metadata (category, tags, date) "
+            "as indexed fields — e.g., frontmatter `category: mistake` could "
+            "pre-populate the knowledge type without relying on regex heuristics"
+        )
+
+    # ── Incremental reindex / changed-file tracking ───────────────────────────
+    # "reindex" is domain-specific enough on its own; compound phrases add coverage.
+    if any(kw in hint for kw in (
+        "incremental reindex", "incremental index", "reindex",
+        "changed files", "change detection",
+    )):
+        out.append(
+            "**Incremental reindex / changed-file tracking**: the change-detection "
+            "approach here could improve `watch-sessions.py`'s polling loop — e.g., "
+            "storing per-file content hashes so only modified or new session files "
+            "trigger re-extraction, reducing redundant `extract-knowledge.py` passes "
+            "on large session directories"
+        )
+
+    # ── Document / attachment conversion pipeline ─────────────────────────────
+    if any(kw in hint for kw in (
+        "document conversion", "file conversion", "attachment support",
+        "html export", "office document",
+    )):
+        out.append(
+            "**Document conversion pipeline**: the file/attachment ingestion approach "
+            "here could extend `build-session-index.py` to normalise non-markdown "
+            "sources — e.g., a pre-processing stage that converts attachments or "
+            "exported documents to plain text before the FTS5 insert path"
+        )
+
     # ── Fallback: concrete, architecture-specific ─────────────────────────────
     if not out:
         out.append(

@@ -644,6 +644,190 @@ test(
 )
 
 
+# ─── Issue #5 / #7 Regression Tests ──────────────────────────────────────────
+# These tests guard against regression to the "one generic bullet" state seen in
+# GitHub issues #5 (martin-papy/qdrant-loader) and #7 (pvliesdonk/markdown-vault-mcp).
+
+print("\n🐛 Issues #5 / #7 — Heuristic learning quality regressions")
+
+# ── Issue #5: qdrant-loader style fixture ─────────────────────────────────────
+# Signals: multi-source ingestion, Confluence/JIRA connectors, MCP server, document conversion
+QDRANT_LOADER_REPO: dict = {
+    **REPO_FIXTURE,
+    "full_name": "martin-papy/qdrant-loader",
+    "name": "qdrant-loader",
+    "description": (
+        "Multi-source document ingestion for Qdrant: Confluence, JIRA, Git, and local files. "
+        "MCP server support for AI tool integration. Semantic search via Qdrant vector embeddings."
+    ),
+    "topics": ["qdrant", "confluence", "python", "mcp", "knowledge-base"],
+    "language": "Python",
+}
+QDRANT_LOADER_README = (
+    "qdrant-loader ingests documents from Confluence spaces, JIRA projects, "
+    "Git repositories, and local files. Document conversion handles PDF and HTML "
+    "formats. Exposes an MCP server for tool-callable access to the knowledge base. "
+    "Attachment support for binary files embedded in Confluence pages."
+)
+
+_qdrant_learnings = ts._derive_learnings(QDRANT_LOADER_REPO, our_topics, QDRANT_LOADER_README)
+
+test(
+    "issue#5 qdrant-loader: produces ≥3 concrete bullets (not collapsed to generic only)",
+    len(_qdrant_learnings) >= 3,
+    str(_qdrant_learnings),
+)
+test(
+    "issue#5 qdrant-loader: connector/ingestion adapter bullet present",
+    any(
+        "connector" in l.lower() or "ingestion" in l.lower() or "adapter" in l.lower()
+        for l in _qdrant_learnings
+    ),
+    str(_qdrant_learnings),
+)
+test(
+    "issue#5 qdrant-loader: MCP tool-server bullet present",
+    any("mcp" in l.lower() or "model context protocol" in l.lower() for l in _qdrant_learnings),
+    str(_qdrant_learnings),
+)
+test(
+    "issue#5 qdrant-loader: hybrid/semantic bullet still present",
+    any("hybrid" in l.lower() or "semantic" in l.lower() for l in _qdrant_learnings),
+    str(_qdrant_learnings),
+)
+test(
+    "issue#5 qdrant-loader: document conversion bullet present",
+    any(
+        "document conversion" in l.lower() or "attachment" in l.lower() or "pipeline" in l.lower()
+        for l in _qdrant_learnings
+    ),
+    str(_qdrant_learnings),
+)
+test(
+    "issue#5 qdrant-loader: cap respected",
+    len(_qdrant_learnings) <= ts._MAX_HEURISTIC_LEARNINGS,
+    f"got {len(_qdrant_learnings)}",
+)
+
+# ── Issue #7: markdown-vault-mcp style fixture ────────────────────────────────
+# Signals: frontmatter-aware indexing, incremental reindexing, MCP server, FTS5+semantic
+MARKDOWN_VAULT_MCP_REPO: dict = {
+    **REPO_FIXTURE,
+    "full_name": "pvliesdonk/markdown-vault-mcp",
+    "name": "markdown-vault-mcp",
+    "description": (
+        "MCP server for indexing a markdown vault. Frontmatter-aware indexing, "
+        "incremental reindexing, FTS5 and semantic search."
+    ),
+    "topics": ["mcp", "markdown", "obsidian", "semantic-search", "fts5"],
+    "language": "Python",
+}
+MARKDOWN_VAULT_README = (
+    "Index your markdown vault with FTS5 and semantic search. "
+    "Frontmatter-aware indexing extracts tags and metadata from YAML frontmatter. "
+    "Incremental reindex only processes changed files. "
+    "Attachment support for embedded documents."
+)
+
+_vault_learnings = ts._derive_learnings(MARKDOWN_VAULT_MCP_REPO, our_topics, MARKDOWN_VAULT_README)
+
+test(
+    "issue#7 markdown-vault-mcp: produces ≥3 concrete bullets (not collapsed to generic only)",
+    len(_vault_learnings) >= 3,
+    str(_vault_learnings),
+)
+test(
+    "issue#7 markdown-vault-mcp: frontmatter bullet present",
+    any(
+        "frontmatter" in l.lower() or "front matter" in l.lower() or "front-matter" in l.lower()
+        for l in _vault_learnings
+    ),
+    str(_vault_learnings),
+)
+test(
+    "issue#7 markdown-vault-mcp: incremental reindex bullet present",
+    any(
+        "incremental" in l.lower() or "reindex" in l.lower() or "changed" in l.lower()
+        for l in _vault_learnings
+    ),
+    str(_vault_learnings),
+)
+test(
+    "issue#7 markdown-vault-mcp: MCP tool-server bullet present",
+    any("mcp" in l.lower() or "model context protocol" in l.lower() for l in _vault_learnings),
+    str(_vault_learnings),
+)
+test(
+    "issue#7 markdown-vault-mcp: hybrid/semantic bullet still present",
+    any("hybrid" in l.lower() or "semantic" in l.lower() for l in _vault_learnings),
+    str(_vault_learnings),
+)
+test(
+    "issue#7 markdown-vault-mcp: cap respected",
+    len(_vault_learnings) <= ts._MAX_HEURISTIC_LEARNINGS,
+    f"got {len(_vault_learnings)}",
+)
+
+# ── False-positive guards for new heuristics ──────────────────────────────────
+
+# MCP: bare "mcp" substring NOT in topics/server context should not fire
+_mcp_fp_repo: dict = {**REPO_FIXTURE, "description": "A Python toolkit for promcptools", "topics": []}
+_mcp_fp_learnings = ts._derive_learnings(_mcp_fp_repo, our_topics, "mcptest config and xmcp module")
+test(
+    "issue#5/#7 MCP FP: 'mcp' embedded in other words does NOT trigger MCP bullet",
+    not any("mcp tool" in l.lower() or "model context protocol" in l.lower() for l in _mcp_fp_learnings),
+    str(_mcp_fp_learnings),
+)
+
+# Connector: generic "multi" or "source" alone must not fire connector bullet
+_connector_fp_repo: dict = {
+    **REPO_FIXTURE,
+    "description": "A multi-threading source code analyser",
+    "topics": [],
+}
+_connector_fp_learnings = ts._derive_learnings(_connector_fp_repo, our_topics, "source analysis tool")
+test(
+    "issue#5/#7 connector FP: 'multi' and 'source' in generic context do NOT trigger connector bullet",
+    not any("connector" in l.lower() or "adapter" in l.lower() for l in _connector_fp_learnings),
+    str(_connector_fp_learnings),
+)
+
+# Incremental: bare "incremental" without search/index context must not fire reindex bullet
+_incr_fp_repo: dict = {
+    **REPO_FIXTURE,
+    "description": "Incremental backup utility for files",
+    "topics": [],
+}
+_incr_fp_learnings = ts._derive_learnings(_incr_fp_repo, our_topics, "incremental backup algorithm")
+test(
+    "issue#5/#7 incremental FP: 'incremental backup' does NOT trigger reindex bullet",
+    not any("reindex" in l.lower() or "changed-file" in l.lower() for l in _incr_fp_learnings),
+    str(_incr_fp_learnings),
+)
+
+# Positive: 'reindex' alone IS sufficient to trigger the incremental reindex bullet
+_reindex_positive_learnings = ts._derive_learnings(
+    {**REPO_FIXTURE, "description": "Tool with reindex support for large collections", "topics": []},
+    our_topics, "",
+)
+test(
+    "issue#5/#7 incremental positive: 'reindex' in description triggers incremental reindex bullet",
+    any("incremental" in l.lower() or "reindex" in l.lower() for l in _reindex_positive_learnings),
+    str(_reindex_positive_learnings),
+)
+
+# Positive: 'mcp' topic fires MCP bullet
+_mcp_topic_positive_learnings = ts._derive_learnings(
+    {**REPO_FIXTURE, "description": "A knowledge search tool", "topics": ["mcp", "knowledge-base"]},
+    our_topics, "",
+)
+test(
+    "issue#5/#7 MCP positive: 'mcp' in topics triggers MCP bullet",
+    any("mcp" in l.lower() or "tool-server" in l.lower() for l in _mcp_topic_positive_learnings),
+    str(_mcp_topic_positive_learnings),
+)
+
+
 print("\n📝 Issue Body Rendering")
 
 marker = ts.repo_marker("someuser/ai-knowledge-base")
