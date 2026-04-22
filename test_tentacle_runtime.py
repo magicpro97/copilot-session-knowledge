@@ -34,6 +34,15 @@ import tentacle as T
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _names_from_entries(entries):
+    """Extract tentacle names from active_tentacles entries.
+
+    Handles both the new dict-list format {name, ts, git_root} and the legacy
+    string-list format so tests can assert on names without coupling to the
+    on-disk representation.
+    """
+    return [e["name"] if isinstance(e, dict) else e for e in entries]
+
 SCRATCH_DIR = TOOLS_DIR / "_test_tentacle_runtime_scratch"
 
 
@@ -1633,7 +1642,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
         self.assertEqual(data["name"], self.MARKER_NAME)
         self.assertIn("ts", data)
         self.assertIn("active_tentacles", data)
-        self.assertIn("my-tent", data["active_tentacles"])
+        self.assertIn("my-tent", _names_from_entries(data["active_tentacles"]))
         self.assertEqual(data["scope"], ["a.py", "b.py"])
         self.assertEqual(data["dispatch_mode"], "parallel")
         self.assertIn("ttl_seconds", data)
@@ -1785,7 +1794,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
                 T.cmd_swarm(args)
         self.assertTrue(self.marker_path.is_file())
         data = json.loads(self.marker_path.read_text())
-        self.assertIn("sp-test", data["active_tentacles"])
+        self.assertIn("sp-test", _names_from_entries(data["active_tentacles"]))
         self.assertEqual(data["dispatch_mode"], "prompt")
 
     def test_swarm_parallel_writes_marker(self):
@@ -1916,7 +1925,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
         self.assertTrue(self.marker_path.is_file())
         data = json.loads(self.marker_path.read_text())
         self.assertEqual(data["dispatch_mode"], "bundle")
-        self.assertIn("bm-test", data["active_tentacles"])
+        self.assertIn("bm-test", _names_from_entries(data["active_tentacles"]))
 
     def test_bundle_json_output_includes_marker_state(self):
         """cmd_bundle --output json must include marker_state in the JSON output."""
@@ -1983,24 +1992,25 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
         T._write_dispatched_subagent_marker("tent-a", ["a.py"], "prompt")
         T._write_dispatched_subagent_marker("tent-b", ["b.py"], "parallel")
         data = json.loads(self.marker_path.read_text())
-        active = data["active_tentacles"]
-        self.assertIn("tent-a", active)
-        self.assertIn("tent-b", active)
-        self.assertEqual(len(active), 2)
+        names = _names_from_entries(data["active_tentacles"])
+        self.assertIn("tent-a", names)
+        self.assertIn("tent-b", names)
+        self.assertEqual(len(names), 2)
 
     def test_dispatch_deduplicates_same_tentacle(self):
         """Writing the same tentacle twice must not create duplicate entries."""
         T._write_dispatched_subagent_marker("tent-a", [], "prompt")
         T._write_dispatched_subagent_marker("tent-a", [], "prompt")
         data = json.loads(self.marker_path.read_text())
-        self.assertEqual(data["active_tentacles"].count("tent-a"), 1)
+        names = _names_from_entries(data["active_tentacles"])
+        self.assertEqual(names.count("tent-a"), 1)
 
     def test_dispatch_on_existing_preserves_prior_entries(self):
         """Writing tent-b after tent-a keeps tent-a in active_tentacles."""
         T._write_dispatched_subagent_marker("tent-a", [], "prompt")
         T._write_dispatched_subagent_marker("tent-b", [], "json")
         data = json.loads(self.marker_path.read_text())
-        self.assertIn("tent-a", data["active_tentacles"])
+        self.assertIn("tent-a", _names_from_entries(data["active_tentacles"]))
 
     # ── partial complete ──────────────────────────────────────────────────────
 
@@ -2011,8 +2021,9 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
         T._clear_dispatched_subagent_marker("tent-a")
         self.assertTrue(self.marker_path.is_file())
         data = json.loads(self.marker_path.read_text())
-        self.assertNotIn("tent-a", data["active_tentacles"])
-        self.assertIn("tent-b", data["active_tentacles"])
+        names = _names_from_entries(data["active_tentacles"])
+        self.assertNotIn("tent-a", names)
+        self.assertIn("tent-b", names)
 
     def test_last_complete_deletes_marker_file(self):
         """File must be deleted once active_tentacles is empty."""
@@ -2028,7 +2039,7 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
         T._clear_dispatched_subagent_marker("tent-x")  # not in active set
         self.assertTrue(self.marker_path.is_file())
         data = json.loads(self.marker_path.read_text())
-        self.assertIn("tent-a", data["active_tentacles"])
+        self.assertIn("tent-a", _names_from_entries(data["active_tentacles"]))
 
     # ── HMAC integrity across lifecycle ──────────────────────────────────────
 
@@ -2081,7 +2092,7 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
         T._write_dispatched_subagent_marker("new-tent", [], "prompt")
         data = json.loads(self.marker_path.read_text())
         self.assertIn("active_tentacles", data)
-        self.assertIn("new-tent", data["active_tentacles"])
+        self.assertIn("new-tent", _names_from_entries(data["active_tentacles"]))
 
     def test_old_single_owner_format_cleared_correctly(self):
         """Old marker with 'tentacle' field is deleted when that owner clears."""
@@ -2091,6 +2102,660 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
         T._clear_dispatched_subagent_marker("legacy-tent")
         self.assertFalse(self.marker_path.is_file())
 
+
+
+# ---------------------------------------------------------------------------
+# Phase-4 new-format marker tests
+# ---------------------------------------------------------------------------
+
+class TestMarkerNewFormat(unittest.TestCase):
+    """Tests for the new dict-list active_tentacles format and git_root field."""
+
+    MARKER_NAME = "dispatched-subagent-active"
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "new_format_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / self.MARKER_NAME
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    # ── entry shape ─────────────────────────────────────────────────────────
+
+    def test_write_creates_dict_entries_not_strings(self):
+        """active_tentacles must be a list of dicts, not strings."""
+        T._write_dispatched_subagent_marker("my-tent", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        self.assertTrue(len(data["active_tentacles"]) > 0)
+        for entry in data["active_tentacles"]:
+            self.assertIsInstance(entry, dict, "Each active_tentacles entry must be a dict")
+
+    def test_entry_has_name_field(self):
+        T._write_dispatched_subagent_marker("my-tent", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        entry = data["active_tentacles"][0]
+        self.assertEqual(entry["name"], "my-tent")
+
+    def test_entry_has_ts_field(self):
+        """Each entry must carry its own UNIX timestamp."""
+        T._write_dispatched_subagent_marker("my-tent", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        entry = data["active_tentacles"][0]
+        self.assertIn("ts", entry)
+        self.assertIsNotNone(entry["ts"])
+        # ts must be a parseable integer string
+        self.assertGreater(int(entry["ts"]), 0)
+
+    def test_entry_has_git_root_field(self):
+        """Each entry must carry a git_root key (even if None for non-git CWD)."""
+        T._write_dispatched_subagent_marker("my-tent", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        entry = data["active_tentacles"][0]
+        self.assertIn("git_root", entry)
+
+    def test_top_level_git_root_written(self):
+        """Marker must carry a top-level git_root field from the writing context."""
+        T._write_dispatched_subagent_marker("my-tent", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        self.assertIn("git_root", data)
+
+    def test_global_ts_still_present_for_hmac(self):
+        """Global ts must still be present — it anchors the HMAC signature."""
+        T._write_dispatched_subagent_marker("my-tent", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        self.assertIn("ts", data)
+        self.assertIsNotNone(data["ts"])
+
+    def test_per_entry_ts_is_independent_of_global_ts(self):
+        """Per-entry ts is distinct from the global ts field."""
+        T._write_dispatched_subagent_marker("my-tent", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        # Both exist — they are separate fields serving separate purposes
+        self.assertIn("ts", data)                            # global HMAC anchor
+        self.assertIn("ts", data["active_tentacles"][0])     # per-entry TTL anchor
+
+    # ── per-entry ts independence across different entries ────────────────────
+
+    def test_second_entry_gets_its_own_ts(self):
+        """Two distinct entries each have independently set ts values."""
+        T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        time.sleep(0.02)
+        T._write_dispatched_subagent_marker("tent-b", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        entries = {e["name"]: e for e in data["active_tentacles"]}
+        self.assertIn("tent-a", entries)
+        self.assertIn("tent-b", entries)
+        # tent-b's per-entry ts must be >= tent-a's (set later)
+        self.assertGreaterEqual(int(entries["tent-b"]["ts"]), int(entries["tent-a"]["ts"]))
+
+    def test_same_name_redispatch_refreshes_per_entry_ts(self):
+        """Re-dispatching the same tentacle in the same repo must refresh its per-entry ts."""
+        T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        ts_before = json.loads(self.marker_path.read_text())["active_tentacles"][0]["ts"]
+        time.sleep(0.02)
+        T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        entries = json.loads(self.marker_path.read_text())["active_tentacles"]
+        names = _names_from_entries(entries)
+        # Must still be exactly one entry (deduped)
+        self.assertEqual(names.count("tent-a"), 1)
+        ts_after = entries[0]["ts"]
+        self.assertGreaterEqual(int(ts_after), int(ts_before))
+
+    # ── git_root repo identity ────────────────────────────────────────────────
+
+    def test_git_root_matches_find_git_root(self):
+        """Entry git_root must equal the result of find_git_root() at write time."""
+        fake_root = self.base / "fake_repo"
+        fake_root.mkdir(exist_ok=True)
+        with patch.object(T, "find_git_root", return_value=fake_root):
+            T._write_dispatched_subagent_marker("my-tent", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        self.assertEqual(data["active_tentacles"][0]["git_root"], str(fake_root))
+        self.assertEqual(data["git_root"], str(fake_root))
+
+    def test_git_root_none_when_not_in_git_repo(self):
+        """When CWD is outside any git repo, git_root must be null."""
+        with patch.object(T, "find_git_root", return_value=None):
+            T._write_dispatched_subagent_marker("my-tent", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        self.assertIsNone(data["active_tentacles"][0]["git_root"])
+        self.assertIsNone(data["git_root"])
+
+    # ── _get_marker_state enriched output ──────────────────────────────────────
+
+    def test_get_state_includes_active_tentacle_entries(self):
+        """_get_marker_state must include the new active_tentacle_entries field."""
+        T._write_dispatched_subagent_marker("a-tent", [], "prompt")
+        state = T._get_marker_state()
+        self.assertIn("active_tentacle_entries", state)
+        self.assertIsInstance(state["active_tentacle_entries"], list)
+
+    def test_get_state_entries_are_dicts(self):
+        T._write_dispatched_subagent_marker("a-tent", [], "prompt")
+        state = T._get_marker_state()
+        for entry in state["active_tentacle_entries"]:
+            self.assertIsInstance(entry, dict)
+            self.assertIn("name", entry)
+            self.assertIn("ts", entry)
+            self.assertIn("git_root", entry)
+
+    def test_get_state_active_tentacles_still_returns_names(self):
+        """active_tentacles in marker_state must remain a list of strings (backward compat)."""
+        T._write_dispatched_subagent_marker("a-tent", [], "prompt")
+        state = T._get_marker_state()
+        for item in state["active_tentacles"]:
+            self.assertIsInstance(item, str, "active_tentacles must be strings (backward compat)")
+
+    def test_get_state_includes_git_root(self):
+        """_get_marker_state must expose top-level git_root."""
+        T._write_dispatched_subagent_marker("a-tent", [], "prompt")
+        state = T._get_marker_state()
+        self.assertIn("git_root", state)
+
+    def test_get_state_inactive_includes_new_fields(self):
+        """Empty marker_state must still have the new fields with safe defaults."""
+        state = T._get_marker_state()
+        self.assertFalse(state["active"])
+        self.assertEqual(state["active_tentacle_entries"], [])
+        self.assertIsNone(state["git_root"])
+
+    def test_get_state_entries_match_names_list(self):
+        """active_tentacle_entries and active_tentacles must represent the same set."""
+        T._write_dispatched_subagent_marker("tent-x", [], "prompt")
+        T._write_dispatched_subagent_marker("tent-y", [], "parallel")
+        state = T._get_marker_state()
+        entry_names = [e["name"] for e in state["active_tentacle_entries"]]
+        self.assertEqual(sorted(state["active_tentacles"]), sorted(entry_names))
+
+
+class TestMarkerOldFormatCompatibility(unittest.TestCase):
+    """Backward-compatibility: old string-list and single-owner formats must still work."""
+
+    MARKER_NAME = "dispatched-subagent-active"
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "compat_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / self.MARKER_NAME
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def test_old_string_list_readable_via_get_state(self):
+        """_get_marker_state must return names from an old string-list marker."""
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "active_tentacles": ["old-tent-a", "old-tent-b"],
+            "dispatch_mode": "prompt",
+        }))
+        state = T._get_marker_state()
+        self.assertTrue(state["active"])
+        self.assertIn("old-tent-a", state["active_tentacles"])
+        self.assertIn("old-tent-b", state["active_tentacles"])
+
+    def test_old_string_list_entries_normalised_in_state(self):
+        """active_tentacle_entries must normalise old string entries to dicts."""
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "active_tentacles": ["old-tent"],
+        }))
+        state = T._get_marker_state()
+        entries = state["active_tentacle_entries"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["name"], "old-tent")
+        self.assertIsNone(entries[0]["ts"])
+        self.assertIsNone(entries[0]["git_root"])
+
+    def test_old_string_list_clear_by_name(self):
+        """Clearing an old-format string entry must work (conservative name-only match)."""
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": "1000",
+            "active_tentacles": ["old-tent"],
+        }))
+        T._clear_dispatched_subagent_marker("old-tent")
+        self.assertFalse(self.marker_path.is_file())
+
+    def test_old_string_list_partial_clear_leaves_other_entries(self):
+        """Clearing one entry from an old string-list marker preserves other entries."""
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "active_tentacles": ["tent-keep", "tent-remove"],
+        }))
+        T._clear_dispatched_subagent_marker("tent-remove")
+        self.assertTrue(self.marker_path.is_file())
+        data = json.loads(self.marker_path.read_text())
+        names = _names_from_entries(data["active_tentacles"])
+        self.assertIn("tent-keep", names)
+        self.assertNotIn("tent-remove", names)
+
+    def test_new_write_on_old_marker_normalises_to_dict_list(self):
+        """A new write on top of an old string-list marker must produce dict entries."""
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": "1000",
+            "active_tentacles": ["old-string-tent"],
+        }))
+        T._write_dispatched_subagent_marker("new-tent", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        for entry in data["active_tentacles"]:
+            self.assertIsInstance(entry, dict, "All entries must be dicts after write")
+
+    def test_mixed_format_entries_handled_gracefully(self):
+        """Marker with a mix of dict and string entries must not raise."""
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "active_tentacles": [
+                "old-string",
+                {"name": "new-dict", "ts": "12345", "git_root": None},
+            ],
+        }))
+        # Reading must not raise
+        state = T._get_marker_state()
+        self.assertIn("old-string", state["active_tentacles"])
+        self.assertIn("new-dict", state["active_tentacles"])
+
+    def test_clear_after_mixed_format_write_normalises(self):
+        """Clearing from a mixed-format marker must write back clean dict entries."""
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "active_tentacles": [
+                "string-to-keep",
+                {"name": "dict-to-remove", "ts": "123", "git_root": None},
+            ],
+        }))
+        T._clear_dispatched_subagent_marker("dict-to-remove")
+        self.assertTrue(self.marker_path.is_file())
+        data = json.loads(self.marker_path.read_text())
+        names = _names_from_entries(data["active_tentacles"])
+        self.assertIn("string-to-keep", names)
+        self.assertNotIn("dict-to-remove", names)
+        # Written back as dicts
+        for entry in data["active_tentacles"]:
+            self.assertIsInstance(entry, dict)
+
+    # ── targeted upgrade-path tests (migration correctness) ──────────────────
+
+    def test_legacy_string_entry_absorbed_by_dispatch_from_known_repo(self):
+        """Old string entry for tent-a + new dispatch of tent-a from /repo-a
+        must produce exactly one entry with git_root=/repo-a (not two entries)."""
+        repo_a = self.base / "repo-a"
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": "1000",
+            "active_tentacles": ["tent-a"],
+        }))
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        entries = data["active_tentacles"]
+        self.assertEqual(len(entries), 1, "Legacy entry must be absorbed, not duplicated")
+        self.assertEqual(entries[0]["name"], "tent-a")
+        self.assertEqual(entries[0]["git_root"], str(repo_a))
+
+    def test_coexisting_none_and_real_repo_entry_deduplicated_on_dispatch(self):
+        """If a marker somehow contains both (tent-a, None) and (tent-a, /repo-b),
+        dispatching tent-a from /repo-b must collapse them into a single entry
+        rather than producing a duplicate."""
+        repo_b = self.base / "repo-b"
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "active_tentacles": [
+                {"name": "tent-a", "ts": None, "git_root": None},
+                {"name": "tent-a", "ts": "1000", "git_root": str(repo_b)},
+            ],
+        }))
+        with patch.object(T, "find_git_root", return_value=repo_b):
+            T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        names = _names_from_entries(data["active_tentacles"])
+        self.assertEqual(
+            names.count("tent-a"), 1,
+            "Legacy None entry + real-repo entry must collapse to one entry"
+        )
+        self.assertEqual(data["active_tentacles"][0]["git_root"], str(repo_b))
+
+    def test_legacy_cleanup_only_affects_dispatching_tentacle_name(self):
+        """Legacy (tent-b, None) must NOT be removed when dispatching tent-a."""
+        repo_a = self.base / "repo-a"
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "active_tentacles": [
+                {"name": "tent-b", "ts": None, "git_root": None},
+            ],
+        }))
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        names = _names_from_entries(data["active_tentacles"])
+        # tent-b's legacy entry must remain untouched
+        self.assertIn("tent-b", names)
+        self.assertIn("tent-a", names)
+        tent_b = next(e for e in data["active_tentacles"] if e["name"] == "tent-b")
+        self.assertIsNone(tent_b["git_root"], "tent-b legacy entry must be unchanged")
+
+    def test_no_legacy_cleanup_when_dispatching_from_unknown_git_root(self):
+        """When current_git_root is None, existing (name, None) entries are handled
+        by normal dedup (None==None) rather than being removed."""
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "active_tentacles": [
+                {"name": "tent-a", "ts": "1000", "git_root": None},
+            ],
+        }))
+        with patch.object(T, "find_git_root", return_value=None):
+            T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        names = _names_from_entries(data["active_tentacles"])
+        # Must still be one entry (deduped by None==None exact match)
+        self.assertEqual(names.count("tent-a"), 1)
+        self.assertIsNone(data["active_tentacles"][0]["git_root"])
+
+
+class TestMarkerCrossRepoIsolation(unittest.TestCase):
+    """Same tentacle name from different repos must not collapse into one entry."""
+
+    MARKER_NAME = "dispatched-subagent-active"
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "cross_repo_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / self.MARKER_NAME
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def test_same_name_different_repos_produce_two_entries(self):
+        """Dispatching the same tentacle name from two repos creates two distinct entries."""
+        repo_a = self.base / "repo-a"
+        repo_b = self.base / "repo-b"
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt")
+        with patch.object(T, "find_git_root", return_value=repo_b):
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        entries = data["active_tentacles"]
+        self.assertEqual(len(entries), 2, "Different-repo same-name dispatches must not collapse")
+        git_roots = {e["git_root"] for e in entries}
+        self.assertIn(str(repo_a), git_roots)
+        self.assertIn(str(repo_b), git_roots)
+
+    def test_same_name_same_repo_is_deduped(self):
+        """Two dispatches of the same name in the same repo stay as one entry."""
+        repo_a = self.base / "repo-a"
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt")
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        names = _names_from_entries(data["active_tentacles"])
+        self.assertEqual(names.count("feature-x"), 1)
+
+    def test_clear_only_removes_matching_repo_entry(self):
+        """Completing a tentacle in repo-a must not remove the same-named entry for repo-b."""
+        repo_a = self.base / "repo-a"
+        repo_b = self.base / "repo-b"
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt")
+        with patch.object(T, "find_git_root", return_value=repo_b):
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt")
+        # Complete from repo-a context
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._clear_dispatched_subagent_marker("feature-x")
+        # Marker file must still exist (repo-b entry remains)
+        self.assertTrue(self.marker_path.is_file())
+        data = json.loads(self.marker_path.read_text())
+        remaining = data["active_tentacles"]
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["git_root"], str(repo_b))
+
+    def test_clear_from_no_git_context_removes_all_matching_names(self):
+        """When CWD has no git repo, clearing by name removes all same-named entries
+        (conservative: no repo info means we can't discriminate)."""
+        repo_a = self.base / "repo-a"
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("tent-x", [], "prompt")
+        # Clear from a non-git context (git_root=None)
+        with patch.object(T, "find_git_root", return_value=None):
+            T._clear_dispatched_subagent_marker("tent-x")
+        # Conservative: entry with known git_root is removed because current git_root is None
+        self.assertFalse(self.marker_path.is_file())
+
+    def test_different_names_different_repos_both_coexist(self):
+        """Different tentacle names from different repos all appear in active list."""
+        repo_a = self.base / "repo-a"
+        repo_b = self.base / "repo-b"
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("alpha", [], "prompt")
+        with patch.object(T, "find_git_root", return_value=repo_b):
+            T._write_dispatched_subagent_marker("beta", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        names = _names_from_entries(data["active_tentacles"])
+        self.assertIn("alpha", names)
+        self.assertIn("beta", names)
+
+    def test_marker_state_entries_carry_per_repo_git_root(self):
+        """active_tentacle_entries in _get_marker_state must expose per-entry git_root."""
+        repo_a = self.base / "repo-a"
+        repo_b = self.base / "repo-b"
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("task", [], "prompt")
+        with patch.object(T, "find_git_root", return_value=repo_b):
+            T._write_dispatched_subagent_marker("task", [], "prompt")
+        state = T._get_marker_state()
+        roots = {e["git_root"] for e in state["active_tentacle_entries"]}
+        self.assertIn(str(repo_a), roots)
+        self.assertIn(str(repo_b), roots)
+
+    def test_json_swarm_output_marker_state_has_git_root(self):
+        """marker_state in swarm JSON output must include git_root field."""
+        import io
+        from contextlib import redirect_stdout
+        swarm_base = self.base / "swarm_test"
+        swarm_base.mkdir()
+        make_tentacle("xr-test", swarm_base)
+        args = fake_args(
+            name="xr-test",
+            agent_type="general-purpose",
+            model="claude-sonnet-4.6",
+            output="json",
+            briefing=False,
+            bundle=False,
+        )
+        buf = io.StringIO()
+        with patch.object(T, "get_tentacles_dir", return_value=swarm_base):
+            with redirect_stdout(buf):
+                T.cmd_swarm(args)
+        out = buf.getvalue()
+        decoder = json.JSONDecoder()
+        idx = out.find("{")
+        dispatch_data, _ = decoder.raw_decode(out, idx)
+        ms = dispatch_data["marker_state"]
+        self.assertIn("git_root", ms)
+        self.assertIn("active_tentacle_entries", ms)
+
+
+# ---------------------------------------------------------------------------
+# Legacy-entry upgrade path tests (cross-review fix)
+# ---------------------------------------------------------------------------
+
+class TestMarkerLegacyUpgradePath(unittest.TestCase):
+    """When a known git_root dispatch encounters a legacy git_root=None entry with the
+    same tentacle name, it must absorb/replace the legacy entry rather than appending
+    a duplicate — which would cause hook readers to conservatively short-circuit on
+    the unscoped entry and silently defeat the cross-repo fix.
+    """
+
+    MARKER_NAME = "dispatched-subagent-active"
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "upgrade_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / self.MARKER_NAME
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def _write_legacy_entry(self, name):
+        """Write an old-format dict entry with git_root=None directly to the marker."""
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "active_tentacles": [{"name": name, "ts": None, "git_root": None}],
+        }))
+
+    # ── core upgrade-path behaviour ───────────────────────────────────────────
+
+    def test_legacy_none_entry_absorbed_by_known_repo_dispatch(self):
+        """A git_root=None legacy entry must be replaced (not duplicated) when the
+        same tentacle is re-dispatched with a real git_root."""
+        self._write_legacy_entry("tent-a")
+        repo_a = self.base / "repo-a"
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        entries = data["active_tentacles"]
+        # Must be exactly one entry — no duplicate
+        self.assertEqual(len(entries), 1, "Legacy entry must be absorbed, not duplicated")
+
+    def test_absorbed_entry_gets_real_git_root(self):
+        """After absorption the single entry must carry the known git_root, not None."""
+        self._write_legacy_entry("tent-a")
+        repo_a = self.base / "repo-a"
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        entry = data["active_tentacles"][0]
+        self.assertEqual(entry["git_root"], str(repo_a))
+
+    def test_absorbed_entry_gets_fresh_ts(self):
+        """After absorption the entry ts must be refreshed (not left as None)."""
+        self._write_legacy_entry("tent-a")
+        repo_a = self.base / "repo-a"
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        entry = data["active_tentacles"][0]
+        self.assertIsNotNone(entry["ts"])
+        self.assertGreater(int(entry["ts"]), 0)
+
+    def test_other_entries_preserved_during_upgrade(self):
+        """Absorption of one legacy entry must not disturb unrelated entries."""
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "active_tentacles": [
+                {"name": "tent-a", "ts": None, "git_root": None},   # legacy → will be upgraded
+                {"name": "tent-b", "ts": "9999", "git_root": "/other/repo"},  # real → untouched
+            ],
+        }))
+        repo_a = self.base / "repo-a"
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        entries = {e["name"]: e for e in data["active_tentacles"]}
+        self.assertIn("tent-b", entries, "Unrelated entry must survive")
+        self.assertEqual(entries["tent-b"]["git_root"], "/other/repo")
+        self.assertEqual(entries["tent-a"]["git_root"], str(repo_a))
+        self.assertEqual(len(entries), 2)
+
+    def test_old_string_list_entry_absorbed_by_known_repo_dispatch(self):
+        """An old string-list entry (promoted to git_root=None dict) is also absorbed."""
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": "1000",
+            "active_tentacles": ["tent-a"],   # old string format
+        }))
+        repo_a = self.base / "repo-a"
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        entries = data["active_tentacles"]
+        self.assertEqual(len(entries), 1, "String-list legacy entry must also be absorbed")
+        self.assertEqual(entries[0]["git_root"], str(repo_a))
+
+    # ── same-name different-real-repo entries stay distinct ───────────────────
+
+    def test_known_repo_entry_not_absorbed_by_different_real_repo(self):
+        """A real-repo entry must NOT be absorbed by a different real-repo dispatch."""
+        repo_a = self.base / "repo-a"
+        repo_b = self.base / "repo-b"
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "active_tentacles": [{"name": "tent-x", "ts": "9999", "git_root": str(repo_a)}],
+        }))
+        with patch.object(T, "find_git_root", return_value=repo_b):
+            T._write_dispatched_subagent_marker("tent-x", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        entries = data["active_tentacles"]
+        self.assertEqual(len(entries), 2, "Different real-repo entries must stay distinct")
+        roots = {e["git_root"] for e in entries}
+        self.assertIn(str(repo_a), roots)
+        self.assertIn(str(repo_b), roots)
+
+    # ── both-None dedup regression ────────────────────────────────────────────
+
+    def test_none_plus_none_still_deduped(self):
+        """Two dispatches both from unknown-repo context must still deduplicate."""
+        with patch.object(T, "find_git_root", return_value=None):
+            T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+            T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        names = _names_from_entries(data["active_tentacles"])
+        self.assertEqual(names.count("tent-a"), 1)
+
+    # ── upgrade does not break _get_marker_state names list ───────────────────
+
+    def test_state_names_correct_after_upgrade(self):
+        """_get_marker_state active_tentacles must still return names after upgrade."""
+        self._write_legacy_entry("tent-a")
+        repo_a = self.base / "repo-a"
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        state = T._get_marker_state()
+        self.assertEqual(state["active_tentacles"], ["tent-a"])
+        self.assertEqual(state["active_tentacle_entries"][0]["git_root"], str(repo_a))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -96,23 +96,52 @@ The marker is a JSON file with the following contract:
 | Field | Description |
 |-------|-------------|
 | `name` | Always `"dispatched-subagent-active"` |
-| `ts` | UNIX timestamp of the most-recent write (used for HMAC + TTL) |
+| `ts` | UNIX timestamp of the most-recent write (used for HMAC + global TTL anchor) |
 | `sig` | HMAC-SHA256 over `"name:ts"` (omitted when no secret is configured) |
-| `active_tentacles` | Ordered list of tentacle names currently dispatched (deduped, concurrency-safe) |
+| `active_tentacles` | List of per-entry objects: `{"name": "<tentacle>", "ts": "<unix>", "git_root": "<abs-path>"}`. Each entry carries its own dispatch timestamp and the absolute path of the git repository where the tentacle was dispatched. Readers also accept the old string-list format for backward compatibility. |
 | `scope` | File-scope list from the most-recently-dispatching tentacle |
 | `dispatch_mode` | Dispatch mode of the most-recently-dispatching tentacle |
 | `ttl_seconds` | Expected lifetime; consumers treat markers older than this as stale |
 | `written_at` | ISO 8601 human-readable timestamp |
 
-**Concurrent tentacles:** Multiple tentacles dispatched in parallel each add their name to
-`active_tentacles` rather than overwriting the file. `tentacle.py complete <name>` removes only
-that tentacle's entry; the marker is deleted only when `active_tentacles` becomes empty.
+**Per-entry TTL:** Each `active_tentacles` entry's `ts` is used for its own TTL check. A stale
+entry (its `ts` is older than `ttl_seconds`) is treated as inactive even if the global marker
+file is still fresh.
+
+**Concurrent tentacles:** Multiple tentacles dispatched in parallel each add their dict entry to
+`active_tentacles`. `tentacle.py complete <name>` removes only that tentacle's entry; the marker
+is deleted only when `active_tentacles` becomes empty.
 
 **Step 2 — Git pre-commit / pre-push (primary enforcement)**
 
 `hooks/check_subagent_marker.py` is called by both `hooks/pre-commit` and `hooks/pre-push`.
-When the marker is present, auth-valid, and within the 4-hour TTL, it exits with code 1 and
-prints a diagnostic message — blocking the git operation.
+When the marker is present, auth-valid, within the 4-hour TTL, and its `git_root` matches the
+repository where the git operation is running, it exits with code 1 and prints a diagnostic
+message — blocking the git operation.
+
+**Repo-scope check:** Each `active_tentacles` entry carries a `git_root` field. The hook
+resolves the current repo's root with `git rev-parse --show-toplevel` and compares it against
+the entry's `git_root`. If they differ, that entry does not block the operation. This prevents
+a tentacle active in repo A from falsely blocking unrelated commits in repo B — the cross-repo
+false-positive that existed before phase 4.
+
+**Backward compatibility:** If a marker entry has no `git_root` (written by old code or
+dispatched from a non-git directory), the hook conservatively blocks — same behavior as before.
+
+> **Upgrade migration note:** Cross-repo isolation is **not retroactive** for in-flight
+> old-format markers. If you upgrade while a tentacle is still active and the marker was
+> written by old code (string-list `active_tentacles`, no per-entry `git_root`), that marker
+> carries no repo identity and will continue to block **all** repos conservatively until the
+> tentacle completes, the marker is cleared manually, or the 4-hour TTL expires.
+>
+> **Recommended action:** Before upgrading on a machine with active tentacles, run
+> `tentacle.py complete <name>` for each active tentacle, then re-dispatch after upgrading.
+> Or clear the marker immediately:
+> ```bash
+> rm ~/.copilot/markers/dispatched-subagent-active
+> ```
+> After clearing, re-dispatch any tentacles that still need to run — they will now write
+> new-format entries with `git_root` and benefit from cross-repo isolation.
 
 This is the **primary enforcement surface**: git hooks fire at the filesystem level for any
 `git commit` or `git push` call, regardless of which agent spawned the process.
@@ -123,7 +152,9 @@ This is the **primary enforcement surface**: git hooks fire at the filesystem le
 `preToolUse` event that contains a `git commit` or `git push` bash command. This provides a
 second interception point when `preToolUse` does fire inside the subagent. However, it is
 **not the primary path** — whether `preToolUse` events from the parent `hooks.json` propagate
-into a delegated subagent context is undefined by the platform.
+into a delegated subagent context is undefined by the platform. Git hooks remain the reliable
+enforcement surface. If the platform ever guarantees `preToolUse` propagation into
+`task()`-spawned agents, `subagent_guard.py` could become the primary path and replace git hooks.
 
 **Step 4 — Marker cleanup**
 
@@ -139,6 +170,15 @@ sessions that crash without calling `complete`.
 > - Cloud-hosted or remote-delegated agent runs (hooks.json is not copied to cloud environments)
 > - Any environment where git hooks are not installed (`install.py --install-git-hooks`)
 > - Manual filesystem operations that bypass git (direct file writes without committing)
+
+### Known limitations
+
+| Limitation | Detail |
+|---|---|
+| `preToolUse` non-inheritance | `preToolUse` hooks from the parent `hooks.json` may not fire inside `task()`-spawned subagents — platform-level behavior, not fixable here. Git hooks remain the reliable surface. |
+| Same-repo multi-orchestrator | Two concurrent orchestrators running in the **same** repo are not isolated from each other — both share the same marker `git_root` entry. One orchestrator per repo at a time is the supported model. |
+| Cloud/remote agents | Hooks are local-only. Cloud-delegated or remote agent runs have no coverage. |
+| `auto-update` does not reinstall git hooks | `auto-update-tools.py` updates tools-repo files but does **not** re-run `--install-git-hooks` in registered repos. It prints a warning when hook files change. Users must re-run `install.py --install-git-hooks` manually to apply new hook logic in each protected repo. |
 
 ### Installing the git hooks
 
@@ -156,16 +196,31 @@ python "$env:USERPROFILE\.copilot\tools\install.py" --install-git-hooks
 config to ensure the hooks fire even when a project-level override is present.
 
 After tool updates (`git pull` or `auto-update-tools.py --force`), re-run
-`--install-git-hooks` to refresh the hook scripts in `.git/hooks/`.
+`--install-git-hooks` to refresh the hook scripts in `.git/hooks/`. `auto-update-tools.py`
+does **not** perform this reinstallation automatically — it cannot safely enumerate every repo
+where hooks are installed. When hook files change, it emits these two warnings to stdout:
+
+```
+WARNING: Git hook scripts updated — installed per-repo hooks are NOT automatically refreshed.
+WARNING: Re-run in each protected repo: python3 ~/.copilot/tools/install.py --install-git-hooks
+```
 
 ### Fail-open behavior
 
-All enforcement surfaces are fail-open:
+Enforcement surfaces are **selectively fail-open**. The behavior differs by error type:
 
-- Missing marker → allow (no false positives)
-- Stale marker (age ≥ 4 hours) → allow
-- HMAC auth failure (marker tampered or written without secret) → allow
-- Any unexpected error in `check_subagent_marker.py` → allow
+| Condition | Behavior |
+|-----------|----------|
+| Missing marker file | allow (no false positives) |
+| Stale marker (age ≥ 4 hours) | allow |
+| HMAC auth failure (tampered or written without secret) | allow |
+| Missing or unparseable timestamp | allow |
+| Empty `active_tentacles` list (zombie marker) | allow |
+| Exception during entry processing or repo-scope check | **conservative (block)** — errors in parsing `active_tentacles` entries or the `git_root` comparison fall through to blocking to avoid accidentally unblocking an active session |
+
+> **Note:** The `is_marker_fresh()` docstring and implementation are now aligned: auth/parse
+> failures are fail-open (return `False` → allow), while repo-scope check exceptions are
+> fail-conservative (`pass` → keep blocking). See `hooks/check_subagent_marker.py`.
 
 To clear a stuck marker manually:
 

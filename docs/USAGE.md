@@ -237,12 +237,25 @@ These apply to every dispatched sub-agent.
 - **Commit restriction (enforced + convention)**: Sub-agents must not run `git commit` or
   `git push`. When git hooks are installed (`install.py --install-git-hooks`), both operations
   are **blocked at the git level** by `hooks/check_subagent_marker.py` whenever the
-  `dispatched-subagent-active` marker is present and fresh. Even without git hooks, this
-  remains a firm convention: only the orchestrator commits, after merging and verifying all
-  tentacle results. A sub-agent commit mid-run risks corrupting the orchestrator's merge flow.
+  `dispatched-subagent-active` marker is present, fresh, and its `git_root` matches the repo
+  running the git command. Even without git hooks, this remains a firm convention: only the
+  orchestrator commits, after merging and verifying all tentacle results. A sub-agent commit
+  mid-run risks corrupting the orchestrator's merge flow.
+
+  > **Cross-repo isolation:** A marker written in repo A does not block `git commit` in repo B.
+  > Each marker entry carries a `git_root` field; the hook skips entries from different repos.
+  > Entries without `git_root` (old format) conservatively block all repos.
+  >
+  > **Upgrade migration:** Cross-repo isolation is not retroactive. In-flight old-format markers
+  > have no `git_root` and continue to block all repos until completed, cleared, or expired.
+  > To get isolation immediately after upgrading: `tentacle.py complete <name>`, then re-dispatch.
 
   > **Local-only enforcement**: the git hook guard fires only on local machines where hooks are
   > installed. Cloud-delegated or remote agent runs are not covered.
+
+  > **Same-repo multi-orchestrator**: Two concurrent orchestrators in the **same** repo share
+  > one marker entry and are not isolated from each other. One orchestrator per repo at a time
+  > is the supported model.
 
 - **Stay in scope**: Avoid editing files outside your tentacle's declared scope.
 - **Escalate, don't expand**: If scope is insufficient, record the gap in `handoff.md` and stop.

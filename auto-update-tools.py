@@ -404,6 +404,18 @@ def post_pull_pipeline(old_sha: str, new_sha: str):
     if changes.get("launchd"):
         reinstall_launchagents()
 
+    # 3b. Git hook scripts changed → remind user to re-install per-repo hooks.
+    # auto-update deliberately does NOT auto-reinstall git hooks into other repos:
+    # it has no registry of which repos have hooks installed, and silently modifying
+    # .git/hooks/ in arbitrary repos would be unsafe.  Users must re-run install.py.
+    if changes.get("hooks"):
+        hook_files = [f for f in changes["hooks"]
+                      if "pre-commit" in f or "pre-push" in f or "check_subagent" in f]
+        if hook_files:
+            warn("Git hook scripts updated — installed per-repo hooks are NOT automatically refreshed.")
+            warn("ACTION REQUIRED to pick up the cross-repo isolation fix (and future hook changes):")
+            warn("  Re-run in EVERY protected repo: python3 ~/.copilot/tools/install.py --install-git-hooks")
+
     # 4. Template/SKILL.md changed → redeploy
     if changes.get("templates") or changes.get("skills"):
         deploy_skills()

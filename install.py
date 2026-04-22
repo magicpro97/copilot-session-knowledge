@@ -1213,6 +1213,8 @@ def install_git_hooks(target_dir: "Path | None" = None) -> None:
     else:
         print(f"\n  {len(installed)} installed, {len(skipped)} already up to date (of {total} hooks).")
         print("  Hooks block git commit/push when dispatched-subagent-active marker is fresh.")
+        print("  NOTE: After each 'auto-update-tools.py' run, re-run --install-git-hooks here")
+        print("        to pick up new hook logic (auto-update cannot do this for you safely).")
 
 
 def main():
