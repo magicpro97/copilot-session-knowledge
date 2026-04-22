@@ -1281,6 +1281,177 @@ def _test_format_default_ordering():
 _test_format_default_ordering()
 
 
+# ─── 23. Adaptive strictness — JSON/contract stability ───────────────────
+
+print("\n⚙️  Adaptive strictness — output contract stability")
+
+
+def _test_adaptive_strictness_modules():
+    """Both modules expose _analyze_query_strictness and _build_adaptive_fts_query."""
+    test("qs has _analyze_query_strictness",
+         hasattr(_qs, "_analyze_query_strictness"),
+         "attribute missing from query-session.py")
+    test("br has _analyze_query_strictness",
+         hasattr(_briefing, "_analyze_query_strictness"),
+         "attribute missing from briefing.py")
+    test("qs has _build_adaptive_fts_query",
+         hasattr(_qs, "_build_adaptive_fts_query"),
+         "attribute missing from query-session.py")
+    test("br has _build_adaptive_fts_query",
+         hasattr(_briefing, "_build_adaptive_fts_query"),
+         "attribute missing from briefing.py")
+
+
+_test_adaptive_strictness_modules()
+
+
+@with_test_db
+def _test_adaptive_briefing_json_strict(db_path):
+    """generate_briefing with a strict (1-word) query still emits valid JSON."""
+    db = sqlite3.connect(db_path)
+    import time as _time
+    now = _time.strftime("%Y-%m-%dT%H:%M:%S")
+    db.execute("""
+        INSERT INTO knowledge_entries
+            (category, title, content, confidence, session_id, task_id,
+             affected_files, facts, tags, occurrence_count, first_seen, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+    """, ("pattern", "Strict query test pattern",
+          "Strict query JSON contract verification.",
+          0.9, "test-session-strict", "", '[]', '[]', "", now, now))
+    db.execute("""
+        INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts)
+        VALUES (last_insert_rowid(),
+                'Strict query test pattern',
+                'Strict query JSON contract verification.',
+                '', 'pattern', '', '', '[]')
+    """)
+    db.commit()
+    db.close()
+
+    _briefing.DB_PATH = Path(db_path)
+    result = _briefing.generate_briefing("strict", limit=5, fmt="json")
+
+    try:
+        data = json.loads(result)
+        test("generate_briefing strict query --json: valid JSON", True)
+        test("generate_briefing strict query --json: has 'query' key",
+             "query" in data, f"keys={list(data)}")
+        test("generate_briefing strict query --json: has 'sections' key",
+             "sections" in data, f"keys={list(data)}")
+        test("generate_briefing strict query --json: 'sections' is dict",
+             isinstance(data.get("sections"), dict),
+             f"type={type(data.get('sections')).__name__}")
+    except json.JSONDecodeError as e:
+        test("generate_briefing strict query --json: valid JSON",
+             False, f"{e}; result={result[:200]!r}")
+
+
+_test_adaptive_briefing_json_strict()
+
+
+@with_test_db
+def _test_adaptive_briefing_json_broad(db_path):
+    """generate_briefing with a broad (7+ word) query still emits valid JSON."""
+    db = sqlite3.connect(db_path)
+    import time as _time
+    now = _time.strftime("%Y-%m-%dT%H:%M:%S")
+    db.execute("""
+        INSERT INTO knowledge_entries
+            (category, title, content, confidence, session_id, task_id,
+             affected_files, facts, tags, occurrence_count, first_seen, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+    """, ("mistake", "Broad query test mistake",
+          "Broad query JSON contract verification for auth implementation.",
+          0.4, "test-session-broad", "", '[]', '[]', "", now, now))
+    db.execute("""
+        INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts)
+        VALUES (last_insert_rowid(),
+                'Broad query test mistake',
+                'Broad query JSON contract verification for auth implementation.',
+                '', 'mistake', '', '', '[]')
+    """)
+    db.commit()
+    db.close()
+
+    _briefing.DB_PATH = Path(db_path)
+    broad_q = "how should we implement user authentication with jwt tokens"
+    result = _briefing.generate_briefing(broad_q, limit=5, fmt="json")
+
+    try:
+        data = json.loads(result)
+        test("generate_briefing broad query --json: valid JSON", True)
+        test("generate_briefing broad query --json: has 'query' key",
+             "query" in data, f"keys={list(data)}")
+        test("generate_briefing broad query --json: 'generated_at' present",
+             "generated_at" in data, f"keys={list(data)}")
+    except json.JSONDecodeError as e:
+        test("generate_briefing broad query --json: valid JSON",
+             False, f"{e}; result={result[:200]!r}")
+
+
+_test_adaptive_briefing_json_broad()
+
+
+@with_test_db
+def _test_adaptive_search_knowledge_json(db_path):
+    """search_knowledge JSON export is a list regardless of adaptive strictness path."""
+    db = sqlite3.connect(db_path)
+    import time as _time
+    now = _time.strftime("%Y-%m-%dT%H:%M:%S")
+    db.execute("""
+        INSERT INTO knowledge_entries
+            (category, title, content, confidence, session_id,
+             affected_files, facts, occurrence_count, first_seen, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+    """, ("pattern", "Frobnitz cache pattern",
+          "Use frobnitz for caching database results.",
+          0.8, "test-session-fqc", '[]', '[]', now, now))
+    db.execute("""
+        INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts)
+        VALUES (last_insert_rowid(),
+                'Frobnitz cache pattern',
+                'Use frobnitz for caching database results.',
+                '', 'pattern', '', '', '[]')
+    """)
+    db.commit()
+    db.close()
+
+    _qs.DB_PATH = Path(db_path)
+
+    # Strict query (single technical term)
+    with _CapStdout() as cap:
+        _qs.search_knowledge("frobnitz", limit=10, export_fmt="json")
+    raw_strict = cap.getvalue().strip()
+    if raw_strict:
+        try:
+            parsed = json.loads(raw_strict)
+            test("search_knowledge strict --json: output is a list",
+                 isinstance(parsed, list), f"type={type(parsed).__name__}")
+        except json.JSONDecodeError as e:
+            test("search_knowledge strict --json: valid JSON", False, str(e))
+    else:
+        test("search_knowledge strict --json: returned results", False,
+             "got empty output — strict+fallback found nothing")
+
+    # Medium query (3 terms)
+    with _CapStdout() as cap:
+        _qs.search_knowledge("frobnitz cache database", limit=10, export_fmt="json")
+    raw_med = cap.getvalue().strip()
+    if raw_med:
+        try:
+            parsed2 = json.loads(raw_med)
+            test("search_knowledge medium --json: output is a list",
+                 isinstance(parsed2, list), f"type={type(parsed2).__name__}")
+        except json.JSONDecodeError as e:
+            test("search_knowledge medium --json: valid JSON", False, str(e))
+    else:
+        test("search_knowledge medium --json: returned results", False, "empty output")
+
+
+_test_adaptive_search_knowledge_json()
+
+
 # ─── Summary ─────────────────────────────────────────────────────────────
 
 print(f"\n{'='*50}")

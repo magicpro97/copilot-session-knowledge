@@ -147,6 +147,26 @@ def get_file_signatures(dirs: list[Path]) -> dict[str, tuple[float, int]]:
     return sigs
 
 
+def _content_hash(path: Path) -> str:
+    """Compute a quick content hash for change detection (SHA256, first 16 hex chars).
+
+    Reads in chunks so large files don't load entirely into memory.
+    Returns empty string on any OS error — callers treat '' as 'unknown,
+    assume changed' which is the safe fallback.
+    """
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()[:16]
+    except OSError:
+        return ""
+
+
 def load_state() -> dict:
     """Load previous watch state."""
     import json
@@ -234,25 +254,63 @@ def run_extractor(changed_files: list[str] | None = None):
 
 def check_and_index(prev_sigs: dict, watch_dirs: list[Path],
                     changed_only: bool = False) -> dict:
-    """Compare current files with previous state, index if changed."""
-    current_sigs = get_file_signatures(watch_dirs)
+    """Compare current files with previous state, index if changed.
 
-    # Find changes
-    new_files = set(current_sigs.keys()) - set(prev_sigs.keys())
-    changed_files = {
-        f for f in current_sigs
-        if f in prev_sigs and current_sigs[f] != prev_sigs[f]
+    Uses hybrid mtime+size fast-path followed by content-hash verification.
+    Files whose mtime/size changed but whose content is identical are skipped
+    (e.g., touch, editor autosave with no edits) so the indexer only runs when
+    content actually differs.
+
+    Returns enriched signatures {filepath: [mtime, size, content_hash]}.
+    State is backward-compatible: old 2-element entries trigger a one-time
+    hash computation on the first poll after upgrade.
+    """
+    current_mtime_sigs = get_file_signatures(watch_dirs)
+
+    # Files that don't exist in previous state
+    new_files = set(current_mtime_sigs.keys()) - set(prev_sigs.keys())
+
+    # Files whose mtime or size changed — candidates for content check
+    mtime_changed = {
+        f for f in current_mtime_sigs
+        if f in prev_sigs
+        and (current_mtime_sigs[f][0], current_mtime_sigs[f][1]) != (prev_sigs[f][0], prev_sigs[f][1])
     }
 
-    if new_files or changed_files:
-        all_changed = sorted(new_files | changed_files)
+    # Build enriched sigs {fp: [mtime, size, hash]} and resolve true changes
+    content_changed = set()
+    enriched_sigs: dict[str, list] = {}
+
+    for fp, (mtime, size) in current_mtime_sigs.items():
+        if fp in new_files or fp in mtime_changed:
+            # Compute hash only for files that need re-evaluation
+            h = _content_hash(Path(fp))
+            prev = prev_sigs.get(fp, [])
+            prev_hash = prev[2] if len(prev) >= 3 else ""
+            if h != prev_hash:
+                content_changed.add(fp)
+            enriched_sigs[fp] = [mtime, size, h]
+        else:
+            # mtime/size stable — carry forward stored hash without re-reading.
+            # One-time backfill: legacy 2-element entries carry "" which would
+            # cause a false-positive re-index the next time mtime changes.
+            prev = prev_sigs.get(fp, [])
+            stored_hash = prev[2] if len(prev) >= 3 else ""
+            if not stored_hash:
+                stored_hash = _content_hash(Path(fp))
+            enriched_sigs[fp] = [mtime, size, stored_hash]
+
+    all_changed = sorted(new_files | content_changed)
+    if all_changed:
         total = len(all_changed)
+        skipped = len(mtime_changed) - len(content_changed & mtime_changed)
         now = datetime.now().strftime("%H:%M:%S")
-        print(f"[watch] {now} — {total} file(s) changed, re-indexing...")
+        skip_note = f", {skipped} skipped (content unchanged)" if skipped > 0 else ""
+        print(f"[watch] {now} — {total} file(s) changed{skip_note}, re-indexing...")
         run_indexer(incremental=True)
         run_extractor(changed_files=all_changed if changed_only else None)
 
-    return current_sigs
+    return enriched_sigs
 
 
 def print_install_hint():

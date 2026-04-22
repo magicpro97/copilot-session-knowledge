@@ -30,9 +30,19 @@ MARKERS_DIR = Path.home() / ".copilot" / "markers"
 EDIT_COUNTER = MARKERS_DIR / "code-edit-count"
 LEARN_DONE = MARKERS_DIR / "learn-done"
 
+# Markdown (.md) intentionally excluded — consistent with unified rules/common.py.
+# Shell-script extensions (.sh, .bat, .ps1) are included to match the canonical set.
 CODE_EXTENSIONS = {".py", ".kt", ".ts", ".tsx", ".js", ".jsx", ".swift", ".java", ".go", ".rs",
-                   ".json", ".yaml", ".yml", ".xml", ".html", ".css", ".toml"}
+                   ".json", ".yaml", ".yml", ".xml", ".html", ".css", ".toml",
+                   ".sh", ".bat", ".ps1"}
 EDIT_THRESHOLD = 3
+
+_SESSION_STATE_ABS = str(Path.home() / ".copilot" / "session-state")
+
+
+def _is_session_path(path: str) -> bool:
+    """Return True if path is under ~/.copilot/session-state/."""
+    return path.startswith(_SESSION_STATE_ABS) or ".copilot/session-state" in path
 
 
 def _get_edit_count():
@@ -81,7 +91,7 @@ def main():
     if tool_name in ("edit", "create"):
         file_path = tool_args.get("path", "")
         suffix = Path(file_path).suffix.lower() if file_path else ""
-        if suffix in CODE_EXTENSIONS:
+        if suffix in CODE_EXTENSIONS and not _is_session_path(file_path):
             _increment_counter()
         return
 

@@ -1018,6 +1018,149 @@ def test_learn_list_tokens(tmp_db_path: str):
         _learn.DB_PATH = original_db_path
 
 
+def test_hybrid_change_detection():
+    """10. watch-sessions.py: hybrid mtime+content-hash change detection."""
+    print("\n🔍 Hybrid Change Detection Tests (watch-sessions.py)")
+    ws = _load_module("watch_sessions", TOOLS_DIR / "watch-sessions.py")
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="test_watch_"))
+    try:
+        # ── _content_hash unit tests ──────────────────────────────────────
+        f1 = tmp_dir / "a.md"
+        f1.write_text("Hello world", encoding="utf-8")
+
+        h1 = ws._content_hash(f1)
+        h2 = ws._content_hash(f1)
+        test("_content_hash returns 16-char hex string", len(h1) == 16 and h1.isalnum(),
+             f"got {h1!r}")
+        test("_content_hash is deterministic", h1 == h2, f"{h1!r} != {h2!r}")
+
+        f2 = tmp_dir / "b.md"
+        f2.write_text("Different content", encoding="utf-8")
+        h3 = ws._content_hash(f2)
+        test("_content_hash differs for different content", h1 != h3,
+             f"collision: {h1!r}")
+
+        missing = tmp_dir / "nonexistent.md"
+        test("_content_hash returns '' for missing file",
+             ws._content_hash(missing) == "", "expected empty string")
+
+        # ── get_file_signatures still returns (mtime, size) 2-tuples ─────
+        watch_root = tmp_dir / "watchroot"
+        watch_root.mkdir()
+        sess = watch_root / "session-xyz"
+        sess.mkdir()
+        (sess / "note.md").write_text("initial content", encoding="utf-8")
+
+        sigs = ws.get_file_signatures([watch_root])
+        test("get_file_signatures finds the file", len(sigs) == 1,
+             f"found {len(sigs)} files")
+        if sigs:
+            val = list(sigs.values())[0]
+            test("get_file_signatures value has 2 elements (mtime, size)",
+                 len(val) == 2 and isinstance(val[0], float), f"got {val!r}")
+
+        # ── check_and_index returns enriched 3-element sigs ──────────────
+        # Patch run_indexer and run_extractor to no-ops for isolation
+        _orig_indexer = ws.run_indexer
+        _orig_extractor = ws.run_extractor
+        indexer_calls: list = []
+        ws.run_indexer = lambda incremental=True: indexer_calls.append(1) or True
+        ws.run_extractor = lambda changed_files=None: True
+
+        try:
+            # Pass 1: empty prev_sigs → file is new → should index
+            indexer_calls.clear()
+            enriched1 = ws.check_and_index({}, [watch_root])
+            fp = str(sess / "note.md")
+            test("check_and_index enriched sigs have 3 elements",
+                 fp in enriched1 and len(enriched1[fp]) == 3,
+                 f"got {enriched1.get(fp, 'MISSING')!r}")
+            test("New file triggers indexer", len(indexer_calls) == 1,
+                 f"indexer called {len(indexer_calls)} times")
+
+            # Pass 2: identical state → no changes → no re-index
+            indexer_calls.clear()
+            enriched2 = ws.check_and_index(enriched1, [watch_root])
+            test("Unchanged file does not trigger re-index", len(indexer_calls) == 0,
+                 f"indexer called {len(indexer_calls)} times")
+
+            # Pass 3: touch file (same content, updated mtime) → skip re-index
+            import time as _time
+            _time.sleep(0.02)  # ensure OS mtime resolution ticks
+            (sess / "note.md").write_text("initial content", encoding="utf-8")
+            fresh_mtime = (sess / "note.md").stat().st_mtime
+            mtime_moved = fresh_mtime != enriched2[fp][0]
+            if mtime_moved:
+                indexer_calls.clear()
+                enriched3 = ws.check_and_index(enriched2, [watch_root])
+                test("Touch with same content skips re-index (hash match)",
+                     len(indexer_calls) == 0,
+                     f"indexer called {len(indexer_calls)} times despite identical content")
+            else:
+                # Filesystem mtime resolution too coarse — skip this sub-test
+                enriched3 = enriched2
+                test("Touch with same content skips re-index (hash match)",
+                     True, "(skipped — fs mtime resolution too coarse)")
+
+            # Pass 4: genuinely changed content → must re-index
+            indexer_calls.clear()
+            (sess / "note.md").write_text("CHANGED content", encoding="utf-8")
+            enriched4 = ws.check_and_index(enriched3, [watch_root])
+            test("Content change triggers re-index", len(indexer_calls) == 1,
+                 f"indexer called {len(indexer_calls)} times after content change")
+
+            # ── Legacy 2-element upgrade path (regression) ───────────────
+            # Use an isolated watch root so no other files appear as "new".
+            # Simulate pre-upgrade state where prev_sigs has only [mtime, size].
+            # First post-upgrade poll should backfill the hash without re-indexing.
+            # A subsequent same-content touch must NOT trigger a false-positive.
+            legacy_root = tmp_dir / "legacy_watchroot"
+            legacy_root.mkdir()
+            legacy_sess = legacy_root / "session-legacy"
+            legacy_sess.mkdir()
+            legacy_file = legacy_sess / "legacy.md"
+            legacy_file.write_text("legacy content", encoding="utf-8")
+            legacy_st = legacy_file.stat()
+            legacy_key = str(legacy_file)
+            legacy_2elem = {legacy_key: [legacy_st.st_mtime, legacy_st.st_size]}
+
+            # Poll 1 with legacy state — mtime/size unchanged → else branch
+            indexer_calls.clear()
+            enriched_legacy1 = ws.check_and_index(legacy_2elem, [legacy_root])
+            test("Legacy 2-elem: first poll does not trigger re-index",
+                 len(indexer_calls) == 0,
+                 f"indexer called {len(indexer_calls)} times on stable legacy file")
+            test("Legacy 2-elem: first poll backfills hash (non-empty)",
+                 legacy_key in enriched_legacy1
+                 and len(enriched_legacy1[legacy_key]) == 3
+                 and enriched_legacy1[legacy_key][2] != "",
+                 f"got {enriched_legacy1.get(legacy_key, 'MISSING')!r}")
+
+            # Poll 2: touch file with same content (mtime changes but content identical)
+            import time as _time2
+            _time2.sleep(0.02)
+            legacy_file.write_text("legacy content", encoding="utf-8")
+            fresh_legacy_mtime = legacy_file.stat().st_mtime
+            legacy_mtime_moved = fresh_legacy_mtime != enriched_legacy1[legacy_key][0]
+            if legacy_mtime_moved:
+                indexer_calls.clear()
+                enriched_legacy2 = ws.check_and_index(enriched_legacy1, [legacy_root])
+                test("Legacy 2-elem: same-content touch after upgrade does not re-index",
+                     len(indexer_calls) == 0,
+                     f"indexer called {len(indexer_calls)} times (false-positive)")
+            else:
+                test("Legacy 2-elem: same-content touch after upgrade does not re-index",
+                     True, "(skipped — fs mtime resolution too coarse)")
+
+        finally:
+            ws.run_indexer = _orig_indexer
+            ws.run_extractor = _orig_extractor
+
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def main():
     print("=" * 60)
     print("test_session_surface.py — memory-surface feature tests")
@@ -1045,6 +1188,7 @@ def main():
         test_budget_and_compact_surfaces(db, tmp_db_path)
         test_briefing_task_budget(db, tmp_db_path)
         test_learn_list_tokens(tmp_db_path)
+        test_hybrid_change_detection()
 
         db.close()
     finally:

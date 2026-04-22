@@ -380,15 +380,20 @@ python3 ~/.copilot/tools/trend-scout.py --limit 3       # Cap issues created thi
 python3 ~/.copilot/tools/trend-scout.py --repo owner/repo  # Override target repo
 python3 ~/.copilot/tools/trend-scout.py --config path.json # Custom config file
 python3 ~/.copilot/tools/trend-scout.py --token TOKEN   # Explicit GitHub token (overrides GITHUB_TOKEN env)
+python3 ~/.copilot/tools/trend-scout.py --force         # Bypass grace window; force a new run
 ```
 
 Requires a `GITHUB_TOKEN` env var (or `--token TOKEN` flag) to avoid rate limits. The tool auto-creates the `trend-scout` label and deduplicates against both open and closed issues using hidden deterministic markers — each marker is a 16-character truncated SHA-256 hash of the lowercased `owner/name`.
 
 **Optional GitHub Models analysis:** set `analysis.enabled=true` in `trend-scout-config.json` to replace the repetitive heuristic learning bullets with repo-specific LLM analysis. The models path calls `https://models.github.ai/inference/chat/completions`, expects a publisher-qualified model ID such as `openai/gpt-4o-mini`, and reads its credential from `analysis.token_env` (default `GITHUB_MODELS_TOKEN`). If the token is missing, the model ID is invalid, or the response cannot be parsed, Trend Scout falls back to the heuristic engine automatically.
 
-**Tune discovery:** edit `trend-scout-config.json` to adjust seed keywords, topic filters, scoring weights, `min_stars`, `enrichment.readme_max_chars`, and the optional `analysis.*` settings (`model`, `temperature`, `max_learnings`, `token_env`).
+**Veto gate:** set `veto.require_domain_signals=1` in `trend-scout-config.json` to skip candidates whose heuristic learning engine produces only the generic fallback bullet (no domain-specific signals matched). Default is `0` — all shortlisted candidates are written.
 
-**GitHub Actions workflow** — `.github/workflows/trend-scout.yml` runs daily at 07:00 UTC with permissions `contents: read`, `issues: write`, and `models: read`. It also maps `secrets.GITHUB_TOKEN` into `GITHUB_MODELS_TOKEN`, so enabling `analysis.enabled` in config works in Actions without a separate secret. Manual runs via `workflow_dispatch` support `dry_run`, `search_only`, `repo`, and `limit` inputs.
+**Grace window:** set `run_control.grace_window_hours` in config to prevent runs that are too close together. The last-run timestamp is persisted locally in `.trend-scout-state.json` (adjacent to the script). Use `--force` to bypass the grace window. Default is `0` (disabled). In GitHub Actions, the `.trend-scout-state.json` file is cached between runs via `actions/cache` so the grace window persists across GitHub-hosted runner instances.
+
+**Tune discovery:** edit `trend-scout-config.json` to adjust seed keywords, topic filters, scoring weights, `min_stars`, `enrichment.readme_max_chars`, the optional `analysis.*` settings (`model`, `temperature`, `max_learnings`, `token_env`), `veto.require_domain_signals`, and `run_control.grace_window_hours`.
+
+**GitHub Actions workflow** — `.github/workflows/trend-scout.yml` runs daily at 07:00 UTC with permissions `contents: read`, `issues: write`, and `models: read`. It also maps `secrets.GITHUB_TOKEN` into `GITHUB_MODELS_TOKEN`, so enabling `analysis.enabled` in config works in Actions without a separate secret. Manual runs via `workflow_dispatch` support `dry_run`, `search_only`, `repo`, `limit`, and `force` inputs.
 
 📖 **Details:** [docs/USAGE.md#trend-scout](docs/USAGE.md#trend-scout)
 

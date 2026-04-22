@@ -963,7 +963,8 @@ print("\n🧪 create_stage dry-run (mocked)")
 with mock.patch.object(ts.GitHubClient, "ensure_label", return_value=True), \
      mock.patch.object(ts.GitHubClient, "create_issue", return_value=None):
     client = ts.GitHubClient(token="ghp_test")
-    cfg_c = ts.load_config(None)
+    # Disable veto for general create_stage tests — these repos don't exercise the veto path.
+    cfg_c = {**ts.load_config(None), "veto": {"require_domain_signals": 0}}
     enriched = [(REPO_FIXTURE, "readme text"), (REPO_INACTIVE, "")]
     existing: set[str] = set()
     urls = ts.create_stage(enriched, client, cfg_c, existing, dry_run=True, limit=None)
@@ -1098,7 +1099,7 @@ with mock.patch.object(ts.GitHubClient, "ensure_label", return_value=True), \
      mock.patch.object(ts.GitHubClient, "patch_issue",
                        return_value={"html_url": "https://github.com/x/y/issues/55"}) as mock_patch_reg:
     client_reg = ts.GitHubClient(token="ghp_test")
-    cfg_reg = ts.load_config(None)
+    cfg_reg = {**ts.load_config(None), "veto": {"require_domain_signals": 0}}
     existing_reg: set[str] = set()
     urls_reg = ts.create_stage(
         [(REPO_FIXTURE, "readme"), (REPO_INACTIVE, "readme inactive")],
@@ -1441,6 +1442,7 @@ with mock.patch.object(ts.GitHubClient, "list_issues", side_effect=_mock_list_is
 with mock.patch.object(ts, "search_stage", return_value=[]), \
      mock.patch.object(ts, "shortlist_repos", return_value=[]), \
      mock.patch.object(ts, "ModelsClient") as mock_models, \
+     mock.patch.object(ts, "load_run_state", return_value={}), \
      mock.patch.dict(os.environ, {"GITHUB_TOKEN": "ghs_actions_token"}, clear=True):
     explicit_token_cfg = ts.load_config(None)
     explicit_token_cfg["analysis"]["enabled"] = True
@@ -1455,6 +1457,7 @@ with mock.patch.object(ts, "search_stage", return_value=[]), \
 with mock.patch.object(ts, "search_stage", return_value=[]), \
      mock.patch.object(ts, "shortlist_repos", return_value=[]), \
      mock.patch.object(ts, "ModelsClient") as mock_models, \
+     mock.patch.object(ts, "load_run_state", return_value={}), \
      mock.patch.dict(os.environ, {"GITHUB_TOKEN": "ghs_actions_token"}, clear=True):
     explicit_workflow_cfg = ts.load_config(None)
     explicit_workflow_cfg["analysis"]["enabled"] = True
@@ -1475,6 +1478,7 @@ with mock.patch.object(ts, "search_stage", return_value=[]), \
 with mock.patch.object(ts, "search_stage", return_value=[]), \
      mock.patch.object(ts, "shortlist_repos", return_value=[]), \
      mock.patch.object(ts, "ModelsClient") as mock_models, \
+     mock.patch.object(ts, "load_run_state", return_value={}), \
      mock.patch.dict(os.environ, {"GITHUB_MODELS_TOKEN": "ghm_pat"}, clear=True):
     invalid_model_cfg = ts.load_config(None)
     invalid_model_cfg["analysis"]["enabled"] = True
@@ -1489,6 +1493,7 @@ with mock.patch.object(ts, "search_stage", return_value=[]), \
 with mock.patch.object(ts, "search_stage", return_value=[]), \
      mock.patch.object(ts, "shortlist_repos", return_value=[]), \
      mock.patch.object(ts, "ModelsClient") as mock_models, \
+     mock.patch.object(ts, "load_run_state", return_value={}), \
      mock.patch.dict(os.environ, {"GITHUB_MODELS_TOKEN": "ghm_pat"}, clear=True):
     null_timeout_cfg = ts.load_config(None)
     null_timeout_cfg["analysis"]["enabled"] = True
@@ -1512,7 +1517,7 @@ with mock.patch.object(ts, "_analyze_repo_with_models", return_value=None) as mo
     urls = ts.create_stage(
         [(REPO_FIXTURE, "readme text")],
         client,
-        ts.load_config(None),
+        {**ts.load_config(None), "veto": {"require_domain_signals": 0}},
         set(),
         dry_run=True,
         models_client=mock.Mock(),
@@ -1575,6 +1580,292 @@ test(
     fake_marker not in multi_extracted and real_marker in multi_extracted,
     f"extracted={multi_extracted}",
 )
+
+
+# ─── Rowboat Veto Gate ────────────────────────────────────────────────────────
+
+print("\n🔒 Rowboat Veto Gate")
+
+_veto_our_topics = ["ai-tools", "copilot", "fts5", "knowledge-base", "python", "sqlite"]
+
+# _is_only_fallback_learnings
+_no_signal_repo = {**REPO_FIXTURE, "description": "A simple utility", "topics": []}
+_fallback_l = ts._derive_learnings(_no_signal_repo, _veto_our_topics, "")
+test("_is_only_fallback_learnings: True for fallback-only output",
+     ts._is_only_fallback_learnings(_fallback_l),
+     str(_fallback_l))
+
+_signal_l = ts._derive_learnings(AI_IQ_LIKE_REPO, _veto_our_topics, AI_IQ_README)
+test("_is_only_fallback_learnings: False for signal-rich output",
+     not ts._is_only_fallback_learnings(_signal_l),
+     str(_signal_l))
+
+test("_is_only_fallback_learnings: False for empty list",
+     not ts._is_only_fallback_learnings([]))
+
+test("_is_only_fallback_learnings: False for multi-bullet list",
+     not ts._is_only_fallback_learnings(["bullet 1", "bullet 2"]))
+
+# _should_veto_candidate: pre-computed learnings path (wires production to helper)
+# _should_veto_candidate
+_veto_enabled_cfg = {"require_domain_signals": 1}
+_veto_disabled_cfg = {"require_domain_signals": 0}
+
+_veto_ok, _veto_reason = ts._should_veto_candidate(
+    _no_signal_repo, "", _veto_our_topics, _veto_enabled_cfg
+)
+test("_should_veto_candidate: vetoes repo with no domain signals (veto enabled)",
+     _veto_ok, _veto_reason)
+
+_veto_pass, _ = ts._should_veto_candidate(
+    AI_IQ_LIKE_REPO, AI_IQ_README, _veto_our_topics, _veto_enabled_cfg
+)
+test("_should_veto_candidate: passes repo with domain signals",
+     not _veto_pass)
+
+_veto_off, _ = ts._should_veto_candidate(
+    _no_signal_repo, "", _veto_our_topics, _veto_disabled_cfg
+)
+test("_should_veto_candidate: disabled config never vetoes",
+     not _veto_off)
+
+# create_stage with veto enabled: generic repo is skipped
+_veto_cfg_c = {**ts.load_config(None), "veto": {"require_domain_signals": 1}}
+_no_signal_fixture = {
+    **REPO_FIXTURE, "full_name": "veto/test-no-signal",
+    "description": "A simple utility", "topics": [],
+}
+
+with mock.patch.object(ts.GitHubClient, "ensure_label", return_value=True), \
+     mock.patch.object(ts.GitHubClient, "create_issue", return_value=None):
+    _veto_client = ts.GitHubClient(token="ghp_test")
+    _veto_urls = ts.create_stage(
+        [(_no_signal_fixture, "")],
+        _veto_client, _veto_cfg_c, set(), dry_run=True,
+    )
+    test("create_stage: vetoed repo (no domain signals) produces no issue URL",
+         len(_veto_urls) == 0,
+         str(_veto_urls))
+
+# Signal-rich repo is NOT vetoed
+with mock.patch.object(ts.GitHubClient, "ensure_label", return_value=True), \
+     mock.patch.object(ts.GitHubClient, "create_issue", return_value=None):
+    _signal_urls = ts.create_stage(
+        [(AI_IQ_LIKE_REPO, AI_IQ_README)],
+        _veto_client, _veto_cfg_c, set(), dry_run=True,
+    )
+    test("create_stage: signal-rich repo is NOT vetoed",
+         len(_signal_urls) == 1,
+         str(_signal_urls))
+
+# Veto does NOT apply to update-eligible repos (is_update path is exempt)
+with mock.patch.object(ts.GitHubClient, "patch_issue",
+                       return_value={"html_url": "https://github.com/x/y/issues/42"}) as _mock_veto_patch:
+    _veto_marker = ts.repo_marker(_no_signal_fixture["full_name"])
+    _old_veto_body = "old body content that is different"
+    _veto_issue_map = {_veto_marker: {"number": 42, "state": "open", "body": _old_veto_body}}
+    _veto_update_urls = ts.create_stage(
+        [(_no_signal_fixture, "")],
+        _veto_client, _veto_cfg_c, {_veto_marker},
+        dry_run=False,
+        issue_map=_veto_issue_map,
+    )
+    test("create_stage: veto does NOT block update of existing issue",
+         _mock_veto_patch.call_count == 1,
+         f"patch_issue calls={_mock_veto_patch.call_count}")
+
+# _should_veto_candidate: pre-computed learnings (production-wiring tests)
+_precomp_veto, _precomp_reason = ts._should_veto_candidate(
+    _no_signal_repo, "", _veto_our_topics, _veto_enabled_cfg,
+    learnings=_fallback_l,
+)
+test("_should_veto_candidate: vetoes with pre-computed fallback learnings",
+     _precomp_veto, _precomp_reason)
+
+_precomp_pass, _ = ts._should_veto_candidate(
+    AI_IQ_LIKE_REPO, AI_IQ_README, _veto_our_topics, _veto_enabled_cfg,
+    learnings=_signal_l,
+)
+test("_should_veto_candidate: passes with pre-computed signal-rich learnings",
+     not _precomp_pass)
+
+# LLM-style learnings (non-fallback bullets) also pass the gate
+_llm_like_learnings = ["**Pattern**: FTS5 incremental indexing could improve query-session.py recall"]
+_llm_veto, _ = ts._should_veto_candidate(
+    _no_signal_repo, "", _veto_our_topics, _veto_enabled_cfg,
+    learnings=_llm_like_learnings,
+)
+test("_should_veto_candidate: non-fallback pre-computed (LLM-style) bullets pass the gate",
+     not _llm_veto)
+
+# create_stage calls _should_veto_candidate (not dead code): spy to confirm
+with mock.patch.object(ts, "_should_veto_candidate", wraps=ts._should_veto_candidate) as _spy_veto, \
+     mock.patch.object(ts.GitHubClient, "ensure_label", return_value=True), \
+     mock.patch.object(ts.GitHubClient, "create_issue", return_value=None):
+    ts.create_stage(
+        [(_no_signal_fixture, "")],
+        ts.GitHubClient(token="ghp_test"),
+        _veto_cfg_c, set(), dry_run=True,
+    )
+    test("create_stage: calls _should_veto_candidate in production path (not dead code)",
+         _spy_veto.call_count == 1,
+         f"_should_veto_candidate call_count={_spy_veto.call_count}")
+
+# Verify spy passes learnings kwarg (production path sends pre-computed learnings)
+with mock.patch.object(ts, "_should_veto_candidate", wraps=ts._should_veto_candidate) as _spy_veto2, \
+     mock.patch.object(ts.GitHubClient, "ensure_label", return_value=True), \
+     mock.patch.object(ts.GitHubClient, "create_issue", return_value=None):
+    ts.create_stage(
+        [(AI_IQ_LIKE_REPO, AI_IQ_README)],
+        ts.GitHubClient(token="ghp_test"),
+        _veto_cfg_c, set(), dry_run=True,
+    )
+    _spy_call_kwargs = _spy_veto2.call_args.kwargs if _spy_veto2.call_args else {}
+    test("create_stage: passes pre-computed learnings to _should_veto_candidate",
+         "learnings" in _spy_call_kwargs and _spy_call_kwargs["learnings"] is not None,
+         f"kwargs={_spy_call_kwargs}")
+
+
+# ─── Grace Window / Run State ─────────────────────────────────────────────────
+
+print("\n⏰ Grace Window / Run State")
+
+import datetime as _dt_gw
+
+_gw_state_file = SCRATCH / "run-state.json"
+_gw_state_file.unlink(missing_ok=True)
+
+# load_run_state: returns {} for non-existent file
+test("load_run_state: returns {} for non-existent file",
+     ts.load_run_state(_gw_state_file) == {})
+
+# save + load roundtrip
+_test_gw_state = {"last_run_utc": "2024-01-01T12:00:00+00:00"}
+ts.save_run_state(_test_gw_state, _gw_state_file)
+_gw_loaded = ts.load_run_state(_gw_state_file)
+test("save_run_state / load_run_state roundtrip",
+     _gw_loaded.get("last_run_utc") == "2024-01-01T12:00:00+00:00",
+     str(_gw_loaded))
+
+# _check_grace_window: disabled (grace_hours=0)
+_gw_skip, _gw_reason = ts._check_grace_window(0, {"last_run_utc": "2024-01-01T12:00:00+00:00"})
+test("_check_grace_window: disabled (grace_hours=0) never skips",
+     not _gw_skip)
+
+# _check_grace_window: empty state → no skip
+_gw_skip2, _ = ts._check_grace_window(20, {})
+test("_check_grace_window: empty state → no skip",
+     not _gw_skip2)
+
+# _check_grace_window: recent run → skip
+_recent_ts = (
+    _dt_gw.datetime.now(_dt_gw.timezone.utc) - _dt_gw.timedelta(hours=5)
+).isoformat()
+_gw_skip3, _gw_reason3 = ts._check_grace_window(20, {"last_run_utc": _recent_ts})
+test("_check_grace_window: last run 5h ago within 20h window → skip",
+     _gw_skip3, _gw_reason3)
+test("_check_grace_window: reason mentions elapsed and window",
+     "ago" in _gw_reason3 and "grace window" in _gw_reason3.lower(),
+     _gw_reason3)
+
+# _check_grace_window: old run → no skip
+_old_ts = (
+    _dt_gw.datetime.now(_dt_gw.timezone.utc) - _dt_gw.timedelta(hours=25)
+).isoformat()
+_gw_skip4, _ = ts._check_grace_window(20, {"last_run_utc": _old_ts})
+test("_check_grace_window: last run 25h ago past 20h window → no skip",
+     not _gw_skip4)
+
+# Grace window integration: run() respects grace window (search_stage not called)
+with mock.patch.object(ts, "search_stage", return_value=[]) as _mock_gw_search, \
+     mock.patch.object(ts, "shortlist_repos", return_value=[]), \
+     mock.patch.object(ts, "load_run_state", return_value={"last_run_utc": _recent_ts}):
+    _gw_run_cfg = {
+        **ts.load_config(None),
+        "run_control": {"grace_window_hours": 20, "state_file": str(_gw_state_file)},
+    }
+    _gw_exit = ts.run(_gw_run_cfg, dry_run=True, force=False)
+    test("run(): grace window active → search_stage NOT called",
+         _mock_gw_search.call_count == 0,
+         f"search_stage calls={_mock_gw_search.call_count}")
+    test("run(): grace window active → exit 0 (not an error)",
+         _gw_exit == 0)
+
+# Grace window bypassed with force=True
+with mock.patch.object(ts, "search_stage", return_value=[]) as _mock_gw_force, \
+     mock.patch.object(ts, "shortlist_repos", return_value=[]), \
+     mock.patch.object(ts, "load_run_state", return_value={"last_run_utc": _recent_ts}):
+    _gw_force_cfg = {
+        **ts.load_config(None),
+        "run_control": {"grace_window_hours": 20, "state_file": str(_gw_state_file)},
+    }
+    ts.run(_gw_force_cfg, dry_run=True, force=True)
+    test("run(): force=True bypasses grace window (search_stage called)",
+         _mock_gw_force.call_count >= 1,
+         f"search_stage calls={_mock_gw_force.call_count}")
+
+# run() with dry_run=True does NOT persist run state
+with mock.patch.object(ts, "search_stage", return_value=[]), \
+     mock.patch.object(ts, "shortlist_repos", return_value=[]), \
+     mock.patch.object(ts, "load_run_state", return_value={}), \
+     mock.patch.object(ts, "save_run_state") as _mock_save_gw:
+    _dr_cfg = {
+        **ts.load_config(None),
+        "run_control": {"grace_window_hours": 20, "state_file": str(_gw_state_file)},
+    }
+    ts.run(_dr_cfg, dry_run=True, force=True)
+    test("run(): dry-run does NOT persist run state",
+         _mock_save_gw.call_count == 0,
+         f"save_run_state calls={_mock_save_gw.call_count}")
+
+# run() with search_only=True does NOT persist run state
+with mock.patch.object(ts, "search_stage", return_value=[]), \
+     mock.patch.object(ts, "shortlist_repos", return_value=[]), \
+     mock.patch.object(ts, "load_run_state", return_value={}), \
+     mock.patch.object(ts, "save_run_state") as _mock_save_so:
+    _so_cfg = {
+        **ts.load_config(None),
+        "run_control": {"grace_window_hours": 20, "state_file": str(_gw_state_file)},
+    }
+    ts.run(_so_cfg, search_only=True, force=True)
+    test("run(): search_only does NOT persist run state",
+         _mock_save_so.call_count == 0,
+         f"save_run_state calls={_mock_save_so.call_count}")
+
+# CLI: --force mentioned in --help
+_r_force = run_cli("--help")
+test("CLI --help mentions --force", "--force" in _r_force.stdout)
+
+# config file has required new keys
+if CONFIG_FILE.exists():
+    _disk_cfg2 = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    test("disk config has 'veto' section", "veto" in _disk_cfg2,
+         f"keys={list(_disk_cfg2.keys())}")
+    test("disk config veto.require_domain_signals >= 1",
+         int(_disk_cfg2.get("veto", {}).get("require_domain_signals", 0)) >= 1,
+         str(_disk_cfg2.get("veto")))
+    test("disk config has 'run_control' section", "run_control" in _disk_cfg2,
+         f"keys={list(_disk_cfg2.keys())}")
+    test("disk config run_control.grace_window_hours >= 1",
+         float(_disk_cfg2.get("run_control", {}).get("grace_window_hours", 0)) >= 1,
+         str(_disk_cfg2.get("run_control")))
+
+# Workflow YAML has actions/cache step so the grace-window state file actually
+# survives between GitHub-hosted Actions runner runs (otherwise ephemeral).
+_workflow_path = REPO / ".github" / "workflows" / "trend-scout.yml"
+if _workflow_path.exists():
+    _wf_text = _workflow_path.read_text(encoding="utf-8")
+    test("workflow: includes actions/cache step for CI grace-window state persistence",
+         "actions/cache" in _wf_text,
+         "actions/cache not found in trend-scout.yml")
+    test("workflow: cache path covers .trend-scout-state.json",
+         ".trend-scout-state.json" in _wf_text,
+         "state file path not found in trend-scout.yml")
+    test("workflow: cache restore-keys uses 'trend-scout-state-' prefix for cross-run recall",
+         "trend-scout-state-" in _wf_text,
+         "trend-scout-state- prefix not found in trend-scout.yml")
+else:
+    test("workflow file exists", False, f"{_workflow_path} not found")
 
 
 # ─── Cleanup ──────────────────────────────────────────────────────────────────

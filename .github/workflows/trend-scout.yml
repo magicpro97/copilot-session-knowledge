@@ -22,6 +22,10 @@ on:
         description: "Max number of issues to create (leave blank for config default)"
         type: string
         default: ""
+      force:
+        description: "Bypass grace window and force a full run"
+        type: boolean
+        default: false
 
 # Prevent concurrent scheduled runs from overlapping
 concurrency:
@@ -47,6 +51,19 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Restore trend-scout state
+        # Restores .trend-scout-state.json from cache so the grace-window check
+        # actually has a last-run timestamp between GitHub-hosted runner runs.
+        # Cache is saved after the job completes (post-step).  Key includes run_id
+        # so each run produces a new entry; restore-keys prefix picks up the most
+        # recent prior state on cache miss (typical for every run except the first).
+        uses: actions/cache@v4
+        with:
+          path: .trend-scout-state.json
+          key: trend-scout-state-${{ github.run_id }}
+          restore-keys: |
+            trend-scout-state-
+
       - name: Run trend-scout
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -71,6 +88,10 @@ jobs:
 
           if [ -n "$INPUT_LIMIT" ]; then
             ARGS="$ARGS --limit $INPUT_LIMIT"
+          fi
+
+          if [ "${{ inputs.force }}" = "true" ]; then
+            ARGS="$ARGS --force"
           fi
 
           python3 trend-scout.py $ARGS

@@ -300,3 +300,30 @@ Recommendations:
 
 **Version:** 2.2.0
 **Last Updated:** 2026-03-25
+
+<example>
+User: "Set up instruction files for my project — I don't have any yet."
+
+1. Run the skill to create all instruction files from templates:
+   - AGENTS.md created from template (118 lines, 47 imperatives)
+   - CLAUDE.md created as @AGENTS.md import stub (13 lines)
+   - GEMINI.md created as @AGENTS.md import stub (12 lines)
+
+2. The skill reports its audit immediately after creation:
+   | File       | Lines | Cache-safe | Quality | Import pattern | Issues |
+   |------------|-------|------------|---------|----------------|--------|
+   | AGENTS.md  | 118   | OK         | 7/7     | n/a            | OK     |
+   | CLAUDE.md  | 13    | OK         | 7/7     | OK             | OK     |
+   | GEMINI.md  | 12    | OK         | 7/7     | OK             | OK     |
+
+3. No conflicts detected with installed plugins.
+</example>
+
+<example>
+User: "Audit our CLAUDE.md — it seems to be duplicating content from AGENTS.md."
+
+1. Skill discovers: AGENTS.md (canonical), CLAUDE.md (stub), GEMINI.md (stub)
+2. Phase 6 detects: CLAUDE.md has 3 sections duplicated from AGENTS.md + file is 72 lines
+3. Fix applied: duplicated sections removed from CLAUDE.md, @AGENTS.md import preserved
+4. Result: CLAUDE.md trimmed to 18 lines, all content now flowing through @AGENTS.md
+</example>

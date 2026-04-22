@@ -137,11 +137,117 @@ def _sanitize_fts_query(query: str, max_length: int = 500) -> str:
     return " ".join(f'"{t}"*' for t in terms)
 
 
+def _analyze_query_strictness(query: str) -> str:
+    """Classify query retrieval strictness from lightweight signals.
+
+    Returns 'strict', 'medium', or 'broad'.
+
+    - 'strict':  1-2 terms, or has file/path separators or extensions, or
+                 high average word length (domain-specific technical terms).
+                 Callers use exact token matching and a tighter confidence threshold.
+    - 'broad':   6+ words with 2+ natural-language stopwords present.
+                 Callers use OR-conjunction matching and a relaxed threshold.
+    - 'medium':  Everything else — the default prefix-match behaviour.
+
+    No network or LLM calls.  Pure Python stdlib.
+    """
+    import re as _re
+    words = query.strip().split()
+    if not words:
+        return "medium"
+
+    wc = len(words)
+    strict_score = 0
+    broad_score = 0
+
+    if wc <= 2:
+        strict_score += 2
+    elif wc >= 6:
+        broad_score += 2
+
+    # Technical path/identifier signals (file extensions, separators, long numeric IDs)
+    _tech = _re.compile(r'\.[a-z]{1,5}(?:\b|$)|[/\\]|\d{4,}|_[a-z]')
+    if any(_tech.search(w) for w in words):
+        strict_score += 2
+
+    avg_len = sum(len(w) for w in words) / wc
+    if avg_len >= 7:
+        strict_score += 1
+    elif avg_len <= 3.5:
+        broad_score += 1
+
+    # Natural-language stopwords → query reads like a sentence → broad recall
+    _STOPWORDS = frozenset({"the", "for", "and", "with", "that", "this", "when",
+                            "how", "what", "why", "should", "use", "using", "from",
+                            "into", "over", "not", "does", "have", "are", "was",
+                            "we", "our", "they", "them", "it", "its", "by", "as",
+                            "at", "an", "a", "is", "in", "on", "to", "be", "or",
+                            "do", "so", "if"})
+    stopword_count = sum(1 for w in words if w.lower() in _STOPWORDS)
+    if stopword_count >= 2:
+        broad_score += 2
+
+    if strict_score > broad_score:
+        return "strict"
+    if broad_score > strict_score:
+        return "broad"
+    return "medium"
+
+
+def _build_adaptive_fts_query(query: str) -> tuple:
+    """Build an FTS5 query and confidence-threshold delta based on query strictness.
+
+    Returns:
+        (fts_query: str, strictness: str, confidence_delta: float)
+
+    Strictness effects:
+        'strict' — exact token match (no trailing ``*``); confidence += 0.2.
+                   Callers should fall back to prefix match when 0 results returned.
+        'medium' — prefix match ``"term"*`` (current default); delta = 0.0.
+        'broad'  — OR-conjunction prefix match for higher recall; confidence -= 0.2.
+                   Common stopwords stripped from the OR terms to reduce noise.
+
+    The confidence_delta is intended to be added to the caller's min_confidence
+    (clamped to [0.0, 1.0]) so adaptive logic is non-breaking to existing contracts.
+    """
+    strictness = _analyze_query_strictness(query)
+    base = _sanitize_fts_query(query)
+
+    if base == '""':
+        return base, strictness, 0.0
+
+    terms = base.split()  # ["\"term\"*", ...]
+
+    if strictness == "strict":
+        # Strip trailing * to require exact token, not prefix
+        fts_query = " ".join(t.rstrip("*") for t in terms)
+        confidence_delta = 0.2
+    elif strictness == "broad" and len(terms) > 1:
+        # OR-conjunction: any term match is sufficient (recall over precision)
+        _BROAD_STOPWORDS = frozenset({"the", "for", "and", "with", "that", "this",
+                                      "when", "how", "what", "why", "should", "use",
+                                      "using", "from", "into", "over", "not", "does",
+                                      "have", "are", "was", "we", "our", "they",
+                                      "them", "it", "its", "by", "as", "at", "an",
+                                      "a", "is", "in", "on", "to", "be", "or",
+                                      "do", "so", "if"})
+        content_terms = [t for t in terms
+                         if t.strip('"*').lower() not in _BROAD_STOPWORDS]
+        fts_query = " OR ".join(content_terms if content_terms else terms)
+        confidence_delta = -0.2
+    else:
+        fts_query = base
+        confidence_delta = 0.0
+
+    return fts_query, strictness, confidence_delta
+
+
 def search_knowledge_entries(db: sqlite3.Connection, query: str,
                              category: str, limit: int = 3,
                              min_confidence: float = 0.0) -> list[dict]:
-    """Search knowledge entries by category using FTS5."""
-    fts_query = _sanitize_fts_query(query)
+    """Search knowledge entries by category using FTS5 with adaptive strictness."""
+    fts_query, strictness, confidence_delta = _build_adaptive_fts_query(query)
+    effective_confidence = max(0.0, min(1.0, min_confidence + confidence_delta))
 
     results = []
     try:
@@ -155,10 +261,29 @@ def search_knowledge_entries(db: sqlite3.Connection, query: str,
             AND ke.confidence >= ?
             ORDER BY ke.confidence DESC, rank
             LIMIT ?
-        """, (fts_query, category, min_confidence, limit)).fetchall()
+        """, (fts_query, category, effective_confidence, limit)).fetchall()
         results.extend([dict(r) for r in rows])
     except sqlite3.OperationalError:
         pass
+
+    # Strict fallback: if exact-match returned nothing, retry with prefix query
+    if not results and strictness == "strict":
+        base_query = _sanitize_fts_query(query)
+        try:
+            rows = db.execute("""
+                SELECT ke.id, ke.title, ke.content, ke.tags,
+                       ke.confidence, ke.session_id, ke.occurrence_count
+                FROM ke_fts fts
+                JOIN knowledge_entries ke ON fts.rowid = ke.id
+                WHERE ke_fts MATCH ?
+                AND ke.category = ?
+                AND ke.confidence >= ?
+                ORDER BY ke.confidence DESC, rank
+                LIMIT ?
+            """, (base_query, category, min_confidence, limit)).fetchall()
+            results.extend([dict(r) for r in rows])
+        except sqlite3.OperationalError:
+            pass
 
     return results
 

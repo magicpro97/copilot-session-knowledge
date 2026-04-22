@@ -834,6 +834,214 @@ def test_ranking_title_over_content() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 11. Adaptive strictness — analysis + FTS generation + retrieval behaviour
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_adaptive_strictness() -> None:
+    print("\n⚙️  11. Adaptive strictness — analysis + FTS + retrieval")
+
+    # ── 11a. _analyze_query_strictness: strict cases ─────────────────────
+    strict_cases = [
+        ("single technical term",    "walrus"),
+        ("two words, file ext",      "src/auth.py"),
+        ("snake_case identifier",    "parse_query"),
+        ("two camelCase-like terms", "parseToken"),
+    ]
+    for desc, query in strict_cases:
+        result_qs = _qs._analyze_query_strictness(query)
+        result_br = _br._analyze_query_strictness(query)
+        test(f"analyze_strictness strict: qs({desc!r})",
+             result_qs == "strict", f"got {result_qs!r}")
+        test(f"analyze_strictness strict: br agrees ({desc!r})",
+             result_qs == result_br, f"qs={result_qs!r} br={result_br!r}")
+
+    # ── 11b. _analyze_query_strictness: broad cases ───────────────────────
+    broad_cases = [
+        ("long natural-language query",
+         "how should we implement user authentication with jwt and oauth"),
+        ("many stopwords",
+         "what are the best practices for using this with that framework"),
+    ]
+    for desc, query in broad_cases:
+        result_qs = _qs._analyze_query_strictness(query)
+        result_br = _br._analyze_query_strictness(query)
+        test(f"analyze_strictness broad: qs({desc!r})",
+             result_qs == "broad", f"got {result_qs!r}")
+        test(f"analyze_strictness broad: br agrees ({desc!r})",
+             result_qs == result_br, f"qs={result_qs!r} br={result_br!r}")
+
+    # ── 11c. _analyze_query_strictness: medium cases ──────────────────────
+    medium_cases = [
+        ("3-word technical query", "memory recall cache"),
+        ("empty string",           ""),
+    ]
+    for desc, query in medium_cases:
+        result_qs = _qs._analyze_query_strictness(query)
+        result_br = _br._analyze_query_strictness(query)
+        test(f"analyze_strictness medium: qs({desc!r})",
+             result_qs == "medium", f"got {result_qs!r}")
+        test(f"analyze_strictness medium: br agrees ({desc!r})",
+             result_qs == result_br, f"qs={result_qs!r} br={result_br!r}")
+
+    # ── 11d. _build_adaptive_fts_query: strict → no trailing * ───────────
+    fts_strict, s_strict, delta_strict = _qs._build_adaptive_fts_query("walrus")
+    test("build_adaptive_fts strict: strictness=strict",
+         s_strict == "strict", f"got {s_strict!r}")
+    test("build_adaptive_fts strict: no * wildcard in query",
+         "*" not in fts_strict, f"fts_query={fts_strict!r}")
+    test("build_adaptive_fts strict: confidence_delta >= 0",
+         delta_strict >= 0, f"delta={delta_strict}")
+
+    # ── 11e. _build_adaptive_fts_query: broad → OR conjunction ───────────
+    fts_broad, s_broad, delta_broad = _qs._build_adaptive_fts_query(
+        "how should we implement user auth with jwt and oauth in python"
+    )
+    test("build_adaptive_fts broad: strictness=broad",
+         s_broad == "broad", f"got {s_broad!r}")
+    test("build_adaptive_fts broad: OR conjunction present",
+         " OR " in fts_broad, f"fts_query={fts_broad!r}")
+    test("build_adaptive_fts broad: confidence_delta <= 0",
+         delta_broad <= 0, f"delta={delta_broad}")
+
+    # ── 11f. _build_adaptive_fts_query: medium → unchanged prefix * ───────
+    fts_med, s_med, delta_med = _qs._build_adaptive_fts_query("memory recall cache")
+    test("build_adaptive_fts medium: strictness=medium",
+         s_med == "medium", f"got {s_med!r}")
+    test("build_adaptive_fts medium: all terms have * wildcard",
+         all(t.endswith('"*') for t in fts_med.split() if t),
+         f"fts_query={fts_med!r}")
+    test("build_adaptive_fts medium: delta=0.0",
+         delta_med == 0.0, f"delta={delta_med}")
+
+    # ── 11g. Both modules agree on _build_adaptive_fts_query ─────────────
+    test("build_adaptive_fts: qs and br agree on 'walrus'",
+         _qs._build_adaptive_fts_query("walrus") ==
+         _br._build_adaptive_fts_query("walrus"),
+         "modules returned different results")
+
+    # ── 11h. Empty query → safe no-op ────────────────────────────────────
+    fts_empty, s_empty, d_empty = _qs._build_adaptive_fts_query("")
+    test("build_adaptive_fts empty: returns safe '\"\"' query",
+         fts_empty == '""', f"got {fts_empty!r}")
+    test("build_adaptive_fts empty: delta is 0.0",
+         d_empty == 0.0, f"delta={d_empty}")
+
+    # ── 11i. Strict retrieval: exact match finds seeded entry ─────────────
+    fd, db_path = tempfile.mkstemp(suffix=".db", prefix="re_test_", dir=str(TOOLS_DIR))
+    os.close(fd)
+    db = _make_db(db_path)
+
+    _insert_ke(db, category="pattern",
+               title="Wombat allocation strategy",
+               content="Allocate objects using pool-based wombat allocator.")
+    _insert_ke(db, category="mistake",
+               title="Wombats are not thread-safe",
+               content="Do not share wombats across threads.")
+
+    orig = _qs.DB_PATH
+    _qs.DB_PATH = Path(db_path)
+    try:
+        with _Cap() as cap:
+            _qs.search_knowledge("wombat", limit=10, export_fmt="json")
+        raw = cap.getvalue().strip()
+        try:
+            results = json.loads(raw)
+            test("adaptive strict: 'wombat' finds ≥1 result",
+                 len(results) >= 1,
+                 f"got {len(results)} results; fts={_qs._build_adaptive_fts_query('wombat')[0]!r}")
+        except json.JSONDecodeError as e:
+            test("adaptive strict: 'wombat' finds ≥1 result", False,
+                 f"JSON invalid: {e}; raw={raw[:200]!r}")
+    finally:
+        _qs.DB_PATH = orig
+        try:
+            db.close()
+            Path(db_path).unlink()
+        except OSError:
+            pass
+
+    # ── 11j. Broad retrieval: OR query finds entries via separate terms ────
+    fd2, db_path2 = tempfile.mkstemp(suffix=".db", prefix="re_test_", dir=str(TOOLS_DIR))
+    os.close(fd2)
+    db2 = _make_db(db_path2)
+
+    _insert_ke(db2, category="pattern",
+               title="JWT authentication implementation",
+               content="Use HS256 for JWT signature verification.")
+    _insert_ke(db2, category="mistake",
+               title="OAuth token expiry oversight",
+               content="Always check token expiry before using cached tokens.")
+
+    orig2 = _qs.DB_PATH
+    _qs.DB_PATH = Path(db_path2)
+    try:
+        broad_q = "how should we implement user authentication with jwt and oauth"
+        with _Cap() as cap:
+            _qs.search_knowledge(broad_q, limit=10, export_fmt="json")
+        raw2 = cap.getvalue().strip()
+        try:
+            results2 = json.loads(raw2)
+            test("adaptive broad: OR query returns ≥1 result",
+                 len(results2) >= 1,
+                 f"got {len(results2)}; fts={_qs._build_adaptive_fts_query(broad_q)[0]!r}")
+        except json.JSONDecodeError as e:
+            test("adaptive broad: OR query returns ≥1 result", False,
+                 f"JSON invalid: {e}; raw={raw2[:200]!r}")
+    finally:
+        _qs.DB_PATH = orig2
+        try:
+            db2.close()
+            Path(db_path2).unlink()
+        except OSError:
+            pass
+
+    # ── 11k. Confidence delta applied in briefing search_knowledge_entries ─
+    fd3, db_path3 = tempfile.mkstemp(suffix=".db", prefix="re_test_", dir=str(TOOLS_DIR))
+    os.close(fd3)
+    db3 = _make_db(db_path3)
+
+    # High-confidence entry — should appear in strict mode (0.5 + 0.2 = 0.7 threshold)
+    _insert_ke(db3, category="pattern", title="Frobnicator design pattern",
+               content="Use frobnicator for cross-cutting concerns.", confidence=0.9)
+    # Low-confidence entry — should appear in broad mode but not strict
+    _insert_ke(db3, category="pattern", title="Frobnicator alternative",
+               content="Alternative approach using frobnicator.", confidence=0.4)
+
+    orig3 = _br.DB_PATH
+    _br.DB_PATH = Path(db_path3)
+    try:
+        # Strict query: only high-confidence entry should be returned
+        strict_results = _br.search_knowledge_entries(
+            db3, "frobnicator", "pattern", limit=10, min_confidence=0.5
+        )
+        high_conf_titles = [r["title"] for r in strict_results]
+        test("br search_ke strict: high-confidence entry returned",
+             any("Frobnicator design" in t for t in high_conf_titles),
+             f"titles={high_conf_titles}")
+        test("br search_ke strict: low-confidence entry excluded",
+             not any("alternative" in t.lower() for t in high_conf_titles),
+             f"titles={high_conf_titles}")
+
+        # Broad query: lower confidence threshold → both entries should appear
+        broad_results = _br.search_knowledge_entries(
+            db3,
+            "how should we use frobnicator with other patterns in our project",
+            "pattern", limit=10, min_confidence=0.5
+        )
+        broad_titles = [r["title"] for r in broad_results]
+        test("br search_ke broad: low-confidence entry included",
+             any("alternative" in t.lower() for t in broad_titles),
+             f"titles={broad_titles}")
+    finally:
+        _br.DB_PATH = orig3
+        try:
+            db3.close()
+            Path(db_path3).unlink()
+        except OSError:
+            pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -850,6 +1058,7 @@ def main() -> int:
     test_generate_briefing()
     test_generate_task_briefing()
     test_ranking_title_over_content()
+    test_adaptive_strictness()
 
     print()
     print("=" * 60)

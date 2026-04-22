@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from . import Rule
-from .common import MARKERS_DIR, CODE_EXTENSIONS, deny
+from .common import MARKERS_DIR, CODE_EXTENSIONS, is_session_path, deny
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
@@ -48,7 +48,7 @@ class EnforceLearnRule(Rule):
         if tool_name in ("edit", "create"):
             file_path = tool_args.get("path", "")
             suffix = Path(file_path).suffix.lower() if file_path else ""
-            if suffix in CODE_EXTENSIONS:
+            if suffix in CODE_EXTENSIONS and not is_session_path(file_path):
                 MARKERS_DIR.mkdir(parents=True, exist_ok=True)
                 count = verify_counter(EDIT_COUNTER) + 1
                 sign_counter(EDIT_COUNTER, count)

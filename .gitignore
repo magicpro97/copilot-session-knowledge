@@ -25,6 +25,7 @@ Thumbs.db
 # Session data (user-specific)
 KNOWLEDGE.md
 .watch-state.json
+.trend-scout-state.json
 
 # Local tentacle / multi-agent orchestration artifacts
 .octogent/

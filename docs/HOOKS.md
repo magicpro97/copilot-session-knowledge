@@ -55,6 +55,27 @@ hooks/
 
 Hooks detect file writes via bash commands (heredocs, redirects, `sed -i`, `tee`, `cp`, `mv`, `curl -o`, etc.) AND verify actual changes via `git status`.
 
+## Learn Gate — Code Edit Counting
+
+The `enforce-learn` rule (and its legacy standalone `enforce-learn.py`) counts a fixed set of source-code extensions toward the learn-gate threshold. Two surfaces are **always excluded**:
+
+- **`.md` files** — markdown documentation and session-research notes are never counted. Writes to these files during active research, documentation, or planning passes must not inflate the code-edit counter or trigger false learn-gate blocks.
+- **Session-state writes** — any file path under `~/.copilot/session-state/` is excluded regardless of extension. Briefings, knowledge fragments, and other session artifacts are not project source code.
+
+**Extensions that count toward the threshold:**
+
+```
+.py  .kt  .ts  .tsx  .js  .jsx  .swift  .java  .go  .rs
+.json  .yaml  .yml  .xml  .html  .css  .toml  .sh  .bat  .ps1
+```
+
+> **Shell scripts are included.** `.sh`, `.bat`, and `.ps1` count as code edits. Both the unified
+> `hooks/rules/learn_gate.py` and the legacy `hooks/enforce-learn.py` use the same extension set,
+> so the threshold behavior is consistent regardless of which runner fires.
+>
+> The canonical definition lives in `hooks/rules/common.py` (`CODE_EXTENSIONS`) and is mirrored
+> verbatim in `enforce-learn.py` so both paths remain in sync after updates.
+
 ## Tamper Protection
 
 Hook files are locked with OS immutable flags:

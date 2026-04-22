@@ -10,17 +10,36 @@ TOOLS_DIR = Path.home() / ".copilot" / "tools"
 
 SAFE_PATH_PREFIXES = ("/tmp/", "/var/", "/dev/", "/proc/")
 
+# CODE_EXTENSIONS: files counted as code edits for learn-gate and tentacle tracking.
+# Markdown (.md) is intentionally excluded: session-research and documentation writes
+# must not inflate multi-module edit counters and trigger false tentacle enforcement.
 CODE_EXTENSIONS = {
     ".py", ".kt", ".ts", ".tsx", ".js", ".jsx", ".swift", ".java",
     ".go", ".rs", ".json", ".yaml", ".yml", ".xml", ".html", ".css",
-    ".toml", ".md", ".sh", ".bat", ".ps1",
+    ".toml", ".sh", ".bat", ".ps1",
 }
 
+# SOURCE_EXTENSIONS: broader set used by is_source_path() for bash-write detection.
+# Keeps .md so bash commands writing markdown are still visible to safety helpers.
 SOURCE_EXTENSIONS = {
     ".py", ".kt", ".ts", ".tsx", ".js", ".jsx", ".swift", ".java",
     ".go", ".rs", ".json", ".yaml", ".yml", ".xml", ".html", ".css",
     ".md", ".toml",
 }
+
+# Absolute prefix for session-state files (e.g. research markdown under ~/.copilot/session-state/).
+_SESSION_STATE_ABS = str(Path.home() / ".copilot" / "session-state")
+
+
+def is_session_path(path: str) -> bool:
+    """Return True if path is under the Copilot session-state directory.
+
+    Session-state files (research notes, briefings, knowledge fragments) are
+    not project source code and must not count as code edits for learn-gate
+    or tentacle-enforcement purposes.
+    """
+    p = str(path)
+    return p.startswith(_SESSION_STATE_ABS) or ".copilot/session-state" in p
 
 MODULE_MARKERS = (
     "src", "lib", "app", "pkg", "internal", "cmd",

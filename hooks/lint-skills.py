@@ -197,6 +197,10 @@ SKILL_VALID_FIELDS = {
     # but harmless and intentional for multi-platform compatibility:
     "aliases", "context", "model", "skills", "hooks",
     "license", "metadata", "version",
+    # Vendored-skill provenance/attribution fields — intentional for vendored skills
+    # (e.g. karpathy-guidelines). Silently ignored by the CLI but required here to
+    # avoid false SK-007 warnings for files that legitimately carry these fields.
+    "vendored-from", "vendored-commit", "supported-hosts",
 }
 
 # VS Code tool names (NOT valid in CLI)

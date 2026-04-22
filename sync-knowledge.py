@@ -489,6 +489,7 @@ def main():
         print(f"Backup: {backup}")
 
     db = bsi.create_db(DB_PATH)
+    db.execute("PRAGMA busy_timeout=5000")  # wait up to 5 s on concurrent writes
 
     mode = "DRY RUN" if dry_run else "SYNC"
     print(f"\n{mode}: Merging {len(valid_sources)} source(s) → {DB_PATH}")

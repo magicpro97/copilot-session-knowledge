@@ -345,6 +345,9 @@ python3 ~/.copilot/tools/trend-scout.py --config /path/to/config.json
 
 # Explicit GitHub token (overrides GITHUB_TOKEN env var)
 python3 ~/.copilot/tools/trend-scout.py --token TOKEN
+
+# Bypass grace window and force a new run regardless of last-run state
+python3 ~/.copilot/tools/trend-scout.py --force
 ```
 
 Set `GITHUB_TOKEN` in the environment, or pass `--token TOKEN`, to avoid API rate limits.
@@ -367,6 +370,33 @@ Trend Scout can replace the static learning-bullet heuristics with GitHub Models
 - `analysis.model` must use the GitHub Models `publisher/model` format.
 - `analysis.token_env` is explicit on purpose: locally, export `GITHUB_MODELS_TOKEN`; in GitHub Actions, either set `token_env` to `GITHUB_TOKEN` or map `GITHUB_MODELS_TOKEN` from `secrets.GITHUB_TOKEN`.
 - If the token is missing, the model ID is invalid, or the response is malformed, Trend Scout logs the reason and falls back to the heuristic `_derive_learnings()` path.
+
+### Veto gate
+
+Before creating a new issue, the pipeline evaluates the candidate against the configured veto gate.
+Set `veto.require_domain_signals=1` in `trend-scout-config.json` to skip any candidate whose heuristic
+learning engine returns only the generic fallback bullet (no domain-specific signals matched). The
+default is `0` — disabled; all shortlisted candidates advance to issue creation regardless of learning
+quality. Candidates already in `existing_markers` (dedup) are also silently skipped without triggering
+the veto. Veto decisions are printed to stdout as `⊘ Veto (<reason>): owner/repo`.
+
+> **Note:** the veto gate applies to **new creates only** — it does not suppress updates to issues that
+> already exist in the repo.
+
+### Grace window and run state
+
+`run_control.grace_window_hours` prevents back-to-back runs from firing within the configured window.
+After each successful full run (non-dry-run, non-search-only), the last-run timestamp is written to
+`.trend-scout-state.json` adjacent to the script (or to the path set in `run_control.state_file`). On
+the next run, if the elapsed time since `last_run_utc` is less than `grace_window_hours`, the run
+exits 0 immediately and prints the remaining window. Use `--force` (or the `force` workflow input) to
+bypass the grace window unconditionally.
+
+The default value is `0` (disabled). In GitHub Actions, `.trend-scout-state.json` is preserved between
+runner instances via `actions/cache` so the grace window works across daily scheduled runs.
+
+> `.trend-scout-state.json` is a local runtime artifact — it is listed in `.gitignore` and should not
+> be committed.
 
 ### Deduplication
 
@@ -395,6 +425,9 @@ regardless of issue state.
 | `analysis.token_env` | Environment variable that holds the models-capable token (default `GITHUB_MODELS_TOKEN`) |
 | `analysis.max_learnings` | Caps LLM-generated bullets per repo before rendering |
 | `analysis.temperature`, `analysis.max_tokens`, `analysis.timeout` | Controls inference determinism, output size, and request timeout |
+| `veto.require_domain_signals` | `0` = disabled; `1` = skip candidates whose heuristic engine produces only the generic fallback bullet (no domain-specific signals). Applies to new creates only; existing issues are always updated. |
+| `run_control.grace_window_hours` | Hours to wait between full runs (`0` = disabled). Grace window state is persisted to `.trend-scout-state.json`. Use `--force` to bypass. |
+| `run_control.state_file` | Path to the run-state JSON file. `null` or absent resolves to `.trend-scout-state.json` adjacent to the script. |
 
 ### Limitations
 
@@ -418,6 +451,7 @@ The workflow exports both `GITHUB_TOKEN` and `GITHUB_MODELS_TOKEN` from `secrets
 | `search_only` | boolean | Discovery + shortlist only |
 | `repo` | string | Override target repo (`OWNER/REPO`) |
 | `limit` | string | Max issues to create this run |
+| `force` | boolean | Bypass grace window and force a full run |
 
 ## Maintenance
 

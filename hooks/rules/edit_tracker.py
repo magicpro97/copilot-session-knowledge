@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from . import Rule
-from .common import MARKERS_DIR, CODE_EXTENSIONS, info
+from .common import MARKERS_DIR, CODE_EXTENSIONS, is_session_path, info
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
@@ -58,7 +58,7 @@ class TrackEditsRule(Rule):
         new_py_files = set()
         for f in new_modifications:
             suffix = Path(f).suffix.lower()
-            if suffix in CODE_EXTENSIONS:
+            if suffix in CODE_EXTENSIONS and not is_session_path(f):
                 new_code_files.add(f)
             if suffix == ".py":
                 new_py_files.add(f)

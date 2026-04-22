@@ -123,6 +123,19 @@ DEFAULT_CONFIG: dict = {
         # when the workflow grants permissions: models: read.
         "token_env": "GITHUB_MODELS_TOKEN",
     },
+    "veto": {
+        # Rowboat veto gate: set require_domain_signals>=1 to skip repos whose
+        # heuristic learning engine produces only the generic fallback bullet.
+        # 0 = disabled (all shortlisted repos are written).
+        "require_domain_signals": 0,
+    },
+    "run_control": {
+        # Grace window prevents repeated runs too close together.
+        # 0 = disabled; the config file sets this for scheduled runs.
+        # state_file=None resolves to .trend-scout-state.json adjacent to this script.
+        "grace_window_hours": 0,
+        "state_file": None,
+    },
 }
 
 
@@ -741,6 +754,10 @@ def _derive_weaknesses(repo: dict) -> list[str]:
 
 _MAX_HEURISTIC_LEARNINGS = 5  # cap to prevent wall-of-text bullet dumps
 
+# Prefix of the generic fallback bullet returned by _derive_learnings() when
+# no domain-specific signals fire.  Used by the Rowboat veto gate.
+_VETO_FALLBACK_PREFIX = "Review the source for architectural patterns"
+
 
 def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "") -> list[str]:
     """Generate concrete, actionable learning bullets from a candidate repo.
@@ -970,8 +987,37 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
     return out[:_MAX_HEURISTIC_LEARNINGS]
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  GitHub Models Analysis Path (direction 2)
+def _is_only_fallback_learnings(learnings: list[str]) -> bool:
+    """Return True when the learnings list contains only the generic FTS5/architecture fallback.
+
+    Used by the Rowboat veto gate: if True, no domain-specific signals fired and the
+    candidate should be skipped rather than having generic filler written to an issue.
+    """
+    return len(learnings) == 1 and learnings[0].startswith(_VETO_FALLBACK_PREFIX)
+
+
+def _should_veto_candidate(
+    repo: dict, readme: str, our_topics: list[str], veto_cfg: dict,
+    learnings: "list[str] | None" = None,
+) -> tuple[bool, str]:
+    """Rowboat veto gate: evaluate whether a candidate should be skipped.
+
+    Returns (should_veto, reason).  Vetoes when the heuristic learning engine
+    produces only the generic fallback bullet (i.e., no domain-specific signals
+    matched), and the veto config requires at least one domain signal.
+
+    If ``learnings`` is provided (e.g. pre-computed in ``create_stage``), it is
+    used directly instead of re-running ``_derive_learnings``.  This ensures the
+    production path and tests describe the same veto behaviour and that LLM-derived
+    learnings are evaluated when available.
+    """
+    min_signals: int = int(veto_cfg.get("require_domain_signals", 0))
+    if min_signals <= 0:
+        return False, ""
+    effective = learnings if learnings is not None else _derive_learnings(repo, our_topics, readme)
+    if _is_only_fallback_learnings(effective):
+        return True, "no domain-specific signals matched"
+    return False, ""
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Hard cap on individual LLM-generated bullet length to bound output size.
@@ -1238,7 +1284,64 @@ def _strip_volatile_text(body: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Pipeline
+#  Run-state / Grace-window
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_STATE_FILE_DEFAULT = SCRIPT_DIR / ".trend-scout-state.json"
+
+
+def _resolve_state_file(run_control_cfg: dict) -> Path:
+    """Resolve the state file path from config; defaults to script-adjacent file."""
+    sf = run_control_cfg.get("state_file")
+    if sf:
+        return Path(sf).expanduser().resolve()
+    return _STATE_FILE_DEFAULT
+
+
+def load_run_state(state_file: "Path | None" = None) -> dict:
+    """Load persisted run state from JSON file. Returns {} on any error."""
+    path = state_file if state_file is not None else _STATE_FILE_DEFAULT
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def save_run_state(state: dict, state_file: "Path | None" = None) -> None:
+    """Persist run state to JSON file. Silently ignores write errors."""
+    path = state_file if state_file is not None else _STATE_FILE_DEFAULT
+    try:
+        path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"  ⚠ Could not save run state to {path}: {e}", file=sys.stderr)
+
+
+def _check_grace_window(grace_window_hours: float, state: dict) -> tuple[bool, str]:
+    """Check whether the last run falls within the grace window.
+
+    Returns (skip, reason).  skip=True means the caller should skip this run.
+    A grace_window_hours <= 0 always returns (False, "").
+    """
+    if grace_window_hours <= 0:
+        return False, ""
+    last_run_str: str = state.get("last_run_utc", "")
+    if not last_run_str:
+        return False, ""
+    try:
+        last_run = datetime.fromisoformat(last_run_str)
+        elapsed_hours = (datetime.now(timezone.utc) - last_run).total_seconds() / 3600.0
+        if elapsed_hours < grace_window_hours:
+            remaining = grace_window_hours - elapsed_hours
+            return True, (
+                f"last run {elapsed_hours:.1f}h ago, "
+                f"grace window {grace_window_hours:.0f}h "
+                f"({remaining:.1f}h remaining)"
+            )
+    except Exception:
+        pass
+    return False, ""
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def search_stage(client: GitHubClient, config: dict) -> list[dict]:
@@ -1341,6 +1444,8 @@ def create_stage(
     analysis_temp = float(_analysis_number(analysis_cfg, "temperature", 0.2, float))
     analysis_max_tok = int(_analysis_number(analysis_cfg, "max_tokens", 800, int))
     analysis_max_learn = int(_analysis_number(analysis_cfg, "max_learnings", 5, int))
+    # Rowboat veto gate: skip new creates when no domain-specific signals fire.
+    veto_cfg: dict = config.get("veto", {})
 
     created_urls: list[str] = []
     created_count = 0
@@ -1375,9 +1480,24 @@ def create_stage(
             else:
                 print("  ↩ Falling back to heuristic learnings engine", flush=True)
 
+        # Compute effective learnings before veto check and rendering.
+        effective_learnings: list[str] = (
+            llm_learnings if llm_learnings is not None
+            else _derive_learnings(repo, our_topics, readme)
+        )
+
+        # ── Rowboat veto gate (new creates only) ──────────────────────────────
+        # Abstain rather than emit generic filler when no domain signals fired.
+        if not is_update:
+            _veto, _veto_reason = _should_veto_candidate(
+                repo, readme, our_topics, veto_cfg, learnings=effective_learnings
+            )
+            if _veto:
+                print(f"  ⊘ Veto ({_veto_reason}): {full_name}")
+                continue
+
         title = f"{title_prefix} {full_name}"
-        # Pass llm_learnings (may be None → heuristic fallback inside render_issue_body)
-        body = render_issue_body(repo, readme, marker, our_topics, learnings=llm_learnings)
+        body = render_issue_body(repo, readme, marker, our_topics, learnings=effective_learnings)
 
         # ── Update path: existing issue found ─────────────────────────────────
         if is_update:
@@ -1455,11 +1575,25 @@ def create_stage(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def run(config: dict, dry_run: bool = False, search_only: bool = False,
-        limit: int | None = None, token: str | None = None) -> int:
+        limit: int | None = None, token: str | None = None, force: bool = False) -> int:
     """Execute the full trend-scout pipeline. Returns exit code."""
     target_repo = config["target_repo"]
     print(f"\n🔭 Trend Scout — target: {target_repo}")
-    print(f"   Mode: {'dry-run' if dry_run else 'live'}", flush=True)
+    print(f"   Mode: {'dry-run' if dry_run else 'live'}{' [force]' if force else ''}", flush=True)
+
+    # ── Grace window check ─────────────────────────────────────────────────────
+    run_control_cfg: dict = config.get("run_control", {})
+    grace_hours = float(run_control_cfg.get("grace_window_hours") or 0)
+    state_file = _resolve_state_file(run_control_cfg)
+    run_state: dict = {}
+    if grace_hours > 0:
+        run_state = load_run_state(state_file)
+        if not force:
+            skip, reason = _check_grace_window(grace_hours, run_state)
+            if skip:
+                print(f"⏭  Grace window active — {reason}")
+                print(f"   Use --force to override.")
+                return 0
 
     client = GitHubClient(token=token)
 
@@ -1534,6 +1668,13 @@ def run(config: dict, dry_run: bool = False, search_only: bool = False,
 
     mode_tag = "[dry-run] " if dry_run else ""
     print(f"\n✅ Done — {mode_tag}{len(created)} issue(s) {'would be ' if dry_run else ''}created/updated.")
+
+    # Persist last-run timestamp to enable grace-window protection on next run.
+    if grace_hours > 0 and not dry_run and not search_only:
+        new_state = {**run_state, "last_run_utc": datetime.now(timezone.utc).isoformat()}
+        save_run_state(new_state, state_file)
+        print(f"   Saved run state → {state_file}", flush=True)
+
     return 0
 
 
@@ -1561,6 +1702,8 @@ Examples:
                         help="Maximum number of issues to create in one run")
     parser.add_argument("--token", default=None, metavar="TOKEN",
                         help="GitHub personal access token (overrides GITHUB_TOKEN env var)")
+    parser.add_argument("--force", action="store_true",
+                        help="Bypass grace window and force a new run regardless of last-run state")
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve() if args.config else None
@@ -1578,6 +1721,7 @@ Examples:
         search_only=args.search_only,
         limit=args.limit,
         token=args.token,
+        force=args.force,
     ))
 
 

@@ -203,8 +203,46 @@ def test_sql_whitelist():
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Helpers for import-based tests
+#  Test: DB write safety (busy_timeout)
 # ═══════════════════════════════════════════════════════════════════
+
+def test_db_write_safety():
+    """Test that DB connections use busy_timeout for concurrent write safety."""
+    learn_src = Path(__file__).parent / "learn.py"
+    learn_content = learn_src.read_text(encoding="utf-8")
+    assert "busy_timeout" in learn_content, \
+        "busy_timeout not set in learn.py — concurrent writes may fail with SQLITE_BUSY"
+
+    sync_src = Path(__file__).parent / "sync-knowledge.py"
+    sync_content = sync_src.read_text(encoding="utf-8")
+    assert "busy_timeout" in sync_content, \
+        "busy_timeout not set in sync-knowledge.py — concurrent writes may fail with SQLITE_BUSY"
+
+    print("  ✓ DB write safety (busy_timeout) tests passed")
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Test: Hybrid change detection in watch-sessions.py
+# ═══════════════════════════════════════════════════════════════════
+
+def test_hybrid_change_detection_source():
+    """Test that watch-sessions.py has hybrid mtime+content-hash change detection."""
+    source = Path(__file__).parent / "watch-sessions.py"
+    content = source.read_text(encoding="utf-8")
+
+    assert "_content_hash" in content, \
+        "_content_hash function not found in watch-sessions.py"
+    assert "hashlib.sha256" in content, \
+        "SHA256 content hashing not found in watch-sessions.py"
+    assert "prev_hash" in content, \
+        "prev_hash comparison not found — content-hash dedup logic missing"
+    assert "content unchanged" in content.lower() or "content_changed" in content, \
+        "content-change tracking variable not found in watch-sessions.py"
+
+    print("  ✓ Hybrid change detection source tests passed")
+
+
+
 
 # Create minimal stub modules for tests that need imports
 class query_session_sanitizer:
@@ -256,6 +294,8 @@ def main():
         test_sql_whitelist,
         test_fts5_sanitization,
         test_sql_parameterized_queries,
+        test_db_write_safety,
+        test_hybrid_change_detection_source,
     ]
 
     for test in tests:

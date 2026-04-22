@@ -2366,6 +2366,324 @@ for f in sorted(py_files):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  Section 18: Markdown / Session-State Scope Regression
+#  Verifies that .md files and ~/.copilot/session-state/ paths are
+#  NOT counted as code edits for tentacle or learn-gate purposes.
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n📝 Section 18: Markdown / Session-State Scope Regression")
+
+from rules.common import CODE_EXTENSIONS as _ce18, SOURCE_EXTENSIONS as _se18, is_session_path as _isp18
+
+# 18a. .md must NOT be in CODE_EXTENSIONS
+test(".md excluded from CODE_EXTENSIONS",
+     ".md" not in _ce18,
+     ".md was found in CODE_EXTENSIONS — it would count markdown writes as code edits")
+
+# 18b. .md must still be in SOURCE_EXTENSIONS (for bash write detection)
+test(".md kept in SOURCE_EXTENSIONS",
+     ".md" in _se18,
+     ".md should remain in SOURCE_EXTENSIONS so bash_writes_source_files still detects markdown writes")
+
+# 18c. Core code extensions still present in CODE_EXTENSIONS
+for _ext18 in (".py", ".ts", ".json", ".yaml", ".yml"):
+    test(f"{_ext18} still in CODE_EXTENSIONS", _ext18 in _ce18)
+
+# 18d. is_session_path() rejects session-state absolute paths
+import os as _os18
+_fake_ss18 = str(Path.home() / ".copilot" / "session-state" / "abc" / "research" / "notes.md")
+test("is_session_path: session-state absolute path → True",
+     _isp18(_fake_ss18),
+     f"Expected True for {_fake_ss18}")
+
+# 18e. is_session_path() passes real project paths
+test("is_session_path: project source path → False",
+     not _isp18("hooks/rules/common.py"),
+     "Project path should NOT be classified as session-state")
+
+test("is_session_path: relative session-state path → True",
+     _isp18(".copilot/session-state/x/research/file.md"))
+
+# 18f. EnforceLearnRule does not count a markdown edit
+try:
+    from rules.learn_gate import EnforceLearnRule as _elr18
+    import rules.learn_gate as _lg18
+
+    _orig_vc18 = _lg18.verify_counter
+    _orig_sc18 = _lg18.sign_counter
+    _orig_ctm18 = _lg18.check_tamper_marker
+
+    _counter18 = [0]
+    _lg18.verify_counter = lambda p: _counter18[0]
+    _lg18.sign_counter = lambda p, v: _counter18.__setitem__(0, v)
+    _lg18.check_tamper_marker = lambda: False
+
+    _rule18 = _elr18()
+
+    # Edit a markdown file → counter must NOT increment
+    _rule18.evaluate("preToolUse", {
+        "toolName": "edit",
+        "toolArgs": {"path": "docs/README.md"},
+    })
+    test("EnforceLearnRule: .md edit does NOT increment counter",
+         _counter18[0] == 0,
+         f"Counter was {_counter18[0]}, expected 0")
+
+    # Edit a session-state markdown → counter must NOT increment
+    _rule18.evaluate("preToolUse", {
+        "toolName": "edit",
+        "toolArgs": {"path": _fake_ss18},
+    })
+    test("EnforceLearnRule: session-state .md edit does NOT increment counter",
+         _counter18[0] == 0,
+         f"Counter was {_counter18[0]}, expected 0")
+
+    # Edit a real Python file → counter MUST increment
+    _rule18.evaluate("preToolUse", {
+        "toolName": "edit",
+        "toolArgs": {"path": "hooks/rules/common.py"},
+    })
+    test("EnforceLearnRule: .py edit DOES increment counter",
+         _counter18[0] == 1,
+         f"Counter was {_counter18[0]}, expected 1")
+
+    # Edit a YAML config file → counter MUST increment
+    _rule18.evaluate("preToolUse", {
+        "toolName": "edit",
+        "toolArgs": {"path": "config.yaml"},
+    })
+    test("EnforceLearnRule: .yaml edit DOES increment counter",
+         _counter18[0] == 2,
+         f"Counter was {_counter18[0]}, expected 2")
+
+    _lg18.verify_counter = _orig_vc18
+    _lg18.sign_counter = _orig_sc18
+    _lg18.check_tamper_marker = _orig_ctm18
+    test("EnforceLearnRule markdown regression ran without exception", True)
+except Exception as e:
+    test("EnforceLearnRule markdown regression ran without exception", False, str(e))
+
+# 18g. TentacleSuggestRule does not track markdown paths in the signed marker
+try:
+    from rules.tentacle import TentacleSuggestRule as _tsr18
+    import rules.tentacle as _rt18
+
+    _orig_vlist18 = _rt18.verify_list_marker
+    _orig_slist18 = _rt18.sign_list_marker
+    _orig_sf18 = _rt18.SUGGESTED_FILE
+
+    _tracked18 = set()
+    _rt18.verify_list_marker = lambda p: set(_tracked18)
+    _rt18.sign_list_marker = lambda p, lines: _tracked18.update(lines)
+    _rt18.SUGGESTED_FILE = Path("/nonexistent/tentacle-suggested-md-regression-testonly")
+
+    _tsr18_rule = _tsr18()
+
+    # Edit a session-state markdown → must NOT be tracked
+    _tsr18_rule.evaluate("postToolUse", {
+        "toolName": "edit",
+        "toolArgs": {},
+        "toolResult": {"filePath": _fake_ss18},
+    })
+    test("TentacleSuggestRule: session-state .md NOT added to tracked edits",
+         len(_tracked18) == 0,
+         f"Expected 0 tracked files; got: {_tracked18}")
+
+    # Edit a regular markdown doc → must NOT be tracked (not in CODE_EXTENSIONS)
+    _tsr18_rule.evaluate("postToolUse", {
+        "toolName": "edit",
+        "toolArgs": {},
+        "toolResult": {"filePath": "docs/HOOKS.md"},
+    })
+    test("TentacleSuggestRule: doc .md NOT added to tracked edits",
+         len(_tracked18) == 0,
+         f"Expected 0 tracked files; got: {_tracked18}")
+
+    # Edit a real Python file → MUST be tracked
+    _tsr18_rule.evaluate("postToolUse", {
+        "toolName": "edit",
+        "toolArgs": {},
+        "toolResult": {"filePath": "hooks/rules/common.py"},
+    })
+    test("TentacleSuggestRule: .py DOES get tracked",
+         any("common.py" in f for f in _tracked18),
+         f"Expected common.py in tracked files; got: {_tracked18}")
+
+    _rt18.verify_list_marker = _orig_vlist18
+    _rt18.sign_list_marker = _orig_slist18
+    _rt18.SUGGESTED_FILE = _orig_sf18
+    test("TentacleSuggestRule markdown regression ran without exception", True)
+except Exception as e:
+    test("TentacleSuggestRule markdown regression ran without exception", False, str(e))
+
+# 18h. TrackEditsRule (edit_tracker) does not count markdown files
+try:
+    from rules.edit_tracker import TrackEditsRule as _ter18
+    import rules.edit_tracker as _et18
+
+    _orig_vc_et18 = _et18.verify_counter
+    _orig_sc_et18 = _et18.sign_counter
+    _orig_vl_et18 = _et18.verify_list_marker
+    _orig_sl_et18 = _et18.sign_list_marker
+    _orig_load18 = None  # patch instance method instead
+
+    _code_count18 = [0]  # kept for restore compatibility
+    _tentacle_files18 = set()
+
+    _ter18_rule = _ter18()
+
+    # Simulate git status returning markdown and Python modifications
+    _counters18 = {}
+    _et18.verify_counter = lambda p: _counters18.get(str(p), 0)
+    _et18.sign_counter = lambda p, v: _counters18.__setitem__(str(p), v)
+    _et18.verify_list_marker = lambda p: set(_tentacle_files18)
+    _et18.sign_list_marker = lambda p, lines: _tentacle_files18.update(lines)
+
+    # Patch _get_git_modified to return both a .md and a .py file
+    _ter18_rule._get_git_modified = lambda: {"docs/CHANGES.md", "hooks/rules/common.py"}
+    _ter18_rule._load_seen = lambda: set()
+    _ter18_rule._save_seen = lambda s: None
+
+    _ter18_rule.evaluate("postToolUse", {"toolName": "bash", "toolArgs": {"command": "git status"}})
+
+    test("TrackEditsRule: .md file NOT counted as code edit",
+         _counters18.get(str(_et18.CODE_EDIT_COUNTER), 0) == 1,
+         f"Expected CODE_EDIT_COUNTER=1 (only .py); got {_counters18}")
+    test("TrackEditsRule: .md file NOT added to tentacle-edits marker",
+         not any(".md" in f for f in _tentacle_files18),
+         f"Found .md in tentacle edits: {_tentacle_files18}")
+    test("TrackEditsRule: .py file IS counted as code edit",
+         any("common.py" in f for f in _tentacle_files18),
+         f"Expected common.py in tentacle edits: {_tentacle_files18}")
+
+    _et18.verify_counter = _orig_vc_et18
+    _et18.sign_counter = _orig_sc_et18
+    _et18.verify_list_marker = _orig_vl_et18
+    _et18.sign_list_marker = _orig_sl_et18
+    test("TrackEditsRule markdown regression ran without exception", True)
+except Exception as e:
+    test("TrackEditsRule markdown regression ran without exception", False, str(e))
+
+# 18i. Legacy track-bash-edits.py CODE_EXTENSIONS must not contain .md
+_tbe_src = (REPO / "hooks" / "track-bash-edits.py").read_text(encoding="utf-8")
+test("legacy track-bash-edits.py: .md not in CODE_EXTENSIONS",
+     '".md"' not in _tbe_src.split("CODE_EXTENSIONS")[1].split("}")[0],
+     "track-bash-edits.py still has '.md' in CODE_EXTENSIONS")
+
+# 18j. Legacy enforce-learn.py CODE_EXTENSIONS must not contain .md (was already clean, stays clean)
+_el_src = (REPO / "hooks" / "enforce-learn.py").read_text(encoding="utf-8")
+test("legacy enforce-learn.py: .md not in CODE_EXTENSIONS",
+     '".md"' not in _el_src.split("CODE_EXTENSIONS")[1].split("}")[0],
+     "enforce-learn.py still has '.md' in CODE_EXTENSIONS")
+
+# 18k. Legacy enforce-learn.py CODE_EXTENSIONS must include .sh, .bat, .ps1 (shell-script alignment)
+_el_ce_block18 = _el_src.split("CODE_EXTENSIONS")[1].split("}")[0]
+test("legacy enforce-learn.py: .sh in CODE_EXTENSIONS",
+     '".sh"' in _el_ce_block18,
+     "enforce-learn.py missing '.sh' — weaker than unified common.py")
+test("legacy enforce-learn.py: .bat in CODE_EXTENSIONS",
+     '".bat"' in _el_ce_block18,
+     "enforce-learn.py missing '.bat' — weaker than unified common.py")
+test("legacy enforce-learn.py: .ps1 in CODE_EXTENSIONS",
+     '".ps1"' in _el_ce_block18,
+     "enforce-learn.py missing '.ps1' — weaker than unified common.py")
+
+# 18l. Legacy enforce-learn.py actually counts .sh/.bat/.ps1 edits (runtime behaviour)
+# Import the legacy hook directly and drive its counter logic in isolation.
+try:
+    import importlib.util as _ilu18
+    _el_spec18 = _ilu18.spec_from_file_location(
+        "_enforce_learn_legacy", REPO / "hooks" / "enforce-learn.py"
+    )
+    _el_mod18 = _ilu18.module_from_spec(_el_spec18)
+    # Stub marker_auth before exec so the module doesn't try to read the filesystem
+    import types as _types18
+    _stub_ma18 = _types18.ModuleType("marker_auth")
+    _stub_ma18.verify_marker = lambda p, n: False
+    _stub_ma18.verify_counter = lambda p: 0
+    _el_counter18 = [0]
+
+    def _stub_sign_counter18(p, v):
+        _el_counter18[0] = v
+
+    _stub_ma18.sign_counter = _stub_sign_counter18
+    _stub_ma18.is_secret_access = lambda c: False
+    _stub_ma18.check_tamper_marker = lambda: False
+    import sys as _sys18
+    _sys18.modules["marker_auth"] = _stub_ma18
+    _el_spec18.loader.exec_module(_el_mod18)
+
+    # Restore env
+    del _sys18.modules["marker_auth"]
+
+    _orig_el_vc18 = _el_mod18.verify_counter
+    _orig_el_sc18 = _el_mod18.sign_counter
+
+    _el_mod18.verify_counter = lambda p: _el_counter18[0]
+    _el_mod18.sign_counter = _stub_sign_counter18
+
+    # .sh edit must increment counter
+    _el_counter18[0] = 0
+    _el_mod18.MARKERS_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _el_run_edit18(path):
+        _el_mod18._get_edit_count = lambda: _el_counter18[0]
+        _el_mod18._increment_counter()
+
+    # Directly exercise _should_count by calling _increment_counter after confirming suffix match
+    _el_counter18[0] = 0
+    import json as _json18, io as _io18, unittest.mock as _mock18
+    for _shell_ext18 in (".sh", ".bat", ".ps1"):
+        _el_counter18[0] = 0
+        _payload18 = json.dumps({
+            "toolName": "edit",
+            "toolArgs": {"path": f"scripts/deploy{_shell_ext18}"}
+        })
+        with _mock18.patch.object(_el_mod18, "_get_edit_count", return_value=_el_counter18[0]), \
+             _mock18.patch.object(_el_mod18, "_increment_counter", side_effect=lambda: _el_counter18.__setitem__(0, _el_counter18[0] + 1)), \
+             _mock18.patch("sys.stdin", _io18.StringIO(_payload18)), \
+             _mock18.patch("sys.stdout", _io18.StringIO()):
+            _el_mod18.main()
+        test(f"legacy enforce-learn.py: {_shell_ext18} edit increments counter",
+             _el_counter18[0] == 1,
+             f"Counter was {_el_counter18[0]}, expected 1")
+
+    # .md edit must NOT increment counter (false-positive regression)
+    _el_counter18[0] = 0
+    _md_payload18 = json.dumps({
+        "toolName": "edit",
+        "toolArgs": {"path": "docs/README.md"}
+    })
+    with _mock18.patch.object(_el_mod18, "_get_edit_count", return_value=0), \
+         _mock18.patch.object(_el_mod18, "_increment_counter", side_effect=lambda: _el_counter18.__setitem__(0, _el_counter18[0] + 1)), \
+         _mock18.patch("sys.stdin", _io18.StringIO(_md_payload18)), \
+         _mock18.patch("sys.stdout", _io18.StringIO()):
+        _el_mod18.main()
+    test("legacy enforce-learn.py: .md edit does NOT increment counter (false-positive guard)",
+         _el_counter18[0] == 0,
+         f"Counter was {_el_counter18[0]}, expected 0")
+
+    # session-state .md must NOT increment counter
+    _el_counter18[0] = 0
+    _ss_payload18 = json.dumps({
+        "toolName": "edit",
+        "toolArgs": {"path": str(Path.home() / ".copilot" / "session-state" / "x.sh")}
+    })
+    with _mock18.patch.object(_el_mod18, "_get_edit_count", return_value=0), \
+         _mock18.patch.object(_el_mod18, "_increment_counter", side_effect=lambda: _el_counter18.__setitem__(0, _el_counter18[0] + 1)), \
+         _mock18.patch("sys.stdin", _io18.StringIO(_ss_payload18)), \
+         _mock18.patch("sys.stdout", _io18.StringIO()):
+        _el_mod18.main()
+    test("legacy enforce-learn.py: session-state .sh edit does NOT increment counter",
+         _el_counter18[0] == 0,
+         f"Counter was {_el_counter18[0]}, expected 0")
+
+except Exception as _e18k:
+    for _lbl18 in (".sh", ".bat", ".ps1", ".md false-positive", "session-state .sh"):
+        test(f"legacy enforce-learn.py runtime: {_lbl18}", False, str(_e18k))
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  Results
 # ═══════════════════════════════════════════════════════════════════
 

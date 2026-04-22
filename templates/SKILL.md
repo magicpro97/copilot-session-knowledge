@@ -1,9 +1,10 @@
 ---
 name: session-knowledge
 description: >-
-  Search past Copilot/Claude session knowledge before complex tasks. Run briefing.py
-  for relevant mistakes, patterns, decisions. Use query-session.py to search errors,
-  tools, architecture choices. Supports semantic search with embeddings.
+  Use when starting a complex task, hitting an error, or making a design decision — search
+  past Copilot/Claude session knowledge. Run briefing.py for relevant mistakes, patterns,
+  decisions. Use query-session.py to search errors, tools, architecture choices.
+  Supports semantic search with embeddings.
 ---
 
 # Session Knowledge

@@ -146,6 +146,10 @@ def get_db() -> sqlite3.Connection:
         sys.exit(1)
     db = sqlite3.connect(str(DB_PATH))
     db.row_factory = sqlite3.Row
+    # WAL mode for concurrent reads; busy_timeout lets writers retry up to 5 s
+    # before failing with SQLITE_BUSY when the indexer or sync is also writing.
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=5000")
     return db
 
 

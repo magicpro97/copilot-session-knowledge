@@ -34,9 +34,18 @@ PY_EDIT_COUNTER = MARKERS_DIR / "py-edit-count"
 SEEN_MODIFIED = MARKERS_DIR / "git-modified-seen"
 TENTACLE_EDITS = MARKERS_DIR / "tentacle-edits"
 
+# Markdown (.md) intentionally excluded: session-research writes must not count
+# as multi-module code edits and trigger false tentacle enforcement.
 CODE_EXTENSIONS = {".py", ".kt", ".ts", ".tsx", ".js", ".jsx", ".swift", ".java",
                    ".go", ".rs", ".json", ".yaml", ".yml", ".xml", ".html",
-                   ".css", ".toml", ".md", ".sh", ".bat", ".ps1"}
+                   ".css", ".toml", ".sh", ".bat", ".ps1"}
+
+_SESSION_STATE_ABS = str(Path.home() / ".copilot" / "session-state")
+
+
+def _is_session_path(path: str) -> bool:
+    """Return True if path is under ~/.copilot/session-state/."""
+    return path.startswith(_SESSION_STATE_ABS) or ".copilot/session-state" in path
 
 
 def _get_git_modified():
@@ -105,7 +114,7 @@ def main():
     new_py_files = set()
     for f in new_modifications:
         suffix = Path(f).suffix.lower()
-        if suffix in CODE_EXTENSIONS:
+        if suffix in CODE_EXTENSIONS and not _is_session_path(f):
             new_code_files.add(f)
         if suffix == ".py":
             new_py_files.add(f)

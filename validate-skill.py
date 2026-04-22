@@ -43,8 +43,9 @@ def validate(path: Path) -> tuple[list[str], list[str]]:
             if "description:" not in fm:
                 errors.append("Frontmatter missing 'description' field")
             else:
-                # Extract description text
-                desc_match = re.search(r"description:\s*>?\s*\n((?:\s+.*\n)*)", fm)
+                # Extract description text — handle YAML block scalars (>-, >+, >, |, |-…)
+                # as well as quoted/unquoted single-line values.
+                desc_match = re.search(r"description:\s*[>|][+\-]?\s*\n((?:\s+.*\n)*)", fm)
                 if not desc_match:
                     desc_match = re.search(r'description:\s*["\']?(.+)', fm)
                 if desc_match:

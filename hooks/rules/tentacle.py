@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from . import Rule
-from .common import MARKERS_DIR, CODE_EXTENSIONS, get_module, deny, info
+from .common import MARKERS_DIR, CODE_EXTENSIONS, get_module, is_session_path, deny, info
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
@@ -144,6 +144,17 @@ class TentacleSuggestRule(Rule):
                 p = m.group(1)
                 if not p.startswith(("/tmp/", "/var/", "/dev/")):
                     file_paths.append(p)
+
+        if not file_paths:
+            return None
+
+        # Filter: only track actual code/config files, not markdown or session-state paths.
+        # This prevents session-research markdown writes from accumulating in the
+        # tentacle-edits marker and falsely triggering multi-module enforcement.
+        file_paths = [
+            fp for fp in file_paths
+            if Path(fp).suffix.lower() in CODE_EXTENSIONS and not is_session_path(fp)
+        ]
 
         if not file_paths:
             return None
