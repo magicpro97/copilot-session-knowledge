@@ -894,6 +894,129 @@ with mock.patch.object(ts.GitHubClient, "patch_issue",
          "state" not in closed_kwargs)
 
 
+# ─── 8b-reg1. limit=N does NOT drop update-eligible repos appearing after cap ──
+
+print("\n🧪 create_stage: limit does not drop later updates (regression fix 1)")
+
+_marker_f  = ts.repo_marker(REPO_FIXTURE["full_name"])
+_marker_i  = ts.repo_marker(REPO_INACTIVE["full_name"])
+
+# list order: REPO_FIXTURE (new create) → REPO_INACTIVE (update-eligible)
+# limit=1 should create REPO_FIXTURE and still update REPO_INACTIVE
+_old_body_i = "old body for inactive repo"
+_issue_map_update_after_cap: dict = {
+    _marker_i: {"number": 55, "state": "open", "body": _old_body_i, "title": "old inactive"},
+}
+
+with mock.patch.object(ts.GitHubClient, "ensure_label", return_value=True), \
+     mock.patch.object(ts.GitHubClient, "create_issue",
+                       return_value={"html_url": "https://github.com/x/y/issues/NEW"}) as mock_create, \
+     mock.patch.object(ts.GitHubClient, "patch_issue",
+                       return_value={"html_url": "https://github.com/x/y/issues/55"}) as mock_patch_reg:
+    client_reg = ts.GitHubClient(token="ghp_test")
+    cfg_reg = ts.load_config(None)
+    existing_reg: set[str] = set()
+    urls_reg = ts.create_stage(
+        [(REPO_FIXTURE, "readme"), (REPO_INACTIVE, "readme inactive")],
+        client_reg, cfg_reg, existing_reg,
+        dry_run=False,
+        limit=1,
+        issue_map=_issue_map_update_after_cap,
+    )
+    test(
+        "limit regression: create_issue called once (new create capped at 1)",
+        mock_create.call_count == 1,
+        f"create_issue call_count={mock_create.call_count}",
+    )
+    test(
+        "limit regression: patch_issue still called for update-eligible repo after cap",
+        mock_patch_reg.call_count == 1,
+        f"patch_issue call_count={mock_patch_reg.call_count}",
+    )
+    test(
+        "limit regression: both URLs returned (1 new + 1 update)",
+        len(urls_reg) == 2,
+        f"urls={urls_reg}",
+    )
+
+
+# ─── 8b-reg2. body-unchanged check ignores volatile date/age text ──────────────
+
+print("\n🧪 create_stage: volatile date/age text ignored in body-unchanged check (regression fix 2)")
+
+_marker_vol = ts.repo_marker(REPO_FIXTURE["full_name"])
+
+# Render a body "today" and then simulate it being stored with a different date/age
+_body_today = ts.render_issue_body(
+    REPO_FIXTURE, "readme text", _marker_vol,
+    ts.load_config(None).get("search", {}).get("our_topics", []),
+)
+
+import re as _re
+
+# Simulate a stored body from a previous day by substituting the date pattern
+# and incrementing any "N days ago" counters — this is exactly what cross-day
+# rendering produces without any substantive content change.
+_body_yesterday = _re.sub(
+    r"Scouted on \d{4}-\d{2}-\d{2}",
+    "Scouted on 2000-01-01",
+    _body_today,
+    flags=_re.IGNORECASE,
+)
+_body_yesterday = _re.sub(
+    r"last pushed (\d+) days ago",
+    lambda m: f"last pushed {int(m.group(1)) + 1} days ago",
+    _body_yesterday,
+    flags=_re.IGNORECASE,
+)
+
+_issue_map_vol: dict = {
+    _marker_vol: {"number": 88, "state": "open", "body": _body_yesterday, "title": "vol title"}
+}
+
+with mock.patch.object(ts.GitHubClient, "patch_issue", return_value=None) as mock_patch_vol:
+    client_vol = ts.GitHubClient(token="ghp_test")
+    urls_vol = ts.create_stage(
+        [(REPO_FIXTURE, "readme text")],
+        client_vol, ts.load_config(None), {_marker_vol},
+        dry_run=False,
+        issue_map=_issue_map_vol,
+    )
+    test(
+        "volatile text fix: patch_issue NOT called when only date/age text differs",
+        mock_patch_vol.call_count == 0,
+        f"patch_issue call_count={mock_patch_vol.call_count}",
+    )
+    test(
+        "volatile text fix: no URL emitted when body is substantively unchanged",
+        len(urls_vol) == 0,
+        f"urls={urls_vol}",
+    )
+
+# Confirm real content change still triggers a patch (guard against over-stripping)
+_body_real_change = _body_yesterday.replace(
+    REPO_FIXTURE["description"],
+    "COMPLETELY DIFFERENT DESCRIPTION",
+)
+_issue_map_vol_real: dict = {
+    _marker_vol: {"number": 88, "state": "open", "body": _body_real_change, "title": "vol title"}
+}
+with mock.patch.object(ts.GitHubClient, "patch_issue",
+                       return_value={"html_url": "https://github.com/x/y/issues/88"}) as mock_patch_real:
+    client_vol2 = ts.GitHubClient(token="ghp_test")
+    urls_vol2 = ts.create_stage(
+        [(REPO_FIXTURE, "readme text")],
+        client_vol2, ts.load_config(None), {_marker_vol},
+        dry_run=False,
+        issue_map=_issue_map_vol_real,
+    )
+    test(
+        "volatile text fix: patch_issue IS called when substantive content changes",
+        mock_patch_real.call_count == 1,
+        f"patch_issue call_count={mock_patch_real.call_count}",
+    )
+
+
 # ─── 8c. get_existing_issue_map (mocked) ──────────────────────────────────────
 
 print("\n🗂  get_existing_issue_map (mocked)")

@@ -1154,6 +1154,23 @@ def render_issue_body(
     )
 
 
+_VOLATILE_PATTERNS = [
+    # Footer: "*Scouted on 2025-07-17 · …*"
+    re.compile(r"Scouted on \d{4}-\d{2}-\d{2}", re.IGNORECASE),
+    # Weakness/strength bullets: "last pushed 42 days ago"
+    re.compile(r"last pushed \d+ days ago", re.IGNORECASE),
+]
+
+
+def _strip_volatile_text(body: str) -> str:
+    """Remove date/age substrings that change across calendar days so that
+    body-equality checks are not tripped by purely cosmetic day-rollover churn.
+    Real content changes (descriptions, scores, etc.) are unaffected."""
+    for pat in _VOLATILE_PATTERNS:
+        body = pat.sub("", body)
+    return body
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Pipeline
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1273,8 +1290,10 @@ def create_stage(
                 print(f"  ⏭  Skip (already scouted): {full_name}")
                 continue
             # Limit only applies to new issue creates, not updates.
+            # Use `continue` (not `break`) so update-eligible repos that appear
+            # later in the list are still processed after the create cap is hit.
             if limit is not None and created_count >= limit:
-                break
+                continue
 
         # ── Optional LLM-enhanced learnings (direction 2) ─────────────────────
         llm_learnings: list[str] | None = None
@@ -1301,7 +1320,7 @@ def create_stage(
             issue_state: str = existing_issue.get("state", "open")
             existing_body: str = existing_issue.get("body") or ""
 
-            if body.strip() == existing_body.strip():
+            if _strip_volatile_text(body.strip()) == _strip_volatile_text(existing_body.strip()):
                 print(f"  ⏭  Skip (body unchanged): {full_name} #{issue_number}")
                 continue
 
