@@ -27,12 +27,15 @@ Environment:
 """
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import re
 import subprocess
 import sys
 import textwrap
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -45,6 +48,16 @@ else:
 LEARN_PY = TOOLS_DIR / "learn.py"
 BRIEFING_PY = TOOLS_DIR / "briefing.py"
 CHECKPOINT_RESTORE_PY = TOOLS_DIR / "checkpoint-restore.py"
+
+# ---------------------------------------------------------------------------
+# Dispatched-subagent marker constants
+# ---------------------------------------------------------------------------
+MARKERS_DIR = Path.home() / ".copilot" / "markers"
+_DISPATCHED_MARKER_NAME = "dispatched-subagent-active"
+_DISPATCHED_MARKER_PATH = MARKERS_DIR / _DISPATCHED_MARKER_NAME
+# Default TTL: 4 h. Downstream enforcement surfaces should treat older markers as stale.
+_DISPATCHED_MARKER_TTL = 4 * 3600
+_MARKER_SECRET_PATH = Path.home() / ".copilot" / "hooks" / ".marker-secret"
 
 
 
@@ -273,6 +286,212 @@ def _load_latest_checkpoint_context() -> str:
         return _render_checkpoint_context(data)
     except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
         return ""
+
+
+# ---------------------------------------------------------------------------
+# Dispatched-subagent marker helpers
+# ---------------------------------------------------------------------------
+
+def _read_marker_secret() -> str | None:
+    """Read the shared HMAC secret used by marker_auth. Returns None if absent."""
+    try:
+        if _MARKER_SECRET_PATH.is_file():
+            return _MARKER_SECRET_PATH.read_text().strip()
+    except Exception:
+        pass
+    return None
+
+
+def _write_dispatched_subagent_marker(
+    tentacle_name: str,
+    scope: list,
+    dispatch_mode: str,
+) -> bool:
+    """Write/update the dispatched-subagent-active marker (set-based, concurrency-safe).
+
+    Uses an exclusive file lock so parallel tentacle dispatches safely merge into the
+    active_tentacles list rather than overwriting each other (last-writer-wins race of
+    the single-owner design).
+
+    Marker contract (JSON file at ~/.copilot/markers/dispatched-subagent-active):
+      name:             "dispatched-subagent-active"
+      ts:               UNIX timestamp of the most-recent write (used for HMAC + TTL)
+      sig:              HMAC-SHA256 over "name:ts" (omitted when no secret is present)
+      active_tentacles: ordered list of tentacle names currently dispatched (deduped)
+      scope:            file-scope list from the most-recently-dispatching tentacle
+      dispatch_mode:    mode of the most-recently-dispatching tentacle
+      ttl_seconds:      expected lifetime; consumers treat older markers as stale
+      written_at:       ISO 8601 human-readable timestamp of the most-recent write
+
+    Downstream enforcement surfaces (git hooks, preToolUse guards) can read this marker
+    to detect active dispatched-subagent sessions.  This surface is advisory only —
+    tentacle.py is not itself a hook enforcement layer.
+
+    Fail-open: returns False on any error without raising.
+    """
+    try:
+        MARKERS_DIR.mkdir(parents=True, exist_ok=True)
+        with file_locked(_DISPATCHED_MARKER_PATH):
+            # Merge with existing active set (if any)
+            active: list = []
+            if _DISPATCHED_MARKER_PATH.is_file():
+                try:
+                    existing = json.loads(_DISPATCHED_MARKER_PATH.read_text())
+                    if "active_tentacles" in existing:
+                        active = list(existing["active_tentacles"])
+                    elif "tentacle" in existing:
+                        # Backward-compat: promote old single-owner field
+                        active = [existing["tentacle"]]
+                except (json.JSONDecodeError, OSError):
+                    pass
+            if tentacle_name not in active:
+                active.append(tentacle_name)
+            ts = str(int(time.time()))
+            data: dict = {
+                "name": _DISPATCHED_MARKER_NAME,
+                "ts": ts,
+                "active_tentacles": active,
+                "scope": list(scope),
+                "dispatch_mode": dispatch_mode,
+                "ttl_seconds": _DISPATCHED_MARKER_TTL,
+                "written_at": datetime.now(timezone.utc).isoformat(),
+            }
+            secret = _read_marker_secret()
+            if secret:
+                sig = hmac.new(
+                    secret.encode(),
+                    f"{_DISPATCHED_MARKER_NAME}:{ts}".encode(),
+                    hashlib.sha256,
+                ).hexdigest()
+                data["sig"] = sig
+            _DISPATCHED_MARKER_PATH.write_text(json.dumps(data, indent=2) + "\n")
+        return True
+    except Exception:
+        return False
+
+
+def _clear_dispatched_subagent_marker(tentacle_name: str) -> bool:
+    """Remove a tentacle from the dispatched-subagent-active marker set.
+
+    Deletes the marker file only when active_tentacles becomes empty after removal.
+    Uses an exclusive file lock so concurrent cmd_complete calls do not race.
+
+    Called by cmd_complete so a completing tentacle's entry is removed without
+    disturbing sibling tentacles that are still running.
+
+    Fail-open: returns False on error without raising.
+    """
+    try:
+        with file_locked(_DISPATCHED_MARKER_PATH):
+            if not _DISPATCHED_MARKER_PATH.is_file():
+                return True
+            try:
+                data = json.loads(_DISPATCHED_MARKER_PATH.read_text())
+            except (json.JSONDecodeError, OSError):
+                _DISPATCHED_MARKER_PATH.unlink(missing_ok=True)
+                return True
+            # Support old single-owner format
+            if "active_tentacles" in data:
+                active: list = list(data["active_tentacles"])
+            elif "tentacle" in data:
+                active = [data["tentacle"]]
+            else:
+                active = []
+            if tentacle_name in active:
+                active.remove(tentacle_name)
+            if not active:
+                _DISPATCHED_MARKER_PATH.unlink()
+            else:
+                ts = str(int(time.time()))
+                data["active_tentacles"] = active
+                data["ts"] = ts
+                data["written_at"] = datetime.now(timezone.utc).isoformat()
+                data.pop("tentacle", None)  # Remove old single-owner field
+                secret = _read_marker_secret()
+                if secret:
+                    sig = hmac.new(
+                        secret.encode(),
+                        f"{_DISPATCHED_MARKER_NAME}:{ts}".encode(),
+                        hashlib.sha256,
+                    ).hexdigest()
+                    data["sig"] = sig
+                elif "sig" in data:
+                    del data["sig"]
+                _DISPATCHED_MARKER_PATH.write_text(json.dumps(data, indent=2) + "\n")
+        return True
+    except Exception:
+        return False
+
+
+def _read_dispatched_subagent_marker() -> dict | None:
+    """Read the dispatched-subagent-active marker. Returns metadata dict or None.
+
+    Does NOT validate HMAC signature — tentacle.py is the *write* side; downstream
+    enforcement surfaces (hooks/git guards) should use marker_auth.verify_marker for
+    cryptographic validation.
+
+    Returns None when the marker is absent or unreadable.
+    """
+    try:
+        if not _DISPATCHED_MARKER_PATH.is_file():
+            return None
+        return json.loads(_DISPATCHED_MARKER_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _is_marker_stale(marker_data: dict) -> bool:
+    """Return True if the marker has exceeded its declared TTL.
+
+    Uses ts (UNIX timestamp string) and ttl_seconds from the marker JSON.
+    Returns False (not stale) when fields are missing or unparseable — fail-open.
+    """
+    try:
+        ts = int(marker_data.get("ts", 0))
+        ttl = int(marker_data.get("ttl_seconds", _DISPATCHED_MARKER_TTL))
+        if ts == 0:
+            return False
+        return (time.time() - ts) > ttl
+    except (TypeError, ValueError):
+        return False
+
+
+def _get_marker_state() -> dict:
+    """Return machine-readable marker state dict for JSON consumers.
+
+    Fields:
+      active:           bool — active_tentacles list is non-empty
+      path:             string path to marker file
+      active_tentacles: list of tentacle names currently dispatched
+      dispatch_mode:    dispatch_mode from marker (or null)
+      stale:            bool — marker age exceeds its declared TTL
+      written_at:       ISO timestamp from marker (or null)
+    """
+    data = _read_dispatched_subagent_marker()
+    if data is None:
+        return {
+            "active": False,
+            "path": str(_DISPATCHED_MARKER_PATH),
+            "active_tentacles": [],
+            "dispatch_mode": None,
+            "stale": False,
+            "written_at": None,
+        }
+    # Support old single-owner format for backward-compat reads
+    if "active_tentacles" in data:
+        active_tentacles = list(data["active_tentacles"])
+    elif "tentacle" in data:
+        active_tentacles = [data["tentacle"]]
+    else:
+        active_tentacles = []
+    return {
+        "active": len(active_tentacles) > 0,
+        "path": str(_DISPATCHED_MARKER_PATH),
+        "active_tentacles": active_tentacles,
+        "dispatch_mode": data.get("dispatch_mode"),
+        "stale": _is_marker_stale(data),
+        "written_at": data.get("written_at"),
+    }
 
 
 def _build_runtime_bundle(
@@ -804,7 +1023,13 @@ def cmd_complete(args):
                 learned = 1
                 print(f"🧠 Knowledge recorded from handoff")
 
-    # 4. Summary
+    # 4. Clear dispatched-subagent-active marker entry for this tentacle
+    had_marker = _DISPATCHED_MARKER_PATH.is_file()
+    _clear_dispatched_subagent_marker(args.name)
+    if had_marker:
+        print(f"🧹 Dispatched-subagent marker updated (removed '{args.name}')")
+
+    # 5. Summary
     print(f"\n🏁 Tentacle '{args.name}' completed!")
     if learned:
         print(f"   🧠 {learned} knowledge entry saved to long-term memory")
@@ -958,6 +1183,19 @@ def cmd_swarm(args):
         bundle_section = f"\n### Bundle Path\n\n`{bundle_dir}`\n"
         print(f"   ✅ Bundle: {bundle_dir}\n")
 
+    # Write dispatched-subagent-active marker so local enforcement surfaces can
+    # observe that a dispatch is in flight. The marker is advisory — tentacle.py
+    # is not itself an enforcement layer. Cleared by cmd_complete.
+    marker_written = _write_dispatched_subagent_marker(
+        tentacle_name=args.name,
+        scope=meta.get("scope", []),
+        dispatch_mode=args.output,
+    )
+    if marker_written:
+        print(f"📌 Marker: {_DISPATCHED_MARKER_PATH}")
+        print(f"   Active until tentacle.py complete OR {_DISPATCHED_MARKER_TTL // 3600}h TTL.")
+        print(f"   Local enforcement surfaces (git hooks, preToolUse guards) may observe this.\n")
+
     if args.output == "prompt":
         # Output as a single dispatch prompt with all todos
         print("─── DISPATCH PROMPT ───\n")
@@ -1048,6 +1286,7 @@ def cmd_swarm(args):
                 "scope": "Stay within declared files — do not widen scope without escalating to the orchestrator",
                 "escalation": "If scope is insufficient, stop and write a scope escalation note to handoff",
             },
+            "marker_state": _get_marker_state(),
         }
         if bundle_dir is not None:
             dispatch["bundle_path"] = str(bundle_dir)
@@ -1179,12 +1418,24 @@ def cmd_bundle(args):
         checkpoint_text=checkpoint_text,
     )
 
+    # Write dispatched-subagent-active marker when materializing a bundle
+    _write_dispatched_subagent_marker(
+        tentacle_name=args.name,
+        scope=meta.get("scope", []),
+        dispatch_mode="bundle",
+    )
+
     if getattr(args, "output", "text") == "json":
         manifest_path = bundle_dir / "manifest.json"
         manifest = json.loads(manifest_path.read_text())
-        print(json.dumps({"bundle_path": str(bundle_dir), **manifest}, indent=2))
+        print(json.dumps({
+            "bundle_path": str(bundle_dir),
+            "marker_state": _get_marker_state(),
+            **manifest,
+        }, indent=2))
     else:
         print(f"📦 Bundle materialized: {bundle_dir}")
+        print(f"📌 Marker: {_DISPATCHED_MARKER_PATH}")
         for f in sorted(bundle_dir.iterdir()):
             print(f"   {f.name} ({f.stat().st_size} bytes)")
 

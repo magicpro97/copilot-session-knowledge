@@ -33,12 +33,14 @@ hooks/
 | `enforce-briefing` | preToolUse | Blocks edit/create/bash-writes until briefing done |
 | `enforce-learn` | preToolUse | Blocks git commit AND task_complete without learn.py |
 | `tentacle-enforce` | preToolUse | Blocks (deny) edits once ≥3 files across ≥2 modules are reached without tentacle setup. The deny message contains convention-level guidance: if you are the **orchestrator**, follow the runtime-bundle workflow — `tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing` → `tentacle.py todo <name> add "<task>"` → `tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6`; if you are a **dispatched sub-agent**, stay within your declared scope, write any scope gaps to `handoff.md`, and by convention avoid `git commit`/`git push`. |
+| `subagent-git-guard` | preToolUse | **Defense-in-depth**: blocks `git commit`/`git push` bash commands when the `dispatched-subagent-active` marker is fresh. This is a secondary surface — **not** the primary enforcement path (see §Dispatched-Subagent Git Guard below). Whether `preToolUse` fires inside a delegated subagent context is not guaranteed by the platform. |
 | `track-edits` | postToolUse | Detects file changes via `git status` (language-agnostic) |
 | `learn-reminder` | postToolUse | Reminds to record learnings after task_complete |
 | `test-reminder` | postToolUse | Reminds to run tests after 3+ Python file edits |
 | `tentacle-suggest` | postToolUse | Suggests tentacle when edits reach ≥3 files across ≥2 modules (same threshold as tentacle-enforce) |
 | `error-kb` | errorOccurred | Auto-searches knowledge base on errors |
-| `pre-commit` | git pre-commit | Validates `.agent.md` / `SKILL.md` via `lint-skills.py` |
+| `pre-commit` | git pre-commit | (1) Blocks commit when `dispatched-subagent-active` marker is fresh (primary subagent guard); (2) validates `.agent.md` / `SKILL.md` via `lint-skills.py`. Requires `install.py --install-git-hooks`. |
+| `pre-push` | git pre-push | Blocks push when `dispatched-subagent-active` marker is fresh. Requires `install.py --install-git-hooks`. |
 
 ## Key Features
 
@@ -61,9 +63,116 @@ Hook files are locked with OS immutable flags:
 - **Windows**: `attrib +R` — read-only (weaker)
 
 ```bash
-python3 ~/.copilot/tools/install.py --deploy-hooks   # Deploy hooks
-python3 ~/.copilot/tools/install.py --lock-hooks      # Lock (AI can't modify)
-python3 ~/.copilot/tools/install.py --unlock-hooks    # Unlock for updates
+python3 ~/.copilot/tools/install.py --deploy-hooks       # Deploy Copilot CLI hooks
+python3 ~/.copilot/tools/install.py --lock-hooks          # Lock (AI can't modify)
+python3 ~/.copilot/tools/install.py --unlock-hooks        # Unlock for updates
+python3 ~/.copilot/tools/install.py --install-git-hooks   # Install pre-commit/pre-push into current repo
+```
+
+> **Note:** `--install-git-hooks` must be run separately per repository to install the git-level
+> subagent guard. It is not performed automatically by `--deploy-hooks`. Re-run after major tool
+> updates to refresh hook scripts in `.git/hooks/`.
+
+## Dispatched-Subagent Git Guard
+
+Phase 3 adds git-level enforcement that blocks `git commit` and `git push` while a dispatched
+subagent session is active. The design is **marker-based** rather than hook-only because
+`preToolUse` hook inheritance inside delegated/background agent contexts is not guaranteed by
+the platform — a hook that fires reliably in the orchestrator session may silently not fire
+inside a `task()`-spawned subagent.
+
+### How it works
+
+**Step 1 — Marker write (orchestrator, via `tentacle.py swarm`)**
+
+When `tentacle.py swarm` dispatches a subagent, it writes an HMAC-signed marker file:
+
+```
+~/.copilot/markers/dispatched-subagent-active
+```
+
+The marker is a JSON file with the following contract:
+
+| Field | Description |
+|-------|-------------|
+| `name` | Always `"dispatched-subagent-active"` |
+| `ts` | UNIX timestamp of the most-recent write (used for HMAC + TTL) |
+| `sig` | HMAC-SHA256 over `"name:ts"` (omitted when no secret is configured) |
+| `active_tentacles` | Ordered list of tentacle names currently dispatched (deduped, concurrency-safe) |
+| `scope` | File-scope list from the most-recently-dispatching tentacle |
+| `dispatch_mode` | Dispatch mode of the most-recently-dispatching tentacle |
+| `ttl_seconds` | Expected lifetime; consumers treat markers older than this as stale |
+| `written_at` | ISO 8601 human-readable timestamp |
+
+**Concurrent tentacles:** Multiple tentacles dispatched in parallel each add their name to
+`active_tentacles` rather than overwriting the file. `tentacle.py complete <name>` removes only
+that tentacle's entry; the marker is deleted only when `active_tentacles` becomes empty.
+
+**Step 2 — Git pre-commit / pre-push (primary enforcement)**
+
+`hooks/check_subagent_marker.py` is called by both `hooks/pre-commit` and `hooks/pre-push`.
+When the marker is present, auth-valid, and within the 4-hour TTL, it exits with code 1 and
+prints a diagnostic message — blocking the git operation.
+
+This is the **primary enforcement surface**: git hooks fire at the filesystem level for any
+`git commit` or `git push` call, regardless of which agent spawned the process.
+
+**Step 3 — `preToolUse` guard (defense-in-depth, secondary)**
+
+`hooks/rules/subagent_guard.py` (`SubagentGitGuardRule`) checks the same marker on every
+`preToolUse` event that contains a `git commit` or `git push` bash command. This provides a
+second interception point when `preToolUse` does fire inside the subagent. However, it is
+**not the primary path** — whether `preToolUse` events from the parent `hooks.json` propagate
+into a delegated subagent context is undefined by the platform.
+
+**Step 4 — Marker cleanup**
+
+`tentacle.py complete <name>` removes the tentacle's entry from `active_tentacles`. The marker
+file is deleted when the list becomes empty. The 4-hour TTL acts as a dead-man switch for
+sessions that crash without calling `complete`.
+
+### Enforcement scope
+
+> **Local-only.** This enforcement covers local git operations on the machine where the tools
+> are installed. It does **not** cover:
+>
+> - Cloud-hosted or remote-delegated agent runs (hooks.json is not copied to cloud environments)
+> - Any environment where git hooks are not installed (`install.py --install-git-hooks`)
+> - Manual filesystem operations that bypass git (direct file writes without committing)
+
+### Installing the git hooks
+
+The git-level guard requires installation per repository:
+
+```bash
+# Install into the current repo's .git/hooks/
+python3 ~/.copilot/tools/install.py --install-git-hooks
+
+# On Windows (PowerShell)
+python "$env:USERPROFILE\.copilot\tools\install.py" --install-git-hooks
+```
+
+`install.py --install-git-hooks` also sets `core.hooksPath = .git/hooks` in the repository
+config to ensure the hooks fire even when a project-level override is present.
+
+After tool updates (`git pull` or `auto-update-tools.py --force`), re-run
+`--install-git-hooks` to refresh the hook scripts in `.git/hooks/`.
+
+### Fail-open behavior
+
+All enforcement surfaces are fail-open:
+
+- Missing marker → allow (no false positives)
+- Stale marker (age ≥ 4 hours) → allow
+- HMAC auth failure (marker tampered or written without secret) → allow
+- Any unexpected error in `check_subagent_marker.py` → allow
+
+To clear a stuck marker manually:
+
+```bash
+python3 ~/.copilot/tools/tentacle.py complete <name>
+# or delete the marker file directly:
+rm ~/.copilot/markers/dispatched-subagent-active
 ```
 
 ## Host Scope

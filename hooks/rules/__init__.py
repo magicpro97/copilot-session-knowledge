@@ -27,6 +27,7 @@ def get_rules_for_event(event):
     from .error_kb import ErrorKBRule
     from .integrity import IntegrityRule
     from .session_lifecycle import SessionEndRule
+    from .subagent_guard import SubagentGitGuardRule
 
     ALL_RULES = [
         # sessionStart (order: briefing first, then integrity)
@@ -36,6 +37,7 @@ def get_rules_for_event(event):
         EnforceBriefingRule(),
         EnforceLearnRule(),
         TentacleEnforceRule(),
+        SubagentGitGuardRule(),
         # postToolUse (all run, output is informational)
         TrackEditsRule(),
         LearnReminderRule(),

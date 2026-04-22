@@ -163,10 +163,11 @@ python3 ~/.copilot/tools/tentacle.py complete api-export
 > programmatic consumption. `--briefing` injects live session-knowledge at dispatch time
 > (incompatible with `--output json`).
 
-**Commit convention:** By convention, the orchestrator handles all `git commit` and `git push`
-operations, after merging and verifying tentacle results. Dispatched sub-agents write files
-and `handoff.md` only. If a sub-agent's scope is insufficient, it escalates via `handoff.md`
-rather than committing partial work or expanding scope unilaterally.
+**Commit restriction:** Sub-agents must not run `git commit` or `git push`. When git hooks
+are installed (`install.py --install-git-hooks`), both operations are **blocked at the git level**
+while a `dispatched-subagent-active` marker is active. Even without hooks, this is a hard
+convention: only the orchestrator commits, after merging and verifying tentacle results.
+Enforcement is local-only — cloud-delegated runs are not covered.
 
 ### Tentacle Next Step
 
@@ -277,10 +278,19 @@ Smart pipeline analyzes `git diff` to run only what changed. Post-merge hook aut
 
 Unified hook runner architecture — 1 Python process per event with fail-open, HMAC-signed markers, audit logging, and tamper protection. Hook deployment is **Copilot CLI only**; Claude Code does not support the `hook_runner.py` format.
 
+**Dispatched-subagent git guard (phase 3):** `install.py --install-git-hooks` deploys
+`pre-commit` and `pre-push` scripts into the current repo's `.git/hooks/`. When the
+`dispatched-subagent-active` marker is fresh, both scripts block the git operation. This is the
+**primary enforcement surface** for subagent commit restrictions — it fires at the filesystem
+level regardless of which agent process calls git. The `preToolUse` hook provides
+defense-in-depth but cannot be relied on inside delegated subagent contexts. Enforcement is
+**local-only**; cloud-delegated runs are not covered.
+
 ```bash
-python3 ~/.copilot/tools/install.py --deploy-skill    # Deploy skill to project
-python3 ~/.copilot/tools/install.py --deploy-hooks    # Deploy enforcement hooks (Copilot CLI)
-python3 ~/.copilot/tools/install.py --lock-hooks      # Lock hooks (tamper protection)
+python3 ~/.copilot/tools/install.py --deploy-skill        # Deploy skill to project
+python3 ~/.copilot/tools/install.py --deploy-hooks        # Deploy enforcement hooks (Copilot CLI)
+python3 ~/.copilot/tools/install.py --lock-hooks          # Lock hooks (tamper protection)
+python3 ~/.copilot/tools/install.py --install-git-hooks   # Install pre-commit/pre-push into current repo
 
 # Project setup with a workflow profile
 python3 ~/.copilot/tools/setup-project.py --profile python      # Python hook bundle + WORKFLOW.md

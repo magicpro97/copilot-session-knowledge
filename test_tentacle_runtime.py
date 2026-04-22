@@ -17,6 +17,7 @@ import os
 import sys
 import subprocess
 import textwrap
+import time
 import types
 import unittest
 from datetime import datetime, timezone
@@ -1587,6 +1588,508 @@ class TestSwarmGuardrails(unittest.TestCase):
         self.assertGreater(guardrail_pos, -1, "'Guardrails' heading not found in parallel output")
         self.assertGreater(when_done_pos, -1, "'When done' section not found in parallel output")
         self.assertLess(guardrail_pos, when_done_pos, "Advisory guidance must precede 'When done'")
+
+
+# ---------------------------------------------------------------------------
+# Phase-3 dispatched-subagent marker tests
+# ---------------------------------------------------------------------------
+
+class TestDispatchedSubagentMarker(unittest.TestCase):
+    """Tests for the dispatched-subagent-active marker contract.
+
+    All tests redirect marker writes to SCRATCH_DIR to avoid polluting
+    ~/.copilot/markers/ on the developer's machine.
+    """
+
+    MARKER_NAME = "dispatched-subagent-active"
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "marker_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / self.MARKER_NAME
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        # Also redirect MARKERS_DIR so mkdir() writes to scratch
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    # ── _write_dispatched_subagent_marker ─────────────────────────────────────
+
+    def test_write_creates_marker_file(self):
+        result = T._write_dispatched_subagent_marker("my-tent", ["a.py"], "prompt")
+        self.assertTrue(result)
+        self.assertTrue(self.marker_path.is_file())
+
+    def test_write_marker_contains_required_fields(self):
+        T._write_dispatched_subagent_marker("my-tent", ["a.py", "b.py"], "parallel")
+        data = json.loads(self.marker_path.read_text())
+        self.assertEqual(data["name"], self.MARKER_NAME)
+        self.assertIn("ts", data)
+        self.assertIn("active_tentacles", data)
+        self.assertIn("my-tent", data["active_tentacles"])
+        self.assertEqual(data["scope"], ["a.py", "b.py"])
+        self.assertEqual(data["dispatch_mode"], "parallel")
+        self.assertIn("ttl_seconds", data)
+        self.assertIn("written_at", data)
+
+    def test_write_marker_no_sig_when_no_secret(self):
+        """Without a secret, the marker should be written without a sig field."""
+        with patch.object(T, "_read_marker_secret", return_value=None):
+            T._write_dispatched_subagent_marker("my-tent", [], "json")
+        data = json.loads(self.marker_path.read_text())
+        self.assertNotIn("sig", data)
+
+    def test_write_marker_includes_sig_when_secret_present(self):
+        """With a secret, the marker must include an HMAC sig."""
+        with patch.object(T, "_read_marker_secret", return_value="test-secret"):
+            T._write_dispatched_subagent_marker("my-tent", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        self.assertIn("sig", data)
+        self.assertIsInstance(data["sig"], str)
+        self.assertEqual(len(data["sig"]), 64)  # SHA-256 hex digest
+
+    def test_write_sig_matches_expected_hmac(self):
+        """Sig must be HMAC-SHA256 over 'name:ts' — same formula as marker_auth."""
+        import hashlib, hmac as _hmac
+        with patch.object(T, "_read_marker_secret", return_value="my-secret"):
+            T._write_dispatched_subagent_marker("my-tent", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        expected = _hmac.new(
+            "my-secret".encode(),
+            f"{self.MARKER_NAME}:{data['ts']}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        self.assertEqual(data["sig"], expected)
+
+    def test_write_returns_false_on_write_error(self):
+        """Fail-open: write failure returns False without raising."""
+        with patch("pathlib.Path.write_text", side_effect=PermissionError("no write")):
+            result = T._write_dispatched_subagent_marker("t", [], "prompt")
+        self.assertFalse(result)
+
+    # ── _clear_dispatched_subagent_marker ─────────────────────────────────────
+
+    def test_clear_removes_marker_file(self):
+        self.marker_path.write_text('{"name": "test", "active_tentacles": ["any-tent"]}')
+        result = T._clear_dispatched_subagent_marker("any-tent")
+        self.assertTrue(result)
+        self.assertFalse(self.marker_path.is_file())
+
+    def test_clear_returns_true_when_marker_absent(self):
+        """Clearing when no marker exists should succeed (idempotent)."""
+        self.assertFalse(self.marker_path.is_file())
+        result = T._clear_dispatched_subagent_marker("any-tent")
+        self.assertTrue(result)
+
+    def test_clear_returns_false_on_error(self):
+        self.marker_path.write_text('{"active_tentacles": ["any-tent"]}')
+        with patch("pathlib.Path.unlink", side_effect=PermissionError("busy")):
+            result = T._clear_dispatched_subagent_marker("any-tent")
+        self.assertFalse(result)
+
+    # ── _read_dispatched_subagent_marker ──────────────────────────────────────
+
+    def test_read_returns_none_when_marker_absent(self):
+        result = T._read_dispatched_subagent_marker()
+        self.assertIsNone(result)
+
+    def test_read_returns_dict_when_marker_present(self):
+        data = {"name": self.MARKER_NAME, "ts": "12345", "active_tentacles": ["my-tent"]}
+        self.marker_path.write_text(json.dumps(data))
+        result = T._read_dispatched_subagent_marker()
+        self.assertIsNotNone(result)
+        self.assertIn("my-tent", result["active_tentacles"])
+
+    def test_read_returns_none_on_invalid_json(self):
+        self.marker_path.write_text("not json {{")
+        result = T._read_dispatched_subagent_marker()
+        self.assertIsNone(result)
+
+    # ── _is_marker_stale ──────────────────────────────────────────────────────
+
+    def test_is_stale_returns_false_for_fresh_marker(self):
+        data = {"ts": str(int(time.time())), "ttl_seconds": 14400}
+        self.assertFalse(T._is_marker_stale(data))
+
+    def test_is_stale_returns_true_for_expired_marker(self):
+        old_ts = int(time.time()) - 5 * 3600  # 5 hours ago
+        data = {"ts": str(old_ts), "ttl_seconds": 14400}
+        self.assertTrue(T._is_marker_stale(data))
+
+    def test_is_stale_returns_false_when_ts_missing(self):
+        """Fail-open: missing ts should not mark as stale."""
+        self.assertFalse(T._is_marker_stale({}))
+
+    def test_is_stale_returns_false_on_bad_types(self):
+        """Fail-open: non-numeric ts/ttl should not raise."""
+        self.assertFalse(T._is_marker_stale({"ts": "bad", "ttl_seconds": "also_bad"}))
+
+    # ── _get_marker_state ────────────────────────────────────────────────────
+
+    def test_get_state_inactive_when_no_marker(self):
+        state = T._get_marker_state()
+        self.assertFalse(state["active"])
+        self.assertEqual(state["active_tentacles"], [])
+        self.assertIsNone(state["dispatch_mode"])
+        self.assertFalse(state["stale"])
+        self.assertIsNone(state["written_at"])
+        self.assertIn("path", state)
+
+    def test_get_state_active_when_marker_present(self):
+        T._write_dispatched_subagent_marker("a-tent", ["x.py"], "json")
+        state = T._get_marker_state()
+        self.assertTrue(state["active"])
+        self.assertIn("a-tent", state["active_tentacles"])
+        self.assertEqual(state["dispatch_mode"], "json")
+        self.assertFalse(state["stale"])
+        self.assertIsNotNone(state["written_at"])
+
+    def test_get_state_stale_flag_reflects_age(self):
+        old_ts = int(time.time()) - 6 * 3600
+        data = {
+            "name": self.MARKER_NAME, "ts": str(old_ts),
+            "active_tentacles": ["old-tent"], "dispatch_mode": "prompt",
+            "ttl_seconds": 14400, "written_at": "2025-01-01T00:00:00+00:00",
+        }
+        self.marker_path.write_text(json.dumps(data))
+        state = T._get_marker_state()
+        self.assertTrue(state["stale"])
+
+    # ── cmd_swarm integration ─────────────────────────────────────────────────
+
+    def _swarm_args(self, name, output="prompt"):
+        return fake_args(
+            name=name,
+            agent_type="general-purpose",
+            model="claude-sonnet-4.6",
+            output=output,
+            briefing=False,
+            bundle=False,
+        )
+
+    def test_swarm_prompt_writes_marker(self):
+        """cmd_swarm --output prompt writes dispatched-subagent-active marker."""
+        swarm_base = self.base / "swarm_prompt"
+        swarm_base.mkdir()
+        make_tentacle("sp-test", swarm_base)
+        args = self._swarm_args("sp-test", output="prompt")
+        with patch.object(T, "get_tentacles_dir", return_value=swarm_base):
+            with patch("builtins.print"):
+                T.cmd_swarm(args)
+        self.assertTrue(self.marker_path.is_file())
+        data = json.loads(self.marker_path.read_text())
+        self.assertIn("sp-test", data["active_tentacles"])
+        self.assertEqual(data["dispatch_mode"], "prompt")
+
+    def test_swarm_parallel_writes_marker(self):
+        """cmd_swarm --output parallel writes dispatched-subagent-active marker."""
+        swarm_base = self.base / "swarm_parallel"
+        swarm_base.mkdir()
+        make_tentacle("par-test", swarm_base)
+        args = self._swarm_args("par-test", output="parallel")
+        with patch.object(T, "get_tentacles_dir", return_value=swarm_base):
+            with patch("builtins.print"):
+                T.cmd_swarm(args)
+        self.assertTrue(self.marker_path.is_file())
+        data = json.loads(self.marker_path.read_text())
+        self.assertEqual(data["dispatch_mode"], "parallel")
+
+    def test_swarm_json_writes_marker(self):
+        """cmd_swarm --output json writes marker and includes marker_state in output."""
+        import io
+        from contextlib import redirect_stdout
+        swarm_base = self.base / "swarm_json"
+        swarm_base.mkdir()
+        make_tentacle("json-test", swarm_base)
+        args = self._swarm_args("json-test", output="json")
+        buf = io.StringIO()
+        with patch.object(T, "get_tentacles_dir", return_value=swarm_base):
+            with redirect_stdout(buf):
+                T.cmd_swarm(args)
+        # Marker file must exist
+        self.assertTrue(self.marker_path.is_file())
+        # JSON output must include marker_state
+        out = buf.getvalue()
+        decoder = json.JSONDecoder()
+        idx = out.find("{")
+        dispatch_data, _ = decoder.raw_decode(out, idx)
+        self.assertIn("marker_state", dispatch_data)
+        ms = dispatch_data["marker_state"]
+        self.assertTrue(ms["active"])
+        self.assertIn("json-test", ms["active_tentacles"])
+
+    def test_swarm_json_marker_state_has_required_keys(self):
+        """marker_state in JSON output must have all required machine-readable keys."""
+        import io
+        from contextlib import redirect_stdout
+        swarm_base = self.base / "swarm_json_keys"
+        swarm_base.mkdir()
+        make_tentacle("jk-test", swarm_base)
+        args = self._swarm_args("jk-test", output="json")
+        buf = io.StringIO()
+        with patch.object(T, "get_tentacles_dir", return_value=swarm_base):
+            with redirect_stdout(buf):
+                T.cmd_swarm(args)
+        out = buf.getvalue()
+        decoder = json.JSONDecoder()
+        idx = out.find("{")
+        data, _ = decoder.raw_decode(out, idx)
+        ms = data["marker_state"]
+        for key in ("active", "path", "active_tentacles", "dispatch_mode", "stale", "written_at"):
+            self.assertIn(key, ms, f"marker_state missing key: {key}")
+
+    def test_swarm_does_not_write_marker_when_all_done(self):
+        """No marker is written when there are no pending todos."""
+        swarm_base = self.base / "swarm_done"
+        swarm_base.mkdir()
+        d = make_tentacle("done-test", swarm_base)
+        (d / "todo.md").write_text("# Todo\n\n- [x] All done\n")
+        args = self._swarm_args("done-test", output="prompt")
+        with patch.object(T, "get_tentacles_dir", return_value=swarm_base):
+            with patch("builtins.print"):
+                T.cmd_swarm(args)
+        self.assertFalse(self.marker_path.is_file())
+
+    # ── cmd_complete integration ──────────────────────────────────────────────
+
+    def test_complete_clears_marker_for_same_tentacle(self):
+        """cmd_complete removes the marker when it belongs to the completing tentacle."""
+        complete_base = self.base / "complete_test"
+        complete_base.mkdir()
+        make_tentacle("c-test", complete_base)
+        # Pre-write marker for c-test
+        T._write_dispatched_subagent_marker("c-test", [], "prompt")
+        self.assertTrue(self.marker_path.is_file())
+        args = fake_args(name="c-test", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=complete_base):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+        self.assertFalse(self.marker_path.is_file())
+
+    def test_complete_does_not_clear_marker_for_different_tentacle(self):
+        """cmd_complete must not clear a marker belonging to a different tentacle."""
+        complete_base = self.base / "complete_other"
+        complete_base.mkdir()
+        make_tentacle("mine", complete_base)
+        # Marker belongs to "other-tent", not "mine"
+        T._write_dispatched_subagent_marker("other-tent", [], "prompt")
+        self.assertTrue(self.marker_path.is_file())
+        args = fake_args(name="mine", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=complete_base):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+        # Marker must still be present (belongs to different tentacle)
+        self.assertTrue(self.marker_path.is_file())
+
+    def test_complete_safe_when_no_marker_exists(self):
+        """cmd_complete must not fail when no marker is present."""
+        complete_base = self.base / "complete_nomarker"
+        complete_base.mkdir()
+        make_tentacle("nm-test", complete_base)
+        self.assertFalse(self.marker_path.is_file())
+        args = fake_args(name="nm-test", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=complete_base):
+            with patch("builtins.print"):
+                T.cmd_complete(args)  # Must not raise
+        # Tentacle should be completed regardless
+        meta = json.loads(((complete_base / "nm-test") / "meta.json").read_text())
+        self.assertEqual(meta["status"], "completed")
+
+    # ── cmd_bundle integration ────────────────────────────────────────────────
+
+    def test_bundle_writes_marker(self):
+        """cmd_bundle writes dispatched-subagent-active marker on materialization."""
+        bundle_base = self.base / "bundle_marker"
+        bundle_base.mkdir()
+        make_tentacle("bm-test", bundle_base)
+        args = fake_args(name="bm-test", no_briefing=True, no_checkpoint=True, output="text")
+        with patch.object(T, "get_tentacles_dir", return_value=bundle_base):
+            with patch("builtins.print"):
+                T.cmd_bundle(args)
+        self.assertTrue(self.marker_path.is_file())
+        data = json.loads(self.marker_path.read_text())
+        self.assertEqual(data["dispatch_mode"], "bundle")
+        self.assertIn("bm-test", data["active_tentacles"])
+
+    def test_bundle_json_output_includes_marker_state(self):
+        """cmd_bundle --output json must include marker_state in the JSON output."""
+        import io
+        from contextlib import redirect_stdout
+        bundle_base = self.base / "bundle_json_marker"
+        bundle_base.mkdir()
+        make_tentacle("bjm-test", bundle_base)
+        args = fake_args(name="bjm-test", no_briefing=True, no_checkpoint=True, output="json")
+        buf = io.StringIO()
+        with patch.object(T, "get_tentacles_dir", return_value=bundle_base):
+            with redirect_stdout(buf):
+                T.cmd_bundle(args)
+        data = json.loads(buf.getvalue().strip())
+        self.assertIn("marker_state", data)
+        self.assertTrue(data["marker_state"]["active"])
+        self.assertEqual(data["marker_state"]["dispatch_mode"], "bundle")
+
+    # ── marker scope propagation ──────────────────────────────────────────────
+
+    def test_marker_inherits_scope_from_tentacle_meta(self):
+        """Marker scope must match the tentacle's declared scope list."""
+        swarm_base = self.base / "scope_test"
+        swarm_base.mkdir()
+        d = make_tentacle("sc-test", swarm_base)
+        # Override meta scope
+        meta = json.loads((d / "meta.json").read_text())
+        meta["scope"] = ["backend/handler.ts", "shared/dtos.ts"]
+        (d / "meta.json").write_text(json.dumps(meta))
+        args = self._swarm_args("sc-test", output="json")
+        with patch.object(T, "get_tentacles_dir", return_value=swarm_base):
+            with patch("builtins.print"):
+                T.cmd_swarm(args)
+        data = json.loads(self.marker_path.read_text())
+        self.assertIn("backend/handler.ts", data["scope"])
+        self.assertIn("shared/dtos.ts", data["scope"])
+
+
+class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
+    """Concurrency correctness: parallel dispatches merge; partial completes preserve state."""
+
+    MARKER_NAME = "dispatched-subagent-active"
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "concurrency_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / self.MARKER_NAME
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    # ── parallel dispatch merging ─────────────────────────────────────────────
+
+    def test_two_dispatches_merge_active_tentacles(self):
+        """Second dispatch must append to active_tentacles, not overwrite."""
+        T._write_dispatched_subagent_marker("tent-a", ["a.py"], "prompt")
+        T._write_dispatched_subagent_marker("tent-b", ["b.py"], "parallel")
+        data = json.loads(self.marker_path.read_text())
+        active = data["active_tentacles"]
+        self.assertIn("tent-a", active)
+        self.assertIn("tent-b", active)
+        self.assertEqual(len(active), 2)
+
+    def test_dispatch_deduplicates_same_tentacle(self):
+        """Writing the same tentacle twice must not create duplicate entries."""
+        T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        self.assertEqual(data["active_tentacles"].count("tent-a"), 1)
+
+    def test_dispatch_on_existing_preserves_prior_entries(self):
+        """Writing tent-b after tent-a keeps tent-a in active_tentacles."""
+        T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        T._write_dispatched_subagent_marker("tent-b", [], "json")
+        data = json.loads(self.marker_path.read_text())
+        self.assertIn("tent-a", data["active_tentacles"])
+
+    # ── partial complete ──────────────────────────────────────────────────────
+
+    def test_first_complete_removes_own_entry_marker_survives(self):
+        """Clearing tent-a when tent-b is also active must leave the file intact."""
+        T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        T._write_dispatched_subagent_marker("tent-b", [], "prompt")
+        T._clear_dispatched_subagent_marker("tent-a")
+        self.assertTrue(self.marker_path.is_file())
+        data = json.loads(self.marker_path.read_text())
+        self.assertNotIn("tent-a", data["active_tentacles"])
+        self.assertIn("tent-b", data["active_tentacles"])
+
+    def test_last_complete_deletes_marker_file(self):
+        """File must be deleted once active_tentacles is empty."""
+        T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        T._write_dispatched_subagent_marker("tent-b", [], "prompt")
+        T._clear_dispatched_subagent_marker("tent-a")
+        T._clear_dispatched_subagent_marker("tent-b")
+        self.assertFalse(self.marker_path.is_file())
+
+    def test_clear_unknown_tentacle_leaves_others_untouched(self):
+        """Clearing a tentacle not in the active set must not modify the file."""
+        T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        T._clear_dispatched_subagent_marker("tent-x")  # not in active set
+        self.assertTrue(self.marker_path.is_file())
+        data = json.loads(self.marker_path.read_text())
+        self.assertIn("tent-a", data["active_tentacles"])
+
+    # ── HMAC integrity across lifecycle ──────────────────────────────────────
+
+    def test_hmac_valid_after_second_dispatch(self):
+        """sig must remain a valid HMAC-SHA256 over 'name:ts' after merging."""
+        import hashlib, hmac as _hmac
+        with patch.object(T, "_read_marker_secret", return_value="shared-secret"):
+            T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+            T._write_dispatched_subagent_marker("tent-b", [], "json")
+        data = json.loads(self.marker_path.read_text())
+        expected = _hmac.new(
+            "shared-secret".encode(),
+            f"{self.MARKER_NAME}:{data['ts']}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        self.assertEqual(data["sig"], expected)
+
+    def test_ts_refreshed_on_second_dispatch(self):
+        """ts must reflect the most-recent write, not the first one."""
+        T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+        ts_first = json.loads(self.marker_path.read_text())["ts"]
+        time.sleep(0.01)
+        T._write_dispatched_subagent_marker("tent-b", [], "json")
+        ts_second = json.loads(self.marker_path.read_text())["ts"]
+        self.assertGreaterEqual(int(ts_second), int(ts_first))
+
+    def test_hmac_valid_after_partial_clear(self):
+        """sig must remain valid after one tentacle is cleared and file is rewritten."""
+        import hashlib, hmac as _hmac
+        with patch.object(T, "_read_marker_secret", return_value="shared-secret"):
+            T._write_dispatched_subagent_marker("tent-a", [], "prompt")
+            T._write_dispatched_subagent_marker("tent-b", [], "prompt")
+            T._clear_dispatched_subagent_marker("tent-a")
+        data = json.loads(self.marker_path.read_text())
+        expected = _hmac.new(
+            "shared-secret".encode(),
+            f"{self.MARKER_NAME}:{data['ts']}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        self.assertEqual(data["sig"], expected)
+
+    # ── backward compat ───────────────────────────────────────────────────────
+
+    def test_old_single_owner_format_is_promoted_on_write(self):
+        """Old marker with 'tentacle' field must be promoted to active_tentacles list."""
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME, "ts": "1000", "tentacle": "legacy-tent",
+        }))
+        # New dispatch merges old owner into set
+        T._write_dispatched_subagent_marker("new-tent", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        self.assertIn("active_tentacles", data)
+        self.assertIn("new-tent", data["active_tentacles"])
+
+    def test_old_single_owner_format_cleared_correctly(self):
+        """Old marker with 'tentacle' field is deleted when that owner clears."""
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME, "ts": "1000", "tentacle": "legacy-tent",
+        }))
+        T._clear_dispatched_subagent_marker("legacy-tent")
+        self.assertFalse(self.marker_path.is_file())
 
 
 if __name__ == "__main__":

@@ -1,0 +1,19 @@
+#!/bin/sh
+# pre-push hook — Block push when dispatched-subagent-active marker is set.
+#
+# The pre-push hook fires before any `git push` regardless of target.
+#
+# Install: python3 ~/.copilot/tools/install.py --install-git-hooks
+# (Do NOT hand-copy: install.py embeds the correct tools path.)
+
+# Use the canonical installed path unconditionally.  Relative dirname-based
+# resolution breaks when this file is installed in a normal repo's .git/hooks/.
+SUBAGENT_CHECK="$HOME/.copilot/tools/hooks/check_subagent_marker.py"
+if [ -f "$SUBAGENT_CHECK" ]; then
+    python3 "$SUBAGENT_CHECK"
+    if [ $? -ne 0 ]; then
+        exit 1
+    fi
+fi
+
+exit 0

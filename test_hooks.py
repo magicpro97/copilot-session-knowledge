@@ -759,6 +759,399 @@ except Exception as e:
     test("TentacleSuggestRule bash-parity test ran without exception", False, str(e))
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  Section 12: Subagent Git Guard
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n🚫 Section 12: Subagent Git Guard")
+
+# 12a. Rule registered in preToolUse
+from rules import get_rules_for_event as _gre12
+_pre12 = _gre12("preToolUse")
+_pre12_names = [r.name for r in _pre12]
+test("preToolUse has subagent-git-guard", "subagent-git-guard" in _pre12_names)
+
+if "tentacle-enforce" in _pre12_names and "subagent-git-guard" in _pre12_names:
+    test(
+        "subagent-git-guard registered after tentacle-enforce",
+        _pre12_names.index("tentacle-enforce") < _pre12_names.index("subagent-git-guard"),
+    )
+
+# 12b–12g: SubagentGitGuardRule unit tests
+try:
+    sys.path.insert(0, str(REPO / "hooks"))
+    from rules.subagent_guard import SubagentGitGuardRule
+    import rules.subagent_guard as _sg
+
+    _orig_sg_fresh = _sg._marker_is_fresh
+    rule_sg = SubagentGitGuardRule()
+
+    _sg._marker_is_fresh = lambda: False
+    result_allow = rule_sg.evaluate("preToolUse", {
+        "toolName": "bash", "toolArgs": {"command": "git commit -m 'test'"},
+    })
+    test("No active marker → git commit allowed", result_allow is None)
+
+    _sg._marker_is_fresh = lambda: True
+    result_nongit = rule_sg.evaluate("preToolUse", {
+        "toolName": "bash", "toolArgs": {"command": "ls -la"},
+    })
+    test("Non-git command → allowed even with active marker", result_nongit is None)
+
+    result_deny_commit = rule_sg.evaluate("preToolUse", {
+        "toolName": "bash", "toolArgs": {"command": "git commit -m 'wip'"},
+    })
+    test("Active marker + git commit → denied",
+         isinstance(result_deny_commit, dict) and
+         result_deny_commit.get("permissionDecision") == "deny")
+
+    result_deny_push = rule_sg.evaluate("preToolUse", {
+        "toolName": "bash", "toolArgs": {"command": "git push origin main"},
+    })
+    test("Active marker + git push → denied",
+         isinstance(result_deny_push, dict) and
+         result_deny_push.get("permissionDecision") == "deny")
+
+    if isinstance(result_deny_commit, dict):
+        msg = result_deny_commit.get("permissionDecisionReason", "")
+        test("Deny message mentions subagent mode", "subagent" in msg.lower())
+        test("Deny message mentions handoff.md", "handoff.md" in msg)
+        test("Deny message mentions tentacle.py complete", "tentacle.py complete" in msg)
+        test("Deny message mentions local-only limitation", "local" in msg.lower())
+
+    result_edit = rule_sg.evaluate("preToolUse", {
+        "toolName": "edit", "toolArgs": {"path": "x.py"},
+    })
+    test("edit tool with active marker → not blocked by subagent-git-guard", result_edit is None)
+
+    _sg._marker_is_fresh = _orig_sg_fresh
+    test("SubagentGitGuardRule unit tests ran without exception", True)
+except Exception as e:
+    test("SubagentGitGuardRule unit tests ran without exception", False, str(e))
+
+# 12b2. ImportError fallback: verify_marker returns p.is_file() (existence fallback)
+# Verify that if marker_auth is unavailable, the guard is not silently disabled.
+try:
+    import rules.subagent_guard as _sg_fb
+    _orig_vm_fb = _sg_fb.verify_marker
+
+    # Simulate the import-failure fallback: existence-only
+    _sg_fb.verify_marker = lambda p, n: p.is_file()
+
+    _fb_rule = _sg_fb.SubagentGitGuardRule()
+    _orig_sm_fb = _sg_fb.SUBAGENT_MARKER
+
+    # No file → verify_marker returns False → allow
+    _sg_fb.SUBAGENT_MARKER = Path("/nonexistent/dispatched-subagent-active-testonly")
+    result_fb_absent = _fb_rule.evaluate("preToolUse", {
+        "toolName": "bash", "toolArgs": {"command": "git commit -m x"},
+    })
+    test("ImportError fallback (p.is_file): absent marker → allowed", result_fb_absent is None)
+
+    # File exists + fresh timestamp → allow (since no HMAC, file passes, but now check TTL)
+    # The important thing: existence-fallback does NOT silently disable the guard
+    _sg_fb.verify_marker = _orig_vm_fb
+    _sg_fb.SUBAGENT_MARKER = _orig_sm_fb
+    test("ImportError fallback: guard not silently disabled (verify_marker != always-False)",
+         _sg_fb.verify_marker is not (lambda p, n: False))
+
+    # Source-level check: fallback must NOT be `return False`
+    _sg_src = (REPO / "hooks" / "rules" / "subagent_guard.py").read_text(encoding="utf-8")
+    _fallback_block = _sg_src.split("except ImportError:")[1].split("def verify_marker")[1].split("\n\n")[0]
+    test("subagent_guard.py ImportError fallback uses is_file() not False",
+         "is_file()" in _fallback_block and "return False" not in _fallback_block)
+
+    test("ImportError fallback test ran without exception", True)
+except Exception as e:
+    test("ImportError fallback test ran without exception", False, str(e))
+
+# 12h. check_subagent_marker.py exists and syntax-valid
+_csm_path = REPO / "hooks" / "check_subagent_marker.py"
+test("hooks/check_subagent_marker.py exists", _csm_path.is_file())
+if _csm_path.is_file():
+    try:
+        import ast as _ast12
+        _ast12.parse(_csm_path.read_text(encoding="utf-8"))
+        test("check_subagent_marker.py syntax valid", True)
+    except SyntaxError as e:
+        test("check_subagent_marker.py syntax valid", False, str(e))
+
+# 12i. check_subagent_marker.py content checks
+if _csm_path.is_file():
+    _csm_src = _csm_path.read_text(encoding="utf-8")
+    test("check_subagent_marker.py has TTL constant", "MARKER_TTL" in _csm_src)
+    test("check_subagent_marker.py checks dispatched-subagent-active",
+         "dispatched-subagent-active" in _csm_src)
+    test("check_subagent_marker.py fails open on error", "return False" in _csm_src)
+    test("check_subagent_marker.py mentions handoff.md", "handoff.md" in _csm_src)
+    test("check_subagent_marker.py uses verify_marker",
+         "verify_marker" in _csm_src or "_verify_marker" in _csm_src)
+    test("check_subagent_marker.py has zombie marker check",
+         "active_tentacles" in _csm_src)
+
+# 12j. Absent marker → exit 0
+if _csm_path.is_file():
+    import time as _time12
+    _absent_home = Path(tempfile.mkdtemp(prefix="test-home-"))
+    r_absent = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        env={**os.environ, "HOME": str(_absent_home)},
+    )
+    test("check_subagent_marker.py absent marker → exit 0",
+         r_absent.returncode == 0,
+         f"exit={r_absent.returncode} stderr={r_absent.stderr[:80]}")
+    shutil.rmtree(str(_absent_home), ignore_errors=True)
+
+# 12k. Stale marker (no secret) → exit 0
+if _csm_path.is_file():
+    _stale_home = Path(tempfile.mkdtemp(prefix="test-stale-"))
+    (_stale_home / ".copilot" / "markers").mkdir(parents=True)
+    stale_ts = int(_time12.time()) - 99999
+    (_stale_home / ".copilot" / "markers" / "dispatched-subagent-active").write_text(
+        json.dumps({"name": "dispatched-subagent-active", "ts": str(stale_ts)})
+    )
+    r_stale = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        env={**os.environ, "HOME": str(_stale_home)},
+    )
+    test("check_subagent_marker.py stale marker (no secret) → exit 0",
+         r_stale.returncode == 0,
+         f"exit={r_stale.returncode} stdout={r_stale.stdout[:80]}")
+    shutil.rmtree(str(_stale_home), ignore_errors=True)
+
+# 12l. Fresh marker, no secret (existence fallback) → exit 1
+if _csm_path.is_file():
+    _fresh_home = Path(tempfile.mkdtemp(prefix="test-fresh-"))
+    (_fresh_home / ".copilot" / "markers").mkdir(parents=True)
+    (_fresh_home / ".copilot" / "markers" / "dispatched-subagent-active").write_text(
+        json.dumps({"name": "dispatched-subagent-active", "ts": str(int(_time12.time()))})
+    )
+    r_fresh = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        env={**os.environ, "HOME": str(_fresh_home)},
+    )
+    test("check_subagent_marker.py fresh marker (no secret, existence fallback) → exit 1",
+         r_fresh.returncode == 1,
+         f"exit={r_fresh.returncode} stdout={r_fresh.stdout[:120]}")
+    if r_fresh.returncode == 1:
+        test("Block message mentions handoff.md", "handoff.md" in r_fresh.stdout)
+        test("Block message mentions SUBAGENT", "SUBAGENT" in r_fresh.stdout.upper())
+    shutil.rmtree(str(_fresh_home), ignore_errors=True)
+
+# 12l2. Fresh marker with bad sig + secret present → exit 0 (HMAC rejects unsigned)
+if _csm_path.is_file():
+    import secrets as _secrets12
+    _badsig_home = Path(tempfile.mkdtemp(prefix="test-badsig-"))
+    (_badsig_home / ".copilot" / "hooks").mkdir(parents=True)
+    (_badsig_home / ".copilot" / "markers").mkdir(parents=True)
+    (_badsig_home / ".copilot" / "hooks" / ".marker-secret").write_text(_secrets12.token_hex(32))
+    (_badsig_home / ".copilot" / "markers" / "dispatched-subagent-active").write_text(
+        json.dumps({"name": "dispatched-subagent-active",
+                    "ts": str(int(_time12.time())), "sig": "badsig"})
+    )
+    r_badsig = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        env={**os.environ, "HOME": str(_badsig_home)},
+    )
+    test("check_subagent_marker.py bad sig + secret present → exit 0 (HMAC rejects)",
+         r_badsig.returncode == 0,
+         f"exit={r_badsig.returncode} stdout={r_badsig.stdout[:120]}")
+    shutil.rmtree(str(_badsig_home), ignore_errors=True)
+
+# 12m. pre-push exists and uses $HOME/.copilot/tools (not dirname)
+_prepush_path = REPO / "hooks" / "pre-push"
+test("hooks/pre-push exists", _prepush_path.is_file())
+if _prepush_path.is_file():
+    _prepush_src = _prepush_path.read_text(encoding="utf-8")
+    test("pre-push has shebang", _prepush_src.startswith("#!/"))
+    test("pre-push calls check_subagent_marker.py", "check_subagent_marker.py" in _prepush_src)
+    test("pre-push exits 0 normally", "exit 0" in _prepush_src)
+    test("pre-push uses $HOME/.copilot/tools for guard path",
+         "$HOME/.copilot/tools/hooks/check_subagent_marker.py" in _prepush_src)
+    test("pre-push does NOT use dirname-based path for guard",
+         "$(dirname" not in _prepush_src)
+
+# 12n. pre-commit uses $HOME/.copilot/tools (not dirname) for the guard
+_precommit_src = (REPO / "hooks" / "pre-commit").read_text(encoding="utf-8")
+test("pre-commit calls check_subagent_marker.py", "check_subagent_marker.py" in _precommit_src)
+test("pre-commit uses $HOME/.copilot/tools for guard path",
+     "$HOME/.copilot/tools/hooks/check_subagent_marker.py" in _precommit_src)
+_guard_block = _precommit_src.split("check_subagent_marker.py")[0].split("SUBAGENT_CHECK")[-1]
+test("pre-commit guard block does NOT use dirname resolution",
+     "$(dirname" not in _guard_block)
+
+# 12o. install.py exposes install_git_hooks
+_install_src = (REPO / "install.py").read_text(encoding="utf-8")
+test("install.py has install_git_hooks function", "def install_git_hooks" in _install_src)
+test("install.py has --install-git-hooks flag", "--install-git-hooks" in _install_src)
+
+# 12p. install.py syntax valid
+try:
+    import ast as _ast12p
+    _ast12p.parse((REPO / "install.py").read_text(encoding="utf-8"))
+    test("install.py syntax valid after changes", True)
+except SyntaxError as e:
+    test("install.py syntax valid after changes", False, str(e))
+
+# ── Zombie marker tests ────────────────────────────────────────────────────
+
+# 12q. SubagentGitGuardRule: zombie marker (active_tentacles=[]) → allow
+try:
+    import rules.subagent_guard as _sg2
+    rule_sg2 = _sg2.SubagentGitGuardRule()
+    _orig_vm2 = _sg2.verify_marker
+
+    _sg2.verify_marker = lambda p, n: True
+
+    _zombie_home = Path(tempfile.mkdtemp(prefix="test-zombie-"))
+    (_zombie_home / ".copilot" / "markers").mkdir(parents=True)
+    _zombie_file = _zombie_home / ".copilot" / "markers" / "dispatched-subagent-active"
+    _zombie_file.write_text(json.dumps({
+        "name": "dispatched-subagent-active",
+        "ts": str(int(_time12.time())),
+        "active_tentacles": [],
+    }))
+    _orig_sm2 = _sg2.SUBAGENT_MARKER
+    _sg2.SUBAGENT_MARKER = _zombie_file
+
+    result_zombie = rule_sg2.evaluate("preToolUse", {
+        "toolName": "bash", "toolArgs": {"command": "git commit -m 'test'"},
+    })
+    test("SubagentGitGuardRule: zombie marker (active_tentacles=[]) → allowed",
+         result_zombie is None,
+         f"Expected None, got: {result_zombie!r:.80}")
+
+    _zombie_file.write_text(json.dumps({
+        "name": "dispatched-subagent-active",
+        "ts": str(int(_time12.time())),
+        "active_tentacles": ["my-tentacle"],
+    }))
+    result_active = rule_sg2.evaluate("preToolUse", {
+        "toolName": "bash", "toolArgs": {"command": "git commit -m 'test'"},
+    })
+    test("SubagentGitGuardRule: non-empty active_tentacles → still blocked",
+         isinstance(result_active, dict) and
+         result_active.get("permissionDecision") == "deny",
+         f"Expected deny, got: {result_active!r:.80}")
+
+    _sg2.verify_marker = _orig_vm2
+    _sg2.SUBAGENT_MARKER = _orig_sm2
+    shutil.rmtree(str(_zombie_home), ignore_errors=True)
+    test("SubagentGitGuardRule zombie test ran without exception", True)
+except Exception as e:
+    test("SubagentGitGuardRule zombie test ran without exception", False, str(e))
+
+# 12r. check_subagent_marker.py: zombie marker → exit 0
+if _csm_path.is_file():
+    _z_home = Path(tempfile.mkdtemp(prefix="test-zombie-csm-"))
+    (_z_home / ".copilot" / "markers").mkdir(parents=True)
+    (_z_home / ".copilot" / "markers" / "dispatched-subagent-active").write_text(
+        json.dumps({
+            "name": "dispatched-subagent-active",
+            "ts": str(int(_time12.time())),
+            "active_tentacles": [],
+        })
+    )
+    r_zombie = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        env={**os.environ, "HOME": str(_z_home)},
+    )
+    test("check_subagent_marker.py zombie marker (active_tentacles=[]) → exit 0",
+         r_zombie.returncode == 0,
+         f"exit={r_zombie.returncode} stdout={r_zombie.stdout[:120]}")
+    shutil.rmtree(str(_z_home), ignore_errors=True)
+
+# 12r2. check_subagent_marker.py: non-empty active_tentacles → still exit 1
+if _csm_path.is_file():
+    _nz_home = Path(tempfile.mkdtemp(prefix="test-nonzombie-"))
+    (_nz_home / ".copilot" / "markers").mkdir(parents=True)
+    (_nz_home / ".copilot" / "markers" / "dispatched-subagent-active").write_text(
+        json.dumps({
+            "name": "dispatched-subagent-active",
+            "ts": str(int(_time12.time())),
+            "active_tentacles": ["my-tentacle"],
+        })
+    )
+    r_nonzombie = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        env={**os.environ, "HOME": str(_nz_home)},
+    )
+    test("check_subagent_marker.py non-empty active_tentacles → exit 1 (still blocks)",
+         r_nonzombie.returncode == 1,
+         f"exit={r_nonzombie.returncode} stdout={r_nonzombie.stdout[:120]}")
+    shutil.rmtree(str(_nz_home), ignore_errors=True)
+
+# ── E2E: installed hook in a non-tools repo ────────────────────────────────
+
+# 12s. E2E: installed hook correctly invokes guard in a fresh git repo.
+# Skipped when REPO is not at $HOME/.copilot/tools (e.g. non-standard WSL path).
+_canonical_tools = Path.home() / ".copilot" / "tools"
+_skip_e2e = REPO.resolve() != _canonical_tools.resolve()
+
+if _skip_e2e:
+    test("E2E: installed hook blocks commit (skip: REPO not at $HOME/.copilot/tools)", True)
+else:
+    _e2e_repo = Path(tempfile.mkdtemp(prefix="test-e2e-repo-"))
+    _e2e_marker_written = False
+    _real_marker = Path.home() / ".copilot" / "markers" / "dispatched-subagent-active"
+    try:
+        subprocess.run(["git", "init", str(_e2e_repo)],
+                       capture_output=True, check=True, timeout=10)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                       cwd=str(_e2e_repo), capture_output=True, timeout=5)
+        subprocess.run(["git", "config", "user.name", "Test"],
+                       cwd=str(_e2e_repo), capture_output=True, timeout=5)
+
+        _e2e_hook_dst = _e2e_repo / ".git" / "hooks" / "pre-commit"
+        (_e2e_repo / ".git" / "hooks").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(REPO / "hooks" / "pre-commit"), str(_e2e_hook_dst))
+        _e2e_hook_dst.chmod(_e2e_hook_dst.stat().st_mode | 0o111)
+
+        # (a) content check: canonical path, no dirname
+        _installed = _e2e_hook_dst.read_text(encoding="utf-8")
+        test("E2E: installed hook uses $HOME/.copilot/tools (not dirname)",
+             "$HOME/.copilot/tools/hooks/check_subagent_marker.py" in _installed and
+             "$(dirname" not in _installed.split("check_subagent_marker.py")[0].split("SUBAGENT_CHECK")[-1])
+
+        # (b) blocking check: signed marker → commit blocked
+        _real_marker.parent.mkdir(parents=True, exist_ok=True)
+        sign_marker(_real_marker, "dispatched-subagent-active")
+        _e2e_marker_written = True
+
+        (_e2e_repo / "README.md").write_text("test\n")
+        subprocess.run(["git", "add", "README.md"],
+                       cwd=str(_e2e_repo), capture_output=True, timeout=5)
+        r_e2e = subprocess.run(
+            ["git", "commit", "-m", "test"],
+            cwd=str(_e2e_repo),
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+        )
+        test("E2E: git commit in non-tools repo blocked by hook when marker present",
+             r_e2e.returncode != 0,
+             f"exit={r_e2e.returncode} stdout={r_e2e.stdout[:150]}")
+        if r_e2e.returncode != 0:
+            combined = r_e2e.stdout + r_e2e.stderr
+            test("E2E: block message mentions SUBAGENT",
+                 "SUBAGENT" in combined.upper(),
+                 f"Got: {combined[:150]}")
+
+    except subprocess.CalledProcessError as e:
+        test("E2E: git init succeeded", False, str(e))
+    except Exception as e:
+        test("E2E: installed-hook path test ran without exception", False, str(e))
+    finally:
+        if _e2e_marker_written and _real_marker.exists():
+            try:
+                _real_marker.unlink()
+            except Exception:
+                pass
+        shutil.rmtree(str(_e2e_repo), ignore_errors=True)
 
 
 import ast

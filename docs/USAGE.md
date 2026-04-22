@@ -232,11 +232,18 @@ JSON output includes `tentacle`, `status`, `todos_done`, `todos_total`, `pending
 
 ### Sub-agent conventions
 
-These apply to every dispatched sub-agent. They are guidance conventions, not hard runtime locks.
+These apply to every dispatched sub-agent.
 
-- **Commit convention**: By convention, only the orchestrator runs `git commit`/`git push`,
-  after merging and verifying all tentacle results. Sub-agents write files and `handoff.md`.
-  A sub-agent commit mid-run risks corrupting the orchestrator's merge flow.
+- **Commit restriction (enforced + convention)**: Sub-agents must not run `git commit` or
+  `git push`. When git hooks are installed (`install.py --install-git-hooks`), both operations
+  are **blocked at the git level** by `hooks/check_subagent_marker.py` whenever the
+  `dispatched-subagent-active` marker is present and fresh. Even without git hooks, this
+  remains a firm convention: only the orchestrator commits, after merging and verifying all
+  tentacle results. A sub-agent commit mid-run risks corrupting the orchestrator's merge flow.
+
+  > **Local-only enforcement**: the git hook guard fires only on local machines where hooks are
+  > installed. Cloud-delegated or remote agent runs are not covered.
+
 - **Stay in scope**: Avoid editing files outside your tentacle's declared scope.
 - **Escalate, don't expand**: If scope is insufficient, record the gap in `handoff.md` and stop.
   Do not expand scope or commit partial work unilaterally.
@@ -395,7 +402,8 @@ python3 ~/.copilot/tools/watch-sessions.py --daemon             # Run in backgro
 python3 ~/.copilot/tools/embed.py --status                      # Embedding coverage stats
 python3 ~/.copilot/tools/embed.py --build                       # Rebuild all embeddings
 python3 ~/.copilot/tools/install.py --deploy-skill              # Deploy SKILL.md
-python3 ~/.copilot/tools/install.py --deploy-hooks              # Deploy hooks
+python3 ~/.copilot/tools/install.py --deploy-hooks              # Deploy Copilot CLI hooks
+python3 ~/.copilot/tools/install.py --install-git-hooks         # Install pre-commit/pre-push git hooks (per repo)
 python3 ~/.copilot/tools/install.py --deploy-instructions       # Deploy global instructions
 python3 ~/.copilot/tools/install.py --inject-global             # Inject into global copilot-instructions
 ```

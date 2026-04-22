@@ -23,13 +23,40 @@ Adapted from the [OctoGent](https://github.com/hesamsheikh/octogent) tentacle pa
 
 **Not a good fit:** strictly sequential single-file tasks, limited token budget, trivial edits.
 
-## Sub-agent Guardrails (conventions)
+## Sub-agent Guardrails
 
-These conventions apply to dispatched sub-agents. They are enforced by prompt context and hook guidance, not by hard runtime locks. Violating them is the primary failure mode in multi-agent runs.
+These guardrails apply to dispatched sub-agents. The **commit restriction is enforced at the
+git level** when hooks are installed; all other items are conventions reinforced by prompt
+context.
+
+**Why git hooks, not preToolUse alone:** When the orchestrator dispatches a sub-agent via the
+`task()` tool, the platform does not guarantee that `preToolUse` hooks from the parent
+`hooks.json` propagate into the sub-agent's context window. Git hooks (`pre-commit`,
+`pre-push`) are filesystem-level and fire for any git process regardless of which agent spawned
+it — they are the reliable enforcement surface.
+
+**How enforcement works:**
+1. `tentacle.py swarm` writes an HMAC-signed marker file at
+   `~/.copilot/markers/dispatched-subagent-active` containing an `active_tentacles` list.
+2. `hooks/pre-commit` and `hooks/pre-push` call `hooks/check_subagent_marker.py`, which blocks
+   the git operation when the marker is present, auth-valid, and within its 4-hour TTL.
+3. `hooks/rules/subagent_guard.py` provides a secondary `preToolUse` intercept for the
+   orchestrator session (defense-in-depth only — not the primary path).
+4. `tentacle.py complete <name>` removes the tentacle's entry; the marker is deleted when
+   `active_tentacles` becomes empty.
+
+**Install the git hooks** (once per repository):
+
+```bash
+python3 ~/.copilot/tools/install.py --install-git-hooks
+```
+
+**Enforcement scope:** Local-only. Cloud-delegated or remote agent runs are not covered.
+The `preToolUse` guard in the main session is defense-in-depth — it does not replace git hooks.
 
 | Convention | What to do |
 |------------|-----------|
-| **Commit convention** | By convention, only the orchestrator runs `git commit` and `git push`, after verifying merged results. Sub-agents write files and `handoff.md`. Committing from a sub-agent mid-run risks corrupting the orchestrator's merge flow. |
+| **Commit restriction** | Do not run `git commit` or `git push`. When git hooks are installed, both are blocked at the filesystem level while the `dispatched-subagent-active` marker is fresh. Even without hooks, committing from a subagent mid-run risks corrupting the orchestrator's merge flow. |
 | **Stay in scope** | Do not edit files outside your tentacle's declared `scope`. If you discover that more files are needed, escalate — do not expand unilaterally. |
 | **Escalate, don't expand** | If your scope is insufficient to complete the task, write the gap to `handoff.md` (e.g. "blocked: need changes in `src/db/` which is outside my scope") and stop. The orchestrator decides whether to create a new tentacle or adjust scope. |
 | **No over-implementation** | Implement only what your todos specify. Do not add features, refactors, or improvements that are not in your todo list — even if they seem obvious. |
@@ -43,9 +70,10 @@ These conventions apply to dispatched sub-agents. They are enforced by prompt co
 - ❌ Skipping `complete` before `delete` → learnings from handoff.md lost permanently
 - ❌ Overlapping tentacle scopes → agents overwrite each other's work
 - ❌ Using `--briefing` with `--output json` → not supported; briefing content cannot be represented in JSON payload
-- ❌ Sub-agent commits or pushes → risks corrupting the orchestrator's merge/verify flow
+- ❌ Sub-agent commits or pushes → blocked by git hooks when installed (and risky regardless: corrupts orchestrator's merge/verify flow)
 - ❌ Sub-agent edits files outside declared scope → silent conflicts with other parallel agents
 - ❌ Sub-agent silently expands scope instead of escalating → orchestrator loses visibility
+- ❌ Skipping `install.py --install-git-hooks` → git-level commit/push guard is inactive; enforcement falls back to preToolUse only (not guaranteed in subagent contexts)
 
 ## Core concept
 
@@ -183,10 +211,11 @@ git add -A && git commit -m "feat(<scope>): <phase description>"
 - After Phase 3 verification passes → commit
 - Final integration wiring → commit
 
-**Commit convention:** By convention, only the orchestrator runs `git commit` and `git push`,
-after merging and verifying all tentacle results. Sub-agents write files and `handoff.md`.
-If a sub-agent's scope is insufficient, it escalates via `handoff.md` rather than
-committing partial work or expanding scope.
+**Commit restriction:** Sub-agents must not run `git commit` or `git push`. When git hooks
+are installed (`install.py --install-git-hooks`), both operations are blocked at the git level
+while the `dispatched-subagent-active` marker is fresh. Even without hooks, this is a hard
+convention: the orchestrator commits after merging and verifying all tentacle results.
+This enforcement is **local-only** — cloud-delegated or remote agent runs are not covered.
 
 #### Step 14: Runtime verification
 
@@ -253,4 +282,4 @@ tentacle.py delete <name>
 4. **Complete before delete** — `complete` saves learnings; `delete` alone loses them
 5. **Commit after each phase** — uncommitted code is lost if the session crashes or compacts
 6. **Run the app** — build+test ≠ works. Launch the app to verify DI resolution and runtime behavior
-7. **⚠️ Commit convention** — By convention, only the orchestrator runs `git commit`/`git push` after merging and verifying all tentacle results. Sub-agents write files and `handoff.md`. Parallel agents share the same filesystem and git index — a sub-agent commit mid-run risks corrupting the orchestrator's merge flow.
+7. **⚠️ Commit restriction** — Sub-agents must not run `git commit`/`git push`. When git hooks are installed (`install.py --install-git-hooks`), both are blocked at the filesystem level while the `dispatched-subagent-active` marker is fresh. Even without hooks, a sub-agent commit mid-run corrupts the orchestrator's merge flow. Enforcement is local-only; cloud-delegated runs are not covered.

@@ -8,6 +8,7 @@ Usage:
     python install.py --deploy-hooks         # Deploy hooks.json to ~/.copilot/hooks/
     python install.py --deploy-instructions  # Deploy global instructions to ~/.github/
     python install.py --inject-global        # Add session-knowledge to global copilot-instructions
+    python install.py --install-git-hooks    # Install pre-commit/pre-push into current repo's .git/hooks/
     python install.py --lock-hooks           # Lock hooks with OS immutable flags (tamper protection)
     python install.py --unlock-hooks         # Unlock hooks for updates
     python install.py --test                 # Run self-test
@@ -884,6 +885,7 @@ def _show_usage_hints():
     print(f"    python {inst} --deploy-hooks           # Deploy hooks")
     print(f"    python {inst} --deploy-instructions   # Deploy global instructions")
     print(f"    python {inst} --inject-global         # Add to global copilot-instructions")
+    print(f"    python {inst} --install-git-hooks     # Install pre-commit/pre-push git hooks")
     print(f"    python {inst} --lock-hooks             # Lock hooks (tamper protection)")
     print(f"    python {inst} --unlock-hooks           # Unlock hooks for updates")
     print(f"    python {inst} --test                  # Run self-test")
@@ -1119,6 +1121,100 @@ def unlock_hooks():
     print("  ⚠️  Re-lock after updates: python3 install.py --lock-hooks")
 
 
+def install_git_hooks(target_dir: "Path | None" = None) -> None:
+    """Install pre-commit and pre-push git hooks into a repository's .git/hooks/.
+
+    Copies hooks/pre-commit and hooks/pre-push from the tools source tree into
+    <target_dir>/.git/hooks/ (or the git root of cwd if target_dir is None).
+    Makes both files executable (chmod +x on POSIX).  Does NOT overwrite existing
+    hooks that differ without interactive confirmation.
+
+    The installed hooks reference $HOME/.copilot/tools unconditionally so they
+    work correctly in any repo, not just the tools repo itself.
+    """
+    print("\nInstall Git Hooks (pre-commit / pre-push)")
+
+    hooks_src_dir = _SCRIPT_DIR / "hooks"
+    hook_names = ["pre-commit", "pre-push"]
+
+    if target_dir is None:
+        target_dir = _git_root()
+    if target_dir is None:
+        print(f"  {FAIL} Not inside a git repository — run from a project directory.")
+        return
+
+    git_hooks_dir = target_dir / ".git" / "hooks"
+    if not git_hooks_dir.is_dir():
+        print(f"  {FAIL} .git/hooks/ not found at {git_hooks_dir}")
+        return
+
+    installed = []
+    skipped = []
+
+    for hook_name in hook_names:
+        src = hooks_src_dir / hook_name
+        dst = git_hooks_dir / hook_name
+
+        if not src.is_file():
+            print(f"  {FAIL} Source hook not found: {_tilde(src)}")
+            continue
+
+        src_text = src.read_text(encoding="utf-8")
+
+        if dst.is_file():
+            dst_text = dst.read_text(encoding="utf-8")
+            if dst_text == src_text:
+                print(f"  {INFO} {hook_name} — already up to date")
+                skipped.append(hook_name)
+                continue
+            if not sys.stdin.isatty():
+                print(
+                    f"  {WARN} {hook_name} already exists and differs — "
+                    "skipping (non-interactive). Back it up and re-run to overwrite."
+                )
+                skipped.append(hook_name)
+                continue
+            try:
+                answer = input(
+                    f"  {WARN} {hook_name} already exists and differs. Overwrite? [y/N] "
+                ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print(f"\n  Skipping {hook_name}.")
+                skipped.append(hook_name)
+                continue
+            if answer not in ("y", "yes"):
+                print(f"  Skipping {hook_name}.")
+                skipped.append(hook_name)
+                continue
+            backup = dst.with_name(hook_name + ".backup")
+            shutil.copy2(str(dst), str(backup))
+            print(f"  {INFO} Backed up existing hook to {backup.name}")
+
+        dst.write_text(src_text, encoding="utf-8")
+        if os.name != "nt":
+            dst.chmod(dst.stat().st_mode | 0o111)
+        installed.append(hook_name)
+        print(f"  {OK} {hook_name} installed → {_tilde(dst)}")
+
+    if installed:
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(target_dir), "config", "core.hooksPath", ".git/hooks"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                print(f"  {OK} core.hooksPath confirmed as .git/hooks")
+        except Exception:
+            pass
+
+    total = len(installed) + len(skipped)
+    if not installed and not skipped:
+        print(f"  {FAIL} Nothing installed.")
+    else:
+        print(f"\n  {len(installed)} installed, {len(skipped)} already up to date (of {total} hooks).")
+        print("  Hooks block git commit/push when dispatched-subagent-active marker is fresh.")
+
+
 def main():
     args = sys.argv[1:]
 
@@ -1132,6 +1228,10 @@ def main():
 
     if "--deploy-hooks" in args:
         deploy_hooks()
+        return
+
+    if "--install-git-hooks" in args:
+        install_git_hooks()
         return
 
     if "--lock-hooks" in args:

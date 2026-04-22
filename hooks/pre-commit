@@ -1,11 +1,27 @@
 #!/bin/sh
 # pre-commit hook — Validate .agent.md and SKILL.md files before commit
 # Catches: deprecated fields, unknown tool names, schema mismatches
+# Also: blocks commit when dispatched-subagent-active marker is set.
 #
-# Install: cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
-# Or run:  bash hooks/install-hooks.sh
+# Install: python3 ~/.copilot/tools/install.py --install-git-hooks
+# (Do NOT hand-copy: use install.py so the canonical tools path is embedded.)
 
-TOOLS_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+# ── Dispatched-subagent guard ──────────────────────────────────────────────
+# Use the canonical installed path unconditionally.  Relative dirname-based
+# resolution breaks when this file lives in a normal repo's .git/hooks/
+# because dirname resolves to .git/hooks/, not ~/.copilot/tools.
+SUBAGENT_CHECK="$HOME/.copilot/tools/hooks/check_subagent_marker.py"
+if [ -f "$SUBAGENT_CHECK" ]; then
+    python3 "$SUBAGENT_CHECK"
+    if [ $? -ne 0 ]; then
+        exit 1
+    fi
+fi
+# ──────────────────────────────────────────────────────────────────────────
+
+# Skill/agent lint — only meaningful in the tools repo itself; silently skips
+# in other repos where lint-skills.py is absent.
+TOOLS_DIR="$HOME/.copilot/tools"
 HOOK_SCRIPT="$TOOLS_DIR/hooks/lint-skills.py"
 
 # Only run if the lint script exists
