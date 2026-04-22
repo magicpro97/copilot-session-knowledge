@@ -26,6 +26,14 @@ import tempfile
 import time
 from pathlib import Path
 
+# Fix Windows console encoding (cp1252 can't print emoji)
+if os.name == "nt":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 PASS = 0
 FAIL = 0
 REPO = Path(__file__).parent
@@ -1119,18 +1127,28 @@ else:
              "$HOME/.copilot/tools/hooks/check_subagent_marker.py" in _installed and
              "$(dirname" not in _installed.split("check_subagent_marker.py")[0].split("SUBAGENT_CHECK")[-1])
 
-        # (b) blocking check: signed marker → commit blocked
+        # (b) blocking check: fresh marker → commit blocked
+        # Write a full JSON marker (sign_marker writes an empty file when no
+        # secret exists, but is_marker_fresh requires parseable JSON with ts).
         _real_marker.parent.mkdir(parents=True, exist_ok=True)
-        sign_marker(_real_marker, "dispatched-subagent-active")
+        _real_marker.write_text(json.dumps({
+            "name": "dispatched-subagent-active",
+            "ts": str(int(time.time())),
+            "active_tentacles": ["e2e-test"],
+        }))
         _e2e_marker_written = True
 
         (_e2e_repo / "README.md").write_text("test\n")
         subprocess.run(["git", "add", "README.md"],
                        cwd=str(_e2e_repo), capture_output=True, timeout=5)
+        # Inject PYTHON_BIN so Git's MSYS2 sh can find the interpreter
+        # reliably regardless of PATH translation quirks.
+        _e2e_env = {**os.environ, "PYTHON_BIN": sys.executable}
         r_e2e = subprocess.run(
             ["git", "commit", "-m", "test"],
             cwd=str(_e2e_repo),
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+            env=_e2e_env,
         )
         test("E2E: git commit in non-tools repo blocked by hook when marker present",
              r_e2e.returncode != 0,
@@ -2129,6 +2147,211 @@ try:
          "Old active[0] dispatch pattern should be gone from repo-scope check")
 except Exception as e:
     test("16e: format-dispatch source checks", False, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Section 17: Windows home resolution & portable interpreter
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n── Section 17: Windows home resolution & portable interpreter ──")
+
+# 17a. check_subagent_marker.py has _copilot_home() helper
+_csm_src17 = (REPO / "hooks" / "check_subagent_marker.py").read_text(encoding="utf-8")
+test("17a: check_subagent_marker.py has _copilot_home helper",
+     "def _copilot_home" in _csm_src17)
+test("17a2: _copilot_home checks COPILOT_HOME env var",
+     "COPILOT_HOME" in _csm_src17)
+test("17a3: _copilot_home checks HOME env var",
+     '"HOME"' in _csm_src17 or "'HOME'" in _csm_src17)
+test("17a4: MARKER_PATH uses _copilot_home() not Path.home()",
+     "_copilot_home()" in _csm_src17 and
+     "Path.home()" not in _csm_src17.split("def _copilot_home")[0].split("MARKER_PATH")[1:2].__repr__())
+
+# 17b. pre-commit and pre-push use PYTHON_BIN detection, not hard-coded python3
+_pc_src17 = (REPO / "hooks" / "pre-commit").read_text(encoding="utf-8")
+_pp_src17 = (REPO / "hooks" / "pre-push").read_text(encoding="utf-8")
+test("17b: pre-commit has PYTHON_BIN detection",
+     "PYTHON_BIN" in _pc_src17 and "command -v" in _pc_src17)
+test("17b2: pre-commit uses $PYTHON_BIN not hard-coded python3 for guard",
+     '"$PYTHON_BIN" "$SUBAGENT_CHECK"' in _pc_src17)
+test("17b3: pre-push has PYTHON_BIN detection",
+     "PYTHON_BIN" in _pp_src17 and "command -v" in _pp_src17)
+test("17b4: pre-push uses $PYTHON_BIN not hard-coded python3 for guard",
+     '"$PYTHON_BIN" "$SUBAGENT_CHECK"' in _pp_src17)
+test("17b5: pre-commit verifies interpreter with -c probe",
+     '-c ""' in _pc_src17)
+test("17b6: pre-push verifies interpreter with -c probe",
+     '-c ""' in _pp_src17)
+
+# 17c. Subprocess: HOME override is respected by check_subagent_marker.py
+# This is the core Windows regression test — _copilot_home() must honour HOME.
+if _csm_path.is_file():
+    _home17 = Path(tempfile.mkdtemp(prefix="test-home17-"))
+    (_home17 / ".copilot" / "markers").mkdir(parents=True)
+    # Write a fresh marker under the temp home
+    (_home17 / ".copilot" / "markers" / "dispatched-subagent-active").write_text(
+        json.dumps({"name": "dispatched-subagent-active",
+                    "ts": str(int(time.time())),
+                    "active_tentacles": ["home-test"]})
+    )
+    r_home17 = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        env={**os.environ, "HOME": str(_home17)},
+    )
+    test("17c: HOME override → fresh marker under temp HOME blocks (exit 1)",
+         r_home17.returncode == 1,
+         f"exit={r_home17.returncode} stdout={r_home17.stdout[:120]}")
+    shutil.rmtree(str(_home17), ignore_errors=True)
+
+# 17d. Subprocess: COPILOT_HOME takes precedence over HOME
+if _csm_path.is_file():
+    _ch17 = Path(tempfile.mkdtemp(prefix="test-ch17-"))
+    _badh17 = Path(tempfile.mkdtemp(prefix="test-badh17-"))
+    (_ch17 / ".copilot" / "markers").mkdir(parents=True)
+    (_ch17 / ".copilot" / "markers" / "dispatched-subagent-active").write_text(
+        json.dumps({"name": "dispatched-subagent-active",
+                    "ts": str(int(time.time())),
+                    "active_tentacles": ["copilot-home-test"]})
+    )
+    # HOME points to empty dir, COPILOT_HOME points to dir with marker
+    r_ch17 = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        env={**os.environ, "HOME": str(_badh17), "COPILOT_HOME": str(_ch17)},
+    )
+    test("17d: COPILOT_HOME takes precedence over HOME",
+         r_ch17.returncode == 1,
+         f"exit={r_ch17.returncode} stdout={r_ch17.stdout[:120]}")
+    shutil.rmtree(str(_ch17), ignore_errors=True)
+    shutil.rmtree(str(_badh17), ignore_errors=True)
+
+# 17e. In-process: _copilot_home() respects env vars
+try:
+    import importlib.util as _ilu17
+    _csm_spec17 = _ilu17.spec_from_file_location("check_subagent_marker_17", _csm_path)
+    _csm17 = _ilu17.module_from_spec(_csm_spec17)
+    _csm_spec17.loader.exec_module(_csm17)
+
+    _saved_env17 = {k: os.environ.get(k) for k in ("COPILOT_HOME", "HOME")}
+    try:
+        os.environ["HOME"] = "/test/home17"
+        os.environ.pop("COPILOT_HOME", None)
+        result17a = _csm17._copilot_home()
+        test("17e: _copilot_home() returns HOME when set",
+             str(result17a) == "/test/home17" or str(result17a) == "\\test\\home17",
+             f"Got: {result17a}")
+
+        os.environ["COPILOT_HOME"] = "/test/copilot-home17"
+        result17b = _csm17._copilot_home()
+        test("17e2: _copilot_home() prefers COPILOT_HOME over HOME",
+             str(result17b) == "/test/copilot-home17" or str(result17b) == "\\test\\copilot-home17",
+             f"Got: {result17b}")
+
+        os.environ.pop("COPILOT_HOME", None)
+        os.environ.pop("HOME", None)
+        result17c = _csm17._copilot_home()
+        test("17e3: _copilot_home() falls back to Path.home() when no env vars",
+             result17c == Path.home(),
+             f"Got: {result17c}")
+    finally:
+        for k, v in _saved_env17.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+except Exception as e:
+    test("17e: _copilot_home in-process tests", False, str(e))
+
+# 17f. No bare Path.home() remains in MARKER_PATH or _SECRET_PATH assignments
+test("17f: no bare Path.home() in MARKER_PATH assignment",
+     "MARKER_PATH = Path.home()" not in _csm_src17)
+_secret_lines17 = [l for l in _csm_src17.splitlines() if "_SECRET_PATH" in l and "=" in l]
+test("17f2: _SECRET_PATH uses _copilot_home() if present",
+     all("_copilot_home()" in l for l in _secret_lines17) if _secret_lines17 else True,
+     f"Lines: {_secret_lines17}")
+
+
+# 17g. POSIX-style path normalization (regression for Git Bash HOME on Windows)
+test("17g: _normalize_posix_home function exists",
+     "def _normalize_posix_home" in _csm_src17)
+
+try:
+    import importlib.util as _ilu17g
+    _csm_spec17g = _ilu17g.spec_from_file_location("csm17g", _csm_path)
+    _csm17g = _ilu17g.module_from_spec(_csm_spec17g)
+    _csm_spec17g.loader.exec_module(_csm17g)
+
+    _saved_osname17g = os.name
+
+    # Build expected Windows paths using explicit backslash (chr(92)) so
+    # assertions are correct regardless of the host's os.sep value.
+    _bs = chr(92)  # backslash — avoids escape-in-fstring issues
+
+    # Simulate Windows for normalization tests
+    os.name = "nt"
+    try:
+        test("17g2: /c/Users/foo → C:\\Users\\foo",
+             _csm17g._normalize_posix_home("/c/Users/foo") == f"C:{_bs}Users{_bs}foo",
+             f"Got: {_csm17g._normalize_posix_home('/c/Users/foo')}")
+        test("17g3: /d/Projects/bar → D:\\Projects\\bar",
+             _csm17g._normalize_posix_home("/d/Projects/bar") == f"D:{_bs}Projects{_bs}bar",
+             f"Got: {_csm17g._normalize_posix_home('/d/Projects/bar')}")
+        test("17g4: /mnt/c/Users/foo → C:\\Users\\foo",
+             _csm17g._normalize_posix_home("/mnt/c/Users/foo") == f"C:{_bs}Users{_bs}foo",
+             f"Got: {_csm17g._normalize_posix_home('/mnt/c/Users/foo')}")
+        test("17g5: /mnt/d/Work → D:\\Work",
+             _csm17g._normalize_posix_home("/mnt/d/Work") == f"D:{_bs}Work",
+             f"Got: {_csm17g._normalize_posix_home('/mnt/d/Work')}")
+        test("17g6: native Windows path unchanged",
+             _csm17g._normalize_posix_home("C:\\Users\\foo") == "C:\\Users\\foo",
+             f"Got: {_csm17g._normalize_posix_home('C:\\Users\\foo')}")
+        test("17g7: plain /tmp unchanged on Windows",
+             _csm17g._normalize_posix_home("/tmp/test") == "/tmp/test",
+             f"Got: {_csm17g._normalize_posix_home('/tmp/test')}")
+
+        # Cygwin-style paths
+        test("17g9: /cygdrive/c/Users/foo → C:\\Users\\foo",
+             _csm17g._normalize_posix_home("/cygdrive/c/Users/foo") == f"C:{_bs}Users{_bs}foo",
+             f"Got: {_csm17g._normalize_posix_home('/cygdrive/c/Users/foo')}")
+        test("17g10: /cygdrive/d/Work → D:\\Work",
+             _csm17g._normalize_posix_home("/cygdrive/d/Work") == f"D:{_bs}Work",
+             f"Got: {_csm17g._normalize_posix_home('/cygdrive/d/Work')}")
+
+        # Non-Windows: no normalization
+        os.name = "posix"
+        test("17g8: no normalization on non-Windows",
+             _csm17g._normalize_posix_home("/c/Users/foo") == "/c/Users/foo",
+             f"Got: {_csm17g._normalize_posix_home('/c/Users/foo')}")
+    finally:
+        os.name = _saved_osname17g
+except Exception as e:
+    test("17g: POSIX path normalization tests", False, str(e))
+
+# 17h. Subprocess: HOME with POSIX-style path correctly resolves marker on Windows
+if _csm_path.is_file() and os.name == "nt":
+    _home17h = Path(tempfile.mkdtemp(prefix="test-home17h-"))
+    (_home17h / ".copilot" / "markers").mkdir(parents=True)
+    (_home17h / ".copilot" / "markers" / "dispatched-subagent-active").write_text(
+        json.dumps({"name": "dispatched-subagent-active",
+                    "ts": str(int(time.time())),
+                    "active_tentacles": ["posix-path-test"]})
+    )
+    # Build a POSIX-style path: C:\Users\x\AppData\... → /c/Users/x/AppData/...
+    _home17h_str = str(_home17h)
+    if len(_home17h_str) >= 2 and _home17h_str[1] == ":":
+        _posix_home17h = "/" + _home17h_str[0].lower() + "/" + _home17h_str[3:].replace("\\", "/")
+    else:
+        _posix_home17h = _home17h_str
+    r_posix17h = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        env={**os.environ, "HOME": _posix_home17h},
+    )
+    test("17h: POSIX-style HOME (e.g. /c/Users/...) → marker found → blocks (exit 1)",
+         r_posix17h.returncode == 1,
+         f"POSIX HOME={_posix_home17h} exit={r_posix17h.returncode} stdout={r_posix17h.stdout[:120]}")
+    shutil.rmtree(str(_home17h), ignore_errors=True)
 
 
 import ast

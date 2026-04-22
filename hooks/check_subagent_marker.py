@@ -35,7 +35,54 @@ import sys
 import time
 from pathlib import Path
 
-MARKER_PATH = Path.home() / ".copilot" / "markers" / "dispatched-subagent-active"
+
+def _normalize_posix_home(val: str) -> str:
+    """Convert POSIX-style Windows home paths to native Windows paths.
+
+    Git Bash and MSYS2 expose HOME as ``/c/Users/...`` or ``/mnt/c/Users/...``,
+    and Cygwin uses ``/cygdrive/c/Users/...``.  ``Path(...)`` on Windows turns
+    these into ``C:\\c\\Users\\...`` (wrong).  Detect and rewrite to
+    ``C:\\Users\\...`` so marker lookups hit the real home.
+    Only applies on Windows (os.name == 'nt').
+    """
+    if os.name != "nt":
+        return val
+    import re
+    # /c/Users/... → C:\Users\...
+    m = re.match(r"^/([a-zA-Z])/(.*)", val)
+    if m:
+        return f"{m.group(1).upper()}:\\{m.group(2).replace('/', chr(92))}"
+    # /mnt/c/Users/... → C:\Users\...
+    m = re.match(r"^/mnt/([a-zA-Z])/(.*)", val)
+    if m:
+        return f"{m.group(1).upper()}:\\{m.group(2).replace('/', chr(92))}"
+    # /cygdrive/c/Users/... → C:\Users\...
+    m = re.match(r"^/cygdrive/([a-zA-Z])/(.*)", val)
+    if m:
+        return f"{m.group(1).upper()}:\\{m.group(2).replace('/', chr(92))}"
+    return val
+
+
+def _copilot_home() -> Path:
+    """Resolve the user home directory for .copilot paths.
+
+    Priority: COPILOT_HOME > HOME > Path.home().
+    On Windows, Path.home() uses USERPROFILE and ignores HOME.  Tests and
+    isolated environments set HOME to temp dirs, so we must honour it
+    explicitly to keep subprocess test coverage deterministic.
+
+    POSIX-style paths from Git Bash / MSYS2 (``/c/Users/...``,
+    ``/mnt/c/Users/...``) are normalised to native Windows paths so that
+    marker file lookups resolve correctly.
+    """
+    for var in ("COPILOT_HOME", "HOME"):
+        val = os.environ.get(var)
+        if val:
+            return Path(_normalize_posix_home(val))
+    return Path.home()
+
+
+MARKER_PATH = _copilot_home() / ".copilot" / "markers" / "dispatched-subagent-active"
 MARKER_NAME = "dispatched-subagent-active"
 MARKER_TTL = 14400  # 4 hours
 
@@ -50,14 +97,18 @@ sys.path.insert(0, str(_TOOLS_DIR / "hooks"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # hooks/ itself
 
 try:
-    from marker_auth import verify_marker as _verify_marker  # type: ignore
+    import marker_auth as _marker_auth_mod  # type: ignore
+    # Patch SECRET_PATH so imported verify_marker uses the same home
+    # resolution as this script (honours COPILOT_HOME / HOME env vars).
+    _marker_auth_mod.SECRET_PATH = _copilot_home() / ".copilot" / "hooks" / ".marker-secret"
+    _verify_marker = _marker_auth_mod.verify_marker
 except ImportError:
     # Inline fallback that mirrors marker_auth semantics exactly:
     # no secret → existence only; secret present → HMAC check.
     import hashlib
     import hmac as _hmac
 
-    _SECRET_PATH = Path.home() / ".copilot" / "hooks" / ".marker-secret"
+    _SECRET_PATH = _copilot_home() / ".copilot" / "hooks" / ".marker-secret"
 
     def _read_secret_inline():
         try:

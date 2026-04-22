@@ -3339,5 +3339,337 @@ class TestMigrationCleanupGap(unittest.TestCase):
         self.assertIn(tid, ids, "New phase-5 entry must be present")
 
 
+# ---------------------------------------------------------------------------
+# Path-canonicalization regression tests
+# ---------------------------------------------------------------------------
+
+class TestCanonicalRootComparison(unittest.TestCase):
+    """Regression tests for _same_canonical_root and canonical-path marker operations.
+
+    The root cause: _clear_dispatched_subagent_marker() compared raw git_root
+    strings while hook readers use Path.resolve() — so the same physical repo
+    accessed via different path representations (dotdot components, symlinks,
+    Windows case differences) could strand a stale marker.
+    """
+
+    MARKER_NAME = "dispatched-subagent-active"
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "canonical_root_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.repo = self.base / "my-repo"
+        self.repo.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / self.MARKER_NAME
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    # ── _same_canonical_root unit tests ──────────────────────────────────────
+
+    def test_same_path_string_is_equal(self):
+        """Identical path strings must compare equal."""
+        self.assertTrue(T._same_canonical_root(str(self.repo), str(self.repo)))
+
+    def test_different_paths_are_not_equal(self):
+        """Paths to different directories must not compare equal."""
+        other = self.base / "other-repo"
+        self.assertFalse(T._same_canonical_root(str(self.repo), str(other)))
+
+    def test_both_none_is_equal(self):
+        """Two None roots (both unknown) must compare equal — legacy dedup."""
+        self.assertTrue(T._same_canonical_root(None, None))
+
+    def test_one_none_is_not_equal(self):
+        """One None vs. one non-None must not match — can't confirm identity."""
+        self.assertFalse(T._same_canonical_root(None, str(self.repo)))
+        self.assertFalse(T._same_canonical_root(str(self.repo), None))
+
+    def test_dotdot_resolves_to_same_dir(self):
+        """Path with dotdot component must compare equal to the canonical form."""
+        sibling = self.base / "sibling"
+        sibling.mkdir(exist_ok=True)
+        # <base>/sibling/../my-repo resolves to <base>/my-repo
+        alt_path = str(sibling / ".." / "my-repo")
+        self.assertTrue(T._same_canonical_root(str(self.repo), alt_path))
+
+    # ── marker clear uses canonical comparison ────────────────────────────────
+
+    def test_clear_works_when_marker_has_dotdot_path(self):
+        """A marker written with a dotdot path must be cleared by the canonical path."""
+        sibling = self.base / "sibling"
+        sibling.mkdir(exist_ok=True)
+        alt_git_root = str(sibling / ".." / "my-repo")
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "git_root": alt_git_root,
+            "active_tentacles": [
+                {"name": "work", "ts": str(int(time.time())), "git_root": alt_git_root},
+            ],
+        }))
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            result = T._clear_dispatched_subagent_marker("work")
+        self.assertTrue(result)
+        self.assertFalse(
+            self.marker_path.is_file(),
+            "Marker must be deleted when dotdot path canonicalizes to the same dir",
+        )
+
+    def test_clear_does_not_remove_entry_from_genuinely_different_repo(self):
+        """A different-repo entry must NOT be removed even if clear is called."""
+        other_repo = self.base / "other-repo"
+        other_repo.mkdir(exist_ok=True)
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "git_root": str(other_repo),
+            "active_tentacles": [
+                {"name": "work", "ts": str(int(time.time())), "git_root": str(other_repo)},
+            ],
+        }))
+        # Clear from self.repo — different from other_repo
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._clear_dispatched_subagent_marker("work")
+        self.assertTrue(
+            self.marker_path.is_file(),
+            "Other-repo entry must survive a clear from a different repo",
+        )
+
+    def test_write_dedup_with_dotdot_path_in_existing_entry(self):
+        """Writing with a canonical path must dedup against an existing dotdot-path entry."""
+        sibling = self.base / "sibling"
+        sibling.mkdir(exist_ok=True)
+        alt_git_root = str(sibling / ".." / "my-repo")
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "git_root": alt_git_root,
+            "active_tentacles": [
+                {"name": "work", "ts": str(int(time.time())), "git_root": alt_git_root},
+            ],
+        }))
+        # Write again using canonical path — should dedup (not add a second entry)
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("work", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        names = _names_from_entries(data["active_tentacles"])
+        self.assertEqual(
+            names.count("work"), 1,
+            "Dotdot path and canonical path to same dir must dedup to one entry",
+        )
+
+    def test_write_then_clear_both_non_canonical_same_repo(self):
+        """Write→clear round-trip where both sides use distinct non-canonical paths.
+
+        Scenario: the write call's find_git_root returns <base>/sibA/../my-repo and
+        the clear call's find_git_root returns <base>/sibB/../my-repo.  Both resolve
+        to the same physical directory.  The marker must be fully cleared.
+        """
+        sibA = self.base / "sibA"
+        sibB = self.base / "sibB"
+        sibA.mkdir(exist_ok=True)
+        sibB.mkdir(exist_ok=True)
+
+        # Two different non-canonical representations of the same dir.
+        path_a = Path(str(sibA / ".." / "my-repo"))  # resolved → self.repo
+        path_b = Path(str(sibB / ".." / "my-repo"))  # resolved → self.repo
+
+        # --- write phase ---
+        with patch.object(T, "find_git_root", return_value=path_a):
+            T._write_dispatched_subagent_marker("work", [], "prompt")
+
+        self.assertTrue(self.marker_path.is_file(), "Marker must exist after write")
+
+        # Verify the written git_root is the non-canonical string form of path_a
+        data = json.loads(self.marker_path.read_text())
+        written_root = data["active_tentacles"][0]["git_root"]
+        self.assertNotEqual(
+            written_root,
+            str(self.repo),
+            "Pre-condition: written path should be non-canonical",
+        )
+
+        # --- clear phase using a different non-canonical path ---
+        with patch.object(T, "find_git_root", return_value=path_b):
+            result = T._clear_dispatched_subagent_marker("work")
+
+        self.assertTrue(result, "clear must return True on success")
+        self.assertFalse(
+            self.marker_path.is_file(),
+            "Marker must be deleted when both write and clear use different "
+            "non-canonical paths that resolve to the same directory",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Collision-renamed tentacle lifecycle and bundle metadata regression tests
+# ---------------------------------------------------------------------------
+
+class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
+    """Regression tests for collision-renamed tentacle lifecycle and bundle metadata.
+
+    When cmd_create encounters an existing directory it appends a UUID slug:
+    alpha → alpha-<uuid[:8]>.  The logical name is preserved in meta.json['name']
+    and the actual dir name in meta.json['dir_name'].  _build_runtime_bundle must
+    surface both in manifest.json (slug) and session-metadata.md (Slug line).
+    """
+
+    MARKER_NAME = "dispatched-subagent-active"
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "collision_lifecycle_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / self.MARKER_NAME
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def _make_collision_tentacle(self, logical_name: str, slug: str) -> Path:
+        """Create a collision-renamed tentacle directory with proper meta.json."""
+        d = self.base / slug
+        d.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "name": logical_name,
+            "dir_name": slug,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "scope": [],
+            "description": f"Collision-renamed {logical_name}",
+            "status": "idle",
+            "tentacle_id": str(uuid.uuid4()),
+        }
+        (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+        (d / "CONTEXT.md").write_text(f"# {logical_name}\n\nCollision test.\n")
+        (d / "todo.md").write_text("# Todo\n\n- [ ] Task A\n")
+        return d
+
+    # ── bundle manifest slug ──────────────────────────────────────────────────
+
+    def test_bundle_manifest_includes_slug_for_collision_renamed(self):
+        """manifest.json must include 'slug' when actual dir name != logical name."""
+        d = self._make_collision_tentacle("alpha", "alpha-abc12345")
+        with patch.object(T, "find_git_root", return_value=None):
+            bundle_dir = T._build_runtime_bundle(d, "alpha")
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        self.assertIn("slug", data, "slug must be present for collision-renamed tentacle")
+        self.assertEqual(data["slug"], "alpha-abc12345")
+
+    def test_bundle_manifest_no_slug_for_normal_tentacle(self):
+        """manifest.json must NOT include 'slug' when dir name matches logical name."""
+        d = make_tentacle("normal-tent", self.base)
+        with patch.object(T, "find_git_root", return_value=None):
+            bundle_dir = T._build_runtime_bundle(d, "normal-tent")
+        data = json.loads((bundle_dir / "manifest.json").read_text())
+        self.assertNotIn("slug", data, "slug must be absent when dir name matches logical name")
+
+    # ── bundle session-metadata slug line ────────────────────────────────────
+
+    def test_bundle_session_metadata_shows_slug_for_collision_renamed(self):
+        """session-metadata.md must contain a Slug line for collision-renamed tentacles."""
+        d = self._make_collision_tentacle("beta", "beta-xyz99999")
+        with patch.object(T, "find_git_root", return_value=None):
+            bundle_dir = T._build_runtime_bundle(d, "beta")
+        content = (bundle_dir / "session-metadata.md").read_text()
+        self.assertIn("beta-xyz99999", content,
+                      "session-metadata.md must show the collision slug")
+        self.assertIn("Slug:", content,
+                      "session-metadata.md must have an explicit Slug label")
+
+    def test_bundle_session_metadata_no_slug_line_for_normal_tentacle(self):
+        """session-metadata.md must NOT have a Slug line for non-collision tentacles."""
+        d = make_tentacle("plain-tent", self.base)
+        with patch.object(T, "find_git_root", return_value=None):
+            bundle_dir = T._build_runtime_bundle(d, "plain-tent")
+        content = (bundle_dir / "session-metadata.md").read_text()
+        self.assertNotIn("Slug:", content)
+
+    # ── collision tentacle marker lifecycle ───────────────────────────────────
+
+    def test_collision_tentacle_marker_written_with_tentacle_id(self):
+        """A collision-renamed tentacle must write its marker entry with tentacle_id."""
+        d = self._make_collision_tentacle("gamma", "gamma-deadbeef")
+        meta = json.loads((d / "meta.json").read_text())
+        tid = meta["tentacle_id"]
+        with patch.object(T, "find_git_root", return_value=self.base):
+            T._write_dispatched_subagent_marker(
+                "gamma", [], "prompt", tentacle_id=tid
+            )
+        data = json.loads(self.marker_path.read_text())
+        ids = [e.get("tentacle_id") for e in data["active_tentacles"]]
+        self.assertIn(tid, ids, "Collision tentacle's tentacle_id must be in marker")
+
+    def test_collision_tentacle_marker_cleared_by_tentacle_id(self):
+        """Completing a collision-renamed tentacle must remove its entry by tentacle_id."""
+        d = self._make_collision_tentacle("delta", "delta-cafebabe")
+        meta = json.loads((d / "meta.json").read_text())
+        tid = meta["tentacle_id"]
+        sibling_tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.base):
+            T._write_dispatched_subagent_marker("delta", [], "prompt", tentacle_id=tid)
+            T._write_dispatched_subagent_marker("sibling", [], "prompt",
+                                                tentacle_id=sibling_tid)
+            T._clear_dispatched_subagent_marker("delta", tentacle_id=tid)
+        # delta's entry must be gone; sibling must survive
+        self.assertTrue(self.marker_path.is_file(),
+                        "Marker must survive while sibling is active")
+        data = json.loads(self.marker_path.read_text())
+        ids = [e.get("tentacle_id") for e in data["active_tentacles"]]
+        self.assertNotIn(tid, ids, "Completed collision tentacle entry must be removed")
+        self.assertIn(sibling_tid, ids, "Sibling entry must survive")
+
+    def test_two_collision_tentacles_same_logical_name_have_distinct_entries(self):
+        """Two collision-renamed tentacles from the same logical name must each have
+        a separate marker entry (phase-5 identity isolation)."""
+        d1 = self._make_collision_tentacle("epsilon", "epsilon-11111111")
+        d2 = self._make_collision_tentacle("epsilon", "epsilon-22222222")
+        meta1 = json.loads((d1 / "meta.json").read_text())
+        meta2 = json.loads((d2 / "meta.json").read_text())
+        tid1, tid2 = meta1["tentacle_id"], meta2["tentacle_id"]
+        repo = self.base / "repo"
+        with patch.object(T, "find_git_root", return_value=repo):
+            T._write_dispatched_subagent_marker("epsilon", [], "prompt", tentacle_id=tid1)
+            T._write_dispatched_subagent_marker("epsilon", [], "prompt", tentacle_id=tid2)
+        data = json.loads(self.marker_path.read_text())
+        self.assertEqual(len(data["active_tentacles"]), 2,
+                         "Two collision tentacles with same logical name must produce 2 entries")
+        written_ids = {e.get("tentacle_id") for e in data["active_tentacles"]}
+        self.assertIn(tid1, written_ids)
+        self.assertIn(tid2, written_ids)
+
+
+class TestWindowsEncodingFix(unittest.TestCase):
+    """Verify the Windows UTF-8 stdout/stderr reconfigure block is present in tentacle.py."""
+
+    def test_encoding_block_present_in_source(self):
+        """tentacle.py must contain the standard Windows UTF-8 reconfigure block."""
+        source = (TOOLS_DIR / "tentacle.py").read_text(encoding="utf-8")
+        self.assertIn('sys.stdout.reconfigure(encoding="utf-8", errors="replace")', source)
+        self.assertIn('sys.stderr.reconfigure(encoding="utf-8", errors="replace")', source)
+
+    def test_emoji_in_print_does_not_raise(self):
+        """Printing emoji via the module must not raise UnicodeEncodeError in-process."""
+        import io
+        buf = io.StringIO()
+        # Simulate what Windows reconfigure protects: writing emoji to a text stream
+        buf.write("✅ done\n")
+        buf.write("🔥 status\n")
+        self.assertIn("✅", buf.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

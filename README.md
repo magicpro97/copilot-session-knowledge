@@ -306,9 +306,10 @@ root where the dispatch originated, and a stable UUID (`tentacle_id`) generated 
 Primary deduplication key is `tentacle_id` (phase 5, when present) with `(name, git_root)` as the
 fallback for legacy entries. Two instances with the same logical name — whether in different repos
 or in the same repo — each produce separate entries because their `tentacle_id` values differ.
-The hook compares `git_root` against the repo running git — a marker from a different repo does not
-block commits there (cross-repo isolation). Markers written without `git_root` (old format or
-non-git CWD) conservatively block.
+The hook compares `git_root` against the repo running git using canonical path resolution
+(`Path.resolve()`) so symlinks and dotdot paths that resolve to the same physical directory are
+treated as the same repo — a marker from a different repo does not block commits there (cross-repo
+isolation). Markers written without `git_root` (old format or non-git CWD) conservatively block.
 
 > **Upgrade migration:** Cross-repo isolation is not retroactive for in-flight old-format
 > markers. If a tentacle is still active when you upgrade, its existing marker entry has no
@@ -319,6 +320,9 @@ non-git CWD) conservatively block.
 **Same-repo multi-session (phase 5):** `tentacle.py create` now generates a `tentacle_id` UUID per
 instance and auto-resolves directory collisions — if `<name>` already exists, it creates
 `<name>-<uuid[:8]>` instead of exiting. All subsequent commands must use the printed slug name.
+When a collision rename occurs, the runtime bundle surfaces the actual invocation slug in two
+places: `manifest.json` gains a `slug` field and `session-metadata.md` gains a `Slug:` header
+line, so sub-agents can always determine the correct name to use in follow-up commands.
 Runtime identity ensures `complete` clears only the matching entry, not a sibling with the same
 logical name. **Working-tree caveat:** this isolation is at the marker/enforcement layer only.
 Concurrent tentacles in the same repo that touch overlapping files still share one working tree
@@ -421,7 +425,7 @@ A: No. API keys are optional — only needed for semantic search via embedding p
 A: `~/.copilot/session-state/knowledge.db` — a single SQLite file with FTS5 indexes.
 
 **Q: Does it work on Windows?**
-A: Yes. All scripts include Windows encoding fixes. Use `python` instead of `python3`. See [Installation](#windows-powershell).
+A: Yes. All scripts include Windows encoding fixes. Use `python` instead of `python3`. See [Installation](#windows-powershell). POSIX-style home paths from Git Bash (`/c/Users/...`), WSL (`/mnt/c/...`), and Cygwin (`/cygdrive/c/...`) are automatically normalised to native Windows paths for marker lookups.
 
 **Q: How do I update?**
 A: `python3 ~/.copilot/tools/auto-update-tools.py --force` or just `git pull` (post-merge hook handles the rest).

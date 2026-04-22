@@ -8,9 +8,29 @@
 
 # Use the canonical installed path unconditionally.  Relative dirname-based
 # resolution breaks when this file is installed in a normal repo's .git/hooks/.
+
+# Portable Python interpreter detection.
+# On Windows the Microsoft Store alias for python3 passes `command -v` but
+# is not a real interpreter.  Verify with a no-op `-c ""` invocation.
+# Also try `py` (Windows Python Launcher) as a last resort.
+# Allow env override (e.g. for testing) then auto-detect.
+if [ -z "$PYTHON_BIN" ] || ! "$PYTHON_BIN" -c "" 2>/dev/null; then
+    PYTHON_BIN=""
+    for _py in python3 python py; do
+        if command -v "$_py" >/dev/null 2>&1 && "$_py" -c "" 2>/dev/null; then
+            PYTHON_BIN="$_py"
+            break
+        fi
+    done
+fi
+if [ -z "$PYTHON_BIN" ]; then
+    # No working interpreter → fail-open (don't block pushes).
+    exit 0
+fi
+
 SUBAGENT_CHECK="$HOME/.copilot/tools/hooks/check_subagent_marker.py"
 if [ -f "$SUBAGENT_CHECK" ]; then
-    python3 "$SUBAGENT_CHECK"
+    "$PYTHON_BIN" "$SUBAGENT_CHECK"
     if [ $? -ne 0 ]; then
         exit 1
     fi

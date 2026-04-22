@@ -41,7 +41,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 TOOLS_DIR = Path(__file__).resolve().parent
+
+# Fix Windows console encoding
 if os.name == "nt":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     import msvcrt
 else:
     import fcntl
@@ -100,6 +107,31 @@ def find_git_root() -> Path | None:
         if (parent / ".git").exists():
             return parent
     return None
+
+
+def _same_canonical_root(root_a: "str | None", root_b: "str | None") -> bool:
+    """Return True iff two git-root path strings refer to the same directory.
+
+    Handles None values: two Nones are considered equal (both unknown —
+    legacy/string-format dedup).  One None vs. one non-None is not a match
+    (can't confirm identity without repo info on both sides).
+
+    Uses Path.resolve() for canonical comparison so that equivalent paths
+    written from different working directories (symlink traversal, dotdot
+    components, or Windows path-case differences) compare equal — matching
+    the semantics of _roots_match() in hooks/check_subagent_marker.py.
+
+    Fail-safe: returns False on any exception so uncertain comparisons never
+    accidentally remove or overwrite a live marker entry.
+    """
+    if root_a is None and root_b is None:
+        return True  # both unknown — legacy dedup: treat as same
+    if root_a is None or root_b is None:
+        return False  # one unknown — can't confirm match
+    try:
+        return Path(root_a).resolve() == Path(root_b).resolve()
+    except Exception:
+        return False  # fail-safe: uncertain → treat as different
 
 
 def get_tentacles_dir(session_dir: str | None = None) -> Path:
@@ -415,7 +447,7 @@ def _write_dispatched_subagent_marker(
                         and e.get("tentacle_id") is None
                         and (
                             e.get("git_root") is None
-                            or (tentacle_id is not None and e.get("git_root") == current_git_root_str)
+                            or (tentacle_id is not None and _same_canonical_root(e.get("git_root"), current_git_root_str))
                         )
                     )
                 ]
@@ -440,7 +472,7 @@ def _write_dispatched_subagent_marker(
                     if entry.get("name") != tentacle_name:
                         continue
                     if (
-                        entry.get("git_root") == current_git_root_str
+                        _same_canonical_root(entry.get("git_root"), current_git_root_str)
                         and entry.get("tentacle_id") is None
                     ):
                         existing_idx = i
@@ -550,7 +582,7 @@ def _clear_dispatched_subagent_marker(
                 entry_git_root = entry.get("git_root")
                 if entry_git_root is None or current_git_root_str is None:
                     return True
-                return entry_git_root == current_git_root_str
+                return _same_canonical_root(entry_git_root, current_git_root_str)
 
             remaining = [e for e in normalized if not _should_remove(e)]
             if not remaining:
@@ -701,6 +733,11 @@ def _build_runtime_bundle(
         "created_at": ts,
         "artifacts": {},
     }
+    # For collision-renamed tentacles the actual directory name differs from the
+    # logical name; surface it as 'slug' so machine readers can locate the dir.
+    actual_slug = tentacle_dir.name
+    if actual_slug != name:
+        manifest["slug"] = actual_slug
 
     # ── 1. Briefing ──────────────────────────────────────────────────────────
     if briefing_text:
@@ -711,7 +748,7 @@ def _build_runtime_bundle(
             "<!-- No briefing data available for this tentacle. -->\n\n"
             f"Fetch manually:  python3 ~/.copilot/tools/briefing.py \"{name}\" --compact\n"
         )
-    (bundle_dir / "briefing.md").write_text(briefing_content)
+    (bundle_dir / "briefing.md").write_text(briefing_content, encoding="utf-8")
     manifest["artifacts"]["briefing"] = {
         "file": "briefing.md",
         "populated": bool(briefing_text),
@@ -749,7 +786,7 @@ def _build_runtime_bundle(
             "Expected: .github/copilot-instructions.md, CLAUDE.md, AGENTS.md, "
             ".github/instructions/*.md\n"
         )
-    (bundle_dir / "instructions.md").write_text("\n".join(instr_lines))
+    (bundle_dir / "instructions.md").write_text("\n".join(instr_lines), encoding="utf-8")
     manifest["artifacts"]["instructions"] = {
         "file": "instructions.md",
         "sources": instr_paths,
@@ -775,7 +812,7 @@ def _build_runtime_bundle(
             "<!-- No SKILL.md files found under .github/skills/. -->\n"
             "Expected pattern: .github/skills/<name>/SKILL.md\n"
         )
-    (bundle_dir / "skills.md").write_text("\n".join(skill_lines))
+    (bundle_dir / "skills.md").write_text("\n".join(skill_lines), encoding="utf-8")
     manifest["artifacts"]["skills"] = {
         "file": "skills.md",
         "sources": skill_paths,
@@ -791,9 +828,14 @@ def _build_runtime_bundle(
 
     if meta_path.exists():
         try:
-            meta = json.loads(meta_path.read_text())
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
             meta_lines.append("## Tentacle Meta\n")
             meta_lines.append(f"- Name: {meta.get('name', name)}")
+            # Surface the actual directory slug for collision-renamed tentacles so
+            # readers know which directory to look in when name != dir_name.
+            dir_name = meta.get("dir_name")
+            if dir_name:
+                meta_lines.append(f"- Slug: {dir_name}")
             meta_lines.append(f"- Status: {meta.get('status', 'unknown')}")
             meta_lines.append(f"- Description: {meta.get('description', '')}")
             meta_lines.append(f"- Created: {meta.get('created_at', '')}")
@@ -803,17 +845,17 @@ def _build_runtime_bundle(
 
     if context_path.exists():
         meta_lines.append("## Context\n")
-        meta_lines.append(context_path.read_text())
+        meta_lines.append(context_path.read_text(encoding="utf-8", errors="replace"))
         meta_lines.append("")
 
     if todo_path.exists():
         meta_lines.append("## Todos\n")
-        meta_lines.append(todo_path.read_text())
+        meta_lines.append(todo_path.read_text(encoding="utf-8", errors="replace"))
         meta_lines.append("")
 
     if handoff_path.exists():
         meta_lines.append("## Latest Handoff\n")
-        meta_lines.append(handoff_path.read_text())
+        meta_lines.append(handoff_path.read_text(encoding="utf-8", errors="replace"))
         meta_lines.append("")
 
     if checkpoint_text:
@@ -821,7 +863,7 @@ def _build_runtime_bundle(
         meta_lines.append(checkpoint_text)
         meta_lines.append("")
 
-    (bundle_dir / "session-metadata.md").write_text("\n".join(meta_lines))
+    (bundle_dir / "session-metadata.md").write_text("\n".join(meta_lines), encoding="utf-8")
     manifest["artifacts"]["session_metadata"] = {
         "file": "session-metadata.md",
         "has_context": context_path.exists(),
@@ -831,7 +873,7 @@ def _build_runtime_bundle(
     }
 
     # ── 5. Manifest ───────────────────────────────────────────────────────────
-    (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     return bundle_dir
 

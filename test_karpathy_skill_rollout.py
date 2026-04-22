@@ -133,7 +133,7 @@ for host_name, ref_subpath in HOST_SKILL_SUBPATHS.items():
     derived = skills_base / "karpathy-guidelines" / "SKILL.md"
     test(
         f"{host_name}: derived path ends with skills/karpathy-guidelines/SKILL.md",
-        str(derived).endswith("skills/karpathy-guidelines/SKILL.md"),
+        derived.as_posix().endswith("skills/karpathy-guidelines/SKILL.md"),
         f"got {derived}",
     )
 
@@ -721,7 +721,7 @@ if skill_md.exists():
     _aut14_spec.loader.exec_module(_aut14_mod)
 
     test("_windows_path_to_wsl_path() converts a Windows profile path",
-         str(_aut14_mod._windows_path_to_wsl_path(r"C:\Users\WinUser")) == "/mnt/c/Users/WinUser")
+         _aut14_mod._windows_path_to_wsl_path(r"C:\Users\WinUser").as_posix() == "/mnt/c/Users/WinUser")
     test("_windows_path_to_wsl_path() rejects traversal in Windows profile path",
          _aut14_mod._windows_path_to_wsl_path(r"C:\Users\..\WinUser") is None)
 
