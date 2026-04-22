@@ -36,21 +36,28 @@ context.
 it — they are the reliable enforcement surface.
 
 **How enforcement works:**
-1. `tentacle.py swarm` writes an HMAC-signed marker file at
-   `~/.copilot/markers/dispatched-subagent-active` containing an `active_tentacles` list of
-   per-entry objects: `{"name": "<tentacle>", "ts": "<unix>", "git_root": "<abs-path>"}`.
+1. `tentacle.py create` generates a UUID `tentacle_id` stored in the tentacle's `meta.json`.
+   If the requested name directory already exists, `create` auto-resolves the collision by
+   creating `<name>-<uuid[:8]>` — the slug is printed and must be used for all subsequent
+   commands. `tentacle.py swarm` reads `tentacle_id` from `meta.json` and writes an HMAC-signed
+   marker file at `~/.copilot/markers/dispatched-subagent-active` containing `active_tentacles`
+   entries of the form `{"name": ..., "ts": ..., "git_root": ..., "tentacle_id": ...}`.
+   **Primary deduplication key: `tentacle_id`** (when present) — two instances with the same
+   logical name in the same repo each get a separate entry. Fallback for legacy entries without
+   `tentacle_id`: `(name, git_root)`.
 2. `hooks/pre-commit` and `hooks/pre-push` call `hooks/check_subagent_marker.py`, which blocks
    the git operation when the marker is present, auth-valid, within its 4-hour TTL, **and the
    entry's `git_root` matches the repo running the git command**. A marker from a different repo
-   does not block commits here — this isolates multi-session, multi-repo setups. Entries without
-   `git_root` (old format) conservatively block all repos.
+   does not block commits there — this prevents cross-repo false positives when tentacles are
+   active in other repos concurrently. Entries without `git_root` (old format) conservatively
+   block all repos.
    > **Upgrade migration:** Cross-repo isolation is not retroactive. In-flight old-format marker
    > entries (no `git_root`) continue to block all repos until completed, cleared, or expired (4h
    > TTL). To get isolation immediately: `tentacle.py complete <name>` then re-dispatch.
 3. `hooks/rules/subagent_guard.py` provides a secondary `preToolUse` intercept for the
    orchestrator session (defense-in-depth only — not the primary path).
-4. `tentacle.py complete <name>` removes the tentacle's entry; the marker is deleted when
-   `active_tentacles` becomes empty.
+4. `tentacle.py complete <name>` reads `tentacle_id` from `meta.json` and removes only the
+   matching marker entry; the marker is deleted when `active_tentacles` becomes empty.
 
 **Install the git hooks** (once per repository):
 
@@ -64,9 +71,13 @@ python3 ~/.copilot/tools/install.py --install-git-hooks
 - **`preToolUse` non-inheritance.** The `preToolUse` guard in the main session is
   defense-in-depth — it does not replace git hooks. Whether `preToolUse` propagates into
   `task()`-spawned subagents is undefined by the platform.
-- **Same-repo multi-orchestrator not supported.** Two concurrent orchestrators in the same repo
-  share one marker entry and are not isolated from each other. One orchestrator per repo at a
-  time is the supported model.
+- **Same-repo multi-session supported (phase 5) — with working-tree caveat.** `tentacle_id`
+  isolation at the marker/runtime layer means two instances with the same logical name in the
+  same repo each hold a separate entry and `complete` only clears the matching one. However,
+  the working tree and git index are shared — concurrent tentacles with overlapping file scopes
+  will produce conflicts. Keep scopes non-overlapping.
+- **Collision-resolved slug names:** When `create` auto-resolves a directory collision, the
+  printed `<name>-<uuid[:8]>` slug must be used for all subsequent commands.
 - **After tool updates,** `auto-update-tools.py` does NOT auto-reinstall git hooks. Re-run
   `install.py --install-git-hooks` in each protected repo after relevant updates.
 

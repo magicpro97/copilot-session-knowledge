@@ -36,6 +36,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -306,6 +307,7 @@ def _write_dispatched_subagent_marker(
     tentacle_name: str,
     scope: list,
     dispatch_mode: str,
+    tentacle_id: str | None = None,
 ) -> bool:
     """Write/update the dispatched-subagent-active marker (set-based, concurrency-safe).
 
@@ -321,9 +323,11 @@ def _write_dispatched_subagent_marker(
                         originated (None when CWD is not inside a git repo).
                         Enforcement surfaces can use this to skip markers from
                         unrelated repositories (cross-repo false-positive guard).
-      active_tentacles: list of per-entry objects {name, ts, git_root}.  Each entry
-                        carries its own UNIX timestamp (TTL anchor) and git_root so
-                        cross-session refreshes do not extend unrelated entries.
+      active_tentacles: list of per-entry objects {name, ts, git_root[, tentacle_id]}.
+                        Each entry carries its own UNIX timestamp (TTL anchor) and
+                        git_root so cross-session refreshes do not extend unrelated
+                        entries.  When a tentacle_id is available it is included for
+                        per-instance identity-based dedup (phase 5).
                         Readers must tolerate the legacy string-list format produced
                         by older versions (see backward-compat note below).
       scope:            file-scope list from the most-recently-dispatching tentacle
@@ -336,9 +340,11 @@ def _write_dispatched_subagent_marker(
     normalises both to the dict-list format on every write.  Old string entries are
     treated as having git_root=None (unknown repo).
 
-    Deduplication key: (name, git_root).  Same-name tentacles from different repos
-    produce separate entries so enforcement surfaces can discriminate by repo.
-    Same-name same-repo re-dispatch refreshes the existing entry's per-entry ts.
+    Deduplication key: tentacle_id (when present) > (name, git_root) fallback.
+    When tentacle_id is supplied (phase-5 tentacles), dedup is by stable identity so
+    two orchestrators in the same repo with the same logical name produce separate
+    entries and do not overwrite each other.  When tentacle_id is absent (old
+    tentacles), dedup falls back to (name, git_root) preserving phase-4 semantics.
 
     Downstream enforcement surfaces (git hooks, preToolUse guards) can read this marker
     to detect active dispatched-subagent sessions.  This surface is advisory only —
@@ -373,43 +379,73 @@ def _write_dispatched_subagent_marker(
                 except (json.JSONDecodeError, OSError):
                     pass
 
-            # Deduplicate by (name, git_root): update ts in-place when match found;
-            # add a new entry for the same name from a different repo.
+            # Build the new entry dict.  Include tentacle_id when provided so that
+            # per-instance identity-based dedup can distinguish same-name same-repo
+            # tentacles created by different orchestrator sessions (phase-5 support).
             entry_ts = str(int(time.time()))
             new_entry: dict = {
                 "name": tentacle_name,
                 "ts": entry_ts,
                 "git_root": current_git_root_str,
             }
-            # Migration cleanup: when dispatching from a known repo, eagerly remove all
-            # legacy entries for this tentacle name whose git_root is None.  Such entries
-            # are artefacts of the old string-list format — they carry no repo identity,
-            # so hook readers conservatively treat them as active in every repo, silently
-            # defeating the cross-repo fix until TTL expiry.
+            if tentacle_id is not None:
+                new_entry["tentacle_id"] = tentacle_id
+
+            # Migration cleanup: when dispatching from a known repo, eagerly remove
+            # legacy entries for this tentacle name that have no tentacle_id and whose
+            # git_root is either:
+            #   - None: old string-format promotions with no repo identity; always stale.
+            #   - Equal to current repo (phase-5 dispatch only): phase-4 dict entries
+            #     without identity from a crash-then-upgrade scenario.  If left alive
+            #     they strand a stale phase-4 entry that blocks commits until TTL expiry.
             #
-            # Removing them before the dedup step ensures:
-            #   - A single (name, None) legacy entry is absorbed cleanly.
-            #   - A (name, None) entry that coexists with a real (name, /repo) entry
-            #     (e.g. from a race between old and new code) is also cleaned up, avoiding
-            #     duplicate entries that would arise from the "first match" search below.
+            # Entries that carry a tentacle_id are never touched — they belong to a
+            # live instance that owns its own identity.
             #
-            # If current_git_root_str is None we skip cleanup — the exact-match branch
-            # below handles (None == None) dedup correctly.
+            # For legacy dispatches (tentacle_id=None) only git_root=None entries are
+            # cleaned; same-repo phase-4 entries are left for the legacy dedup path.
+            #
+            # If current_git_root_str is None we skip cleanup entirely — the dedup
+            # branch below handles (None == None) correctly.
             if current_git_root_str is not None:
                 active = [
                     e for e in active
-                    if not (e.get("name") == tentacle_name and e.get("git_root") is None)
+                    if not (
+                        e.get("name") == tentacle_name
+                        and "tentacle_id" not in e
+                        and (
+                            e.get("git_root") is None
+                            or (tentacle_id is not None and e.get("git_root") == current_git_root_str)
+                        )
+                    )
                 ]
 
-            # Normal dedup: update ts in-place for exact (name, git_root) match;
-            # append a new entry for the same name from a different real repo.
+            # Dedup: when tentacle_id is provided, match by stable per-instance
+            # identity so that two sessions with the same logical name in the same
+            # repo each keep their own entry.  Fall back to (name, git_root) for
+            # old tentacles without tentacle_id to preserve phase-4 semantics.
             existing_idx: int | None = None
-            for i, entry in enumerate(active):
-                if entry.get("name") != tentacle_name:
-                    continue
-                if entry.get("git_root") == current_git_root_str:
-                    existing_idx = i
-                    break
+            if tentacle_id is not None:
+                # Phase-5 path: identity-based dedup
+                for i, entry in enumerate(active):
+                    if entry.get("tentacle_id") == tentacle_id:
+                        existing_idx = i
+                        break
+            else:
+                # Legacy path: (name, git_root) dedup — but only match entries that
+                # also lack tentacle_id.  A phase-5 entry that happens to share
+                # (name, git_root) must NOT be overwritten by a legacy dispatch; it
+                # belongs to a different session with its own stable identity.
+                for i, entry in enumerate(active):
+                    if entry.get("name") != tentacle_name:
+                        continue
+                    if (
+                        entry.get("git_root") == current_git_root_str
+                        and entry.get("tentacle_id") is None
+                    ):
+                        existing_idx = i
+                        break
+
             if existing_idx is not None:
                 active[existing_idx] = new_entry  # Refresh per-entry ts
             else:
@@ -440,7 +476,10 @@ def _write_dispatched_subagent_marker(
         return False
 
 
-def _clear_dispatched_subagent_marker(tentacle_name: str) -> bool:
+def _clear_dispatched_subagent_marker(
+    tentacle_name: str,
+    tentacle_id: str | None = None,
+) -> bool:
     """Remove a tentacle from the dispatched-subagent-active marker set.
 
     Deletes the marker file only when active_tentacles becomes empty after removal.
@@ -449,7 +488,11 @@ def _clear_dispatched_subagent_marker(tentacle_name: str) -> bool:
     Called by cmd_complete so a completing tentacle's entry is removed without
     disturbing sibling tentacles that are still running.
 
-    Removal is scoped by (name, git_root) when both are available, so completing a
+    When tentacle_id is supplied, removal is scoped to the exact per-instance identity
+    so two orchestrators with the same logical name in the same repo each only clear
+    their own entry (phase-5 same-repo multi-session support).
+
+    When tentacle_id is absent, removal falls back to (name, git_root) so completing a
     tentacle in one repo does not accidentally clear a same-named tentacle in another
     repo that may be running in a parallel session.
 
@@ -488,9 +531,23 @@ def _clear_dispatched_subagent_marker(tentacle_name: str) -> bool:
             def _should_remove(entry: dict) -> bool:
                 if entry.get("name") != tentacle_name:
                     return False
+                entry_id = entry.get("tentacle_id")
+                # Phase-5 path: both sides have tentacle_id → match by identity only.
+                # This prevents a same-repo same-name complete from clearing a sibling.
+                if tentacle_id is not None and entry_id is not None:
+                    return entry_id == tentacle_id
+                # Phase-5 caller clearing a legacy entry: don't remove it — we can't
+                # confirm ownership without identity on both sides.
+                if tentacle_id is not None and entry_id is None:
+                    return False
+                # HIGH-bug guard: legacy caller (tentacle_id=None) must NEVER remove
+                # a phase-5 entry that carries its own tentacle_id.  Without a matching
+                # identity we cannot confirm the caller owns this entry.
+                if tentacle_id is None and entry_id is not None:
+                    return False
+                # Pure legacy path: both sides have no tentacle_id → (name, git_root)
+                # match with conservative removal when repo info is missing on either side.
                 entry_git_root = entry.get("git_root")
-                # If either side lacks git_root info, match by name only (conservative
-                # removal: can't distinguish repos, so err on the side of cleaning up).
                 if entry_git_root is None or current_git_root_str is None:
                     return True
                 return entry_git_root == current_git_root_str
@@ -561,7 +618,7 @@ def _get_marker_state() -> dict:
       path:                    string path to marker file
       active_tentacles:        list of tentacle names currently dispatched
                                (backward-compat: always a list of strings)
-      active_tentacle_entries: list of full per-entry dicts {name, ts, git_root}
+      active_tentacle_entries: list of full per-entry dicts {name, ts, git_root[, tentacle_id]}
                                (new field: enriched data for enforcement surfaces)
       git_root:                top-level git_root from the marker (last writer's repo)
       dispatch_mode:           dispatch_mode from marker (or null)
@@ -587,17 +644,21 @@ def _get_marker_state() -> dict:
     elif "tentacle" in data:
         raw_active = [data["tentacle"]]
 
-    # Normalise to both a name-list (backward compat) and enriched entry-list (new)
+    # Normalise to both a name-list (backward compat) and enriched entry-list (new).
+    # Preserve tentacle_id when present so consumers can discriminate per-instance.
     names: list[str] = []
     entries: list[dict] = []
     for entry in raw_active:
         if isinstance(entry, str):
             names.append(entry)
-            entries.append({"name": entry, "ts": None, "git_root": None})
+            entries.append({"name": entry, "ts": None, "git_root": None, "tentacle_id": None})
         elif isinstance(entry, dict):
             name = entry.get("name", "")
             names.append(name)
-            entries.append(entry)
+            # Include tentacle_id in the enriched entry (None for old entries)
+            enriched = {"name": name, "ts": entry.get("ts"), "git_root": entry.get("git_root"),
+                        "tentacle_id": entry.get("tentacle_id")}
+            entries.append(enriched)
 
     return {
         "active": len(names) > 0,
@@ -808,9 +869,19 @@ def cmd_create(args):
     tentacles = get_tentacles_dir(args.session_dir)
     tentacle_dir = _validate_tentacle_name(args.name, tentacles)
 
+    # Generate a stable per-instance identity used for dedup/clear in marker operations.
+    tentacle_id = str(uuid.uuid4())
+
+    # Phase-5 collision avoidance: if the requested name dir already exists (e.g. two
+    # orchestrators in the same session), use a unique slug instead of hard-erroring.
+    actual_dir_name = args.name
     if tentacle_dir.exists():
-        print(f"ERROR: Tentacle '{args.name}' already exists.", file=sys.stderr)
-        sys.exit(1)
+        actual_dir_name = f"{args.name}-{tentacle_id[:8]}"
+        tentacle_dir = tentacles / actual_dir_name
+        print(
+            f"ℹ️  Tentacle '{args.name}' dir already exists — creating as '{actual_dir_name}'",
+            file=sys.stderr,
+        )
 
     tentacle_dir.mkdir(parents=True)
 
@@ -873,10 +944,14 @@ def cmd_create(args):
         "scope": [s.strip() for s in args.scope.split(",")] if args.scope else [],
         "description": desc,
         "status": "idle",
+        "tentacle_id": tentacle_id,
     }
+    # When dir_name differs from name (collision case), record it explicitly.
+    if actual_dir_name != args.name:
+        meta["dir_name"] = actual_dir_name
     (tentacle_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
 
-    print(f"✅ Tentacle '{args.name}' created at {tentacle_dir}")
+    print(f"✅ Tentacle '{actual_dir_name}' created at {tentacle_dir}")
     print(f"   📄 CONTEXT.md — edit to add area-specific context")
     print(f"   📋 todo.md    — add checkbox items for delegation")
 
@@ -1142,7 +1217,8 @@ def cmd_complete(args):
 
     # 4. Clear dispatched-subagent-active marker entry for this tentacle
     had_marker = _DISPATCHED_MARKER_PATH.is_file()
-    _clear_dispatched_subagent_marker(args.name)
+    tentacle_id = meta.get("tentacle_id")
+    _clear_dispatched_subagent_marker(args.name, tentacle_id=tentacle_id)
     if had_marker:
         print(f"🧹 Dispatched-subagent marker updated (removed '{args.name}')")
 
@@ -1303,10 +1379,12 @@ def cmd_swarm(args):
     # Write dispatched-subagent-active marker so local enforcement surfaces can
     # observe that a dispatch is in flight. The marker is advisory — tentacle.py
     # is not itself an enforcement layer. Cleared by cmd_complete.
+    tentacle_id = meta.get("tentacle_id")
     marker_written = _write_dispatched_subagent_marker(
         tentacle_name=args.name,
         scope=meta.get("scope", []),
         dispatch_mode=args.output,
+        tentacle_id=tentacle_id,
     )
     if marker_written:
         print(f"📌 Marker: {_DISPATCHED_MARKER_PATH}")
@@ -1495,6 +1573,20 @@ def cmd_delete(args):
         print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
         sys.exit(1)
 
+    # Read tentacle_id from meta before removing the directory so targeted
+    # marker cleanup can still use identity-based matching.
+    meta_path = tentacle_dir / "meta.json"
+    tentacle_id: str | None = None
+    if meta_path.exists():
+        try:
+            tentacle_id = json.loads(meta_path.read_text()).get("tentacle_id")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Clear any active marker entry before deleting (fail-open: proceed even on error).
+    if _DISPATCHED_MARKER_PATH.is_file():
+        _clear_dispatched_subagent_marker(args.name, tentacle_id=tentacle_id)
+
     import shutil
     shutil.rmtree(tentacle_dir)
     print(f"🗑️  Tentacle '{args.name}' deleted.")
@@ -1536,10 +1628,12 @@ def cmd_bundle(args):
     )
 
     # Write dispatched-subagent-active marker when materializing a bundle
+    tentacle_id = meta.get("tentacle_id")
     _write_dispatched_subagent_marker(
         tentacle_name=args.name,
         scope=meta.get("scope", []),
         dispatch_mode="bundle",
+        tentacle_id=tentacle_id,
     )
 
     if getattr(args, "output", "text") == "json":

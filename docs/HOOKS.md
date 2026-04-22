@@ -98,7 +98,8 @@ The marker is a JSON file with the following contract:
 | `name` | Always `"dispatched-subagent-active"` |
 | `ts` | UNIX timestamp of the most-recent write (used for HMAC + global TTL anchor) |
 | `sig` | HMAC-SHA256 over `"name:ts"` (omitted when no secret is configured) |
-| `active_tentacles` | List of per-entry objects: `{"name": "<tentacle>", "ts": "<unix>", "git_root": "<abs-path>"}`. Each entry carries its own dispatch timestamp and the absolute path of the git repository where the tentacle was dispatched. Readers also accept the old string-list format for backward compatibility. |
+| `active_tentacles` | List of per-entry objects: `{"name": "<tentacle>", "ts": "<unix>", "git_root": "<abs-path>", "tentacle_id": "<uuid>"}`. Each entry carries its own dispatch timestamp, the git root of the dispatching repo, and a stable per-instance UUID generated at `create` time. `tentacle_id` is `null` in legacy entries. Readers also accept the old string-list format for backward compatibility. **Deduplication key: `tentacle_id` (primary, phase 5) → `(name, git_root)` fallback (phase 4, legacy entries without `tentacle_id`).** Two instances with the same logical name in the same repo each produce a separate entry because their `tentacle_id` values differ. |
+| `git_root` | Top-level field: absolute git root of the most-recent writer (used by the legacy path **only** for pure string-list `active_tentacles` — not for mixed-format or dict-list entries). Per-entry `git_root` is the authoritative source for all dict-list and mixed-format markers. |
 | `scope` | File-scope list from the most-recently-dispatching tentacle |
 | `dispatch_mode` | Dispatch mode of the most-recently-dispatching tentacle |
 | `ttl_seconds` | Expected lifetime; consumers treat markers older than this as stale |
@@ -109,8 +110,29 @@ entry (its `ts` is older than `ttl_seconds`) is treated as inactive even if the 
 file is still fresh.
 
 **Concurrent tentacles:** Multiple tentacles dispatched in parallel each add their dict entry to
-`active_tentacles`. `tentacle.py complete <name>` removes only that tentacle's entry; the marker
-is deleted only when `active_tentacles` becomes empty.
+`active_tentacles`. `tentacle.py complete <name>` removes only that tentacle's entry (matched by
+`tentacle_id` when present, falling back to `(name, git_root)` for legacy entries); the marker
+file is deleted only when `active_tentacles` becomes empty.
+
+**Tentacle identity (phase 5):** `tentacle.py create` now generates a UUID `tentacle_id` and
+stores it in the tentacle's `meta.json`. `swarm` and `bundle` read this UUID and embed it in the
+marker entry. This enables two orchestrators in the same repo using the same logical name to each
+hold a separate, non-colliding marker entry. `complete` reads `tentacle_id` from `meta.json` and
+removes only the entry with the matching identity — completing one session does not clear a
+same-named sibling in the same repo.
+
+**Same-repo directory collision avoidance (phase 5):** If `tentacle.py create <name>` finds that
+the directory `<name>` already exists, it automatically creates `<name>-<uuid[:8]>` instead of
+exiting with an error. The unique slug is printed to stderr and stored as `dir_name` in
+`meta.json`. **All subsequent commands (`todo`, `swarm`, `complete`, `handoff`, etc.) must use
+the printed slug** — `_validate_tentacle_name` resolves by exact directory name, so the logical
+name passed to `create` will find the original (other session's) directory, not the slug.
+
+**Migration cleanup:** When re-dispatching from a known git repo, `tentacle.py swarm` eagerly
+removes legacy entries whose `name` matches, `tentacle_id` is absent, and whose `git_root` is
+either `None` (old string-list artefacts with no repo identity) or equal to the current repo
+when the new dispatch carries a `tentacle_id` (crash-then-upgrade: stale phase-4 dict entry for
+the same repo that would otherwise keep blocking commits until TTL expiry).
 
 **Step 2 — Git pre-commit / pre-push (primary enforcement)**
 
@@ -127,6 +149,12 @@ false-positive that existed before phase 4.
 
 **Backward compatibility:** If a marker entry has no `git_root` (written by old code or
 dispatched from a non-git directory), the hook conservatively blocks — same behavior as before.
+
+**Mixed-format markers:** The format dispatch checks `all(isinstance(e, str) for e in active)`
+— only a *pure* string-list triggers the legacy top-level `git_root` path. A mixed-format
+marker (some string entries, some dict entries — possible when upgrading mid-flight) is routed
+through the per-entry check; string entries inside such a list carry no repo identity and
+conservatively block every repo, while dict entries are evaluated per-entry as usual.
 
 > **Upgrade migration note:** Cross-repo isolation is **not retroactive** for in-flight
 > old-format markers. If you upgrade while a tentacle is still active and the marker was
@@ -176,7 +204,7 @@ sessions that crash without calling `complete`.
 | Limitation | Detail |
 |---|---|
 | `preToolUse` non-inheritance | `preToolUse` hooks from the parent `hooks.json` may not fire inside `task()`-spawned subagents — platform-level behavior, not fixable here. Git hooks remain the reliable surface. |
-| Same-repo multi-orchestrator | Two concurrent orchestrators running in the **same** repo are not isolated from each other — both share the same marker `git_root` entry. One orchestrator per repo at a time is the supported model. |
+| Same-repo multi-orchestrator | Supported (phase 5): each tentacle gets a stable `tentacle_id` at create time. Two instances with the same logical name in the same repo each hold a separate marker entry and `complete` removes only the matching identity. **Caveat: working-tree / git-index side effects are not isolated** — concurrent tentacles in the same repo that touch the same files will still produce conflicts in the shared working tree and index. |
 | Cloud/remote agents | Hooks are local-only. Cloud-delegated or remote agent runs have no coverage. |
 | `auto-update` does not reinstall git hooks | `auto-update-tools.py` updates tools-repo files but does **not** re-run `--install-git-hooks` in registered repos. It prints a warning when hook files change. Users must re-run `install.py --install-git-hooks` manually to apply new hook logic in each protected repo. |
 
@@ -198,11 +226,12 @@ config to ensure the hooks fire even when a project-level override is present.
 After tool updates (`git pull` or `auto-update-tools.py --force`), re-run
 `--install-git-hooks` to refresh the hook scripts in `.git/hooks/`. `auto-update-tools.py`
 does **not** perform this reinstallation automatically — it cannot safely enumerate every repo
-where hooks are installed. When hook files change, it emits these two warnings to stdout:
+where hooks are installed. When hook files change, it emits these three warnings to stderr:
 
 ```
-WARNING: Git hook scripts updated — installed per-repo hooks are NOT automatically refreshed.
-WARNING: Re-run in each protected repo: python3 ~/.copilot/tools/install.py --install-git-hooks
+[sk-update] ⚠️  Git hook scripts updated — installed per-repo hooks are NOT automatically refreshed.
+[sk-update] ⚠️  ACTION REQUIRED to pick up the cross-repo isolation fix (and future hook changes):
+[sk-update] ⚠️    Re-run in EVERY protected repo: python3 ~/.copilot/tools/install.py --install-git-hooks
 ```
 
 ### Fail-open behavior
