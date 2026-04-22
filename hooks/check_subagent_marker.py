@@ -13,10 +13,21 @@ Verification follows the same semantics as marker_auth.verify_marker():
 This script imports marker_auth from the hooks/ directory when available, and
 falls back to the same logic inline so the git hook works even when invoked
 from an arbitrary working directory.
+
+Repo-scope check (cross-repo false-positive prevention):
+  New-format markers carry a git_root field (top-level and/or per-entry in
+  active_tentacles).  When present, the marker only blocks commits in the same
+  repository.  Absent git_root → conservative block (backward compat with old
+  markers that carry no repo metadata).
+
+Dual-format support:
+  active_tentacles may be a list of strings (old format) or a list of dicts
+  with {name, ts, git_root} fields (new format).  Both are handled transparently.
 """
 
 import json
 import os
+import subprocess as _subprocess
 import sys
 import time
 from pathlib import Path
@@ -99,14 +110,25 @@ def _read_marker_ts(marker_path: Path):
 
 
 def _read_tentacle_info() -> str:
-    """Extract tentacle name(s) from marker for UX messaging (best-effort)."""
+    """Extract tentacle name(s) from marker for UX messaging (best-effort).
+
+    Supports both old string-list and new dict-list active_tentacles formats.
+    """
     try:
         data = json.loads(MARKER_PATH.read_text(encoding="utf-8"))
         if isinstance(data, dict):
-            # New format: active_tentacles list
             active = data.get("active_tentacles")
             if isinstance(active, list) and active:
-                return ", ".join(active)
+                names = []
+                for entry in active:
+                    if isinstance(entry, str):
+                        names.append(entry)
+                    elif isinstance(entry, dict):
+                        name = entry.get("name")
+                        if name:
+                            names.append(str(name))
+                if names:
+                    return ", ".join(names)
             # Old single-owner format
             return data.get("tentacle") or data.get("detail", "")
     except Exception:
@@ -114,42 +136,149 @@ def _read_tentacle_info() -> str:
     return ""
 
 
+def _get_current_git_root() -> "str | None":
+    """Return the git root of the current working directory, or None on failure."""
+    try:
+        r = _subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _roots_match(root_a: str, root_b: str) -> bool:
+    """Return True iff two git root paths resolve to the same directory.
+
+    Fail-conservative: returns True on any exception so that an uncertain
+    path comparison never silently lets a commit through.  Callers that skip
+    an entry on non-match (``if not _roots_match(...): continue``) will
+    therefore keep the entry active when comparison fails, preserving the
+    blocking behaviour.
+    """
+    try:
+        return Path(root_a).resolve() == Path(root_b).resolve()
+    except Exception:
+        return True  # fail-conservative: uncertain → treat as same repo (block)
+
+
+def _any_entry_relevant(active: list, current_git_root: "str | None", now: float) -> bool:
+    """Return True if at least one active_tentacles entry is relevant to the current repo.
+
+    Old string entries: no per-entry repo metadata → conservative (relevant).
+    New dict entries: check per-entry git_root and per-entry TTL.
+      - git_root absent or None → conservative (relevant, blocks).
+      - git_root present + different repo → skip entry.
+      - git_root present + same repo → relevant.
+    Fail-conservative: any exception → entry treated as relevant.
+    """
+    for entry in active:
+        try:
+            if isinstance(entry, str):
+                # Old format: no repo metadata → conservatively block.
+                return True
+            if isinstance(entry, dict):
+                # Per-entry TTL check (new format only).
+                entry_ts = entry.get("ts")
+                if entry_ts is not None:
+                    try:
+                        age = now - int(entry_ts)
+                        if not (0 <= age < MARKER_TTL):
+                            continue  # This entry has expired; skip it.
+                    except (ValueError, TypeError):
+                        pass  # Can't parse entry ts → don't skip.
+
+                # Per-entry repo-scope check.
+                entry_git_root = entry.get("git_root")
+                if not entry_git_root:
+                    # Absent or None: conservative → relevant.
+                    return True
+                if current_git_root and not _roots_match(current_git_root, entry_git_root):
+                    continue  # Different repo — skip this entry.
+                return True  # Same repo (or can't determine current → conservative).
+        except Exception:
+            return True  # fail-conservative
+    return False  # No relevant entries found.
+
+
 def is_marker_fresh() -> bool:
     """Return True iff the marker is auth-valid (HMAC or existence fallback) and within TTL.
 
-    Step 1 — marker_auth check (mirrors verify_marker semantics):
-      secret present  → requires valid HMAC signature
-      no secret       → any readable file is considered valid
-    Step 2 — TTL check: 0 ≤ age < MARKER_TTL
-    Step 3 — Zombie check: active_tentacles field exists and is [] → inactive, allow
-    Fail-open on any exception.
+    Step 1 — File-exists check.
+    Step 2 — HMAC/existence-fallback check via _verify_marker (reads file internally).
+    Step 3 — Parse once; all subsequent checks reuse the same parsed dict to
+             avoid repeated file reads and narrow the TOCTOU window between
+             verification and content inspection.
+    Step 4 — TTL check: 0 ≤ age < MARKER_TTL.
+    Step 5 — Zombie check: active_tentacles == [] → inactive, allow.
+    Step 6 — Repo-scope check: if all active entries belong to a different git
+             repo, don't block (cross-repo false-positive prevention).
+             Absent git_root → conservative block (backward compat with old
+             markers carrying no repo metadata).
+
+    Fail-open on auth/parse failure (stale or unreadable markers should not
+    block indefinitely).  Fail-conservative on repo-scope exceptions (a marker
+    that passed auth but whose scope cannot be determined is treated as
+    potentially relevant to the current repo).
     """
     if not MARKER_PATH.is_file():
         return False
 
-    # Reuse the repo's marker_auth verification scheme.
+    # HMAC / existence-fallback check (reads file internally — unavoidable).
     if not _verify_marker(MARKER_PATH, MARKER_NAME):
         return False
 
-    # TTL check — read timestamp from marker JSON.
-    ts = _read_marker_ts(MARKER_PATH)
-    if ts is None:
-        # Marker passed auth but has no readable timestamp → fail-open.
+    # Parse once; reuse for all remaining checks.
+    try:
+        data = json.loads(MARKER_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return False  # Unreadable / unparseable after auth → fail-open.
+
+    if not isinstance(data, dict):
+        return False  # Unrecognised format → fail-open.
+
+    # TTL check.
+    ts_raw = data.get("ts")
+    if ts_raw is None:
+        return False  # No timestamp → fail-open.
+    try:
+        now = time.time()
+        age = now - int(ts_raw)
+    except (ValueError, TypeError):
         return False
-    age = time.time() - ts
     if not (0 <= age < MARKER_TTL):
         return False
 
-    # Zombie marker check: orchestrator wrote the marker but cleared all active
-    # tentacles without removing the file.  active_tentacles: [] → allow.
+    # Zombie check: orchestrator cleared all tentacles without removing the file.
+    active = data.get("active_tentacles")
+    if isinstance(active, list) and len(active) == 0:
+        return False
+
+    # Repo-scope check: prevent cross-repo false positives.
+    # If all active entries have a git_root that doesn't match the current repo,
+    # the marker was written for a different repository — don't block.
+    # Old string-list entries with no git_root → conservative block (unchanged).
+    # Exception here → fail-conservative: scope uncertainty keeps blocking.
     try:
-        data = json.loads(MARKER_PATH.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            active = data.get("active_tentacles")
-            if isinstance(active, list) and len(active) == 0:
-                return False
+        if isinstance(active, list) and active:
+            if isinstance(active[0], str):
+                # Old string-list format: check top-level git_root if present.
+                marker_git_root = data.get("git_root")
+                if marker_git_root:
+                    current_git_root = _get_current_git_root()
+                    if current_git_root and not _roots_match(current_git_root, marker_git_root):
+                        return False  # Confirmed different repo — don't block.
+                # No top-level git_root → conservative block (old marker).
+            elif isinstance(active[0], dict):
+                # New dict-list format: per-entry git_root check.
+                current_git_root = _get_current_git_root()
+                if not _any_entry_relevant(active, current_git_root, now):
+                    return False  # All entries confirmed for other repos.
     except Exception:
-        pass  # Unreadable field → conservatively keep blocking
+        pass  # fail-conservative: scope check failed → keep blocking.
 
     return True
 

@@ -317,11 +317,28 @@ def _write_dispatched_subagent_marker(
       name:             "dispatched-subagent-active"
       ts:               UNIX timestamp of the most-recent write (used for HMAC + TTL)
       sig:              HMAC-SHA256 over "name:ts" (omitted when no secret is present)
-      active_tentacles: ordered list of tentacle names currently dispatched (deduped)
+      git_root:         absolute path of the git repository from which this write
+                        originated (None when CWD is not inside a git repo).
+                        Enforcement surfaces can use this to skip markers from
+                        unrelated repositories (cross-repo false-positive guard).
+      active_tentacles: list of per-entry objects {name, ts, git_root}.  Each entry
+                        carries its own UNIX timestamp (TTL anchor) and git_root so
+                        cross-session refreshes do not extend unrelated entries.
+                        Readers must tolerate the legacy string-list format produced
+                        by older versions (see backward-compat note below).
       scope:            file-scope list from the most-recently-dispatching tentacle
       dispatch_mode:    mode of the most-recently-dispatching tentacle
       ttl_seconds:      expected lifetime; consumers treat older markers as stale
       written_at:       ISO 8601 human-readable timestamp of the most-recent write
+
+    Backward compat: existing markers may carry active_tentacles as a flat list of
+    strings (old format) or the legacy single-owner 'tentacle' field.  This writer
+    normalises both to the dict-list format on every write.  Old string entries are
+    treated as having git_root=None (unknown repo).
+
+    Deduplication key: (name, git_root).  Same-name tentacles from different repos
+    produce separate entries so enforcement surfaces can discriminate by repo.
+    Same-name same-repo re-dispatch refreshes the existing entry's per-entry ts.
 
     Downstream enforcement surfaces (git hooks, preToolUse guards) can read this marker
     to detect active dispatched-subagent sessions.  This surface is advisory only —
@@ -332,24 +349,77 @@ def _write_dispatched_subagent_marker(
     try:
         MARKERS_DIR.mkdir(parents=True, exist_ok=True)
         with file_locked(_DISPATCHED_MARKER_PATH):
-            # Merge with existing active set (if any)
-            active: list = []
+            current_git_root = find_git_root()
+            current_git_root_str = str(current_git_root) if current_git_root else None
+
+            # Read and normalise existing active entries to list of dicts
+            active: list[dict] = []
             if _DISPATCHED_MARKER_PATH.is_file():
                 try:
                     existing = json.loads(_DISPATCHED_MARKER_PATH.read_text())
+                    raw: list = []
                     if "active_tentacles" in existing:
-                        active = list(existing["active_tentacles"])
+                        raw = list(existing["active_tentacles"])
                     elif "tentacle" in existing:
                         # Backward-compat: promote old single-owner field
-                        active = [existing["tentacle"]]
+                        raw = [existing["tentacle"]]
+                    for entry in raw:
+                        if isinstance(entry, str):
+                            # Old string format — no per-entry metadata
+                            active.append({"name": entry, "ts": None, "git_root": None})
+                        elif isinstance(entry, dict):
+                            active.append(entry)
+                        # Silently skip malformed entries
                 except (json.JSONDecodeError, OSError):
                     pass
-            if tentacle_name not in active:
-                active.append(tentacle_name)
+
+            # Deduplicate by (name, git_root): update ts in-place when match found;
+            # add a new entry for the same name from a different repo.
+            entry_ts = str(int(time.time()))
+            new_entry: dict = {
+                "name": tentacle_name,
+                "ts": entry_ts,
+                "git_root": current_git_root_str,
+            }
+            # Migration cleanup: when dispatching from a known repo, eagerly remove all
+            # legacy entries for this tentacle name whose git_root is None.  Such entries
+            # are artefacts of the old string-list format — they carry no repo identity,
+            # so hook readers conservatively treat them as active in every repo, silently
+            # defeating the cross-repo fix until TTL expiry.
+            #
+            # Removing them before the dedup step ensures:
+            #   - A single (name, None) legacy entry is absorbed cleanly.
+            #   - A (name, None) entry that coexists with a real (name, /repo) entry
+            #     (e.g. from a race between old and new code) is also cleaned up, avoiding
+            #     duplicate entries that would arise from the "first match" search below.
+            #
+            # If current_git_root_str is None we skip cleanup — the exact-match branch
+            # below handles (None == None) dedup correctly.
+            if current_git_root_str is not None:
+                active = [
+                    e for e in active
+                    if not (e.get("name") == tentacle_name and e.get("git_root") is None)
+                ]
+
+            # Normal dedup: update ts in-place for exact (name, git_root) match;
+            # append a new entry for the same name from a different real repo.
+            existing_idx: int | None = None
+            for i, entry in enumerate(active):
+                if entry.get("name") != tentacle_name:
+                    continue
+                if entry.get("git_root") == current_git_root_str:
+                    existing_idx = i
+                    break
+            if existing_idx is not None:
+                active[existing_idx] = new_entry  # Refresh per-entry ts
+            else:
+                active.append(new_entry)
+
             ts = str(int(time.time()))
             data: dict = {
                 "name": _DISPATCHED_MARKER_NAME,
                 "ts": ts,
+                "git_root": current_git_root_str,
                 "active_tentacles": active,
                 "scope": list(scope),
                 "dispatch_mode": dispatch_mode,
@@ -379,6 +449,14 @@ def _clear_dispatched_subagent_marker(tentacle_name: str) -> bool:
     Called by cmd_complete so a completing tentacle's entry is removed without
     disturbing sibling tentacles that are still running.
 
+    Removal is scoped by (name, git_root) when both are available, so completing a
+    tentacle in one repo does not accidentally clear a same-named tentacle in another
+    repo that may be running in a parallel session.
+
+    Backward compat: old string entries and old single-owner 'tentacle' field are
+    normalised to dicts before removal.  An old string entry (git_root=None) is
+    removed by name alone (conservative: we have no repo info to discriminate with).
+
     Fail-open: returns False on error without raising.
     """
     try:
@@ -390,20 +468,39 @@ def _clear_dispatched_subagent_marker(tentacle_name: str) -> bool:
             except (json.JSONDecodeError, OSError):
                 _DISPATCHED_MARKER_PATH.unlink(missing_ok=True)
                 return True
-            # Support old single-owner format
+
+            current_git_root = find_git_root()
+            current_git_root_str = str(current_git_root) if current_git_root else None
+
+            # Normalise to list of dicts (handles both old string-list and new dict-list)
+            raw: list = []
             if "active_tentacles" in data:
-                active: list = list(data["active_tentacles"])
+                raw = list(data["active_tentacles"])
             elif "tentacle" in data:
-                active = [data["tentacle"]]
-            else:
-                active = []
-            if tentacle_name in active:
-                active.remove(tentacle_name)
-            if not active:
+                raw = [data["tentacle"]]
+            normalized: list[dict] = []
+            for entry in raw:
+                if isinstance(entry, str):
+                    normalized.append({"name": entry, "ts": None, "git_root": None})
+                elif isinstance(entry, dict):
+                    normalized.append(entry)
+
+            def _should_remove(entry: dict) -> bool:
+                if entry.get("name") != tentacle_name:
+                    return False
+                entry_git_root = entry.get("git_root")
+                # If either side lacks git_root info, match by name only (conservative
+                # removal: can't distinguish repos, so err on the side of cleaning up).
+                if entry_git_root is None or current_git_root_str is None:
+                    return True
+                return entry_git_root == current_git_root_str
+
+            remaining = [e for e in normalized if not _should_remove(e)]
+            if not remaining:
                 _DISPATCHED_MARKER_PATH.unlink()
             else:
                 ts = str(int(time.time()))
-                data["active_tentacles"] = active
+                data["active_tentacles"] = remaining
                 data["ts"] = ts
                 data["written_at"] = datetime.now(timezone.utc).isoformat()
                 data.pop("tentacle", None)  # Remove old single-owner field
@@ -460,12 +557,16 @@ def _get_marker_state() -> dict:
     """Return machine-readable marker state dict for JSON consumers.
 
     Fields:
-      active:           bool — active_tentacles list is non-empty
-      path:             string path to marker file
-      active_tentacles: list of tentacle names currently dispatched
-      dispatch_mode:    dispatch_mode from marker (or null)
-      stale:            bool — marker age exceeds its declared TTL
-      written_at:       ISO timestamp from marker (or null)
+      active:                  bool — active_tentacles list is non-empty
+      path:                    string path to marker file
+      active_tentacles:        list of tentacle names currently dispatched
+                               (backward-compat: always a list of strings)
+      active_tentacle_entries: list of full per-entry dicts {name, ts, git_root}
+                               (new field: enriched data for enforcement surfaces)
+      git_root:                top-level git_root from the marker (last writer's repo)
+      dispatch_mode:           dispatch_mode from marker (or null)
+      stale:                   bool — marker age exceeds its declared TTL
+      written_at:              ISO timestamp from marker (or null)
     """
     data = _read_dispatched_subagent_marker()
     if data is None:
@@ -473,21 +574,37 @@ def _get_marker_state() -> dict:
             "active": False,
             "path": str(_DISPATCHED_MARKER_PATH),
             "active_tentacles": [],
+            "active_tentacle_entries": [],
+            "git_root": None,
             "dispatch_mode": None,
             "stale": False,
             "written_at": None,
         }
     # Support old single-owner format for backward-compat reads
+    raw_active: list = []
     if "active_tentacles" in data:
-        active_tentacles = list(data["active_tentacles"])
+        raw_active = list(data["active_tentacles"])
     elif "tentacle" in data:
-        active_tentacles = [data["tentacle"]]
-    else:
-        active_tentacles = []
+        raw_active = [data["tentacle"]]
+
+    # Normalise to both a name-list (backward compat) and enriched entry-list (new)
+    names: list[str] = []
+    entries: list[dict] = []
+    for entry in raw_active:
+        if isinstance(entry, str):
+            names.append(entry)
+            entries.append({"name": entry, "ts": None, "git_root": None})
+        elif isinstance(entry, dict):
+            name = entry.get("name", "")
+            names.append(name)
+            entries.append(entry)
+
     return {
-        "active": len(active_tentacles) > 0,
+        "active": len(names) > 0,
         "path": str(_DISPATCHED_MARKER_PATH),
-        "active_tentacles": active_tentacles,
+        "active_tentacles": names,           # backward compat: list of names
+        "active_tentacle_entries": entries,  # new: enriched per-entry data
+        "git_root": data.get("git_root"),    # top-level git_root of last writer
         "dispatch_mode": data.get("dispatch_mode"),
         "stale": _is_marker_stale(data),
         "written_at": data.get("written_at"),

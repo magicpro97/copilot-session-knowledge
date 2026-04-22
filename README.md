@@ -165,9 +165,23 @@ python3 ~/.copilot/tools/tentacle.py complete api-export
 
 **Commit restriction:** Sub-agents must not run `git commit` or `git push`. When git hooks
 are installed (`install.py --install-git-hooks`), both operations are **blocked at the git level**
-while a `dispatched-subagent-active` marker is active. Even without hooks, this is a hard
-convention: only the orchestrator commits, after merging and verifying tentacle results.
-Enforcement is local-only — cloud-delegated runs are not covered.
+while a `dispatched-subagent-active` marker is active and the marker's `git_root` matches the
+current repo. Even without hooks, this is a hard convention: only the orchestrator commits,
+after merging and verifying tentacle results. Enforcement is local-only — cloud-delegated runs
+are not covered.
+
+> **Cross-repo isolation:** Each marker entry carries a `git_root` field. If Terminal A has an
+> active tentacle in repo A, a `git commit` in repo B is **not blocked** — the hook skips
+> markers whose `git_root` doesn't match the committing repo. Markers written without `git_root`
+> (old format or dispatch from a non-git directory) conservatively block as before.
+
+> **Stuck marker:** If the orchestrator crashes before `tentacle.py complete`, the marker stays
+> active for up to 4 hours (TTL dead-man switch). To clear it manually:
+> ```bash
+> python3 ~/.copilot/tools/tentacle.py complete <name>
+> # or directly:
+> rm ~/.copilot/markers/dispatched-subagent-active
+> ```
 
 ### Tentacle Next Step
 
@@ -278,13 +292,34 @@ Smart pipeline analyzes `git diff` to run only what changed. Post-merge hook aut
 
 Unified hook runner architecture — 1 Python process per event with fail-open, HMAC-signed markers, audit logging, and tamper protection. Hook deployment is **Copilot CLI only**; Claude Code does not support the `hook_runner.py` format.
 
-**Dispatched-subagent git guard (phase 3):** `install.py --install-git-hooks` deploys
+**Dispatched-subagent git guard (phase 3+):** `install.py --install-git-hooks` deploys
 `pre-commit` and `pre-push` scripts into the current repo's `.git/hooks/`. When the
-`dispatched-subagent-active` marker is fresh, both scripts block the git operation. This is the
-**primary enforcement surface** for subagent commit restrictions — it fires at the filesystem
-level regardless of which agent process calls git. The `preToolUse` hook provides
-defense-in-depth but cannot be relied on inside delegated subagent contexts. Enforcement is
-**local-only**; cloud-delegated runs are not covered.
+`dispatched-subagent-active` marker is fresh and its `git_root` matches the committing repo,
+both scripts block the git operation. This is the **primary enforcement surface** for subagent
+commit restrictions — it fires at the filesystem level regardless of which agent process calls
+git. The `preToolUse` hook provides defense-in-depth but cannot be relied on inside delegated
+subagent contexts. Enforcement is **local-only**; cloud-delegated runs are not covered.
+
+The marker now stores `active_tentacles` as a list of objects (`{name, ts, git_root}`) instead
+of a flat string list. Each entry carries its own dispatch timestamp and the git repository root
+where the dispatch originated. The hook compares `git_root` against the repo running git — a
+marker from a different repo does not block commits there (fixes cross-repo false-positive
+blocking). Markers written without `git_root` (old format or non-git CWD) conservatively block.
+
+> **Upgrade migration:** Cross-repo isolation is not retroactive for in-flight old-format
+> markers. If a tentacle is still active when you upgrade, its existing marker entry has no
+> `git_root` and will continue to block all repos until it completes, is cleared, or the 4-hour
+> TTL expires. To get isolation immediately: `tentacle.py complete <name>` (or
+> `rm ~/.copilot/markers/dispatched-subagent-active`), then re-dispatch.
+
+**Limitations:** `preToolUse` non-inheritance inside `task()`-spawned subagents remains a
+platform limitation — git hooks are the reliable surface. Two concurrent orchestrators in the
+same repo share one marker and are not isolated from each other; one orchestrator per repo at a
+time is the supported model. `auto-update-tools.py` does **not** auto-reinstall git hooks in
+registered repos — when hook files change it prints:
+`"Git hook scripts updated — installed per-repo hooks are NOT automatically refreshed."` and
+`"Re-run in each protected repo: python3 ~/.copilot/tools/install.py --install-git-hooks"`.
+Re-run that command in each protected repo after relevant tool updates.
 
 ```bash
 python3 ~/.copilot/tools/install.py --deploy-skill        # Deploy skill to project

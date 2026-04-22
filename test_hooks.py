@@ -1154,6 +1154,505 @@ else:
         shutil.rmtree(str(_e2e_repo), ignore_errors=True)
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  Section 13: Repo-scope isolation & dual-format tests
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n── Section 13: Repo-scope isolation & dual-format ──")
+
+# 13a. _read_tentacle_info handles old string-list format
+try:
+    import importlib.util as _ilu13
+    _csm_spec = _ilu13.spec_from_file_location("check_subagent_marker_13", _csm_path)
+    _csm13 = _ilu13.module_from_spec(_csm_spec)
+    _csm_spec.loader.exec_module(_csm13)
+
+    _old_mp13 = _csm13.MARKER_PATH
+    _t13_home = Path(tempfile.mkdtemp(prefix="test-dualfmt-"))
+    _t13_marker = _t13_home / ".copilot" / "markers" / "dispatched-subagent-active"
+    _t13_marker.parent.mkdir(parents=True)
+
+    # Write old string-list format
+    _t13_marker.write_text(json.dumps({
+        "name": "dispatched-subagent-active",
+        "ts": str(int(_time12.time())),
+        "active_tentacles": ["tentacle-alpha", "tentacle-beta"],
+    }))
+    _csm13.MARKER_PATH = _t13_marker
+
+    info_old = _csm13._read_tentacle_info()
+    test("13a: _read_tentacle_info handles old string-list format",
+         "tentacle-alpha" in info_old and "tentacle-beta" in info_old,
+         f"Got: {info_old!r}")
+
+    # 13b. _read_tentacle_info handles new dict-list format
+    _t13_marker.write_text(json.dumps({
+        "name": "dispatched-subagent-active",
+        "ts": str(int(_time12.time())),
+        "active_tentacles": [
+            {"name": "tentacle-alpha", "ts": str(int(_time12.time())), "git_root": "/some/repo"},
+            {"name": "tentacle-beta", "ts": str(int(_time12.time())), "git_root": "/some/repo"},
+        ],
+    }))
+    _csm13.MARKER_PATH = _t13_marker
+    info_new = _csm13._read_tentacle_info()
+    test("13b: _read_tentacle_info handles new dict-list format",
+         "tentacle-alpha" in info_new and "tentacle-beta" in info_new,
+         f"Got: {info_new!r}")
+
+    _csm13.MARKER_PATH = _old_mp13
+    shutil.rmtree(str(_t13_home), ignore_errors=True)
+    test("13a-b: dual-format tentacle info tests ran", True)
+except Exception as e:
+    test("13a-b: dual-format tentacle info tests ran", False, str(e))
+
+# 13c-d. Old-format marker: different vs same git_root
+if _csm_path.is_file():
+    _repo_a = Path(tempfile.mkdtemp(prefix="test-repo-a-"))
+    _repo_b = Path(tempfile.mkdtemp(prefix="test-repo-b-"))
+
+    try:
+        subprocess.run(["git", "init", str(_repo_a)], capture_output=True, check=True, timeout=10)
+        subprocess.run(["git", "config", "user.email", "t@t.com"],
+                       cwd=str(_repo_a), capture_output=True, timeout=5)
+        subprocess.run(["git", "config", "user.name", "T"],
+                       cwd=str(_repo_a), capture_output=True, timeout=5)
+
+        _rA_home = Path(tempfile.mkdtemp(prefix="test-roota-home-"))
+        (_rA_home / ".copilot" / "markers").mkdir(parents=True)
+        _rA_marker = _rA_home / ".copilot" / "markers" / "dispatched-subagent-active"
+
+        # Marker from repo-b → should NOT block in repo-a
+        _rA_marker.write_text(json.dumps({
+            "name": "dispatched-subagent-active",
+            "ts": str(int(_time12.time())),
+            "active_tentacles": ["my-tentacle"],
+            "git_root": str(_repo_b),
+        }))
+        r_cross = subprocess.run(
+            [sys.executable, str(_csm_path)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            env={**os.environ, "HOME": str(_rA_home)},
+            cwd=str(_repo_a),
+        )
+        test("13c: old-format marker different git_root → exit 0 (cross-repo skip)",
+             r_cross.returncode == 0,
+             f"exit={r_cross.returncode} stdout={r_cross.stdout[:120]}")
+
+        # Marker from repo-a → should block in repo-a
+        _rA_marker.write_text(json.dumps({
+            "name": "dispatched-subagent-active",
+            "ts": str(int(_time12.time())),
+            "active_tentacles": ["my-tentacle"],
+            "git_root": str(_repo_a),
+        }))
+        r_same = subprocess.run(
+            [sys.executable, str(_csm_path)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            env={**os.environ, "HOME": str(_rA_home)},
+            cwd=str(_repo_a),
+        )
+        test("13d: old-format marker same git_root → exit 1 (blocks)",
+             r_same.returncode == 1,
+             f"exit={r_same.returncode} stdout={r_same.stdout[:120]}")
+
+        shutil.rmtree(str(_rA_home), ignore_errors=True)
+    except subprocess.CalledProcessError as e:
+        test("13c-d: git-root repo-scope tests (subprocess setup)", False, str(e))
+    except Exception as e:
+        test("13c-d: git-root repo-scope tests", False, str(e))
+    finally:
+        shutil.rmtree(str(_repo_a), ignore_errors=True)
+        shutil.rmtree(str(_repo_b), ignore_errors=True)
+
+# 13e. Old-format marker without git_root → conservative block
+if _csm_path.is_file():
+    _c_home = Path(tempfile.mkdtemp(prefix="test-conservative-"))
+    (_c_home / ".copilot" / "markers").mkdir(parents=True)
+    (_c_home / ".copilot" / "markers" / "dispatched-subagent-active").write_text(json.dumps({
+        "name": "dispatched-subagent-active",
+        "ts": str(int(_time12.time())),
+        "active_tentacles": ["my-tentacle"],
+        # No git_root — old marker without repo metadata
+    }))
+    r_conservative = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        env={**os.environ, "HOME": str(_c_home)},
+    )
+    test("13e: absent git_root → exit 1 (conservative block, backward compat)",
+         r_conservative.returncode == 1,
+         f"exit={r_conservative.returncode} stdout={r_conservative.stdout[:120]}")
+    shutil.rmtree(str(_c_home), ignore_errors=True)
+
+# 13f-g. New dict-list format: all-other-repo vs one-matching-repo
+if _csm_path.is_file():
+    _nf_repo = Path(tempfile.mkdtemp(prefix="test-nf-repo-"))
+    _nf_other = Path(tempfile.mkdtemp(prefix="test-nf-other-"))
+    try:
+        subprocess.run(["git", "init", str(_nf_repo)], capture_output=True, check=True, timeout=10)
+        subprocess.run(["git", "config", "user.email", "t@t.com"],
+                       cwd=str(_nf_repo), capture_output=True, timeout=5)
+
+        _nf_home = Path(tempfile.mkdtemp(prefix="test-nf-home-"))
+        (_nf_home / ".copilot" / "markers").mkdir(parents=True)
+        _nf_marker = _nf_home / ".copilot" / "markers" / "dispatched-subagent-active"
+
+        # All entries for other repo → exit 0
+        _nf_marker.write_text(json.dumps({
+            "name": "dispatched-subagent-active",
+            "ts": str(int(_time12.time())),
+            "active_tentacles": [
+                {"name": "t1", "ts": str(int(_time12.time())), "git_root": str(_nf_other)},
+            ],
+        }))
+        r_all_other = subprocess.run(
+            [sys.executable, str(_csm_path)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            env={**os.environ, "HOME": str(_nf_home)},
+            cwd=str(_nf_repo),
+        )
+        test("13f: new dict-list all entries other repo → exit 0",
+             r_all_other.returncode == 0,
+             f"exit={r_all_other.returncode} stdout={r_all_other.stdout[:120]}")
+
+        # Mixed: one entry for current repo → exit 1
+        _nf_marker.write_text(json.dumps({
+            "name": "dispatched-subagent-active",
+            "ts": str(int(_time12.time())),
+            "active_tentacles": [
+                {"name": "t-other", "ts": str(int(_time12.time())), "git_root": str(_nf_other)},
+                {"name": "t-current", "ts": str(int(_time12.time())), "git_root": str(_nf_repo)},
+            ],
+        }))
+        r_one_match = subprocess.run(
+            [sys.executable, str(_csm_path)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            env={**os.environ, "HOME": str(_nf_home)},
+            cwd=str(_nf_repo),
+        )
+        test("13g: new dict-list one entry for current repo → exit 1 (blocks)",
+             r_one_match.returncode == 1,
+             f"exit={r_one_match.returncode} stdout={r_one_match.stdout[:120]}")
+
+        shutil.rmtree(str(_nf_home), ignore_errors=True)
+    except subprocess.CalledProcessError as e:
+        test("13f-g: new dict-list repo-scope tests (subprocess setup)", False, str(e))
+    except Exception as e:
+        test("13f-g: new dict-list repo-scope tests", False, str(e))
+    finally:
+        shutil.rmtree(str(_nf_repo), ignore_errors=True)
+        shutil.rmtree(str(_nf_other), ignore_errors=True)
+
+# 13h. New dict entry absent git_root → conservative block
+if _csm_path.is_file():
+    _ca_home = Path(tempfile.mkdtemp(prefix="test-consv-absent-"))
+    (_ca_home / ".copilot" / "markers").mkdir(parents=True)
+    (_ca_home / ".copilot" / "markers" / "dispatched-subagent-active").write_text(json.dumps({
+        "name": "dispatched-subagent-active",
+        "ts": str(int(_time12.time())),
+        "active_tentacles": [{"name": "t1", "ts": str(int(_time12.time()))}],  # No git_root
+    }))
+    r_ca = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        env={**os.environ, "HOME": str(_ca_home)},
+    )
+    test("13h: dict entry absent git_root → exit 1 (conservative block)",
+         r_ca.returncode == 1,
+         f"exit={r_ca.returncode} stdout={r_ca.stdout[:120]}")
+    shutil.rmtree(str(_ca_home), ignore_errors=True)
+
+# 13i. New dict entry with expired per-entry ts → exit 0
+if _csm_path.is_file():
+    _exp_home = Path(tempfile.mkdtemp(prefix="test-expired-entry-"))
+    (_exp_home / ".copilot" / "markers").mkdir(parents=True)
+    stale_entry_ts = str(int(_time12.time()) - 99999)
+    (_exp_home / ".copilot" / "markers" / "dispatched-subagent-active").write_text(json.dumps({
+        "name": "dispatched-subagent-active",
+        "ts": str(int(_time12.time())),  # Global ts is fresh
+        "active_tentacles": [
+            {"name": "t-expired", "ts": stale_entry_ts},  # No git_root → conservative but expired
+        ],
+    }))
+    r_exp = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        env={**os.environ, "HOME": str(_exp_home)},
+    )
+    test("13i: dict entry with stale per-entry ts → exit 0 (entry expired)",
+         r_exp.returncode == 0,
+         f"exit={r_exp.returncode} stdout={r_exp.stdout[:120]}")
+    shutil.rmtree(str(_exp_home), ignore_errors=True)
+
+# 13j. SubagentGitGuardRule: cross-repo dict entry → allowed; same-repo → denied
+try:
+    import rules.subagent_guard as _sg13
+    _rule_sg13 = _sg13.SubagentGitGuardRule()
+
+    _j_other = Path(tempfile.mkdtemp(prefix="test-j-other-"))
+    _j_current = Path(tempfile.mkdtemp(prefix="test-j-current-"))
+    _j_marker_dir = Path(tempfile.mkdtemp(prefix="test-sg-cross-"))
+    (_j_marker_dir / "markers").mkdir(parents=True)
+    _j_marker_file = _j_marker_dir / "markers" / "dispatched-subagent-active"
+    _j_marker_file.write_text(json.dumps({
+        "name": "dispatched-subagent-active",
+        "ts": str(int(_time12.time())),
+        "active_tentacles": [
+            {"name": "t1", "ts": str(int(_time12.time())), "git_root": str(_j_other)},
+        ],
+    }))
+
+    _orig_sm13 = _sg13.SUBAGENT_MARKER
+    _orig_vm13 = _sg13.verify_marker
+    _orig_gcr13 = _sg13._get_current_git_root
+    _sg13.SUBAGENT_MARKER = _j_marker_file
+    _sg13.verify_marker = lambda p, n: True
+    _sg13._get_current_git_root = lambda: str(_j_current)
+
+    result_cross = _rule_sg13.evaluate("preToolUse", {
+        "toolName": "bash", "toolArgs": {"command": "git commit -m test"},
+    })
+    test("13j: SubagentGitGuardRule cross-repo dict entry → allowed",
+         result_cross is None,
+         f"Got: {result_cross!r:.80}")
+
+    # Same repo → blocks
+    _sg13._get_current_git_root = lambda: str(_j_other)
+    result_sameRepo = _rule_sg13.evaluate("preToolUse", {
+        "toolName": "bash", "toolArgs": {"command": "git commit -m test"},
+    })
+    test("13j2: SubagentGitGuardRule same-repo dict entry → denied",
+         isinstance(result_sameRepo, dict) and result_sameRepo.get("permissionDecision") == "deny",
+         f"Got: {result_sameRepo!r:.80}")
+
+    _sg13.SUBAGENT_MARKER = _orig_sm13
+    _sg13.verify_marker = _orig_vm13
+    _sg13._get_current_git_root = _orig_gcr13
+    shutil.rmtree(str(_j_marker_dir), ignore_errors=True)
+    shutil.rmtree(str(_j_other), ignore_errors=True)
+    shutil.rmtree(str(_j_current), ignore_errors=True)
+    test("13j: SubagentGitGuardRule cross-repo tests ran", True)
+except Exception as e:
+    test("13j: SubagentGitGuardRule cross-repo tests ran", False, str(e))
+
+# 13k. auto-update-tools.py emits reinstall warning when hooks change
+try:
+    _au_src = (REPO / "auto-update-tools.py").read_text(encoding="utf-8")
+    test("13k: auto-update-tools.py has --install-git-hooks reminder",
+         "--install-git-hooks" in _au_src,
+         "Expected --install-git-hooks in auto-update warning")
+    test("13k2: auto-update-tools.py states it does NOT auto-reinstall git hooks",
+         "NOT auto" in _au_src or "NOT automatically" in _au_src,
+         "Expected explicit non-propagation statement")
+except Exception as e:
+    test("13k: auto-update hook reminder source checks", False, str(e))
+
+# 13l. install.py mentions re-run after auto-update
+try:
+    _install_src_13 = (REPO / "install.py").read_text(encoding="utf-8")
+    test("13l: install.py --install-git-hooks mentions re-run after update",
+         "auto-update" in _install_src_13,
+         "Expected auto-update reference in install_git_hooks output")
+except Exception as e:
+    test("13l: install.py update reminder source check", False, str(e))
+
+# 13m. Dual-format readers present in both hook files
+try:
+    _sg_src_13 = (REPO / "hooks" / "rules" / "subagent_guard.py").read_text(encoding="utf-8")
+    _csm_src_13 = (REPO / "hooks" / "check_subagent_marker.py").read_text(encoding="utf-8")
+    test("13m: subagent_guard.py supports dict entries",
+         "isinstance(active[0], dict)" in _sg_src_13 or "isinstance(entry, dict)" in _sg_src_13)
+    test("13m2: subagent_guard.py supports string entries",
+         "isinstance(active[0], str)" in _sg_src_13 or "isinstance(entry, str)" in _sg_src_13)
+    test("13m3: check_subagent_marker.py supports dict entries",
+         "isinstance(active[0], dict)" in _csm_src_13 or "isinstance(entry, dict)" in _csm_src_13)
+    test("13m4: check_subagent_marker.py supports string entries",
+         "isinstance(active[0], str)" in _csm_src_13 or "isinstance(entry, str)" in _csm_src_13)
+    test("13m5: subagent_guard.py has repo-scope check",
+         "git_root" in _sg_src_13 and "_get_current_git_root" in _sg_src_13)
+    test("13m6: check_subagent_marker.py has repo-scope check",
+         "git_root" in _csm_src_13 and "_get_current_git_root" in _csm_src_13)
+except Exception as e:
+    test("13m: dual-format source checks", False, str(e))
+
+# 13n. Installed-hook path uses canonical tools-dir (not dirname)
+try:
+    _pc_src_13 = (REPO / "hooks" / "pre-commit").read_text(encoding="utf-8")
+    _pp_src_13 = (REPO / "hooks" / "pre-push").read_text(encoding="utf-8")
+    test("13n: pre-commit uses canonical $HOME/.copilot/tools path",
+         "$HOME/.copilot/tools/hooks/check_subagent_marker.py" in _pc_src_13)
+    test("13n2: pre-push uses canonical $HOME/.copilot/tools path",
+         "$HOME/.copilot/tools/hooks/check_subagent_marker.py" in _pp_src_13)
+    test("13n3: pre-commit does not use dirname for guard path",
+         "$(dirname" not in _pc_src_13.split("check_subagent_marker.py")[0].split("SUBAGENT_CHECK")[-1])
+except Exception as e:
+    test("13n: canonical-path source checks", False, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Section 14: _roots_match fail-conservative & parse-once tests
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n── Section 14: _roots_match fail-conservative & parse-once ──")
+
+# 14a. _roots_match returns True on exception (fail-conservative)
+try:
+    import importlib.util as _ilu14
+    _csm_spec14 = _ilu14.spec_from_file_location("csm14", _csm_path)
+    _csm14 = _ilu14.module_from_spec(_csm_spec14)
+    _csm_spec14.loader.exec_module(_csm14)
+
+    # Normal match
+    import tempfile as _tf14
+    _d1 = Path(_tf14.mkdtemp(prefix="root-a-"))
+    _d2 = Path(_tf14.mkdtemp(prefix="root-b-"))
+    test("14a: _roots_match same dir returns True", _csm14._roots_match(str(_d1), str(_d1)))
+    test("14a2: _roots_match different dirs returns False", not _csm14._roots_match(str(_d1), str(_d2)))
+
+    # Exception path: passing a non-string/non-path that causes resolve() to fail
+    # We trigger an OSError by passing a path with embedded null byte.
+    try:
+        result_exc = _csm14._roots_match("/valid/path", "/invalid\x00path")
+    except Exception:
+        result_exc = None  # If it raises instead of returning, mark as failing
+    test("14a3: _roots_match on exception returns True (fail-conservative)",
+         result_exc is True,
+         f"Got: {result_exc!r} — should be True (conservative), not False (fail-open)")
+
+    shutil.rmtree(str(_d1), ignore_errors=True)
+    shutil.rmtree(str(_d2), ignore_errors=True)
+    test("14a: _roots_match tests ran", True)
+except Exception as e:
+    test("14a: _roots_match tests ran", False, str(e))
+
+# 14a-sg. Same check in subagent_guard._roots_match
+try:
+    import rules.subagent_guard as _sg14
+    _d1sg = Path(tempfile.mkdtemp(prefix="sg-root-a-"))
+    _d2sg = Path(tempfile.mkdtemp(prefix="sg-root-b-"))
+
+    test("14a-sg: _roots_match same dir returns True", _sg14._roots_match(str(_d1sg), str(_d1sg)))
+    test("14a-sg2: _roots_match different dirs returns False",
+         not _sg14._roots_match(str(_d1sg), str(_d2sg)))
+
+    try:
+        result_sg_exc = _sg14._roots_match("/valid/path", "/invalid\x00path")
+    except Exception:
+        result_sg_exc = None
+    test("14a-sg3: subagent_guard._roots_match on exception returns True (fail-conservative)",
+         result_sg_exc is True,
+         f"Got: {result_sg_exc!r} — should be True (conservative), not False (fail-open)")
+
+    shutil.rmtree(str(_d1sg), ignore_errors=True)
+    shutil.rmtree(str(_d2sg), ignore_errors=True)
+    test("14a-sg: subagent_guard._roots_match tests ran", True)
+except Exception as e:
+    test("14a-sg: subagent_guard._roots_match tests ran", False, str(e))
+
+# 14b. _any_entry_relevant: entry with bad git_root path → conservative block
+# (relies on _roots_match returning True on exception, so the entry is kept active)
+try:
+    import rules.subagent_guard as _sg14b
+    now14b = _time12.time()
+    entry_bad_root = {"name": "t", "ts": str(int(now14b)), "git_root": "/invalid\x00path"}
+    result_bad = _sg14b._any_entry_relevant([entry_bad_root], "/some/current/repo", now14b)
+    test("14b: _any_entry_relevant with bad git_root path → True (conservative block)",
+         result_bad is True,
+         f"Got: {result_bad!r} — bad path should not silently skip the entry")
+except Exception as e:
+    test("14b: _any_entry_relevant bad-path conservative test", False, str(e))
+
+# 14b2. Same for check_subagent_marker._any_entry_relevant
+try:
+    now14b2 = _time12.time()
+    entry_bad_root2 = {"name": "t", "ts": str(int(now14b2)), "git_root": "/invalid\x00path"}
+    result_bad2 = _csm14._any_entry_relevant([entry_bad_root2], "/some/repo", now14b2)
+    test("14b2: check_subagent_marker._any_entry_relevant bad path → True (conservative)",
+         result_bad2 is True,
+         f"Got: {result_bad2!r}")
+except Exception as e:
+    test("14b2: check_subagent_marker._any_entry_relevant bad-path test", False, str(e))
+
+# 14c. is_marker_fresh parses once: verify no second MARKER_PATH.read_text call
+# after the parse.  We check this at source level.
+try:
+    _csm_src14 = _csm_path.read_text(encoding="utf-8")
+    # Find the body of is_marker_fresh
+    fn_start = _csm_src14.index("def is_marker_fresh()")
+    # Find the next top-level def after is_marker_fresh
+    fn_end = _csm_src14.index("\ndef ", fn_start + 1)
+    fn_body = _csm_src14[fn_start:fn_end]
+
+    # There should be exactly ONE MARKER_PATH.read_text call in is_marker_fresh
+    read_count = fn_body.count("MARKER_PATH.read_text")
+    test("14c: is_marker_fresh reads MARKER_PATH exactly once (parse-once refactor)",
+         read_count == 1,
+         f"Found {read_count} MARKER_PATH.read_text call(s) in is_marker_fresh — expected 1")
+    test("14c2: is_marker_fresh does NOT call _read_marker_ts (parse-once refactor)",
+         "_read_marker_ts" not in fn_body,
+         "is_marker_fresh should extract ts from the already-parsed dict, not re-read the file")
+except Exception as e:
+    test("14c: parse-once source checks", False, str(e))
+
+# 14d. is_marker_fresh behaves identically to before: fresh marker still blocks
+if _csm_path.is_file():
+    _d14_home = Path(tempfile.mkdtemp(prefix="test-14d-"))
+    (_d14_home / ".copilot" / "markers").mkdir(parents=True)
+    (_d14_home / ".copilot" / "markers" / "dispatched-subagent-active").write_text(json.dumps({
+        "name": "dispatched-subagent-active",
+        "ts": str(int(_time12.time())),
+        "active_tentacles": ["my-tentacle"],
+    }))
+    r14d = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        env={**os.environ, "HOME": str(_d14_home)},
+    )
+    test("14d: parse-once refactor: fresh marker still exits 1 (blocks)",
+         r14d.returncode == 1,
+         f"exit={r14d.returncode} stdout={r14d.stdout[:80]}")
+    shutil.rmtree(str(_d14_home), ignore_errors=True)
+
+# 14e. fail-conservative comment is accurate in source: no "fail-open" on scope check
+try:
+    _csm_src14e = _csm_path.read_text(encoding="utf-8")
+    fn_start = _csm_src14e.index("def is_marker_fresh()")
+    fn_end = _csm_src14e.index("\ndef ", fn_start + 1)
+    fn_body14e = _csm_src14e[fn_start:fn_end]
+    # The repo-scope except clause should say "fail-conservative", not "fail-open"
+    # Locate the repo-scope check except block
+    scope_part = fn_body14e.split("Repo-scope check")[-1] if "Repo-scope check" in fn_body14e else fn_body14e
+    test("14e: is_marker_fresh repo-scope except comment says fail-conservative (not fail-open)",
+         "fail-conservative" in scope_part and "fail-open" not in scope_part.split("fail-conservative")[0][-30:],
+         "Comment should be 'fail-conservative' to accurately describe that scope errors keep blocking")
+except Exception as e:
+    test("14e: is_marker_fresh comment accuracy check", False, str(e))
+
+# 14f. auto-update warning text says "ACTION REQUIRED" and "EVERY"
+try:
+    _au_src14 = (REPO / "auto-update-tools.py").read_text(encoding="utf-8")
+    test("14f: auto-update warning says ACTION REQUIRED",
+         "ACTION REQUIRED" in _au_src14,
+         "Strengthened warning should say 'ACTION REQUIRED'")
+    test("14f2: auto-update warning says EVERY protected repo",
+         "EVERY" in _au_src14,
+         "Strengthened warning should say 'EVERY' to clarify scope")
+except Exception as e:
+    test("14f: auto-update warning strength checks", False, str(e))
+
+# 14g. _roots_match docstring in both files mentions fail-conservative
+try:
+    _sg_src14g = (REPO / "hooks" / "rules" / "subagent_guard.py").read_text(encoding="utf-8")
+    _csm_src14g = (REPO / "hooks" / "check_subagent_marker.py").read_text(encoding="utf-8")
+    test("14g: subagent_guard._roots_match docstring mentions fail-conservative",
+         "fail-conservative" in _sg_src14g.split("def _roots_match")[1].split("def ")[0])
+    test("14g2: check_subagent_marker._roots_match docstring mentions fail-conservative",
+         "fail-conservative" in _csm_src14g.split("def _roots_match")[1].split("def ")[0])
+except Exception as e:
+    test("14g: _roots_match docstring checks", False, str(e))
+
+
 import ast
 
 py_files = list(REPO.glob("*.py")) + list((REPO / "hooks").glob("*.py")) + list((REPO / "hooks" / "rules").glob("*.py"))

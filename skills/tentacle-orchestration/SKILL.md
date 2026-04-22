@@ -37,9 +37,16 @@ it — they are the reliable enforcement surface.
 
 **How enforcement works:**
 1. `tentacle.py swarm` writes an HMAC-signed marker file at
-   `~/.copilot/markers/dispatched-subagent-active` containing an `active_tentacles` list.
+   `~/.copilot/markers/dispatched-subagent-active` containing an `active_tentacles` list of
+   per-entry objects: `{"name": "<tentacle>", "ts": "<unix>", "git_root": "<abs-path>"}`.
 2. `hooks/pre-commit` and `hooks/pre-push` call `hooks/check_subagent_marker.py`, which blocks
-   the git operation when the marker is present, auth-valid, and within its 4-hour TTL.
+   the git operation when the marker is present, auth-valid, within its 4-hour TTL, **and the
+   entry's `git_root` matches the repo running the git command**. A marker from a different repo
+   does not block commits here — this isolates multi-session, multi-repo setups. Entries without
+   `git_root` (old format) conservatively block all repos.
+   > **Upgrade migration:** Cross-repo isolation is not retroactive. In-flight old-format marker
+   > entries (no `git_root`) continue to block all repos until completed, cleared, or expired (4h
+   > TTL). To get isolation immediately: `tentacle.py complete <name>` then re-dispatch.
 3. `hooks/rules/subagent_guard.py` provides a secondary `preToolUse` intercept for the
    orchestrator session (defense-in-depth only — not the primary path).
 4. `tentacle.py complete <name>` removes the tentacle's entry; the marker is deleted when
@@ -51,8 +58,17 @@ it — they are the reliable enforcement surface.
 python3 ~/.copilot/tools/install.py --install-git-hooks
 ```
 
-**Enforcement scope:** Local-only. Cloud-delegated or remote agent runs are not covered.
-The `preToolUse` guard in the main session is defense-in-depth — it does not replace git hooks.
+**Enforcement scope and known limitations:**
+
+- **Local-only.** Cloud-delegated or remote agent runs are not covered.
+- **`preToolUse` non-inheritance.** The `preToolUse` guard in the main session is
+  defense-in-depth — it does not replace git hooks. Whether `preToolUse` propagates into
+  `task()`-spawned subagents is undefined by the platform.
+- **Same-repo multi-orchestrator not supported.** Two concurrent orchestrators in the same repo
+  share one marker entry and are not isolated from each other. One orchestrator per repo at a
+  time is the supported model.
+- **After tool updates,** `auto-update-tools.py` does NOT auto-reinstall git hooks. Re-run
+  `install.py --install-git-hooks` in each protected repo after relevant updates.
 
 | Convention | What to do |
 |------------|-----------|
@@ -282,4 +298,4 @@ tentacle.py delete <name>
 4. **Complete before delete** — `complete` saves learnings; `delete` alone loses them
 5. **Commit after each phase** — uncommitted code is lost if the session crashes or compacts
 6. **Run the app** — build+test ≠ works. Launch the app to verify DI resolution and runtime behavior
-7. **⚠️ Commit restriction** — Sub-agents must not run `git commit`/`git push`. When git hooks are installed (`install.py --install-git-hooks`), both are blocked at the filesystem level while the `dispatched-subagent-active` marker is fresh. Even without hooks, a sub-agent commit mid-run corrupts the orchestrator's merge flow. Enforcement is local-only; cloud-delegated runs are not covered.
+7. **⚠️ Commit restriction** — Sub-agents must not run `git commit`/`git push`. When git hooks are installed (`install.py --install-git-hooks`), both are blocked at the filesystem level for the repo where the tentacle was dispatched, while the `dispatched-subagent-active` marker is fresh. Commits in other repos are not affected. Even without hooks, a sub-agent commit mid-run corrupts the orchestrator's merge flow. Enforcement is local-only; cloud-delegated runs are not covered.
