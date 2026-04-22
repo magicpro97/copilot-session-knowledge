@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
 import unittest.mock as mock
 from pathlib import Path
 from importlib import import_module
@@ -293,11 +294,19 @@ test("_derive_learnings returns non-empty list", len(learnings) > 0)
 
 novel_topic_repo: dict = {**REPO_FIXTURE, "topics": ["novel-topic-xyz", "ai-tools"]}
 novel_learnings = ts._derive_learnings(novel_topic_repo, our_topics)
-test("_derive_learnings surfaces novel topics", any("novel-topic-xyz" in l for l in novel_learnings))
+# Novel-only repos now fall back to a concrete architectural review bullet instead of
+# emitting a generic "Novel topic signals" dump.
+test("_derive_learnings: novel-only repo uses concrete fallback (not generic topic list)",
+     any("fts5" in l.lower() or "knowledge" in l.lower() or "session" in l.lower()
+         for l in novel_learnings),
+     str(novel_learnings))
 
-# Regression: no bare "Novel topics to explore: ..." dumps
+# Regression: no bare "Novel topics to explore: ..." or "Novel topic signals" dumps
 test("_derive_learnings no longer emits bare topic-list bullets",
      not any(l.startswith("Novel topics to explore:") for l in novel_learnings))
+test("_derive_learnings no longer emits 'Novel topic signals' bullets",
+     not any("novel topic signals" in l.lower() for l in novel_learnings),
+     str(novel_learnings))
 
 # AI-IQ-like fixture: hybrid search + graph intelligence + zero config in description
 AI_IQ_LIKE_REPO: dict = {
@@ -410,15 +419,52 @@ test("_derive_learnings: 'async' does NOT trigger cross-env sync bullet",
              for l in cli_fp_learnings),
      str(cli_fp_learnings))
 
-# Positive: exact word "cli" and "sync" still fire correctly
+# Positive: exact word "cli" still fires correctly
 cli_exact_repo: dict = {**REPO_FIXTURE, "description": "A cli tool with sync support for knowledge", "topics": []}
 cli_exact_learnings = ts._derive_learnings(cli_exact_repo, our_topics, "")
 test("_derive_learnings: bare 'cli' word still triggers CLI bullet",
      any("cli verb" in l.lower() or "add/search/update" in l.lower() for l in cli_exact_learnings),
      str(cli_exact_learnings))
-test("_derive_learnings: bare 'sync' word still triggers cross-env sync bullet",
-     any("cross-environment sync" in l.lower() or "sync-knowledge" in l.lower() for l in cli_exact_learnings),
+# Bare "sync" alone is NOT sufficient — cross-platform signal is required.
+test("_derive_learnings: bare 'sync' alone does NOT trigger cross-env sync bullet",
+     not any("cross-environment sync" in l.lower() or "sync-knowledge" in l.lower()
+             for l in cli_exact_learnings),
      str(cli_exact_learnings))
+# Positive: explicit cross-platform signal does fire the sync bullet
+wsl_sync_repo: dict = {**REPO_FIXTURE, "description": "A knowledge tool with wsl cross-platform support", "topics": []}
+wsl_sync_learnings = ts._derive_learnings(wsl_sync_repo, our_topics, "")
+test("_derive_learnings: 'wsl' keyword triggers cross-env sync bullet",
+     any("cross-environment sync" in l.lower() or "sync-knowledge" in l.lower()
+         for l in wsl_sync_learnings),
+     str(wsl_sync_learnings))
+
+# Cap: output never exceeds MAX_HEURISTIC_LEARNINGS even for high-signal repos
+test("_derive_learnings: result capped at MAX_HEURISTIC_LEARNINGS",
+     len(ai_iq_learnings) <= ts._MAX_HEURISTIC_LEARNINGS,
+     f"got {len(ai_iq_learnings)} bullets")
+
+# Editor integration: only fires on topic match, NOT bare keyword in description/readme
+editor_kw_repo: dict = {**REPO_FIXTURE, "description": "Move cursor position in vscode extension", "topics": []}
+editor_kw_learnings = ts._derive_learnings(editor_kw_repo, our_topics, "check cursor and vscode settings")
+test("_derive_learnings: editor keywords alone do NOT trigger editor bullet",
+     not any("editor integration" in l.lower() for l in editor_kw_learnings),
+     str(editor_kw_learnings))
+
+editor_topic_repo: dict = {**REPO_FIXTURE, "description": "A memory tool", "topics": ["cursor", "ai-tools"]}
+editor_topic_learnings = ts._derive_learnings(editor_topic_repo, our_topics, "")
+test("_derive_learnings: 'cursor' in topics DOES trigger editor bullet",
+     any("editor integration" in l.lower() for l in editor_topic_learnings),
+     str(editor_topic_learnings))
+
+# Claude Code prioritised: fires as first bullet when topic matches
+claude_code_repo: dict = {**REPO_FIXTURE, "description": "Hybrid search semantic knowledge", "topics": ["claude-code", "knowledge-graph"]}
+claude_code_learnings = ts._derive_learnings(claude_code_repo, our_topics, "")
+test("_derive_learnings: claude-code topic produces a bullet",
+     any("claude" in l.lower() for l in claude_code_learnings),
+     str(claude_code_learnings))
+test("_derive_learnings: claude-code bullet is first (highest priority)",
+     claude_code_learnings and "claude" in claude_code_learnings[0].lower(),
+     str(claude_code_learnings))
 
 
 # ─── Issue #3 Regression Tests ────────────────────────────────────────────────
@@ -757,7 +803,174 @@ with mock.patch.object(ts.GitHubClient, "ensure_label", return_value=True), \
     test("already-seen marker is skipped", len(urls3) == 0)
 
 
-# ─── 9. CLI subprocess tests ──────────────────────────────────────────────────
+# ─── 8b. create_stage update path (mocked) ────────────────────────────────────
+
+print("\n🔄 create_stage update path (mocked)")
+
+_marker_update = ts.repo_marker(REPO_FIXTURE["full_name"])
+_old_body = "old body content that differs from newly rendered body"
+_issue_map_open: dict = {
+    _marker_update: {"number": 42, "state": "open", "body": _old_body, "title": "old title"}
+}
+_issue_map_closed: dict = {
+    _marker_update: {"number": 99, "state": "closed", "body": _old_body, "title": "old title"}
+}
+
+# dry-run with issue_map: should show [would-update] for existing issue
+with mock.patch.object(ts.GitHubClient, "patch_issue", return_value=None) as mock_patch:
+    client_u = ts.GitHubClient(token="ghp_test")
+    existing_u: set[str] = {_marker_update}  # marker is in existing_markers too
+    urls_update_dry = ts.create_stage(
+        [(REPO_FIXTURE, "readme text")],
+        client_u, cfg_c, existing_u,
+        dry_run=True,
+        issue_map=_issue_map_open,
+    )
+    test("dry-run update: returns a URL for the existing issue number",
+         len(urls_update_dry) == 1 and "42" in urls_update_dry[0],
+         str(urls_update_dry))
+    test("dry-run update: URL contains [dry-run] tag",
+         urls_update_dry and "[dry-run]" in urls_update_dry[0])
+    test("dry-run update: patch_issue NOT called in dry-run mode",
+         mock_patch.call_count == 0)
+
+# live update: patch_issue called, body differs
+with mock.patch.object(ts.GitHubClient, "patch_issue",
+                       return_value={"html_url": "https://github.com/x/y/issues/42"}) as mock_patch2:
+    client_u2 = ts.GitHubClient(token="ghp_test")
+    existing_u2: set[str] = {_marker_update}
+    urls_live_update = ts.create_stage(
+        [(REPO_FIXTURE, "readme text")],
+        client_u2, cfg_c, existing_u2,
+        dry_run=False,
+        issue_map=_issue_map_open,
+    )
+    test("live update: patch_issue called once",
+         mock_patch2.call_count == 1,
+         f"call_count={mock_patch2.call_count}")
+    test("live update: returns URL from patch response",
+         urls_live_update == ["https://github.com/x/y/issues/42"],
+         str(urls_live_update))
+    # Verify patch_issue was NOT called with a state change
+    patch_kwargs = mock_patch2.call_args.kwargs if mock_patch2.call_args else {}
+    test("live update: patch_issue has no state param (does not reopen closed issues)",
+         "state" not in patch_kwargs)
+
+# unchanged body: should be skipped even when in issue_map
+with mock.patch.object(ts.GitHubClient, "patch_issue", return_value=None) as mock_patch3:
+    client_u3 = ts.GitHubClient(token="ghp_test")
+    # Use the actual rendered body so the comparison matches
+    _real_marker = ts.repo_marker(REPO_FIXTURE["full_name"])
+    _real_body = ts.render_issue_body(REPO_FIXTURE, "readme text", _real_marker,
+                                      cfg_c.get("search", {}).get("our_topics", []))
+    _issue_map_same = {_real_marker: {"number": 77, "state": "open", "body": _real_body}}
+    urls_unchanged = ts.create_stage(
+        [(REPO_FIXTURE, "readme text")],
+        client_u3, cfg_c, {_real_marker},
+        dry_run=False,
+        issue_map=_issue_map_same,
+    )
+    test("unchanged body: patch_issue NOT called",
+         mock_patch3.call_count == 0,
+         f"call_count={mock_patch3.call_count}")
+    test("unchanged body: no URL emitted",
+         len(urls_unchanged) == 0,
+         str(urls_unchanged))
+
+# closed issue: patch updates body but does NOT reopen (state not passed to patch_issue)
+with mock.patch.object(ts.GitHubClient, "patch_issue",
+                       return_value={"html_url": "https://github.com/x/y/issues/99"}) as mock_patch4:
+    client_u4 = ts.GitHubClient(token="ghp_test")
+    urls_closed_update = ts.create_stage(
+        [(REPO_FIXTURE, "readme text")],
+        client_u4, cfg_c, {_marker_update},
+        dry_run=False,
+        issue_map=_issue_map_closed,
+    )
+    test("closed issue update: patch_issue called (body refreshed)",
+         mock_patch4.call_count == 1)
+    closed_kwargs = mock_patch4.call_args.kwargs if mock_patch4.call_args else {}
+    test("closed issue update: state NOT in patch call (issue stays closed)",
+         "state" not in closed_kwargs)
+
+
+# ─── 8c. get_existing_issue_map (mocked) ──────────────────────────────────────
+
+print("\n🗂  get_existing_issue_map (mocked)")
+
+_map_marker_a = ts.repo_marker("owner/repo-a")
+_map_marker_b = ts.repo_marker("owner/repo-b")
+_map_issues: list = [
+    {"number": 10, "state": "open",   "title": "T-A", "body": f"body\n{_map_marker_a}",     "pull_request": None},
+    {"number": 20, "state": "closed", "title": "T-B", "body": f"body\n{_map_marker_b}",     "pull_request": None},
+    {"number": 30, "state": "open",   "title": "T-PR", "body": f"{_map_marker_a}",          "pull_request": {"url": "x"}},  # skip PR
+]
+
+def _mock_list_issues_map(repo, state="all", per_page=100, page=1, labels=None):
+    if page == 1:
+        return _map_issues
+    return []
+
+with mock.patch.object(ts.GitHubClient, "list_issues", side_effect=_mock_list_issues_map):
+    client_map = ts.GitHubClient(token="ghp_test")
+    imap = ts.get_existing_issue_map(client_map, "owner/repo", ts.load_config(None))
+    test("get_existing_issue_map: marker_a present", _map_marker_a in imap,
+         f"keys={list(imap.keys())}")
+    test("get_existing_issue_map: marker_b present", _map_marker_b in imap)
+    test("get_existing_issue_map: PR entry skipped (only 2 entries)",
+         len(imap) == 2, f"len={len(imap)}")
+    test("get_existing_issue_map: issue number preserved",
+         imap[_map_marker_a]["number"] == 10,
+         str(imap.get(_map_marker_a)))
+    test("get_existing_issue_map: closed state preserved",
+         imap[_map_marker_b]["state"] == "closed")
+    # get_existing_markers delegates to issue_map
+    with mock.patch.object(ts.GitHubClient, "list_issues", side_effect=_mock_list_issues_map):
+        markers_set = ts.get_existing_markers(client_map, "owner/repo", ts.load_config(None))
+    test("get_existing_markers still works after refactor",
+         _map_marker_a in markers_set and _map_marker_b in markers_set)
+
+
+# ─── 8d. GitHubClient.patch_issue (mocked) ────────────────────────────────────
+
+print("\n🔧 GitHubClient.patch_issue (mocked)")
+
+_patch_resp = {"number": 5, "html_url": "https://github.com/o/r/issues/5", "state": "closed"}
+
+def _mock_patch_urlopen(req, timeout=None):
+    assert req.method == "PATCH", f"expected PATCH, got {req.method}"
+    assert "/issues/5" in req.full_url, f"unexpected URL: {req.full_url}"
+    body_sent = json.loads(req.data.decode())
+    assert "title" in body_sent and "body" in body_sent
+    resp = mock.MagicMock()
+    resp.read.return_value = json.dumps(_patch_resp).encode()
+    resp.headers = mock.MagicMock()
+    resp.headers.__iter__ = mock.Mock(return_value=iter([]))
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = mock.Mock(return_value=False)
+    return resp
+
+with mock.patch("urllib.request.urlopen", side_effect=_mock_patch_urlopen):
+    client_patch = ts.GitHubClient(token="ghp_test")
+    patch_result = client_patch.patch_issue("owner/repo", 5, "New Title", "New body")
+    test("patch_issue: returns parsed dict on success",
+         isinstance(patch_result, dict) and patch_result.get("number") == 5,
+         str(patch_result))
+    test("patch_issue: html_url in response",
+         patch_result is not None and "html_url" in patch_result)
+
+# patch_issue returns None on HTTP error
+def _mock_patch_404(*args, **kwargs):
+    raise urllib.error.HTTPError("https://api.github.com/repos/x/y/issues/999",
+                                  404, "Not Found", mock.MagicMock(), None)
+
+with mock.patch("urllib.request.urlopen", side_effect=_mock_patch_404):
+    client_patch2 = ts.GitHubClient(token="ghp_test")
+    patch_fail = client_patch2.patch_issue("x/y", 999, "Title", "Body")
+    test("patch_issue: returns None on HTTP 404",
+         patch_fail is None)
+
+
 
 print("\n💻 CLI")
 

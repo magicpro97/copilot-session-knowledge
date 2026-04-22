@@ -353,6 +353,37 @@ class GitHubClient:
             {"title": title[:MAX_TITLE_LEN], "body": body, "labels": labels},
         )
 
+    def patch_issue(self, repo: str, issue_number: int, title: str, body: str) -> dict | None:
+        """Update an existing issue's title and body (does NOT change state).
+
+        Uses PATCH /repos/{repo}/issues/{number} — keeping closed issues closed.
+        Returns updated issue dict or None on failure.
+        """
+        self._wait_if_rate_limited()
+        url = f"{GITHUB_API}/repos/{repo}/issues/{issue_number}"
+        data = json.dumps({"title": title[:MAX_TITLE_LEN], "body": body}).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={**self._headers(), "Content-Type": "application/json"},
+            method="PATCH",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                self._update_rate_limits(dict(resp.headers))
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body_bytes = b""
+            try:
+                body_bytes = e.read()
+            except Exception:
+                pass
+            print(f"  ⚠ PATCH HTTP {e.code} for {url}: {body_bytes[:200]}", file=sys.stderr)
+            return None
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            print(f"  ⚠ PATCH failed for {url}: {e}", file=sys.stderr)
+            return None
+
     def ensure_label(
         self,
         repo: str,
@@ -458,17 +489,20 @@ def extract_markers_from_body(body: str, marker_prefix: str) -> set[str]:
     return {m.strip() for m in re.findall(pattern, stripped)}
 
 
-def get_existing_markers(client: GitHubClient, target_repo: str, config: dict) -> set[str]:
-    """Scan open (and optionally closed) issues labelled with the trend-scout label for markers."""
+def get_existing_issue_map(client: GitHubClient, target_repo: str, config: dict) -> dict[str, dict]:
+    """Scan open (and optionally closed) trend-scout issues for dedup markers.
+
+    Returns a dict mapping marker string → {number, state, body, title} for every
+    issue that carries a marker.  When a marker appears in multiple issues (shouldn't
+    happen but defensive), the first one encountered wins.
+    """
     dedup_cfg = config.get("dedup", {})
     marker_prefix: str = dedup_cfg.get("marker_prefix", "trend-scout:repo:")
     search_closed: bool = dedup_cfg.get("search_closed_issues", True)
     max_scan: int = int(dedup_cfg.get("max_issues_scan", 300))
-    # Filter by label so we only scan issues that could carry markers; avoids
-    # missing old markers on busy repos where unrelated issues dominate the page.
     label: str = config.get("issue_label", "trend-scout")
 
-    markers: set[str] = set()
+    issue_map: dict[str, dict] = {}
     states = ["open", "closed"] if search_closed else ["open"]
 
     for state in states:
@@ -479,17 +513,32 @@ def get_existing_markers(client: GitHubClient, target_repo: str, config: dict) -
             if not issues:
                 break
             for issue in issues:
-                # Skip PRs
                 if issue.get("pull_request"):
                     continue
                 body = issue.get("body") or ""
-                markers |= extract_markers_from_body(body, marker_prefix)
+                markers = extract_markers_from_body(body, marker_prefix)
+                for m in markers:
+                    if m not in issue_map:
+                        issue_map[m] = {
+                            "number": issue["number"],
+                            "state": issue.get("state", "open"),
+                            "body": body,
+                            "title": issue.get("title", ""),
+                        }
             fetched += len(issues)
             if len(issues) < 100:
                 break
             page += 1
 
-    return markers
+    return issue_map
+
+
+def get_existing_markers(client: GitHubClient, target_repo: str, config: dict) -> set[str]:
+    """Return the set of dedup markers found in existing trend-scout issues.
+
+    Delegates to get_existing_issue_map; kept for API compatibility.
+    """
+    return set(get_existing_issue_map(client, target_repo, config).keys())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -690,19 +739,36 @@ def _derive_weaknesses(repo: dict) -> list[str]:
     return out or ["No significant risks identified from available metadata"]
 
 
+_MAX_HEURISTIC_LEARNINGS = 5  # cap to prevent wall-of-text bullet dumps
+
+
 def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "") -> list[str]:
     """Generate concrete, actionable learning bullets from a candidate repo.
 
     Each bullet encodes: the capability/pattern, what it could help with in this
     repo, and a specific example of where/how it could apply.
+
+    Bullets are prioritised by how directly actionable they are for this repo's
+    scripts, capped at _MAX_HEURISTIC_LEARNINGS to avoid wall-of-text dumps.
+    Low-value generic bullets (novel-topic lists, alt-language comparisons,
+    editor-keyword speculation) are not emitted.
     """
     out: list[str] = []
     repo_topics: set[str] = set(repo.get("topics", []))
-    our_set: set[str] = set(our_topics)
 
     desc = (repo.get("description") or "").lower()
     # Combine description + first 3000 chars of readme for richer signal matching
     hint = f"{desc} {readme_excerpt[:3000].lower()}"
+
+    # ── Claude Code integration (highest priority — directly affects claude-adapter.py) ──
+    if "claude-code" in repo_topics or any(kw in hint for kw in (
+        "claude code", "claude-code",
+    )):
+        out.append(
+            "**Claude Code session patterns**: this repo's Claude Code integration approach "
+            "could improve `claude-adapter.py`'s JSONL parsing — e.g., handling new session "
+            "event types or extracting richer metadata from Claude Code tool-use blocks"
+        )
 
     # ── Hybrid / semantic retrieval ──────────────────────────────────────────
     if any(kw in hint for kw in (
@@ -727,17 +793,6 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
             "without requiring identical keywords"
         )
 
-    # ── Zero-config / one-command install ────────────────────────────────────
-    if any(kw in hint for kw in (
-        "zero config", "zero-config", "one command", "1 command",
-        "plugin marketplace", "pip install ai",
-    )):
-        out.append(
-            "**Zero-config install UX**: `install.py` / `setup-project.py` could adopt a "
-            "single-command bootstrap pattern (similar to this repo's one-command install) to "
-            "lower the setup barrier when onboarding new machines or environments"
-        )
-
     # ── Memory consolidation / dedup ─────────────────────────────────────────
     if any(kw in hint for kw in (
         "consolidate", "consolidat", "dream", "dedup", "deduplicate",
@@ -757,60 +812,6 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
             "**CLI verb patterns**: a clear add/search/update/delete verb model (like "
             "`memory-tool add` / `search` / `dream`) could streamline the UX of "
             "`query-session.py` and `learn.py`, making them easier to invoke from hooks or scripts"
-        )
-
-    # ── Claude Code integration ───────────────────────────────────────────────
-    if "claude-code" in repo_topics or any(kw in hint for kw in (
-        "claude code", "claude-code",
-    )):
-        out.append(
-            "**Claude Code session patterns**: this repo's Claude Code integration approach "
-            "could improve `claude-adapter.py`'s JSONL parsing — e.g., handling new session "
-            "event types or extracting richer metadata from Claude Code tool-use blocks"
-        )
-
-    # ── Editor integrations (Cursor, VS Code, etc.) ──────────────────────────
-    editor_topics = repo_topics & {"cursor", "vscode", "jetbrains", "neovim", "vim"}
-    if editor_topics or any(kw in hint for kw in ("cursor", "vs code", "vscode")):
-        editors = ", ".join(sorted(editor_topics)) if editor_topics else "the editor"
-        out.append(
-            f"**Editor integration ({editors})**: `watch-sessions.py` could be extended to "
-            f"detect and parse {editors} session formats natively, broadening the range of AI "
-            f"sessions indexed into `knowledge.db`"
-        )
-
-    # ── Cross-env sync ────────────────────────────────────────────────────────
-    if bool(re.search(r"\bsync\b", hint)) or any(kw in hint for kw in ("cross-platform", "wsl", "windows")):
-        out.append(
-            "**Cross-environment sync patterns**: the sync strategy here could inform "
-            "`sync-knowledge.py` for more robust Windows ↔ WSL knowledge merging"
-        )
-
-    # ── Hooks / workflow enforcement ──────────────────────────────────────────
-    if any(kw in hint for kw in ("hook", "pre-commit", "workflow enforcement")):
-        out.append(
-            "**Git hook / workflow patterns**: hook design from this repo could strengthen the "
-            "`hooks/` enforcement chain (e.g., auto-briefing, commit guards, learn reminders)"
-        )
-
-    # ── Export / portability ──────────────────────────────────────────────────
-    # Note: "import" is intentionally excluded — it matches Python import statements
-    # (e.g. "from ai_iq import Memory") and produces false positives for repos that
-    # have no actual export/portability feature.
-    if any(kw in hint for kw in ("export", "portable", "backup")):
-        out.append(
-            "**Knowledge portability**: the export/backup flow here could complement "
-            "`sync-knowledge.py` for cross-machine knowledge portability"
-        )
-
-    # ── Offline / no-cloud posture ────────────────────────────────────────────
-    if any(kw in hint for kw in (
-        "offline", "no cloud", "no-cloud", "owns your data", "zero api key", "zero api keys",
-    )):
-        out.append(
-            "**Offline-first design**: this repo's no-cloud/no-server posture directly mirrors "
-            "our local-SQLite approach — could validate that `knowledge.db` workflows never "
-            "require external API calls even when semantic search is enabled"
         )
 
     # ── Structured reflexion / reflection workflow ────────────────────────────
@@ -835,30 +836,62 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
             "simultaneous Copilot / Claude sessions"
         )
 
-    # ── Novel topics: contextual, not a bare list ─────────────────────────────
-    # Exclude topics that are already covered by specific bullets above, and
-    # skip overly generic labels that add no actionable signal.
-    _skip_generic = {
-        "ai", "llm", "python", "sqlite", "memory", "developer-tools", "ai-tools",
-    }
-    _already_handled = {"cursor", "vscode", "claude-code", "knowledge-graph"}
-    interesting_novel = sorted(
-        (repo_topics - our_set - _skip_generic - _already_handled)
-    )[:4]
-    if interesting_novel:
-        topic_list = ", ".join(f"`{t}`" for t in interesting_novel)
+    # ── Zero-config / one-command install ────────────────────────────────────
+    if any(kw in hint for kw in (
+        "zero config", "zero-config", "one command", "1 command",
+        "plugin marketplace", "pip install ai",
+    )):
         out.append(
-            f"**Novel topic signals** ({topic_list}): these tags suggest capabilities or "
-            f"patterns not yet in this repo — worth reviewing the source to identify "
-            f"transferable design decisions"
+            "**Zero-config install UX**: `install.py` / `setup-project.py` could adopt a "
+            "single-command bootstrap pattern (similar to this repo's one-command install) to "
+            "lower the setup barrier when onboarding new machines or environments"
         )
 
-    # ── Non-Python language ────────────────────────────────────────────────────
-    lang: str = repo.get("language") or ""
-    if lang and lang.lower() not in ("python",):
+    # ── Offline / no-cloud posture ────────────────────────────────────────────
+    if any(kw in hint for kw in (
+        "offline", "no cloud", "no-cloud", "owns your data", "zero api key", "zero api keys",
+    )):
         out.append(
-            f"**Alternative {lang} implementation**: compare data structure and concurrency "
-            f"choices against our Python/SQLite stack for potential performance insights"
+            "**Offline-first design**: this repo's no-cloud/no-server posture directly mirrors "
+            "our local-SQLite approach — could validate that `knowledge.db` workflows never "
+            "require external API calls even when semantic search is enabled"
+        )
+
+    # ── Cross-env sync ────────────────────────────────────────────────────────
+    # Require an explicit cross-platform signal; bare "sync" is too common a word.
+    if any(kw in hint for kw in ("cross-platform", "wsl", "windows")):
+        out.append(
+            "**Cross-environment sync patterns**: the sync strategy here could inform "
+            "`sync-knowledge.py` for more robust Windows ↔ WSL knowledge merging"
+        )
+
+    # ── Hooks / workflow enforcement ──────────────────────────────────────────
+    if any(kw in hint for kw in ("hook", "pre-commit", "workflow enforcement")):
+        out.append(
+            "**Git hook / workflow patterns**: hook design from this repo could strengthen the "
+            "`hooks/` enforcement chain (e.g., auto-briefing, commit guards, learn reminders)"
+        )
+
+    # ── Export / portability ──────────────────────────────────────────────────
+    # Note: "import" is intentionally excluded — it matches Python import statements
+    # (e.g. "from ai_iq import Memory") and produces false positives for repos that
+    # have no actual export/portability feature.
+    if any(kw in hint for kw in ("export", "portable", "backup")):
+        out.append(
+            "**Knowledge portability**: the export/backup flow here could complement "
+            "`sync-knowledge.py` for cross-machine knowledge portability"
+        )
+
+    # ── Editor integrations ───────────────────────────────────────────────────
+    # Only fires when the repo is explicitly tagged with an editor topic — keyword
+    # matches in descriptions/READMEs are too noisy (e.g. "cursor position", "vim-like").
+    editor_topics = repo_topics & {"cursor", "vscode", "jetbrains", "neovim", "vim"}
+    if editor_topics:
+        editors = ", ".join(sorted(editor_topics))
+        out.append(
+            f"**Editor integration ({editors})**: `watch-sessions.py` could be extended to "
+            f"detect and parse {editors} session formats natively, broadening the range of AI "
+            f"sessions indexed into `knowledge.db`"
         )
 
     # ── Fallback: concrete, architecture-specific ─────────────────────────────
@@ -868,7 +901,7 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
             "workflows — particularly around data ingestion, search recall, and session indexing"
         )
 
-    return out
+    return out[:_MAX_HEURISTIC_LEARNINGS]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1201,8 +1234,14 @@ def create_stage(
     limit: int | None = None,
     models_client: "ModelsClient | None" = None,
     analysis_cfg: dict | None = None,
+    issue_map: "dict[str, dict] | None" = None,
 ) -> list[str]:
-    """Stage 5: render and create issues; returns list of created issue URLs.
+    """Stage 5: render and create (or update) issues; returns list of issue URLs.
+
+    If ``issue_map`` (marker → {number, state, body}) is provided, repos whose
+    marker already exists will have their issue body *updated in place* when the
+    newly rendered content differs — without reopening closed issues.  Repos not
+    present in the map follow the normal create path.
 
     If ``models_client`` is provided and ``analysis_cfg`` is non-empty, attempts to
     enrich each issue's learnings section via GitHub Models.  Falls back silently to
@@ -1224,15 +1263,18 @@ def create_stage(
     created_count = 0
 
     for repo, readme in enriched:
-        if limit is not None and created_count >= limit:
-            break
-
         full_name: str = repo["full_name"]
         marker = repo_marker(full_name, marker_prefix)
+        is_update = issue_map is not None and marker in issue_map
 
-        if marker in existing_markers:
-            print(f"  ⏭  Skip (already scouted): {full_name}")
-            continue
+        if not is_update:
+            # Skip repos already scouted when there is no update map entry.
+            if marker in existing_markers:
+                print(f"  ⏭  Skip (already scouted): {full_name}")
+                continue
+            # Limit only applies to new issue creates, not updates.
+            if limit is not None and created_count >= limit:
+                break
 
         # ── Optional LLM-enhanced learnings (direction 2) ─────────────────────
         llm_learnings: list[str] | None = None
@@ -1251,6 +1293,42 @@ def create_stage(
         title = f"{title_prefix} {full_name}"
         # Pass llm_learnings (may be None → heuristic fallback inside render_issue_body)
         body = render_issue_body(repo, readme, marker, our_topics, learnings=llm_learnings)
+
+        # ── Update path: existing issue found ─────────────────────────────────
+        if is_update:
+            existing_issue = issue_map[marker]  # type: ignore[index]
+            issue_number: int = existing_issue["number"]
+            issue_state: str = existing_issue.get("state", "open")
+            existing_body: str = existing_issue.get("body") or ""
+
+            if body.strip() == existing_body.strip():
+                print(f"  ⏭  Skip (body unchanged): {full_name} #{issue_number}")
+                continue
+
+            if dry_run:
+                print(f"\n  [dry-run] Would update issue #{issue_number}: {title!r}")
+                print(f"  [dry-run] Target repo: {target_repo}")
+                print(f"  [dry-run] State: {issue_state} (will NOT reopen if closed)")
+                print(f"  [dry-run] Marker: {marker}")
+                print(f"  [dry-run] Body preview ({len(body)} chars):")
+                preview = body[:600].replace("\n", "\n    ")
+                print(f"    {preview}")
+                if len(body) > 600:
+                    print(f"    … ({len(body) - 600} more chars)")
+                created_urls.append(
+                    f"[dry-run] https://github.com/{target_repo}/issues/{issue_number}"
+                )
+                continue
+
+            print(f"  🔄 Updating issue #{issue_number}: {title!r}", flush=True)
+            result = client.patch_issue(target_repo, issue_number, title, body)
+            if result and isinstance(result, dict):
+                url = result.get("html_url", "(no url)")
+                print(f"  ✅ Updated: {url}")
+                created_urls.append(url)
+            else:
+                print(f"  ✗ Failed to update issue #{issue_number} for {full_name}", file=sys.stderr)
+            continue
 
         if dry_run:
             print(f"\n  [dry-run] Would create issue: {title!r}")
@@ -1349,26 +1427,28 @@ def run(config: dict, dry_run: bool = False, search_only: bool = False,
         print("\nℹ Nothing shortlisted — no issues to create.")
         return 0
 
-    # Stage 3: Fetch existing markers for dedup
+    # Stage 3: Fetch existing issue map for dedup + update
     print("\n[Stage 3/4] Fetching existing issue markers for deduplication…")
-    existing_markers = get_existing_markers(client, target_repo, config)
+    issue_map = get_existing_issue_map(client, target_repo, config)
+    existing_markers = set(issue_map.keys())
     print(f"  → Found {len(existing_markers)} existing marker(s)")
 
     # Stage 4: Enrich
     print("\n[Stage 4a] Enriching shortlisted repos…")
     enriched = enrich_stage(shortlisted, client, config)
 
-    # Stage 5: Create issues (with optional LLM analysis per-repo)
-    print("\n[Stage 4b] Creating issues…")
+    # Stage 5: Create/update issues (with optional LLM analysis per-repo)
+    print("\n[Stage 4b] Creating/updating issues…")
     created = create_stage(
         enriched, client, config, existing_markers,
         dry_run=dry_run, limit=limit,
         models_client=models_client,
         analysis_cfg=analysis_cfg if models_client else None,
+        issue_map=issue_map,
     )
 
     mode_tag = "[dry-run] " if dry_run else ""
-    print(f"\n✅ Done — {mode_tag}{len(created)} issue(s) {'would be ' if dry_run else ''}created.")
+    print(f"\n✅ Done — {mode_tag}{len(created)} issue(s) {'would be ' if dry_run else ''}created/updated.")
     return 0
 
 
