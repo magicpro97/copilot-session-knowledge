@@ -15,10 +15,12 @@ Does NOT write to /tmp — uses a subdirectory of the tools dir instead.
 import json
 import os
 import sys
+import argparse
 import subprocess
 import textwrap
 import time
 import types
+import uuid
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2756,6 +2758,586 @@ class TestMarkerLegacyUpgradePath(unittest.TestCase):
         state = T._get_marker_state()
         self.assertEqual(state["active_tentacles"], ["tent-a"])
         self.assertEqual(state["active_tentacle_entries"][0]["git_root"], str(repo_a))
+
+
+class TestSameRepoMultiSession(unittest.TestCase):
+    """Phase-5: two orchestrators in the same git repo with the same tentacle name
+    must not collide on marker dedup/cleanup.  Each tentacle is identified by its
+    unique tentacle_id; (name, git_root) is the fallback for legacy entries.
+    """
+
+    MARKER_NAME = "dispatched-subagent-active"
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "same_repo_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / self.MARKER_NAME
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+        self.repo = self.base / "my-repo"
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    # ── core coexistence behaviour ────────────────────────────────────────────
+
+    def test_two_instances_same_name_same_repo_coexist_in_marker(self):
+        """Two tentacles with the same name and same repo but different tentacle_id
+        must each produce a separate marker entry — no dedup collision."""
+        tid_a = str(uuid.uuid4())
+        tid_b = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("my-tent", [], "prompt", tentacle_id=tid_a)
+            T._write_dispatched_subagent_marker("my-tent", [], "prompt", tentacle_id=tid_b)
+        data = json.loads(self.marker_path.read_text())
+        active = data["active_tentacles"]
+        self.assertEqual(len(active), 2, "Both entries must coexist")
+        ids = {e["tentacle_id"] for e in active}
+        self.assertIn(tid_a, ids)
+        self.assertIn(tid_b, ids)
+
+    def test_complete_only_removes_own_entry_by_tentacle_id(self):
+        """Completing tentacle A must leave tentacle B's entry untouched."""
+        tid_a = str(uuid.uuid4())
+        tid_b = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("my-tent", [], "prompt", tentacle_id=tid_a)
+            T._write_dispatched_subagent_marker("my-tent", [], "prompt", tentacle_id=tid_b)
+            T._clear_dispatched_subagent_marker("my-tent", tentacle_id=tid_a)
+        data = json.loads(self.marker_path.read_text())
+        active = data["active_tentacles"]
+        self.assertEqual(len(active), 1, "Only one entry should remain")
+        self.assertEqual(active[0]["tentacle_id"], tid_b)
+
+    def test_complete_removes_last_entry_deletes_file(self):
+        """When the last entry is removed the marker file should be deleted."""
+        tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("solo", [], "prompt", tentacle_id=tid)
+            T._clear_dispatched_subagent_marker("solo", tentacle_id=tid)
+        self.assertFalse(self.marker_path.exists(), "Marker file should be deleted when empty")
+
+    def test_redispatch_same_tentacle_id_refreshes_ts_no_duplicate(self):
+        """Re-dispatching the same tentacle (same tentacle_id) updates ts, no duplicate."""
+        tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("tent-x", [], "prompt", tentacle_id=tid)
+        ts1 = json.loads(self.marker_path.read_text())["active_tentacles"][0]["ts"]
+
+        time.sleep(0.01)  # ensure ts advances
+
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("tent-x", [], "prompt", tentacle_id=tid)
+        data = json.loads(self.marker_path.read_text())
+        active = data["active_tentacles"]
+        self.assertEqual(len(active), 1, "No duplicate after re-dispatch")
+        # ts should be refreshed (numeric string comparison is enough as both are
+        # epoch-second strings; the second write happened strictly after the first)
+        self.assertGreaterEqual(active[0]["ts"], ts1)
+
+    # ── cmd_create collision avoidance ────────────────────────────────────────
+
+    def test_create_collision_produces_unique_dir(self):
+        """cmd_create on an existing name must NOT exit(1); it must create a unique dir."""
+        tentacles_dir = self.base / "tentacles"
+        tentacles_dir.mkdir(parents=True, exist_ok=True)
+        # Simulate existing tentacle dir
+        (tentacles_dir / "alpha").mkdir()
+
+        args = argparse.Namespace(
+            name="alpha",
+            desc="",
+            scope="",
+            briefing=False,
+            session_dir=str(self.base),
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=tentacles_dir):
+            T.cmd_create(args)  # Must not raise SystemExit
+
+        dirs = [d.name for d in tentacles_dir.iterdir() if d.is_dir()]
+        slug_dirs = [d for d in dirs if d.startswith("alpha-") and len(d) == len("alpha-") + 8]
+        self.assertTrue(len(slug_dirs) >= 1, f"Expected slug dir, got: {dirs}")
+
+    def test_create_collision_dir_is_usable(self):
+        """The collision-avoidance dir must contain CONTEXT.md and meta.json."""
+        tentacles_dir = self.base / "tentacles2"
+        tentacles_dir.mkdir(parents=True, exist_ok=True)
+        (tentacles_dir / "beta").mkdir()
+
+        args = argparse.Namespace(
+            name="beta",
+            desc="",
+            scope="",
+            briefing=False,
+            session_dir=str(self.base),
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=tentacles_dir):
+            T.cmd_create(args)
+
+        slug_dirs = [d for d in tentacles_dir.iterdir()
+                     if d.is_dir() and d.name.startswith("beta-")]
+        self.assertEqual(len(slug_dirs), 1)
+        slug_dir = slug_dirs[0]
+        self.assertTrue((slug_dir / "CONTEXT.md").exists())
+        self.assertTrue((slug_dir / "meta.json").exists())
+
+    def test_create_collision_preserves_logical_name_in_meta(self):
+        """meta.json must store the original logical name even after slug collision."""
+        tentacles_dir = self.base / "tentacles3"
+        tentacles_dir.mkdir(parents=True, exist_ok=True)
+        (tentacles_dir / "gamma").mkdir()
+
+        args = argparse.Namespace(
+            name="gamma",
+            desc="",
+            scope="",
+            briefing=False,
+            session_dir=str(self.base),
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=tentacles_dir):
+            T.cmd_create(args)
+
+        slug_dirs = [d for d in tentacles_dir.iterdir()
+                     if d.is_dir() and d.name.startswith("gamma-")]
+        meta = json.loads((slug_dirs[0] / "meta.json").read_text())
+        self.assertEqual(meta["name"], "gamma")
+        self.assertIn("dir_name", meta, "meta must record the actual dir name")
+        self.assertNotEqual(meta["dir_name"], "gamma")
+
+    def test_create_sets_tentacle_id_in_meta(self):
+        """Freshly created tentacle must have a non-empty tentacle_id in meta.json."""
+        tentacles_dir = self.base / "tentacles4"
+        tentacles_dir.mkdir(parents=True, exist_ok=True)
+
+        args = argparse.Namespace(
+            name="delta",
+            desc="",
+            scope="",
+            briefing=False,
+            session_dir=str(self.base),
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=tentacles_dir):
+            T.cmd_create(args)
+
+        meta = json.loads((tentacles_dir / "delta" / "meta.json").read_text())
+        self.assertIn("tentacle_id", meta)
+        # Must be a valid UUID4 (36 chars with hyphens)
+        self.assertEqual(len(meta["tentacle_id"]), 36)
+
+    # ── backward compat: old tentacle without tentacle_id ─────────────────────
+
+    def test_old_tentacle_without_tentacle_id_write_still_works(self):
+        """Calling _write_dispatched_subagent_marker without tentacle_id must succeed."""
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            result = T._write_dispatched_subagent_marker("legacy-tent", [], "prompt")
+        self.assertTrue(result)
+        self.assertTrue(self.marker_path.exists())
+
+    def test_old_tentacle_without_tentacle_id_clear_still_works(self):
+        """Calling _clear_dispatched_subagent_marker without tentacle_id must succeed."""
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("legacy-tent", [], "prompt")
+            result = T._clear_dispatched_subagent_marker("legacy-tent")
+        self.assertTrue(result)
+        self.assertFalse(self.marker_path.exists())
+
+    def test_get_marker_state_includes_tentacle_id_field(self):
+        """_get_marker_state entries must expose tentacle_id (None for old entries)."""
+        tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("t1", [], "prompt", tentacle_id=tid)
+            # Old-style write without tentacle_id
+            T._write_dispatched_subagent_marker("t2", [], "prompt")
+        state = T._get_marker_state()
+        entries_by_name = {e["name"]: e for e in state["active_tentacle_entries"]}
+        self.assertEqual(entries_by_name["t1"]["tentacle_id"], tid)
+        self.assertIsNone(entries_by_name["t2"]["tentacle_id"])
+
+    # ── phase-4 cross-repo not regressed ─────────────────────────────────────
+
+    def test_phase4_cross_repo_not_regressed(self):
+        """Same name in different repos must still produce two separate entries."""
+        repo_a = self.base / "repo-a"
+        repo_b = self.base / "repo-b"
+        tid_a = str(uuid.uuid4())
+        tid_b = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("worker", [], "prompt", tentacle_id=tid_a)
+        with patch.object(T, "find_git_root", return_value=repo_b):
+            T._write_dispatched_subagent_marker("worker", [], "prompt", tentacle_id=tid_b)
+        data = json.loads(self.marker_path.read_text())
+        self.assertEqual(len(data["active_tentacles"]), 2)
+
+    def test_phase4_complete_only_clears_own_repo_entry(self):
+        """Completing in repo-A must not remove repo-B's same-named entry."""
+        repo_a = self.base / "repo-a"
+        repo_b = self.base / "repo-b"
+        tid_a = str(uuid.uuid4())
+        tid_b = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._write_dispatched_subagent_marker("worker", [], "prompt", tentacle_id=tid_a)
+        with patch.object(T, "find_git_root", return_value=repo_b):
+            T._write_dispatched_subagent_marker("worker", [], "prompt", tentacle_id=tid_b)
+        # Complete from repo_a perspective
+        with patch.object(T, "find_git_root", return_value=repo_a):
+            T._clear_dispatched_subagent_marker("worker", tentacle_id=tid_a)
+        data = json.loads(self.marker_path.read_text())
+        remaining = data["active_tentacles"]
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["tentacle_id"], tid_b)
+
+
+# ---------------------------------------------------------------------------
+# Cross-review bug fixes — regression tests
+# ---------------------------------------------------------------------------
+
+class TestCrossReviewFixes(unittest.TestCase):
+    """Regression tests for three cross-review findings.
+
+    Finding #1 (HIGH): legacy write/clear must not collide with phase-5 entries.
+    Finding #2 (MEDIUM): cmd_delete must clear the marker before deleting the dir.
+    Finding #3 is structural (__main__ guard at EOF) and has no runtime tests.
+    """
+
+    MARKER_NAME = "dispatched-subagent-active"
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "crossreview_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / self.MARKER_NAME
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+        self.repo = self.base / "my-repo"
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    # ── Finding #1 write path ─────────────────────────────────────────────────
+
+    def test_legacy_write_does_not_overwrite_phase5_entry(self):
+        """A legacy dispatch (no tentacle_id) for the same (name, git_root) must NOT
+        overwrite an existing phase-5 entry — it must append a separate entry."""
+        tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            # Phase-5 entry written first
+            T._write_dispatched_subagent_marker("work", [], "prompt", tentacle_id=tid)
+            # Legacy dispatch arrives for the same name/repo
+            T._write_dispatched_subagent_marker("work", [], "prompt")  # no tentacle_id
+        data = json.loads(self.marker_path.read_text())
+        entries = data["active_tentacles"]
+        # Both entries must coexist; phase-5 identity must be preserved
+        self.assertEqual(len(entries), 2, "Legacy write must not overwrite phase-5 entry")
+        ids = [e.get("tentacle_id") for e in entries]
+        self.assertIn(tid, ids, "Phase-5 tentacle_id must still be present")
+        self.assertIn(None, ids, "Legacy entry (no tentacle_id) must also be present")
+
+    def test_legacy_write_deduplicates_against_other_legacy_entries(self):
+        """Two legacy dispatches (no tentacle_id) for the same (name, git_root) still
+        produce a single entry — the original phase-4 dedup is preserved."""
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("work", [], "prompt")
+            T._write_dispatched_subagent_marker("work", [], "prompt")
+        data = json.loads(self.marker_path.read_text())
+        names = _names_from_entries(data["active_tentacles"])
+        self.assertEqual(names.count("work"), 1, "Two legacy writes must still dedup to one entry")
+
+    # ── Finding #1 clear path ─────────────────────────────────────────────────
+
+    def test_phase5_clear_does_not_remove_legacy_entry(self):
+        """A phase-5 complete (with tentacle_id) must not clear a legacy entry
+        (no tentacle_id) for the same (name, git_root) — that entry belongs to a
+        different, still-running old-code session."""
+        tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            # Phase-5 entry + co-existing legacy entry
+            T._write_dispatched_subagent_marker("work", [], "prompt", tentacle_id=tid)
+            T._write_dispatched_subagent_marker("work", [], "prompt")
+        # Phase-5 tentacle completes
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._clear_dispatched_subagent_marker("work", tentacle_id=tid)
+        # Marker file must survive (legacy entry remains)
+        self.assertTrue(self.marker_path.is_file(), "Marker must not be deleted while legacy entry exists")
+        data = json.loads(self.marker_path.read_text())
+        remaining = data["active_tentacles"]
+        self.assertEqual(len(remaining), 1)
+        self.assertIsNone(remaining[0].get("tentacle_id"), "Only the legacy entry must remain")
+
+    def test_phase5_clear_only_its_own_entry_among_two_phase5(self):
+        """Two phase-5 tentacles: completing one must leave the other untouched."""
+        tid_a = str(uuid.uuid4())
+        tid_b = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("work", [], "prompt", tentacle_id=tid_a)
+            T._write_dispatched_subagent_marker("work", [], "prompt", tentacle_id=tid_b)
+            T._clear_dispatched_subagent_marker("work", tentacle_id=tid_a)
+        data = json.loads(self.marker_path.read_text())
+        ids = [e.get("tentacle_id") for e in data["active_tentacles"]]
+        self.assertNotIn(tid_a, ids)
+        self.assertIn(tid_b, ids)
+
+    def test_legacy_clear_still_works_for_legacy_entry(self):
+        """A legacy complete (no tentacle_id) must still remove a legacy entry."""
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("work", [], "prompt")
+            T._clear_dispatched_subagent_marker("work")  # no tentacle_id
+        self.assertFalse(self.marker_path.is_file())
+
+    def test_legacy_clear_does_not_remove_phase5_entry(self):
+        """A legacy clear (no tentacle_id) must NOT remove a phase-5 entry that carries
+        its own tentacle_id.  Without matching identity the caller cannot prove ownership
+        of the entry, so it is left alone (conservative protection)."""
+        tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("work", [], "prompt", tentacle_id=tid)
+            T._clear_dispatched_subagent_marker("work")  # no tentacle_id — legacy clear
+        # Phase-5 entry must survive: legacy caller cannot prove it owns this entry
+        self.assertTrue(self.marker_path.is_file(),
+                        "Phase-5 entry must not be removed by a legacy clear")
+        data = json.loads(self.marker_path.read_text())
+        ids = [e.get("tentacle_id") for e in data["active_tentacles"]]
+        self.assertIn(tid, ids, "Phase-5 tentacle_id must still be in the active set")
+
+    # ── Finding #2: cmd_delete clears marker before deleting dir ─────────────
+
+    def test_delete_clears_active_marker_before_removing_dir(self):
+        """cmd_delete must remove the marker entry for the deleted tentacle."""
+        tentacles_dir = self.base / "tentacles_del"
+        tentacles_dir.mkdir(parents=True, exist_ok=True)
+        d = make_tentacle("del-test", tentacles_dir)
+        # Give the tentacle a tentacle_id
+        meta = json.loads((d / "meta.json").read_text())
+        tid = str(uuid.uuid4())
+        meta["tentacle_id"] = tid
+        (d / "meta.json").write_text(json.dumps(meta))
+        # Write an active marker entry for it
+        T._write_dispatched_subagent_marker("del-test", [], "prompt", tentacle_id=tid)
+        self.assertTrue(self.marker_path.is_file(), "Pre-condition: marker must exist")
+        # Delete the tentacle
+        args = fake_args(name="del-test")
+        with patch.object(T, "get_tentacles_dir", return_value=tentacles_dir):
+            with patch("builtins.print"):
+                T.cmd_delete(args)
+        # Marker must have been cleared
+        self.assertFalse(self.marker_path.is_file(), "Marker must be cleared by cmd_delete")
+
+    def test_delete_does_not_clear_sibling_marker_entry(self):
+        """cmd_delete must only clear the deleted tentacle's entry, not siblings."""
+        tentacles_dir = self.base / "tentacles_del2"
+        tentacles_dir.mkdir(parents=True, exist_ok=True)
+        d = make_tentacle("del-me", tentacles_dir)
+        meta = json.loads((d / "meta.json").read_text())
+        tid = str(uuid.uuid4())
+        meta["tentacle_id"] = tid
+        (d / "meta.json").write_text(json.dumps(meta))
+        T._write_dispatched_subagent_marker("del-me", [], "prompt", tentacle_id=tid)
+        # Sibling tentacle also active
+        sibling_tid = str(uuid.uuid4())
+        T._write_dispatched_subagent_marker("sibling", [], "prompt", tentacle_id=sibling_tid)
+        args = fake_args(name="del-me")
+        with patch.object(T, "get_tentacles_dir", return_value=tentacles_dir):
+            with patch("builtins.print"):
+                T.cmd_delete(args)
+        # Marker file must survive; sibling must still be active
+        self.assertTrue(self.marker_path.is_file(), "Marker must survive when sibling is active")
+        data = json.loads(self.marker_path.read_text())
+        ids = [e.get("tentacle_id") for e in data["active_tentacles"]]
+        self.assertIn(sibling_tid, ids, "Sibling entry must still be active")
+        self.assertNotIn(tid, ids, "Deleted tentacle's entry must be gone")
+
+    def test_delete_safe_when_no_active_marker(self):
+        """cmd_delete must succeed even when no active marker file exists."""
+        tentacles_dir = self.base / "tentacles_del3"
+        tentacles_dir.mkdir(parents=True, exist_ok=True)
+        make_tentacle("safe-del", tentacles_dir)
+        self.assertFalse(self.marker_path.is_file(), "Pre-condition: no marker")
+        args = fake_args(name="safe-del")
+        with patch.object(T, "get_tentacles_dir", return_value=tentacles_dir):
+            with patch("builtins.print"):
+                T.cmd_delete(args)  # Must not raise
+        self.assertFalse((tentacles_dir / "safe-del").exists())
+
+
+class TestMigrationCleanupGap(unittest.TestCase):
+    """Regression tests for the migration cleanup gap.
+
+    Scenario: a phase-4 dict entry {name, ts, git_root=/repo} with no tentacle_id
+    coexists with a new phase-5 dispatch for the same (name, git_root).  Without the
+    fix the stale phase-4 entry strands in the active set after the phase-5 complete
+    clears only its own identity-tagged entry, blocking commits until TTL expiry.
+    """
+
+    MARKER_NAME = "dispatched-subagent-active"
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "migration_cleanup_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / self.MARKER_NAME
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+        self.repo = self.base / "my-repo"
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def _write_phase4_entry(self, name, git_root, tentacle_id_sentinel=...):
+        """Inject a phase-4 style dict entry into the marker.
+
+        By default the entry omits tentacle_id entirely; passing None writes an
+        explicit null to cover mixed-version/manual-marker edge cases.
+        """
+        entry = {"name": name, "ts": str(int(time.time())), "git_root": str(git_root)}
+        if tentacle_id_sentinel is not ...:
+            entry["tentacle_id"] = tentacle_id_sentinel
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "git_root": str(git_root),
+            "active_tentacles": [entry],
+        }))
+
+    # ── core gap fix ──────────────────────────────────────────────────────────
+
+    def test_phase5_dispatch_absorbs_stale_phase4_same_repo_entry(self):
+        """A phase-5 dispatch for the same (name, git_root) must absorb/remove a
+        pre-existing phase-4 entry (no tentacle_id) rather than coexisting with it."""
+        self._write_phase4_entry("feature-x", self.repo)
+        tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
+        data = json.loads(self.marker_path.read_text())
+        entries = data["active_tentacles"]
+        self.assertEqual(
+            len(entries), 1,
+            "Phase-5 dispatch must absorb the stale phase-4 entry, leaving exactly one entry"
+        )
+        self.assertEqual(entries[0].get("tentacle_id"), tid,
+                         "The surviving entry must be the new phase-5 entry")
+
+    def test_phase5_dispatch_absorbs_same_repo_entry_with_null_tentacle_id(self):
+        """Explicit null tentacle_id must be treated as legacy identity-less state."""
+        self._write_phase4_entry("feature-x", self.repo, tentacle_id_sentinel=None)
+        tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
+        data = json.loads(self.marker_path.read_text())
+        entries = data["active_tentacles"]
+        self.assertEqual(len(entries), 1, "Null tentacle_id legacy entry must be absorbed")
+        self.assertEqual(entries[0].get("tentacle_id"), tid)
+
+    def test_phase5_complete_leaves_no_stale_phase4_entry(self):
+        """Full lifecycle: existing phase-4 entry → phase-5 dispatch → phase-5 complete
+        must leave the marker empty (no stranded entry)."""
+        self._write_phase4_entry("feature-x", self.repo)
+        tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
+            T._clear_dispatched_subagent_marker("feature-x", tentacle_id=tid)
+        self.assertFalse(
+            self.marker_path.is_file(),
+            "Marker must be deleted after complete — no stale phase-4 entry should remain"
+        )
+
+    def test_phase5_dispatch_does_not_absorb_different_name_phase4_entry(self):
+        """Absorption must be scoped to the dispatching tentacle name only."""
+        self._write_phase4_entry("other-feature", self.repo)
+        tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
+        data = json.loads(self.marker_path.read_text())
+        names = _names_from_entries(data["active_tentacles"])
+        self.assertIn("other-feature", names, "Unrelated phase-4 entry must not be touched")
+        self.assertIn("feature-x", names)
+        self.assertEqual(len(data["active_tentacles"]), 2)
+
+    def test_phase5_dispatch_does_not_absorb_different_repo_phase4_entry(self):
+        """Absorption must be scoped to the current repo only."""
+        other_repo = self.base / "other-repo"
+        self._write_phase4_entry("feature-x", other_repo)
+        tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
+        data = json.loads(self.marker_path.read_text())
+        entries = data["active_tentacles"]
+        self.assertEqual(
+            len(entries), 2,
+            "Phase-4 entry from a different repo must NOT be absorbed"
+        )
+        git_roots = {e.get("git_root") for e in entries}
+        self.assertIn(str(other_repo), git_roots, "Other-repo entry must survive")
+        self.assertIn(str(self.repo), git_roots, "Current-repo entry must exist")
+
+    def test_phase5_dispatch_does_not_absorb_different_repo_entry_with_null_tentacle_id(self):
+        """Explicit null tentacle_id must not allow cross-repo absorption."""
+        other_repo = self.base / "other-repo"
+        self._write_phase4_entry("feature-x", other_repo, tentacle_id_sentinel=None)
+        tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
+        data = json.loads(self.marker_path.read_text())
+        entries = data["active_tentacles"]
+        self.assertEqual(
+            len(entries), 2,
+            "Different-repo null-tentacle_id entry must not be absorbed"
+        )
+        git_roots = {e.get("git_root") for e in entries}
+        self.assertIn(str(other_repo), git_roots, "Other-repo entry must survive")
+        self.assertIn(str(self.repo), git_roots, "Current-repo entry must exist")
+
+    def test_legacy_dispatch_does_not_absorb_same_repo_phase4_entry(self):
+        """A legacy dispatch (no tentacle_id) must NOT absorb a same-name same-repo
+        phase-4 entry — that absorption is reserved for phase-5 dispatches only."""
+        self._write_phase4_entry("feature-x", self.repo)
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt")  # no tentacle_id
+        data = json.loads(self.marker_path.read_text())
+        names = _names_from_entries(data["active_tentacles"])
+        # Legacy dedup: same (name, git_root), no tentacle_id on either side → merge to 1
+        self.assertEqual(names.count("feature-x"), 1,
+                         "Legacy-on-phase-4 dedup must still collapse to a single entry")
+
+    def test_phase5_dispatch_does_not_absorb_phase4_entry_with_tentacle_id(self):
+        """A phase-4-shaped entry that already has a tentacle_id (edge case: partial
+        upgrade) must NOT be absorbed — it belongs to a live instance."""
+        sibling_tid = str(uuid.uuid4())
+        self.marker_path.write_text(json.dumps({
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "active_tentacles": [
+                {"name": "feature-x", "ts": str(int(time.time())),
+                 "git_root": str(self.repo), "tentacle_id": sibling_tid},
+            ],
+        }))
+        tid = str(uuid.uuid4())
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
+        data = json.loads(self.marker_path.read_text())
+        entries = data["active_tentacles"]
+        self.assertEqual(
+            len(entries), 2,
+            "Entry with tentacle_id must NOT be absorbed even if same (name, git_root)"
+        )
+        ids = {e.get("tentacle_id") for e in entries}
+        self.assertIn(sibling_tid, ids, "Sibling phase-5 entry must survive")
+        self.assertIn(tid, ids, "New phase-5 entry must be present")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

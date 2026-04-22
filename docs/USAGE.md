@@ -242,8 +242,11 @@ These apply to every dispatched sub-agent.
   orchestrator commits, after merging and verifying all tentacle results. A sub-agent commit
   mid-run risks corrupting the orchestrator's merge flow.
 
-  > **Cross-repo isolation:** A marker written in repo A does not block `git commit` in repo B.
-  > Each marker entry carries a `git_root` field; the hook skips entries from different repos.
+  > **Cross-repo isolation (phase 4+):** A marker written in repo A does not block `git commit`
+  > in repo B. Each marker entry carries a `git_root` field; the hook skips entries from
+  > different repos. The same tentacle name can be active in multiple repos at once — each
+  > produces a separate marker entry. Dedup key: `tentacle_id` (primary, for phase-5 entries)
+  > → `(name, git_root)` fallback (for phase-4 / legacy entries without `tentacle_id`).
   > Entries without `git_root` (old format) conservatively block all repos.
   >
   > **Upgrade migration:** Cross-repo isolation is not retroactive. In-flight old-format markers
@@ -253,9 +256,21 @@ These apply to every dispatched sub-agent.
   > **Local-only enforcement**: the git hook guard fires only on local machines where hooks are
   > installed. Cloud-delegated or remote agent runs are not covered.
 
-  > **Same-repo multi-orchestrator**: Two concurrent orchestrators in the **same** repo share
-  > one marker entry and are not isolated from each other. One orchestrator per repo at a time
-  > is the supported model.
+  > **Same-repo multi-session (phase 5 — supported at runtime, with caveats):**
+  > `tentacle.py create` now generates a `tentacle_id` UUID per instance. If the requested
+  > directory already exists, `create` auto-resolves the collision by creating
+  > `<name>-<8-char-uuid>` and printing the slug. Two sessions in the same repo can each hold
+  > separate, non-colliding marker entries; `complete` removes only the matching identity.
+  >
+  > **Working-tree caveat:** Runtime identity isolation does not create separate working trees
+  > or index snapshots. Two tentacles in the same repo with overlapping file scopes will still
+  > produce merge conflicts or overwritten files in the shared working directory. Keep tentacle
+  > scopes non-overlapping when running same-repo concurrent sessions.
+  >
+  > **Slug name caveat:** When a collision-resolved slug (`<name>-<uuid[:8]>`) is created, all
+  > subsequent commands (`todo`, `swarm`, `complete`, `handoff`) must use the slug, not the
+  > original logical name. The slug is printed by `create` and stored as `dir_name` in
+  > `meta.json`.
 
 - **Stay in scope**: Avoid editing files outside your tentacle's declared scope.
 - **Escalate, don't expand**: If scope is insufficient, record the gap in `handoff.md` and stop.

@@ -300,11 +300,15 @@ commit restrictions — it fires at the filesystem level regardless of which age
 git. The `preToolUse` hook provides defense-in-depth but cannot be relied on inside delegated
 subagent contexts. Enforcement is **local-only**; cloud-delegated runs are not covered.
 
-The marker now stores `active_tentacles` as a list of objects (`{name, ts, git_root}`) instead
-of a flat string list. Each entry carries its own dispatch timestamp and the git repository root
-where the dispatch originated. The hook compares `git_root` against the repo running git — a
-marker from a different repo does not block commits there (fixes cross-repo false-positive
-blocking). Markers written without `git_root` (old format or non-git CWD) conservatively block.
+The marker now stores `active_tentacles` as a list of objects (`{name, ts, git_root, tentacle_id}`)
+instead of a flat string list. Each entry carries its own dispatch timestamp, the git repository
+root where the dispatch originated, and a stable UUID (`tentacle_id`) generated at `create` time.
+Primary deduplication key is `tentacle_id` (phase 5, when present) with `(name, git_root)` as the
+fallback for legacy entries. Two instances with the same logical name — whether in different repos
+or in the same repo — each produce separate entries because their `tentacle_id` values differ.
+The hook compares `git_root` against the repo running git — a marker from a different repo does not
+block commits there (cross-repo isolation). Markers written without `git_root` (old format or
+non-git CWD) conservatively block.
 
 > **Upgrade migration:** Cross-repo isolation is not retroactive for in-flight old-format
 > markers. If a tentacle is still active when you upgrade, its existing marker entry has no
@@ -312,14 +316,21 @@ blocking). Markers written without `git_root` (old format or non-git CWD) conser
 > TTL expires. To get isolation immediately: `tentacle.py complete <name>` (or
 > `rm ~/.copilot/markers/dispatched-subagent-active`), then re-dispatch.
 
+**Same-repo multi-session (phase 5):** `tentacle.py create` now generates a `tentacle_id` UUID per
+instance and auto-resolves directory collisions — if `<name>` already exists, it creates
+`<name>-<uuid[:8]>` instead of exiting. All subsequent commands must use the printed slug name.
+Runtime identity ensures `complete` clears only the matching entry, not a sibling with the same
+logical name. **Working-tree caveat:** this isolation is at the marker/enforcement layer only.
+Concurrent tentacles in the same repo that touch overlapping files still share one working tree
+and git index — file-level conflicts must be managed through non-overlapping scope declarations.
+
 **Limitations:** `preToolUse` non-inheritance inside `task()`-spawned subagents remains a
-platform limitation — git hooks are the reliable surface. Two concurrent orchestrators in the
-same repo share one marker and are not isolated from each other; one orchestrator per repo at a
-time is the supported model. `auto-update-tools.py` does **not** auto-reinstall git hooks in
-registered repos — when hook files change it prints:
-`"Git hook scripts updated — installed per-repo hooks are NOT automatically refreshed."` and
-`"Re-run in each protected repo: python3 ~/.copilot/tools/install.py --install-git-hooks"`.
-Re-run that command in each protected repo after relevant tool updates.
+platform limitation — git hooks are the reliable surface. `auto-update-tools.py` does **not**
+auto-reinstall git hooks in registered repos — when hook files change it prints three warnings
+to stderr: `"Git hook scripts updated — installed per-repo hooks are NOT automatically
+refreshed."`, `"ACTION REQUIRED to pick up the cross-repo isolation fix (and future hook
+changes):"`, and `"Re-run in EVERY protected repo: python3 ~/.copilot/tools/install.py
+--install-git-hooks"`. Re-run that command in every protected repo after relevant tool updates.
 
 ```bash
 python3 ~/.copilot/tools/install.py --deploy-skill        # Deploy skill to project

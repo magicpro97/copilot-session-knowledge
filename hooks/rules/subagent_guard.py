@@ -16,7 +16,10 @@ Repo-scope check (cross-repo false-positive prevention):
 
 Dual-format support:
   active_tentacles may be a list of strings (old format) or a list of dicts
-  with {name, ts, git_root} fields (new format).  Both are handled transparently.
+  with {name, ts, git_root} fields (new format), or a mix of both.  All are
+  handled transparently.  Format detection uses all() across the whole list so
+  that mixed-format markers (string entry followed by dict entries for the current
+  repo) cannot bypass blocking via the top-level git_root path.
 
 Note: preToolUse does NOT reliably fire inside task()-spawned delegated subagents.
 Git hooks (pre-commit/pre-push) remain the primary enforcement surface.
@@ -154,17 +157,25 @@ def _marker_is_fresh() -> bool:
 
         # Repo-scope check: prevent cross-repo false positives.
         # Exception here → fail-open (consistent with the outer except).
+        #
+        # Format dispatch uses all() rather than active[0] type so that mixed-format
+        # markers (legacy string entry followed by dict entries for the current repo)
+        # are routed through _any_entry_relevant.  Branching on active[0] alone would
+        # cause the top-level git_root of a different-repo dispatch to shadow any
+        # same-repo dict entries that come later in the list, silently allowing a commit.
         if isinstance(active, list) and active:
-            if isinstance(active[0], str):
-                # Old string-list format: check top-level git_root if present.
+            if all(isinstance(e, str) for e in active):
+                # Pure old string-list format: check top-level git_root if present.
                 marker_git_root = data.get("git_root")
                 if marker_git_root:
                     current_git_root = _get_current_git_root()
                     if current_git_root and not _roots_match(current_git_root, marker_git_root):
                         return False  # Confirmed different repo — don't block.
                 # No top-level git_root → conservative block (old marker).
-            elif isinstance(active[0], dict):
-                # New dict-list format: per-entry git_root check.
+            else:
+                # New dict-list format or mixed format: use per-entry checks.
+                # String entries inside a mixed list are treated conservatively
+                # (relevant to every repo) by _any_entry_relevant.
                 current_git_root = _get_current_git_root()
                 if not _any_entry_relevant(active, current_git_root, now):
                     return False  # All entries confirmed for other repos.

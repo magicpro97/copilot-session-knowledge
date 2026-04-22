@@ -1653,6 +1653,484 @@ except Exception as e:
     test("14g: _roots_match docstring checks", False, str(e))
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  Section 15: Phase-5 per-tentacle tentacle_id field
+#
+#  Phase-5 runtime adds an optional "tentacle_id" field to each
+#  active_tentacles entry so that same-name, same-repo tentacles
+#  dispatched concurrently remain distinct entries.  Hook readers
+#  already iterate dict entries with get(); the extra field is
+#  silently ignored — no hook logic changes are required.
+#
+#  These tests verify:
+#    a. Extra tentacle_id field doesn't break _any_entry_relevant
+#    b. Multiple same-repo entries with distinct tentacle_ids → ALL block
+#    c. _read_tentacle_info still returns names correctly with tentacle_id
+#    d. Subprocess: multi-tentacle_id same-repo marker → exit 1 (blocks)
+#    e. Subprocess: one same-repo + one different-repo tentacle_id entry → exit 1
+#    f. SubagentGitGuardRule: multi-tentacle_id same-repo entries → deny
+#    g. tentacle_id field present in fresh single-entry marker → still blocks
+#    h. All same-repo tentacle_id entries expired → allow
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n── Section 15: Phase-5 per-tentacle tentacle_id field ──")
+
+# 15a. _any_entry_relevant: entry with extra "tentacle_id" field → still True (same repo)
+try:
+    import rules.subagent_guard as _sg15
+    import importlib.util as _ilu15
+    _csm_spec15 = _ilu15.spec_from_file_location("csm15", _csm_path)
+    _csm15 = _ilu15.module_from_spec(_csm_spec15)
+    _csm_spec15.loader.exec_module(_csm15)
+
+    _now15 = _time12.time()
+    _same_repo = tempfile.mkdtemp(prefix="test-15-repo-")
+    _entry_with_id = {
+        "name": "build-api",
+        "ts": str(int(_now15)),
+        "git_root": _same_repo,
+        "tentacle_id": "abc-uuid-1",
+    }
+    result_sg15a = _sg15._any_entry_relevant([_entry_with_id], _same_repo, _now15)
+    test("15a: subagent_guard._any_entry_relevant ignores tentacle_id field, returns True for same-repo",
+         result_sg15a is True,
+         f"Got {result_sg15a!r}")
+    result_csm15a = _csm15._any_entry_relevant([_entry_with_id], _same_repo, _now15)
+    test("15a2: check_subagent_marker._any_entry_relevant ignores tentacle_id field, returns True for same-repo",
+         result_csm15a is True,
+         f"Got {result_csm15a!r}")
+    shutil.rmtree(_same_repo, ignore_errors=True)
+    test("15a: tentacle_id field tolerance tests ran", True)
+except Exception as e:
+    test("15a: tentacle_id field tolerance tests", False, str(e))
+
+# 15b. Multiple same-repo entries with distinct tentacle_ids → _any_entry_relevant returns True
+try:
+    import rules.subagent_guard as _sg15b
+    _now15b = _time12.time()
+    _repo15b = tempfile.mkdtemp(prefix="test-15b-repo-")
+    _entries15b = [
+        {"name": "worker", "ts": str(int(_now15b)), "git_root": _repo15b, "tentacle_id": "tid-1"},
+        {"name": "worker", "ts": str(int(_now15b)), "git_root": _repo15b, "tentacle_id": "tid-2"},
+    ]
+    result_sg15b = _sg15b._any_entry_relevant(_entries15b, _repo15b, _now15b)
+    test("15b: subagent_guard._any_entry_relevant: two same-repo tentacle_id entries → True (blocks)",
+         result_sg15b is True,
+         f"Got {result_sg15b!r}")
+
+    import importlib.util as _ilu15b
+    _csm_spec15b = _ilu15b.spec_from_file_location("csm15b", _csm_path)
+    _csm15b = _ilu15b.module_from_spec(_csm_spec15b)
+    _csm_spec15b.loader.exec_module(_csm15b)
+    result_csm15b = _csm15b._any_entry_relevant(_entries15b, _repo15b, _now15b)
+    test("15b2: check_subagent_marker._any_entry_relevant: two same-repo tentacle_id entries → True",
+         result_csm15b is True,
+         f"Got {result_csm15b!r}")
+    shutil.rmtree(_repo15b, ignore_errors=True)
+    test("15b: multi-tentacle_id same-repo tests ran", True)
+except Exception as e:
+    test("15b: multi-tentacle_id same-repo tests", False, str(e))
+
+# 15c. _read_tentacle_info: tentacle_id field doesn't break name extraction
+try:
+    import rules.subagent_guard as _sg15c
+    _now15c = _time12.time()
+    _home15c = Path(tempfile.mkdtemp(prefix="test-15c-"))
+    (_home15c / ".copilot" / "markers").mkdir(parents=True)
+    _marker15c = _home15c / ".copilot" / "markers" / "dispatched-subagent-active"
+    _marker15c.write_text(json.dumps({
+        "name": "dispatched-subagent-active",
+        "ts": str(int(_now15c)),
+        "active_tentacles": [
+            {"name": "alpha", "ts": str(int(_now15c)), "git_root": "/r", "tentacle_id": "tid-A"},
+            {"name": "beta",  "ts": str(int(_now15c)), "git_root": "/r", "tentacle_id": "tid-B"},
+        ],
+    }), encoding="utf-8")
+
+    # Patch SUBAGENT_MARKER so _read_tentacle_info uses our file
+    _orig_sm15c = _sg15c.SUBAGENT_MARKER
+    _sg15c.SUBAGENT_MARKER = _marker15c
+    info15c = _sg15c._read_tentacle_info()
+    _sg15c.SUBAGENT_MARKER = _orig_sm15c
+
+    test("15c: subagent_guard._read_tentacle_info with tentacle_id entries returns both names",
+         "alpha" in info15c and "beta" in info15c,
+         f"Got: {info15c!r}")
+
+    # Same for check_subagent_marker
+    import importlib.util as _ilu15c
+    _csm_spec15c = _ilu15c.spec_from_file_location("csm15c", _csm_path)
+    _csm15c2 = _ilu15c.module_from_spec(_csm_spec15c)
+    _csm_spec15c.loader.exec_module(_csm15c2)
+    _orig_mp15c = _csm15c2.MARKER_PATH
+    _csm15c2.MARKER_PATH = _marker15c
+    info15c2 = _csm15c2._read_tentacle_info()
+    _csm15c2.MARKER_PATH = _orig_mp15c
+
+    test("15c2: check_subagent_marker._read_tentacle_info with tentacle_id entries returns both names",
+         "alpha" in info15c2 and "beta" in info15c2,
+         f"Got: {info15c2!r}")
+    shutil.rmtree(str(_home15c), ignore_errors=True)
+    test("15c: _read_tentacle_info tentacle_id tests ran", True)
+except Exception as e:
+    test("15c: _read_tentacle_info tentacle_id tests", False, str(e))
+
+# 15d. Subprocess: marker with two same-repo entries (distinct tentacle_ids) → exit 1
+try:
+    _now15d = _time12.time()
+    _home15d = Path(tempfile.mkdtemp(prefix="test-15d-"))
+    (_home15d / ".copilot" / "markers").mkdir(parents=True)
+    _repo15d = tempfile.mkdtemp(prefix="test-15d-repo-")
+    (_home15d / ".copilot" / "markers" / "dispatched-subagent-active").write_text(
+        json.dumps({
+            "name": "dispatched-subagent-active",
+            "ts": str(int(_now15d)),
+            "git_root": _repo15d,
+            "active_tentacles": [
+                {"name": "worker", "ts": str(int(_now15d)), "git_root": _repo15d, "tentacle_id": "tid-1"},
+                {"name": "worker", "ts": str(int(_now15d)), "git_root": _repo15d, "tentacle_id": "tid-2"},
+            ],
+        }), encoding="utf-8"
+    )
+    r15d = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        cwd=_repo15d,
+        env={**os.environ, "HOME": str(_home15d)},
+    )
+    test("15d: subprocess same-repo two tentacle_id entries → exit 1 (blocks)",
+         r15d.returncode == 1,
+         f"exit={r15d.returncode} stdout={r15d.stdout[:120]}")
+    shutil.rmtree(str(_home15d), ignore_errors=True)
+    shutil.rmtree(_repo15d, ignore_errors=True)
+except Exception as e:
+    test("15d: subprocess multi-tentacle_id same-repo test", False, str(e))
+
+# 15e. Subprocess: one same-repo tentacle_id entry + one different-repo → still exit 1
+try:
+    _now15e = _time12.time()
+    _home15e = Path(tempfile.mkdtemp(prefix="test-15e-"))
+    (_home15e / ".copilot" / "markers").mkdir(parents=True)
+    _repo15e_current = tempfile.mkdtemp(prefix="test-15e-current-")
+    _repo15e_other   = tempfile.mkdtemp(prefix="test-15e-other-")
+    (_home15e / ".copilot" / "markers" / "dispatched-subagent-active").write_text(
+        json.dumps({
+            "name": "dispatched-subagent-active",
+            "ts": str(int(_now15e)),
+            "git_root": _repo15e_current,
+            "active_tentacles": [
+                {"name": "t-other",   "ts": str(int(_now15e)), "git_root": _repo15e_other,   "tentacle_id": "tid-A"},
+                {"name": "t-current", "ts": str(int(_now15e)), "git_root": _repo15e_current, "tentacle_id": "tid-B"},
+            ],
+        }), encoding="utf-8"
+    )
+    r15e = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        cwd=_repo15e_current,
+        env={**os.environ, "HOME": str(_home15e)},
+    )
+    test("15e: subprocess mixed-repo tentacle_id entries → exit 1 (same-repo entry still blocks)",
+         r15e.returncode == 1,
+         f"exit={r15e.returncode} stdout={r15e.stdout[:120]}")
+    shutil.rmtree(str(_home15e), ignore_errors=True)
+    shutil.rmtree(_repo15e_current, ignore_errors=True)
+    shutil.rmtree(_repo15e_other, ignore_errors=True)
+except Exception as e:
+    test("15e: subprocess mixed-repo tentacle_id test", False, str(e))
+
+# 15f. SubagentGitGuardRule: multiple same-repo tentacle_id entries → deny
+try:
+    import rules.subagent_guard as _sg15f
+    _now15f = _time12.time()
+    _home15f = Path(tempfile.mkdtemp(prefix="test-15f-"))
+    (_home15f / ".copilot" / "markers").mkdir(parents=True)
+    _repo15f = tempfile.mkdtemp(prefix="test-15f-repo-")
+    _marker15f = _home15f / ".copilot" / "markers" / "dispatched-subagent-active"
+    _marker15f.write_text(json.dumps({
+        "name": "dispatched-subagent-active",
+        "ts": str(int(_now15f)),
+        "git_root": _repo15f,
+        "active_tentacles": [
+            {"name": "svc-a", "ts": str(int(_now15f)), "git_root": _repo15f, "tentacle_id": "run-1"},
+            {"name": "svc-b", "ts": str(int(_now15f)), "git_root": _repo15f, "tentacle_id": "run-2"},
+        ],
+    }), encoding="utf-8")
+    _orig_sm15f = _sg15f.SUBAGENT_MARKER
+    _orig_vm15f = _sg15f.verify_marker
+    _orig_gcr15f = _sg15f._get_current_git_root
+    _sg15f.SUBAGENT_MARKER = _marker15f
+    _sg15f.verify_marker = lambda p, n: True  # bypass HMAC; testing routing logic only
+    _sg15f._get_current_git_root = lambda: _repo15f
+    rule15f = _sg15f.SubagentGitGuardRule()
+    result15f = rule15f.evaluate("preToolUse", {"toolArgs": {"command": "git commit -m 'x'"}})
+    _sg15f.SUBAGENT_MARKER = _orig_sm15f
+    _sg15f.verify_marker = _orig_vm15f
+    _sg15f._get_current_git_root = _orig_gcr15f
+    test("15f: SubagentGitGuardRule multi-tentacle_id same-repo → deny",
+         result15f is not None,
+         f"Got None (allowed) — should have been denied")
+    if result15f is not None:
+        msg15f = result15f.get("permissionDecisionReason", "") if isinstance(result15f, dict) else str(result15f)
+        test("15f2: deny message mentions subagent mode",
+             "subagent" in msg15f.lower(),
+             f"permissionDecisionReason: {msg15f[:80]!r}")
+    shutil.rmtree(str(_home15f), ignore_errors=True)
+    shutil.rmtree(_repo15f, ignore_errors=True)
+    test("15f: SubagentGitGuardRule multi-tentacle_id tests ran", True)
+except Exception as e:
+    test("15f: SubagentGitGuardRule multi-tentacle_id tests", False, str(e))
+
+# 15g. Single tentacle_id entry (fresh) still blocks — regression guard
+try:
+    _now15g = _time12.time()
+    _home15g = Path(tempfile.mkdtemp(prefix="test-15g-"))
+    (_home15g / ".copilot" / "markers").mkdir(parents=True)
+    _repo15g = tempfile.mkdtemp(prefix="test-15g-repo-")
+    (_home15g / ".copilot" / "markers" / "dispatched-subagent-active").write_text(
+        json.dumps({
+            "name": "dispatched-subagent-active",
+            "ts": str(int(_now15g)),
+            "git_root": _repo15g,
+            "active_tentacles": [
+                {"name": "solo", "ts": str(int(_now15g)), "git_root": _repo15g, "tentacle_id": "uid-xyz"},
+            ],
+        }), encoding="utf-8"
+    )
+    r15g = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        cwd=_repo15g,
+        env={**os.environ, "HOME": str(_home15g)},
+    )
+    test("15g: single tentacle_id entry still blocks (regression guard)",
+         r15g.returncode == 1,
+         f"exit={r15g.returncode}")
+    shutil.rmtree(str(_home15g), ignore_errors=True)
+    shutil.rmtree(_repo15g, ignore_errors=True)
+except Exception as e:
+    test("15g: single tentacle_id entry regression guard", False, str(e))
+
+# 15h. All same-repo tentacle_id entries expired → allow
+try:
+    import rules.subagent_guard as _sg15h
+    _now15h = _time12.time()
+    _stale_ts15h = str(int(_now15h - 20000))  # well past 4h TTL
+    _repo15h = tempfile.mkdtemp(prefix="test-15h-repo-")
+    _entries15h = [
+        {"name": "t1", "ts": _stale_ts15h, "git_root": _repo15h, "tentacle_id": "tid-1"},
+        {"name": "t2", "ts": _stale_ts15h, "git_root": _repo15h, "tentacle_id": "tid-2"},
+    ]
+    result_sg15h = _sg15h._any_entry_relevant(_entries15h, _repo15h, _now15h)
+    test("15h: all same-repo tentacle_id entries expired → _any_entry_relevant returns False",
+         result_sg15h is False,
+         f"Got {result_sg15h!r} — expired entries should not block")
+
+    import importlib.util as _ilu15h
+    _csm_spec15h = _ilu15h.spec_from_file_location("csm15h", _csm_path)
+    _csm15h = _ilu15h.module_from_spec(_csm_spec15h)
+    _csm_spec15h.loader.exec_module(_csm15h)
+    result_csm15h = _csm15h._any_entry_relevant(_entries15h, _repo15h, _now15h)
+    test("15h2: check_subagent_marker all expired tentacle_id entries → False",
+         result_csm15h is False,
+         f"Got {result_csm15h!r}")
+    shutil.rmtree(_repo15h, ignore_errors=True)
+    test("15h: expired tentacle_id entries tests ran", True)
+except Exception as e:
+    test("15h: expired tentacle_id entries test", False, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Section 16: Mixed-format marker bypass regression tests
+#
+#  Bug: when active_tentacles[0] is a string (old format), the previous
+#  code entered the "old string-list" branch and checked only the
+#  top-level git_root — completely skipping any later dict entries that
+#  may carry a different (current-repo) git_root.  A crafted or migrating
+#  marker with active[0]=string, top-level git_root=/other/repo, and a
+#  dict entry for /current/repo would return False (allow commit).
+#
+#  Fix: use all(isinstance(e, str) for e in active) so a mixed list is
+#  routed through _any_entry_relevant, which handles strings conservatively.
+#
+#  Tests:
+#   a. _any_entry_relevant: mixed list with string first → True (conservative)
+#   b. Subprocess: mixed list, string first + dict for current repo,
+#      top-level git_root=/other → exit 1 (BLOCKS — was bypass before fix)
+#   c. Subprocess: pure old string list + top-level git_root=/other → exit 0
+#      (cross-repo skip still works for purely old-format markers)
+#   d. SubagentGitGuardRule: mixed list, string first + current-repo dict → deny
+#   e. Source check: both hook files use all() not active[0] for format dispatch
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n── Section 16: Mixed-format marker bypass regression ──")
+
+# 16a. _any_entry_relevant: string entry first in mixed list → True (conservative)
+try:
+    import rules.subagent_guard as _sg16
+    import importlib.util as _ilu16
+    _csm_spec16 = _ilu16.spec_from_file_location("csm16", _csm_path)
+    _csm16 = _ilu16.module_from_spec(_csm_spec16)
+    _csm_spec16.loader.exec_module(_csm16)
+
+    _now16 = _time12.time()
+    _repo16 = tempfile.mkdtemp(prefix="test-16-repo-")
+    _other16 = tempfile.mkdtemp(prefix="test-16-other-")
+    # Mixed: string first (no repo metadata) + dict for current repo
+    _mixed16 = [
+        "legacy-tentacle",
+        {"name": "current-work", "ts": str(int(_now16)), "git_root": _repo16},
+    ]
+    result_sg16a = _sg16._any_entry_relevant(_mixed16, _repo16, _now16)
+    test("16a: subagent_guard._any_entry_relevant mixed (string first) → True (conservative block)",
+         result_sg16a is True,
+         f"Got {result_sg16a!r}")
+    result_csm16a = _csm16._any_entry_relevant(_mixed16, _repo16, _now16)
+    test("16a2: check_subagent_marker._any_entry_relevant mixed (string first) → True",
+         result_csm16a is True,
+         f"Got {result_csm16a!r}")
+    shutil.rmtree(_repo16, ignore_errors=True)
+    shutil.rmtree(_other16, ignore_errors=True)
+    test("16a: mixed-format _any_entry_relevant tests ran", True)
+except Exception as e:
+    test("16a: mixed-format _any_entry_relevant tests", False, str(e))
+
+# 16b. Subprocess: mixed list (string first) + dict for current repo +
+#      top-level git_root = other repo → must exit 1 (was bypass before fix)
+try:
+    _now16b = _time12.time()
+    _home16b = Path(tempfile.mkdtemp(prefix="test-16b-"))
+    (_home16b / ".copilot" / "markers").mkdir(parents=True)
+    _current16b = tempfile.mkdtemp(prefix="test-16b-current-")
+    _other16b   = tempfile.mkdtemp(prefix="test-16b-other-")
+    # Top-level git_root points to OTHER repo; active_tentacles[1] dict is for CURRENT repo.
+    # Before fix: active[0] is string → string branch → top-level git_root mismatch → exit 0 (BYPASS)
+    # After fix: all() check → mixed → _any_entry_relevant → string entry → True → exit 1 (BLOCKS)
+    (_home16b / ".copilot" / "markers" / "dispatched-subagent-active").write_text(
+        json.dumps({
+            "name": "dispatched-subagent-active",
+            "ts": str(int(_now16b)),
+            "git_root": _other16b,          # top-level points to other repo
+            "active_tentacles": [
+                "legacy-tentacle",          # old string entry (no repo metadata)
+                {"name": "current-work", "ts": str(int(_now16b)), "git_root": _current16b},
+            ],
+        }), encoding="utf-8"
+    )
+    r16b = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        cwd=_current16b,
+        env={**os.environ, "HOME": str(_home16b)},
+    )
+    test("16b: mixed list (string first + current-repo dict, other top-level git_root) → exit 1 (blocks)",
+         r16b.returncode == 1,
+         f"exit={r16b.returncode} — was exit 0 (bypass) before fix; stdout={r16b.stdout[:80]}")
+    shutil.rmtree(str(_home16b), ignore_errors=True)
+    shutil.rmtree(_current16b, ignore_errors=True)
+    shutil.rmtree(_other16b, ignore_errors=True)
+except Exception as e:
+    test("16b: mixed-format bypass subprocess test", False, str(e))
+
+# 16c. Subprocess: pure old string list + top-level git_root = other repo → exit 0
+#      (cross-repo skip for purely old-format markers must still work)
+try:
+    _now16c = _time12.time()
+    _home16c = Path(tempfile.mkdtemp(prefix="test-16c-"))
+    (_home16c / ".copilot" / "markers").mkdir(parents=True)
+    _current16c = Path(tempfile.mkdtemp(prefix="test-16c-current-"))
+    _other16c   = Path(tempfile.mkdtemp(prefix="test-16c-other-"))
+    # current repo needs git init so _get_current_git_root() returns a real path
+    subprocess.run(["git", "init", str(_current16c)], capture_output=True, check=True, timeout=10)
+    subprocess.run(["git", "config", "user.email", "t@t.com"],
+                   cwd=str(_current16c), capture_output=True, timeout=5)
+    subprocess.run(["git", "config", "user.name", "T"],
+                   cwd=str(_current16c), capture_output=True, timeout=5)
+    (_home16c / ".copilot" / "markers" / "dispatched-subagent-active").write_text(
+        json.dumps({
+            "name": "dispatched-subagent-active",
+            "ts": str(int(_now16c)),
+            "git_root": str(_other16c),     # top-level: other repo
+            "active_tentacles": ["legacy-only"],  # pure old string list
+        }), encoding="utf-8"
+    )
+    r16c = subprocess.run(
+        [sys.executable, str(_csm_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        cwd=str(_current16c),
+        env={**os.environ, "HOME": str(_home16c)},
+    )
+    test("16c: pure old string list + other-repo top-level git_root → exit 0 (backward compat preserved)",
+         r16c.returncode == 0,
+         f"exit={r16c.returncode} — cross-repo skip for pure old-format markers must still work")
+    shutil.rmtree(str(_home16c), ignore_errors=True)
+    shutil.rmtree(str(_current16c), ignore_errors=True)
+    shutil.rmtree(str(_other16c), ignore_errors=True)
+except subprocess.CalledProcessError as e:
+    test("16c: pure-old-format backward-compat test (git init)", False, str(e))
+except Exception as e:
+    test("16c: pure-old-format backward-compat test", False, str(e))
+
+# 16d. SubagentGitGuardRule: mixed list (string first) + current-repo dict → deny
+try:
+    import rules.subagent_guard as _sg16d
+    _now16d = _time12.time()
+    _home16d = Path(tempfile.mkdtemp(prefix="test-16d-"))
+    (_home16d / ".copilot" / "markers").mkdir(parents=True)
+    _current16d = tempfile.mkdtemp(prefix="test-16d-current-")
+    _other16d   = tempfile.mkdtemp(prefix="test-16d-other-")
+    _marker16d = _home16d / ".copilot" / "markers" / "dispatched-subagent-active"
+    _marker16d.write_text(json.dumps({
+        "name": "dispatched-subagent-active",
+        "ts": str(int(_now16d)),
+        "git_root": _other16d,
+        "active_tentacles": [
+            "legacy-tentacle",
+            {"name": "current-work", "ts": str(int(_now16d)), "git_root": _current16d},
+        ],
+    }), encoding="utf-8")
+    _orig_sm16d = _sg16d.SUBAGENT_MARKER
+    _orig_vm16d = _sg16d.verify_marker
+    _orig_gcr16d = _sg16d._get_current_git_root
+    _sg16d.SUBAGENT_MARKER = _marker16d
+    _sg16d.verify_marker = lambda p, n: True  # bypass HMAC; testing routing logic
+    _sg16d._get_current_git_root = lambda: _current16d
+    rule16d = _sg16d.SubagentGitGuardRule()
+    result16d = rule16d.evaluate("preToolUse", {"toolArgs": {"command": "git commit -m 'x'"}})
+    _sg16d.SUBAGENT_MARKER = _orig_sm16d
+    _sg16d.verify_marker = _orig_vm16d
+    _sg16d._get_current_git_root = _orig_gcr16d
+    test("16d: SubagentGitGuardRule mixed list (string first + current-repo dict) → deny",
+         result16d is not None and isinstance(result16d, dict)
+         and result16d.get("permissionDecision") == "deny",
+         f"Got {result16d!r:.80} — was allowed (bypass) before fix")
+    shutil.rmtree(str(_home16d), ignore_errors=True)
+    shutil.rmtree(_current16d, ignore_errors=True)
+    shutil.rmtree(_other16d, ignore_errors=True)
+    test("16d: SubagentGitGuardRule mixed-format tests ran", True)
+except Exception as e:
+    test("16d: SubagentGitGuardRule mixed-format tests", False, str(e))
+
+# 16e. Source check: both hook files dispatch on all() not active[0]
+try:
+    _sg_src16 = (REPO / "hooks" / "rules" / "subagent_guard.py").read_text(encoding="utf-8")
+    _csm_src16 = (REPO / "hooks" / "check_subagent_marker.py").read_text(encoding="utf-8")
+    test("16e: subagent_guard.py uses all(isinstance(e, str) for e in active) for format dispatch",
+         "all(isinstance(e, str) for e in active)" in _sg_src16,
+         "Format detection should use all() not active[0] type check")
+    test("16e2: check_subagent_marker.py uses all(isinstance(e, str) for e in active) for format dispatch",
+         "all(isinstance(e, str) for e in active)" in _csm_src16,
+         "Format detection should use all() not active[0] type check")
+    test("16e3: subagent_guard.py does not dispatch on isinstance(active[0], str) in repo-scope check",
+         "isinstance(active[0], str)" not in _sg_src16.split("Repo-scope check")[-1],
+         "Old active[0] dispatch pattern should be gone from repo-scope check")
+    test("16e4: check_subagent_marker.py does not dispatch on isinstance(active[0], str) in repo-scope check",
+         "isinstance(active[0], str)" not in _csm_src16.split("Repo-scope check")[-1],
+         "Old active[0] dispatch pattern should be gone from repo-scope check")
+except Exception as e:
+    test("16e: format-dispatch source checks", False, str(e))
+
+
 import ast
 
 py_files = list(REPO.glob("*.py")) + list((REPO / "hooks").glob("*.py")) + list((REPO / "hooks" / "rules").glob("*.py"))
