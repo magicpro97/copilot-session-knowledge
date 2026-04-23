@@ -865,9 +865,15 @@ def restart_processes():
     if system == "Darwin":
         plist = HOME / "Library" / "LaunchAgents" / "com.copilot.watch-sessions.plist"
         if plist.exists():
+            uid = os.getuid()
             label = "com.copilot.watch-sessions"
-            subprocess.run(["launchctl", "stop", label], capture_output=True)
-            subprocess.run(["launchctl", "start", label], capture_output=True)
+            # kickstart -k kills any running instance and starts a fresh one,
+            # which is required after reinstalling a plist.  stop+start leaves
+            # the agent in "spawn scheduled" state with no live PID.
+            subprocess.run(
+                ["launchctl", "kickstart", "-k", f"gui/{uid}/{label}"],
+                capture_output=True,
+            )
             ok("watch-sessions restarted (launchd)")
             return
 
@@ -1031,13 +1037,17 @@ def doctor():
             plist = HOME / "Library" / "LaunchAgents" / f"{agent}.plist"
             if plist.exists():
                 r = subprocess.run(["launchctl", "list", agent], capture_output=True, text=True)
-                if r.returncode == 0 and '"PID"' in r.stdout:
-                    ok(f"LaunchAgent {agent}: running")
-                elif r.returncode == 0:
-                    warn(f"LaunchAgent {agent}: loaded but not running (check logs)")
-                    issues += 1
-                else:
+                if r.returncode != 0:
                     warn(f"LaunchAgent {agent}: plist exists but not loaded")
+                    issues += 1
+                elif '"PID"' in r.stdout:
+                    ok(f"LaunchAgent {agent}: running")
+                elif agent == "com.copilot.auto-update":
+                    # Scheduled agent — loaded/idle between daily runs is healthy;
+                    # a live PID is only present while the update job is executing.
+                    ok(f"LaunchAgent {agent}: loaded/scheduled")
+                else:
+                    warn(f"LaunchAgent {agent}: loaded but not running (check logs)")
                     issues += 1
             else:
                 warn(f"LaunchAgent {agent}: not installed")
