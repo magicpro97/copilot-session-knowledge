@@ -32,7 +32,7 @@ hooks/
 | `session-end` | sessionEnd | Cleans up marker files, writes session.log entry, opt-in checkpoint reminder (`COPILOT_CHECKPOINT_REMIND=1`) |
 | `enforce-briefing` | preToolUse | Blocks edit/create/bash-writes until briefing done |
 | `enforce-learn` | preToolUse | Blocks git commit AND task_complete without learn.py |
-| `tentacle-enforce` | preToolUse | Blocks (deny) edits once ≥3 files across ≥2 modules are reached without tentacle setup. The deny message contains convention-level guidance: if you are the **orchestrator**, follow the runtime-bundle workflow — `tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing` → `tentacle.py todo <name> add "<task>"` → `tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6`; if you are a **dispatched sub-agent**, stay within your declared scope, write any scope gaps to `handoff.md`, and by convention avoid `git commit`/`git push`. |
+| `tentacle-enforce` | preToolUse | Blocks (deny) edits once ≥3 files across ≥2 modules are reached without tentacle setup. **Session-state paths** (`~/.copilot/session-state/`) are always exempt — `/research` outputs and other session artifacts are never blocked. **Bash redirects** are only flagged when the destination is a real source file; redirects to `.txt`, `.log`, `/dev/null`, or session-state paths are allowed. The deny message contains convention-level guidance: if you are the **orchestrator**, follow the runtime-bundle workflow — `tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing` → `tentacle.py todo <name> add "<task>"` → `tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6`; if you are a **dispatched sub-agent**, stay within your declared scope, write any scope gaps to `handoff.md`, and by convention avoid `git commit`/`git push`. |
 | `subagent-git-guard` | preToolUse | **Defense-in-depth**: blocks `git commit`/`git push` bash commands when the `dispatched-subagent-active` marker is fresh. This is a secondary surface — **not** the primary enforcement path (see §Dispatched-Subagent Git Guard below). Whether `preToolUse` fires inside a delegated subagent context is not guaranteed by the platform. |
 | `track-edits` | postToolUse | Detects file changes via `git status` (language-agnostic) |
 | `learn-reminder` | postToolUse | Reminds to record learnings after task_complete |
@@ -42,6 +42,28 @@ hooks/
 | `pre-commit` | git pre-commit | (1) Blocks commit when `dispatched-subagent-active` marker is fresh (primary subagent guard); (2) validates `.agent.md` / `SKILL.md` via `lint-skills.py`. Requires `install.py --install-git-hooks`. |
 | `pre-push` | git pre-push | Blocks push when `dispatched-subagent-active` marker is fresh. Requires `install.py --install-git-hooks`. |
 
+### Platform events not currently handled
+
+The Copilot platform provides 8 hook event types (per [GitHub docs](https://docs.github.com/en/copilot/concepts/agents/cloud-agent/about-hooks)). This repo's `hooks.json` and `hook_runner.py` handle 5 of them. The remaining 3 are available but have no rules registered:
+
+| Event | Available since | Status | Notes |
+|-------|----------------|--------|-------|
+| `userPromptSubmitted` | 2024 | **Not handled** — no rules registered | Fires when user submits a prompt; input includes `prompt` field. Could be used for prompt logging/auditing. Deliberately excluded for now; add a rule in `hooks/rules/` to use it. |
+| `agentStop` | 2024 | **Not handled** — no rules registered | Fires when the main agent finishes responding. Could be used for post-response cleanup or checkpointing. |
+| `subagentStop` | 2024 | **Not handled** — no rules registered | Fires when a subagent completes, before returning results to the parent. Could be used for subagent result processing. |
+
+These events are registered in `hooks/hook_runner.py`'s docstring for discovery but will silently no-op until rules are added.
+
+### `toolArgs` type: platform sends dict, docs show string
+
+The [official GitHub docs](https://docs.github.com/en/copilot/reference/hooks-configuration) show `toolArgs` as a JSON-encoded string:
+
+```json
+{"toolArgs": "{\"command\":\"rm -rf dist\"}"}
+```
+
+The **actual platform sends `toolArgs` as a parsed JSON object (dict)**, not a string. This repo's hooks handle it correctly via defensive `isinstance(tool_args, dict)` checks in `hooks/rules/briefing.py` and related rules. If you write hooks from the official docs' Bash examples, `jq -r '.toolArgs'` will give you the dict — no secondary `jq` parse needed. If the platform ever aligns with the docs and starts sending a string, the defensive checks will silently fall back to fail-open behavior.
+
 ## Key Features
 
 - **Single process per event** — 1 Python process instead of 3-4
@@ -50,6 +72,12 @@ hooks/
 - **Audit logging** — all decisions logged to `~/.copilot/markers/audit.jsonl`
 - **Dry-run mode** — set `HOOK_DRY_RUN=1` to test without blocking
 - **Merged duplicates** — tentacle enforce+suggest, track+test share code
+
+## `hooks.json` Schema Notes
+
+### `comment` field
+
+The repo's `hooks.json` includes a `comment` field on each hook entry (e.g. `"comment": "[GLOBAL] Unified hook runner — auto-briefing + integrity check"`). The [official schema](https://docs.github.com/en/copilot/concepts/agents/cloud-agent/about-hooks) defines only `type`, `bash`, `powershell`, `cwd`, `env`, and `timeoutSec`. The `comment` field is **not part of the official schema** and is likely silently ignored by the platform. It is kept here as human-readable inline documentation. If the platform adds strict JSON validation, these comments will need to be removed.
 
 ## Bash Bypass Protection
 

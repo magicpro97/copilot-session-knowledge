@@ -198,8 +198,11 @@ if sys.platform == "darwin":
              f"Got: {prog_args}")
         test("Runs watch-sessions.py", any("watch-sessions" in a for a in prog_args),
              f"Got: {prog_args}")
-        test("Has --daemon flag", "--daemon" in prog_args,
-             f"Got: {prog_args}")
+        # launchd must own the watcher lifecycle — run in foreground (no --daemon).
+        # --daemon causes a double-fork so launchd loses the PID and the detached
+        # child conflicts with every subsequent launchd restart attempt.
+        test("No --daemon flag (launchd owns lifecycle)", "--daemon" not in prog_args,
+             f"Got: {prog_args} — remove --daemon so launchd manages the process")
 
         test("RunAtLoad is true", plist_data.get("RunAtLoad") is True)
 
@@ -643,6 +646,141 @@ test("Sp14: conductor-creator/templates/test-conductor.py exists in repo",
      (_cc_templates / "test-conductor.py").exists(),
      f"Expected at {_cc_templates / 'test-conductor.py'}")
 
+# Sp15. Empty name value (bare `name:` with no value) → must report an error, not silently pass.
+# Before the fix, `\s*` in the regex could cross a newline and capture the next line
+# (e.g. `description:`) as the name value.  The fix ([ \t]*) closes that hole and the
+# new `else` branch emits an honest error.
+_EMPTY_NAME_SKILL = """\
+---
+name:
+description: Use when testing empty name. Trigger: test-empty-name.
+---
+
+# Empty Name Skill
+
+## When to Use
+
+Testing empty name validation.
+
+## Workflow
+
+Does nothing.
+
+<example>
+Example usage.
+</example>
+"""
+_d15 = _make_skill_dir(_EMPTY_NAME_SKILL)
+try:
+    _errs15, _warns15 = validate(_d15 / "SKILL.md")
+    test("Sp15: bare `name:` (empty value) → error reported",
+         any("no value" in e or "empty" in e.lower() for e in _errs15),
+         f"Expected empty-name error; got errors={_errs15}")
+    test("Sp15: bare `name:` does NOT capture next line as name value",
+         not any("description" in e.lower() and "invalid" in e.lower() for e in _errs15),
+         f"Regex crossed line boundary — captured 'description:' as name: errors={_errs15}")
+finally:
+    _shutil.rmtree(_d15, ignore_errors=True)
+
+# Sp16. Name with whitespace-only value (e.g. `name:   `) → must also report an error.
+_WHITESPACE_NAME_SKILL = """\
+---
+name:   
+description: Use when testing whitespace name. Trigger: test-ws-name.
+---
+
+# Whitespace Name Skill
+
+## When to Use
+
+Testing whitespace name validation.
+
+## Workflow
+
+Does nothing.
+
+<example>
+Example usage.
+</example>
+"""
+_d16 = _make_skill_dir(_WHITESPACE_NAME_SKILL)
+try:
+    _errs16, _warns16 = validate(_d16 / "SKILL.md")
+    test("Sp16: whitespace-only `name:   ` → error reported (empty value)",
+         any("no value" in e or "empty" in e.lower() for e in _errs16),
+         f"Expected empty-name error; got errors={_errs16}")
+finally:
+    _shutil.rmtree(_d16, ignore_errors=True)
+
+# Sp17. Empty description value (bare `description:` with no value) → must report an error,
+# not silently pass.  Before the fix, `\s*` in the regex could cross a newline and capture
+# the next YAML key (e.g. `name:`) as the description text; now [ \t]* closes that hole
+# and an else-branch emits an honest error.
+_EMPTY_DESC_SKILL = """\
+---
+name: sp17-test
+description:
+location: user
+---
+
+# Empty Description Skill
+
+## When to Use
+
+Testing empty description validation.
+
+## Workflow
+
+Does nothing.
+
+<example>
+Example usage.
+</example>
+"""
+_d17 = _make_skill_dir(_EMPTY_DESC_SKILL)
+try:
+    _errs17, _warns17 = validate(_d17 / "SKILL.md")
+    test("Sp17: bare `description:` (empty value) → error reported",
+         any("no value" in e or "empty" in e.lower() for e in _errs17),
+         f"Expected empty-description error; got errors={_errs17}")
+    test("Sp17: bare `description:` does NOT capture next YAML line as description",
+         not any("description only" in w.lower() for w in _warns17),
+         f"Regex crossed line boundary — word-count warning implies next key was captured as description: warns={_warns17}")
+finally:
+    _shutil.rmtree(_d17, ignore_errors=True)
+
+# Sp18. Description with whitespace-only value (e.g. `description:   `) → must also
+# report an error (mirrors Sp16 for description).
+_WHITESPACE_DESC_SKILL = """\
+---
+name: sp18-test
+description:   
+location: user
+---
+
+# Whitespace Description Skill
+
+## When to Use
+
+Testing whitespace description validation.
+
+## Workflow
+
+Does nothing.
+
+<example>
+Example usage.
+</example>
+"""
+_d18 = _make_skill_dir(_WHITESPACE_DESC_SKILL)
+try:
+    _errs18, _warns18 = validate(_d18 / "SKILL.md")
+    test("Sp18: whitespace-only `description:   ` → error reported (empty value)",
+         any("no value" in e or "empty" in e.lower() for e in _errs18),
+         f"Expected empty-description error; got errors={_errs18}")
+finally:
+    _shutil.rmtree(_d18, ignore_errors=True)
+
 
 # ─── Guidance Alignment (Ga1–Ga5) ──────────────────────────────────────────
 # Verify that the injected GLOBAL_INJECT_BLOCK and the canonical
@@ -774,6 +912,116 @@ test(
     "[*]" in _editorconfig_text and re.search(r"(?mi)^end_of_line\s*=\s*lf$", _editorconfig_text) is not None,
     "Expected [*] section with end_of_line = lf",
 )
+
+
+# ─── Global Skill Deployment (Gs1–Gs5) ───────────────────────────────────
+# Tests for deploy_skills() global-skill rollout gaps:
+#   Gs1-Gs2: VENDORED skill dir is created from scratch when missing
+#   Gs3:     stale BUILTIN SKILL.md in existing global dir is updated
+#   Gs4:     missing asset file inside existing BUILTIN global dir is created
+#   Gs5:     BUILTIN dir is NOT auto-created (update-only constraint)
+
+print("\n🌐 Global Skill Deployment Tests (Gs)")
+
+with tempfile.TemporaryDirectory(prefix="global-skills-test-") as _gs_tmp:
+    _gs_root = Path(_gs_tmp)
+
+    # Fake TOOLS_DIR with one vendored skill (no assets) and one builtin skill
+    # (with an assets subdir containing a single file).
+    _gs_tools = _gs_root / "tools"
+    _gs_skills_src = _gs_tools / "skills"
+
+    _gs_vendored_src = _gs_skills_src / "karpathy-guidelines"
+    _gs_vendored_src.mkdir(parents=True)
+    (_gs_vendored_src / "SKILL.md").write_text("# Karpathy vendored", encoding="utf-8")
+
+    _gs_builtin_src = _gs_skills_src / "tentacle-orchestration"
+    _gs_builtin_src.mkdir(parents=True)
+    (_gs_builtin_src / "SKILL.md").write_text("# New tentacle content", encoding="utf-8")
+    (_gs_builtin_src / "references").mkdir()
+    (_gs_builtin_src / "references" / "guide.md").write_text("# guide", encoding="utf-8")
+
+    # Fake global skills root: tentacle-orchestration dir exists (stale, no asset);
+    # karpathy-guidelines dir is absent entirely.
+    _gs_global = _gs_root / "global_skills"
+    _gs_global.mkdir()
+    _gs_to_installed = _gs_global / "tentacle-orchestration"
+    _gs_to_installed.mkdir()
+    (_gs_to_installed / "SKILL.md").write_text("# OLD stale content", encoding="utf-8")
+    # No references/ subdir — simulates missing asset file gap
+
+    _orig_gs_tools = _autoupdate_mod.TOOLS_DIR
+    _orig_gs_global_dirs = _autoupdate_mod._global_copilot_skill_dirs
+    _orig_gs_vendored = _autoupdate_mod.VENDORED_SKILLS
+    _orig_gs_builtin = _autoupdate_mod.BUILTIN_PROJECT_SKILLS
+    _orig_gs_registry = _autoupdate_mod._load_project_registry
+    _orig_gs_subprocess = _autoupdate_mod.subprocess
+    _orig_gs_sys_path = sys.path[:]
+
+    # Stub subprocess so git rev-parse --show-toplevel never resolves the real
+    # repo root.  All other subprocess calls are forwarded unchanged.
+    class _NoGitRoot:
+        def run(self, cmd, *a, **kw):
+            if isinstance(cmd, list) and "--show-toplevel" in cmd:
+                return subprocess.CompletedProcess(args=cmd, returncode=1,
+                                                   stdout="", stderr="")
+            return _orig_gs_subprocess.run(cmd, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(_orig_gs_subprocess, name)
+
+    try:
+        _autoupdate_mod.subprocess = _NoGitRoot()
+        _autoupdate_mod.TOOLS_DIR = _gs_tools
+        _autoupdate_mod.VENDORED_SKILLS = ("karpathy-guidelines",)
+        _autoupdate_mod.BUILTIN_PROJECT_SKILLS = ("tentacle-orchestration",)
+        _autoupdate_mod._global_copilot_skill_dirs = lambda: (_gs_global,)
+        _autoupdate_mod._load_project_registry = lambda: []
+
+        _autoupdate_mod.deploy_skills()
+
+        _gs_karpathy_dir = _gs_global / "karpathy-guidelines"
+        test(
+            "Gs1: deploy_skills() creates missing vendored global skill dir",
+            _gs_karpathy_dir.is_dir(),
+            f"Expected dir at {_gs_karpathy_dir}",
+        )
+        test(
+            "Gs2: deploy_skills() writes SKILL.md into new vendored global skill dir",
+            (_gs_karpathy_dir / "SKILL.md").exists()
+            and (_gs_karpathy_dir / "SKILL.md").read_text(encoding="utf-8") == "# Karpathy vendored",
+            "SKILL.md missing or has unexpected content",
+        )
+        test(
+            "Gs3: deploy_skills() updates stale SKILL.md in existing global builtin dir",
+            (_gs_to_installed / "SKILL.md").read_text(encoding="utf-8") == "# New tentacle content",
+            f"Got: {(_gs_to_installed / 'SKILL.md').read_text(encoding='utf-8')!r}",
+        )
+        test(
+            "Gs4: deploy_skills() creates missing asset file in existing global builtin dir",
+            (_gs_to_installed / "references" / "guide.md").exists(),
+            "Missing asset file was not created",
+        )
+
+        # Gs5: BUILTIN skill dir must NOT be auto-created.
+        _gs_new_builtin_src = _gs_skills_src / "brand-new-builtin"
+        _gs_new_builtin_src.mkdir()
+        (_gs_new_builtin_src / "SKILL.md").write_text("# new", encoding="utf-8")
+        _autoupdate_mod.BUILTIN_PROJECT_SKILLS = ("tentacle-orchestration", "brand-new-builtin")
+        _autoupdate_mod.deploy_skills()
+        test(
+            "Gs5: deploy_skills() does NOT create global dir for uninstalled builtin skill",
+            not (_gs_global / "brand-new-builtin").is_dir(),
+            "Builtin skill dir was auto-created — update-only constraint violated",
+        )
+    finally:
+        _autoupdate_mod.subprocess = _orig_gs_subprocess
+        _autoupdate_mod.TOOLS_DIR = _orig_gs_tools
+        _autoupdate_mod._global_copilot_skill_dirs = _orig_gs_global_dirs
+        _autoupdate_mod.VENDORED_SKILLS = _orig_gs_vendored
+        _autoupdate_mod.BUILTIN_PROJECT_SKILLS = _orig_gs_builtin
+        _autoupdate_mod._load_project_registry = _orig_gs_registry
+        sys.path[:] = _orig_gs_sys_path
 
 
 # ─── Summary ────────────────────────────────────────────────────────────

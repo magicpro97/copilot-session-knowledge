@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Validate a SKILL.md file against Anthropic standards.
+"""Validate a SKILL.md file against the Agent Skills open standard.
+
+Spec: https://agentskills.io/specification
+Repo: https://github.com/agentskills/agentskills
 
 Usage:
     python3 validate-skill.py path/to/SKILL.md
@@ -40,30 +43,81 @@ def validate(path: Path) -> tuple[list[str], list[str]]:
             fm = content[3:fm_end]
             if "name:" not in fm:
                 errors.append("Frontmatter missing 'name' field")
+            else:
+                # Validate name format per Agent Skills spec:
+                # 1–64 chars, a-z/0-9/hyphens, no leading/trailing/consecutive hyphens,
+                # must match parent directory name.
+                # Use [ \t]* (horizontal whitespace only) so a bare `name:` with no value
+                # on the same line does NOT match the next line's content (e.g. description:).
+                name_match = re.search(r"^name:[ \t]*['\"]?([^\s'\"#\n]+)['\"]?", fm, re.MULTILINE)
+                if name_match:
+                    skill_name = name_match.group(1).strip()
+                    if not re.fullmatch(r"[a-z0-9][a-z0-9\-]*[a-z0-9]|[a-z0-9]", skill_name):
+                        errors.append(
+                            f"'name' value '{skill_name}' is invalid: must be 1–64 chars, "
+                            "lowercase letters/digits/hyphens only, no leading or trailing hyphens."
+                        )
+                    elif "--" in skill_name:
+                        errors.append(
+                            f"'name' value '{skill_name}' contains consecutive hyphens (--), "
+                            "which is not allowed by the Agent Skills spec."
+                        )
+                    elif len(skill_name) > 64:
+                        errors.append(
+                            f"'name' value '{skill_name}' is {len(skill_name)} chars; "
+                            "max is 64 per the Agent Skills spec."
+                        )
+                    else:
+                        # Check directory name match (only when validating a file inside a dir)
+                        dir_name = path.parent.name
+                        if dir_name and dir_name != "." and dir_name != skill_name:
+                            warnings.append(
+                                f"'name' field '{skill_name}' does not match parent directory "
+                                f"'{dir_name}' — the Agent Skills spec requires them to match."
+                            )
+                else:
+                    errors.append(
+                        "'name' field has no value — it must not be empty "
+                        "(e.g. `name: my-skill` not just `name:`)."
+                    )
             if "description:" not in fm:
                 errors.append("Frontmatter missing 'description' field")
             else:
                 # Extract description text — handle YAML block scalars (>-, >+, >, |, |-…)
                 # as well as quoted/unquoted single-line values.
-                desc_match = re.search(r"description:\s*[>|][+\-]?\s*\n((?:\s+.*\n)*)", fm)
+                # Use [ \t]* (horizontal whitespace only) so a bare `description:` with no
+                # value on the same line does NOT cross the newline and capture the next
+                # YAML key (e.g. `name:`) as the description text.
+                desc_match = re.search(r"description:[ \t]*[>|][+\-]?[ \t]*\n((?:[ \t]+.*\n)*)", fm)
                 if not desc_match:
-                    desc_match = re.search(r'description:\s*["\']?(.+)', fm)
+                    desc_match = re.search(r'description:[ \t]*["\']?(.+)', fm)
                 if desc_match:
                     desc_text = desc_match.group(1).strip()
-                    word_count = len(desc_text.split())
-                    if word_count < MIN_DESCRIPTION_WORDS:
-                        warnings.append(
-                            f"Description only {word_count} words — aim for {MIN_DESCRIPTION_WORDS}+ "
-                            f"with trigger phrases (skills under-activate without them)"
+                    if not desc_text:
+                        errors.append(
+                            "'description' field has no value — it must not be empty "
+                            "(e.g. `description: Use when ...` not just `description:`)."
                         )
-                    # Check for trigger words
-                    trigger_patterns = ["use when", "trigger", "activat", "invoke", "keyword"]
-                    has_triggers = any(p in desc_text.lower() for p in trigger_patterns)
-                    if not has_triggers:
-                        warnings.append(
-                            "Description lacks trigger phrases — add 'Use when...' or keywords "
-                            "to improve activation reliability"
-                        )
+                    else:
+                        word_count = len(desc_text.split())
+                        if word_count < MIN_DESCRIPTION_WORDS:
+                            warnings.append(
+                                f"Description only {word_count} words — aim for {MIN_DESCRIPTION_WORDS}+ "
+                                f"with trigger phrases (skills under-activate without them)"
+                            )
+                        # Check for trigger words
+                        trigger_patterns = ["use when", "trigger", "activat", "invoke", "keyword"]
+                        has_triggers = any(p in desc_text.lower() for p in trigger_patterns)
+                        if not has_triggers:
+                            warnings.append(
+                                "Description lacks trigger phrases — add 'Use when...' or keywords "
+                                "to improve activation reliability"
+                            )
+                else:
+                    errors.append(
+                        "'description' field has no value — it must not be empty "
+                        "(e.g. `description: Use when ...` not just `description:`)."
+                    )
 
     # --- 2. Line count ---
     line_count = len(lines)

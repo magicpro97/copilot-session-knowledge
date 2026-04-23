@@ -52,9 +52,18 @@ MODULE_MARKERS = (
 )
 
 
+def _strip_shell_quotes(s: str) -> str:
+    """Strip surrounding single or double shell quotes from a string."""
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        return s[1:-1]
+    return s
+
+
 def is_source_path(path):
-    """Check if a path is a source code file (not in safe temp dirs)."""
+    """Check if a path is a source code file (not in safe temp dirs or session-state)."""
     if any(path.startswith(p) for p in SAFE_PATH_PREFIXES):
+        return False
+    if is_session_path(path):
         return False
     return Path(path).suffix.lower() in SOURCE_EXTENSIONS
 
@@ -83,19 +92,19 @@ def bash_writes_source_files(command):
         if re.search(r"open\s*\(.*['\"]>['\"]", command):
             return True
 
-    for m in re.finditer(r">\s*([^\s;|&]+)", command):
-        if is_source_path(m.group(1)):
+    for m in re.finditer(r">{1,2}\s*([^\s;|&]+)", command):
+        if is_source_path(_strip_shell_quotes(m.group(1))):
             return True
 
     if re.search(r"\bsed\s+-i", command):
         return True
 
     for m in re.finditer(r"\btee\s+(?:-a\s+)?([^\s;|&]+)", command):
-        if is_source_path(m.group(1)):
+        if is_source_path(_strip_shell_quotes(m.group(1))):
             return True
 
     for m in re.finditer(r"\b(?:cp|mv|install)\b.*\s([^\s;|&]+)(?:\s|$)", command):
-        if is_source_path(m.group(1)):
+        if is_source_path(_strip_shell_quotes(m.group(1))):
             return True
 
     if re.search(r"\b(?:python3?|node|ruby|perl)\s+-[ce]\s", command):
@@ -104,13 +113,13 @@ def bash_writes_source_files(command):
             return True
 
     for m in re.finditer(r"\b(?:curl\s+-o|wget\s+-O)\s+([^\s;|&]+)", command):
-        if is_source_path(m.group(1)):
+        if is_source_path(_strip_shell_quotes(m.group(1))):
             return True
 
     if re.search(r"\bdd\b.*of=", command):
         return True
     for m in re.finditer(r"\b(?:patch|rsync)\b.*\s([^\s;|&]+)(?:\s|$)", command):
-        if is_source_path(m.group(1)):
+        if is_source_path(_strip_shell_quotes(m.group(1))):
             return True
 
     return False

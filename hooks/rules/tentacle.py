@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from . import Rule
-from .common import MARKERS_DIR, CODE_EXTENSIONS, get_module, is_session_path, deny, info
+from .common import MARKERS_DIR, CODE_EXTENSIONS, get_module, is_session_path, is_source_path, deny, info
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
@@ -65,8 +65,22 @@ class TentacleEnforceRule(Rule):
                                                "dd ", "patch ", "rsync ", "install ")):
                     writes_source = True
                 elif re.search(r">{1,2}\s*\S+", command):
-                    writes_source = True
+                    for m in re.finditer(r">{1,2}\s*([^\s;|&]+)", command):
+                        p = m.group(1)
+                        # Strip surrounding shell quotes before path checks
+                        if len(p) >= 2 and p[0] == p[-1] and p[0] in ('"', "'"):
+                            p = p[1:-1]
+                        if is_source_path(p):
+                            writes_source = True
+                            break
             if not writes_source:
+                return None
+
+        # FP-1: session-state files (e.g. /research outputs) are not project source;
+        # skip threshold check so create/edit to these paths is never blocked.
+        if tool_name in ("edit", "create"):
+            file_path = tool_args.get("path", "")
+            if file_path and is_session_path(file_path):
                 return None
 
         # Check bypass markers
@@ -131,8 +145,11 @@ class TentacleSuggestRule(Rule):
                     if not p.startswith(("/tmp/", "/var/", "/dev/")):
                         file_paths.append(p)
             if ">" in command:
-                for m in re.finditer(r">\s*([^\s;|&]+)", command):
+                for m in re.finditer(r">{1,2}\s*([^\s;|&]+)", command):
                     p = m.group(1)
+                    # Strip surrounding shell quotes before path checks
+                    if len(p) >= 2 and p[0] == p[-1] and p[0] in ('"', "'"):
+                        p = p[1:-1]
                     if not p.startswith(("/tmp/", "/var/", "/dev/")):
                         file_paths.append(p)
             # Mirror enforce: also track paths written by sed -i and tee

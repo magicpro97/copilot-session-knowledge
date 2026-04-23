@@ -97,6 +97,7 @@ def main():
 
         source_exts = (".py", ".js", ".ts", ".kt", ".java", ".swift", ".go",
                        ".rs", ".c", ".cpp", ".h", ".rb", ".php", ".cs", ".tsx", ".jsx")
+        _session_state_abs = str(Path.home() / ".copilot" / "session-state")
         writes_source = False
         if any(ext in command for ext in source_exts):
             import re as _re
@@ -105,8 +106,27 @@ def main():
                                            "dd ", "patch ", "rsync ", "install ")):
                 writes_source = True
             elif _re.search(r">{1,2}\s*\S+", command):
-                writes_source = True
+                for _m in _re.finditer(r">{1,2}\s*([^\s;|&]+)", command):
+                    _dest = _m.group(1)
+                    # Strip surrounding shell quotes before path/suffix checks
+                    if len(_dest) >= 2 and _dest[0] == _dest[-1] and _dest[0] in ('"', "'"):
+                        _dest = _dest[1:-1]
+                    if any(_dest.startswith(p) for p in ("/tmp/", "/var/", "/dev/", "/proc/")):
+                        continue
+                    if _dest.startswith(_session_state_abs) or ".copilot/session-state" in _dest:
+                        continue
+                    if Path(_dest).suffix.lower() in source_exts:
+                        writes_source = True
+                        break
         if not writes_source:
+            return
+
+    # FP-1: session-state files (e.g. /research outputs) are not project source;
+    # skip threshold check so create/edit to these paths is never blocked.
+    if tool_name in ("edit", "create"):
+        file_path = (data.get("toolArgs") or {}).get("path", "")
+        _ss_abs = str(Path.home() / ".copilot" / "session-state")
+        if file_path and (file_path.startswith(_ss_abs) or ".copilot/session-state" in file_path):
             return
 
     # Verify HMAC-signed markers (touch won't work anymore)

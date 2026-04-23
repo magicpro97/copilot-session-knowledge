@@ -2694,6 +2694,390 @@ except Exception as _e18k:
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  Section 19: FP-1/FP-2/FP-3 false-positive regression tests
+#  Verifies the confirmed false-positive fixes from hook-fp-research:
+#    FP-1: TentacleEnforceRule allows edit/create to session-state paths
+#    FP-2: TentacleEnforceRule bash redirect check validates destination path
+#    FP-3: is_source_path() excludes session-state paths
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n📝 Section 19: Hook False-Positive Regression (FP-1/FP-2/FP-3)")
+
+from rules.common import is_source_path as _isp19, bash_writes_source_files as _bwsf19
+from pathlib import Path as _Path19
+
+_ss_md19 = str(_Path19.home() / ".copilot" / "session-state" / "abc" / "research" / "notes.md")
+_ss_py19 = str(_Path19.home() / ".copilot" / "session-state" / "abc" / "out.py")
+
+# 19a. FP-3: is_source_path() must return False for session-state paths
+test("FP-3: is_source_path session-state .md → False",
+     not _isp19(_ss_md19),
+     f"is_source_path({_ss_md19!r}) should be False (session-state)")
+
+test("FP-3: is_source_path session-state .py → False",
+     not _isp19(_ss_py19),
+     f"is_source_path({_ss_py19!r}) should be False (session-state)")
+
+# Real project .md and .py still correct
+test("FP-3: is_source_path project .md → True",
+     _isp19("docs/HOOKS.md"),
+     "docs/HOOKS.md should still be a source path (.md in SOURCE_EXTENSIONS)")
+
+test("FP-3: is_source_path project .py → True",
+     _isp19("hooks/rules/common.py"),
+     "hooks/rules/common.py should be a source path")
+
+# 19b. FP-3: bash_writes_source_files must return False for redirect to session-state
+test("FP-3: bash redirect to session-state .md → NOT a source write",
+     not _bwsf19(f"python3 script.py > {_ss_md19}"),
+     "redirect to session-state markdown should not count as a source write")
+
+test("FP-3: bash redirect to session-state .py → NOT a source write",
+     not _bwsf19(f"python3 script.py > {_ss_py19}"),
+     "redirect to session-state .py should not count as a source write")
+
+# 19c. FP-2: bash redirect to non-source destination must NOT flag writes_source
+test("FP-2: bash_writes_source_files redirect to .log → False",
+     not _bwsf19("python3 test_fixes.py > output.log"),
+     "redirect to .log is not a source write")
+
+test("FP-2: bash_writes_source_files redirect to .txt → False",
+     not _bwsf19("python3 test_hooks.py > results.txt"),
+     "redirect to .txt is not a source write")
+
+test("FP-2: bash_writes_source_files redirect to /dev/null → False",
+     not _bwsf19("python3 briefing.py task > /dev/null"),
+     "redirect to /dev/null is not a source write")
+
+# Still catches real source writes
+test("FP-2: bash_writes_source_files redirect to .py → True",
+     _bwsf19("echo 'x' > src/main.py"),
+     "redirect to .py should still be a source write")
+
+# 19d. FP-1: TentacleEnforceRule must return None for edit/create to session-state
+try:
+    from rules.tentacle import TentacleEnforceRule as _TER19
+    import rules.tentacle as _rt19
+
+    _orig_vlist19 = _rt19.verify_list_marker
+    _orig_vm19 = _rt19.verify_marker
+    _orig_sl19 = _rt19.sign_list_marker
+    _orig_isa19 = _rt19.is_secret_access
+    _orig_ctm19 = _rt19.check_tamper_marker
+
+    # Fake threshold: 3 files across 2 modules
+    _fake_files19 = ["src/auth/login.py", "src/api/routes.py", "tests/test_auth.py"]
+    _rt19.verify_list_marker = lambda p: set(_fake_files19)
+    _rt19.verify_marker = lambda p, n: False
+    _rt19.sign_list_marker = lambda p, lines: None
+    _rt19.is_secret_access = lambda c: False
+    _rt19.check_tamper_marker = lambda: False
+
+    _ter19 = _TER19()
+
+    # FP-1: create to session-state research path must be allowed (return None)
+    _ss_create_path19 = str(_Path19.home() / ".copilot" / "session-state" / "abc" / "research" / "output.md")
+    _r19_create = _ter19.evaluate("preToolUse", {
+        "toolName": "create",
+        "toolArgs": {"path": _ss_create_path19},
+    })
+    test("FP-1: TentacleEnforceRule create to session-state → None (allowed)",
+         _r19_create is None,
+         f"Expected None, got: {_r19_create!r}")
+
+    # FP-1: edit to session-state path must be allowed
+    _r19_edit = _ter19.evaluate("preToolUse", {
+        "toolName": "edit",
+        "toolArgs": {"path": _ss_md19},
+    })
+    test("FP-1: TentacleEnforceRule edit to session-state → None (allowed)",
+         _r19_edit is None,
+         f"Expected None, got: {_r19_edit!r}")
+
+    # Non-session edit at threshold must still deny
+    _r19_deny = _ter19.evaluate("preToolUse", {
+        "toolName": "edit",
+        "toolArgs": {"path": "src/api/new_feature.py"},
+    })
+    test("FP-1: TentacleEnforceRule edit to project file at threshold → deny",
+         _r19_deny is not None and _r19_deny.get("permissionDecision") == "deny",
+         f"Expected deny, got: {_r19_deny!r}")
+
+    # FP-2: bash redirect to .txt (non-source) must return None at threshold
+    _r19_bash_txt = _ter19.evaluate("preToolUse", {
+        "toolName": "bash",
+        "toolArgs": {"command": "python3 test_fixes.py > output.txt"},
+    })
+    test("FP-2: TentacleEnforceRule bash redirect to .txt → None (not a source write)",
+         _r19_bash_txt is None,
+         f"Expected None, got: {_r19_bash_txt!r}")
+
+    # FP-2: bash redirect to /dev/null must return None
+    _r19_bash_devnull = _ter19.evaluate("preToolUse", {
+        "toolName": "bash",
+        "toolArgs": {"command": "python3 briefing.py task > /dev/null"},
+    })
+    test("FP-2: TentacleEnforceRule bash redirect to /dev/null → None",
+         _r19_bash_devnull is None,
+         f"Expected None, got: {_r19_bash_devnull!r}")
+
+    # FP-2: bash redirect to a real .py source file must still be caught
+    _r19_bash_py = _ter19.evaluate("preToolUse", {
+        "toolName": "bash",
+        "toolArgs": {"command": "echo 'x' > src/generated.py"},
+    })
+    test("FP-2: TentacleEnforceRule bash redirect to .py → deny (real source write)",
+         _r19_bash_py is not None and _r19_bash_py.get("permissionDecision") == "deny",
+         f"Expected deny for .py redirect, got: {_r19_bash_py!r}")
+
+    test("Section 19 FP regression tests ran without exception", True)
+except Exception as _e19:
+    test("Section 19 FP regression tests ran without exception", False, str(_e19))
+finally:
+    try:
+        _rt19.verify_list_marker = _orig_vlist19
+        _rt19.verify_marker = _orig_vm19
+        _rt19.sign_list_marker = _orig_sl19
+        _rt19.is_secret_access = _orig_isa19
+        _rt19.check_tamper_marker = _orig_ctm19
+    except NameError:
+        pass
+
+# ═══════════════════════════════════════════════════════════════════
+#  Section 19e: Standalone enforce-tentacle.py FP-1 parity
+#  Regression: standalone file must mirror the rules-path FP-1 exemption
+#  so it cannot silently drift back to blocking session-state paths.
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n📝 Section 19e: Standalone enforce-tentacle.py FP-1 Parity")
+
+# 19e-src: source-code guard — presence of session-state exemption for edit/create
+_standalone_src19e = (REPO / "hooks" / "enforce-tentacle.py").read_text(encoding="utf-8")
+test(
+    "FP-1 parity: standalone enforce-tentacle.py contains session-state exemption",
+    ".copilot/session-state" in _standalone_src19e,
+    "hooks/enforce-tentacle.py must contain '.copilot/session-state' in its FP-1 guard"
+)
+test(
+    "FP-1 parity: standalone enforce-tentacle.py applies exemption to edit/create",
+    'tool_name in ("edit", "create")' in _standalone_src19e,
+    "hooks/enforce-tentacle.py must check tool_name in ('edit', 'create') for FP-1"
+)
+
+# 19e-func: functional test — run main() with mocked stdin/stdout
+try:
+    import importlib.util as _ilu19e
+    import io as _io19e
+
+    _spec19e = _ilu19e.spec_from_file_location(
+        "_enforce_tentacle_19e",
+        REPO / "hooks" / "enforce-tentacle.py",
+    )
+    _mod19e = _ilu19e.module_from_spec(_spec19e)
+    _spec19e.loader.exec_module(_mod19e)
+
+    # Patch module-level marker helpers
+    _orig_vm19e = _mod19e.verify_marker
+    _orig_vl19e = _mod19e.verify_list_marker
+    _orig_isa19e = _mod19e.is_secret_access
+    _orig_ctm19e = _mod19e.check_tamper_marker
+
+    _fake_files19e = ["src/auth/login.py", "src/api/routes.py", "tests/test_auth.py"]
+    _mod19e.verify_marker = lambda p, n: False
+    _mod19e.verify_list_marker = lambda p: set(_fake_files19e)
+    _mod19e.is_secret_access = lambda c: False
+    _mod19e.check_tamper_marker = lambda: False
+
+    _ss_create19e = str(Path.home() / ".copilot" / "session-state" / "abc" / "research" / "output.md")
+    _ss_edit19e = str(Path.home() / ".copilot" / "session-state" / "abc" / "out.py")
+
+    def _run_standalone19e(tool_name, path):
+        import sys as _sys
+        payload = json.dumps({"toolName": tool_name, "toolArgs": {"path": path}})
+        _old_in, _old_out = _sys.stdin, _sys.stdout
+        _sys.stdin = _io19e.StringIO(payload)
+        _sys.stdout = _io19e.StringIO()
+        try:
+            _mod19e.main()
+            return _sys.stdout.getvalue().strip()
+        finally:
+            _sys.stdin, _sys.stdout = _old_in, _old_out
+
+    _out19e_create = _run_standalone19e("create", _ss_create19e)
+    test(
+        "FP-1 parity: standalone create to session-state → no output (allowed)",
+        _out19e_create == "",
+        f"Expected no output (allow), got: {_out19e_create!r}",
+    )
+
+    _out19e_edit = _run_standalone19e("edit", _ss_edit19e)
+    test(
+        "FP-1 parity: standalone edit to session-state → no output (allowed)",
+        _out19e_edit == "",
+        f"Expected no output (allow), got: {_out19e_edit!r}",
+    )
+
+    _out19e_deny = _run_standalone19e("edit", "src/api/new_feature.py")
+    test(
+        "FP-1 parity: standalone edit to project file at threshold → deny",
+        '"permissionDecision": "deny"' in _out19e_deny or (
+            _out19e_deny != "" and "deny" in _out19e_deny.lower()
+        ),
+        f"Expected deny output, got: {_out19e_deny!r}",
+    )
+
+    test("Section 19e standalone parity tests ran without exception", True)
+except Exception as _e19e:
+    test("Section 19e standalone parity tests ran without exception", False, str(_e19e))
+finally:
+    try:
+        _mod19e.verify_marker = _orig_vm19e
+        _mod19e.verify_list_marker = _orig_vl19e
+        _mod19e.is_secret_access = _orig_isa19e
+        _mod19e.check_tamper_marker = _orig_ctm19e
+    except NameError:
+        pass
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Section 20: Quoted redirect target detection
+#  Regression: shell-quoted paths like > "src/main.py" must be
+#  treated as source-file redirects, not bypassed due to .py" suffix.
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n📝 Section 20: Quoted redirect target detection")
+
+from rules.common import bash_writes_source_files as _bwsf20, _strip_shell_quotes
+
+# 20a. _strip_shell_quotes helper
+test('_strip_shell_quotes: double-quoted', _strip_shell_quotes('"src/main.py"') == 'src/main.py')
+test('_strip_shell_quotes: single-quoted', _strip_shell_quotes("'src/main.py'") == 'src/main.py')
+test('_strip_shell_quotes: unquoted passthrough', _strip_shell_quotes('src/main.py') == 'src/main.py')
+test('_strip_shell_quotes: mismatched quotes passthrough', _strip_shell_quotes('"src/main.py\'') == '"src/main.py\'')
+
+# 20b. bash_writes_source_files with quoted redirect targets
+test('quoted redirect > "src/main.py" → writes',
+     _bwsf20('echo x > "src/main.py"'),
+     'double-quoted .py redirect must be detected as a source write')
+test("quoted redirect > 'src/main.py' → writes",
+     _bwsf20("echo x > 'src/main.py'"),
+     'single-quoted .py redirect must be detected as a source write')
+test('quoted redirect >> "app/utils.ts" → writes',
+     _bwsf20('echo x >> "app/utils.ts"'),
+     'double-quoted .ts append redirect must be detected as a source write')
+
+# 20c. Quoted safe destinations must still be allowed
+test('quoted redirect > "/dev/null" → NOT writes',
+     not _bwsf20('echo x > "/dev/null"'),
+     'quoted /dev/null redirect must NOT be a source write')
+test('quoted redirect > "/tmp/test.py" → NOT writes',
+     not _bwsf20('echo x > "/tmp/test.py"'),
+     'quoted /tmp redirect must NOT be a source write')
+test("quoted redirect > 'results.log' → NOT writes",
+     not _bwsf20("echo x > 'results.log'"),
+     'quoted .log redirect must NOT be a source write')
+
+# 20d. Regression guard: unquoted behaviour unchanged
+test('unquoted redirect > src/main.py → still writes',
+     _bwsf20('echo x > src/main.py'),
+     'unquoted .py redirect must still be detected as a source write')
+test('unquoted redirect > /dev/null → still NOT writes',
+     not _bwsf20('echo x > /dev/null'),
+     'unquoted /dev/null redirect must still NOT be a source write')
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Section 21: TentacleEnforceRule – quoted redirect source paths
+#  Regression: TentacleEnforceRule must deny bash commands that write
+#  to source files via shell-quoted redirect targets, e.g.
+#      echo x > "src/main.py"
+#  Previously, m.group(1) captured the quotes, Path.suffix → ".py\""
+#  and is_source_path returned False, wrongly allowing the command.
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n📝 Section 21: TentacleEnforceRule quoted redirect enforcement")
+
+try:
+    import importlib as _il21
+    import sys as _sys21
+    import types as _types21
+    from pathlib import Path as _Path21
+
+    _ter21_mod = _il21.import_module("rules.tentacle")
+    _TER21 = _ter21_mod.TentacleEnforceRule
+
+    def _make_event21(command, *, edited_files=None):
+        """Return a preToolUse event dict for a bash command at threshold."""
+        return {
+            "toolName": "bash",
+            "toolArgs": {"command": command},
+        }
+
+    # Monkeypatch the module-level helpers so we can test without real marker files.
+    _orig_verify_marker21 = _ter21_mod.verify_marker
+    _orig_verify_list21 = _ter21_mod.verify_list_marker
+    _orig_isa21 = _ter21_mod.is_secret_access
+    _orig_ctm21 = _ter21_mod.check_tamper_marker
+
+    # Simulate: tamper=False, no bypass markers, N files across M modules at threshold
+    _FAKE_EDITS21 = {
+        "src/api/routes.py",
+        "src/db/models.py",
+        "ui/components/App.tsx",
+    }
+    _ter21_mod.check_tamper_marker = lambda: False
+    _ter21_mod.verify_marker = lambda p, n: False
+    _ter21_mod.verify_list_marker = lambda p: set(_FAKE_EDITS21)
+    _ter21_mod.is_secret_access = lambda c: False
+
+    _rule21 = _TER21()
+
+    # 21a: double-quoted .py redirect must be denied
+    _result21a = _rule21.evaluate("preToolUse", _make_event21('echo x > "src/main.py"'))
+    test(
+        "TentacleEnforceRule: double-quoted .py redirect → denied",
+        _result21a is not None and _result21a.get("permissionDecision") == "deny",
+        f"Expected deny, got: {_result21a!r}",
+    )
+
+    # 21b: single-quoted .ts redirect must be denied
+    _result21b = _rule21.evaluate("preToolUse", _make_event21("echo x > 'app/utils.ts'"))
+    test(
+        "TentacleEnforceRule: single-quoted .ts redirect → denied",
+        _result21b is not None and _result21b.get("permissionDecision") == "deny",
+        f"Expected deny, got: {_result21b!r}",
+    )
+
+    # 21c: unquoted .py redirect still denied (regression guard)
+    _result21c = _rule21.evaluate("preToolUse", _make_event21("echo x > src/main.py"))
+    test(
+        "TentacleEnforceRule: unquoted .py redirect → still denied",
+        _result21c is not None and _result21c.get("permissionDecision") == "deny",
+        f"Expected deny, got: {_result21c!r}",
+    )
+
+    # 21d: double-quoted /dev/null redirect must NOT trigger writes_source → None
+    _result21d = _rule21.evaluate("preToolUse", _make_event21('echo x > "/dev/null"'))
+    test(
+        "TentacleEnforceRule: double-quoted /dev/null redirect → allowed (None)",
+        _result21d is None,
+        f"Expected None, got: {_result21d!r}",
+    )
+
+    test("Section 21 TentacleEnforceRule quoted redirect tests ran without exception", True)
+except Exception as _e21:
+    test("Section 21 TentacleEnforceRule quoted redirect tests ran without exception", False, str(_e21))
+finally:
+    try:
+        _ter21_mod.verify_marker = _orig_verify_marker21
+        _ter21_mod.verify_list_marker = _orig_verify_list21
+        _ter21_mod.is_secret_access = _orig_isa21
+        _ter21_mod.check_tamper_marker = _orig_ctm21
+    except NameError:
+        pass
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  Results
 # ═══════════════════════════════════════════════════════════════════
 

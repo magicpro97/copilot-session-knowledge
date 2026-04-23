@@ -89,8 +89,8 @@ BUILTIN_PROJECT_SKILLS: tuple[str, ...] = (
     "project-onboarding",
 )
 
-# Global Copilot CLI skills directory.  deploy_skills() updates already-installed
-# skills here (update-only; never creates a new global install from scratch).
+# Global Copilot CLI skills directory.  deploy_skills() creates missing VENDORED
+# skill dirs here and updates both VENDORED and already-installed BUILTIN dirs.
 GLOBAL_COPILOT_SKILLS_DIR = HOME / ".copilot" / "skills"
 
 
@@ -572,9 +572,14 @@ def write_manifest(sha: str, changes: dict):
             ["launchctl", "list", "com.copilot.watch-sessions"],
             capture_output=True, text=True,
         )
+        # launchctl list exits 0 when the job is loaded, even when it is not
+        # actively running (e.g. waiting for restart after repeated failures).
+        # A job is truly running only when launchd has a live PID for it.
+        launchd_loaded = r.returncode == 0
+        launchd_running = launchd_loaded and '"PID"' in r.stdout
         manifest["services"]["watch-sessions"] = {
             "managed_by": "launchd",
-            "running": r.returncode == 0,
+            "running": launchd_running,
         }
     elif system == "Linux":
         r = subprocess.run(
@@ -759,37 +764,79 @@ def deploy_skills():
                         except Exception:
                             pass
 
-    # --- global Copilot CLI skills (update-only; never create) ---------------
-    # Propagate vendored-skill updates to already-installed global skill dirs
-    # at ~/.copilot/skills/<name>/.  Only touches files that already exist.
+    # --- global Copilot CLI skills ----------------------------------------
+    # VENDORED skills: create the dir from scratch if it is missing so newly
+    # added skills (e.g. karpathy-guidelines) land on the machine after a
+    # pull+update without requiring a manual rsync step.
+    # BUILTIN_PROJECT_SKILLS: update already-installed global dirs + fill in
+    # any missing asset files (e.g. forge-ecosystem/references/).  Dir
+    # creation is deliberately skipped for BUILTIN skills — those are
+    # installed by the Copilot CLI marketplace / install.py, not this updater.
     for global_skills_root in _global_copilot_skill_dirs():
+        # VENDORED: create dir if missing, sync SKILL.md and all asset files.
         for skill_name, (skill_content, skill_src_dir) in vendored_sources.items():
             global_skill_dir = global_skills_root / skill_name
             global_skill_md = global_skill_dir / "SKILL.md"
-            if global_skill_md.exists():
-                try:
-                    if global_skill_md.read_text(encoding="utf-8") != skill_content:
-                        global_skill_md.write_text(skill_content, encoding="utf-8")
-                        ok(f"Updated global Copilot CLI {skill_name}/SKILL.md in {global_skills_root}")
-                except Exception:
-                    pass
-                # Asset subdirs — update only, never create.
-                for subdir in sorted(skill_src_dir.iterdir()):
-                    if not subdir.is_dir():
+            try:
+                global_skill_dir.mkdir(parents=True, exist_ok=True)
+                existed = global_skill_md.exists()
+                if not existed or global_skill_md.read_text(encoding="utf-8") != skill_content:
+                    global_skill_md.write_text(skill_content, encoding="utf-8")
+                    ok(f"{'Created' if not existed else 'Updated'} global Copilot CLI {skill_name}/SKILL.md in {global_skills_root}")
+            except Exception:
+                pass
+            for subdir in sorted(skill_src_dir.iterdir()):
+                if not subdir.is_dir():
+                    continue
+                for asset_file in subdir.rglob("*"):
+                    if not asset_file.is_file():
                         continue
-                    for asset_file in subdir.rglob("*"):
-                        if not asset_file.is_file():
-                            continue
-                        rel = asset_file.relative_to(skill_src_dir)
-                        asset_target = global_skill_dir / rel
-                        if asset_target.exists():
-                            try:
-                                content = asset_file.read_bytes()
-                                if asset_target.read_bytes() != content:
-                                    asset_target.write_bytes(content)
-                                    ok(f"Updated global Copilot CLI {skill_name}/{rel} in {global_skills_root}")
-                            except Exception:
-                                pass
+                    rel = asset_file.relative_to(skill_src_dir)
+                    asset_target = global_skill_dir / rel
+                    try:
+                        content = asset_file.read_bytes()
+                        existed = asset_target.exists()
+                        if not existed or asset_target.read_bytes() != content:
+                            asset_target.parent.mkdir(parents=True, exist_ok=True)
+                            asset_target.write_bytes(content)
+                            ok(f"{'Created' if not existed else 'Updated'} global Copilot CLI {skill_name}/{rel} in {global_skills_root}")
+                    except Exception:
+                        pass
+
+        # BUILTIN_PROJECT_SKILLS: update existing global dirs + sync missing assets.
+        for skill_name in BUILTIN_PROJECT_SKILLS:
+            skill_src = TOOLS_DIR / "skills" / skill_name / "SKILL.md"
+            if not skill_src.exists():
+                continue
+            global_skill_dir = global_skills_root / skill_name
+            if not global_skill_dir.is_dir():
+                continue  # update-only: never auto-create global dirs for builtin skills
+            skill_content = skill_src.read_text(encoding="utf-8")
+            skill_src_dir = TOOLS_DIR / "skills" / skill_name
+            global_skill_md = global_skill_dir / "SKILL.md"
+            try:
+                if not global_skill_md.exists() or global_skill_md.read_text(encoding="utf-8") != skill_content:
+                    global_skill_md.write_text(skill_content, encoding="utf-8")
+                    ok(f"Updated global Copilot CLI {skill_name}/SKILL.md in {global_skills_root}")
+            except Exception:
+                pass
+            for subdir in sorted(skill_src_dir.iterdir()):
+                if not subdir.is_dir():
+                    continue
+                for asset_file in subdir.rglob("*"):
+                    if not asset_file.is_file():
+                        continue
+                    rel = asset_file.relative_to(skill_src_dir)
+                    asset_target = global_skill_dir / rel
+                    try:
+                        content = asset_file.read_bytes()
+                        existed = asset_target.exists()
+                        if not existed or asset_target.read_bytes() != content:
+                            asset_target.parent.mkdir(parents=True, exist_ok=True)
+                            asset_target.write_bytes(content)
+                            ok(f"{'Created' if not existed else 'Updated'} global Copilot CLI {skill_name}/{rel} in {global_skills_root}")
+                    except Exception:
+                        pass
 
 
 # ---------------------------------------------------------------------------
@@ -984,8 +1031,11 @@ def doctor():
             plist = HOME / "Library" / "LaunchAgents" / f"{agent}.plist"
             if plist.exists():
                 r = subprocess.run(["launchctl", "list", agent], capture_output=True, text=True)
-                if r.returncode == 0:
-                    ok(f"LaunchAgent {agent}: loaded")
+                if r.returncode == 0 and '"PID"' in r.stdout:
+                    ok(f"LaunchAgent {agent}: running")
+                elif r.returncode == 0:
+                    warn(f"LaunchAgent {agent}: loaded but not running (check logs)")
+                    issues += 1
                 else:
                     warn(f"LaunchAgent {agent}: plist exists but not loaded")
                     issues += 1

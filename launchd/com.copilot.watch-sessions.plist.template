@@ -9,7 +9,6 @@
     <array>
         <string>__PYTHON3__</string>
         <string>tools/watch-sessions.py</string>
-        <string>--daemon</string>
     </array>
 
     <key>WorkingDirectory</key>

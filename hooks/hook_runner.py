@@ -5,7 +5,17 @@ Replaces 11 separate Python scripts with 1 process per event.
 Performance: ~11 processes per tool call → 1 process.
 
 Usage: python3 hook_runner.py <event>
-Events: sessionStart, sessionEnd, preToolUse, postToolUse, errorOccurred
+Platform events (8 total, per GitHub Copilot docs):
+  sessionStart, sessionEnd, userPromptSubmitted,
+  preToolUse, postToolUse,
+  agentStop, subagentStop,
+  errorOccurred
+
+This runner handles: sessionStart, sessionEnd, preToolUse, postToolUse, errorOccurred
+Not currently handled (no rules registered):
+  userPromptSubmitted — prompt logging/auditing not yet implemented
+  agentStop          — post-response cleanup not yet implemented
+  subagentStop       — subagent result processing not yet implemented
 
 Environment variables:
   HOOK_DRY_RUN=1       — Log denials but allow through (testing mode)

@@ -68,7 +68,7 @@ python3 ~/.copilot/tools/hooks/lint-skills.py /path/to/project               # S
 
 ## SKILL.md Validator (`validate-skill.py`)
 
-Validates `SKILL.md` files against the [Anthropic Agent Skills](https://github.com/anthropics/skills) standard.
+Validates `SKILL.md` files against the [Agent Skills open standard](https://agentskills.io) (open standard; repository: [agentskills/agentskills](https://github.com/agentskills/agentskills)).
 
 ```bash
 python3 ~/.copilot/tools/validate-skill.py path/to/SKILL.md   # Single file
@@ -246,3 +246,22 @@ The canonical host metadata is centralised in `host_manifest.py`, which exports 
 `setup-project.py`, `watch-sessions.py`, and `auto-update-tools.py`. The supported set is
 intentionally restricted to Copilot CLI and Claude Code. Do **not** add Codex, Cursor, or other
 hosts without documented session and hook formats.
+
+### Unsupported official skill paths
+
+The GitHub Copilot docs list three official project skill paths (`.github/skills/`, `.claude/skills/`,
+`.agents/skills/`) and three personal skill paths (`~/.copilot/skills/`, `~/.claude/skills/`,
+`~/.agents/skills/`). **This repo's tooling (`install.py`, `setup-project.py`, `auto-update-tools.py`,
+`host_manifest.py`) does not deploy to or scan `.agents/skills/` or `~/.agents/skills/`.** Skills
+placed there manually will not be registered, auto-updated, or linted by these tools. If `.agents/skills/`
+support is needed, add it to `host_manifest.py` and propagate through the three deploy scripts — this
+is intentionally deferred until there is a clear runtime that reads from that path.
+
+### Plugin system coexistence
+
+GitHub Copilot also supports a plugin-based skill distribution mechanism (CLI: `/plugin marketplace`,
+`/plugin install`, `gh skill`, `/skills reload`). Plugin-installed skills land outside the
+file-copy paths above and are not managed by this repo's tooling. If you use both, skills from
+either deployment method appear in the Copilot skill catalog independently. There is no conflict,
+but `validate-skill.py`, `hooks/lint-skills.py`, and `auto-update-tools.py` only cover file-copy
+skills — plugin-installed skills are not scanned or updated by these tools.

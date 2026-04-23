@@ -460,7 +460,7 @@ python3 ~/.copilot/tools/build-session-index.py --incremental   # Update changed
 python3 ~/.copilot/tools/build-session-index.py --no-embed      # Index only, skip embeddings
 python3 ~/.copilot/tools/extract-knowledge.py --stats           # View knowledge statistics
 python3 ~/.copilot/tools/extract-knowledge.py --relations       # View relation statistics
-python3 ~/.copilot/tools/watch-sessions.py --daemon             # Run in background, auto-index
+python3 ~/.copilot/tools/watch-sessions.py --install-hint      # Show auto-start setup instructions
 python3 ~/.copilot/tools/embed.py --status                      # Embedding coverage stats
 python3 ~/.copilot/tools/embed.py --build                       # Rebuild all embeddings
 python3 ~/.copilot/tools/install.py --deploy-skill              # Deploy SKILL.md
@@ -479,7 +479,7 @@ bash ~/.copilot/tools/launchd/install-launchd.sh           # Install both agents
 bash ~/.copilot/tools/launchd/install-launchd.sh --remove   # Uninstall
 
 # Installs two LaunchAgents:
-#   com.copilot.watch-sessions  — daemon, auto-indexes sessions + auto-embeds
+#   com.copilot.watch-sessions  — foreground watcher managed by launchd (auto-indexes + auto-embeds)
 #   com.copilot.auto-update     — daily 9 AM, git pulls tool updates + migrates DB
 ```
 
@@ -509,7 +509,7 @@ cat > ~/.config/systemd/user/copilot-watch.service << 'SVC'
 Description=Copilot Session Knowledge Watcher
 
 [Service]
-ExecStart=/usr/bin/python3 %h/.copilot/tools/watch-sessions.py --daemon
+ExecStart=/usr/bin/python3 %h/.copilot/tools/watch-sessions.py
 WorkingDirectory=%h/.copilot
 Restart=on-failure
 RestartSec=30
