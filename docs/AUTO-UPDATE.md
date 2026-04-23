@@ -85,10 +85,13 @@ If not using LaunchAgents/systemd:
 
 ## Version Manifest
 
-After each update, `.update-manifest.json` records:
+After each update, `.update-manifest.json` is written to the tools directory with:
 - Git SHA and timestamp
 - Changed files count
 - Pipeline actions taken
 - Service status (running/stopped)
+
+This file is **local runtime state** — it is listed in `.gitignore` and is never committed.
+Each machine maintains its own copy reflecting its last update.
 
 Use `--doctor` to verify the manifest and check overall health.

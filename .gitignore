@@ -36,6 +36,7 @@ publish.sh
 
 # Auto-update local state
 .update-state.json
+.update-manifest.json
 .last-update-check
 .version
 .backup/

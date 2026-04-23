@@ -8,9 +8,9 @@ This repo contains both **Skills** (SKILL.md) and **Agent templates** (.agent.md
 
 | | Skills (SKILL.md) | Agents (.agent.md) |
 |---|---|---|
-| **Standard** | [Anthropic Agent Skills](https://github.com/anthropics/skills) | GitHub Copilot / Claude Code |
+| **Standard** | [Agent Skills](https://agentskills.io) | GitHub Copilot / Claude Code |
 | **Purpose** | Instructions for specific tasks | Specialized sub-agent persona |
-| **Frontmatter** | `name`, `description`, `license`, `allowed-tools`, `metadata`, `version` | `name`, `description`, `tools`, `model` |
+| **Frontmatter** | `name`, `description`, `license`, `compatibility`, `allowed-tools`, `metadata` | `name`, `description`, `tools`, `model` |
 | **Triggered by** | AI matching description to user intent | Explicit delegation or keyword match |
 | **Validation** | `validate-skill.py` (local validator in this repo) | `hooks/lint-skills.py` (schema + tool-name rules, auto-parses CLI schemas) |
 

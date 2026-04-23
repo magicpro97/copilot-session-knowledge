@@ -1128,14 +1128,24 @@ else:
              "$(dirname" not in _installed.split("check_subagent_marker.py")[0].split("SUBAGENT_CHECK")[-1])
 
         # (b) blocking check: fresh marker → commit blocked
-        # Write a full JSON marker (sign_marker writes an empty file when no
-        # secret exists, but is_marker_fresh requires parseable JSON with ts).
+        # Sign the marker when ~/.copilot/hooks/.marker-secret exists so that
+        # _verify_marker passes HMAC verification on machines with a secret.
+        # Machines without a secret fall back to existence-only (no sig needed).
         _real_marker.parent.mkdir(parents=True, exist_ok=True)
-        _real_marker.write_text(json.dumps({
-            "name": "dispatched-subagent-active",
-            "ts": str(int(time.time())),
+        _e2e_ts = str(int(time.time()))
+        _e2e_name = "dispatched-subagent-active"
+        _e2e_marker_data: dict = {
+            "name": _e2e_name,
+            "ts": _e2e_ts,
             "active_tentacles": ["e2e-test"],
-        }))
+        }
+        _e2e_secret = _read_secret()
+        if _e2e_secret:
+            _e2e_sig = hmac.new(
+                _e2e_secret.encode(), f"{_e2e_name}:{_e2e_ts}".encode(), hashlib.sha256
+            ).hexdigest()
+            _e2e_marker_data["sig"] = _e2e_sig
+        _real_marker.write_text(json.dumps(_e2e_marker_data))
         _e2e_marker_written = True
 
         (_e2e_repo / "README.md").write_text("test\n")
