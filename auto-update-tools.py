@@ -105,6 +105,7 @@ COVERAGE_MANIFEST: "dict[str, list[tuple[str, str]]]" = {
         ("*.py",                 "root-level Python scripts (triggers restart-services)"),
         ("browse/",              "browse module — web session browser"),
         ("providers/",           "provider implementations"),
+        ("tests/",               "tests/ — pytest-style subdirectory for newer test modules"),
     ],
     "Skills": [
         ("skills/",              "skill SKILL.md and assets — deployed on update"),

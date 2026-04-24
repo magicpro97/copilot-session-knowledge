@@ -263,12 +263,13 @@ Security: token is required on every request; `Content-Security-Policy` blocks i
 | F5 | `/graph` | Knowledge graph — interactive Cytoscape.js entity graph |
 | F6 | `/diff` | Checkpoint diff — side-by-side diff between two checkpoints |
 | F7 | `/search` | Search — FTS5 full-text search across knowledge + sessions |
-| F9 | `/dashboard` | Dashboard — aggregate stats (counts by type, session health) |
+| F9 | `/dashboard` | Dashboard — aggregate stats, session health, red-flag sessions, weekly mistakes trend, top error-prone modules |
 | F10 | `/embeddings` | Embeddings — 2-D PCA scatterplot of knowledge-entry vectors |
 | F11 | `/live` | Live feed — real-time SSE stream of new knowledge events |
-| F12 | `/session/<id>/agents` | Agents — sub-agent dispatch log for a session |
 | F13 | `/session/<id>/mindmap` | Mind map — D3.js radial mind-map of session knowledge |
 | F15 | `/eval` | Eval/Feedback — thumbs-up/down rating for knowledge entries |
+| — | `/compare?a=&b=` | Compare — side-by-side diff of two sessions |
+| — | `/session/<id>.md` | Export — plain-text markdown dump of a session for copy/paste |
 
 > F8 (dark mode) is baked into the base template via `prefers-color-scheme` + localStorage toggle and is not a separate route.
 

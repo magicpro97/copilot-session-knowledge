@@ -26,18 +26,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Table of Contents in README
 - Collision-renamed tentacle bundles now include `slug` in `manifest.json` and a `Slug:` header in `session-metadata.md`, so sub-agents can always resolve the correct invocation name after a directory collision rename.
 - `_normalize_posix_home()` in `check_subagent_marker.py` now handles Cygwin-style `/cygdrive/<drive>/...` paths in addition to Git Bash `/c/...` and WSL `/mnt/c/...` forms.
+- `/compare?a=&b=` — side-by-side session comparison (243b85b)
+- `/session/{id}.md` — markdown export of a session for copy/paste use (243b85b)
+- Dashboard widgets: red-flag sessions, weekly mistakes trend, top error-prone modules (243b85b)
+- Session detail: button row (Timeline / Mindmap / Export MD / Compare / Find similar) and tool-usage summary (243b85b)
+- Command palette expanded to 11 commands with section grouping (Navigation / Explore / Admin / View / Help) (243b85b)
+- Timeline: model-based color coding and legend, incorporating data previously served by the removed agents route (243b85b)
 
 ### Changed
 - Restructured README from 577 lines to ~280 lines (moved details to docs/)
 - Added "Why?" section for first-time readers
 - Added Quick Start section (3 commands from zero to working)
 - Cross-repo isolation git-root comparison now uses `Path.resolve()` canonical paths (`_same_canonical_root()`), so repos reached through dotdot paths or symlink-equivalent representations are correctly identified as the same repo — prevents stranded or duplicate dispatched-subagent markers.
+- Navigation now uses `<details>` hamburger menu for better discoverability (243b85b)
+- `browse/core/registry.py` sorts routes by path length descending so specific routes (e.g. `/session/{id}.md`) match before generic ones (e.g. `/session/{id}`) (243b85b)
+
+### Removed
+- Screenshot / "save as PNG" feature (broken under CSP, rarely used) (243b85b)
+- `browse/static/vendor/html-to-image.min.js` (orphaned after screenshot removal) (243b85b)
+- `/session/{id}/agents` and `/api/session/{id}/agents` routes — functionality merged into `/session/{id}/timeline` (243b85b)
 
 ### Fixed
 - `tentacle.py` Unicode console failures on Windows: added standard UTF-8 stdout/stderr reconfigure block (matching `briefing.py`/`install.py` pattern), eliminating `UnicodeEncodeError` for emoji and non-ASCII output.
 - `test_karpathy_skill_rollout.py` Windows path assertion failures: two assertions now use `.as_posix()` for cross-platform path comparison.
 - POSIX home normalization in `check_subagent_marker.py` now uses explicit backslash (`chr(92)`) instead of `os.sep` for separator replacement, so the function produces correct Windows paths even when the Python runtime reports a POSIX `os.sep`. This fixes a latent bug that could have surfaced if the code were ever exercised in a POSIX-hosted Windows-emulation layer.
 - Section 17g tests in `test_hooks.py` now build expected Windows paths with `chr(92)` instead of literal backslash string comparisons, making assertions valid on both Windows and non-Windows hosts.
+- CSP-breaking inline `onclick=` on the dark-mode toggle button — replaced with `addEventListener` using a nonce'd script (243b85b)
+- `copyLink()` token leak: now uses `URL.searchParams.delete('token')` instead of stripping all query params, preserving `?q=`, `?session=`, `?a=&b=` in shared links (243b85b)
 
 ## [1.3.1] - 2026-04-24
 
