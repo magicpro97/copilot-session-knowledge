@@ -2,9 +2,16 @@
 
 Combines enforce-tentacle.py and tentacle-suggest.py into one module.
 Single get_module() implementation, shared edit tracking.
+
+Edit tracking uses a per-repo-partitioned JSON payload so edits in one git
+repository never inflate counts for a different repository.  Entries carry a
+Unix timestamp and are dropped after 24 h (TTL).
 """
+import json
 import re
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 from . import Rule
@@ -30,6 +37,83 @@ SUGGESTED_FILE = MARKERS_DIR / "tentacle-suggested"
 
 MIN_FILES = 3
 MIN_MODULES = 2
+
+
+# ── Edit-tracking helpers ──────────────────────────────────────────────────
+
+def _get_git_root(cwd=None):
+    """Return the git root for *cwd* (or cwd()) as a string, or None."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(cwd or Path.cwd()), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _prune_ttl(entries, now):
+    """Return entries whose timestamp is within the last 24 hours."""
+    cutoff = now - 86400
+    return [e for e in entries if isinstance(e, dict) and e.get("t", 0) >= cutoff]
+
+
+def _read_edits(path):
+    """Read the HMAC-signed edits marker and return a dict of the form::
+
+        {git_root: [{"p": file_path, "t": unix_ts}, ...], ...}
+
+    Accepts both:
+    * **New format** – the signed content is a single-element set whose sole
+      element is a JSON-encoded dict (written by ``_write_edits``).
+    * **Legacy format** – the signed content is a set of bare file-path
+      strings (old format).  They are migrated into a ``"legacy"`` bucket
+      with the current timestamp so they expire naturally after 24 h.
+    """
+    raw_set = verify_list_marker(path)
+    if not raw_set:
+        return {}
+    # New format: exactly one element that is a JSON dict
+    if len(raw_set) == 1:
+        sole = next(iter(raw_set))
+        if sole.startswith("{"):
+            try:
+                data = json.loads(sole)
+                if isinstance(data, dict):
+                    return data
+            except (json.JSONDecodeError, ValueError):
+                pass
+    # Legacy: flat set of file paths → migrate with current timestamp
+    now = time.time()
+    legacy_entries = [{"p": fp, "t": now} for fp in raw_set if fp]
+    return {"legacy": legacy_entries}
+
+
+def _write_edits(path, data):
+    """Write *data* as an HMAC-signed single-JSON-element list marker."""
+    payload = json.dumps(data, separators=(",", ":"), sort_keys=True)
+    sign_list_marker(path, {payload})
+
+
+def _get_entries_for_repo(data, git_root):
+    """Return entries that belong to *git_root*.
+
+    * If *git_root* is present as a key, return those entries directly.
+    * Otherwise fall back to the ``"legacy"`` bucket, filtering by path
+      prefix when *git_root* is known (heuristic for migrated markers).
+    * If *git_root* is ``None`` (git unavailable), return all legacy entries
+      without filtering.
+    """
+    if git_root and git_root in data:
+        return list(data[git_root])
+    if "legacy" in data:
+        if git_root:
+            return [e for e in data["legacy"] if str(e.get("p", "")).startswith(git_root)]
+        return list(data["legacy"])
+    return []
 
 
 class TentacleEnforceRule(Rule):
@@ -89,17 +173,23 @@ class TentacleEnforceRule(Rule):
         if verify_marker(TENTACLE_BYPASS, "tentacle-bypass"):
             return None
 
-        # Check tracked edits
-        edited = verify_list_marker(EDITS_FILE)
-        if not edited or len(edited) < MIN_FILES:
+        # Check tracked edits — only count files for the current repo
+        git_root = _get_git_root()
+        repo_prefix = Path(git_root).name if git_root else "legacy"
+        edited_dict = _read_edits(EDITS_FILE)
+        now = time.time()
+        for key in list(edited_dict.keys()):
+            edited_dict[key] = _prune_ttl(edited_dict[key], now)
+        entries = _get_entries_for_repo(edited_dict, git_root)
+        if not entries or len(entries) < MIN_FILES:
             return None
 
-        modules = {get_module(f) for f in edited if get_module(f)}
+        modules = {get_module(e["p"], repo_prefix) for e in entries if get_module(e["p"])}
         if len(modules) < MIN_MODULES:
             return None
 
         return deny(
-            f"\U0001f419 TENTACLE REQUIRED: {len(edited)} files across {len(modules)} modules "
+            f"\U0001f419 TENTACLE REQUIRED: {len(entries)} files across {len(modules)} modules "
             f"({', '.join(sorted(modules))}). "
             "Multi-module edits should use tentacle-orchestration. "
             "If you are the orchestrator: (1) tentacle.py create <name> --scope \"<paths>\" --desc \"<desc>\" --briefing  "
@@ -176,20 +266,32 @@ class TentacleSuggestRule(Rule):
         if not file_paths:
             return None
 
-        # Track edited files using HMAC-signed list markers
+        # Track edited files using HMAC-signed list markers, partitioned by git repo
         MARKERS_DIR.mkdir(parents=True, exist_ok=True)
-        edited = verify_list_marker(EDITS_FILE)
+        git_root = _get_git_root()
+        repo_key = git_root if git_root else "legacy"
+        repo_prefix = Path(git_root).name if git_root else "legacy"
+        now = time.time()
+        edited_dict = _read_edits(EDITS_FILE)
+        # Prune TTL on every bucket
+        for key in list(edited_dict.keys()):
+            edited_dict[key] = _prune_ttl(edited_dict[key], now)
+        entries = edited_dict.get(repo_key, [])
+        existing_paths = {e["p"] for e in entries}
         for fp in file_paths:
-            edited.add(fp)
+            if fp not in existing_paths:
+                entries.append({"p": fp, "t": now})
+                existing_paths.add(fp)
+        edited_dict[repo_key] = entries
         try:
-            sign_list_marker(EDITS_FILE, edited)
+            _write_edits(EDITS_FILE, edited_dict)
         except Exception:
             pass
 
-        if len(edited) < MIN_FILES:
+        if len(entries) < MIN_FILES:
             return None
 
-        modules = {get_module(f) for f in edited if get_module(f)}
+        modules = {get_module(e["p"], repo_prefix) for e in entries if get_module(e["p"])}
         if len(modules) < MIN_MODULES:
             return None
 
@@ -199,7 +301,7 @@ class TentacleSuggestRule(Rule):
             pass
 
         return info(
-            f"\n  \U0001f419 TENTACLE SUGGESTION: {len(edited)} files across "
+            f"\n  \U0001f419 TENTACLE SUGGESTION: {len(entries)} files across "
             f"{len(modules)} modules detected.\n"
             "  Consider using tentacle-orchestration for parallel multi-agent execution.\n"
             f"  Modules: {', '.join(sorted(modules))}\n"

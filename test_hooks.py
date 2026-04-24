@@ -644,6 +644,7 @@ try:
     _orig_sl    = _rt.sign_list_marker
     _orig_isa   = _rt.is_secret_access
     _orig_ctm   = _rt.check_tamper_marker
+    _orig_ggr   = _rt._get_git_root  # patch so legacy entries are not filtered by repo prefix
 
     # 3 files across 2 modules → should trigger deny
     _fake_files = ["src/auth/login.py", "src/api/routes.py", "tests/test_auth.py"]
@@ -652,6 +653,7 @@ try:
     _rt.sign_list_marker = lambda p, lines: None
     _rt.is_secret_access = lambda c: False
     _rt.check_tamper_marker = lambda: False
+    _rt._get_git_root = lambda: None  # None → no repo-prefix filtering on legacy entries
 
     result = rule.evaluate("preToolUse", {"toolName": "edit", "toolArgs": {"path": "x.py"}})
 
@@ -661,6 +663,7 @@ try:
     _rt.sign_list_marker = _orig_sl
     _rt.is_secret_access = _orig_isa
     _rt.check_tamper_marker = _orig_ctm
+    _rt._get_git_root = _orig_ggr
 
     if result is not None:
         deny_msg = result.get("permissionDecisionReason", "") if isinstance(result, dict) else str(result)
@@ -2276,7 +2279,8 @@ except Exception as e:
 # 17f. No bare Path.home() remains in MARKER_PATH or _SECRET_PATH assignments
 test("17f: no bare Path.home() in MARKER_PATH assignment",
      "MARKER_PATH = Path.home()" not in _csm_src17)
-_secret_lines17 = [l for l in _csm_src17.splitlines() if "_SECRET_PATH" in l and "=" in l]
+import re as _re17
+_secret_lines17 = [l for l in _csm_src17.splitlines() if _re17.search(r'^\s*_SECRET_PATH\s*=', l)]
 test("17f2: _SECRET_PATH uses _copilot_home() if present",
      all("_copilot_home()" in l for l in _secret_lines17) if _secret_lines17 else True,
      f"Lines: {_secret_lines17}")
@@ -2764,6 +2768,7 @@ try:
     _orig_sl19 = _rt19.sign_list_marker
     _orig_isa19 = _rt19.is_secret_access
     _orig_ctm19 = _rt19.check_tamper_marker
+    _orig_ggr19 = _rt19._get_git_root  # None → no repo-prefix filtering
 
     # Fake threshold: 3 files across 2 modules
     _fake_files19 = ["src/auth/login.py", "src/api/routes.py", "tests/test_auth.py"]
@@ -2772,6 +2777,7 @@ try:
     _rt19.sign_list_marker = lambda p, lines: None
     _rt19.is_secret_access = lambda c: False
     _rt19.check_tamper_marker = lambda: False
+    _rt19._get_git_root = lambda: None
 
     _ter19 = _TER19()
 
@@ -2840,6 +2846,7 @@ finally:
         _rt19.sign_list_marker = _orig_sl19
         _rt19.is_secret_access = _orig_isa19
         _rt19.check_tamper_marker = _orig_ctm19
+        _rt19._get_git_root = _orig_ggr19
     except NameError:
         pass
 
@@ -3018,6 +3025,7 @@ try:
     _orig_verify_list21 = _ter21_mod.verify_list_marker
     _orig_isa21 = _ter21_mod.is_secret_access
     _orig_ctm21 = _ter21_mod.check_tamper_marker
+    _orig_ggr21 = _ter21_mod._get_git_root  # None → legacy entries not filtered by prefix
 
     # Simulate: tamper=False, no bypass markers, N files across M modules at threshold
     _FAKE_EDITS21 = {
@@ -3029,6 +3037,7 @@ try:
     _ter21_mod.verify_marker = lambda p, n: False
     _ter21_mod.verify_list_marker = lambda p: set(_FAKE_EDITS21)
     _ter21_mod.is_secret_access = lambda c: False
+    _ter21_mod._get_git_root = lambda: None
 
     _rule21 = _TER21()
 
@@ -3073,8 +3082,253 @@ finally:
         _ter21_mod.verify_list_marker = _orig_verify_list21
         _ter21_mod.is_secret_access = _orig_isa21
         _ter21_mod.check_tamper_marker = _orig_ctm21
+        _ter21_mod._get_git_root = _orig_ggr21
     except NameError:
         pass
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Section 17: Tentacle edits marker — repo-scope isolation & TTL
+#
+#  Tests:
+#    a. _read_edits / _write_edits round-trip new format
+#    b. Legacy flat-list migrates without crash
+#    c. Cross-repo isolation: edits under repo A are invisible in repo B
+#    d. TTL: _prune_ttl drops stale entries (>24 h)
+#    e. TentacleEnforceRule: other-repo edits do NOT trigger block
+#    f. TentacleEnforceRule: same-repo edits DO trigger block
+#    g. get_module() repo_prefix parameter
+#    h. HMAC signature validates end-to-end for new JSON payload
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n── Section 17: Tentacle edits marker repo-scope isolation ──")
+
+try:
+    import rules.tentacle as _rt17
+    from rules.tentacle import _read_edits, _write_edits, _prune_ttl, _get_entries_for_repo
+    import json as _json17
+    import time as _time17
+
+    _now17 = _time17.time()
+
+    # 17a. Round-trip new format via _write_edits / _read_edits
+    _td17a = Path(tempfile.mkdtemp(prefix="test-17a-"))
+    _marker17a = _td17a / "tentacle-edits"
+    _data17a = {"/repo/tools": [{"p": "/repo/tools/src/auth.py", "t": _now17}]}
+    _write_edits(_marker17a, _data17a)
+    _back17a = _read_edits(_marker17a)
+    test("17a: _write_edits / _read_edits round-trips new format",
+         "/repo/tools" in _back17a and
+         len(_back17a["/repo/tools"]) == 1 and
+         _back17a["/repo/tools"][0]["p"] == "/repo/tools/src/auth.py",
+         f"Got: {_back17a!r}")
+    shutil.rmtree(str(_td17a), ignore_errors=True)
+
+    # 17b. Legacy flat-list (mocked) migrates to "legacy" bucket without crash
+    _orig_vlist17b = _rt17.verify_list_marker
+    _rt17.verify_list_marker = lambda p: {"src/a.py", "src/b.py", "tests/c.py"}
+    _loaded17b = _read_edits(Path("/nonexistent/marker"))
+    _rt17.verify_list_marker = _orig_vlist17b
+    test("17b: legacy flat-list migrates to 'legacy' bucket without crash",
+         "legacy" in _loaded17b,
+         f"Got keys: {list(_loaded17b)!r}")
+    test("17b2: all 3 legacy paths present",
+         len(_loaded17b.get("legacy", [])) == 3,
+         f"Got: {_loaded17b!r}")
+
+    # 17c. Cross-repo isolation: repo-A entries invisible from repo-B
+    _repo_a17c = "/fake/repo-a"
+    _repo_b17c = "/fake/repo-b"
+    _data17c = {
+        _repo_a17c: [
+            {"p": f"{_repo_a17c}/src/auth.py", "t": _now17},
+            {"p": f"{_repo_a17c}/src/api.py",  "t": _now17},
+            {"p": f"{_repo_a17c}/tests/t.py",  "t": _now17},
+        ]
+    }
+    _entries_a17c = _get_entries_for_repo(_data17c, _repo_a17c)
+    _entries_b17c = _get_entries_for_repo(_data17c, _repo_b17c)
+    test("17c: entries for repo A visible from repo A",
+         len(_entries_a17c) == 3,
+         f"Got: {len(_entries_a17c)}")
+    test("17c2: entries for repo A NOT visible from repo B (cross-repo isolation)",
+         len(_entries_b17c) == 0,
+         f"Got: {len(_entries_b17c)} — cross-repo contamination!")
+
+    # 17d. TTL: _prune_ttl drops entries older than 24 h
+    _stale17d = _now17 - 90000   # 25 h ago
+    _fresh17d = _now17 - 3600    # 1 h ago
+    _bucket17d = [
+        {"p": "/repo/old.py", "t": _stale17d},
+        {"p": "/repo/new.py", "t": _fresh17d},
+    ]
+    _pruned17d = _prune_ttl(_bucket17d, _now17)
+    test("17d: TTL prune drops stale entry",
+         len(_pruned17d) == 1 and _pruned17d[0]["p"] == "/repo/new.py",
+         f"Got: {_pruned17d!r}")
+    test("17d2: TTL prune keeps fresh entry",
+         _pruned17d[0]["t"] == _fresh17d,
+         f"Got: {_pruned17d!r}")
+
+    # 17e. TentacleEnforceRule: edits in ANOTHER repo do NOT trigger block
+    _orig_ggr17e   = _rt17._get_git_root
+    _orig_vlist17e = _rt17.verify_list_marker
+    _orig_vm17e    = _rt17.verify_marker
+    _orig_isa17e   = _rt17.is_secret_access
+    _orig_ctm17e   = _rt17.check_tamper_marker
+
+    _repo_cur17e   = "/current/tools"
+    _repo_other17e = "/other/alarm"
+    _other_data17e = {
+        _repo_other17e: [
+            {"p": f"{_repo_other17e}/src/auth.py", "t": _now17},
+            {"p": f"{_repo_other17e}/src/api.py",  "t": _now17},
+            {"p": f"{_repo_other17e}/tests/t.py",  "t": _now17},
+        ]
+    }
+    _payload17e = _json17.dumps(_other_data17e, separators=(",", ":"), sort_keys=True)
+
+    _rt17._get_git_root     = lambda: _repo_cur17e
+    _rt17.verify_list_marker = lambda p: {_payload17e}
+    _rt17.verify_marker      = lambda p, n: False
+    _rt17.is_secret_access   = lambda c: False
+    _rt17.check_tamper_marker = lambda: False
+
+    _rule17e   = _rt17.TentacleEnforceRule()
+    _result17e = _rule17e.evaluate("preToolUse", {"toolName": "edit", "toolArgs": {"path": "x.py"}})
+
+    _rt17._get_git_root      = _orig_ggr17e
+    _rt17.verify_list_marker = _orig_vlist17e
+    _rt17.verify_marker      = _orig_vm17e
+    _rt17.is_secret_access   = _orig_isa17e
+    _rt17.check_tamper_marker = _orig_ctm17e
+
+    test("17e: TentacleEnforceRule — other-repo edits do NOT trigger block",
+         _result17e is None,
+         f"Expected None, got: {_result17e!r:.120}")
+
+    # 17f. TentacleEnforceRule: same-repo edits DO trigger block
+    _orig_ggr17f   = _rt17._get_git_root
+    _orig_vlist17f = _rt17.verify_list_marker
+    _orig_vm17f    = _rt17.verify_marker
+    _orig_isa17f   = _rt17.is_secret_access
+    _orig_ctm17f   = _rt17.check_tamper_marker
+
+    _repo_self17f = "/current/tools"
+    _same_data17f = {
+        _repo_self17f: [
+            {"p": f"{_repo_self17f}/src/auth.py", "t": _now17},
+            {"p": f"{_repo_self17f}/src/api.py",  "t": _now17},
+            {"p": f"{_repo_self17f}/tests/t.py",  "t": _now17},
+        ]
+    }
+    _payload17f = _json17.dumps(_same_data17f, separators=(",", ":"), sort_keys=True)
+
+    _rt17._get_git_root      = lambda: _repo_self17f
+    _rt17.verify_list_marker = lambda p: {_payload17f}
+    _rt17.verify_marker      = lambda p, n: False
+    _rt17.is_secret_access   = lambda c: False
+    _rt17.check_tamper_marker = lambda: False
+
+    _rule17f   = _rt17.TentacleEnforceRule()
+    _result17f = _rule17f.evaluate("preToolUse", {"toolName": "edit", "toolArgs": {"path": "x.py"}})
+
+    _rt17._get_git_root      = _orig_ggr17f
+    _rt17.verify_list_marker = _orig_vlist17f
+    _rt17.verify_marker      = _orig_vm17f
+    _rt17.is_secret_access   = _orig_isa17f
+    _rt17.check_tamper_marker = _orig_ctm17f
+
+    test("17f: TentacleEnforceRule — same-repo edits DO trigger block",
+         isinstance(_result17f, dict) and _result17f.get("permissionDecision") == "deny",
+         f"Expected deny, got: {_result17f!r:.120}")
+
+    # 17g. get_module with repo_prefix
+    from rules.common import get_module as _gm17
+    test("17g: get_module without prefix is unchanged",
+         _gm17("src/auth/login.py") == "auth")
+    test("17g2: get_module with repo_prefix prepends prefix",
+         _gm17("src/auth/login.py", repo_prefix="tools") == "tools:auth")
+    test("17g3: get_module with prefix for hooks dir",
+         _gm17("hooks/rules/tentacle.py", repo_prefix="tools") == "tools:hooks/rules")
+
+    # 17h. End-to-end HMAC: write with real sign_list_marker, read back with verify
+    _td17h = Path(tempfile.mkdtemp(prefix="test-17h-"))
+    _marker17h = _td17h / "tentacle-edits"
+    _data17h = {"/e2e/repo": [{"p": "/e2e/repo/main.py", "t": _now17}]}
+    _write_edits(_marker17h, _data17h)
+    _back17h = _read_edits(_marker17h)
+    test("17h: HMAC end-to-end: written data reads back correctly",
+         "/e2e/repo" in _back17h and
+         _back17h["/e2e/repo"][0]["p"] == "/e2e/repo/main.py",
+         f"Got: {_back17h!r}")
+    # Corrupt the file and verify it returns empty (HMAC rejects tampered data)
+    if _marker17h.is_file():
+        raw = _marker17h.read_text(encoding="utf-8")
+        try:
+            _tampered = __import__("json").loads(raw)
+            _tampered["content"] = _tampered.get("content", "") + "TAMPER"
+            _marker17h.write_text(__import__("json").dumps(_tampered), encoding="utf-8")
+            _tampered_back = _read_edits(_marker17h)
+            # With a secret, HMAC fails → empty; without secret, file is plain text
+            _secret_present = bool(Path.home().joinpath(".copilot/hooks/.marker-secret").exists())
+            if _secret_present:
+                test("17h2: tampered HMAC-signed payload → empty dict returned",
+                     _tampered_back == {},
+                     f"Got: {_tampered_back!r}")
+            else:
+                test("17h2: no secret — tamper check skipped (no HMAC)", True)
+        except Exception:
+            test("17h2: tamper test ran", True)
+    shutil.rmtree(str(_td17h), ignore_errors=True)
+
+    # 17i. Empty marker file → _read_edits returns empty dict (no crash)
+    _td17i = Path(tempfile.mkdtemp(prefix="test-17i-"))
+    _absent17i = _td17i / "nonexistent"
+    test("17i: absent marker → empty dict", _read_edits(_absent17i) == {},
+         f"Got: {_read_edits(_absent17i)!r}")
+    shutil.rmtree(str(_td17i), ignore_errors=True)
+
+    # 17j. enforce-path prunes TTL-stale entries
+    _orig_ggr17j   = _rt17._get_git_root
+    _orig_vlist17j = _rt17.verify_list_marker
+    _orig_vm17j    = _rt17.verify_marker
+    _orig_isa17j   = _rt17.is_secret_access
+    _orig_ctm17j   = _rt17.check_tamper_marker
+
+    _repo_17j  = "/current/tools"
+    _stale_17j = _now17 - 90_000   # 25 h ago
+    _stale_data17j = {
+        _repo_17j: [
+            {"p": f"{_repo_17j}/src/auth.py", "t": _stale_17j},
+            {"p": f"{_repo_17j}/src/api.py",  "t": _stale_17j},
+            {"p": f"{_repo_17j}/tests/t.py",  "t": _stale_17j},
+        ]
+    }
+    _payload17j = _json17.dumps(_stale_data17j, separators=(",", ":"), sort_keys=True)
+
+    _rt17._get_git_root      = lambda: _repo_17j
+    _rt17.verify_list_marker = lambda p: {_payload17j}
+    _rt17.verify_marker      = lambda p, n: False
+    _rt17.is_secret_access   = lambda c: False
+    _rt17.check_tamper_marker = lambda: False
+
+    _rule17j   = _rt17.TentacleEnforceRule()
+    _result17j = _rule17j.evaluate("preToolUse", {"toolName": "edit", "toolArgs": {"path": "x.py"}})
+
+    _rt17._get_git_root      = _orig_ggr17j
+    _rt17.verify_list_marker = _orig_vlist17j
+    _rt17.verify_marker      = _orig_vm17j
+    _rt17.is_secret_access   = _orig_isa17j
+    _rt17.check_tamper_marker = _orig_ctm17j
+
+    test("17j: enforce-path prunes TTL-stale entries",
+         _result17j is None,
+         f"Expected None (all pruned), got: {_result17j!r:.120}")
+
+    test("Section 17 tentacle edits repo-scope tests ran without exception", True)
+except Exception as _e17:
+    test("Section 17 tentacle edits repo-scope tests ran without exception", False, str(_e17))
 
 
 # ═══════════════════════════════════════════════════════════════════

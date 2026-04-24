@@ -68,16 +68,23 @@ def is_source_path(path):
     return Path(path).suffix.lower() in SOURCE_EXTENSIONS
 
 
-def get_module(file_path):
-    """Extract module from path using deepest meaningful directory."""
+def get_module(file_path, repo_prefix=None):
+    """Extract module from path using deepest meaningful directory.
+
+    repo_prefix: optional short repo name (e.g. basename of git_root) prepended
+    as ``"<prefix>:<module>"``.  Callers without repo info leave it None.
+    """
     parts = Path(file_path).parts
     best = ""
     for i, p in enumerate(parts[:-1]):
         if p in MODULE_MARKERS:
             best = f"{p}/{parts[i + 1]}" if i + 1 < len(parts) - 1 else p
-    if best:
-        return best
-    return parts[-2] if len(parts) >= 2 else ""
+    module = best if best else (parts[-2] if len(parts) >= 2 else "")
+    if not module:
+        return module
+    if repo_prefix:
+        return f"{repo_prefix}:{module}"
+    return module
 
 
 def bash_writes_source_files(command):
