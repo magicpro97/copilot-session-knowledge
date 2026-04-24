@@ -113,6 +113,20 @@ def create_db(db_path: Path) -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_event_offsets_session ON event_offsets(session_id);
     """)
 
+    # Create sessions_fts for BM25 + column-scoped search (Batch C v8).
+    # Column layout (ALL columns counted by snippet()/bm25(), UNINDEXED included):
+    #   0=session_id (UNINDEXED), 1=title, 2=user_messages, 3=assistant_messages, 4=tool_names
+    db.executescript("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
+            session_id UNINDEXED,
+            title,
+            user_messages,
+            assistant_messages,
+            tool_names,
+            tokenize='porter unicode61 remove_diacritics 2'
+        );
+    """)
+
     # Migrate existing databases: add source column if missing, then create indexes
     _migrate_add_source(db)
 
@@ -275,8 +289,10 @@ def phase2_index_events(
     Before indexing:
       - DELETE FROM knowledge_fts WHERE session_id = ?  (B-BL-06: no duplicates)
       - DELETE FROM event_offsets WHERE session_id = ?
+      - DELETE FROM sessions_fts WHERE session_id = ?   (C: no duplicates)
 
     Iterates events, applies noise filter, inserts FTS rows and event_offsets.
+    Aggregates user_msg / assistant_msg / tool_name content for sessions_fts.
     At end: sets fts_indexed_at = now() on sessions row.
 
     Returns number of FTS rows inserted.
@@ -284,15 +300,33 @@ def phase2_index_events(
     # Ensure document row exists for FK (use session as a pseudo-document)
     doc_id = _get_or_create_session_document(db, session_id, session_meta)
 
-    # B-BL-06: DELETE before re-index to prevent FTS duplication on crash recovery.
+    # B-BL-06 + C: DELETE before re-index to prevent FTS duplication on crash recovery.
     db.execute("DELETE FROM knowledge_fts WHERE session_id = ?", (session_id,))
     db.execute("DELETE FROM event_offsets WHERE session_id = ?", (session_id,))
+    try:
+        db.execute("DELETE FROM sessions_fts WHERE session_id = ?", (session_id,))
+    except Exception:
+        pass  # table may not exist yet on very old DBs
+
+    # Batch C: per-session content accumulators for sessions_fts.
+    # C-BL-01: use kind == "user_msg" / "assistant_msg", NOT role field (Event has no role).
+    _user_parts: list = []
+    _asst_parts: list = []
+    _tool_names: set = set()
 
     inserted = 0
     for event, byte_offset in provider.iter_events_with_offset(session_meta, from_event=0):
         # Noise filter: skip system boilerplate and notes (scope cut).
         if _is_system_boilerplate(event):
             continue
+
+        # Aggregate for sessions_fts (C-BL-01: kind-based, never role-based)
+        if event.kind == "user_msg" and event.content:
+            _user_parts.append(event.content)
+        elif event.kind == "assistant_msg" and event.content:
+            _asst_parts.append(event.content)
+        elif event.kind in ("tool_call", "tool_result") and event.tool_name:
+            _tool_names.add(event.tool_name)
 
         # Insert FTS row
         db.execute("""
@@ -314,6 +348,31 @@ def phase2_index_events(
         """, (session_id, event.event_id, byte_offset, file_mtime))
 
         inserted += 1
+
+    # Populate sessions_fts — one row per session aggregating all event content.
+    # Title: sessions.summary (fallback to session_id[:8]).
+    _title = (session_meta.title or "").strip()
+    if not _title:
+        _row = db.execute("SELECT summary FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        _title = (_row[0] or "").strip() if _row else ""
+    if not _title:
+        _title = session_id[:8]
+
+    try:
+        db.execute(
+            "INSERT INTO sessions_fts"
+            " (session_id, title, user_messages, assistant_messages, tool_names)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                session_id,
+                _title[:200],
+                "\n\n".join(_user_parts),
+                "\n\n".join(_asst_parts),
+                " ".join(sorted(_tool_names)),
+            ),
+        )
+    except Exception:
+        pass  # sessions_fts table may not exist on very old DBs without v8 migration
 
     # Mark Phase 2 complete
     db.execute(

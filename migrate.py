@@ -66,6 +66,21 @@ MIGRATIONS = [
         )""",
         "CREATE INDEX IF NOT EXISTS idx_event_offsets_session ON event_offsets(session_id)",
     ]),
+    # v8: Batch C — sessions_fts for BM25 + role-based column-scoped search.
+    # C-BL-02: version = 8 (B already took v7).
+    # Contentless FTS5: session_id UNINDEXED (col 0, still counted by snippet/bm25),
+    # title (col 1), user_messages (col 2), assistant_messages (col 3), tool_names (col 4).
+    # Empirically verified column indices before committing (see _fts5_empirical.py).
+    (8, "add_sessions_fts", [
+        """CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
+            session_id UNINDEXED,
+            title,
+            user_messages,
+            assistant_messages,
+            tool_names,
+            tokenize='porter unicode61 remove_diacritics 2'
+        )""",
+    ]),
 ]
 applied = 0
 for ver, name, stmts in MIGRATIONS:

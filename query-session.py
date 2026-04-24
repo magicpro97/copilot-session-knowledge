@@ -219,8 +219,143 @@ def _build_adaptive_fts_query(query: str) -> tuple:
     return fts_query, strictness, confidence_delta
 
 
+# ──────────────────────────────────────────────
+# Batch C: sessions_fts search helpers
+# ──────────────────────────────────────────────
+
+# Column name → (fts5_col_name, snippet_col_index)
+# Indices: 0=session_id(UNINDEXED), 1=title, 2=user_messages, 3=assistant_messages, 4=tool_names
+# Empirically verified against real DB (see _fts5_empirical.py).
+_SESSION_COL_MAP: dict = {
+    "user":      ("user_messages",      2),
+    "assistant": ("assistant_messages", 3),
+    "tools":     ("tool_names",         4),
+    "title":     ("title",              1),
+}
+
+
+def _build_column_scoped_query(sanitized_term: str, columns: list) -> str:
+    """Build a column-scoped FTS5 query using {col}: terms syntax.
+
+    Syntax empirically verified: {col1 col2}: "term"* works with quoted prefix terms.
+    sanitized_term: output of _sanitize_fts_query() — already quoted/prefixed.
+    columns: list of FTS5 column names to restrict search to.
+
+    Reuses the _sanitize_fts_query output (C security rule: sanitize before column wrap).
+    """
+    if not columns:
+        return sanitized_term
+    col_filter = " ".join(columns)
+    return f"{{{col_filter}}}: {sanitized_term}"
+
+
+def search_sessions_fts(
+    query: str,
+    *,
+    session_id_filter: str | None = None,
+    col_name: str | None = None,
+    snippet_col: int = 2,
+    show_snippet: bool = True,
+    limit: int = 10,
+) -> list:
+    """Search sessions_fts with BM25 ranking and optional column-scoped filter.
+
+    BM25 weights (positional, all 5 columns):
+        bm25(sessions_fts, 0, 2.0, 3.0, 1.0, 1.0)
+        → session_id=0 (UNINDEXED, ignored), title=2.0, user_messages=3.0,
+          assistant_messages=1.0, tool_names=1.0
+    Weights verified empirically against real DB.
+
+    Returns list of dicts tagged origin='session'.
+    """
+    db = get_db()
+
+    raw = _sanitize_fts_query(query)
+    if col_name:
+        fts_query = _build_column_scoped_query(raw, [col_name])
+    else:
+        fts_query = raw
+
+    if show_snippet:
+        snippet_expr = f"snippet(sessions_fts, {snippet_col}, '<mark>', '</mark>', '\u2026', 12)"
+    else:
+        snippet_expr = "''"
+
+    sql = (
+        f"SELECT session_id, title,"
+        f" bm25(sessions_fts, 0, 2.0, 3.0, 1.0, 1.0) AS score,"
+        f" {snippet_expr} AS excerpt"
+        f" FROM sessions_fts WHERE sessions_fts MATCH ?"
+    )
+    params: list = [fts_query]
+
+    if session_id_filter:
+        sql += " AND session_id = ?"
+        params.append(session_id_filter)
+
+    sql += " ORDER BY score LIMIT ?"
+    params.append(limit)
+
+    try:
+        rows = db.execute(sql, params).fetchall()
+    except Exception as exc:
+        print(f"{DIM}(sessions_fts unavailable: {exc}){RESET}", file=sys.stderr)
+        db.close()
+        return []
+
+    results = []
+    for r in rows:
+        results.append({
+            "origin": "session",
+            "session_id": r[0],
+            "title": r[1],
+            "score": r[2],
+            "excerpt": r[3] or "",
+        })
+    db.close()
+    return results
+
+
+def show_session_raw(session_id_prefix: str):
+    """Dump raw session content from documents for a given session ID prefix."""
+    db = get_db()
+    row = db.execute(
+        "SELECT id, summary FROM sessions WHERE id LIKE ?",
+        (f"{session_id_prefix}%",)
+    ).fetchone()
+    if not row:
+        print(f"No session found matching: {session_id_prefix}")
+        db.close()
+        return
+
+    full_id = row[0]
+    summary = row[1] or "(no summary)"
+    print(f"\n{BOLD}Session raw content: {full_id[:8]}...{RESET}")
+    print(f"{DIM}Summary: {summary[:100]}{RESET}\n")
+
+    docs = db.execute(
+        """SELECT d.doc_type, d.title, s.section_name, s.content
+           FROM documents d
+           JOIN sections s ON s.document_id = d.id
+           WHERE d.session_id = ?
+           ORDER BY d.doc_type, d.seq, s.id""",
+        (full_id,),
+    ).fetchall()
+
+    if not docs:
+        print(f"No documents indexed for session {full_id[:8]}...")
+    else:
+        for doc in docs:
+            print(f"--- {doc[0]}: {doc[1]} [{doc[2]}] ---")
+            print(doc[3][:2000])
+            if len(doc[3]) > 2000:
+                print(f"{DIM}... ({len(doc[3])} chars total){RESET}")
+            print()
+    db.close()
+
+
 def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = False,
-           source_filter: str = None):
+           source_filter: str = None, session_id_filter: str = None):
     """Full-text search across all indexed content."""
     db = get_db()
 
@@ -252,6 +387,10 @@ def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = Fa
     if source_filter and source_filter != "all":
         sql += " AND COALESCE(d.source, 'copilot') = ?"
         params.append(source_filter)
+
+    if session_id_filter:
+        sql += " AND fts.session_id = ?"
+        params.append(session_id_filter)
 
     sql += f" ORDER BY rank LIMIT {limit}"
 
@@ -1661,6 +1800,43 @@ def _run(args: list, compact: bool = False):
                           compact=compact)
         return
 
+    # ── Batch C: new session-focused flags ─────────────────────────────────
+
+    # --session-raw: dump raw document content for a session (requires --from)
+    if "--session-raw" in args:
+        from_id = None
+        if "--from" in args:
+            fi = args.index("--from")
+            from_id = args[fi + 1] if fi + 1 < len(args) and not args[fi + 1].startswith("--") else None
+        if from_id:
+            show_session_raw(from_id)
+        else:
+            print("Error: --session-raw requires --from <session-id>")
+        return
+
+    # Parse Batch C search modifiers (used in default search below)
+    column_filter_str = None
+    if "--in" in args:
+        idx = args.index("--in")
+        column_filter_str = args[idx + 1] if idx + 1 < len(args) and not args[idx + 1].startswith("--") else None
+
+    session_filter = None
+    if "--from" in args:
+        idx = args.index("--from")
+        session_filter = args[idx + 1] if idx + 1 < len(args) and not args[idx + 1].startswith("--") else None
+
+    show_snippet = "--no-snippet" not in args  # default: on
+
+    # Resolve --in to FTS5 column name and snippet column index
+    col_name = None
+    snip_col = 2  # default: user_messages (col index 2, empirically verified)
+    if column_filter_str:
+        if column_filter_str in _SESSION_COL_MAP:
+            col_name, snip_col = _SESSION_COL_MAP[column_filter_str]
+        else:
+            valid = ", ".join(_SESSION_COL_MAP.keys())
+            print(f"{DIM}Warning: --in {column_filter_str!r} unknown; valid: {valid}{RESET}")
+
     # Knowledge category shortcuts (export_fmt already parsed above)
 
     # limit/verbose already parsed above; re-read for semantic/search paths
@@ -1684,15 +1860,15 @@ def _run(args: list, compact: bool = False):
         if args[i] == "--type" and i + 1 < len(args):
             doc_type = args[i + 1]
             i += 2
-        elif args[i] in ("--limit", "--export", "--source"):
+        elif args[i] in ("--limit", "--export", "--source", "--in", "--from"):
             i += 2  # skip flag + value (already parsed)
         elif args[i] in ("--verbose", "-v"):
             verbose = True
             i += 1
         elif args[i] in ("--semantic", "-s"):
             i += 1
-        elif args[i] in ("--compact",):
-            i += 1  # already consumed by main()
+        elif args[i] in ("--compact", "--snippet", "--no-snippet"):
+            i += 1  # already consumed or toggle flags
         elif args[i].startswith("--"):
             i += 1  # skip unknown flags
         else:
@@ -1708,9 +1884,29 @@ def _run(args: list, compact: bool = False):
     if use_semantic:
         semantic_search(query, limit, verbose)
     elif export_fmt:
-        search(query, doc_type, limit, verbose, source_filter)
+        search(query, doc_type, limit, verbose, source_filter,
+               session_id_filter=session_filter)
     else:
-        search(query, doc_type, limit, verbose, source_filter)
+        search(query, doc_type, limit, verbose, source_filter,
+               session_id_filter=session_filter)
+        # Batch C: also search sessions_fts (BM25 + column-scoped)
+        session_hits = search_sessions_fts(
+            query,
+            session_id_filter=session_filter,
+            col_name=col_name,
+            snippet_col=snip_col,
+            show_snippet=show_snippet,
+            limit=limit,
+        )
+        if session_hits:
+            print(f"\n{BOLD}Session hits ({len(session_hits)} results){RESET}\n")
+            for i, r in enumerate(session_hits, 1):
+                sid = r["session_id"][:8]
+                excerpt = (r["excerpt"] or "").replace("<mark>", f"{BOLD}{YELLOW}").replace("</mark>", RESET)
+                print(f"  {BOLD}{i}.{RESET} {r['title'][:55]} {DIM}[session: {sid}...]{RESET}")
+                if show_snippet and excerpt.strip():
+                    short = excerpt[:120].replace("\n", " ").strip()
+                    print(f"     {DIM}{short}{RESET}")
         # Also search knowledge entries
         search_knowledge(query, limit=5)
 
