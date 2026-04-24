@@ -28,6 +28,13 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
+if os.name == "nt":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 # ─── Auto-detect schemas from installed CLI ──────────────────────────────
 

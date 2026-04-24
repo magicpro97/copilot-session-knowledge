@@ -39,6 +39,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - POSIX home normalization in `check_subagent_marker.py` now uses explicit backslash (`chr(92)`) instead of `os.sep` for separator replacement, so the function produces correct Windows paths even when the Python runtime reports a POSIX `os.sep`. This fixes a latent bug that could have surfaced if the code were ever exercised in a POSIX-hosted Windows-emulation layer.
 - Section 17g tests in `test_hooks.py` now build expected Windows paths with `chr(92)` instead of literal backslash string comparisons, making assertions valid on both Windows and non-Windows hosts.
 
+## [1.3.1] - 2026-04-24
+
+### Added
+- **Quality gates** — new scripts and workflow for CI-level syntax enforcement:
+  - `scripts/check_syntax.py`: `py_compile`-based syntax check for all Python files; exits non-zero on first failure. Intended for pre-commit and CI.
+  - `run_all_tests.py`: single-command test runner; discovers and executes all `test_*.py` files, reports pass/fail counts, exits non-zero if any test fails.
+  - `.github/workflows/ci.yml`: GitHub Actions workflow running syntax check + full test suite on every push and pull request.
+  - `hooks/rules/syntax_gate.py`: preToolUse hook rule that py_compiles the post-edit/create content of `.py` files and blocks `edit`/`create` tools on `SyntaxError`. Does NOT run on bash / git commit.
+- **Auto-update coverage expansion**: `auto-update-tools.py` now detects changes to `scripts/` and `hooks/rules/` directories alongside the existing detection rules; adds `syntax_gate.py` to the set of hook rules refreshed on `--skip-pull`.
+- **I1** `test_retrieval.py`: added 4 assertions covering FTS5 snippet extraction edge-cases that were previously untested (empty-result snippet, multi-column snippet, snippet with special FTS5 characters, and snippet on a contentless table). All 4 pass.
+- `test_hooks.py`: 16 new tests (Section 17) covering cross-repo isolation, TTL expiry, legacy-format migration, and HMAC end-to-end validation for the `tentacle-edits` marker.
+
+### Changed
+- **I2** Added inline comment on `cursor.lastrowid` in `browse/routes/eval.py` documenting the per-request-cursor / pre-commit atomicity invariant.
+- `hooks/rules/common.py`: `get_module()` now accepts optional `repo_prefix` param for cross-repo distinction (backwards-compatible).
+- `install.py`: `deploy_hooks()` now enumerates hook subdirectories, auto-discovering `hooks/rules/*.py` hook files.
+- `hooks/hooks.json`: source copy updated alongside the syntax_gate rule registration in `hooks/rules/__init__.py`.
+- `auto-update-tools.py`: VENDORED global skill dirs are now update-only (match BUILTIN_PROJECT_SKILLS rule) — no auto-create of absent dirs or asset files.
+
+### Fixed
+- **C1** `watch-sessions.py`: Misindented Windows UTF-8 stdout/stderr reconfigure block was inside `_is_pid_running()` body instead of module top-level, causing `SyntaxError` at import time. Moved block to module top-level with try/except guard matching pattern used by embed.py / learn.py.
+- **hooks/rules/tentacle.py**: false-positive tentacle-enforce blocks on unrelated git repos. Edit list is now partitioned by `git_root` (resolved via `git rev-parse --show-toplevel`); per-root counters each carry their own TTL so stale entries from a previous session in a different repo never inflate the current session's module count.
+- `test_indexing.py`: I6 boundary test changed input from 120s to 119s to eliminate timing race where `time.time()` drift pushed age above the boundary.
+- `test_hooks.py`: 17f2 filter tightened to match only assignment lines (was matching kwarg `=` in usage lines, producing false failures).
+
 ## [1.3.0] - 2026-04-24
 
 ### Added — W0 (browse/ package foundation)

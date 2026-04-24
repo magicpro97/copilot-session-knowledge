@@ -1,6 +1,6 @@
 ---
 name: ln-014-agent-instructions-manager
-description: "Creates AGENTS.md canonical and CLAUDE.md/GEMINI.md/ANTIGRAVITY.md @AGENTS.md stubs; audits token budget, cache safety, import-pattern compliance. Use when instruction files need alignment."
+description: "Creates AGENTS.md canonical and CLAUDE.md/GEMINI.md/ANTIGRAVITY.md @AGENTS.md stubs; audits token budget, cache safety, and import-pattern compliance. Use when instruction files need alignment or when a project's AI instruction set is out of sync."
 license: MIT
 ---
 
