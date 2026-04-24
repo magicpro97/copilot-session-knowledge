@@ -508,7 +508,7 @@ def _write_dispatched_subagent_marker(
                     hashlib.sha256,
                 ).hexdigest()
                 data["sig"] = sig
-            _DISPATCHED_MARKER_PATH.write_text(json.dumps(data, indent=2) + "\n")
+            _DISPATCHED_MARKER_PATH.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         return True
     except Exception:
         return False
@@ -609,7 +609,7 @@ def _clear_dispatched_subagent_marker(
                     data["sig"] = sig
                 elif "sig" in data:
                     del data["sig"]
-                _DISPATCHED_MARKER_PATH.write_text(json.dumps(data, indent=2) + "\n")
+                _DISPATCHED_MARKER_PATH.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         return True
     except Exception:
         return False
@@ -981,11 +981,11 @@ def cmd_create(args):
         *Created: {datetime.now(timezone.utc).isoformat()}*
     """)
 
-    (tentacle_dir / "CONTEXT.md").write_text(context_content)
+    (tentacle_dir / "CONTEXT.md").write_text(context_content, encoding="utf-8")
 
     # Create empty todo.md
     todo_content = "# Todo\n\n"
-    (tentacle_dir / "todo.md").write_text(todo_content)
+    (tentacle_dir / "todo.md").write_text(todo_content, encoding="utf-8")
 
     # Create metadata
     meta = {
@@ -999,7 +999,7 @@ def cmd_create(args):
     # When dir_name differs from name (collision case), record it explicitly.
     if actual_dir_name != args.name:
         meta["dir_name"] = actual_dir_name
-    (tentacle_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    (tentacle_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
     print(f"✅ Tentacle '{actual_dir_name}' created at {tentacle_dir}")
     print(f"   📄 CONTEXT.md — edit to add area-specific context")
@@ -1141,7 +1141,7 @@ def cmd_todo(args):
 
         if args.action == "add":
             todos.append({"index": len(todos), "done": False, "text": args.text})
-            todo_path.write_text(render_todos(todos))
+            todo_path.write_text(render_todos(todos), encoding="utf-8")
             print(f"✅ Added todo [{len(todos) - 1}]: {args.text}")
 
         elif args.action == "done":
@@ -1152,7 +1152,7 @@ def cmd_todo(args):
                 sys.exit(1)
             if 0 <= idx < len(todos):
                 todos[idx]["done"] = True
-                todo_path.write_text(render_todos(todos))
+                todo_path.write_text(render_todos(todos), encoding="utf-8")
                 print(f"✅ Marked done [{idx}]: {todos[idx]['text']}")
             else:
                 print(f"ERROR: Index {idx} out of range (0-{len(todos) - 1})", file=sys.stderr)
@@ -1166,7 +1166,7 @@ def cmd_todo(args):
                 sys.exit(1)
             if 0 <= idx < len(todos):
                 todos[idx]["done"] = False
-                todo_path.write_text(render_todos(todos))
+                todo_path.write_text(render_todos(todos), encoding="utf-8")
                 print(f"↩️  Marked undone [{idx}]: {todos[idx]['text']}")
             else:
                 print(f"ERROR: Index {idx} out of range (0-{len(todos) - 1})", file=sys.stderr)
@@ -1198,9 +1198,9 @@ def cmd_handoff(args):
     with file_locked(handoff_path):
         if handoff_path.exists():
             existing = handoff_path.read_text()
-            handoff_path.write_text(existing + entry)
+            handoff_path.write_text(existing + entry, encoding="utf-8")
         else:
-            handoff_path.write_text(f"# Handoff Notes\n{entry}")
+            handoff_path.write_text(f"# Handoff Notes\n{entry}", encoding="utf-8")
 
     print(f"📨 Handoff recorded for '{args.name}'")
 
@@ -1236,7 +1236,7 @@ def cmd_complete(args):
             pending = [t for t in todos if not t["done"]]
             for t in todos:
                 t["done"] = True
-            todo_path.write_text(render_todos(todos))
+            todo_path.write_text(render_todos(todos), encoding="utf-8")
             if pending:
                 print(f"✅ Marked {len(pending)} pending todos as done")
             else:
@@ -1246,7 +1246,7 @@ def cmd_complete(args):
     meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
     meta["status"] = "completed"
     meta["completed_at"] = datetime.now(timezone.utc).isoformat()
-    meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
     # 3. Auto-learn from handoff (unless --no-learn)
     learned = 0
@@ -1298,7 +1298,7 @@ def cmd_resume(args):
     prev_status = meta.get("status", "idle")
     meta["status"] = "active"
     meta["resumed_at"] = datetime.now(timezone.utc).isoformat()
-    meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
     print(f"🔄 Resuming tentacle '{args.name}' (was: {prev_status})")
 
@@ -1330,9 +1330,9 @@ def cmd_resume(args):
 
     if context_path.exists():
         existing = context_path.read_text()
-        context_path.write_text(existing + resume_section)
+        context_path.write_text(existing + resume_section, encoding="utf-8")
     else:
-        context_path.write_text(f"# {args.name}\n{resume_section}")
+        context_path.write_text(f"# {args.name}\n{resume_section}", encoding="utf-8")
 
     # 4. Show current todo state
     todos = parse_todos(todo_path.read_text()) if todo_path.exists() else []
