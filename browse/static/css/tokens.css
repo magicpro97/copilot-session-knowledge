@@ -1,0 +1,96 @@
+/*
+ * browse/static/css/tokens.css — Design token layer for Hindsight Browse UI.
+ * Load AFTER pico.min.css, BEFORE app.css.
+ * Defines all custom properties consumed by app.css and future components.
+ * DO NOT reference var(--pico-*) here; this layer must be Pico-independent.
+ */
+
+/* ── Light mode (default) ───────────────────────────────────────────────── */
+:root {
+  /* Colors */
+  --bg: #ffffff;
+  --bg-elevated: #f6f8fa;
+  --bg-muted: #eaeef2;
+  --bg-hover: #e6ebf1;
+  --fg: #1f2328;
+  --fg-muted: #656d76;
+  --fg-subtle: #6e7781;
+  --accent: #0969da;
+  --accent-hover: #0550ae;
+  --accent-fg: #ffffff;
+  --border: #d0d7de;
+  --border-strong: #afb8c1;
+
+  /* Status */
+  --success: #1a7f37;
+  --success-bg: #dafbe1;
+  --warning: #9a6700;
+  --warning-bg: #fff8c5;
+  --danger: #d1242f;
+  --danger-bg: #ffebe9;
+  --info: #0969da;
+  --info-bg: #ddf4ff;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* Radius */
+  --radius-sm: 3px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.08);
+  --shadow-lg: 0 4px 16px rgba(0,0,0,0.12);
+
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.875rem;
+  --fs-base: 1rem;
+  --fs-lg: 1.125rem;
+  --fs-xl: 1.25rem;
+  --fs-2xl: 1.5rem;
+  --fs-3xl: 2rem;
+  --lh-tight: 1.2;
+  --lh-normal: 1.5;
+  --lh-relaxed: 1.75;
+
+  /* Transitions */
+  --transition-fast: 120ms ease;
+  --transition-base: 200ms ease;
+}
+
+/* ── Dark mode overrides (colors only) ─────────────────────────────────── */
+[data-theme="dark"] {
+  --bg: #0d1117;
+  --bg-elevated: #161b22;
+  --bg-muted: #21262d;
+  --bg-hover: #2a3038;
+  --fg: #e6edf3;
+  --fg-muted: #9198a1;
+  --fg-subtle: #7d8590;
+  --accent: #4493f8;
+  --accent-hover: #1f6feb;
+  --accent-fg: #ffffff;
+  --border: #30363d;
+  --border-strong: #484f58;
+
+  /* Status dark */
+  --success: #3fb950;
+  --success-bg: #0f2417;
+  --warning: #d29922;
+  --warning-bg: #26200a;
+  --danger: #f85149;
+  --danger-bg: #2d0a0e;
+  --info: #4493f8;
+  --info-bg: #0a1929;
+}

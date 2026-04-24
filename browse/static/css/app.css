@@ -1,81 +1,380 @@
-/*
- * browse/static/css/app.css — Thin custom styles on top of Pico CSS
- * W0-foundation layer; minimal overrides only.
+/* ── App styles ───────────────────────────────────────────────────────────
+ * browse/static/css/app.css — Custom UI styles for Hindsight Browse.
+ * Depends on tokens.css (must be loaded first).
+ * Pico CSS remains as a base; this layer overrides and extends with our tokens.
+ * NO hardcoded hex colors outside comments. NO var(--pico-*) references.
+ * Target: 350–450 lines.
  */
 
-/* ── Layout helpers ──────────────────────────────────────────────────── */
-nav a { margin-right: 0.75rem; }
-#dark-toggle {
-    float: right;
-    padding: 0.2rem 0.5rem;
-    cursor: pointer;
-    font-size: 1rem;
-    border: none;
-    background: transparent;
+/* ── Base & reset ──────────────────────────────────────────────────────── */
+body {
+  font-family: var(--font-sans);
+  color: var(--fg);
+  background: var(--bg);
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1rem;
+  transition: background var(--transition-base), color var(--transition-base);
 }
 
-/* ── Hamburger nav menu ───────────────────────────────────────────────── */
+/* ── Typography scale ──────────────────────────────────────────────────── */
+h1 {
+  font-size: var(--fs-3xl);
+  line-height: var(--lh-tight);
+  font-weight: 600;
+  margin-top: var(--space-5);
+}
+h2 {
+  font-size: var(--fs-2xl);
+  line-height: var(--lh-tight);
+  font-weight: 600;
+  margin-top: var(--space-5);
+}
+h3 {
+  font-size: var(--fs-xl);
+  line-height: var(--lh-tight);
+  font-weight: 600;
+  margin-top: var(--space-4);
+}
+h4 {
+  font-size: var(--fs-lg);
+  line-height: var(--lh-tight);
+  font-weight: 600;
+  margin-top: var(--space-4);
+}
+
+/* ── Nav ───────────────────────────────────────────────────────────────── */
+nav {
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  padding: var(--space-3);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+nav a {
+  margin-right: 0.75rem;
+  color: var(--fg);
+  text-decoration: none;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+}
+nav a:hover {
+  background: var(--bg-muted);
+}
+nav a[aria-current="page"] {
+  background: var(--bg-muted);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ── .nav-menu (back-compat) ──────────────────────────────────────────── */
 .nav-menu { display: inline-block; position: relative; }
 .nav-menu summary {
-    list-style: none;
-    cursor: pointer;
-    padding: 0.2rem 0.5rem;
-    margin-right: 0.75rem;
+  list-style: none;
+  cursor: pointer;
+  padding: var(--space-1) var(--space-2);
+  margin-right: 0.75rem;
 }
 .nav-menu summary::-webkit-details-marker { display: none; }
 .nav-menu-inner {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    background: var(--pico-background-color, #fff);
-    border: 1px solid var(--pico-muted-border-color, #ccc);
-    border-radius: 4px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.12);
-    z-index: 100;
-    min-width: 160px;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  z-index: 100;
+  min-width: 160px;
 }
-.nav-menu-inner ul { list-style: none; margin: 0; padding: 0.25rem 0; }
+.nav-menu-inner ul { list-style: none; margin: 0; padding: var(--space-1) 0; }
 .nav-menu-inner li a {
-    display: block;
-    padding: 0.4rem 1rem;
-    text-decoration: none;
-    white-space: nowrap;
+  display: block;
+  padding: var(--space-1) var(--space-4);
+  text-decoration: none;
+  white-space: nowrap;
+  color: var(--fg);
 }
-.nav-menu-inner li a:hover { background: var(--pico-muted-background-color, #f5f5f5); }
+.nav-menu-inner li a:hover { background: var(--bg-muted); }
 
+/* ── #dark-toggle ──────────────────────────────────────────────────────── */
+#dark-toggle {
+  min-width: 32px;
+  min-height: 32px;
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+  font-size: var(--fs-base);
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+  float: right;
+}
+#dark-toggle:hover { background: var(--bg-muted); }
 
+/* ── Buttons ───────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+  border: 1px solid transparent;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.btn:hover {
+  background: var(--accent-hover);
+}
+.btn-secondary {
+  background: var(--bg-elevated);
+  color: var(--fg);
+  border-color: var(--border);
+}
+.btn-secondary:hover {
+  background: var(--bg-muted);
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--fg);
+  border-color: var(--border);
+}
+.btn-ghost:hover {
+  background: var(--bg-muted);
+}
+.btn-danger {
+  background: var(--danger);
+  color: var(--accent-fg);
+  border-color: var(--danger);
+}
+.btn-danger:hover {
+  opacity: 0.85;
+}
+.btn-sm {
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--fs-xs);
+}
+/* Back-compat: Pico-rendered role=button.secondary in session_detail.py */
+a[role="button"].secondary {
+  background: var(--bg-elevated);
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+a[role="button"].secondary:hover {
+  background: var(--bg-muted);
+}
+
+/* ── Tables ────────────────────────────────────────────────────────────── */
+.table-wrapper {
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th {
+  background: var(--bg-elevated);
+  position: sticky;
+  top: 0;
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  color: var(--fg);
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-strong);
+}
+td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm);
+  vertical-align: top;
+}
+tbody tr:nth-child(even) { background: var(--bg-muted); }
+tbody tr:hover { background: var(--bg-hover); }
+
+/* ── Forms ─────────────────────────────────────────────────────────────── */
+input, select, textarea {
+  border-color: var(--border);
+  color: var(--fg);
+  background: var(--bg);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+input:focus:not(:focus-visible), select:focus:not(:focus-visible), textarea:focus:not(:focus-visible) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+  outline: none;
+}
+
+/* ── Cards ─────────────────────────────────────────────────────────────── */
+.card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  box-shadow: var(--shadow-sm);
+}
+.card-grid {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+/* ── Stat tiles ─────────────────────────────────────────────────────────── */
+.stat-grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+}
+.stat-card {
+  background: var(--bg-elevated);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+}
+.stat-card .stat-label {
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.stat-card .stat-value {
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* ── Badges ─────────────────────────────────────────────────────────────── */
+.badge {
+  display: inline-block;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+.badge-success { background: var(--success-bg); color: var(--success); }
+.badge-warning { background: var(--warning-bg); color: var(--warning); }
+.badge-danger  { background: var(--danger-bg);  color: var(--danger);  }
+.badge-info    { background: var(--info-bg);    color: var(--info);    }
+
+/* ── Banners ────────────────────────────────────────────────────────────── */
 .banner {
-    background: var(--pico-color-amber-100, #fff3cd);
-    border: 1px solid var(--pico-color-amber-500, #ffc107);
-    padding: 0.5rem 1rem;
-    border-radius: 4px;
-    margin: 0.5rem 0;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  margin: var(--space-2) 0;
+}
+.banner-info {
+  background: var(--info-bg);
+  border: 1px solid var(--info);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  margin: var(--space-2) 0;
+}
+.banner-success {
+  background: var(--success-bg);
+  border: 1px solid var(--success);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  margin: var(--space-2) 0;
+}
+.banner-error {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  margin: var(--space-2) 0;
 }
 
-/* ── Session timeline blocks ─────────────────────────────────────────── */
+/* ── Empty state ────────────────────────────────────────────────────────── */
+.empty-state {
+  text-align: center;
+  padding: var(--space-6) var(--space-4);
+  color: var(--fg-muted);
+}
+.empty-state-icon {
+  font-size: 2.5rem;
+  margin-bottom: var(--space-3);
+  opacity: 0.5;
+}
+.empty-state-title {
+  font-size: var(--fs-lg);
+  color: var(--fg);
+  margin-bottom: var(--space-2);
+}
+
+/* ── Section blocks ─────────────────────────────────────────────────────── */
 .section-block {
-    background: var(--pico-color-slate-50, #f9f9f9);
-    border-left: 3px solid var(--pico-color-slate-300, #ccc);
-    padding: 0.4rem 0.8rem;
-    margin: 0.3rem 0;
+  background: var(--bg-elevated);
+  border-left: 3px solid var(--border);
+  padding: var(--space-1) var(--space-3);
+  margin: var(--space-1) 0;
 }
+.section-block.is-error { border-left-color: var(--danger); }
+.section-block.is-warn  { border-left-color: var(--warning); }
+.section-block.is-info  { border-left-color: var(--info); }
 
-/* ── Metadata / caption text ─────────────────────────────────────────── */
+/* ── Meta text ──────────────────────────────────────────────────────────── */
 .meta {
-    color: var(--pico-muted-color, #666);
-    font-size: 0.9em;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
 }
 
-/* ── Code / pre blocks ───────────────────────────────────────────────── */
+/* ── Code / pre ─────────────────────────────────────────────────────────── */
 pre {
-    white-space: pre-wrap;
-    word-break: break-word;
-    font-size: 0.85em;
-    margin: 0.2rem 0;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  background: var(--bg-muted);
+  border-radius: var(--radius-sm);
 }
 
-/* ── Fallback styles when Pico is not yet loaded ─────────────────────── */
-body { max-width: 960px; margin: 0 auto; padding: 1rem; }
-table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 0.4rem 0.6rem; border: 1px solid #ddd; }
-th { background: #f4f4f4; }
+/* ── Skeleton loader ────────────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-muted) 0%,
+    var(--bg-elevated) 50%,
+    var(--bg-muted) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+  border-radius: var(--radius-sm);
+}
+@keyframes skeleton-pulse {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Focus-visible (a11y) ───────────────────────────────────────────────── */
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ── Print ──────────────────────────────────────────────────────────────── */
+@media print {
+  nav, #dark-toggle, ninja-keys { display: none; }
+  body { max-width: none; }
+}

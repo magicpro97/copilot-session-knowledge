@@ -45,6 +45,7 @@ def base_page(
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         f"<title>{title_esc} - Hindsight</title>",
         '<link rel="stylesheet" href="/static/vendor/pico.min.css">',
+        '<link rel="stylesheet" href="/static/css/tokens.css">',
         '<link rel="stylesheet" href="/static/css/app.css">',
         head_extra,
         "</head>",
