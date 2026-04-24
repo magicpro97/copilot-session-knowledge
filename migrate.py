@@ -86,6 +86,21 @@ MIGRATIONS = [
             tokenize='porter unicode61 remove_diacritics 2'
         )""",
     ]),
+    # v9: F15 Eval/Feedback — records thumbs up/down on search results.
+    (9, "search_feedback_table", [
+        """CREATE TABLE IF NOT EXISTS search_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query TEXT,
+            result_id TEXT,
+            result_kind TEXT,
+            verdict INTEGER NOT NULL CHECK(verdict IN (-1,0,1)),
+            comment TEXT,
+            user_agent TEXT,
+            created_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_sf_query ON search_feedback(query)",
+        "CREATE INDEX IF NOT EXISTS idx_sf_created ON search_feedback(created_at)",
+    ]),
 ]
 applied = 0
 for ver, name, stmts in MIGRATIONS:

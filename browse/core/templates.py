@@ -35,7 +35,7 @@ def base_page(
 
     title_esc = _esc(title)
     tok_qs = f"?token={_esc(token)}" if token else ""
-    _global_cmds_json = _json.dumps(_palette.get_global_commands(), separators=(",", ":"))
+    _global_cmds_json = _json.dumps(_palette.get_global_commands(), separators=(",", ":")).replace("</", "<\\/")
 
     parts = [
         "<!DOCTYPE html>",
@@ -68,6 +68,8 @@ def base_page(
         body_scripts,
         f'<script nonce="{nonce}">window.__paletteCommands = window.__paletteCommands.concat({_global_cmds_json});</script>',
         f'<script nonce="{nonce}" src="/static/js/palette.js"></script>',
+        f'<script nonce="{nonce}" src="/static/vendor/html-to-image.min.js"></script>',
+        f'<script nonce="{nonce}" src="/static/js/share.js"></script>',
         "</body>",
         "</html>",
     ]

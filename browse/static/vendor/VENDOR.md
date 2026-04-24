@@ -20,6 +20,7 @@ Downloaded by `_download.py`. Do not edit manually.
 | `diff2html.min.css` | diff2html | 3.4.48 | MIT | `sha384-iBvSlI3tNrrSIy7s6mvLg+5B2Z/QXbR4L0Pzg1nRf8zkXrz5JF316MLm2igMIpi2` | [https://cdn.jsdelivr.net/npm/diff2html@3.4.48/bundles/css/diff2html.min.css](https://cdn.jsdelivr.net/npm/diff2html@3.4.48/bundles/css/diff2html.min.css) |
 | `prism.min.js` | prismjs | 1.29.0 | MIT | `sha384-ZM8fDxYm+GXOWeJcxDetoRImNnEAS7XwVFH5kv0pT6RXNy92Nemw/Sj7NfciXpqg` | [https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js](https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js) |
 | `prism.min.css` | prismjs | 1.29.0 | MIT | `sha384-rCCjoCPCsizaAAYVoz1Q0CmCTvnctK0JkfCSjx7IIxexTBg+uCKtFYycedUjMyA2` | [https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism.min.css](https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism.min.css) |
+| `html-to-image.min.js` | html-to-image | 1.11.11 | MIT | `sha384-lELZMVO0WZSKHeOrm8rKLCq9ZXjY1+2I9uL/QyDxIXSd83b3/z5xBXb1uDoFi3P/` | [https://cdn.jsdelivr.net/npm/html-to-image@1.11.11/dist/html-to-image.min.js](https://cdn.jsdelivr.net/npm/html-to-image@1.11.11/dist/html-to-image.min.js) |
 
 ## Re-downloading
 

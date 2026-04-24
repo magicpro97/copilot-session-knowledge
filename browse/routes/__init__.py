@@ -10,6 +10,7 @@ if os.name == "nt":
 # Import order matters: health first (no auth), then page routes, then API
 from browse.routes import health  # noqa: F401
 from browse.routes import home  # noqa: F401
+from browse.routes import live  # noqa: F401
 from browse.routes import sessions  # noqa: F401
 from browse.routes import session_detail  # noqa: F401
 from browse.routes import search  # noqa: F401
@@ -17,6 +18,8 @@ from browse.routes import search_api  # noqa: F401
 from browse.routes import agents  # noqa: F401
 from browse.routes import dashboard  # noqa: F401
 from browse.routes import diff  # noqa: F401
+from browse.routes import embeddings  # noqa: F401
+from browse.routes import eval as eval_route  # noqa: F401
+from browse.routes import graph  # noqa: F401
 from browse.routes import mindmap  # noqa: F401
 from browse.routes import timeline  # noqa: F401
-from browse.routes import graph  # noqa: F401

@@ -224,7 +224,7 @@ def run_all_tests() -> int:
         test("T3: CSP has nonce-", "nonce-" in csp)
         # Extract nonce from CSP and check body has it
         import re
-        nonce_match = re.search(r"nonce-([A-Za-z0-9+/=]+)", csp)
+        nonce_match = re.search(r"nonce-([A-Za-z0-9_=+/\-]+)", csp)
         if nonce_match:
             nonce_val = nonce_match.group(1)
             test("T3: nonce value in script tag", f'nonce="{nonce_val}"'.encode() in body)

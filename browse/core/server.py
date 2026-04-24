@@ -101,6 +101,83 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             ct = "text/plain"
             status = 500
 
+        # SSE streaming: body is a callable factory(stop_event) → generator.
+        # Detected by Content-Type; avoids Content-Length header issues.
+        if ct == "text/event-stream":
+            import threading as _th
+            from browse.core.streaming import sse_response
+            _stop = _th.Event()
+            try:
+                _gen = body(_stop) if callable(body) else iter(body)
+                sse_response(self, _gen, heartbeat=15, stop_event=_stop)
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                pass
+            finally:
+                _stop.set()
+            return
+
+        self._send(
+            body,
+            ct,
+            status,
+            nonce,
+            set_cookie=token_val if should_set_cookie else None,
+        )
+
+    def do_POST(self) -> None:
+        from browse.core.auth import check_token, check_origin
+        from browse.core.csp import generate_nonce
+        from browse.core.fts import _esc
+        from browse.core.registry import match_route
+
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        nonce = generate_nonce()
+
+        # Auth check (cookie or query-string token)
+        cookie_header = self.headers.get("Cookie", "")
+        valid, token_val, should_set_cookie = check_token(
+            self.token, params, cookie_header
+        )
+        if not valid:
+            self._send(b"401 Unauthorized", "text/plain", 401, nonce)
+            return
+
+        # CSRF protection: reject if Origin present and doesn't match Host
+        host = self.headers.get("Host", "")
+        if not check_origin(self.headers, host):
+            self._send(b"403 Forbidden", "text/plain", 403, nonce)
+            return
+
+        # Body size guard (10 KB)
+        _MAX_BODY = 10 * 1024
+        try:
+            content_length = int(self.headers.get("Content-Length", "0") or "0")
+        except (ValueError, TypeError):
+            content_length = 0
+        if content_length > _MAX_BODY:
+            self._send(b"413 Request Entity Too Large", "text/plain", 413, nonce)
+            return
+        body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
+
+        # Inject body + request metadata into params for handlers
+        params["_body"] = [body_bytes.decode("utf-8", errors="replace")]
+        params["_user_agent"] = [self.headers.get("User-Agent", "")]
+
+        # Route dispatch
+        handler_fn, kwargs = match_route(path, "POST")
+        if handler_fn is None:
+            self._send(b"404 Not Found", "text/plain", 404, nonce)
+            return
+
+        try:
+            body, ct, status = handler_fn(self.db, params, token_val, nonce, **kwargs)
+        except Exception as exc:
+            body = f"500 Internal Server Error: {_esc(str(exc))}".encode("utf-8")
+            ct = "text/plain"
+            status = 500
+
         self._send(
             body,
             ct,
