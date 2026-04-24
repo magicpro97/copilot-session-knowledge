@@ -278,6 +278,102 @@ def run_all_tests() -> int:
     finally:
         server.shutdown()
 
+    # ── T11: SSE helper yields framed chunks + stops on flag ──────────────────
+    print("\n-- T11: SSE streaming helper")
+    import io
+    import threading as _threading
+    from browse.core.streaming import sse_response
+
+    class _FakeHandler:
+        def __init__(self):
+            self.wfile = io.BytesIO()
+            self._headers_sent = False
+
+        def send_response(self, code):
+            pass
+
+        def send_header(self, k, v):
+            pass
+
+        def end_headers(self):
+            self._headers_sent = True
+
+    stop = _threading.Event()
+
+    def _gen():
+        yield "hello"
+        yield "world"
+
+    fh = _FakeHandler()
+    returned_stop = sse_response(fh, _gen(), heartbeat=60, stop_event=stop)
+    buf = fh.wfile.getvalue()
+    test("T11: SSE framed chunk 'hello'", b"data: hello\n\n" in buf)
+    test("T11: SSE framed chunk 'world'", b"data: world\n\n" in buf)
+    test("T11: SSE stop event set after generator exhausted", returned_stop.is_set())
+
+    # Test stop_event aborts mid-stream
+    stop2 = _threading.Event()
+
+    def _infinite_gen():
+        i = 0
+        while True:
+            yield f"item{i}"
+            i += 1
+
+    fh2 = _FakeHandler()
+    stop2.set()  # set before calling — should yield nothing
+    sse_response(fh2, _infinite_gen(), heartbeat=60, stop_event=stop2)
+    buf2 = fh2.wfile.getvalue()
+    test("T11: SSE stops immediately on pre-set flag", b"data: item0" not in buf2)
+
+    # ── T12: Static handler rejects ../ and absolute paths ────────────────────
+    print("\n-- T12: static handler security")
+    from browse.core.static import serve_static
+
+    _, _, code1 = serve_static(None, "../browse.py")
+    test("T12: static rejects ../", code1 == 400)
+
+    _, _, code2 = serve_static(None, "../../etc/passwd")
+    test("T12: static rejects ../../", code2 == 400)
+
+    import os as _os
+    abs_path = _os.path.abspath("browse.py")
+    _, _, code3 = serve_static(None, abs_path)
+    test("T12: static rejects absolute path", code3 == 400)
+
+    _, _, code4 = serve_static(None, "%2e%2e/browse.py")
+    test("T12: static rejects URL-encoded ../", code4 == 400)
+
+    _, _, code5 = serve_static(None, "vendor/cytoscape.min.js")
+    test("T12: static serves valid file (200 or 404 if missing)", code5 in (200, 404))
+
+    # ── T13: CSP nonce in response header matches script tag nonces ───────────
+    print("\n-- T13: CSP nonce matches inline scripts")
+    import re as _re
+    db13 = _make_test_db()
+    server13, host13, port13 = _start_server(db13, token="tok")
+    try:
+        status13, hdrs13, body13 = _get(host13, port13, "/?token=tok")
+        csp13 = hdrs13.get("content-security-policy", "")
+        # Extract nonce from CSP header
+        m = _re.search(r"nonce-([A-Za-z0-9_=-]+)", csp13)
+        test("T13: CSP header contains a nonce", bool(m))
+        if m:
+            nonce_val = m.group(1)
+            test(
+                "T13: script tags carry matching nonce attribute",
+                f'nonce="{nonce_val}"'.encode("utf-8") in body13,
+            )
+            test("T13: ninja-keys scaffold present", b"ninja-keys" in body13)
+            test(
+                "T13: window.__paletteCommands present",
+                b"__paletteCommands" in body13,
+            )
+        # Also verify no unsafe-eval in CSP
+        test("T13: CSP has no unsafe-eval", "unsafe-eval" not in csp13)
+    finally:
+        server13.shutdown()
+
     print(f"\n{'='*50}")
     print(f"Results: {_PASS} passed, {_FAIL} failed")
     return _FAIL

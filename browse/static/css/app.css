@@ -1,0 +1,52 @@
+/*
+ * browse/static/css/app.css — Thin custom styles on top of Pico CSS
+ * W0-foundation layer; minimal overrides only.
+ */
+
+/* ── Layout helpers ──────────────────────────────────────────────────── */
+nav a { margin-right: 0.75rem; }
+#dark-toggle {
+    float: right;
+    padding: 0.2rem 0.5rem;
+    cursor: pointer;
+    font-size: 1rem;
+    border: none;
+    background: transparent;
+}
+
+/* ── Notification banner ─────────────────────────────────────────────── */
+.banner {
+    background: var(--pico-color-amber-100, #fff3cd);
+    border: 1px solid var(--pico-color-amber-500, #ffc107);
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    margin: 0.5rem 0;
+}
+
+/* ── Session timeline blocks ─────────────────────────────────────────── */
+.section-block {
+    background: var(--pico-color-slate-50, #f9f9f9);
+    border-left: 3px solid var(--pico-color-slate-300, #ccc);
+    padding: 0.4rem 0.8rem;
+    margin: 0.3rem 0;
+}
+
+/* ── Metadata / caption text ─────────────────────────────────────────── */
+.meta {
+    color: var(--pico-muted-color, #666);
+    font-size: 0.9em;
+}
+
+/* ── Code / pre blocks ───────────────────────────────────────────────── */
+pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.85em;
+    margin: 0.2rem 0;
+}
+
+/* ── Fallback styles when Pico is not yet loaded ─────────────────────── */
+body { max-width: 960px; margin: 0 auto; padding: 1rem; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 0.4rem 0.6rem; border: 1px solid #ddd; }
+th { background: #f4f4f4; }
