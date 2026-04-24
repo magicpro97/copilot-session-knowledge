@@ -70,6 +70,34 @@ nav a[aria-current="page"] {
   font-weight: 600;
 }
 
+/* ── Page header ─────────────────────────────────────────────────────── */
+.page-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-4);
+    flex-wrap: wrap;
+    margin-top: var(--space-5);
+    margin-bottom: var(--space-3);
+    padding-bottom: var(--space-2);
+    border-bottom: 1px solid var(--border);
+}
+.page-header-text { flex: 1 1 auto; min-width: 0; }
+.page-header-text h2,
+.page-header-text h3 {
+    margin: 0 0 var(--space-1) 0;
+    font-size: var(--fs-xl);
+    line-height: var(--lh-tight);
+}
+.page-header-text h3 { font-size: var(--fs-lg); }
+.page-header-text .meta { margin: 0; font-size: var(--fs-sm); color: var(--fg-muted); }
+.page-header-actions {
+    display: flex;
+    gap: var(--space-2);
+    flex-shrink: 0;
+    align-items: center;
+}
+
 /* ── .nav-menu (back-compat) ──────────────────────────────────────────── */
 .nav-menu { display: inline-block; position: relative; }
 .nav-menu summary {

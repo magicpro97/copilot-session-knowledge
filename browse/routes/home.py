@@ -10,6 +10,7 @@ if os.name == "nt":
 from browse.core.registry import route
 from browse.core.fts import _esc
 from browse.core.templates import base_page
+from browse.components import data_table, banner, page_header
 
 
 @route("/", methods=["GET"])
@@ -28,7 +29,7 @@ def handle_home(db, params, token, nonce) -> tuple:
         return json.dumps(data).encode("utf-8"), "application/json", 200
 
     tok_qs = f"?token={_esc(token)}" if token else ""
-    rows_html = ""
+    table_rows = []
     for r in rows:
         sid = _esc(r["id"])
         sid_short = _esc(r["id"][:8] if r["id"] else "")
@@ -36,10 +37,10 @@ def handle_home(db, params, token, nonce) -> tuple:
         source = _esc(r["source"] or "")
         path_val = _esc(r["path"] or "")
         ec = _esc(r["event_count_estimate"] or "")
-        rows_html += (
-            f'<tr><td><a href="/session/{sid}{tok_qs}">{sid_short}</a></td>'
-            f"<td>{summary}</td><td>{source}</td><td>{path_val}</td><td>{ec}</td></tr>\n"
-        )
+        table_rows.append([
+            f'<a href="/session/{sid}{tok_qs}">{sid_short}</a>',
+            summary, source, path_val, ec,
+        ])
 
     tok_esc = _esc(token)
     body = (
@@ -48,14 +49,13 @@ def handle_home(db, params, token, nonce) -> tuple:
         f'  <input type="text" name="q" placeholder="Search sessions&hellip;">\n'
         f'  <button type="submit">Search</button>\n'
         f"</form>\n"
-        f'<div style="padding:0.5rem;background:var(--pico-card-background-color,#f8f9fa);'
-        f'border-left:4px solid var(--pico-primary);margin-bottom:1rem;">\n'
-        f'  👉 <a href="/dashboard{tok_qs}">View full dashboard</a>'
-        f' for trends, red flags, and most-referenced modules.\n'
-        f'</div>\n'
-        f"<h2>Recent Sessions</h2>\n"
-        f"<table><thead><tr>"
-        f"<th>ID</th><th>Summary</th><th>Source</th><th>Path</th><th>Events</th>"
-        f"</tr></thead>\n<tbody>{rows_html}</tbody>\n</table>"
+        + banner(
+            f'<a href="/dashboard{tok_qs}">View full dashboard</a>'
+            f' for trends, red flags, and most-referenced modules.',
+            variant="info", icon="👉",
+        )
+        + page_header("Recent Sessions",
+                      subtitle_html=f'Most recent {len(rows)} sessions.')
+        + data_table(["ID", "Summary", "Source", "Path", "Events"], table_rows)
     )
     return base_page(nonce, "Home", main_content=body, token=token), "text/html; charset=utf-8", 200

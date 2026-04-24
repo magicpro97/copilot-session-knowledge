@@ -13,6 +13,7 @@ if os.name == "nt":
 from browse.core.registry import route
 from browse.core.fts import _esc
 from browse.core.templates import base_page
+from browse.components import stat_grid, data_table, empty_state, page_header
 
 _ARRAY_CAP = 100
 
@@ -164,34 +165,26 @@ def handle_dashboard(db, params, token, nonce) -> tuple:
     red_flags = _query_red_flags(db)
     weekly_mistakes = _query_weekly_mistakes(db)
     top_modules = _query_top_modules(db)
-    kpi_html = (
-        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1rem;margin-bottom:1.5rem;">\n'
-        + "\n".join(
-            f'<div class="db-kpi-tile"><div class="db-kpi-value">{totals[k]}</div>'
-            f'<div class="db-kpi-label">{_esc(label)}</div></div>'
-            for k, label in [
-                ("sessions", "Sessions"),
-                ("knowledge_entries", "Knowledge Entries"),
-                ("relations", "Relations"),
-                ("embeddings", "Embeddings"),
-            ]
-        )
-        + "\n</div>"
-    )
+    kpi_html = stat_grid([
+        (str(totals["sessions"]), "Sessions"),
+        (str(totals["knowledge_entries"]), "Knowledge Entries"),
+        (str(totals["relations"]), "Relations"),
+        (str(totals["embeddings"]), "Embeddings"),
+    ])
 
     charts_html = (
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;">\n'
         '<div>\n'
-        '<h3>Sessions per Day (last 30 days)</h3>\n'
-        '<div id="chart-sessions-day" class="db-chart-wrap"></div>\n'
+        + page_header("Sessions per day", subtitle_html='<p class="meta">How many AI-coding sessions got indexed per day over the last month.</p>')
+        + '<div id="chart-sessions-day" class="db-chart-wrap"></div>\n'
         '</div>\n'
         '<div>\n'
-        '<h3>Entries by Category</h3>\n'
-        '<div id="chart-by-category" class="db-chart-wrap"></div>\n'
+        + page_header("Entries by category", subtitle_html='<p class="meta">Knowledge entries grouped by type (mistake, pattern, decision…).</p>')
+        + '<div id="chart-by-category" class="db-chart-wrap"></div>\n'
         '</div>\n'
         '<div>\n'
-        '<h3>Top Wings</h3>\n'
-        '<div id="chart-top-wings" class="db-chart-wrap"></div>\n'
+        + page_header("Top modules", subtitle_html='<p class="meta">Most active knowledge wings/modules.</p>')
+        + '<div id="chart-top-wings" class="db-chart-wrap"></div>\n'
         '</div>\n'
         '</div>\n'
     )
@@ -199,21 +192,20 @@ def handle_dashboard(db, params, token, nonce) -> tuple:
     main_content = kpi_html + charts_html
 
     # Red flags section
-    rf_rows_html = ""
+    red_rows = []
     for rf in red_flags:
         sid = rf["session_id"] or ""
         sid8 = _esc(sid[:8])
         events = _esc(str(rf["events"] or ""))
         summary = _esc(rf["summary"] or "")
         href = f'/session/{_esc(sid)}?token={_esc(token)}' if token else f'/session/{_esc(sid)}'
-        rf_rows_html += (
-            f'<tr><td><a href="{href}">{sid8}</a></td>'
-            f'<td>{events}</td><td>{summary}</td></tr>\n'
-        )
+        red_rows.append([f'<a href="{href}">{sid8}</a>', events, summary])
     red_flags_html = (
-        '<h3>🚩 Red Flags — sessions with edits but no learnings</h3>\n'
-        '<table><thead><tr><th>Session</th><th>Events</th><th>Summary</th></tr></thead>\n'
-        f'<tbody>{rf_rows_html}</tbody></table>\n'
+        page_header("🚩 Red Flags",
+                    subtitle_html='Sessions with edits but no learnings.')
+        + data_table(["Session", "Events", "Summary"], red_rows,
+                     empty_icon="🚩", empty_title="No red flags",
+                     empty_message="All high-event sessions have at least one learning — nice work.")
     )
 
     # Weekly mistakes section
@@ -222,8 +214,8 @@ def handle_dashboard(db, params, token, nonce) -> tuple:
         for row in weekly_mistakes
     )
     weekly_html = (
-        '<h3>Mistakes per week (last 8 weeks)</h3>\n'
-        f'<ul>{wm_items}</ul>\n'
+        page_header("Mistakes per week (last 8 weeks)")
+        + (f'<ul>{wm_items}</ul>\n' if wm_items else empty_state("📉", "No mistakes logged"))
     )
 
     # Top modules section
@@ -232,8 +224,8 @@ def handle_dashboard(db, params, token, nonce) -> tuple:
         for row in top_modules
     )
     modules_html = (
-        '<h3>Most-referenced modules</h3>\n'
-        f'<ul>{tm_items}</ul>\n'
+        page_header("Most-referenced modules")
+        + (f'<ul>{tm_items}</ul>\n' if tm_items else empty_state("📦", "No modules logged"))
     )
 
     main_content += red_flags_html + weekly_html + modules_html
@@ -241,11 +233,6 @@ def handle_dashboard(db, params, token, nonce) -> tuple:
     head_extra = (
         f'<link rel="stylesheet" href="/static/vendor/uplot.min.css">\n'
         '<style>\n'
-        '.db-kpi-tile{background:var(--pico-card-background-color,#f8f9fa);'
-        'border:1px solid var(--pico-muted-border-color,#dee2e6);border-radius:8px;'
-        'padding:1rem;text-align:center;}\n'
-        '.db-kpi-value{font-size:2rem;font-weight:700;color:var(--pico-primary);}\n'
-        '.db-kpi-label{font-size:0.85rem;color:var(--pico-muted-color,#6c757d);margin-top:0.25rem;}\n'
         '.db-chart-wrap{min-height:180px;}\n'
         '.db-chart-wrap .u-wrap{width:100%!important;}\n'
         '</style>\n'
