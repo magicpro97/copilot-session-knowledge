@@ -48,6 +48,10 @@ def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> Non
 # Do NOT add new hosts here; update host_manifest.py through the review process.
 from host_manifest import HOST_INSTRUCTION_FILES as KNOWN_HOSTS_INSTRUCTION_FILES  # noqa: E402
 from host_manifest import HOST_SKILL_SUBPATHS  # noqa: E402
+if os.name == "nt":
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
 
 # Vendored skills that explicitly support both Copilot CLI and Claude Code.
 # These are deployed to BOTH host skill paths by install_skills().
@@ -287,7 +291,7 @@ def install_tentacle(project_root: Path, dry_run: bool) -> int:
     gitignore = project_root / ".gitignore"
 
     if gitignore.exists():
-        content = gitignore.read_text()
+        content = gitignore.read_text(encoding="utf-8")
         if ".octogent/" not in content:
             if dry_run:
                 print("  [dry-run] Would add .octogent/ to .gitignore")
@@ -302,7 +306,7 @@ def install_tentacle(project_root: Path, dry_run: bool) -> int:
         if dry_run:
             print("  [dry-run] Would create .gitignore with .octogent/")
         else:
-            gitignore.write_text("# Tentacle orchestration (local work contexts)\n.octogent/\n")
+            gitignore.write_text("# Tentacle orchestration (local work contexts)\n.octogent/\n", encoding="utf-8")
             print("  ✓ Created .gitignore with .octogent/")
         changes += 1
 
@@ -316,7 +320,7 @@ def patch_claude_md(project_root: Path, dry_run: bool) -> bool:
         print("  ⏭ No CLAUDE.md found, skipping")
         return False
 
-    content = claude_md.read_text()
+    content = claude_md.read_text(encoding="utf-8")
     if "session-knowledge" in content or "briefing.py" in content:
         print("  ⏭ CLAUDE.md already references session-knowledge")
         return False
@@ -356,7 +360,7 @@ def patch_claude_md(project_root: Path, dry_run: bool) -> bool:
 
     snippet_lines = CLAUDE_SNIPPET.strip().split("\n")
     lines = lines[:insert_idx] + [""] + snippet_lines + [""] + lines[insert_idx:]
-    claude_md.write_text("\n".join(lines))
+    claude_md.write_text("\n".join(lines), encoding="utf-8")
     print("  ✓ Added Pre-Task Briefing section to CLAUDE.md")
     return True
 
@@ -368,7 +372,7 @@ def patch_copilot_instructions(project_root: Path, dry_run: bool) -> bool:
         print("  ⏭ No .github/copilot-instructions.md found, skipping")
         return False
 
-    content = instructions.read_text()
+    content = instructions.read_text(encoding="utf-8")
     if "session-knowledge" in content:
         print("  ⏭ copilot-instructions.md already references session-knowledge")
         return False
@@ -382,7 +386,7 @@ def patch_copilot_instructions(project_root: Path, dry_run: bool) -> bool:
     for i, line in enumerate(lines):
         if "|------|-------|" in line or "|------|-" in line:
             lines.insert(i + 1, SKILLS_TABLE_ROW)
-            instructions.write_text("\n".join(lines))
+            instructions.write_text("\n".join(lines), encoding="utf-8")
             print("  ✓ Added session-knowledge to copilot-instructions.md skills table")
             return True
 
@@ -397,7 +401,7 @@ def patch_agents_md(project_root: Path, dry_run: bool) -> bool:
         print("  ⏭ No AGENTS.md found, skipping")
         return False
 
-    content = agents_md.read_text()
+    content = agents_md.read_text(encoding="utf-8")
     if "session-knowledge" in content or "briefing.py" in content:
         print("  ⏭ AGENTS.md already references session-knowledge")
         return False
@@ -420,7 +424,7 @@ def patch_agents_md(project_root: Path, dry_run: bool) -> bool:
 
     snippet_lines = AGENTS_SNIPPET.strip().split("\n")
     lines = lines[:insert_idx] + [""] + snippet_lines + [""] + lines[insert_idx:]
-    agents_md.write_text("\n".join(lines))
+    agents_md.write_text("\n".join(lines), encoding="utf-8")
     print("  ✓ Added Pre-Task Briefing section to AGENTS.md")
     return True
 

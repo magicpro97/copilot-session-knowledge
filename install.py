@@ -946,7 +946,7 @@ def lock_hooks():
     # 0. Generate HMAC secret if not exists
     hooks_dst_dir.mkdir(parents=True, exist_ok=True)
     if not secret_path.is_file():
-        secret_path.write_text(secrets.token_hex(32))
+        secret_path.write_text(secrets.token_hex(32), encoding="utf-8")
         print(f"  {OK} HMAC secret generated: {_tilde(secret_path)}")
     else:
         print(f"  {OK} HMAC secret exists: {_tilde(secret_path)}")
@@ -954,10 +954,10 @@ def lock_hooks():
     # 0b. Sanitize config.json — remove disableAllHooks
     if config_json.is_file():
         try:
-            cfg = json.loads(config_json.read_text())
+            cfg = json.loads(config_json.read_text(encoding="utf-8"))
             if "disableAllHooks" in cfg:
                 del cfg["disableAllHooks"]
-                config_json.write_text(json.dumps(cfg, indent=2))
+                config_json.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
                 print(f"  {WARN} Removed disableAllHooks from config.json!")
             else:
                 print(f"  {OK} config.json clean (no disableAllHooks)")
@@ -990,7 +990,7 @@ def lock_hooks():
     # Save manifest
     manifest_path = hooks_dst_dir / "integrity-manifest.json"
     hooks_dst_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2))
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(f"\n  {OK} Manifest saved: {_tilde(manifest_path)}")
 
     # 2. Set OS-level immutable flags

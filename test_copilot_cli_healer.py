@@ -189,7 +189,7 @@ with tempfile.TemporaryDirectory() as td:
 
     # Simulate an existing lock (another process holding it)
     lock_path = pkg / ".healer.lock"
-    lock_path.write_text("99999")
+    lock_path.write_text("99999", encoding="utf-8")
 
     fd = healer._acquire_lock()
     test("Second heal attempt blocked by existing lock", fd is None)

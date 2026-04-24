@@ -45,6 +45,12 @@ from pathlib import Path
 
 if os.name == "nt":
     import io
+import os
+import sys
+if os.name == "nt":
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
@@ -170,7 +176,7 @@ def import_profile(
 
     presets_dir.mkdir(parents=True, exist_ok=True)
     already_exists = dest.exists()
-    dest.write_text(json.dumps(profile, indent=2) + "\n")
+    dest.write_text(json.dumps(profile, indent=2) + "\n", encoding="utf-8")
     action = "Overwritten" if already_exists else "Imported"
     print(f"  ✓  {action}: '{name}' ({len(hooks)} hooks, {len(phases)} phases) → {dest}")
     return True
@@ -210,7 +216,7 @@ Examples:
         sys.exit(1)
 
     try:
-        data = json.loads(src.read_text())
+        data = json.loads(src.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         print(f"✗ Invalid JSON in {src}: {e}")
         sys.exit(1)

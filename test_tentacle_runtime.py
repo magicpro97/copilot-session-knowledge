@@ -59,9 +59,9 @@ def make_tentacle(name: str, base: Path, desc: str = "Test tentacle") -> Path:
         "description": desc,
         "status": "idle",
     }
-    (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
-    (d / "CONTEXT.md").write_text(f"# {name}\n\n{desc}\n")
-    (d / "todo.md").write_text("# Todo\n\n- [ ] Task A\n- [x] Task B\n")
+    (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    (d / "CONTEXT.md").write_text(f"# {name}\n\n{desc}\n", encoding="utf-8")
+    (d / "todo.md").write_text("# Todo\n\n- [ ] Task A\n- [x] Task B\n", encoding="utf-8")
     return d
 
 
@@ -176,7 +176,7 @@ class TestCmdResume(unittest.TestCase):
         args = self._args()
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             T.cmd_resume(args)
-        meta = json.loads((self.tentacle_dir / "meta.json").read_text())
+        meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
         self.assertEqual(meta["status"], "active")
 
     def test_resume_sets_resumed_at_timestamp(self):
@@ -184,17 +184,17 @@ class TestCmdResume(unittest.TestCase):
         before = datetime.now(timezone.utc).isoformat()
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             T.cmd_resume(args)
-        meta = json.loads((self.tentacle_dir / "meta.json").read_text())
+        meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
         self.assertIn("resumed_at", meta)
         # resumed_at should be a valid ISO timestamp after test start
         self.assertGreaterEqual(meta["resumed_at"], before)
 
     def test_resume_appends_resume_section_to_context(self):
         args = self._args()
-        original = (self.tentacle_dir / "CONTEXT.md").read_text()
+        original = (self.tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             T.cmd_resume(args)
-        new_content = (self.tentacle_dir / "CONTEXT.md").read_text()
+        new_content = (self.tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
         # Original content preserved
         self.assertIn(original.strip(), new_content)
         # Resume section appended
@@ -214,7 +214,7 @@ class TestCmdResume(unittest.TestCase):
                 with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                     T.cmd_resume(args)
         mock_brief.assert_called_once()
-        context = (self.tentacle_dir / "CONTEXT.md").read_text()
+        context = (self.tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
         self.assertIn("Lesson: always test", context)
         self.assertIn("Live Briefing", context)
 
@@ -224,7 +224,7 @@ class TestCmdResume(unittest.TestCase):
             with patch.object(T, "_run_briefing_for_task", return_value=""):
                 with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                     T.cmd_resume(args)
-        context = (self.tentacle_dir / "CONTEXT.md").read_text()
+        context = (self.tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
         self.assertIn("No new briefing content available", context)
 
     def test_resume_shows_pending_todos(self, capsys=None):
@@ -253,7 +253,7 @@ class TestCmdResume(unittest.TestCase):
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             T.cmd_resume(args)
         self.assertTrue((self.tentacle_dir / "CONTEXT.md").exists())
-        content = (self.tentacle_dir / "CONTEXT.md").read_text()
+        content = (self.tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
         self.assertIn("## Resumed [", content)
 
     def test_resume_uses_task_id_equal_to_name_for_briefing(self):
@@ -271,7 +271,7 @@ class TestCmdResume(unittest.TestCase):
         args = self._args()
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             T.cmd_resume(args)
-        meta = json.loads((self.tentacle_dir / "meta.json").read_text())
+        meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
         self.assertEqual(meta.get("scope"), ["src/foo.py"])
         self.assertEqual(meta.get("description"), "Test tentacle")
 
@@ -354,7 +354,7 @@ class TestSwarmBriefingFlag(unittest.TestCase):
 
     def test_swarm_no_pending_todos_returns_early(self):
         # Mark all todos done
-        (self.tentacle_dir / "todo.md").write_text("# Todo\n\n- [x] Task A\n- [x] Task B\n")
+        (self.tentacle_dir / "todo.md").write_text("# Todo\n\n- [x] Task A\n- [x] Task B\n", encoding="utf-8")
         args = self._swarm_args(briefing=True)
         captured = []
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
@@ -455,7 +455,7 @@ class TestExistingBehaviorUnchanged(unittest.TestCase):
         args = fake_args(name="complete-test", no_learn=True)
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             T.cmd_complete(args)
-        meta = json.loads(((self.base / "complete-test") / "meta.json").read_text())
+        meta = json.loads(((self.base / "complete-test") / "meta.json").read_text(encoding="utf-8"))
         self.assertEqual(meta["status"], "completed")
 
 
@@ -679,7 +679,7 @@ class TestCmdResumeWithCheckpoint(unittest.TestCase):
             with patch.object(T, "_run_briefing_for_task", return_value=""):
                 with patch.object(T, "_load_latest_checkpoint_context", return_value=checkpoint_ctx):
                     T.cmd_resume(args)
-        context = (self.tentacle_dir / "CONTEXT.md").read_text()
+        context = (self.tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
         self.assertIn("Starting batch two", context)
         self.assertIn("#3", context)
         self.assertIn("Some overview", context)
@@ -690,7 +690,7 @@ class TestCmdResumeWithCheckpoint(unittest.TestCase):
             with patch.object(T, "_run_briefing_for_task", return_value=""):
                 with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                     T.cmd_resume(args)  # Must not raise
-        context = (self.tentacle_dir / "CONTEXT.md").read_text()
+        context = (self.tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
         self.assertIn("## Resumed [", context)
         self.assertNotIn("Latest Checkpoint", context)
 
@@ -709,7 +709,7 @@ class TestCmdResumeWithCheckpoint(unittest.TestCase):
             with patch.object(T, "_run_briefing_for_task", return_value="Lesson: test first"):
                 with patch.object(T, "_load_latest_checkpoint_context", return_value=checkpoint_ctx):
                     T.cmd_resume(args)
-        context = (self.tentacle_dir / "CONTEXT.md").read_text()
+        context = (self.tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
         self.assertIn("Lesson: test first", context)
         self.assertIn("Live Briefing", context)
         self.assertIn("checkpoint overview", context)
@@ -758,7 +758,7 @@ class TestCmdNextStep(unittest.TestCase):
         self.assertFalse(any("Task B" in l for l in lines_with_arrow))
 
     def test_all_done_shows_completion_message(self):
-        (self.tentacle_dir / "todo.md").write_text("# Todo\n\n- [x] Task A\n- [x] Task B\n")
+        (self.tentacle_dir / "todo.md").write_text("# Todo\n\n- [x] Task A\n- [x] Task B\n", encoding="utf-8")
         captured = []
         args = self._args()
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
@@ -783,7 +783,7 @@ class TestCmdNextStep(unittest.TestCase):
         self.assertIn("todos_total", data)
 
     def test_json_all_done_returns_null_next_step(self):
-        (self.tentacle_dir / "todo.md").write_text("# Todo\n\n- [x] Task A\n")
+        (self.tentacle_dir / "todo.md").write_text("# Todo\n\n- [x] Task A\n", encoding="utf-8")
         captured = []
         args = self._args(fmt="json")
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
@@ -850,7 +850,7 @@ class TestCmdNextStep(unittest.TestCase):
     def test_all_flag_shows_all_pending(self):
         (self.tentacle_dir / "todo.md").write_text(
             "# Todo\n\n- [ ] Step 1\n- [ ] Step 2\n- [ ] Step 3\n- [x] Done task\n"
-        )
+        , encoding="utf-8")
         captured = []
         args = self._args(show_all=True)
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
@@ -867,7 +867,7 @@ class TestCmdNextStep(unittest.TestCase):
     def test_without_all_flag_only_first_todo_highlighted(self):
         (self.tentacle_dir / "todo.md").write_text(
             "# Todo\n\n- [ ] First\n- [ ] Second\n"
-        )
+        , encoding="utf-8")
         captured = []
         args = self._args(show_all=False)
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
@@ -898,24 +898,24 @@ class TestCmdNextStep(unittest.TestCase):
 
     def test_read_only_does_not_mutate_meta(self):
         """next-step must not change meta.json status."""
-        meta_before = json.loads((self.tentacle_dir / "meta.json").read_text())
+        meta_before = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
         args = self._args()
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                 with patch("builtins.print"):
                     T.cmd_next_step(args)
-        meta_after = json.loads((self.tentacle_dir / "meta.json").read_text())
+        meta_after = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
         self.assertEqual(meta_before, meta_after)
 
     def test_read_only_does_not_mutate_todo_file(self):
         """next-step must not modify todo.md."""
-        content_before = (self.tentacle_dir / "todo.md").read_text()
+        content_before = (self.tentacle_dir / "todo.md").read_text(encoding="utf-8")
         args = self._args()
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                 with patch("builtins.print"):
                     T.cmd_next_step(args)
-        content_after = (self.tentacle_dir / "todo.md").read_text()
+        content_after = (self.tentacle_dir / "todo.md").read_text(encoding="utf-8")
         self.assertEqual(content_before, content_after)
 
 
@@ -1046,7 +1046,7 @@ class TestBuildRuntimeBundle(unittest.TestCase):
     def test_manifest_is_valid_json(self):
         d = self._make()
         bundle_dir = T._build_runtime_bundle(d, "test-bundle")
-        raw = (bundle_dir / "manifest.json").read_text()
+        raw = (bundle_dir / "manifest.json").read_text(encoding="utf-8")
         data = json.loads(raw)
         self.assertEqual(data["tentacle"], "test-bundle")
         self.assertIn("created_at", data)
@@ -1055,7 +1055,7 @@ class TestBuildRuntimeBundle(unittest.TestCase):
     def test_manifest_artifact_keys(self):
         d = self._make()
         bundle_dir = T._build_runtime_bundle(d, "test-bundle")
-        data = json.loads((bundle_dir / "manifest.json").read_text())
+        data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
         for key in ("briefing", "instructions", "skills", "session_metadata"):
             self.assertIn(key, data["artifacts"], f"Missing artifact key: {key}")
 
@@ -1064,25 +1064,25 @@ class TestBuildRuntimeBundle(unittest.TestCase):
     def test_briefing_populated_when_text_provided(self):
         d = self._make()
         bundle_dir = T._build_runtime_bundle(d, "test-bundle", briefing_text="Past learning: use X not Y")
-        content = (bundle_dir / "briefing.md").read_text()
+        content = (bundle_dir / "briefing.md").read_text(encoding="utf-8")
         self.assertIn("Past learning", content)
 
     def test_briefing_populated_flag_in_manifest(self):
         d = self._make()
         bundle_dir = T._build_runtime_bundle(d, "test-bundle", briefing_text="some text")
-        data = json.loads((bundle_dir / "manifest.json").read_text())
+        data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertTrue(data["artifacts"]["briefing"]["populated"])
 
     def test_briefing_placeholder_when_empty(self):
         d = self._make()
         bundle_dir = T._build_runtime_bundle(d, "test-bundle", briefing_text="")
-        content = (bundle_dir / "briefing.md").read_text()
+        content = (bundle_dir / "briefing.md").read_text(encoding="utf-8")
         self.assertIn("No briefing data", content)
 
     def test_briefing_not_populated_flag_in_manifest(self):
         d = self._make()
         bundle_dir = T._build_runtime_bundle(d, "test-bundle", briefing_text="")
-        data = json.loads((bundle_dir / "manifest.json").read_text())
+        data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertFalse(data["artifacts"]["briefing"]["populated"])
 
     # ── absent surfaces fall back to placeholder ─────────────────────────────
@@ -1091,28 +1091,28 @@ class TestBuildRuntimeBundle(unittest.TestCase):
         d = self._make()
         with patch.object(T, "find_git_root", return_value=None):
             bundle_dir = T._build_runtime_bundle(d, "test-bundle")
-        content = (bundle_dir / "instructions.md").read_text()
+        content = (bundle_dir / "instructions.md").read_text(encoding="utf-8")
         self.assertIn("No instruction files found", content)
 
     def test_instructions_not_populated_when_absent(self):
         d = self._make()
         with patch.object(T, "find_git_root", return_value=None):
             bundle_dir = T._build_runtime_bundle(d, "test-bundle")
-        data = json.loads((bundle_dir / "manifest.json").read_text())
+        data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertFalse(data["artifacts"]["instructions"]["populated"])
 
     def test_skills_placeholder_when_no_git_root(self):
         d = self._make()
         with patch.object(T, "find_git_root", return_value=None):
             bundle_dir = T._build_runtime_bundle(d, "test-bundle")
-        content = (bundle_dir / "skills.md").read_text()
+        content = (bundle_dir / "skills.md").read_text(encoding="utf-8")
         self.assertIn("No SKILL.md files found", content)
 
     def test_skills_not_populated_when_absent(self):
         d = self._make()
         with patch.object(T, "find_git_root", return_value=None):
             bundle_dir = T._build_runtime_bundle(d, "test-bundle")
-        data = json.loads((bundle_dir / "manifest.json").read_text())
+        data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertFalse(data["artifacts"]["skills"]["populated"])
 
     # ── session metadata ─────────────────────────────────────────────────────
@@ -1120,43 +1120,43 @@ class TestBuildRuntimeBundle(unittest.TestCase):
     def test_session_metadata_includes_context(self):
         d = self._make()
         bundle_dir = T._build_runtime_bundle(d, "test-bundle")
-        content = (bundle_dir / "session-metadata.md").read_text()
+        content = (bundle_dir / "session-metadata.md").read_text(encoding="utf-8")
         self.assertIn("# Session Metadata", content)
 
     def test_session_metadata_has_context_flag(self):
         d = self._make()
         bundle_dir = T._build_runtime_bundle(d, "test-bundle")
-        data = json.loads((bundle_dir / "manifest.json").read_text())
+        data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertTrue(data["artifacts"]["session_metadata"]["has_context"])
         self.assertTrue(data["artifacts"]["session_metadata"]["has_todos"])
 
     def test_session_metadata_checkpoint_included(self):
         d = self._make()
         bundle_dir = T._build_runtime_bundle(d, "test-bundle", checkpoint_text="## Checkpoint\n\nSome work done.")
-        content = (bundle_dir / "session-metadata.md").read_text()
+        content = (bundle_dir / "session-metadata.md").read_text(encoding="utf-8")
         self.assertIn("Some work done", content)
-        data = json.loads((bundle_dir / "manifest.json").read_text())
+        data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertTrue(data["artifacts"]["session_metadata"]["has_checkpoint"])
 
     def test_session_metadata_no_checkpoint_flag_when_absent(self):
         d = self._make()
         bundle_dir = T._build_runtime_bundle(d, "test-bundle", checkpoint_text="")
-        data = json.loads((bundle_dir / "manifest.json").read_text())
+        data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertFalse(data["artifacts"]["session_metadata"]["has_checkpoint"])
 
     def test_session_metadata_handoff_included_when_present(self):
         d = self._make()
-        (d / "handoff.md").write_text("# Handoff\n\nDone the thing.\n")
+        (d / "handoff.md").write_text("# Handoff\n\nDone the thing.\n", encoding="utf-8")
         bundle_dir = T._build_runtime_bundle(d, "test-bundle")
-        content = (bundle_dir / "session-metadata.md").read_text()
+        content = (bundle_dir / "session-metadata.md").read_text(encoding="utf-8")
         self.assertIn("Done the thing", content)
-        data = json.loads((bundle_dir / "manifest.json").read_text())
+        data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertTrue(data["artifacts"]["session_metadata"]["has_handoff"])
 
     def test_session_metadata_no_handoff_flag_when_absent(self):
         d = self._make()
         bundle_dir = T._build_runtime_bundle(d, "test-bundle")
-        data = json.loads((bundle_dir / "manifest.json").read_text())
+        data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertFalse(data["artifacts"]["session_metadata"]["has_handoff"])
 
     # ── skills populated when SKILL.md files present ─────────────────────────
@@ -1166,12 +1166,12 @@ class TestBuildRuntimeBundle(unittest.TestCase):
         fake_root = self.base / "fake_repo"
         skills_dir = fake_root / ".github" / "skills" / "my-skill"
         skills_dir.mkdir(parents=True)
-        (skills_dir / "SKILL.md").write_text("# My Skill\n\nDoes things.\n")
+        (skills_dir / "SKILL.md").write_text("# My Skill\n\nDoes things.\n", encoding="utf-8")
         with patch.object(T, "find_git_root", return_value=fake_root):
             bundle_dir = T._build_runtime_bundle(d, "test-bundle")
-        content = (bundle_dir / "skills.md").read_text()
+        content = (bundle_dir / "skills.md").read_text(encoding="utf-8")
         self.assertIn("my-skill", content)
-        data = json.loads((bundle_dir / "manifest.json").read_text())
+        data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertTrue(data["artifacts"]["skills"]["populated"])
 
     # ── instructions populated when files present ─────────────────────────────
@@ -1180,12 +1180,12 @@ class TestBuildRuntimeBundle(unittest.TestCase):
         d = self._make()
         fake_root = self.base / "fake_repo2"
         fake_root.mkdir(parents=True, exist_ok=True)
-        (fake_root / "CLAUDE.md").write_text("# Claude Instructions\n\nDo this.\n")
+        (fake_root / "CLAUDE.md").write_text("# Claude Instructions\n\nDo this.\n", encoding="utf-8")
         with patch.object(T, "find_git_root", return_value=fake_root):
             bundle_dir = T._build_runtime_bundle(d, "test-bundle")
-        content = (bundle_dir / "instructions.md").read_text()
+        content = (bundle_dir / "instructions.md").read_text(encoding="utf-8")
         self.assertIn("Claude Instructions", content)
-        data = json.loads((bundle_dir / "manifest.json").read_text())
+        data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertTrue(data["artifacts"]["instructions"]["populated"])
 
     # ── re-materialization overwrites existing bundle ─────────────────────────
@@ -1194,7 +1194,7 @@ class TestBuildRuntimeBundle(unittest.TestCase):
         d = self._make()
         T._build_runtime_bundle(d, "test-bundle", briefing_text="first run")
         T._build_runtime_bundle(d, "test-bundle", briefing_text="second run")
-        content = (d / "bundle" / "briefing.md").read_text()
+        content = (d / "bundle" / "briefing.md").read_text(encoding="utf-8")
         self.assertIn("second run", content)
         self.assertNotIn("first run", content)
 
@@ -1251,7 +1251,7 @@ class TestCmdBundle(unittest.TestCase):
         args = self._args("my-tentacle", no_briefing=True)
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             T.cmd_bundle(args)
-        content = (d / "bundle" / "briefing.md").read_text()
+        content = (d / "bundle" / "briefing.md").read_text(encoding="utf-8")
         self.assertIn("No briefing data", content)
 
     def test_cmd_bundle_with_briefing_fetches_knowledge(self):
@@ -1390,7 +1390,7 @@ class TestSwarmBundleFlag(unittest.TestCase):
                     from contextlib import redirect_stdout
                     with redirect_stdout(io.StringIO()):
                         T.cmd_swarm(args)
-        content = (d / "bundle" / "briefing.md").read_text()
+        content = (d / "bundle" / "briefing.md").read_text(encoding="utf-8")
         self.assertIn("Pattern: keep raw briefing", content)
         self.assertNotIn("### Past Knowledge (live briefing at dispatch)", content)
 
@@ -1571,7 +1571,7 @@ class TestSwarmGuardrails(unittest.TestCase):
 
     def test_advisory_text_present_even_with_single_todo(self):
         """Advisory guidance is injected regardless of todo count."""
-        (self.tentacle_dir / "todo.md").write_text("# Todo\n\n- [ ] Only task\n")
+        (self.tentacle_dir / "todo.md").write_text("# Todo\n\n- [ ] Only task\n", encoding="utf-8")
         combined = self._capture(self._swarm_args(output="prompt"))
         self.assertIn("git commit", combined)
         self.assertIn("git push", combined)
@@ -1581,7 +1581,7 @@ class TestSwarmGuardrails(unittest.TestCase):
         """Advisory guidance is injected with multiple pending todos."""
         (self.tentacle_dir / "todo.md").write_text(
             "# Todo\n\n- [ ] Task 1\n- [ ] Task 2\n- [ ] Task 3\n"
-        )
+        , encoding="utf-8")
         combined = self._capture(self._swarm_args(output="prompt"))
         self.assertIn("git commit", combined)
         self.assertIn("orchestrator", combined)
@@ -1640,7 +1640,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
 
     def test_write_marker_contains_required_fields(self):
         T._write_dispatched_subagent_marker("my-tent", ["a.py", "b.py"], "parallel")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertEqual(data["name"], self.MARKER_NAME)
         self.assertIn("ts", data)
         self.assertIn("active_tentacles", data)
@@ -1654,14 +1654,14 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
         """Without a secret, the marker should be written without a sig field."""
         with patch.object(T, "_read_marker_secret", return_value=None):
             T._write_dispatched_subagent_marker("my-tent", [], "json")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertNotIn("sig", data)
 
     def test_write_marker_includes_sig_when_secret_present(self):
         """With a secret, the marker must include an HMAC sig."""
         with patch.object(T, "_read_marker_secret", return_value="test-secret"):
             T._write_dispatched_subagent_marker("my-tent", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertIn("sig", data)
         self.assertIsInstance(data["sig"], str)
         self.assertEqual(len(data["sig"]), 64)  # SHA-256 hex digest
@@ -1671,7 +1671,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
         import hashlib, hmac as _hmac
         with patch.object(T, "_read_marker_secret", return_value="my-secret"):
             T._write_dispatched_subagent_marker("my-tent", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         expected = _hmac.new(
             "my-secret".encode(),
             f"{self.MARKER_NAME}:{data['ts']}".encode(),
@@ -1688,7 +1688,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
     # ── _clear_dispatched_subagent_marker ─────────────────────────────────────
 
     def test_clear_removes_marker_file(self):
-        self.marker_path.write_text('{"name": "test", "active_tentacles": ["any-tent"]}')
+        self.marker_path.write_text('{"name": "test", "active_tentacles": ["any-tent"]}', encoding="utf-8")
         result = T._clear_dispatched_subagent_marker("any-tent")
         self.assertTrue(result)
         self.assertFalse(self.marker_path.is_file())
@@ -1700,7 +1700,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
         self.assertTrue(result)
 
     def test_clear_returns_false_on_error(self):
-        self.marker_path.write_text('{"active_tentacles": ["any-tent"]}')
+        self.marker_path.write_text('{"active_tentacles": ["any-tent"]}', encoding="utf-8")
         with patch("pathlib.Path.unlink", side_effect=PermissionError("busy")):
             result = T._clear_dispatched_subagent_marker("any-tent")
         self.assertFalse(result)
@@ -1713,13 +1713,13 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
 
     def test_read_returns_dict_when_marker_present(self):
         data = {"name": self.MARKER_NAME, "ts": "12345", "active_tentacles": ["my-tent"]}
-        self.marker_path.write_text(json.dumps(data))
+        self.marker_path.write_text(json.dumps(data), encoding="utf-8")
         result = T._read_dispatched_subagent_marker()
         self.assertIsNotNone(result)
         self.assertIn("my-tent", result["active_tentacles"])
 
     def test_read_returns_none_on_invalid_json(self):
-        self.marker_path.write_text("not json {{")
+        self.marker_path.write_text("not json {{", encoding="utf-8")
         result = T._read_dispatched_subagent_marker()
         self.assertIsNone(result)
 
@@ -1769,7 +1769,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
             "active_tentacles": ["old-tent"], "dispatch_mode": "prompt",
             "ttl_seconds": 14400, "written_at": "2025-01-01T00:00:00+00:00",
         }
-        self.marker_path.write_text(json.dumps(data))
+        self.marker_path.write_text(json.dumps(data), encoding="utf-8")
         state = T._get_marker_state()
         self.assertTrue(state["stale"])
 
@@ -1795,7 +1795,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
             with patch("builtins.print"):
                 T.cmd_swarm(args)
         self.assertTrue(self.marker_path.is_file())
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertIn("sp-test", _names_from_entries(data["active_tentacles"]))
         self.assertEqual(data["dispatch_mode"], "prompt")
 
@@ -1809,7 +1809,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
             with patch("builtins.print"):
                 T.cmd_swarm(args)
         self.assertTrue(self.marker_path.is_file())
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertEqual(data["dispatch_mode"], "parallel")
 
     def test_swarm_json_writes_marker(self):
@@ -1861,7 +1861,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
         swarm_base = self.base / "swarm_done"
         swarm_base.mkdir()
         d = make_tentacle("done-test", swarm_base)
-        (d / "todo.md").write_text("# Todo\n\n- [x] All done\n")
+        (d / "todo.md").write_text("# Todo\n\n- [x] All done\n", encoding="utf-8")
         args = self._swarm_args("done-test", output="prompt")
         with patch.object(T, "get_tentacles_dir", return_value=swarm_base):
             with patch("builtins.print"):
@@ -1910,7 +1910,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
             with patch("builtins.print"):
                 T.cmd_complete(args)  # Must not raise
         # Tentacle should be completed regardless
-        meta = json.loads(((complete_base / "nm-test") / "meta.json").read_text())
+        meta = json.loads(((complete_base / "nm-test") / "meta.json").read_text(encoding="utf-8"))
         self.assertEqual(meta["status"], "completed")
 
     # ── cmd_bundle integration ────────────────────────────────────────────────
@@ -1925,7 +1925,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
             with patch("builtins.print"):
                 T.cmd_bundle(args)
         self.assertTrue(self.marker_path.is_file())
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertEqual(data["dispatch_mode"], "bundle")
         self.assertIn("bm-test", _names_from_entries(data["active_tentacles"]))
 
@@ -1954,14 +1954,14 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
         swarm_base.mkdir()
         d = make_tentacle("sc-test", swarm_base)
         # Override meta scope
-        meta = json.loads((d / "meta.json").read_text())
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
         meta["scope"] = ["backend/handler.ts", "shared/dtos.ts"]
-        (d / "meta.json").write_text(json.dumps(meta))
+        (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
         args = self._swarm_args("sc-test", output="json")
         with patch.object(T, "get_tentacles_dir", return_value=swarm_base):
             with patch("builtins.print"):
                 T.cmd_swarm(args)
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertIn("backend/handler.ts", data["scope"])
         self.assertIn("shared/dtos.ts", data["scope"])
 
@@ -1993,7 +1993,7 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
         """Second dispatch must append to active_tentacles, not overwrite."""
         T._write_dispatched_subagent_marker("tent-a", ["a.py"], "prompt")
         T._write_dispatched_subagent_marker("tent-b", ["b.py"], "parallel")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         self.assertIn("tent-a", names)
         self.assertIn("tent-b", names)
@@ -2003,7 +2003,7 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
         """Writing the same tentacle twice must not create duplicate entries."""
         T._write_dispatched_subagent_marker("tent-a", [], "prompt")
         T._write_dispatched_subagent_marker("tent-a", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         self.assertEqual(names.count("tent-a"), 1)
 
@@ -2011,7 +2011,7 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
         """Writing tent-b after tent-a keeps tent-a in active_tentacles."""
         T._write_dispatched_subagent_marker("tent-a", [], "prompt")
         T._write_dispatched_subagent_marker("tent-b", [], "json")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertIn("tent-a", _names_from_entries(data["active_tentacles"]))
 
     # ── partial complete ──────────────────────────────────────────────────────
@@ -2022,7 +2022,7 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
         T._write_dispatched_subagent_marker("tent-b", [], "prompt")
         T._clear_dispatched_subagent_marker("tent-a")
         self.assertTrue(self.marker_path.is_file())
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         self.assertNotIn("tent-a", names)
         self.assertIn("tent-b", names)
@@ -2040,7 +2040,7 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
         T._write_dispatched_subagent_marker("tent-a", [], "prompt")
         T._clear_dispatched_subagent_marker("tent-x")  # not in active set
         self.assertTrue(self.marker_path.is_file())
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertIn("tent-a", _names_from_entries(data["active_tentacles"]))
 
     # ── HMAC integrity across lifecycle ──────────────────────────────────────
@@ -2051,7 +2051,7 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
         with patch.object(T, "_read_marker_secret", return_value="shared-secret"):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
             T._write_dispatched_subagent_marker("tent-b", [], "json")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         expected = _hmac.new(
             "shared-secret".encode(),
             f"{self.MARKER_NAME}:{data['ts']}".encode(),
@@ -2062,10 +2062,10 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
     def test_ts_refreshed_on_second_dispatch(self):
         """ts must reflect the most-recent write, not the first one."""
         T._write_dispatched_subagent_marker("tent-a", [], "prompt")
-        ts_first = json.loads(self.marker_path.read_text())["ts"]
+        ts_first = json.loads(self.marker_path.read_text(encoding="utf-8"))["ts"]
         time.sleep(0.01)
         T._write_dispatched_subagent_marker("tent-b", [], "json")
-        ts_second = json.loads(self.marker_path.read_text())["ts"]
+        ts_second = json.loads(self.marker_path.read_text(encoding="utf-8"))["ts"]
         self.assertGreaterEqual(int(ts_second), int(ts_first))
 
     def test_hmac_valid_after_partial_clear(self):
@@ -2075,7 +2075,7 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
             T._write_dispatched_subagent_marker("tent-b", [], "prompt")
             T._clear_dispatched_subagent_marker("tent-a")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         expected = _hmac.new(
             "shared-secret".encode(),
             f"{self.MARKER_NAME}:{data['ts']}".encode(),
@@ -2089,10 +2089,10 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
         """Old marker with 'tentacle' field must be promoted to active_tentacles list."""
         self.marker_path.write_text(json.dumps({
             "name": self.MARKER_NAME, "ts": "1000", "tentacle": "legacy-tent",
-        }))
+        }), encoding="utf-8")
         # New dispatch merges old owner into set
         T._write_dispatched_subagent_marker("new-tent", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertIn("active_tentacles", data)
         self.assertIn("new-tent", _names_from_entries(data["active_tentacles"]))
 
@@ -2100,7 +2100,7 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
         """Old marker with 'tentacle' field is deleted when that owner clears."""
         self.marker_path.write_text(json.dumps({
             "name": self.MARKER_NAME, "ts": "1000", "tentacle": "legacy-tent",
-        }))
+        }), encoding="utf-8")
         T._clear_dispatched_subagent_marker("legacy-tent")
         self.assertFalse(self.marker_path.is_file())
 
@@ -2136,21 +2136,21 @@ class TestMarkerNewFormat(unittest.TestCase):
     def test_write_creates_dict_entries_not_strings(self):
         """active_tentacles must be a list of dicts, not strings."""
         T._write_dispatched_subagent_marker("my-tent", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertTrue(len(data["active_tentacles"]) > 0)
         for entry in data["active_tentacles"]:
             self.assertIsInstance(entry, dict, "Each active_tentacles entry must be a dict")
 
     def test_entry_has_name_field(self):
         T._write_dispatched_subagent_marker("my-tent", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entry = data["active_tentacles"][0]
         self.assertEqual(entry["name"], "my-tent")
 
     def test_entry_has_ts_field(self):
         """Each entry must carry its own UNIX timestamp."""
         T._write_dispatched_subagent_marker("my-tent", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entry = data["active_tentacles"][0]
         self.assertIn("ts", entry)
         self.assertIsNotNone(entry["ts"])
@@ -2160,27 +2160,27 @@ class TestMarkerNewFormat(unittest.TestCase):
     def test_entry_has_git_root_field(self):
         """Each entry must carry a git_root key (even if None for non-git CWD)."""
         T._write_dispatched_subagent_marker("my-tent", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entry = data["active_tentacles"][0]
         self.assertIn("git_root", entry)
 
     def test_top_level_git_root_written(self):
         """Marker must carry a top-level git_root field from the writing context."""
         T._write_dispatched_subagent_marker("my-tent", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertIn("git_root", data)
 
     def test_global_ts_still_present_for_hmac(self):
         """Global ts must still be present — it anchors the HMAC signature."""
         T._write_dispatched_subagent_marker("my-tent", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertIn("ts", data)
         self.assertIsNotNone(data["ts"])
 
     def test_per_entry_ts_is_independent_of_global_ts(self):
         """Per-entry ts is distinct from the global ts field."""
         T._write_dispatched_subagent_marker("my-tent", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         # Both exist — they are separate fields serving separate purposes
         self.assertIn("ts", data)                            # global HMAC anchor
         self.assertIn("ts", data["active_tentacles"][0])     # per-entry TTL anchor
@@ -2192,7 +2192,7 @@ class TestMarkerNewFormat(unittest.TestCase):
         T._write_dispatched_subagent_marker("tent-a", [], "prompt")
         time.sleep(0.02)
         T._write_dispatched_subagent_marker("tent-b", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = {e["name"]: e for e in data["active_tentacles"]}
         self.assertIn("tent-a", entries)
         self.assertIn("tent-b", entries)
@@ -2202,10 +2202,10 @@ class TestMarkerNewFormat(unittest.TestCase):
     def test_same_name_redispatch_refreshes_per_entry_ts(self):
         """Re-dispatching the same tentacle in the same repo must refresh its per-entry ts."""
         T._write_dispatched_subagent_marker("tent-a", [], "prompt")
-        ts_before = json.loads(self.marker_path.read_text())["active_tentacles"][0]["ts"]
+        ts_before = json.loads(self.marker_path.read_text(encoding="utf-8"))["active_tentacles"][0]["ts"]
         time.sleep(0.02)
         T._write_dispatched_subagent_marker("tent-a", [], "prompt")
-        entries = json.loads(self.marker_path.read_text())["active_tentacles"]
+        entries = json.loads(self.marker_path.read_text(encoding="utf-8"))["active_tentacles"]
         names = _names_from_entries(entries)
         # Must still be exactly one entry (deduped)
         self.assertEqual(names.count("tent-a"), 1)
@@ -2220,7 +2220,7 @@ class TestMarkerNewFormat(unittest.TestCase):
         fake_root.mkdir(exist_ok=True)
         with patch.object(T, "find_git_root", return_value=fake_root):
             T._write_dispatched_subagent_marker("my-tent", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertEqual(data["active_tentacles"][0]["git_root"], str(fake_root))
         self.assertEqual(data["git_root"], str(fake_root))
 
@@ -2228,7 +2228,7 @@ class TestMarkerNewFormat(unittest.TestCase):
         """When CWD is outside any git repo, git_root must be null."""
         with patch.object(T, "find_git_root", return_value=None):
             T._write_dispatched_subagent_marker("my-tent", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertIsNone(data["active_tentacles"][0]["git_root"])
         self.assertIsNone(data["git_root"])
 
@@ -2333,7 +2333,7 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
             "name": self.MARKER_NAME,
             "ts": "1000",
             "active_tentacles": ["old-tent"],
-        }))
+        }), encoding="utf-8")
         T._clear_dispatched_subagent_marker("old-tent")
         self.assertFalse(self.marker_path.is_file())
 
@@ -2346,7 +2346,7 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
         }))
         T._clear_dispatched_subagent_marker("tent-remove")
         self.assertTrue(self.marker_path.is_file())
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         self.assertIn("tent-keep", names)
         self.assertNotIn("tent-remove", names)
@@ -2357,9 +2357,9 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
             "name": self.MARKER_NAME,
             "ts": "1000",
             "active_tentacles": ["old-string-tent"],
-        }))
+        }), encoding="utf-8")
         T._write_dispatched_subagent_marker("new-tent", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         for entry in data["active_tentacles"]:
             self.assertIsInstance(entry, dict, "All entries must be dicts after write")
 
@@ -2390,7 +2390,7 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
         }))
         T._clear_dispatched_subagent_marker("dict-to-remove")
         self.assertTrue(self.marker_path.is_file())
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         self.assertIn("string-to-keep", names)
         self.assertNotIn("dict-to-remove", names)
@@ -2408,10 +2408,10 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
             "name": self.MARKER_NAME,
             "ts": "1000",
             "active_tentacles": ["tent-a"],
-        }))
+        }), encoding="utf-8")
         with patch.object(T, "find_git_root", return_value=repo_a):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = data["active_tentacles"]
         self.assertEqual(len(entries), 1, "Legacy entry must be absorbed, not duplicated")
         self.assertEqual(entries[0]["name"], "tent-a")
@@ -2432,7 +2432,7 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
         }))
         with patch.object(T, "find_git_root", return_value=repo_b):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         self.assertEqual(
             names.count("tent-a"), 1,
@@ -2452,7 +2452,7 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
         }))
         with patch.object(T, "find_git_root", return_value=repo_a):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         # tent-b's legacy entry must remain untouched
         self.assertIn("tent-b", names)
@@ -2472,7 +2472,7 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
         }))
         with patch.object(T, "find_git_root", return_value=None):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         # Must still be one entry (deduped by None==None exact match)
         self.assertEqual(names.count("tent-a"), 1)
@@ -2508,7 +2508,7 @@ class TestMarkerCrossRepoIsolation(unittest.TestCase):
             T._write_dispatched_subagent_marker("feature-x", [], "prompt")
         with patch.object(T, "find_git_root", return_value=repo_b):
             T._write_dispatched_subagent_marker("feature-x", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = data["active_tentacles"]
         self.assertEqual(len(entries), 2, "Different-repo same-name dispatches must not collapse")
         git_roots = {e["git_root"] for e in entries}
@@ -2521,7 +2521,7 @@ class TestMarkerCrossRepoIsolation(unittest.TestCase):
         with patch.object(T, "find_git_root", return_value=repo_a):
             T._write_dispatched_subagent_marker("feature-x", [], "prompt")
             T._write_dispatched_subagent_marker("feature-x", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         self.assertEqual(names.count("feature-x"), 1)
 
@@ -2538,7 +2538,7 @@ class TestMarkerCrossRepoIsolation(unittest.TestCase):
             T._clear_dispatched_subagent_marker("feature-x")
         # Marker file must still exist (repo-b entry remains)
         self.assertTrue(self.marker_path.is_file())
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         remaining = data["active_tentacles"]
         self.assertEqual(len(remaining), 1)
         self.assertEqual(remaining[0]["git_root"], str(repo_b))
@@ -2563,7 +2563,7 @@ class TestMarkerCrossRepoIsolation(unittest.TestCase):
             T._write_dispatched_subagent_marker("alpha", [], "prompt")
         with patch.object(T, "find_git_root", return_value=repo_b):
             T._write_dispatched_subagent_marker("beta", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         self.assertIn("alpha", names)
         self.assertIn("beta", names)
@@ -2655,7 +2655,7 @@ class TestMarkerLegacyUpgradePath(unittest.TestCase):
         repo_a = self.base / "repo-a"
         with patch.object(T, "find_git_root", return_value=repo_a):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = data["active_tentacles"]
         # Must be exactly one entry — no duplicate
         self.assertEqual(len(entries), 1, "Legacy entry must be absorbed, not duplicated")
@@ -2666,7 +2666,7 @@ class TestMarkerLegacyUpgradePath(unittest.TestCase):
         repo_a = self.base / "repo-a"
         with patch.object(T, "find_git_root", return_value=repo_a):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entry = data["active_tentacles"][0]
         self.assertEqual(entry["git_root"], str(repo_a))
 
@@ -2676,7 +2676,7 @@ class TestMarkerLegacyUpgradePath(unittest.TestCase):
         repo_a = self.base / "repo-a"
         with patch.object(T, "find_git_root", return_value=repo_a):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entry = data["active_tentacles"][0]
         self.assertIsNotNone(entry["ts"])
         self.assertGreater(int(entry["ts"]), 0)
@@ -2694,7 +2694,7 @@ class TestMarkerLegacyUpgradePath(unittest.TestCase):
         repo_a = self.base / "repo-a"
         with patch.object(T, "find_git_root", return_value=repo_a):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = {e["name"]: e for e in data["active_tentacles"]}
         self.assertIn("tent-b", entries, "Unrelated entry must survive")
         self.assertEqual(entries["tent-b"]["git_root"], "/other/repo")
@@ -2707,11 +2707,11 @@ class TestMarkerLegacyUpgradePath(unittest.TestCase):
             "name": self.MARKER_NAME,
             "ts": "1000",
             "active_tentacles": ["tent-a"],   # old string format
-        }))
+        }), encoding="utf-8")
         repo_a = self.base / "repo-a"
         with patch.object(T, "find_git_root", return_value=repo_a):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = data["active_tentacles"]
         self.assertEqual(len(entries), 1, "String-list legacy entry must also be absorbed")
         self.assertEqual(entries[0]["git_root"], str(repo_a))
@@ -2729,7 +2729,7 @@ class TestMarkerLegacyUpgradePath(unittest.TestCase):
         }))
         with patch.object(T, "find_git_root", return_value=repo_b):
             T._write_dispatched_subagent_marker("tent-x", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = data["active_tentacles"]
         self.assertEqual(len(entries), 2, "Different real-repo entries must stay distinct")
         roots = {e["git_root"] for e in entries}
@@ -2743,7 +2743,7 @@ class TestMarkerLegacyUpgradePath(unittest.TestCase):
         with patch.object(T, "find_git_root", return_value=None):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         self.assertEqual(names.count("tent-a"), 1)
 
@@ -2795,7 +2795,7 @@ class TestSameRepoMultiSession(unittest.TestCase):
         with patch.object(T, "find_git_root", return_value=self.repo):
             T._write_dispatched_subagent_marker("my-tent", [], "prompt", tentacle_id=tid_a)
             T._write_dispatched_subagent_marker("my-tent", [], "prompt", tentacle_id=tid_b)
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         active = data["active_tentacles"]
         self.assertEqual(len(active), 2, "Both entries must coexist")
         ids = {e["tentacle_id"] for e in active}
@@ -2810,7 +2810,7 @@ class TestSameRepoMultiSession(unittest.TestCase):
             T._write_dispatched_subagent_marker("my-tent", [], "prompt", tentacle_id=tid_a)
             T._write_dispatched_subagent_marker("my-tent", [], "prompt", tentacle_id=tid_b)
             T._clear_dispatched_subagent_marker("my-tent", tentacle_id=tid_a)
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         active = data["active_tentacles"]
         self.assertEqual(len(active), 1, "Only one entry should remain")
         self.assertEqual(active[0]["tentacle_id"], tid_b)
@@ -2828,13 +2828,13 @@ class TestSameRepoMultiSession(unittest.TestCase):
         tid = str(uuid.uuid4())
         with patch.object(T, "find_git_root", return_value=self.repo):
             T._write_dispatched_subagent_marker("tent-x", [], "prompt", tentacle_id=tid)
-        ts1 = json.loads(self.marker_path.read_text())["active_tentacles"][0]["ts"]
+        ts1 = json.loads(self.marker_path.read_text(encoding="utf-8"))["active_tentacles"][0]["ts"]
 
         time.sleep(0.01)  # ensure ts advances
 
         with patch.object(T, "find_git_root", return_value=self.repo):
             T._write_dispatched_subagent_marker("tent-x", [], "prompt", tentacle_id=tid)
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         active = data["active_tentacles"]
         self.assertEqual(len(active), 1, "No duplicate after re-dispatch")
         # ts should be refreshed (numeric string comparison is enough as both are
@@ -2905,7 +2905,7 @@ class TestSameRepoMultiSession(unittest.TestCase):
 
         slug_dirs = [d for d in tentacles_dir.iterdir()
                      if d.is_dir() and d.name.startswith("gamma-")]
-        meta = json.loads((slug_dirs[0] / "meta.json").read_text())
+        meta = json.loads((slug_dirs[0] / "meta.json").read_text(encoding="utf-8"))
         self.assertEqual(meta["name"], "gamma")
         self.assertIn("dir_name", meta, "meta must record the actual dir name")
         self.assertNotEqual(meta["dir_name"], "gamma")
@@ -2925,7 +2925,7 @@ class TestSameRepoMultiSession(unittest.TestCase):
         with patch.object(T, "get_tentacles_dir", return_value=tentacles_dir):
             T.cmd_create(args)
 
-        meta = json.loads((tentacles_dir / "delta" / "meta.json").read_text())
+        meta = json.loads((tentacles_dir / "delta" / "meta.json").read_text(encoding="utf-8"))
         self.assertIn("tentacle_id", meta)
         # Must be a valid UUID4 (36 chars with hyphens)
         self.assertEqual(len(meta["tentacle_id"]), 36)
@@ -2971,7 +2971,7 @@ class TestSameRepoMultiSession(unittest.TestCase):
             T._write_dispatched_subagent_marker("worker", [], "prompt", tentacle_id=tid_a)
         with patch.object(T, "find_git_root", return_value=repo_b):
             T._write_dispatched_subagent_marker("worker", [], "prompt", tentacle_id=tid_b)
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertEqual(len(data["active_tentacles"]), 2)
 
     def test_phase4_complete_only_clears_own_repo_entry(self):
@@ -2987,7 +2987,7 @@ class TestSameRepoMultiSession(unittest.TestCase):
         # Complete from repo_a perspective
         with patch.object(T, "find_git_root", return_value=repo_a):
             T._clear_dispatched_subagent_marker("worker", tentacle_id=tid_a)
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         remaining = data["active_tentacles"]
         self.assertEqual(len(remaining), 1)
         self.assertEqual(remaining[0]["tentacle_id"], tid_b)
@@ -3035,7 +3035,7 @@ class TestCrossReviewFixes(unittest.TestCase):
             T._write_dispatched_subagent_marker("work", [], "prompt", tentacle_id=tid)
             # Legacy dispatch arrives for the same name/repo
             T._write_dispatched_subagent_marker("work", [], "prompt")  # no tentacle_id
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = data["active_tentacles"]
         # Both entries must coexist; phase-5 identity must be preserved
         self.assertEqual(len(entries), 2, "Legacy write must not overwrite phase-5 entry")
@@ -3049,7 +3049,7 @@ class TestCrossReviewFixes(unittest.TestCase):
         with patch.object(T, "find_git_root", return_value=self.repo):
             T._write_dispatched_subagent_marker("work", [], "prompt")
             T._write_dispatched_subagent_marker("work", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         self.assertEqual(names.count("work"), 1, "Two legacy writes must still dedup to one entry")
 
@@ -3069,7 +3069,7 @@ class TestCrossReviewFixes(unittest.TestCase):
             T._clear_dispatched_subagent_marker("work", tentacle_id=tid)
         # Marker file must survive (legacy entry remains)
         self.assertTrue(self.marker_path.is_file(), "Marker must not be deleted while legacy entry exists")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         remaining = data["active_tentacles"]
         self.assertEqual(len(remaining), 1)
         self.assertIsNone(remaining[0].get("tentacle_id"), "Only the legacy entry must remain")
@@ -3082,7 +3082,7 @@ class TestCrossReviewFixes(unittest.TestCase):
             T._write_dispatched_subagent_marker("work", [], "prompt", tentacle_id=tid_a)
             T._write_dispatched_subagent_marker("work", [], "prompt", tentacle_id=tid_b)
             T._clear_dispatched_subagent_marker("work", tentacle_id=tid_a)
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         ids = [e.get("tentacle_id") for e in data["active_tentacles"]]
         self.assertNotIn(tid_a, ids)
         self.assertIn(tid_b, ids)
@@ -3105,7 +3105,7 @@ class TestCrossReviewFixes(unittest.TestCase):
         # Phase-5 entry must survive: legacy caller cannot prove it owns this entry
         self.assertTrue(self.marker_path.is_file(),
                         "Phase-5 entry must not be removed by a legacy clear")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         ids = [e.get("tentacle_id") for e in data["active_tentacles"]]
         self.assertIn(tid, ids, "Phase-5 tentacle_id must still be in the active set")
 
@@ -3117,10 +3117,10 @@ class TestCrossReviewFixes(unittest.TestCase):
         tentacles_dir.mkdir(parents=True, exist_ok=True)
         d = make_tentacle("del-test", tentacles_dir)
         # Give the tentacle a tentacle_id
-        meta = json.loads((d / "meta.json").read_text())
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
         tid = str(uuid.uuid4())
         meta["tentacle_id"] = tid
-        (d / "meta.json").write_text(json.dumps(meta))
+        (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
         # Write an active marker entry for it
         T._write_dispatched_subagent_marker("del-test", [], "prompt", tentacle_id=tid)
         self.assertTrue(self.marker_path.is_file(), "Pre-condition: marker must exist")
@@ -3137,10 +3137,10 @@ class TestCrossReviewFixes(unittest.TestCase):
         tentacles_dir = self.base / "tentacles_del2"
         tentacles_dir.mkdir(parents=True, exist_ok=True)
         d = make_tentacle("del-me", tentacles_dir)
-        meta = json.loads((d / "meta.json").read_text())
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
         tid = str(uuid.uuid4())
         meta["tentacle_id"] = tid
-        (d / "meta.json").write_text(json.dumps(meta))
+        (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
         T._write_dispatched_subagent_marker("del-me", [], "prompt", tentacle_id=tid)
         # Sibling tentacle also active
         sibling_tid = str(uuid.uuid4())
@@ -3151,7 +3151,7 @@ class TestCrossReviewFixes(unittest.TestCase):
                 T.cmd_delete(args)
         # Marker file must survive; sibling must still be active
         self.assertTrue(self.marker_path.is_file(), "Marker must survive when sibling is active")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         ids = [e.get("tentacle_id") for e in data["active_tentacles"]]
         self.assertIn(sibling_tid, ids, "Sibling entry must still be active")
         self.assertNotIn(tid, ids, "Deleted tentacle's entry must be gone")
@@ -3222,7 +3222,7 @@ class TestMigrationCleanupGap(unittest.TestCase):
         tid = str(uuid.uuid4())
         with patch.object(T, "find_git_root", return_value=self.repo):
             T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = data["active_tentacles"]
         self.assertEqual(
             len(entries), 1,
@@ -3237,7 +3237,7 @@ class TestMigrationCleanupGap(unittest.TestCase):
         tid = str(uuid.uuid4())
         with patch.object(T, "find_git_root", return_value=self.repo):
             T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = data["active_tentacles"]
         self.assertEqual(len(entries), 1, "Null tentacle_id legacy entry must be absorbed")
         self.assertEqual(entries[0].get("tentacle_id"), tid)
@@ -3261,7 +3261,7 @@ class TestMigrationCleanupGap(unittest.TestCase):
         tid = str(uuid.uuid4())
         with patch.object(T, "find_git_root", return_value=self.repo):
             T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         self.assertIn("other-feature", names, "Unrelated phase-4 entry must not be touched")
         self.assertIn("feature-x", names)
@@ -3274,7 +3274,7 @@ class TestMigrationCleanupGap(unittest.TestCase):
         tid = str(uuid.uuid4())
         with patch.object(T, "find_git_root", return_value=self.repo):
             T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = data["active_tentacles"]
         self.assertEqual(
             len(entries), 2,
@@ -3291,7 +3291,7 @@ class TestMigrationCleanupGap(unittest.TestCase):
         tid = str(uuid.uuid4())
         with patch.object(T, "find_git_root", return_value=self.repo):
             T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = data["active_tentacles"]
         self.assertEqual(
             len(entries), 2,
@@ -3307,7 +3307,7 @@ class TestMigrationCleanupGap(unittest.TestCase):
         self._write_phase4_entry("feature-x", self.repo)
         with patch.object(T, "find_git_root", return_value=self.repo):
             T._write_dispatched_subagent_marker("feature-x", [], "prompt")  # no tentacle_id
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         # Legacy dedup: same (name, git_root), no tentacle_id on either side → merge to 1
         self.assertEqual(names.count("feature-x"), 1,
@@ -3328,7 +3328,7 @@ class TestMigrationCleanupGap(unittest.TestCase):
         tid = str(uuid.uuid4())
         with patch.object(T, "find_git_root", return_value=self.repo):
             T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = data["active_tentacles"]
         self.assertEqual(
             len(entries), 2,
@@ -3459,7 +3459,7 @@ class TestCanonicalRootComparison(unittest.TestCase):
         # Write again using canonical path — should dedup (not add a second entry)
         with patch.object(T, "find_git_root", return_value=self.repo):
             T._write_dispatched_subagent_marker("work", [], "prompt")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         self.assertEqual(
             names.count("work"), 1,
@@ -3489,7 +3489,7 @@ class TestCanonicalRootComparison(unittest.TestCase):
         self.assertTrue(self.marker_path.is_file(), "Marker must exist after write")
 
         # Verify the written git_root is the non-canonical string form of path_a
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         written_root = data["active_tentacles"][0]["git_root"]
         self.assertNotEqual(
             written_root,
@@ -3553,9 +3553,9 @@ class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
             "status": "idle",
             "tentacle_id": str(uuid.uuid4()),
         }
-        (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
-        (d / "CONTEXT.md").write_text(f"# {logical_name}\n\nCollision test.\n")
-        (d / "todo.md").write_text("# Todo\n\n- [ ] Task A\n")
+        (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        (d / "CONTEXT.md").write_text(f"# {logical_name}\n\nCollision test.\n", encoding="utf-8")
+        (d / "todo.md").write_text("# Todo\n\n- [ ] Task A\n", encoding="utf-8")
         return d
 
     # ── bundle manifest slug ──────────────────────────────────────────────────
@@ -3565,7 +3565,7 @@ class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
         d = self._make_collision_tentacle("alpha", "alpha-abc12345")
         with patch.object(T, "find_git_root", return_value=None):
             bundle_dir = T._build_runtime_bundle(d, "alpha")
-        data = json.loads((bundle_dir / "manifest.json").read_text())
+        data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertIn("slug", data, "slug must be present for collision-renamed tentacle")
         self.assertEqual(data["slug"], "alpha-abc12345")
 
@@ -3574,7 +3574,7 @@ class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
         d = make_tentacle("normal-tent", self.base)
         with patch.object(T, "find_git_root", return_value=None):
             bundle_dir = T._build_runtime_bundle(d, "normal-tent")
-        data = json.loads((bundle_dir / "manifest.json").read_text())
+        data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertNotIn("slug", data, "slug must be absent when dir name matches logical name")
 
     # ── bundle session-metadata slug line ────────────────────────────────────
@@ -3584,7 +3584,7 @@ class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
         d = self._make_collision_tentacle("beta", "beta-xyz99999")
         with patch.object(T, "find_git_root", return_value=None):
             bundle_dir = T._build_runtime_bundle(d, "beta")
-        content = (bundle_dir / "session-metadata.md").read_text()
+        content = (bundle_dir / "session-metadata.md").read_text(encoding="utf-8")
         self.assertIn("beta-xyz99999", content,
                       "session-metadata.md must show the collision slug")
         self.assertIn("Slug:", content,
@@ -3595,7 +3595,7 @@ class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
         d = make_tentacle("plain-tent", self.base)
         with patch.object(T, "find_git_root", return_value=None):
             bundle_dir = T._build_runtime_bundle(d, "plain-tent")
-        content = (bundle_dir / "session-metadata.md").read_text()
+        content = (bundle_dir / "session-metadata.md").read_text(encoding="utf-8")
         self.assertNotIn("Slug:", content)
 
     # ── collision tentacle marker lifecycle ───────────────────────────────────
@@ -3603,20 +3603,20 @@ class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
     def test_collision_tentacle_marker_written_with_tentacle_id(self):
         """A collision-renamed tentacle must write its marker entry with tentacle_id."""
         d = self._make_collision_tentacle("gamma", "gamma-deadbeef")
-        meta = json.loads((d / "meta.json").read_text())
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
         tid = meta["tentacle_id"]
         with patch.object(T, "find_git_root", return_value=self.base):
             T._write_dispatched_subagent_marker(
                 "gamma", [], "prompt", tentacle_id=tid
             )
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         ids = [e.get("tentacle_id") for e in data["active_tentacles"]]
         self.assertIn(tid, ids, "Collision tentacle's tentacle_id must be in marker")
 
     def test_collision_tentacle_marker_cleared_by_tentacle_id(self):
         """Completing a collision-renamed tentacle must remove its entry by tentacle_id."""
         d = self._make_collision_tentacle("delta", "delta-cafebabe")
-        meta = json.loads((d / "meta.json").read_text())
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
         tid = meta["tentacle_id"]
         sibling_tid = str(uuid.uuid4())
         with patch.object(T, "find_git_root", return_value=self.base):
@@ -3627,7 +3627,7 @@ class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
         # delta's entry must be gone; sibling must survive
         self.assertTrue(self.marker_path.is_file(),
                         "Marker must survive while sibling is active")
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         ids = [e.get("tentacle_id") for e in data["active_tentacles"]]
         self.assertNotIn(tid, ids, "Completed collision tentacle entry must be removed")
         self.assertIn(sibling_tid, ids, "Sibling entry must survive")
@@ -3637,14 +3637,14 @@ class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
         a separate marker entry (phase-5 identity isolation)."""
         d1 = self._make_collision_tentacle("epsilon", "epsilon-11111111")
         d2 = self._make_collision_tentacle("epsilon", "epsilon-22222222")
-        meta1 = json.loads((d1 / "meta.json").read_text())
-        meta2 = json.loads((d2 / "meta.json").read_text())
+        meta1 = json.loads((d1 / "meta.json").read_text(encoding="utf-8"))
+        meta2 = json.loads((d2 / "meta.json").read_text(encoding="utf-8"))
         tid1, tid2 = meta1["tentacle_id"], meta2["tentacle_id"]
         repo = self.base / "repo"
         with patch.object(T, "find_git_root", return_value=repo):
             T._write_dispatched_subagent_marker("epsilon", [], "prompt", tentacle_id=tid1)
             T._write_dispatched_subagent_marker("epsilon", [], "prompt", tentacle_id=tid2)
-        data = json.loads(self.marker_path.read_text())
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertEqual(len(data["active_tentacles"]), 2,
                          "Two collision tentacles with same logical name must produce 2 entries")
         written_ids = {e.get("tentacle_id") for e in data["active_tentacles"]}

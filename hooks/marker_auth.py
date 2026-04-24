@@ -33,7 +33,7 @@ PROTECTED_PATTERNS = (
 def _read_secret():
     try:
         if SECRET_PATH.is_file():
-            return SECRET_PATH.read_text().strip()
+            return SECRET_PATH.read_text(encoding="utf-8").strip()
     except Exception:
         pass
     return None
@@ -47,7 +47,7 @@ def sign_marker(marker_path, name):
         return
     ts = str(int(time.time()))
     sig = hmac.new(secret.encode(), f"{name}:{ts}".encode(), hashlib.sha256).hexdigest()
-    marker_path.write_text(json.dumps({"name": name, "ts": ts, "sig": sig}))
+    marker_path.write_text(json.dumps({"name": name, "ts": ts, "sig": sig}), encoding="utf-8")
 
 
 def verify_marker(marker_path, name):
@@ -57,7 +57,7 @@ def verify_marker(marker_path, name):
     if not secret:
         return True
     try:
-        data = json.loads(marker_path.read_text())
+        data = json.loads(marker_path.read_text(encoding="utf-8"))
         m_name = data.get("name", "")
         ts = data.get("ts", "")
         sig = data.get("sig", "")
@@ -74,19 +74,19 @@ def sign_counter(counter_path, value):
     MARKERS_DIR.mkdir(parents=True, exist_ok=True)
     secret = _read_secret()
     if not secret:
-        counter_path.write_text(str(value))
+        counter_path.write_text(str(value), encoding="utf-8")
         return
     name = counter_path.name
     ts = str(int(time.time()))
     sig = hmac.new(secret.encode(), f"{name}:{value}:{ts}".encode(), hashlib.sha256).hexdigest()
-    counter_path.write_text(json.dumps({"name": name, "value": value, "ts": ts, "sig": sig}))
+    counter_path.write_text(json.dumps({"name": name, "value": value, "ts": ts, "sig": sig}), encoding="utf-8")
 
 
 def verify_counter(counter_path):
     if not counter_path.is_file():
         return 0
     secret = _read_secret()
-    content = counter_path.read_text().strip()
+    content = counter_path.read_text(encoding="utf-8").strip()
     if not secret:
         try:
             return int(content)
@@ -114,19 +114,19 @@ def sign_list_marker(marker_path, lines):
     content = "\n".join(sorted(lines))
     secret = _read_secret()
     if not secret:
-        marker_path.write_text(content)
+        marker_path.write_text(content, encoding="utf-8")
         return
     name = marker_path.name
     sig = hmac.new(secret.encode(), f"{name}:{content}".encode(),
                    hashlib.sha256).hexdigest()
-    marker_path.write_text(json.dumps({"name": name, "content": content, "sig": sig}))
+    marker_path.write_text(json.dumps({"name": name, "content": content, "sig": sig}), encoding="utf-8")
 
 
 def verify_list_marker(marker_path):
     if not marker_path.is_file():
         return set()
     secret = _read_secret()
-    raw = marker_path.read_text().strip()
+    raw = marker_path.read_text(encoding="utf-8").strip()
     if not secret:
         return set(raw.splitlines()) if raw else set()
     try:
@@ -172,7 +172,7 @@ if __name__ == "__main__":
         import secrets
         s = secrets.token_hex(32)
         SECRET_PATH.parent.mkdir(parents=True, exist_ok=True)
-        SECRET_PATH.write_text(s)
+        SECRET_PATH.write_text(s, encoding="utf-8")
         print(f"Secret generated: {SECRET_PATH}")
         sys.exit(0)
     elif cmd == "verify":

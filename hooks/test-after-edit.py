@@ -44,13 +44,13 @@ def _increment_and_warn(added=1):
     count = 0
     try:
         if EDIT_COUNTER.is_file():
-            count = int(EDIT_COUNTER.read_text().strip())
+            count = int(EDIT_COUNTER.read_text(encoding="utf-8").strip())
     except Exception:
         pass
 
     count += added
     try:
-        EDIT_COUNTER.write_text(str(count))
+        EDIT_COUNTER.write_text(str(count), encoding="utf-8")
     except Exception:
         pass
 

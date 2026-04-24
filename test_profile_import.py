@@ -22,6 +22,10 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+if os.name == "nt":
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
 
 PASS = 0
 FAIL = 0
@@ -75,7 +79,7 @@ def scratch_dir(name: str) -> Path:
 
 
 def write_json(path: Path, data: dict) -> None:
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
 VALID_PROFILE = {
@@ -114,7 +118,7 @@ test("success message says Imported (not Overwritten) on first write",
      "Imported:" in r.stdout, repr(r.stdout))
 
 if dest_file.exists():
-    data = json.loads(dest_file.read_text())
+    data = json.loads(dest_file.read_text(encoding="utf-8"))
     test("name field preserved", data.get("name") == "test-import-profile")
     test("hooks preserved", data.get("hooks") == VALID_PROFILE["hooks"])
     test("phases preserved",
@@ -134,7 +138,7 @@ test("error message mentions --force or already exists",
      "--force" in r.stdout or "already exists" in r.stdout or "force" in r.stdout.lower())
 # Original file should be unchanged
 if dest_file.exists():
-    data = json.loads(dest_file.read_text())
+    data = json.loads(dest_file.read_text(encoding="utf-8"))
     test("original description preserved (not overwritten)",
          data.get("description") == VALID_PROFILE["description"])
 
@@ -146,7 +150,7 @@ test("exits 0 with --force", r.returncode == 0, r.stderr + r.stdout)
 test("success message says Overwritten on forced overwrite",
      "Overwritten:" in r.stdout, repr(r.stdout))
 if dest_file.exists():
-    data = json.loads(dest_file.read_text())
+    data = json.loads(dest_file.read_text(encoding="utf-8"))
     test("description updated after --force",
          data.get("description") == "Updated description")
 
@@ -230,7 +234,7 @@ test("bundle import exits 0", r.returncode == 0, r.stderr + r.stdout)
 test("profile imported from bundle", (bundle_presets / "python.json").exists())
 
 if (bundle_presets / "python.json").exists():
-    data = json.loads((bundle_presets / "python.json").read_text())
+    data = json.loads((bundle_presets / "python.json").read_text(encoding="utf-8"))
     test("imported profile name correct", data.get("name") == "python")
     test("imported profile hooks present", len(data.get("hooks", [])) > 0)
 

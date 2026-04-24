@@ -16,6 +16,11 @@ Run: python3 test_workflow_profiles.py
 import json
 import sys
 from pathlib import Path
+import os
+if os.name == "nt":
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
 
 PASS = 0
 FAIL = 0
@@ -54,7 +59,7 @@ profiles: dict[str, dict] = {}
 print("\n📄 Profile Loading & Schema")
 for pf in profile_files:
     try:
-        data = json.loads(pf.read_text())
+        data = json.loads(pf.read_text(encoding="utf-8"))
         profiles[pf.stem] = data
         test(f"{pf.name} parses as valid JSON", True)
     except json.JSONDecodeError as e:

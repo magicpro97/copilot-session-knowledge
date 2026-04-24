@@ -122,7 +122,7 @@ override_cfg_path = SCRATCH / "override_config.json"
 override_cfg_path.write_text(json.dumps({
     "target_repo": "myorg/myrepo",
     "shortlist": {"max_candidates": 99},
-}))
+}), encoding="utf-8")
 cfg2 = ts.load_config(override_cfg_path)
 test("override: target_repo changed", cfg2["target_repo"] == "myorg/myrepo")
 test("override: shortlist.max_candidates overridden", cfg2["shortlist"]["max_candidates"] == 99)
@@ -137,7 +137,7 @@ null_cfg_path.write_text(json.dumps({
         "timeout": None,
         "token_env": None,
     }
-}))
+}), encoding="utf-8")
 cfg_null = ts.load_config(null_cfg_path)
 test("null override keeps default analysis model", cfg_null["analysis"]["model"] == ts.DEFAULT_MODELS_MODEL)
 test("null override keeps default analysis endpoint", cfg_null["analysis"]["endpoint"] == ts.MODELS_API_ENDPOINT)
@@ -146,7 +146,7 @@ test("null override keeps default analysis token env", cfg_null["analysis"]["tok
 
 # Malformed JSON falls back to defaults gracefully
 bad_cfg_path = SCRATCH / "bad_config.json"
-bad_cfg_path.write_text("{not valid json}")
+bad_cfg_path.write_text("{not valid json}", encoding="utf-8")
 cfg3 = ts.load_config(bad_cfg_path)
 test("malformed config falls back to defaults", cfg3["target_repo"] == "magicpro97/copilot-session-knowledge")
 

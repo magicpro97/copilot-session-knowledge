@@ -19,13 +19,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from marker_auth import sign_counter, verify_counter, sign_list_marker, verify_list_marker
 except ImportError:
-    def sign_counter(p, v): p.parent.mkdir(parents=True, exist_ok=True); p.write_text(str(v))
+    def sign_counter(p, v): p.parent.mkdir(parents=True, exist_ok=True); p.write_text(str(v), encoding="utf-8")
     def verify_counter(p):
-        try: return int(p.read_text().strip()) if p.is_file() else 0
+        try: return int(p.read_text(encoding="utf-8").strip()) if p.is_file() else 0
         except: return 0
     def sign_list_marker(p, l): p.parent.mkdir(parents=True, exist_ok=True); p.write_text("\n".join(sorted(l)))
     def verify_list_marker(p):
-        try: return set(p.read_text().strip().splitlines()) if p.is_file() else set()
+        try: return set(p.read_text(encoding="utf-8").strip().splitlines()) if p.is_file() else set()
         except: return set()
 
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
@@ -76,7 +76,7 @@ def _load_seen():
     # git-modified-seen is internal tracking — plain text OK
     try:
         if SEEN_MODIFIED.is_file():
-            return set(SEEN_MODIFIED.read_text().strip().splitlines())
+            return set(SEEN_MODIFIED.read_text(encoding="utf-8").strip().splitlines())
     except Exception:
         pass
     return set()

@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Versioned DB migration for session-knowledge tools."""
 import sqlite3, sys, os
-
+import os
+import sys
+if os.name == "nt":
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
 if len(sys.argv) < 2:
     sys.argv.append(os.path.expanduser("~/.copilot/session-state/knowledge.db"))
 db = sqlite3.connect(sys.argv[1])

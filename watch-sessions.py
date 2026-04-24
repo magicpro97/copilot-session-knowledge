@@ -59,6 +59,10 @@ def _is_pid_running(pid: int) -> bool:
     """Check if a process with the given PID is still running."""
     if os.name == "nt":
         import ctypes
+if os.name == "nt":
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
         handle = ctypes.windll.kernel32.OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION, False, pid

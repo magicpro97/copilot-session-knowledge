@@ -1025,7 +1025,7 @@ def restart_processes():
     if system == "Darwin":
         plist = HOME / "Library" / "LaunchAgents" / "com.copilot.watch-sessions.plist"
         if plist.exists():
-            uid = os.getuid()
+            uid = os.getuid() if hasattr(os, "getuid") else 0
             label = "com.copilot.watch-sessions"
             # kickstart -k kills any running instance and starts a fresh one,
             # which is required after reinstalling a plist.  stop+start leaves

@@ -16,6 +16,11 @@ import tempfile
 import plistlib
 from pathlib import Path
 
+if os.name == "nt":
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
+
 PASS = 0
 FAIL = 0
 REPO = Path(__file__).parent
@@ -317,7 +322,7 @@ if not skill_path.exists():
 test("SKILL.md exists in tools or skills path", skill_path.exists())
 
 if skill_path.exists():
-    skill_content = skill_path.read_text()
+    skill_content = skill_path.read_text(encoding="utf-8")
     test("Contains --for-subagent docs", "--for-subagent" in skill_content)
     test("Contains sub-agent workflow", "sub-agent" in skill_content.lower())
     test("Uses python3 (not python)", "python3 " in skill_content)
@@ -471,8 +476,8 @@ _proj8 = Path(_tf.mkdtemp())      # isolated install target (acts as project roo
 _fake_skill_name = "fake-nested-skill"
 _fake_skill_dir = _sp8_root / _fake_skill_name
 (_fake_skill_dir / "references" / "nested_test").mkdir(parents=True)
-(_fake_skill_dir / "SKILL.md").write_text("# Fake skill\n")
-(_fake_skill_dir / "references" / "nested_test" / "nested-ref.md").write_text("# Nested test\n")
+(_fake_skill_dir / "SKILL.md").write_text("# Fake skill\n", encoding="utf-8")
+(_fake_skill_dir / "references" / "nested_test" / "nested-ref.md").write_text("# Nested test\n", encoding="utf-8")
 
 try:
     _sp_spec = _ilu.spec_from_file_location("setup_project", REPO / "setup-project.py")
@@ -570,10 +575,10 @@ _proj12 = Path(_tf.mkdtemp())     # fake project root
 _fake12 = _sp12_root / "conductor-creator"
 (_fake12 / "templates").mkdir(parents=True)
 (_fake12 / "references").mkdir(parents=True)
-(_fake12 / "SKILL.md").write_text("# Conductor Creator\n")
-(_fake12 / "templates" / "conductor.py").write_text("# conductor template\n")
-(_fake12 / "templates" / "test-conductor.py").write_text("# test-conductor template\n")
-(_fake12 / "references" / "guide.md").write_text("# guide\n")
+(_fake12 / "SKILL.md").write_text("# Conductor Creator\n", encoding="utf-8")
+(_fake12 / "templates" / "conductor.py").write_text("# conductor template\n", encoding="utf-8")
+(_fake12 / "templates" / "test-conductor.py").write_text("# test-conductor template\n", encoding="utf-8")
+(_fake12 / "references" / "guide.md").write_text("# guide\n", encoding="utf-8")
 
 try:
     _sp12_spec = _ilu.spec_from_file_location("setup_project_sp12", REPO / "setup-project.py")
@@ -609,10 +614,10 @@ _fake13 = _sp13_root / "multi-asset-skill"
 (_fake13 / "templates").mkdir(parents=True)
 (_fake13 / "evals").mkdir(parents=True)
 (_fake13 / "references").mkdir(parents=True)
-(_fake13 / "SKILL.md").write_text("# Multi Asset Skill\n")
-(_fake13 / "templates" / "tmpl.py").write_text("# tmpl\n")
-(_fake13 / "evals" / "eval.json").write_text("{}\n")
-(_fake13 / "references" / "ref.md").write_text("# ref\n")
+(_fake13 / "SKILL.md").write_text("# Multi Asset Skill\n", encoding="utf-8")
+(_fake13 / "templates" / "tmpl.py").write_text("# tmpl\n", encoding="utf-8")
+(_fake13 / "evals" / "eval.json").write_text("{}\n", encoding="utf-8")
+(_fake13 / "references" / "ref.md").write_text("# ref\n", encoding="utf-8")
 
 try:
     _sp13_spec = _ilu.spec_from_file_location("setup_project_sp13", REPO / "setup-project.py")
@@ -1094,7 +1099,7 @@ test(
 test(
     "Ld1d: kickstart targets the correct gui/<uid>/com.copilot.watch-sessions service",
     len(_kickstart_calls) == 1
-    and _kickstart_calls[0][-1] == f"gui/{os.getuid()}/com.copilot.watch-sessions",
+    and _kickstart_calls[0][-1] == f"gui/{os.getuid() if hasattr(os, 'getuid') else 0}/com.copilot.watch-sessions",
     f"Got target: {_kickstart_calls[0][-1] if _kickstart_calls else '(none)'}",
 )
 

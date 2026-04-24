@@ -21,6 +21,10 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+if os.name == "nt":
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
 
 PASS = 0
 FAIL = 0
@@ -166,7 +170,7 @@ test("success message says Created (not Overwritten) on first write",
      "✓ Created:" in r.stdout, repr(r.stdout))
 
 if out_file.exists():
-    data = json.loads(out_file.read_text())
+    data = json.loads(out_file.read_text(encoding="utf-8"))
     test("name field correct", data.get("name") == "myteam")
     test("description field correct", data.get("description") == "My team workflow")
     test("hooks list correct", data.get("hooks") == ["dangerous-blocker.sh", "secret-detector.sh"])
@@ -223,7 +227,7 @@ r = run("--name", "overwriteme",
 test("overwrite with --force exits 0", r.returncode == 0, r.stderr + r.stdout)
 test("success message says Overwritten on second write",
      "✓ Overwritten:" in r.stdout, repr(r.stdout))
-data = json.loads((out_dir / "overwriteme.json").read_text())
+data = json.loads((out_dir / "overwriteme.json").read_text(encoding="utf-8"))
 test("file updated with new description", data.get("description") == "updated")
 test("file updated with new hooks", data.get("hooks") == ["secret-detector.sh"])
 

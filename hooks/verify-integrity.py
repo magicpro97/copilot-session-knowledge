@@ -45,7 +45,7 @@ def _check_config_poisoning():
     """Check if config.json has been poisoned with disableAllHooks."""
     try:
         if CONFIG.is_file():
-            cfg = json.loads(CONFIG.read_text())
+            cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
             if cfg.get("disableAllHooks"):
                 return True
     except Exception:

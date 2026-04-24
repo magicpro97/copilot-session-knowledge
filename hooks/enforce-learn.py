@@ -22,7 +22,7 @@ try:
 except ImportError:
     def verify_marker(p, n): return False
     def verify_counter(p): return 0
-    def sign_counter(p, v): p.parent.mkdir(parents=True, exist_ok=True); p.write_text(str(v))
+    def sign_counter(p, v): p.parent.mkdir(parents=True, exist_ok=True); p.write_text(str(v), encoding="utf-8")
     def is_secret_access(c): return True
     def check_tamper_marker(): return False
 

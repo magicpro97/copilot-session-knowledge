@@ -36,6 +36,10 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+if os.name == "nt":
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
 
 if os.name == "nt":
     import io
@@ -59,13 +63,13 @@ def load_profile(name: str, presets_dir: Path) -> dict:
             f"Profile '{name}' not found in {presets_dir}. "
             f"Available: {', '.join(available) or '(none)'}"
         )
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def load_all_profiles(presets_dir: Path) -> list[dict]:
     profiles = []
     for p in sorted(presets_dir.glob("*.json")):
-        profiles.append(json.loads(p.read_text()))
+        profiles.append(json.loads(p.read_text(encoding="utf-8")))
     return profiles
 
 
@@ -89,7 +93,7 @@ def write_json(path: Path, data: dict, dry_run: bool) -> None:
         print(f"  [dry-run] Would write {path} ({len(text)} bytes)")
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
         print(f"  ✓  Written: {path}")
 
 

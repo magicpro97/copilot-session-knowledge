@@ -955,7 +955,7 @@ if _csm_path.is_file():
     _badsig_home = Path(tempfile.mkdtemp(prefix="test-badsig-"))
     (_badsig_home / ".copilot" / "hooks").mkdir(parents=True)
     (_badsig_home / ".copilot" / "markers").mkdir(parents=True)
-    (_badsig_home / ".copilot" / "hooks" / ".marker-secret").write_text(_secrets12.token_hex(32))
+    (_badsig_home / ".copilot" / "hooks" / ".marker-secret").write_text(_secrets12.token_hex(32), encoding="utf-8")
     (_badsig_home / ".copilot" / "markers" / "dispatched-subagent-active").write_text(
         json.dumps({"name": "dispatched-subagent-active",
                     "ts": str(int(_time12.time())), "sig": "badsig"})
@@ -1145,10 +1145,10 @@ else:
                 _e2e_secret.encode(), f"{_e2e_name}:{_e2e_ts}".encode(), hashlib.sha256
             ).hexdigest()
             _e2e_marker_data["sig"] = _e2e_sig
-        _real_marker.write_text(json.dumps(_e2e_marker_data))
+        _real_marker.write_text(json.dumps(_e2e_marker_data), encoding="utf-8")
         _e2e_marker_written = True
 
-        (_e2e_repo / "README.md").write_text("test\n")
+        (_e2e_repo / "README.md").write_text("test\n", encoding="utf-8")
         subprocess.run(["git", "add", "README.md"],
                        cwd=str(_e2e_repo), capture_output=True, timeout=5)
         # Inject PYTHON_BIN so Git's MSYS2 sh can find the interpreter

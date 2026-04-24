@@ -21,6 +21,10 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+if os.name == "nt":
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
 
 PASS = 0
 FAIL = 0
@@ -85,7 +89,7 @@ test("exits 0", r.returncode == 0, r.stderr + r.stdout)
 test("output file created", out_file.exists())
 
 if out_file.exists():
-    data = json.loads(out_file.read_text())
+    data = json.loads(out_file.read_text(encoding="utf-8"))
     test("name field present and correct", data.get("name") == "python")
     test("description field present", bool(data.get("description")))
     test("hooks field present", isinstance(data.get("hooks"), list))
@@ -104,7 +108,7 @@ test("exits 0", r.returncode == 0, r.stderr + r.stdout)
 test("bundle file created", out_file.exists())
 
 if out_file.exists():
-    data = json.loads(out_file.read_text())
+    data = json.loads(out_file.read_text(encoding="utf-8"))
     test("exported_by field present", data.get("exported_by") == "profile-export.py")
     test("bundle_version field present", bool(data.get("bundle_version")))
     test("exported_at field present", bool(data.get("exported_at")))
@@ -126,7 +130,7 @@ for name in expected_profiles:
     f = out_dir / f"{name}.json"
     test(f"{name}.json created", f.exists())
     if f.exists():
-        data = json.loads(f.read_text())
+        data = json.loads(f.read_text(encoding="utf-8"))
         test(f"{name}.json has name field == '{name}'", data.get("name") == name)
 
 # ─── Export all profiles to single bundle ────────────────────────────────────
@@ -139,7 +143,7 @@ test("exits 0", r.returncode == 0, r.stderr + r.stdout)
 test("bundle file created", bundle_file.exists())
 
 if bundle_file.exists():
-    data = json.loads(bundle_file.read_text())
+    data = json.loads(bundle_file.read_text(encoding="utf-8"))
     test("exported_by field present", "exported_by" in data)
     profiles = data.get("profiles", [])
     test("contains all profiles",
@@ -186,7 +190,7 @@ test("export exits 0", r.returncode == 0, r.stderr)
 
 if plain_file.exists():
     # Verify the exported file is valid JSON and has all required fields
-    data = json.loads(plain_file.read_text())
+    data = json.loads(plain_file.read_text(encoding="utf-8"))
     required = {"name", "description", "hooks", "workflow_phases"}
     test("exported file has all required fields",
          required.issubset(data.keys()),

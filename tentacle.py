@@ -335,7 +335,7 @@ def _read_marker_secret() -> str | None:
     """Read the shared HMAC secret used by marker_auth. Returns None if absent."""
     try:
         if _MARKER_SECRET_PATH.is_file():
-            return _MARKER_SECRET_PATH.read_text().strip()
+            return _MARKER_SECRET_PATH.read_text(encoding="utf-8").strip()
     except Exception:
         pass
     return None
@@ -400,7 +400,7 @@ def _write_dispatched_subagent_marker(
             active: list[dict] = []
             if _DISPATCHED_MARKER_PATH.is_file():
                 try:
-                    existing = json.loads(_DISPATCHED_MARKER_PATH.read_text())
+                    existing = json.loads(_DISPATCHED_MARKER_PATH.read_text(encoding="utf-8"))
                     raw: list = []
                     if "active_tentacles" in existing:
                         raw = list(existing["active_tentacles"])
@@ -545,7 +545,7 @@ def _clear_dispatched_subagent_marker(
             if not _DISPATCHED_MARKER_PATH.is_file():
                 return True
             try:
-                data = json.loads(_DISPATCHED_MARKER_PATH.read_text())
+                data = json.loads(_DISPATCHED_MARKER_PATH.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 _DISPATCHED_MARKER_PATH.unlink(missing_ok=True)
                 return True
@@ -627,7 +627,7 @@ def _read_dispatched_subagent_marker() -> dict | None:
     try:
         if not _DISPATCHED_MARKER_PATH.is_file():
             return None
-        return json.loads(_DISPATCHED_MARKER_PATH.read_text())
+        return json.loads(_DISPATCHED_MARKER_PATH.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -1020,11 +1020,11 @@ def cmd_list(args):
 
     for d in dirs:
         meta_path = d / "meta.json"
-        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
 
         todo_path = d / "todo.md"
         if todo_path.exists():
-            todos = parse_todos(todo_path.read_text())
+            todos = parse_todos(todo_path.read_text(encoding="utf-8"))
             total = len(todos)
             done = sum(1 for t in todos if t["done"])
             progress = f"{done}/{total}" if total > 0 else "—"
@@ -1050,10 +1050,10 @@ def cmd_status(args):
 
     for d in dirs:
         meta_path = d / "meta.json"
-        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
 
         todo_path = d / "todo.md"
-        todos = parse_todos(todo_path.read_text()) if todo_path.exists() else []
+        todos = parse_todos(todo_path.read_text(encoding="utf-8")) if todo_path.exists() else []
         done = sum(1 for t in todos if t["done"])
         pending = len(todos) - done
         total_todos += len(todos)
@@ -1106,13 +1106,13 @@ def cmd_show(args):
     context_path = tentacle_dir / "CONTEXT.md"
     if context_path.exists():
         print("═══ CONTEXT.md ═══")
-        print(context_path.read_text())
+        print(context_path.read_text(encoding="utf-8"))
 
     # Show todo.md
     todo_path = tentacle_dir / "todo.md"
     if todo_path.exists():
         print("═══ todo.md ═══")
-        todos = parse_todos(todo_path.read_text())
+        todos = parse_todos(todo_path.read_text(encoding="utf-8"))
         for t in todos:
             mark = "✅" if t["done"] else "☐"
             print(f"  [{t['index']}] {mark} {t['text']}")
@@ -1122,7 +1122,7 @@ def cmd_show(args):
     handoff_path = tentacle_dir / "handoff.md"
     if handoff_path.exists():
         print("═══ handoff.md ═══")
-        print(handoff_path.read_text())
+        print(handoff_path.read_text(encoding="utf-8"))
 
 
 def cmd_todo(args):
@@ -1136,7 +1136,7 @@ def cmd_todo(args):
         sys.exit(1)
 
     with file_locked(todo_path):
-        content = todo_path.read_text() if todo_path.exists() else "# Todo\n\n"
+        content = todo_path.read_text(encoding="utf-8") if todo_path.exists() else "# Todo\n\n"
         todos = parse_todos(content)
 
         if args.action == "add":
@@ -1197,7 +1197,7 @@ def cmd_handoff(args):
 
     with file_locked(handoff_path):
         if handoff_path.exists():
-            existing = handoff_path.read_text()
+            existing = handoff_path.read_text(encoding="utf-8")
             handoff_path.write_text(existing + entry, encoding="utf-8")
         else:
             handoff_path.write_text(f"# Handoff Notes\n{entry}", encoding="utf-8")
@@ -1207,7 +1207,7 @@ def cmd_handoff(args):
     # Auto-learn if --learn flag
     if args.learn:
         meta_path = tentacle_dir / "meta.json"
-        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
         tags = ",".join(["tentacle", args.name] + meta.get("scope", [])[:2])
         title = f"[{args.name}] {args.message[:60]}"
         if _run_learn("discovery", title, args.message, tags):
@@ -1232,7 +1232,7 @@ def cmd_complete(args):
     # 1. Mark all todos done
     if todo_path.exists():
         with file_locked(todo_path):
-            todos = parse_todos(todo_path.read_text())
+            todos = parse_todos(todo_path.read_text(encoding="utf-8"))
             pending = [t for t in todos if not t["done"]]
             for t in todos:
                 t["done"] = True
@@ -1243,7 +1243,7 @@ def cmd_complete(args):
                 print(f"✅ All {len(todos)} todos already done")
 
     # 2. Update status
-    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
     meta["status"] = "completed"
     meta["completed_at"] = datetime.now(timezone.utc).isoformat()
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
@@ -1251,7 +1251,7 @@ def cmd_complete(args):
     # 3. Auto-learn from handoff (unless --no-learn)
     learned = 0
     if not args.no_learn and handoff_path.exists():
-        handoff_content = handoff_path.read_text()
+        handoff_content = handoff_path.read_text(encoding="utf-8")
         # Extract meaningful content (skip headers, short entries)
         sections = re.split(r"^## \[", handoff_content, flags=re.MULTILINE)
         meaningful = [s.strip() for s in sections if len(s.strip()) > 30]
@@ -1294,7 +1294,7 @@ def cmd_resume(args):
     handoff_path = tentacle_dir / "handoff.md"
 
     # 1. Load and update meta
-    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
     prev_status = meta.get("status", "idle")
     meta["status"] = "active"
     meta["resumed_at"] = datetime.now(timezone.utc).isoformat()
@@ -1329,13 +1329,13 @@ def cmd_resume(args):
         resume_section += f"\n{checkpoint_text}\n"
 
     if context_path.exists():
-        existing = context_path.read_text()
+        existing = context_path.read_text(encoding="utf-8")
         context_path.write_text(existing + resume_section, encoding="utf-8")
     else:
         context_path.write_text(f"# {args.name}\n{resume_section}", encoding="utf-8")
 
     # 4. Show current todo state
-    todos = parse_todos(todo_path.read_text()) if todo_path.exists() else []
+    todos = parse_todos(todo_path.read_text(encoding="utf-8")) if todo_path.exists() else []
     done_count = sum(1 for t in todos if t["done"])
     pending = [t for t in todos if not t["done"]]
 
@@ -1366,7 +1366,7 @@ def cmd_swarm(args):
     context_path = tentacle_dir / "CONTEXT.md"
     meta_path = tentacle_dir / "meta.json"
 
-    todos = parse_todos(todo_path.read_text()) if todo_path.exists() else []
+    todos = parse_todos(todo_path.read_text(encoding="utf-8")) if todo_path.exists() else []
     pending = [t for t in todos if not t["done"]]
 
     if not pending:
@@ -1382,8 +1382,8 @@ def cmd_swarm(args):
         )
         sys.exit(1)
 
-    context = context_path.read_text() if context_path.exists() else ""
-    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    context = context_path.read_text(encoding="utf-8") if context_path.exists() else ""
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
 
     agent_type = args.agent_type or "general-purpose"
     model = args.model or "claude-sonnet-4.6"
@@ -1553,8 +1553,8 @@ def cmd_next_step(args):
     meta_path = tentacle_dir / "meta.json"
     todo_path = tentacle_dir / "todo.md"
 
-    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
-    todos = parse_todos(todo_path.read_text()) if todo_path.exists() else []
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    todos = parse_todos(todo_path.read_text(encoding="utf-8")) if todo_path.exists() else []
     pending = [t for t in todos if not t["done"]]
     done_count = sum(1 for t in todos if t["done"])
 
@@ -1629,7 +1629,7 @@ def cmd_delete(args):
     tentacle_id: str | None = None
     if meta_path.exists():
         try:
-            tentacle_id = json.loads(meta_path.read_text()).get("tentacle_id")
+            tentacle_id = json.loads(meta_path.read_text(encoding="utf-8")).get("tentacle_id")
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -1652,7 +1652,7 @@ def cmd_bundle(args):
         sys.exit(1)
 
     meta_path = tentacle_dir / "meta.json"
-    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
 
     # Fetch briefing
     briefing_text = ""
@@ -1688,7 +1688,7 @@ def cmd_bundle(args):
 
     if getattr(args, "output", "text") == "json":
         manifest_path = bundle_dir / "manifest.json"
-        manifest = json.loads(manifest_path.read_text())
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         print(json.dumps({
             "bundle_path": str(bundle_dir),
             "marker_state": _get_marker_state(),

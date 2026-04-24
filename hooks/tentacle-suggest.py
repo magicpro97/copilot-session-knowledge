@@ -24,7 +24,7 @@ except ImportError:
         p.write_text("\n".join(sorted(lines)))
     def verify_list_marker(p):
         if not p.is_file(): return set()
-        raw = p.read_text().strip()
+        raw = p.read_text(encoding="utf-8").strip()
         return set(raw.splitlines()) if raw else set()
 
 MARKERS_DIR = Path.home() / ".copilot" / "markers"

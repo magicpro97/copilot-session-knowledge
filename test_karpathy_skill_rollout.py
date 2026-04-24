@@ -375,7 +375,7 @@ test("install_skills() mirrors asset subdirs to Claude Code for vendored skills"
      "Asset subdir mirror for Claude Code missing from install_skills()")
 
 # Call the real install_skills() and verify the files it creates on disk.
-# This replaces the tautological Path.write_text() simulation: we let the
+# This replaces the tautological Path.write_text(, encoding="utf-8") simulation: we let the
 # production function run against a scratch directory and inspect its output.
 import importlib.util as _ilu_sp
 if str(REPO) not in sys.path:

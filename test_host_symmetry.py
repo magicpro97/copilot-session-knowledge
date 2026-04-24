@@ -24,6 +24,10 @@ import shutil
 import tempfile
 from contextlib import redirect_stdout
 from pathlib import Path
+if os.name == "nt":
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
 
 PASS = 0
 FAIL = 0

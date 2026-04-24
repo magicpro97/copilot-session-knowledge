@@ -37,6 +37,10 @@ import json
 import os
 import sys
 from pathlib import Path
+if os.name == "nt":
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
 
 if os.name == "nt":
     import io
@@ -235,7 +239,7 @@ Examples:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     already_exists = out_path.exists()
-    out_path.write_text(json.dumps(profile, indent=2) + "\n")
+    out_path.write_text(json.dumps(profile, indent=2) + "\n", encoding="utf-8")
 
     action = "Overwritten" if already_exists else "Created"
     print(f"✓ {action}: {out_path}")

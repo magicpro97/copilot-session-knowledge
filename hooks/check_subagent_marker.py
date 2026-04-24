@@ -113,7 +113,7 @@ except ImportError:
     def _read_secret_inline():
         try:
             if _SECRET_PATH.is_file():
-                return _SECRET_PATH.read_text().strip()
+                return _SECRET_PATH.read_text(encoding="utf-8").strip()
         except Exception:
             pass
         return None
