@@ -1,0 +1,494 @@
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260416_180001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+    + 334 new embeddings
+  Rebuilding FTS indexes...
+    knowledge_fts: 1626 entries
+    ke_fts: 2735 entries
+
+========================================
+  Total synced:
+    embeddings: +334
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260417_000001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1626 entries
+    ke_fts: 2735 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260417_060001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1626 entries
+    ke_fts: 2735 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260417_120001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1632 entries
+    ke_fts: 2740 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260417_180001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1644 entries
+    ke_fts: 2754 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260418_000001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1644 entries
+    ke_fts: 2754 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260418_060001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1644 entries
+    ke_fts: 2754 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260418_120001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1644 entries
+    ke_fts: 2754 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260418_180001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1644 entries
+    ke_fts: 2754 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260419_000001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1644 entries
+    ke_fts: 2754 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260419_060001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1644 entries
+    ke_fts: 2754 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260419_120001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+    + 334 new embeddings
+  Rebuilding FTS indexes...
+    knowledge_fts: 1644 entries
+    ke_fts: 2754 entries
+
+========================================
+  Total synced:
+    embeddings: +334
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260419_180002.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1644 entries
+    ke_fts: 2754 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260420_000001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1644 entries
+    ke_fts: 2754 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260420_060001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1644 entries
+    ke_fts: 2754 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260420_120001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+    + 334 new embeddings
+  Rebuilding FTS indexes...
+    knowledge_fts: 1664 entries
+    ke_fts: 2857 entries
+
+========================================
+  Total synced:
+    embeddings: +334
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260420_180001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+    + 334 new embeddings
+  Rebuilding FTS indexes...
+    knowledge_fts: 1689 entries
+    ke_fts: 3017 entries
+
+========================================
+  Total synced:
+    embeddings: +334
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260421_000001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1689 entries
+    ke_fts: 3017 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260421_060001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1689 entries
+    ke_fts: 3017 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260421_120001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (82 sessions, 1573 knowledge entries)
+    + 334 new embeddings
+  Rebuilding FTS indexes...
+    knowledge_fts: 1702 entries
+    ke_fts: 3087 entries
+
+========================================
+  Total synced:
+    embeddings: +334
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260421_180001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (83 sessions, 1577 knowledge entries)
+    + 1 new sessions
+    + 3 new documents
+    + 3 new sections
+    + 4 new knowledge_entries
+    + 2473 new embeddings
+  Rebuilding FTS indexes...
+    knowledge_fts: 1719 entries
+    ke_fts: 3150 entries
+
+========================================
+  Total synced:
+    sessions: +1
+    documents: +3
+    sections: +3
+    knowledge_entries: +4
+    embeddings: +2473
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260422_000001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (83 sessions, 1580 knowledge entries)
+    + 1 new documents
+    + 6 new sections
+    + 3 new knowledge_entries
+    + 2482 new embeddings
+  Rebuilding FTS indexes...
+    knowledge_fts: 1732 entries
+    ke_fts: 3182 entries
+
+========================================
+  Total synced:
+    documents: +1
+    sections: +6
+    knowledge_entries: +3
+    embeddings: +2482
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260422_060002.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (83 sessions, 1580 knowledge entries)
+    + 2482 new embeddings
+  Rebuilding FTS indexes...
+    knowledge_fts: 1744 entries
+    ke_fts: 3229 entries
+
+========================================
+  Total synced:
+    embeddings: +2482
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260422_120001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (83 sessions, 1580 knowledge entries)
+    + 2482 new embeddings
+  Rebuilding FTS indexes...
+    knowledge_fts: 1762 entries
+    ke_fts: 3311 entries
+
+========================================
+  Total synced:
+    embeddings: +2482
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260422_180001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (84 sessions, 1598 knowledge entries)
+    + 1 new sessions
+    + 2 new documents
+    + 7 new sections
+    + 18 new knowledge_entries
+    + 2508 new embeddings
+  Rebuilding FTS indexes...
+    knowledge_fts: 1788 entries
+    ke_fts: 3389 entries
+
+========================================
+  Total synced:
+    sessions: +1
+    documents: +2
+    sections: +7
+    knowledge_entries: +18
+    embeddings: +2508
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260423_000001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (84 sessions, 1598 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1788 entries
+    ke_fts: 3389 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260423_060001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (84 sessions, 1598 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1788 entries
+    ke_fts: 3389 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260423_120001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (84 sessions, 1598 knowledge entries)
+    + 2508 new embeddings
+  Rebuilding FTS indexes...
+    knowledge_fts: 1788 entries
+    ke_fts: 3416 entries
+
+========================================
+  Total synced:
+    embeddings: +2508
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260423_180001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (84 sessions, 1599 knowledge entries)
+    + 1 new knowledge_entries
+    + 2509 new embeddings
+  Rebuilding FTS indexes...
+    knowledge_fts: 1809 entries
+    ke_fts: 3464 entries
+
+========================================
+  Total synced:
+    knowledge_entries: +1
+    embeddings: +2509
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260424_000001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (84 sessions, 1599 knowledge entries)
+    + 2509 new embeddings
+  Rebuilding FTS indexes...
+    knowledge_fts: 1815 entries
+    ke_fts: 3475 entries
+
+========================================
+  Total synced:
+    embeddings: +2509
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260424_060001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (84 sessions, 1599 knowledge entries)
+  Rebuilding FTS indexes...
+    knowledge_fts: 1815 entries
+    ke_fts: 3475 entries
+
+========================================
+  Total synced:
+    (no new data to sync)
+========================================
+Backup: /home/linhnt102/.copilot/session-state/knowledge.backup_20260424_120001.db
+
+SYNC: Merging 1 source(s) → /home/linhnt102/.copilot/session-state/knowledge.db
+
+  Source: /mnt/c/Users/linhnt102/.copilot/session-state/knowledge.db
+    (85 sessions, 1608 knowledge entries)
+    + 1 new sessions
+    + 2 new documents
+    + 7 new sections
+    + 9 new knowledge_entries
+    + 2525 new embeddings
+  Rebuilding FTS indexes...
+    knowledge_fts: 1835 entries
+    ke_fts: 3504 entries
+
+========================================
+  Total synced:
+    sessions: +1
+    documents: +2
+    sections: +7
+    knowledge_entries: +9
+    embeddings: +2525
+========================================

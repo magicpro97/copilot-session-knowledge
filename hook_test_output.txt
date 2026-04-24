@@ -1,0 +1,442 @@
+
+≡ƒöî Section 1: Hook Runner
+  Γ£à Empty stdin ΓåÆ allow (exit 0)
+  Γ£à Empty stdin ΓåÆ no JSON output
+  Γ£à Invalid JSON ΓåÆ allow (exit 0)
+  Γ£à Unknown event ΓåÆ allow
+  Γ£à No event arg ΓåÆ silent exit
+  Γ£à Dry-run mode ΓåÆ no deny JSON
+  Γ£à Dry-run mode ΓåÆ has DRY RUN label
+  Γ£à View tool ΓåÆ allowed
+  Γ£à postToolUse ΓåÆ no error
+  Γ£à errorOccurred ΓåÆ no crash
+
+≡ƒöÉ Section 2: Marker Auth
+  Γ£à Sign marker creates file
+  Γ£à Verify own marker succeeds
+  Γ£à No secret ΓåÆ wrong name falls back to existence check
+  Γ£à Non-existent marker ΓåÆ false
+  Γ£à No secret ΓåÆ simple existence check (tamper test skipped)
+  Γ£à Empty marker ΓåÆ verify passes (no secret, existence only)
+  Γ£à Counter sign creates file
+  Γ£à Counter verify returns value
+  Γ£à Counter zero ΓåÆ returns 0
+  Γ£à Non-existent counter ΓåÆ 0
+  Γ£à Counter tamper test (skipped, no secret)
+  Γ£à List marker contains all items
+  Γ£à Empty list marker ΓåÆ empty set
+  Γ£à Detects .marker-secret access
+  Γ£à Detects integrity-manifest access
+  Γ£à Detects marker_auth.py access
+  Γ£à Normal command ΓåÆ not secret
+  Γ£à Normal python ΓåÆ not secret
+  Γ£à No tamper marker in test env
+
+≡ƒ¢á∩╕Å  Section 3: Rule Utilities (common.py)
+  Γ£à Python file ΓåÆ source
+  Γ£à Kotlin file ΓåÆ source
+  Γ£à Swift file ΓåÆ source
+  Γ£à JSON file ΓåÆ source
+  Γ£à Markdown ΓåÆ source
+  Γ£à /tmp file ΓåÆ NOT source
+  Γ£à /var file ΓåÆ NOT source
+  Γ£à Binary file ΓåÆ NOT source
+  Γ£à Image file ΓåÆ NOT source
+  Γ£à src/auth/login.py ΓåÆ auth
+  Γ£à app/main.py ΓåÆ app
+  Γ£à single.py ΓåÆ empty
+  Γ£à presentation/ui/Screen.kt ΓåÆ ui
+  Γ£à echo > file.py ΓåÆ writes
+  Γ£à sed -i ΓåÆ writes
+  Γ£à tee file.py ΓåÆ writes
+  Γ£à cp to source ΓåÆ writes
+  Γ£à curl -o source ΓåÆ writes
+  Γ£à python -c with open ΓåÆ writes
+  Γ£à dd of= ΓåÆ writes
+  Γ£à ls -la ΓåÆ NOT writes
+  Γ£à cat file.py ΓåÆ NOT writes
+  Γ£à grep pattern ΓåÆ NOT writes
+  Γ£à echo to /tmp ΓåÆ NOT writes
+  Γ£à git status ΓåÆ NOT writes
+  Γ£à python3 briefing.py ΓåÆ NOT writes
+  Γ£à deny() has permissionDecision=deny
+  Γ£à deny() has reason
+  Γ£à info() has message
+
+≡ƒôï Section 4: Rule Registration
+  Γ£à sessionStart has rules
+  Γ£à preToolUse has rules
+  Γ£à postToolUse has rules
+  Γ£à errorOccurred has rules
+  Γ£à sessionEnd has rules
+  Γ£à sessionStart has auto-briefing
+  Γ£à sessionStart has integrity
+  Γ£à preToolUse has enforce-briefing
+  Γ£à preToolUse has enforce-learn
+  Γ£à preToolUse has tentacle-enforce
+  Γ£à Briefing rule before learn gate
+  Γ£à Rule 'auto-briefing' inherits Rule
+  Γ£à Rule 'integrity' inherits Rule
+  Γ£à Rule 'enforce-briefing' inherits Rule
+  Γ£à Rule 'enforce-learn' inherits Rule
+  Γ£à Rule 'tentacle-enforce' inherits Rule
+  Γ£à Rule 'subagent-git-guard' inherits Rule
+  Γ£à Rule 'track-edits' inherits Rule
+  Γ£à Rule 'learn-reminder' inherits Rule
+  Γ£à Rule 'test-reminder' inherits Rule
+  Γ£à Rule 'tentacle-suggest' inherits Rule
+  Γ£à Rule 'auto-briefing' has name
+  Γ£à Rule 'auto-briefing' has events
+  Γ£à Rule 'integrity' has name
+  Γ£à Rule 'integrity' has events
+  Γ£à Rule 'enforce-briefing' has name
+  Γ£à Rule 'enforce-briefing' has events
+  Γ£à Rule 'enforce-learn' has name
+  Γ£à Rule 'enforce-learn' has events
+  Γ£à Rule 'tentacle-enforce' has name
+  Γ£à Rule 'tentacle-enforce' has events
+  Γ£à Rule 'subagent-git-guard' has name
+  Γ£à Rule 'subagent-git-guard' has events
+  Γ£à Rule 'track-edits' has name
+  Γ£à Rule 'track-edits' has events
+  Γ£à Rule 'learn-reminder' has name
+  Γ£à Rule 'learn-reminder' has events
+  Γ£à Rule 'test-reminder' has name
+  Γ£à Rule 'test-reminder' has events
+  Γ£à Rule 'tentacle-suggest' has name
+  Γ£à Rule 'tentacle-suggest' has events
+  Γ£à Rule 'error-kb' has name
+  Γ£à Rule 'error-kb' has events
+  Γ£à Rule 'session-end' has name
+  Γ£à Rule 'session-end' has events
+
+≡ƒôä Section 5: hooks.json Consistency
+  Γ£à User hooks.json is valid JSON
+  Γ£à User hooks has version
+  Γ£à Project hooks.json is valid JSON
+  Γ£à Project sessionStart NOT using old enforce-briefing.py
+  Γ£à Project sessionStart NOT using old enforce-learn.py
+  Γ£à Project sessionStart NOT using old enforce-tentacle.py
+  Γ£à Project sessionStart NOT using old auto-briefing.py
+  Γ£à Project sessionStart NOT using old verify-integrity.py
+  Γ£à Project sessionStart NOT using old session-end.py
+  Γ£à Project sessionStart NOT using old track-bash-edits.py
+  Γ£à Project sessionStart NOT using old suggest-learn.py
+  Γ£à Project sessionStart NOT using old suggest-tentacle.py
+  Γ£à Project sessionStart uses hook_runner.py
+  Γ£à Project sessionEnd NOT using old enforce-briefing.py
+  Γ£à Project sessionEnd NOT using old enforce-learn.py
+  Γ£à Project sessionEnd NOT using old enforce-tentacle.py
+  Γ£à Project sessionEnd NOT using old auto-briefing.py
+  Γ£à Project sessionEnd NOT using old verify-integrity.py
+  Γ£à Project sessionEnd NOT using old session-end.py
+  Γ£à Project sessionEnd NOT using old track-bash-edits.py
+  Γ£à Project sessionEnd NOT using old suggest-learn.py
+  Γ£à Project sessionEnd NOT using old suggest-tentacle.py
+  Γ£à Project sessionEnd uses hook_runner.py
+  Γ£à Project preToolUse NOT using old enforce-briefing.py
+  Γ£à Project preToolUse NOT using old enforce-learn.py
+  Γ£à Project preToolUse NOT using old enforce-tentacle.py
+  Γ£à Project preToolUse NOT using old auto-briefing.py
+  Γ£à Project preToolUse NOT using old verify-integrity.py
+  Γ£à Project preToolUse NOT using old session-end.py
+  Γ£à Project preToolUse NOT using old track-bash-edits.py
+  Γ£à Project preToolUse NOT using old suggest-learn.py
+  Γ£à Project preToolUse NOT using old suggest-tentacle.py
+  Γ£à Project preToolUse uses hook_runner.py
+  Γ£à Project postToolUse NOT using old enforce-briefing.py
+  Γ£à Project postToolUse NOT using old enforce-learn.py
+  Γ£à Project postToolUse NOT using old enforce-tentacle.py
+  Γ£à Project postToolUse NOT using old auto-briefing.py
+  Γ£à Project postToolUse NOT using old verify-integrity.py
+  Γ£à Project postToolUse NOT using old session-end.py
+  Γ£à Project postToolUse NOT using old track-bash-edits.py
+  Γ£à Project postToolUse NOT using old suggest-learn.py
+  Γ£à Project postToolUse NOT using old suggest-tentacle.py
+  Γ£à Project postToolUse uses hook_runner.py
+  Γ£à Project errorOccurred NOT using old enforce-briefing.py
+  Γ£à Project errorOccurred NOT using old enforce-learn.py
+  Γ£à Project errorOccurred NOT using old enforce-tentacle.py
+  Γ£à Project errorOccurred NOT using old auto-briefing.py
+  Γ£à Project errorOccurred NOT using old verify-integrity.py
+  Γ£à Project errorOccurred NOT using old session-end.py
+  Γ£à Project errorOccurred NOT using old track-bash-edits.py
+  Γ£à Project errorOccurred NOT using old suggest-learn.py
+  Γ£à Project errorOccurred NOT using old suggest-tentacle.py
+  Γ£à Project errorOccurred uses hook_runner.py
+  Γ£à User and project hooks.json match
+
+≡ƒùâ∩╕Å  Section 6: Migrate.py
+  Γ£à migrate.py runs without error
+  Γ£à Schema version is set
+  Γ£à wing/room columns exist (v2)
+  Γ£à entity_relations table exists (v3)
+  Γ£à facts column exists (v5)
+  Γ£à est_tokens column exists (v6)
+  Γ£à Re-run migrate is idempotent
+  Γ£à Version unchanged after re-run
+
+≡ƒöä Section 7: Auto-Update Tools
+  Γ£à --status runs without error
+  Γ£à --check runs without error
+  Γ£à --doctor runs without error
+  Γ£à Has classify_changes()
+  Γ£à Has run_migrations()
+  Γ£à Has write_manifest()
+  Γ£à Has deploy_skills()
+  Γ£à Has restart_processes()
+  Γ£à Has 24h cooldown
+
+≡ƒº╣ Section 8: Extract-Knowledge Stale Cleanup
+  Γ£à Has stale embedding cleanup
+  Γ£à Has orphan relation cleanup
+
+≡ƒôÜ Section 9: Documentation Completeness
+  Γ£à README has Table of Contents
+  Γ£à README has Why section
+  Γ£à README has Quick Start
+  Γ£à README has FAQ
+  Γ£à README has Contributing
+  Γ£à README has License
+  Γ£à README has badges
+  Γ£à README Γëñ 600 lines
+  Γ£à CONTRIBUTING.md exists
+  Γ£à CHANGELOG.md exists
+  Γ£à SECURITY.md exists
+  Γ£à docs/ directory exists
+  Γ£à docs/USAGE.md exists
+  Γ£à docs/SKILLS.md exists
+  Γ£à docs/HOOKS.md exists
+  Γ£à docs/AUTO-UPDATE.md exists
+  Γ£à README links to docs/USAGE.md
+  Γ£à README links to docs/SKILLS.md
+  Γ£à README links to docs/HOOKS.md
+  Γ£à README links to docs/AUTO-UPDATE.md
+
+Γ£Å∩╕Å  Section 10: Script Syntax Validation
+
+≡ƒÉÖ Section 11: Tentacle Hook Message Validity
+  Γ£à TentacleEnforceRule does not use invalid bare-string form
+  Γ£à TentacleEnforceRule suggests tentacle.py create
+  Γ£à TentacleEnforceRule suggests tentacle.py swarm
+  Γ£à TentacleEnforceRule deny message contains 'create'
+  Γ£à TentacleEnforceRule deny message contains 'swarm'
+  Γ£à TentacleEnforceRule deny message does not contain '"your task"'
+  Γ£à TentacleEnforceRule deny message references handoff escalation path
+  Γ£à TentacleEnforceRule deny message mentions commit convention
+  Γ£à TentacleEnforceRule deny message mentions git push
+  Γ£à TentacleEnforceRule evaluates without exception
+  Γ£à TentacleSuggestRule tracks sed -i writes
+  Γ£à TentacleSuggestRule tracks tee writes
+  Γ£à TentacleSuggestRule extracts path from sed -i command
+  Γ£à TentacleSuggestRule extracts path from tee command
+  Γ£à TentacleSuggestRule bash-parity test ran without exception
+
+≡ƒÜ½ Section 12: Subagent Git Guard
+  Γ£à preToolUse has subagent-git-guard
+  Γ£à subagent-git-guard registered after tentacle-enforce
+  Γ£à No active marker ΓåÆ git commit allowed
+  Γ£à Non-git command ΓåÆ allowed even with active marker
+  Γ£à Active marker + git commit ΓåÆ denied
+  Γ£à Active marker + git push ΓåÆ denied
+  Γ£à Deny message mentions subagent mode
+  Γ£à Deny message mentions handoff.md
+  Γ£à Deny message mentions tentacle.py complete
+  Γ£à Deny message mentions local-only limitation
+  Γ£à edit tool with active marker ΓåÆ not blocked by subagent-git-guard
+  Γ£à SubagentGitGuardRule unit tests ran without exception
+  Γ£à ImportError fallback (p.is_file): absent marker ΓåÆ allowed
+  Γ£à ImportError fallback: guard not silently disabled (verify_marker != always-False)
+  Γ£à subagent_guard.py ImportError fallback uses is_file() not False
+  Γ£à ImportError fallback test ran without exception
+  Γ£à hooks/check_subagent_marker.py exists
+  Γ£à check_subagent_marker.py syntax valid
+  Γ£à check_subagent_marker.py has TTL constant
+  Γ£à check_subagent_marker.py checks dispatched-subagent-active
+  Γ£à check_subagent_marker.py fails open on error
+  Γ£à check_subagent_marker.py mentions handoff.md
+  Γ£à check_subagent_marker.py uses verify_marker
+  Γ£à check_subagent_marker.py has zombie marker check
+  Γ£à check_subagent_marker.py absent marker ΓåÆ exit 0
+  Γ£à check_subagent_marker.py stale marker (no secret) ΓåÆ exit 0
+  Γ¥î check_subagent_marker.py fresh marker (no secret, existence fallback) ΓåÆ exit 1 ΓÇö exit=0 stdout=
+  Γ£à check_subagent_marker.py bad sig + secret present ΓåÆ exit 0 (HMAC rejects)
+  Γ£à hooks/pre-push exists
+  Γ£à pre-push has shebang
+  Γ£à pre-push calls check_subagent_marker.py
+  Γ£à pre-push exits 0 normally
+  Γ£à pre-push uses $HOME/.copilot/tools for guard path
+  Γ£à pre-push does NOT use dirname-based path for guard
+  Γ£à pre-commit calls check_subagent_marker.py
+  Γ£à pre-commit uses $HOME/.copilot/tools for guard path
+  Γ£à pre-commit guard block does NOT use dirname resolution
+  Γ£à install.py has install_git_hooks function
+  Γ£à install.py has --install-git-hooks flag
+  Γ£à install.py syntax valid after changes
+  Γ£à SubagentGitGuardRule: zombie marker (active_tentacles=[]) ΓåÆ allowed
+  Γ£à SubagentGitGuardRule: non-empty active_tentacles ΓåÆ still blocked
+  Γ£à SubagentGitGuardRule zombie test ran without exception
+  Γ£à check_subagent_marker.py zombie marker (active_tentacles=[]) ΓåÆ exit 0
+  Γ¥î check_subagent_marker.py non-empty active_tentacles ΓåÆ exit 1 (still blocks) ΓÇö exit=0 stdout=
+  Γ£à E2E: installed hook uses $HOME/.copilot/tools (not dirname)
+  Γ£à E2E: git commit in non-tools repo blocked by hook when marker present
+  Γ¥î E2E: block message mentions SUBAGENT ΓÇö Got: Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings
+
+ΓöÇΓöÇ Section 13: Repo-scope isolation & dual-format ΓöÇΓöÇ
+  Γ£à 13a: _read_tentacle_info handles old string-list format
+  Γ£à 13b: _read_tentacle_info handles new dict-list format
+  Γ£à 13a-b: dual-format tentacle info tests ran
+  Γ£à 13c: old-format marker different git_root ΓåÆ exit 0 (cross-repo skip)
+  Γ¥î 13d: old-format marker same git_root ΓåÆ exit 1 (blocks) ΓÇö exit=0 stdout=
+  Γ¥î 13e: absent git_root ΓåÆ exit 1 (conservative block, backward compat) ΓÇö exit=0 stdout=
+  Γ£à 13f: new dict-list all entries other repo ΓåÆ exit 0
+  Γ¥î 13g: new dict-list one entry for current repo ΓåÆ exit 1 (blocks) ΓÇö exit=0 stdout=
+  Γ¥î 13h: dict entry absent git_root ΓåÆ exit 1 (conservative block) ΓÇö exit=0 stdout=
+  Γ£à 13i: dict entry with stale per-entry ts ΓåÆ exit 0 (entry expired)
+  Γ£à 13j: SubagentGitGuardRule cross-repo dict entry ΓåÆ allowed
+  Γ£à 13j2: SubagentGitGuardRule same-repo dict entry ΓåÆ denied
+  Γ£à 13j: SubagentGitGuardRule cross-repo tests ran
+  Γ£à 13k: auto-update-tools.py has --install-git-hooks reminder
+  Γ£à 13k2: auto-update-tools.py states it does NOT auto-reinstall git hooks
+  Γ£à 13l: install.py --install-git-hooks mentions re-run after update
+  Γ£à 13m: subagent_guard.py supports dict entries
+  Γ£à 13m2: subagent_guard.py supports string entries
+  Γ£à 13m3: check_subagent_marker.py supports dict entries
+  Γ£à 13m4: check_subagent_marker.py supports string entries
+  Γ£à 13m5: subagent_guard.py has repo-scope check
+  Γ£à 13m6: check_subagent_marker.py has repo-scope check
+  Γ£à 13n: pre-commit uses canonical $HOME/.copilot/tools path
+  Γ£à 13n2: pre-push uses canonical $HOME/.copilot/tools path
+  Γ£à 13n3: pre-commit does not use dirname for guard path
+
+ΓöÇΓöÇ Section 14: _roots_match fail-conservative & parse-once ΓöÇΓöÇ
+  Γ£à 14a: _roots_match same dir returns True
+  Γ£à 14a2: _roots_match different dirs returns False
+  Γ£à 14a3: _roots_match on exception returns True (fail-conservative)
+  Γ£à 14a: _roots_match tests ran
+  Γ£à 14a-sg: _roots_match same dir returns True
+  Γ£à 14a-sg2: _roots_match different dirs returns False
+  Γ£à 14a-sg3: subagent_guard._roots_match on exception returns True (fail-conservative)
+  Γ£à 14a-sg: subagent_guard._roots_match tests ran
+  Γ£à 14b: _any_entry_relevant with bad git_root path ΓåÆ True (conservative block)
+  Γ£à 14b2: check_subagent_marker._any_entry_relevant bad path ΓåÆ True (conservative)
+  Γ£à 14c: is_marker_fresh reads MARKER_PATH exactly once (parse-once refactor)
+  Γ£à 14c2: is_marker_fresh does NOT call _read_marker_ts (parse-once refactor)
+  Γ¥î 14d: parse-once refactor: fresh marker still exits 1 (blocks) ΓÇö exit=0 stdout=
+  Γ£à 14e: is_marker_fresh repo-scope except comment says fail-conservative (not fail-open)
+  Γ£à 14f: auto-update warning says ACTION REQUIRED
+  Γ£à 14f2: auto-update warning says EVERY protected repo
+  Γ£à 14g: subagent_guard._roots_match docstring mentions fail-conservative
+  Γ£à 14g2: check_subagent_marker._roots_match docstring mentions fail-conservative
+
+ΓöÇΓöÇ Section 15: Phase-5 per-tentacle tentacle_id field ΓöÇΓöÇ
+  Γ£à 15a: subagent_guard._any_entry_relevant ignores tentacle_id field, returns True for same-repo
+  Γ£à 15a2: check_subagent_marker._any_entry_relevant ignores tentacle_id field, returns True for same-repo
+  Γ£à 15a: tentacle_id field tolerance tests ran
+  Γ£à 15b: subagent_guard._any_entry_relevant: two same-repo tentacle_id entries ΓåÆ True (blocks)
+  Γ£à 15b2: check_subagent_marker._any_entry_relevant: two same-repo tentacle_id entries ΓåÆ True
+  Γ£à 15b: multi-tentacle_id same-repo tests ran
+  Γ£à 15c: subagent_guard._read_tentacle_info with tentacle_id entries returns both names
+  Γ£à 15c2: check_subagent_marker._read_tentacle_info with tentacle_id entries returns both names
+  Γ£à 15c: _read_tentacle_info tentacle_id tests ran
+  Γ¥î 15d: subprocess same-repo two tentacle_id entries ΓåÆ exit 1 (blocks) ΓÇö exit=0 stdout=
+  Γ¥î 15e: subprocess mixed-repo tentacle_id entries ΓåÆ exit 1 (same-repo entry still blocks) ΓÇö exit=0 stdout=
+  Γ£à 15f: SubagentGitGuardRule multi-tentacle_id same-repo ΓåÆ deny
+  Γ£à 15f2: deny message mentions subagent mode
+  Γ£à 15f: SubagentGitGuardRule multi-tentacle_id tests ran
+  Γ¥î 15g: single tentacle_id entry still blocks (regression guard) ΓÇö exit=0
+  Γ£à 15h: all same-repo tentacle_id entries expired ΓåÆ _any_entry_relevant returns False
+  Γ£à 15h2: check_subagent_marker all expired tentacle_id entries ΓåÆ False
+  Γ£à 15h: expired tentacle_id entries tests ran
+
+ΓöÇΓöÇ Section 16: Mixed-format marker bypass regression ΓöÇΓöÇ
+  Γ£à 16a: subagent_guard._any_entry_relevant mixed (string first) ΓåÆ True (conservative block)
+  Γ£à 16a2: check_subagent_marker._any_entry_relevant mixed (string first) ΓåÆ True
+  Γ£à 16a: mixed-format _any_entry_relevant tests ran
+  Γ¥î 16b: mixed list (string first + current-repo dict, other top-level git_root) ΓåÆ exit 1 (blocks) ΓÇö exit=0 ΓÇö was exit 0 (bypass) before fix; stdout=
+  Γ£à 16c: pure old string list + other-repo top-level git_root ΓåÆ exit 0 (backward compat preserved)
+  Γ£à 16d: SubagentGitGuardRule mixed list (string first + current-repo dict) ΓåÆ deny
+  Γ£à 16d: SubagentGitGuardRule mixed-format tests ran
+  Γ£à 16e: subagent_guard.py uses all(isinstance(e, str) for e in active) for format dispatch
+  Γ£à 16e2: check_subagent_marker.py uses all(isinstance(e, str) for e in active) for format dispatch
+  Γ£à 16e3: subagent_guard.py does not dispatch on isinstance(active[0], str) in repo-scope check
+  Γ£à 16e4: check_subagent_marker.py does not dispatch on isinstance(active[0], str) in repo-scope check
+  Γ£à Syntax OK: auto-update-tools.py
+  Γ£à Syntax OK: briefing.py
+  Γ£à Syntax OK: build-session-index.py
+  Γ£à Syntax OK: checkpoint-diff.py
+  Γ£à Syntax OK: checkpoint-restore.py
+  Γ£à Syntax OK: checkpoint-save.py
+  Γ£à Syntax OK: claude-adapter.py
+  Γ£à Syntax OK: codebase-map.py
+  Γ£à Syntax OK: embed.py
+  Γ£à Syntax OK: extract-knowledge.py
+  Γ£à Syntax OK: generate-summary.py
+  Γ£à Syntax OK: auto-briefing.py
+  Γ£à Syntax OK: check_subagent_marker.py
+  Γ£à Syntax OK: enforce-briefing.py
+  Γ£à Syntax OK: enforce-learn.py
+  Γ£à Syntax OK: enforce-tentacle.py
+  Γ£à Syntax OK: error-search-kb.py
+  Γ£à Syntax OK: hook_runner.py
+  Γ£à Syntax OK: learn-reminder.py
+  Γ£à Syntax OK: lint-skills.py
+  Γ£à Syntax OK: marker_auth.py
+  Γ£à Syntax OK: __init__.py
+  Γ£à Syntax OK: briefing.py
+  Γ£à Syntax OK: common.py
+  Γ£à Syntax OK: edit_tracker.py
+  Γ£à Syntax OK: error_kb.py
+  Γ£à Syntax OK: integrity.py
+  Γ£à Syntax OK: learn_gate.py
+  Γ£à Syntax OK: learn_reminder.py
+  Γ£à Syntax OK: session_lifecycle.py
+  Γ£à Syntax OK: subagent_guard.py
+  Γ£à Syntax OK: tentacle.py
+  Γ£à Syntax OK: session-end.py
+  Γ£à Syntax OK: tentacle-suggest.py
+  Γ£à Syntax OK: test-after-edit.py
+  Γ£à Syntax OK: track-bash-edits.py
+  Γ£à Syntax OK: verify-integrity.py
+  Γ£à Syntax OK: host_manifest.py
+  Γ£à Syntax OK: install-project-hooks.py
+  Γ£à Syntax OK: install.py
+  Γ£à Syntax OK: knowledge-health.py
+  Γ£à Syntax OK: learn.py
+  Γ£à Syntax OK: migrate-knowledge-v2.py
+  Γ£à Syntax OK: migrate.py
+  Γ£à Syntax OK: profile-builder.py
+  Γ£à Syntax OK: profile-export.py
+  Γ£à Syntax OK: profile-import.py
+  Γ£à Syntax OK: project-context.py
+  Γ£à Syntax OK: query-session.py
+  Γ£à Syntax OK: setup-project.py
+  Γ£à Syntax OK: sync-knowledge.py
+  Γ£à Syntax OK: tentacle.py
+  Γ£à Syntax OK: test_checkpoint_diff.py
+  Γ£à Syntax OK: test_checkpoint_restore.py
+  Γ£à Syntax OK: test_checkpoint_save.py
+  Γ£à Syntax OK: test_codebase_map.py
+  Γ£à Syntax OK: test_fixes.py
+  Γ£à Syntax OK: test_hooks.py
+  Γ£à Syntax OK: test_host_symmetry.py
+  Γ£à Syntax OK: test_karpathy_skill_rollout.py
+  Γ£à Syntax OK: test_memory_contract.py
+  Γ£à Syntax OK: test_profile_builder.py
+  Γ£à Syntax OK: test_profile_export.py
+  Γ£à Syntax OK: test_profile_import.py
+  Γ£à Syntax OK: test_project_context.py
+  Γ£à Syntax OK: test_project_hooks.py
+  Γ£à Syntax OK: test_retrieval_evals.py
+  Γ£à Syntax OK: test_security.py
+  Γ£à Syntax OK: test_session_surface.py
+  Γ£à Syntax OK: test_tentacle_runtime.py
+  Γ£à Syntax OK: test_trend_scout.py
+  Γ£à Syntax OK: test_workflow_profiles.py
+  Γ£à Syntax OK: trend-scout.py
+  Γ£à Syntax OK: validate-skill.py
+  Γ£à Syntax OK: watch-sessions.py
+
+==================================================
+Results: 394 passed, 12 failed out of 406
+ΓÜá∩╕Å  12 test(s) need attention

@@ -1,0 +1,2 @@
+Hindsight UI: http://127.0.0.1:19823/?token=testtoken123
+Bound: 127.0.0.1:19823
