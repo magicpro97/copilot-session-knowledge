@@ -1,0 +1,11 @@
+# Deliberately broken Python — mimics the C1 misindented top-level block bug.
+# Stored as .txt so test discovery never auto-runs this file.
+# test_quality_gates.py copies it to a temp dir as .py to verify the syntax gate.
+
+def watch_sessions():
+    """Simulated watcher function."""
+    sessions = []
+    for s in sessions:
+        print(s)
+        # next line is misindented (extra 4 spaces = IndentationError)
+            return s

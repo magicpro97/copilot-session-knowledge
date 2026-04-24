@@ -28,6 +28,7 @@ def get_rules_for_event(event):
     from .integrity import IntegrityRule
     from .session_lifecycle import SessionEndRule
     from .subagent_guard import SubagentGitGuardRule
+    from .syntax_gate import SyntaxGateRule
 
     ALL_RULES = [
         # sessionStart (order: briefing first, then integrity)
@@ -38,6 +39,7 @@ def get_rules_for_event(event):
         EnforceLearnRule(),
         TentacleEnforceRule(),
         SubagentGitGuardRule(),
+        SyntaxGateRule(),
         # postToolUse (all run, output is informational)
         TrackEditsRule(),
         LearnReminderRule(),

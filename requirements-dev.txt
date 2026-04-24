@@ -1,0 +1,7 @@
+# OPTIONAL dev-only dependencies.
+# Core runtime (check_syntax.py, run_all_tests.py, all quality gates) is pure stdlib
+# and works WITHOUT installing anything from this file.
+# Install only if you want lint + coverage tooling:
+#   pip install -r requirements-dev.txt
+ruff>=0.5
+pytest-cov>=5

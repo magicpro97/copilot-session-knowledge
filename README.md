@@ -525,6 +525,16 @@ python ~/.copilot/tools/install.py --install-healer
 
 📖 **Details:** [docs/copilot-cli-healer.md](docs/copilot-cli-healer.md)
 
+## Quality Gates
+
+Motivated by a C1-class bug where a misindented top-level block caused a `SyntaxError` in `watch-sessions.py` that slipped past review. The following gates make this class of error impossible to commit again:
+
+- **`scripts/check_syntax.py`** — stdlib-only CLI; walks the repo and runs `py_compile` on every `.py` file. Prints `file:line: error` for each failure, exits 1 on any error.
+- **`run_all_tests.py`** — stdlib-only test runner; discovers and runs all `test_*.py` files, prints a pass/fail table, and exits non-zero on any failure.
+- **`hooks/rules/syntax_gate.py`** — `preToolUse` hook; blocks `edit`/`create` on `*.py` files if the new content has a syntax error. Registered in the unified hook runner via `hooks/rules/__init__.py`.
+- **`.github/workflows/ci.yml`** — GitHub Actions CI; runs syntax check then all tests on every push and pull request (ubuntu-latest, Python 3.11).
+- **`requirements-dev.txt`** — optional dev-only deps (`ruff`, `pytest-cov`); core runtime and all quality gates work without installing it.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on reporting bugs, suggesting features, and submitting pull requests.

@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "_comment": "Source copy of ~/.copilot/hooks/hooks.json. Deploy via: python3 install.py",
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" sessionStart",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" sessionStart",
+        "comment": "[GLOBAL] Unified hook runner — auto-briefing + integrity check",
+        "timeoutSec": 20
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" sessionEnd",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" sessionEnd",
+        "comment": "[GLOBAL] Unified hook runner — marker cleanup",
+        "timeoutSec": 5
+      }
+    ],
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" preToolUse",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" preToolUse",
+        "comment": "[GLOBAL] Unified hook runner — briefing + learn + tentacle + syntax_gate enforcement",
+        "timeoutSec": 10
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" postToolUse",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" postToolUse",
+        "comment": "[GLOBAL] Unified hook runner — edit tracking + reminders + suggestions",
+        "timeoutSec": 10
+      }
+    ],
+    "errorOccurred": [
+      {
+        "type": "command",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" errorOccurred",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" errorOccurred",
+        "comment": "[GLOBAL] Unified hook runner — KB error search",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}
