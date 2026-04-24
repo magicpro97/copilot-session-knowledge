@@ -43,6 +43,23 @@ if os.name == "nt":
     except Exception:
         pass
 
+
+# ---------------------------------------------------------------------------
+# Atomic write helper (P1-5, P1-7)
+# ---------------------------------------------------------------------------
+def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
+    """Write content to path atomically via temp + os.replace. No CRLF translation."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_bytes(content.encode(encoding))
+        os.replace(str(tmp), str(path))
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -103,9 +120,8 @@ def _register_project(project_root: Path) -> None:
         if key not in projects:
             projects.append(key)
             REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-            REGISTRY_PATH.write_text(
-                json.dumps({"projects": projects}, indent=2), encoding="utf-8"
-            )
+            # P1-7: atomic write prevents registry truncation on concurrent access
+            _atomic_write_text(REGISTRY_PATH, json.dumps({"projects": projects}, indent=2))
     except Exception:
         pass
 
@@ -401,7 +417,7 @@ def deploy_skill():
             continue
         target = project_root / subpath
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(skill_content, encoding="utf-8")
+        _atomic_write_text(target, skill_content)  # P1-5: atomic write
         deployed.append((host_name, target))
         print(f"  {OK} {host_name}: {target.relative_to(project_root)}")
 
@@ -481,10 +497,10 @@ def deploy_hooks():
         else:
             backup = hooks_dst.with_suffix(".json.backup")
             shutil.copy2(str(hooks_dst), str(backup))
-            hooks_dst.write_text(new, encoding="utf-8")
+            _atomic_write_text(hooks_dst, new)  # P1-5: atomic write
             print(f"  {OK} hooks.json — updated (backup: {backup.name})")
     else:
-        hooks_dst.write_text(new, encoding="utf-8")
+        _atomic_write_text(hooks_dst, new)  # P1-5: atomic write
         print(f"  {OK} hooks.json — created")
 
     # Ensure markers directory exists
@@ -1217,11 +1233,29 @@ def install_git_hooks(target_dir: "Path | None" = None) -> None:
         print("        to pick up new hook logic (auto-update cannot do this for you safely).")
 
 
+def _dispatch_healer(flag: str) -> None:
+    """Dispatch to copilot-cli-healer.py for schedule management."""
+    healer = _SCRIPT_DIR / "copilot-cli-healer.py"
+    if not healer.exists():
+        print(f"  {FAIL} copilot-cli-healer.py not found at {_tilde(healer)}")
+        return
+    import subprocess as _sp
+    _sp.run([sys.executable, str(healer), flag])
+
+
 def main():
     args = sys.argv[1:]
 
     if "--help" in args or "-h" in args:
         print(__doc__)
+        return
+
+    if "--install-healer" in args:
+        _dispatch_healer("--install-schedule")
+        return
+
+    if "--uninstall-healer" in args:
+        _dispatch_healer("--uninstall-schedule")
         return
 
     if "--deploy-skill" in args:

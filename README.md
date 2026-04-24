@@ -438,6 +438,36 @@ A: `python3 ~/.copilot/tools/auto-update-tools.py --force` or just `git pull` (p
 **Q: Will hooks crash my AI agent?**
 A: No. The unified hook runner uses fail-open architecture — if any rule crashes, it logs the error and allows the action to proceed.
 
+## Troubleshooting
+
+### Copilot CLI auto-heal
+
+If `copilot update` fails with an error like:
+
+```
+ENOENT: no such file or directory, rename .../.copilot/pkg/universal/.replaced-1.0.35-<pid>-<ts>
+```
+
+or `EPERM` on a rename inside `pkg/universal/`, run the healer:
+
+```bash
+python ~/.copilot/tools/copilot-cli-healer.py --status   # Diagnose
+python ~/.copilot/tools/copilot-cli-healer.py --heal     # Fix
+python ~/.copilot/tools/copilot-cli-healer.py --update   # Heal + retry copilot update
+```
+
+**Root cause:** The upstream Copilot CLI Node updater calls `fs.rename(src, dst)` without checking that `src` exists, leaving stale `.replaced-*` dirs and `pkg/tmp/` partial downloads behind. The healer removes these safely.
+
+To prevent recurrence, register a daily scheduled task:
+
+```bash
+python ~/.copilot/tools/copilot-cli-healer.py --install-schedule
+# or:
+python ~/.copilot/tools/install.py --install-healer
+```
+
+📖 **Details:** [docs/copilot-cli-healer.md](docs/copilot-cli-healer.md)
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on reporting bugs, suggesting features, and submitting pull requests.

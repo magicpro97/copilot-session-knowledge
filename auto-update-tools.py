@@ -19,6 +19,7 @@ Usage:
     python auto-update-tools.py --skip-pull  # Run pipeline without pulling (used by self-exec)
 """
 
+import contextlib
 import json
 import os
 import platform
@@ -230,8 +231,9 @@ def _load_state() -> dict:
 
 
 def _save_state(state: dict):
+    # P0-1: atomic write to prevent truncated state on crash/kill
     try:
-        STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        _atomic_write_text(STATE_FILE, json.dumps(state, indent=2))
     except Exception as e:
         warn(f"Could not save state: {e}")
 
@@ -260,6 +262,88 @@ def _load_project_registry() -> list[Path]:
     except Exception:
         pass
     return []
+
+
+# ---------------------------------------------------------------------------
+# Atomic write helpers, Windows FS retry, and update lock (P0-1/2/3/4/8)
+# ---------------------------------------------------------------------------
+SELF_EXEC_GUARD = TOOLS_DIR / ".self-exec-active"   # P0-7
+_UPDATE_LOCK_FILE = TOOLS_DIR / ".update-lock"       # P0-8
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write *data* to *path* atomically using a sibling .tmp + os.replace."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(str(tmp), str(path))
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+
+def _atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
+    """Write *text* to *path* atomically (temp + os.replace). No CRLF translation."""
+    _atomic_write_bytes(path, text.encode(encoding))
+
+
+def _retry_windows_fs(func, *args, retries: int = 3, delay: float = 0.5):
+    """Call func(*args); on PermissionError/OSError retry up to *retries* times.
+
+    Handles Windows AV scanner locking during shutil.move / os.rename.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            return func(*args)
+        except (PermissionError, OSError) as exc:
+            last_exc = exc
+            if attempt < retries - 1:
+                time.sleep(delay * (attempt + 1))
+    raise last_exc  # type: ignore[misc]
+
+
+@contextlib.contextmanager
+def _update_lock():
+    """Cross-platform exclusive update lock via O_CREAT|O_EXCL.
+
+    If the lock file is fresh (< 10 min), exits 0 (another update is running).
+    Stale locks (>= 10 min) are removed and the lock is re-acquired.
+    """
+    lock_path = _UPDATE_LOCK_FILE
+    acquired = False
+    for _attempt in range(2):
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            acquired = True
+            break
+        except FileExistsError:
+            try:
+                age = time.time() - lock_path.stat().st_mtime
+            except OSError:
+                age = 0
+            if age >= 600:
+                try:
+                    lock_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                continue  # retry
+            log("Update already in progress — skipping")
+            sys.exit(0)
+    if not acquired:
+        log("Could not acquire update lock — skipping")
+        sys.exit(0)
+    try:
+        yield
+    finally:
+        try:
+            lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +381,12 @@ def ensure_clone() -> bool:
             return False
 
         TOOLS_DIR.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(tmp / "repo" / ".git"), str(TOOLS_DIR / ".git"))
+        # P0-4: retry on Windows AV scanner locking .git objects during move
+        try:
+            _retry_windows_fs(shutil.move, str(tmp / "repo" / ".git"), str(TOOLS_DIR / ".git"))
+        except (PermissionError, OSError):
+            # Fallback: copy tree (handles cross-device: different drive letters)
+            shutil.copytree(str(tmp / "repo" / ".git"), str(TOOLS_DIR / ".git"), dirs_exist_ok=True)
         _git("checkout", "--", ".")
         ok("Cloned successfully")
         return True
@@ -324,7 +413,14 @@ def pull_latest() -> tuple[bool, str, str]:
         _git("fetch", "--quiet", "origin")
         _git("reset", "--hard", "origin/main", "--quiet")
 
-    _git("stash", "pop", "--quiet")
+    # P0-5: check stash pop result; abort if conflicted to avoid running on broken tree
+    r_pop = _git("stash", "pop", "--quiet")
+    if r_pop.returncode != 0:
+        warn("Stash pop failed — local changes are in stash. "
+             "Run 'git stash pop' manually after resolving conflicts.")
+        if r_pop.stderr:
+            warn(f"git stash pop stderr: {r_pop.stderr[:200]}")
+        return False, old_sha, old_sha  # treat as no-update; abort pipeline
 
     new_sha = _git_output("rev-parse", "HEAD")
     short_old = old_sha[:8] if old_sha else "unknown"
@@ -390,51 +486,94 @@ def post_pull_pipeline(old_sha: str, new_sha: str):
                 args.append(a)
         if "--force" in sys.argv:
             args.append("--force")
+        # Release the update lock BEFORE handing off: we are currently inside
+        # `with _update_lock():` in main(); os.execl never returns (so __exit__
+        # doesn't fire) and Popen+sys.exit(0) on Windows exits before __exit__
+        # can run reliably.  The child process re-acquires the lock itself.
+        try:
+            _UPDATE_LOCK_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
         if platform.system() == "Windows":
             # os.execl behaves differently on Windows
+            SELF_EXEC_GUARD.touch()   # P0-7: block concurrent post-merge hook race
             subprocess.Popen(args)
             sys.exit(0)
         else:
+            SELF_EXEC_GUARD.touch()   # P0-7
             os.execl(sys.executable, *args)
 
-    # 2. DB migrations (always — idempotent and safe)
-    run_migrations()
+    # P0-6: wrap pipeline steps; always write manifest so --doctor reflects reality
+    pipeline_success = True
+    try:
+        # 2. DB migrations (always — idempotent and safe)
+        run_migrations()
 
-    # 3. LaunchAgent templates changed → reinstall
-    if changes.get("launchd"):
-        reinstall_launchagents()
+        # 3. LaunchAgent templates changed → reinstall
+        if changes.get("launchd"):
+            reinstall_launchagents()
 
-    # 3b. Git hook scripts changed → remind user to re-install per-repo hooks.
-    # auto-update deliberately does NOT auto-reinstall git hooks into other repos:
-    # it has no registry of which repos have hooks installed, and silently modifying
-    # .git/hooks/ in arbitrary repos would be unsafe.  Users must re-run install.py.
-    if changes.get("hooks"):
-        hook_files = [f for f in changes["hooks"]
-                      if "pre-commit" in f or "pre-push" in f or "check_subagent" in f]
-        if hook_files:
-            warn("Git hook scripts updated — installed per-repo hooks are NOT automatically refreshed.")
-            warn("ACTION REQUIRED to pick up the cross-repo isolation fix (and future hook changes):")
-            warn("  Re-run in EVERY protected repo: python3 ~/.copilot/tools/install.py --install-git-hooks")
+        # 3b. Git hook scripts changed → remind user to re-install per-repo hooks.
+        # auto-update deliberately does NOT auto-reinstall git hooks into other repos:
+        # it has no registry of which repos have hooks installed, and silently modifying
+        # .git/hooks/ in arbitrary repos would be unsafe.  Users must re-run install.py.
+        if changes.get("hooks"):
+            hook_files = [f for f in changes["hooks"]
+                          if "pre-commit" in f or "pre-push" in f or "check_subagent" in f]
+            if hook_files:
+                warn("Git hook scripts updated — installed per-repo hooks are NOT automatically refreshed.")
+                warn("ACTION REQUIRED to pick up the cross-repo isolation fix (and future hook changes):")
+                warn("  Re-run in EVERY protected repo: python3 ~/.copilot/tools/install.py --install-git-hooks")
 
-    # 4. Template/SKILL.md changed → redeploy
-    if changes.get("templates") or changes.get("skills"):
-        deploy_skills()
+        # 4. Template/SKILL.md changed → redeploy
+        if changes.get("templates") or changes.get("skills"):
+            deploy_skills()
 
-    # 5. Python scripts changed → restart watcher service
-    if changes.get("py_scripts"):
-        restart_processes()
+        # 5. Python scripts changed → restart watcher service
+        if changes.get("py_scripts"):
+            restart_processes()
 
-    # 6. Embedding logic changed → trigger rebuild (async, non-blocking)
-    if changes.get("embed"):
-        trigger_embedding_rebuild()
+        # 6. Embedding logic changed → trigger rebuild (async, non-blocking)
+        if changes.get("embed"):
+            trigger_embedding_rebuild()
 
-    # 7. Install/update post-merge hook
-    ensure_post_merge_hook()
+        # 7. Install/update post-merge hook
+        ensure_post_merge_hook()
 
-    # 8. Write version manifest
+    except Exception as _pipeline_exc:
+        err(f"Pipeline step failed: {_pipeline_exc}")
+        pipeline_success = False
+
+    # 8. Write version manifest (always — even on failure so --doctor reflects reality)
     write_manifest(new_sha, changes)
 
-    ok("Pipeline complete")
+    if pipeline_success:
+        ok("Pipeline complete")
+        # P2 (review): clear stale failure marker after a successful pipeline
+        # so doctor() stops warning about an incomplete previous update.
+        try:
+            _FAILED_MARKER = TOOLS_DIR / ".update-failed.json"
+            _FAILED_MARKER.unlink(missing_ok=True)
+        except Exception:
+            pass
+    else:
+        warn("Pipeline failed mid-run — some components may not be updated.")
+        warn("Run 'sk-update --force' to retry.")
+        try:
+            _FAILED_MARKER = TOOLS_DIR / ".update-failed.json"
+            _atomic_write_text(_FAILED_MARKER, json.dumps({
+                "failed_at": datetime.now().isoformat(),
+                "old_sha": old_sha,
+                "new_sha": new_sha,
+            }, indent=2))
+        except Exception:
+            pass
+
+    # P0-7: clean up self-exec guard after skip-pull child completes
+    try:
+        SELF_EXEC_GUARD.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +667,16 @@ python3 "$TOOLS_DIR/auto-update-tools.py" --skip-pull --old-sha="$OLD_SHA" --new
         # Compare exact bytes so CRLF-generated hooks get normalized back to LF.
         if hook_path.exists() and hook_path.read_bytes() == desired_bytes:
             return
-        hook_path.write_text(hook_content, encoding="utf-8", newline="\n")
+        # P0-3: atomic write with retry to handle Windows file-lock from running hook
+        for attempt in range(3):
+            try:
+                _atomic_write_bytes(hook_path, desired_bytes)
+                break
+            except PermissionError:
+                if attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
+                else:
+                    raise
         if platform.system() != "Windows":
             hook_path.chmod(0o755)
         ok("Post-merge hook installed")
@@ -600,8 +748,9 @@ def write_manifest(sha: str, changes: dict):
             "running": r.returncode == 0,
         }
 
+    # P0-2: atomic manifest write to prevent --doctor parse failures on crash
     try:
-        MANIFEST_FILE.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        _atomic_write_text(MANIFEST_FILE, json.dumps(manifest, indent=2))
     except Exception as e:
         warn(f"Could not write manifest: {e}")
 
@@ -613,16 +762,27 @@ def run_migrations():
     if not DB_PATH.exists():
         return
     migrate_script = TOOLS_DIR / "migrate.py"
-    if migrate_script.exists():
+    if not migrate_script.exists():
+        return
+    # P1-1: retry up to 3× with 5 s backoff — handles DB-locked by watch-sessions
+    for attempt in range(3):
         try:
-            subprocess.run(
+            r = subprocess.run(
                 [sys.executable, str(migrate_script), str(DB_PATH)],
                 capture_output=True,
                 text=True,
                 timeout=30,
             )
+            if r.returncode == 0:
+                return
+            warn(f"Migration returned {r.returncode}: {r.stderr[:200]}")
+            break  # non-zero exit (not a timeout) — don't retry
         except subprocess.TimeoutExpired:
-            warn("Migration timed out after 30s (DB may be locked by another process)")
+            warn(f"Migration timed out (attempt {attempt + 1}/3) — DB may be locked")
+            if attempt < 2:
+                time.sleep(5)
+    else:
+        warn("Migration failed after 3 attempts; run manually: python migrate.py")
 
 
 # ---------------------------------------------------------------------------
@@ -914,15 +1074,29 @@ def _restart_manual():
             capture_output=True,
             text=True,
         )
+        killed_pids: list[int] = []
         for line in r.stdout.splitlines():
             line = line.strip()
             if line.isdigit():
                 pid = int(line)
                 try:
                     os.kill(pid, signal.SIGTERM)
+                    killed_pids.append(pid)
                 except Exception:
                     pass
-        time.sleep(1)
+
+        # P1-2: poll for process exit on Windows before spawning replacement
+        if killed_pids:
+            import ctypes
+            PROCESS_SYNCHRONIZE = 0x00100000
+            for pid in killed_pids:
+                h = ctypes.windll.kernel32.OpenProcess(PROCESS_SYNCHRONIZE, False, pid)
+                if h:
+                    ctypes.windll.kernel32.WaitForSingleObject(h, 5000)  # 5 s max
+                    ctypes.windll.kernel32.CloseHandle(h)
+            time.sleep(0.5)  # extra buffer for file handle GC
+        else:
+            time.sleep(1)
 
         pythonw = shutil.which("pythonw") or shutil.which("python")
         subprocess.Popen(
@@ -953,6 +1127,24 @@ def _restart_manual():
             start_new_session=True,
         )
         ok("watch-sessions restarted (manual)")
+
+
+# ---------------------------------------------------------------------------
+# Healer integration (optional — gracefully absent if healer not deployed)
+# ---------------------------------------------------------------------------
+def _try_healer_check():
+    """Return list of healer Issues or None if healer unavailable."""
+    try:
+        import importlib.util as _ilu
+        _hpath = TOOLS_DIR / "copilot-cli-healer.py"
+        if not _hpath.exists():
+            return None
+        _spec = _ilu.spec_from_file_location("_healer", _hpath)
+        _mod = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        return _mod.check()
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1030,6 +1222,17 @@ def doctor():
         warn("Post-merge hook: missing — run update to install")
         issues += 1
 
+    # Check for a previous failed pipeline run (P0-6 marker)
+    _FAILED_MARKER = TOOLS_DIR / ".update-failed.json"
+    if _FAILED_MARKER.exists():
+        try:
+            fdata = json.loads(_FAILED_MARKER.read_text(encoding="utf-8"))
+            warn(f"Previous update incomplete (failed at {fdata.get('failed_at', '?')}). "
+                 "Run 'sk-update --force' to retry.")
+            issues += 1
+        except Exception:
+            pass
+
     # LaunchAgents (macOS) / systemd (Linux) / Task Scheduler (Windows)
     system = platform.system()
     if system == "Darwin":
@@ -1069,6 +1272,16 @@ def doctor():
             ok("Task Scheduler CopilotSessionWatcher: registered")
         else:
             warn("Task Scheduler CopilotSessionWatcher: not registered (optional)")
+
+    # Copilot CLI pkg healer check
+    healer_issues = _try_healer_check()
+    if healer_issues is None:
+        warn("Copilot CLI healer: not found (optional — run install.py --install-healer)")
+    elif healer_issues:
+        warn(f"Copilot CLI pkg: stale state — run: python copilot-cli-healer.py --heal")
+        issues += 1
+    else:
+        ok("Copilot CLI pkg: healthy")
 
     if issues == 0:
         ok("All good")
@@ -1135,24 +1348,51 @@ def main():
         elif arg == "--doctor":
             doctor()
             return
+        elif arg == "--heal-copilot-cli":
+            _issues = _try_healer_check()
+            if _issues is None:
+                err("copilot-cli-healer.py not found in tools dir")
+                sys.exit(1)
+            import importlib.util as _ilu
+            _hpath = TOOLS_DIR / "copilot-cli-healer.py"
+            _spec = _ilu.spec_from_file_location("_healer", _hpath)
+            _mod = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            sys.exit(_mod.main())
         elif arg in ("--help", "-h"):
             print(__doc__)
             return
 
+    # P0-7: Self-exec guard check — prevents double-run when post-merge hook races.
+    # Review fix: skip this check when --skip-pull is in argv, because that IS
+    # the self-exec child (and it's the one the guard is meant to allow, not block).
+    if SELF_EXEC_GUARD.exists() and not skip_pull:
+        try:
+            age = time.time() - SELF_EXEC_GUARD.stat().st_mtime
+            if age < 120:
+                log("Self-exec guard active — another instance just ran, skipping")
+                sys.exit(0)
+            else:
+                SELF_EXEC_GUARD.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     # --skip-pull mode: pipeline only (used by self-exec and post-merge hook)
     if skip_pull:
-        old_sha = old_sha_arg
-        new_sha = new_sha_arg or _git_output("rev-parse", "HEAD")
-        if old_sha and new_sha:
-            log("Running post-pull pipeline (skip-pull mode)...")
-            post_pull_pipeline(old_sha, new_sha)
-        else:
-            # No SHAs available — run full pipeline as fallback
-            run_migrations()
-            deploy_skills()
-            restart_processes()
-            ensure_post_merge_hook()
-            ok("Fallback pipeline complete")
+        # P0-8: hold update lock during skip-pull pipeline too
+        with _update_lock():
+            old_sha = old_sha_arg
+            new_sha = new_sha_arg or _git_output("rev-parse", "HEAD")
+            if old_sha and new_sha:
+                log("Running post-pull pipeline (skip-pull mode)...")
+                post_pull_pipeline(old_sha, new_sha)
+            else:
+                # No SHAs available — run full pipeline as fallback
+                run_migrations()
+                deploy_skills()
+                restart_processes()
+                ensure_post_merge_hook()
+                ok("Fallback pipeline complete")
         return
 
     # Cooldown
@@ -1162,20 +1402,22 @@ def main():
 
     _state_set("last_check_epoch", str(int(time.time())))
 
-    # Ensure git clone
-    if not ensure_clone():
-        sys.exit(1)
+    # P0-8: Acquire update lock for the full pull + pipeline lifecycle
+    with _update_lock():
+        # Ensure git clone
+        if not ensure_clone():
+            sys.exit(1)
 
-    # Pull
-    updated, old_sha, new_sha = pull_latest()
-    if updated:
-        if check_only:
-            log("Update available")
-            return
-        post_pull_pipeline(old_sha, new_sha)
-    else:
-        # Even if no update, ensure post-merge hook exists
-        ensure_post_merge_hook()
+        # Pull
+        updated, old_sha, new_sha = pull_latest()
+        if updated:
+            if check_only:
+                log("Update available")
+                return
+            post_pull_pipeline(old_sha, new_sha)
+        else:
+            # Even if no update, ensure post-merge hook exists
+            ensure_post_merge_hook()
 
 
 if __name__ == "__main__":

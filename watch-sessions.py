@@ -179,9 +179,17 @@ def load_state() -> dict:
 
 
 def save_state(state: dict):
-    """Save current watch state."""
-    import json
-    STATE_FILE.write_text(json.dumps(state, default=str), encoding="utf-8")
+    """Save current watch state (atomic write — P0-10)."""
+    import json, os
+    tmp = STATE_FILE.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(state, default=str), encoding="utf-8")
+        os.replace(str(tmp), str(STATE_FILE))
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def run_indexer(incremental: bool = True):

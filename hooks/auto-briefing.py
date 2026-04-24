@@ -83,6 +83,7 @@ def main():
         subprocess.run(
             [sys.executable, str(BRIEFING), project, "--budget", "500"],
             timeout=10, stderr=subprocess.DEVNULL,
+            encoding="utf-8", errors="replace",  # P1-4: prevent UnicodeDecodeError on Windows cp1252
         )
     except subprocess.TimeoutExpired:
         print("  ⏱ Briefing timed out (10s)")

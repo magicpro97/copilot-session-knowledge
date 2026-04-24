@@ -56,16 +56,20 @@ try:
             needs_rebuild = True
     if needs_rebuild:
         print("  [migrate] Rebuilding FTS5 (adding facts column)...")
-        # Safe rebuild: create new table first, then swap (avoids permanent loss if CREATE fails)
+        # P0-9: use BEGIN EXCLUSIVE so the DROP→RENAME is atomic;
+        # prevents FTS permanent loss if watch-sessions holds a read transaction.
+        db.execute("BEGIN EXCLUSIVE")
         try:
             db.execute("DROP TABLE IF EXISTS ke_fts_new")
             db.execute("CREATE VIRTUAL TABLE ke_fts_new USING fts5(title, content, tags, category, wing, room, facts, tokenize='unicode61 remove_diacritics 2')")
             db.execute("INSERT INTO ke_fts_new(rowid, title, content, tags, category, wing, room, facts) SELECT id, title, content, tags, category, COALESCE(wing,''), COALESCE(room,''), COALESCE(facts,'[]') FROM knowledge_entries")
             db.execute("DROP TABLE IF EXISTS ke_fts")
             db.execute("ALTER TABLE ke_fts_new RENAME TO ke_fts")
-            db.commit(); print("  [migrate] FTS5 rebuilt with facts column")
+            db.execute("COMMIT")
+            print("  [migrate] FTS5 rebuilt with facts column")
         except Exception as e:
-            db.execute("DROP TABLE IF EXISTS ke_fts_new")  # cleanup temp table on failure
+            db.execute("ROLLBACK")
+            db.execute("DROP TABLE IF EXISTS ke_fts_new")
             print(f"  [migrate] FTS5 rebuild failed: {e}", file=sys.stderr)
             raise
 except Exception as e:

@@ -219,7 +219,9 @@ def _run_briefing(query: str) -> str:
     try:
         result = subprocess.run(
             [sys.executable, str(BRIEFING_PY), query, "--compact", "--limit", "3"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",  # P1-3: prevent UnicodeDecodeError on Windows cp1252
+            timeout=15,
         )
         output = result.stdout.strip()
         if output and "No relevant" not in output and len(output) > 20:
@@ -268,7 +270,9 @@ def _run_briefing_for_task(task_id: str, fallback_query: str = "") -> str:
     try:
         result = subprocess.run(
             [sys.executable, str(BRIEFING_PY), "--task", task_id, "--json"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",  # P1-3
+            timeout=15,
         )
         if result.returncode == 0 and result.stdout.strip():
             data = json.loads(result.stdout)
@@ -311,7 +315,9 @@ def _load_latest_checkpoint_context() -> str:
     try:
         result = subprocess.run(
             [sys.executable, str(CHECKPOINT_RESTORE_PY), "--export", "latest", "--format", "json"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",  # P1-3
+            timeout=15,
         )
         if result.returncode != 0 or not result.stdout.strip():
             return ""

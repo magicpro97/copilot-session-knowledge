@@ -70,9 +70,12 @@ pull_latest() {
         git -C "$TOOLS_DIR" stash drop --quiet 2>/dev/null || true
         warn "Local changes were dropped due to diverged history (reset --hard to origin/main)"
     else
-        git -C "$TOOLS_DIR" stash pop --quiet 2>/dev/null || {
-            warn "Stash pop failed — local changes saved in git stash. Run 'git stash pop' manually."
-        }
+        # P1-8: abort pipeline on stash-pop conflict to avoid running on broken tree
+        if ! git -C "$TOOLS_DIR" stash pop --quiet 2>/dev/null; then
+            warn "Stash pop failed — local changes still in stash. Run 'git stash pop' manually."
+            git -C "$TOOLS_DIR" stash drop --quiet 2>/dev/null || true
+            return 1   # abort pipeline
+        fi
     fi
     
     local new_sha; new_sha=$(git -C "$TOOLS_DIR" rev-parse --short=8 HEAD 2>/dev/null)

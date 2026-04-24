@@ -7,6 +7,14 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
+# Windows console encoding fix — lets emoji/unicode print without cp1252 crashes
+if os.name == "nt":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Adjust path to import from parent
 sys.path.insert(0, str(Path(__file__).parent))
 

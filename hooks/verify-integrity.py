@@ -72,7 +72,16 @@ def _regenerate_manifest():
             hooks_json_path.read_bytes()
         ).hexdigest()
     HOOKS_DST_DIR.mkdir(parents=True, exist_ok=True)
-    MANIFEST.write_text(json.dumps(manifest, indent=2))
+    # P1-6: atomic write + explicit encoding to prevent false tamper on partial read
+    tmp = MANIFEST.with_suffix(".tmp")
+    try:
+        tmp.write_bytes(json.dumps(manifest, indent=2).encode("utf-8"))
+        os.replace(str(tmp), str(MANIFEST))
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def main():
@@ -92,7 +101,7 @@ def main():
         return
 
     try:
-        manifest = json.loads(MANIFEST.read_text())
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     except Exception:
         return
 

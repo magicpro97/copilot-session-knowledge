@@ -27,6 +27,23 @@ TEMPLATES_DIR = SCRIPT_DIR / "templates"
 SKILLS_DIR = SCRIPT_DIR / "skills"
 PRESETS_DIR = SCRIPT_DIR / "presets"
 
+
+# ---------------------------------------------------------------------------
+# Atomic write helper (P1-7)
+# ---------------------------------------------------------------------------
+def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
+    """Write content to path atomically via temp + os.replace. No CRLF translation."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_bytes(content.encode(encoding))
+        os.replace(str(tmp), str(path))
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
 # Host metadata is centralised in host_manifest.py — import canonical constants.
 # Do NOT add new hosts here; update host_manifest.py through the review process.
 from host_manifest import HOST_INSTRUCTION_FILES as KNOWN_HOSTS_INSTRUCTION_FILES  # noqa: E402
@@ -119,9 +136,8 @@ def _register_project(project_root: Path) -> None:
         if key not in projects:
             projects.append(key)
             REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-            REGISTRY_PATH.write_text(
-                json.dumps({"projects": projects}, indent=2), encoding="utf-8"
-            )
+            # P1-7: atomic write prevents registry truncation on concurrent access
+            _atomic_write_text(REGISTRY_PATH, json.dumps({"projects": projects}, indent=2))
     except Exception:
         pass
 

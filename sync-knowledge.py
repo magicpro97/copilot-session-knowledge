@@ -165,7 +165,10 @@ def sync_from_source(target_db: sqlite3.Connection, source_path: Path,
     actual_path = source_path
     source_str = str(source_path)
     if source_str.startswith("\\\\") or source_str.startswith("//") or "wsl$" in source_str.lower():
-        fd, tmp_name = tempfile.mkstemp(suffix=".db", prefix="sync_src_")
+        # P1-9: create temp adjacent to target DB (same filesystem — no cross-device error)
+        tmp_dir = DB_PATH.parent
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(suffix=".db", prefix="sync_src_", dir=str(tmp_dir))
         os.close(fd)
         temp_copy = Path(tmp_name)
         print(f"    Copying to temp (UNC path)...")

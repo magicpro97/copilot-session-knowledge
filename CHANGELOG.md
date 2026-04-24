@@ -8,7 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- Comprehensive docs/ directory (USAGE, SKILLS, HOOKS, AUTO-UPDATE)
+- `copilot-cli-healer.py`: cross-platform self-healer for Copilot CLI pkg dir corruption. Detects and cleans stale `.replaced-*` rename-backup dirs, `pkg/tmp/` partial downloads, and empty dummy version dirs. CLI: `--status`, `--check`, `--heal`, `--heal --dry-run`, `--update`, `--install-schedule`, `--uninstall-schedule`. Supports Windows Task Scheduler, macOS launchd, and Linux systemd. Concurrent-heal guard via `O_CREAT|O_EXCL` lock; Windows rmtree retry loop (3×500ms); stdlib-only.
+- `hooks/copilot-cli-healer-check.py`: sessionStart hook that warns to stderr in <500ms when stale Copilot CLI pkg state is detected. Never auto-heals; notifies only.
+- `launchd/com.copilot.cli-healer.plist`: macOS LaunchAgent template for daily healer runs (10:00).
+- `install.py --install-healer` / `--uninstall-healer`: delegate to healer's schedule management.
+- `auto-update-tools.py --doctor`: now reports Copilot CLI pkg health.
+- `auto-update-tools.py --heal-copilot-cli`: new flag that invokes healer.
+- `docs/copilot-cli-healer.md`: deep-dive doc — root cause, detection rules, heal procedure, schedule config, hook behaviour.
+- README.md: new "Copilot CLI auto-heal" section under Troubleshooting with exact error string for Google-ability.
+- `launchd/install-launchd.sh`: now installs `com.copilot.cli-healer` alongside existing agents.
+
+
 - CONTRIBUTING.md with development guidelines
 - CHANGELOG.md (this file)
 - FAQ section in README
