@@ -195,9 +195,13 @@ def _load_cache(cache_path: Path) -> dict | None:
 def _save_cache(data: dict, cache_path: Path) -> None:
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(
+        # Atomic write: tmp + os.replace prevents readers from seeing partial JSON
+        tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        tmp_path.write_text(
             json.dumps(data, separators=(",", ":")), encoding="utf-8"
         )
+        import os as _os
+        _os.replace(str(tmp_path), str(cache_path))
     except Exception:
         pass
 

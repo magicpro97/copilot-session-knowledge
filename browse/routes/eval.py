@@ -206,7 +206,7 @@ def handle_feedback(db, params, token, nonce) -> tuple:
     created_at = datetime.now(timezone.utc).isoformat()
 
     try:
-        db.execute(
+        cur = db.execute(
             "INSERT INTO search_feedback"
             " (query, result_id, result_kind, verdict, comment, user_agent, created_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -220,11 +220,13 @@ def handle_feedback(db, params, token, nonce) -> tuple:
                 created_at,
             ),
         )
+        row_id = cur.lastrowid
         db.commit()
-        row_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
     except Exception as exc:
+        import sys as _sys
+        print(f"[eval] db error: {exc}", file=_sys.stderr)
         return (
-            json.dumps({"error": f"db error: {exc}"}).encode("utf-8"),
+            json.dumps({"error": "database error"}).encode("utf-8"),
             "application/json",
             500,
         )

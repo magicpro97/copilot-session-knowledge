@@ -13,6 +13,7 @@ if os.name == "nt":
 
 class _BrowseHandler(BaseHTTPRequestHandler):
     """Read-only HTTP request handler. db and token set on class by _make_handler_class."""
+    timeout = 15  # slow-loris guard: drops sockets that idle/dribble more than 15s
 
     db: sqlite3.Connection
     token: str

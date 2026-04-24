@@ -39,6 +39,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - POSIX home normalization in `check_subagent_marker.py` now uses explicit backslash (`chr(92)`) instead of `os.sep` for separator replacement, so the function produces correct Windows paths even when the Python runtime reports a POSIX `os.sep`. This fixes a latent bug that could have surfaced if the code were ever exercised in a POSIX-hosted Windows-emulation layer.
 - Section 17g tests in `test_hooks.py` now build expected Windows paths with `chr(92)` instead of literal backslash string comparisons, making assertions valid on both Windows and non-Windows hosts.
 
+## [1.3.0] - 2026-04-24
+
+### Added — W0 (browse/ package foundation)
+- `browse/` package: modular web UI replacing monolithic `browse.py`; `browse.py` is now a thin shim.
+- `browse/core/`: `server.py` (ThreadingHTTPServer), `auth.py` (token auth), `csp.py` (nonce CSP), `fts.py` (FTS5 helpers), `registry.py` (route decorator), `templates.py` (base page), `static.py` (vendored assets), `projection.py` (PCA), `palette.py` (command palette commands), `streaming.py` (SSE helper).
+- F1 `/` — home page with recent sessions.
+- F2 `/sessions` — FTS-powered sessions list.
+- F3 `/session/<id>` — session detail view.
+- F8 dark-mode toggle baked into base template (`prefers-color-scheme` + localStorage).
+
+### Added — W1 (knowledge + graph features)
+- F4 command palette (`Ctrl+K`, ninja-keys) — global keyboard navigation on every page.
+- F5 `/graph` — interactive Cytoscape.js knowledge-entity graph.
+- F6 `/diff` — side-by-side checkpoint diff viewer.
+- F7 `/search` + `/api/search` — FTS5 full-text search with facets (F7 rich UX).
+
+### Added — W2 (analytics + streaming)
+- F9 `/dashboard` + `/api/dashboard/stats` — aggregate stats and session health.
+- F10 `/embeddings` + `/api/embeddings/points` — 2-D PCA scatterplot of knowledge vectors.
+- F11 `/live` + `/api/live` (SSE) — real-time feed of new knowledge events.
+
+### Added — W3 (session deep-dive + eval)
+- F12 `/session/<id>/agents` — sub-agent dispatch log per session.
+- F13 `/session/<id>/mindmap` — D3.js radial mind-map of session knowledge.
+- F15 `/eval` + `POST /api/feedback` — thumbs-up/down eval/feedback for knowledge entries.
+- Share: `share.js` — copy-link and screenshot-to-clipboard on every page.
+
+### Tests
+- Added 372 new browse tests across 12 feature suites (graph, agents, timeline, search_v2, dashboard, diff, mindmap, palette, share, live, eval, embeddings). Total browse tests: 412 pass.
+
 ## [1.2.0] - 2026-05-01
 
 ### Added

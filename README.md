@@ -245,11 +245,32 @@ python3 ~/.copilot/tools/checkpoint-diff.py --from 1 --to latest --pager   # ext
 A read-only local web UI for browsing the knowledge base from a browser. Bound to `127.0.0.1` only — not accessible from other machines.
 
 ```bash
-python3 ~/.copilot/tools/browse.py --port 8080 --token YOUR_TOKEN
-# Then open http://127.0.0.1:8080 in your browser
+python browse.py --port 8080 --token YOUR_TOKEN
+# Then open http://127.0.0.1:8080/?token=YOUR_TOKEN in your browser
+# Omit --port for a random free port (printed on startup)
 ```
 
 Security: token is required on every request; `Content-Security-Policy` blocks inline scripts. Do not expose this port externally.
+
+#### Features
+
+| # | Route | Description |
+|---|-------|-------------|
+| F1 | `/` | Home — recent sessions list with quick-search bar |
+| F2 | `/sessions` | Sessions — FTS5-powered session browser with pagination |
+| F3 | `/session/<id>` | Session detail — knowledge entries, tool calls, file diffs |
+| F4 | *(all pages)* | Command palette — `Ctrl+K` (ninja-keys) for keyboard navigation |
+| F5 | `/graph` | Knowledge graph — interactive Cytoscape.js entity graph |
+| F6 | `/diff` | Checkpoint diff — side-by-side diff between two checkpoints |
+| F7 | `/search` | Search — FTS5 full-text search across knowledge + sessions |
+| F9 | `/dashboard` | Dashboard — aggregate stats (counts by type, session health) |
+| F10 | `/embeddings` | Embeddings — 2-D PCA scatterplot of knowledge-entry vectors |
+| F11 | `/live` | Live feed — real-time SSE stream of new knowledge events |
+| F12 | `/session/<id>/agents` | Agents — sub-agent dispatch log for a session |
+| F13 | `/session/<id>/mindmap` | Mind map — D3.js radial mind-map of session knowledge |
+| F15 | `/eval` | Eval/Feedback — thumbs-up/down rating for knowledge entries |
+
+> F8 (dark mode) is baked into the base template via `prefers-color-scheme` + localStorage toggle and is not a separate route.
 
 ### Profile Lifecycle
 
