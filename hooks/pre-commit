@@ -39,6 +39,31 @@ if [ -f "$SUBAGENT_CHECK" ]; then
 fi
 # ──────────────────────────────────────────────────────────────────────────
 
+# ── UI inline-style regression guard ──────────────────────────────────────
+CHANGED_ROUTES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^browse/routes/.*\.py$' || true)
+if [ -n "$CHANGED_ROUTES" ]; then
+    # Whitelist: dashboard.py's .db-chart-wrap block (uplot-coupled)
+    # Anything else with <style> should fail
+    VIOLATORS=""
+    for f in $CHANGED_ROUTES; do
+        staged_content=$(git show ":$f" 2>/dev/null) || staged_content=""
+        style_count=$(printf '%s\n' "$staged_content" | grep -c '<style' || true)
+        if [ "$style_count" -gt 0 ]; then
+            if [ "$f" = "browse/routes/dashboard.py" ] && [ "$style_count" -eq 1 ] && printf '%s\n' "$staged_content" | grep -q '\.db-chart-wrap'; then
+                :  # allowed: single <style> block containing .db-chart-wrap
+            else
+                VIOLATORS="$VIOLATORS $f"
+            fi
+        fi
+    done
+    if [ -n "$VIOLATORS" ]; then
+        echo "✖ Pre-commit: inline <style> blocks detected in routes:$VIOLATORS"
+        echo "  Move CSS to browse/static/css/app.css. This is enforced by test_no_inline_style_in_routes()."
+        exit 1
+    fi
+fi
+# ──────────────────────────────────────────────────────────────────────────
+
 # Skill/agent lint — only meaningful in the tools repo itself; silently skips
 # in other repos where lint-skills.py is absent.
 TOOLS_DIR="$HOME/.copilot/tools"

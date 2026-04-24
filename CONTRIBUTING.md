@@ -58,3 +58,25 @@ python3 -c "import ast; ast.parse(open('your_file.py').read())"
 ## Security
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting. Never commit secrets or API keys.
+
+## UI sustainability rules
+
+All changes under `browse/` MUST obey:
+
+1. **Token-first.** No hardcoded colors/spacing/font sizes in Python routes OR in `app.css`.
+   Use design tokens from `browse/static/css/tokens.css` (`var(--space-2)`, `var(--fg)`, `var(--radius-md)`, …).
+2. **No inline `<style>` in routes.** Pre-commit hook blocks it; test `test_no_inline_style_in_routes()`
+   enforces at runtime. Only allowed exception: `browse/routes/dashboard.py`'s `.db-chart-wrap` block
+   (uplot-coupled). Move CSS to `browse/static/css/app.css`.
+3. **Component-first rendering.** Common UI patterns (header, stat grid, table, banner, empty state,
+   card, badge) MUST go through `browse.components.primitives`. If a pattern is missing, add a
+   primitive with docstring + unit tests + a demo in `/style-guide` — do not inline-render.
+4. **Dark mode parity.** Every new token declared in `:root` of `tokens.css` MUST have a
+   `[data-theme="dark"]` override (or be theme-invariant by design, documented via comment).
+5. **Accessibility baseline.** Focus rings visible (use `:focus-visible`), contrast ≥ 4.5:1 for body
+   text, icon-only buttons get `aria-label`, heading hierarchy strictly nested (`base_page()`
+   emits `<h1>`, sections use `<h2>`; `page_header(level=...)` clamps 2-4).
+6. **Visual snapshot test** (`tests/test_visual_snapshot.py`) fails on unintended HTML drift.
+   Run `UPDATE_SNAPSHOTS=1 python3 tests/test_visual_snapshot.py` to refresh baselines after
+   intentional changes.
+

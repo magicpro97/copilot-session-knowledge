@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Design tokens layer (`browse/static/css/tokens.css`) — centralised colors, spacing, typography, shadows.
+- Component primitives (`browse/components/primitives.py`): `page_header`, `stat_grid`, `data_table`, `empty_state`, `badge`, `banner`, `card` — pure functions, stdlib only, documented escape contracts.
+- `/style-guide` route — visual reference for all primitive components.
+- Visual snapshot test (`tests/test_visual_snapshot.py`) — guards against unintended HTML drift.
+- Pre-commit hook blocks inline `<style>` in `browse/routes/*.py` (whitelist only for `dashboard.py`'s uplot-coupled block).
 - `copilot-cli-healer.py`: cross-platform self-healer for Copilot CLI pkg dir corruption. Detects and cleans stale `.replaced-*` rename-backup dirs, `pkg/tmp/` partial downloads, and empty dummy version dirs. CLI: `--status`, `--check`, `--heal`, `--heal --dry-run`, `--update`, `--install-schedule`, `--uninstall-schedule`. Supports Windows Task Scheduler, macOS launchd, and Linux systemd. Concurrent-heal guard via `O_CREAT|O_EXCL` lock; Windows rmtree retry loop (3×500ms); stdlib-only.
 - `hooks/copilot-cli-healer-check.py`: sessionStart hook that warns to stderr in <500ms when stale Copilot CLI pkg state is detected. Never auto-heals; notifies only.
 - `launchd/com.copilot.cli-healer.plist`: macOS LaunchAgent template for daily healer runs (10:00).
@@ -34,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Timeline: model-based color coding and legend, incorporating data previously served by the removed agents route (243b85b)
 
 ### Changed
+- `browse/static/css/app.css` — rewrote to consume design tokens, no hardcoded hex, no `var(--pico-*)` references, 24 sections (header/footer, nav, page-header, tables, stat grid, banner, card, mindmap, live feed, embeddings, …).
+- Migrated `browse/routes/{home,sessions,dashboard,mindmap,live,embeddings}.py` to use component primitives; inline `<style>` blocks removed (only `dashboard.py`'s `.db-chart-wrap` whitelisted).
+- `mindmap.js` now syncs `.markmap-dark` class on `#mindmap-wrap` with `[data-theme]` to restore contrast in dark mode.
 - Restructured README from 577 lines to ~280 lines (moved details to docs/)
 - Added "Why?" section for first-time readers
 - Added Quick Start section (3 commands from zero to working)
