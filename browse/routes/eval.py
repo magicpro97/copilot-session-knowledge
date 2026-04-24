@@ -220,7 +220,7 @@ def handle_feedback(db, params, token, nonce) -> tuple:
                 created_at,
             ),
         )
-        row_id = cur.lastrowid
+        row_id = cur.lastrowid  # safe: cursor is local to this request; lastrowid is atomic on the cursor before commit
         db.commit()
     except Exception as exc:
         import sys as _sys

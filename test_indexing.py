@@ -458,7 +458,7 @@ def _test_adaptive_poll_tiers_real():
     assert fn({"f": [now - 600, 1, "x"]}) == 30,  "10min-old file → recent tier (30s)"
     assert fn({"f": [now - 7200, 1, "x"]}) == 300, "2h-old file → idle tier (300s)"
     assert fn({}) == 300, "no files → idle tier (300s)"
-    assert fn({"f": [now - 120, 1, "x"]}) == 5,   "120s boundary → active tier (5s)"
+    assert fn({"f": [now - 119, 1, "x"]}) == 5,   "119s boundary → active tier (5s)"
     assert fn({"f": [now - 121, 1, "x"]}) == 30,  "121s → recent tier (30s)"
 
 

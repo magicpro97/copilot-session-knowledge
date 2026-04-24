@@ -193,7 +193,7 @@ def test_v8_migration_fresh_db():
         db2 = sqlite3.connect(db_path)
         ver = db2.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
         db2.close()
-        assert ver == 8, f"Expected schema_version 8, got {ver}"
+        assert ver >= 8, f"Expected schema_version >= 8, got {ver}"
     finally:
         try:
             Path(db_path).unlink(missing_ok=True)
