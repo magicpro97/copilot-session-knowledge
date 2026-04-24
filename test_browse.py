@@ -374,6 +374,199 @@ def run_all_tests() -> int:
     finally:
         server13.shutdown()
 
+    # ── T14: base_page() contains no onclick= attributes ─────────────────────
+    print("\n-- T14: no onclick= in base_page()")
+    from browse.core.templates import base_page as _base_page
+    import secrets as _secrets
+
+    nonce14 = _secrets.token_hex(16)
+    html14 = _base_page(nonce14, "Test Page").decode("utf-8")
+    test("T14: no onclick= in base_page output", "onclick=" not in html14)
+    test("T14: dark-toggle button present", "dark-toggle" in html14)
+
+    # ── T15: palette.get_global_commands() has all required ids ──────────────
+    print("\n-- T15: palette commands completeness")
+    from browse.core import palette as _palette15
+
+    cmds15 = _palette15.get_global_commands()
+    cmd_ids15 = {c["id"] for c in cmds15}
+    required_ids = {
+        "nav-home", "nav-sessions", "nav-search", "nav-dashboard",
+        "nav-graph", "nav-embeddings", "nav-live", "nav-diff", "nav-eval",
+        "toggle-dark", "help-shortcuts",
+    }
+    test("T15: all required command ids present", required_ids.issubset(cmd_ids15))
+    test("T15: ≥11 commands total", len(cmds15) >= 11)
+
+    # ── T16: share.js strips only token param, preserving other query params ───
+    print("\n-- T16: share.js strips only token param")
+    share_js_path = Path(__file__).parent / "browse" / "static" / "js" / "share.js"
+    share_js_content = share_js_path.read_text(encoding="utf-8")
+    test("T16: share.js uses location.href as URL input", "location.href" in share_js_content)
+    test("T16: share.js does not reference location.search", "location.search" not in share_js_content)
+    test("T16: share.js deletes only the token param", "searchParams.delete('token')" in share_js_content)
+
+    # ── T17: templates.py does not reference html-to-image ───────────────────
+    print("\n-- T17: no html-to-image in templates")
+    templates_path = Path(__file__).parent / "browse" / "core" / "templates.py"
+    templates_content = templates_path.read_text(encoding="utf-8")
+    test("T17: html-to-image not in templates.py", "html-to-image" not in templates_content)
+
+    # Also verify share.js doesn't reference html-to-image
+    test("T17: html-to-image not in share.js", "html-to-image" not in share_js_content)
+    test("T17: saveScreenshot not in share.js", "saveScreenshot" not in share_js_content)
+    test("T17: downloadScreenshot not in share.js", "downloadScreenshot" not in share_js_content)
+
+    # ── T18: session_detail nav buttons + tool-usage summary ─────────────────
+    print("\n-- T18: session detail nav buttons & tool-usage")
+    from browse.routes.session_detail import handle_session_detail
+
+    db18 = sqlite3.connect(":memory:", check_same_thread=False)
+    db18.row_factory = sqlite3.Row
+    db18.executescript("""
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, path TEXT, summary TEXT, source TEXT,
+            file_mtime REAL, indexed_at_r REAL, fts_indexed_at REAL,
+            event_count_estimate INTEGER, file_size_bytes INTEGER,
+            total_checkpoints INTEGER, total_research INTEGER,
+            total_files INTEGER, has_plan INTEGER, indexed_at TEXT
+        );
+        CREATE TABLE documents (
+            id INTEGER PRIMARY KEY, session_id TEXT, doc_type TEXT, seq INTEGER,
+            title TEXT, file_path TEXT, file_hash TEXT, size_bytes INTEGER,
+            content_preview TEXT, indexed_at TEXT, source TEXT
+        );
+        CREATE TABLE sections (
+            id INTEGER PRIMARY KEY, document_id INTEGER,
+            section_name TEXT, content TEXT
+        );
+    """)
+    db18.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("abc123", "/path/abc123", "Test session", "copilot",
+         1.0, 2.0, 3.0, 5, 512, 1, 0, 1, 0, "2026-01-01"),
+    )
+    db18.execute(
+        "INSERT INTO documents VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (1, "abc123", "checkpoint", 1, "Doc1", "/path", "h", 100, "preview", "2026-01-01", "copilot"),
+    )
+    db18.execute(
+        "INSERT INTO sections VALUES (?,?,?,?)",
+        (1, 1, "overview", "edit(foo)\nview(bar)\nedit(baz)\nbash(qux)"),
+    )
+    db18.commit()
+
+    body18, ct18, code18 = handle_session_detail(db18, {}, "t0k", "nonceX", session_id="abc123")
+    body18_str = body18.decode("utf-8")
+    test("T18: status 200", code18 == 200)
+    test("T18: edit × 2 in body", "edit × 2" in body18_str)
+    test("T18: view × 1 in body", "view × 1" in body18_str)
+    test("T18: bash × 1 in body", "bash × 1" in body18_str)
+    test("T18: timeline button href present", "/session/abc123/timeline" in body18_str)
+    test("T18: mindmap button href present", "/session/abc123/mindmap" in body18_str)
+    test("T18: find-similar href present", "/embeddings?session=abc123" in body18_str)
+    test("T18: export markdown href present", "/session/abc123.md" in body18_str)
+    test("T18: compare href present", "/compare?a=abc123" in body18_str)
+    test("T18: token passed through in href", "?token=t0k" in body18_str)
+
+    # ── T19: dashboard insight hero — red_flags, weekly_mistakes, top_modules ─
+    print("\n-- T19: dashboard insight hero API and home link")
+
+    db19 = sqlite3.connect(":memory:", check_same_thread=False)
+    db19.row_factory = sqlite3.Row
+    db19.executescript("""
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, path TEXT, summary TEXT, source TEXT,
+            file_mtime REAL, indexed_at_r REAL, fts_indexed_at REAL,
+            event_count_estimate INTEGER, file_size_bytes INTEGER,
+            total_checkpoints INTEGER, total_research INTEGER,
+            total_files INTEGER, has_plan INTEGER, indexed_at TEXT
+        );
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT,
+            category TEXT,
+            wing TEXT,
+            content TEXT,
+            created_at TEXT,
+            entry_type TEXT
+        );
+        INSERT INTO sessions VALUES ('sess-high','p','big session','copilot',1,1,1,100,1,1,1,1,0,'2026-01-01');
+        INSERT INTO sessions VALUES ('sess-low','p','small session','copilot',1,1,1,5,1,1,1,1,0,'2026-01-01');
+        INSERT INTO knowledge_entries VALUES (1,'sess-high','mistake',NULL,'check query_session.py: fix the bug','2026-01-10','tool');
+        INSERT INTO knowledge_entries VALUES (2,NULL,'pattern',NULL,'use embed.py for search','2026-01-12',NULL);
+        INSERT INTO knowledge_entries VALUES (3,NULL,'mistake',NULL,'another issue','2026-01-13',NULL);
+    """)
+
+    from browse.routes.dashboard import handle_api_dashboard_stats as _dash_api
+    from browse.routes.home import handle_home as _handle_home
+
+    body19, ctype19, status19 = _dash_api(db19, {}, "", "nonce19")
+    data19 = json.loads(body19.decode("utf-8"))
+    test("T19: API status 200", status19 == 200)
+    test("T19: red_flags key present", "red_flags" in data19)
+    test("T19: weekly_mistakes key present", "weekly_mistakes" in data19)
+    test("T19: top_modules key present", "top_modules" in data19)
+    test("T19: red_flags is list", isinstance(data19["red_flags"], list))
+    test("T19: weekly_mistakes is list", isinstance(data19["weekly_mistakes"], list))
+    test("T19: top_modules is list", isinstance(data19["top_modules"], list))
+    test("T19: red_flags contains high-event session", any(r.get("session_id") == "sess-high" for r in data19["red_flags"]))
+    test("T19: top_modules finds query_session.py", any(r.get("module") == "query_session.py" for r in data19["top_modules"]))
+
+    home_body19, _, _ = _handle_home(db19, {}, "", "nonce19")
+    home_html19 = home_body19.decode("utf-8") if isinstance(home_body19, bytes) else home_body19
+    test("T19: home contains 'View full dashboard'", "View full dashboard" in home_html19)
+    test("T19: home contains href=/dashboard", 'href="/dashboard"' in home_html19)
+
+    # ── T20: session_compare route ────────────────────────────────────────────
+    print("\n-- T20: session_compare route")
+    import browse.routes.session_compare  # noqa: F401 — registers @route
+    from browse.core.registry import match_route as _match_route
+
+    h20, kw20 = _match_route("/compare", "GET")
+    test("T20: /compare route registered", h20 is not None)
+
+    # Form fallback when params are empty
+    db20 = sqlite3.connect(":memory:", check_same_thread=False)
+    db20.row_factory = sqlite3.Row
+    db20.executescript("""
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY, path TEXT, summary TEXT, source TEXT,
+            file_mtime REAL, indexed_at_r REAL, fts_indexed_at REAL,
+            event_count_estimate INTEGER, file_size_bytes INTEGER,
+            total_checkpoints INTEGER, total_research INTEGER,
+            total_files INTEGER, has_plan INTEGER, indexed_at TEXT
+        );
+        CREATE TABLE documents (
+            id INTEGER PRIMARY KEY, session_id TEXT, doc_type TEXT, seq INTEGER,
+            title TEXT, file_path TEXT, file_hash TEXT, size_bytes INTEGER,
+            content_preview TEXT, indexed_at TEXT, source TEXT
+        );
+        CREATE TABLE sections (
+            id INTEGER PRIMARY KEY, document_id INTEGER,
+            section_name TEXT, content TEXT
+        );
+        INSERT INTO sessions VALUES ('aaaa1111', '/p/a', 'Session A summary', 'copilot',
+            1.0, 2.0, 3.0, 5, 512, 0, 0, 0, 0, '2026-01-01');
+        INSERT INTO sessions VALUES ('bbbb2222', '/p/b', 'Session B summary', 'copilot',
+            1.0, 2.0, 4.0, 7, 1024, 0, 0, 0, 0, '2026-01-02');
+    """)
+    db20.commit()
+
+    body20_form, ct20_form, code20_form = h20(db20, {}, "tok20", "nonce20")
+    body20_form_str = body20_form.decode("utf-8") if isinstance(body20_form, bytes) else body20_form
+    test("T20: form fallback returns 200", code20_form == 200)
+    test("T20: form fallback contains <select", "<select" in body20_form_str)
+
+    # Side-by-side view with two valid session IDs
+    params20 = {"a": ["aaaa1111"], "b": ["bbbb2222"]}
+    body20, ct20, code20 = h20(db20, params20, "tok20", "nonce20")
+    body20_str = body20.decode("utf-8") if isinstance(body20, bytes) else body20
+    test("T20: compare view returns 200", code20 == 200)
+    test("T20: compare view contains session A id prefix", "aaaa1111"[:8] in body20_str)
+    test("T20: compare view contains session B id prefix", "bbbb2222"[:8] in body20_str)
+    test("T20: compare view uses grid layout", "grid-template-columns" in body20_str)
+
     print(f"\n{'='*50}")
     print(f"Results: {_PASS} passed, {_FAIL} failed")
     return _FAIL

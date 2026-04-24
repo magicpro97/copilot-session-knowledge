@@ -23,3 +23,5 @@ from browse.routes import eval as eval_route  # noqa: F401
 from browse.routes import graph  # noqa: F401
 from browse.routes import mindmap  # noqa: F401
 from browse.routes import timeline  # noqa: F401
+from browse.routes import session_export  # noqa: F401
+from browse.routes import session_compare  # noqa: F401

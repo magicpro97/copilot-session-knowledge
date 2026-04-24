@@ -57,6 +57,8 @@
             resolved.handler = function () { window.location.href = url; };
         } else if (h === 'help-modal') {
             resolved.handler = showHelpModal;
+        } else if (h === 'toggle-dark') {
+            resolved.handler = function () { if (typeof window.toggleDark === 'function') { window.toggleDark(); } };
         } else {
             /* Unknown action string — no-op so palette still opens cleanly */
             resolved.handler = function () {};

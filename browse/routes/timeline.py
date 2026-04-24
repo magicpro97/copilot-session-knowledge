@@ -8,6 +8,8 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
+import re as _re
+
 from browse.core.registry import route
 from browse.core.fts import _esc, _SESSION_ID_RE
 from browse.core.templates import base_page
@@ -15,6 +17,29 @@ from browse.core.templates import base_page
 _MAX_LIMIT = 200
 _DEFAULT_LIMIT = 50
 _PREVIEW_LEN = 200
+
+# ── Colour palette (merged from agents.py) ────────────────────────────────────
+_COLOR = {
+    "orchestrator": "#7c3aed",
+    "agent_sonnet":  "#3b82f6",
+    "agent_opus":    "#4f46e5",
+    "agent_haiku":   "#eab308",
+    "agent_default": "#6b7280",
+    "tool":          "#9ca3af",
+}
+
+_MODEL_RE = _re.compile(r'claude-(?:sonnet|opus|haiku)[-\d.]*', _re.IGNORECASE)
+
+
+def _agent_color(model: str) -> str:
+    m = (model or "").lower()
+    if "haiku" in m:
+        return _COLOR["agent_haiku"]
+    if "opus" in m:
+        return _COLOR["agent_opus"]
+    if "sonnet" in m:
+        return _COLOR["agent_sonnet"]
+    return _COLOR["agent_default"]
 
 
 def _table_exists(db, table: str) -> bool:
@@ -99,12 +124,16 @@ def _fetch_events(db, session_id: str, from_idx: int, limit: int) -> tuple:
                 else:
                     preview = "(source file missing)"
 
+                model_match = _MODEL_RE.search(preview)
+                color = _agent_color(model_match.group(0) if model_match else "")
+
                 events.append({
                     "event_id": event_id,
                     "kind": kind,
                     "preview": preview,
                     "byte_offset": byte_offset,
                     "file_mtime": file_mtime,
+                    "color": color,
                 })
         finally:
             if fh is not None:
@@ -135,6 +164,12 @@ def handle_session_timeline(db, params, token, nonce, session_id: str = "") -> t
 
     main_content = (
         f'<p class="meta"><b>Session:</b> {sid_esc} &nbsp; <b>Events:</b> {total}</p>\n'
+        f'<div class="legend">'
+        f'<span style="color:#7c3aed">&#9632; Orchestrator</span> '
+        f'<span style="color:#3b82f6">&#9632; Sonnet</span> '
+        f'<span style="color:#4f46e5">&#9632; Opus</span> '
+        f'<span style="color:#eab308">&#9632; Haiku</span>'
+        f'</div>\n'
         f'<div id="timeline-wrap">\n'
         f'  <div id="timeline-heatmap"></div>\n'
         f'  <input id="timeline-slider" type="range" min="0" max="{slider_max}" '

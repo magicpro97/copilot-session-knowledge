@@ -1,6 +1,7 @@
 """browse/routes/session_detail.py — GET /session/{id} detail page."""
 import json
 import os
+import re
 import sys
 
 if os.name == "nt":
@@ -82,7 +83,40 @@ def handle_session_detail(db, params, token, nonce, session_id: str = "") -> tup
     if not tl_html:
         tl_html = "<p><em>No timeline data available.</em></p>"
 
-    body = f"{meta_html}\n<h2>Timeline</h2>\n{tl_html}"
+    tok_qs = f"?token={_esc(token)}" if token else ""
+    token_part = f"&token={_esc(token)}" if token else ""
+    nav_html = (
+        f'<div class="session-actions" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:1rem 0;">'
+        f'<a role="button" class="secondary" href="/session/{session_id}/timeline{tok_qs}">📜 Timeline</a>'
+        f'<a role="button" class="secondary" href="/session/{session_id}/mindmap{tok_qs}">🗺️ Mindmap</a>'
+        f'<a role="button" class="secondary" href="/embeddings?session={session_id}{token_part}">🔍 Find similar</a>'
+        f'<a role="button" class="secondary" href="/session/{session_id}.md{tok_qs}">📄 Export Markdown</a>'
+        f'<a role="button" class="secondary" href="/compare?a={session_id}{token_part}">⚖️ Compare…</a>'
+        f'</div>'
+    )
+
+    _TOOL_RE = re.compile(r'\b(edit|view|bash|grep|glob|write_bash|task|create)\s*\(')
+    all_content = "\n".join(r["content"] or "" for r in timeline_rows)
+    tool_matches = _TOOL_RE.findall(all_content)
+    tool_counts: dict[str, int] = {}
+    for t in tool_matches:
+        tool_counts[t] = tool_counts.get(t, 0) + 1
+    total_tools = sum(tool_counts.values())
+    if total_tools > 0:
+        items = "".join(
+            f"<li>{_esc(t)} × {c}</li>"
+            for t, c in sorted(tool_counts.items(), key=lambda x: -x[1])
+        )
+        tool_html = (
+            f'<details class="tool-usage" style="margin:1rem 0">'
+            f"<summary><b>Tool usage</b> ({total_tools} invocations)</summary>"
+            f"<ul>{items}</ul>"
+            f"</details>"
+        )
+    else:
+        tool_html = ""
+
+    body = f"{meta_html}\n{nav_html}\n{tool_html}\n<h2>Timeline</h2>\n{tl_html}"
     sid_short = session_id[:8]
     return (
         base_page(nonce, f"Session {_esc(sid_short)}", main_content=body, token=token),

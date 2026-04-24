@@ -17,8 +17,9 @@ def get_global_commands() -> list:
     """Return global navigation/help commands for every page.
 
     handler values:
-      "navigate"   — palette.js will do location.href = cmd.href
-      "help-modal" — palette.js will open the keyboard shortcuts modal
+      "navigate"    — palette.js will do location.href = cmd.href
+      "help-modal"  — palette.js will open the keyboard shortcuts modal
+      "toggle-dark" — palette.js will invoke window.toggleDark()
     """
     return [
         {
@@ -46,20 +47,59 @@ def get_global_commands() -> list:
             "section": "Navigation",
         },
         {
-            "id": "nav-graph",
-            "title": "Knowledge Graph",
-            "hotkey": "",
-            "handler": "navigate",
-            "href": "/graph",
-            "section": "Navigation",
-        },
-        {
             "id": "nav-dashboard",
             "title": "Dashboard",
             "hotkey": "",
             "handler": "navigate",
             "href": "/dashboard",
             "section": "Navigation",
+        },
+        {
+            "id": "nav-live",
+            "title": "Live",
+            "hotkey": "",
+            "handler": "navigate",
+            "href": "/live",
+            "section": "Navigation",
+        },
+        {
+            "id": "nav-diff",
+            "title": "Diff",
+            "hotkey": "",
+            "handler": "navigate",
+            "href": "/diff",
+            "section": "Navigation",
+        },
+        {
+            "id": "nav-graph",
+            "title": "Knowledge Graph",
+            "hotkey": "",
+            "handler": "navigate",
+            "href": "/graph",
+            "section": "Explore",
+        },
+        {
+            "id": "nav-embeddings",
+            "title": "Embeddings",
+            "hotkey": "",
+            "handler": "navigate",
+            "href": "/embeddings",
+            "section": "Explore",
+        },
+        {
+            "id": "nav-eval",
+            "title": "Eval",
+            "hotkey": "",
+            "handler": "navigate",
+            "href": "/eval",
+            "section": "Admin",
+        },
+        {
+            "id": "toggle-dark",
+            "title": "Toggle dark mode",
+            "hotkey": "F8",
+            "handler": "toggle-dark",
+            "section": "View",
         },
         {
             "id": "help-shortcuts",

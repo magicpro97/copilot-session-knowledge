@@ -263,10 +263,10 @@ def run_all_tests() -> int:
     from browse.core.palette import get_global_commands
     cmds = get_global_commands()
     test("P9: returns a list", isinstance(cmds, list))
-    test("P9: exactly 6 commands", len(cmds) == 6)
+    test("P9: at least 11 commands", len(cmds) >= 11)
     nav_cmds = [c for c in cmds if c.get("handler") == "navigate"]
     help_cmds = [c for c in cmds if c.get("handler") == "help-modal"]
-    test("P9: 5 navigate commands", len(nav_cmds) == 5)
+    test("P9: at least 9 navigate commands", len(nav_cmds) >= 9)
     test("P9: 1 help-modal command", len(help_cmds) == 1)
     for c in cmds:
         for field in ("id", "title", "hotkey", "handler"):

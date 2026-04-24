@@ -42,7 +42,9 @@ def match_route(path: str, method: str) -> tuple:
             return handler, {}
 
     # Generic {id} template matching — supports /session/{id}/suffix, /api/session/{id}/suffix
-    for route_path, route_methods, handler in ROUTES:
+    # Sort by path length descending so more-specific routes (e.g. /session/{id}.md) win over
+    # less-specific ones (e.g. /session/{id}) when both patterns would match.
+    for route_path, route_methods, handler in sorted(ROUTES, key=lambda r: -len(r[0])):
         if "{id}" in route_path and method in route_methods:
             pat = "^" + re.escape(route_path).replace("\\{id\\}", "(?P<session_id>[^/]+)") + "$"
             m = re.match(pat, path)

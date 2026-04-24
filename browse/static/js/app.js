@@ -48,4 +48,7 @@ document.addEventListener('DOMContentLoaded', function () {
     if (ninja.data !== undefined) {
         ninja.data = defaults.concat(cmds);
     }
+    /* Bind dark-toggle button via addEventListener (no inline onclick) */
+    var btn = document.getElementById('dark-toggle');
+    if (btn) { btn.addEventListener('click', toggleDark); }
 });

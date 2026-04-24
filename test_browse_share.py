@@ -137,26 +137,25 @@ def test_suite():
     # Test 2: share.js is valid JavaScript (can parse it)
     if share_js_path.exists():
         content = share_js_path.read_text(encoding="utf-8")
-        # Basic check: look for function definitions
+        # Check for required functions (screenshot removed per task)
         has_functions = all(
-            fn in content for fn in ["copyLink", "downloadScreenshot", "injectToolbar"]
+            fn in content for fn in ["copyLink", "injectToolbar"]
         )
         test("share.js has required functions", has_functions)
     else:
         test("share.js has required functions", False)
 
-    # Test 3: html-to-image.min.js exists
+    # Test 3: html-to-image.min.js has been removed (screenshot feature deleted)
     vendor_path = Path(__file__).parent / "browse" / "static" / "vendor" / "html-to-image.min.js"
-    test("html-to-image.min.js exists", vendor_path.exists())
+    test("html-to-image.min.js removed", not vendor_path.exists())
 
-    # Test 4: VENDOR.md has html-to-image entry
+    # Test 4: VENDOR.md no longer references html-to-image
     vendor_md_path = Path(__file__).parent / "browse" / "static" / "vendor" / "VENDOR.md"
     if vendor_md_path.exists():
         vendor_md = vendor_md_path.read_text(encoding="utf-8")
-        has_html_to_image = "html-to-image" in vendor_md and "1.11.11" in vendor_md
-        test("VENDOR.md documents html-to-image", has_html_to_image)
+        test("VENDOR.md does not document html-to-image", "html-to-image" not in vendor_md)
     else:
-        test("VENDOR.md documents html-to-image", False)
+        test("VENDOR.md does not document html-to-image", False)
 
     # Test 5: templates.py includes share.js in body_scripts
     templates_path = Path(__file__).parent / "browse" / "core" / "templates.py"
@@ -164,15 +163,12 @@ def test_suite():
         templates_content = templates_path.read_text(encoding="utf-8")
         has_share_script = 'src="/static/js/share.js"' in templates_content
         test("templates.py includes share.js script tag", has_share_script)
-        
-        # Also check html-to-image is loaded before share.js
-        html_to_img_pos = templates_content.find('src="/static/vendor/html-to-image.min.js"')
-        share_pos = templates_content.find('src="/static/js/share.js"')
-        correct_order = html_to_img_pos != -1 and share_pos != -1 and html_to_img_pos < share_pos
-        test("html-to-image loaded before share.js", correct_order)
+
+        # html-to-image intentionally absent from templates
+        test("templates.py does not reference html-to-image", "html-to-image" not in templates_content)
     else:
         test("templates.py includes share.js script tag", False)
-        test("html-to-image loaded before share.js", False)
+        test("templates.py does not reference html-to-image", False)
 
     # Test 6: templates.py base_page signature unchanged
     if templates_path.exists():
@@ -218,15 +214,14 @@ def test_suite():
         has_share_tag = 'src="/static/js/share.js"' in html and 'nonce=' in html
         test("home page includes share.js with nonce", has_share_tag)
 
-        # Check that html-to-image is also loaded
-        has_html_to_image_tag = 'src="/static/vendor/html-to-image.min.js"' in html
-        test("home page includes html-to-image", has_html_to_image_tag)
+        # Check that home page does NOT load html-to-image (feature removed)
+        test("home page does not include html-to-image", "html-to-image" not in html)
 
         server.shutdown()
     except Exception as e:
         print(f"  Server error: {e}")
         test("home page includes share.js with nonce", False)
-        test("home page includes html-to-image", False)
+        test("home page does not include html-to-image", False)
 
     print("\n" + "=" * 60)
     print(f"Results: {_PASS} passed, {_FAIL} failed")

@@ -48,6 +48,11 @@ def handle_home(db, params, token, nonce) -> tuple:
         f'  <input type="text" name="q" placeholder="Search sessions&hellip;">\n'
         f'  <button type="submit">Search</button>\n'
         f"</form>\n"
+        f'<div style="padding:0.5rem;background:var(--pico-card-background-color,#f8f9fa);'
+        f'border-left:4px solid var(--pico-primary);margin-bottom:1rem;">\n'
+        f'  👉 <a href="/dashboard{tok_qs}">View full dashboard</a>'
+        f' for trends, red flags, and most-referenced modules.\n'
+        f'</div>\n'
         f"<h2>Recent Sessions</h2>\n"
         f"<table><thead><tr>"
         f"<th>ID</th><th>Summary</th><th>Source</th><th>Path</th><th>Events</th>"
