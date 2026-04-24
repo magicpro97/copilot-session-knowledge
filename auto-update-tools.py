@@ -11,12 +11,13 @@ Features:
   - Post-merge hook: auto-triggers pipeline on manual `git pull`
 
 Usage:
-    python auto-update-tools.py              # Update (24h cooldown)
-    python auto-update-tools.py --force      # Force update now
-    python auto-update-tools.py --check      # Check only
-    python auto-update-tools.py --status     # Show state
-    python auto-update-tools.py --doctor     # Verify health (includes manifest check)
-    python auto-update-tools.py --skip-pull  # Run pipeline without pulling (used by self-exec)
+    python auto-update-tools.py                # Update (24h cooldown)
+    python auto-update-tools.py --force        # Force update now
+    python auto-update-tools.py --check        # Check only
+    python auto-update-tools.py --status       # Show state
+    python auto-update-tools.py --doctor       # Verify health (includes manifest check)
+    python auto-update-tools.py --list-coverage  # Print all tracked paths/patterns
+    python auto-update-tools.py --skip-pull    # Run pipeline without pulling (used by self-exec)
 """
 
 import contextlib
@@ -93,6 +94,38 @@ BUILTIN_PROJECT_SKILLS: tuple[str, ...] = (
 # Global Copilot CLI skills directory.  deploy_skills() creates missing VENDORED
 # skill dirs here and updates both VENDORED and already-installed BUILTIN dirs.
 GLOBAL_COPILOT_SKILLS_DIR = HOME / ".copilot" / "skills"
+
+# ---------------------------------------------------------------------------
+# Coverage manifest — single source of truth for ALL tracked paths/patterns.
+# Used by --list-coverage and --doctor.  Old .update-manifest.json versions
+# (pre-coverage field) remain safe: all consumers use .get() with defaults.
+# ---------------------------------------------------------------------------
+COVERAGE_MANIFEST: "dict[str, list[tuple[str, str]]]" = {
+    "Source Scripts": [
+        ("*.py",                 "root-level Python scripts (triggers restart-services)"),
+        ("browse/",              "browse module — web session browser"),
+        ("providers/",           "provider implementations"),
+    ],
+    "Skills": [
+        ("skills/",              "skill SKILL.md and assets — deployed on update"),
+        ("templates/",           "SKILL.md templates — deployed on update"),
+    ],
+    "Hooks": [
+        ("hooks/*.py",           "Copilot CLI hook scripts — re-run install.py --deploy-hooks after update"),
+        ("hooks/rules/",         "hook rule modules (auto-discovered by install.py)"),
+    ],
+    "Workflows": [
+        ("scripts/",             "pipeline scripts (added by quality-gates tentacle)"),
+        (".github/workflows/",   "CI/CD workflow definitions (added by quality-gates tentacle)"),
+    ],
+    "Services": [
+        ("launchd/",             "macOS LaunchAgent templates — reinstalled on update"),
+    ],
+    "Other": [
+        ("docs/",                "documentation"),
+        ("presets/",             "preset configurations"),
+    ],
+}
 
 
 def _running_in_wsl() -> bool:
@@ -449,14 +482,19 @@ def classify_changes(old_sha: str, new_sha: str) -> dict:
     changed = diff_output.splitlines()
     return {
         "all": changed,
-        "py_scripts": [f for f in changed if f.endswith(".py")],
-        "launchd": [f for f in changed if f.startswith("launchd/")],
-        "templates": [f for f in changed if f.startswith("templates/")],
-        "skills": [f for f in changed if f.startswith("skills/")],
-        "hooks": [f for f in changed if f.startswith("hooks/")],
-        "embed": [f for f in changed if "embed" in f.lower() and f.endswith(".py")],
-        "migrate": "migrate.py" in changed,
-        "self_update": "auto-update-tools.py" in changed,
+        "py_scripts":   [f for f in changed if f.endswith(".py")],
+        "launchd":      [f for f in changed if f.startswith("launchd/")],
+        "templates":    [f for f in changed if f.startswith("templates/")],
+        "skills":       [f for f in changed if f.startswith("skills/")],
+        "hooks":        [f for f in changed if f.startswith("hooks/")],
+        "hooks_rules":  [f for f in changed if f.startswith("hooks/rules/")],
+        "browse":       [f for f in changed if f.startswith("browse/")],
+        "providers":    [f for f in changed if f.startswith("providers/")],
+        "scripts":      [f for f in changed if f.startswith("scripts/")],
+        "workflows":    [f for f in changed if f.startswith(".github/workflows/")],
+        "embed":        [f for f in changed if "embed" in f.lower() and f.endswith(".py")],
+        "migrate":      "migrate.py" in changed,
+        "self_update":  "auto-update-tools.py" in changed,
         "watch_sessions": "watch-sessions.py" in changed,
     }
 
@@ -749,6 +787,16 @@ def write_manifest(sha: str, changes: dict):
         }
 
     # P0-2: atomic manifest write to prevent --doctor parse failures on crash
+    # Coverage: which categories had changes this run (backwards-compat: use .get())
+    manifest["tracked_dirs"] = [
+        pat for entries in COVERAGE_MANIFEST.values() for pat, _ in entries
+    ]
+    manifest["changed_categories"] = {
+        key: bool(changes.get(key))
+        for key in ("browse", "providers", "skills", "hooks", "hooks_rules",
+                    "scripts", "workflows", "launchd", "templates", "py_scripts")
+        if key in changes
+    }
     try:
         _atomic_write_text(MANIFEST_FILE, json.dumps(manifest, indent=2))
     except Exception as e:
@@ -925,24 +973,22 @@ def deploy_skills():
                             pass
 
     # --- global Copilot CLI skills ----------------------------------------
-    # VENDORED skills: create the dir from scratch if it is missing so newly
-    # added skills (e.g. karpathy-guidelines) land on the machine after a
-    # pull+update without requiring a manual rsync step.
-    # BUILTIN_PROJECT_SKILLS: update already-installed global dirs + fill in
-    # any missing asset files (e.g. forge-ecosystem/references/).  Dir
-    # creation is deliberately skipped for BUILTIN skills — those are
-    # installed by the Copilot CLI marketplace / install.py, not this updater.
+    # Both VENDORED and BUILTIN_PROJECT_SKILLS are update-only: never
+    # auto-create a global skill dir that doesn't already exist.  Dir
+    # creation is handled by the Copilot CLI marketplace / install.py.
+    # For asset files: only overwrite files that are already present —
+    # do not create missing asset files.
     for global_skills_root in _global_copilot_skill_dirs():
-        # VENDORED: create dir if missing, sync SKILL.md and all asset files.
+        # VENDORED: update-only (skip if dir not pre-installed).
         for skill_name, (skill_content, skill_src_dir) in vendored_sources.items():
             global_skill_dir = global_skills_root / skill_name
+            if not global_skill_dir.is_dir():
+                continue  # update-only: never auto-create global dirs for vendored skills
             global_skill_md = global_skill_dir / "SKILL.md"
             try:
-                global_skill_dir.mkdir(parents=True, exist_ok=True)
-                existed = global_skill_md.exists()
-                if not existed or global_skill_md.read_text(encoding="utf-8") != skill_content:
+                if not global_skill_md.exists() or global_skill_md.read_text(encoding="utf-8") != skill_content:
                     global_skill_md.write_text(skill_content, encoding="utf-8")
-                    ok(f"{'Created' if not existed else 'Updated'} global Copilot CLI {skill_name}/SKILL.md in {global_skills_root}")
+                    ok(f"Updated global Copilot CLI {skill_name}/SKILL.md in {global_skills_root}")
             except Exception:
                 pass
             for subdir in sorted(skill_src_dir.iterdir()):
@@ -954,12 +1000,12 @@ def deploy_skills():
                     rel = asset_file.relative_to(skill_src_dir)
                     asset_target = global_skill_dir / rel
                     try:
+                        if not asset_target.exists():
+                            continue  # update-only: never create missing asset files
                         content = asset_file.read_bytes()
-                        existed = asset_target.exists()
-                        if not existed or asset_target.read_bytes() != content:
-                            asset_target.parent.mkdir(parents=True, exist_ok=True)
+                        if asset_target.read_bytes() != content:
                             asset_target.write_bytes(content)
-                            ok(f"{'Created' if not existed else 'Updated'} global Copilot CLI {skill_name}/{rel} in {global_skills_root}")
+                            ok(f"Updated global Copilot CLI {skill_name}/{rel} in {global_skills_root}")
                     except Exception:
                         pass
 
@@ -1148,6 +1194,28 @@ def _try_healer_check():
 
 
 # ---------------------------------------------------------------------------
+# Coverage listing
+# ---------------------------------------------------------------------------
+def list_coverage():
+    """Print all tracked paths/patterns grouped by category."""
+    print("=== sk-update: tracked coverage ===")
+    print("All paths/patterns monitored by the update pipeline:\n")
+    for category, entries in COVERAGE_MANIFEST.items():
+        print(f"  [{category}]")
+        for pattern, description in entries:
+            print(f"    {pattern:<30} {description}")
+        print()
+    print("Pipeline actions by category:")
+    print("  *.py / browse/ / providers/  → restart-services (if watcher running)")
+    print("  skills/ / templates/         → deploy-skills (to registered projects + global)")
+    print("  launchd/                     → reinstall-launchagents (macOS only)")
+    print("  hooks/                       → warn: re-run install.py --deploy-hooks")
+    print("  scripts/ / .github/workflows/ → tracked; no automatic post-update action")
+    print()
+    print("Run --doctor to verify which directories are present on this machine.")
+
+
+# ---------------------------------------------------------------------------
 # Doctor
 # ---------------------------------------------------------------------------
 def doctor():
@@ -1283,6 +1351,31 @@ def doctor():
     else:
         ok("Copilot CLI pkg: healthy")
 
+    # Directory coverage audit — check which tracked dirs are present on disk
+    print("\n  [Directory Coverage]")
+    present: list[str] = []
+    absent: list[str] = []
+    for entries in COVERAGE_MANIFEST.values():
+        for pattern, _ in entries:
+            # Derive the full relative base path from the pattern
+            # e.g. ".github/workflows/*.yml" → ".github/workflows"
+            # e.g. "*.py" → "" → skip (wildcard-only, no directory prefix)
+            base = pattern.rstrip("/").split("*")[0].rstrip("/")
+            if not base:
+                continue
+            check_path = TOOLS_DIR / base
+            if check_path.exists():
+                if pattern not in [p for p, _ in [e for ent in COVERAGE_MANIFEST.values() for e in ent] if p in present]:
+                    present.append(pattern)
+            else:
+                absent.append(pattern)
+    if present:
+        ok(f"  Present ({len(present)}): " + ", ".join(present))
+    if absent:
+        # scripts/ and .github/workflows/ may not exist yet — not a hard error
+        warn(f"  Absent ({len(absent)}): " + ", ".join(absent))
+        warn("  Run --list-coverage for details. Absent dirs are tracked once added.")
+
     if issues == 0:
         ok("All good")
     else:
@@ -1347,6 +1440,9 @@ def main():
             return
         elif arg == "--doctor":
             doctor()
+            return
+        elif arg == "--list-coverage":
+            list_coverage()
             return
         elif arg == "--heal-copilot-cli":
             _issues = _try_healer_check()

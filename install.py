@@ -508,12 +508,17 @@ def deploy_hooks():
     markers_dir.mkdir(parents=True, exist_ok=True)
     print(f"  {OK} markers/ directory ready")
 
-    # List available hooks
+    # List available hooks (root-level + any subdirectories, e.g. hooks/rules/)
     hooks_dir = _SCRIPT_DIR / "hooks"
-    py_hooks = sorted(hooks_dir.glob("*.py")) if hooks_dir.is_dir() else []
+    py_hooks: list[Path] = sorted(hooks_dir.glob("*.py")) if hooks_dir.is_dir() else []
+    if hooks_dir.is_dir():
+        for sub in sorted(hooks_dir.iterdir()):
+            if sub.is_dir() and not sub.name.startswith((".", "_")):
+                py_hooks += sorted(sub.glob("*.py"))
     print(f"\n  {len(py_hooks)} Python hook scripts available:")
     for h in py_hooks:
-        print(f"    • {h.name}")
+        rel = h.relative_to(hooks_dir)
+        print(f"    • {rel.as_posix()}")
 
 
 

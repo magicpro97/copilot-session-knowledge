@@ -921,7 +921,7 @@ test(
 
 # ─── Global Skill Deployment (Gs1–Gs5) ───────────────────────────────────
 # Tests for deploy_skills() global-skill rollout gaps:
-#   Gs1-Gs2: VENDORED skill dir is created from scratch when missing
+#   Gs1-Gs2: VENDORED skill dir is NOT created when missing (update-only)
 #   Gs3:     stale BUILTIN SKILL.md in existing global dir is updated
 #   Gs4:     missing asset file inside existing BUILTIN global dir is created
 #   Gs5:     BUILTIN dir is NOT auto-created (update-only constraint)
@@ -987,15 +987,14 @@ with tempfile.TemporaryDirectory(prefix="global-skills-test-") as _gs_tmp:
 
         _gs_karpathy_dir = _gs_global / "karpathy-guidelines"
         test(
-            "Gs1: deploy_skills() creates missing vendored global skill dir",
-            _gs_karpathy_dir.is_dir(),
-            f"Expected dir at {_gs_karpathy_dir}",
+            "Gs1: deploy_skills() does NOT create missing vendored global skill dir",
+            not _gs_karpathy_dir.is_dir(),
+            f"update-only rule violated: dir was created at {_gs_karpathy_dir}",
         )
         test(
-            "Gs2: deploy_skills() writes SKILL.md into new vendored global skill dir",
-            (_gs_karpathy_dir / "SKILL.md").exists()
-            and (_gs_karpathy_dir / "SKILL.md").read_text(encoding="utf-8") == "# Karpathy vendored",
-            "SKILL.md missing or has unexpected content",
+            "Gs2: deploy_skills() does NOT write SKILL.md for absent vendored global skill dir",
+            not (_gs_karpathy_dir / "SKILL.md").exists(),
+            "SKILL.md was created for absent vendored dir — update-only constraint violated",
         )
         test(
             "Gs3: deploy_skills() updates stale SKILL.md in existing global builtin dir",
