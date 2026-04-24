@@ -12,6 +12,7 @@ Usage:
     python3 checkpoint-diff.py --summary                   # Show change summary across all
     python3 checkpoint-diff.py --session SESSION_ID        # Specify session
     python3 checkpoint-diff.py --session-dir DIR           # Specify session-state root
+    python3 checkpoint-diff.py --from N --to M --pager     # Pipe output through pager
 
 Selectors for --from / --to:
     N          Checkpoint sequence number (e.g. 1, 2, 3)
@@ -19,13 +20,17 @@ Selectors for --from / --to:
     first      Oldest checkpoint
 
 Environment:
-    COPILOT_SESSION_ID     Override session detection
-    COPILOT_SESSION_STATE  Override session-state root directory
+    COPILOT_SESSION_ID      Override session detection
+    COPILOT_SESSION_STATE   Override session-state root directory
+    CHECKPOINT_DIFF_PAGER   Pager command for --pager (default: less -R)
+                            Must be one of: less, more, most
 """
 
 import difflib
 import os
 import re
+import shlex
+import subprocess
 import sys
 import argparse
 from pathlib import Path
@@ -37,6 +42,31 @@ if os.name == "nt":
 
 _env_state = os.environ.get("COPILOT_SESSION_STATE")
 SESSION_STATE = Path(_env_state) if _env_state else Path.home() / ".copilot" / "session-state"
+
+# ── Pager helpers ─────────────────────────────────────────────────────────────
+
+_PAGER_ALLOWLIST: frozenset = frozenset({"less", "more", "most"})
+
+
+def _resolve_pager() -> list[str]:
+    """Resolve and validate the pager command.
+
+    Reads CHECKPOINT_DIFF_PAGER env var (default: "less -R").
+    Validates the basename is in _PAGER_ALLOWLIST.
+    Returns a list of args for subprocess.run(..., shell=False).
+    Raises SystemExit on invalid/empty pager.
+    """
+    raw = os.environ.get("CHECKPOINT_DIFF_PAGER", "less -R")
+    args = shlex.split(raw)
+    if not args:
+        raise SystemExit("Empty pager command in CHECKPOINT_DIFF_PAGER")
+    basename = Path(args[0]).name
+    if basename not in _PAGER_ALLOWLIST:
+        raise SystemExit(
+            f"Pager {basename!r} not in allowlist {set(_PAGER_ALLOWLIST)}. "
+            "Set CHECKPOINT_DIFF_PAGER to one of: less, more, most"
+        )
+    return args
 
 CHECKPOINT_SECTIONS = [
     "overview", "history", "work_done", "technical_details",
@@ -318,6 +348,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Specific session ID")
     p.add_argument("--session-dir", metavar="DIR", default=None,
                    help="Session-state root directory")
+    p.add_argument("--pager", action="store_true",
+                   help="Pipe output through pager (see CHECKPOINT_DIFF_PAGER env var)")
+    color_group = p.add_mutually_exclusive_group()
+    color_group.add_argument("--color", dest="color", action="store_true", default=None,
+                             help="Force ANSI color output")
+    color_group.add_argument("--no-color", dest="color", action="store_false",
+                             help="Disable ANSI color output (default: auto-detect TTY)")
     return p
 
 
@@ -328,6 +365,15 @@ def main(argv: list[str] | None = None) -> int:
     if not any([args.from_sel, args.consecutive, args.summary]):
         parser.print_help()
         return 0
+
+    # Color: explicit flag > auto-detect TTY
+    use_color: bool
+    if args.color is True:
+        use_color = True
+    elif args.color is False:
+        use_color = False
+    else:
+        use_color = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
 
     state_root = Path(args.session_dir) if args.session_dir else SESSION_STATE
 
@@ -346,6 +392,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     cp_dir = session_dir / "checkpoints"
+    output_lines: list[str] = []
 
     # --summary
     if args.summary:
@@ -357,11 +404,10 @@ def main(argv: list[str] | None = None) -> int:
             sa = parse_checkpoint_sections(cp_dir / ea["file"])
             sb = parse_checkpoint_sections(cp_dir / eb["file"])
             all_diffs.append(diff_sections(sa, sb))
-        print(format_summary_output(sorted_entries, all_diffs))
-        return 0
+        output_lines.append(format_summary_output(sorted_entries, all_diffs))
 
     # --consecutive
-    if args.consecutive:
+    elif args.consecutive:
         sorted_entries = sorted(entries, key=lambda e: e["seq"])
         if len(sorted_entries) < 2:
             print("✗ Need at least 2 checkpoints to diff.", file=sys.stderr)
@@ -372,35 +418,48 @@ def main(argv: list[str] | None = None) -> int:
             sa = parse_checkpoint_sections(cp_dir / ea["file"])
             sb = parse_checkpoint_sections(cp_dir / eb["file"])
             diffs = diff_sections(sa, sb)
-            print(format_diff_output(ea, eb, diffs, show_unchanged=args.show_unchanged))
-            print()
-        return 0
+            output_lines.append(
+                format_diff_output(ea, eb, diffs, show_unchanged=args.show_unchanged)
+            )
+            output_lines.append("")
 
     # --from / --to
-    if not args.to_sel:
-        print("✗ --to is required when using --from.", file=sys.stderr)
-        return 1
+    else:
+        if not args.to_sel:
+            print("✗ --to is required when using --from.", file=sys.stderr)
+            return 1
 
-    entry_a = resolve_selector(entries, args.from_sel)
-    if entry_a is None:
-        available = ", ".join(str(e["seq"]) for e in sorted(entries, key=lambda e: e["seq"]))
-        print(f"✗ Checkpoint '{args.from_sel}' not found. Available: {available}", file=sys.stderr)
-        return 1
+        entry_a = resolve_selector(entries, args.from_sel)
+        if entry_a is None:
+            available = ", ".join(str(e["seq"]) for e in sorted(entries, key=lambda e: e["seq"]))
+            print(f"✗ Checkpoint '{args.from_sel}' not found. Available: {available}", file=sys.stderr)
+            return 1
 
-    entry_b = resolve_selector(entries, args.to_sel)
-    if entry_b is None:
-        available = ", ".join(str(e["seq"]) for e in sorted(entries, key=lambda e: e["seq"]))
-        print(f"✗ Checkpoint '{args.to_sel}' not found. Available: {available}", file=sys.stderr)
-        return 1
+        entry_b = resolve_selector(entries, args.to_sel)
+        if entry_b is None:
+            available = ", ".join(str(e["seq"]) for e in sorted(entries, key=lambda e: e["seq"]))
+            print(f"✗ Checkpoint '{args.to_sel}' not found. Available: {available}", file=sys.stderr)
+            return 1
 
-    if entry_a["seq"] == entry_b["seq"]:
-        print("✗ Cannot diff a checkpoint against itself.", file=sys.stderr)
-        return 1
+        if entry_a["seq"] == entry_b["seq"]:
+            print("✗ Cannot diff a checkpoint against itself.", file=sys.stderr)
+            return 1
 
-    sa = parse_checkpoint_sections(cp_dir / entry_a["file"])
-    sb = parse_checkpoint_sections(cp_dir / entry_b["file"])
-    diffs = diff_sections(sa, sb)
-    print(format_diff_output(entry_a, entry_b, diffs, show_unchanged=args.show_unchanged))
+        sa = parse_checkpoint_sections(cp_dir / entry_a["file"])
+        sb = parse_checkpoint_sections(cp_dir / entry_b["file"])
+        diffs = diff_sections(sa, sb)
+        output_lines.append(
+            format_diff_output(entry_a, entry_b, diffs, show_unchanged=args.show_unchanged)
+        )
+
+    diff_text = "\n".join(output_lines)
+
+    if args.pager:
+        pager_args = _resolve_pager()
+        subprocess.run(pager_args, shell=False, input=diff_text, text=True)
+    else:
+        print(diff_text)
+
     return 0
 
 
