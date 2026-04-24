@@ -65,12 +65,6 @@ def handle_embeddings(db, params, token, nonce) -> tuple:
         '</canvas>\n'
     )
 
-    head_extra = (
-        '<style>\n'
-        '#emb-scatter { background: var(--pico-background-color, #fff); }\n'
-        '</style>\n'
-    )
-
     body_scripts = (
         f'<script nonce="{nonce_esc}" src="/static/js/embeddings.js"></script>\n'
         f'<script nonce="{nonce_esc}">\n'
@@ -89,7 +83,6 @@ def handle_embeddings(db, params, token, nonce) -> tuple:
             nonce,
             "Embeddings 2D Projection",
             main_content=main_content,
-            head_extra=head_extra,
             body_scripts=body_scripts,
             token=token,
         ),

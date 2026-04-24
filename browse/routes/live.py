@@ -112,28 +112,6 @@ def handle_live(db, params, token, nonce) -> tuple:
         '<ul id="live-list" style="list-style:none;padding:0;margin:0;"></ul>\n'
     )
 
-    head_extra = (
-        "<style>\n"
-        "#live-list li{"
-        "padding:0.5rem 0.75rem;"
-        "border-bottom:1px solid var(--pico-muted-border-color,#dee2e6);"
-        "animation:lf-fade 0.3s ease;}\n"
-        "@keyframes lf-fade{"
-        "from{opacity:0;transform:translateY(-4px)}"
-        "to{opacity:1;transform:none}}\n"
-        ".lf-cat{"
-        "font-size:0.75rem;font-weight:600;text-transform:uppercase;"
-        "letter-spacing:0.05em;margin-right:0.5rem;padding:0.1rem 0.4rem;"
-        "border-radius:3px;"
-        "background:var(--pico-primary-background,#e8f4fd);"
-        "color:var(--pico-primary,#1a6fd4);}\n"
-        ".lf-wing{"
-        "font-size:0.75rem;"
-        "color:var(--pico-muted-color,#6c757d);"
-        "margin-left:0.5rem;}\n"
-        "</style>\n"
-    )
-
     body_scripts = (
         f'<script nonce="{nonce_esc}" src="/static/js/live.js"></script>\n'
         f'<script nonce="{nonce_esc}">\n'
@@ -155,7 +133,6 @@ def handle_live(db, params, token, nonce) -> tuple:
             nonce,
             "Live Feed",
             main_content=main_content,
-            head_extra=head_extra,
             body_scripts=body_scripts,
             token=token,
         ),

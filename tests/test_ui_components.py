@@ -276,6 +276,30 @@ def run_integration_tests(host: str, port: int) -> None:
     test("sessions: has table-wrapper", 'class="table-wrapper"' in html)
 
 
+def test_no_inline_style_in_routes():
+    """Sustainability gate: no inline <style> blocks in routes (except
+    dashboard.py's .db-chart-wrap, which is tied to uplot and tracked
+    as tech debt). New routes MUST put CSS in app.css."""
+    import re
+    routes_dir = os.path.join(os.path.dirname(__file__), '..', 'browse', 'routes')
+    allowed = {'dashboard.py': ['.db-chart-wrap']}  # file → required tokens in the <style> block
+    for fn in sorted(os.listdir(routes_dir)):
+        if not fn.endswith('.py') or fn == '__init__.py':
+            continue
+        path = os.path.join(routes_dir, fn)
+        content = open(path, encoding='utf-8').read()
+        style_blocks = re.findall(r'<style[^>]*>.*?</style>', content, re.DOTALL | re.IGNORECASE)
+        if not style_blocks:
+            continue
+        if fn not in allowed:
+            raise AssertionError(f'{fn} contains inline <style> block — move CSS to app.css. Found: {style_blocks[0][:80]}...')
+        for block in style_blocks:
+            for required in allowed[fn]:
+                if required not in block:
+                    raise AssertionError(f'{fn} <style> block missing whitelisted token {required!r}')
+    test("no inline <style> in routes (except dashboard.py whitelist)", True)
+
+
 def run_all_tests() -> int:
     print("=== tests/test_ui_components.py ===")
 
@@ -291,6 +315,7 @@ def run_all_tests() -> int:
     test_page_header_css_classes_exist()
     test_page_header_shape()
     test_card_shape()
+    test_no_inline_style_in_routes()
 
     # Integration tests
     db = _make_test_db()

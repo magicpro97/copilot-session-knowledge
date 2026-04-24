@@ -104,18 +104,6 @@ def handle_session_mindmap(db, params, token, nonce, session_id: str = "") -> tu
         f'</div>\n'
     )
 
-    head_extra = (
-        '<style>\n'
-        '#mindmap-wrap{display:flex;flex-direction:column;height:80vh;}\n'
-        '#mindmap-toolbar{display:flex;gap:.5rem;align-items:center;'
-        'padding:.25rem 0;flex-shrink:0;}\n'
-        '#mindmap-toolbar button{padding:.25rem .75rem;cursor:pointer;}\n'
-        '#mindmap-svg{flex:1;width:100%;'
-        'border:1px solid var(--pico-muted-border-color,#ccc);'
-        'border-radius:4px;background:#fff;overflow:hidden;}\n'
-        '</style>\n'
-    )
-
     body_scripts = (
         f'<script nonce="{nonce}">\n'
         f'window.__paletteCommands.push({{'
@@ -141,7 +129,6 @@ def handle_session_mindmap(db, params, token, nonce, session_id: str = "") -> tu
             nonce,
             f"Mindmap \u2014 {session_id[:8]}",
             main_content=main_content,
-            head_extra=head_extra,
             body_scripts=body_scripts,
             token=token,
         ),

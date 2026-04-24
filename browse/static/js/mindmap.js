@@ -75,6 +75,17 @@
       mm = Markmap.create(svgEl, { maxWidth: 300, initialExpandLevel: 3 }, tree);
     }
     setStatus("Loaded \u2014 " + data.title);
+
+    /* Sync markmap-dark class so markmap text stays visible in dark mode */
+    var wrap = document.getElementById("mindmap-wrap");
+    function syncMarkmapTheme() {
+      var dark = document.documentElement.getAttribute("data-theme") === "dark";
+      if (wrap) wrap.classList.toggle("markmap-dark", dark);
+    }
+    syncMarkmapTheme();
+    new MutationObserver(syncMarkmapTheme).observe(
+      document.documentElement, { attributes: true, attributeFilter: ["data-theme"] }
+    );
   }
 
   /* ── Fetch data and render ──────────────────────────────────── */
