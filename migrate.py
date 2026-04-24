@@ -32,6 +32,40 @@ MIGRATIONS = [
         "ALTER TABLE knowledge_entries ADD COLUMN est_tokens INTEGER DEFAULT 0",
         "UPDATE knowledge_entries SET est_tokens = LENGTH(COALESCE(title,'') || ' ' || COALESCE(content,'')) / 4 WHERE est_tokens = 0",
     ]),
+    # v7: Batch B — two-phase indexing.
+    # B-BL-07: CREATE TABLE IF NOT EXISTS sessions first so ALTERs don't fail on fresh DB.
+    # B-BL-02: event_offsets.event_id is INTEGER NOT NULL (not TEXT).
+    # B-BL-05: event_offsets has file_mtime REAL column.
+    (7, "two_phase_indexing", [
+        # Guard: ensure sessions table exists with current schema before ALTERs.
+        """CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            path TEXT NOT NULL,
+            summary TEXT DEFAULT '',
+            total_checkpoints INTEGER DEFAULT 0,
+            total_research INTEGER DEFAULT 0,
+            total_files INTEGER DEFAULT 0,
+            has_plan INTEGER DEFAULT 0,
+            source TEXT DEFAULT 'copilot',
+            indexed_at TEXT
+        )""",
+        # Add new Phase-1 / Phase-2 tracking columns (idempotent: runner catches 'duplicate').
+        "ALTER TABLE sessions ADD COLUMN file_mtime REAL",
+        "ALTER TABLE sessions ADD COLUMN indexed_at_r REAL",
+        "ALTER TABLE sessions ADD COLUMN fts_indexed_at REAL",
+        "ALTER TABLE sessions ADD COLUMN event_count_estimate INTEGER DEFAULT 0",
+        "ALTER TABLE sessions ADD COLUMN file_size_bytes INTEGER DEFAULT 0",
+        # event_offsets: byte-offset seek table.
+        # event_id INTEGER NOT NULL (B-BL-02); file_mtime REAL (B-BL-05).
+        """CREATE TABLE IF NOT EXISTS event_offsets (
+            session_id TEXT NOT NULL,
+            event_id INTEGER NOT NULL,
+            byte_offset INTEGER NOT NULL,
+            file_mtime REAL NOT NULL,
+            PRIMARY KEY (session_id, event_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_event_offsets_session ON event_offsets(session_id)",
+    ]),
 ]
 applied = 0
 for ver, name, stmts in MIGRATIONS:

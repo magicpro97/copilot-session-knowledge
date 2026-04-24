@@ -353,6 +353,34 @@ def print_install_hint():
         print("WantedBy=default.target")
 
 
+def _adaptive_poll_interval(file_signatures: dict) -> int:
+    """Compute next poll interval based on most recently modified session file.
+
+    Tiers (Batch B adaptive polling):
+      Active  — any file modified within last 2 minutes  → 5 seconds
+      Recent  — any file modified within last 1 hour     → 30 seconds
+      Idle    — everything older                         → 300 seconds (5 minutes)
+
+    Returns the interval in seconds.
+    """
+    now = time.time()
+    if not file_signatures:
+        return 300  # idle tier — no files known
+
+    # file_signatures values are [mtime, size, hash] or (mtime, size)
+    most_recent = max(
+        (v[0] if isinstance(v, (list, tuple)) else 0.0)
+        for v in file_signatures.values()
+    )
+    age = now - most_recent
+
+    if age <= 120:     # 2 minutes
+        return 5
+    if age <= 3600:    # 1 hour
+        return 30
+    return 300         # idle
+
+
 def main():
     _setup_logging()
 
@@ -475,8 +503,15 @@ def main():
             except Exception as e:
                 print(f"[watch] Error: {e}")
 
-            # Sleep in small increments for responsive shutdown
-            for _ in range(interval):
+            # Adaptive tiered poll interval (Batch B).
+            # If --interval was explicitly provided, respect it; otherwise use tiers.
+            if "--interval" in sys.argv:
+                sleep_secs = interval
+            else:
+                sleep_secs = _adaptive_poll_interval(prev_sigs)
+
+            # Sleep in 1-second increments for responsive shutdown
+            for _ in range(sleep_secs):
                 if not running:
                     break
                 time.sleep(1)

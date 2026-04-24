@@ -130,6 +130,104 @@ class ClaudeProvider(SessionProvider):
                         extra=(("project_hash", project_hash),),
                     )
 
+    def iter_events_with_offset(
+        self, session: SessionMeta, *, from_event: int = 0
+    ) -> Iterator[tuple[Event, int]]:
+        """Override: yield (Event, byte_offset) using f.tell() before readline().
+
+        Opens file in binary mode so tell() returns accurate byte offsets.
+        All events derived from the same JSONL line share that line's start offset.
+        """
+        event_counter = 0
+        warned_once = False
+
+        try:
+            fh = open(session.path, "rb")  # binary for accurate tell()
+        except OSError as exc:
+            print(f"[ClaudeProvider] Cannot open {session.path}: {exc}", file=sys.stderr)
+            return
+
+        with fh:
+            line_num = 0
+            while True:
+                line_byte_offset = fh.tell()
+                raw_bytes = fh.readline()
+                if not raw_bytes:
+                    break
+                line_num += 1
+
+                if len(raw_bytes) > MAX_LINE_BYTES:
+                    continue
+
+                raw_line = raw_bytes.decode("utf-8", errors="replace").strip()
+                if not raw_line:
+                    continue
+
+                try:
+                    entry = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    if not warned_once:
+                        print(
+                            f"[ClaudeProvider] Malformed JSONL in {session.path.name}"
+                            f" (first bad line: {line_num}), skipping",
+                            file=sys.stderr,
+                        )
+                        warned_once = True
+                    continue
+
+                raw_ref = f"{session.path.stem}:L{line_num}"
+                entry_type = entry.get("type", "")
+                ts = _parse_iso_ts(entry.get("timestamp", ""))
+
+                new_events: list[Event] = []
+
+                if entry_type == "user":
+                    msg = entry.get("message", {})
+                    if isinstance(msg, dict):
+                        content_raw = msg.get("content", "")
+                        new_events = _decompose_user_content(
+                            content_raw, session.id, event_counter, ts, raw_ref
+                        )
+
+                elif entry_type == "assistant":
+                    msg = entry.get("message", {})
+                    if isinstance(msg, dict):
+                        content_raw = msg.get("content", [])
+                        new_events = _decompose_assistant_content(
+                            content_raw, session.id, event_counter, ts, raw_ref
+                        )
+
+                elif entry_type == "system":
+                    msg = entry.get("message", {})
+                    sys_text = ""
+                    if isinstance(msg, dict):
+                        sys_text = str(msg.get("content", ""))
+                    if sys_text:
+                        new_events = [Event(
+                            session_id=session.id,
+                            event_id=event_counter,
+                            ts=ts,
+                            kind="system",
+                            content=sys_text[:MAX_CONTENT_CHARS],
+                            raw_ref=raw_ref,
+                        )]
+
+                elif entry_type in ("attachment", "last-prompt"):
+                    note_text = json.dumps(entry, ensure_ascii=False)
+                    new_events = [Event(
+                        session_id=session.id,
+                        event_id=event_counter,
+                        ts=ts,
+                        kind="note",
+                        content=note_text[:MAX_CONTENT_CHARS],
+                        raw_ref=raw_ref,
+                    )]
+
+                for evt in new_events:
+                    if event_counter >= from_event:
+                        yield evt, line_byte_offset
+                    event_counter += 1
+
     def iter_events(
         self, session: SessionMeta, *, from_event: int = 0
     ) -> Iterator[Event]:

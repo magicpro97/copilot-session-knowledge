@@ -167,6 +167,21 @@ class SessionProvider(ABC):
         """
         ...
 
+    def iter_events_with_offset(
+        self, session: SessionMeta, *, from_event: int = 0
+    ) -> "Iterator[tuple[Event, int]]":
+        """Yield (event, byte_offset) pairs from a session.
+
+        byte_offset is the byte position in the source file where the event's
+        source record begins.  Default implementation yields -1 for all offsets
+        (no seek support).  ClaudeProvider overrides this to yield real offsets
+        via f.tell() tracked before each readline().
+
+        Malformed data MUST be silently skipped — never raise.
+        """
+        for event in self.iter_events(session, from_event=from_event):
+            yield event, -1
+
     def compute_session_hash(self, session: SessionMeta) -> str:
         """Return a cache key for the session.
 
