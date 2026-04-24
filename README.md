@@ -126,6 +126,24 @@ qs "search" --budget 2000            # Cap output to 2000 chars
 qs "search" --compact                # Titles-only with ~token hint
 ```
 
+### Advanced Query Flags
+
+Column-scoped BM25 search and session inspection (schema v8):
+
+```bash
+qs "bug" --in user                   # Search only in user_messages column
+qs "deploy" --in assistant           # Search only in assistant_messages column
+qs --from <session-id>               # Show all entries from a specific session
+qs "error" --snippet                 # Include surrounding context snippet
+qs --session-raw <session-id>        # Dump raw events for a session
+```
+
+### Index Health
+
+```bash
+python3 ~/.copilot/tools/index-status.py          # Row counts, FTS integrity, offset coverage
+```
+
 ### Record Knowledge
 
 ```bash
@@ -219,7 +237,19 @@ python3 ~/.copilot/tools/checkpoint-restore.py --export latest --format json
 # Compare
 python3 ~/.copilot/tools/checkpoint-diff.py --from 1 --to latest
 python3 ~/.copilot/tools/checkpoint-diff.py --summary
+python3 ~/.copilot/tools/checkpoint-diff.py --from 1 --to latest --pager   # external pager (safe allowlist)
 ```
+
+### Web UI (browse.py)
+
+A read-only local web UI for browsing the knowledge base from a browser. Bound to `127.0.0.1` only — not accessible from other machines.
+
+```bash
+python3 ~/.copilot/tools/browse.py --port 8080 --token YOUR_TOKEN
+# Then open http://127.0.0.1:8080 in your browser
+```
+
+Security: token is required on every request; `Content-Security-Policy` blocks inline scripts. Do not expose this port externally.
 
 ### Profile Lifecycle
 
@@ -263,14 +293,20 @@ flowchart TD
 
 ### How it works
 
-1. **Index** — `build-session-index.py` scans session `.md` files → SQLite FTS5
+1. **Index** — `build-session-index.py` Phase 1 (session metadata) + Phase 2 (event content) via `providers/` (`SessionProvider` ABC, `CopilotProvider`, `ClaudeProvider`) → SQLite FTS5 (schema v8)
 2. **Extract** — `extract-knowledge.py` classifies into 7 types, dedup by content hash
 3. **Graph** — Auto-detect relations: same session, same tag, mistake→fix
-4. **Search** — FTS5 keyword + optional semantic vector (Reciprocal Rank Fusion)
-5. **Watch** — `watch-sessions.py` polls for changes, auto re-indexes
-6. **Update** — `auto-update-tools.py` smart pipeline: git pull → diff-based update
-7. **Host metadata** — `host_manifest.py` is the single source of truth for supported hosts (Copilot CLI + Claude Code only) and their file-system paths; imported by `install.py`, `setup-project.py`, `watch-sessions.py`, and `auto-update-tools.py`
-8. **Tentacle workspace** — `.octogent/` stores local tentacle state and is gitignored in this repo
+4. **Search** — `sessions_fts` BM25 + column-scoped (`--in user/assistant/tool`) + optional semantic vector (RRF)
+5. **Watch** — `watch-sessions.py` adaptive polling (5 s/30 s/300 s tiers), auto re-indexes
+6. **Browse** — `browse.py` read-only local web UI (127.0.0.1, token auth, CSP)
+7. **Health** — `index-status.py` reports row counts, FTS integrity, event-offset coverage
+8. **Update** — `auto-update-tools.py` smart pipeline: git pull → diff-based update
+9. **Host metadata** — `host_manifest.py` is the single source of truth for supported hosts (Copilot CLI + Claude Code only) and their file-system paths; imported by `install.py`, `setup-project.py`, `watch-sessions.py`, and `auto-update-tools.py`
+10. **Tentacle workspace** — `.octogent/` stores local tentacle state and is gitignored in this repo
+
+**Schema versions:** v1–v6 (legacy indexing) → v7 (two-phase indexing + `event_offsets`) → v8 (current: `sessions_fts` contentless FTS5 + BM25). Run `python3 migrate.py` to upgrade.
+
+**`providers/` package:** `SessionProvider` ABC defines `iter_sessions()` and `iter_events_with_offset()`. `CopilotProvider` handles `.md` checkpoints; `ClaudeProvider` handles JSONL with real byte-offset seeks for Phase 2.
 
 ## Auto-Update
 

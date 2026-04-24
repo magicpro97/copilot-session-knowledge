@@ -39,6 +39,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - POSIX home normalization in `check_subagent_marker.py` now uses explicit backslash (`chr(92)`) instead of `os.sep` for separator replacement, so the function produces correct Windows paths even when the Python runtime reports a POSIX `os.sep`. This fixes a latent bug that could have surfaced if the code were ever exercised in a POSIX-hosted Windows-emulation layer.
 - Section 17g tests in `test_hooks.py` now build expected Windows paths with `chr(92)` instead of literal backslash string comparisons, making assertions valid on both Windows and non-Windows hosts.
 
+## [1.2.0] - 2026-05-01
+
+### Added
+- `providers/` package: `SessionProvider` ABC + `Event` IR dataclass; `CopilotProvider` and `ClaudeProvider` implementations. `EventKind` literals: `user_msg`, `assistant_msg`, `tool_call`, `tool_result`, `diff`, `system`, `note`.
+- Schema v7 — two-phase indexing: `event_offsets` table stores byte-offset seeks per session; `build-session-index.py` Phase 1 (metadata) / Phase 2 (full events) split.
+- Schema v8 — `sessions_fts` contentless FTS5 table with BM25 ranking and column-scoped search (column indices: `session_id=0` UNINDEXED, `title=1`, `user_messages=2`, `assistant_messages=3`, `tool_names=4`).
+- `query-session.py` (`qs`) new flags: `--in <column>` (column-scoped FTS), `--from <session-id>` (filter by session), `--snippet` (context snippet), `--session-raw <session-id>` (dump raw session events).
+- `index-status.py` — index health inspection: row counts, FTS integrity check, event-offset coverage.
+- `browse.py` — read-only local web UI; bound to `127.0.0.1` with token authentication and `Content-Security-Policy` headers.
+- `checkpoint-diff.py --pager` with subprocess `shell=False` + basename allowlist for safe external pager invocation.
+
+### Changed
+- `build-session-index.py` refactored to use `SessionProvider` ABC with Phase 1 (session metadata) / Phase 2 (event content) split.
+- `watch-sessions.py` adaptive polling tiers: 5 s (active), 30 s (idle), 300 s (dormant).
+- `claude-adapter.py` backward-compatibility preserved via `ClaudeProvider` in the `providers/` package.
+
+### Security
+- `checkpoint-diff.py --pager`: `shell=False` + basename allowlist prevents RCE via hostile `$PAGER` environment variable.
+- `browse.py`: bound to `127.0.0.1` only; token auth on every request; `Content-Security-Policy` blocks inline scripts.
+
+### Tests
+- Added `test_providers.py` (9), `test_indexing.py` (7), `test_retrieval.py` (11), `test_browse.py` (26), `test_diff_viewer.py` (19). All 83 new tests pass.
+
 ## [1.1.0] - 2026-04-18
 
 ### Added
