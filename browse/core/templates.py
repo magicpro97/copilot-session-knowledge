@@ -29,10 +29,13 @@ def base_page(
 
     FROZEN after W0 — do not add fields without bumping TEMPLATE_VERSION.
     """
+    import json as _json
     from browse.core.fts import _esc
+    from browse.core import palette as _palette
 
     title_esc = _esc(title)
     tok_qs = f"?token={_esc(token)}" if token else ""
+    _global_cmds_json = _json.dumps(_palette.get_global_commands(), separators=(",", ":"))
 
     parts = [
         "<!DOCTYPE html>",
@@ -63,6 +66,8 @@ def base_page(
         f'<script nonce="{nonce}" src="/static/vendor/ninja-keys.min.js"></script>',
         f'<script nonce="{nonce}" src="/static/js/app.js"></script>',
         body_scripts,
+        f'<script nonce="{nonce}">window.__paletteCommands = window.__paletteCommands.concat({_global_cmds_json});</script>',
+        f'<script nonce="{nonce}" src="/static/js/palette.js"></script>',
         "</body>",
         "</html>",
     ]

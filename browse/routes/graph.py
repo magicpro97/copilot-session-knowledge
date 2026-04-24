@@ -140,6 +140,10 @@ def _build_graph_data(db, wing: str, room: str, kind: str, limit: int) -> dict:
             edges.append({"source": src_id, "target": tgt_id, "relation": pred})
 
     nodes.extend(entity_nodes.values())
+    # Re-cap total nodes and update truncated flag if entity nodes pushed us over.
+    if len(nodes) > _NODE_CAP:
+        nodes = nodes[:_NODE_CAP]
+        truncated = True
     return {"nodes": nodes, "edges": edges, "truncated": truncated}
 
 

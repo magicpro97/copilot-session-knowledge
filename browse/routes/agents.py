@@ -210,7 +210,8 @@ def handle_session_agents(db, params, token, nonce, session_id: str = "") -> tup
         f"</div>\n"
     )
 
-    graph_json = json.dumps(graph, ensure_ascii=False)
+    # Escape </ to prevent </script> breakout; JSON.parse still works.
+    graph_json = json.dumps(graph, ensure_ascii=False).replace("</", "<\\/")
     body_scripts = (
         f'<script nonce="{nonce}" src="/static/vendor/dagre.min.js"></script>\n'
         f'<script nonce="{nonce}" src="/static/vendor/cytoscape.min.js"></script>\n'

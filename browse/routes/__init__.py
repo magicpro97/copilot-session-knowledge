@@ -15,5 +15,8 @@ from browse.routes import session_detail  # noqa: F401
 from browse.routes import search  # noqa: F401
 from browse.routes import search_api  # noqa: F401
 from browse.routes import agents  # noqa: F401
+from browse.routes import dashboard  # noqa: F401
+from browse.routes import diff  # noqa: F401
+from browse.routes import mindmap  # noqa: F401
 from browse.routes import timeline  # noqa: F401
 from browse.routes import graph  # noqa: F401
