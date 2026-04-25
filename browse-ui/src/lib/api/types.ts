@@ -174,7 +174,8 @@ export interface EmbeddingPoint {
 
 export interface EmbeddingProjection {
   points: EmbeddingPoint[];
-  method: string;
+  count: number;
+  cached: boolean;
 }
 
 // ── Live (/api/live  — SSE) ─────────────────────────────────────────

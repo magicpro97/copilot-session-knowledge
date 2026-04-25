@@ -154,7 +154,8 @@ export const embeddingPointSchema = z.object({
 
 export const embeddingProjectionSchema = z.object({
   points: z.array(embeddingPointSchema),
-  method: z.string(),
+  count: z.number().int().nonnegative(),
+  cached: z.boolean(),
 });
 
 export const liveEventSchema = z.object({

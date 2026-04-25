@@ -45,13 +45,20 @@ export type SearchQueryParams = {
   cols?: string[];
 };
 
+export type GraphQueryParams = {
+  wing?: string[];
+  room?: string[];
+  kind?: string[];
+  limit?: number;
+};
+
 export const queryKeys = {
   sessions: (params: SessionsQueryParams = {}) => ["sessions", params] as const,
   sessionDetail: (sessionId: string) => ["session-detail", sessionId] as const,
   search: (params: SearchQueryParams) => ["search", params] as const,
   health: () => ["health"] as const,
   dashboard: () => ["dashboard"] as const,
-  graph: () => ["graph"] as const,
+  graph: (params: GraphQueryParams = {}) => ["graph", params] as const,
   embeddings: () => ["embeddings"] as const,
   eval: () => ["eval"] as const,
   compare: (a: string, b: string) => ["compare", a, b] as const,
@@ -89,6 +96,32 @@ export function createArrayQueryString(
   }
   const serialized = params.toString();
   return serialized ? `?${serialized}` : "";
+}
+
+function normalizeListParam(values?: string[]): string[] | undefined {
+  if (!values?.length) return undefined;
+  const normalized = Array.from(
+    new Set(
+      values
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+    )
+  ).sort((a, b) => a.localeCompare(b));
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeGraphParams(params: GraphQueryParams = {}): GraphQueryParams {
+  const normalizedLimit =
+    typeof params.limit === "number" && Number.isFinite(params.limit)
+      ? Math.max(1, Math.floor(params.limit))
+      : undefined;
+
+  return {
+    wing: normalizeListParam(params.wing),
+    room: normalizeListParam(params.room),
+    kind: normalizeListParam(params.kind),
+    limit: normalizedLimit,
+  };
 }
 
 export function normalizeSessionsResponse(
@@ -193,13 +226,26 @@ export function useDashboard() {
   });
 }
 
-export function useGraph() {
+export function useGraph(params: GraphQueryParams = {}) {
+  const normalizedParams = normalizeGraphParams(params);
+  const graphFiltersQueryString = createArrayQueryString({
+    wing: normalizedParams.wing,
+    room: normalizedParams.room,
+    kind: normalizedParams.kind,
+  });
+  const graphLimitQueryString = createQueryString({ limit: normalizedParams.limit });
+  const graphQueryString = graphFiltersQueryString
+    ? `${graphFiltersQueryString}${graphLimitQueryString ? `&${graphLimitQueryString.slice(1)}` : ""}`
+    : graphLimitQueryString;
+
   return useQuery({
-    queryKey: queryKeys.graph(),
+    queryKey: queryKeys.graph(normalizedParams),
     staleTime: STALE_TIMES.graph,
     gcTime: CACHE_TIMES.graph,
     queryFn: async (): Promise<GraphResponse> => {
-      const data = await apiFetch<GraphResponse>(withLeadingSlash("/api/graph"));
+      const data = await apiFetch<GraphResponse>(
+        withLeadingSlash(`/api/graph${graphQueryString}`)
+      );
       return graphResponseSchema.parse(data);
     },
   });

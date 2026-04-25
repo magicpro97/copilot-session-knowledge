@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `browse-ui/` — Phase 8 feature delivery:
+  - `/v2/insights` dashboard tab with KPI tiles, area/bar/donut charts, red-flag sessions table, and eval section.
+  - `/v2/insights` live feed tab with SSE streaming, pause/resume controls (intentional drop-on-pause semantics), and connection-status badge.
+  - `/v2/graph` relationships tab with force-directed canvas, entity/category filters, and node detail panel.
+  - `/v2/graph` clusters tab with 2-D scatter canvas, category filtering, legend/point selection, and projection-unavailable handling.
+- `browse-ui/` — Phase 8 integrated acceptance:
+  - `/v2/graph` now mounts `ClustersTab` from `graph/page.tsx` so the shipped clusters view is reachable.
+  - `/v2/insights` now mounts `LiveTab` from `insights/layout.tsx` and enables the live tab.
+  - Docs alignment for shipped status: updated Phase 8 notes and corrected phase mapping in `browse-ui/README.md` (Search remains Phase 7).
 - `browse-ui/` — Phase 7 acceptance slice:
   - Foundation layer for v2 UI (shared hooks, schemas, formatters, layout/data primitives, charts, and command wiring)
   - `/v2/sessions` sessions list with client-side filter/sort/pagination and keyboard navigation
