@@ -406,6 +406,30 @@ def run_all_tests() -> int:
     var_y = sum((v - mean_ys) ** 2 for v in ys) / len(ys)
     test("T9: PC1 captures most variance (var_x > var_y)", var_x > var_y)
 
+    # ── T10: /api/embeddings/points contract remains stable ───────────────────
+    print("\n-- T10: embeddings API contract freeze")
+    cache10 = _TEST_CACHE_DIR / "t10.json"
+    _cleanup_cache(cache10)
+    _override_cache(cache10)
+    db = _make_test_db()
+    server, host, port = _start_server(db, token="tok")
+    try:
+        status, hdrs, body = _get(host, port, "/api/embeddings/points?token=tok")
+        data = json.loads(body)
+        test("T10: endpoint returns 200", status == 200)
+        test("T10: content-type JSON", "application/json" in hdrs.get("content-type", ""))
+        test("T10: top-level keys frozen to points/count/cached",
+             set(data.keys()) == {"points", "count", "cached"})
+        if data.get("points"):
+            point0 = data["points"][0]
+            test(
+                "T10: point contract keeps orientation fields",
+                {"id", "x", "y", "category", "title"}.issubset(set(point0.keys())),
+            )
+    finally:
+        server.shutdown()
+        _cleanup_cache(cache10)
+
     # ── Cleanup ───────────────────────────────────────────────────────────────
     try:
         if _TEST_CACHE_DIR.exists():

@@ -157,6 +157,10 @@ def _find_v2_chunk_with_double_dot_js() -> str:
     return f"_next/static/chunks/{matches[0].name}"
 
 
+def _v2_dist_path(*parts: str) -> Path:
+    return Path(__file__).parent / "browse-ui" / "dist" / Path(*parts)
+
+
 def run_all_tests() -> int:
     print("=== test_browse_v2_runtime.py ===")
 
@@ -306,6 +310,47 @@ def run_all_tests() -> int:
     except OSError as exc:
         raised_unrelated = exc.errno == errno.EINVAL
     test("V6: unrelated OSError still raises", raised_unrelated)
+
+    # V7: Real session UUID route serves session detail placeholder shell (not root index)
+    print("\n-- V7: /v2/sessions/{uuid}/ serves placeholder session shell")
+    db7 = _make_test_db()
+    server7, host7, port7 = _start_server(db7, token="tok")
+    try:
+        status7, headers7, body7 = _get(host7, port7, "/v2/sessions/v2-test-session/?token=tok")
+        test("V7: /v2/sessions/{uuid}/ returns 200", status7 == 200)
+        test(
+            "V7: /v2/sessions/{uuid}/ is HTML",
+            headers7.get("content-type", "").startswith("text/html"),
+        )
+        placeholder_html = _v2_dist_path("sessions", "_placeholder", "index.html").read_bytes()
+        root_html = _v2_dist_path("index.html").read_bytes()
+        test("V7: body matches sessions/_placeholder/index.html", body7 == placeholder_html)
+        test("V7: body is not root dist/index.html", body7 != root_html)
+    finally:
+        server7.shutdown()
+        db7.close()
+
+    # V8: Real session UUID RSC payload falls back to placeholder payload
+    print("\n-- V8: /v2/sessions/{uuid}/__next.* payload serves placeholder file")
+    db8 = _make_test_db()
+    server8, host8, port8 = _start_server(db8, token="tok")
+    try:
+        payload_path = "/v2/sessions/v2-test-session/__next.sessions.$d$id.__PAGE__.txt?token=tok"
+        status8, headers8, body8 = _get(host8, port8, payload_path)
+        test("V8: session detail payload returns 200", status8 == 200)
+        test(
+            "V8: session detail payload uses text/plain",
+            headers8.get("content-type", "").startswith("text/plain"),
+        )
+        placeholder_payload = _v2_dist_path(
+            "sessions", "_placeholder", "__next.sessions.$d$id.__PAGE__.txt"
+        ).read_bytes()
+        root_html8 = _v2_dist_path("index.html").read_bytes()
+        test("V8: body matches placeholder payload", body8 == placeholder_payload)
+        test("V8: payload is not root HTML", body8 != root_html8)
+    finally:
+        server8.shutdown()
+        db8.close()
 
     print(f"\n{'='*50}")
     total = _PASS + _FAIL

@@ -31,6 +31,25 @@ _CT: dict = {
 }
 
 
+def _content_type(path: Path) -> str:
+    return _CT.get(path.suffix.lower(), "application/octet-stream")
+
+
+def _session_placeholder_fallback_paths(rel_path: str) -> list[Path]:
+    parts = Path(rel_path).parts
+    if len(parts) < 2 or parts[0] != "sessions" or parts[1] == "_placeholder":
+        return []
+
+    placeholder_base = _V2_DIST / "sessions" / "_placeholder"
+    suffix_parts = list(parts[2:])
+    fallback_paths: list[Path] = []
+
+    if suffix_parts:
+        fallback_paths.append(placeholder_base.joinpath(*suffix_parts))
+    fallback_paths.append(placeholder_base / "index.html")
+    return fallback_paths
+
+
 def serve_v2(rel_path: str) -> tuple:
     """Serve files from browse-ui/dist/ with SPA fallback.
 
@@ -59,9 +78,17 @@ def serve_v2(rel_path: str) -> tuple:
 
     # Serve exact file first (JS/CSS/fonts/_next assets)
     if candidate.is_file():
-        ext = candidate.suffix.lower()
-        ct = _CT.get(ext, "application/octet-stream")
-        return candidate.read_bytes(), ct, 200
+        return candidate.read_bytes(), _content_type(candidate), 200
+
+    # Dynamic session detail fallback: /sessions/{id}/... -> /sessions/_placeholder/...
+    for try_path in _session_placeholder_fallback_paths(rel_path):
+        resolved = try_path.resolve()
+        try:
+            resolved.relative_to(_V2_DIST)
+        except ValueError:
+            continue
+        if resolved.is_file():
+            return resolved.read_bytes(), _content_type(resolved), 200
 
     # SPA fallback: try {rel_path}/index.html, then {rel_path}.html, then dist/index.html
     for try_path in [

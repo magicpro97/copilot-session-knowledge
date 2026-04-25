@@ -138,10 +138,41 @@ export const graphEdgeSchema = z.object({
   relation: z.string(),
 });
 
-export const graphResponseSchema = z.object({
+export const graphLegacyResponseSchema = z.object({
   nodes: z.array(graphNodeSchema),
   edges: z.array(graphEdgeSchema),
   truncated: z.boolean(),
+});
+
+export const graphResponseSchema = graphLegacyResponseSchema;
+
+export const evidenceRelationTypeSchema = z.enum([
+  "SAME_SESSION",
+  "RESOLVED_BY",
+  "TAG_OVERLAP",
+  // Keep SAME_TOPIC visible in contract, but UI must gate by data presence.
+  "SAME_TOPIC",
+]);
+
+export const evidenceRelationTypeValueSchema = z.string();
+
+export const evidenceEdgeSchema = z.object({
+  source: z.string(),
+  target: z.string(),
+  relation_type: evidenceRelationTypeValueSchema,
+  confidence: z.number(),
+});
+
+export const evidenceGraphMetaSchema = z.object({
+  edge_source: z.string(),
+  relation_types: z.array(evidenceRelationTypeValueSchema),
+});
+
+export const evidenceGraphResponseSchema = z.object({
+  nodes: z.array(graphNodeSchema),
+  edges: z.array(evidenceEdgeSchema),
+  truncated: z.boolean(),
+  meta: evidenceGraphMetaSchema.optional(),
 });
 
 export const embeddingPointSchema = z.object({
@@ -156,6 +187,61 @@ export const embeddingProjectionSchema = z.object({
   points: z.array(embeddingPointSchema),
   count: z.number().int().nonnegative(),
   cached: z.boolean(),
+});
+
+export const similarityNeighborSchema = z.object({
+  id: z.number(),
+  title: z.string(),
+  category: z.string(),
+  score: z.number(),
+});
+
+export const similarityNeighborsByEntrySchema = z.object({
+  entry_id: z.number(),
+  neighbors: z.array(similarityNeighborSchema),
+});
+
+export const similarityResponseSchema = z.object({
+  results: z.array(similarityNeighborsByEntrySchema),
+  meta: z
+    .object({
+      method: z.string().optional(),
+      k: z.number().optional(),
+    })
+    .passthrough()
+    .optional(),
+});
+
+export const communityTopCountSchema = z.object({
+  name: z.string(),
+  count: z.number(),
+});
+
+export const communityRepresentativeEntrySchema = z.object({
+  id: z.number(),
+  title: z.string(),
+  category: z.string(),
+});
+
+export const communitySummarySchema = z.object({
+  id: z.string(),
+  label: z.string().optional(),
+  entry_count: z.number(),
+  wings: z.array(z.string()).optional(),
+  top_categories: z.array(communityTopCountSchema),
+  top_relation_types: z
+    .array(
+      z.object({
+        type: evidenceRelationTypeValueSchema,
+        count: z.number(),
+      })
+    )
+    .optional(),
+  representative_entries: z.array(communityRepresentativeEntrySchema),
+});
+
+export const communitiesResponseSchema = z.object({
+  communities: z.array(communitySummarySchema),
 });
 
 export const liveEventSchema = z.object({

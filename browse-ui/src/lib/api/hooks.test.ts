@@ -59,5 +59,16 @@ describe("api hooks helpers", () => {
   it("builds stable query keys", () => {
     expect(queryKeys.sessionDetail("abc")).toEqual(["session-detail", "abc"]);
     expect(queryKeys.health()).toEqual(["health"]);
+    expect(queryKeys.graph({ wing: ["alpha"], limit: 10 })).toEqual([
+      "graph",
+      { wing: ["alpha"], limit: 10 },
+    ]);
+    expect(queryKeys.graphLegacy({ wing: ["alpha"], limit: 10 })).toEqual([
+      "graph-legacy",
+      { wing: ["alpha"], limit: 10 },
+    ]);
+    expect(queryKeys.graph({ wing: ["alpha"], limit: 10 })).not.toEqual(
+      queryKeys.graphLegacy({ wing: ["alpha"], limit: 10 })
+    );
   });
 });

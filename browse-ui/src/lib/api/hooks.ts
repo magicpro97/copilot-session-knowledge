@@ -6,7 +6,9 @@ import { CACHE_TIMES, DEFAULT_PAGE_SIZE, STALE_TIMES } from "@/lib/constants";
 import { apiFetch } from "@/lib/api/client";
 import {
   compareResponseSchema,
+  communitiesResponseSchema,
   dashboardStatsSchema,
+  evidenceGraphResponseSchema,
   embeddingProjectionSchema,
   evalResponseSchema,
   graphResponseSchema,
@@ -14,16 +16,21 @@ import {
   searchResponseSchema,
   sessionDetailResponseSchema,
   sessionListResponseSchema,
+  similarityResponseSchema,
   sessionsResponseSchema,
 } from "@/lib/api/schemas";
 import type {
   CompareResponse,
+  CommunitiesResponse,
   DashboardStats,
+  EvidenceGraphResponse,
+  EvidenceRelationType,
   EmbeddingProjection,
   EvalResponse,
   GraphResponse,
   HealthResponse,
   SearchResponse,
+  SimilarityResponse,
   SessionDetailResponse,
   SessionListResponse,
   SessionsResponse,
@@ -52,13 +59,28 @@ export type GraphQueryParams = {
   limit?: number;
 };
 
+export type EvidenceGraphQueryParams = GraphQueryParams & {
+  relation_type?: EvidenceRelationType[];
+};
+
+export type SimilarityQueryParams = Record<
+  string,
+  string | number | boolean | Array<string | number | boolean> | null | undefined
+>;
+
 export const queryKeys = {
   sessions: (params: SessionsQueryParams = {}) => ["sessions", params] as const,
   sessionDetail: (sessionId: string) => ["session-detail", sessionId] as const,
   search: (params: SearchQueryParams) => ["search", params] as const,
   health: () => ["health"] as const,
   dashboard: () => ["dashboard"] as const,
+  graphLegacy: (params: GraphQueryParams = {}) => ["graph-legacy", params] as const,
   graph: (params: GraphQueryParams = {}) => ["graph", params] as const,
+  graphEvidence: (params: EvidenceGraphQueryParams = {}) =>
+    ["graph-evidence", params] as const,
+  graphSimilarity: (params: SimilarityQueryParams = {}) =>
+    ["graph-similarity", params] as const,
+  graphCommunities: () => ["graph-communities"] as const,
   embeddings: () => ["embeddings"] as const,
   eval: () => ["eval"] as const,
   compare: (a: string, b: string) => ["compare", a, b] as const,
@@ -122,6 +144,39 @@ function normalizeGraphParams(params: GraphQueryParams = {}): GraphQueryParams {
     kind: normalizeListParam(params.kind),
     limit: normalizedLimit,
   };
+}
+
+const evidenceRelationTypes: readonly EvidenceRelationType[] = [
+  "SAME_SESSION",
+  "RESOLVED_BY",
+  "TAG_OVERLAP",
+  "SAME_TOPIC",
+];
+
+function normalizeEvidenceRelationTypes(
+  values?: EvidenceRelationType[]
+): EvidenceRelationType[] | undefined {
+  const normalized = normalizeListParam(values) ?? [];
+  const allowed = normalized.filter((value): value is EvidenceRelationType =>
+    evidenceRelationTypes.includes(value as EvidenceRelationType)
+  );
+  return allowed.length > 0 ? allowed : undefined;
+}
+
+function createSoftQueryString(input: SimilarityQueryParams = {}): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(input)) {
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        params.append(key, String(item));
+      }
+      continue;
+    }
+    params.set(key, String(value));
+  }
+  const serialized = params.toString();
+  return serialized ? `?${serialized}` : "";
 }
 
 export function normalizeSessionsResponse(
@@ -239,7 +294,7 @@ export function useGraph(params: GraphQueryParams = {}) {
     : graphLimitQueryString;
 
   return useQuery({
-    queryKey: queryKeys.graph(normalizedParams),
+    queryKey: queryKeys.graphLegacy(normalizedParams),
     staleTime: STALE_TIMES.graph,
     gcTime: CACHE_TIMES.graph,
     queryFn: async (): Promise<GraphResponse> => {
@@ -247,6 +302,36 @@ export function useGraph(params: GraphQueryParams = {}) {
         withLeadingSlash(`/api/graph${graphQueryString}`)
       );
       return graphResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useEvidenceGraph(params: EvidenceGraphQueryParams = {}) {
+  const normalizedParams = normalizeGraphParams(params);
+  const normalizedRelationTypes = normalizeEvidenceRelationTypes(params.relation_type);
+  const graphFiltersQueryString = createArrayQueryString({
+    wing: normalizedParams.wing,
+    room: normalizedParams.room,
+    kind: normalizedParams.kind,
+    relation_type: normalizedRelationTypes,
+  });
+  const graphLimitQueryString = createQueryString({ limit: normalizedParams.limit });
+  const graphQueryString = graphFiltersQueryString
+    ? `${graphFiltersQueryString}${graphLimitQueryString ? `&${graphLimitQueryString.slice(1)}` : ""}`
+    : graphLimitQueryString;
+
+  return useQuery({
+    queryKey: queryKeys.graphEvidence({
+      ...normalizedParams,
+      relation_type: normalizedRelationTypes,
+    }),
+    staleTime: STALE_TIMES.graph,
+    gcTime: CACHE_TIMES.graph,
+    queryFn: async (): Promise<EvidenceGraphResponse> => {
+      const data = await apiFetch<EvidenceGraphResponse>(
+        withLeadingSlash(`/api/graph/evidence${graphQueryString}`)
+      );
+      return evidenceGraphResponseSchema.parse(data);
     },
   });
 }
@@ -261,6 +346,40 @@ export function useEmbeddings() {
         withLeadingSlash("/api/embeddings/points")
       );
       return embeddingProjectionSchema.parse(data);
+    },
+  });
+}
+
+export function useSimilarity(
+  params: SimilarityQueryParams = {},
+  enabled = true
+) {
+  const queryString = createSoftQueryString(params);
+  return useQuery({
+    queryKey: queryKeys.graphSimilarity(params),
+    staleTime: STALE_TIMES.graph,
+    gcTime: CACHE_TIMES.graph,
+    enabled,
+    queryFn: async (): Promise<SimilarityResponse> => {
+      const data = await apiFetch<SimilarityResponse>(
+        withLeadingSlash(`/api/graph/similarity${queryString}`)
+      );
+      return similarityResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useCommunities(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.graphCommunities(),
+    staleTime: STALE_TIMES.graph,
+    gcTime: CACHE_TIMES.graph,
+    enabled,
+    queryFn: async (): Promise<CommunitiesResponse> => {
+      const data = await apiFetch<CommunitiesResponse>(
+        withLeadingSlash("/api/graph/communities")
+      );
+      return communitiesResponseSchema.parse(data);
     },
   });
 }

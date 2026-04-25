@@ -21,7 +21,7 @@ After `git pull`, auto-update analyzes `git diff` to run only what changed:
 |---|---|
 | Python scripts (`*.py`) | Restart services |
 | LaunchAgent templates (`launchd/`) | Reinstall LaunchAgents |
-| `skills/` or `templates/` | Redeploy session-knowledge SKILL (`templates/SKILL.md`), update built-in skill bodies + assets for all skills in `BUILTIN_PROJECT_SKILLS` (e.g. `forge-ecosystem`) and vendored skills (e.g. `karpathy-guidelines`) to already-deployed **project** destinations, and update already-installed **global** `~/.copilot/skills/<name>/` entries (vendored skills only) |
+| `skills/` or `templates/` | Redeploy session-knowledge SKILL (`templates/SKILL.md`), update built-in skill bodies + assets for all skills in `BUILTIN_PROJECT_SKILLS` (e.g. `forge-ecosystem`) and vendored skills (e.g. `karpathy-guidelines`) to already-deployed **project** destinations, and refresh already-installed **global Copilot CLI** `~/.copilot/skills/<name>/` entries for vendored + built-in skills |
 | Embedding logic | Rebuild embeddings (background) |
 | `auto-update-tools.py` itself | Self-exec with new code |
 | Hook templates (`hooks/references/`) | Detected only — no auto-deploy (templates are copied manually) |
@@ -31,22 +31,25 @@ After `git pull`, auto-update analyzes `git diff` to run only what changed:
 > covered by the `*.py` detection rule — the watcher service is restarted when they change.
 >
 > **`skills/` changes and references/:** When files under `skills/` change, auto-update calls
-> `deploy_skills()`, which does four things:
+> `deploy_skills()`, which does five things:
 > (1) updates `templates/SKILL.md` (the session-knowledge skill) in already-deployed project destinations,
 > (2) updates vendored skill bodies and asset subdirs for skills listed in `VENDORED_SKILLS`
 > (currently `karpathy-guidelines`) in already-deployed project destinations,
 > (3) updates non-vendored built-in project skill bodies and asset subdirs for skills listed in
 > `BUILTIN_PROJECT_SKILLS` (including `forge-ecosystem` and all other skills deployed by
 > `setup-project.py`) in already-deployed **Copilot CLI** project destinations (`.github/skills/<name>/`),
-> and
 > (4) updates already-installed **global Copilot CLI** skill directories at `~/.copilot/skills/<name>/`
-> for whitelisted vendored skills (currently `karpathy-guidelines`). When auto-update runs inside WSL and
+> for whitelisted vendored skills (currently `karpathy-guidelines`) using update-only behavior for directories and files,
+> and
+> (5) updates already-installed **global Copilot CLI** skill directories for `BUILTIN_PROJECT_SKILLS`
+> entries using update-only behavior for directories, while syncing missing asset files inside those already-installed dirs.
+> When auto-update runs inside WSL and
 > can resolve the current Windows user's profile, it also refreshes that Windows Copilot CLI global
 > skill directory — but only if it already exists there from a separate manual install. This is
 > **Copilot CLI scope only** —
-> `~/.claude/skills/` global installs are **not** touched by auto-update. All four operations follow an
-> **update-only, don't-create** rule — files are only updated if they already exist at the target
-> location; new deployments are never created automatically. Custom or third-party skill files not
+> `~/.claude/skills/` global installs are **not** touched by auto-update. All five operations are
+> **update-only, don't-create** at the deployment-directory level — new skill deployments are never
+> created automatically. Custom or third-party skill files not
 > listed in `BUILTIN_PROJECT_SKILLS` or `VENDORED_SKILLS` are not re-deployed by auto-update; to pick
 > up changes to those, run `setup-project.py` (or `install.py --deploy-skill`) manually in the
 > target project.
@@ -63,6 +66,10 @@ After `git pull`, auto-update analyzes `git diff` to run only what changed:
 > **Hook templates:** Files in `hooks/references/` are classified under the `hooks` category
 > but auto-update intentionally does **not** deploy them — they are manually copied at project
 > setup time via `hook-creator` or `setup-project.py`.
+>
+> **Git hook reinstall reminder:** when git-hook scripts (pre-commit/pre-push/check_subagent marker guard)
+> change, auto-update prints an action-required warning and does **not** rewrite `.git/hooks/` across repos.
+> Re-run `python3 ~/.copilot/tools/install.py --install-git-hooks` in each protected repo.
 
 ## Post-Merge Hook
 

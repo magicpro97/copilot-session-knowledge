@@ -13,7 +13,8 @@ import {
   useState,
 } from "react";
 
-import type { GraphEdge, GraphNode } from "@/lib/api/types";
+import type { GraphNode } from "@/lib/api/types";
+import { edgeColor, type GraphRelationEdge } from "@/components/data/evidence-relations";
 import { cn } from "@/lib/utils";
 
 type ForceGraphRef = {
@@ -22,7 +23,7 @@ type ForceGraphRef = {
 };
 
 type ForceGraphNode = GraphNode & { x?: number; y?: number };
-type ForceGraphEdge = GraphEdge & {
+type ForceGraphEdge = GraphRelationEdge & {
   source: string | ForceGraphNode;
   target: string | ForceGraphNode;
 };
@@ -58,7 +59,7 @@ export type GraphCanvasHandle = {
 
 type GraphCanvasProps = {
   nodes: GraphNode[];
-  edges: GraphEdge[];
+  edges: GraphRelationEdge[];
   selectedNodeId?: string | null;
   className?: string;
   onNodeSelect?: (node: GraphNode) => void;
@@ -86,8 +87,10 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       if (!selectedNodeId) return new Set<string>();
       const next = new Set<string>([selectedNodeId]);
       for (const edge of edges) {
-        if (edge.source === selectedNodeId) next.add(edge.target);
-        if (edge.target === selectedNodeId) next.add(edge.source);
+        const sourceId = resolveNodeId(edge.source as string | ForceGraphNode);
+        const targetId = resolveNodeId(edge.target as string | ForceGraphNode);
+        if (sourceId === selectedNodeId) next.add(targetId);
+        if (targetId === selectedNodeId) next.add(sourceId);
       }
       return next;
     }, [edges, selectedNodeId]);
@@ -151,20 +154,26 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
             }}
             linkColor={(link) => {
               const typed = link as ForceGraphEdge;
-              if (!selectedNodeId) return "rgba(148, 163, 184, 0.45)";
               const sourceId = resolveNodeId(typed.source);
               const targetId = resolveNodeId(typed.target);
-              if (sourceId === selectedNodeId || targetId === selectedNodeId) {
-                return "rgba(99, 102, 241, 0.75)";
-              }
-              return "rgba(148, 163, 184, 0.2)";
+              const isConnected =
+                Boolean(selectedNodeId) &&
+                (sourceId === selectedNodeId || targetId === selectedNodeId);
+
+              if (!selectedNodeId) return edgeColor(typed, 0.45);
+              return edgeColor(typed, isConnected ? 0.85 : 0.18, "rgba(148, 163, 184, 0.2)");
             }}
             linkWidth={(link) => {
               const typed = link as ForceGraphEdge;
-              if (!selectedNodeId) return 1;
               const sourceId = resolveNodeId(typed.source);
               const targetId = resolveNodeId(typed.target);
-              return sourceId === selectedNodeId || targetId === selectedNodeId ? 2 : 0.8;
+              const isConnected =
+                Boolean(selectedNodeId) &&
+                (sourceId === selectedNodeId || targetId === selectedNodeId);
+              const confidence = "confidence" in typed ? typed.confidence : 0;
+              const baseWidth = 1 + confidence;
+              if (!selectedNodeId) return baseWidth;
+              return isConnected ? baseWidth + 0.8 : 0.8;
             }}
             nodeLabel={(node) => {
               const typed = node as GraphNode;

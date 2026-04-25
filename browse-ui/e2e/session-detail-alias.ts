@@ -1,6 +1,6 @@
 import type { Page, Route } from "@playwright/test";
 
-const SEEDED_SESSION_ID = "e2e-session-0001-abcdef";
+export const SEEDED_SESSION_ID = "e2e-session-0001-abcdef";
 
 async function proxyToSessionId(route: Route, sessionId: string): Promise<void> {
   const requestUrl = new URL(route.request().url());
@@ -17,4 +17,11 @@ export async function aliasPlaceholderSession(page: Page): Promise<string> {
     proxyToSessionId(route, SEEDED_SESSION_ID)
   );
   return SEEDED_SESSION_ID;
+}
+
+export async function assertSeededSessionAvailable(page: Page): Promise<void> {
+  const response = await page.request.get(`/api/sessions/${encodeURIComponent(SEEDED_SESSION_ID)}`);
+  if (!response.ok()) {
+    throw new Error(`Missing seeded session fixture: ${SEEDED_SESSION_ID} (${response.status()})`);
+  }
 }

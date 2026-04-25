@@ -17,6 +17,10 @@ test("settings shortcuts card visual snapshot", async ({ page }) => {
 });
 
 test("command palette visual snapshot", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.removeItem("browse-ui-recent-commands");
+    window.localStorage.removeItem("browse-ui-recent-searches");
+  });
   await page.goto("/v2/sessions/");
   await expect(page.getByRole("heading", { level: 1, name: "Sessions" })).toBeVisible({
     timeout: 20_000,
@@ -38,11 +42,14 @@ test("graph tabs visual snapshot", async ({ page }) => {
   await expect(page.getByRole("heading", { level: 1, name: "Graph" })).toBeVisible({
     timeout: 20_000,
   });
-  const tabsContainer = page
-    .getByText("Relationships", { exact: true })
-    .locator("xpath=ancestor::div[1]");
-  await expect(tabsContainer).toBeVisible();
-  await expect(tabsContainer).toHaveScreenshot("graph-tabs.png", {
+  const tabsList = page.getByRole("tablist");
+  await expect(tabsList).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Evidence" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Similarity" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Communities" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Relationships" })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "Clusters" })).toHaveCount(0);
+  await expect(tabsList).toHaveScreenshot("graph-tabs.png", {
     animations: "disabled",
     caret: "hide",
   });

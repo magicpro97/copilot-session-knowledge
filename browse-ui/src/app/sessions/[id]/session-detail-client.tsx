@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useParams, usePathname } from "next/navigation";
 import { Download, GitCompare, Loader2 } from "lucide-react";
 
 import { Breadcrumbs } from "@/components/layout/breadcrumbs";
@@ -20,6 +20,7 @@ import { formatNumber, formatSessionIdBadgeText } from "@/lib/formatters";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 
 type SessionTab = "overview" | "timeline" | "mindmap" | "checkpoints";
+const PLACEHOLDER_SESSION_ID = "_placeholder";
 
 function hashToTab(hash: string): SessionTab | null {
   const cleaned = hash.replace(/^#/, "").toLowerCase();
@@ -30,9 +31,47 @@ function hashToTab(hash: string): SessionTab | null {
   return null;
 }
 
+function safeDecodeSegment(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function sessionIdFromPathname(pathname: string | null): string {
+  if (!pathname) return "";
+  const parts = pathname.split("/").filter(Boolean);
+  const sessionsIndex = parts.lastIndexOf("sessions");
+  if (sessionsIndex < 0) return "";
+  const rawId = parts[sessionsIndex + 1];
+  return rawId ? safeDecodeSegment(rawId) : "";
+}
+
+function sessionIdFromHref(href: string | null): string {
+  if (!href) return "";
+  try {
+    const url = new URL(href, "http://localhost");
+    return sessionIdFromPathname(url.pathname);
+  } catch {
+    return "";
+  }
+}
+
 export function SessionDetailClient() {
   const params = useParams<{ id: string }>();
-  const sessionId = params.id ?? "";
+  const pathname = usePathname();
+  const sessionId = useMemo(() => {
+    const routeSessionId = safeDecodeSegment(params.id ?? "");
+    const browserSessionId =
+      typeof window === "undefined" ? "" : sessionIdFromHref(window.location.href);
+    if (browserSessionId) return browserSessionId;
+    if (routeSessionId && routeSessionId !== PLACEHOLDER_SESSION_ID) return routeSessionId;
+    const browserPathname = typeof window === "undefined" ? null : window.location.pathname;
+    const pathnameSessionId = sessionIdFromPathname(browserPathname ?? pathname);
+    if (pathnameSessionId && pathnameSessionId !== PLACEHOLDER_SESSION_ID) return pathnameSessionId;
+    return routeSessionId || pathnameSessionId;
+  }, [params.id, pathname]);
 
   const [activeTab, setActiveTab] = useState<SessionTab>("overview");
   const [compareOpen, setCompareOpen] = useState(false);

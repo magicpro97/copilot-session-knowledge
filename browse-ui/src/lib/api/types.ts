@@ -138,7 +138,7 @@ export interface DashboardStats {
   top_modules: ModuleCount[];
 }
 
-// ── Graph (/api/graph) ──────────────────────────────────────────────
+// ── Legacy Graph (/api/graph) ───────────────────────────────────────
 
 export interface GraphNode {
   id: string;
@@ -156,10 +156,43 @@ export interface GraphEdge {
   relation: string;
 }
 
-export interface GraphResponse {
+export interface GraphResponseLegacy {
   nodes: GraphNode[];
   edges: GraphEdge[];
   truncated: boolean;
+}
+
+export type GraphResponse = GraphResponseLegacy;
+
+// ── Evidence Graph (/api/graph/evidence) ────────────────────────────
+
+export type EvidenceRelationType =
+  | "SAME_SESSION"
+  | "RESOLVED_BY"
+  | "TAG_OVERLAP"
+  // Keep SAME_TOPIC explicit but gated by runtime data presence.
+  | "SAME_TOPIC";
+
+// Runtime payloads can include relation types outside canonical literals.
+export type EvidenceRelationTypeValue = EvidenceRelationType | (string & {});
+
+export interface EvidenceEdge {
+  source: string;
+  target: string;
+  relation_type: EvidenceRelationTypeValue;
+  confidence: number;
+}
+
+export interface EvidenceGraphMeta {
+  edge_source: string;
+  relation_types: EvidenceRelationTypeValue[];
+}
+
+export interface EvidenceGraphResponse {
+  nodes: GraphNode[];
+  edges: EvidenceEdge[];
+  truncated: boolean;
+  meta?: EvidenceGraphMeta;
 }
 
 // ── Embeddings (/api/embeddings/points) ──────────────────────────────
@@ -176,6 +209,57 @@ export interface EmbeddingProjection {
   points: EmbeddingPoint[];
   count: number;
   cached: boolean;
+}
+
+// ── Similarity (/api/graph/similarity) ───────────────────────────────
+// Request shape intentionally soft until backend tentacle freezes it.
+
+export interface SimilarityNeighbor {
+  id: number;
+  title: string;
+  category: string;
+  score: number;
+}
+
+export interface SimilarityNeighborsByEntry {
+  entry_id: number;
+  neighbors: SimilarityNeighbor[];
+}
+
+export interface SimilarityResponse {
+  results: SimilarityNeighborsByEntry[];
+  meta?: {
+    method?: string;
+    k?: number;
+    [key: string]: unknown;
+  };
+}
+
+// ── Communities (/api/graph/communities) ─────────────────────────────
+
+export interface CommunityTopCount {
+  name: string;
+  count: number;
+}
+
+export interface CommunityRepresentativeEntry {
+  id: number;
+  title: string;
+  category: string;
+}
+
+export interface CommunitySummary {
+  id: string;
+  label?: string;
+  entry_count: number;
+  wings?: string[];
+  top_categories: CommunityTopCount[];
+  top_relation_types?: Array<{ type: EvidenceRelationTypeValue; count: number }>;
+  representative_entries: CommunityRepresentativeEntry[];
+}
+
+export interface CommunitiesResponse {
+  communities: CommunitySummary[];
 }
 
 // ── Live (/api/live  — SSE) ─────────────────────────────────────────

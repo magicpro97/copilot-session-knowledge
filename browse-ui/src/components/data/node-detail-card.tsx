@@ -2,16 +2,33 @@
 
 import { ExternalLink } from "lucide-react";
 
-import type { GraphNode } from "@/lib/api/types";
+import type { EvidenceEdge, GraphNode } from "@/lib/api/types";
+import {
+  formatConfidence,
+  relationTypeColor,
+  relationTypeLabel,
+} from "@/components/data/evidence-relations";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
+export type ConnectedEvidenceItem = {
+  edge: EvidenceEdge;
+  node: GraphNode;
+};
+
 type NodeDetailCardProps = {
   node: GraphNode;
+  connectedEvidence?: ConnectedEvidenceItem[];
+  onSelectRelatedNode?: (node: GraphNode) => void;
   onOpenSearch: (node: GraphNode) => void;
 };
 
-export function NodeDetailCard({ node, onOpenSearch }: NodeDetailCardProps) {
+export function NodeDetailCard({
+  node,
+  connectedEvidence = [],
+  onSelectRelatedNode,
+  onOpenSearch,
+}: NodeDetailCardProps) {
   return (
     <Card>
       <CardHeader className="space-y-1">
@@ -44,6 +61,42 @@ export function NodeDetailCard({ node, onOpenSearch }: NodeDetailCardProps) {
             <p>{node.room}</p>
           </div>
         ) : null}
+
+        <div className="space-y-2">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Evidence links</p>
+          {connectedEvidence.length > 0 ? (
+            <ul className="space-y-2">
+              {connectedEvidence.map(({ edge, node: relatedNode }) => (
+                <li key={`${edge.source}:${edge.target}:${edge.relation_type}`} className="rounded-md border p-2">
+                  <div className="flex items-start gap-2">
+                    <span
+                      className="mt-1 inline-block size-2 rounded-full"
+                      style={{ backgroundColor: relationTypeColor(edge.relation_type) }}
+                      aria-hidden
+                    />
+                    <div className="min-w-0 space-y-1">
+                      <Button
+                        type="button"
+                        variant="link"
+                        className="h-auto p-0 text-left"
+                        onClick={() => onSelectRelatedNode?.(relatedNode)}
+                      >
+                        {relatedNode.label}
+                      </Button>
+                      <p className="text-xs text-muted-foreground">
+                        {relationTypeLabel(edge.relation_type)} · confidence {formatConfidence(edge.confidence)}
+                      </p>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              No connected evidence edges for this node in the current view.
+            </p>
+          )}
+        </div>
 
         <Button type="button" variant="outline" size="sm" onClick={() => onOpenSearch(node)}>
           <ExternalLink className="size-3.5" />

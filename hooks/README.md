@@ -23,7 +23,11 @@ hooks/
     integrity.py         # integrity check rule
     session_lifecycle.py # session-end rule
     subagent_guard.py    # subagent git guard rule
-    syntax_gate.py       # [added in this release] syntax/lint gate rule
+    syntax_gate.py       # Syntax gate for Python edit/create payloads
+    block_edit_dist.py   # Blocks direct edits to browse-ui/dist/ artifacts
+    pnpm_lockfile_guard.py # Blocks commit when browse-ui/package.json staged without pnpm-lock.yaml
+    block_unsafe_html.py # Blocks dangerouslySetInnerHTML without sanitization
+    nextjs_typecheck.py  # Reminds to run pnpm typecheck after TS edits
   references/
     docs-reminder.py     # Hook template: remind to update docs after edits
 ```
@@ -44,8 +48,8 @@ All five event types are handled by `hook_runner.py`:
 |-------|---------|---------|-------|
 | `sessionStart` | `hook_runner.py sessionStart` | 20 s | Auto-briefing + integrity check |
 | `sessionEnd` | `hook_runner.py sessionEnd` | 5 s | Marker cleanup |
-| `preToolUse` | `hook_runner.py preToolUse` | 10 s | Briefing + learn + tentacle enforcement |
-| `postToolUse` | `hook_runner.py postToolUse` | 10 s | Edit tracking + reminders + suggestions |
+| `preToolUse` | `hook_runner.py preToolUse` | 10 s | Briefing/learn/tentacle + syntax/dist/lockfile/XSS guards |
+| `postToolUse` | `hook_runner.py postToolUse` | 10 s | Edit tracking + learn/test/tentacle + Next.js typecheck reminders |
 | `errorOccurred` | `hook_runner.py errorOccurred` | 10 s | KB error search |
 
 ---
@@ -61,12 +65,16 @@ All five event types are handled by `hook_runner.py`:
 | `rules/learn_gate.py` | `EnforceLearnRule` | `preToolUse` | `edit`, `create`, `bash`, `task_complete` | Blocks `git commit` / `task_complete` after ≥3 code edits without `learn.py` | Y |
 | `rules/tentacle.py` | `TentacleEnforceRule` | `preToolUse` | `edit`, `create`, `bash` | Blocks edits when ≥3 files across ≥2 modules without tentacle setup | Y |
 | `rules/subagent_guard.py` | `SubagentGitGuardRule` | `preToolUse` | `bash` | Defense-in-depth: blocks `git commit`/`git push` inside dispatched subagent | Y |
+| `rules/syntax_gate.py` | `SyntaxGateRule` | `preToolUse` | `edit`, `create` | Blocks `.py` edit/create payloads that fail `py_compile` (`SyntaxError`) | Y |
+| `rules/block_edit_dist.py` | `BlockEditDistRule` | `preToolUse` | `edit`, `create` | Blocks direct edits to `browse-ui/dist/`; requires rebuild via `pnpm build` | Y |
+| `rules/pnpm_lockfile_guard.py` | `PnpmLockfileGuardRule` | `preToolUse` | `bash` | Blocks `git commit` when `browse-ui/package.json` is staged without `browse-ui/pnpm-lock.yaml` | Y |
+| `rules/block_unsafe_html.py` | `BlockUnsafeHtmlRule` | `preToolUse` | `edit`, `create` | Blocks `dangerouslySetInnerHTML` without in-payload sanitization (`DOMPurify`/`sanitize`) | Y |
 | `rules/edit_tracker.py` | `TrackEditsRule` | `postToolUse` | `bash` | Runs `git status` after bash to detect all file writes (language-agnostic) | Y |
 | `rules/edit_tracker.py` | `TestReminderRule` | `postToolUse` | `edit`, `create`, `bash` | Reminds to run tests after ≥3 Python file edits | Y |
 | `rules/learn_reminder.py` | `LearnReminderRule` | `postToolUse` | `bash`, `task_complete` | Reminds to record learnings; creates marker when `learn.py` runs | Y |
 | `rules/tentacle.py` | `TentacleSuggestRule` | `postToolUse` | `edit`, `create`, `bash` | Suggests tentacle orchestration at ≥3 files / ≥2 modules threshold | Y |
+| `rules/nextjs_typecheck.py` | `NextjsTypecheckRule` | `postToolUse` | `edit`, `create` | Reminds to run `cd browse-ui && pnpm typecheck` after repeated TS edits | Y |
 | `rules/error_kb.py` | `ErrorKBRule` | `errorOccurred` | *(all)* | Auto-searches knowledge base for past solutions when an error fires | Y |
-| `rules/syntax_gate.py` | *(new)* | `preToolUse` | `edit, create` | Blocks `edit`/`create` on `.py` files when the post-edit content has a `SyntaxError` (uses `py_compile`) | Y |
 
 ---
 

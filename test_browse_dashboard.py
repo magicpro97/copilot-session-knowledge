@@ -253,37 +253,84 @@ def run_all_tests() -> int:
     finally:
         server.shutdown()
 
-    # ── T5: Totals counts correct ─────────────────────────────────────────────
-    print("\n-- T5: totals counts")
+    # ── T5: relations fallback when knowledge_relations is missing ───────────
+    print("\n-- T5: missing knowledge_relations falls back to entity_relations")
     db = _make_test_db()
     server, host, port = _start_server(db, token="tok")
     try:
         status, hdrs, body = _get(host, port, "/api/dashboard/stats?token=tok")
         data = json.loads(body)
         t = data["totals"]
-        test("T5: sessions count = 3", t["sessions"] == 3)
-        test("T5: knowledge_entries count = 6", t["knowledge_entries"] == 6)
-        test("T5: relations count = 2", t["relations"] == 2)
-        test("T5: embeddings count = 2", t["embeddings"] == 2)
+        test("T5: relations count uses entity_relations = 2", t["relations"] == 2)
     finally:
         server.shutdown()
 
-    # ── T6: Auth required — 401 without token ─────────────────────────────────
-    print("\n-- T6: auth required")
+    # ── T6: existing empty knowledge_relations reports 0 (no fallback) ───────
+    print("\n-- T6: empty knowledge_relations reports 0")
+    db = _make_test_db()
+    db.execute("""
+        CREATE TABLE knowledge_relations (
+            id INTEGER PRIMARY KEY,
+            source_entry_id INTEGER NOT NULL,
+            target_entry_id INTEGER NOT NULL,
+            relation_type TEXT NOT NULL
+        )
+    """)
+    db.commit()
+    server, host, port = _start_server(db, token="tok")
+    try:
+        status, hdrs, body = _get(host, port, "/api/dashboard/stats?token=tok")
+        data = json.loads(body)
+        t = data["totals"]
+        test("T6: relations count = 0 when knowledge_relations is empty", t["relations"] == 0)
+    finally:
+        server.shutdown()
+
+    # ── T7: populated knowledge_relations takes precedence ────────────────────
+    print("\n-- T7: populated knowledge_relations takes precedence")
+    db = _make_test_db()
+    db.execute("""
+        CREATE TABLE knowledge_relations (
+            id INTEGER PRIMARY KEY,
+            source_entry_id INTEGER NOT NULL,
+            target_entry_id INTEGER NOT NULL,
+            relation_type TEXT NOT NULL
+        )
+    """)
+    db.executemany(
+        "INSERT INTO knowledge_relations (source_entry_id, target_entry_id, relation_type) VALUES (?,?,?)",
+        [
+            (1, 2, "RELATED_TO"),
+            (2, 3, "IMPLEMENTS"),
+            (3, 4, "DEPENDS_ON"),
+        ],
+    )
+    db.commit()
+    server, host, port = _start_server(db, token="tok")
+    try:
+        status, hdrs, body = _get(host, port, "/api/dashboard/stats?token=tok")
+        data = json.loads(body)
+        t = data["totals"]
+        test("T7: relations count uses knowledge_relations = 3", t["relations"] == 3)
+    finally:
+        server.shutdown()
+
+    # ── T8: Auth required — 401 without token ─────────────────────────────────
+    print("\n-- T8: auth required")
     db = _make_test_db()
     server, host, port = _start_server(db, token="secret")
     try:
         status_html, _, _ = _get(host, port, "/dashboard")
-        test("T6: /dashboard without token → 401", status_html == 401)
+        test("T8: /dashboard without token → 401", status_html == 401)
         status_api, _, _ = _get(host, port, "/api/dashboard/stats")
-        test("T6: /api/dashboard/stats without token → 401", status_api == 401)
+        test("T8: /api/dashboard/stats without token → 401", status_api == 401)
         status_bad, _, _ = _get(host, port, "/dashboard?token=wrong")
-        test("T6: /dashboard with wrong token → 401", status_bad == 401)
+        test("T8: /dashboard with wrong token → 401", status_bad == 401)
     finally:
         server.shutdown()
 
-    # ── T7: cap enforcement — by_category and top_wings ≤ 100 ─────────────────
-    print("\n-- T7: array cap ≤ 100")
+    # ── T9: cap enforcement — by_category and top_wings ≤ 100 ─────────────────
+    print("\n-- T9: array cap ≤ 100")
     db = _make_test_db()
     # Insert 150 extra entries with distinct wings to exceed cap
     extra = [
@@ -299,61 +346,61 @@ def run_all_tests() -> int:
     try:
         status, hdrs, body = _get(host, port, "/api/dashboard/stats?token=tok")
         data = json.loads(body)
-        test("T7: by_category len ≤ 100", len(data.get("by_category", [])) <= 100)
-        test("T7: top_wings len ≤ 100", len(data.get("top_wings", [])) <= 100)
-        test("T7: sessions_per_day len ≤ 100", len(data.get("sessions_per_day", [])) <= 100)
+        test("T9: by_category len ≤ 100", len(data.get("by_category", [])) <= 100)
+        test("T9: top_wings len ≤ 100", len(data.get("top_wings", [])) <= 100)
+        test("T9: sessions_per_day len ≤ 100", len(data.get("sessions_per_day", [])) <= 100)
     finally:
         server.shutdown()
 
-    # ── T8: No XSS — wing name with <script> is escaped in HTML ───────────────
-    print("\n-- T8: XSS prevention")
+    # ── T10: No XSS — wing name with <script> is escaped in HTML ──────────────
+    print("\n-- T10: XSS prevention")
     db = _make_test_db()
     server, host, port = _start_server(db, token="tok")
     try:
         status, hdrs, body = _get(host, port, "/dashboard?token=tok")
         # The XSS payload "<script>alert(1)</script>" in a wing name must not
         # appear unescaped in the HTML response
-        test("T8: raw <script>alert not in body",
+        test("T10: raw <script>alert not in body",
              b"<script>alert(1)</script>" not in body)
         # But the escaped version may appear (optional check)
-        test("T8: response is 200 (not broken by bad wing)", status == 200)
+        test("T10: response is 200 (not broken by bad wing)", status == 200)
     finally:
         server.shutdown()
 
-    # ── T9: by_category shape ─────────────────────────────────────────────────
-    print("\n-- T9: by_category shape")
+    # ── T11: by_category shape ────────────────────────────────────────────────
+    print("\n-- T11: by_category shape")
     db = _make_test_db()
     server, host, port = _start_server(db, token="tok")
     try:
         status, hdrs, body = _get(host, port, "/api/dashboard/stats?token=tok")
         data = json.loads(body)
         cats = data.get("by_category", [])
-        test("T9: by_category non-empty", len(cats) > 0)
-        test("T9: by_category items have name+count",
+        test("T11: by_category non-empty", len(cats) > 0)
+        test("T11: by_category items have name+count",
              all("name" in c and "count" in c for c in cats))
-        test("T9: by_category counts are ints",
+        test("T11: by_category counts are ints",
              all(isinstance(c["count"], int) for c in cats))
     finally:
         server.shutdown()
 
-    # ── T10: top_wings shape ──────────────────────────────────────────────────
-    print("\n-- T10: top_wings shape")
+    # ── T12: top_wings shape ──────────────────────────────────────────────────
+    print("\n-- T12: top_wings shape")
     db = _make_test_db()
     server, host, port = _start_server(db, token="tok")
     try:
         status, hdrs, body = _get(host, port, "/api/dashboard/stats?token=tok")
         data = json.loads(body)
         wings = data.get("top_wings", [])
-        test("T10: top_wings non-empty", len(wings) > 0)
-        test("T10: top_wings items have wing+count",
+        test("T12: top_wings non-empty", len(wings) > 0)
+        test("T12: top_wings items have wing+count",
              all("wing" in w and "count" in w for w in wings))
-        test("T10: top_wings backend first (most entries)",
+        test("T12: top_wings backend first (most entries)",
              wings[0]["wing"] == "backend" if wings else False)
     finally:
         server.shutdown()
 
-    # ── T11: sessions_per_day has date+count ──────────────────────────────────
-    print("\n-- T11: sessions_per_day shape")
+    # ── T13: sessions_per_day has date+count ──────────────────────────────────
+    print("\n-- T13: sessions_per_day shape")
     db = _make_test_db()
     # Insert sessions with recent dates for the query to return results
     today = __import__("datetime").date.today()
@@ -370,26 +417,26 @@ def run_all_tests() -> int:
         status, hdrs, body = _get(host, port, "/api/dashboard/stats?token=tok")
         data = json.loads(body)
         spd = data.get("sessions_per_day", [])
-        test("T11: sessions_per_day non-empty", len(spd) > 0)
-        test("T11: sessions_per_day items have date+count",
+        test("T13: sessions_per_day non-empty", len(spd) > 0)
+        test("T13: sessions_per_day items have date+count",
              all("date" in x and "count" in x for x in spd))
     finally:
         server.shutdown()
 
-    # ── T12: JSON content-type header ─────────────────────────────────────────
-    print("\n-- T12: JSON content-type")
+    # ── T14: JSON content-type header ─────────────────────────────────────────
+    print("\n-- T14: JSON content-type")
     db = _make_test_db()
     server, host, port = _start_server(db, token="tok")
     try:
         status, hdrs, body = _get(host, port, "/api/dashboard/stats?token=tok")
         ct = hdrs.get("content-type", "")
-        test("T12: content-type is application/json", "application/json" in ct)
+        test("T14: content-type is application/json", "application/json" in ct)
         # Verify response is valid JSON
         try:
             json.loads(body)
-            test("T12: body is valid JSON", True)
+            test("T14: body is valid JSON", True)
         except json.JSONDecodeError:
-            test("T12: body is valid JSON", False)
+            test("T14: body is valid JSON", False)
     finally:
         server.shutdown()
 

@@ -82,7 +82,7 @@ copilot-session-knowledge/
 │   │   │   ├── insights/
 │   │   │   │   └── page.tsx         # Dashboard + Live Feed + Search Quality (tabs)
 │   │   │   ├── graph/
-│   │   │   │   └── page.tsx         # Knowledge Graph + Embeddings Clusters (tabs)
+│   │   │   │   └── page.tsx         # Graph workspace: Evidence / Similarity / Communities
 │   │   │   ├── settings/
 │   │   │   │   └── page.tsx         # Preferences: theme, density, default landing, token storage
 │   │   │   └── not-found.tsx        # Custom 404 page
@@ -182,8 +182,8 @@ copilot-session-knowledge/
 | 6 | `/session/{id}/mindmap` | GET | ❌ | `/api/session/{id}/mindmap` | `{ markdown: string, title: string }` |
 | 7 | `/search` | GET | ✅ | `/api/search` | `{ query: string, results: SearchResult[], total: number, took_ms: number }` |
 | 8 | `/dashboard` | GET | ❌ | `/api/dashboard/stats` | `DashboardStats` |
-| 9 | `/graph` | GET | ❌ | `/api/graph` | `{ nodes: GraphNode[], edges: GraphEdge[], truncated: boolean }` |
-| 10 | `/embeddings` | GET | ❌ | `/api/embeddings/points` | `EmbeddingProjection` |
+| 9 | `/graph` | GET | ❌ | `/api/graph` (legacy) + `/api/graph/evidence` (v2 primary) | `GraphResponseLegacy` + `EvidenceGraphResponse` |
+| 10 | `/embeddings` | GET | ❌ | `/api/embeddings/points` | `EmbeddingProjection` (Similarity orientation map) |
 | 11 | `/live` | GET | ❌ | `/api/live` | SSE stream: `LiveEvent` per event |
 | 12 | `/diff` | GET | ❌ | `/api/diff` | `DiffResult` |
 | 13 | `/eval` | GET | ❌ | — **NEEDS JSON** | `EvalAggregation` |
@@ -348,7 +348,7 @@ export interface DashboardStats {
   top_modules: ModuleCount[];
 }
 
-// ── Graph (/api/graph) ──────────────────────────────────────────────
+// ── Legacy Graph (/api/graph) — compatibility only ──────────────────
 
 export interface GraphNode {
   id: string;
@@ -366,10 +366,35 @@ export interface GraphEdge {
   relation: string;
 }
 
-export interface GraphResponse {
+export interface GraphResponseLegacy {
   nodes: GraphNode[];
   edges: GraphEdge[];
   truncated: boolean;
+}
+
+// ── Evidence Graph (/api/graph/evidence) — v2 primary ───────────────
+
+export type EvidenceRelationType =
+  | "SAME_SESSION"
+  | "RESOLVED_BY"
+  | "TAG_OVERLAP"
+  | "SAME_TOPIC";
+
+export interface EvidenceEdge {
+  source: string;
+  target: string;
+  relation_type: EvidenceRelationType;
+  confidence: number; // [0, 1]
+}
+
+export interface EvidenceGraphResponse {
+  nodes: GraphNode[]; // kind is expected to be "entry" for evidence graph
+  edges: EvidenceEdge[];
+  truncated: boolean;
+  meta: {
+    edge_source: "knowledge_relations";
+    relation_types: EvidenceRelationType[];
+  };
 }
 
 // ── Embeddings (/api/embeddings/points) ──────────────────────────────
@@ -385,6 +410,44 @@ export interface EmbeddingPoint {
 export interface EmbeddingProjection {
   points: EmbeddingPoint[];
   method: string;
+}
+
+// ── Similarity (/api/graph/similarity) — neighbors are primary ───────
+// NOTE (contract freeze): request shape must remain bulk-friendly.
+// Final request parameters/body format is intentionally unresolved.
+
+export interface SimilarityNeighbor {
+  id: number;
+  title: string;
+  category: string;
+  score: number; // cosine similarity in [0, 1]
+}
+
+export interface SimilarityNeighborsByEntry {
+  entry_id: number;
+  neighbors: SimilarityNeighbor[];
+}
+
+export interface SimilarityResponse {
+  results: SimilarityNeighborsByEntry[];
+  meta: {
+    method: "cosine_knn";
+    k: number;
+  };
+}
+
+// ── Communities (/api/graph/communities) ─────────────────────────────
+// Communities ship only after evidence + similarity are trustworthy.
+
+export interface CommunitySummary {
+  id: string;
+  entry_count: number;
+  top_categories: Array<{ name: string; count: number }>;
+  representative_entries: Array<{ id: number; title: string; category: string }>;
+}
+
+export interface CommunitiesResponse {
+  communities: CommunitySummary[];
 }
 
 // ── Live (/api/live  — SSE) ─────────────────────────────────────────
@@ -731,7 +794,7 @@ if path.startswith("/v2/"):
 | `/dashboard` | `/v2/insights` (Dashboard tab) | P2 | 2 |
 | `/live` | `/v2/insights` (Live Feed tab) | P2 | 2 |
 | `/graph` | `/v2/graph` (Knowledge Graph tab) | P3 | 3 |
-| `/embeddings` | `/v2/graph` (Embeddings Clusters tab) | P3 | 3 |
+| `/embeddings` | `/v2/graph` (Similarity orientation map, via `/api/embeddings/points`) | P3 | 3 |
 | `/eval` | `/v2/insights` (Search Quality tab) | P4 | 4 |
 | `/compare` | — (action within session detail) | P3 | 3 |
 | `/diff` | — (action within session detail) | P3 | 3 |
@@ -950,7 +1013,26 @@ export function useGraph(filters?: { wing?: string; kind?: string; limit?: numbe
       if (filters?.wing) params.set("wing", filters.wing);
       if (filters?.kind) params.set("kind", filters.kind);
       if (filters?.limit) params.set("limit", String(filters.limit));
-      return apiFetch<T.GraphResponse>(`/api/graph?${params}`);
+      return apiFetch<T.GraphResponseLegacy>(`/api/graph?${params}`);
+    },
+  });
+}
+
+export function useEvidenceGraph(filters?: {
+  wing?: string;
+  kind?: string;
+  relation_type?: T.EvidenceRelationType;
+  limit?: number;
+}) {
+  return useQuery({
+    queryKey: ["evidence", filters],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (filters?.wing) params.set("wing", filters.wing);
+      if (filters?.kind) params.set("kind", filters.kind);
+      if (filters?.relation_type) params.set("relation_type", filters.relation_type);
+      if (filters?.limit) params.set("limit", String(filters.limit));
+      return apiFetch<T.EvidenceGraphResponse>(`/api/graph/evidence?${params}`);
     },
   });
 }
@@ -1435,7 +1517,7 @@ fi
 
 | Task | Files | Risk | Rollback |
 |------|-------|------|----------|
-| Graph page — Knowledge Graph tab (react-force-graph-2d) + Embeddings Clusters tab (canvas scatter) | `app/graph/page.tsx` | High: graph lib integration | Keep old `/graph` |
+| Graph page — Evidence tab (typed edges) + Similarity tab (neighbors primary + `/api/embeddings/points` map) + Communities tab | `app/graph/page.tsx` | High: graph lib integration | Keep old `/graph` |
 | Mindmap tab (markmap) | `app/sessions/[id]/mindmap/page.tsx` | Medium: D3 integration | — |
 
 **Exit criteria Phase 3:** All routes functional. Playwright E2E full-suite green.

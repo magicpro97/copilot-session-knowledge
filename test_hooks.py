@@ -2317,9 +2317,11 @@ try:
         test("17g5: /mnt/d/Work → D:\\Work",
              _csm17g._normalize_posix_home("/mnt/d/Work") == f"D:{_bs}Work",
              f"Got: {_csm17g._normalize_posix_home('/mnt/d/Work')}")
+        _native_win_path17g = "C:\\Users\\foo"
+        _native_win_result17g = _csm17g._normalize_posix_home(_native_win_path17g)
         test("17g6: native Windows path unchanged",
-             _csm17g._normalize_posix_home("C:\\Users\\foo") == "C:\\Users\\foo",
-             f"Got: {_csm17g._normalize_posix_home('C:\\Users\\foo')}")
+             _native_win_result17g == _native_win_path17g,
+             f"Got: {_native_win_result17g}")
         test("17g7: plain /tmp unchanged on Windows",
              _csm17g._normalize_posix_home("/tmp/test") == "/tmp/test",
              f"Got: {_csm17g._normalize_posix_home('/tmp/test')}")

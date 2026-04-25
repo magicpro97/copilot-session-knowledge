@@ -70,7 +70,7 @@
 | `/dashboard` | **RENAME → `/insights`** | "Dashboard" is vague. "Insights" communicates value: trends, red flags, accumulated knowledge stats. | — |
 | `/search` | **KEEP as `/search`** | Critical path for J1. Rich enough to be standalone. | — |
 | `/live` | **MERGE → tab in `/insights`** | Live feed is useful but niche. Not worth a top-level slot. Sub-tab of Insights. | Tab "Live" within Insights |
-| `/embeddings` | **MERGE → tab in `/graph`** | Embeddings 2D projection is another visualization of the same knowledge data. Tab alongside the relationship graph. | Tab "Clusters" within Graph page |
+| `/embeddings` | **MERGE → sub-view in `/graph` Similarity tab** | Embeddings 2D projection is an orientation map, not the primary semantic surface. Keep it inside Similarity while neighbors remain primary. | Similarity tab → "Map" sub-view |
 | `/eval` | **MERGE → section in `/insights`** | Eval/feedback is search quality metrics — belongs in Insights as an expandable section. Almost no one navigates here directly. | Collapsible "Search Quality" section in Insights |
 | `/graph` | **KEEP as `/graph`** | Knowledge graph is visually distinct, has its own interaction model (pan/zoom/filter). Deserves top-level. | — |
 | `/healthz` | **KEEP as API-only** | Not a user-facing page. Remains `/healthz` for programmatic checks. Surface health status in Insights header instead. | Health badge in Insights header |
@@ -84,7 +84,7 @@
 /sessions/[id]               ← Session detail (tabs: Overview, Timeline, Mindmap, Checkpoints)
 /search                      ← Full-text search with facets
 /insights                    ← Dashboard + Live Feed + Search Quality (tabs)
-/graph                       ← Knowledge Graph + Embeddings Clusters (tabs)
+/graph                       ← Evidence + Similarity + Communities (tabs)
 /settings                    ← Theme, density, style guide (dev), system health
 /healthz                     ← API-only, no UI page
 /api/*                       ← All JSON endpoints preserved, no changes
@@ -588,7 +588,10 @@ interface HealthStatus {
 ## /graph
 
 ### Mục tiêu
-Explore connections between knowledge entries (J4) — find clusters, trace relationships, discover patterns across wings/categories.
+Explore connections between knowledge entries (J4) with three distinct questions:
+- **Evidence**: What proven/derived relations exist?
+- **Similarity**: What is semantically close, even without explicit relations?
+- **Communities**: What higher-level themes emerge once evidence + similarity are trustworthy?
 
 ### Layout
 ```
@@ -597,10 +600,10 @@ Explore connections between knowledge entries (J4) — find clusters, trace rela
 ├──────────────────────────────────────────────────────────────────┤
 │ Knowledge Graph                                                  │
 │                                                                  │
-│ [Relationships] [Clusters]                                       │
+│ [Evidence] [Similarity] [Communities]                            │
 │ ──────────────────────────                                       │
 │                                                                  │
-│ ── Tab: Relationships ──────────────────────────────────────────│
+│ ── Tab: Evidence ───────────────────────────────────────────────│
 │ ┌─ Filters (sidebar) ──┐ ┌─ Canvas ────────────────────────────┐│
 │ │                       │ │                                      ││
 │ │ Wing                  │ │      ●──────●                        ││
@@ -612,51 +615,59 @@ Explore connections between knowledge entries (J4) — find clusters, trace rela
 │ │ ☑ mistake  ☑ pattern  │ │  (Cytoscape.js graph)               ││
 │ │ ☑ decision            │ │                                      ││
 │ │ ☑ discovery           │ └──────────────────────────────────────┘│
+│ │                       │ [Status: N nodes, M edges; source=     ││
+│ │ Relation type         │  knowledge_relations]                  ││
+│ │ ☑ SAME_SESSION        │                                        │
+│ │ ☑ RESOLVED_BY         │ ┌─ Detail panel ─────────────────────┐ │
+│ │ ☑ TAG_OVERLAP         │ │ Selected entry                      │ │
+│ │ ☐ SAME_TOPIC*         │ │ - metadata                           │ │
+│ │                       │ │ - connected edges (type + confidence)│ │
+│ │ [Show manual overlay] │ │ [Open in Search] [Open session]      │ │
+│ │ [Reset] [Fit]         │ └──────────────────────────────────────┘ │
+│ │                       │                                          │
+│ │ *Only enabled when data│                                          │
+│ │ exists in source DB    │                                          │
 │ │                       │                                        │
-│ │ ── Node Detail ──     │                                        │
-│ │ Title: "Always..."   │                                        │
-│ │ Wing: core            │                                        │
-│ │ [Open in Search]      │                                        │
 │ └───────────────────────┘                                        │
 │                                                                  │
-│ ── Tab: Clusters ───────────────────────────────────────────────│
-│ ┌─ Controls ────────────────────────────────────────────────────┐│
-│ │ Category: [All ▾]                              342 entries    ││
-│ ├───────────────────────────────────────────────────────────────┤│
-│ │                                                                ││
-│ │   ● ●  ● ●●  ●                ●●●                            ││
-│ │    ●●●●  ●    ●●              ●●●●                            ││
-│ │     ● ●  ●      ●●             ●●                             ││
-│ │                                                                ││
-│ │   (Canvas scatter plot — 2D t-SNE/UMAP projection)            ││
-│ │                                                                ││
-│ │   [tooltip on hover: entry title, category]                   ││
-│ └───────────────────────────────────────────────────────────────┘│
-│ Legend: ● mistake  ● pattern  ● decision  ● discovery           │
+│ ── Tab: Similarity ─────────────────────────────────────────────│
+│ [View: Neighbors | Map]                                          │
+│                                                                  │
+│ Neighbors view (primary): ranked kNN list per selected entry     │
+│ Map view (secondary): `/api/embeddings/points` orientation map   │
+│                                                                  │
+│ ── Tab: Communities ────────────────────────────────────────────│
+│ Community cards + detail panel.                                  │
+│ Shown as trustworthy summary layer after evidence + similarity.   │
+│ Singleton/noise groups are not presented as first-class themes.   │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 ### Components dùng (shadcn list)
-- `<Tabs>`: Relationships / Clusters.
-- `<Checkbox>`: wing and category filters in sidebar.
+- `<Tabs>`: Evidence / Similarity / Communities.
+- `<Checkbox>`: wing and category filters in Evidence sidebar.
+- `<Checkbox>`: relation-type filters (`SAME_SESSION`, `RESOLVED_BY`, `TAG_OVERLAP`, `SAME_TOPIC` when available).
 - `<ScrollArea>`: sidebar scrollable when many wings.
-- `<Card>`: node detail panel in sidebar (appears on node click).
-- `<Button variant="link">`: "Open in Search" link in node detail.
-- `<Select>`: category filter for Clusters tab.
-- `<Tooltip>`: hover tooltip on scatter plot points.
+- `<Card>`: detail panel (Evidence node detail, Similarity selection detail, Communities detail).
+- `<Button variant="link">`: "Open in Search" / "Open session" navigation.
+- `<Select>`: category filter for Similarity surfaces.
+- `<Tooltip>`: hover tooltip on graph/scatter points.
 - `<Skeleton>`: canvas placeholder rectangle during data load.
 
 ### States
-- **Empty (no knowledge)**: "No knowledge entries found. Use `learn.py` to record learnings from your sessions."
-- **Loading**: Sidebar renders; canvas area shows centered spinner.
-- **Error (503 — no embeddings)**: `<Alert>` in Clusters tab: "Embeddings not available. Run `embed.py` to generate vector embeddings."
+- **Evidence empty**: "No evidence relationships found in `knowledge_relations`. Run `extract-knowledge.py` then reload."
+- **Similarity empty**: "No embedding data available. Run `embed.py` then reload."
+- **Communities empty**: "No communities detected yet. Communities appear after evidence + similarity are sufficiently connected."
+- **Loading**: Tabs render; active panel shows centered spinner/skeleton.
 
 ### Interactions
-- Mouse: pan/zoom graph canvas. Click node → show detail in sidebar.
+- Mouse: pan/zoom evidence graph canvas. Click node → show detail in sidebar.
 - `F`: fit graph to viewport.
 - `R`: reset filters.
-- Hover scatter point → tooltip with title + category.
-- Click scatter point → highlight, show detail.
+- `1` / `2` / `3`: switch Evidence / Similarity / Communities.
+- Hover similarity map point → tooltip with title + category.
+- Click similarity map point or neighbor entry → highlight, show detail.
+- `V` keyboard shortcut is intentionally **not** part of the frozen contract.
 
 ### Data shape
 ```ts
@@ -673,13 +684,30 @@ interface GraphNode {
 interface GraphEdge {
   source: string;
   target: string;
-  relation: string;      // predicate
+  relation: string;      // legacy /api/graph only
 }
 
 interface GraphData {
   nodes: GraphNode[];
   edges: GraphEdge[];
   truncated: boolean;
+}
+
+interface EvidenceEdge {
+  source: string;
+  target: string;
+  relation_type: 'SAME_SESSION' | 'RESOLVED_BY' | 'TAG_OVERLAP' | 'SAME_TOPIC';
+  confidence: number;    // 0..1
+}
+
+interface EvidenceGraphData {
+  nodes: GraphNode[];    // evidence path expects entry nodes
+  edges: EvidenceEdge[];
+  truncated: boolean;
+  meta: {
+    edge_source: 'knowledge_relations';
+    relation_types: string[];
+  };
 }
 
 <!-- FIXED in cross-review pass: MAJOR-5 — removed wing field (not in projection.py API response) -->
@@ -692,7 +720,29 @@ interface EmbeddingPoint {
   // NOTE: no wing or cluster_id field — projection.py returns {id, x, y, category, title} only.
   // Cluster filtering is NOT available. Filter by category instead.
 }
+
+interface SimilarityResult {
+  entry_id: number;
+  neighbors: Array<{ id: number; title: string; category: string; score: number }>;
+}
+
+interface SimilarityResponse {
+  results: SimilarityResult[];
+  meta: { method: 'cosine_knn'; k: number };
+}
+
+interface CommunitySummary {
+  id: string;
+  entry_count: number;
+  top_categories: Array<{ name: string; count: number }>;
+  representative_entries: Array<{ id: number; title: string; category: string }>;
+}
 ```
+
+### Intentionally unresolved (must not be invented during implementation)
+- Exact request format for similarity retrieval (query params vs body) is unresolved; implementation must remain **bulk-friendly**.
+- SAME_TOPIC is kept in enum for forward compatibility but must not be presented as a normal working filter unless data exists.
+- Communities algorithm choice remains open; output must avoid singleton-noise and stay deterministic.
 
 ---
 

@@ -11,6 +11,8 @@ if os.name == "nt":
 from browse.core.registry import route
 from browse.core.fts import _esc
 from browse.core.templates import base_page
+from browse.core.similarity import get_similarity
+from browse.core.communities import get_communities
 from browse.components import banner
 
 # Node color palette keyed by knowledge category
@@ -28,35 +30,55 @@ _DEFAULT_COLOR = "#adb5bd"
 _NODE_CAP = 500
 
 
-def _build_graph_data(db, wing: str, room: str, kind: str, limit: int) -> dict:
-    """Query DB and return {nodes, edges, truncated}."""
-    limit = min(max(1, limit), _NODE_CAP)
+def _csv_values(raw: str) -> list[str]:
+    return [v.strip() for v in (raw or "").split(",") if v.strip()]
 
-    # Build parameterized WHERE clause
+
+def _parse_int_values(values: list[str]) -> list[int]:
+    parsed: list[int] = []
+    for value in values:
+        for part in (value or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                ivalue = int(part)
+            except ValueError:
+                continue
+            if ivalue > 0:
+                parsed.append(ivalue)
+    return parsed
+
+
+def _build_entry_filters(wing: str, room: str, kind: str) -> tuple[list[str], list]:
     conditions: list[str] = []
     binds: list = []
 
-    if wing:
-        wings = [w.strip() for w in wing.split(",") if w.strip()]
-        if wings:
-            placeholders = ",".join("?" * len(wings))
-            conditions.append(f"wing IN ({placeholders})")
-            binds.extend(wings)
+    wings = _csv_values(wing)
+    if wings:
+        placeholders = ",".join("?" * len(wings))
+        conditions.append(f"wing IN ({placeholders})")
+        binds.extend(wings)
 
-    if room:
-        rooms = [r.strip() for r in room.split(",") if r.strip()]
-        if rooms:
-            placeholders = ",".join("?" * len(rooms))
-            conditions.append(f"room IN ({placeholders})")
-            binds.extend(rooms)
+    rooms = _csv_values(room)
+    if rooms:
+        placeholders = ",".join("?" * len(rooms))
+        conditions.append(f"room IN ({placeholders})")
+        binds.extend(rooms)
 
-    if kind:
-        kinds = [k.strip() for k in kind.split(",") if k.strip()]
-        if kinds:
-            placeholders = ",".join("?" * len(kinds))
-            conditions.append(f"category IN ({placeholders})")
-            binds.extend(kinds)
+    kinds = _csv_values(kind)
+    if kinds:
+        placeholders = ",".join("?" * len(kinds))
+        conditions.append(f"category IN ({placeholders})")
+        binds.extend(kinds)
 
+    return conditions, binds
+
+
+def _build_graph_data(db, wing: str, room: str, kind: str, limit: int) -> dict:
+    """Query DB and return legacy /api/graph payload: {nodes, edges, truncated}."""
+    limit = min(max(1, limit), _NODE_CAP)
+    conditions, binds = _build_entry_filters(wing, room, kind)
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     sql = f"""
         SELECT id, category, title, wing, room
@@ -154,6 +176,90 @@ def _safe_id(name: str) -> str:
     return hashlib.md5(name.encode("utf-8", errors="replace")).hexdigest()[:12]
 
 
+def _build_evidence_graph_data(
+    db, wing: str, room: str, kind: str, relation_type: str, limit: int
+) -> dict:
+    """Query DB and return evidence payload backed by knowledge_relations."""
+    limit = min(max(1, limit), _NODE_CAP)
+    conditions, binds = _build_entry_filters(wing, room, kind)
+    where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    sql = f"""
+        SELECT id, category, title, wing, room
+        FROM knowledge_entries
+        {where_clause}
+        ORDER BY id DESC
+        LIMIT ?
+    """
+    binds.append(limit + 1)
+    rows = list(db.execute(sql, binds))
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+
+    nodes: list[dict] = []
+    entry_ids: list[int] = []
+    for r in rows:
+        eid = int(r[0])
+        cat = r[1] or "unknown"
+        entry_ids.append(eid)
+        nodes.append({
+            "id": f"e-{eid}",
+            "kind": "entry",
+            "label": (r[2] or "")[:80],
+            "wing": r[3] or "",
+            "room": r[4] or "",
+            "category": cat,
+            "color": CATEGORY_COLORS.get(cat, _DEFAULT_COLOR),
+        })
+
+    edges: list[dict] = []
+    relation_types_seen: set[str] = set()
+    if entry_ids:
+        placeholders = ",".join("?" * len(entry_ids))
+        rel_conditions = [
+            f"kr.source_id IN ({placeholders})",
+            f"kr.target_id IN ({placeholders})",
+        ]
+        rel_binds: list = [*entry_ids, *entry_ids]
+
+        relation_types = _csv_values(relation_type)
+        if relation_types:
+            rel_conditions.append(
+                f"kr.relation_type IN ({','.join('?' * len(relation_types))})"
+            )
+            rel_binds.extend(relation_types)
+
+        rel_sql = f"""
+            SELECT kr.source_id, kr.target_id, kr.relation_type, kr.confidence
+            FROM knowledge_relations kr
+            WHERE {" AND ".join(rel_conditions)}
+            ORDER BY kr.id ASC
+            LIMIT ?
+        """
+        rel_binds.append(limit * 4)
+        try:
+            rel_rows = db.execute(rel_sql, rel_binds)
+        except Exception:
+            rel_rows = []
+        for src, tgt, rel_type, confidence in rel_rows:
+            relation_types_seen.add(rel_type)
+            edges.append({
+                "source": f"e-{src}",
+                "target": f"e-{tgt}",
+                "relation_type": rel_type,
+                "confidence": confidence,
+            })
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "truncated": truncated,
+        "meta": {
+            "edge_source": "knowledge_relations",
+            "relation_types": sorted(relation_types_seen),
+        },
+    }
+
+
 @route("/api/graph", methods=["GET"])
 def handle_api_graph(db, params, token, nonce) -> tuple:
     wing = params.get("wing", [""])[0]
@@ -165,6 +271,47 @@ def handle_api_graph(db, params, token, nonce) -> tuple:
         limit = _NODE_CAP
 
     data = _build_graph_data(db, wing, room, kind, limit)
+    return json.dumps(data).encode("utf-8"), "application/json", 200
+
+
+@route("/api/graph/evidence", methods=["GET"])
+def handle_api_graph_evidence(db, params, token, nonce) -> tuple:
+    wing = params.get("wing", [""])[0]
+    room = params.get("room", [""])[0]
+    kind = params.get("kind", [""])[0]
+    relation_type = params.get("relation_type", [""])[0]
+    try:
+        limit = int(params.get("limit", ["500"])[0])
+    except (ValueError, IndexError):
+        limit = _NODE_CAP
+
+    data = _build_evidence_graph_data(db, wing, room, kind, relation_type, limit)
+    return json.dumps(data).encode("utf-8"), "application/json", 200
+
+
+@route("/api/graph/similarity", methods=["GET"])
+def handle_api_graph_similarity(db, params, token, nonce) -> tuple:
+    raw_entry_ids = params.get("entry_id", [])
+    entry_ids = _parse_int_values(raw_entry_ids)
+    try:
+        k = int(params.get("k", ["5"])[0])
+    except (ValueError, IndexError):
+        k = 5
+
+    try:
+        data = get_similarity(db, entry_ids=entry_ids, k=k)
+    except Exception as e:
+        return (
+            json.dumps({"error": str(e)}).encode("utf-8"),
+            "application/json",
+            500,
+        )
+    return json.dumps(data).encode("utf-8"), "application/json", 200
+
+
+@route("/api/graph/communities", methods=["GET"])
+def handle_api_graph_communities(db, params, token, nonce) -> tuple:
+    data = get_communities(db)
     return json.dumps(data).encode("utf-8"), "application/json", 200
 
 

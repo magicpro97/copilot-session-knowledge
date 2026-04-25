@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `browse-ui/` — graph redesign + runtime hardening now reflected as shipped behavior:
+  - `/v2/graph` is documented and tested as three truthful tabs: **Evidence** (`/api/graph/evidence`), **Similarity** (`/api/graph/similarity` neighbors-first with optional `/api/embeddings/points` orientation map), and **Communities** (`/api/graph/communities` deterministic summaries with singleton-noise suppression + drill-in to Evidence/Similarity).
+  - `browse-ui/e2e/smoke.spec.ts` includes direct real-UUID session-detail smoke coverage and `/v2/graph` live-surface guards (no placeholder shell regressions).
+  - Graph surface tests now freeze evidence truncation/error handling, similarity degraded/error/map-click flows, and embeddings projection contract behavior.
 - `browse-ui/` — Phase 10 final shell polish + docs truthfulness:
   - Sidebar now supports a persistent collapsible rail mode with `⌘B / Ctrl+B` for density control.
   - Header now renders route-aware breadcrumbs + context text while keeping command discoverability (`⌘K`) and theme toggle in place.
@@ -84,6 +88,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Timeline: model-based color coding and legend, incorporating data previously served by the removed agents route (243b85b)
 
 ### Changed
+- Docs rollout alignment:
+  - `README.md` and `browse-ui/README.md` now describe `/v2/graph` using Evidence/Similarity/Communities semantics instead of legacy relationships/clusters wording.
+  - Auto-update + hooks documentation now matches current rollout behavior (update-only directory semantics, global Copilot skill refresh behavior, and git-hook reinstall requirements after git-hook script updates).
 - `browse/static/css/app.css` — rewrote to consume design tokens, no hardcoded hex, no `var(--pico-*)` references, 24 sections (header/footer, nav, page-header, tables, stat grid, banner, card, mindmap, live feed, embeddings, …).
 - Migrated `browse/routes/{home,sessions,dashboard,mindmap,live,embeddings}.py` to use component primitives; inline `<style>` blocks removed (only `dashboard.py`'s `.db-chart-wrap` whitelisted).
 - `mindmap.js` now syncs `.markmap-dark` class on `#mindmap-wrap` with `[data-theme]` to restore contrast in dark mode.
@@ -100,6 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `/session/{id}/agents` and `/api/session/{id}/agents` routes — functionality merged into `/session/{id}/timeline` (243b85b)
 
 ### Fixed
+- `/v2/sessions/[id]` real UUID session-detail runtime routing behavior is now explicitly covered in shipped smoke tests, preventing regressions back to placeholder-only resolution on real deployments.
 - `tentacle.py` Unicode console failures on Windows: added standard UTF-8 stdout/stderr reconfigure block (matching `briefing.py`/`install.py` pattern), eliminating `UnicodeEncodeError` for emoji and non-ASCII output.
 - `test_karpathy_skill_rollout.py` Windows path assertion failures: two assertions now use `.as_posix()` for cross-platform path comparison.
 - POSIX home normalization in `check_subagent_marker.py` now uses explicit backslash (`chr(92)`) instead of `os.sep` for separator replacement, so the function produces correct Windows paths even when the Python runtime reports a POSIX `os.sep`. This fixes a latent bug that could have surfaced if the code were ever exercised in a POSIX-hosted Windows-emulation layer.

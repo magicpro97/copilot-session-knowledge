@@ -26,10 +26,25 @@ def _query_totals(db) -> dict:
         except Exception:
             return 0
 
+    def _table_exists(name):
+        try:
+            row = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+                (name,),
+            ).fetchone()
+            return bool(row)
+        except Exception:
+            return False
+
+    if _table_exists("knowledge_relations"):
+        relations = _count("SELECT COUNT(*) FROM knowledge_relations")
+    else:
+        relations = _count("SELECT COUNT(*) FROM entity_relations")
+
     return {
         "sessions": _count("SELECT COUNT(*) FROM sessions"),
         "knowledge_entries": _count("SELECT COUNT(*) FROM knowledge_entries"),
-        "relations": _count("SELECT COUNT(*) FROM entity_relations"),
+        "relations": relations,
         "embeddings": _count("SELECT COUNT(*) FROM embeddings"),
     }
 

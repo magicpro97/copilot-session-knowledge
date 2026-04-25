@@ -2,21 +2,23 @@
 
 import { useEffect, useState } from "react";
 
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClustersTab } from "./clusters-tab";
+import { CommunitiesTab } from "./communities-tab";
 import { RelationshipsTab } from "./relationships-tab";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-type GraphTab = "relationships" | "clusters";
+type GraphTab = "evidence" | "similarity" | "communities";
 
 function hashToGraphTab(hash: string): GraphTab | null {
   const cleaned = hash.replace(/^#/, "").toLowerCase();
-  if (cleaned === "relationships") return "relationships";
-  if (cleaned === "clusters") return "clusters";
+  if (cleaned === "evidence" || cleaned === "relationships") return "evidence";
+  if (cleaned === "similarity" || cleaned === "clusters") return "similarity";
+  if (cleaned === "communities") return "communities";
   return null;
 }
 
 export default function GraphPage() {
-  const [activeTab, setActiveTab] = useState<GraphTab>("relationships");
+  const [activeTab, setActiveTab] = useState<GraphTab>("evidence");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -34,22 +36,60 @@ export default function GraphPage() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      const isTypingTarget =
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.isContentEditable;
+      if (isTypingTarget) return;
+
+      if (event.key === "1") {
+        event.preventDefault();
+        setActiveTab("evidence");
+      } else if (event.key === "2") {
+        event.preventDefault();
+        setActiveTab("similarity");
+      } else if (event.key === "3") {
+        event.preventDefault();
+        setActiveTab("communities");
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
     window.history.replaceState(null, "", `#${activeTab}`);
   }, [activeTab]);
 
   return (
     <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as GraphTab)}>
       <TabsList variant="line">
-        <TabsTrigger value="relationships">Relationships</TabsTrigger>
-        <TabsTrigger value="clusters">Clusters</TabsTrigger>
+        <TabsTrigger value="evidence">Evidence</TabsTrigger>
+        <TabsTrigger value="similarity">Similarity</TabsTrigger>
+        <TabsTrigger value="communities">Communities</TabsTrigger>
       </TabsList>
 
-      <TabsContent value="relationships">
-        <RelationshipsTab active={activeTab === "relationships"} />
+      <TabsContent value="evidence">
+        <RelationshipsTab active={activeTab === "evidence"} />
       </TabsContent>
 
-      <TabsContent value="clusters">
-        <ClustersTab active={activeTab === "clusters"} />
+      <TabsContent value="similarity">
+        <ClustersTab active={activeTab === "similarity"} />
+      </TabsContent>
+
+      <TabsContent value="communities">
+        <CommunitiesTab
+          active={activeTab === "communities"}
+          onDrillIn={(target) => {
+            setActiveTab(target);
+          }}
+        />
       </TabsContent>
     </Tabs>
   );

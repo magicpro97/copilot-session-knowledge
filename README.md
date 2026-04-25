@@ -259,10 +259,10 @@ The `/v2/*` routes are the primary browse experience and serve the modern Next.j
 | Route | Description |
 |-------|-------------|
 | `/v2/sessions` | Session list |
-| `/v2/sessions/[id]` | Session detail + timeline |
+| `/v2/sessions/[id]` | Session detail (real UUID paths) + timeline/mindmap/checkpoints |
 | `/v2/search` | Full-text + semantic search |
 | `/v2/insights` | Knowledge insights |
-| `/v2/graph` | Knowledge graph (force-directed) |
+| `/v2/graph` | Graph workspace: Evidence + Similarity + Communities |
 | `/v2/settings` | Preferences |
 
 To rebuild the primary UI after editing `browse-ui/src/`:

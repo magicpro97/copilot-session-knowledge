@@ -129,7 +129,21 @@ def main() -> int:
                 id, path, summary, total_checkpoints, total_research, total_files, has_plan,
                 source, indexed_at, file_mtime, indexed_at_r, fts_indexed_at, event_count_estimate, file_size_bytes
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?)""",
-            (SESSION_ID, "", "E2E deterministic session", 1, 0, 2, 0, "copilot", 1.0, 2.0, 3.0, 4, 1024),
+            (
+                SESSION_ID,
+                "",
+                "E2E deterministic session",
+                1,
+                0,
+                2,
+                0,
+                "copilot",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:01Z",
+                "2026-01-01T00:00:02Z",
+                4,
+                1024,
+            ),
         )
         db.execute(
             """INSERT INTO documents (

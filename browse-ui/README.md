@@ -39,10 +39,10 @@ pnpm build
 | Path | Description |
 |------|-------------|
 | `/v2/sessions` | Session list |
-| `/v2/sessions/[id]` | Session detail + timeline |
+| `/v2/sessions/[id]` | Session detail (real UUID paths) + timeline/mindmap/checkpoints |
 | `/v2/search` | Full-text + semantic search |
 | `/v2/insights` | Knowledge insights |
-| `/v2/graph` | Knowledge graph (force-directed) |
+| `/v2/graph` | Graph workspace: Evidence + Similarity + Communities |
 | `/v2/settings` | Preferences |
 
 ## Build output
@@ -64,5 +64,5 @@ Do **not** edit files in `dist/` directly — they are build artifacts. Run `pnp
 
 - **Phase 6**: Shipped scaffold — stub routes, providers, API client, and build pipeline
 - **Phase 7**: Shipped sessions list + session detail + search pages with real data
-- **Phase 8**: Shipped insights + graph pages (dashboard/live and relationships/clusters)
+- **Phase 8**: Shipped insights + graph pages (dashboard/live and Evidence/Similarity/Communities)
 - **Phase 9**: Shipped settings, global keyboard shortcuts, and session detail compare/export polish

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  communitiesResponseSchema,
+  evidenceGraphResponseSchema,
   compareResponseSchema,
   evalResponseSchema,
   searchResponseSchema,
@@ -78,5 +80,50 @@ describe("api schemas", () => {
       },
     });
     expect(parsed.a.timeline).toEqual([]);
+  });
+
+  it("accepts unknown evidence relation types from runtime data", () => {
+    const parsed = evidenceGraphResponseSchema.parse({
+      nodes: [
+        {
+          id: "n1",
+          kind: "entry",
+          label: "Entry 1",
+          color: "#111111",
+        },
+      ],
+      edges: [
+        {
+          source: "n1",
+          target: "n1",
+          relation_type: "CITED_WITH",
+          confidence: 0.6,
+        },
+      ],
+      truncated: false,
+      meta: {
+        edge_source: "knowledge_relations",
+        relation_types: ["RESOLVED_BY", "CITED_WITH"],
+      },
+    });
+
+    expect(parsed.edges[0].relation_type).toBe("CITED_WITH");
+    expect(parsed.meta?.relation_types).toContain("CITED_WITH");
+  });
+
+  it("accepts unknown community top relation types", () => {
+    const parsed = communitiesResponseSchema.parse({
+      communities: [
+        {
+          id: "c-1",
+          entry_count: 2,
+          top_categories: [{ name: "pattern", count: 2 }],
+          top_relation_types: [{ type: "CITED_WITH", count: 2 }],
+          representative_entries: [{ id: 1, title: "x", category: "pattern" }],
+        },
+      ],
+    });
+
+    expect(parsed.communities[0].top_relation_types?.[0]?.type).toBe("CITED_WITH");
   });
 });
