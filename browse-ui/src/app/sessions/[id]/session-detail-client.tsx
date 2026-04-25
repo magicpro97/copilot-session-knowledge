@@ -1,11 +1,11 @@
 "use client";
 
-import { useMemo, useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
 import { Download, GitCompare, Loader2 } from "lucide-react";
 
 import { Breadcrumbs } from "@/components/layout/breadcrumbs";
+import { CompareSheet } from "@/components/data/compare-sheet";
 import { SourceBadge, TimeRelative } from "@/components/data/session-badges";
 import { Banner } from "@/components/data/banner";
 import { OverviewTab } from "./overview-tab";
@@ -14,27 +14,12 @@ import { MindmapTab } from "./mindmap-tab";
 import { CheckpointsTab } from "./checkpoints-tab";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useCompare, useSessionDetail } from "@/lib/api/hooks";
-import { apiFetch } from "@/lib/api/client";
-import { sessionListResponseSchema } from "@/lib/api/schemas";
+import { Card, CardHeader, CardTitle } from "@/components/ui/card";
+import { useSessionDetail } from "@/lib/api/hooks";
 import { formatNumber, formatSessionIdBadgeText } from "@/lib/formatters";
+import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 
 type SessionTab = "overview" | "timeline" | "mindmap" | "checkpoints";
-
-const TAB_BY_KEY: Record<string, SessionTab> = {
-  "1": "overview",
-  "2": "timeline",
-  "3": "mindmap",
-  "4": "checkpoints",
-};
 
 function hashToTab(hash: string): SessionTab | null {
   const cleaned = hash.replace(/^#/, "").toLowerCase();
@@ -51,30 +36,43 @@ export function SessionDetailClient() {
 
   const [activeTab, setActiveTab] = useState<SessionTab>("overview");
   const [compareOpen, setCompareOpen] = useState(false);
-  const [compareSessionId, setCompareSessionId] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const detailQuery = useSessionDetail(sessionId, Boolean(sessionId));
-  const sessionListQuery = useQuery({
-    queryKey: ["session-compare-picker", 1, 100],
-    enabled: Boolean(sessionId),
-    queryFn: async () => {
-      const data = await apiFetch("/api/sessions?page=1&page_size=100");
-      return sessionListResponseSchema.parse(data);
-    },
-  });
-  const compareQuery = useCompare(
-    sessionId,
-    compareSessionId,
-    compareOpen && Boolean(compareSessionId)
-  );
-
-  const compareCandidates = useMemo(
-    () => (sessionListQuery.data?.items ?? []).filter((item) => item.id !== sessionId),
-    [sessionListQuery.data?.items, sessionId]
-  );
-
   const shortId = formatSessionIdBadgeText(sessionId);
   const exportHref = `/session/${encodeURIComponent(sessionId)}.md`;
+  const exportFileName = `${sessionId || "session"}.md`;
+
+  const handleExport = useCallback(async () => {
+    if (!sessionId || typeof window === "undefined" || exporting) return;
+
+    setExportError(null);
+    setExporting(true);
+    try {
+      const response = await fetch(exportHref, {
+        method: "GET",
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        throw new Error(`Export failed (${response.status})`);
+      }
+
+      const blob = await response.blob();
+      const objectUrl = window.URL.createObjectURL(blob);
+      const anchor = window.document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = exportFileName;
+      window.document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : "Unknown export error");
+    } finally {
+      setExporting(false);
+    }
+  }, [exportFileName, exportHref, exporting, sessionId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -94,44 +92,42 @@ export function SessionDetailClient() {
     window.history.replaceState(null, "", `#${activeTab}`);
   }, [activeTab]);
 
-  useEffect(() => {
-    if (!compareOpen || compareSessionId || compareCandidates.length === 0) return;
-    setCompareSessionId(compareCandidates[0].id);
-  }, [compareOpen, compareSessionId, compareCandidates]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
-      const target = event.target as HTMLElement | null;
-      const tagName = target?.tagName?.toLowerCase();
-      if (
-        target?.isContentEditable ||
-        tagName === "input" ||
-        tagName === "textarea" ||
-        tagName === "select"
-      ) {
-        return;
-      }
-
-      if (TAB_BY_KEY[event.key]) {
-        event.preventDefault();
-        setActiveTab(TAB_BY_KEY[event.key]);
-        return;
-      }
-      if (event.key.toLowerCase() === "e" && sessionId) {
-        event.preventDefault();
-        window.open(exportHref, "_blank", "noopener,noreferrer");
-        return;
-      }
-      if (event.key.toLowerCase() === "c") {
-        event.preventDefault();
-        setCompareOpen(true);
-      }
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [exportHref, sessionId]);
+  useKeyboardShortcuts([
+    {
+      key: "1",
+      preventDefault: true,
+      handler: () => setActiveTab("overview"),
+    },
+    {
+      key: "2",
+      preventDefault: true,
+      handler: () => setActiveTab("timeline"),
+    },
+    {
+      key: "3",
+      preventDefault: true,
+      handler: () => setActiveTab("mindmap"),
+    },
+    {
+      key: "4",
+      preventDefault: true,
+      handler: () => setActiveTab("checkpoints"),
+    },
+    {
+      key: "e",
+      preventDefault: true,
+      handler: () => {
+        if (!sessionId) return false;
+        void handleExport();
+        return true;
+      },
+    },
+    {
+      key: "c",
+      preventDefault: true,
+      handler: () => setCompareOpen(true),
+    },
+  ]);
 
   return (
     <div className="space-y-4">
@@ -151,6 +147,7 @@ export function SessionDetailClient() {
           }
         />
       ) : null}
+      {exportError ? <Banner tone="danger" title="Export failed" description={exportError} /> : null}
 
       <Card>
         <CardHeader className="space-y-2">
@@ -168,9 +165,12 @@ export function SessionDetailClient() {
             <div className="flex items-center gap-2">
               <Button
                 variant="outline"
-                onClick={() => window.open(exportHref, "_blank", "noopener,noreferrer")}
+                onClick={() => {
+                  void handleExport();
+                }}
+                disabled={exporting || !sessionId}
               >
-                <Download className="size-4" />
+                {exporting ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
                 Export .md
               </Button>
               <Button variant="outline" onClick={() => setCompareOpen(true)}>
@@ -204,81 +204,7 @@ export function SessionDetailClient() {
         </TabsContent>
       </Tabs>
 
-      <Sheet open={compareOpen} onOpenChange={setCompareOpen}>
-        <SheetContent side="right" className="w-full gap-0 sm:max-w-2xl">
-          <SheetHeader className="border-b">
-            <SheetTitle>Compare sessions</SheetTitle>
-            <SheetDescription>
-              Compare this session against another session in context.
-            </SheetDescription>
-          </SheetHeader>
-
-          <div className="space-y-3 p-4">
-            <label className="text-sm font-medium" htmlFor="compare-session">
-              Compare with
-            </label>
-            <select
-              id="compare-session"
-              className="h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm"
-              value={compareSessionId}
-              onChange={(event) => setCompareSessionId(event.target.value)}
-            >
-              {compareCandidates.map((candidate) => (
-                <option key={candidate.id} value={candidate.id}>
-                  {formatSessionIdBadgeText(candidate.id)} — {candidate.summary || "(no summary)"}
-                </option>
-              ))}
-            </select>
-
-            {compareQuery.isLoading ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="size-4 animate-spin" />
-                Loading compare data...
-              </div>
-            ) : null}
-
-            {compareQuery.error ? (
-              <Banner
-                tone="danger"
-                title="Compare failed"
-                description={
-                  compareQuery.error instanceof Error
-                    ? compareQuery.error.message
-                    : "Unknown compare error"
-                }
-              />
-            ) : null}
-
-            {compareQuery.data ? (
-              <div className="grid gap-3 md:grid-cols-2">
-                <Card size="sm">
-                  <CardHeader>
-                    <CardTitle className="text-sm">
-                      {formatSessionIdBadgeText(sessionId)} (current)
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-1 text-xs text-muted-foreground">
-                    <p>{compareQuery.data.a.session?.summary || "(no summary)"}</p>
-                    <p>Timeline rows: {formatNumber(compareQuery.data.a.timeline.length)}</p>
-                  </CardContent>
-                </Card>
-
-                <Card size="sm">
-                  <CardHeader>
-                    <CardTitle className="text-sm">
-                      {formatSessionIdBadgeText(compareSessionId)}
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-1 text-xs text-muted-foreground">
-                    <p>{compareQuery.data.b.session?.summary || "(missing session)"}</p>
-                    <p>Timeline rows: {formatNumber(compareQuery.data.b.timeline.length)}</p>
-                  </CardContent>
-                </Card>
-              </div>
-            ) : null}
-          </div>
-        </SheetContent>
-      </Sheet>
+      <CompareSheet open={compareOpen} onOpenChange={setCompareOpen} sessionId={sessionId} />
     </div>
   );
 }

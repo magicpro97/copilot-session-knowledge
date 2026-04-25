@@ -1,10 +1,11 @@
 "use client";
 
 import { Activity } from "lucide-react";
-import { type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useHealth } from "@/lib/api/hooks";
 import { formatNumber } from "@/lib/formatters";
 import { LiveTab } from "./live-tab";
@@ -24,6 +25,20 @@ function getHealthTone(status: string | undefined): string {
 
 export default function InsightsLayout({ children }: InsightsLayoutProps) {
   const health = useHealth();
+  const [activeTab, setActiveTab] = useState<"dashboard" | "live">("dashboard");
+
+  useKeyboardShortcuts([
+    {
+      key: "1",
+      preventDefault: true,
+      handler: () => setActiveTab("dashboard"),
+    },
+    {
+      key: "2",
+      preventDefault: true,
+      handler: () => setActiveTab("live"),
+    },
+  ]);
 
   return (
     <div className="space-y-6">
@@ -46,7 +61,11 @@ export default function InsightsLayout({ children }: InsightsLayoutProps) {
         </div>
       </div>
 
-      <Tabs defaultValue="dashboard" className="space-y-4">
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as "dashboard" | "live")}
+        className="space-y-4"
+      >
         <TabsList variant="line">
           <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
           <TabsTrigger value="live">Live feed</TabsTrigger>

@@ -62,7 +62,7 @@ Do **not** edit files in `dist/` directly — they are build artifacts. Run `pnp
 
 ## Phases
 
-- **Phase 6** (this PR): Scaffold — stub pages, providers, API client, build pipeline
-- **Phase 7**: Sessions list + detail + search pages with real data
-- **Phase 8**: Insights + graph pages (dashboard/live and relationships/clusters)
-- **Phase 9**: Settings, keyboard shortcuts, polish
+- **Phase 6**: Shipped scaffold — stub routes, providers, API client, and build pipeline
+- **Phase 7**: Shipped sessions list + session detail + search pages with real data
+- **Phase 8**: Shipped insights + graph pages (dashboard/live and relationships/clusters)
+- **Phase 9**: Shipped settings, global keyboard shortcuts, and session detail compare/export polish

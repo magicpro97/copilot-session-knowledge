@@ -2,7 +2,7 @@
 
 import { Filter, Loader2, Search, SearchX, X } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Banner } from "@/components/data/banner";
 import { EmptyState } from "@/components/data/empty-state";
@@ -13,6 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDebounce } from "@/hooks/use-debounce";
+import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useSearchHistory } from "@/hooks/use-search-history";
 import { useSearch } from "@/lib/api/hooks";
 import { cn } from "@/lib/utils";
@@ -133,47 +134,71 @@ export default function SearchPage() {
     });
   }, [activeIndex]);
 
-  const openResult = (index: number) => {
-    const result = results[index];
-    if (!result) return;
-    if (result.type === "session" && typeof result.id === "string") {
-      router.push(`/sessions/${encodeURIComponent(result.id)}`);
-      return;
-    }
-    const nextKind = parseCsv(result.kind ?? null, ALL_KINDS);
-    setQuery(result.title);
-    setCommittedQuery(result.title.trim());
-    setSources(["knowledge"]);
-    setColumns([]);
-    setKinds(nextKind);
-  };
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      const isTypingTarget =
-        target?.tagName === "INPUT" ||
-        target?.tagName === "TEXTAREA" ||
-        target?.isContentEditable;
-      if (isTypingTarget) return;
-      if (!results.length) return;
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-
-      if (event.key === "j" || event.key === "ArrowDown") {
-        event.preventDefault();
-        setActiveIndex((prev) => (prev + 1) % results.length);
-      } else if (event.key === "k" || event.key === "ArrowUp") {
-        event.preventDefault();
-        setActiveIndex((prev) => (prev <= 0 ? results.length - 1 : prev - 1));
-      } else if (event.key === "Enter" && activeIndex >= 0) {
-        event.preventDefault();
-        openResult(activeIndex);
+  const openResult = useCallback(
+    (index: number) => {
+      const result = results[index];
+      if (!result) return;
+      if (result.type === "session" && typeof result.id === "string") {
+        router.push(`/sessions/${encodeURIComponent(result.id)}`);
+        return;
       }
-    };
+      const nextKind = parseCsv(result.kind ?? null, ALL_KINDS);
+      setQuery(result.title);
+      setCommittedQuery(result.title.trim());
+      setSources(["knowledge"]);
+      setColumns([]);
+      setKinds(nextKind);
+    },
+    [results, router]
+  );
 
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [activeIndex, results]);
+  useKeyboardShortcuts([
+    {
+      key: "j",
+      preventDefault: true,
+      handler: () => {
+        if (!results.length) return false;
+        setActiveIndex((prev) => (prev + 1) % results.length);
+        return true;
+      },
+    },
+    {
+      key: "ArrowDown",
+      preventDefault: true,
+      handler: () => {
+        if (!results.length) return false;
+        setActiveIndex((prev) => (prev + 1) % results.length);
+        return true;
+      },
+    },
+    {
+      key: "k",
+      preventDefault: true,
+      handler: () => {
+        if (!results.length) return false;
+        setActiveIndex((prev) => (prev <= 0 ? results.length - 1 : prev - 1));
+        return true;
+      },
+    },
+    {
+      key: "ArrowUp",
+      preventDefault: true,
+      handler: () => {
+        if (!results.length) return false;
+        setActiveIndex((prev) => (prev <= 0 ? results.length - 1 : prev - 1));
+        return true;
+      },
+    },
+    {
+      key: "Enter",
+      preventDefault: true,
+      handler: () => {
+        if (activeIndex < 0) return false;
+        openResult(activeIndex);
+        return true;
+      },
+    },
+  ]);
 
   return (
     <div className="space-y-6">

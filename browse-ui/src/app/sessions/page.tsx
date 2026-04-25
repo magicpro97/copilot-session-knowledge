@@ -30,6 +30,7 @@ import { PAGE_SIZES, SEARCH_DEBOUNCE_MS, SOURCE_LABELS } from "@/lib/constants";
 import { useSessions } from "@/lib/api/hooks";
 import type { SessionRow } from "@/lib/api/types";
 import { formatNumber } from "@/lib/formatters";
+import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 
 type TimeRange = "all" | "today" | "7d" | "30d";
 type SummaryFilter = "all" | "yes" | "no";
@@ -58,11 +59,6 @@ function inTimeRange(timestamp: number | null, timeRange: TimeRange, nowMs: numb
   if (timeRange === "today") return nowMs - timestamp <= dayMs;
   if (timeRange === "7d") return nowMs - timestamp <= 7 * dayMs;
   return nowMs - timestamp <= 30 * dayMs;
-}
-
-function isTypingTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  return Boolean(target.closest("input, textarea, [contenteditable='true'], [role='combobox']"));
 }
 
 export default function SessionsPage() {
@@ -175,40 +171,61 @@ export default function SessionsPage() {
     [router]
   );
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-
-      if (event.key === "/") {
-        if (isTypingTarget(event.target)) return;
-        event.preventDefault();
-        const searchInput = document.getElementById(searchInputId) as HTMLInputElement | null;
-        searchInput?.focus();
-        searchInput?.select();
-        return;
-      }
-
-      if (isTypingTarget(event.target)) return;
-
-      if (event.key.toLowerCase() === "j" || event.key === "ArrowDown") {
-        event.preventDefault();
-        setFocusedIndex((prev) => Math.min(prev + 1, Math.max(0, filteredAndSortedItems.length - 1)));
-      }
-
-      if (event.key.toLowerCase() === "k" || event.key === "ArrowUp") {
-        event.preventDefault();
-        setFocusedIndex((prev) => Math.max(prev - 1, 0));
-      }
-
-      if (event.key === "Enter" && focusedRow) {
-        event.preventDefault();
-        openSession(focusedRow);
-      }
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [filteredAndSortedItems.length, focusedRow, openSession]);
+  useKeyboardShortcuts(
+    [
+      {
+        key: "/",
+        preventDefault: true,
+        handler: () => {
+          const searchInput = document.getElementById(searchInputId) as HTMLInputElement | null;
+          searchInput?.focus();
+          searchInput?.select();
+        },
+      },
+      {
+        key: "j",
+        preventDefault: true,
+        handler: () => {
+          setFocusedIndex((prev) =>
+            Math.min(prev + 1, Math.max(0, filteredAndSortedItems.length - 1))
+          );
+        },
+      },
+      {
+        key: "ArrowDown",
+        preventDefault: true,
+        handler: () => {
+          setFocusedIndex((prev) =>
+            Math.min(prev + 1, Math.max(0, filteredAndSortedItems.length - 1))
+          );
+        },
+      },
+      {
+        key: "k",
+        preventDefault: true,
+        handler: () => {
+          setFocusedIndex((prev) => Math.max(prev - 1, 0));
+        },
+      },
+      {
+        key: "ArrowUp",
+        preventDefault: true,
+        handler: () => {
+          setFocusedIndex((prev) => Math.max(prev - 1, 0));
+        },
+      },
+      {
+        key: "Enter",
+        preventDefault: true,
+        handler: () => {
+          if (!focusedRow) return false;
+          openSession(focusedRow);
+          return true;
+        },
+      },
+    ],
+    { enabled: true }
+  );
 
   const clearAllFilters = () => {
     setQueryInput("");

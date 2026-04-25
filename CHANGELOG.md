@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `browse-ui/` — Phase 9 docs acceptance:
+  - `/v2/settings` shipped with theme + density preferences, direct `/healthz` diagnostics, and a keyboard shortcuts reference.
+  - Global shortcut layer is mounted via shared `useKeyboardShortcuts` hook, including `G`-chord navigation, `?` → `/settings#shortcuts`, and insights tab switching with `1`/`2`.
+  - Session detail compare/export upgrade is shipped via `CompareSheet` + `SessionPicker` and markdown download flow (`/session/{id}.md`).
 - `browse-ui/` — Phase 8 feature delivery:
   - `/v2/insights` dashboard tab with KPI tiles, area/bar/donut charts, red-flag sessions table, and eval section.
   - `/v2/insights` live feed tab with SSE streaming, pause/resume controls (intentional drop-on-pause semantics), and connection-status badge.
