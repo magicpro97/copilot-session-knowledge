@@ -26,3 +26,7 @@ from browse.routes import timeline  # noqa: F401
 from browse.routes import session_export  # noqa: F401
 from browse.routes import session_compare  # noqa: F401
 from browse.routes import style_guide  # noqa: F401
+
+# NOTE: Must be LAST — registers /api/* routes after HTML route decorators run.
+# Reordering will cause /api/* paths to fall through to HTML 404 handler.
+import browse.api  # noqa: F401

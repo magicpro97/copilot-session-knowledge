@@ -122,6 +122,12 @@ COVERAGE_MANIFEST: "dict[str, list[tuple[str, str]]]" = {
     "Services": [
         ("launchd/",             "macOS LaunchAgent templates — reinstalled on update"),
     ],
+    "Browse UI": [
+        ("browse/api/",          "browse JSON API module (Pha 5 extract — /api/* endpoints)"),
+        ("browse-ui/src/",       "browse-ui Next.js source (TS + components)"),
+        ("browse-ui/public/",    "browse-ui static assets"),
+        ("browse-ui/dist/",      "browse-ui prebuilt artifacts (checked-in)"),
+    ],
     "Other": [
         ("docs/",                "documentation"),
         ("presets/",             "preset configurations"),
