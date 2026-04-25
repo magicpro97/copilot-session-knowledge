@@ -79,6 +79,27 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             self._send(body, ct, status, nonce)
             return
 
+        # /v2/ — pre-built Next.js UI; _next/* assets are public, pages require auth
+        if path.startswith("/v2/") or path == "/v2":
+            from browse.routes.serve_v2 import serve_v2
+            rel_path = path[len("/v2/"):] if path.startswith("/v2/") else ""
+            # Static assets (_next/) and public files are served without auth
+            if rel_path.startswith("_next/") or rel_path in ("favicon.ico", "robots.txt"):
+                body, ct, status = serve_v2(rel_path)
+                self._send(body, ct, status, nonce)
+                return
+            # Pages require auth
+            cookie_header = self.headers.get("Cookie", "")
+            valid, _token_val, should_set_cookie = check_token(
+                self.token, params, cookie_header
+            )
+            if not valid:
+                self._send(b"401 Unauthorized", "text/plain", 401, nonce)
+                return
+            body, ct, status = serve_v2(rel_path)
+            self._send(body, ct, status, nonce, set_cookie=should_set_cookie or None)
+            return
+
         # Auth check
         cookie_header = self.headers.get("Cookie", "")
         valid, token_val, should_set_cookie = check_token(

@@ -30,7 +30,14 @@ KNOWLEDGE.md
 # Local tentacle / multi-agent orchestration artifacts
 .octogent/
 
-# One-time publish scripts
+# browse-ui Node.js artifacts (dist/ is committed)
+browse-ui/node_modules/
+browse-ui/.next/
+browse-ui/tsconfig.tsbuildinfo
+browse-ui/.env.local
+browse-ui/.env*.local
+browse-ui/.turbo/
+
 publish.ps1
 publish.sh
 

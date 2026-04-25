@@ -1,0 +1,1 @@
+(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["object"==typeof document?document.currentScript:void 0,52683,e=>{"use strict";var t=e.i(13219),s=e.i(38334);e.s(["default",0,function(){let e=(0,t.useRouter)();return(0,s.useEffect)(()=>{e.replace("/sessions")},[e]),null}])}]);

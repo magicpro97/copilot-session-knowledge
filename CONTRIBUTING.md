@@ -80,3 +80,15 @@ All changes under `browse/` MUST obey:
    Run `UPDATE_SNAPSHOTS=1 python3 tests/test_visual_snapshot.py` to refresh baselines after
    intentional changes.
 
+## browse-ui (Next.js v2 UI)
+
+Changes under `browse-ui/src/` follow TypeScript/React conventions. Key rules:
+
+1. **Never edit `browse-ui/dist/` directly.** Run `cd browse-ui && pnpm build` instead.
+   The `block-edit-dist` hook will block direct edits.
+2. **Staged `package.json` requires lockfile.** If you change `browse-ui/package.json`, run
+   `pnpm install` and stage `pnpm-lock.yaml` too. The `pnpm-lockfile-guard` hook enforces this.
+3. **No `dangerouslySetInnerHTML` without sanitization.** Use `DOMPurify.sanitize()` or render
+   via the `<Highlight>` component. The `block-unsafe-html` hook enforces this.
+4. **Typecheck after TS edits.** Run `cd browse-ui && pnpm typecheck` after editing `.ts`/`.tsx`.
+

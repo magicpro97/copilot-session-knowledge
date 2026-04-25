@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `browse-ui/` — Next.js 16 static-export frontend scaffold (Phase 6):
+  - 6 stub routes: `/v2/sessions`, `/v2/sessions/[id]`, `/v2/search`, `/v2/insights`, `/v2/graph`, `/v2/settings`
+  - AppShell layout (sidebar + header) using shadcn/ui + Tailwind v4
+  - TanStack Query v5 provider, next-themes dark mode provider
+  - `lib/api/client.ts` — typed `apiFetch()` with token injection and 401 handling
+  - `lib/api/types.ts` — full TypeScript interface set matching Python API schema
+  - `hooks/use-sse.ts` — SSE hook with pause/resume; `hooks/use-density.ts`
+  - Vitest unit tests (3/3); Playwright E2E stub
+  - `dist/` committed to git — served at `/v2/*` by Python browse server
+- `browse/routes/serve_v2.py` — Python static file server for `browse-ui/dist/` at `/v2/*`:
+  - SPA fallback to `index.html` for unknown page paths
+  - Path traversal protection (`..` / null-byte rejection)
+  - `_next/` static assets served without auth; page routes require auth
+- `browse/core/server.py` — added `/v2/` prefix handling in `do_GET`
+- `hooks/rules/block_edit_dist.py` — `preToolUse`: blocks direct edits to `browse-ui/dist/`
+- `hooks/rules/nextjs_typecheck.py` — `postToolUse`: reminds to run `pnpm typecheck` after TS edits
+- `hooks/rules/pnpm_lockfile_guard.py` — `preToolUse`: blocks commit if `package.json` staged without `pnpm-lock.yaml`
+- `hooks/rules/block_unsafe_html.py` — `preToolUse`: blocks `dangerouslySetInnerHTML` without sanitization
+- `auto-update-tools.py`: `browse_ui` category in `classify_changes()`, `write_manifest()`, and `post_pull_pipeline()` step to rebuild `dist/` when source changes
+- `.gitignore`: `browse-ui/node_modules/`, `browse-ui/.next/` (dist/ is NOT ignored)
+
 - Design tokens layer (`browse/static/css/tokens.css`) — centralised colors, spacing, typography, shadows.
 - Component primitives (`browse/components/primitives.py`): `page_header`, `stat_grid`, `data_table`, `empty_state`, `badge`, `banner`, `card` — pure functions, stdlib only, documented escape contracts.
 - `/style-guide` route — visual reference for all primitive components.

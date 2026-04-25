@@ -1,0 +1,5 @@
+1:"$Sreact.fragment"
+2:I[47601,["/v2/_next/static/chunks/00o-7belgo~vg.js","/v2/_next/static/chunks/05wngqniy~_s9.js","/v2/_next/static/chunks/0fop1leqadlrf.js"],"OutletBoundary"]
+3:"$Sreact.suspense"
+0:{"rsc":["$","$1","c",{"children":[["$","div",null,{"children":[["$","h1",null,{"className":"text-2xl font-semibold","children":"Insights"}],["$","p",null,{"className":"mt-2 text-muted-foreground","children":"Implementation in Pha 7"}]]}],null,["$","$L2",null,{"children":["$","$3",null,{"name":"Next.MetadataOutlet","children":"$@4"}]}]]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"9moDXSXSEdQmfbu99aiu8"}
+4:null

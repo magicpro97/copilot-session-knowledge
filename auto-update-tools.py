@@ -496,6 +496,7 @@ def classify_changes(old_sha: str, new_sha: str) -> dict:
         "hooks":        [f for f in changed if f.startswith("hooks/")],
         "hooks_rules":  [f for f in changed if f.startswith("hooks/rules/")],
         "browse":       [f for f in changed if f.startswith("browse/")],
+        "browse_ui":    [f for f in changed if f.startswith("browse-ui/") and not f.startswith("browse-ui/dist/")],
         "providers":    [f for f in changed if f.startswith("providers/")],
         "scripts":      [f for f in changed if f.startswith("scripts/")],
         "workflows":    [f for f in changed if f.startswith(".github/workflows/")],
@@ -582,6 +583,10 @@ def post_pull_pipeline(old_sha: str, new_sha: str):
         if changes.get("embed"):
             trigger_embedding_rebuild()
 
+        # 6b. browse-ui source changed → rebuild Next.js UI (dist/ must stay fresh)
+        if changes.get("browse_ui"):
+            _rebuild_browse_ui()
+
         # 7. Install/update post-merge hook
         ensure_post_merge_hook()
 
@@ -659,6 +664,39 @@ def trigger_embedding_rebuild():
            if platform.system() == "Windows" else {}),
     )
     ok("Embedding rebuild triggered (background)")
+
+
+def _rebuild_browse_ui():
+    """Rebuild browse-ui dist/ when source files change during update pull."""
+    browse_ui_dir = TOOLS_DIR / "browse-ui"
+    if not browse_ui_dir.exists():
+        return
+    pkg_json = browse_ui_dir / "package.json"
+    if not pkg_json.exists():
+        return
+    log("browse-ui source changed — rebuilding Next.js UI...")
+    try:
+        r = subprocess.run(
+            ["pnpm", "install", "--frozen-lockfile"],
+            cwd=str(browse_ui_dir),
+            capture_output=True, text=True, timeout=120,
+        )
+        if r.returncode != 0:
+            warn(f"pnpm install failed: {r.stderr[:300]}")
+            return
+        r = subprocess.run(
+            ["pnpm", "build"],
+            cwd=str(browse_ui_dir),
+            capture_output=True, text=True, timeout=180,
+        )
+        if r.returncode == 0:
+            ok("browse-ui rebuilt successfully")
+        else:
+            warn(f"pnpm build failed: {r.stderr[:300]}")
+    except FileNotFoundError:
+        warn("pnpm not found — skipping browse-ui rebuild. Install pnpm to fix.")
+    except Exception as exc:
+        warn(f"browse-ui rebuild failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -800,7 +838,7 @@ def write_manifest(sha: str, changes: dict):
     ]
     manifest["changed_categories"] = {
         key: bool(changes.get(key))
-        for key in ("browse", "providers", "skills", "hooks", "hooks_rules",
+        for key in ("browse", "browse_ui", "providers", "skills", "hooks", "hooks_rules",
                     "scripts", "workflows", "launchd", "templates", "py_scripts")
         if key in changes
     }
