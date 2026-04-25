@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `browse-ui/` — Phase 7 acceptance slice:
+  - Foundation layer for v2 UI (shared hooks, schemas, formatters, layout/data primitives, charts, and command wiring)
+  - `/v2/sessions` sessions list with client-side filter/sort/pagination and keyboard navigation
+  - `/v2/sessions/[id]` session detail with Overview/Timeline/Mindmap/Checkpoints tabs, compare sheet, and markdown export action
+  - `/v2/search` faceted search with recent-query history, keyboard navigation, and session/detail jump actions
+  - Command palette improvements with fuzzy matching, grouped commands, and recent-search integration
 - `browse-ui/` — Next.js 16 static-export frontend scaffold (Phase 6):
   - 6 stub routes: `/v2/sessions`, `/v2/sessions/[id]`, `/v2/search`, `/v2/insights`, `/v2/graph`, `/v2/settings`
   - AppShell layout (sidebar + header) using shadcn/ui + Tailwind v4
