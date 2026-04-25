@@ -1,4 +1,5 @@
 """browse/core/server.py — ThreadingHTTPServer wrapper and request dispatcher."""
+import errno
 import os
 import sqlite3
 import sys
@@ -28,6 +29,8 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         status: int = 200,
         nonce: str = "",
         set_cookie: str | None = None,
+        csp_header: str | None = None,
+        send_body: bool = True,
     ) -> None:
         from browse.core.csp import build_csp_header
 
@@ -35,7 +38,9 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
 
-        if nonce:
+        if csp_header is not None:
+            csp = csp_header
+        elif nonce:
             csp = build_csp_header(nonce)
         else:
             csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
@@ -48,9 +53,17 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", make_cookie_header(set_cookie))
 
         self.end_headers()
-        self.wfile.write(body)
+        if send_body:
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except OSError as exc:
+                if exc.errno in (errno.EPIPE, errno.ECONNRESET):
+                    return
+                raise
 
-    def do_GET(self) -> None:
+    def _handle_get_like(self, send_body: bool = True) -> None:
         from browse.core.auth import check_token
         from browse.core.csp import generate_nonce
         from browse.core.fts import _esc
@@ -69,24 +82,26 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 body, ct, status = handler_fn(self.db, params, "", nonce, **kwargs)
             else:
                 body, ct, status = b"404 Not Found", "text/plain", 404
-            self._send(body, ct, status, nonce)
+            self._send(body, ct, status, nonce, send_body=send_body)
             return
 
         # /static/ — no auth required; hardened path check
         if path.startswith("/static/"):
             rel_path = path[len("/static/"):]
             body, ct, status = serve_static(self, rel_path)
-            self._send(body, ct, status, nonce)
+            self._send(body, ct, status, nonce, send_body=send_body)
             return
 
         # /v2/ — pre-built Next.js UI; _next/* assets are public, pages require auth
         if path.startswith("/v2/") or path == "/v2":
+            from browse.core.csp import build_v2_csp_header
             from browse.routes.serve_v2 import serve_v2
             rel_path = path[len("/v2/"):] if path.startswith("/v2/") else ""
+            v2_csp = build_v2_csp_header()
             # Static assets (_next/) and public files are served without auth
             if rel_path.startswith("_next/") or rel_path in ("favicon.ico", "robots.txt"):
                 body, ct, status = serve_v2(rel_path)
-                self._send(body, ct, status, nonce)
+                self._send(body, ct, status, nonce, csp_header=v2_csp, send_body=send_body)
                 return
             # Pages require auth
             cookie_header = self.headers.get("Cookie", "")
@@ -94,10 +109,25 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 self.token, params, cookie_header
             )
             if not valid:
-                self._send(b"401 Unauthorized", "text/plain", 401, nonce)
+                self._send(
+                    b"401 Unauthorized",
+                    "text/plain",
+                    401,
+                    nonce,
+                    csp_header=v2_csp,
+                    send_body=send_body,
+                )
                 return
             body, ct, status = serve_v2(rel_path)
-            self._send(body, ct, status, nonce, set_cookie=should_set_cookie or None)
+            self._send(
+                body,
+                ct,
+                status,
+                nonce,
+                set_cookie=should_set_cookie or None,
+                csp_header=v2_csp,
+                send_body=send_body,
+            )
             return
 
         # Auth check
@@ -107,13 +137,13 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         )
 
         if not valid:
-            self._send(b"401 Unauthorized", "text/plain", 401, nonce)
+            self._send(b"401 Unauthorized", "text/plain", 401, nonce, send_body=send_body)
             return
 
         # Route dispatch
         handler_fn, kwargs = match_route(path, "GET")
         if handler_fn is None:
-            self._send(b"404 Not Found", "text/plain", 404, nonce)
+            self._send(b"404 Not Found", "text/plain", 404, nonce, send_body=send_body)
             return
 
         try:
@@ -126,6 +156,13 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         # SSE streaming: body is a callable factory(stop_event) → generator.
         # Detected by Content-Type; avoids Content-Length header issues.
         if ct == "text/event-stream":
+            if not send_body:
+                self.send_response(status)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Accel-Buffering", "no")
+                self.end_headers()
+                return
             import threading as _th
             from browse.core.streaming import sse_response
             _stop = _th.Event()
@@ -144,7 +181,14 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             status,
             nonce,
             set_cookie=token_val if should_set_cookie else None,
+            send_body=send_body,
         )
+
+    def do_GET(self) -> None:
+        self._handle_get_like(send_body=True)
+
+    def do_HEAD(self) -> None:
+        self._handle_get_like(send_body=False)
 
     def do_POST(self) -> None:
         from browse.core.auth import check_token, check_origin

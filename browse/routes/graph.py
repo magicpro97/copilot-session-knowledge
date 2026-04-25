@@ -11,6 +11,7 @@ if os.name == "nt":
 from browse.core.registry import route
 from browse.core.fts import _esc
 from browse.core.templates import base_page
+from browse.components import banner
 
 # Node color palette keyed by knowledge category
 CATEGORY_COLORS: dict[str, str] = {
@@ -171,6 +172,12 @@ def handle_api_graph(db, params, token, nonce) -> tuple:
 def handle_graph(db, params, token, nonce) -> tuple:
     tok_qs = f"?token={_esc(token)}" if token else ""
     nonce_esc = _esc(nonce)
+    legacy_notice = banner(
+        f'Legacy v1 HTML page (/graph) is deprecated and kept for backward compatibility. '
+        f'Use <a href="/v2/graph{tok_qs}">/v2/graph</a> as the primary UI.',
+        variant="warning",
+        icon="⚠",
+    )
 
     # Collect distinct wings for filter sidebar
     try:
@@ -237,7 +244,7 @@ def handle_graph(db, params, token, nonce) -> tuple:
     return base_page(
         nonce,
         "Knowledge Graph",
-        main_content=canvas,
+        main_content=legacy_notice + canvas,
         head_extra=head_extra,
         body_scripts=body_scripts,
         token=token,

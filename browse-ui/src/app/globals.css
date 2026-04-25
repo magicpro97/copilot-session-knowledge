@@ -104,12 +104,14 @@
   --font-size-compact: 0.8125rem;     /* 13px */
   --cell-padding: 0.75rem 1rem;
   --sidebar-width: 16rem;
+  --sidebar-rail-width: 4rem;
 }
 
 .density-compact {
   --row-height: 2rem;
   --cell-padding: 0.25rem 0.5rem;
   --sidebar-width: 14rem;
+  --sidebar-rail-width: 3.5rem;
 }
 
 @layer base {

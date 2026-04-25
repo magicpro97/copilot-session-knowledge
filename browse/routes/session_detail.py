@@ -12,6 +12,7 @@ if os.name == "nt":
 from browse.core.registry import route
 from browse.core.fts import _esc, _SESSION_ID_RE
 from browse.core.templates import base_page
+from browse.components import banner
 
 
 @route("/session/{id}", methods=["GET"])
@@ -85,6 +86,12 @@ def handle_session_detail(db, params, token, nonce, session_id: str = "") -> tup
 
     tok_qs = f"?token={_esc(token)}" if token else ""
     token_part = f"&token={_esc(token)}" if token else ""
+    legacy_notice = banner(
+        f'Legacy v1 HTML page (/session/&lt;id&gt;) is deprecated and kept for backward compatibility. '
+        f'Use <a href="/v2/sessions/{_esc(session_id)}{tok_qs}">/v2/sessions/{_esc(session_id)}</a> as the primary UI.',
+        variant="warning",
+        icon="⚠",
+    )
     nav_html = (
         f'<div class="session-actions" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:1rem 0;">'
         f'<a role="button" class="secondary" href="/session/{session_id}/timeline{tok_qs}">📜 Timeline</a>'
@@ -116,7 +123,7 @@ def handle_session_detail(db, params, token, nonce, session_id: str = "") -> tup
     else:
         tool_html = ""
 
-    body = f"{meta_html}\n{nav_html}\n{tool_html}\n<h2>Timeline</h2>\n{tl_html}"
+    body = f"{legacy_notice}{meta_html}\n{nav_html}\n{tool_html}\n<h2>Timeline</h2>\n{tl_html}"
     sid_short = session_id[:8]
     return (
         base_page(nonce, f"Session {_esc(sid_short)}", main_content=body, token=token),

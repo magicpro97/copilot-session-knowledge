@@ -14,19 +14,24 @@ type BreadcrumbsProps = {
 };
 
 export function Breadcrumbs({ items, className }: BreadcrumbsProps) {
+  if (items.length === 0) return null;
+
   return (
     <nav aria-label="Breadcrumb" className={cn("text-sm", className)}>
       <ol className="flex flex-wrap items-center gap-1 text-muted-foreground">
         {items.map((item, index) => {
           const isLast = index === items.length - 1;
           return (
-            <li key={`${item.label}-${index}`} className="flex items-center gap-1">
+            <li key={`${item.label}-${index}`} className="flex min-w-0 items-center gap-1">
               {item.href && !isLast ? (
-                <Link href={item.href} className="hover:text-foreground">
+                <Link href={item.href} className="truncate hover:text-foreground">
                   {item.label}
                 </Link>
               ) : (
-                <span className={isLast ? "font-medium text-foreground" : undefined}>
+                <span
+                  aria-current={isLast ? "page" : undefined}
+                  className={cn("truncate", isLast ? "font-medium text-foreground" : undefined)}
+                >
                   {item.label}
                 </span>
               )}

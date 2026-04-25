@@ -13,6 +13,7 @@ if os.name == "nt":
 from browse.core.registry import route
 from browse.core.fts import _esc
 from browse.core.templates import base_page
+from browse.components import banner
 
 _VERDICT_VALUES = frozenset({-1, 0, 1})
 _MAX_QUERY = 500
@@ -48,6 +49,13 @@ def _ensure_feedback_table(db) -> None:
 def handle_eval(db, params, token, nonce) -> tuple:
     """GET /eval — Admin view: feedback aggregation by query."""
     _ensure_feedback_table(db)
+    tok_qs = f"?token={_esc(token)}" if token else ""
+    legacy_notice = banner(
+        f'Legacy v1 HTML page (/eval) is deprecated and kept for backward compatibility. '
+        f'There is no 1:1 /v2 replacement yet; use <a href="/v2/search{tok_qs}">/v2/search</a> for primary search UX.',
+        variant="warning",
+        icon="⚠",
+    )
 
     try:
         agg_rows = db.execute("""
@@ -122,7 +130,8 @@ def handle_eval(db, params, token, nonce) -> tuple:
         comments_html = ""
 
     main_content = (
-        "<h2>Feedback Aggregation</h2>\n"
+        legacy_notice
+        + "<h2>Feedback Aggregation</h2>\n"
         + agg_html
         + "\n"
         + comments_html

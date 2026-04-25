@@ -14,6 +14,7 @@ if os.name == "nt":
 from browse.core.registry import route
 from browse.core.fts import _esc
 from browse.core.templates import base_page
+from browse.components import banner
 
 # Validation: session id — alphanumeric + dashes, ≤64 chars
 _DIFF_SESSION_RE = re.compile(r"^[a-zA-Z0-9-]{1,64}$")
@@ -226,6 +227,13 @@ def handle_diff(db, params, token, nonce) -> tuple:
     to_label = _esc(f"{data['to']['seq']}: {data['to']['title']}")
     tok_esc = _esc(token)
     stats = data["stats"]
+    tok_qs = f"?token={_esc(token)}" if token else ""
+    legacy_notice = banner(
+        f'Legacy v1 HTML page (/diff) is deprecated and kept for backward compatibility. '
+        f'There is no 1:1 /v2 replacement yet; start from <a href="/v2/sessions{tok_qs}">/v2/sessions</a>.',
+        variant="warning",
+        icon="⚠",
+    )
 
     # Embed diff string safely in JS (escape < to prevent </script> injection)
     unified_json = json.dumps(data["unified_diff"]).replace("<", r"\u003c")
@@ -236,6 +244,7 @@ def handle_diff(db, params, token, nonce) -> tuple:
     )
 
     main_content = (
+        f"{legacy_notice}"
         f'<p class="meta">'
         f"<b>Session:</b> {sid_esc} &nbsp; "
         f"<b>From:</b> {from_label} &nbsp; "

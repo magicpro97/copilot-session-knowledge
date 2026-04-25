@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `browse-ui/` — Phase 10 final shell polish + docs truthfulness:
+  - Sidebar now supports a persistent collapsible rail mode with `⌘B / Ctrl+B` for density control.
+  - Header now renders route-aware breadcrumbs + context text while keeping command discoverability (`⌘K`) and theme toggle in place.
+  - `/v2` not-found state now provides integrated recovery actions (Sessions/Search) and command-palette guidance.
+  - `docs/design/browse-ui/README.md` now reflects shipped status (design archive), rather than pre-implementation readiness wording.
 - `browse-ui/` — Phase 9 docs acceptance:
   - `/v2/settings` shipped with theme + density preferences, direct `/healthz` diagnostics, and a keyboard shortcuts reference.
   - Global shortcut layer is mounted via shared `useKeyboardShortcuts` hook, including `G`-chord navigation, `?` → `/settings#shortcuts`, and insights tab switching with `1`/`2`.

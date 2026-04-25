@@ -252,9 +252,9 @@ python browse.py --port 8080 --token YOUR_TOKEN
 
 Security: token is required on every request; `Content-Security-Policy` blocks inline scripts. Do not expose this port externally.
 
-#### New UI (v2) — Next.js
+#### Primary UI (v2) — Next.js
 
-The `/v2/*` routes serve a modern Next.js 16 frontend (`browse-ui/`). Access it at `http://127.0.0.1:8080/v2/sessions?token=YOUR_TOKEN`.
+The `/v2/*` routes are the primary browse experience and serve the modern Next.js 16 frontend (`browse-ui/`). Start at `http://127.0.0.1:8080/v2/sessions?token=YOUR_TOKEN`.
 
 | Route | Description |
 |-------|-------------|
@@ -265,12 +265,14 @@ The `/v2/*` routes serve a modern Next.js 16 frontend (`browse-ui/`). Access it 
 | `/v2/graph` | Knowledge graph (force-directed) |
 | `/v2/settings` | Preferences |
 
-To rebuild the UI after editing `browse-ui/src/`:
+To rebuild the primary UI after editing `browse-ui/src/`:
 ```bash
 cd browse-ui && pnpm build
 ```
 
-#### Classic UI (v1)
+#### Legacy UI (v1, deprecated but still supported)
+
+The classic Python-rendered HTML routes remain available for backward compatibility while v2 is the default path.
 
 | # | Route | Description |
 |---|-------|-------------|

@@ -13,7 +13,7 @@ if os.name == "nt":
 from browse.core.registry import route
 from browse.core.fts import _esc
 from browse.core.templates import base_page
-from browse.components import stat_grid, data_table, empty_state, page_header
+from browse.components import stat_grid, data_table, empty_state, page_header, banner
 
 _ARRAY_CAP = 100
 
@@ -159,6 +159,12 @@ def handle_api_dashboard_stats(db, params, token, nonce) -> tuple:
 def handle_dashboard(db, params, token, nonce) -> tuple:
     tok_qs = f"?token={_esc(token)}" if token else ""
     nonce_esc = _esc(nonce)
+    legacy_notice = banner(
+        f'Legacy v1 HTML page (/dashboard) is deprecated and kept for backward compatibility. '
+        f'Use <a href="/v2/insights{tok_qs}">/v2/insights</a> as the primary UI.',
+        variant="warning",
+        icon="⚠",
+    )
 
     # KPI tiles
     totals = _query_totals(db)
@@ -189,7 +195,7 @@ def handle_dashboard(db, params, token, nonce) -> tuple:
         '</div>\n'
     )
 
-    main_content = kpi_html + charts_html
+    main_content = legacy_notice + kpi_html + charts_html
 
     # Red flags section
     red_rows = []

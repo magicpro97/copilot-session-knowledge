@@ -10,6 +10,7 @@ if os.name == "nt":
 from browse.core.registry import route
 from browse.core.fts import _esc, _SESSION_ID_RE
 from browse.core.templates import base_page
+from browse.components import banner
 
 
 def _fetch_session_data(db, session_id: str) -> tuple:
@@ -105,6 +106,13 @@ def _render_form(db, token: str, a_val: str, b_val: str) -> str:
 def handle_session_compare(db, params, token, nonce) -> tuple:
     a = params.get("a", [""])[0]
     b = params.get("b", [""])[0]
+    tok_qs = f"?token={_esc(token)}" if token else ""
+    legacy_notice = banner(
+        f'Legacy v1 HTML page (/compare) is deprecated and kept for backward compatibility. '
+        f'There is no 1:1 /v2 replacement yet; start from <a href="/v2/sessions{tok_qs}">/v2/sessions</a>.',
+        variant="warning",
+        icon="⚠",
+    )
 
     a_valid = bool(a and _SESSION_ID_RE.match(a))
     b_valid = bool(b and _SESSION_ID_RE.match(b))
@@ -117,6 +125,8 @@ def handle_session_compare(db, params, token, nonce) -> tuple:
         col_b = _render_column(b, sess_b, tl_b)
 
         body = (
+            legacy_notice
+            +
             '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">\n'
             f"  <div>{col_a}</div>\n"
             f"  <div>{col_b}</div>\n"
@@ -129,7 +139,7 @@ def handle_session_compare(db, params, token, nonce) -> tuple:
         )
 
     # Form fallback
-    body = _render_form(db, token, a, b)
+    body = legacy_notice + _render_form(db, token, a, b)
     return (
         base_page(nonce, "Compare Sessions", main_content=body, token=token),
         "text/html; charset=utf-8",

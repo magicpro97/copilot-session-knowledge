@@ -13,6 +13,7 @@ if os.name == "nt":
 from browse.core.registry import route
 from browse.core.fts import _esc
 from browse.core.templates import base_page
+from browse.components import banner
 
 _MAX_SECONDS = 600      # 10 minutes max SSE connection lifetime
 _POLL_INTERVAL = 2.0    # seconds between DB polls
@@ -99,8 +100,15 @@ def handle_live(db, params, token, nonce) -> tuple:
     tok_qs = f"?token={_esc(token)}" if token else ""
     nonce_esc = _esc(nonce)
     tok_esc = _esc(token)
+    legacy_notice = banner(
+        f'Legacy v1 HTML page (/live) is deprecated and kept for backward compatibility. '
+        f'There is no 1:1 /v2 replacement yet; start from <a href="/v2/insights{tok_qs}">/v2/insights</a>.',
+        variant="warning",
+        icon="⚠",
+    )
 
     main_content = (
+        f"{legacy_notice}"
         '<div id="live-status" style="margin-bottom:0.5rem;">'
         '<span id="live-badge" style="color:var(--pico-muted-color,#6c757d);">'
         "Connecting\u2026</span>"

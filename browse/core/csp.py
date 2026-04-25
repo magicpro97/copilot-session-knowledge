@@ -28,3 +28,16 @@ def build_csp_header(nonce: str) -> str:
         f"frame-ancestors 'none'; "
         f"base-uri 'self'"
     )
+
+
+def build_v2_csp_header() -> str:
+    """Build CSP for static /v2 export (inline scripts without nonce attributes)."""
+    return (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'"
+    )

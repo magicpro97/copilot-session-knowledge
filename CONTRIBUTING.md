@@ -82,6 +82,17 @@ All changes under `browse/` MUST obey:
 
 ## browse-ui (Next.js v2 UI)
 
+`browse-ui/` is the primary browse UI surface. Prefer implementing UI/product changes in v2 first; touch legacy `browse/routes/*.py` HTML only for compatibility fixes or deprecation guidance.
+
+Typical workflow:
+
+```bash
+cd browse-ui
+pnpm install
+pnpm typecheck
+pnpm build
+```
+
 Changes under `browse-ui/src/` follow TypeScript/React conventions. Key rules:
 
 1. **Never edit `browse-ui/dist/` directly.** Run `cd browse-ui && pnpm build` instead.
@@ -91,4 +102,3 @@ Changes under `browse-ui/src/` follow TypeScript/React conventions. Key rules:
 3. **No `dangerouslySetInnerHTML` without sanitization.** Use `DOMPurify.sanitize()` or render
    via the `<Highlight>` component. The `block-unsafe-html` hook enforces this.
 4. **Typecheck after TS edits.** Run `cd browse-ui && pnpm typecheck` after editing `.ts`/`.tsx`.
-

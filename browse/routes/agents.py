@@ -1,4 +1,8 @@
-"""DEPRECATED: merged into timeline.py. Kept as import shim for backward compat; safe to delete next release."""
+"""DEPRECATED SHIM: merged into timeline.py.
+
+Retained for backward compatibility with legacy imports/tests.
+No routes are registered from this module.
+"""
 import os
 import sys
 

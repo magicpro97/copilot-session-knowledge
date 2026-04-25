@@ -13,6 +13,7 @@ import re as _re
 from browse.core.registry import route
 from browse.core.fts import _esc, _SESSION_ID_RE
 from browse.core.templates import base_page
+from browse.components import banner
 
 _MAX_LIMIT = 200
 _DEFAULT_LIMIT = 50
@@ -158,11 +159,19 @@ def handle_session_timeline(db, params, token, nonce, session_id: str = "") -> t
 
     total = _count_events(db, session_id)
     sid_esc = _esc(session_id)
+    tok_qs = f"?token={_esc(token)}" if token else ""
+    legacy_notice = banner(
+        f'Legacy v1 HTML page (/session/&lt;id&gt;/timeline) is deprecated and kept for backward compatibility. '
+        f'Use <a href="/v2/sessions/{sid_esc}{tok_qs}">/v2/sessions/{sid_esc}</a> as the primary UI.',
+        variant="warning",
+        icon="⚠",
+    )
     slider_max = max(total - 1, 0)
     slider_disabled = ' disabled' if total == 0 else ''
     no_events_msg = "(no events for this session)" if total == 0 else "Loading..."
 
     main_content = (
+        f"{legacy_notice}"
         f'<p class="meta"><b>Session:</b> {sid_esc} &nbsp; <b>Events:</b> {total}</p>\n'
         f'<div class="legend">'
         f'<span style="color:#7c3aed">&#9632; Orchestrator</span> '

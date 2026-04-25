@@ -1,8 +1,8 @@
 # browse-ui Design Phase Artifacts
 
-This folder is the **design phase output** for the `browse-ui/` rebuild
-(Next.js 15 + shadcn/ui + Tailwind v4). All implementation in Pha 5+ MUST be
-traceable back to a section in these docs.
+This folder is the **design-phase archive** for the `browse-ui/` rebuild
+(Next.js + shadcn/ui + Tailwind v4). Shipped implementation in Pha 5–10 is
+traceable back to these docs.
 
 ## Read order
 
@@ -31,9 +31,9 @@ traceable back to a section in these docs.
 
 ## Status
 
-**Design phase: CLEAN.** Ready for Pha 5 (API extraction + Python envelope
-updates) and Pha 6 (`browse-ui/` scaffold).
+**Design phase: COMPLETE and implemented.** The planned work is now shipped
+through Pha 10, including runtime acceptance, deterministic Playwright lanes,
+and final shell polish.
 
-Process used: 4 parallel design agents (Opus-4.6) → cross-review (Opus-4.6
-rubber-duck) → fix synthesis (Opus-4.6) → reader test (Sonnet-4.6) → medium
-fix (Sonnet-4.6). Orchestrator did not write any design content directly.
+This directory remains the canonical rationale/audit trail for implementation
+decisions and regression checks.

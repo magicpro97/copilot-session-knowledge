@@ -11,6 +11,7 @@ if os.name == "nt":
 from browse.core.registry import route
 from browse.core.fts import _esc, _SESSION_ID_RE
 from browse.core.templates import base_page
+from browse.components import banner
 
 _MAX_MARKDOWN = 100 * 1024  # 100 KB hard cap to avoid browser freeze
 
@@ -90,8 +91,16 @@ def handle_session_mindmap(db, params, token, nonce, session_id: str = "") -> tu
     sid_esc = _esc(session_id)
     api_url = f"/api/session/{sid_esc}/mindmap"
     tok_esc = _esc(token)
+    tok_qs = f"?token={tok_esc}" if token else ""
+    legacy_notice = banner(
+        f'Legacy v1 HTML page (/session/&lt;id&gt;/mindmap) is deprecated and kept for backward compatibility. '
+        f'Use <a href="/v2/sessions/{sid_esc}{tok_qs}">/v2/sessions/{sid_esc}</a> as the primary UI.',
+        variant="warning",
+        icon="⚠",
+    )
 
     main_content = (
+        f"{legacy_notice}"
         f'<p class="meta"><b>Session:</b> {sid_esc}</p>\n'
         f'<div id="mindmap-wrap">\n'
         f'  <div id="mindmap-toolbar">\n'

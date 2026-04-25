@@ -73,6 +73,12 @@ def handle_sessions(db, params, token, nonce) -> tuple:
         return json.dumps(data).encode("utf-8"), "application/json", 200
 
     tok_qs = f"?token={_esc(token)}" if token else ""
+    legacy_notice = _banner(
+        f'Legacy v1 HTML page (/sessions) is deprecated and kept for backward compatibility. '
+        f'Use <a href="/v2/sessions{tok_qs}">/v2/sessions</a> as the primary UI.',
+        variant="warning",
+        icon="⚠",
+    )
     table_rows = []
     for r in rows:
         sid = _esc(r["id"])
@@ -88,7 +94,7 @@ def handle_sessions(db, params, token, nonce) -> tuple:
 
     tok_esc = _esc(token)
     body = (
-        f"{banner_html}"
+        f"{legacy_notice}{banner_html}"
         f'<form action="/sessions" method="get">\n'
         f'  <input type="hidden" name="token" value="{tok_esc}">\n'
         f'  <input type="text" name="q" value="{_esc(q)}" placeholder="Search sessions&hellip;">\n'

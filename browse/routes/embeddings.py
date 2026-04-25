@@ -12,6 +12,7 @@ from browse.core.registry import route
 from browse.core.fts import _esc
 from browse.core.templates import base_page
 from browse.core.projection import get_projection
+from browse.components import banner
 
 
 @route("/api/embeddings/points", methods=["GET"])
@@ -33,8 +34,15 @@ def handle_api_embeddings_points(db, params, token, nonce) -> tuple:
 def handle_embeddings(db, params, token, nonce) -> tuple:
     tok_qs = f"?token={_esc(token)}" if token else ""
     nonce_esc = _esc(nonce)
+    legacy_notice = banner(
+        f'Legacy v1 HTML page (/embeddings) is deprecated and kept for backward compatibility. '
+        f'There is no 1:1 /v2 replacement yet; start from <a href="/v2/insights{tok_qs}">/v2/insights</a>.',
+        variant="warning",
+        icon="⚠",
+    )
 
     main_content = (
+        f"{legacy_notice}"
         '<div style="margin-bottom:0.75rem;display:flex;gap:0.75rem;'
         'align-items:center;flex-wrap:wrap;">\n'
         '  <label for="cat-filter"><strong>Category:</strong></label>\n'

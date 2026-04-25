@@ -10,6 +10,7 @@ if os.name == "nt":
 from browse.core.registry import route
 from browse.core.fts import _esc
 from browse.core.templates import base_page
+from browse.components import banner
 
 
 def _checkbox(value: str, label: str, checked: bool = False) -> str:
@@ -23,6 +24,12 @@ def _checkbox(value: str, label: str, checked: bool = False) -> str:
 def _search_page_html(token: str, nonce: str) -> bytes:
     tok_esc = _esc(token)
     tok_qs = f"?token={tok_esc}" if token else ""
+    legacy_notice = banner(
+        f'Legacy v1 HTML page (/search) is deprecated and kept for backward compatibility. '
+        f'Use <a href="/v2/search{tok_qs}">/v2/search</a> as the primary UI.',
+        variant="warning",
+        icon="⚠",
+    )
 
     facets = (
         '<div id="search-facets">\n'
@@ -52,6 +59,7 @@ def _search_page_html(token: str, nonce: str) -> bytes:
     )
 
     main_content = (
+        f"{legacy_notice}"
         '<div id="search-wrap">\n'
         '  <input id="q" type="search" placeholder="Search sessions + knowledge..."'
         ' autofocus autocomplete="off">\n'

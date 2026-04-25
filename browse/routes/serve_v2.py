@@ -44,8 +44,8 @@ def serve_v2(rel_path: str) -> tuple:
         )
         return msg, "text/plain", 404
 
-    # Security: reject path traversal
-    if ".." in rel_path or "\x00" in rel_path:
+    # Security: reject NUL byte; traversal guarded below via resolve()+relative_to()
+    if "\x00" in rel_path:
         return b"400 Bad Request", "text/plain", 400
 
     # Normalise: strip leading slash

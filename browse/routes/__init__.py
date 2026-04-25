@@ -15,6 +15,8 @@ from browse.routes import sessions  # noqa: F401
 from browse.routes import session_detail  # noqa: F401
 from browse.routes import search  # noqa: F401
 from browse.routes import search_api  # noqa: F401
+# Deprecated shim retained for compatibility/tests; safe removal requires
+# removing downstream imports first.
 from browse.routes import agents  # noqa: F401
 from browse.routes import dashboard  # noqa: F401
 from browse.routes import diff  # noqa: F401
