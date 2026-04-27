@@ -369,7 +369,10 @@ _test_learn_human()
 print("\n🔍 query-session.py — _export_json field types")
 
 
-def _test_export_json_types():
+@with_test_db
+def _test_export_json_types(db_path):
+    orig_db_path = _qs.DB_PATH
+    _qs.DB_PATH = Path(db_path)
     rows = [
         {
             "id": 1, "category": "pattern", "title": "T",
@@ -379,28 +382,31 @@ def _test_export_json_types():
             "task_id": "memory-contract",
         }
     ]
-    with _CapStdout() as cap:
-        _qs._export_json(rows)
-    output = cap.getvalue().strip()
-
     try:
-        data = json.loads(output)
-        test("_export_json: valid JSON", True)
-    except json.JSONDecodeError as e:
-        test("_export_json: valid JSON", False, str(e))
-        return
+        with _CapStdout() as cap:
+            _qs._export_json(rows)
+        output = cap.getvalue().strip()
 
-    test("_export_json: result is a list", isinstance(data, list))
-    item = data[0] if data else {}
-    af = item.get("affected_files")
-    test("_export_json: affected_files is list (not str)",
-         isinstance(af, list), f"type={type(af).__name__}, val={af!r}")
-    test("_export_json: affected_files contains expected files",
-         isinstance(af, list) and "briefing.py" in af,
-         f"got: {af!r}")
-    facts = item.get("facts")
-    test("_export_json: facts is list (not str)",
-         isinstance(facts, list), f"type={type(facts).__name__}, val={facts!r}")
+        try:
+            data = json.loads(output)
+            test("_export_json: valid JSON", True)
+        except json.JSONDecodeError as e:
+            test("_export_json: valid JSON", False, str(e))
+            return
+
+        test("_export_json: result is a list", isinstance(data, list))
+        item = data[0] if data else {}
+        af = item.get("affected_files")
+        test("_export_json: affected_files is list (not str)",
+             isinstance(af, list), f"type={type(af).__name__}, val={af!r}")
+        test("_export_json: affected_files contains expected files",
+             isinstance(af, list) and "briefing.py" in af,
+             f"got: {af!r}")
+        facts = item.get("facts")
+        test("_export_json: facts is list (not str)",
+             isinstance(facts, list), f"type={type(facts).__name__}, val={facts!r}")
+    finally:
+        _qs.DB_PATH = orig_db_path
 
 
 _test_export_json_types()

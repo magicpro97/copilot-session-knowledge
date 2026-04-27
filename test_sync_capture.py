@@ -472,11 +472,15 @@ test(
 health_buf = io.StringIO()
 health_exit = 0
 sync_status.main.__globals__["sys"].argv = ["sync-status.py", "--health-check", "--no-health", "--json"]
+orig_collect_status = sync_status.collect_status
+sync_status.collect_status = lambda check_health=True: orig_collect_status(db_path=db_path, check_health=check_health)
 try:
     with redirect_stdout(health_buf):
         sync_status.main()
 except SystemExit as exc:
     health_exit = int(exc.code)
+finally:
+    sync_status.collect_status = orig_collect_status
 health_payload = json.loads(health_buf.getvalue())
 test(
     "sync-status health-check treats configured skipped probe as healthy",

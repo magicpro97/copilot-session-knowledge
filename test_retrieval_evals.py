@@ -1045,6 +1045,10 @@ def test_adaptive_strictness() -> None:
 def test_semantic_feedback_fragment_visibility() -> None:
     print("\n🧠 12. semantic feedback fragment visibility")
 
+    fd, db_path = tempfile.mkstemp(suffix=".db", prefix="re_semantic_", dir=str(TOOLS_DIR))
+    os.close(fd)
+    db = _make_db(db_path)
+
     fake_embed = types.ModuleType("embed")
     fake_embed.load_config = lambda: {}
     fake_embed.ensure_embedding_tables = lambda db: None
@@ -1063,6 +1067,8 @@ def test_semantic_feedback_fragment_visibility() -> None:
     ]
 
     old_embed = sys.modules.get("embed")
+    old_db_path = _qs.DB_PATH
+    _qs.DB_PATH = Path(db_path)
     sys.modules["embed"] = fake_embed
     try:
         with _Cap() as cap:
@@ -1097,10 +1103,16 @@ def test_semantic_feedback_fragment_visibility() -> None:
              "Feedback: bias=" not in zero_bias_verbose_out,
              f"output={zero_bias_verbose_out!r}")
     finally:
+        _qs.DB_PATH = old_db_path
         if old_embed is None:
             sys.modules.pop("embed", None)
         else:
             sys.modules["embed"] = old_embed
+        try:
+            db.close()
+            Path(db_path).unlink()
+        except OSError:
+            pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════

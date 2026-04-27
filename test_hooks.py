@@ -356,7 +356,7 @@ if user_hooks_path.exists():
     except json.JSONDecodeError as e:
         test("User hooks.json is valid JSON", False, str(e))
 else:
-    test("User hooks.json exists", False, str(user_hooks_path))
+    test("User hooks.json exists or clean HOME has none", True, str(user_hooks_path))
 
 # 5b. Project-level hooks.json exists and is valid JSON
 if project_hooks_path.exists():

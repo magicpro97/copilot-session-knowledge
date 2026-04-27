@@ -12,6 +12,7 @@ import sys
 import os
 import re
 import json
+import sqlite3
 import subprocess
 import tempfile
 import plistlib
@@ -35,6 +36,109 @@ def test(name: str, condition: bool, detail: str = ""):
     else:
         FAIL += 1
         print(f"  ❌ {name}" + (f" — {detail}" if detail else ""))
+
+
+def _seed_briefing_test_home(base_dir: Path) -> Path:
+    """Create a deterministic HOME + knowledge.db fixture for briefing subprocesses."""
+    home = Path(tempfile.mkdtemp(prefix="briefing-home-", dir=str(base_dir)))
+    db_path = home / ".copilot" / "session-state" / "knowledge.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    db = sqlite3.connect(str(db_path))
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            doc_type TEXT NOT NULL,
+            seq INTEGER DEFAULT 0,
+            title TEXT NOT NULL,
+            file_path TEXT NOT NULL UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            document_id INTEGER,
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            tags TEXT DEFAULT '',
+            confidence REAL DEFAULT 1.0,
+            occurrence_count INTEGER DEFAULT 1,
+            first_seen TEXT,
+            last_seen TEXT,
+            source TEXT DEFAULT 'copilot',
+            topic_key TEXT,
+            revision_count INTEGER DEFAULT 1,
+            content_hash TEXT,
+            wing TEXT DEFAULT '',
+            room TEXT DEFAULT '',
+            facts TEXT DEFAULT '[]',
+            est_tokens INTEGER DEFAULT 0,
+            task_id TEXT DEFAULT '',
+            affected_files TEXT DEFAULT '[]',
+            source_section TEXT DEFAULT '',
+            source_file TEXT DEFAULT '',
+            start_line INTEGER,
+            end_line INTEGER,
+            code_language TEXT DEFAULT '',
+            code_snippet TEXT DEFAULT ''
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
+            title, content, tags, category, wing, room, facts
+        );
+        CREATE TABLE IF NOT EXISTS knowledge_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL,
+            target_id INTEGER NOT NULL,
+            relation_type TEXT NOT NULL,
+            confidence REAL DEFAULT 0.5
+        );
+    """)
+
+    doc_id = db.execute(
+        "INSERT INTO documents (session_id, doc_type, seq, title, file_path) VALUES (?, ?, ?, ?, ?)",
+        ("fixes-session-001", "checkpoint", 1, "Deterministic briefing fixture", "checkpoints/001.md"),
+    ).lastrowid
+
+    entries = [
+        ("mistake", "Code review auth SQL pitfall", "In code review, avoid auth SQL string interpolation."),
+        ("pattern", "Code review uses deterministic DB fixture", "For review auth PR tests, seed deterministic briefing entries."),
+        ("decision", "Review workflow sets explicit HOME", "Set HOME/USERPROFILE for deterministic Path.home() in code review."),
+        ("tool", "Briefing pack for auth review", "Use briefing --pack for code review auth machine output."),
+    ]
+    for cat, title, content in entries:
+        row_id = db.execute(
+            """
+            INSERT INTO knowledge_entries
+                (session_id, document_id, category, title, content, confidence,
+                 occurrence_count, first_seen, last_seen, task_id, affected_files)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "fixes-session-001",
+                doc_id,
+                cat,
+                title,
+                content,
+                0.95,
+                1,
+                "2024-01-01T00:00:00",
+                "2024-01-01T00:00:00",
+                "ci-clean-home-recall-tests",
+                '["briefing.py"]',
+            ),
+        ).lastrowid
+        db.execute(
+            """
+            INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (row_id, title, content, "deterministic,fixture", cat, "", "", '["fixture"]'),
+        )
+
+    db.commit()
+    db.close()
+    return home
 
 
 # ─── Fix 1: Noise Filter ────────────────────────────────────────────────
@@ -134,107 +238,115 @@ for sample in user_quote_samples:
 
 print("\n🤖 Fix 2: Sub-agent Briefing Tests")
 
-# 2a. --for-subagent flag exists and produces output
-result = subprocess.run(
-    [sys.executable, str(REPO / "briefing.py"), "code review", "--for-subagent", "--min-confidence", "0"],
-    capture_output=True, text=True, cwd=str(REPO), encoding="utf-8", errors="replace"
-)
-output = result.stdout.strip()
-
-test("--for-subagent runs without error", result.returncode == 0,
-     f"stderr: {result.stderr[:200]}")
-
-test("Output starts with [KNOWLEDGE CONTEXT]",
-     output.startswith("[KNOWLEDGE CONTEXT"),
-     f"Got: {output[:80]}")
-
-test("Output ends with [END KNOWLEDGE CONTEXT]",
-     "[END KNOWLEDGE CONTEXT]" in output,
-     f"Got last 80 chars: {output[-80:]}")
-
-test("Output has category labels (AVOID/USE/NOTE/CONFIG)",
-     any(label in output for label in ["[AVOID]", "[USE]", "[NOTE]", "[CONFIG]"]),
-     f"No labels found in output")
-
-# 2b. Output is compact (< 500 tokens ≈ < 2000 chars)
-test("Output is compact (< 2000 chars)",
-     len(output) < 2000,
-     f"Got {len(output)} chars")
-
-# 2c. Regular briefing still works
-result2 = subprocess.run(
-    [sys.executable, str(REPO / "briefing.py"), "kotlin compose"],
-    capture_output=True, text=True, cwd=str(REPO), encoding="utf-8", errors="replace"
-)
-test("Regular briefing still works",
-     result2.returncode == 0,
-     f"stdout: {result2.stdout[:100]}")
-
-# 2d. --for-subagent remains compact with explicit mode
-result3 = subprocess.run(
-    [sys.executable, str(REPO / "briefing.py"), "review auth PR", "--for-subagent", "--mode", "review", "--min-confidence", "0"],
-    capture_output=True, text=True, cwd=str(REPO), encoding="utf-8", errors="replace"
-)
-output3 = result3.stdout.strip()
-test("--for-subagent + --mode runs without error", result3.returncode == 0,
-     f"stderr: {result3.stderr[:200]}")
-test("--for-subagent + --mode still starts with compact context header",
-     output3.startswith("[KNOWLEDGE CONTEXT"),
-     f"Got: {output3[:80]}")
-
-# 2e. --pack exposes machine-readable briefing surface
-result4 = subprocess.run(
-    [sys.executable, str(REPO / "briefing.py"), "review auth PR", "--mode", "review", "--pack", "--limit", "1"],
-    capture_output=True, text=True, cwd=str(REPO), encoding="utf-8", errors="replace"
-)
-test("--pack runs without error", result4.returncode == 0,
-     f"stderr: {result4.stderr[:200]}")
+import shutil as _shutil
+_briefing_home = _seed_briefing_test_home(REPO)
+_briefing_env = dict(os.environ)
+_briefing_env["HOME"] = str(_briefing_home)
+_briefing_env["USERPROFILE"] = str(_briefing_home)
 try:
-    pack_obj = json.loads(result4.stdout)
-    test("--pack returns valid JSON", True)
-    test("--pack includes mode field", "mode" in pack_obj, f"keys={list(pack_obj.keys())}")
-    test("--pack preserves explicit mode", pack_obj.get("mode") == "review",
-         f"mode={pack_obj.get('mode')!r}")
-    entries_obj = pack_obj.get("entries", {})
-    test("--pack includes canonical entry buckets",
-         isinstance(entries_obj, dict)
-         and all(k in entries_obj for k in ("mistake", "pattern", "decision", "tool")),
-         f"entries keys={list(entries_obj.keys()) if isinstance(entries_obj, dict) else type(entries_obj).__name__}")
-    first_entry = None
-    if isinstance(entries_obj, dict):
-        for bucket in ("mistake", "pattern", "decision", "tool"):
-            vals = entries_obj.get(bucket, [])
-            if vals:
-                first_entry = vals[0]
-                break
-    if first_entry:
-        test("--pack entry includes source_document field",
-             "source_document" in first_entry,
-             f"keys={list(first_entry.keys())}")
-        test("--pack entry includes code-location/snippet fields",
-             all(k in first_entry for k in ("source_file", "start_line", "end_line", "code_language", "code_snippet")),
-             f"keys={list(first_entry.keys())}")
-        test("--pack entry includes snippet_freshness enum field",
-             first_entry.get("snippet_freshness") in {"fresh", "drifted", "missing", "unknown"},
-             f"snippet_freshness={first_entry.get('snippet_freshness')!r}")
-        rel_ids = first_entry.get("related_entry_ids", [])
-        test("--pack entry includes related_entry_ids as int list",
-             isinstance(rel_ids, list) and all(isinstance(x, int) for x in rel_ids) and len(rel_ids) <= 3,
-             f"related_entry_ids={rel_ids!r}")
-    else:
-        test("--pack entry includes source_document field", True, "(skipped — no entries)")
-        test("--pack entry includes code-location/snippet fields", True, "(skipped — no entries)")
-        test("--pack entry includes snippet_freshness enum field", True, "(skipped — no entries)")
-        test("--pack entry includes related_entry_ids as int list", True, "(skipped — no entries)")
-except json.JSONDecodeError as e:
-    test("--pack returns valid JSON", False, str(e))
-    test("--pack includes mode field", False, "invalid JSON output")
-    test("--pack preserves explicit mode", False, "invalid JSON output")
-    test("--pack includes canonical entry buckets", False, "invalid JSON output")
-    test("--pack entry includes source_document field", False, "invalid JSON output")
-    test("--pack entry includes code-location/snippet fields", False, "invalid JSON output")
-    test("--pack entry includes snippet_freshness enum field", False, "invalid JSON output")
-    test("--pack entry includes related_entry_ids as int list", False, "invalid JSON output")
+    # 2a. --for-subagent flag exists and produces output
+    result = subprocess.run(
+        [sys.executable, str(REPO / "briefing.py"), "code review", "--for-subagent", "--min-confidence", "0"],
+        capture_output=True, text=True, cwd=str(REPO), env=_briefing_env, encoding="utf-8", errors="replace"
+    )
+    output = result.stdout.strip()
+
+    test("--for-subagent runs without error", result.returncode == 0,
+         f"stderr: {result.stderr[:200]}")
+
+    test("Output starts with [KNOWLEDGE CONTEXT]",
+         output.startswith("[KNOWLEDGE CONTEXT"),
+         f"Got: {output[:80]}")
+
+    test("Output ends with [END KNOWLEDGE CONTEXT]",
+         "[END KNOWLEDGE CONTEXT]" in output,
+         f"Got last 80 chars: {output[-80:]}")
+
+    test("Output has category labels (AVOID/USE/NOTE/CONFIG)",
+         any(label in output for label in ["[AVOID]", "[USE]", "[NOTE]", "[CONFIG]"]),
+         f"No labels found in output")
+
+    # 2b. Output is compact (< 500 tokens ≈ < 2000 chars)
+    test("Output is compact (< 2000 chars)",
+         len(output) < 2000,
+         f"Got {len(output)} chars")
+
+    # 2c. Regular briefing still works
+    result2 = subprocess.run(
+        [sys.executable, str(REPO / "briefing.py"), "kotlin compose"],
+        capture_output=True, text=True, cwd=str(REPO), env=_briefing_env, encoding="utf-8", errors="replace"
+    )
+    test("Regular briefing still works",
+         result2.returncode == 0,
+         f"stdout: {result2.stdout[:100]}")
+
+    # 2d. --for-subagent remains compact with explicit mode
+    result3 = subprocess.run(
+        [sys.executable, str(REPO / "briefing.py"), "review auth PR", "--for-subagent", "--mode", "review", "--min-confidence", "0"],
+        capture_output=True, text=True, cwd=str(REPO), env=_briefing_env, encoding="utf-8", errors="replace"
+    )
+    output3 = result3.stdout.strip()
+    test("--for-subagent + --mode runs without error", result3.returncode == 0,
+         f"stderr: {result3.stderr[:200]}")
+    test("--for-subagent + --mode still starts with compact context header",
+         output3.startswith("[KNOWLEDGE CONTEXT"),
+         f"Got: {output3[:80]}")
+
+    # 2e. --pack exposes machine-readable briefing surface
+    result4 = subprocess.run(
+        [sys.executable, str(REPO / "briefing.py"), "review auth PR", "--mode", "review", "--pack", "--limit", "1"],
+        capture_output=True, text=True, cwd=str(REPO), env=_briefing_env, encoding="utf-8", errors="replace"
+    )
+    test("--pack runs without error", result4.returncode == 0,
+         f"stderr: {result4.stderr[:200]}")
+    try:
+        pack_obj = json.loads(result4.stdout)
+        test("--pack returns valid JSON", True)
+        test("--pack includes mode field", "mode" in pack_obj, f"keys={list(pack_obj.keys())}")
+        test("--pack preserves explicit mode", pack_obj.get("mode") == "review",
+             f"mode={pack_obj.get('mode')!r}")
+        entries_obj = pack_obj.get("entries", {})
+        test("--pack includes canonical entry buckets",
+             isinstance(entries_obj, dict)
+             and all(k in entries_obj for k in ("mistake", "pattern", "decision", "tool")),
+             f"entries keys={list(entries_obj.keys()) if isinstance(entries_obj, dict) else type(entries_obj).__name__}")
+        first_entry = None
+        if isinstance(entries_obj, dict):
+            for bucket in ("mistake", "pattern", "decision", "tool"):
+                vals = entries_obj.get(bucket, [])
+                if vals:
+                    first_entry = vals[0]
+                    break
+        if first_entry:
+            test("--pack entry includes source_document field",
+                 "source_document" in first_entry,
+                 f"keys={list(first_entry.keys())}")
+            test("--pack entry includes code-location/snippet fields",
+                 all(k in first_entry for k in ("source_file", "start_line", "end_line", "code_language", "code_snippet")),
+                 f"keys={list(first_entry.keys())}")
+            test("--pack entry includes snippet_freshness enum field",
+                 first_entry.get("snippet_freshness") in {"fresh", "drifted", "missing", "unknown"},
+                 f"snippet_freshness={first_entry.get('snippet_freshness')!r}")
+            rel_ids = first_entry.get("related_entry_ids", [])
+            test("--pack entry includes related_entry_ids as int list",
+                 isinstance(rel_ids, list) and all(isinstance(x, int) for x in rel_ids) and len(rel_ids) <= 3,
+                 f"related_entry_ids={rel_ids!r}")
+        else:
+            test("--pack entry includes source_document field", True, "(skipped — no entries)")
+            test("--pack entry includes code-location/snippet fields", True, "(skipped — no entries)")
+            test("--pack entry includes snippet_freshness enum field", True, "(skipped — no entries)")
+            test("--pack entry includes related_entry_ids as int list", True, "(skipped — no entries)")
+    except json.JSONDecodeError as e:
+        test("--pack returns valid JSON", False, str(e))
+        test("--pack includes mode field", False, "invalid JSON output")
+        test("--pack preserves explicit mode", False, "invalid JSON output")
+        test("--pack includes canonical entry buckets", False, "invalid JSON output")
+        test("--pack entry includes source_document field", False, "invalid JSON output")
+        test("--pack entry includes code-location/snippet fields", False, "invalid JSON output")
+        test("--pack entry includes snippet_freshness enum field", False, "invalid JSON output")
+        test("--pack entry includes related_entry_ids as int list", False, "invalid JSON output")
+finally:
+    _shutil.rmtree(_briefing_home, ignore_errors=True)
 
 
 # ─── Fix 3: LaunchAgent Plist ────────────────────────────────────────────
@@ -242,17 +354,22 @@ except json.JSONDecodeError as e:
 print("\n🚀 Fix 3: LaunchAgent Tests")
 
 plist_path = Path.home() / "Library/LaunchAgents/com.copilot.watch-sessions.plist"
+template_plist = REPO / "templates" / "com.copilot.watch-sessions.plist"
+plist_is_user_install = plist_path.exists()
+plist_under_test = plist_path if plist_is_user_install else template_plist
 
 # LaunchAgent is macOS-only — skip on Linux/WSL
 if sys.platform == "darwin":
-    # 3a. Plist file exists
-    test("Plist file exists", plist_path.exists(),
-         f"Expected at {plist_path}")
+    # 3a. Plist file exists (prefer user install, fallback to repo template)
+    test("Plist file exists", plist_under_test.exists(),
+         f"Expected at {plist_under_test}")
 
-    if plist_path.exists():
+    if plist_under_test.exists():
+        if not plist_is_user_install:
+            print("  ℹ Using repo template plist (user install not present under current HOME)")
         # 3b. Valid XML plist
         try:
-            with open(plist_path, "rb") as f:
+            with open(plist_under_test, "rb") as f:
                 plist_data = plistlib.load(f)
             test("Plist is valid XML", True)
         except Exception as e:
@@ -287,17 +404,21 @@ if sys.platform == "darwin":
 
         # 3d. plutil validates the plist
         plutil_result = subprocess.run(
-            ["plutil", "-lint", str(plist_path)],
+            ["plutil", "-lint", str(plist_under_test)],
             capture_output=True, text=True, encoding="utf-8", errors="replace"
         )
         test("plutil lint passes",
              plutil_result.returncode == 0,
              plutil_result.stderr or plutil_result.stdout)
 
-        # 3e. Python path exists
+        # 3e. Python path exists (only deterministic for installed plist)
         python_path = prog_args[0] if prog_args else ""
-        test("Python3 path exists", Path(python_path).exists(),
-             f"Path: {python_path}")
+        if plist_is_user_install:
+            test("Python3 path exists", Path(python_path).exists(),
+                 f"Path: {python_path}")
+        else:
+            test("Python3 path check skipped for template plist", True,
+                 f"Template path={python_path}")
 else:
     print("  ⏭️  Skipped — LaunchAgent is macOS-only (running on Linux/WSL)")
 
@@ -307,7 +428,6 @@ else:
 print("\n🔄 Integration: Verify noise filter reduces false positives")
 
 # Count current false positives in DB
-import sqlite3
 db_path = Path.home() / ".copilot/session-state/knowledge.db"
 if db_path.exists():
     db = sqlite3.connect(str(db_path))
@@ -383,9 +503,11 @@ else:
 print("\n📝 SKILL.md Verification")
 
 skill_path = Path.home() / ".copilot/skills/session-knowledge/SKILL.md"
-# Fallback: check templates dir if skill not installed
+# Fallbacks: clean HOME may not have global install; use deterministic repo template
 if not skill_path.exists():
     skill_path = Path.home() / ".copilot/tools/templates/SKILL.md"
+if not skill_path.exists():
+    skill_path = REPO / "templates" / "SKILL.md"
 test("SKILL.md exists in tools or skills path", skill_path.exists())
 
 if skill_path.exists():
@@ -459,8 +581,6 @@ Run tests.
 Example usage here.
 </example>
 """
-
-import shutil as _shutil
 
 # Sp1. No dangling references → no warnings about references/
 _d1 = _make_skill_dir(MINIMAL_SKILL)

@@ -319,6 +319,7 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write *data* to *path* atomically using a sibling .tmp + os.replace."""
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_bytes(data)
         os.replace(str(tmp), str(path))
     except Exception:

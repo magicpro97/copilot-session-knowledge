@@ -1263,30 +1263,57 @@ def test_briefing_task_budget(db: sqlite3.Connection, tmp_db_path: str):
             test("briefing --task --budget adds marker or already fits", True, "(skipped — no entries)")
 
         # --- Invalid --budget value must not crash (issues 3 & 5) ---
-        result_inv = subprocess.run(
-            [sys.executable, str(TOOLS_DIR / "briefing.py"),
-             "--task", "nonexistent-xyz-1234", "--budget", "notanumber"],
-            capture_output=True, text=True
-        )
-        test("briefing --task invalid --budget doesn't crash",
-             result_inv.returncode == 0,
-             result_inv.stderr[:200])
+        # Run subprocess with an isolated HOME that contains a minimal DB so
+        # argument parsing path is tested (not missing-DB precondition).
+        cli_home = Path(tempfile.mkdtemp(prefix="test_briefing_cli_", dir=str(TOOLS_DIR)))
+        result_cont = None
+        cli_db_conn = None
+        try:
+            cli_state = cli_home / ".copilot" / "session-state"
+            cli_state.mkdir(parents=True, exist_ok=True)
+            cli_db_path = cli_state / "knowledge.db"
+            cli_db_conn = make_test_db(str(cli_db_path))
+            cli_db_conn.commit()
 
-        # --- Budget value must NOT contaminate main-path FTS query (issue 4) ---
-        result_cont = subprocess.run(
-            [sys.executable, str(TOOLS_DIR / "briefing.py"),
-             "my special query", "--budget", "badval"],
-            capture_output=True, text=True
-        )
-        test("briefing main-path invalid --budget doesn't crash",
-             result_cont.returncode == 0,
-             result_cont.stderr[:200])
+            cli_env = os.environ.copy()
+            cli_env["HOME"] = str(cli_home)
+            cli_env["USERPROFILE"] = str(cli_home)
+
+            result_inv = subprocess.run(
+                [sys.executable, str(TOOLS_DIR / "briefing.py"),
+                 "--task", "nonexistent-xyz-1234", "--budget", "notanumber"],
+                capture_output=True, text=True, env=cli_env
+            )
+            test("briefing --task invalid --budget doesn't crash",
+                 result_inv.returncode == 0,
+                 result_inv.stderr[:200])
+
+            # --- Budget value must NOT contaminate main-path FTS query (issue 4) ---
+            result_cont = subprocess.run(
+                [sys.executable, str(TOOLS_DIR / "briefing.py"),
+                 "my special query", "--budget", "badval"],
+                capture_output=True, text=True, env=cli_env
+            )
+            test("briefing main-path invalid --budget doesn't crash",
+                 result_cont.returncode == 0,
+                 result_cont.stderr[:200])
+        finally:
+            if cli_db_conn is not None:
+                cli_db_conn.close()
+            shutil.rmtree(cli_home, ignore_errors=True)
+
+        test("briefing main-path invalid --budget subprocess executed",
+             result_cont is not None,
+             "subprocess did not run")
+
         # "badval" should not appear in the '📋 Briefing: …' header line
-        header = next((l for l in result_cont.stdout.splitlines()
-                       if "Briefing:" in l or "briefing:" in l.lower()), "")
+        header = ""
+        if result_cont is not None:
+            header = next((l for l in result_cont.stdout.splitlines()
+                           if "Briefing:" in l or "briefing:" in l.lower()), "")
         test("briefing main-path --budget value not in query header",
-             "badval" not in header,
-             f"header: {header!r}")
+              "badval" not in header,
+              f"header: {header!r}")
 
         # --- Test via CLI subprocess (only if real DB exists) ---
         if _REAL_DB.exists():
