@@ -331,6 +331,70 @@ export interface HealthResponse {
   status: string;
   schema_version: number;
   sessions: number;
+  sync_status_endpoint?: string;
+}
+
+export interface SyncConnectionStatus {
+  configured: boolean;
+  endpoint: string | null;
+  config_path: string;
+  target?: string;
+}
+
+export interface SyncFailureInfo {
+  failed_at: string;
+  error_message: string;
+  retry_count: number;
+}
+
+export interface SyncRuntimeStatus {
+  generated_at: string;
+  db_path: string;
+  db_mode: "memory" | "file" | (string & {});
+  sync_tables: Record<string, boolean>;
+  sync_tables_ready: boolean;
+  available_sync_tables: number;
+  total_sync_tables: number;
+  failed_txns: number;
+}
+
+export interface SyncOperatorAction {
+  id: string;
+  title: string;
+  description: string;
+  command: string;
+  safe: boolean;
+  requires_configured_gateway: boolean;
+}
+
+export interface SyncStatusResponse {
+  status: string;
+  configured: boolean;
+  connection: SyncConnectionStatus;
+  rollout?: {
+    client_contract: string;
+    direct_db_sync: boolean;
+    reference_gateway: {
+      mode: string;
+      description: string;
+    };
+    provider_gateway: {
+      mode: string;
+      recommended: string;
+      description: string;
+    };
+  };
+  runtime: SyncRuntimeStatus;
+  operator_actions: SyncOperatorAction[];
+  local_replica_id: string | null;
+  pending_txns: number;
+  pending_ops: number;
+  committed_txns: number;
+  failed_txns: number;
+  failed_ops: number;
+  cursor_count: number;
+  last_committed_at: string | null;
+  last_failure: SyncFailureInfo | null;
 }
 
 // ── Feedback (/api/feedback  POST) ──────────────────────────────────

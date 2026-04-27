@@ -16,6 +16,7 @@ import {
   searchResponseSchema,
   sessionDetailResponseSchema,
   sessionListResponseSchema,
+  syncStatusResponseSchema,
   similarityResponseSchema,
   sessionsResponseSchema,
 } from "@/lib/api/schemas";
@@ -31,6 +32,7 @@ import type {
   HealthResponse,
   SearchResponse,
   SimilarityResponse,
+  SyncStatusResponse,
   SessionDetailResponse,
   SessionListResponse,
   SessionsResponse,
@@ -73,6 +75,7 @@ export const queryKeys = {
   sessionDetail: (sessionId: string) => ["session-detail", sessionId] as const,
   search: (params: SearchQueryParams) => ["search", params] as const,
   health: () => ["health"] as const,
+  syncStatus: () => ["sync-status"] as const,
   dashboard: () => ["dashboard"] as const,
   graphLegacy: (params: GraphQueryParams = {}) => ["graph-legacy", params] as const,
   graph: (params: GraphQueryParams = {}) => ["graph", params] as const,
@@ -263,6 +266,18 @@ export function useHealth() {
     queryFn: async (): Promise<HealthResponse> => {
       const data = await apiFetch<HealthResponse>(withLeadingSlash("/healthz"));
       return healthResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useSyncStatus() {
+  return useQuery({
+    queryKey: queryKeys.syncStatus(),
+    staleTime: STALE_TIMES.health,
+    gcTime: CACHE_TIMES.health,
+    queryFn: async (): Promise<SyncStatusResponse> => {
+      const data = await apiFetch<SyncStatusResponse>(withLeadingSlash("/api/sync/status"));
+      return syncStatusResponseSchema.parse(data);
     },
   });
 }

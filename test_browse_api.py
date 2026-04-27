@@ -16,6 +16,7 @@ Tests:
   T8: /api/embeddings returns 503 when no embeddings in DB
   T9: /api/compare returns CompareResponse with session data
   T10: /api/sessions returns 200 with empty items on empty DB
+  T17: /api/sync/status returns sync diagnostics payload
 """
 
 import http.client
@@ -90,6 +91,27 @@ def _make_test_db() -> sqlite3.Connection:
         CREATE TABLE schema_version (
             version INTEGER PRIMARY KEY, name TEXT, applied_at TEXT
         );
+        CREATE TABLE sync_state (
+            key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE sync_txns (
+            txn_id TEXT PRIMARY KEY, replica_id TEXT NOT NULL, status TEXT NOT NULL,
+            created_at TEXT NOT NULL, committed_at TEXT DEFAULT ''
+        );
+        CREATE TABLE sync_ops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, txn_id TEXT NOT NULL,
+            table_name TEXT NOT NULL, op_type TEXT NOT NULL, row_stable_id TEXT NOT NULL,
+            row_payload TEXT NOT NULL, op_index INTEGER NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE sync_cursors (
+            replica_id TEXT PRIMARY KEY, last_txn_id TEXT DEFAULT '',
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE sync_failures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, txn_id TEXT DEFAULT '', table_name TEXT DEFAULT '',
+            row_stable_id TEXT DEFAULT '', error_code TEXT DEFAULT '',
+            error_message TEXT DEFAULT '', failed_at TEXT NOT NULL, retry_count INTEGER DEFAULT 0
+        );
         INSERT INTO schema_version VALUES (9, 'add_search_feedback', '2026-01-01');
     """)
     db.execute(
@@ -130,6 +152,40 @@ def _make_test_db() -> sqlite3.Connection:
         "INSERT INTO sections VALUES (?,?,?,?)",
         (1, 1, "overview", "Session overview content for test"),
     )
+    db.execute(
+        "INSERT OR REPLACE INTO sync_state(key, value) VALUES(?, ?)",
+        ("local_replica_id", "local"),
+    )
+    db.execute(
+        "INSERT INTO sync_txns VALUES (?,?,?,?,?)",
+        ("txn-pending-1", "local", "pending", "2026-01-02T00:00:00Z", ""),
+    )
+    db.execute(
+        "INSERT INTO sync_txns VALUES (?,?,?,?,?)",
+        ("txn-committed-1", "local", "committed", "2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z"),
+    )
+    db.execute(
+        "INSERT INTO sync_ops(txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)"
+        " VALUES (?,?,?,?,?,?,?)",
+        ("txn-pending-1", "knowledge_entries", "upsert", "k1", "{}", 0, "2026-01-02T00:00:00Z"),
+    )
+    db.execute(
+        "INSERT INTO sync_cursors VALUES (?,?,?)",
+        ("gateway", "txn-committed-1", "2026-01-01T00:02:00Z"),
+    )
+    db.execute(
+        "INSERT INTO sync_failures(txn_id, table_name, row_stable_id, error_code, error_message, failed_at, retry_count)"
+        " VALUES (?,?,?,?,?,?,?)",
+        (
+            "txn-pending-1",
+            "knowledge_entries",
+            "k1",
+            "network_timeout",
+            "timeout while contacting reference gateway",
+            "2026-01-02T00:03:00Z",
+            1,
+        ),
+    )
     db.commit()
     return db
 
@@ -168,6 +224,27 @@ def _make_empty_db() -> sqlite3.Connection:
         );
         CREATE TABLE schema_version (
             version INTEGER PRIMARY KEY, name TEXT, applied_at TEXT
+        );
+        CREATE TABLE sync_state (
+            key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE sync_txns (
+            txn_id TEXT PRIMARY KEY, replica_id TEXT NOT NULL, status TEXT NOT NULL,
+            created_at TEXT NOT NULL, committed_at TEXT DEFAULT ''
+        );
+        CREATE TABLE sync_ops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, txn_id TEXT NOT NULL,
+            table_name TEXT NOT NULL, op_type TEXT NOT NULL, row_stable_id TEXT NOT NULL,
+            row_payload TEXT NOT NULL, op_index INTEGER NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE sync_cursors (
+            replica_id TEXT PRIMARY KEY, last_txn_id TEXT DEFAULT '',
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE sync_failures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, txn_id TEXT DEFAULT '', table_name TEXT DEFAULT '',
+            row_stable_id TEXT DEFAULT '', error_code TEXT DEFAULT '',
+            error_message TEXT DEFAULT '', failed_at TEXT NOT NULL, retry_count INTEGER DEFAULT 0
         );
         INSERT INTO schema_version VALUES (9, 'add_search_feedback', '2026-01-01');
     """)
@@ -374,6 +451,53 @@ def run_all_tests() -> int:
         test("T10: items empty list", data.get("items") == [])
         test("T10: total=0", data.get("total") == 0)
         test("T10: has_more=False", data.get("has_more") is False)
+    finally:
+        server.shutdown()
+
+    # ── T17: /api/sync/status diagnostics shape ───────────────────────────────
+    print("\n-- T17: /api/sync/status diagnostics")
+    db = _make_test_db()
+    server, host, port = _start_server(db)
+    try:
+        status, hdrs, data = _get(host, port, "/api/sync/status")
+        test("T17: status 200", status == 200)
+        test("T17: content-type json", "application/json" in hdrs.get("content-type", ""))
+        test("T17: has status", isinstance(data, dict) and "status" in data)
+        test("T17: has pending_txns", isinstance(data, dict) and "pending_txns" in data)
+        test("T17: pending_txns=1", data.get("pending_txns") == 1)
+        test("T17: failed_ops=1", data.get("failed_ops") == 1)
+        test("T17: has connection object", isinstance(data.get("connection"), dict))
+        test("T17: has local_replica_id", data.get("local_replica_id") == "local")
+        test(
+            "T17: connection target present",
+            data.get("connection", {}).get("target") in {
+                "unconfigured",
+                "reference-mock",
+                "provider-backed-or-custom",
+            },
+        )
+        test("T17: has rollout object", isinstance(data.get("rollout"), dict))
+        test("T17: rollout keeps http gateway contract", data.get("rollout", {}).get("client_contract") == "http-gateway")
+        test("T17: rollout direct_db_sync is false", data.get("rollout", {}).get("direct_db_sync") is False)
+        runtime = data.get("runtime") or {}
+        test("T17: has runtime object", isinstance(runtime, dict))
+        test("T17: runtime includes db_mode", runtime.get("db_mode") in {"memory", "file"})
+        test("T17: runtime includes sync table readiness", isinstance(runtime.get("sync_tables_ready"), bool))
+        test("T17: runtime failed_txns is numeric", isinstance(data.get("failed_txns"), int))
+        actions = data.get("operator_actions") or []
+        test("T17: has operator actions", isinstance(actions, list) and len(actions) >= 3)
+        test(
+            "T17: operator actions are read-only",
+            bool(actions)
+            and all(
+                isinstance(action, dict)
+                and action.get("safe") is True
+                and isinstance(action.get("command"), str)
+                and action.get("command")
+                and "--clear" not in action.get("command")
+                for action in actions
+            ),
+        )
     finally:
         server.shutdown()
 

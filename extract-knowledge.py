@@ -21,6 +21,9 @@ import sqlite3
 import re
 import sys
 import os
+import hashlib
+import json
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -34,6 +37,301 @@ if os.name == "nt":
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
+
+
+def _stable_sha256(*parts) -> str:
+    payload = "\0".join("" if p is None else str(p) for p in parts)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _knowledge_stable_id(session_id: str, category: str, title: str, topic_key: str) -> str:
+    return _stable_sha256("knowledge", session_id, category, title or "", topic_key or "")
+
+
+def _knowledge_relation_stable_id(source_stable_id: str, target_stable_id: str, relation_type: str) -> str:
+    return _stable_sha256(
+        "knowledge_relation",
+        source_stable_id or "",
+        target_stable_id or "",
+        relation_type or "",
+    )
+
+
+def _utc_now() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _default_local_replica_id() -> str:
+    host = os.environ.get("HOSTNAME") or os.environ.get("COMPUTERNAME") or ""
+    user = os.environ.get("USER") or os.environ.get("USERNAME") or ""
+    return f"replica-{_stable_sha256('local-replica', host, user, str(Path.home()))[:16]}"
+
+
+def _get_local_replica_id(db: sqlite3.Connection) -> str:
+    try:
+        row = db.execute("SELECT value FROM sync_state WHERE key='local_replica_id'").fetchone()
+        current = str(row[0]) if row and row[0] else ""
+        if current and current != "local":
+            return current
+        replica_id = _default_local_replica_id()
+        db.execute("""
+            INSERT INTO sync_state (key, value)
+            VALUES ('local_replica_id', ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = datetime('now')
+        """, (replica_id,))
+        db.execute("""
+            INSERT INTO sync_metadata (key, value)
+            VALUES ('local_replica_id', ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = datetime('now')
+        """, (replica_id,))
+        return replica_id
+    except Exception:
+        return ""
+
+
+def _enqueue_sync_op_fail_open(
+    db: sqlite3.Connection,
+    table_name: str,
+    row_stable_id: str,
+    row_payload: dict,
+    op_type: str = "upsert",
+):
+    if not row_stable_id:
+        return
+    try:
+        policy = db.execute(
+            "SELECT sync_scope FROM sync_table_policies WHERE table_name = ?",
+            (table_name,),
+        ).fetchone()
+        if not policy or policy[0] != "canonical":
+            return
+        replica_id = _get_local_replica_id(db)
+        if not replica_id:
+            return
+        now = _utc_now()
+        txn_id = _stable_sha256("sync-txn", replica_id, table_name, row_stable_id, time.time_ns())
+        db.execute("""
+            INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at)
+            VALUES (?, ?, 'pending', ?, '')
+        """, (txn_id, replica_id, now))
+        db.execute("""
+            INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
+            VALUES (?, ?, ?, ?, ?, 0, ?)
+        """, (txn_id, table_name, op_type, row_stable_id, json.dumps(row_payload, ensure_ascii=False), now))
+    except Exception:
+        return
+
+
+def _seed_sync_table_policies(db: sqlite3.Connection):
+    rows = [
+        ("sessions", "canonical", "id"),
+        ("documents", "canonical", "stable_id"),
+        ("sections", "canonical", "stable_id"),
+        ("knowledge_entries", "canonical", "stable_id"),
+        ("knowledge_relations", "canonical", "stable_id"),
+        ("entity_relations", "canonical", "stable_id"),
+        ("search_feedback", "canonical", "stable_id"),
+        ("recall_events", "upload_only", ""),
+        ("knowledge_fts", "local_only", ""),
+        ("ke_fts", "local_only", ""),
+        ("sessions_fts", "local_only", ""),
+        ("event_offsets", "local_only", ""),
+        ("embeddings", "local_only", ""),
+        ("embedding_meta", "local_only", ""),
+        ("tfidf_model", "local_only", ""),
+    ]
+    policy_sql = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='sync_table_policies'"
+    ).fetchone()
+    needs_rebuild = policy_sql and "upload_only" not in (policy_sql[0] or "")
+    if needs_rebuild:
+        db.executescript("""
+            CREATE TABLE sync_table_policies_new (
+                table_name TEXT PRIMARY KEY,
+                sync_scope TEXT NOT NULL CHECK(sync_scope IN ('canonical', 'local_only', 'upload_only')),
+                stable_id_column TEXT DEFAULT ''
+            );
+            INSERT INTO sync_table_policies_new (table_name, sync_scope, stable_id_column)
+            SELECT table_name, sync_scope, COALESCE(stable_id_column, '')
+            FROM sync_table_policies;
+            DROP TABLE sync_table_policies;
+            ALTER TABLE sync_table_policies_new RENAME TO sync_table_policies;
+        """)
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS sync_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS sync_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS sync_txns (
+            txn_id TEXT PRIMARY KEY,
+            replica_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'committed', 'failed')),
+            created_at TEXT NOT NULL,
+            committed_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS sync_ops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            txn_id TEXT NOT NULL,
+            table_name TEXT NOT NULL,
+            op_type TEXT NOT NULL CHECK(op_type IN ('insert', 'update', 'delete', 'upsert')),
+            row_stable_id TEXT NOT NULL,
+            row_payload TEXT NOT NULL,
+            op_index INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(txn_id, op_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_ops_txn ON sync_ops(txn_id);
+        CREATE INDEX IF NOT EXISTS idx_sync_ops_table_row ON sync_ops(table_name, row_stable_id);
+        CREATE TABLE IF NOT EXISTS sync_cursors (
+            replica_id TEXT PRIMARY KEY,
+            last_txn_id TEXT DEFAULT '',
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS sync_failures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            txn_id TEXT DEFAULT '',
+            table_name TEXT DEFAULT '',
+            row_stable_id TEXT DEFAULT '',
+            error_code TEXT DEFAULT '',
+            error_message TEXT DEFAULT '',
+            failed_at TEXT NOT NULL,
+            retry_count INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_failures_txn ON sync_failures(txn_id);
+        CREATE TABLE IF NOT EXISTS sync_table_policies (
+            table_name TEXT PRIMARY KEY,
+            sync_scope TEXT NOT NULL CHECK(sync_scope IN ('canonical', 'local_only', 'upload_only')),
+            stable_id_column TEXT DEFAULT ''
+        );
+    """)
+    db.executemany("""
+        INSERT INTO sync_table_policies (table_name, sync_scope, stable_id_column)
+        VALUES (?, ?, ?)
+        ON CONFLICT(table_name) DO UPDATE SET
+            sync_scope = excluded.sync_scope,
+            stable_id_column = excluded.stable_id_column
+    """, rows)
+    db.execute("""
+        INSERT OR IGNORE INTO sync_metadata (key, value)
+        VALUES ('local_replica_id', 'local')
+    """)
+    db.execute("""
+        INSERT OR IGNORE INTO sync_state (key, value)
+        VALUES ('local_replica_id', 'local')
+    """)
+
+
+def _backfill_stable_ids(db: sqlite3.Connection):
+    for row in db.execute("""
+        SELECT id, session_id, category, title, COALESCE(topic_key, ''), COALESCE(stable_id, '')
+        FROM knowledge_entries
+    """).fetchall():
+        ke_id, session_id, category, title, topic_key, existing = row
+        stable = _knowledge_stable_id(session_id, category, title, topic_key)
+        if existing != stable:
+            db.execute("UPDATE knowledge_entries SET stable_id = ? WHERE id = ?", (stable, ke_id))
+            _enqueue_sync_op_fail_open(
+                db,
+                "knowledge_entries",
+                stable,
+                {
+                    "session_id": session_id,
+                    "category": category,
+                    "title": title,
+                    "topic_key": topic_key,
+                    "stable_id": stable,
+                },
+            )
+
+    for row in db.execute("""
+        SELECT id, subject, predicate, object, COALESCE(stable_id, '')
+        FROM entity_relations
+    """).fetchall():
+        er_id, subject, predicate, obj, existing = row
+        stable = _stable_sha256("entity_relation", subject or "", predicate or "", obj or "")
+        if existing != stable:
+            db.execute("UPDATE entity_relations SET stable_id = ? WHERE id = ?", (stable, er_id))
+            _enqueue_sync_op_fail_open(
+                db,
+                "entity_relations",
+                stable,
+                {
+                    "subject": subject,
+                    "predicate": predicate,
+                    "object": obj,
+                    "stable_id": stable,
+                },
+            )
+
+    for row in db.execute("""
+        SELECT kr.id,
+               kr.source_id,
+               kr.target_id,
+               kr.relation_type,
+               COALESCE(kr.source_stable_id, ''),
+               COALESCE(kr.target_stable_id, ''),
+               COALESCE(kr.stable_id, ''),
+               COALESCE(src.stable_id, ''),
+               COALESCE(tgt.stable_id, '')
+        FROM knowledge_relations kr
+        LEFT JOIN knowledge_entries src ON kr.source_id = src.id
+        LEFT JOIN knowledge_entries tgt ON kr.target_id = tgt.id
+    """).fetchall():
+        rel_id, _, _, relation_type, src_existing, tgt_existing, existing, src_stable, tgt_stable = row
+        if not src_stable or not tgt_stable:
+            continue
+        stable = _knowledge_relation_stable_id(src_stable, tgt_stable, relation_type)
+        if src_existing != src_stable or tgt_existing != tgt_stable or existing != stable:
+            db.execute("""
+                UPDATE knowledge_relations
+                SET source_stable_id = ?, target_stable_id = ?, stable_id = ?
+                WHERE id = ?
+            """, (src_stable, tgt_stable, stable, rel_id))
+
+
+def _dedupe_stable_rows(db: sqlite3.Connection, table: str):
+    if table not in {"knowledge_entries", "knowledge_relations", "entity_relations"}:
+        return
+    db.execute("""
+        DELETE FROM {table}
+        WHERE id IN (
+            SELECT dupe.id
+            FROM {table} dupe
+            JOIN (
+                SELECT stable_id, MIN(id) AS keep_id
+                FROM {table}
+                WHERE COALESCE(stable_id, '') != ''
+                GROUP BY stable_id
+                HAVING COUNT(*) > 1
+            ) grouped ON grouped.stable_id = dupe.stable_id
+            WHERE dupe.id != grouped.keep_id
+        )
+    """.replace("{table}", table))
+
+
+def _enforce_stable_id_uniqueness(db: sqlite3.Connection):
+    has_table = lambda t: db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (t,),
+    ).fetchone() is not None
+    for table, index_name in [
+        ("knowledge_entries", "uq_knowledge_entries_stable_id"),
+        ("knowledge_relations", "uq_knowledge_relations_stable_id"),
+        ("entity_relations", "uq_entity_relations_stable_id"),
+    ]:
+        if has_table(table):
+            _dedupe_stable_rows(db, table)
+            db.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table}(stable_id)")
 
 # Extraction patterns — regex + heuristics for each category
 MISTAKE_INDICATORS = [
@@ -95,6 +393,7 @@ def ensure_tables(db: sqlite3.Connection):
             document_id INTEGER,
             category TEXT NOT NULL,
             title TEXT NOT NULL,
+            stable_id TEXT,
             content TEXT NOT NULL,
             tags TEXT DEFAULT '',
             confidence REAL DEFAULT 1.0,
@@ -105,6 +404,18 @@ def ensure_tables(db: sqlite3.Connection):
             topic_key TEXT,
             revision_count INTEGER DEFAULT 1,
             content_hash TEXT,
+            wing TEXT DEFAULT '',
+            room TEXT DEFAULT '',
+            facts TEXT DEFAULT '[]',
+            est_tokens INTEGER DEFAULT 0,
+            task_id TEXT DEFAULT '',
+            affected_files TEXT DEFAULT '[]',
+            source_section TEXT DEFAULT '',
+            source_file TEXT DEFAULT '',
+            start_line INTEGER DEFAULT 0,
+            end_line INTEGER DEFAULT 0,
+            code_language TEXT DEFAULT '',
+            code_snippet TEXT DEFAULT '',
             UNIQUE(category, title, session_id)
         );
 
@@ -113,12 +424,17 @@ def ensure_tables(db: sqlite3.Connection):
         CREATE INDEX IF NOT EXISTS idx_ke_source ON knowledge_entries(source);
         CREATE INDEX IF NOT EXISTS idx_ke_topic ON knowledge_entries(topic_key);
         CREATE INDEX IF NOT EXISTS idx_ke_hash ON knowledge_entries(content_hash);
+        CREATE INDEX IF NOT EXISTS idx_ke_task ON knowledge_entries(task_id);
+        CREATE INDEX IF NOT EXISTS idx_ke_stable_id ON knowledge_entries(stable_id);
 
         CREATE TABLE IF NOT EXISTS knowledge_relations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_id INTEGER REFERENCES knowledge_entries(id),
             target_id INTEGER REFERENCES knowledge_entries(id),
+            source_stable_id TEXT DEFAULT '',
+            target_stable_id TEXT DEFAULT '',
             relation_type TEXT NOT NULL,
+            stable_id TEXT,
             confidence REAL DEFAULT 0.8,
             created_at TEXT,
             UNIQUE(source_id, target_id, relation_type)
@@ -126,12 +442,16 @@ def ensure_tables(db: sqlite3.Connection):
 
         CREATE INDEX IF NOT EXISTS idx_kr_source ON knowledge_relations(source_id);
         CREATE INDEX IF NOT EXISTS idx_kr_target ON knowledge_relations(target_id);
+        CREATE INDEX IF NOT EXISTS idx_kr_source_stable ON knowledge_relations(source_stable_id);
+        CREATE INDEX IF NOT EXISTS idx_kr_target_stable ON knowledge_relations(target_stable_id);
+        CREATE INDEX IF NOT EXISTS idx_kr_stable_id ON knowledge_relations(stable_id);
 
         CREATE TABLE IF NOT EXISTS entity_relations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             subject TEXT NOT NULL,
             predicate TEXT NOT NULL,
             object TEXT NOT NULL,
+            stable_id TEXT,
             noted_at TEXT DEFAULT (datetime('now')),
             session_id TEXT DEFAULT '',
             UNIQUE(subject, predicate, object)
@@ -139,6 +459,7 @@ def ensure_tables(db: sqlite3.Connection):
 
         CREATE INDEX IF NOT EXISTS idx_er_subject ON entity_relations(subject);
         CREATE INDEX IF NOT EXISTS idx_er_object ON entity_relations(object);
+        CREATE INDEX IF NOT EXISTS idx_er_stable_id ON entity_relations(stable_id);
 
         CREATE TABLE IF NOT EXISTS wakeup_config (
             key TEXT PRIMARY KEY,
@@ -154,9 +475,12 @@ def ensure_tables(db: sqlite3.Connection):
     """)
 
     # Migrate existing databases: add new columns if missing
-    _ALLOWED_COLUMNS = {"source", "topic_key", "revision_count", "content_hash",
-                        "wing", "room", "facts", "est_tokens"}
+    _ALLOWED_COLUMNS = {"stable_id", "source", "topic_key", "revision_count", "content_hash",
+                        "wing", "room", "facts", "est_tokens", "task_id",
+                        "affected_files", "source_section", "source_file",
+                        "start_line", "end_line", "code_language", "code_snippet"}
     for col, col_def in [
+        ("stable_id", "TEXT"),
         ("source", "TEXT DEFAULT 'copilot'"),
         ("topic_key", "TEXT"),
         ("revision_count", "INTEGER DEFAULT 1"),
@@ -165,12 +489,42 @@ def ensure_tables(db: sqlite3.Connection):
         ("room", "TEXT DEFAULT ''"),
         ("facts", "TEXT DEFAULT '[]'"),
         ("est_tokens", "INTEGER DEFAULT 0"),
+        ("task_id", "TEXT DEFAULT ''"),
+        ("affected_files", "TEXT DEFAULT '[]'"),
+        ("source_section", "TEXT DEFAULT ''"),
+        ("source_file", "TEXT DEFAULT ''"),
+        ("start_line", "INTEGER DEFAULT 0"),
+        ("end_line", "INTEGER DEFAULT 0"),
+        ("code_language", "TEXT DEFAULT ''"),
+        ("code_snippet", "TEXT DEFAULT ''"),
     ]:
         assert col in _ALLOWED_COLUMNS, f"Unexpected column: {col}"
         try:
             db.execute(f"ALTER TABLE knowledge_entries ADD COLUMN {col} {col_def}")
         except sqlite3.OperationalError:
             pass  # Column already exists
+
+    db.execute("CREATE INDEX IF NOT EXISTS idx_ke_task ON knowledge_entries(task_id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_ke_stable_id ON knowledge_entries(stable_id)")
+
+    for col, col_def in [
+        ("source_stable_id", "TEXT DEFAULT ''"),
+        ("target_stable_id", "TEXT DEFAULT ''"),
+        ("stable_id", "TEXT"),
+    ]:
+        try:
+            db.execute(f"ALTER TABLE knowledge_relations ADD COLUMN {col} {col_def}")
+        except sqlite3.OperationalError:
+            pass
+    db.execute("CREATE INDEX IF NOT EXISTS idx_kr_source_stable ON knowledge_relations(source_stable_id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_kr_target_stable ON knowledge_relations(target_stable_id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_kr_stable_id ON knowledge_relations(stable_id)")
+
+    try:
+        db.execute("ALTER TABLE entity_relations ADD COLUMN stable_id TEXT")
+    except sqlite3.OperationalError:
+        pass
+    db.execute("CREATE INDEX IF NOT EXISTS idx_er_stable_id ON entity_relations(stable_id)")
 
     # Create FTS table if needed (standalone, no content= sync issues)
     db.execute("""
@@ -179,6 +533,9 @@ def ensure_tables(db: sqlite3.Connection):
             tokenize='unicode61 remove_diacritics 2'
         )
     """)
+    _seed_sync_table_policies(db)
+    _backfill_stable_ids(db)
+    _enforce_stable_id_uniqueness(db)
 
 
 def classify_paragraph(text: str) -> list[tuple[str, float]]:
@@ -388,7 +745,6 @@ def _slugify(text: str) -> str:
 
 def _compute_content_hash(category: str, title: str, content: str) -> str:
     """Compute dedup hash from normalized category + title + key content."""
-    import hashlib
     normalized = (
         category.lower().strip() + "|" +
         re.sub(r"\s+", " ", title.lower().strip()) + "|" +
@@ -419,7 +775,8 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
     section_placeholders = ",".join("?" for _ in target_sections)
     base_query = f"""
         SELECT s.id, s.document_id, s.section_name, s.content, d.session_id,
-               COALESCE(d.source, 'copilot') as source
+               COALESCE(d.source, 'copilot') as source,
+               COALESCE(d.stable_id, '') as document_stable_id
         FROM sections s
         JOIN documents d ON s.document_id = d.id
         WHERE s.section_name IN ({section_placeholders})
@@ -442,7 +799,7 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
     except sqlite3.OperationalError:
         pass
 
-    for section_id, doc_id, section_name, content, session_id, source in rows:
+    for section_id, doc_id, section_name, content, session_id, source, document_stable_id in rows:
         chunks = split_into_knowledge_chunks(content)
 
         for chunk in chunks:
@@ -466,36 +823,87 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
                 ).fetchone()
 
                 if existing:
+                    stable_id = _knowledge_stable_id(session_id, category, title, topic_key)
                     # Upsert: update existing entry with newer content
                     db.execute("""
                         UPDATE knowledge_entries
                         SET content = ?, confidence = MAX(confidence, ?),
                             revision_count = revision_count + 1,
-                            last_seen = ?, content_hash = ?, tags = ?
+                            last_seen = ?, content_hash = ?, tags = ?,
+                            source_section = ?, stable_id = CASE
+                                WHEN COALESCE(stable_id, '') = '' THEN ?
+                                ELSE stable_id
+                            END
                         WHERE id = ?
-                    """, (chunk[:3000], confidence, now, content_hash, tags, existing[0]))
+                    """, (chunk[:3000], confidence, now, content_hash, tags, section_name, stable_id, existing[0]))
+                    _enqueue_sync_op_fail_open(
+                        db,
+                        "knowledge_entries",
+                        stable_id,
+                        {
+                            "session_id": session_id,
+                            "document_stable_id": document_stable_id,
+                            "category": category,
+                            "title": title,
+                            "stable_id": stable_id,
+                            "content": chunk[:3000],
+                            "tags": tags,
+                            "confidence": confidence,
+                            "last_seen": now,
+                            "content_hash": content_hash,
+                            "source": source,
+                            "topic_key": topic_key,
+                            "source_section": section_name,
+                        },
+                    )
                     existing_hashes.add(content_hash)
                     extracted += 1
                     continue
 
                 try:
                     est_tokens = len(f"{title} {chunk[:3000]}") // 4
+                    stable_id = _knowledge_stable_id(session_id, category, title, topic_key)
                     db.execute("""
                         INSERT INTO knowledge_entries
-                        (session_id, document_id, category, title, content, tags,
+                        (session_id, document_id, category, title, stable_id, content, tags,
                          confidence, first_seen, last_seen, source, topic_key,
-                         revision_count, content_hash, est_tokens)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                         revision_count, content_hash, est_tokens, source_section)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                         ON CONFLICT(category, title, session_id) DO UPDATE SET
                             confidence = MAX(knowledge_entries.confidence, excluded.confidence),
                             occurrence_count = knowledge_entries.occurrence_count + 1,
                             last_seen = excluded.last_seen,
                             content_hash = excluded.content_hash,
                             topic_key = excluded.topic_key,
-                            est_tokens = excluded.est_tokens
-                    """, (session_id, doc_id, category, title, chunk[:3000], tags,
+                            est_tokens = excluded.est_tokens,
+                            source_section = excluded.source_section,
+                            stable_id = excluded.stable_id
+                    """, (session_id, doc_id, category, title, stable_id, chunk[:3000], tags,
                           confidence, now, now, source, topic_key, content_hash,
-                          est_tokens))
+                          est_tokens, section_name))
+                    _enqueue_sync_op_fail_open(
+                        db,
+                        "knowledge_entries",
+                        stable_id,
+                        {
+                            "session_id": session_id,
+                            "document_stable_id": document_stable_id,
+                            "category": category,
+                            "title": title,
+                            "stable_id": stable_id,
+                            "content": chunk[:3000],
+                            "tags": tags,
+                            "confidence": confidence,
+                            "first_seen": now,
+                            "last_seen": now,
+                            "source": source,
+                            "topic_key": topic_key,
+                            "revision_count": 1,
+                            "content_hash": content_hash,
+                            "est_tokens": est_tokens,
+                            "source_section": section_name,
+                        },
+                    )
                     existing_hashes.add(content_hash)
                     extracted += 1
                 except sqlite3.IntegrityError as e:
@@ -579,23 +987,25 @@ def extract_relations(db: sqlite3.Connection) -> int:
 
     # Load all entries needed for relation detection
     entries = db.execute("""
-        SELECT id, session_id, category, tags, topic_key
+        SELECT id, session_id, category, title, tags, topic_key, COALESCE(stable_id, '')
         FROM knowledge_entries
     """).fetchall()
 
     if not entries:
         return 0
 
-    relations: list[tuple] = []  # (source_id, target_id, relation_type, confidence, created_at)
+    relations: list[tuple] = []  # (source_id, target_id, src_stable, tgt_stable, relation_type, stable_id, confidence, created_at)
 
     # Build indexes for efficient lookups
     by_session: dict[str, list[tuple]] = {}
     by_topic: dict[str, list[tuple]] = {}
+    by_id: dict[int, tuple] = {}
     for e in entries:
-        eid, sid, cat, tags, topic = e
+        eid, sid, cat, title, tags, topic, stable_id = e
         by_session.setdefault(sid, []).append(e)
         if topic:
             by_topic.setdefault(topic, []).append(e)
+        by_id[eid] = e
 
     seen = set()  # (source_id, target_id, relation_type)
     type_counts = {}  # track count per relation type
@@ -603,13 +1013,20 @@ def extract_relations(db: sqlite3.Connection) -> int:
     def _add(src: int, tgt: int, rtype: str, conf: float) -> bool:
         if src == tgt:
             return False
-        key = (min(src, tgt), max(src, tgt), rtype)
+        key = (src, tgt, rtype)
         if key not in seen:
             cnt = type_counts.get(rtype, 0)
             if cnt >= MAX_PER_TYPE or len(relations) >= MAX_RELATIONS:
                 return True  # signal budget exhausted
             seen.add(key)
-            relations.append((key[0], key[1], rtype, round(conf, 2), now))
+            src = by_id.get(key[0])
+            tgt = by_id.get(key[1])
+            if not src or not tgt:
+                return False
+            src_sid = src[6] or _knowledge_stable_id(src[1], src[2], src[3], src[5] or "")
+            tgt_sid = tgt[6] or _knowledge_stable_id(tgt[1], tgt[2], tgt[3], tgt[5] or "")
+            stable_id = _knowledge_relation_stable_id(src_sid, tgt_sid, rtype)
+            relations.append((key[0], key[1], src_sid, tgt_sid, rtype, stable_id, round(conf, 2), now))
             type_counts[rtype] = cnt + 1
         return False
 
@@ -648,7 +1065,7 @@ def extract_relations(db: sqlite3.Connection) -> int:
     # 3. TAG_OVERLAP — entries sharing 2+ tags
     entry_tags = []
     for e in entries:
-        tags_str = e[3] or ""
+        tags_str = e[4] or ""
         tag_set = frozenset(t.strip() for t in tags_str.split(",") if t.strip())
         if len(tag_set) >= 2:
             entry_tags.append((e[0], tag_set))
@@ -684,9 +1101,23 @@ def extract_relations(db: sqlite3.Connection) -> int:
     if relations:
         db.executemany("""
             INSERT OR IGNORE INTO knowledge_relations
-            (source_id, target_id, relation_type, confidence, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            (source_id, target_id, source_stable_id, target_stable_id, relation_type, stable_id, confidence, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, relations)
+        for rel in relations:
+            _enqueue_sync_op_fail_open(
+                db,
+                "knowledge_relations",
+                rel[5],
+                {
+                    "source_stable_id": rel[2],
+                    "target_stable_id": rel[3],
+                    "relation_type": rel[4],
+                    "stable_id": rel[5],
+                    "confidence": rel[6],
+                    "created_at": rel[7],
+                },
+            )
 
     return len(relations)
 

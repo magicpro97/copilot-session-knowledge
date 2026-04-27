@@ -42,7 +42,7 @@ through `hook_runner.py`.
 
 ## Registered Hooks (`hooks.json`)
 
-All five event types are handled by `hook_runner.py`:
+All seven configured event types are handled by `hook_runner.py`:
 
 | Event | Command | Timeout | Notes |
 |-------|---------|---------|-------|
@@ -50,6 +50,8 @@ All five event types are handled by `hook_runner.py`:
 | `sessionEnd` | `hook_runner.py sessionEnd` | 5 s | Marker cleanup |
 | `preToolUse` | `hook_runner.py preToolUse` | 10 s | Briefing/learn/tentacle + syntax/dist/lockfile/XSS guards |
 | `postToolUse` | `hook_runner.py postToolUse` | 10 s | Edit tracking + learn/test/tentacle + Next.js typecheck reminders |
+| `agentStop` | `hook_runner.py agentStop` | 5 s | Best-effort dispatched-subagent marker cleanup from stop payload hints |
+| `subagentStop` | `hook_runner.py subagentStop` | 5 s | Best-effort dispatched-subagent marker cleanup from stop payload hints |
 | `errorOccurred` | `hook_runner.py errorOccurred` | 10 s | KB error search |
 
 ---
@@ -61,6 +63,7 @@ All five event types are handled by `hook_runner.py`:
 | `rules/briefing.py` | `AutoBriefingRule` | `sessionStart` | *(all)* | Auto-runs `briefing.py`; writes HMAC-signed marker | Y |
 | `rules/integrity.py` | `IntegrityRule` | `sessionStart` | *(all)* | SHA256 manifest check for hook tamper detection | Y |
 | `rules/session_lifecycle.py` | `SessionEndRule` | `sessionEnd` | *(all)* | Deletes this-session markers; writes `session.log` | Y |
+| `rules/session_lifecycle.py` | `SubagentStopRule` | `agentStop`, `subagentStop` | *(all)* | Uses stop-event hints to clear matching `dispatched-subagent-active` marker entries | Y |
 | `rules/briefing.py` | `EnforceBriefingRule` | `preToolUse` | `edit`, `create`, `bash` | Blocks edits until briefing marker is present | Y |
 | `rules/learn_gate.py` | `EnforceLearnRule` | `preToolUse` | `edit`, `create`, `bash`, `task_complete` | Blocks `git commit` / `task_complete` after ≥3 code edits without `learn.py` | Y |
 | `rules/tentacle.py` | `TentacleEnforceRule` | `preToolUse` | `edit`, `create`, `bash` | Blocks edits when ≥3 files across ≥2 modules without tentacle setup | Y |

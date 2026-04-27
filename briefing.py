@@ -10,6 +10,8 @@ Usage:
     python briefing.py "implement user CRUD" --full       # Full markdown briefing
     python briefing.py "fix Docker compose" --compact     # XML compact for AI context
     python briefing.py "fix Docker compose" --json        # JSON output
+    python briefing.py "review auth PR" --mode review     # Mode-aware routing
+    python briefing.py "debug flaky test_parser.py" --pack  # Compact machine JSON
     python briefing.py "spring boot migration" --limit 5  # More results per category
     python briefing.py --auto                             # Auto-detect from git/plan
     python briefing.py --auto --full                      # Full briefing with auto-detect
@@ -29,11 +31,13 @@ Use --full for complete content with tags, confidence scores, and full text.
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
 import textwrap
 import time
+import math
 from pathlib import Path
 
 # Fix Windows console encoding
@@ -48,6 +52,44 @@ TOOLS_DIR = Path(__file__).parent
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
 
+BASE_CATEGORIES = {
+    "mistake": {"emoji": "⚠️", "title": "Past Mistakes to Avoid",
+                "desc": "These mistakes were encountered before. Avoid repeating them."},
+    "pattern": {"emoji": "✅", "title": "Proven Patterns to Follow",
+                "desc": "These patterns worked well in the past."},
+    "decision": {"emoji": "🏗️", "title": "Architecture Decisions",
+                 "desc": "Past decisions for reference — respect unless requirements changed."},
+    "tool": {"emoji": "🔧", "title": "Relevant Tools & Configs",
+             "desc": "Tools and configurations used in similar work."},
+}
+
+MODE_PROFILES = {
+    "auto": {
+        "order": ["mistake", "pattern", "decision", "tool"],
+        "weights": {"mistake": 1.0, "pattern": 1.0, "decision": 1.0, "tool": 1.0},
+    },
+    "implement": {
+        "order": ["pattern", "decision", "tool", "mistake"],
+        "weights": {"mistake": 1.0, "pattern": 1.5, "decision": 1.3, "tool": 1.2},
+    },
+    "debug": {
+        "order": ["mistake", "tool", "pattern", "decision"],
+        "weights": {"mistake": 1.7, "pattern": 1.0, "decision": 0.9, "tool": 1.3},
+    },
+    "review": {
+        "order": ["mistake", "pattern", "decision", "tool"],
+        "weights": {"mistake": 1.6, "pattern": 1.3, "decision": 1.1, "tool": 0.9},
+    },
+    "plan": {
+        "order": ["decision", "pattern", "mistake", "tool"],
+        "weights": {"mistake": 1.0, "pattern": 1.2, "decision": 1.6, "tool": 0.8},
+    },
+    "test": {
+        "order": ["mistake", "pattern", "tool", "decision"],
+        "weights": {"mistake": 1.3, "pattern": 1.4, "decision": 0.9, "tool": 1.1},
+    },
+}
+
 
 def get_db() -> sqlite3.Connection:
     if not DB_PATH.exists():
@@ -57,6 +99,74 @@ def get_db() -> sqlite3.Connection:
     db = sqlite3.connect(str(DB_PATH))
     db.row_factory = sqlite3.Row
     return db
+
+
+def _safe_int_list(values) -> list[int]:
+    out = []
+    for value in values:
+        try:
+            iv = int(value)
+        except (TypeError, ValueError):
+            continue
+        out.append(iv)
+    return out
+
+
+def _estimate_tokens(output_chars: int) -> int:
+    return int(math.ceil(output_chars / 4)) if output_chars > 0 else 0
+
+
+def _record_recall_event(
+    event_kind: str,
+    surface: str,
+    mode: str,
+    raw_query: str,
+    rewritten_query: str,
+    task_id: str,
+    selected_entry_ids: list[int],
+    hit_count: int,
+    output_chars: int,
+    opened_entry_id: int | None = None,
+) -> None:
+    """Best-effort recall telemetry insert. Never crashes main surface."""
+    payload = (
+        time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
+        event_kind,
+        "briefing",
+        surface,
+        mode or "",
+        (raw_query or "")[:500],
+        (rewritten_query or "")[:500],
+        (task_id or "")[:200],
+        "[]",
+        json.dumps(_safe_int_list(selected_entry_ids), ensure_ascii=False),
+        "[]",
+        opened_entry_id,
+        max(0, int(hit_count or 0)),
+        max(0, int(output_chars or 0)),
+        _estimate_tokens(max(0, int(output_chars or 0))),
+    )
+    db = None
+    try:
+        db = sqlite3.connect(str(DB_PATH))
+        db.execute(
+            """
+            INSERT INTO recall_events (
+                created_at, event_kind, tool, surface, mode,
+                raw_query, rewritten_query, task_id, files,
+                selected_entry_ids, selected_snippet_ids, opened_entry_id,
+                hit_count, output_chars, output_est_tokens
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+        db.commit()
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        if db is not None:
+            db.close()
 
 
 def auto_detect_context() -> str:
@@ -242,6 +352,448 @@ def _build_adaptive_fts_query(query: str) -> tuple:
     return fts_query, strictness, confidence_delta
 
 
+def _rewrite_query_local(query: str, max_terms: int = 15) -> str:
+    """Conservative local query condensation while preserving technical tokens."""
+    import re as _re
+    if not query.strip():
+        return query
+
+    _SHORT_TECH = frozenset({
+        "go", "db", "ui", "js", "py", "io", "rx", "vm", "os", "ci", "cd", "tf", "qa",
+    })
+    _FILLER = frozenset({
+        "please", "help", "me", "i", "need", "to", "for", "the", "a", "an", "and", "or",
+        "with", "without", "that", "this", "these", "those", "in", "on", "at", "of", "from",
+        "by", "about", "into", "it", "is", "are", "be", "can", "should", "would", "could",
+        "how", "what", "why", "when", "where", "which", "want",
+    })
+
+    raw_tokens = query.split()
+    condensed = []
+    seen = set()
+
+    def _is_technical_token(tok: str) -> bool:
+        if not tok:
+            return False
+        if any(c in tok for c in "/\\._-:#"):
+            return True
+        if any(c.isdigit() for c in tok):
+            return True
+        if _re.search(r"[a-z][A-Z]|[A-Z][a-z]", tok):
+            return True
+        if tok.isupper() and len(tok) > 1:
+            return True
+        return False
+
+    for tok in raw_tokens:
+        clean = tok.strip(" \t\r\n\"'`()[]{}<>.,;!?")
+        if not clean:
+            continue
+        clean_lower = clean.lower()
+        keep_short_tech = len(clean) == 2 and clean_lower in _SHORT_TECH
+        if clean_lower in _FILLER and not keep_short_tech:
+            continue
+        keep_exact = _is_technical_token(clean)
+        if not keep_exact and not keep_short_tech and len(clean) < 3:
+            continue
+        out_tok = clean if keep_exact else clean_lower
+        if out_tok not in seen:
+            condensed.append(out_tok)
+            seen.add(out_tok)
+        if len(condensed) >= max_terms:
+            break
+
+    return " ".join(condensed) if condensed else query.strip()
+
+
+def _infer_mode_from_query(query: str) -> tuple[str, bool]:
+    """Infer mode from query with conservative confidence gating."""
+    q = query.lower()
+    signal_map = {
+        "implement": {"implement", "build", "create", "add", "feature", "integrate"},
+        "debug": {"debug", "fix", "error", "bug", "trace", "failure", "exception", "broken"},
+        "review": {"review", "audit", "inspect", "pr", "pull request", "security"},
+        "plan": {"plan", "design", "approach", "strategy", "roadmap", "spec"},
+        "test": {"test", "tests", "pytest", "unittest", "coverage", "assert"},
+    }
+    scored = []
+    for mode, keys in signal_map.items():
+        score = sum(1 for k in keys if k in q)
+        if score:
+            scored.append((score, mode))
+    if not scored:
+        return "auto", False
+    scored.sort(reverse=True)
+    top_score, top_mode = scored[0]
+    second_score = scored[1][0] if len(scored) > 1 else 0
+    confident = top_score >= 2 or (top_score == 1 and second_score == 0 and len(query.split()) <= 8)
+    return (top_mode if confident else "auto"), confident
+
+
+def _resolve_mode_profile(mode: str, query: str, infer_auto: bool = True) -> tuple[str, dict]:
+    """Resolve requested mode to an active mode/profile, conservative in auto."""
+    mode = (mode or "auto").lower()
+    if mode not in MODE_PROFILES:
+        mode = "auto"
+    if mode == "auto":
+        if not infer_auto:
+            return "auto", MODE_PROFILES["auto"]
+        inferred, confident = _infer_mode_from_query(query)
+        if confident and inferred in MODE_PROFILES:
+            return inferred, MODE_PROFILES[inferred]
+        return "auto", MODE_PROFILES["auto"]
+    return mode, MODE_PROFILES[mode]
+
+
+def _mode_category_config(limit: int, mode: str, query: str,
+                          infer_auto: bool = True) -> tuple[str, dict, dict]:
+    """Compute active mode, ordered category metadata, and per-category limits."""
+    active_mode, profile = _resolve_mode_profile(mode, query, infer_auto=infer_auto)
+    order = [c for c in profile["order"] if c in BASE_CATEGORIES]
+    categories = {cat: BASE_CATEGORIES[cat] for cat in order}
+    per_cat_limit = {}
+    for cat in categories:
+        weight = profile["weights"].get(cat, 1.0)
+        per_cat_limit[cat] = max(1, int(math.ceil(limit * weight)))
+    return active_mode, categories, per_cat_limit
+
+
+def _serialize_pack_entry(entry: dict) -> dict:
+    entry_id = entry.get("id")
+    try:
+        related_ids = _related_entry_ids_for_entry(int(entry_id)) if entry_id is not None else []
+    except (TypeError, ValueError):
+        related_ids = []
+    source_document = {
+        "id": entry.get("document_id"),
+        "doc_type": entry.get("source_doc_type"),
+        "title": entry.get("source_doc_title"),
+        "file_path": entry.get("source_doc_file_path"),
+        "seq": entry.get("source_doc_seq"),
+        "section": entry.get("source_section"),
+    }
+    return {
+        "id": entry.get("id"),
+        "title": entry.get("title", ""),
+        "content": (entry.get("content", "") or "")[:500],
+        "tags": entry.get("tags", ""),
+        "confidence": entry.get("confidence", 0),
+        "session_id": entry.get("session_id", ""),
+        "occurrence_count": entry.get("occurrence_count", 0),
+        "source_document": source_document,
+        "source_file": entry.get("source_file"),
+        "start_line": entry.get("start_line"),
+        "end_line": entry.get("end_line"),
+        "code_language": entry.get("code_language", ""),
+        "code_snippet": (entry.get("code_snippet", "") or "")[:2000],
+        "snippet_freshness": _compute_snippet_freshness(entry),
+        "related_entry_ids": related_ids,
+    }
+
+
+def _row_value(row: dict, key: str, default=None):
+    if isinstance(row, dict):
+        return row.get(key, default)
+    try:
+        return row[key]
+    except Exception:
+        return default
+
+
+def _source_document_from_row(row: dict) -> dict:
+    return {
+        "id": _row_value(row, "document_id"),
+        "doc_type": _row_value(row, "source_doc_type"),
+        "title": _row_value(row, "source_doc_title"),
+        "file_path": _row_value(row, "source_doc_file_path"),
+        "seq": _row_value(row, "source_doc_seq"),
+        "section": _row_value(row, "source_section"),
+    }
+
+
+def _source_label_from_row(row: dict) -> str:
+    doc_type = (_row_value(row, "source_doc_type") or "").strip()
+    section = (_row_value(row, "source_section") or "").strip()
+    seq = _row_value(row, "source_doc_seq")
+    file_path = (_row_value(row, "source_doc_file_path") or "").strip()
+    title = (_row_value(row, "source_doc_title") or "").strip()
+    if not doc_type:
+        return ""
+    if doc_type == "checkpoint" and seq:
+        base = f"from checkpoint #{seq}"
+        return f"{base} / {section}" if section else base
+    if file_path:
+        base = Path(file_path).name
+        label = f"from {doc_type} / {base}"
+    elif title:
+        label = f"from {doc_type} / {title[:60]}"
+    else:
+        label = f"from {doc_type}"
+    return f"{label} / {section}" if section else label
+
+
+def _code_location_label_from_row(row: dict) -> str:
+    source_file = (_row_value(row, "source_file") or "").strip()
+    if not source_file:
+        return ""
+    start_line = _row_value(row, "start_line")
+    end_line = _row_value(row, "end_line")
+    if start_line and end_line and start_line != end_line:
+        return f"at {source_file}:{start_line}-{end_line}"
+    if start_line:
+        return f"at {source_file}:{start_line}"
+    return f"at {source_file}"
+
+
+def _normalize_feedback_query(query: str) -> str:
+    """Canonical query normalization for feedback matching."""
+    normalized = (query or "").lower()
+    normalized = normalized.strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized[:500]
+
+
+def _compute_snippet_freshness(row: dict) -> str:
+    """Read-time snippet freshness state: fresh|drifted|missing|unknown."""
+    source_file = (_row_value(row, "source_file") or "").strip()
+    code_snippet = _row_value(row, "code_snippet")
+
+    if not source_file or code_snippet is None:
+        return "unknown"
+
+    start_line = _row_value(row, "start_line")
+    end_line = _row_value(row, "end_line")
+    if (
+        not isinstance(start_line, int)
+        or not isinstance(end_line, int)
+        or start_line <= 0
+        or end_line <= 0
+        or end_line < start_line
+    ):
+        return "unknown"
+
+    path = Path(source_file)
+    if not path.exists() or not path.is_file():
+        return "missing"
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "unknown"
+
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
+    lines = content.split("\n")
+    if end_line > len(lines):
+        return "unknown"
+
+    current = "\n".join(lines[start_line - 1:end_line])
+    if not current:
+        return "unknown"
+    current_cmp = current.rstrip()
+    stored_cmp = str(code_snippet).replace("\r\n", "\n").replace("\r", "\n").rstrip()
+    if not stored_cmp:
+        return "unknown"
+
+    if stored_cmp.endswith("…"):
+        prefix = stored_cmp[:-1]
+        if not prefix:
+            return "unknown"
+        return "fresh" if current_cmp.startswith(prefix) else "drifted"
+    return "fresh" if stored_cmp == current_cmp else "drifted"
+
+
+def _related_entry_ids_for_entry(entry_id: int, db: sqlite3.Connection = None) -> list[int]:
+    """Bidirectional related IDs with confidence-aware stable ordering."""
+    own_db = False
+    if db is None:
+        db = get_db()
+        own_db = True
+    try:
+        try:
+            rows = db.execute(
+                """
+                SELECT target_id AS related_id, COALESCE(confidence, 0.0) AS rel_conf, 1 AS outgoing
+                FROM knowledge_relations
+                WHERE source_id = ?
+                UNION ALL
+                SELECT source_id AS related_id, COALESCE(confidence, 0.0) AS rel_conf, 0 AS outgoing
+                FROM knowledge_relations
+                WHERE target_id = ?
+                """,
+                (entry_id, entry_id),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+        best: dict[int, tuple[float, int]] = {}
+        for r in rows:
+            rid = int(r["related_id"])
+            conf = float(r["rel_conf"] if r["rel_conf"] is not None else 0.0)
+            outgoing = int(r["outgoing"])
+            prev = best.get(rid)
+            if prev is None or conf > prev[0] or (conf == prev[0] and outgoing > prev[1]):
+                best[rid] = (conf, outgoing)
+
+        ranked = sorted(best.items(), key=lambda item: (-item[1][0], item[0]))
+        return [int(rid) for rid, _ in ranked[:3]]
+    finally:
+        if own_db:
+            db.close()
+
+
+def _apply_feedback_bias_to_knowledge(
+    db: sqlite3.Connection,
+    query: str,
+    entries: list[dict],
+) -> list[dict]:
+    """Feedback-aware reranking for knowledge entries."""
+    if not entries:
+        return entries
+    entry_ids = sorted({str(e.get("id")) for e in entries if e.get("id") is not None})
+    if not entry_ids:
+        return entries
+
+    try:
+        placeholders = ",".join("?" for _ in entry_ids)
+        rows = db.execute(
+            f"""
+            SELECT query, result_id, verdict
+            FROM search_feedback
+            WHERE result_kind = 'knowledge'
+              AND result_id IN ({placeholders})
+            """,
+            entry_ids,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return entries
+
+    normalized_query = _normalize_feedback_query(query)
+    if not normalized_query:
+        return entries
+
+    verdicts_by_id: dict[str, list[int]] = {}
+    for r in rows:
+        if _normalize_feedback_query(r["query"] or "") != normalized_query:
+            continue
+        rid = str(r["result_id"] or "")
+        verdicts_by_id.setdefault(rid, []).append(int(r["verdict"]))
+
+    if not verdicts_by_id:
+        return entries
+
+    base_scores = [float(e.get("_semantic_score", 0.0)) for e in entries]
+    if len(base_scores) <= 1:
+        normalized_scores = [1.0 for _ in base_scores]
+    else:
+        min_score = min(base_scores)
+        max_score = max(base_scores)
+        if max_score == min_score:
+            normalized_scores = [1.0 for _ in base_scores]
+        else:
+            span = max_score - min_score
+            normalized_scores = [(score - min_score) / span for score in base_scores]
+
+    def _bias_for(entry_id: str) -> float:
+        votes = verdicts_by_id.get(entry_id, [])
+        if not votes:
+            return 0.0
+        non_neutral = [v for v in votes if v != 0]
+        if len(non_neutral) < 2:
+            return 0.0
+        feedback_sum = sum(non_neutral)
+        return max(-0.15, min(0.15, feedback_sum * 0.05))
+
+    ranked = []
+    for idx, entry in enumerate(entries):
+        base = normalized_scores[idx]
+        bias = _bias_for(str(entry.get("id")))
+        ranked.append((base + bias, idx, entry))
+
+    ranked.sort(key=lambda x: (-x[0], x[1]))
+    out = []
+    for _, _, entry in ranked:
+        clean = dict(entry)
+        clean.pop("_semantic_score", None)
+        out.append(clean)
+    return out
+
+
+def _extract_task_matches(db: sqlite3.Connection, rewritten_query: str, limit: int = 5) -> list[dict]:
+    """Find likely task-level matches for pack output."""
+    terms = [t.strip('"*') for t in _sanitize_fts_query(rewritten_query).split() if t.strip('"*')]
+    seen = set()
+    out = []
+    for term in terms[:8]:
+        try:
+            rows = db.execute("""
+                SELECT task_id, title, category, confidence
+                FROM knowledge_entries
+                WHERE task_id != ''
+                  AND (task_id LIKE ? OR title LIKE ?)
+                ORDER BY confidence DESC, occurrence_count DESC
+                LIMIT ?
+            """, (f"%{term}%", f"%{term}%", limit)).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+        for r in rows:
+            tid = r["task_id"]
+            if not tid or tid in seen:
+                continue
+            seen.add(tid)
+            out.append({
+                "task_id": tid,
+                "title": r["title"] or "",
+                "category": r["category"] or "",
+                "confidence": r["confidence"] or 0,
+            })
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _extract_file_matches(db: sqlite3.Connection, rewritten_query: str, limit: int = 5) -> list[dict]:
+    """Find likely file/module matches for pack output."""
+    import re as _re
+    tokens = []
+    for raw in rewritten_query.split():
+        tok = raw.strip(" \t\r\n\"'`()[]{}<>.,;!?")
+        if not tok:
+            continue
+        if _re.search(r"/|\\|\.[a-zA-Z0-9]{1,6}$|_|-", tok):
+            tokens.append(tok)
+    seen = set()
+    out = []
+    for tok in tokens[:8]:
+        try:
+            rows = db.execute("""
+                SELECT id, title, category, confidence
+                FROM knowledge_entries
+                WHERE affected_files LIKE ? OR content LIKE ? OR title LIKE ?
+                ORDER BY confidence DESC, occurrence_count DESC
+                LIMIT ?
+            """, (f"%{tok}%", f"%{tok}%", f"%{tok}%", limit)).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+        hits = 0
+        for r in rows:
+            key = f"{tok}:{r['id']}"
+            if key in seen:
+                continue
+            seen.add(key)
+            hits += 1
+        if hits:
+            out.append({"file_or_module": tok, "hits": hits})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _extract_next_open(limit: int = 5) -> list[dict]:
+    """Reserved for future external todo integration; stable empty for now."""
+    _ = limit
+    return []
+
+
 def search_knowledge_entries(db: sqlite3.Connection, query: str,
                              category: str, limit: int = 3,
                              min_confidence: float = 0.0) -> list[dict]:
@@ -253,9 +805,17 @@ def search_knowledge_entries(db: sqlite3.Connection, query: str,
     try:
         rows = db.execute("""
             SELECT ke.id, ke.title, ke.content, ke.tags,
-                   ke.confidence, ke.session_id, ke.occurrence_count
+                   ke.confidence, ke.session_id, ke.occurrence_count,
+                   ke.document_id, ke.source_section,
+                   ke.source_file, ke.start_line, ke.end_line,
+                   ke.code_language, ke.code_snippet,
+                   d.doc_type as source_doc_type,
+                   d.title as source_doc_title,
+                   d.file_path as source_doc_file_path,
+                   d.seq as source_doc_seq
             FROM ke_fts fts
             JOIN knowledge_entries ke ON fts.rowid = ke.id
+            LEFT JOIN documents d ON ke.document_id = d.id
             WHERE ke_fts MATCH ?
             AND ke.category = ?
             AND ke.confidence >= ?
@@ -264,11 +824,6 @@ def search_knowledge_entries(db: sqlite3.Connection, query: str,
         """, (fts_query, category, effective_confidence, limit)).fetchall()
         results.extend([dict(r) for r in rows])
     except sqlite3.OperationalError:
-        pass
-
-    # Strict fallback: if exact-match returned nothing, retry with prefix query
-    if not results and strictness == "strict":
-        base_query = _sanitize_fts_query(query)
         try:
             rows = db.execute("""
                 SELECT ke.id, ke.title, ke.content, ke.tags,
@@ -280,10 +835,51 @@ def search_knowledge_entries(db: sqlite3.Connection, query: str,
                 AND ke.confidence >= ?
                 ORDER BY ke.confidence DESC, rank
                 LIMIT ?
-            """, (base_query, category, min_confidence, limit)).fetchall()
+            """, (fts_query, category, effective_confidence, limit)).fetchall()
             results.extend([dict(r) for r in rows])
         except sqlite3.OperationalError:
             pass
+
+    # Strict fallback: if exact-match returned nothing, retry with prefix query
+    if not results and strictness == "strict":
+        base_query = _sanitize_fts_query(query)
+        try:
+            rows = db.execute("""
+                SELECT ke.id, ke.title, ke.content, ke.tags,
+                       ke.confidence, ke.session_id, ke.occurrence_count,
+                       ke.document_id, ke.source_section,
+                       ke.source_file, ke.start_line, ke.end_line,
+                       ke.code_language, ke.code_snippet,
+                       d.doc_type as source_doc_type,
+                       d.title as source_doc_title,
+                       d.file_path as source_doc_file_path,
+                       d.seq as source_doc_seq
+                FROM ke_fts fts
+                JOIN knowledge_entries ke ON fts.rowid = ke.id
+                LEFT JOIN documents d ON ke.document_id = d.id
+                WHERE ke_fts MATCH ?
+                AND ke.category = ?
+                AND ke.confidence >= ?
+                ORDER BY ke.confidence DESC, rank
+                LIMIT ?
+            """, (base_query, category, min_confidence, limit)).fetchall()
+            results.extend([dict(r) for r in rows])
+        except sqlite3.OperationalError:
+            try:
+                rows = db.execute("""
+                    SELECT ke.id, ke.title, ke.content, ke.tags,
+                           ke.confidence, ke.session_id, ke.occurrence_count
+                    FROM ke_fts fts
+                    JOIN knowledge_entries ke ON fts.rowid = ke.id
+                    WHERE ke_fts MATCH ?
+                    AND ke.category = ?
+                    AND ke.confidence >= ?
+                    ORDER BY ke.confidence DESC, rank
+                    LIMIT ?
+                """, (base_query, category, min_confidence, limit)).fetchall()
+                results.extend([dict(r) for r in rows])
+            except sqlite3.OperationalError:
+                pass
 
     return results
 
@@ -325,10 +921,11 @@ def search_semantic(db: sqlite3.Connection, query: str,
                     AND confidence >= ?
                 """, (sid, category, min_confidence)).fetchone()
                 if row:
-                    results.append(dict(row))
-                if len(results) >= limit:
-                    break
-            return results
+                    d = dict(row)
+                    d["_semantic_score"] = float(score)
+                    results.append(d)
+            reranked = _apply_feedback_bias_to_knowledge(db, query, results)
+            return reranked[:limit]
 
         # TF-IDF fallback
         if config.get("fallback") == "tfidf":
@@ -338,6 +935,7 @@ def search_semantic(db: sqlite3.Connection, query: str,
             if row and row[0]:
                 tfidf_results = search_tfidf(query, row[0], limit=limit * 3)
                 results = []
+                seen_ids = set()
                 for section_id, score in tfidf_results:
                     if score < 0.05:
                         continue
@@ -363,11 +961,14 @@ def search_semantic(db: sqlite3.Connection, query: str,
                         """, (category, limit)).fetchall()
                     for r in ke_rows:
                         d = dict(r)
-                        if d not in results:
-                            results.append(d)
-                    if len(results) >= limit:
-                        break
-                return results[:limit]
+                        eid = d.get("id")
+                        if eid in seen_ids:
+                            continue
+                        seen_ids.add(eid)
+                        d["_semantic_score"] = float(score)
+                        results.append(d)
+                reranked = _apply_feedback_bias_to_knowledge(db, query, results)
+                return reranked[:limit]
 
     except ImportError:
         pass  # embed.py or scikit-learn not available
@@ -520,7 +1121,9 @@ def blast_radius(db: sqlite3.Connection, query: str) -> list[dict]:
 
 
 def generate_subagent_context(query: str, limit: int = 3,
-                              min_confidence: float = 0.5) -> str:
+                              min_confidence: float = 0.5,
+                              mode: str = "auto",
+                              infer_auto_mode: bool = True) -> str:
     """Generate compact context block for injecting into sub-agent prompts.
 
     Output is ~200-400 tokens — minimal overhead for sub-agent context windows.
@@ -528,12 +1131,18 @@ def generate_subagent_context(query: str, limit: int = 3,
     """
     db = get_db()
     lines = ["[KNOWLEDGE CONTEXT — from past sessions]"]
+    rewritten_query = _rewrite_query_local(query)
+    _, categories, per_cat_limit = _mode_category_config(
+        limit, mode, query, infer_auto=infer_auto_mode
+    )
+    labels = {"mistake": "AVOID", "pattern": "USE", "decision": "NOTE", "tool": "CONFIG"}
 
-    for cat, label in [("mistake", "AVOID"), ("pattern", "USE"),
-                       ("decision", "NOTE"), ("tool", "CONFIG")]:
-        fts = search_knowledge_entries(db, query, cat, limit,
+    for cat in categories:
+        label = labels.get(cat, cat.upper())
+        cat_limit = per_cat_limit.get(cat, limit)
+        fts = search_knowledge_entries(db, rewritten_query, cat, cat_limit,
                                        min_confidence=min_confidence)
-        sem = search_semantic(db, query, cat, limit,
+        sem = search_semantic(db, query, cat, cat_limit,
                               min_confidence=min_confidence)
         # Merge and dedup by id
         seen = set()
@@ -544,7 +1153,7 @@ def generate_subagent_context(query: str, limit: int = 3,
                 seen.add(eid)
                 entries.append(e)
 
-        for e in entries[:limit]:
+        for e in entries[:cat_limit]:
             if isinstance(e, (list, tuple)):
                 title = e[1] if len(e) > 1 else str(e)
             else:
@@ -561,30 +1170,26 @@ def generate_subagent_context(query: str, limit: int = 3,
 
 
 def generate_briefing(query: str, limit: int = 3, fmt: str = "md",
-                      full: bool = False, min_confidence: float = 0.5) -> str:
+                      full: bool = False, min_confidence: float = 0.5,
+                      mode: str = "auto",
+                      infer_auto_mode: bool = True,
+                      with_meta: bool = False):
     """Generate a structured briefing from the knowledge base."""
     db = get_db()
-
-    # Gather knowledge by category
-    categories = {
-        "mistake": {"emoji": "⚠️", "title": "Past Mistakes to Avoid",
-                    "desc": "These mistakes were encountered before. Avoid repeating them."},
-        "pattern": {"emoji": "✅", "title": "Proven Patterns to Follow",
-                    "desc": "These patterns worked well in the past."},
-        "decision": {"emoji": "🏗️", "title": "Architecture Decisions",
-                     "desc": "Past decisions for reference — respect unless requirements changed."},
-        "tool": {"emoji": "🔧", "title": "Relevant Tools & Configs",
-                 "desc": "Tools and configurations used in similar work."},
-    }
+    rewritten_query = _rewrite_query_local(query)
+    active_mode, categories, per_cat_limit = _mode_category_config(
+        limit, mode, query, infer_auto=infer_auto_mode
+    )
 
     briefing_data = {}
     global_seen_titles = set()  # Cross-category dedup
 
-    for cat, meta in categories.items():
+    for cat in categories:
         # Combine FTS5 + semantic results, deduplicate
-        fts_results = search_knowledge_entries(db, query, cat, limit,
-                                                min_confidence=min_confidence)
-        sem_results = search_semantic(db, query, cat, limit,
+        cat_limit = per_cat_limit.get(cat, limit)
+        fts_results = search_knowledge_entries(db, rewritten_query, cat, cat_limit,
+                                                 min_confidence=min_confidence)
+        sem_results = search_semantic(db, query, cat, cat_limit,
                                       min_confidence=min_confidence)
 
         merged = []
@@ -594,37 +1199,114 @@ def generate_briefing(query: str, limit: int = 3, fmt: str = "md",
                 global_seen_titles.add(title)
                 merged.append(r)
 
-        briefing_data[cat] = merged[:limit]
+        briefing_data[cat] = merged[:cat_limit]
 
     # Past related work
-    past_work = search_past_work(db, query, limit)
+    past_work = search_past_work(db, rewritten_query, limit)
 
     # Blast radius analysis
-    blast = blast_radius(db, query)
+    blast = blast_radius(db, rewritten_query)
+
+    # Pack-only machine surface extras
+    task_matches = []
+    file_matches = []
+    next_open = []
+    if fmt == "pack":
+        task_matches = _extract_task_matches(db, rewritten_query, limit=min(5, max(3, limit)))
+        file_matches = _extract_file_matches(db, rewritten_query, limit=min(5, max(3, limit)))
+        next_open = _extract_next_open(limit=5)
 
     db.close()
 
+    selected_entry_ids = _safe_int_list(
+        row.get("id")
+        for rows in briefing_data.values()
+        for row in rows
+        if isinstance(row, dict)
+    )
+
     # Check if we have anything
     total_entries = sum(len(v) for v in briefing_data.values()) + len(past_work)
+    output = ""
     if total_entries == 0:
         if fmt == "json":
-            return json.dumps({
+            output = json.dumps({
                 "query": query,
                 "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "sections": {},
                 "message": "No relevant past experience found.",
             }, indent=2)
-        return f"No relevant past experience found for: {query}\n"
-
-    # Format output
-    if fmt == "json":
-        return _format_json(query, briefing_data, past_work, categories, blast)
-    elif fmt == "compact":
-        return _format_compact(query, briefing_data, past_work, categories, blast)
-    elif full:
-        return _format_markdown(query, briefing_data, past_work, categories, blast)
+        elif fmt == "pack":
+            pack = {
+                "query": query,
+                "rewritten_query": rewritten_query,
+                "mode": active_mode,
+                "risk": [],
+                "entries": {"mistake": [], "pattern": [], "decision": [], "tool": []},
+                "task_matches": task_matches,
+                "file_matches": file_matches,
+                "past_work": [],
+                "next_open": next_open,
+            }
+            output = json.dumps(pack, indent=2, ensure_ascii=False)
+        else:
+            output = f"No relevant past experience found for: {query}\n"
     else:
-        return _format_default(query, briefing_data, past_work, categories, blast)
+        # Format output
+        if fmt == "json":
+            output = _format_json(query, briefing_data, past_work, categories, blast)
+        elif fmt == "pack":
+            pack_entries = {k: [_serialize_pack_entry(e) for e in briefing_data.get(k, [])]
+                            for k in ("mistake", "pattern", "decision", "tool")}
+            pack = {
+                "query": query,
+                "rewritten_query": rewritten_query,
+                "mode": active_mode,
+                "risk": [
+                    {
+                        "file": b.get("file", ""),
+                        "risk_level": b.get("risk_level", ""),
+                        "mistakes": b.get("mistakes", 0),
+                        "patterns": b.get("patterns", 0),
+                        "decisions": b.get("decisions", 0),
+                        "stale": bool(b.get("stale", False)),
+                    }
+                    for b in (blast or [])
+                ],
+                "entries": pack_entries,
+                "task_matches": task_matches,
+                "file_matches": file_matches,
+                "past_work": [
+                    {
+                        "title": w.get("title", ""),
+                        "type": w.get("doc_type", ""),
+                        "session": w.get("session_id", "")[:8],
+                        "excerpt": w.get("excerpt", "")[:200],
+                    }
+                    for w in past_work
+                ],
+                "next_open": next_open,
+            }
+            output = json.dumps(pack, indent=2, ensure_ascii=False)
+        elif fmt == "compact":
+            output = _format_compact(query, briefing_data, past_work, categories, blast)
+        elif full:
+            output = _format_markdown(query, briefing_data, past_work, categories, blast)
+        else:
+            output = _format_default(query, briefing_data, past_work, categories, blast)
+
+    if with_meta:
+        return output, {
+            "surface": "pack" if fmt == "pack" else "standard",
+            "mode": active_mode,
+            "raw_query": query,
+            "rewritten_query": rewritten_query,
+            "task_id": "",
+            "selected_entry_ids": selected_entry_ids,
+            "hit_count": len(selected_entry_ids),
+            "output_chars": len(output),
+        }
+    return output
 
 
 def _format_default(query: str, data: dict, past_work: list, categories: dict,
@@ -1145,7 +1827,8 @@ def search_by_wing_room(wing: str = "", room: str = "",
     return "\n".join(lines)
 
 
-def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text") -> str:
+def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text",
+                           with_meta: bool = False):
     """Generate a focused briefing for a specific task ID.
 
     Pulls all knowledge entries tagged with this task_id and formats them
@@ -1159,14 +1842,36 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text") -> 
     try:
         tagged_rows = db.execute("""
             SELECT id, category, title, content, confidence,
-                   affected_files, tags, occurrence_count
-            FROM knowledge_entries
-            WHERE task_id = ?
-            ORDER BY confidence DESC, occurrence_count DESC
-            LIMIT ?
+                   affected_files, tags, occurrence_count,
+                   document_id, source_section,
+                   source_file, start_line, end_line, code_language, code_snippet,
+                   source_doc_type, source_doc_title, source_doc_file_path, source_doc_seq
+            FROM (
+                SELECT ke.id, ke.category, ke.title, ke.content, ke.confidence,
+                       ke.affected_files, ke.tags, ke.occurrence_count,
+                       ke.document_id, ke.source_section,
+                       ke.source_file, ke.start_line, ke.end_line, ke.code_language, ke.code_snippet,
+                       d.doc_type as source_doc_type, d.title as source_doc_title,
+                       d.file_path as source_doc_file_path, d.seq as source_doc_seq
+                FROM knowledge_entries ke
+                LEFT JOIN documents d ON ke.document_id = d.id
+                WHERE ke.task_id = ?
+                ORDER BY ke.confidence DESC, ke.occurrence_count DESC
+                LIMIT ?
+            )
         """, (safe_task, limit)).fetchall()
     except sqlite3.OperationalError:
-        tagged_rows = []
+        try:
+            tagged_rows = db.execute("""
+                SELECT id, category, title, content, confidence,
+                       affected_files, tags, occurrence_count
+                FROM knowledge_entries
+                WHERE task_id = ?
+                ORDER BY confidence DESC, occurrence_count DESC
+                LIMIT ?
+            """, (safe_task, limit)).fetchall()
+        except sqlite3.OperationalError:
+            tagged_rows = []
 
     # Secondary: FTS search using task_id as query terms (catches related entries)
     fts_query = _sanitize_fts_query(task_id)
@@ -1176,9 +1881,14 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text") -> 
         try:
             rows = db.execute("""
                 SELECT ke.id, ke.category, ke.title, ke.content, ke.confidence,
-                       ke.affected_files, ke.tags, ke.occurrence_count
+                       ke.affected_files, ke.tags, ke.occurrence_count,
+                       ke.document_id, ke.source_section,
+                       ke.source_file, ke.start_line, ke.end_line, ke.code_language, ke.code_snippet,
+                       d.doc_type as source_doc_type, d.title as source_doc_title,
+                       d.file_path as source_doc_file_path, d.seq as source_doc_seq
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
+                LEFT JOIN documents d ON ke.document_id = d.id
                 WHERE ke_fts MATCH ?
                 ORDER BY rank
                 LIMIT ?
@@ -1187,13 +1897,30 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text") -> 
                 if r["id"] not in tagged_ids:
                     fts_rows.append(r)
         except sqlite3.OperationalError:
-            pass
+            try:
+                rows = db.execute("""
+                    SELECT ke.id, ke.category, ke.title, ke.content, ke.confidence,
+                           ke.affected_files, ke.tags, ke.occurrence_count
+                    FROM ke_fts fts
+                    JOIN knowledge_entries ke ON fts.rowid = ke.id
+                    WHERE ke_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                """, (fts_query, min(limit, 10))).fetchall()
+                for r in rows:
+                    if r["id"] not in tagged_ids:
+                        fts_rows.append(r)
+            except sqlite3.OperationalError:
+                pass
 
-    db.close()
+    selected_entry_ids = _safe_int_list(
+        [r["id"] for r in tagged_rows] + [r["id"] for r in fts_rows[:5]]
+    )
+    hit_count = len(selected_entry_ids)
 
     if not tagged_rows and not fts_rows:
         if fmt == "json":
-            return json.dumps(
+            output = json.dumps(
                 {
                     "task_id": task_id,
                     "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -1204,6 +1931,20 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text") -> 
                 indent=2,
                 ensure_ascii=False,
             )
+            db.close()
+            if with_meta:
+                return output, {
+                    "surface": "task_json",
+                    "mode": "auto",
+                    "raw_query": task_id,
+                    "rewritten_query": safe_task,
+                    "task_id": safe_task,
+                    "selected_entry_ids": [],
+                    "hit_count": 0,
+                    "output_chars": len(output),
+                }
+            return output
+        db.close()
         return (f"No knowledge entries found for task: '{task_id}'\n"
                 f"Tip: Use 'learn.py --task {task_id!r} ...' to tag entries.\n"
                 f"Or try: briefing.py '{task_id}' for FTS-based briefing.")
@@ -1241,6 +1982,12 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text") -> 
                 except Exception:
                     pass
                 lines.append(f"  #{eid} {title}{files}")
+                prov = _source_label_from_row(e)
+                if prov:
+                    lines.append(f"    {prov}")
+                loc = _code_location_label_from_row(e)
+                if loc:
+                    lines.append(f"    {loc}")
             lines.append("")
 
         # Render any categories not in the hardcoded map (e.g. custom categories)
@@ -1252,12 +1999,24 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text") -> 
                     eid = e["id"]
                     title = e["title"][:80]
                     lines.append(f"  #{eid} [{cat}] {title}")
+                    prov = _source_label_from_row(e)
+                    if prov:
+                        lines.append(f"    {prov}")
+                    loc = _code_location_label_from_row(e)
+                    if loc:
+                        lines.append(f"    {loc}")
             lines.append("")
 
     if fts_rows:
         lines.append("🔗 Related entries (FTS match on task name)")
         for r in fts_rows[:5]:
             lines.append(f"  #{r['id']} [{r['category']}] {r['title'][:75]}")
+            prov = _source_label_from_row(r)
+            if prov:
+                lines.append(f"    {prov}")
+            loc = _code_location_label_from_row(r)
+            if loc:
+                lines.append(f"    {loc}")
         lines.append("")
 
     total = len(tagged_rows) + len(fts_rows)
@@ -1281,6 +2040,14 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text") -> 
                 "tags": r["tags"] or "",
                 "affected_files": _parse_files(r["affected_files"]),
                 "occurrence_count": r["occurrence_count"],
+                "source_document": _source_document_from_row(r),
+                "source_file": r["source_file"] if "source_file" in r.keys() else None,
+                "start_line": r["start_line"] if "start_line" in r.keys() else None,
+                "end_line": r["end_line"] if "end_line" in r.keys() else None,
+                "code_language": r["code_language"] if "code_language" in r.keys() else "",
+                "code_snippet": (r["code_snippet"] or "")[:2000] if "code_snippet" in r.keys() else "",
+                "snippet_freshness": _compute_snippet_freshness(r),
+                "related_entry_ids": _related_entry_ids_for_entry(int(r["id"]), db=db),
             }
             for r in tagged_rows
         ]
@@ -1291,10 +2058,18 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text") -> 
                 "title": r["title"],
                 "confidence": r["confidence"],
                 "affected_files": _parse_files(r["affected_files"]),
+                "source_document": _source_document_from_row(r),
+                "source_file": r["source_file"] if "source_file" in r.keys() else None,
+                "start_line": r["start_line"] if "start_line" in r.keys() else None,
+                "end_line": r["end_line"] if "end_line" in r.keys() else None,
+                "code_language": r["code_language"] if "code_language" in r.keys() else "",
+                "code_snippet": (r["code_snippet"] or "")[:2000] if "code_snippet" in r.keys() else "",
+                "snippet_freshness": _compute_snippet_freshness(r),
+                "related_entry_ids": _related_entry_ids_for_entry(int(r["id"]), db=db),
             }
             for r in fts_rows[:5]
         ]
-        return json.dumps(
+        output = json.dumps(
             {
                 "task_id": task_id,
                 "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -1305,8 +2080,34 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text") -> 
             indent=2,
             ensure_ascii=False,
         )
+        db.close()
+        if with_meta:
+            return output, {
+                "surface": "task_json",
+                "mode": "auto",
+                "raw_query": task_id,
+                "rewritten_query": safe_task,
+                "task_id": safe_task,
+                "selected_entry_ids": selected_entry_ids,
+                "hit_count": hit_count,
+                "output_chars": len(output),
+            }
+        return output
 
-    return "\n".join(lines)
+    output = "\n".join(lines)
+    db.close()
+    if with_meta:
+        return output, {
+            "surface": "standard",
+            "mode": "auto",
+            "raw_query": task_id,
+            "rewritten_query": safe_task,
+            "task_id": safe_task,
+            "selected_entry_ids": selected_entry_ids,
+            "hit_count": hit_count,
+            "output_chars": len(output),
+        }
+    return output
 
 
 def main():
@@ -1352,10 +2153,28 @@ def main():
                 budget = int(args[idx3 + 1]) if idx3 + 1 < len(args) else 3000
             except ValueError:
                 budget = 3000
-        output = generate_task_briefing(task_id, limit=limit, fmt=task_fmt)
+        task_meta = None
+        if task_fmt == "json":
+            output, task_meta = generate_task_briefing(
+                task_id, limit=limit, fmt=task_fmt, with_meta=True
+            )
+        else:
+            output = generate_task_briefing(task_id, limit=limit, fmt=task_fmt)
         if budget > 0 and len(output) > budget and task_fmt != "json":
             output = output[:budget].rsplit("\n", 1)[0]
             output += f"\n[BUDGET {budget} chars — showing highest-confidence entries only]"
+        if task_fmt == "json" and isinstance(task_meta, dict):
+            _record_recall_event(
+                event_kind="recall",
+                surface=task_meta.get("surface", "task_json"),
+                mode=task_meta.get("mode", "auto"),
+                raw_query=task_meta.get("raw_query", task_id),
+                rewritten_query=task_meta.get("rewritten_query", task_id),
+                task_id=task_meta.get("task_id", task_id),
+                selected_entry_ids=task_meta.get("selected_entry_ids", []),
+                hit_count=task_meta.get("hit_count", 0),
+                output_chars=len(output),
+            )
         print(output)
         return
 
@@ -1383,6 +2202,8 @@ def main():
     limit = 3
     auto_mode = "--auto" in args
     full_mode = "--full" in args
+    mode = "auto"
+    mode_explicit = False
 
     if "--format" in args:
         idx = args.index("--format")
@@ -1393,6 +2214,14 @@ def main():
 
     if "--compact" in args:
         fmt = "compact"
+
+    if "--pack" in args:
+        fmt = "pack"
+
+    if "--mode" in args:
+        idx = args.index("--mode")
+        mode = args[idx + 1].lower() if idx + 1 < len(args) else "auto"
+        mode_explicit = True
 
     if "--limit" in args:
         idx = args.index("--limit")
@@ -1411,15 +2240,16 @@ def main():
         query = auto_detect_context()
         print(f"[briefing] auto-detected: {query}", file=sys.stderr)
     else:
-        query_parts = [a for a in args if not a.startswith("--")
-                       and a not in ("md", "json", "compact", str(limit))]
-        # Filter out values that follow flags (including --budget) so they
-        # don't bleed into the FTS query string.
-        flag_values = set()
+        # Filter out values that follow flags (including --budget) by argument
+        # position, so query terms matching those values are preserved.
+        consumed_value_indices = set()
         for i, a in enumerate(args):
-            if a in ("--format", "--limit", "--min-confidence", "--budget") and i + 1 < len(args):
-                flag_values.add(args[i + 1])
-        query_parts = [a for a in query_parts if a not in flag_values]
+            if a in ("--format", "--limit", "--min-confidence", "--budget", "--mode") and i + 1 < len(args):
+                consumed_value_indices.add(i + 1)
+        query_parts = [a for i, a in enumerate(args)
+                       if i not in consumed_value_indices
+                       and not a.startswith("--")
+                       and a not in ("md", "json", "compact", "pack", str(limit))]
         query = " ".join(query_parts)
 
     if not query:
@@ -1440,11 +2270,19 @@ def main():
             budget = 3000
 
     if subagent_mode:
+        infer_auto_mode = mode_explicit
         output = generate_subagent_context(query, limit=limit,
-                                           min_confidence=min_confidence)
+                                           min_confidence=min_confidence,
+                                           mode=mode,
+                                           infer_auto_mode=infer_auto_mode)
+        output_meta = None
     else:
-        output = generate_briefing(query, limit=limit, fmt=fmt, full=full_mode,
-                                  min_confidence=min_confidence)
+        infer_auto_mode = mode_explicit or fmt == "pack"
+        output, output_meta = generate_briefing(
+            query, limit=limit, fmt=fmt, full=full_mode,
+            min_confidence=min_confidence, mode=mode,
+            infer_auto_mode=infer_auto_mode, with_meta=True
+        )
 
     if budget > 0 and len(output) > budget:
         # Smart budget: re-generate with progressively fewer entries until it fits.
@@ -1453,11 +2291,18 @@ def main():
         for reduced_limit in range(max(1, limit - 1), 0, -1):
             if subagent_mode:
                 output = generate_subagent_context(query, limit=reduced_limit,
-                                                   min_confidence=min_confidence)
+                                                   min_confidence=min_confidence,
+                                                   mode=mode,
+                                                   infer_auto_mode=infer_auto_mode)
             else:
-                output = generate_briefing(query, limit=reduced_limit, fmt=fmt,
-                                          full=full_mode,
-                                          min_confidence=min_confidence)
+                output, output_meta = generate_briefing(
+                    query, limit=reduced_limit, fmt=fmt,
+                    full=full_mode,
+                    min_confidence=min_confidence,
+                    mode=mode,
+                    infer_auto_mode=infer_auto_mode,
+                    with_meta=True,
+                )
             if len(output) <= budget:
                 break
 
@@ -1465,9 +2310,22 @@ def main():
         # JSON and subagent-context (XML-like) output are not truncated — that
         # would corrupt their structure.  Those formats must fit within budget
         # via the progressive-limit loop above.
-        if len(output) > budget and fmt != "json":
+        if len(output) > budget and fmt not in ("json", "pack"):
             output = output[:budget].rsplit("\n", 1)[0]
             output += f"\n[BUDGET {budget} chars — showing highest-confidence entries only]"
+
+    if (not subagent_mode) and isinstance(output_meta, dict):
+        _record_recall_event(
+            event_kind="recall",
+            surface=output_meta.get("surface", "standard"),
+            mode=output_meta.get("mode", mode),
+            raw_query=output_meta.get("raw_query", query),
+            rewritten_query=output_meta.get("rewritten_query", query),
+            task_id=output_meta.get("task_id", ""),
+            selected_entry_ids=output_meta.get("selected_entry_ids", []),
+            hit_count=output_meta.get("hit_count", 0),
+            output_chars=len(output),
+        )
 
     print(output)
 

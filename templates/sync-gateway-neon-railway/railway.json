@@ -1,0 +1,12 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "region": "asia-southeast1-eqsg3a",
+    "sleepApplication": true,
+    "startCommand": "python app.py",
+    "restartPolicyType": "ON_FAILURE"
+  }
+}

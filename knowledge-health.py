@@ -10,6 +10,10 @@ Usage:
     python knowledge-health.py --score        # Just the score (0-100)
     python knowledge-health.py --json         # JSON output
     python knowledge-health.py --stale 30     # Flag entries older than 30 days
+    python knowledge-health.py --recall       # Recall telemetry dashboard
+    python knowledge-health.py --recall --json  # Recall telemetry as JSON
+    python knowledge-health.py --sync         # Sync runtime dashboard
+    python knowledge-health.py --sync --json  # Sync runtime as JSON
 """
 
 import json
@@ -180,6 +184,175 @@ def compute_health(stale_days: int = 30) -> dict:
     }
 
 
+def compute_recall_stats() -> dict:
+    """Compute lean recall telemetry aggregates."""
+    db = get_db()
+    try:
+        table_exists = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recall_events'"
+        ).fetchone()
+        if not table_exists:
+            return {
+                "available": False,
+                "total_events": 0,
+                "events_by_surface": [],
+                "avg_output_by_surface_mode": [],
+                "top_no_hit_queries": [],
+                "top_repeated_detail_opens": [],
+            }
+
+        total_events = db.execute("SELECT COUNT(*) FROM recall_events").fetchone()[0]
+        if total_events == 0:
+            return {
+                "available": True,
+                "total_events": 0,
+                "events_by_surface": [],
+                "avg_output_by_surface_mode": [],
+                "top_no_hit_queries": [],
+                "top_repeated_detail_opens": [],
+            }
+
+        events_by_surface = [
+            dict(row) for row in db.execute(
+                """
+                SELECT tool, surface, COUNT(*) AS event_count
+                FROM recall_events
+                GROUP BY tool, surface
+                ORDER BY event_count DESC, tool ASC, surface ASC
+                """
+            ).fetchall()
+        ]
+        avg_output = [
+            dict(row) for row in db.execute(
+                """
+                SELECT tool, surface, mode,
+                       AVG(output_chars) AS avg_output_chars,
+                       AVG(output_est_tokens) AS avg_output_est_tokens,
+                       COUNT(*) AS event_count
+                FROM recall_events
+                GROUP BY tool, surface, mode
+                ORDER BY event_count DESC, tool ASC, surface ASC, mode ASC
+                """
+            ).fetchall()
+        ]
+        no_hit_queries = [
+            dict(row) for row in db.execute(
+                """
+                SELECT rewritten_query, COUNT(*) AS event_count
+                FROM recall_events
+                WHERE event_kind = 'recall'
+                  AND hit_count = 0
+                  AND COALESCE(rewritten_query, '') != ''
+                GROUP BY rewritten_query
+                ORDER BY event_count DESC, rewritten_query ASC
+                LIMIT 10
+                """
+            ).fetchall()
+        ]
+        repeated_detail = [
+            dict(row) for row in db.execute(
+                """
+                SELECT opened_entry_id, COUNT(*) AS open_count
+                FROM recall_events
+                WHERE event_kind = 'detail_open'
+                  AND opened_entry_id IS NOT NULL
+                GROUP BY opened_entry_id
+                ORDER BY open_count DESC, opened_entry_id ASC
+                LIMIT 10
+                """
+            ).fetchall()
+        ]
+        return {
+            "available": True,
+            "total_events": total_events,
+            "events_by_surface": events_by_surface,
+            "avg_output_by_surface_mode": avg_output,
+            "top_no_hit_queries": no_hit_queries,
+            "top_repeated_detail_opens": repeated_detail,
+        }
+    finally:
+        db.close()
+
+
+def compute_sync_stats() -> dict:
+    """Compute sync runtime diagnostics for local-first status surfaces."""
+    db = get_db()
+    try:
+        has_sync_state = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_state'"
+        ).fetchone()
+        has_sync_txns = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_txns'"
+        ).fetchone()
+        has_sync_failures = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_failures'"
+        ).fetchone()
+        has_cursors = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_cursors'"
+        ).fetchone()
+        if not (has_sync_state and has_sync_txns and has_sync_failures and has_cursors):
+            return {
+                "available": False,
+                "local_replica_id": "",
+                "pending_txns": 0,
+                "committed_txns": 0,
+                "failed_txns": 0,
+                "failure_count": 0,
+                "last_failure": None,
+                "last_pushed_txn_id": "",
+                "last_pulled_txn_id": "",
+                "cursor_txn_id": "",
+            }
+
+        state_rows = db.execute("SELECT key, value FROM sync_state").fetchall()
+        state = {str(r["key"]): str(r["value"] or "") for r in state_rows}
+        local_replica_id = state.get("local_replica_id", "")
+        cursor = ""
+        if local_replica_id:
+            row = db.execute(
+                "SELECT last_txn_id FROM sync_cursors WHERE replica_id = ?",
+                (local_replica_id,),
+            ).fetchone()
+            cursor = str((row[0] if row else "") or "")
+
+        pending = db.execute(
+            "SELECT COUNT(*) FROM sync_txns WHERE status='pending'"
+        ).fetchone()[0]
+        committed = db.execute(
+            "SELECT COUNT(*) FROM sync_txns WHERE status='committed'"
+        ).fetchone()[0]
+        failed = db.execute(
+            "SELECT COUNT(*) FROM sync_txns WHERE status='failed'"
+        ).fetchone()[0]
+        failure_count = db.execute("SELECT COUNT(*) FROM sync_failures").fetchone()[0]
+        last_failure_row = db.execute(
+            """
+            SELECT failed_at, error_code, error_message
+            FROM sync_failures
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        last_failure = dict(last_failure_row) if last_failure_row else None
+        return {
+            "available": True,
+            "local_replica_id": local_replica_id,
+            "pending_txns": pending,
+            "committed_txns": committed,
+            "failed_txns": failed,
+            "failure_count": failure_count,
+            "last_failure": last_failure,
+            "last_pushed_txn_id": state.get("last_pushed_txn_id", ""),
+            "last_pulled_txn_id": state.get("last_pulled_txn_id", ""),
+            "cursor_txn_id": cursor,
+            "last_push_at": state.get("last_push_at", ""),
+            "last_pull_at": state.get("last_pull_at", ""),
+            "last_error": state.get("last_error", ""),
+        }
+    finally:
+        db.close()
+
+
 def format_report(health: dict) -> str:
     """Format health metrics as a text dashboard."""
     score = health["score"]
@@ -280,11 +453,112 @@ def format_report(health: dict) -> str:
     return "\n".join(lines)
 
 
+def format_recall_report(stats: dict) -> str:
+    """Format recall telemetry as a text dashboard."""
+    if not stats.get("available"):
+        return "Recall telemetry unavailable (recall_events table not found)."
+    if stats.get("total_events", 0) == 0:
+        return "Recall telemetry is empty (no events recorded yet)."
+
+    lines = [
+        "╔══════════════════════════════════════════╗",
+        "║  📡 Recall Telemetry",
+        "╚══════════════════════════════════════════╝",
+        "",
+        f"Total recall events: {stats['total_events']}",
+        "",
+        "By tool/surface:",
+    ]
+    for row in stats.get("events_by_surface", []):
+        lines.append(f"  - {row['tool']}/{row['surface']}: {row['event_count']}")
+
+    lines.append("")
+    lines.append("Average output by tool/surface/mode:")
+    for row in stats.get("avg_output_by_surface_mode", []):
+        mode = row.get("mode") or "(none)"
+        avg_chars = round(float(row.get("avg_output_chars", 0) or 0), 1)
+        avg_tokens = round(float(row.get("avg_output_est_tokens", 0) or 0), 1)
+        lines.append(
+            f"  - {row['tool']}/{row['surface']}/{mode}: "
+            f"{avg_chars} chars, {avg_tokens} tok avg ({row['event_count']} events)"
+        )
+
+    lines.append("")
+    lines.append("Top no-hit queries:")
+    no_hit = stats.get("top_no_hit_queries", [])
+    if no_hit:
+        for row in no_hit:
+            lines.append(f"  - {row['rewritten_query']}: {row['event_count']}")
+    else:
+        lines.append("  - (none)")
+
+    lines.append("")
+    lines.append("Top repeated detail opens:")
+    repeated = stats.get("top_repeated_detail_opens", [])
+    if repeated:
+        for row in repeated:
+            lines.append(f"  - #{row['opened_entry_id']}: {row['open_count']}")
+    else:
+        lines.append("  - (none)")
+
+    return "\n".join(lines)
+
+
+def format_sync_report(stats: dict) -> str:
+    """Format sync runtime diagnostics as a text dashboard."""
+    if not stats.get("available"):
+        return "Sync runtime unavailable (sync foundation tables not found)."
+
+    lines = [
+        "╔══════════════════════════════════════════╗",
+        "║  🔁 Sync Runtime Status",
+        "╚══════════════════════════════════════════╝",
+        "",
+        f"Replica:            {stats.get('local_replica_id') or '(unset)'}",
+        f"Pending txns:       {stats.get('pending_txns', 0)}",
+        f"Committed txns:     {stats.get('committed_txns', 0)}",
+        f"Failed txns:        {stats.get('failed_txns', 0)}",
+        f"Failure rows:       {stats.get('failure_count', 0)}",
+        "",
+        f"Last pushed txn:    {stats.get('last_pushed_txn_id') or '(none)'}",
+        f"Last pulled txn:    {stats.get('last_pulled_txn_id') or '(none)'}",
+        f"Cursor txn:         {stats.get('cursor_txn_id') or '(none)'}",
+        f"Last push at:       {stats.get('last_push_at') or '(none)'}",
+        f"Last pull at:       {stats.get('last_pull_at') or '(none)'}",
+    ]
+    if stats.get("last_error"):
+        lines.extend(["", f"Last daemon error:   {stats['last_error']}"])
+    if stats.get("last_failure"):
+        lf = stats["last_failure"]
+        lines.extend([
+            "",
+            "Most recent failure:",
+            f"  {lf.get('failed_at', '')} {lf.get('error_code', '')} {lf.get('error_message', '')}".strip(),
+        ])
+    return "\n".join(lines)
+
+
 def main():
     args = sys.argv[1:]
 
     if "--help" in args or "-h" in args:
         print(__doc__)
+        return
+
+    if "--recall" in args:
+        recall_stats = compute_recall_stats()
+        if "--json" in args:
+            print(json.dumps(recall_stats, indent=2, ensure_ascii=False))
+        else:
+            print(format_recall_report(recall_stats))
+        return
+
+    if "--sync" in args:
+        sync_stats = compute_sync_stats()
+        if "--json" in args:
+            print(json.dumps(sync_stats, indent=2, ensure_ascii=False))
+        else:
+            print(format_sync_report(sync_stats))
         return
 
     stale_days = 30

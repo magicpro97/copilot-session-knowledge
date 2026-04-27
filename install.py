@@ -140,6 +140,10 @@ TOOL_FILES = [
     "embed.py",
     "claude-adapter.py",
     "sync-knowledge.py",
+    "sync-config.py",
+    "sync-daemon.py",
+    "sync-status.py",
+    "sync-gateway.py",
     "generate-summary.py",
     "install.py",
 ]
@@ -360,8 +364,11 @@ MINIMAL_SKILL_MD = textwrap.dedent("""\
     # Get a context briefing for your current task
     python3 ~/.copilot/tools/briefing.py "task description"
 
-    # Compact context for sub-agent prompts
+    # Manual compatibility path for ad hoc sub-agent prompts
     python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
+
+    # Preferred delegated-agent path (tentacle structured evidence)
+    python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
 
     # Record new learnings
     python3 ~/.copilot/tools/learn.py --mistake "Title" "What went wrong and fix"
@@ -380,8 +387,10 @@ MINIMAL_SKILL_MD = textwrap.dedent("""\
     2. **During work**: if you hit an issue, search for similar past problems.
     3. **After finishing**: record any new mistakes, patterns, or decisions
        with `learn.py`.
-    4. **Sub-agents**: run `briefing.py --for-subagent` and inject output into
-       sub-agent prompts.
+    4. **Delegated agents (preferred)**: use `tentacle.py ... --briefing`
+       so dispatch injects bounded `[KNOWLEDGE EVIDENCE]` from task recall first.
+    5. **Manual compatibility**: for ad hoc prompts, run
+       `briefing.py --for-subagent` and inject output directly.
 """)
 
 
@@ -455,7 +464,10 @@ Quick reference:
 # Before moderate/complex tasks — start here, escalate only if needed
 python3 ~/.copilot/tools/briefing.py --auto --compact
 
-# When dispatching sub-agents — cheapest context injection
+# For delegated tentacle agents — preferred structured recall path
+python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
+
+# Manual compatibility for ad hoc sub-agent prompts
 python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
 
 # After resolving a non-trivial issue — record the learning
@@ -478,7 +490,10 @@ def deploy_hooks():
     """
     print("\nDeploy Hooks (Copilot CLI)")
 
-    hooks_src = _SCRIPT_DIR / ".github" / "hooks" / "hooks.json"
+    hooks_src = _SCRIPT_DIR / "hooks" / "hooks.json"
+    if not hooks_src.is_file():
+        # Backward-compatible fallback for older repos.
+        hooks_src = _SCRIPT_DIR / ".github" / "hooks" / "hooks.json"
     hooks_dst_dir = COPILOT_DIR / "hooks"
     hooks_dst = hooks_dst_dir / "hooks.json"
 
@@ -911,6 +926,9 @@ def _show_usage_hints():
     print(f"    python {inst} --unlock-hooks           # Unlock hooks for updates")
     print(f"    python {inst} --test                  # Run self-test")
     print(f"    python {inst} --uninstall             # Remove tools")
+    print(f"\n  Sync rollout note:")
+    print("    sync-config.py --setup expects an HTTP(S) gateway URL (not raw Postgres/libSQL DSN)")
+    print("    Default provider rollout recommendation: Neon (Postgres) + Railway (thin gateway host)")
 
 
 # ===================================================================

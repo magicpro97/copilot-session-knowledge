@@ -11,6 +11,8 @@ Usage:
     python sync-knowledge.py --dry-run --sources /path/to/other.db  # Preview only
     python sync-knowledge.py --stats                                # Show sync info
     python sync-knowledge.py --auto                                 # Auto-detect WSL/Win DBs
+    python sync-knowledge.py --repair-sync                          # Ensure runtime sync tables/state
+    python sync-knowledge.py --sync-status                          # Show runtime sync status
 
 Cross-platform: Windows, macOS, Linux (WSL). Pure Python stdlib.
 """
@@ -19,6 +21,7 @@ import sqlite3
 import os
 import sys
 import shutil
+import json
 from pathlib import Path
 from datetime import datetime
 
@@ -32,6 +35,135 @@ if os.name == "nt":
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
+SYNC_CONFIG_PATH = Path.home() / ".copilot" / "tools" / "sync-config.json"
+
+
+def ensure_sync_runtime_schema(db: sqlite3.Connection):
+    """Ensure local sync runtime tables and defaults exist."""
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS sync_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS sync_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS sync_txns (
+            txn_id TEXT PRIMARY KEY,
+            replica_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'committed', 'failed')),
+            created_at TEXT NOT NULL,
+            committed_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS sync_ops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            txn_id TEXT NOT NULL,
+            table_name TEXT NOT NULL,
+            op_type TEXT NOT NULL CHECK(op_type IN ('insert', 'update', 'delete', 'upsert')),
+            row_stable_id TEXT NOT NULL,
+            row_payload TEXT NOT NULL,
+            op_index INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(txn_id, op_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_ops_txn ON sync_ops(txn_id);
+        CREATE INDEX IF NOT EXISTS idx_sync_ops_table_row ON sync_ops(table_name, row_stable_id);
+        CREATE TABLE IF NOT EXISTS sync_cursors (
+            replica_id TEXT PRIMARY KEY,
+            last_txn_id TEXT DEFAULT '',
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS sync_failures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            txn_id TEXT DEFAULT '',
+            table_name TEXT DEFAULT '',
+            row_stable_id TEXT DEFAULT '',
+            error_code TEXT DEFAULT '',
+            error_message TEXT DEFAULT '',
+            failed_at TEXT NOT NULL,
+            retry_count INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_failures_txn ON sync_failures(txn_id);
+        CREATE TABLE IF NOT EXISTS sync_table_policies (
+            table_name TEXT PRIMARY KEY,
+            sync_scope TEXT NOT NULL CHECK(sync_scope IN ('canonical', 'local_only', 'upload_only')),
+            stable_id_column TEXT DEFAULT ''
+        );
+    """)
+    db.executemany("""
+        INSERT INTO sync_table_policies (table_name, sync_scope, stable_id_column)
+        VALUES (?, ?, ?)
+        ON CONFLICT(table_name) DO UPDATE SET
+            sync_scope = excluded.sync_scope,
+            stable_id_column = excluded.stable_id_column
+    """, [
+        ("sessions", "canonical", "id"),
+        ("documents", "canonical", "stable_id"),
+        ("sections", "canonical", "stable_id"),
+        ("knowledge_entries", "canonical", "stable_id"),
+        ("knowledge_relations", "canonical", "stable_id"),
+        ("entity_relations", "canonical", "stable_id"),
+        ("search_feedback", "canonical", "stable_id"),
+        ("recall_events", "upload_only", ""),
+        ("knowledge_fts", "local_only", ""),
+        ("ke_fts", "local_only", ""),
+        ("sessions_fts", "local_only", ""),
+        ("event_offsets", "local_only", ""),
+        ("embeddings", "local_only", ""),
+        ("embedding_meta", "local_only", ""),
+        ("tfidf_model", "local_only", ""),
+    ])
+    db.execute("""
+        INSERT OR IGNORE INTO sync_state (key, value)
+        VALUES ('local_replica_id', '')
+    """)
+
+
+def _sync_runtime_status(db: sqlite3.Connection) -> dict:
+    """Collect compact runtime health for repair/status workflows."""
+    state_rows = db.execute("SELECT key, value FROM sync_state").fetchall()
+    state = {str(k): str(v or "") for k, v in state_rows}
+    pending = db.execute("SELECT COUNT(*) FROM sync_txns WHERE status='pending'").fetchone()[0]
+    committed = db.execute("SELECT COUNT(*) FROM sync_txns WHERE status='committed'").fetchone()[0]
+    failed = db.execute("SELECT COUNT(*) FROM sync_txns WHERE status='failed'").fetchone()[0]
+    failures = db.execute("SELECT COUNT(*) FROM sync_failures").fetchone()[0]
+    cfg = {"connection_string": ""}
+    if SYNC_CONFIG_PATH.exists():
+        try:
+            cfg_obj = json.loads(SYNC_CONFIG_PATH.read_text(encoding="utf-8"))
+            if isinstance(cfg_obj, dict):
+                cfg["connection_string"] = str(cfg_obj.get("connection_string", "") or "")
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {
+        "configured": bool(cfg["connection_string"]),
+        "connection_string": cfg["connection_string"],
+        "local_replica_id": state.get("local_replica_id", ""),
+        "last_pushed_txn_id": state.get("last_pushed_txn_id", ""),
+        "last_pulled_txn_id": state.get("last_pulled_txn_id", ""),
+        "pending_txns": pending,
+        "committed_txns": committed,
+        "failed_txns": failed,
+        "sync_failures": failures,
+    }
+
+
+def show_sync_runtime_status(db: sqlite3.Connection):
+    status = _sync_runtime_status(db)
+    print("\nSync runtime status")
+    print(f"  configured:      {'yes' if status['configured'] else 'no'}")
+    print(f"  replica_id:      {status['local_replica_id'] or '(unset)'}")
+    print(f"  pending_txns:    {status['pending_txns']}")
+    print(f"  committed_txns:  {status['committed_txns']}")
+    print(f"  failed_txns:     {status['failed_txns']}")
+    print(f"  sync_failures:   {status['sync_failures']}")
+    if status["last_pushed_txn_id"]:
+        print(f"  last_pushed:     {status['last_pushed_txn_id']}")
+    if status["last_pulled_txn_id"]:
+        print(f"  last_pulled:     {status['last_pulled_txn_id']}")
 
 
 def auto_detect_sources() -> list[Path]:
@@ -442,6 +574,8 @@ def main():
     dry_run = "--dry-run" in sys.argv
     stats_only = "--stats" in sys.argv
     auto_mode = "--auto" in sys.argv
+    repair_sync = "--repair-sync" in sys.argv or "--repair-runtime" in sys.argv
+    runtime_status = "--sync-status" in sys.argv
     source_paths = []
 
     if "--sources" in sys.argv:
@@ -454,6 +588,31 @@ def main():
     if stats_only:
         show_stats()
         return
+
+    if repair_sync or runtime_status:
+        if not DB_PATH.exists():
+            print(f"Error: database not found at {DB_PATH}", file=sys.stderr)
+            sys.exit(1)
+        db = sqlite3.connect(str(DB_PATH))
+        try:
+            ensure_sync_runtime_schema(db)
+            db.execute("""
+                INSERT INTO sync_state (key, value)
+                VALUES ('last_repair_sync_at', ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = datetime('now')
+            """, (datetime.utcnow().replace(microsecond=0).isoformat() + "Z",))
+            db.commit()
+            if repair_sync:
+                print("✓ sync runtime schema repaired/validated")
+            show_sync_runtime_status(db)
+        finally:
+            db.close()
+        if runtime_status and not repair_sync:
+            return
+        if repair_sync and not source_paths and not auto_mode:
+            return
 
     if auto_mode:
         source_paths = auto_detect_sources()
@@ -493,6 +652,7 @@ def main():
 
     db = bsi.create_db(DB_PATH)
     db.execute("PRAGMA busy_timeout=5000")  # wait up to 5 s on concurrent writes
+    ensure_sync_runtime_schema(db)
 
     mode = "DRY RUN" if dry_run else "SYNC"
     print(f"\n{mode}: Merging {len(valid_sources)} source(s) → {DB_PATH}")
@@ -513,6 +673,13 @@ def main():
     if not dry_run:
         # Rebuild FTS indexes
         rebuild_fts(db)
+        db.execute("""
+            INSERT INTO sync_state (key, value)
+            VALUES ('last_manual_merge_at', ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = datetime('now')
+        """, (datetime.utcnow().replace(microsecond=0).isoformat() + "Z",))
         db.commit()
 
     print(f"\n{'='*40}")

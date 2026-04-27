@@ -5,6 +5,7 @@ import {
   evidenceGraphResponseSchema,
   compareResponseSchema,
   evalResponseSchema,
+  syncStatusResponseSchema,
   searchResponseSchema,
   sessionListResponseSchema,
 } from "@/lib/api/schemas";
@@ -125,5 +126,58 @@ describe("api schemas", () => {
     });
 
     expect(parsed.communities[0].top_relation_types?.[0]?.type).toBe("CITED_WITH");
+  });
+
+  it("parses sync diagnostics status response", () => {
+    const parsed = syncStatusResponseSchema.parse({
+      status: "pending",
+      configured: true,
+      connection: {
+        configured: true,
+        endpoint: "https://sync.local",
+        config_path: "/home/user/.copilot/tools/sync-config.json",
+      },
+      runtime: {
+        generated_at: "2026-01-01T00:00:00Z",
+        db_path: "/home/user/.copilot/session-state/knowledge.db",
+        db_mode: "file",
+        sync_tables: {
+          sync_state: true,
+          sync_txns: true,
+        },
+        sync_tables_ready: false,
+        available_sync_tables: 2,
+        total_sync_tables: 5,
+        failed_txns: 0,
+      },
+      operator_actions: [
+        {
+          id: "sync-status-json",
+          title: "Local sync runtime snapshot",
+          description: "Inspect queue + gateway health without mutating state.",
+          command: "python3 sync-status.py --json",
+          safe: true,
+          requires_configured_gateway: false,
+        },
+      ],
+      local_replica_id: "local",
+      pending_txns: 2,
+      pending_ops: 4,
+      committed_txns: 10,
+      failed_txns: 0,
+      failed_ops: 1,
+      cursor_count: 1,
+      last_committed_at: "2026-01-01T00:00:00Z",
+      last_failure: {
+        failed_at: "2026-01-01T00:10:00Z",
+        error_message: "timeout",
+        retry_count: 2,
+      },
+    });
+
+    expect(parsed.connection.endpoint).toBe("https://sync.local");
+    expect(parsed.runtime.db_mode).toBe("file");
+    expect(parsed.operator_actions[0].safe).toBe(true);
+    expect(parsed.failed_ops).toBe(1);
   });
 });

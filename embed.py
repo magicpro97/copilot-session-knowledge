@@ -22,10 +22,12 @@ Usage:
 
 import json
 import os
+import re
 import sqlite3
 import struct
 import sys
 import time
+import hashlib
 import urllib.request
 import urllib.error
 import ssl
@@ -48,6 +50,187 @@ CONFIG_PATH = TOOLS_DIR / "embedding-config.json"
 
 # SSL verification — disable with --no-verify-ssl flag or COPILOT_NO_VERIFY_SSL=1
 NO_VERIFY_SSL = False
+
+
+def _stable_sha256(*parts) -> str:
+    payload = "\0".join("" if p is None else str(p) for p in parts)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _default_local_replica_id() -> str:
+    host = os.environ.get("HOSTNAME") or os.environ.get("COMPUTERNAME") or ""
+    user = os.environ.get("USER") or os.environ.get("USERNAME") or ""
+    return f"replica-{_stable_sha256('local-replica', host, user, str(Path.home()))[:16]}"
+
+
+def _get_local_replica_id(db: sqlite3.Connection) -> str:
+    for table in ("sync_state", "sync_metadata"):
+        try:
+            row = db.execute(
+                f"SELECT value FROM {table} WHERE key='local_replica_id'"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            continue
+        current = str(row[0]) if row and row[0] else ""
+        if current and current != "local":
+            return current
+    replica_id = _default_local_replica_id()
+    for table in ("sync_state", "sync_metadata"):
+        try:
+            db.execute(f"""
+                INSERT INTO {table} (key, value)
+                VALUES ('local_replica_id', ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = datetime('now')
+            """, (replica_id,))
+        except sqlite3.OperationalError:
+            pass
+    return replica_id or "local"
+
+
+def _normalize_search_feedback_origin(origin_replica_id: str, local_replica_id: str) -> str:
+    origin = (origin_replica_id or "").strip()
+    if not origin or origin == "local":
+        return local_replica_id or "local"
+    return origin
+
+
+def _enqueue_sync_op_fail_open(
+    db: sqlite3.Connection,
+    table_name: str,
+    row_stable_id: str,
+    row_payload: dict,
+    op_type: str = "upsert",
+):
+    if not row_stable_id:
+        return
+    try:
+        policy = db.execute(
+            "SELECT sync_scope FROM sync_table_policies WHERE table_name = ?",
+            (table_name,),
+        ).fetchone()
+        if not policy or policy[0] != "canonical":
+            return
+        replica_id = _get_local_replica_id(db)
+        if not replica_id:
+            return
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        txn_id = _stable_sha256("sync-txn", replica_id, table_name, row_stable_id, time.time_ns())
+        db.execute("""
+            INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at)
+            VALUES (?, ?, 'pending', ?, '')
+        """, (txn_id, replica_id, now))
+        db.execute("""
+            INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
+            VALUES (?, ?, ?, ?, ?, 0, ?)
+        """, (txn_id, table_name, op_type, row_stable_id, json.dumps(row_payload, ensure_ascii=False), now))
+    except Exception:
+        return
+
+
+def _seed_local_only_sync_policy(db: sqlite3.Connection):
+    policy_sql = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='sync_table_policies'"
+    ).fetchone()
+    needs_rebuild = policy_sql and "upload_only" not in (policy_sql[0] or "")
+    if needs_rebuild:
+        db.executescript("""
+            CREATE TABLE sync_table_policies_new (
+                table_name TEXT PRIMARY KEY,
+                sync_scope TEXT NOT NULL CHECK(sync_scope IN ('canonical', 'local_only', 'upload_only')),
+                stable_id_column TEXT DEFAULT ''
+            );
+            INSERT INTO sync_table_policies_new (table_name, sync_scope, stable_id_column)
+            SELECT table_name, sync_scope, COALESCE(stable_id_column, '')
+            FROM sync_table_policies;
+            DROP TABLE sync_table_policies;
+            ALTER TABLE sync_table_policies_new RENAME TO sync_table_policies;
+        """)
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS sync_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS sync_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS sync_txns (
+            txn_id TEXT PRIMARY KEY,
+            replica_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'committed', 'failed')),
+            created_at TEXT NOT NULL,
+            committed_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS sync_ops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            txn_id TEXT NOT NULL,
+            table_name TEXT NOT NULL,
+            op_type TEXT NOT NULL CHECK(op_type IN ('insert', 'update', 'delete', 'upsert')),
+            row_stable_id TEXT NOT NULL,
+            row_payload TEXT NOT NULL,
+            op_index INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(txn_id, op_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_ops_txn ON sync_ops(txn_id);
+        CREATE INDEX IF NOT EXISTS idx_sync_ops_table_row ON sync_ops(table_name, row_stable_id);
+        CREATE TABLE IF NOT EXISTS sync_cursors (
+            replica_id TEXT PRIMARY KEY,
+            last_txn_id TEXT DEFAULT '',
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS sync_failures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            txn_id TEXT DEFAULT '',
+            table_name TEXT DEFAULT '',
+            row_stable_id TEXT DEFAULT '',
+            error_code TEXT DEFAULT '',
+            error_message TEXT DEFAULT '',
+            failed_at TEXT NOT NULL,
+            retry_count INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_failures_txn ON sync_failures(txn_id);
+        CREATE TABLE IF NOT EXISTS sync_table_policies (
+            table_name TEXT PRIMARY KEY,
+            sync_scope TEXT NOT NULL CHECK(sync_scope IN ('canonical', 'local_only', 'upload_only')),
+            stable_id_column TEXT DEFAULT ''
+        );
+    """)
+    db.executemany("""
+        INSERT INTO sync_table_policies (table_name, sync_scope, stable_id_column)
+        VALUES (?, ?, ?)
+        ON CONFLICT(table_name) DO UPDATE SET
+            sync_scope = excluded.sync_scope,
+            stable_id_column = excluded.stable_id_column
+    """, [
+        ("sessions", "canonical", "id"),
+        ("documents", "canonical", "stable_id"),
+        ("sections", "canonical", "stable_id"),
+        ("knowledge_entries", "canonical", "stable_id"),
+        ("knowledge_relations", "canonical", "stable_id"),
+        ("entity_relations", "canonical", "stable_id"),
+        ("search_feedback", "canonical", "stable_id"),
+        ("recall_events", "upload_only", ""),
+        ("embeddings", "local_only", ""),
+        ("embedding_meta", "local_only", ""),
+        ("tfidf_model", "local_only", ""),
+        ("knowledge_fts", "local_only", ""),
+        ("ke_fts", "local_only", ""),
+        ("sessions_fts", "local_only", ""),
+        ("event_offsets", "local_only", ""),
+    ])
+    db.execute("""
+        INSERT OR IGNORE INTO sync_metadata (key, value)
+        VALUES ('local_replica_id', 'local')
+    """)
+    db.execute("""
+        INSERT OR IGNORE INTO sync_state (key, value)
+        VALUES ('local_replica_id', 'local')
+    """)
 
 # ── Default provider configs ──────────────────────────────────────────
 DEFAULT_CONFIG = {
@@ -474,6 +657,72 @@ def ensure_embedding_tables(db: sqlite3.Connection):
             built_at TEXT
         );
     """)
+    _seed_local_only_sync_policy(db)
+    try:
+        db.execute("ALTER TABLE search_feedback ADD COLUMN origin_replica_id TEXT DEFAULT 'local'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        db.execute("ALTER TABLE search_feedback ADD COLUMN stable_id TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        local_replica_id = _get_local_replica_id(db)
+        rows = db.execute("""
+            SELECT id, created_at, result_kind, result_id, verdict, query,
+                   COALESCE(origin_replica_id, ''), COALESCE(stable_id, '')
+            FROM search_feedback
+        """).fetchall()
+        for row in rows:
+            sf_id, created_at, result_kind, result_id, verdict, query, origin_replica_id, existing_stable = row
+            origin = _normalize_search_feedback_origin(origin_replica_id, local_replica_id)
+            stable_id = _stable_sha256(
+                "search_feedback",
+                created_at or "",
+                result_kind or "",
+                result_id or "",
+                verdict if verdict is not None else "",
+                query or "",
+                origin,
+            )
+            if existing_stable != stable_id or origin_replica_id != origin:
+                db.execute("""
+                    UPDATE search_feedback
+                    SET origin_replica_id = ?, stable_id = ?
+                    WHERE id = ?
+                """, (origin, stable_id, sf_id))
+                _enqueue_sync_op_fail_open(
+                    db,
+                    "search_feedback",
+                    stable_id,
+                    {
+                        "query": query,
+                        "result_id": result_id,
+                        "result_kind": result_kind,
+                        "verdict": verdict,
+                        "created_at": created_at,
+                        "origin_replica_id": origin,
+                        "stable_id": stable_id,
+                    },
+                )
+        db.execute("""
+            DELETE FROM search_feedback
+            WHERE id IN (
+                SELECT dupe.id
+                FROM search_feedback dupe
+                JOIN (
+                    SELECT stable_id, MIN(id) AS keep_id
+                    FROM search_feedback
+                    WHERE COALESCE(stable_id, '') != ''
+                    GROUP BY stable_id
+                    HAVING COUNT(*) > 1
+                ) grouped ON grouped.stable_id = dupe.stable_id
+                WHERE dupe.id != grouped.keep_id
+            )
+        """)
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_search_feedback_stable_id ON search_feedback(stable_id)")
+    except sqlite3.OperationalError:
+        pass
 
 
 def store_embeddings(db: sqlite3.Connection, source_type: str,
@@ -538,6 +787,119 @@ def reciprocal_rank_fusion(ranked_lists: list[list], k: int = 60) -> list[tuple]
         for rank, key in enumerate(ranked):
             scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
     return sorted(scores.items(), key=lambda x: -x[1])
+
+
+def _normalize_feedback_query(query: str) -> str:
+    """Canonical query normalization for feedback matching."""
+    normalized = (query or "").lower()
+    normalized = normalized.strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized[:500]
+
+
+def _apply_feedback_bias(
+    db: sqlite3.Connection,
+    query: str,
+    merged: list[tuple],
+) -> tuple[list[tuple], dict[tuple, tuple[float, int]]]:
+    """Apply query-scoped feedback bias while preserving original rrf_score values."""
+    if not merged:
+        return merged, {}
+
+    grouped_ids: dict[str, set[str]] = {"knowledge": set(), "section": set()}
+    key_to_feedback_id: dict[tuple, tuple[str, str]] = {}
+
+    for key, _ in merged:
+        if not isinstance(key, tuple) or not key:
+            continue
+        if key[0] == "knowledge" and len(key) >= 2:
+            rid = str(key[1])
+            grouped_ids["knowledge"].add(rid)
+            key_to_feedback_id[key] = ("knowledge", rid)
+        elif key[0] == "section" and len(key) >= 3:
+            rid = f"{key[1]}:{key[2]}"
+            grouped_ids["section"].add(rid)
+            key_to_feedback_id[key] = ("section", rid)
+
+    if not key_to_feedback_id:
+        return merged, {}
+
+    feedback_rows = []
+    try:
+        for result_kind, id_set in grouped_ids.items():
+            if not id_set:
+                continue
+            ids = sorted(id_set)
+            placeholders = ",".join("?" for _ in ids)
+            rows = db.execute(
+                f"""
+                SELECT query, result_id, result_kind, verdict
+                FROM search_feedback
+                WHERE result_kind = ?
+                  AND result_id IN ({placeholders})
+                """,
+                [result_kind, *ids],
+            ).fetchall()
+            feedback_rows.extend(rows)
+    except sqlite3.OperationalError:
+        return merged, {}
+
+    normalized_query = _normalize_feedback_query(query)
+    if not normalized_query:
+        return merged, {}
+
+    votes_by_key: dict[tuple[str, str], list[int]] = {}
+    for row in feedback_rows:
+        row_query = _normalize_feedback_query(row[0] or "")
+        if row_query != normalized_query:
+            continue
+        fk = (str(row[2] or ""), str(row[1] or ""))
+        votes_by_key.setdefault(fk, []).append(int(row[3]))
+
+    if not votes_by_key:
+        return merged, {}
+
+    base_scores = [float(rrf_score) for _, rrf_score in merged]
+    if len(base_scores) <= 1:
+        normalized_scores = [1.0 for _ in base_scores]
+    else:
+        min_score = min(base_scores)
+        max_score = max(base_scores)
+        if max_score == min_score:
+            normalized_scores = [1.0 for _ in base_scores]
+        else:
+            span = max_score - min_score
+            normalized_scores = [(score - min_score) / span for score in base_scores]
+
+    def _bias_for(feedback_key: tuple[str, str] | None) -> float:
+        if not feedback_key:
+            return 0.0
+        votes = votes_by_key.get(feedback_key, [])
+        if not votes:
+            return 0.0
+        non_neutral = [v for v in votes if v != 0]
+        if len(non_neutral) < 2:
+            return 0.0
+        feedback_sum = sum(non_neutral)
+        return max(-0.15, min(0.15, feedback_sum * 0.05))
+
+    ranked = []
+    for idx, (key, rrf_score) in enumerate(merged):
+        feedback_key = key_to_feedback_id.get(key)
+        feedback_votes = votes_by_key.get(feedback_key, []) if feedback_key else []
+        feedback_count = len(feedback_votes)
+        feedback_bias = _bias_for(feedback_key)
+        normalized_base = normalized_scores[idx]
+        combined_score = normalized_base + feedback_bias
+        ranked.append((combined_score, idx, key, rrf_score, feedback_bias, feedback_count))
+
+    ranked.sort(key=lambda x: (-x[0], x[1]))
+    reranked = []
+    feedback_meta = {}
+    for _, _, key, rrf_score, feedback_bias, feedback_count in ranked:
+        reranked.append((key, rrf_score))
+        feedback_meta[key] = (float(feedback_bias), int(feedback_count))
+    return reranked, feedback_meta
 
 
 def hybrid_search(db: sqlite3.Connection, query: str, config: dict,
@@ -688,10 +1050,15 @@ def hybrid_search(db: sqlite3.Connection, query: str, config: dict,
     else:
         return []
 
+    merged, feedback_meta = _apply_feedback_bias(db, query, merged)
+
     results = []
     for key, rrf_score in merged[:limit]:
         info = info_map.get(key, {})
         info["rrf_score"] = rrf_score
+        feedback_bias, feedback_count = feedback_meta.get(key, (0.0, 0))
+        info["feedback_bias"] = feedback_bias
+        info["feedback_count"] = feedback_count
         results.append(info)
 
     return results

@@ -9,6 +9,10 @@
 #   sk-update --check      # Check only
 #   sk-update --status     # Show state
 #   sk-update --doctor     # Verify health
+#   sk-update --restart-watch  # Restart watch-sessions runtime
+#   sk-update --watch-status   # Show watcher runtime status
+#   sk-update --health-check   # Run sync runtime health check
+#   sk-update --audit-runtime  # Run runtime operations audit
 
 set -euo pipefail
 
@@ -205,6 +209,10 @@ main() {
             --check)   check_only=true ;;
             --status)  show_status; return 0 ;;
             --doctor)  doctor; return 0 ;;
+            --restart-watch) restart_processes; return $? ;;
+            --watch-status) python3 "${TOOLS_DIR}/sync-status.py" --watch-status; return $? ;;
+            --health-check) python3 "${TOOLS_DIR}/sync-status.py" --health-check; return $? ;;
+            --audit-runtime) python3 "${TOOLS_DIR}/sync-status.py" --audit; return $? ;;
             --help|-h) head -12 "$0" | tail -7; return 0 ;;
         esac
     done

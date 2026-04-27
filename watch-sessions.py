@@ -456,12 +456,11 @@ def main():
         # Re-acquire lock atomically with new PID after fork
         # Write new PID to temp file, then atomic rename to avoid TOCTOU
         try:
-            import tempfile
-            lock_dir = LOCK_FILE.parent
-            fd, tmp_lock = tempfile.mkstemp(dir=str(lock_dir), prefix=".watcher.lock.tmp.")
+            tmp_lock = LOCK_FILE.parent / f".watcher.lock.tmp.{os.getpid()}"
+            fd = os.open(str(tmp_lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.write(fd, str(os.getpid()).encode("utf-8"))
             os.close(fd)
-            os.replace(tmp_lock, str(LOCK_FILE))
+            os.replace(str(tmp_lock), str(LOCK_FILE))
         except OSError as e:
             print(f"[watch] Warning: could not re-acquire lock after fork: {e}", file=sys.stderr)
         # Signal parent that lock is updated

@@ -56,6 +56,8 @@ else:
 LEARN_PY = TOOLS_DIR / "learn.py"
 BRIEFING_PY = TOOLS_DIR / "briefing.py"
 CHECKPOINT_RESTORE_PY = TOOLS_DIR / "checkpoint-restore.py"
+AUTO_RECALL_START = "<!-- AUTO-RECALL-START -->"
+AUTO_RECALL_END = "<!-- AUTO-RECALL-END -->"
 
 # ---------------------------------------------------------------------------
 # Dispatched-subagent marker constants
@@ -231,40 +233,98 @@ def _run_briefing(query: str) -> str:
     return ""
 
 
-def _render_briefing_from_json(data: dict) -> str:
-    """Render a compact briefing text block from structured task briefing JSON."""
-    task_id = data.get("task_id", "unknown")
-    lines = [f"📋 Task recall: {task_id}", ""]
-    tagged = data.get("tagged_entries", [])
-    related = data.get("related_entries", [])
-    if tagged:
-        lines.append("🏷 Tagged entries")
-        for e in tagged[:5]:
-            eid = e.get("id", "?")
-            cat = e.get("category", "unknown")
-            title = e.get("title", "(no title)")
-            lines.append(f"  #{eid} [{cat}] {title}")
-        lines.append("")
-    if related:
-        lines.append("🔗 Related entries (FTS match on task name)")
-        for e in related[:5]:
-            eid = e.get("id", "?")
-            cat = e.get("category", "unknown")
-            title = e.get("title", "(no title)")
-            lines.append(f"  #{eid} [{cat}] {title}")
-        lines.append("")
-    total = data.get("total_entries", 0)
-    lines.append(f"({total} entries) Use query-session.py --task '{task_id}' for full detail")
+def _render_knowledge_evidence(
+    entries: list[dict],
+    *,
+    task_id: str = "",
+    file_matches: list[dict] | None = None,
+) -> str:
+    """Render deterministic compact evidence block for prompt injection."""
+    def _source_label(entry: dict) -> str:
+        src = entry.get("source_document") or {}
+        if not isinstance(src, dict):
+            return ""
+        doc_type = str(src.get("doc_type") or "").strip()
+        if not doc_type:
+            return ""
+        section = str(src.get("section") or "").strip()
+        seq = src.get("seq")
+        file_path = str(src.get("file_path") or "").strip()
+        title = str(src.get("title") or "").strip()
+        if doc_type == "checkpoint" and seq:
+            label = f"checkpoint #{seq}"
+        elif file_path:
+            label = f"{doc_type} / {Path(file_path).name}"
+        elif title:
+            label = f"{doc_type} / {title[:80]}"
+        else:
+            label = doc_type
+        if section:
+            label = f"{label} / {section}"
+        return label[:120]
+
+    refs = entries[:5]
+    if not refs:
+        return ""
+    lines = ["[KNOWLEDGE EVIDENCE]"]
+    if task_id:
+        lines.append(f"Task: {task_id}")
+    for e in refs:
+        eid = e.get("id", "?")
+        cat = e.get("category", "unknown")
+        title = e.get("title", "(no title)")
+        lines.append(f"- #{eid} [{cat}] {title}")
+    labels: list[str] = []
+    for e in refs:
+        label = _source_label(e)
+        if not label or label in labels:
+            continue
+        labels.append(label)
+        if len(labels) >= 2:
+            break
+    if labels:
+        lines.append(f"From: {'; '.join(labels)}")
+    file_paths: list[str] = []
+    for fm in file_matches or []:
+        path = str(fm.get("file_or_module", "")).strip()
+        if path and path not in file_paths:
+            file_paths.append(path)
+        if len(file_paths) >= 3:
+            break
+    if file_paths:
+        lines.append(f"Files: {', '.join(file_paths)}")
+    first_entry = refs[0]
+    first_id = first_entry.get("id", "?")
+    drilldowns = [f"query-session.py --detail {first_id}"]
+    first_related = first_entry.get("related_entry_ids")
+    if isinstance(first_related, list) and len(first_related) > 0:
+        drilldowns.append(f"query-session.py --related {first_id}")
+    if task_id:
+        drilldowns.append(f"query-session.py --task {task_id!r}")
+    if file_paths:
+        drilldowns.append(f"query-session.py {file_paths[0]!r}")
+    lines.append(f"Drilldown: {' | '.join(drilldowns)}")
     return "\n".join(lines)
 
 
-def _run_briefing_for_task(task_id: str, fallback_query: str = "") -> str:
-    """Load task-scoped briefing via structured JSON and render compact text.
+def _extract_pack_entries(pack_data: dict) -> list[dict]:
+    """Extract ordered reference entries from briefing --pack payload."""
+    entries = pack_data.get("entries", {})
+    out = []
+    for category in ("mistake", "pattern", "decision", "tool"):
+        for entry in entries.get(category, []):
+            out.append({
+                "id": entry.get("id", "?"),
+                "category": entry.get("category", category),
+                "title": entry.get("title", "(no title)"),
+                "source_document": entry.get("source_document"),
+                "related_entry_ids": entry.get("related_entry_ids", []),
+            })
+    return out
 
-    Uses briefing.py --task <task_id> --json to avoid brittle text sniffing.
-    Falls back to a text query if the task has no entries.
-    Returns empty string on failure or no results.
-    """
+
+def _run_briefing_for_task(task_id: str, fallback_query: str = "") -> str:
+    """Load evidence block for task recall using task-json then pack fallback."""
     if not BRIEFING_PY.exists():
         return ""
     try:
@@ -276,14 +336,54 @@ def _run_briefing_for_task(task_id: str, fallback_query: str = "") -> str:
         )
         if result.returncode == 0 and result.stdout.strip():
             data = json.loads(result.stdout)
-            if data.get("total_entries", 0) > 0:
-                return _render_briefing_from_json(data)
+            tagged = data.get("tagged_entries", [])
+            related = data.get("related_entries", [])
+            if tagged or related:
+                task_entries = [
+                    {
+                        "id": e.get("id", "?"),
+                        "category": e.get("category", "unknown"),
+                        "title": e.get("title", "(no title)"),
+                        "source_document": e.get("source_document"),
+                        "related_entry_ids": e.get("related_entry_ids", []),
+                    }
+                    for e in [*tagged, *related]
+                ]
+                return _render_knowledge_evidence(task_entries, task_id=task_id)
     except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
         pass
-    # Fallback to text query when task-scoped recall is empty
+    # Fallback to --pack query when task-scoped recall is empty
     if fallback_query:
-        return _run_briefing(fallback_query)
+        try:
+            result = subprocess.run(
+                [sys.executable, str(BRIEFING_PY), fallback_query, "--pack", "--limit", "3"],
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                timeout=15,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                pack_data = json.loads(result.stdout)
+                pack_entries = _extract_pack_entries(pack_data)
+                return _render_knowledge_evidence(
+                    pack_entries,
+                    file_matches=pack_data.get("file_matches", []),
+                )
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
+            pass
     return ""
+
+
+def _upsert_auto_recall_block(context_text: str, recall_content: str) -> str:
+    """Insert/replace a single auto-managed recall block in CONTEXT.md."""
+    block = f"{AUTO_RECALL_START}\n{recall_content}\n{AUTO_RECALL_END}"
+    pattern = re.compile(
+        rf"{re.escape(AUTO_RECALL_START)}.*?{re.escape(AUTO_RECALL_END)}",
+        flags=re.DOTALL,
+    )
+    if pattern.search(context_text):
+        return pattern.sub(block, context_text, count=1)
+    prefix = "" if not context_text or context_text.endswith("\n") else "\n"
+    return f"{context_text}{prefix}\n{block}\n"
 
 
 def _render_checkpoint_context(data: dict) -> str:
@@ -1317,22 +1417,24 @@ def cmd_resume(args):
         if checkpoint_text:
             print(f"   📌 Latest checkpoint context injected")
 
-    # 3. Append a resume section to CONTEXT.md
+    # 3. Replace a bounded AUTO-RECALL block in CONTEXT.md
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    resume_section = f"\n## Resumed [{timestamp}]\n\n"
+    recall_lines = [f"## Resumed [{timestamp}]"]
     if briefing_text:
-        resume_section += "### Live Briefing (fresh at dispatch)\n\n"
-        resume_section += f"{briefing_text}\n"
+        recall_lines.append(briefing_text)
     else:
-        resume_section += "_No new briefing content available._\n"
+        recall_lines.append("_No new briefing content available._")
     if checkpoint_text:
-        resume_section += f"\n{checkpoint_text}\n"
-
+        recall_lines.append(checkpoint_text)
+    recall_content = "\n\n".join(recall_lines).rstrip()
     if context_path.exists():
         existing = context_path.read_text(encoding="utf-8")
-        context_path.write_text(existing + resume_section, encoding="utf-8")
+        updated = _upsert_auto_recall_block(existing, recall_content)
+        context_path.write_text(updated, encoding="utf-8")
     else:
-        context_path.write_text(f"# {args.name}\n{resume_section}", encoding="utf-8")
+        base_context = f"# {args.name}\n"
+        updated = _upsert_auto_recall_block(base_context, recall_content)
+        context_path.write_text(updated, encoding="utf-8")
 
     # 4. Show current todo state
     todos = parse_todos(todo_path.read_text(encoding="utf-8")) if todo_path.exists() else []
@@ -1399,10 +1501,7 @@ def cmd_swarm(args):
         print(f"🧠 Fetching live briefing for dispatch...")
         briefing_text = _run_briefing_for_task(args.name, fallback_query=fallback)
         if briefing_text:
-            live_briefing_section = (
-                "\n### Past Knowledge (live briefing at dispatch)\n\n"
-                f"{briefing_text}\n"
-            )
+            live_briefing_section = f"\n{briefing_text}\n"
             print(f"   ✅ Injected {len(briefing_text)} chars of live knowledge\n")
         else:
             print(f"   ℹ️  No relevant past knowledge found\n")

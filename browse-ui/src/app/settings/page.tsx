@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, CheckCircle2, Moon, Monitor, Sun } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, Copy, Moon, Monitor, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 
 import { Banner } from "@/components/data/banner";
@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDensity } from "@/hooks/use-density";
-import { useHealth } from "@/lib/api/hooks";
+import { useHealth, useSyncStatus } from "@/lib/api/hooks";
 import { SHORTCUT_GROUPS } from "@/lib/constants";
 import { formatNumber } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
@@ -32,10 +32,20 @@ function statusTone(status: string | undefined): "success" | "warning" {
   return status.toLowerCase().includes("ok") ? "success" : "warning";
 }
 
+async function copyCommand(command: string) {
+  if (!command || typeof navigator === "undefined" || !navigator.clipboard) return;
+  try {
+    await navigator.clipboard.writeText(command);
+  } catch (_error) {
+    // Ignore clipboard failures in unsupported environments.
+  }
+}
+
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
   const [density] = useDensity();
   const health = useHealth();
+  const syncStatus = useSyncStatus();
 
   const activeTheme = theme ?? "system";
   const healthStatus = health.data?.status;
@@ -88,6 +98,187 @@ export default function SettingsPage() {
               ).
             </p>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Sync diagnostics</CardTitle>
+          <CardDescription>
+            Read-only sync diagnostics from <code>/api/sync/status</code>.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {syncStatus.isLoading ? (
+            <div className="grid gap-2 sm:grid-cols-4">
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+            </div>
+          ) : null}
+
+          {syncStatus.isError ? (
+            <Banner
+              tone="warning"
+              title="Sync diagnostics unavailable"
+              description={
+                syncStatus.error instanceof Error
+                  ? syncStatus.error.message
+                  : "Could not fetch /api/sync/status."
+              }
+              actions={
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => syncStatus.refetch()}
+                >
+                  Retry
+                </Button>
+              }
+            />
+          ) : null}
+
+          {syncStatus.data ? (
+            <>
+              <div className="grid gap-2 sm:grid-cols-4">
+                <div className="rounded-lg border bg-card p-3">
+                  <p className="text-xs text-muted-foreground">Mode</p>
+                  <p className="mt-1 text-sm font-medium">{syncStatus.data.status}</p>
+                </div>
+                <div className="rounded-lg border bg-card p-3">
+                  <p className="text-xs text-muted-foreground">Replica</p>
+                  <p className="mt-1 text-sm font-medium">
+                    {syncStatus.data.local_replica_id ?? "Not set"}
+                  </p>
+                </div>
+                <div className="rounded-lg border bg-card p-3">
+                  <p className="text-xs text-muted-foreground">Pending txns</p>
+                  <p className="mt-1 text-sm font-medium">{formatNumber(syncStatus.data.pending_txns)}</p>
+                </div>
+                <div className="rounded-lg border bg-card p-3">
+                  <p className="text-xs text-muted-foreground">Failed ops</p>
+                  <p className="mt-1 flex items-center gap-2 text-sm font-medium">
+                    {syncStatus.data.failed_ops > 0 ? (
+                      <AlertTriangle className="size-3.5 text-amber-500" />
+                    ) : (
+                      <CheckCircle2 className="size-3.5 text-emerald-500" />
+                    )}
+                    {formatNumber(syncStatus.data.failed_ops)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-1 rounded-lg border bg-card p-3 text-xs text-muted-foreground">
+                <p>
+                  Gateway:{" "}
+                  <span className="font-medium text-foreground">
+                    {syncStatus.data.connection.endpoint ?? "Not configured (local-only mode)"}
+                  </span>
+                </p>
+                <p>
+                  Target:{" "}
+                  <span className="font-medium text-foreground">
+                    {syncStatus.data.connection.target ?? "unconfigured"}
+                  </span>
+                </p>
+                <p>
+                  Config file:{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+                    {syncStatus.data.connection.config_path}
+                  </code>
+                </p>
+              </div>
+
+              <Banner
+                tone="info"
+                title="Rollout contract"
+                description={
+                  syncStatus.data.rollout
+                    ? `Client stays local-first and syncs via HTTP(S) gateway URL. Direct Postgres/libSQL sync in CLI core: ${syncStatus.data.rollout.direct_db_sync ? "yes" : "no"}.`
+                    : "Client stays local-first and syncs via HTTP(S) gateway URL. Direct Postgres/libSQL sync in CLI core is not part of this batch."
+                }
+              />
+
+              <div className="space-y-1 rounded-lg border bg-card p-3 text-xs text-muted-foreground">
+                <p className="font-medium text-foreground">Gateway paths</p>
+                <p>
+                  Reference/mock:{" "}
+                  {syncStatus.data.rollout?.reference_gateway.description ??
+                    "In-repo reference/mock gateway for local integration tests."}
+                </p>
+                <p>
+                  Provider-backed:{" "}
+                  {syncStatus.data.rollout?.provider_gateway.description ??
+                    "Deploy a thin provider-backed HTTP gateway and set its HTTPS URL in sync-config."}
+                </p>
+              </div>
+
+              <div className="space-y-1 rounded-lg border bg-card p-3 text-xs text-muted-foreground">
+                <p className="font-medium text-foreground">Runtime visibility</p>
+                <p>
+                  DB mode:{" "}
+                  <span className="font-medium text-foreground">{syncStatus.data.runtime.db_mode}</span>
+                </p>
+                <p>
+                  Sync tables ready:{" "}
+                  <span className="font-medium text-foreground">
+                    {syncStatus.data.runtime.available_sync_tables}/
+                    {syncStatus.data.runtime.total_sync_tables}
+                  </span>
+                </p>
+                <p>
+                  Runtime failures (txns):{" "}
+                  <span className="font-medium text-foreground">
+                    {formatNumber(syncStatus.data.failed_txns)}
+                  </span>
+                </p>
+                <p>
+                  Runtime snapshot:{" "}
+                  <span className="font-medium text-foreground">
+                    {syncStatus.data.runtime.generated_at}
+                  </span>
+                </p>
+                <p>
+                  DB path:{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+                    {syncStatus.data.runtime.db_path}
+                  </code>
+                </p>
+              </div>
+
+              <div className="space-y-2 rounded-lg border bg-card p-3">
+                <p className="text-xs font-medium text-foreground">Operator checks (read-only)</p>
+                <p className="text-xs text-muted-foreground">
+                  Safe command-line checks for local visibility only. No write operations are listed.
+                </p>
+                <div className="space-y-2">
+                  {syncStatus.data.operator_actions.map((action) => (
+                    <div key={action.id} className="rounded-md border bg-background p-2 text-xs">
+                      <p className="font-medium text-foreground">{action.title}</p>
+                      <p className="text-muted-foreground">{action.description}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+                          {action.command}
+                        </code>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-6 px-2 text-[11px]"
+                          onClick={() => void copyCommand(action.command)}
+                        >
+                          <Copy className="size-3" />
+                          Copy
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          ) : null}
         </CardContent>
       </Card>
 

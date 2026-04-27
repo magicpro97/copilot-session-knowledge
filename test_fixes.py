@@ -11,6 +11,7 @@ Run: python3 test_fixes.py
 import sys
 import os
 import re
+import json
 import subprocess
 import tempfile
 import plistlib
@@ -169,6 +170,72 @@ test("Regular briefing still works",
      result2.returncode == 0,
      f"stdout: {result2.stdout[:100]}")
 
+# 2d. --for-subagent remains compact with explicit mode
+result3 = subprocess.run(
+    [sys.executable, str(REPO / "briefing.py"), "review auth PR", "--for-subagent", "--mode", "review", "--min-confidence", "0"],
+    capture_output=True, text=True, cwd=str(REPO), encoding="utf-8", errors="replace"
+)
+output3 = result3.stdout.strip()
+test("--for-subagent + --mode runs without error", result3.returncode == 0,
+     f"stderr: {result3.stderr[:200]}")
+test("--for-subagent + --mode still starts with compact context header",
+     output3.startswith("[KNOWLEDGE CONTEXT"),
+     f"Got: {output3[:80]}")
+
+# 2e. --pack exposes machine-readable briefing surface
+result4 = subprocess.run(
+    [sys.executable, str(REPO / "briefing.py"), "review auth PR", "--mode", "review", "--pack", "--limit", "1"],
+    capture_output=True, text=True, cwd=str(REPO), encoding="utf-8", errors="replace"
+)
+test("--pack runs without error", result4.returncode == 0,
+     f"stderr: {result4.stderr[:200]}")
+try:
+    pack_obj = json.loads(result4.stdout)
+    test("--pack returns valid JSON", True)
+    test("--pack includes mode field", "mode" in pack_obj, f"keys={list(pack_obj.keys())}")
+    test("--pack preserves explicit mode", pack_obj.get("mode") == "review",
+         f"mode={pack_obj.get('mode')!r}")
+    entries_obj = pack_obj.get("entries", {})
+    test("--pack includes canonical entry buckets",
+         isinstance(entries_obj, dict)
+         and all(k in entries_obj for k in ("mistake", "pattern", "decision", "tool")),
+         f"entries keys={list(entries_obj.keys()) if isinstance(entries_obj, dict) else type(entries_obj).__name__}")
+    first_entry = None
+    if isinstance(entries_obj, dict):
+        for bucket in ("mistake", "pattern", "decision", "tool"):
+            vals = entries_obj.get(bucket, [])
+            if vals:
+                first_entry = vals[0]
+                break
+    if first_entry:
+        test("--pack entry includes source_document field",
+             "source_document" in first_entry,
+             f"keys={list(first_entry.keys())}")
+        test("--pack entry includes code-location/snippet fields",
+             all(k in first_entry for k in ("source_file", "start_line", "end_line", "code_language", "code_snippet")),
+             f"keys={list(first_entry.keys())}")
+        test("--pack entry includes snippet_freshness enum field",
+             first_entry.get("snippet_freshness") in {"fresh", "drifted", "missing", "unknown"},
+             f"snippet_freshness={first_entry.get('snippet_freshness')!r}")
+        rel_ids = first_entry.get("related_entry_ids", [])
+        test("--pack entry includes related_entry_ids as int list",
+             isinstance(rel_ids, list) and all(isinstance(x, int) for x in rel_ids) and len(rel_ids) <= 3,
+             f"related_entry_ids={rel_ids!r}")
+    else:
+        test("--pack entry includes source_document field", True, "(skipped — no entries)")
+        test("--pack entry includes code-location/snippet fields", True, "(skipped — no entries)")
+        test("--pack entry includes snippet_freshness enum field", True, "(skipped — no entries)")
+        test("--pack entry includes related_entry_ids as int list", True, "(skipped — no entries)")
+except json.JSONDecodeError as e:
+    test("--pack returns valid JSON", False, str(e))
+    test("--pack includes mode field", False, "invalid JSON output")
+    test("--pack preserves explicit mode", False, "invalid JSON output")
+    test("--pack includes canonical entry buckets", False, "invalid JSON output")
+    test("--pack entry includes source_document field", False, "invalid JSON output")
+    test("--pack entry includes code-location/snippet fields", False, "invalid JSON output")
+    test("--pack entry includes snippet_freshness enum field", False, "invalid JSON output")
+    test("--pack entry includes related_entry_ids as int list", False, "invalid JSON output")
+
 
 # ─── Fix 3: LaunchAgent Plist ────────────────────────────────────────────
 
@@ -323,7 +390,15 @@ test("SKILL.md exists in tools or skills path", skill_path.exists())
 
 if skill_path.exists():
     skill_content = skill_path.read_text(encoding="utf-8")
+    template_skill_path = REPO / "templates" / "SKILL.md"
+    template_skill_content = (
+        template_skill_path.read_text(encoding="utf-8")
+        if template_skill_path.exists()
+        else ""
+    )
     test("Contains --for-subagent docs", "--for-subagent" in skill_content)
+    test("Documents structured tentacle recall path",
+         "tentacle.py" in template_skill_content and "[KNOWLEDGE EVIDENCE]" in template_skill_content)
     test("Contains sub-agent workflow", "sub-agent" in skill_content.lower())
     test("Uses python3 (not python)", "python3 " in skill_content)
     test("No bare 'python ' commands",
@@ -812,32 +887,60 @@ test(
     "Found a line that calls briefing.py with --full — use --compact and escalate only when needed",
 )
 
-# Ga2. Injected block must contain --for-subagent (sub-agent path)
+# Ga2. Injected block must mention structured tentacle recall as preferred delegated path
 test(
-    "Ga2: GLOBAL_INJECT_BLOCK includes --for-subagent guidance",
-    "--for-subagent" in _inject_block,
-    "GLOBAL_INJECT_BLOCK is missing --for-subagent sub-agent context injection",
+    "Ga2: GLOBAL_INJECT_BLOCK references tentacle structured recall path",
+    "tentacle.py" in _inject_block and "--briefing" in _inject_block,
+    "GLOBAL_INJECT_BLOCK missing tentacle structured recall guidance",
 )
 
-# Ga3. Injected block must contain --compact (start-minimal signal)
+# Ga3. Injected block must preserve --for-subagent as manual compatibility path
 test(
-    "Ga3: GLOBAL_INJECT_BLOCK references --compact (start-minimal strategy)",
+    "Ga3: GLOBAL_INJECT_BLOCK keeps --for-subagent compatibility guidance",
+    "--for-subagent" in _inject_block,
+    "GLOBAL_INJECT_BLOCK missing --for-subagent manual compatibility guidance",
+)
+
+# Ga4. Injected block must contain --compact (start-minimal signal)
+test(
+    "Ga4: GLOBAL_INJECT_BLOCK references --compact (start-minimal strategy)",
     "--compact" in _inject_block,
     "GLOBAL_INJECT_BLOCK missing --compact — injected guidance conflicts with start-minimal policy",
 )
 
-# Ga4. Canonical template must contain --for-subagent guidance
+# Ga5. Canonical template must contain --for-subagent compatibility guidance
 test(
-    "Ga4: canonical template includes --for-subagent guidance",
+    "Ga5: canonical template includes --for-subagent guidance",
     "--for-subagent" in _template_text,
     f"session-knowledge.instructions.md missing --for-subagent section",
 )
 
-# Ga5. Injected block must be a pointer (short) — no duplicate policy paragraphs.
+# Ga6. Canonical template should mention structured tentacle evidence path
+test(
+    "Ga6: canonical template documents tentacle structured recall path",
+    "tentacle.py" in _template_text and "[KNOWLEDGE EVIDENCE]" in _template_text,
+    "session-knowledge.instructions.md missing tentacle structured evidence guidance",
+)
+
+# Ga8. Canonical template should document recall telemetry stats surface
+test(
+    "Ga8: canonical template documents --recall telemetry stats",
+    "knowledge-health.py --recall" in _template_text,
+    "session-knowledge.instructions.md missing knowledge-health --recall guidance",
+)
+
+# Ga9. Canonical template should capture stateless detail-open miss semantics
+test(
+    "Ga9: canonical template documents detail_open miss telemetry semantics",
+    "hit_count=0" in _template_text and "selected_entry_ids=[]" in _template_text,
+    "session-knowledge.instructions.md missing detail_open miss telemetry contract",
+)
+
+# Ga7. Injected block must be a pointer (short) — no duplicate policy paragraphs.
 #      Heuristic: block must be <= 30 lines (a full-policy block was ~20 lines of rules)
 _inject_lines = [ln for ln in _inject_block.splitlines() if ln.strip()]
 test(
-    "Ga5: GLOBAL_INJECT_BLOCK is a lightweight pointer (≤ 30 non-blank lines)",
+    "Ga7: GLOBAL_INJECT_BLOCK is a lightweight pointer (≤ 30 non-blank lines)",
     len(_inject_lines) <= 30,
     f"Block has {len(_inject_lines)} non-blank lines — it may duplicate canonical policy",
 )

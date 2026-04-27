@@ -16,6 +16,10 @@ Usage:
     python auto-update-tools.py --check        # Check only
     python auto-update-tools.py --status       # Show state
     python auto-update-tools.py --doctor       # Verify health (includes manifest check)
+    python auto-update-tools.py --restart-watch  # Restart watch-sessions runtime
+    python auto-update-tools.py --watch-status   # Show watcher runtime status
+    python auto-update-tools.py --health-check   # Run sync runtime health check
+    python auto-update-tools.py --audit-runtime  # Run runtime operations audit
     python auto-update-tools.py --list-coverage  # Print all tracked paths/patterns
     python auto-update-tools.py --skip-pull    # Run pipeline without pulling (used by self-exec)
 """
@@ -1443,6 +1447,15 @@ def show_status():
     print(f"  Files:   {py_count} Python scripts")
 
 
+def _run_runtime_surface(args: list[str]) -> int:
+    script = TOOLS_DIR / "sync-status.py"
+    if not script.exists():
+        err("sync-status.py not found")
+        return 1
+    result = subprocess.run([sys.executable, str(script), *args])
+    return int(result.returncode)
+
+
 # ---------------------------------------------------------------------------
 # Cooldown
 # ---------------------------------------------------------------------------
@@ -1486,6 +1499,18 @@ def main():
         elif arg == "--doctor":
             doctor()
             return
+        elif arg == "--restart-watch":
+            restart_processes()
+            return
+        elif arg == "--watch-status":
+            code = _run_runtime_surface(["--watch-status"])
+            raise SystemExit(code)
+        elif arg == "--health-check":
+            code = _run_runtime_surface(["--health-check"])
+            raise SystemExit(code)
+        elif arg == "--audit-runtime":
+            code = _run_runtime_surface(["--audit"])
+            raise SystemExit(code)
         elif arg == "--list-coverage":
             list_coverage()
             return

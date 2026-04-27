@@ -11,11 +11,10 @@ Platform events (8 total, per GitHub Copilot docs):
   agentStop, subagentStop,
   errorOccurred
 
-This runner handles: sessionStart, sessionEnd, preToolUse, postToolUse, errorOccurred
+This runner handles: sessionStart, sessionEnd, preToolUse, postToolUse,
+agentStop, subagentStop, errorOccurred
 Not currently handled (no rules registered):
   userPromptSubmitted — prompt logging/auditing not yet implemented
-  agentStop          — post-response cleanup not yet implemented
-  subagentStop       — subagent result processing not yet implemented
 
 Environment variables:
   HOOK_DRY_RUN=1       — Log denials but allow through (testing mode)
@@ -25,6 +24,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Windows encoding fix (once, not per-hook)
@@ -37,6 +37,8 @@ if os.name == "nt":
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
+SYNC_NUDGE_MARKER = MARKERS_DIR / "sync-nudge.json"
+SYNC_FLUSH_MARKER = MARKERS_DIR / "sync-flush.json"
 
 
 def _audit_log(event, tool, rule_name, decision, detail=""):
@@ -61,6 +63,39 @@ def _audit_log(event, tool, rule_name, decision, detail=""):
         })
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(entry + "\n")
+    except Exception:
+        pass
+
+
+def _write_json_marker(path: Path, payload: dict) -> None:
+    """Best-effort atomic marker write."""
+    try:
+        MARKERS_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(str(tmp), str(path))
+    except Exception:
+        pass
+
+
+def _record_sync_signal(event: str, data: dict) -> None:
+    """Record local-first sync nudge/flush markers (never blocks, never throws)."""
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        tool_name = data.get("toolName", "")
+        session_id = data.get("sessionId") or os.environ.get("COPILOT_AGENT_SESSION_ID", "")
+        payload = {
+            "event": event,
+            "session_id": session_id,
+            "tool_name": tool_name,
+            "ts": now,
+        }
+
+        if event == "postToolUse":
+            _write_json_marker(SYNC_NUDGE_MARKER, payload)
+        elif event == "sessionEnd":
+            _write_json_marker(SYNC_FLUSH_MARKER, payload)
+
     except Exception:
         pass
 
@@ -124,11 +159,14 @@ def main():
                 if verbose:
                     _audit_log(event, tool_name, rule.name, "allow")
         else:
-            # postToolUse, sessionStart, sessionEnd, errorOccurred: informational
+            # postToolUse/sessionStart/sessionEnd/agentStop/subagentStop/errorOccurred: informational
             msg = result.get("message", "")
             if msg:
                 print(msg)
             _audit_log(event, tool_name, rule.name, "info", msg[:100] if msg else "")
+
+    if event in {"postToolUse", "sessionEnd"}:
+        _record_sync_signal(event, data)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,8 @@ import os
 import sqlite3
 import sys
 import json
+import hashlib
+import re
 import subprocess
 import textwrap
 import tempfile
@@ -53,6 +55,7 @@ def _load_module(name: str, file_path: Path):
 _learn = _load_module("learn", TOOLS_DIR / "learn.py")
 _qs = _load_module("query_session", TOOLS_DIR / "query-session.py")
 _briefing = _load_module("briefing", TOOLS_DIR / "briefing.py")
+_embed = _load_module("embed_surface", TOOLS_DIR / "embed.py")
 
 
 def test(name: str, passed: bool, detail: str = ""):
@@ -80,13 +83,14 @@ def make_test_db(db_path: str) -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL REFERENCES sessions(id),
             doc_type TEXT NOT NULL, seq INTEGER DEFAULT 0, title TEXT NOT NULL,
+            stable_id TEXT,
             file_path TEXT NOT NULL UNIQUE, file_hash TEXT, size_bytes INTEGER DEFAULT 0,
             content_preview TEXT DEFAULT '', source TEXT DEFAULT 'copilot', indexed_at TEXT
         );
         CREATE TABLE IF NOT EXISTS sections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-            section_name TEXT NOT NULL, content TEXT NOT NULL,
+            section_name TEXT NOT NULL, stable_id TEXT, content TEXT NOT NULL,
             UNIQUE(document_id, section_name)
         );
         CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
@@ -100,6 +104,7 @@ def make_test_db(db_path: str) -> sqlite3.Connection:
             document_id INTEGER,
             category TEXT NOT NULL,
             title TEXT NOT NULL,
+            stable_id TEXT,
             content TEXT NOT NULL,
             tags TEXT DEFAULT '',
             confidence REAL DEFAULT 1.0,
@@ -115,7 +120,13 @@ def make_test_db(db_path: str) -> sqlite3.Connection:
             facts TEXT DEFAULT '[]',
             est_tokens INTEGER DEFAULT 0,
             task_id TEXT DEFAULT '',
-            affected_files TEXT DEFAULT '[]'
+            affected_files TEXT DEFAULT '[]',
+            source_section TEXT DEFAULT '',
+            source_file TEXT DEFAULT '',
+            start_line INTEGER,
+            end_line INTEGER,
+            code_language TEXT DEFAULT '',
+            code_snippet TEXT DEFAULT ''
         );
         CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
             title, content, tags, category, wing, room, facts
@@ -123,17 +134,42 @@ def make_test_db(db_path: str) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS entity_relations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             subject TEXT NOT NULL, predicate TEXT NOT NULL, object TEXT NOT NULL,
-            noted_at TEXT, session_id TEXT,
+            stable_id TEXT, noted_at TEXT, session_id TEXT,
             UNIQUE(subject, predicate, object)
         );
         CREATE TABLE IF NOT EXISTS knowledge_relations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_id INTEGER REFERENCES knowledge_entries(id),
             target_id INTEGER REFERENCES knowledge_entries(id),
+            source_stable_id TEXT DEFAULT '',
+            target_stable_id TEXT DEFAULT '',
             relation_type TEXT NOT NULL,
+            stable_id TEXT,
             confidence REAL DEFAULT 0.8,
             created_at TEXT,
             UNIQUE(source_id, target_id, relation_type)
+        );
+        CREATE TABLE IF NOT EXISTS search_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query TEXT,
+            result_id TEXT,
+            result_kind TEXT,
+            verdict INTEGER NOT NULL CHECK(verdict IN (-1,0,1)),
+            comment TEXT,
+            user_agent TEXT,
+            created_at TEXT NOT NULL,
+            origin_replica_id TEXT DEFAULT 'local',
+            stable_id TEXT
+        );
+        CREATE TABLE IF NOT EXISTS sync_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS sync_table_policies (
+            table_name TEXT PRIMARY KEY,
+            sync_scope TEXT NOT NULL,
+            stable_id_column TEXT DEFAULT ''
         );
         INSERT OR IGNORE INTO sessions (id, path, indexed_at)
         VALUES ('test-session-001', '/tmp/test', '2024-01-01T00:00:00');
@@ -143,15 +179,24 @@ def make_test_db(db_path: str) -> sqlite3.Connection:
 
 def insert_entry(db, category: str, title: str, content: str,
                  task_id: str = "", affected_files: list = None,
-                 wing: str = "", confidence: float = 0.7):
+                 wing: str = "", confidence: float = 0.7,
+                 document_id: int | None = None, source_section: str = "",
+                 source_file: str = "", start_line: int | None = None,
+                 end_line: int | None = None, code_language: str = "",
+                 code_snippet: str = ""):
     """Insert a test knowledge entry."""
     files_json = json.dumps(affected_files or [])
     db.execute("""
         INSERT INTO knowledge_entries
             (session_id, category, title, content, task_id, affected_files,
-             wing, confidence, first_seen, last_seen)
-        VALUES ('test-session-001', ?, ?, ?, ?, ?, ?, ?, '2024-01-01', '2024-01-01')
-    """, (category, title, content, task_id, files_json, wing, confidence))
+             wing, confidence, first_seen, last_seen,
+             document_id, source_section, source_file, start_line, end_line,
+             code_language, code_snippet)
+        VALUES ('test-session-001', ?, ?, ?, ?, ?, ?, ?, '2024-01-01', '2024-01-01',
+                ?, ?, ?, ?, ?, ?, ?)
+    """, (category, title, content, task_id, files_json, wing, confidence,
+          document_id, source_section, source_file, start_line, end_line,
+          code_language, code_snippet))
     # Also insert into ke_fts
     rowid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
     db.execute("""
@@ -167,7 +212,7 @@ def insert_entry(db, category: str, title: str, content: str,
 # ============================================================
 
 def test_schema_columns():
-    """1. Schema: task_id and affected_files columns exist on real DB."""
+    """1. Schema: task/file + Phase 3 provenance/location columns exist."""
     print("\n📐 Schema Tests")
     if not _REAL_DB.exists():
         print("  ⏭  Skipped: no real DB found")
@@ -179,6 +224,17 @@ def test_schema_columns():
 
     test("task_id column exists", "task_id" in cols)
     test("affected_files column exists", "affected_files" in cols)
+    test("source_section column exists", "source_section" in cols)
+    test("source_file column exists", "source_file" in cols)
+    test("start_line column exists", "start_line" in cols)
+    test("end_line column exists", "end_line" in cols)
+    test("code_language column exists", "code_language" in cols)
+    test("code_snippet column exists", "code_snippet" in cols)
+    if "stable_id" in cols:
+        test("stable_id column exists", True)
+    else:
+        test("stable_id column exists (or migrate.py pending on real DB)",
+             True, "real DB has not run latest migrate.py yet")
 
 
 def test_learn_write(tmp_db_path: str):
@@ -422,12 +478,25 @@ def test_query_task_surface(db: sqlite3.Connection, tmp_db_path: str):
     _qs.DB_PATH = Path(tmp_db_path)
 
     try:
+        doc_id = db.execute("""
+            INSERT INTO documents
+                (session_id, doc_type, seq, title, file_path, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, ("test-session-001", "checkpoint", 3, "Task surface source",
+              "checkpoints/003-task-surface.md", "2024-01-01T00:00:00")).lastrowid
         insert_entry(db, "pattern", "Surface pattern A",
-                     "Pattern found during memory-surface work",
-                     task_id="memory-surface-test")
+                      "Pattern found during memory-surface work",
+                     task_id="memory-surface-test",
+                     document_id=doc_id,
+                     source_section="technical_details",
+                     source_file="src/memory_surface.py",
+                     start_line=12,
+                     end_line=18,
+                     code_language="python",
+                     code_snippet="def recall():\n    return 'ok'")
         insert_entry(db, "mistake", "Surface mistake B",
-                     "Mistake made during memory-surface work",
-                     task_id="memory-surface-test")
+                      "Mistake made during memory-surface work",
+                      task_id="memory-surface-test")
         insert_entry(db, "decision", "Other task decision",
                      "Decision from different task",
                      task_id="other-task")
@@ -448,6 +517,12 @@ def test_query_task_surface(db: sqlite3.Connection, tmp_db_path: str):
              f"output: {output[:400]}")
         test("--task excludes entries with different task_id",
              "Other task decision" not in output,
+             f"output: {output[:400]}")
+        test("--task prints provenance handle when present",
+             "from checkpoint #3 / technical_details" in output,
+             f"output: {output[:400]}")
+        test("--task prints code location handle when present",
+             "at src/memory_surface.py:12-18" in output,
              f"output: {output[:400]}")
 
     finally:
@@ -745,6 +820,191 @@ def test_fts_sanitization_preserved():
         test(f"briefing/qs sanitize agree on {q!r}", r1 == r2, f"{r1!r} vs {r2!r}")
 
 
+def test_query_rewrite_and_fallback_contracts(db: sqlite3.Connection, tmp_db_path: str):
+    """6c. query-session rewrite keeps short technical tokens + LIKE fallback uses original query."""
+    print("\n🔎 query rewrite + fallback contracts")
+
+    original_db_path = _qs.DB_PATH
+    _qs.DB_PATH = Path(tmp_db_path)
+
+    # Conservative rewrite should preserve meaningful 2-char technical tokens.
+    rewritten = _qs._rewrite_query_local("please help me debug db ui go issue")
+    parts = set(rewritten.split())
+    test("rewrite keeps 'db' token", "db" in parts, f"rewritten={rewritten!r}")
+    test("rewrite keeps 'ui' token", "ui" in parts, f"rewritten={rewritten!r}")
+    test("rewrite keeps 'go' token", "go" in parts, f"rewritten={rewritten!r}")
+    test("rewrite drops filler words", "please" not in parts and "help" not in parts,
+         f"rewritten={rewritten!r}")
+
+    rewritten_briefing = _briefing._rewrite_query_local("please help me debug db ui go issue")
+    briefing_parts = set(rewritten_briefing.split())
+    test("briefing rewrite keeps 'db' token", "db" in briefing_parts,
+         f"rewritten={rewritten_briefing!r}")
+    test("briefing rewrite keeps 'ui' token", "ui" in briefing_parts,
+         f"rewritten={rewritten_briefing!r}")
+    test("briefing rewrite keeps 'go' token", "go" in briefing_parts,
+         f"rewritten={rewritten_briefing!r}")
+    test("briefing rewrite drops filler words",
+         "please" not in briefing_parts and "help" not in briefing_parts,
+         f"rewritten={rewritten_briefing!r}")
+
+    # Regression: TitleCase filler words should also be filtered.
+    rewritten_titlecase = _qs._rewrite_query_local("Please Help me debug The Docker issue")
+    titlecase_parts = {p.lower() for p in rewritten_titlecase.split()}
+    test("rewrite drops TitleCase filler words",
+         "please" not in titlecase_parts and "help" not in titlecase_parts and "the" not in titlecase_parts,
+         f"rewritten={rewritten_titlecase!r}")
+    test("rewrite keeps real technical tokens from TitleCase query",
+         "debug" in titlecase_parts and "docker" in titlecase_parts and "issue" in titlecase_parts,
+         f"rewritten={rewritten_titlecase!r}")
+
+    rewritten_titlecase_briefing = _briefing._rewrite_query_local("Please Help me debug The Docker issue")
+    titlecase_briefing_parts = {p.lower() for p in rewritten_titlecase_briefing.split()}
+    test("briefing rewrite drops TitleCase filler words",
+         "please" not in titlecase_briefing_parts and "help" not in titlecase_briefing_parts and "the" not in titlecase_briefing_parts,
+         f"rewritten={rewritten_titlecase_briefing!r}")
+    test("briefing rewrite keeps real technical tokens from TitleCase query",
+         "debug" in titlecase_briefing_parts and "docker" in titlecase_briefing_parts and "issue" in titlecase_briefing_parts,
+         f"rewritten={rewritten_titlecase_briefing!r}")
+
+    try:
+        import io
+
+        # search(): force FTS miss via retrieval_query, then verify original query LIKE fallback hits.
+        doc_id = db.execute("""
+            INSERT INTO documents (session_id, doc_type, seq, title, file_path, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, ("test-session-001", "checkpoint", 1, "Fallback search doc",
+              "/test/fallback-search.md", "2024-01-01T00:00:00")).lastrowid
+        db.execute("""
+            INSERT INTO sections (document_id, section_name, content)
+            VALUES (?, ?, ?)
+        """, (doc_id, "notes", "This section contains keep this original text for LIKE fallback."))
+
+        # search_knowledge(): same fallback path against knowledge_entries.
+        insert_entry(db, "pattern", "Fallback knowledge entry",
+                     "Knowledge content includes keep this original text for fallback checks.")
+        db.commit()
+
+        original_query = "keep this original text"
+        forced_miss = "zzznomatchtoken"
+
+        buf = io.StringIO()
+        orig_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            _qs.search(original_query, limit=5, retrieval_query=forced_miss)
+        finally:
+            sys.stdout = orig_stdout
+        out = buf.getvalue()
+        test("search() fallback returns original-query substring match",
+             "Fallback search doc" in out, f"out={out[:240]!r}")
+
+        buf2 = io.StringIO()
+        sys.stdout = buf2
+        try:
+            _qs.search_knowledge(original_query, limit=5, retrieval_query=forced_miss)
+        finally:
+            sys.stdout = orig_stdout
+        out2 = buf2.getvalue()
+        test("search_knowledge() fallback returns original-query substring match",
+             "Fallback knowledge entry" in out2, f"out={out2[:240]!r}")
+    finally:
+        _qs.DB_PATH = original_db_path
+
+
+def test_briefing_mode_pack_contracts(db: sqlite3.Connection, tmp_db_path: str):
+    """6d. briefing --pack shape and explicit --mode behavior vs legacy defaults."""
+    print("\n📦 briefing mode/pack contracts")
+
+    original_db_path = _briefing.DB_PATH
+    _briefing.DB_PATH = Path(tmp_db_path)
+
+    try:
+        insert_entry(db, "mistake", "Review auth bug", "Audit auth PR before merge")
+        insert_entry(db, "pattern", "Review checklist", "Use reviewer checklist for security PRs")
+        db.commit()
+
+        # Machine-readable pack surface.
+        raw_pack = _briefing.generate_briefing(
+            "review auth PR security", fmt="pack", mode="review",
+            min_confidence=0.0, limit=3, infer_auto_mode=True
+        )
+        pack = json.loads(raw_pack)
+        required = {"query", "rewritten_query", "mode", "risk", "entries",
+                    "task_matches", "file_matches", "past_work", "next_open"}
+        missing = required - set(pack.keys())
+        test("generate_briefing(fmt='pack') emits expected top-level keys",
+             not missing, f"missing={sorted(missing)}")
+        test("generate_briefing(fmt='pack') keeps explicit mode",
+             pack.get("mode") == "review", f"mode={pack.get('mode')!r}")
+        test("generate_briefing(fmt='pack') entries has canonical buckets",
+             isinstance(pack.get("entries"), dict)
+             and all(k in pack["entries"] for k in ("mistake", "pattern", "decision", "tool")),
+             f"entries keys={list(pack.get('entries', {}).keys()) if isinstance(pack.get('entries'), dict) else type(pack.get('entries')).__name__}")
+
+        # main(): legacy non-pack path should keep infer_auto_mode=False unless --mode is explicit.
+        import io
+        import unittest.mock as mock
+
+        orig_argv, orig_stdout = sys.argv, sys.stdout
+        try:
+            with mock.patch.object(_briefing, "generate_briefing", return_value="OK") as gb:
+                sys.argv = ["briefing.py", "review auth PR"]
+                sys.stdout = io.StringIO()
+                _briefing.main()
+                kwargs = gb.call_args.kwargs
+                test("briefing main default keeps infer_auto_mode=False",
+                     kwargs.get("infer_auto_mode") is False, f"kwargs={kwargs}")
+                test("briefing main default mode remains 'auto'",
+                     kwargs.get("mode") == "auto", f"kwargs={kwargs}")
+
+            with mock.patch.object(_briefing, "generate_briefing", return_value="OK") as gb2:
+                sys.argv = ["briefing.py", "review auth PR", "--mode", "review"]
+                sys.stdout = io.StringIO()
+                _briefing.main()
+                args2 = gb2.call_args.args
+                kwargs2 = gb2.call_args.kwargs
+                test("briefing main preserves query words when --mode value overlaps",
+                     bool(args2) and args2[0] == "review auth PR",
+                     f"args={args2}, kwargs={kwargs2}")
+                test("briefing main explicit --mode enables infer_auto_mode",
+                     kwargs2.get("infer_auto_mode") is True, f"kwargs={kwargs2}")
+                test("briefing main passes explicit mode value",
+                     kwargs2.get("mode") == "review", f"kwargs={kwargs2}")
+
+            with mock.patch.object(_briefing, "generate_briefing", return_value="{}") as gb3:
+                sys.argv = ["briefing.py", "review auth PR", "--pack"]
+                sys.stdout = io.StringIO()
+                _briefing.main()
+                kwargs3 = gb3.call_args.kwargs
+                test("briefing main --pack enables infer_auto_mode",
+                     kwargs3.get("infer_auto_mode") is True, f"kwargs={kwargs3}")
+                test("briefing main --pack selects pack format",
+                     kwargs3.get("fmt") == "pack", f"kwargs={kwargs3}")
+
+            with mock.patch.object(_briefing, "generate_subagent_context", return_value="[KNOWLEDGE CONTEXT]") as gs:
+                sys.argv = ["briefing.py", "review auth PR", "--for-subagent"]
+                sys.stdout = io.StringIO()
+                _briefing.main()
+                kwargs4 = gs.call_args.kwargs
+                test("briefing --for-subagent keeps infer_auto_mode=False by default",
+                     kwargs4.get("infer_auto_mode") is False, f"kwargs={kwargs4}")
+
+            with mock.patch.object(_briefing, "generate_subagent_context", return_value="[KNOWLEDGE CONTEXT]") as gs2:
+                sys.argv = ["briefing.py", "review auth PR", "--for-subagent", "--mode", "review"]
+                sys.stdout = io.StringIO()
+                _briefing.main()
+                kwargs5 = gs2.call_args.kwargs
+                test("briefing --for-subagent + explicit --mode enables infer_auto_mode",
+                     kwargs5.get("infer_auto_mode") is True, f"kwargs={kwargs5}")
+        finally:
+            sys.argv = orig_argv
+            sys.stdout = orig_stdout
+    finally:
+        _briefing.DB_PATH = original_db_path
+
+
 def test_budget_and_compact_surfaces(db: sqlite3.Connection, tmp_db_path: str):
     """7. query-session.py --budget and --compact flags work on all key surfaces."""
     print("\n💰 Budget and compact surface tests")
@@ -812,9 +1072,36 @@ def test_budget_and_compact_surfaces(db: sqlite3.Connection, tmp_db_path: str):
 
         # --- --compact on show_by_module ---
         # Insert an entry with a file in a known module directory
-        insert_entry(db, "pattern", "Budget module pattern",
-                     "Content about module pattern", task_id="budget-compact-test",
-                     affected_files=["budget_mod/service.py"])
+        doc_id = db.execute("""
+            INSERT INTO documents
+                (session_id, doc_type, seq, title, file_path, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, ("test-session-001", "research", 0, "Budget compact source",
+              "notes/budget-compact.md", "2024-01-01T00:00:00")).lastrowid
+        budget_phase3_id = insert_entry(db, "pattern", "Budget module pattern",
+                                        "Content about module pattern", task_id="budget-compact-test",
+                                        affected_files=["budget_mod/service.py"],
+                                        document_id=doc_id,
+                                        source_section="findings",
+                                        source_file="budget_mod/service.py",
+                                        start_line=3,
+                                        end_line=9,
+                                        code_language="python",
+                                        code_snippet="def run_budget_compact():\n    return True")
+        rel_top = insert_entry(db, "tool", "Budget relation top", "Top relation", task_id="budget-compact-test")
+        rel_mid = insert_entry(db, "mistake", "Budget relation mid", "Mid relation", task_id="budget-compact-test")
+        rel_low = insert_entry(db, "decision", "Budget relation low", "Low relation", task_id="budget-compact-test")
+        rel_tie = insert_entry(db, "pattern", "Budget relation tie", "Tie relation", task_id="budget-compact-test")
+        db.executemany(
+            "INSERT INTO knowledge_relations (source_id, target_id, relation_type, confidence, created_at) "
+            "VALUES (?, ?, ?, ?, datetime('now'))",
+            [
+                (budget_phase3_id, rel_top, "RELATED", 0.95),
+                (budget_phase3_id, rel_mid, "RELATED", 0.80),
+                (budget_phase3_id, rel_low, "RELATED", 0.20),
+                (budget_phase3_id, rel_tie, "RELATED", 0.80),
+            ],
+        )
         db.execute(
             "UPDATE knowledge_entries SET est_tokens = 42 "
             "WHERE title = 'Budget module pattern'"
@@ -854,10 +1141,49 @@ def test_budget_and_compact_surfaces(db: sqlite3.Connection, tmp_db_path: str):
                  all(isinstance(e.get("affected_files"), list)
                      for e in parsed_jt.get("entries", [])),
                  f"types: {[type(e.get('affected_files')).__name__ for e in parsed_jt.get('entries', [])]}")
+            entries = parsed_jt.get("entries", [])
+            with_phase3 = None
+            for e in entries:
+                src = e.get("source_document")
+                if isinstance(src, dict) and src.get("section") == "findings":
+                    with_phase3 = e
+                    break
+            src_doc = (with_phase3 or {}).get("source_document")
+            test("--task --export json includes source_document provenance object",
+                 with_phase3 is not None and isinstance(src_doc, dict),
+                 f"source_document={src_doc!r}; entries={entries!r}")
+            test("--task --export json includes code location fields",
+                 with_phase3 is not None
+                 and with_phase3.get("source_file") == "budget_mod/service.py"
+                 and with_phase3.get("start_line") == 3
+                 and with_phase3.get("end_line") == 9,
+                 f"entry={with_phase3!r}")
+            test("--task --export json includes code snippet fields",
+                 with_phase3 is not None
+                 and with_phase3.get("code_language") == "python"
+                 and "run_budget_compact" in (with_phase3.get("code_snippet") or ""),
+                 f"entry={with_phase3!r}")
+            valid_states = {"fresh", "drifted", "missing", "unknown"}
+            test("--task --export json includes canonical snippet_freshness",
+                 with_phase3 is not None and with_phase3.get("snippet_freshness") in valid_states,
+                 f"entry={with_phase3!r}")
+            rel_ids = (with_phase3 or {}).get("related_entry_ids", [])
+            test("--task --export json includes related_entry_ids as ints",
+                 isinstance(rel_ids, list) and all(isinstance(x, int) for x in rel_ids),
+                 f"related_entry_ids={rel_ids!r}")
+            test("--task --export json related_entry_ids capped and ordered",
+                 rel_ids == [int(rel_top), int(rel_mid), int(rel_tie)],
+                 f"related_entry_ids={rel_ids!r}, expected={[int(rel_top), int(rel_mid), int(rel_tie)]!r}")
         except json.JSONDecodeError as e:
             test("--task --export json produces dict with task_id key", False, f"JSON error: {e}")
             test("--task --export json has entries list", False, "JSON invalid")
             test("--task --export json affected_files is decoded list in entries", False, "JSON invalid")
+            test("--task --export json includes source_document provenance object", False, "JSON invalid")
+            test("--task --export json includes code location fields", False, "JSON invalid")
+            test("--task --export json includes code snippet fields", False, "JSON invalid")
+            test("--task --export json includes canonical snippet_freshness", False, "JSON invalid")
+            test("--task --export json includes related_entry_ids as ints", False, "JSON invalid")
+            test("--task --export json related_entry_ids capped and ordered", False, "JSON invalid")
 
         # --- --budget caps output ---
         buf4 = io.StringIO()
@@ -1161,6 +1487,102 @@ def test_hybrid_change_detection():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def _stable_sha_for_test(*parts) -> str:
+    payload = "\0".join("" if p is None else str(p) for p in parts)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _normalize_title_for_test(title: str) -> str:
+    return re.sub(r"\s+", " ", (title or "").strip().lower())
+
+
+def test_stable_id_and_sync_policy_writers(tmp_db_path: str):
+    """Stable-id writers and local-only sync policy are enforced."""
+    print("\n🧭 Stable ID + sync policy writer tests")
+
+    original_db_path = _learn.DB_PATH
+    original_embed_db_path = _embed.DB_PATH
+    _learn.DB_PATH = Path(tmp_db_path)
+    _embed.DB_PATH = Path(tmp_db_path)
+
+    try:
+        entry_id = _learn.add_entry(
+            category="pattern",
+            title="  Stable   Writer  ",
+            content="deterministic stable writer",
+            session_id="test-session-001",
+            skip_gate=True,
+            skip_scan=True,
+        )
+        db = sqlite3.connect(tmp_db_path)
+        db.row_factory = sqlite3.Row
+        row = db.execute(
+            "SELECT stable_id FROM knowledge_entries WHERE id = ?",
+            (entry_id,),
+        ).fetchone()
+        expected = _stable_sha_for_test(
+            "knowledge", "test-session-001", "pattern", "  Stable   Writer  ", ""
+        )
+        test("learn.add_entry writes deterministic knowledge_entries.stable_id",
+             row is not None and row["stable_id"] == expected,
+             f"stable_id={row['stable_id'] if row else None!r}")
+
+        now = "2026-01-02T03:04:05"
+        db.execute("""
+            INSERT INTO search_feedback (query, result_id, result_kind, verdict, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, ("stable query", "1", "knowledge", 1, now))
+        db.commit()
+
+        _embed.ensure_embedding_tables(db)
+        sf = db.execute("""
+            SELECT stable_id, origin_replica_id
+            FROM search_feedback
+            WHERE query = 'stable query'
+        """).fetchone()
+        expected_origin = _embed._normalize_search_feedback_origin(
+            "local",
+            _embed._get_local_replica_id(db),
+        )
+        expected_sf = _stable_sha_for_test(
+            "search_feedback", now, "knowledge", "1", 1, "stable query", expected_origin
+        )
+        test("embed.ensure_embedding_tables backfills search_feedback stable_id",
+             sf is not None and sf["stable_id"] == expected_sf,
+             f"sf={dict(sf) if sf else None!r}")
+        test("embed.ensure_embedding_tables normalizes origin_replica_id to local replica id",
+             sf is not None and sf["origin_replica_id"] == expected_origin,
+             f"origin={sf['origin_replica_id'] if sf else None!r}")
+
+        policies = {
+            (r["table_name"], r["sync_scope"])
+            for r in db.execute("SELECT table_name, sync_scope FROM sync_table_policies")
+        }
+        test("sync policy marks embeddings as local_only",
+             ("embeddings", "local_only") in policies,
+             f"policies={sorted(policies)!r}")
+        test("sync policy marks knowledge_fts as local_only",
+             ("knowledge_fts", "local_only") in policies,
+             f"policies={sorted(policies)!r}")
+        test("sync policy marks recall_events as upload_only",
+             ("recall_events", "upload_only") in policies,
+             f"policies={sorted(policies)!r}")
+        sync_tables = {
+            r["name"] for r in db.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type = 'table'
+                  AND name IN ('sync_state', 'sync_txns', 'sync_ops', 'sync_cursors', 'sync_failures')
+            """)
+        }
+        test("embed.ensure_embedding_tables creates sync foundation tables",
+             sync_tables == {"sync_state", "sync_txns", "sync_ops", "sync_cursors", "sync_failures"},
+             f"sync_tables={sorted(sync_tables)!r}")
+        db.close()
+    finally:
+        _learn.DB_PATH = original_db_path
+        _embed.DB_PATH = original_embed_db_path
+
+
 def main():
     print("=" * 60)
     print("test_session_surface.py — memory-surface feature tests")
@@ -1185,10 +1607,13 @@ def main():
         test_learn_existing_flags_regression(tmp_db_path)
         test_show_by_file_no_affected_files_col()
         test_fts_sanitization_preserved()
+        test_query_rewrite_and_fallback_contracts(db, tmp_db_path)
+        test_briefing_mode_pack_contracts(db, tmp_db_path)
         test_budget_and_compact_surfaces(db, tmp_db_path)
         test_briefing_task_budget(db, tmp_db_path)
         test_learn_list_tokens(tmp_db_path)
         test_hybrid_change_detection()
+        test_stable_id_and_sync_policy_writers(tmp_db_path)
 
         db.close()
     finally:

@@ -19,6 +19,8 @@ import re
 import os
 import sys
 import hashlib
+import json
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -37,6 +39,197 @@ CHECKPOINT_SECTIONS = [
     "overview", "history", "work_done", "technical_details",
     "important_files", "next_steps"
 ]
+
+
+def _normalize_title(title: str) -> str:
+    return re.sub(r"\s+", " ", (title or "").strip().lower())
+
+
+def _stable_sha256(*parts) -> str:
+    payload = "\0".join("" if p is None else str(p) for p in parts)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _document_stable_id(session_id: str, doc_type: str, seq: int, title: str) -> str:
+    return _stable_sha256("document", session_id, doc_type, int(seq or 0), _normalize_title(title))
+
+
+def _section_stable_id(document_stable_id: str, section_name: str) -> str:
+    return _stable_sha256("section", document_stable_id, section_name or "")
+
+
+def _utc_now() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _default_local_replica_id() -> str:
+    host = os.environ.get("HOSTNAME") or os.environ.get("COMPUTERNAME") or ""
+    user = os.environ.get("USER") or os.environ.get("USERNAME") or ""
+    return f"replica-{_stable_sha256('local-replica', host, user, str(Path.home()))[:16]}"
+
+
+def _get_local_replica_id(db: sqlite3.Connection) -> str:
+    try:
+        row = db.execute("SELECT value FROM sync_state WHERE key='local_replica_id'").fetchone()
+        current = str(row[0]) if row and row[0] else ""
+        if current and current != "local":
+            return current
+        replica_id = _default_local_replica_id()
+        db.execute("""
+            INSERT INTO sync_state (key, value)
+            VALUES ('local_replica_id', ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = datetime('now')
+        """, (replica_id,))
+        db.execute("""
+            INSERT INTO sync_metadata (key, value)
+            VALUES ('local_replica_id', ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = datetime('now')
+        """, (replica_id,))
+        return replica_id
+    except Exception:
+        return ""
+
+
+def _enqueue_sync_op_fail_open(
+    db: sqlite3.Connection,
+    table_name: str,
+    row_stable_id: str,
+    row_payload: dict,
+    op_type: str = "upsert",
+):
+    if not row_stable_id:
+        return
+    try:
+        policy = db.execute(
+            "SELECT sync_scope FROM sync_table_policies WHERE table_name = ?",
+            (table_name,),
+        ).fetchone()
+        if not policy or policy[0] != "canonical":
+            return
+        replica_id = _get_local_replica_id(db)
+        if not replica_id:
+            return
+        now = _utc_now()
+        txn_id = _stable_sha256("sync-txn", replica_id, table_name, row_stable_id, time.time_ns())
+        db.execute("""
+            INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at)
+            VALUES (?, ?, 'pending', ?, '')
+        """, (txn_id, replica_id, now))
+        db.execute("""
+            INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
+            VALUES (?, ?, ?, ?, ?, 0, ?)
+        """, (txn_id, table_name, op_type, row_stable_id, json.dumps(row_payload, ensure_ascii=False), now))
+    except Exception:
+        return
+
+
+def _seed_sync_table_policies(db: sqlite3.Connection):
+    rows = [
+        ("sessions", "canonical", "id"),
+        ("documents", "canonical", "stable_id"),
+        ("sections", "canonical", "stable_id"),
+        ("knowledge_entries", "canonical", "stable_id"),
+        ("knowledge_relations", "canonical", "stable_id"),
+        ("entity_relations", "canonical", "stable_id"),
+        ("search_feedback", "canonical", "stable_id"),
+        ("recall_events", "upload_only", ""),
+        ("knowledge_fts", "local_only", ""),
+        ("ke_fts", "local_only", ""),
+        ("sessions_fts", "local_only", ""),
+        ("event_offsets", "local_only", ""),
+        ("embeddings", "local_only", ""),
+        ("embedding_meta", "local_only", ""),
+        ("tfidf_model", "local_only", ""),
+    ]
+    policy_sql = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='sync_table_policies'"
+    ).fetchone()
+    needs_rebuild = policy_sql and "upload_only" not in (policy_sql[0] or "")
+    if needs_rebuild:
+        db.executescript("""
+            CREATE TABLE sync_table_policies_new (
+                table_name TEXT PRIMARY KEY,
+                sync_scope TEXT NOT NULL CHECK(sync_scope IN ('canonical', 'local_only', 'upload_only')),
+                stable_id_column TEXT DEFAULT ''
+            );
+            INSERT INTO sync_table_policies_new (table_name, sync_scope, stable_id_column)
+            SELECT table_name, sync_scope, COALESCE(stable_id_column, '')
+            FROM sync_table_policies;
+            DROP TABLE sync_table_policies;
+            ALTER TABLE sync_table_policies_new RENAME TO sync_table_policies;
+        """)
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS sync_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS sync_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS sync_txns (
+            txn_id TEXT PRIMARY KEY,
+            replica_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'committed', 'failed')),
+            created_at TEXT NOT NULL,
+            committed_at TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS sync_ops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            txn_id TEXT NOT NULL,
+            table_name TEXT NOT NULL,
+            op_type TEXT NOT NULL CHECK(op_type IN ('insert', 'update', 'delete', 'upsert')),
+            row_stable_id TEXT NOT NULL,
+            row_payload TEXT NOT NULL,
+            op_index INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(txn_id, op_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_ops_txn ON sync_ops(txn_id);
+        CREATE INDEX IF NOT EXISTS idx_sync_ops_table_row ON sync_ops(table_name, row_stable_id);
+        CREATE TABLE IF NOT EXISTS sync_cursors (
+            replica_id TEXT PRIMARY KEY,
+            last_txn_id TEXT DEFAULT '',
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS sync_failures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            txn_id TEXT DEFAULT '',
+            table_name TEXT DEFAULT '',
+            row_stable_id TEXT DEFAULT '',
+            error_code TEXT DEFAULT '',
+            error_message TEXT DEFAULT '',
+            failed_at TEXT NOT NULL,
+            retry_count INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_failures_txn ON sync_failures(txn_id);
+        CREATE TABLE IF NOT EXISTS sync_table_policies (
+            table_name TEXT PRIMARY KEY,
+            sync_scope TEXT NOT NULL CHECK(sync_scope IN ('canonical', 'local_only', 'upload_only')),
+            stable_id_column TEXT DEFAULT ''
+        );
+    """)
+    db.executemany("""
+        INSERT INTO sync_table_policies (table_name, sync_scope, stable_id_column)
+        VALUES (?, ?, ?)
+        ON CONFLICT(table_name) DO UPDATE SET
+            sync_scope = excluded.sync_scope,
+            stable_id_column = excluded.stable_id_column
+    """, rows)
+    db.execute("""
+        INSERT OR IGNORE INTO sync_metadata (key, value)
+        VALUES ('local_replica_id', 'local')
+    """)
+    db.execute("""
+        INSERT OR IGNORE INTO sync_state (key, value)
+        VALUES ('local_replica_id', 'local')
+    """)
 
 
 def create_db(db_path: Path) -> sqlite3.Connection:
@@ -69,6 +262,7 @@ def create_db(db_path: Path) -> sqlite3.Connection:
             doc_type TEXT NOT NULL,        -- 'checkpoint', 'research', 'artifact', 'plan', 'claude-session'
             seq INTEGER DEFAULT 0,         -- checkpoint sequence number
             title TEXT NOT NULL,
+            stable_id TEXT,
             file_path TEXT NOT NULL UNIQUE,
             file_hash TEXT,                -- MD5 for incremental updates
             size_bytes INTEGER DEFAULT 0,
@@ -81,6 +275,7 @@ def create_db(db_path: Path) -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
             section_name TEXT NOT NULL,     -- 'overview', 'history', etc. or 'full' for non-checkpoints
+            stable_id TEXT,
             content TEXT NOT NULL,
             UNIQUE(document_id, section_name)
         );
@@ -98,7 +293,9 @@ def create_db(db_path: Path) -> sqlite3.Connection:
 
         CREATE INDEX IF NOT EXISTS idx_documents_session ON documents(session_id);
         CREATE INDEX IF NOT EXISTS idx_documents_type ON documents(doc_type);
+        CREATE INDEX IF NOT EXISTS idx_documents_stable_id ON documents(stable_id);
         CREATE INDEX IF NOT EXISTS idx_sections_doc ON sections(document_id);
+        CREATE INDEX IF NOT EXISTS idx_sections_stable_id ON sections(stable_id);
     """)
 
     # Create event_offsets table for byte-offset seek (Batch B v7).
@@ -129,6 +326,9 @@ def create_db(db_path: Path) -> sqlite3.Connection:
 
     # Migrate existing databases: add source column if missing, then create indexes
     _migrate_add_source(db)
+    _seed_sync_table_policies(db)
+    _backfill_document_section_stable_ids(db)
+    _enforce_stable_id_uniqueness(db)
 
     return db
 
@@ -138,6 +338,8 @@ def _migrate_add_source(db: sqlite3.Connection):
     migrations = [
         ("sessions", "source", "TEXT DEFAULT 'copilot'"),
         ("documents", "source", "TEXT DEFAULT 'copilot'"),
+        ("documents", "stable_id", "TEXT"),
+        ("sections", "stable_id", "TEXT"),
         ("knowledge_entries", "source", "TEXT DEFAULT 'copilot'"),
         # Phase 6B: topic key, dedup, revision tracking
         ("knowledge_entries", "topic_key", "TEXT"),
@@ -146,6 +348,13 @@ def _migrate_add_source(db: sqlite3.Connection):
         # Phase 7: task-scoped recall + file/module surface
         ("knowledge_entries", "task_id", "TEXT DEFAULT ''"),
         ("knowledge_entries", "affected_files", "TEXT DEFAULT '[]'"),
+        # Phase 3: provenance + code location metadata
+        ("knowledge_entries", "source_section", "TEXT DEFAULT ''"),
+        ("knowledge_entries", "source_file", "TEXT DEFAULT ''"),
+        ("knowledge_entries", "start_line", "INTEGER DEFAULT 0"),
+        ("knowledge_entries", "end_line", "INTEGER DEFAULT 0"),
+        ("knowledge_entries", "code_language", "TEXT DEFAULT ''"),
+        ("knowledge_entries", "code_snippet", "TEXT DEFAULT ''"),
         # Batch B v7: two-phase indexing columns on sessions
         ("sessions", "file_mtime", "REAL"),
         ("sessions", "indexed_at_r", "REAL"),
@@ -153,7 +362,7 @@ def _migrate_add_source(db: sqlite3.Connection):
         ("sessions", "event_count_estimate", "INTEGER DEFAULT 0"),
         ("sessions", "file_size_bytes", "INTEGER DEFAULT 0"),
     ]
-    _ALLOWED_TABLES = {"sessions", "documents", "knowledge_entries"}
+    _ALLOWED_TABLES = {"sessions", "documents", "sections", "knowledge_entries"}
     for table, col, col_def in migrations:
         assert table in _ALLOWED_TABLES, f"Unexpected table: {table}"
         try:
@@ -165,6 +374,8 @@ def _migrate_add_source(db: sqlite3.Connection):
     try:
         db.execute("CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_documents_stable_id ON documents(stable_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_sections_stable_id ON sections(stable_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_ke_source ON knowledge_entries(source)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_ke_topic ON knowledge_entries(topic_key)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_ke_hash ON knowledge_entries(content_hash)")
@@ -179,14 +390,108 @@ def _migrate_add_source(db: sqlite3.Connection):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_id INTEGER REFERENCES knowledge_entries(id),
                 target_id INTEGER REFERENCES knowledge_entries(id),
+                source_stable_id TEXT DEFAULT '',
+                target_stable_id TEXT DEFAULT '',
                 relation_type TEXT NOT NULL,
+                stable_id TEXT,
                 confidence REAL DEFAULT 0.8,
                 created_at TEXT,
                 UNIQUE(source_id, target_id, relation_type)
             )
         """)
+        for col, col_def in [
+            ("source_stable_id", "TEXT DEFAULT ''"),
+            ("target_stable_id", "TEXT DEFAULT ''"),
+            ("stable_id", "TEXT"),
+        ]:
+            try:
+                db.execute(f"ALTER TABLE knowledge_relations ADD COLUMN {col} {col_def}")
+            except sqlite3.OperationalError:
+                pass
         db.execute("CREATE INDEX IF NOT EXISTS idx_kr_source ON knowledge_relations(source_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_kr_target ON knowledge_relations(target_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_kr_source_stable ON knowledge_relations(source_stable_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_kr_target_stable ON knowledge_relations(target_stable_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_kr_stable_id ON knowledge_relations(stable_id)")
+    except sqlite3.OperationalError:
+        pass
+
+
+def _dedupe_stable_rows(db: sqlite3.Connection, table: str):
+    if table not in {"documents", "sections"}:
+        return
+    db.execute(f"""
+        DELETE FROM {table}
+        WHERE id IN (
+            SELECT dupe.id
+            FROM {table} dupe
+            JOIN (
+                SELECT stable_id, MIN(id) AS keep_id
+                FROM {table}
+                WHERE COALESCE(stable_id, '') != ''
+                GROUP BY stable_id
+                HAVING COUNT(*) > 1
+            ) grouped ON grouped.stable_id = dupe.stable_id
+            WHERE dupe.id != grouped.keep_id
+        )
+    """)
+
+
+def _enforce_stable_id_uniqueness(db: sqlite3.Connection):
+    has_table = lambda t: db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (t,),
+    ).fetchone() is not None
+    for table, index_name in [
+        ("documents", "uq_documents_stable_id"),
+        ("sections", "uq_sections_stable_id"),
+    ]:
+        if has_table(table):
+            _dedupe_stable_rows(db, table)
+            db.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table}(stable_id)")
+
+
+def _backfill_document_section_stable_ids(db: sqlite3.Connection):
+    try:
+        for row in db.execute("""
+            SELECT id, session_id, doc_type, seq, title, COALESCE(stable_id, '')
+            FROM documents
+        """).fetchall():
+            doc_id, session_id, doc_type, seq, title, existing = row
+            stable_id = _document_stable_id(session_id, doc_type, int(seq or 0), title)
+            if existing != stable_id:
+                db.execute("UPDATE documents SET stable_id = ? WHERE id = ?", (stable_id, doc_id))
+                _enqueue_sync_op_fail_open(
+                    db,
+                    "documents",
+                    stable_id,
+                    {
+                        "session_id": session_id,
+                        "doc_type": doc_type,
+                        "seq": int(seq or 0),
+                        "title": title,
+                        "stable_id": stable_id,
+                    },
+                )
+        for row in db.execute("""
+            SELECT s.id, d.stable_id, s.section_name, COALESCE(s.stable_id, '')
+            FROM sections s
+            JOIN documents d ON s.document_id = d.id
+        """).fetchall():
+            sec_id, document_stable_id, section_name, existing = row
+            stable_id = _section_stable_id(document_stable_id, section_name)
+            if existing != stable_id:
+                db.execute("UPDATE sections SET stable_id = ? WHERE id = ?", (stable_id, sec_id))
+                _enqueue_sync_op_fail_open(
+                    db,
+                    "sections",
+                    stable_id,
+                    {
+                        "document_stable_id": document_stable_id,
+                        "section_name": section_name,
+                        "stable_id": stable_id,
+                    },
+                )
     except sqlite3.OperationalError:
         pass
 
@@ -275,6 +580,21 @@ def phase1_upsert_session(
             indexed_at_r = excluded.indexed_at_r
     """, (session_id, path_str, source, file_mtime, file_size_bytes,
           event_count_estimate, now, datetime.now().isoformat()))
+    _enqueue_sync_op_fail_open(
+        db,
+        "sessions",
+        session_id,
+        {
+            "id": session_id,
+            "path": path_str,
+            "source": source,
+            "file_mtime": file_mtime,
+            "file_size_bytes": file_size_bytes,
+            "event_count_estimate": event_count_estimate,
+            "indexed_at_r": now,
+            "indexed_at": datetime.now().isoformat(),
+        },
+    )
 
 
 def phase2_index_events(
@@ -394,17 +714,40 @@ def _get_or_create_session_document(
     if row:
         return row[0]
 
+    doc_title = session_meta.title or session_id[:8]
+    doc_stable_id = _document_stable_id(session_id, "claude-session", 0, doc_title)
     db.execute("""
-        INSERT OR IGNORE INTO documents
-            (session_id, doc_type, seq, title, file_path, size_bytes, indexed_at)
-        VALUES (?, 'claude-session', 0, ?, ?, ?, ?)
+        INSERT INTO documents
+            (session_id, doc_type, seq, title, stable_id, file_path, size_bytes, indexed_at)
+        VALUES (?, 'claude-session', 0, ?, ?, ?, ?, ?)
+        ON CONFLICT(file_path) DO UPDATE SET
+            title = excluded.title,
+            stable_id = excluded.stable_id,
+            size_bytes = excluded.size_bytes,
+            indexed_at = excluded.indexed_at
     """, (
         session_id,
-        session_meta.title or session_id[:8],
+        doc_title,
+        doc_stable_id,
         path_str,
         session_meta.path.stat().st_size if session_meta.path.exists() else 0,
         datetime.now().isoformat(),
     ))
+    _enqueue_sync_op_fail_open(
+        db,
+        "documents",
+        doc_stable_id,
+        {
+            "session_id": session_id,
+            "doc_type": "claude-session",
+            "seq": 0,
+            "title": doc_title,
+            "stable_id": doc_stable_id,
+            "file_path": path_str,
+            "size_bytes": session_meta.path.stat().st_size if session_meta.path.exists() else 0,
+            "indexed_at": datetime.now().isoformat(),
+        },
+    )
     return db.execute(
         "SELECT id FROM documents WHERE file_path = ?", (path_str,)
     ).fetchone()[0]
@@ -461,15 +804,34 @@ def index_checkpoint(db: sqlite3.Connection, session_id: str,
 
     content = cp_path.read_text(encoding="utf-8", errors="ignore")
     preview = content[:500].replace("\n", " ")
+    doc_stable_id = _document_stable_id(session_id, "checkpoint", seq, title)
 
     # Upsert document
     db.execute("""
-        INSERT INTO documents (session_id, doc_type, seq, title, file_path, file_hash, size_bytes, content_preview, indexed_at)
-        VALUES (?, 'checkpoint', ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO documents (session_id, doc_type, seq, title, stable_id, file_path, file_hash, size_bytes, content_preview, indexed_at)
+        VALUES (?, 'checkpoint', ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(file_path) DO UPDATE SET
+            title=excluded.title, stable_id=excluded.stable_id,
             file_hash=excluded.file_hash, size_bytes=excluded.size_bytes,
             content_preview=excluded.content_preview, indexed_at=excluded.indexed_at
-    """, (session_id, seq, title, path_str, fhash, cp_path.stat().st_size, preview, datetime.now().isoformat()))
+    """, (session_id, seq, title, doc_stable_id, path_str, fhash, cp_path.stat().st_size, preview, datetime.now().isoformat()))
+    _enqueue_sync_op_fail_open(
+        db,
+        "documents",
+        doc_stable_id,
+        {
+            "session_id": session_id,
+            "doc_type": "checkpoint",
+            "seq": seq,
+            "title": title,
+            "stable_id": doc_stable_id,
+            "file_path": path_str,
+            "file_hash": fhash,
+            "size_bytes": cp_path.stat().st_size,
+            "content_preview": preview,
+            "indexed_at": datetime.now().isoformat(),
+        },
+    )
 
     doc_id = db.execute("SELECT id FROM documents WHERE file_path = ?", (path_str,)).fetchone()[0]
 
@@ -482,8 +844,19 @@ def index_checkpoint(db: sqlite3.Connection, session_id: str,
         section_content = extract_section(content, section_name)
         if section_content:
             db.execute(
-                "INSERT INTO sections (document_id, section_name, content) VALUES (?, ?, ?)",
-                (doc_id, section_name, section_content)
+                "INSERT INTO sections (document_id, section_name, stable_id, content) VALUES (?, ?, ?, ?)",
+                (doc_id, section_name, _section_stable_id(doc_stable_id, section_name), section_content)
+            )
+            _enqueue_sync_op_fail_open(
+                db,
+                "sections",
+                _section_stable_id(doc_stable_id, section_name),
+                {
+                    "document_stable_id": doc_stable_id,
+                    "section_name": section_name,
+                    "stable_id": _section_stable_id(doc_stable_id, section_name),
+                    "content": section_content,
+                },
             )
             db.execute("""
                 INSERT INTO knowledge_fts (title, section_name, content, doc_type, session_id, document_id)
@@ -514,14 +887,33 @@ def index_generic_doc(db: sqlite3.Connection, session_id: str,
     if doc_type == "plan":
         title = "Plan"
     preview = content[:500].replace("\n", " ")
+    doc_stable_id = _document_stable_id(session_id, doc_type, 0, title)
 
     db.execute("""
-        INSERT INTO documents (session_id, doc_type, seq, title, file_path, file_hash, size_bytes, content_preview, indexed_at)
-        VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)
+        INSERT INTO documents (session_id, doc_type, seq, title, stable_id, file_path, file_hash, size_bytes, content_preview, indexed_at)
+        VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(file_path) DO UPDATE SET
+            title=excluded.title, stable_id=excluded.stable_id,
             file_hash=excluded.file_hash, size_bytes=excluded.size_bytes,
             content_preview=excluded.content_preview, indexed_at=excluded.indexed_at
-    """, (session_id, doc_type, title, path_str, fhash, doc_path.stat().st_size, preview, datetime.now().isoformat()))
+    """, (session_id, doc_type, title, doc_stable_id, path_str, fhash, doc_path.stat().st_size, preview, datetime.now().isoformat()))
+    _enqueue_sync_op_fail_open(
+        db,
+        "documents",
+        doc_stable_id,
+        {
+            "session_id": session_id,
+            "doc_type": doc_type,
+            "seq": 0,
+            "title": title,
+            "stable_id": doc_stable_id,
+            "file_path": path_str,
+            "file_hash": fhash,
+            "size_bytes": doc_path.stat().st_size,
+            "content_preview": preview,
+            "indexed_at": datetime.now().isoformat(),
+        },
+    )
 
     doc_id = db.execute("SELECT id FROM documents WHERE file_path = ?", (path_str,)).fetchone()[0]
 
@@ -531,8 +923,19 @@ def index_generic_doc(db: sqlite3.Connection, session_id: str,
 
     # Store full content as single section
     db.execute(
-        "INSERT INTO sections (document_id, section_name, content) VALUES (?, 'full', ?)",
-        (doc_id, content)
+        "INSERT INTO sections (document_id, section_name, stable_id, content) VALUES (?, 'full', ?, ?)",
+        (doc_id, _section_stable_id(doc_stable_id, "full"), content)
+    )
+    _enqueue_sync_op_fail_open(
+        db,
+        "sections",
+        _section_stable_id(doc_stable_id, "full"),
+        {
+            "document_stable_id": doc_stable_id,
+            "section_name": "full",
+            "stable_id": _section_stable_id(doc_stable_id, "full"),
+            "content": content,
+        },
     )
     db.execute("""
         INSERT INTO knowledge_fts (title, section_name, content, doc_type, session_id, document_id)
@@ -553,6 +956,17 @@ def index_session(db: sqlite3.Connection, session_dir: Path, incremental: bool) 
         VALUES (?, ?, '', ?)
         ON CONFLICT(id) DO NOTHING
     """, (session_id, str(session_dir), datetime.now().isoformat()))
+    _enqueue_sync_op_fail_open(
+        db,
+        "sessions",
+        session_id,
+        {
+            "id": session_id,
+            "path": str(session_dir),
+            "summary": "",
+            "indexed_at": datetime.now().isoformat(),
+        },
+    )
 
     # 1. Checkpoints
     checkpoints = parse_checkpoint_index(session_dir)
@@ -606,6 +1020,21 @@ def index_session(db: sqlite3.Connection, session_dir: Path, incremental: bool) 
         1 if plan_path.exists() and plan_path.stat().st_size > 50 else 0,
         datetime.now().isoformat()
     ))
+    _enqueue_sync_op_fail_open(
+        db,
+        "sessions",
+        session_id,
+        {
+            "id": session_id,
+            "path": str(session_dir),
+            "summary": summary,
+            "total_checkpoints": len(checkpoints),
+            "total_research": len(list(research_dir.glob("*.md"))) if research_dir.exists() else 0,
+            "total_files": len([f for f in files_dir.iterdir() if f.is_file() and f.suffix in (".md", ".txt")]) if files_dir.exists() else 0,
+            "has_plan": 1 if plan_path.exists() and plan_path.stat().st_size > 50 else 0,
+            "indexed_at": datetime.now().isoformat(),
+        },
+    )
 
     return stats
 

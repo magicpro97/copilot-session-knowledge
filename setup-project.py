@@ -155,10 +155,13 @@ AGENTS_SNIPPET = """
 > Details: `.github/skills/session-knowledge/SKILL.md`
 
 ```bash
-# Before task — get context
-python3 ~/.copilot/tools/briefing.py "<task>" --full
+# Before task — start minimal and escalate only when needed
+python3 ~/.copilot/tools/briefing.py --auto --compact
 
-# Before delegating to sub-agent — inject context
+# Before delegating via tentacle — preferred structured recall path
+python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
+
+# Manual compatibility for ad hoc sub-agent prompts
 python3 ~/.copilot/tools/briefing.py "<sub-agent task>" --for-subagent
 
 # During task — search for errors/topics
@@ -574,7 +577,9 @@ copy to avoid duplicate always-loaded instructions and reduce context bloat.
         print()
         print("Next steps:")
         print("  1. Run: python3 ~/.copilot/tools/build-session-index.py --all")
-        print("  2. Customize for your project:")
+        print("  2. (Optional) Configure sync gateway URL: python3 ~/.copilot/tools/sync-config.py --setup <https://gateway>")
+        print("     Default provider rollout recommendation: Neon (Postgres) + Railway (thin gateway host).")
+        print("  3. Customize for your project:")
         print("     /session-knowledge-creator   — Generate project-specific knowledge skill")
         if not args.no_tentacle:
             print("     /tentacle-creator            — Generate project-specific tentacle skill")

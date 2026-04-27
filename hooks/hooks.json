@@ -12,14 +12,14 @@
       }
     ],
     "sessionEnd": [
-      {
-        "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" sessionEnd",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" sessionEnd",
-        "comment": "[GLOBAL] Unified hook runner — marker cleanup",
-        "timeoutSec": 5
-      }
-    ],
+        {
+          "type": "command",
+          "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" sessionEnd",
+          "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" sessionEnd",
+          "comment": "[GLOBAL] Unified hook runner — marker cleanup + sync flush signal",
+          "timeoutSec": 5
+        }
+      ],
     "preToolUse": [
       {
         "type": "command",
@@ -30,12 +30,30 @@
       }
     ],
     "postToolUse": [
+        {
+          "type": "command",
+          "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" postToolUse",
+          "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" postToolUse",
+          "comment": "[GLOBAL] Unified hook runner — edit tracking + reminders + sync nudge",
+          "timeoutSec": 10
+        }
+      ],
+    "agentStop": [
       {
         "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" postToolUse",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" postToolUse",
-        "comment": "[GLOBAL] Unified hook runner — edit tracking + reminders + suggestions",
-        "timeoutSec": 10
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" agentStop",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" agentStop",
+        "comment": "[GLOBAL] Unified hook runner — marker cleanup after agent stop",
+        "timeoutSec": 5
+      }
+    ],
+    "subagentStop": [
+      {
+        "type": "command",
+        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" subagentStop",
+        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" subagentStop",
+        "comment": "[GLOBAL] Unified hook runner — marker cleanup after subagent stop",
+        "timeoutSec": 5
       }
     ],
     "errorOccurred": [

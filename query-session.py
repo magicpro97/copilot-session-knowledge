@@ -45,6 +45,11 @@ import sqlite3
 import sys
 import os
 import textwrap
+import json
+import math
+import time
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 
 # Fix Windows console encoding for Unicode output
@@ -57,6 +62,89 @@ if os.name == "nt":
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
+
+
+def _safe_int_list(values) -> list[int]:
+    out = []
+    for value in values:
+        try:
+            iv = int(value)
+        except (TypeError, ValueError):
+            continue
+        out.append(iv)
+    return out
+
+
+def _estimate_tokens(output_chars: int) -> int:
+    return int(math.ceil(output_chars / 4)) if output_chars > 0 else 0
+
+
+def _record_recall_event(
+    event_kind: str,
+    surface: str,
+    raw_query: str,
+    rewritten_query: str,
+    task_id: str,
+    selected_entry_ids: list[int],
+    hit_count: int,
+    output_chars: int,
+    opened_entry_id: int | None = None,
+) -> None:
+    payload = (
+        time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
+        event_kind,
+        "query-session",
+        surface,
+        "",
+        (raw_query or "")[:500],
+        (rewritten_query or "")[:500],
+        (task_id or "")[:200],
+        "[]",
+        json.dumps(_safe_int_list(selected_entry_ids), ensure_ascii=False),
+        "[]",
+        opened_entry_id,
+        max(0, int(hit_count or 0)),
+        max(0, int(output_chars or 0)),
+        _estimate_tokens(max(0, int(output_chars or 0))),
+    )
+    db = None
+    try:
+        db = sqlite3.connect(str(DB_PATH))
+        db.execute(
+            """
+            INSERT INTO recall_events (
+                created_at, event_kind, tool, surface, mode,
+                raw_query, rewritten_query, task_id, files,
+                selected_entry_ids, selected_snippet_ids, opened_entry_id,
+                hit_count, output_chars, output_est_tokens
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+        db.commit()
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        if db is not None:
+            db.close()
+
+
+def _run_with_capture(func, *args, **kwargs):
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        result = func(*args, **kwargs)
+    output = buf.getvalue()
+    sys.stdout.write(output)
+    return output, result
+
+
+def _coerce_recall_meta(meta, default: dict) -> dict:
+    if not isinstance(meta, dict):
+        return dict(default)
+    merged = dict(default)
+    merged.update(meta)
+    return merged
 
 # ANSI colors — auto-detect terminal support
 def _supports_color() -> bool:
@@ -219,6 +307,60 @@ def _build_adaptive_fts_query(query: str) -> tuple:
     return fts_query, strictness, confidence_delta
 
 
+def _rewrite_query_local(query: str, max_terms: int = 15) -> str:
+    """Conservative local query condensation while preserving technical tokens."""
+    import re as _re
+    if not query.strip():
+        return query
+
+    _SHORT_TECH = frozenset({
+        "go", "db", "ui", "js", "py", "io", "rx", "vm", "os", "ci", "cd", "tf", "qa",
+    })
+    _FILLER = frozenset({
+        "please", "help", "me", "i", "need", "to", "for", "the", "a", "an", "and", "or",
+        "with", "without", "that", "this", "these", "those", "in", "on", "at", "of", "from",
+        "by", "about", "into", "it", "is", "are", "be", "can", "should", "would", "could",
+        "how", "what", "why", "when", "where", "which", "want",
+    })
+
+    raw_tokens = query.split()
+    condensed = []
+    seen = set()
+
+    def _is_technical_token(tok: str) -> bool:
+        if not tok:
+            return False
+        if any(c in tok for c in "/\\._-:#"):
+            return True
+        if any(c.isdigit() for c in tok):
+            return True
+        if _re.search(r"[a-z][A-Z]|[A-Z][a-z]", tok):
+            return True
+        if tok.isupper() and len(tok) > 1:
+            return True
+        return False
+
+    for tok in raw_tokens:
+        clean = tok.strip(" \t\r\n\"'`()[]{}<>.,;!?")
+        if not clean:
+            continue
+        clean_lower = clean.lower()
+        keep_short_tech = len(clean) == 2 and clean_lower in _SHORT_TECH
+        if not keep_short_tech and clean_lower in _FILLER:
+            continue
+        keep_exact = _is_technical_token(clean)
+        if not keep_exact and not keep_short_tech and len(clean) < 3:
+            continue
+        out_tok = clean if keep_exact else clean_lower
+        if out_tok not in seen:
+            condensed.append(out_tok)
+            seen.add(out_tok)
+        if len(condensed) >= max_terms:
+            break
+
+    return " ".join(condensed) if condensed else query.strip()
+
+
 # ──────────────────────────────────────────────
 # Batch C: sessions_fts search helpers
 # ──────────────────────────────────────────────
@@ -257,6 +399,7 @@ def search_sessions_fts(
     snippet_col: int = 2,
     show_snippet: bool = True,
     limit: int = 10,
+    retrieval_query: str | None = None,
 ) -> list:
     """Search sessions_fts with BM25 ranking and optional column-scoped filter.
 
@@ -270,7 +413,8 @@ def search_sessions_fts(
     """
     db = get_db()
 
-    raw = _sanitize_fts_query(query)
+    query_for_retrieval = retrieval_query if retrieval_query is not None else query
+    raw = _sanitize_fts_query(query_for_retrieval)
     if col_name:
         fts_query = _build_column_scoped_query(raw, [col_name])
     else:
@@ -355,12 +499,14 @@ def show_session_raw(session_id_prefix: str):
 
 
 def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = False,
-           source_filter: str = None, session_id_filter: str = None):
+           source_filter: str = None, session_id_filter: str = None,
+           retrieval_query: str = None):
     """Full-text search across all indexed content."""
     db = get_db()
+    query_for_retrieval = retrieval_query if retrieval_query is not None else query
 
     # Build FTS5 query - sanitize and wrap terms for prefix matching
-    fts_query = _sanitize_fts_query(query)
+    fts_query = _sanitize_fts_query(query_for_retrieval)
 
     sql = """
         SELECT
@@ -400,10 +546,11 @@ def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = Fa
         print(f"Search error: {e}")
         print(f"Try simpler search terms or use quotes for exact phrases.")
         db.close()
-        return
+        return {"hit_count": 0, "selected_entry_ids": []}
 
     # Fallback: substring LIKE search when FTS returns nothing
     if not results:
+        like_query_text = query.strip() or query_for_retrieval
         like_sql = """
             SELECT d.title, s.section_name, d.doc_type, d.session_id,
                    d.id as document_id,
@@ -414,7 +561,7 @@ def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = Fa
             JOIN documents d ON s.document_id = d.id
             WHERE LOWER(s.content) LIKE ?
         """
-        like_params = [query, f"%{query.lower()}%"]
+        like_params = [like_query_text, f"%{like_query_text.lower()}%"]
         if doc_type:
             like_sql += " AND d.doc_type = ?"
             like_params.append(doc_type)
@@ -433,7 +580,7 @@ def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = Fa
         print(f"No results for: {query}")
         print(f"Tip: Try broader terms or check with --list for available sessions.")
         db.close()
-        return
+        return {"hit_count": 0, "selected_entry_ids": []}
 
     print(f"\n{BOLD}Found {len(results)} result(s) for: {query}{RESET}\n")
 
@@ -469,6 +616,7 @@ def search(query: str, doc_type: str = None, limit: int = 10, verbose: bool = Fa
         print(f"\n{DIM}Use --verbose for full excerpts{RESET}")
 
     db.close()
+    return {"hit_count": len(results), "selected_entry_ids": []}
 
 
 def list_sessions(source_filter: str = None):
@@ -650,7 +798,9 @@ def show_detail(entry_id: int):
     db = get_db()
     row = db.execute("""
         SELECT ke.*, COALESCE(ke.source, 'copilot') as src,
-               d.title as doc_title, d.doc_type, d.file_path
+               d.title as doc_title, d.doc_type,
+               d.file_path as doc_file_path, d.file_path,
+               d.seq as doc_seq
         FROM knowledge_entries ke
         LEFT JOIN documents d ON ke.document_id = d.id
         WHERE ke.id = ?
@@ -659,7 +809,7 @@ def show_detail(entry_id: int):
     if not row:
         print(f"No knowledge entry with ID {entry_id}")
         db.close()
-        return
+        return {"opened_entry_id": int(entry_id), "hit_count": 0, "selected_entry_ids": []}
 
     print(f"\n{BOLD}Knowledge Entry #{entry_id}{RESET}")
     print(f"{'='*60}")
@@ -671,8 +821,20 @@ def show_detail(entry_id: int):
           f"{DIM}Occurrences:{RESET} {row['occurrence_count']}")
     if row['tags']:
         print(f"{BOLD}Tags:{RESET} {row['tags']}")
+    row_dict = dict(row)
     if row['doc_title']:
         print(f"{BOLD}Document:{RESET} {row['doc_title']} ({row['doc_type']})")
+    source_label = _source_label_from_row(row_dict)
+    if source_label:
+        print(f"{BOLD}Provenance:{RESET} {source_label}")
+    location_label = _code_location_label_from_row(row_dict)
+    snippet_freshness = _compute_snippet_freshness(row_dict)
+    code_snippet = (row_dict.get("code_snippet") or "").strip()
+    if location_label:
+        print(f"{BOLD}Code location:{RESET} {location_label}")
+        print(f"{BOLD}Snippet freshness:{RESET} {snippet_freshness}")
+    else:
+        print(f"{BOLD}Snippet freshness:{RESET} {snippet_freshness}")
     if row['first_seen']:
         print(f"{BOLD}First seen:{RESET} {row['first_seen']}")
     if row['last_seen']:
@@ -683,7 +845,18 @@ def show_detail(entry_id: int):
     print(row['content'])
     print(f"{'-'*60}")
 
+    if code_snippet:
+        code_language = (row_dict.get("code_language") or "").strip()
+        snippet_label = "Code snippet"
+        if code_language:
+            snippet_label = f"{snippet_label} ({code_language})"
+        print(f"\n{BOLD}{snippet_label}:{RESET}")
+        print(f"{'-'*60}")
+        print(code_snippet)
+        print(f"{'-'*60}")
+
     db.close()
+    return {"opened_entry_id": int(entry_id), "hit_count": 1, "selected_entry_ids": [int(entry_id)]}
 
 
 def show_context(entry_id: int):
@@ -880,11 +1053,13 @@ def show_graph(topic: str):
     db.close()
 
 
-def search_knowledge(query: str, limit: int = 10, export_fmt: str = None):
+def search_knowledge(query: str, limit: int = 10, export_fmt: str = None,
+                     retrieval_query: str = None):
     """Search knowledge entries with FTS5 and adaptive strictness."""
     db = get_db()
+    query_for_retrieval = retrieval_query if retrieval_query is not None else query
 
-    fts_query, strictness, _ = _build_adaptive_fts_query(query)
+    fts_query, strictness, _ = _build_adaptive_fts_query(query_for_retrieval)
 
     try:
         rows = db.execute("""
@@ -900,7 +1075,7 @@ def search_knowledge(query: str, limit: int = 10, export_fmt: str = None):
 
     # Strict fallback: exact-match returned nothing → retry with prefix query
     if not rows and strictness == "strict":
-        base_query = _sanitize_fts_query(query)
+        base_query = _sanitize_fts_query(query_for_retrieval)
         try:
             rows = db.execute("""
                 SELECT ke.*, snippet(ke_fts, 1, '>>>', '<<<', '...', 48) as excerpt
@@ -915,6 +1090,7 @@ def search_knowledge(query: str, limit: int = 10, export_fmt: str = None):
 
     # Fallback: substring LIKE search when FTS returns nothing
     if not rows:
+        like_query_text = query.strip() or query_for_retrieval
         try:
             rows = db.execute("""
                 SELECT ke.*,
@@ -923,7 +1099,8 @@ def search_knowledge(query: str, limit: int = 10, export_fmt: str = None):
                 WHERE LOWER(ke.title) LIKE ? OR LOWER(ke.content) LIKE ?
                 ORDER BY ke.confidence DESC
                 LIMIT ?
-            """, (query, f"%{query.lower()}%", f"%{query.lower()}%", limit)).fetchall()
+            """, (like_query_text, f"%{like_query_text.lower()}%",
+                  f"%{like_query_text.lower()}%", limit)).fetchall()
             if rows:
                 print(f"{DIM}(FTS returned 0 — showing substring matches){RESET}")
         except sqlite3.OperationalError:
@@ -944,7 +1121,10 @@ def search_knowledge(query: str, limit: int = 10, export_fmt: str = None):
             print(f"   {excerpt}")
             print()
 
+    selected_entry_ids = _safe_int_list(r["id"] for r in rows) if rows else []
+    hit_count = len(rows)
     db.close()
+    return {"hit_count": hit_count, "selected_entry_ids": selected_entry_ids}
 
 
 def _export_json(rows: list):
@@ -953,27 +1133,158 @@ def _export_json(rows: list):
     Deserializes JSON-encoded column fields (affected_files, facts) so consumers
     receive proper arrays rather than raw JSON strings.
     """
-    import json
-    import io
     _JSON_ARRAY_FIELDS = ("affected_files", "facts")
+    db = get_db()
     clean = []
-    for r in rows:
-        d = dict(r)
-        d.pop("excerpt", None)
-        for field in _JSON_ARRAY_FIELDS:
-            if field in d and isinstance(d[field], str):
-                try:
-                    d[field] = json.loads(d[field])
-                except (ValueError, TypeError):
-                    pass
-        clean.append(d)
-    output = json.dumps(clean, indent=2, ensure_ascii=False, default=str)
-    # Handle Windows console encoding issues
     try:
-        print(output)
-    except UnicodeEncodeError:
-        sys.stdout.buffer.write(output.encode("utf-8"))
-        sys.stdout.buffer.write(b"\n")
+        for r in rows:
+            d = dict(r)
+            d.pop("excerpt", None)
+            for field in _JSON_ARRAY_FIELDS:
+                if field in d and isinstance(d[field], str):
+                    try:
+                        d[field] = json.loads(d[field])
+                    except (ValueError, TypeError):
+                        pass
+            d["snippet_freshness"] = _compute_snippet_freshness(d)
+            entry_id = d.get("id")
+            if isinstance(entry_id, int):
+                d["related_entry_ids"] = _related_entry_ids(db, entry_id)
+            clean.append(d)
+        output = json.dumps(clean, indent=2, ensure_ascii=False, default=str)
+        # Handle Windows console encoding issues
+        try:
+            print(output)
+        except UnicodeEncodeError:
+            sys.stdout.buffer.write(output.encode("utf-8"))
+            sys.stdout.buffer.write(b"\n")
+    finally:
+        db.close()
+
+
+def _source_document_from_row(row: dict) -> dict:
+    return {
+        "id": row.get("document_id"),
+        "doc_type": row.get("doc_type"),
+        "title": row.get("doc_title"),
+        "file_path": row.get("doc_file_path"),
+        "seq": row.get("doc_seq"),
+        "section": row.get("source_section"),
+    }
+
+
+def _source_label_from_row(row: dict) -> str:
+    doc_type = (row.get("doc_type") or "").strip()
+    if not doc_type:
+        return ""
+    section = (row.get("source_section") or "").strip()
+    seq = row.get("doc_seq")
+    doc_file_path = (row.get("doc_file_path") or "").strip()
+    doc_title = (row.get("doc_title") or "").strip()
+    if doc_type == "checkpoint" and seq:
+        base = f"from checkpoint #{seq}"
+        return f"{base} / {section}" if section else base
+    if doc_file_path:
+        from pathlib import Path as _Path
+        base = f"from {doc_type} / {_Path(doc_file_path).name}"
+    elif doc_title:
+        base = f"from {doc_type} / {doc_title[:60]}"
+    else:
+        base = f"from {doc_type}"
+    return f"{base} / {section}" if section else base
+
+
+def _code_location_label_from_row(row: dict) -> str:
+    source_file = (row.get("source_file") or "").strip()
+    if not source_file:
+        return ""
+    start_line = row.get("start_line")
+    end_line = row.get("end_line")
+    if start_line and end_line and start_line != end_line:
+        return f"{source_file}:{start_line}-{end_line}"
+    if start_line:
+        return f"{source_file}:{start_line}"
+    return source_file
+
+
+def _compute_snippet_freshness(row: dict) -> str:
+    """Read-time snippet freshness state: fresh|drifted|missing|unknown."""
+    source_file = (row.get("source_file") or "").strip()
+    code_snippet = row.get("code_snippet")
+
+    if not source_file or code_snippet is None:
+        return "unknown"
+
+    start_line = row.get("start_line")
+    end_line = row.get("end_line")
+    if (
+        not isinstance(start_line, int)
+        or not isinstance(end_line, int)
+        or start_line <= 0
+        or end_line <= 0
+        or end_line < start_line
+    ):
+        return "unknown"
+
+    path = Path(source_file)
+    if not path.exists() or not path.is_file():
+        return "missing"
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "unknown"
+
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
+    lines = content.split("\n")
+    if end_line > len(lines):
+        return "unknown"
+
+    current = "\n".join(lines[start_line - 1:end_line])
+    if not current:
+        return "unknown"
+    current_cmp = current.rstrip()
+    stored_cmp = str(code_snippet).replace("\r\n", "\n").replace("\r", "\n").rstrip()
+    if not stored_cmp:
+        return "unknown"
+
+    if stored_cmp.endswith("…"):
+        prefix = stored_cmp[:-1]
+        if not prefix:
+            return "unknown"
+        return "fresh" if current_cmp.startswith(prefix) else "drifted"
+    return "fresh" if stored_cmp == current_cmp else "drifted"
+
+
+def _related_entry_ids(db: sqlite3.Connection, entry_id: int) -> list[int]:
+    """Bidirectional related IDs ordered by confidence desc, ID asc."""
+    try:
+        rows = db.execute(
+            """
+            SELECT target_id AS related_id, COALESCE(confidence, 0.0) AS rel_conf, 1 AS outgoing
+            FROM knowledge_relations
+            WHERE source_id = ?
+            UNION ALL
+            SELECT source_id AS related_id, COALESCE(confidence, 0.0) AS rel_conf, 0 AS outgoing
+            FROM knowledge_relations
+            WHERE target_id = ?
+            """,
+            (entry_id, entry_id),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    best: dict[int, tuple[float, int]] = {}
+    for r in rows:
+        rid = int(r["related_id"])
+        conf = float(r["rel_conf"] if r["rel_conf"] is not None else 0.0)
+        outgoing = int(r["outgoing"])
+        prev = best.get(rid)
+        if prev is None or conf > prev[0] or (conf == prev[0] and outgoing > prev[1]):
+            best[rid] = (conf, outgoing)
+
+    ranked = sorted(best.items(), key=lambda item: (-item[1][0], item[0]))
+    return [int(rid) for rid, _ in ranked[:3]]
 
 
 def _export_markdown_knowledge(rows: list, category: str):
@@ -1004,7 +1315,8 @@ def export_search_results(results: list, fmt: str):
             print("---\n")
 
 
-def semantic_search(query: str, limit: int = 10, verbose: bool = False):
+def semantic_search(query: str, limit: int = 10, verbose: bool = False,
+                    retrieval_query: str = None):
     """Hybrid search: FTS5 keyword + vector semantic, merged with RRF."""
     try:
         tools_dir = Path(__file__).parent
@@ -1012,8 +1324,7 @@ def semantic_search(query: str, limit: int = 10, verbose: bool = False):
         from embed import load_config, hybrid_search, ensure_embedding_tables
     except ImportError:
         print("Error: embed.py not found. Falling back to keyword search.")
-        search(query, limit=limit, verbose=verbose)
-        return
+        return search(query, limit=limit, verbose=verbose, retrieval_query=retrieval_query)
 
     config = load_config()
     db = get_db()
@@ -1025,7 +1336,7 @@ def semantic_search(query: str, limit: int = 10, verbose: bool = False):
         print(f"No results for: {query}")
         print("Tip: Try keyword search (without --semantic) or broader terms.")
         db.close()
-        return
+        return {"hit_count": 0, "selected_entry_ids": []}
 
     # Determine search mode used
     sources = set()
@@ -1042,6 +1353,8 @@ def semantic_search(query: str, limit: int = 10, verbose: bool = False):
         doc_type = r.get("doc_type", "?")
         source = r.get("source", "?")
         rrf = r.get("rrf_score", 0)
+        feedback_bias = float(r.get("feedback_bias", 0.0) or 0.0)
+        feedback_count = int(r.get("feedback_count", 0) or 0)
 
         type_color = {"checkpoint": CYAN, "research": GREEN, "artifact": YELLOW,
                       "plan": MAGENTA, "mistake": YELLOW, "pattern": GREEN,
@@ -1058,10 +1371,14 @@ def semantic_search(query: str, limit: int = 10, verbose: bool = False):
         source_label = "+".join(source_parts) if source_parts else source
 
         print(f"{BOLD}{i}. {r.get('title', '?')}{RESET}")
+        feedback_fragment = ""
+        if verbose and feedback_bias != 0.0:
+            feedback_fragment = f" | Feedback: bias={feedback_bias:+.2f} (count={feedback_count})"
         print(f"   {DIM}Session:{RESET} {sid}..  "
               f"{type_color}{doc_type}{RESET}  "
               f"{DIM}Match:{RESET} {source_label}  "
-              f"{DIM}RRF:{RESET} {rrf:.4f}")
+              f"{DIM}RRF:{RESET} {rrf:.4f}"
+              f"{feedback_fragment}")
 
         # Show scores if verbose
         if verbose:
@@ -1089,6 +1406,8 @@ def semantic_search(query: str, limit: int = 10, verbose: bool = False):
         print()
 
     db.close()
+    selected_entry_ids = _safe_int_list(r.get("id") for r in results if isinstance(r, dict))
+    return {"hit_count": len(results), "selected_entry_ids": selected_entry_ids}
 
 
 def query_entity_relations(entity: str):
@@ -1378,20 +1697,41 @@ def show_by_task(task_id: str, limit: int = 30, verbose: bool = False,
     try:
         rows = db.execute("""
             SELECT id, category, title, content, confidence, affected_files, task_id,
-                   occurrence_count, last_seen, est_tokens
-            FROM knowledge_entries
-            WHERE task_id = ?
-            ORDER BY confidence DESC, occurrence_count DESC
-            LIMIT ?
+                   occurrence_count, last_seen, est_tokens,
+                   document_id, source_section, source_file, start_line, end_line,
+                   code_language, code_snippet,
+                   doc_type, doc_title, doc_file_path, doc_seq
+            FROM (
+                SELECT ke.id, ke.category, ke.title, ke.content, ke.confidence, ke.affected_files, ke.task_id,
+                       ke.occurrence_count, ke.last_seen, ke.est_tokens,
+                       ke.document_id, ke.source_section, ke.source_file, ke.start_line, ke.end_line,
+                       ke.code_language, ke.code_snippet,
+                       d.doc_type as doc_type, d.title as doc_title, d.file_path as doc_file_path, d.seq as doc_seq
+                FROM knowledge_entries ke
+                LEFT JOIN documents d ON ke.document_id = d.id
+                WHERE ke.task_id = ?
+                ORDER BY ke.confidence DESC, ke.occurrence_count DESC
+                LIMIT ?
+            )
         """, (safe, limit)).fetchall()
     except sqlite3.OperationalError:
-        if export_fmt == "json":
-            import json as _json
-            print(_json.dumps({"task_id": task_id, "entries": []}, indent=2))
-        else:
-            print("⚠ task_id column not found. Run build-session-index.py to migrate.")
-        db.close()
-        return
+        try:
+            rows = db.execute("""
+                SELECT id, category, title, content, confidence, affected_files, task_id,
+                       occurrence_count, last_seen, est_tokens
+                FROM knowledge_entries
+                WHERE task_id = ?
+                ORDER BY confidence DESC, occurrence_count DESC
+                LIMIT ?
+            """, (safe, limit)).fetchall()
+        except sqlite3.OperationalError:
+            if export_fmt == "json":
+                import json as _json
+                print(_json.dumps({"task_id": task_id, "entries": []}, indent=2))
+            else:
+                print("⚠ task_id column not found. Run build-session-index.py to migrate.")
+            db.close()
+            return {"hit_count": 0, "selected_entry_ids": [], "task_id": safe}
 
     if not rows:
         # Fallback: FTS search on the task_id as a query string
@@ -1402,7 +1742,7 @@ def show_by_task(task_id: str, limit: int = 30, verbose: bool = False,
             print(f"No entries directly tagged task_id='{task_id}'.")
             print(f"Try: python query-session.py '{task_id}' for FTS search.")
         db.close()
-        return
+        return {"hit_count": 0, "selected_entry_ids": [], "task_id": safe}
 
     if export_fmt == "json":
         import json as _json
@@ -1417,6 +1757,11 @@ def show_by_task(task_id: str, limit: int = 30, verbose: bool = False,
                         d[field] = _json.loads(d[field])
                     except (ValueError, TypeError):
                         pass
+            d["source_document"] = _source_document_from_row(d)
+            d["snippet_freshness"] = _compute_snippet_freshness(d)
+            entry_id = d.get("id")
+            if isinstance(entry_id, int):
+                d["related_entry_ids"] = _related_entry_ids(db, entry_id)
             entries.append(d)
         output = _json.dumps(
             {"task_id": task_id, "entries": entries},
@@ -1428,7 +1773,8 @@ def show_by_task(task_id: str, limit: int = 30, verbose: bool = False,
             sys.stdout.buffer.write(output.encode("utf-8"))
             sys.stdout.buffer.write(b"\n")
         db.close()
-        return
+        selected_entry_ids = _safe_int_list(d.get("id") for d in entries)
+        return {"hit_count": len(selected_entry_ids), "selected_entry_ids": selected_entry_ids, "task_id": safe}
 
     print(f"\n{BOLD}Task recall: {task_id} ({len(rows)} entries){RESET}\n")
     for r in rows:
@@ -1451,12 +1797,19 @@ def show_by_task(task_id: str, limit: int = 30, verbose: bool = False,
                 pass
             print(f"  {DIM}#{r['id']:>4d}{RESET} {cat_color}[{r['category']}]{RESET} "
                   f"{BOLD}{r['title'][:65]}{RESET}{files}{tok}")
+            source_label = _source_label_from_row(dict(r))
+            if source_label:
+                print(f"         {DIM}{source_label}{RESET}")
+            location_label = _code_location_label_from_row(dict(r))
+            if location_label:
+                print(f"         {DIM}at {location_label}{RESET}")
             if verbose and r["content"]:
                 first = r["content"].split("\n")[0][:100]
                 print(f"         {DIM}{first}{RESET}")
     if not compact and not verbose:
         print(f"\n{DIM}Use --verbose for content preview, --detail <id> for full entry{RESET}")
     db.close()
+    return {"hit_count": len(rows), "selected_entry_ids": _safe_int_list(r["id"] for r in rows), "task_id": safe}
 
 
 def show_diff_context(limit: int = 20, verbose: bool = False, export_fmt: str = None,
@@ -1568,6 +1921,10 @@ def show_diff_context(limit: int = 20, verbose: bool = False, export_fmt: str = 
                     except (ValueError, TypeError):
                         pass
             d["matched_by"] = matched_file
+            d["snippet_freshness"] = _compute_snippet_freshness(d)
+            entry_id = d.get("id")
+            if isinstance(entry_id, int):
+                d["related_entry_ids"] = _related_entry_ids(db, entry_id)
             entries.append(d)
         output = _json.dumps(
             {"changed_files": changed, "entries": entries},
@@ -1703,7 +2060,23 @@ def _run(args: list, compact: bool = False):
     if "--detail" in args:
         idx = args.index("--detail")
         if idx + 1 < len(args):
-            show_detail(int(args[idx + 1]))
+            entry_id = int(args[idx + 1])
+            output, meta = _run_with_capture(show_detail, entry_id)
+            meta = _coerce_recall_meta(
+                meta,
+                {"opened_entry_id": entry_id, "hit_count": 0, "selected_entry_ids": []},
+            )
+            _record_recall_event(
+                event_kind="detail_open",
+                surface="detail",
+                raw_query="",
+                rewritten_query="",
+                task_id="",
+                selected_entry_ids=meta.get("selected_entry_ids", []),
+                hit_count=meta.get("hit_count", 0),
+                output_chars=len(output),
+                opened_entry_id=meta.get("opened_entry_id", entry_id),
+            )
         else:
             print("Error: --detail requires an entry ID")
         return
@@ -1789,8 +2162,26 @@ def _run(args: list, compact: bool = False):
     if "--task" in args:
         idx = args.index("--task")
         if idx + 1 < len(args):
-            show_by_task(args[idx + 1], limit=limit, verbose=verbose,
-                         export_fmt=export_fmt, compact=compact)
+            task_id = args[idx + 1]
+            if export_fmt == "json":
+                output, meta = _run_with_capture(
+                    show_by_task, task_id, limit=limit, verbose=verbose,
+                    export_fmt=export_fmt, compact=compact
+                )
+                meta = meta or {"hit_count": 0, "selected_entry_ids": [], "task_id": task_id}
+                _record_recall_event(
+                    event_kind="recall",
+                    surface="task_json",
+                    raw_query=task_id,
+                    rewritten_query=(meta.get("task_id") or task_id),
+                    task_id=(meta.get("task_id") or task_id),
+                    selected_entry_ids=meta.get("selected_entry_ids", []),
+                    hit_count=meta.get("hit_count", 0),
+                    output_chars=len(output),
+                )
+            else:
+                show_by_task(task_id, limit=limit, verbose=verbose,
+                             export_fmt=export_fmt, compact=compact)
         else:
             print("Error: --task requires a task ID")
         return
@@ -1880,35 +2271,102 @@ def _run(args: list, compact: bool = False):
         print("Error: Search query required")
         print_usage()
         return
+    rewritten_query = _rewrite_query_local(query)
 
     if use_semantic:
-        semantic_search(query, limit, verbose)
-    elif export_fmt:
-        search(query, doc_type, limit, verbose, source_filter,
-               session_id_filter=session_filter)
-    else:
-        search(query, doc_type, limit, verbose, source_filter,
-               session_id_filter=session_filter)
-        # Batch C: also search sessions_fts (BM25 + column-scoped)
-        session_hits = search_sessions_fts(
-            query,
-            session_id_filter=session_filter,
-            col_name=col_name,
-            snippet_col=snip_col,
-            show_snippet=show_snippet,
-            limit=limit,
+        output, meta = _run_with_capture(
+            semantic_search, query, limit, verbose, rewritten_query
         )
-        if session_hits:
-            print(f"\n{BOLD}Session hits ({len(session_hits)} results){RESET}\n")
-            for i, r in enumerate(session_hits, 1):
-                sid = r["session_id"][:8]
-                excerpt = (r["excerpt"] or "").replace("<mark>", f"{BOLD}{YELLOW}").replace("</mark>", RESET)
-                print(f"  {BOLD}{i}.{RESET} {r['title'][:55]} {DIM}[session: {sid}...]{RESET}")
-                if show_snippet and excerpt.strip():
-                    short = excerpt[:120].replace("\n", " ").strip()
-                    print(f"     {DIM}{short}{RESET}")
-        # Also search knowledge entries
-        search_knowledge(query, limit=5)
+        meta = meta or {"hit_count": 0, "selected_entry_ids": []}
+        _record_recall_event(
+            event_kind="recall",
+            surface="semantic",
+            raw_query=query,
+            rewritten_query=rewritten_query,
+            task_id="",
+            selected_entry_ids=meta.get("selected_entry_ids", []),
+            hit_count=meta.get("hit_count", 0),
+            output_chars=len(output),
+        )
+    elif export_fmt:
+        output, meta = _run_with_capture(
+            search, query, doc_type, limit, verbose, source_filter,
+            session_filter, rewritten_query
+        )
+        meta = _coerce_recall_meta(meta, {"hit_count": 0, "selected_entry_ids": []})
+        _record_recall_event(
+            event_kind="recall",
+            surface="search",
+            raw_query=query,
+            rewritten_query=rewritten_query,
+            task_id="",
+            selected_entry_ids=meta.get("selected_entry_ids", []),
+            hit_count=meta.get("hit_count", 0),
+            output_chars=len(output),
+        )
+    else:
+        def _run_default_search_surface():
+            search_meta = _coerce_recall_meta(
+                search(
+                    query,
+                    doc_type,
+                    limit,
+                    verbose,
+                    source_filter,
+                    session_filter,
+                    rewritten_query,
+                ),
+                {"hit_count": 0, "selected_entry_ids": []},
+            )
+            total_hit_count = int(search_meta.get("hit_count", 0) or 0)
+            selected_entry_ids = list(search_meta.get("selected_entry_ids", []))
+
+            # Batch C: also search sessions_fts (BM25 + column-scoped)
+            session_hits = search_sessions_fts(
+                query,
+                session_id_filter=session_filter,
+                col_name=col_name,
+                snippet_col=snip_col,
+                show_snippet=show_snippet,
+                limit=limit,
+                retrieval_query=rewritten_query,
+            )
+            total_hit_count += len(session_hits)
+            if session_hits:
+                print(f"\n{BOLD}Session hits ({len(session_hits)} results){RESET}\n")
+                for i, r in enumerate(session_hits, 1):
+                    sid = r["session_id"][:8]
+                    excerpt = (r["excerpt"] or "").replace("<mark>", f"{BOLD}{YELLOW}").replace("</mark>", RESET)
+                    print(f"  {BOLD}{i}.{RESET} {r['title'][:55]} {DIM}[session: {sid}...]{RESET}")
+                    if show_snippet and excerpt.strip():
+                        short = excerpt[:120].replace("\n", " ").strip()
+                        print(f"     {DIM}{short}{RESET}")
+
+            # Also search knowledge entries
+            knowledge_meta = _coerce_recall_meta(
+                search_knowledge(query, limit=5, retrieval_query=rewritten_query),
+                {"hit_count": 0, "selected_entry_ids": []},
+            )
+            total_hit_count += int(knowledge_meta.get("hit_count", 0) or 0)
+            selected_entry_ids.extend(knowledge_meta.get("selected_entry_ids", []))
+
+            return {
+                "hit_count": total_hit_count,
+                "selected_entry_ids": _safe_int_list(selected_entry_ids),
+            }
+
+        output, meta = _run_with_capture(_run_default_search_surface)
+        meta = _coerce_recall_meta(meta, {"hit_count": 0, "selected_entry_ids": []})
+        _record_recall_event(
+            event_kind="recall",
+            surface="search",
+            raw_query=query,
+            rewritten_query=rewritten_query,
+            task_id="",
+            selected_entry_ids=meta.get("selected_entry_ids", []),
+            hit_count=meta.get("hit_count", 0),
+            output_chars=len(output),
+        )
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ if os.name == "nt":
 
 # Import order matters: health first (no auth), then page routes, then API
 from browse.routes import health  # noqa: F401
+from browse.routes import sync  # noqa: F401
 from browse.routes import home  # noqa: F401
 from browse.routes import live  # noqa: F401
 from browse.routes import sessions  # noqa: F401

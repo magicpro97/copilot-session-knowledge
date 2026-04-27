@@ -15,15 +15,18 @@ brief --wakeup                       # Ultra-compact (~170 tokens) for session s
 brief --titles-only                  # Index only (~10 tok/entry) — progressive disclosure
 brief --titles-only "DynamoDB"       # Filtered titles
 brief --wing backend --room patient  # Filter by wing/room (palace-style)
-brief "task" --for-subagent --budget 3000  # Capped output for sub-agent injection
+brief "task" --for-subagent --budget 3000  # Manual compatibility path for ad hoc sub-agent injection
 brief "task" --min-confidence 0.7    # High-quality entries only
-brief "task" --for-subagent          # Compact context block for sub-agent prompts
+brief "task" --for-subagent          # Manual compatibility context block for sub-agent prompts
 brief "task" --compact               # XML compact block for AI context injection
 brief --task "memory-surface"        # Task-scoped recall: entries tagged with this task ID
+brief --task "memory-surface" --json # Includes source_document + code-location/snippet fields
 brief "fix Docker" --json            # JSON output for programmatic use
 ```
 
 Token-distillation flags: `--compact` produces an XML compact block; `--budget N` hard-caps output to N characters (frozen snapshot, highest-confidence entries first); `--titles-only` gives ~10 tok/entry for progressive disclosure.
+
+For tentacle delegation, prefer `tentacle.py ... --briefing`: it injects bounded `[KNOWLEDGE EVIDENCE]` from task-scoped JSON recall first, then `--pack` fallback when task recall is empty. Bullets stay unchanged; runtime may add one optional bounded `From:` provenance line. Keep `--for-subagent` for manual compatibility and ad hoc prompts.
 
 ## Search
 
@@ -40,30 +43,111 @@ qs --decisions                       # View architecture decisions
 qs --file src/auth.py                # Entries that touched a specific file
 qs --module auth                     # Entries for a module or directory
 qs --task memory-surface             # Entries tagged with a specific task ID
+qs --task memory-surface --export json   # JSON object with entries[] (includes snippet_freshness + related_entry_ids)
 qs --diff                            # Entries for files in the current git diff
 qs "search" --export json            # Export results as JSON
 qs "search" --export markdown        # Export results as Markdown
 ```
+
+Default `qs "query"` telemetry records the full emitted search surface (primary block + `sessions_fts` block + knowledge-entry block), not just the first printed block.
 
 ## Drill Down
 
 Use entry ID from search results:
 
 ```bash
-qs --detail 2045                     # View full entry details
+qs --detail 2045                     # View full entry details (+ Snippet freshness: fresh|drifted|missing|unknown)
 qs --context 2045                    # Entry + entries from same session
 qs --related 2045                    # Entry + knowledge graph connections
 qs --graph "spring boot"             # Mini knowledge graph by topic
 ```
+
+`qs --detail <id>` writes a stateless `detail_open` telemetry row:
+- existing ID → `hit_count=1`, `selected_entry_ids=[id]`
+- missing ID → `hit_count=0`, `selected_entry_ids=[]`
+
+## Recall Telemetry Stats
+
+```bash
+python3 ~/.copilot/tools/knowledge-health.py --recall         # Recall-only text dashboard
+python3 ~/.copilot/tools/knowledge-health.py --recall --json  # Recall-only JSON payload
+```
+
+- `--recall` output is recall-only (it does not append the default health dashboard).
+- `recall_events` is lean telemetry only (IDs/counts/output size), not verbose payload logging.
+- If `recall_events` is absent (older schema), recall commands still work and stats report unavailable/empty.
+- Browse UI, contextual summaries, and provider rerank are out of scope for this telemetry surface.
 
 ## Semantic Search
 
 Requires an embedding API key (optional):
 
 ```bash
-qs "deployment error" --semantic     # Search by meaning, not just keywords
+qs "deployment error" --semantic     # Search by meaning (compact output; no feedback fragment)
+qs "deployment error" --semantic --verbose  # Adds feedback bias fragment only when non-zero
 python3 ~/.copilot/tools/embed.py --setup   # Setup API key
 ```
+
+## Sync Rollout (Local-First, Optional)
+
+Sync is local-first: `~/.copilot/session-state/knowledge.db` stays primary for reads/search.
+Remote sync is optional replication transport, not the query authority.
+
+### Configure sync endpoint (single connection string)
+
+`sync-config.py` stores one `connection_string` in `~/.copilot/tools/sync-config.json` (HTTP(S) gateway URL, not raw Postgres/libSQL DSN).
+
+```bash
+python3 ~/.copilot/tools/sync-config.py --setup https://gateway.example.com
+python3 ~/.copilot/tools/sync-config.py --setup-env SYNC_GATEWAY_URL
+python3 ~/.copilot/tools/sync-config.py --status
+python3 ~/.copilot/tools/sync-config.py --status --json
+python3 ~/.copilot/tools/sync-config.py --get
+python3 ~/.copilot/tools/sync-config.py --clear
+```
+
+### Run sync runtime
+
+```bash
+python3 ~/.copilot/tools/sync-daemon.py --once
+python3 ~/.copilot/tools/sync-daemon.py --daemon
+python3 ~/.copilot/tools/sync-daemon.py --interval 30
+python3 ~/.copilot/tools/sync-daemon.py --push-only
+python3 ~/.copilot/tools/sync-daemon.py --pull-only
+```
+
+If `connection_string` is unset, daemon mode remains local-only (idle/no-op for remote sync).
+When backlog is large, daemon applies adaptive per-cycle limits automatically, paginates pull within one cycle, and refreshes local `knowledge_fts` / `ke_fts` rows touched by pulled canonical changes.
+
+### Inspect sync status
+
+```bash
+python3 ~/.copilot/tools/sync-status.py
+python3 ~/.copilot/tools/sync-status.py --json
+python3 ~/.copilot/tools/sync-status.py --watch-status --json
+python3 ~/.copilot/tools/sync-status.py --health-check --json   # exit 0/2
+python3 ~/.copilot/tools/sync-status.py --audit --json          # exit 0/2
+python3 ~/.copilot/tools/auto-update-tools.py --restart-watch
+python3 ~/.copilot/tools/auto-update-tools.py --watch-status
+python3 ~/.copilot/tools/auto-update-tools.py --health-check
+python3 ~/.copilot/tools/auto-update-tools.py --audit-runtime
+```
+
+### Browse diagnostics surfaces (read-only)
+
+- `GET /healthz` includes: `sync_status_endpoint: "/api/sync/status"`
+- `GET /api/sync/status` reports local sync diagnostics (configured endpoint preview, queue/failure counts, cursor and replica state)
+
+### Reference/mock gateway
+
+`sync-gateway.py` is intentionally **reference/mock only** in this repo.
+For provider-backed rollout, the default recommendation is Neon (backing Postgres) + Railway (thin gateway host) while keeping the same HTTP gateway contract.
+
+```bash
+python3 ~/.copilot/tools/sync-gateway.py --host 127.0.0.1 --port 8765
+```
+
+Endpoints: `/sync/push`, `/sync/pull`, `/healthz`.
 
 ## Record Knowledge (learn.py)
 
@@ -79,6 +163,9 @@ learn --discovery "Title" "Codebase finding or insight"     --tags "dynamodb"
 
 # Tag entry with a task ID and affected files (for task-scoped recall)
 learn --mistake "Title" "Description" --task "memory-surface" --file "briefing.py" --file "learn.py"
+
+# Attach a concrete code location (path:line or path:start-end)
+learn --pattern "FTS sanitizer fix" "Strip operators before MATCH" --code-location "query-session.py:120-142"
 
 # Structured facts (discrete, verifiable statements)
 learn --pattern "DynamoDB Batch Ops" "How to use batch writes" \

@@ -31,6 +31,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
 
 import tentacle as T
+from hooks.rules import session_lifecycle as session_lifecycle_rules
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -97,16 +98,18 @@ class TestRunBriefingForTask(unittest.TestCase):
         with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
             with patch("subprocess.run", return_value=mock_result) as mock_run:
                 result = T._run_briefing_for_task("my-task", fallback_query="something")
-        self.assertIn("my-task", result)
-        self.assertIn("use X not Y", result)
+        self.assertIn("[KNOWLEDGE EVIDENCE]", result)
+        self.assertIn("Task: my-task", result)
+        self.assertIn("- #1 [pattern] use X not Y", result)
+        self.assertIn("Drilldown: query-session.py --detail 1", result)
         # Should now use --json flag instead of --compact
         first_call_args = mock_run.call_args_list[0][0][0]
         self.assertIn("--task", first_call_args)
         self.assertIn("my-task", first_call_args)
         self.assertIn("--json", first_call_args)
 
-    def test_falls_back_to_text_query_when_task_returns_empty(self):
-        """When --task JSON returns total_entries=0, fall back to text query."""
+    def test_falls_back_to_pack_query_when_task_returns_empty(self):
+        """When --task JSON returns no entries, fall back to --pack query."""
         no_result = MagicMock()
         no_result.stdout = json.dumps({
             "task_id": "unknown-task",
@@ -117,14 +120,27 @@ class TestRunBriefingForTask(unittest.TestCase):
         })
         no_result.returncode = 0
 
-        text_result = MagicMock()
-        text_result.stdout = "Pattern: always validate inputs"
-        text_result.returncode = 0
+        pack_result = MagicMock()
+        pack_result.stdout = json.dumps({
+            "entries": {
+                "mistake": [{"id": 22, "title": "Always validate inputs"}],
+                "pattern": [],
+                "decision": [],
+                "tool": [],
+            },
+            "file_matches": [{"file_or_module": "src/validator.py", "hits": 2}],
+        })
+        pack_result.returncode = 0
 
         with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
-            with patch("subprocess.run", side_effect=[no_result, text_result]):
+            with patch("subprocess.run", side_effect=[no_result, pack_result]) as mock_run:
                 result = T._run_briefing_for_task("unknown-task", fallback_query="validate inputs")
-        self.assertEqual(result, "Pattern: always validate inputs")
+        self.assertIn("[KNOWLEDGE EVIDENCE]", result)
+        self.assertIn("- #22 [mistake] Always validate inputs", result)
+        self.assertIn("Files: src/validator.py", result)
+        fallback_call = mock_run.call_args_list[1][0][0]
+        self.assertIn("--pack", fallback_call)
+        self.assertIn("--limit", fallback_call)
 
     def test_returns_empty_on_timeout(self):
         with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
@@ -189,15 +205,16 @@ class TestCmdResume(unittest.TestCase):
         # resumed_at should be a valid ISO timestamp after test start
         self.assertGreaterEqual(meta["resumed_at"], before)
 
-    def test_resume_appends_resume_section_to_context(self):
+    def test_resume_writes_single_auto_recall_block(self):
         args = self._args()
         original = (self.tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             T.cmd_resume(args)
         new_content = (self.tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
-        # Original content preserved
+        # Manual context preserved and bounded recall markers inserted once
         self.assertIn(original.strip(), new_content)
-        # Resume section appended
+        self.assertEqual(new_content.count(T.AUTO_RECALL_START), 1)
+        self.assertEqual(new_content.count(T.AUTO_RECALL_END), 1)
         self.assertIn("## Resumed [", new_content)
 
     def test_resume_no_briefing_flag_skips_briefing_call(self):
@@ -216,7 +233,7 @@ class TestCmdResume(unittest.TestCase):
         mock_brief.assert_called_once()
         context = (self.tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
         self.assertIn("Lesson: always test", context)
-        self.assertIn("Live Briefing", context)
+        self.assertIn(T.AUTO_RECALL_START, context)
 
     def test_resume_with_empty_briefing_shows_no_content_available(self):
         args = self._args(no_briefing=False)
@@ -255,6 +272,8 @@ class TestCmdResume(unittest.TestCase):
         self.assertTrue((self.tentacle_dir / "CONTEXT.md").exists())
         content = (self.tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
         self.assertIn("## Resumed [", content)
+        self.assertIn(T.AUTO_RECALL_START, content)
+        self.assertIn(T.AUTO_RECALL_END, content)
 
     def test_resume_uses_task_id_equal_to_name_for_briefing(self):
         """_run_briefing_for_task should be called with the tentacle name as task_id."""
@@ -281,6 +300,44 @@ class TestCmdResume(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 T.cmd_resume(args)
         self.assertEqual(cm.exception.code, 1)
+
+    def test_resume_replaces_existing_auto_recall_block(self):
+        args = self._args(no_briefing=False)
+        manual = "# test-resume\n\nManual context line.\n\n"
+        initial = (
+            f"{manual}{T.AUTO_RECALL_START}\nold recall\n{T.AUTO_RECALL_END}\n"
+            "Trailing manual line.\n"
+        )
+        (self.tentacle_dir / "CONTEXT.md").write_text(initial, encoding="utf-8")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_run_briefing_for_task", return_value="[KNOWLEDGE EVIDENCE]\n- #1 [pattern] New"):
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                    T.cmd_resume(args)
+        updated = (self.tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
+        self.assertEqual(updated.count(T.AUTO_RECALL_START), 1)
+        self.assertEqual(updated.count(T.AUTO_RECALL_END), 1)
+        self.assertIn("Manual context line.", updated)
+        self.assertIn("Trailing manual line.", updated)
+        self.assertNotIn("old recall", updated)
+        self.assertIn("[KNOWLEDGE EVIDENCE]", updated)
+
+    def test_resume_preserves_manual_context_outside_markers_byte_for_byte(self):
+        args = self._args(no_briefing=False)
+        prefix = "# test-resume\n\nManual A\n\n"
+        suffix = "\n\nManual Z\n"
+        original = (
+            f"{prefix}{T.AUTO_RECALL_START}\nold\n{T.AUTO_RECALL_END}{suffix}"
+        )
+        (self.tentacle_dir / "CONTEXT.md").write_text(original, encoding="utf-8")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_run_briefing_for_task", return_value=""):
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                    T.cmd_resume(args)
+        updated = (self.tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
+        start_idx = updated.index(T.AUTO_RECALL_START)
+        end_idx = updated.index(T.AUTO_RECALL_END) + len(T.AUTO_RECALL_END)
+        self.assertEqual(updated[:start_idx], prefix)
+        self.assertEqual(updated[end_idx:], suffix)
 
 
 class TestSwarmBriefingFlag(unittest.TestCase):
@@ -325,12 +382,12 @@ class TestSwarmBriefingFlag(unittest.TestCase):
         args = self._swarm_args(briefing=True)
         captured = []
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
-            with patch.object(T, "_run_briefing_for_task", return_value="Pattern: X before Y"):
+            with patch.object(T, "_run_briefing_for_task", return_value="[KNOWLEDGE EVIDENCE]\n- #7 [pattern] X before Y"):
                 with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
                     T.cmd_swarm(args)
         combined = "\n".join(captured)
-        self.assertIn("Pattern: X before Y", combined)
-        self.assertIn("Past Knowledge", combined)
+        self.assertIn("[KNOWLEDGE EVIDENCE]", combined)
+        self.assertIn("- #7 [pattern] X before Y", combined)
 
     def test_swarm_briefing_empty_result_not_injected(self):
         args = self._swarm_args(briefing=True)
@@ -340,17 +397,17 @@ class TestSwarmBriefingFlag(unittest.TestCase):
                 with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
                     T.cmd_swarm(args)
         combined = "\n".join(captured)
-        self.assertNotIn("Past Knowledge", combined)
+        self.assertNotIn("[KNOWLEDGE EVIDENCE]", combined)
 
     def test_swarm_parallel_briefing_injected_per_worker(self):
         args = self._swarm_args(briefing=True, output="parallel")
         captured = []
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
-            with patch.object(T, "_run_briefing_for_task", return_value="Tip: use mocks"):
+            with patch.object(T, "_run_briefing_for_task", return_value="[KNOWLEDGE EVIDENCE]\n- #3 [tool] use mocks"):
                 with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
                     T.cmd_swarm(args)
         combined = "\n".join(captured)
-        self.assertIn("Tip: use mocks", combined)
+        self.assertIn("[KNOWLEDGE EVIDENCE]", combined)
 
     def test_swarm_no_pending_todos_returns_early(self):
         # Mark all todos done
@@ -462,7 +519,7 @@ class TestExistingBehaviorUnchanged(unittest.TestCase):
 class TestRunBriefingForTaskStructured(unittest.TestCase):
     """Tests for the structured JSON path in _run_briefing_for_task."""
 
-    def test_structured_json_with_entries_renders_task_id_and_titles(self):
+    def test_structured_json_with_entries_renders_evidence_block(self):
         payload = json.dumps({
             "task_id": "my-task",
             "generated_at": "2026-01-01T00:00:00",
@@ -478,11 +535,11 @@ class TestRunBriefingForTaskStructured(unittest.TestCase):
         with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
             with patch("subprocess.run", return_value=mock_r):
                 result = T._run_briefing_for_task("my-task")
-        self.assertIn("my-task", result)
-        self.assertIn("Do not use X", result)
-        self.assertIn("Use Y instead", result)
-        self.assertIn("mistake", result)
-        self.assertIn("pattern", result)
+        self.assertIn("[KNOWLEDGE EVIDENCE]", result)
+        self.assertIn("Task: my-task", result)
+        self.assertIn("- #10 [mistake] Do not use X", result)
+        self.assertIn("- #11 [pattern] Use Y instead", result)
+        self.assertIn("Drilldown: query-session.py --detail 10", result)
 
     def test_structured_json_empty_total_entries_triggers_fallback(self):
         empty_json = json.dumps({
@@ -496,12 +553,22 @@ class TestRunBriefingForTaskStructured(unittest.TestCase):
         empty_mock.stdout = empty_json
         empty_mock.returncode = 0
         fallback_result = MagicMock()
-        fallback_result.stdout = "Pattern: always validate inputs before processing"
+        fallback_result.stdout = json.dumps({
+            "entries": {
+                "mistake": [],
+                "pattern": [{"id": 21, "title": "validate before processing"}],
+                "decision": [],
+                "tool": [],
+            },
+            "file_matches": [{"file_or_module": "src/processor.py", "hits": 1}],
+        })
         fallback_result.returncode = 0
         with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
             with patch("subprocess.run", side_effect=[empty_mock, fallback_result]):
                 result = T._run_briefing_for_task("empty-task", fallback_query="fallback query")
-        self.assertEqual(result, "Pattern: always validate inputs before processing")
+        self.assertIn("[KNOWLEDGE EVIDENCE]", result)
+        self.assertIn("- #21 [pattern] validate before processing", result)
+        self.assertIn("Files: src/processor.py", result)
 
     def test_uses_json_flag_not_compact_flag(self):
         """Structured path must use --json, not --compact."""
@@ -527,34 +594,92 @@ class TestRunBriefingForTaskStructured(unittest.TestCase):
         bad_mock.stdout = "Traceback (most recent call last):\n  ..."
         bad_mock.returncode = 0
         fallback_mock = MagicMock()
-        fallback_mock.stdout = "Pattern: always validate inputs before processing"
+        fallback_mock.stdout = json.dumps({
+            "entries": {"mistake": [], "pattern": [{"id": 31, "title": "validate inputs"}], "decision": [], "tool": []},
+            "file_matches": [],
+        })
         fallback_mock.returncode = 0
         with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
             with patch("subprocess.run", side_effect=[bad_mock, fallback_mock]):
                 result = T._run_briefing_for_task("my-task", fallback_query="something")
-        self.assertEqual(result, "Pattern: always validate inputs before processing")
+        self.assertIn("- #31 [pattern] validate inputs", result)
 
-    def test_render_briefing_tolerates_malformed_entries(self):
-        """_render_briefing_from_json must not raise KeyError on entries missing fields."""
-        # Entry with no 'title', no 'id', no 'category' — all fields missing
-        data = {
-            "task_id": "bad-task",
-            "total_entries": 2,
-            "tagged_entries": [
-                {},  # completely empty
-                {"id": 7},  # missing category and title
+    def test_evidence_block_is_bounded_and_from_line_is_optional(self):
+        entries = [{"id": i, "category": "pattern", "title": f"title {i}"} for i in range(1, 9)]
+        rendered = T._render_knowledge_evidence(
+            entries,
+            task_id="my-task",
+            file_matches=[{"file_or_module": "a.py"}, {"file_or_module": "b.py"}],
+        )
+        non_empty = [ln for ln in rendered.splitlines() if ln.strip()]
+        self.assertLessEqual(len(non_empty), 10)
+        self.assertLessEqual(sum(1 for ln in non_empty if ln.startswith("From: ")), 1)
+
+    def test_evidence_from_line_uses_bounded_unique_labels_without_changing_bullets(self):
+        rendered = T._render_knowledge_evidence(
+            [
+                {
+                    "id": 1,
+                    "category": "pattern",
+                    "title": "keep bullets stable",
+                    "source_document": {
+                        "doc_type": "checkpoint",
+                        "seq": 3,
+                        "section": "technical_details",
+                    },
+                },
+                {
+                    "id": 2,
+                    "category": "mistake",
+                    "title": "second source label",
+                    "source_document": {
+                        "doc_type": "research",
+                        "file_path": "notes/recall.md",
+                        "section": "findings",
+                    },
+                },
+                {
+                    "id": 3,
+                    "category": "tool",
+                    "title": "third source should not expand From line",
+                    "source_document": {
+                        "doc_type": "decision",
+                        "title": "Decision title",
+                    },
+                },
             ],
-            "related_entries": [
-                {"category": "pattern"},  # missing id and title
+            task_id="phase3",
+        )
+        lines = [ln for ln in rendered.splitlines() if ln.strip()]
+        bullet_lines = [ln for ln in lines if ln.startswith("- #")]
+        from_lines = [ln for ln in lines if ln.startswith("From: ")]
+        self.assertEqual(len(from_lines), 1)
+        self.assertIn("checkpoint #3 / technical_details", from_lines[0])
+        self.assertIn("research / recall.md / findings", from_lines[0])
+        self.assertNotIn("decision", from_lines[0])
+        self.assertTrue(all("[" in ln and "]" in ln for ln in bullet_lines))
+
+    def test_drilldown_includes_related_only_when_first_entry_has_related_ids(self):
+        rendered = T._render_knowledge_evidence(
+            [
+                {"id": 10, "category": "pattern", "title": "first", "related_entry_ids": [11]},
+                {"id": 11, "category": "mistake", "title": "second", "related_entry_ids": []},
             ],
-        }
-        # Must not raise KeyError
-        result = T._render_briefing_from_json(data)
-        self.assertIn("bad-task", result)
-        # Safe defaults must appear instead of crashing
-        self.assertIn("(no title)", result)
-        self.assertIn("unknown", result)
-        self.assertIn("?", result)
+            task_id="phase4",
+        )
+        self.assertIn("query-session.py --detail 10", rendered)
+        self.assertIn("query-session.py --related 10", rendered)
+
+    def test_drilldown_omits_related_when_first_entry_has_no_related_ids(self):
+        rendered = T._render_knowledge_evidence(
+            [
+                {"id": 10, "category": "pattern", "title": "first", "related_entry_ids": []},
+                {"id": 11, "category": "mistake", "title": "second", "related_entry_ids": [12]},
+            ],
+            task_id="phase4",
+        )
+        self.assertIn("query-session.py --detail 10", rendered)
+        self.assertNotIn("query-session.py --related 10", rendered)
 
 
 class TestLoadLatestCheckpointContext(unittest.TestCase):
@@ -711,7 +836,7 @@ class TestCmdResumeWithCheckpoint(unittest.TestCase):
                     T.cmd_resume(args)
         context = (self.tentacle_dir / "CONTEXT.md").read_text(encoding="utf-8")
         self.assertIn("Lesson: test first", context)
-        self.assertIn("Live Briefing", context)
+        self.assertIn(T.AUTO_RECALL_START, context)
         self.assertIn("checkpoint overview", context)
 
 
@@ -3650,6 +3775,136 @@ class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
         written_ids = {e.get("tentacle_id") for e in data["active_tentacles"]}
         self.assertIn(tid1, written_ids)
         self.assertIn(tid2, written_ids)
+
+
+class TestHookSubagentStopCleanup(unittest.TestCase):
+    """Hook-level tests for dynamic marker cleanup on stop events."""
+
+    def _fake_tentacle(self, marker_data):
+        class _FakeTentacle:
+            def __init__(self, data):
+                self.data = data
+                self.calls = []
+
+            def _read_dispatched_subagent_marker(self):
+                return self.data
+
+            def _clear_dispatched_subagent_marker(self, name, tentacle_id=None):
+                self.calls.append((name, tentacle_id))
+                return True
+
+        return _FakeTentacle(marker_data)
+
+    def test_subagent_stop_clears_matching_entry_by_name(self):
+        marker = {
+            "active_tentacles": [
+                {"name": "agent-guardrails-automation", "tentacle_id": "tid-1"},
+                {"name": "other-tent", "tentacle_id": "tid-2"},
+            ]
+        }
+        fake = self._fake_tentacle(marker)
+        with patch.object(session_lifecycle_rules, "_tentacle_mod", fake):
+            rule = session_lifecycle_rules.SubagentStopRule()
+            result = rule.evaluate("subagentStop", {
+                "subagent": {"tentacleName": "agent-guardrails-automation"}
+            })
+        self.assertEqual(fake.calls, [("agent-guardrails-automation", "tid-1")])
+        self.assertIsInstance(result, dict)
+        self.assertIn("cleared", result.get("message", ""))
+
+    def test_subagent_stop_clears_matching_entry_by_id(self):
+        marker = {
+            "active_tentacles": [
+                {"name": "first", "tentacle_id": "tid-1"},
+                {"name": "second", "tentacle_id": "tid-2"},
+            ]
+        }
+        fake = self._fake_tentacle(marker)
+        with patch.object(session_lifecycle_rules, "_tentacle_mod", fake):
+            rule = session_lifecycle_rules.SubagentStopRule()
+            result = rule.evaluate("subagentStop", {
+                "result": {"tentacleId": "tid-2"}
+            })
+        self.assertEqual(fake.calls, [("second", "tid-2")])
+        self.assertIsInstance(result, dict)
+
+    def test_subagent_stop_no_match_does_not_clear(self):
+        marker = {"active_tentacles": [{"name": "only", "tentacle_id": "tid-1"}]}
+        fake = self._fake_tentacle(marker)
+        with patch.object(session_lifecycle_rules, "_tentacle_mod", fake):
+            rule = session_lifecycle_rules.SubagentStopRule()
+            result = rule.evaluate("subagentStop", {"subagent": {"tentacleName": "unknown"}})
+        self.assertEqual(fake.calls, [])
+        self.assertIsNone(result)
+
+    def test_subagent_stop_name_only_skips_ambiguous_same_name_entries(self):
+        marker = {
+            "active_tentacles": [
+                {"name": "shared-name", "tentacle_id": "tid-1"},
+                {"name": "shared-name", "tentacle_id": "tid-2"},
+            ]
+        }
+        fake = self._fake_tentacle(marker)
+        with patch.object(session_lifecycle_rules, "_tentacle_mod", fake):
+            rule = session_lifecycle_rules.SubagentStopRule()
+            result = rule.evaluate("subagentStop", {
+                "subagent": {"tentacleName": "shared-name"}
+            })
+        self.assertEqual(fake.calls, [])
+        self.assertIsNone(result)
+
+    def test_subagent_stop_nested_generic_id_does_not_clear(self):
+        marker = {"active_tentacles": [{"name": "only", "tentacle_id": "tid-1"}]}
+        fake = self._fake_tentacle(marker)
+        with patch.object(session_lifecycle_rules, "_tentacle_mod", fake):
+            rule = session_lifecycle_rules.SubagentStopRule()
+            result = rule.evaluate("subagentStop", {
+                "result": {"metadata": {"id": "tid-1"}}
+            })
+        self.assertEqual(fake.calls, [])
+        self.assertIsNone(result)
+
+    def test_subagent_stop_nested_generic_name_does_not_clear(self):
+        marker = {"active_tentacles": [{"name": "only", "tentacle_id": "tid-1"}]}
+        fake = self._fake_tentacle(marker)
+        with patch.object(session_lifecycle_rules, "_tentacle_mod", fake):
+            rule = session_lifecycle_rules.SubagentStopRule()
+            result = rule.evaluate("subagentStop", {
+                "result": {"metadata": {"name": "only"}}
+            })
+        self.assertEqual(fake.calls, [])
+        self.assertIsNone(result)
+
+    def test_subagent_stop_nested_tentacle_name_still_clears(self):
+        marker = {"active_tentacles": [{"name": "only", "tentacle_id": "tid-1"}]}
+        fake = self._fake_tentacle(marker)
+        with patch.object(session_lifecycle_rules, "_tentacle_mod", fake):
+            rule = session_lifecycle_rules.SubagentStopRule()
+            result = rule.evaluate("subagentStop", {
+                "result": {"subagent": {"tentacle_name": "only"}}
+            })
+        self.assertEqual(fake.calls, [("only", "tid-1")])
+        self.assertIsInstance(result, dict)
+
+    def test_hooks_json_registers_agent_and_subagent_stop(self):
+        hooks_cfg = json.loads((TOOLS_DIR / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+        hooks = hooks_cfg.get("hooks", {})
+        self.assertIn("agentStop", hooks)
+        self.assertIn("subagentStop", hooks)
+        for event in ("agentStop", "subagentStop"):
+            entries = hooks[event]
+            self.assertTrue(entries, f"{event} must have at least one command")
+            self.assertIn("hook_runner.py", entries[0].get("bash", ""))
+
+    def test_rules_registry_includes_stop_cleanup_rule(self):
+        rules = session_lifecycle_rules
+        with patch.object(rules, "_tentacle_mod", None):
+            from hooks.rules import get_rules_for_event
+            event_rules = get_rules_for_event("subagentStop")
+        self.assertTrue(
+            any(r.name == "subagent-stop-cleanup" for r in event_rules),
+            "subagentStop must include subagent-stop-cleanup rule",
+        )
 
 
 class TestWindowsEncodingFix(unittest.TestCase):

@@ -13,6 +13,7 @@
 - [Quick Start](#quick-start)
 - [Installation](#installation)
 - [Usage](#usage)
+- [Sync Rollout (Local-First)](#sync-rollout-local-first)
 - [Architecture](#architecture)
 - [Auto-Update](#auto-update)
 - [Skills & Hooks](#skills--hooks)
@@ -102,9 +103,12 @@ alias learn='python3 ~/.copilot/tools/learn.py'
 brief "implement user CRUD"          # Compact ~500 tokens
 brief "implement user CRUD" --full   # Full detail ~3K tokens
 brief --auto                         # Auto-detect from git state
-brief "task" --for-subagent          # Compact context for sub-agents
+brief "task" --for-subagent          # Manual compatibility path for ad hoc sub-agent prompts
 brief --task "memory-surface"        # Task-scoped recall by task ID
+brief --task "memory-surface" --json # Includes source_document + code-location/snippet fields
 brief "fix Docker" --json            # JSON output for programmatic use
+brief "review auth PR" --mode review # Mode-aware briefing profile
+brief "debug flaky test_parser.py" --pack  # Machine-readable pack JSON (same provenance/location fields)
 brief "task" --budget 3000           # Cap output to 3000 chars (frozen snapshot)
 brief "task" --compact               # XML compact block for AI context injection
 ```
@@ -115,11 +119,13 @@ brief "task" --compact               # XML compact block for AI context injectio
 qs "search terms"                    # Compact results
 qs "docker" --type research          # Filter by doc type
 qs --mistakes                        # View past errors
-qs --detail 2045                     # Full entry by ID
-qs "deployment error" --semantic     # Semantic search (requires API key)
+qs --detail 2045                     # Full entry by ID (includes Snippet freshness: fresh|drifted|missing|unknown)
+qs "deployment error" --semantic     # Semantic search (compact output; no feedback fragment)
+qs "deployment error" --semantic --verbose  # Adds feedback bias fragment only when non-zero
 qs --file src/auth.py                # Entries touching a specific file
 qs --module auth                     # Entries for a module or directory
 qs --task memory-surface             # Entries tagged with a task ID
+qs --task memory-surface --export json   # JSON object with entries[] (includes snippet_freshness + related_entry_ids)
 qs --diff                            # Entries for current git diff files
 qs "search" --export json            # Export results as JSON
 qs "search" --budget 2000            # Cap output to 2000 chars
@@ -144,6 +150,19 @@ qs --session-raw <session-id>        # Dump raw events for a session
 python3 ~/.copilot/tools/index-status.py          # Row counts, FTS integrity, offset coverage
 ```
 
+### Recall Telemetry (Phase 5)
+
+```bash
+python3 ~/.copilot/tools/knowledge-health.py --recall         # Recall-only telemetry dashboard
+python3 ~/.copilot/tools/knowledge-health.py --recall --json  # Recall-only JSON stats
+```
+
+- Telemetry is intentionally lean (`recall_events`): counts/IDs/size only, no verbose output bodies.
+- `qs --detail <id>` logs `detail_open` per call (stateless): existing ID → `hit_count=1` and `selected_entry_ids=[id]`; missing ID → `hit_count=0` and `selected_entry_ids=[]`.
+- Default `qs "query"` telemetry aggregates the full emitted surface (primary search block + `sessions_fts` block + knowledge-entry block).
+- If `recall_events` is missing (older DB), recall commands still run (best-effort telemetry write).
+- No Phase 5 browse UI route, contextual summary, or provider rerank behavior.
+
 ### Record Knowledge
 
 ```bash
@@ -151,6 +170,7 @@ learn --mistake "Title"  "What went wrong"     --tags "docker"
 learn --pattern "Title"  "Best practice"       --tags "lambda"
 learn --decision "Title" "Architecture choice" --tags "cdk"
 learn --mistake "Title"  "Description" --task "memory-surface" --file "briefing.py"
+learn --pattern "FTS sanitizer fix" "Strip operators before MATCH" --code-location "query-session.py:120-142"
 learn --mistake "Title"  "Description" --json  # Machine-readable JSON output
 ```
 
@@ -178,8 +198,13 @@ python3 ~/.copilot/tools/tentacle.py complete api-export
 ```
 
 > `--output parallel` maximises parallelism (one agent per todo). `--output json` is for
-> programmatic consumption. `--briefing` injects live session-knowledge at dispatch time
-> (incompatible with `--output json`).
+> programmatic consumption. `--briefing` injects structured live recall at dispatch time:
+> task-scoped `briefing.py --task <id> --json` first, then `--pack` fallback when needed,
+> rendered as bounded `[KNOWLEDGE EVIDENCE]` (incompatible with `--output json`).
+> Evidence bullets are unchanged; runtime may add one optional bounded `From:` provenance line.
+> Drilldown may include `query-session.py --related <entry_id>` only when the first evidence
+> bullet has related entries.
+> Resume also refreshes a single `AUTO-RECALL` block in `CONTEXT.md` instead of appending repeats.
 
 **Commit restriction:** Sub-agents must not run `git commit` or `git push`. When git hooks
 are installed (`install.py --install-git-hooks`), both operations are **blocked at the git level**
@@ -307,6 +332,31 @@ python3 ~/.copilot/tools/setup-project.py --profile myteam   # deploy
 
 📖 **Full command reference:** [docs/USAGE.md](docs/USAGE.md)
 
+## Sync Rollout (Local-First)
+
+Sync is **local-first and optional**: local `knowledge.db` remains the primary read/query source; remote sync is transport/storage only.
+
+- **Config** (`~/.copilot/tools/sync-config.json`, single `connection_string`):
+  - `python3 ~/.copilot/tools/sync-config.py --setup https://gateway.example.com`
+  - `python3 ~/.copilot/tools/sync-config.py --setup-env SYNC_GATEWAY_URL`
+  - Setup accepts an HTTP(S) gateway URL (not a raw Postgres/libSQL DSN).
+  - `python3 ~/.copilot/tools/sync-config.py --status --json`
+  - `python3 ~/.copilot/tools/sync-config.py --get`
+  - `python3 ~/.copilot/tools/sync-config.py --clear`
+- **Runtime**:
+  - `python3 ~/.copilot/tools/sync-daemon.py --once|--daemon|--interval 30|--push-only|--pull-only`
+  - Backlog-aware adaptive per-cycle sync limits are applied automatically (`sync_txns` volume + relation-heavy queue boost).
+  - Pull consumes multiple pages per cycle (`MAX_PULL_PAGES_PER_CYCLE`) and refreshes local retrieval surfaces (`knowledge_fts`, `ke_fts`) for touched rows after canonical apply.
+  - If no `connection_string` is configured, daemon stays local-only (no hard failure).
+- **Diagnostics**:
+  - `python3 ~/.copilot/tools/sync-status.py --watch-status [--json]`
+  - `python3 ~/.copilot/tools/sync-status.py --health-check [--json]` (exit 0/2)
+  - `python3 ~/.copilot/tools/sync-status.py --audit [--json]` (exit 0/2)
+  - Browse `/healthz` advertises `sync_status_endpoint: "/api/sync/status"`.
+  - Browse `/api/sync/status` is read-only local queue/failure/config/cursor status.
+- **Gateway in this repo**: `sync-gateway.py` is **reference/mock only** (not production authority), exposing `/sync/push`, `/sync/pull`, `/healthz`.
+- **Default provider rollout recommendation**: keep the same HTTP gateway contract, with Neon (backing Postgres) + Railway (thin gateway host) as the default rollout path. This is a recommendation, not a vendor lock.
+
 ## Architecture
 
 ```mermaid
@@ -356,6 +406,10 @@ flowchart TD
 python3 ~/.copilot/tools/auto-update-tools.py           # Auto-update (24h cooldown)
 python3 ~/.copilot/tools/auto-update-tools.py --force    # Force update now
 python3 ~/.copilot/tools/auto-update-tools.py --doctor   # Health check
+python3 ~/.copilot/tools/auto-update-tools.py --restart-watch
+python3 ~/.copilot/tools/auto-update-tools.py --watch-status
+python3 ~/.copilot/tools/auto-update-tools.py --health-check
+python3 ~/.copilot/tools/auto-update-tools.py --audit-runtime
 ```
 
 Smart pipeline analyzes `git diff` to run only what changed. Post-merge hook auto-triggers on `git pull`.
@@ -370,49 +424,12 @@ Smart pipeline analyzes `git diff` to run only what changed. Post-merge hook aut
 
 Unified hook runner architecture — 1 Python process per event with fail-open, HMAC-signed markers, audit logging, and tamper protection. Hook deployment is **Copilot CLI only**; Claude Code does not support the `hook_runner.py` format.
 
-**Dispatched-subagent git guard (phase 3+):** `install.py --install-git-hooks` deploys
-`pre-commit` and `pre-push` scripts into the current repo's `.git/hooks/`. When the
-`dispatched-subagent-active` marker is fresh and its `git_root` matches the committing repo,
-both scripts block the git operation. This is the **primary enforcement surface** for subagent
-commit restrictions — it fires at the filesystem level regardless of which agent process calls
-git. The `preToolUse` hook provides defense-in-depth but cannot be relied on inside delegated
-subagent contexts. Enforcement is **local-only**; cloud-delegated runs are not covered.
-
-The marker now stores `active_tentacles` as a list of objects (`{name, ts, git_root, tentacle_id}`)
-instead of a flat string list. Each entry carries its own dispatch timestamp, the git repository
-root where the dispatch originated, and a stable UUID (`tentacle_id`) generated at `create` time.
-Primary deduplication key is `tentacle_id` (phase 5, when present) with `(name, git_root)` as the
-fallback for legacy entries. Two instances with the same logical name — whether in different repos
-or in the same repo — each produce separate entries because their `tentacle_id` values differ.
-The hook compares `git_root` against the repo running git using canonical path resolution
-(`Path.resolve()`) so symlinks and dotdot paths that resolve to the same physical directory are
-treated as the same repo — a marker from a different repo does not block commits there (cross-repo
-isolation). Markers written without `git_root` (old format or non-git CWD) conservatively block.
-
-> **Upgrade migration:** Cross-repo isolation is not retroactive for in-flight old-format
-> markers. If a tentacle is still active when you upgrade, its existing marker entry has no
-> `git_root` and will continue to block all repos until it completes, is cleared, or the 4-hour
-> TTL expires. To get isolation immediately: `tentacle.py complete <name>` (or
-> `rm ~/.copilot/markers/dispatched-subagent-active`), then re-dispatch.
-
-**Same-repo multi-session (phase 5):** `tentacle.py create` now generates a `tentacle_id` UUID per
-instance and auto-resolves directory collisions — if `<name>` already exists, it creates
-`<name>-<uuid[:8]>` instead of exiting. All subsequent commands must use the printed slug name.
-When a collision rename occurs, the runtime bundle surfaces the actual invocation slug in two
-places: `manifest.json` gains a `slug` field and `session-metadata.md` gains a `Slug:` header
-line, so sub-agents can always determine the correct name to use in follow-up commands.
-Runtime identity ensures `complete` clears only the matching entry, not a sibling with the same
-logical name. **Working-tree caveat:** this isolation is at the marker/enforcement layer only.
-Concurrent tentacles in the same repo that touch overlapping files still share one working tree
-and git index — file-level conflicts must be managed through non-overlapping scope declarations.
-
-**Limitations:** `preToolUse` non-inheritance inside `task()`-spawned subagents remains a
-platform limitation — git hooks are the reliable surface. `auto-update-tools.py` does **not**
-auto-reinstall git hooks in registered repos — when hook files change it prints three warnings
-to stderr: `"Git hook scripts updated — installed per-repo hooks are NOT automatically
-refreshed."`, `"ACTION REQUIRED to pick up the cross-repo isolation fix (and future hook
-changes):"`, and `"Re-run in EVERY protected repo: python3 ~/.copilot/tools/install.py
---install-git-hooks"`. Re-run that command in every protected repo after relevant tool updates.
+**Dispatched-subagent git guard (phase 3+):**
+- `install.py --install-git-hooks` deploys repo-local `pre-commit`/`pre-push`; these are the primary enforcement surface for subagent git restrictions (filesystem-level), while `preToolUse` is defense-in-depth only.
+- Marker format uses `active_tentacles` objects (`{name, ts, git_root, tentacle_id}`); dedupe is by `tentacle_id` (fallback `(name, git_root)`), and `git_root` canonical matching provides cross-repo isolation.
+- Old entries without `git_root` conservatively block; for immediate isolation after upgrade, clear/recreate active markers (`tentacle.py complete <name>` or remove marker file, then re-dispatch).
+- Same-repo collisions auto-resolve to `<name>-<uuid[:8]>`; runtime writes the active slug in `manifest.json` (`slug`) and `session-metadata.md` (`Slug:`). Isolation is marker-level only: overlapping files in one repo can still conflict.
+- `auto-update-tools.py` does not reinstall per-repo git hooks automatically; after hook updates, re-run `python3 ~/.copilot/tools/install.py --install-git-hooks` in every protected repo.
 
 ```bash
 python3 ~/.copilot/tools/install.py --deploy-skill        # Deploy skill to project
@@ -432,8 +449,8 @@ python3 ~/.copilot/tools/profile-import.py --file myteam.json
 
 **Session-start hooks** run through the unified `hook_runner.py` architecture (1 Python process per event, fail-open, HMAC-signed markers, audit logging) and automatically refresh the codebase map (`codebase-map.py`) at the start of each session — no manual step required.
 
-**Session-end hooks** (`hooks/session-end.py`) are **reminder-only**: they never auto-save checkpoints.
-Set `COPILOT_CHECKPOINT_REMIND=1` to log a reminder when a session ends without saved checkpoints.
+**Session lifecycle hooks** run through `hook_runner.py`: `sessionEnd` performs marker cleanup + sync flush signal, and `agentStop`/`subagentStop` perform best-effort dispatched-subagent marker cleanup using stop payload hints.
+Hooks never auto-save checkpoints.
 To save a checkpoint yourself, run `python3 ~/.copilot/tools/checkpoint-save.py`.
 
 ### Context Load Management

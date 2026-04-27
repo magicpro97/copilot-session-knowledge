@@ -18,5 +18,6 @@ def handle_healthz(db, params, token, nonce) -> tuple:
         "status": "ok",
         "schema_version": _get_schema_version(db),
         "sessions": _count_sessions(db),
+        "sync_status_endpoint": "/api/sync/status",
     })
     return payload.encode("utf-8"), "application/json", 200

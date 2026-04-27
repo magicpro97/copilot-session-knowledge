@@ -3,6 +3,7 @@
 
 import http.client
 import errno
+import json
 import os
 import re
 import sqlite3
@@ -351,6 +352,43 @@ def run_all_tests() -> int:
     finally:
         server8.shutdown()
         db8.close()
+
+    # V9: /api/sync/status remains available for read-only diagnostics
+    print("\n-- V9: /api/sync/status read-only diagnostics")
+    db9 = _make_test_db()
+    server9, host9, port9 = _start_server(db9, token="tok")
+    try:
+        status9, headers9, body9 = _get(host9, port9, "/api/sync/status?token=tok")
+        test("V9: /api/sync/status returns 200", status9 == 200)
+        test(
+            "V9: /api/sync/status content-type json",
+            "application/json" in headers9.get("content-type", ""),
+        )
+        payload9 = json.loads(body9.decode("utf-8", errors="replace"))
+        test("V9: payload includes status field", isinstance(payload9, dict) and "status" in payload9)
+        test("V9: payload includes rollout guidance", isinstance(payload9.get("rollout"), dict))
+        test("V9: rollout keeps direct_db_sync false", payload9.get("rollout", {}).get("direct_db_sync") is False)
+        runtime9 = payload9.get("runtime") or {}
+        test("V9: payload includes runtime visibility", isinstance(runtime9, dict))
+        test("V9: runtime db mode present", runtime9.get("db_mode") in {"memory", "file"})
+        test("V9: payload includes failed_txns counter", isinstance(payload9.get("failed_txns"), int))
+        actions9 = payload9.get("operator_actions") or []
+        test("V9: payload includes operator actions", isinstance(actions9, list) and len(actions9) >= 3)
+        test(
+            "V9: operator actions are marked safe read-only",
+            bool(actions9)
+            and all(
+                isinstance(action, dict)
+                and action.get("safe") is True
+                and isinstance(action.get("command"), str)
+                and action.get("command")
+                and "--clear" not in action.get("command")
+                for action in actions9
+            ),
+        )
+    finally:
+        server9.shutdown()
+        db9.close()
 
     print(f"\n{'='*50}")
     total = _PASS + _FAIL

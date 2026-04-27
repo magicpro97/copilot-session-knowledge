@@ -6,24 +6,29 @@ Covers:
   1. learn.py --json: structured write confirmation (id, category, task_id,
      affected_files, status)
   2. learn.py human path unchanged: "Done." still printed without --json
-  3. query-session.py --task --export json: valid JSON array (affected_files
-     is a list, not a raw JSON string)
+   3. query-session.py --task --export json: valid JSON object with provenance
+      and code-location handles
   4. query-session.py --file --export json: valid JSON array with proper types
   5. query-session.py --module --export json: valid JSON array
   6. query-session.py _export_json: affected_files/facts deserialized to lists
   7. briefing.py --task --json: valid JSON with task_id/tagged_entries fields
   8. briefing.py --task (no --json): text output preserved
   9. Regression: learn.py add_entry() quiet=True sends human text to stderr
+  10. briefing.py --pack: machine-readable JSON surface keys + Phase 3 fields
+  11. query-session.py --detail: provenance/location/snippet surfaces render
 
 Run:
     python3 test_memory_contract.py
 """
 
 import importlib.util
+import hashlib
 import io
 import json
 import os
+import re
 import sqlite3
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -63,6 +68,7 @@ def _load_module(name: str, file_path: Path):
 _learn = _load_module("learn_mc", TOOLS_DIR / "learn.py")
 _qs = _load_module("qs_mc", TOOLS_DIR / "query-session.py")
 _briefing = _load_module("briefing_mc", TOOLS_DIR / "briefing.py")
+_health = _load_module("health_mc", TOOLS_DIR / "knowledge-health.py")
 
 _DB_SCHEMA = """
     CREATE TABLE IF NOT EXISTS sessions (
@@ -75,13 +81,14 @@ _DB_SCHEMA = """
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL REFERENCES sessions(id),
         doc_type TEXT NOT NULL, seq INTEGER DEFAULT 0, title TEXT NOT NULL,
+        stable_id TEXT,
         file_path TEXT NOT NULL UNIQUE, file_hash TEXT, size_bytes INTEGER DEFAULT 0,
         content_preview TEXT DEFAULT '', source TEXT DEFAULT 'copilot', indexed_at TEXT
     );
     CREATE TABLE IF NOT EXISTS sections (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-        section_name TEXT NOT NULL, content TEXT NOT NULL,
+        section_name TEXT NOT NULL, stable_id TEXT, content TEXT NOT NULL,
         UNIQUE(document_id, section_name)
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
@@ -89,12 +96,13 @@ _DB_SCHEMA = """
         session_id UNINDEXED, document_id UNINDEXED,
         tokenize='unicode61 remove_diacritics 2'
     );
-    CREATE TABLE IF NOT EXISTS knowledge_entries (
+         CREATE TABLE IF NOT EXISTS knowledge_entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
         document_id INTEGER,
         category TEXT NOT NULL,
         title TEXT NOT NULL,
+        stable_id TEXT,
         content TEXT NOT NULL,
         tags TEXT DEFAULT '',
         confidence REAL DEFAULT 1.0,
@@ -108,16 +116,23 @@ _DB_SCHEMA = """
         wing TEXT DEFAULT '',
         room TEXT DEFAULT '',
         facts TEXT DEFAULT '[]',
-        est_tokens INTEGER DEFAULT 0,
-        task_id TEXT DEFAULT '',
-        affected_files TEXT DEFAULT '[]'
-    );
+             est_tokens INTEGER DEFAULT 0,
+             task_id TEXT DEFAULT '',
+             affected_files TEXT DEFAULT '[]',
+             source_section TEXT DEFAULT '',
+             source_file TEXT DEFAULT '',
+             start_line INTEGER,
+             end_line INTEGER,
+             code_language TEXT DEFAULT '',
+             code_snippet TEXT DEFAULT ''
+         );
     CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
         title, content, tags, category, wing, room, facts
     );
     CREATE TABLE IF NOT EXISTS entity_relations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         subject TEXT NOT NULL, predicate TEXT NOT NULL, object TEXT NOT NULL,
+        stable_id TEXT,
         noted_at TEXT, session_id TEXT,
         UNIQUE(subject, predicate, object)
     );
@@ -125,9 +140,52 @@ _DB_SCHEMA = """
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         source_id INTEGER NOT NULL REFERENCES knowledge_entries(id),
         target_id INTEGER NOT NULL REFERENCES knowledge_entries(id),
+        source_stable_id TEXT DEFAULT '',
+        target_stable_id TEXT DEFAULT '',
         relation_type TEXT NOT NULL,
+        stable_id TEXT,
         confidence REAL DEFAULT 0.5,
         UNIQUE(source_id, target_id, relation_type)
+    );
+    CREATE TABLE IF NOT EXISTS search_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        query TEXT,
+        result_id TEXT,
+        result_kind TEXT,
+        verdict INTEGER NOT NULL CHECK(verdict IN (-1,0,1)),
+        comment TEXT,
+        user_agent TEXT,
+        created_at TEXT NOT NULL,
+        origin_replica_id TEXT DEFAULT 'local',
+        stable_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS sync_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS sync_table_policies (
+        table_name TEXT PRIMARY KEY,
+        sync_scope TEXT NOT NULL,
+        stable_id_column TEXT DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS recall_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT NOT NULL,
+        event_kind TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        surface TEXT NOT NULL,
+        mode TEXT DEFAULT '',
+        raw_query TEXT DEFAULT '',
+        rewritten_query TEXT DEFAULT '',
+        task_id TEXT DEFAULT '',
+        files TEXT DEFAULT '[]',
+        selected_entry_ids TEXT DEFAULT '[]',
+        selected_snippet_ids TEXT DEFAULT '[]',
+        opened_entry_id INTEGER,
+        hit_count INTEGER DEFAULT 0,
+        output_chars INTEGER DEFAULT 0,
+        output_est_tokens INTEGER DEFAULT 0
     );
 """
 
@@ -360,14 +418,50 @@ def _test_qs_task_json(db_path):
     db.row_factory = sqlite3.Row
     import time as _time
     now = _time.strftime("%Y-%m-%dT%H:%M:%S")
+    doc_id = db.execute("""
+        INSERT INTO documents
+            (session_id, doc_type, seq, title, file_path, indexed_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, ("test-session-01", "checkpoint", 3, "Checkpoint for task export test",
+          "checkpoints/003-task-export.md", now)).lastrowid
     db.execute("""
         INSERT INTO knowledge_entries
             (category, title, content, confidence, session_id, task_id,
-             affected_files, facts, occurrence_count, first_seen, last_seen)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+             affected_files, facts, occurrence_count, first_seen, last_seen,
+             document_id, source_section, source_file, start_line, end_line,
+             code_language, code_snippet)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, ("pattern", "Task export test", "Content of task export test.",
-          0.8, "test-session-01", "memory-contract",
-          '["briefing.py","query-session.py"]', '[]', now, now))
+           0.8, "test-session-01", "memory-contract",
+          '["briefing.py","query-session.py"]', '[]', now, now,
+          doc_id, "technical_details", "src/query_session.py", 101, 118,
+          "python", "def show_by_task(task_id):\n    return task_id"))
+    main_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    rel1 = db.execute("""
+        INSERT INTO knowledge_entries (session_id, category, title, content, confidence, first_seen, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, ("test-session-01", "pattern", "Related high confidence", "r1", 0.7, now, now)).lastrowid
+    rel2 = db.execute("""
+        INSERT INTO knowledge_entries (session_id, category, title, content, confidence, first_seen, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, ("test-session-01", "mistake", "Related top confidence", "r2", 0.7, now, now)).lastrowid
+    rel3 = db.execute("""
+        INSERT INTO knowledge_entries (session_id, category, title, content, confidence, first_seen, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, ("test-session-01", "tool", "Related low confidence", "r3", 0.7, now, now)).lastrowid
+    rel4 = db.execute("""
+        INSERT INTO knowledge_entries (session_id, category, title, content, confidence, first_seen, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, ("test-session-01", "decision", "Related tie confidence", "r4", 0.7, now, now)).lastrowid
+    db.executemany("""
+        INSERT INTO knowledge_relations (source_id, target_id, relation_type, confidence)
+        VALUES (?, ?, ?, ?)
+    """, [
+        (main_id, rel1, "RELATED", 0.80),
+        (main_id, rel2, "RELATED", 0.95),
+        (main_id, rel3, "RELATED", 0.20),
+        (main_id, rel4, "RELATED", 0.80),
+    ])
     db.commit()
     db.close()
 
@@ -409,6 +503,34 @@ def _test_qs_task_json(db_path):
          isinstance(af, list), f"type={type(af).__name__}")
     test("--task --export json: task_id field present",
          "task_id" in item, f"keys={list(item)}")
+    src_doc = item.get("source_document")
+    test("--task --export json: source_document is object",
+         isinstance(src_doc, dict), f"type={type(src_doc).__name__}")
+    test("--task --export json: source_document carries checkpoint provenance",
+         isinstance(src_doc, dict)
+         and src_doc.get("doc_type") == "checkpoint"
+         and src_doc.get("section") == "technical_details",
+         f"source_document={src_doc!r}")
+    test("--task --export json: code location handles included",
+         item.get("source_file") == "src/query_session.py"
+         and item.get("start_line") == 101
+         and item.get("end_line") == 118,
+         f"location=({item.get('source_file')!r}, {item.get('start_line')!r}, {item.get('end_line')!r})")
+    test("--task --export json: code snippet handles included",
+         item.get("code_language") == "python"
+         and "def show_by_task" in (item.get("code_snippet") or ""),
+         f"code=({item.get('code_language')!r}, {item.get('code_snippet')!r})")
+    valid_states = {"fresh", "drifted", "missing", "unknown"}
+    test("--task --export json: snippet_freshness is canonical enum",
+         item.get("snippet_freshness") in valid_states,
+         f"snippet_freshness={item.get('snippet_freshness')!r}")
+    related_ids = item.get("related_entry_ids", [])
+    test("--task --export json: related_entry_ids is JSON int list",
+         isinstance(related_ids, list) and all(isinstance(x, int) for x in related_ids),
+         f"related_entry_ids={related_ids!r}")
+    test("--task --export json: related_entry_ids capped and confidence-ranked",
+         related_ids == [int(rel2), int(rel1), int(rel4)],
+         f"related_entry_ids={related_ids!r}, expected={[int(rel2), int(rel1), int(rel4)]!r}")
 
 
 _test_qs_task_json()
@@ -521,15 +643,25 @@ def _test_briefing_task_json(db_path):
     db = sqlite3.connect(db_path)
     import time as _time
     now = _time.strftime("%Y-%m-%dT%H:%M:%S")
+    doc_id = db.execute("""
+        INSERT INTO documents
+            (session_id, doc_type, seq, title, file_path, indexed_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, ("test-session-04", "checkpoint", 9, "Briefing JSON source document",
+          "checkpoints/009-briefing-json.md", now)).lastrowid
     db.execute("""
         INSERT INTO knowledge_entries
             (category, title, content, confidence, session_id, task_id,
-             affected_files, facts, tags, occurrence_count, first_seen, last_seen)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+             affected_files, facts, tags, occurrence_count, first_seen, last_seen,
+             document_id, source_section, source_file, start_line, end_line,
+             code_language, code_snippet)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, ("pattern", "Briefing JSON test pattern",
           "Testing machine-readable briefing output.",
-          0.8, "test-session-04", "memory-contract",
-          '["briefing.py","learn.py"]', '[]', "test", now, now))
+           0.8, "test-session-04", "memory-contract",
+          '["briefing.py","learn.py"]', '[]', "test", now, now,
+          doc_id, "implementation", "briefing.py", 1740, 1769,
+          "python", "json_tagged = [{\"source_document\": _source_document_from_row(r)}]"))
     db.commit()
     db.close()
 
@@ -569,6 +701,27 @@ def _test_briefing_task_json(db_path):
              f"got: {af!r}")
         test("generate_task_briefing(fmt='json'): entry has 'confidence'",
              "confidence" in entry, f"keys={list(entry)}")
+        src_doc = entry.get("source_document")
+        test("generate_task_briefing(fmt='json'): entry.source_document shape",
+             isinstance(src_doc, dict) and "section" in src_doc and "doc_type" in src_doc,
+             f"source_document={src_doc!r}")
+        test("generate_task_briefing(fmt='json'): entry code-location fields",
+             entry.get("source_file") == "briefing.py"
+             and entry.get("start_line") == 1740
+             and entry.get("end_line") == 1769,
+             f"location=({entry.get('source_file')!r}, {entry.get('start_line')!r}, {entry.get('end_line')!r})")
+        test("generate_task_briefing(fmt='json'): entry code-snippet fields",
+             entry.get("code_language") == "python"
+             and "source_document" in (entry.get("code_snippet") or ""),
+             f"code=({entry.get('code_language')!r}, {entry.get('code_snippet')!r})")
+        valid_states = {"fresh", "drifted", "missing", "unknown"}
+        test("generate_task_briefing(fmt='json'): entry snippet_freshness enum",
+             entry.get("snippet_freshness") in valid_states,
+             f"snippet_freshness={entry.get('snippet_freshness')!r}")
+        rel_ids = entry.get("related_entry_ids", [])
+        test("generate_task_briefing(fmt='json'): entry related_entry_ids is int list",
+             isinstance(rel_ids, list) and all(isinstance(x, int) for x in rel_ids) and len(rel_ids) <= 3,
+             f"related_entry_ids={rel_ids!r}")
 
 
 _test_briefing_task_json()
@@ -647,6 +800,65 @@ def _test_qs_task_json_empty(db_path):
 
 
 _test_qs_task_json_empty()
+
+
+# ─── 10b. query-session.py --detail: provenance/location/snippet rendering ─
+
+print("\n🔎 query-session.py — --detail renders Phase 3 surfaces")
+
+
+@with_test_db
+def _test_qs_detail_phase3_surfaces(db_path):
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    import time as _time
+    now = _time.strftime("%Y-%m-%dT%H:%M:%S")
+    doc_id = db.execute("""
+        INSERT INTO documents
+            (session_id, doc_type, seq, title, file_path, indexed_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, ("test-session-detail", "checkpoint", 7, "Detail view source",
+          "checkpoints/007-detail.md", now)).lastrowid
+    db.execute("""
+        INSERT INTO knowledge_entries
+            (category, title, content, confidence, session_id, task_id,
+             affected_files, facts, occurrence_count, first_seen, last_seen,
+             document_id, source_section, source_file, start_line, end_line,
+             code_language, code_snippet)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, ("pattern", "Detail rendering test", "Detail body for rendered contract.",
+          0.91, "test-session-detail", "memory-contract",
+          '["query-session.py"]', '[]', now, now,
+          doc_id, "technical_details", "query-session.py", 740, 760,
+          "python", "def show_detail(entry_id: int):\n    print('detail')"))
+    entry_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    db.commit()
+    db.close()
+
+    _qs.DB_PATH = Path(db_path)
+    with _CapStdout() as cap:
+        _qs.show_detail(entry_id)
+    output = cap.getvalue()
+
+    test("--detail renders provenance label", "Provenance:" in output, f"output={output[:300]!r}")
+    test("--detail renders code location label", "Code location:" in output, f"output={output[:300]!r}")
+    test("--detail renders snippet freshness label",
+         "Snippet freshness:" in output, f"output={output[:300]!r}")
+    test("--detail renders language-tagged snippet heading",
+         "Code snippet (python):" in output, f"output={output[:400]!r}")
+    test("--detail renders snippet body", "def show_detail" in output, f"output={output[:400]!r}")
+    code_loc_idx = output.find("Code location:")
+    freshness_idx = output.find("Snippet freshness:")
+    snippet_idx = output.find("Code snippet (python):")
+    test("--detail freshness line appears after code location",
+         code_loc_idx != -1 and freshness_idx != -1 and code_loc_idx < freshness_idx,
+         f"indices code_location={code_loc_idx}, freshness={freshness_idx}")
+    test("--detail freshness line appears before snippet block",
+         freshness_idx != -1 and snippet_idx != -1 and freshness_idx < snippet_idx,
+         f"indices freshness={freshness_idx}, snippet={snippet_idx}")
+
+
+_test_qs_detail_phase3_surfaces()
 
 
 # ─── 11. query-session.py --file --export json (empty) ───────────────────
@@ -880,6 +1092,105 @@ def _test_generate_briefing_empty_json(db_path):
 
 
 _test_generate_briefing_empty_json()
+
+
+# ─── 17b. briefing.py --pack: machine surface shape + explicit mode ───────
+
+print("\n📋 briefing.py — generate_briefing --pack contract")
+
+
+@with_test_db
+def _test_generate_briefing_pack_contract(db_path):
+    db = sqlite3.connect(db_path)
+    import time as _time
+    now = _time.strftime("%Y-%m-%dT%H:%M:%S")
+    doc_id = db.execute("""
+        INSERT INTO documents
+            (session_id, doc_type, seq, title, file_path, indexed_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, ("test-session-pack", "research", 0, "Pack source doc",
+          "notes/pack-source.md", now)).lastrowid
+    db.execute("""
+        INSERT INTO knowledge_entries
+            (category, title, content, confidence, session_id, task_id,
+             affected_files, facts, tags, occurrence_count, first_seen, last_seen,
+             document_id, source_section, source_file, start_line, end_line,
+             code_language, code_snippet)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, ("pattern", "Pack output pattern",
+          "Pack output should be machine-readable and stable.",
+          0.88, "test-session-pack", "", '["briefing.py"]', '[]', "pack", now, now,
+          doc_id, "findings", "briefing.py", 390, 415, "python",
+          "def _serialize_pack_entry(entry: dict) -> dict:"))
+    db.execute("""
+        INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts)
+        VALUES (last_insert_rowid(),
+                'Pack output pattern',
+                'Pack output should be machine-readable and stable.',
+                'pack', 'pattern', '', '', '[]')
+    """)
+    db.commit()
+    db.close()
+
+    _briefing.DB_PATH = Path(db_path)
+    output = _briefing.generate_briefing(
+        "review pack output", fmt="pack", mode="review",
+        min_confidence=0.0, limit=5, infer_auto_mode=True
+    )
+
+    try:
+        data = json.loads(output)
+        test("generate_briefing --pack: valid JSON", True)
+    except json.JSONDecodeError as e:
+        test("generate_briefing --pack: valid JSON", False, f"{e}; got: {output[:200]!r}")
+        return
+
+    required = {"query", "rewritten_query", "mode", "risk", "entries",
+                "task_matches", "file_matches", "past_work", "next_open"}
+    missing = required - data.keys()
+    test("generate_briefing --pack: expected top-level keys present",
+         not missing, f"missing={sorted(missing)}")
+    test("generate_briefing --pack: explicit mode preserved",
+         data.get("mode") == "review", f"mode={data.get('mode')!r}")
+    test("generate_briefing --pack: entries is dict with canonical buckets",
+         isinstance(data.get("entries"), dict)
+         and all(k in data["entries"] for k in ("mistake", "pattern", "decision", "tool")),
+         f"entries={data.get('entries')!r}")
+    first_entry = None
+    for bucket in ("mistake", "pattern", "decision", "tool"):
+        values = data.get("entries", {}).get(bucket, [])
+        if values:
+            first_entry = values[0]
+            break
+    if first_entry:
+        src_doc = first_entry.get("source_document")
+        test("generate_briefing --pack: entry source_document includes section",
+             isinstance(src_doc, dict) and src_doc.get("section") == "findings",
+             f"source_document={src_doc!r}")
+        test("generate_briefing --pack: entry exposes code location handles",
+             first_entry.get("source_file") == "briefing.py"
+             and first_entry.get("start_line") == 390
+             and first_entry.get("end_line") == 415,
+             f"location=({first_entry.get('source_file')!r}, {first_entry.get('start_line')!r}, {first_entry.get('end_line')!r})")
+        test("generate_briefing --pack: entry exposes code snippet handles",
+             first_entry.get("code_language") == "python"
+             and "serialize_pack_entry" in (first_entry.get("code_snippet") or ""),
+             f"code=({first_entry.get('code_language')!r}, {first_entry.get('code_snippet')!r})")
+        valid_states = {"fresh", "drifted", "missing", "unknown"}
+        test("generate_briefing --pack: entry snippet_freshness enum",
+             first_entry.get("snippet_freshness") in valid_states,
+             f"snippet_freshness={first_entry.get('snippet_freshness')!r}")
+        rel_ids = first_entry.get("related_entry_ids", [])
+        test("generate_briefing --pack: entry related_entry_ids int list",
+             isinstance(rel_ids, list) and all(isinstance(x, int) for x in rel_ids) and len(rel_ids) <= 3,
+             f"related_entry_ids={rel_ids!r}")
+    else:
+        test("generate_briefing --pack: entry source_document includes section", True, "(skipped — no entries)")
+        test("generate_briefing --pack: entry exposes code location handles", True, "(skipped — no entries)")
+        test("generate_briefing --pack: entry exposes code snippet handles", True, "(skipped — no entries)")
+
+
+_test_generate_briefing_pack_contract()
 
 
 # ─── 18–21. OperationalError → JSON on old-schema DB ────────────────────
@@ -1450,6 +1761,538 @@ def _test_adaptive_search_knowledge_json(db_path):
 
 
 _test_adaptive_search_knowledge_json()
+
+
+# ─── 24–28. Phase 5 recall telemetry + stats regressions ───────────────────
+
+print("\n📡 Phase 5 recall telemetry contracts")
+
+
+@with_test_db
+def _test_qs_detail_missing_logs_no_hit_detail_open(db_path):
+    """--detail on missing ID logs stateless no-hit detail_open telemetry."""
+    _qs.DB_PATH = Path(db_path)
+    old_argv = sys.argv
+    sys.argv = ["query-session.py", "--detail", "424242"]
+    with _CapStdout() as cap:
+        try:
+            _qs.main()
+        except SystemExit:
+            pass
+    sys.argv = old_argv
+    output = cap.getvalue()
+
+    db = sqlite3.connect(db_path)
+    row = db.execute("""
+        SELECT event_kind, tool, surface, opened_entry_id, hit_count, selected_entry_ids
+        FROM recall_events ORDER BY id DESC LIMIT 1
+    """).fetchone()
+    db.close()
+
+    test("--detail missing: command still reports missing entry",
+         "No knowledge entry with ID 424242" in output, f"output={output!r}")
+    test("--detail missing: telemetry row exists", row is not None)
+    if row is not None:
+        test("--detail missing: event_kind is detail_open", row[0] == "detail_open", f"event_kind={row[0]!r}")
+        test("--detail missing: tool/surface is query-session/detail",
+             row[1] == "query-session" and row[2] == "detail", f"tool/surface={(row[1], row[2])!r}")
+        test("--detail missing: opened_entry_id captured", row[3] == 424242, f"opened_entry_id={row[3]!r}")
+        test("--detail missing: hit_count is 0", row[4] == 0, f"hit_count={row[4]!r}")
+        try:
+            sel = json.loads(row[5] or "[]")
+        except Exception:
+            sel = None
+        test("--detail missing: selected_entry_ids is []", sel == [], f"selected_entry_ids={row[5]!r}")
+
+
+_test_qs_detail_missing_logs_no_hit_detail_open()
+
+
+@with_test_db
+def _test_qs_default_search_telemetry_aggregates_full_surface(db_path):
+    """Default search telemetry hit_count includes search + sessions_fts + knowledge blocks."""
+    import unittest.mock as _mock
+
+    _qs.DB_PATH = Path(db_path)
+
+    def _fake_search(*_args, **_kwargs):
+        print("PRIMARY_SEARCH_BLOCK")
+        return {"hit_count": 2, "selected_entry_ids": [101, 102]}
+
+    def _fake_sessions(*_args, **_kwargs):
+        return [
+            {"session_id": "sess-001", "title": "S1", "excerpt": "alpha"},
+            {"session_id": "sess-002", "title": "S2", "excerpt": "beta"},
+            {"session_id": "sess-003", "title": "S3", "excerpt": "gamma"},
+        ]
+
+    def _fake_knowledge(*_args, **_kwargs):
+        print("KNOWLEDGE_BLOCK")
+        return {"hit_count": 1, "selected_entry_ids": [303]}
+
+    old_argv = sys.argv
+    sys.argv = ["query-session.py", "phase5-contract"]
+    with _mock.patch.object(_qs, "search", side_effect=_fake_search), \
+         _mock.patch.object(_qs, "search_sessions_fts", side_effect=_fake_sessions), \
+         _mock.patch.object(_qs, "search_knowledge", side_effect=_fake_knowledge):
+        with _CapStdout() as cap:
+            try:
+                _qs.main()
+            except SystemExit:
+                pass
+    sys.argv = old_argv
+    output = cap.getvalue()
+
+    db = sqlite3.connect(db_path)
+    row = db.execute("""
+        SELECT event_kind, surface, hit_count, selected_entry_ids
+        FROM recall_events
+        WHERE tool = 'query-session' AND surface = 'search'
+        ORDER BY id DESC LIMIT 1
+    """).fetchone()
+    db.close()
+
+    test("default search telemetry: emitted output includes session block",
+         "Session hits (3 results)" in output, f"output={output!r}")
+    test("default search telemetry: primary and knowledge blocks emitted",
+         "PRIMARY_SEARCH_BLOCK" in output and "KNOWLEDGE_BLOCK" in output, f"output={output!r}")
+    test("default search telemetry: search recall row exists", row is not None)
+    if row is not None:
+        test("default search telemetry: event_kind is recall", row[0] == "recall", f"event_kind={row[0]!r}")
+        test("default search telemetry: hit_count aggregates full emitted surface",
+             row[2] == 6, f"hit_count={row[2]!r}")
+        try:
+            sel = json.loads(row[3] or "[]")
+        except Exception:
+            sel = None
+        test("default search telemetry: selected_entry_ids keeps knowledge/search IDs",
+             sel == [101, 102, 303], f"selected_entry_ids={row[3]!r}")
+
+
+_test_qs_default_search_telemetry_aggregates_full_surface()
+
+
+@with_test_db
+def _test_recall_surfaces_fail_open_without_recall_table(db_path):
+    """Absence of recall_events must not break recall commands."""
+    db = sqlite3.connect(db_path)
+    db.execute("DROP TABLE IF EXISTS recall_events")
+    db.commit()
+    db.close()
+
+    _qs.DB_PATH = Path(db_path)
+    old_argv = sys.argv
+    sys.argv = ["query-session.py", "--detail", "555555"]
+    with _CapStdout() as cap:
+        try:
+            _qs.main()
+        except SystemExit:
+            pass
+    sys.argv = old_argv
+    output = cap.getvalue()
+    test("missing recall_events table: --detail still completes",
+         "No knowledge entry with ID 555555" in output, f"output={output!r}")
+
+
+_test_recall_surfaces_fail_open_without_recall_table()
+
+
+@with_test_db
+def _test_recall_stats_contracts(db_path):
+    """knowledge-health --recall and --recall --json stay recall-only + deterministic."""
+    import time as _time
+
+    _health.DB_PATH = Path(db_path)
+    db = sqlite3.connect(db_path)
+    now = _time.strftime("%Y-%m-%dT%H:%M:%S")
+    db.executemany("""
+        INSERT INTO recall_events (
+            created_at, event_kind, tool, surface, mode,
+            raw_query, rewritten_query, task_id, files,
+            selected_entry_ids, selected_snippet_ids, opened_entry_id,
+            hit_count, output_chars, output_est_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [
+        (now, "recall", "query-session", "search", "", "auth bug", "auth bug", "", "[]", "[11]", "[]", None, 2, 80, 20),
+        (now, "recall", "query-session", "search", "", "missing", "nohit query", "", "[]", "[]", "[]", None, 0, 40, 10),
+        (now, "recall", "query-session", "search", "", "missing", "nohit query", "", "[]", "[]", "[]", None, 0, 36, 9),
+        (now, "detail_open", "query-session", "detail", "", "", "", "", "[]", "[77]", "[]", 77, 1, 120, 30),
+        (now, "detail_open", "query-session", "detail", "", "", "", "", "[]", "[]", "[]", 88, 0, 18, 5),
+    ])
+    db.commit()
+    db.close()
+
+    stats = _health.compute_recall_stats()
+    test("compute_recall_stats: available is true", stats.get("available") is True, f"stats={stats!r}")
+    test("compute_recall_stats: total_events includes recall + detail_open rows",
+         stats.get("total_events") == 5, f"total_events={stats.get('total_events')!r}")
+
+    top_no_hit = stats.get("top_no_hit_queries", [])
+    test("compute_recall_stats: top no-hit query grouped by rewritten_query",
+         isinstance(top_no_hit, list) and top_no_hit and top_no_hit[0].get("rewritten_query") == "nohit query"
+         and top_no_hit[0].get("event_count") == 2,
+         f"top_no_hit={top_no_hit!r}")
+
+    repeated = stats.get("top_repeated_detail_opens", [])
+    seen_ids = {row.get("opened_entry_id") for row in repeated}
+    test("compute_recall_stats: repeated detail opens keyed by opened_entry_id",
+         77 in seen_ids and 88 in seen_ids, f"repeated={repeated!r}")
+
+    report = _health.format_recall_report(stats)
+    test("format_recall_report: recall-only heading present",
+         "Recall Telemetry" in report, f"report={report!r}")
+    test("format_recall_report: does not include default health heading",
+         "Knowledge Health Report" not in report, f"report={report!r}")
+
+    old_argv = sys.argv
+    _health.DB_PATH = Path(db_path)
+    sys.argv = ["knowledge-health.py", "--recall", "--json"]
+    with _CapStdout() as cap:
+        _health.main()
+    sys.argv = old_argv
+    json_output = cap.getvalue().strip()
+    try:
+        parsed = json.loads(json_output)
+        test("--recall --json: emits valid JSON", True)
+        test("--recall --json: remains recall-only payload keys",
+             "total_events" in parsed and "events_by_surface" in parsed and "score" not in parsed,
+             f"keys={list(parsed)}")
+    except json.JSONDecodeError as e:
+        test("--recall --json: emits valid JSON", False, f"{e}; output={json_output!r}")
+
+
+_test_recall_stats_contracts()
+
+
+@with_test_db
+def _test_recall_stats_unavailable_contract(db_path):
+    """knowledge-health --recall handles missing recall_events table cleanly."""
+    db = sqlite3.connect(db_path)
+    db.execute("DROP TABLE IF EXISTS recall_events")
+    db.commit()
+    db.close()
+
+    _health.DB_PATH = Path(db_path)
+    stats = _health.compute_recall_stats()
+    test("missing recall_events: compute_recall_stats marks unavailable",
+         stats.get("available") is False, f"stats={stats!r}")
+
+    old_argv = sys.argv
+    sys.argv = ["knowledge-health.py", "--recall"]
+    with _CapStdout() as cap:
+        _health.main()
+    sys.argv = old_argv
+    text_output = cap.getvalue().strip()
+    test("missing recall_events: --recall text says unavailable",
+         "Recall telemetry unavailable" in text_output, f"output={text_output!r}")
+
+
+_test_recall_stats_unavailable_contract()
+
+
+# ─── 24. migrate.py stable IDs + sync policy backfill ──────────────────────
+
+print("\n🧭 migrate.py — stable IDs + sync policy contract")
+
+
+def _normalize_title_for_test(title: str) -> str:
+    return re.sub(r"\s+", " ", (title or "").strip().lower())
+
+
+def _stable_sha_for_test(*parts) -> str:
+    payload = "\0".join("" if p is None else str(p) for p in parts)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+@with_test_db
+def _test_migrate_stable_ids_and_policy(db_path):
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    now = "2026-01-02T03:04:05"
+    db.execute("INSERT INTO sessions (id, path, indexed_at) VALUES (?, ?, ?)", ("sess-a", "p", now))
+    db.execute("""
+        INSERT INTO documents (session_id, doc_type, seq, title, file_path, indexed_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, ("sess-a", "checkpoint", 7, "  Hello   World  ", "cp/007.md", now))
+    doc_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    db.execute("""
+        INSERT INTO sections (document_id, section_name, content)
+        VALUES (?, ?, ?)
+    """, (doc_id, "technical_details", "content"))
+    db.execute("""
+        INSERT INTO knowledge_entries
+            (session_id, category, title, content, topic_key, first_seen, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, ("sess-a", "pattern", "Stable Entry", "content", "pattern/stable-entry", now, now))
+    ke_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    db.execute("""
+        INSERT INTO knowledge_entries
+            (session_id, category, title, content, topic_key, first_seen, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, ("sess-a", "mistake", "Directional Source", "content", "mistake/directional-source", now, now))
+    source_ke_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    db.execute("""
+        INSERT INTO knowledge_relations (source_id, target_id, relation_type, confidence)
+        VALUES (?, ?, ?, ?)
+    """, (source_ke_id, ke_id, "RESOLVED_BY", 0.8))
+    db.execute("""
+        INSERT INTO entity_relations (subject, predicate, object, noted_at, session_id)
+        VALUES (?, ?, ?, ?, ?)
+    """, ("svc", "calls", "db", now, "sess-a"))
+    db.execute("""
+        INSERT INTO search_feedback
+            (query, result_id, result_kind, verdict, created_at, origin_replica_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, ("auth bug", str(ke_id), "knowledge", 1, now, "replica-x"))
+    db.execute("""
+        INSERT INTO search_feedback
+            (query, result_id, result_kind, verdict, created_at, origin_replica_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, ("local fallback bug", "local-result-1", "knowledge", -1, now, ""))
+    db.commit()
+    db.close()
+
+    result = subprocess.run(
+        [sys.executable, str(TOOLS_DIR / "migrate.py"), db_path],
+        capture_output=True,
+        text=True,
+    )
+    test("migrate.py exits cleanly", result.returncode == 0, result.stderr[:200])
+    if result.returncode != 0:
+        return
+
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    doc_row = db.execute("SELECT id, stable_id FROM documents WHERE id = ?", (doc_id,)).fetchone()
+    sec_row = db.execute("SELECT stable_id FROM sections WHERE document_id = ?", (doc_id,)).fetchone()
+    ke_row = db.execute("SELECT stable_id FROM knowledge_entries WHERE id = ?", (ke_id,)).fetchone()
+    source_ke_row = db.execute("SELECT stable_id FROM knowledge_entries WHERE id = ?", (source_ke_id,)).fetchone()
+    rel_row = db.execute("""
+        SELECT source_stable_id, target_stable_id, stable_id
+        FROM knowledge_relations
+        WHERE source_id = ? AND target_id = ? AND relation_type = 'RESOLVED_BY'
+    """, (source_ke_id, ke_id)).fetchone()
+    sf_row = db.execute("""
+        SELECT stable_id, origin_replica_id
+        FROM search_feedback
+        WHERE result_id = ? AND result_kind = 'knowledge'
+    """, (str(ke_id),)).fetchone()
+    local_sf_row = db.execute("""
+        SELECT id, stable_id, origin_replica_id, query, result_id, result_kind, verdict, created_at
+        FROM search_feedback
+        WHERE result_id = ? AND result_kind = 'knowledge'
+    """, ("local-result-1",)).fetchone()
+
+    expected_doc_sid = _stable_sha_for_test(
+        "document", "sess-a", "checkpoint", 7, _normalize_title_for_test("  Hello   World  ")
+    )
+    expected_sec_sid = _stable_sha_for_test("section", expected_doc_sid, "technical_details")
+    expected_ke_sid = _stable_sha_for_test(
+        "knowledge", "sess-a", "pattern", "Stable Entry", "pattern/stable-entry"
+    )
+    expected_source_ke_sid = _stable_sha_for_test(
+        "knowledge", "sess-a", "mistake", "Directional Source", "mistake/directional-source"
+    )
+    expected_rel_sid = _stable_sha_for_test(
+        "knowledge_relation", expected_source_ke_sid, expected_ke_sid, "RESOLVED_BY"
+    )
+    expected_sf_sid = _stable_sha_for_test(
+        "search_feedback", now, "knowledge", str(ke_id), 1, "auth bug", "replica-x"
+    )
+
+    test("migrate backfill: documents.stable_id deterministic",
+         doc_row and doc_row["stable_id"] == expected_doc_sid,
+         f"doc_stable_id={doc_row['stable_id'] if doc_row else None!r}")
+    test("migrate backfill: sections.stable_id deterministic",
+         sec_row and sec_row["stable_id"] == expected_sec_sid,
+         f"section_stable_id={sec_row['stable_id'] if sec_row else None!r}")
+    test("migrate backfill: knowledge_entries.stable_id deterministic",
+         ke_row and ke_row["stable_id"] == expected_ke_sid,
+         f"ke_stable_id={ke_row['stable_id'] if ke_row else None!r}")
+    test("migrate backfill: directional source stable_id deterministic",
+         source_ke_row and source_ke_row["stable_id"] == expected_source_ke_sid,
+         f"source_ke_stable_id={source_ke_row['stable_id'] if source_ke_row else None!r}")
+    test("migrate backfill: knowledge_relations preserves source->target stable IDs",
+         rel_row and rel_row["source_stable_id"] == expected_source_ke_sid and rel_row["target_stable_id"] == expected_ke_sid,
+         f"relation={dict(rel_row) if rel_row else None!r}")
+    test("migrate backfill: knowledge_relations.stable_id uses directional order",
+         rel_row and rel_row["stable_id"] == expected_rel_sid,
+         f"relation={dict(rel_row) if rel_row else None!r}")
+    test("migrate backfill: search_feedback stable+origin deterministic",
+         sf_row and sf_row["stable_id"] == expected_sf_sid and sf_row["origin_replica_id"] == "replica-x",
+         f"sf_row={dict(sf_row) if sf_row else None!r}")
+    expected_local_sf_sid = _stable_sha_for_test(
+        "search_feedback",
+        now,
+        "knowledge",
+        "local-result-1",
+        -1,
+        "local fallback bug",
+        local_sf_row["origin_replica_id"] if local_sf_row else "",
+    )
+    test("migrate backfill: local-empty search_feedback origin normalized",
+         local_sf_row
+         and bool(local_sf_row["origin_replica_id"])
+         and local_sf_row["stable_id"] == expected_local_sf_sid,
+         f"local_sf_row={dict(local_sf_row) if local_sf_row else None!r}")
+
+    if local_sf_row:
+        db.execute(
+            "UPDATE search_feedback SET origin_replica_id = 'local', stable_id = '' WHERE id = ?",
+            (local_sf_row["id"],),
+        )
+        db.commit()
+        embed_mod = _load_module("embed_mc_origin_norm", TOOLS_DIR / "embed.py")
+        embed_mod.ensure_embedding_tables(db)
+        from_local = db.execute("""
+            SELECT stable_id, origin_replica_id
+            FROM search_feedback
+            WHERE id = ?
+        """, (local_sf_row["id"],)).fetchone()
+        test("embed path keeps migrate local-origin stable_id for 'local' input",
+             from_local
+             and from_local["origin_replica_id"] == local_sf_row["origin_replica_id"]
+             and from_local["stable_id"] == expected_local_sf_sid,
+             f"from_local={dict(from_local) if from_local else None!r}")
+
+        db.execute(
+            "UPDATE search_feedback SET origin_replica_id = '', stable_id = '' WHERE id = ?",
+            (local_sf_row["id"],),
+        )
+        db.commit()
+        embed_mod.ensure_embedding_tables(db)
+        from_empty = db.execute("""
+            SELECT stable_id, origin_replica_id
+            FROM search_feedback
+            WHERE id = ?
+        """, (local_sf_row["id"],)).fetchone()
+        test("embed path keeps migrate local-origin stable_id for empty input",
+             from_empty
+             and from_empty["origin_replica_id"] == local_sf_row["origin_replica_id"]
+             and from_empty["stable_id"] == expected_local_sf_sid,
+             f"from_empty={dict(from_empty) if from_empty else None!r}")
+
+    def _has_unique_stable_index(table_name: str) -> bool:
+        for idx in db.execute(f"PRAGMA index_list({table_name})").fetchall():
+            idx_name = idx["name"] if "name" in idx.keys() else idx[1]
+            is_unique = int(idx["unique"] if "unique" in idx.keys() else idx[2]) == 1
+            if not is_unique:
+                continue
+            cols = [row["name"] if "name" in row.keys() else row[2]
+                    for row in db.execute(f"PRAGMA index_info({idx_name})").fetchall()]
+            if cols == ["stable_id"]:
+                return True
+        return False
+
+    test("migrate schema: unique documents.stable_id index exists", _has_unique_stable_index("documents"))
+    test("migrate schema: unique sections.stable_id index exists", _has_unique_stable_index("sections"))
+    test("migrate schema: unique knowledge_entries.stable_id index exists", _has_unique_stable_index("knowledge_entries"))
+    test("migrate schema: unique knowledge_relations.stable_id index exists", _has_unique_stable_index("knowledge_relations"))
+    test("migrate schema: unique entity_relations.stable_id index exists", _has_unique_stable_index("entity_relations"))
+    test("migrate schema: unique search_feedback.stable_id index exists", _has_unique_stable_index("search_feedback"))
+
+    def _assert_duplicate_stable_rejected(name: str, sql: str, params: tuple):
+        try:
+            db.execute(sql, params)
+            db.commit()
+            test(name, False, "duplicate stable_id insert unexpectedly succeeded")
+        except sqlite3.IntegrityError:
+            db.rollback()
+            test(name, True)
+
+    _assert_duplicate_stable_rejected(
+        "migrate unique: documents rejects duplicate stable_id",
+        """
+        INSERT INTO documents
+            (session_id, doc_type, seq, title, stable_id, file_path, indexed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("sess-a", "checkpoint", 99, "Duplicate Stable", expected_doc_sid, "cp/dup-1.md", now),
+    )
+    _assert_duplicate_stable_rejected(
+        "migrate unique: sections rejects duplicate stable_id",
+        """
+        INSERT INTO sections (document_id, section_name, stable_id, content)
+        VALUES (?, ?, ?, ?)
+        """,
+        (doc_id, "dup-section", expected_sec_sid, "dup"),
+    )
+    _assert_duplicate_stable_rejected(
+        "migrate unique: knowledge_entries rejects duplicate stable_id",
+        """
+        INSERT INTO knowledge_entries
+            (session_id, category, title, stable_id, content, first_seen, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("sess-a", "pattern", "Duplicate Stable Entry", expected_ke_sid, "dup", now, now),
+    )
+    _assert_duplicate_stable_rejected(
+        "migrate unique: knowledge_relations rejects duplicate stable_id",
+        """
+        INSERT INTO knowledge_relations
+            (source_id, target_id, source_stable_id, target_stable_id, relation_type, stable_id, confidence)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (source_ke_id, ke_id, expected_source_ke_sid, expected_ke_sid, "ALSO_RELATED", expected_rel_sid, 0.5),
+    )
+    _assert_duplicate_stable_rejected(
+        "migrate unique: entity_relations rejects duplicate stable_id",
+        """
+        INSERT INTO entity_relations (subject, predicate, object, stable_id, noted_at, session_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("svc2", "calls", "db2", _stable_sha_for_test("entity_relation", "svc", "calls", "db"), now, "sess-a"),
+    )
+    _assert_duplicate_stable_rejected(
+        "migrate unique: search_feedback rejects duplicate stable_id",
+        """
+        INSERT INTO search_feedback
+            (query, result_id, result_kind, verdict, created_at, origin_replica_id, stable_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("auth bug", str(ke_id), "knowledge", 1, now, "replica-x", expected_sf_sid),
+    )
+
+    policies = {
+        (r["table_name"], r["sync_scope"], r["stable_id_column"])
+        for r in db.execute("SELECT table_name, sync_scope, stable_id_column FROM sync_table_policies")
+    }
+    policy_table_sql_row = db.execute("""
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'sync_table_policies'
+    """).fetchone()
+    policy_table_sql = (policy_table_sql_row["sql"] if policy_table_sql_row else "") or ""
+    policy_sql_normalized = " ".join(policy_table_sql.lower().split())
+    test("sync policy: canonical knowledge_entries has stable_id",
+         ("knowledge_entries", "canonical", "stable_id") in policies,
+         f"policies={sorted(policies)!r}")
+    test("sync policy: recall_events is upload_only",
+         ("recall_events", "upload_only", "") in policies,
+         f"policies={sorted(policies)!r}")
+    test("sync policy: local-only embeddings present",
+         ("embeddings", "local_only", "") in policies,
+         f"policies={sorted(policies)!r}")
+    test("sync policy: local-only knowledge_fts present",
+         ("knowledge_fts", "local_only", "") in policies,
+         f"policies={sorted(policies)!r}")
+    test("sync policy schema allows upload_only scope",
+         "check(sync_scope in ('canonical', 'local_only', 'upload_only'))" in policy_sql_normalized,
+         f"sync_table_policies.sql={policy_table_sql!r}")
+    sync_tables = {
+        r["name"] for r in db.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN ('sync_state', 'sync_txns', 'sync_ops', 'sync_cursors', 'sync_failures')
+        """)
+    }
+    test("sync foundation tables all exist",
+         sync_tables == {"sync_state", "sync_txns", "sync_ops", "sync_cursors", "sync_failures"},
+         f"sync_tables={sorted(sync_tables)!r}")
+    db.close()
+
+
+_test_migrate_stable_ids_and_policy()
 
 
 # ─── Summary ─────────────────────────────────────────────────────────────

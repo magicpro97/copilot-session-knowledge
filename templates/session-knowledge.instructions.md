@@ -26,15 +26,26 @@ Read the output before acting. It surfaces past mistakes and proven patterns.
 
 ## Sub-Agent Context Injection
 
-When dispatching sub-agents (explore / task / general-purpose), inject compact context
-into the prompt rather than loading `--full`:
+When dispatching tentacle agents, prefer the structured recall path in `tentacle.py`:
 
 ```bash
-# Cheapest sub-agent path — compact, injectable, no extra escalation needed
+python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
+```
+
+This injects bounded `[KNOWLEDGE EVIDENCE]` by trying `briefing.py --task <id> --json`
+first and falling back to `briefing.py "<query>" --pack --limit 3` only when task recall is empty.
+`briefing.py --task --json` exposes `tagged_entries[]` and `related_entries[]`; `--pack`
+keeps category buckets in `entries.<category>[]`. Drilldown may add
+`query-session.py --related <entry_id>` only when the first evidence bullet has related entries.
+
+For manual compatibility or ad hoc non-tentacle prompts, inject compact context directly:
+
+```bash
+# Manual compatibility path — compact and directly injectable
 python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
 ```
 
-Include the output verbatim in the sub-agent prompt under a `## Past Knowledge` section.
+Include output verbatim in the sub-agent prompt under a `## Past Knowledge` section.
 Do **not** use `--full` for sub-agent injection; it bloats the prompt unnecessarily.
 
 ## Progressive Escalation
@@ -42,6 +53,58 @@ Do **not** use `--full` for sub-agent injection; it bloats the prompt unnecessar
 Start with `--compact` or `--wakeup`. Escalate to `--full` or `--detail <id>` only
 when the compact output shows a directly relevant past mistake or decision.
 This keeps context lean — escalating to full detail for every task defeats the purpose.
+
+## Sync Rollout (Optional, Local-First)
+
+When sync is configured, keep guidance aligned to shipped behavior:
+
+```bash
+# one connection_string in ~/.copilot/tools/sync-config.json
+python3 ~/.copilot/tools/sync-config.py --setup <https://gateway>
+python3 ~/.copilot/tools/sync-config.py --setup-env SYNC_GATEWAY_URL
+python3 ~/.copilot/tools/sync-config.py --status
+python3 ~/.copilot/tools/sync-config.py --status --json
+python3 ~/.copilot/tools/sync-config.py --clear
+python3 ~/.copilot/tools/sync-config.py --get
+
+# local-first runtime + diagnostics
+python3 ~/.copilot/tools/sync-daemon.py --once
+python3 ~/.copilot/tools/sync-daemon.py --daemon
+python3 ~/.copilot/tools/sync-daemon.py --interval 30
+python3 ~/.copilot/tools/sync-daemon.py --push-only
+python3 ~/.copilot/tools/sync-daemon.py --pull-only
+python3 ~/.copilot/tools/sync-status.py --json
+python3 ~/.copilot/tools/sync-status.py --watch-status --json
+python3 ~/.copilot/tools/sync-status.py --health-check --json
+python3 ~/.copilot/tools/sync-status.py --audit --json
+python3 ~/.copilot/tools/auto-update-tools.py --restart-watch
+python3 ~/.copilot/tools/auto-update-tools.py --watch-status
+python3 ~/.copilot/tools/auto-update-tools.py --health-check
+python3 ~/.copilot/tools/auto-update-tools.py --audit-runtime
+```
+
+- Missing `connection_string` means local-only idle sync (not fatal).
+- Runtime hardening: daemon auto-adjusts per-cycle limits on backlog, consumes multiple pull pages per cycle, and refreshes touched `knowledge_fts` / `ke_fts` rows after pull apply.
+- `sync-gateway.py` is **reference/mock only** in this repo.
+- `sync-config.py --setup` accepts an HTTP(S) gateway URL, not a raw Postgres/libSQL DSN.
+- Default provider rollout recommendation: Neon (backing Postgres) + Railway (thin gateway host), while keeping the same HTTP gateway contract.
+- Browse sync status is read-only: `/healthz` → `sync_status_endpoint: "/api/sync/status"`.
+
+## Recall Telemetry (Phase 5)
+
+```bash
+python3 ~/.copilot/tools/knowledge-health.py --recall
+python3 ~/.copilot/tools/knowledge-health.py --recall --json
+```
+
+- `recall_events` is lean telemetry only (counts/IDs/output size), not verbose output logging.
+- `query-session.py --detail <id>` is stateless telemetry:
+  - found entry → `detail_open` with `hit_count=1`, `selected_entry_ids=[id]`
+  - missing entry → `detail_open` with `hit_count=0`, `selected_entry_ids=[]`
+- default `query-session.py "query"` telemetry aggregates the full emitted search surface
+  (primary search block + `sessions_fts` block + knowledge-entry block).
+- If `recall_events` is unavailable on an older DB, recall commands still run (best-effort telemetry).
+- Browse UI, contextual summaries, and provider rerank are outside this telemetry scope.
 
 ## After Completing Work
 

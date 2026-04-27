@@ -311,6 +311,72 @@ export const healthResponseSchema = z.object({
   status: z.string(),
   schema_version: z.number(),
   sessions: z.number(),
+  sync_status_endpoint: z.string().optional(),
+});
+
+export const syncConnectionStatusSchema = z.object({
+  configured: z.boolean(),
+  endpoint: z.string().nullable(),
+  config_path: z.string(),
+  target: z.string().optional(),
+});
+
+export const syncFailureInfoSchema = z.object({
+  failed_at: z.string(),
+  error_message: z.string(),
+  retry_count: z.number(),
+});
+
+export const syncRuntimeStatusSchema = z.object({
+  generated_at: z.string(),
+  db_path: z.string(),
+  db_mode: z.string(),
+  sync_tables: z.record(z.string(), z.boolean()),
+  sync_tables_ready: z.boolean(),
+  available_sync_tables: z.number(),
+  total_sync_tables: z.number(),
+  failed_txns: z.number(),
+});
+
+export const syncOperatorActionSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  description: z.string(),
+  command: z.string(),
+  safe: z.boolean(),
+  requires_configured_gateway: z.boolean(),
+});
+
+export const syncStatusResponseSchema = z.object({
+  status: z.string(),
+  configured: z.boolean(),
+  connection: syncConnectionStatusSchema,
+  rollout: z
+    .object({
+      client_contract: z.string(),
+      direct_db_sync: z.boolean(),
+      reference_gateway: z.object({
+        mode: z.string(),
+        description: z.string(),
+      }),
+      provider_gateway: z.object({
+        mode: z.string(),
+        recommended: z.string(),
+        description: z.string(),
+      }),
+    })
+    .optional(),
+  runtime: syncRuntimeStatusSchema,
+  operator_actions: z.array(syncOperatorActionSchema),
+  local_replica_id: z.string().nullable(),
+  pending_txns: z.number(),
+  pending_ops: z.number(),
+  committed_txns: z.number(),
+  failed_txns: z.number(),
+  failed_ops: z.number(),
+  cursor_count: z.number(),
+  last_committed_at: z.string().nullable(),
+  last_failure: syncFailureInfoSchema.nullable(),
 });
 
 export const feedbackRequestSchema = z.object({

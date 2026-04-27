@@ -26,7 +26,7 @@ def get_rules_for_event(event):
     from .edit_tracker import TrackEditsRule, TestReminderRule
     from .error_kb import ErrorKBRule
     from .integrity import IntegrityRule
-    from .session_lifecycle import SessionEndRule
+    from .session_lifecycle import SessionEndRule, SubagentStopRule
     from .subagent_guard import SubagentGitGuardRule
     from .syntax_gate import SyntaxGateRule
     from .block_edit_dist import BlockEditDistRule
@@ -57,6 +57,8 @@ def get_rules_for_event(event):
         ErrorKBRule(),
         # sessionEnd
         SessionEndRule(),
+        # agentStop / subagentStop
+        SubagentStopRule(),
     ]
 
     return [r for r in ALL_RULES if event in r.events]

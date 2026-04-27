@@ -57,15 +57,27 @@ Output includes: relevant mistakes to avoid, patterns to follow, related past wo
 
 ### 1b. Sub-agent Context Injection
 
-When launching sub-agents (explore, task, general-purpose) for complex tasks,
-inject knowledge context into their prompts:
+When dispatching tentacle agents, prefer the structured recall path:
+
+```bash
+python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
+```
+
+This injects bounded `[KNOWLEDGE EVIDENCE]` by running task-scoped
+`briefing.py --task <id> --json` first, then `briefing.py "<query>" --pack --limit 3`
+only when task recall is empty.
+`--task --json` exposes `tagged_entries[]` / `related_entries[]`; `--pack` keeps
+`entries.<category>[]`. Drilldown may append `query-session.py --related <entry_id>`
+only when the first evidence bullet has related entries.
+
+For manual compatibility and ad hoc non-tentacle prompts, inject context directly:
 
 ```bash
 python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
 ```
 
 This outputs a compact `[KNOWLEDGE CONTEXT]` block (~200 tokens) designed to be
-embedded directly into sub-agent prompts. Example workflow:
+embedded directly into prompts. Example manual workflow:
 
 1. Run `briefing.py "fix Docker networking" --for-subagent` → get context block
 2. Prepend the context block to the sub-agent's prompt
@@ -76,6 +88,8 @@ embedded directly into sub-agent prompts. Example workflow:
 ```bash
 python3 ~/.copilot/tools/query-session.py "search terms"              # Compact results
 python3 ~/.copilot/tools/query-session.py "docker error" --verbose    # Full content
+python3 ~/.copilot/tools/query-session.py "deployment error" --semantic            # Compact semantic output
+python3 ~/.copilot/tools/query-session.py "deployment error" --semantic --verbose  # Shows feedback bias only when non-zero
 python3 ~/.copilot/tools/query-session.py "spring" --source copilot   # Filter by agent
 python3 ~/.copilot/tools/query-session.py "gradle" --type research    # Filter by doc type
 ```
@@ -88,6 +102,10 @@ python3 ~/.copilot/tools/query-session.py --context <id>    # Entry + same-sessi
 python3 ~/.copilot/tools/query-session.py --related <id>    # Entry + graph connections
 ```
 
+`query-session.py --detail <id>` writes stateless `detail_open` telemetry:
+- found entry → `hit_count=1`, `selected_entry_ids=[id]`
+- missing entry → `hit_count=0`, `selected_entry_ids=[]`
+
 ### 4. Browse by Category
 
 ```bash
@@ -96,6 +114,18 @@ python3 ~/.copilot/tools/query-session.py --patterns    # Reusable best practice
 python3 ~/.copilot/tools/query-session.py --decisions   # Architecture/design choices
 python3 ~/.copilot/tools/query-session.py --tools       # Tool configs and usage notes
 ```
+
+### 4b. Recall Telemetry Stats
+
+```bash
+python3 ~/.copilot/tools/knowledge-health.py --recall
+python3 ~/.copilot/tools/knowledge-health.py --recall --json
+```
+
+- `recall_events` is lean telemetry (counts/IDs/output size only), not verbose output logging.
+- Default `query-session.py "query"` telemetry aggregates the full emitted surface
+  (primary search + `sessions_fts` + knowledge-entry blocks).
+- `--recall` outputs recall-only stats (text or JSON). No browse UI / contextual summary / provider rerank scope here.
 
 ### 5. Knowledge Graph
 
@@ -146,6 +176,41 @@ python3 ~/.copilot/tools/auto-update-tools.py --force       # Force update now
 python3 ~/.copilot/tools/auto-update-tools.py --status      # Show version info
 python3 ~/.copilot/tools/auto-update-tools.py --doctor      # Health check
 ```
+
+### 8. Optional Sync Runtime (local-first)
+
+Use these only when sync replication is needed. Local `knowledge.db` remains primary.
+
+```bash
+# Single connection string in ~/.copilot/tools/sync-config.json
+python3 ~/.copilot/tools/sync-config.py --setup https://gateway.example.com
+python3 ~/.copilot/tools/sync-config.py --setup-env SYNC_GATEWAY_URL
+python3 ~/.copilot/tools/sync-config.py --status
+python3 ~/.copilot/tools/sync-config.py --status --json
+python3 ~/.copilot/tools/sync-config.py --get
+python3 ~/.copilot/tools/sync-config.py --clear
+
+# Local-first runtime + diagnostics
+python3 ~/.copilot/tools/sync-daemon.py --once
+python3 ~/.copilot/tools/sync-daemon.py --daemon
+python3 ~/.copilot/tools/sync-daemon.py --interval 30
+python3 ~/.copilot/tools/sync-daemon.py --push-only
+python3 ~/.copilot/tools/sync-daemon.py --pull-only
+python3 ~/.copilot/tools/sync-status.py --json
+python3 ~/.copilot/tools/sync-status.py --watch-status --json
+python3 ~/.copilot/tools/sync-status.py --health-check --json
+python3 ~/.copilot/tools/sync-status.py --audit --json
+python3 ~/.copilot/tools/auto-update-tools.py --restart-watch
+python3 ~/.copilot/tools/auto-update-tools.py --watch-status
+python3 ~/.copilot/tools/auto-update-tools.py --health-check
+python3 ~/.copilot/tools/auto-update-tools.py --audit-runtime
+```
+
+If no `connection_string` is configured, daemon sync remains local-only/idle.
+Daemon runtime is hardened for backlog catch-up: adaptive per-cycle limits, multi-page pull in one cycle, and post-pull targeted refresh of `knowledge_fts` / `ke_fts`.
+`sync-config.py --setup` expects an HTTP(S) gateway URL (not a raw Postgres/libSQL DSN).
+`sync-gateway.py` is a **reference/mock** contract surface in this repo (not production authority).
+Default provider rollout recommendation: Neon (backing Postgres) + Railway (thin gateway host), while preserving the same HTTP gateway contract.
 
 ## Interpreting Results
 

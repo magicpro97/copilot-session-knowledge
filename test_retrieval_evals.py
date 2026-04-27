@@ -29,6 +29,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 # Windows encoding fix (match project convention)
@@ -1041,6 +1042,67 @@ def test_adaptive_strictness() -> None:
             pass
 
 
+def test_semantic_feedback_fragment_visibility() -> None:
+    print("\n🧠 12. semantic feedback fragment visibility")
+
+    fake_embed = types.ModuleType("embed")
+    fake_embed.load_config = lambda: {}
+    fake_embed.ensure_embedding_tables = lambda db: None
+    fake_embed.hybrid_search = lambda db, query, config, limit=10: [
+        {
+            "title": "Semantic result with feedback",
+            "session_id": "re-session-001",
+            "doc_type": "pattern",
+            "source": "keyword+semantic",
+            "rrf_score": 0.8123,
+            "feedback_bias": 0.25,
+            "feedback_count": 3,
+            "excerpt": "feedback-aware reranking excerpt",
+            "section_name": "findings",
+        }
+    ]
+
+    old_embed = sys.modules.get("embed")
+    sys.modules["embed"] = fake_embed
+    try:
+        with _Cap() as cap:
+            _qs.semantic_search("feedback rerank", limit=5, verbose=False)
+        compact_out = cap.getvalue()
+        test("semantic compact output omits feedback fragment",
+             "Feedback: bias=" not in compact_out, f"output={compact_out!r}")
+
+        with _Cap() as cap2:
+            _qs.semantic_search("feedback rerank", limit=5, verbose=True)
+        verbose_out = cap2.getvalue()
+        test("semantic verbose output shows non-zero feedback fragment",
+             "Feedback: bias=+0.25 (count=3)" in verbose_out, f"output={verbose_out!r}")
+
+        fake_embed.hybrid_search = lambda db, query, config, limit=10: [
+            {
+                "title": "Semantic result zero feedback",
+                "session_id": "re-session-001",
+                "doc_type": "pattern",
+                "source": "keyword+semantic",
+                "rrf_score": 0.7000,
+                "feedback_bias": 0.0,
+                "feedback_count": 2,
+                "excerpt": "zero-bias excerpt",
+                "section_name": "findings",
+            }
+        ]
+        with _Cap() as cap3:
+            _qs.semantic_search("feedback rerank", limit=5, verbose=True)
+        zero_bias_verbose_out = cap3.getvalue()
+        test("semantic verbose output omits zero-bias feedback fragment",
+             "Feedback: bias=" not in zero_bias_verbose_out,
+             f"output={zero_bias_verbose_out!r}")
+    finally:
+        if old_embed is None:
+            sys.modules.pop("embed", None)
+        else:
+            sys.modules["embed"] = old_embed
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1059,6 +1121,7 @@ def main() -> int:
     test_generate_task_briefing()
     test_ranking_title_over_content()
     test_adaptive_strictness()
+    test_semantic_feedback_fragment_visibility()
 
     print()
     print("=" * 60)

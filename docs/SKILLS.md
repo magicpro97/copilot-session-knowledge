@@ -192,13 +192,40 @@ This adds a `🧠 Session Knowledge — MANDATORY` section to `~/.github/copilot
 
 ### Sub-agent Context Injection
 
-Sub-agents don't access the knowledge base directly. The main agent injects context:
+For tentacle dispatch, prefer the structured recall path in `tentacle.py`:
+
+```bash
+python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
+```
+
+This path injects a bounded `[KNOWLEDGE EVIDENCE]` block by trying task-scoped recall first
+(`briefing.py --task <id> --json`) and using `briefing.py "<query>" --pack --limit 3` only as fallback.
+
+For manual compatibility or ad hoc non-tentacle prompts, inject context directly:
 
 ```bash
 python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
 ```
 
-Output is a compact `[KNOWLEDGE CONTEXT]` block (~200 tokens) for sub-agent prompts.
+Output is a compact `[KNOWLEDGE CONTEXT]` block (~200 tokens) for manual prompt injection.
+
+### Sync rollout reference (Copilot CLI + Claude Code users)
+
+When writing project setup/instruction guidance, keep sync wording aligned to shipped behavior:
+
+- Local-first runtime: local `knowledge.db` remains primary.
+- Single config key: `connection_string` in `~/.copilot/tools/sync-config.json`.
+- Runtime/diagnostics commands:
+  - `python3 ~/.copilot/tools/sync-config.py --setup <url>|--setup-env <ENV_VAR>|--status|--status --json|--get|--clear`
+  - `python3 ~/.copilot/tools/sync-daemon.py --once|--daemon|--interval <seconds>|--push-only|--pull-only`
+  - `python3 ~/.copilot/tools/sync-status.py [--json]|--watch-status [--json]|--health-check [--json]|--audit [--json]`
+  - `python3 ~/.copilot/tools/auto-update-tools.py --restart-watch|--watch-status|--health-check|--audit-runtime`
+- Runtime hardening: daemon uses backlog-aware adaptive limits, consumes multi-page pull in one cycle, and refreshes touched `knowledge_fts` / `ke_fts` rows after pull apply.
+- If `connection_string` is missing, sync daemon remains local-only/idle (not fatal).
+- `sync-gateway.py` is **reference/mock only** (`/sync/push`, `/sync/pull`, `/healthz`) — not a production authority.
+- `sync-config.py --setup` expects an HTTP(S) gateway URL, not a raw Postgres/libSQL DSN.
+- Default provider rollout recommendation: Neon (backing Postgres) + Railway (thin gateway host); treat this as default guidance, not a hard vendor lock.
+- Browse diagnostics are read-only: `/healthz` advertises `/api/sync/status`, and `/api/sync/status` reports local queue/failure/config/cursor state.
 
 ## Context Load Guidance
 
@@ -208,15 +235,18 @@ Output is a compact `[KNOWLEDGE CONTEXT]` block (~200 tokens) for sub-agent prom
 
 Start narrow, then escalate:
 
-- Use `briefing.py --compact` (~500 tokens) before escalating to `--full` (~3 K tokens) for your own briefings. For sub-agent prompts, use `briefing.py --for-subagent` (~200 tokens) — it is the cheapest output mode.
+- Use `briefing.py --compact` (~500 tokens) before escalating to `--full` (~3 K tokens) for your own briefings. For tentacle delegation, use the structured `tentacle.py ... --briefing` path first. Keep `briefing.py --for-subagent` (~200 tokens) for manual compatibility.
 - Instruction files with `applyTo: '**/*'` are injected into **every** context — scope them to specific file patterns (e.g., `**/*.ts`) when they only apply to certain files.
-- Sub-agents should receive a focused `[KNOWLEDGE CONTEXT]` block via `briefing.py --for-subagent`, not the full KB dump.
+- Tentacle-dispatched sub-agents should receive bounded `[KNOWLEDGE EVIDENCE]` from `tentacle.py ... --briefing`, not a full KB dump.
+- Manual/ad hoc sub-agent prompts can still use `[KNOWLEDGE CONTEXT]` via `briefing.py --for-subagent`.
 
 ### Progressive escalation
 
 - Retrieve only what the current step needs. Full session history and semantic search are available on demand via `query-session.py` — do not inject them by default.
-- For briefings: `--for-subagent` (~200 tokens) → `--compact` (~500 tokens) → `--full` (~3 K tokens) in order of cost.
+- For delegated tentacle work: structured `tentacle.py ... --briefing` first (task JSON then pack fallback). For manual prompts: `--for-subagent` (~200 tokens) → `--compact` (~500 tokens) → `--full` (~3 K tokens).
 - For searches: FTS keyword first; add `--semantic` only when keyword results are insufficient.
+  Use `--semantic --verbose` only when debugging ranking details; feedback bias appears there
+  only when a non-zero bias was applied.
 
 ### Propagation discipline
 
