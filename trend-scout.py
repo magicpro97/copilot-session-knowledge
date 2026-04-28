@@ -1500,9 +1500,9 @@ def create_stage(
     """Stage 5: render and create (or update) issues; returns list of issue URLs.
 
     If ``issue_map`` (marker → {number, state, body}) is provided, repos whose
-    marker already exists will have their issue body *updated in place* when the
-    newly rendered content differs — without reopening closed issues.  Repos not
-    present in the map follow the normal create path.
+    marker already exists follow marker-aware handling: open issues may be updated
+    in place when content changed, while closed issues are treated as suppressors
+    and skipped. Repos not present in the map follow the normal create path.
 
     If ``models_client`` is provided and ``analysis_cfg`` is non-empty, attempts to
     enrich each issue's learnings section via GitHub Models.  Falls back silently to
@@ -1529,6 +1529,19 @@ def create_stage(
         full_name: str = repo["full_name"]
         marker = repo_marker(full_name, marker_prefix)
         is_update = issue_map is not None and marker in issue_map
+        existing_issue: dict | None = None
+        issue_number: int | None = None
+        issue_state: str = "open"
+        existing_body: str = ""
+
+        if is_update:
+            existing_issue = issue_map[marker]  # type: ignore[index]
+            issue_number = existing_issue["number"]
+            issue_state = existing_issue.get("state", "open")
+            if str(issue_state).lower() == "closed":
+                print(f"  ⏭  Skip (closed marker suppresses writes): {full_name} #{issue_number}")
+                continue
+            existing_body = existing_issue.get("body") or ""
 
         if not is_update:
             # Skip repos already scouted when there is no update map entry.
@@ -1575,12 +1588,7 @@ def create_stage(
         body = render_issue_body(repo, readme, marker, our_topics, learnings=effective_learnings)
 
         # ── Update path: existing issue found ─────────────────────────────────
-        if is_update:
-            existing_issue = issue_map[marker]  # type: ignore[index]
-            issue_number: int = existing_issue["number"]
-            issue_state: str = existing_issue.get("state", "open")
-            existing_body: str = existing_issue.get("body") or ""
-
+        if is_update and issue_number is not None:
             if _strip_volatile_text(body.strip()) == _strip_volatile_text(existing_body.strip()):
                 print(f"  ⏭  Skip (body unchanged): {full_name} #{issue_number}")
                 continue
@@ -1588,7 +1596,7 @@ def create_stage(
             if dry_run:
                 print(f"\n  [dry-run] Would update issue #{issue_number}: {title!r}")
                 print(f"  [dry-run] Target repo: {target_repo}")
-                print(f"  [dry-run] State: {issue_state} (will NOT reopen if closed)")
+                print(f"  [dry-run] State: {issue_state}")
                 print(f"  [dry-run] Marker: {marker}")
                 print(f"  [dry-run] Body preview ({len(body)} chars):")
                 preview = body[:600].replace("\n", "\n    ")

@@ -490,8 +490,8 @@ repository, the bundled config currently sets `2`, which means a candidate with 
 new idea is vetoed instead of creating a new issue. Veto decisions are printed to stdout as
 `⊘ Veto (<reason>): owner/repo`.
 
-> **Note:** the veto gate applies to **new creates only** — it does not suppress updates to issues that
-> already exist in the repo.
+> **Note:** the veto gate applies to **new creates only** — existing **open** issues can still update when
+> marker-matched and changed. Marker-matched **closed** issues suppress writes.
 
 ### Grace window and run state
 
@@ -517,7 +517,8 @@ hash of the lowercased `owner/name` embedded as an HTML comment:
 `<!-- trend-scout:repo:<16-char-hex> -->`.
 
 - **Marker missing** → create a new issue.
-- **Marker present + rendered body changed** → update the existing issue in place (closed issues stay closed).
+- **Marker present + existing issue is open + rendered body changed** → update the existing issue in place.
+- **Marker present + existing issue is closed** → suppress (skip write/update).
 - **Marker present + rendered body unchanged** → skip.
 
 ### Config tuning (`trend-scout-config.json`)
@@ -539,7 +540,7 @@ hash of the lowercased `owner/name` embedded as an HTML comment:
 | `analysis.token_env` | Environment variable that holds the models-capable token (default `GITHUB_MODELS_TOKEN`) |
 | `analysis.max_learnings` | Caps LLM-generated bullets per repo before rendering |
 | `analysis.temperature`, `analysis.max_tokens`, `analysis.timeout` | Controls inference determinism, output size, and request timeout |
-| `veto.require_domain_signals` | Script default: `0` (disabled). Set `1` to skip candidates whose heuristic engine produces only the generic fallback bullet (no domain-specific signals). Applies to new creates only; existing issues are still eligible for update. |
+| `veto.require_domain_signals` | Script default: `0` (disabled). Set `1` to skip candidates whose heuristic engine produces only the generic fallback bullet (no domain-specific signals). Applies to new creates only; existing open issues are still eligible for update (marker-matched closed issues suppress writes). |
 | `veto.min_distinct_learnings` | Script default: `0` (disabled). Requires at least _N_ distinct novel insight families after already-implemented bullets are removed; values like `2` suppress create-stage issues when only one genuinely new insight remains. Applies to new creates only. |
 | `run_control.grace_window_hours` | Script default: `0` (disabled). Hours to wait between full runs. Grace window state is persisted to `.trend-scout-state.json`. Use `--force` to bypass. |
 | `run_control.state_file` | Path to the run-state JSON file. `null` or absent resolves to `.trend-scout-state.json` adjacent to the script. |

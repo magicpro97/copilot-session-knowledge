@@ -1114,21 +1114,68 @@ with mock.patch.object(ts.GitHubClient, "patch_issue", return_value=None) as moc
          len(urls_unchanged) == 0,
          str(urls_unchanged))
 
-# closed issue: patch updates body but does NOT reopen (state not passed to patch_issue)
+# closed issue: marker acts as suppressor (no update write, even when body differs)
 with mock.patch.object(ts.GitHubClient, "patch_issue",
                        return_value={"html_url": "https://github.com/x/y/issues/99"}) as mock_patch4:
     client_u4 = ts.GitHubClient(token="ghp_test")
+    _closed_dry_out = io.StringIO()
+    with mock.patch("sys.stdout", new=_closed_dry_out):
+        urls_closed_dry = ts.create_stage(
+            [(REPO_FIXTURE, "readme text")],
+            client_u4, cfg_c, {_marker_update},
+            dry_run=True,
+            issue_map=_issue_map_closed,
+        )
+    test("closed issue dry-run: suppressed (no would-update URL)",
+         len(urls_closed_dry) == 0,
+         str(urls_closed_dry))
+    test("closed issue dry-run: does not print would-update",
+         "Would update issue #99" not in _closed_dry_out.getvalue())
+
     urls_closed_update = ts.create_stage(
         [(REPO_FIXTURE, "readme text")],
         client_u4, cfg_c, {_marker_update},
         dry_run=False,
         issue_map=_issue_map_closed,
     )
-    test("closed issue update: patch_issue called (body refreshed)",
-         mock_patch4.call_count == 1)
-    closed_kwargs = mock_patch4.call_args.kwargs if mock_patch4.call_args else {}
-    test("closed issue update: state NOT in patch call (issue stays closed)",
-         "state" not in closed_kwargs)
+    test("closed issue update: patch_issue NOT called (suppressed)",
+         mock_patch4.call_count == 0,
+         f"call_count={mock_patch4.call_count}")
+    test("closed issue update: no URL emitted",
+         len(urls_closed_update) == 0,
+         str(urls_closed_update))
+
+# closed issue: suppression short-circuits before models/heuristic/render paths
+with mock.patch.object(ts, "_analyze_repo_with_models", return_value=["**LLM**: keep"]) as mock_closed_analyze, \
+     mock.patch.object(ts, "_derive_learnings", return_value=["**Heuristic**: keep"]) as mock_closed_derive, \
+     mock.patch.object(ts, "render_issue_body", return_value="rendered body") as mock_closed_render, \
+     mock.patch.object(ts.GitHubClient, "patch_issue", return_value=None) as mock_closed_patch:
+    client_u5 = ts.GitHubClient(token="ghp_test")
+    urls_closed_short = ts.create_stage(
+        [(REPO_FIXTURE, "readme text")],
+        client_u5,
+        cfg_c,
+        {_marker_update},
+        dry_run=False,
+        issue_map=_issue_map_closed,
+        models_client=mock.Mock(),
+        analysis_cfg={"enabled": True},
+    )
+    test("closed issue short-circuit: no URL emitted",
+         len(urls_closed_short) == 0,
+         str(urls_closed_short))
+    test("closed issue short-circuit: models analysis NOT called",
+         mock_closed_analyze.call_count == 0,
+         f"analyze_calls={mock_closed_analyze.call_count}")
+    test("closed issue short-circuit: heuristic derivation NOT called",
+         mock_closed_derive.call_count == 0,
+         f"derive_calls={mock_closed_derive.call_count}")
+    test("closed issue short-circuit: issue body render NOT called",
+         mock_closed_render.call_count == 0,
+         f"render_calls={mock_closed_render.call_count}")
+    test("closed issue short-circuit: patch_issue NOT called",
+         mock_closed_patch.call_count == 0,
+         f"patch_calls={mock_closed_patch.call_count}")
 
 
 # ─── 8b-reg1. limit=N does NOT drop update-eligible repos appearing after cap ──

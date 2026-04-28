@@ -478,9 +478,9 @@ python3 ~/.copilot/tools/trend-scout.py --token TOKEN   # Explicit GitHub token 
 python3 ~/.copilot/tools/trend-scout.py --force         # Bypass grace window; force a new run
 ```
 
-`--limit` caps **new issue creates** only; marker-matched updates are still processed.
+`--limit` caps **new issue creates** only; marker-matched **open-issue** updates are still processed.
 
-Requires a `GITHUB_TOKEN` env var (or `--token TOKEN` flag) to avoid rate limits. The tool auto-creates the `trend-scout` label and deduplicates against both open and closed issues using hidden deterministic markers — each marker is a 16-character truncated SHA-256 hash of the lowercased `owner/name`. If a marker already exists, Trend Scout updates that issue in place when content changed (closed issues stay closed).
+Requires a `GITHUB_TOKEN` env var (or `--token TOKEN` flag) to avoid rate limits. The tool auto-creates the `trend-scout` label and deduplicates against both open and closed issues using hidden deterministic markers — each marker is a 16-character truncated SHA-256 hash of the lowercased `owner/name`. If a marker already exists on an **open** issue, Trend Scout updates that issue in place when content changed. Marker-matched **closed** issues are treated as suppressors and skipped (no update write).
 
 **Optional GitHub Models analysis:** set `analysis.enabled=true` in `trend-scout-config.json` to replace the repetitive heuristic learning bullets with repo-specific LLM analysis. The models path calls `https://models.github.ai/inference/chat/completions`, expects a publisher-qualified model ID such as `openai/gpt-4o-mini`, and reads its credential from `analysis.token_env` (default `GITHUB_MODELS_TOKEN`). If the token is missing, the model ID is invalid, or the response cannot be parsed, Trend Scout falls back to the heuristic engine automatically.
 
