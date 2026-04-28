@@ -67,7 +67,15 @@ def run_all_tests() -> int:
     test("Template uses psycopg dependency", "import psycopg" in app_text)
     test(
         "Template uses autocommit reads to avoid idle transactions",
-        "self.conn.autocommit = True" in app_text,
+        "autocommit = True" in app_text,
+    )
+    test(
+        "Template reconnects closed provider connections",
+        "def _reconnect" in app_text and "self.conn.closed" in app_text,
+    )
+    test(
+        "Template retries after provider OperationalError",
+        "except psycopg.OperationalError" in app_text,
     )
     test(
         "Template does not default connection to manual transaction mode",

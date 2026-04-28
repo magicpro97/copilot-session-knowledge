@@ -132,7 +132,7 @@ class _GatewayState:
                 "replica_id": "remote-a",
                 "created_at": "2026-01-01T00:00:00Z",
                 "committed_at": "2026-01-01T00:00:00Z",
-                "status": "committed",
+                "status": "pending",
                 "ops": [
                     {
                         "table_name": "sessions",
@@ -324,6 +324,42 @@ test(
     changes_after == changes_before,
     f"changes {changes_before}->{changes_after}",
 )
+for txn_id, txn_replica, committed_at in [
+    ("remote-pending-filter", "remote-replica", "2026-01-01T00:00:00Z"),
+    ("local-pending-filter", "local-test", ""),
+]:
+    db.execute(
+        "INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at) VALUES (?, ?, 'pending', '2026-01-01T00:00:00Z', ?)",
+        (txn_id, txn_replica, committed_at),
+    )
+    db.execute(
+        """
+        INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
+        VALUES (?, 'sessions', 'upsert', ?, '{}', 0, '2026-01-01T00:00:00Z')
+        """,
+        (txn_id, txn_id),
+    )
+repaired = sync_daemon.repair_nonlocal_committed_txns(db, "local-test")
+remote_status = db.execute(
+    "SELECT status FROM sync_txns WHERE txn_id='remote-pending-filter'"
+).fetchone()
+pending_ids = [
+    t["txn_id"]
+    for t in sync_daemon.collect_pending_txns(db, limit=20, replica_id="local-test")
+]
+test(
+    "sync-daemon repairs committed nonlocal pending txns",
+    repaired >= 1 and remote_status is not None and remote_status[0] == "committed",
+    f"repaired={repaired} remote_status={remote_status}",
+)
+test(
+    "sync-daemon only collects local pending txns for push",
+    "local-pending-filter" in pending_ids and "remote-pending-filter" not in pending_ids,
+    str(pending_ids),
+)
+db.execute("DELETE FROM sync_ops WHERE txn_id IN ('remote-pending-filter', 'local-pending-filter')")
+db.execute("DELETE FROM sync_txns WHERE txn_id IN ('remote-pending-filter', 'local-pending-filter')")
+db.commit()
 db.close()
 
 # DB-open failures should degrade a cycle instead of crashing the background loop.
@@ -385,7 +421,81 @@ try:
     test("local txn marked committed", row is not None and row[0] == "committed", f"row={row}")
     remote_row = db.execute("SELECT id, summary FROM sessions WHERE id='session-remote-1'").fetchone()
     test("remote pull applied to sessions", remote_row is not None and remote_row[1] == "remote row")
+    remote_txn_status = db.execute("SELECT status FROM sync_txns WHERE txn_id='remote-txn-1'").fetchone()
+    test(
+        "remote pulled txn is stored committed locally",
+        remote_txn_status is not None and remote_txn_status[0] == "committed",
+        str(remote_txn_status),
+    )
     db.close()
+
+    db = sqlite3.connect(str(db_path))
+    db.row_factory = sqlite3.Row
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    for txn_id, created_at in [
+        ("local-txn-response-check", "2026-02-01T00:00:00Z"),
+        ("local-txn-unsent", "2026-02-01T00:00:01Z"),
+    ]:
+        db.execute(
+            "INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at) VALUES (?, ?, 'pending', ?, '')",
+            (txn_id, "local-test", created_at),
+        )
+        db.execute(
+            """
+            INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
+            VALUES (?, 'sessions', 'upsert', ?, ?, 0, ?)
+            """,
+            (
+                txn_id,
+                f"session-{txn_id}",
+                json.dumps({
+                    "id": f"session-{txn_id}",
+                    "path": f"/repo/{txn_id}",
+                    "summary": txn_id,
+                    "indexed_at": now,
+                }),
+                now,
+            ),
+        )
+    db.commit()
+
+    original_request_json = sync_daemon._request_json
+    try:
+        def _phantom_push_response(*_args, **_kwargs):
+            return {
+                "accepted_txn_ids": ["local-txn-response-check", "local-txn-unsent"],
+                "duplicate_txn_ids": [],
+                "latest_txn_id": "local-txn-response-check",
+            }
+
+        sync_daemon._request_json = _phantom_push_response
+        try:
+            sync_daemon.push_once(db, "http://sync.test", "local-test", limit=1)
+            phantom_rejected = False
+            phantom_error = ""
+        except ValueError as exc:
+            phantom_rejected = "unsent txn_ids" in str(exc)
+            phantom_error = str(exc)
+        rows = db.execute(
+            """
+            SELECT txn_id, status
+            FROM sync_txns
+            WHERE txn_id IN ('local-txn-response-check', 'local-txn-unsent')
+            ORDER BY txn_id
+            """
+        ).fetchall()
+        test("sync-daemon rejects gateway txn_ids not in pushed batch", phantom_rejected, phantom_error)
+        test("unsent txn_ids remain pending after rejected gateway response", all(r[1] == "pending" for r in rows), str(rows))
+    finally:
+        sync_daemon._request_json = original_request_json
+        db.execute(
+            "DELETE FROM sync_ops WHERE txn_id IN ('local-txn-response-check', 'local-txn-unsent')"
+        )
+        db.execute(
+            "DELETE FROM sync_txns WHERE txn_id IN ('local-txn-response-check', 'local-txn-unsent')"
+        )
+        db.commit()
+        db.close()
 
     status_obj = sync_status.collect_status(db_path=db_path, check_health=True)
     test("sync-status finds local replica id", status_obj["local_replica_id"] == "local-test")

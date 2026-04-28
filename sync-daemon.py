@@ -22,7 +22,7 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import uuid
@@ -47,6 +47,7 @@ SYNC_FLUSH_MARKER = MARKERS_DIR / "sync-flush.json"
 DEFAULT_INTERVAL = 60
 MAX_SYNC_LIMIT = 1000
 MAX_PULL_PAGES_PER_CYCLE = 10
+PUSH_TIMEOUT_SECONDS = 120
 
 
 SYNC_SCHEMA_SQL = """
@@ -133,7 +134,7 @@ REQUIRED_SYNC_TABLES = {
 
 
 def utc_now() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def load_sync_config() -> dict:
@@ -365,16 +366,26 @@ def _request_json(url: str, method: str = "GET", payload: dict | None = None, ti
     raise ValueError("gateway response must be a JSON object")
 
 
-def collect_pending_txns(db: sqlite3.Connection, limit: int = 50) -> list[dict]:
+def collect_pending_txns(
+    db: sqlite3.Connection,
+    limit: int = 50,
+    replica_id: str | None = None,
+) -> list[dict]:
+    where = "WHERE status = 'pending'"
+    params: list[object] = []
+    if replica_id:
+        where += " AND replica_id = ?"
+        params.append(replica_id)
+    params.append(max(1, limit))
     txns = db.execute(
-        """
+        f"""
         SELECT txn_id, replica_id, created_at, committed_at, status
         FROM sync_txns
-        WHERE status = 'pending'
+        {where}
         ORDER BY created_at ASC
         LIMIT ?
         """,
-        (max(1, limit),),
+        tuple(params),
     ).fetchall()
     out = []
     for row in txns:
@@ -410,11 +421,23 @@ def collect_pending_txns(db: sqlite3.Connection, limit: int = 50) -> list[dict]:
     return out
 
 
-def _effective_sync_limit(db: sqlite3.Connection, requested_limit: int) -> int:
+def _effective_sync_limit(
+    db: sqlite3.Connection,
+    requested_limit: int,
+    replica_id: str | None = None,
+) -> int:
     limit = max(1, min(MAX_SYNC_LIMIT, int(requested_limit)))
+    pending_where = "WHERE status='pending'"
+    pending_params: tuple[object, ...] = ()
+    if replica_id:
+        pending_where += " AND replica_id=?"
+        pending_params = (replica_id,)
     try:
         pending = int(
-            db.execute("SELECT COUNT(*) FROM sync_txns WHERE status='pending'").fetchone()[0]
+            db.execute(
+                f"SELECT COUNT(*) FROM sync_txns {pending_where}",
+                pending_params,
+            ).fetchone()[0]
         )
     except (sqlite3.DatabaseError, TypeError, ValueError):
         return limit
@@ -423,7 +446,7 @@ def _effective_sync_limit(db: sqlite3.Connection, requested_limit: int) -> int:
 
     boosted = limit
     if pending >= 5000:
-        boosted = max(boosted, 500)
+        boosted = max(boosted, 100)
     elif pending >= 1000:
         boosted = max(boosted, 250)
     elif pending >= 200:
@@ -437,12 +460,14 @@ def _effective_sync_limit(db: sqlite3.Connection, requested_limit: int) -> int:
                 FROM sync_ops o
                 JOIN sync_txns t ON t.txn_id = o.txn_id
                 WHERE t.status = 'pending'
+                  AND (? = '' OR t.replica_id = ?)
                   AND o.table_name = 'knowledge_relations'
-                """
+                """,
+                (replica_id or "", replica_id or ""),
             ).fetchone()[0]
         )
         if pending_relations * 100 >= pending * 60:
-            boosted = max(boosted, min(MAX_SYNC_LIMIT, limit * 5))
+            boosted = max(boosted, min(MAX_SYNC_LIMIT, max(100, limit)))
     except (sqlite3.DatabaseError, TypeError, ValueError):
         pass
 
@@ -609,17 +634,62 @@ def mark_txns_committed(db: sqlite3.Connection, txn_ids: list[str]) -> None:
         )
 
 
+def repair_nonlocal_committed_txns(db: sqlite3.Connection, local_replica_id: str) -> int:
+    cur = db.execute(
+        """
+        UPDATE sync_txns
+        SET status='committed'
+        WHERE status='pending'
+          AND replica_id != ?
+          AND COALESCE(committed_at, '') != ''
+        """,
+        (local_replica_id,),
+    )
+    return int(cur.rowcount or 0)
+
+
+def _gateway_txn_ids(response: dict, field: str) -> list[str]:
+    raw = response.get(field, []) or []
+    if not isinstance(raw, list):
+        raise ValueError(f"gateway response {field} must be a list")
+
+    txn_ids: list[str] = []
+    for txn_id in raw:
+        if not isinstance(txn_id, str) or not txn_id:
+            raise ValueError(f"gateway response {field} contains invalid txn_id")
+        txn_ids.append(txn_id)
+    return txn_ids
+
+
 def push_once(db: sqlite3.Connection, base_url: str, replica_id: str, limit: int = 50) -> dict:
-    txns = collect_pending_txns(db, limit=limit)
+    txns = collect_pending_txns(db, limit=limit, replica_id=replica_id)
     if not txns:
         return {"attempted": 0, "accepted": 0, "duplicates": 0}
 
+    sent_txn_ids = {str(t.get("txn_id", "") or "") for t in txns}
     payload = {"replica_id": replica_id, "txns": txns}
     endpoint = base_url.rstrip("/") + "/sync/push"
-    response = _request_json(endpoint, method="POST", payload=payload, timeout=15)
+    response = _request_json(
+        endpoint,
+        method="POST",
+        payload=payload,
+        timeout=PUSH_TIMEOUT_SECONDS,
+    )
 
-    accepted = list(response.get("accepted_txn_ids", []) or [])
-    duplicates = list(response.get("duplicate_txn_ids", []) or [])
+    accepted = _gateway_txn_ids(response, "accepted_txn_ids")
+    duplicates = _gateway_txn_ids(response, "duplicate_txn_ids")
+    overlap = set(accepted).intersection(duplicates)
+    if overlap:
+        raise ValueError(
+            "gateway response listed txn_ids as both accepted and duplicate: "
+            + ", ".join(sorted(overlap)[:5])
+        )
+    unexpected = (set(accepted) | set(duplicates)) - sent_txn_ids
+    if unexpected:
+        raise ValueError(
+            "gateway response referenced unsent txn_ids: "
+            + ", ".join(sorted(unexpected)[:5])
+        )
     latest = str(response.get("latest_txn_id", "") or "")
     mark_txns_committed(db, accepted + duplicates)
     if latest:
@@ -640,7 +710,7 @@ def apply_remote_txn(db: sqlite3.Connection, txn: dict) -> None:
     replica_id = str(txn.get("replica_id", "") or "")
     created_at = str(txn.get("created_at", "") or utc_now())
     committed_at = str(txn.get("committed_at", "") or utc_now())
-    status = str(txn.get("status", "committed") or "committed")
+    status = "committed"
     ops = txn.get("ops", [])
 
     if not txn_id:
@@ -655,7 +725,7 @@ def apply_remote_txn(db: sqlite3.Connection, txn: dict) -> None:
             status='committed',
             committed_at=excluded.committed_at
         """,
-        (txn_id, replica_id or "remote", status if status in ("pending", "committed", "failed") else "committed", created_at, committed_at),
+        (txn_id, replica_id or "remote", status, created_at, committed_at),
     )
 
     for index, op in enumerate(ops):
@@ -914,6 +984,7 @@ def run_sync_cycle(
     try:
         db = get_db(db_path)
         replica_id = get_local_replica_id(db)
+        repair_nonlocal_committed_txns(db, replica_id)
         if not base_url:
             set_sync_state(db, "last_error", "sync disabled: no connection_string configured")
             db.commit()
@@ -929,10 +1000,10 @@ def run_sync_cycle(
             return result
 
         if do_push:
-            effective_limit = _effective_sync_limit(db, limit)
+            effective_limit = _effective_sync_limit(db, limit, replica_id=replica_id)
             result["push"] = push_once(db, base_url, replica_id, limit=effective_limit)
         else:
-            effective_limit = _effective_sync_limit(db, limit)
+            effective_limit = _effective_sync_limit(db, limit, replica_id=replica_id)
         if do_pull:
             result["pull"] = pull_once(db, base_url, replica_id, limit=effective_limit)
 

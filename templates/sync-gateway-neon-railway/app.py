@@ -54,13 +54,37 @@ class GatewayStore:
             )
 
         self.database_url = database_url
-        self.conn = psycopg.connect(database_url, row_factory=dict_row)
-        self.conn.autocommit = True
         self.lock = threading.Lock()
+        self.conn = self._connect()
         self._init_schema()
 
-    def _init_schema(self) -> None:
+    def _connect(self):
+        conn = psycopg.connect(self.database_url, row_factory=dict_row)
+        conn.autocommit = True
+        return conn
+
+    def _ensure_connection(self) -> None:
+        if self.conn.closed:
+            self.conn = self._connect()
+
+    def _reconnect(self) -> None:
+        try:
+            self.conn.close()
+        except psycopg.Error:
+            pass
+        self.conn = self._connect()
+
+    def _with_connection(self, action):
         with self.lock:
+            self._ensure_connection()
+            try:
+                return action()
+            except psycopg.OperationalError:
+                self._reconnect()
+                return action()
+
+    def _init_schema(self) -> None:
+        def create_schema() -> None:
             with self.conn.cursor() as cur:
                 cur.execute(
                     """
@@ -89,12 +113,16 @@ class GatewayStore:
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_txns_seq ON txns(seq)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_ops_txn_id ON ops(txn_id)")
 
+        self._with_connection(create_schema)
+
     def latest_txn_id(self) -> str | None:
-        with self.lock:
+        def read_latest() -> str | None:
             with self.conn.cursor() as cur:
                 cur.execute("SELECT txn_id FROM txns ORDER BY seq DESC LIMIT 1")
                 row = cur.fetchone()
-        return row["txn_id"] if row else None
+            return row["txn_id"] if row else None
+
+        return self._with_connection(read_latest)
 
     def _insert_txn_in_current_transaction(self, txn: dict) -> bool:
         payload = json.dumps(txn, separators=(",", ":"), ensure_ascii=False)
@@ -132,9 +160,9 @@ class GatewayStore:
         return True
 
     def insert_txns(self, txns: list[dict]) -> tuple[list[str], list[str]]:
-        accepted_txn_ids: list[str] = []
-        duplicate_txn_ids: list[str] = []
-        with self.lock:
+        def insert_batch() -> tuple[list[str], list[str]]:
+            accepted_txn_ids: list[str] = []
+            duplicate_txn_ids: list[str] = []
             with self.conn.transaction():
                 for txn in txns:
                     txn_id = txn["txn_id"]
@@ -143,10 +171,12 @@ class GatewayStore:
                         accepted_txn_ids.append(txn_id)
                     else:
                         duplicate_txn_ids.append(txn_id)
-        return accepted_txn_ids, duplicate_txn_ids
+            return accepted_txn_ids, duplicate_txn_ids
+
+        return self._with_connection(insert_batch)
 
     def pull(self, after_txn_id: str | None, limit: int) -> tuple[list[dict], str | None, bool]:
-        with self.lock:
+        def read_rows() -> list[dict]:
             with self.conn.cursor() as cur:
                 after_seq = 0
                 if after_txn_id:
@@ -166,8 +196,9 @@ class GatewayStore:
                     """,
                     (after_seq, limit + 1),
                 )
-                rows = cur.fetchall()
+                return cur.fetchall()
 
+        rows = self._with_connection(read_rows)
         has_more = len(rows) > limit
         if has_more:
             rows = rows[:limit]

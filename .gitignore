@@ -1,5 +1,6 @@
 # Sensitive files
 embedding-config.json
+sync-config.json
 *.db
 *.db-journal
 *.db-wal
