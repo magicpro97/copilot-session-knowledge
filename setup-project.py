@@ -579,7 +579,8 @@ copy to avoid duplicate always-loaded instructions and reduce context bloat.
         print("  1. Run: python3 ~/.copilot/tools/build-session-index.py --all")
         print("  2. (Optional) Configure sync gateway URL: python3 ~/.copilot/tools/sync-config.py --setup <https://gateway>")
         print("     Default provider rollout recommendation: Neon (Postgres) + Railway (thin gateway host).")
-        print("  3. Customize for your project:")
+        print("  3. Trend Scout automation: keep trend-scout.py in scheduled/manual flow (trend-scout.yml), not preToolUse/postToolUse hooks.")
+        print("  4. Customize for your project:")
         print("     /session-knowledge-creator   — Generate project-specific knowledge skill")
         if not args.no_tentacle:
             print("     /tentacle-creator            — Generate project-specific tentacle skill")

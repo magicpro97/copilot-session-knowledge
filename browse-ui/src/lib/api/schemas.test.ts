@@ -5,6 +5,7 @@ import {
   evidenceGraphResponseSchema,
   compareResponseSchema,
   evalResponseSchema,
+  trendScoutStatusResponseSchema,
   syncStatusResponseSchema,
   searchResponseSchema,
   sessionListResponseSchema,
@@ -179,5 +180,67 @@ describe("api schemas", () => {
     expect(parsed.runtime.db_mode).toBe("file");
     expect(parsed.operator_actions[0].safe).toBe(true);
     expect(parsed.failed_ops).toBe(1);
+  });
+
+  it("parses trend scout diagnostics status response", () => {
+    const parsed = trendScoutStatusResponseSchema.parse({
+      status: "grace-window",
+      configured: true,
+      config: {
+        configured: true,
+        config_path: "/home/user/repo/trend-scout-config.json",
+        script_path: "/home/user/repo/trend-scout.py",
+        target_repo: "magicpro97/copilot-session-knowledge",
+      },
+      analysis: {
+        enabled: false,
+        model: "openai/gpt-4o-mini",
+        token_env: "GITHUB_MODELS_TOKEN",
+        token_present: false,
+      },
+      grace_window: {
+        enabled: true,
+        grace_window_hours: 20,
+        state_file: "/home/user/repo/.trend-scout-state.json",
+        state_file_exists: true,
+        last_run_utc: "2026-01-01T00:00:00+00:00",
+        elapsed_hours: 3.5,
+        remaining_hours: 16.5,
+        would_skip_without_force: true,
+        reason: "last run 3.5h ago, grace window 20h (16.5h remaining)",
+      },
+      audit: {
+        summary: {
+          ok: false,
+          total_checks: 4,
+          warning_checks: 1,
+        },
+        checks: [
+          {
+            id: "analysis-token",
+            title: "Analysis token availability",
+            status: "warning",
+            detail: "analysis enabled but env GITHUB_MODELS_TOKEN is not set",
+          },
+        ],
+      },
+      operator_actions: [
+        {
+          id: "trend-scout-dry-run",
+          title: "Dry-run full pipeline preview",
+          description: "Preview enrichment + rendering outcomes without creating/updating issues.",
+          command: "python3 trend-scout.py --dry-run --limit 5",
+          safe: true,
+          requires_configured_target: true,
+        },
+      ],
+      runtime: {
+        generated_at: "2026-01-01T01:00:00Z",
+      },
+    });
+
+    expect(parsed.config.target_repo).toBe("magicpro97/copilot-session-knowledge");
+    expect(parsed.grace_window.would_skip_without_force).toBe(true);
+    expect(parsed.operator_actions[0].safe).toBe(true);
   });
 });

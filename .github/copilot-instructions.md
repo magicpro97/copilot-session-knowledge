@@ -137,4 +137,5 @@ A set of standalone Python CLI scripts that index AI coding sessions (Copilot CL
 - **Sync semantics** — local DB is authoritative for reads; remote sync is optional transport/storage, not a query-serving authority.
 - **Sync connection contract** — `sync-config.py --setup` accepts only HTTP(S) gateway URLs; do not claim direct Postgres/libSQL DSN support in CLI core.
 - **Provider rollout default** — recommend Neon (backing Postgres) + Railway (thin gateway host) as default rollout guidance, not a hard vendor lock.
+- **Trend Scout automation surface** — keep `trend-scout.py` scheduled/manual (`trend-scout.yml` or explicit CLI runs), not bound to interactive `preToolUse`/`postToolUse` hooks (avoid hook spam).
 - **DB migrations** — add new migrations to the `MIGRATIONS` list in `migrate.py` with incrementing version numbers and a descriptive name.

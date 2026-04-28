@@ -212,6 +212,18 @@ Daemon runtime is hardened for backlog catch-up: adaptive per-cycle limits, mult
 `sync-gateway.py` is a **reference/mock** contract surface in this repo (not production authority).
 Default provider rollout recommendation: Neon (backing Postgres) + Railway (thin gateway host), while preserving the same HTTP gateway contract.
 
+### 9. Trend Scout operations (scheduled, not hook-driven)
+
+```bash
+python3 ~/.copilot/tools/trend-scout.py --search-only
+python3 ~/.copilot/tools/trend-scout.py --dry-run --limit 1 --force
+python3 ~/.copilot/tools/trend-scout.py --limit 1 --force
+```
+
+- Trend Scout creates **or updates** marker-linked issues.
+- Veto and grace behavior come from `trend-scout-config.json` (script defaults may differ from repo-configured values).
+- Keep Trend Scout out of interactive hooks (`preToolUse`/`postToolUse`) to avoid session spam.
+
 ## Interpreting Results
 
 - **`[mistake]`** entries = things that went wrong → read carefully to avoid repeating

@@ -827,6 +827,33 @@ test(
     str(_mcp_topic_positive_learnings),
 )
 
+_dedup_probe = [
+    "**MCP tool-server surface**: expose query-session.py and briefing.py as MCP tools",
+    "**MCP tool-server surface**: expose query-session.py and briefing.py as MCP tools",
+]
+_dedup_result = ts._dedupe_learning_bullets(_dedup_probe)
+test("learnings dedupe: identical bullets collapse to one entry",
+     len(_dedup_result) == 1,
+     str(_dedup_result))
+
+# issue #12: mostly already-implemented bullets + one novel bullet should be vetoed
+_already_done_plus_mcp = [
+    "**CLI verb patterns**: add/search/update/delete model could streamline query-session.py and learn.py",
+    "**Structured reflexion workflow**: post-task reflection fields could extend learn.py --mistake and briefing.py",
+    "**Cross-environment sync patterns**: sync strategy could harden sync-knowledge.py for Windows ↔ WSL merging",
+    "**MCP tool-server surface**: expose query-session.py and briefing.py as directly callable MCP tools",
+]
+_issue12_veto, _issue12_reason = ts._should_veto_candidate(
+    REPO_FIXTURE, "", our_topics,
+    {"require_domain_signals": 1, "min_distinct_learnings": 2},
+    learnings=_already_done_plus_mcp,
+)
+test(
+    "issue#12 already-done noise: vetoed when only one novel insight remains",
+    _issue12_veto and "distinct insights" in _issue12_reason,
+    _issue12_reason,
+)
+
 
 print("\n📝 Issue Body Rendering")
 
@@ -890,6 +917,17 @@ with mock.patch("urllib.request.urlopen") as mock_open:
     test("search_repos returns list", isinstance(repos, list))
     test("search_repos returns repo items", len(repos) == 2)
 
+# search_repos_by_topic includes language filter (issue #11 wrong-language noise regression)
+with mock.patch.object(ts.GitHubClient, "get", return_value={"items": [REPO_FIXTURE]}) as _mock_topic_get:
+    client = ts.GitHubClient(token="ghp_test")
+    repos_by_topic = client.search_repos_by_topic(
+        "ai-tools", min_stars=5, max_results=10, language="python"
+    )
+    _topic_params = _mock_topic_get.call_args.args[1] if _mock_topic_get.call_args else {}
+    test("search_repos_by_topic returns list", isinstance(repos_by_topic, list))
+    test("search_repos_by_topic query includes topic qualifier", "topic:ai-tools" in _topic_params.get("q", ""))
+    test("search_repos_by_topic query includes language qualifier", "language:python" in _topic_params.get("q", ""))
+
 # 404 returns None gracefully
 import urllib.error as _ue
 with mock.patch("urllib.request.urlopen") as mock_open:
@@ -928,6 +966,20 @@ with mock.patch("urllib.request.urlopen") as mock_open:
     client = ts.GitHubClient(token="ghp_test")
     ok = client.ensure_label("owner/repo", "trend-scout")
     test("ensure_label returns True when label exists", ok is True)
+
+# search_stage forwards language filter to topic queries
+with mock.patch.object(ts.GitHubClient, "search_repos", return_value=[]), \
+     mock.patch.object(ts.GitHubClient, "search_repos_by_topic", return_value=[]) as _mock_topic_call, \
+     mock.patch("time.sleep", return_value=None):
+    _search_cfg = ts.load_config(None)
+    _search_cfg["search"]["seed_keywords"] = []
+    _search_cfg["search"]["extra_topics"] = ["knowledge-base"]
+    _search_cfg["search"]["language"] = "python"
+    ts.search_stage(ts.GitHubClient(token="ghp_test"), _search_cfg)
+    _topic_kwargs = _mock_topic_call.call_args.kwargs if _mock_topic_call.call_args else {}
+    test("search_stage topic search receives configured language",
+         _topic_kwargs.get("language") == "python",
+         str(_topic_kwargs))
 
 
 # ─── 7. get_existing_markers (mocked) ─────────────────────────────────────────
@@ -1674,6 +1726,28 @@ with mock.patch.object(ts.GitHubClient, "patch_issue",
          _mock_veto_patch.call_count == 1,
          f"patch_issue calls={_mock_veto_patch.call_count}")
 
+# Distinct-insight gate: require multiple independent insights for issue quality
+_veto_distinct_cfg = {"require_domain_signals": 1, "min_distinct_learnings": 2}
+_single_signal = [
+    "**MCP tool-server surface**: expose query-session.py and briefing.py via MCP for direct agent calls"
+]
+_distinct_veto, _distinct_reason = ts._should_veto_candidate(
+    _no_signal_repo, "", _veto_our_topics, _veto_distinct_cfg, learnings=_single_signal
+)
+test("_should_veto_candidate: min_distinct_learnings vetoes single-insight candidate",
+     _distinct_veto and "distinct insights" in _distinct_reason,
+     _distinct_reason)
+
+_two_signal = [
+    "**MCP tool-server surface**: expose query-session.py and briefing.py via MCP for direct agent calls",
+    "**Graph-based knowledge linking**: relation graph could connect mistakes and patterns by topic proximity",
+]
+_distinct_pass, _ = ts._should_veto_candidate(
+    _no_signal_repo, "", _veto_our_topics, _veto_distinct_cfg, learnings=_two_signal
+)
+test("_should_veto_candidate: min_distinct_learnings passes two distinct insights",
+     not _distinct_pass)
+
 # _should_veto_candidate: pre-computed learnings (production-wiring tests)
 _precomp_veto, _precomp_reason = ts._should_veto_candidate(
     _no_signal_repo, "", _veto_our_topics, _veto_enabled_cfg,
@@ -1843,6 +1917,9 @@ if CONFIG_FILE.exists():
          f"keys={list(_disk_cfg2.keys())}")
     test("disk config veto.require_domain_signals >= 1",
          int(_disk_cfg2.get("veto", {}).get("require_domain_signals", 0)) >= 1,
+         str(_disk_cfg2.get("veto")))
+    test("disk config veto.min_distinct_learnings >= 2",
+         int(_disk_cfg2.get("veto", {}).get("min_distinct_learnings", 0)) >= 2,
          str(_disk_cfg2.get("veto")))
     test("disk config has 'run_control' section", "run_control" in _disk_cfg2,
          f"keys={list(_disk_cfg2.keys())}")

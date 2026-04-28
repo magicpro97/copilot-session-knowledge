@@ -33,6 +33,7 @@
 - Đoán cú pháp CLI → đọc skills/instructions
 - Gọi Stitch qua designforge CLI → 404 (dùng Stitch MCP)
 - Dùng `--aspect` thay `-r` cho imgforge → crash
+- Gắn `trend-scout.py` vào `preToolUse`/`postToolUse` hooks (gây spam) — dùng workflow `trend-scout.yml` hoặc chạy tay
 
 ## 📋 Scope-specific Instructions
 

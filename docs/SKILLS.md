@@ -97,6 +97,10 @@ python3 ~/.copilot/tools/setup-project.py --profile fullstack   # Full-stack web
 `--profile` installs a **preset hook bundle** and generates a starter `WORKFLOW.md`. Available
 profiles are defined in `presets/` (`default`, `python`, `typescript`, `mobile`, `fullstack`).
 
+Trend Scout automation is intentionally separate from profile hooks: run
+`trend-scout.py` directly (or via `.github/workflows/trend-scout.yml`) rather than attaching
+it to interactive `preToolUse`/`postToolUse` hooks, to avoid output spam during coding sessions.
+
 When deploying skills, `setup-project.py` copies each skill's `SKILL.md` **and** all auxiliary
 asset subdirectories found alongside it (`references/`, `templates/`, `evals/`, or any other
 subdirectory). This is intentionally generic: adding a new asset directory to a skill is

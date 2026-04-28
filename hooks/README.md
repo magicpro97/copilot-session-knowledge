@@ -54,6 +54,10 @@ All seven configured event types are handled by `hook_runner.py`:
 | `subagentStop` | `hook_runner.py subagentStop` | 5 s | Best-effort dispatched-subagent marker cleanup from stop payload hints |
 | `errorOccurred` | `hook_runner.py errorOccurred` | 10 s | KB error search |
 
+Trend Scout is intentionally **not** in this table. It is a scheduled/manual automation surface
+(`trend-scout.py`, `.github/workflows/trend-scout.yml`), not an interactive tool-event hook.
+This avoids noisy per-tool reminders during normal coding sessions.
+
 ---
 
 ## Rule Inventory

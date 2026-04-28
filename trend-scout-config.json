@@ -71,8 +71,9 @@
     "token_env": "GITHUB_MODELS_TOKEN"
   },
   "veto": {
-    "_comment": "Rowboat-style veto gate applied after README enrichment. require_domain_signals>=1 skips repos whose learning engine produces only the generic fallback bullet (no grounded domain signals). Set to 0 to disable.",
-    "require_domain_signals": 1
+    "_comment": "Rowboat-style veto gate applied after README enrichment. require_domain_signals>=1 skips repos with no grounded domain signals. min_distinct_learnings>=2 requires at least two distinct insight families so single generic/already-done bullets are skipped.",
+    "require_domain_signals": 1,
+    "min_distinct_learnings": 2
   },
   "run_control": {
     "_comment": "Grace window prevents re-running within N hours (recommended: 20 for a daily schedule). Set grace_window_hours=0 to disable. state_file defaults to .trend-scout-state.json next to trend-scout.py. In CI (GitHub Actions), the workflow caches this file between runs via actions/cache so the grace window actually persists across ephemeral runners. Use --force to bypass.",

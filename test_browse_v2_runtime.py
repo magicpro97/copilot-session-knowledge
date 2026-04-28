@@ -390,6 +390,43 @@ def run_all_tests() -> int:
         server9.shutdown()
         db9.close()
 
+    # V10: /api/scout/status remains available for read-only diagnostics
+    print("\n-- V10: /api/scout/status read-only diagnostics")
+    db10 = _make_test_db()
+    server10, host10, port10 = _start_server(db10, token="tok")
+    try:
+        status10, headers10, body10 = _get(host10, port10, "/api/scout/status?token=tok")
+        test("V10: /api/scout/status returns 200", status10 == 200)
+        test(
+            "V10: /api/scout/status content-type json",
+            "application/json" in headers10.get("content-type", ""),
+        )
+        payload10 = json.loads(body10.decode("utf-8", errors="replace"))
+        test("V10: payload includes status field", isinstance(payload10, dict) and "status" in payload10)
+        test("V10: payload includes analysis preview", isinstance(payload10.get("analysis"), dict))
+        test("V10: payload includes grace diagnostics", isinstance(payload10.get("grace_window"), dict))
+        test("V10: payload includes audit checks", isinstance(payload10.get("audit", {}).get("checks"), list))
+        actions10 = payload10.get("operator_actions") or []
+        test("V10: payload includes operator actions", isinstance(actions10, list) and len(actions10) >= 3)
+        test(
+            "V10: operator actions are marked safe and read-only",
+            bool(actions10)
+            and all(
+                isinstance(action, dict)
+                and action.get("safe") is True
+                and isinstance(action.get("command"), str)
+                and bool(action.get("command"))
+                and (
+                    "--search-only" in action.get("command")
+                    or "--dry-run" in action.get("command")
+                )
+                for action in actions10
+            ),
+        )
+    finally:
+        server10.shutdown()
+        db10.close()
+
     print(f"\n{'='*50}")
     total = _PASS + _FAIL
     print(f"Results: {_PASS}/{total} passed, {_FAIL} failed")

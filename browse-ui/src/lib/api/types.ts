@@ -397,6 +397,68 @@ export interface SyncStatusResponse {
   last_failure: SyncFailureInfo | null;
 }
 
+export interface TrendScoutConfigStatus {
+  configured: boolean;
+  config_path: string;
+  script_path: string;
+  target_repo: string | null;
+}
+
+export interface TrendScoutAnalysisPreview {
+  enabled: boolean;
+  model: string;
+  token_env: string;
+  token_present: boolean;
+}
+
+export interface TrendScoutGraceWindowStatus {
+  enabled: boolean;
+  grace_window_hours: number;
+  state_file: string;
+  state_file_exists: boolean;
+  last_run_utc: string | null;
+  elapsed_hours: number | null;
+  remaining_hours: number | null;
+  would_skip_without_force: boolean;
+  reason: string | null;
+}
+
+export interface TrendScoutAuditCheck {
+  id: string;
+  title: string;
+  status: "ok" | "warning" | (string & {});
+  detail: string;
+}
+
+export interface TrendScoutOperatorAction {
+  id: string;
+  title: string;
+  description: string;
+  command: string;
+  safe: boolean;
+  requires_configured_target: boolean;
+}
+
+export interface TrendScoutStatusResponse {
+  status: string;
+  configured: boolean;
+  config: TrendScoutConfigStatus;
+  analysis: TrendScoutAnalysisPreview;
+  grace_window: TrendScoutGraceWindowStatus;
+  audit: {
+    summary: {
+      ok: boolean;
+      total_checks: number;
+      warning_checks: number;
+    };
+    checks: TrendScoutAuditCheck[];
+  };
+  operator_actions: TrendScoutOperatorAction[];
+  runtime: {
+    generated_at: string;
+  };
+}
+
 // ── Feedback (/api/feedback  POST) ──────────────────────────────────
 
 export interface FeedbackRequest {

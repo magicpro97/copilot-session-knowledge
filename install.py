@@ -929,6 +929,8 @@ def _show_usage_hints():
     print(f"\n  Sync rollout note:")
     print("    sync-config.py --setup expects an HTTP(S) gateway URL (not raw Postgres/libSQL DSN)")
     print("    Default provider rollout recommendation: Neon (Postgres) + Railway (thin gateway host)")
+    print(f"\n  Trend Scout automation note:")
+    print("    Use trend-scout.py / trend-scout.yml for scheduled scouting; do not wire it to preToolUse/postToolUse hooks")
 
 
 # ===================================================================

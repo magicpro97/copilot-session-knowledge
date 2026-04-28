@@ -10,6 +10,7 @@ Endpoints exposed:
   GET /api/embeddings          → EmbeddingProjection
   GET /api/eval/stats          → EvalResponse
   GET /api/compare             → CompareResponse
+  GET /api/scout/status        → TrendScoutStatusResponse
 
 Existing routes (?format=json on HTML routes, /api/dashboard/stats,
 /api/embeddings/points, /api/diff, /api/feedback) are UNCHANGED.
@@ -28,3 +29,4 @@ from browse.api import dashboard       # noqa: F401
 from browse.api import embeddings      # noqa: F401
 from browse.api import eval as eval_api  # noqa: F401
 from browse.api import compare         # noqa: F401
+from browse.routes import scout        # noqa: F401

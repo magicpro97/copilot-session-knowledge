@@ -379,6 +379,68 @@ export const syncStatusResponseSchema = z.object({
   last_failure: syncFailureInfoSchema.nullable(),
 });
 
+export const trendScoutConfigStatusSchema = z.object({
+  configured: z.boolean(),
+  config_path: z.string(),
+  script_path: z.string(),
+  target_repo: z.string().nullable(),
+});
+
+export const trendScoutAnalysisPreviewSchema = z.object({
+  enabled: z.boolean(),
+  model: z.string(),
+  token_env: z.string(),
+  token_present: z.boolean(),
+});
+
+export const trendScoutGraceWindowStatusSchema = z.object({
+  enabled: z.boolean(),
+  grace_window_hours: z.number(),
+  state_file: z.string(),
+  state_file_exists: z.boolean(),
+  last_run_utc: z.string().nullable(),
+  elapsed_hours: z.number().nullable(),
+  remaining_hours: z.number().nullable(),
+  would_skip_without_force: z.boolean(),
+  reason: z.string().nullable(),
+});
+
+export const trendScoutAuditCheckSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: z.string(),
+  detail: z.string(),
+});
+
+export const trendScoutOperatorActionSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  description: z.string(),
+  command: z.string(),
+  safe: z.boolean(),
+  requires_configured_target: z.boolean(),
+});
+
+export const trendScoutStatusResponseSchema = z.object({
+  status: z.string(),
+  configured: z.boolean(),
+  config: trendScoutConfigStatusSchema,
+  analysis: trendScoutAnalysisPreviewSchema,
+  grace_window: trendScoutGraceWindowStatusSchema,
+  audit: z.object({
+    summary: z.object({
+      ok: z.boolean(),
+      total_checks: z.number(),
+      warning_checks: z.number(),
+    }),
+    checks: z.array(trendScoutAuditCheckSchema),
+  }),
+  operator_actions: z.array(trendScoutOperatorActionSchema),
+  runtime: z.object({
+    generated_at: z.string(),
+  }),
+});
+
 export const feedbackRequestSchema = z.object({
   query: z.string(),
   result_id: z.string(),

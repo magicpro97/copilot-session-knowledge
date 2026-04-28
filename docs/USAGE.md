@@ -405,9 +405,9 @@ time) is used as the timestamp, so re-running without new commits produces an id
 ## Trend Scout
 
 `trend-scout.py` queries the **GitHub Search API** (keyword + topic searches) to discover
-relevant repos, scores and deduplicates candidates, then opens structured issues in the target
-repo. There is no official GitHub Trending API; results are ranked by keyword match, topic
-overlap, star count, and recency.
+relevant repos, scores and deduplicates candidates, then creates or updates structured issues in
+the target repo. There is no official GitHub Trending API; results are ranked by keyword match,
+topic overlap, star count, and recency.
 
 ### Basic usage
 
@@ -438,6 +438,24 @@ python3 ~/.copilot/tools/trend-scout.py --force
 ```
 
 Set `GITHUB_TOKEN` in the environment, or pass `--token TOKEN`, to avoid API rate limits.
+`--limit` caps **new issue creates** only; marker-matched updates are still evaluated.
+
+### Operator-safe automation flow
+
+Use this sequence to keep automation practical and low-noise:
+
+```bash
+# 1) Discovery sanity check (no issue writes)
+python3 ~/.copilot/tools/trend-scout.py --search-only
+
+# 2) Render verification (body previews only)
+python3 ~/.copilot/tools/trend-scout.py --dry-run --limit 1 --force
+
+# 3) Controlled live write
+python3 ~/.copilot/tools/trend-scout.py --limit 1 --force
+```
+
+After validation, let `.github/workflows/trend-scout.yml` handle daily scheduling.
 
 ### Optional GitHub Models analysis
 
@@ -460,12 +478,17 @@ Trend Scout can replace the static learning-bullet heuristics with GitHub Models
 
 ### Veto gate
 
-Before creating a new issue, the pipeline evaluates the candidate against the configured veto gate.
+Before creating a **new** issue, the pipeline evaluates the candidate against the configured veto gate.
 Set `veto.require_domain_signals=1` in `trend-scout-config.json` to skip any candidate whose heuristic
 learning engine returns only the generic fallback bullet (no domain-specific signals matched). The
-default is `0` — disabled; all shortlisted candidates advance to issue creation regardless of learning
-quality. Candidates already in `existing_markers` (dedup) are also silently skipped without triggering
-the veto. Veto decisions are printed to stdout as `⊘ Veto (<reason>): owner/repo`.
+script default is `0` (disabled). In this repository, the bundled `trend-scout-config.json` currently
+sets `1`.
+
+Set `veto.min_distinct_learnings` to require a minimum count of **distinct novel insight families**
+after already-implemented bullets are filtered out. Script default is `0` (disabled). In this
+repository, the bundled config currently sets `2`, which means a candidate with only one genuinely
+new idea is vetoed instead of creating a new issue. Veto decisions are printed to stdout as
+`⊘ Veto (<reason>): owner/repo`.
 
 > **Note:** the veto gate applies to **new creates only** — it does not suppress updates to issues that
 > already exist in the repo.
@@ -479,19 +502,23 @@ the next run, if the elapsed time since `last_run_utc` is less than `grace_windo
 exits 0 immediately and prints the remaining window. Use `--force` (or the `force` workflow input) to
 bypass the grace window unconditionally.
 
-The default value is `0` (disabled). In GitHub Actions, `.trend-scout-state.json` is preserved between
-runner instances via `actions/cache` so the grace window works across daily scheduled runs.
+The script default value is `0` (disabled). In this repository, the bundled config currently sets `20`.
+In GitHub Actions, `.trend-scout-state.json` is preserved between runner instances via `actions/cache`
+so the grace window works across daily scheduled runs.
 
 > `.trend-scout-state.json` is a local runtime artifact — it is listed in `.gitignore` and should not
 > be committed.
 
 ### Deduplication
 
-Before creating each issue the script scans **all open and closed** `trend-scout`-labelled
+Before create/update decisions, the script scans **all open and closed** `trend-scout`-labelled
 issues for a hidden deterministic marker. The marker is a 16-character truncated SHA-256
 hash of the lowercased `owner/name` embedded as an HTML comment:
-`<!-- trend-scout:repo:<16-char-hex> -->`. A repo is skipped if its marker already exists,
-regardless of issue state.
+`<!-- trend-scout:repo:<16-char-hex> -->`.
+
+- **Marker missing** → create a new issue.
+- **Marker present + rendered body changed** → update the existing issue in place (closed issues stay closed).
+- **Marker present + rendered body unchanged** → skip.
 
 ### Config tuning (`trend-scout-config.json`)
 
@@ -512,8 +539,9 @@ regardless of issue state.
 | `analysis.token_env` | Environment variable that holds the models-capable token (default `GITHUB_MODELS_TOKEN`) |
 | `analysis.max_learnings` | Caps LLM-generated bullets per repo before rendering |
 | `analysis.temperature`, `analysis.max_tokens`, `analysis.timeout` | Controls inference determinism, output size, and request timeout |
-| `veto.require_domain_signals` | `0` = disabled; `1` = skip candidates whose heuristic engine produces only the generic fallback bullet (no domain-specific signals). Applies to new creates only; existing issues are always updated. |
-| `run_control.grace_window_hours` | Hours to wait between full runs (`0` = disabled). Grace window state is persisted to `.trend-scout-state.json`. Use `--force` to bypass. |
+| `veto.require_domain_signals` | Script default: `0` (disabled). Set `1` to skip candidates whose heuristic engine produces only the generic fallback bullet (no domain-specific signals). Applies to new creates only; existing issues are still eligible for update. |
+| `veto.min_distinct_learnings` | Script default: `0` (disabled). Requires at least _N_ distinct novel insight families after already-implemented bullets are removed; values like `2` suppress create-stage issues when only one genuinely new insight remains. Applies to new creates only. |
+| `run_control.grace_window_hours` | Script default: `0` (disabled). Hours to wait between full runs. Grace window state is persisted to `.trend-scout-state.json`. Use `--force` to bypass. |
 | `run_control.state_file` | Path to the run-state JSON file. `null` or absent resolves to `.trend-scout-state.json` adjacent to the script. |
 
 ### Limitations
@@ -539,6 +567,12 @@ The workflow exports both `GITHUB_TOKEN` and `GITHUB_MODELS_TOKEN` from `secrets
 | `repo` | string | Override target repo (`OWNER/REPO`) |
 | `limit` | string | Max issues to create this run |
 | `force` | boolean | Bypass grace window and force a full run |
+
+### Hook behavior (anti-spam)
+
+Trend Scout is intentionally **not** registered in Copilot runtime hooks (`hooks/hooks.json`).
+Keep scouting in explicit CLI runs or scheduled workflow automation; avoid per-tool hook triggers
+that would spam session output.
 
 ## Maintenance
 

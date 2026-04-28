@@ -90,6 +90,20 @@ python3 ~/.copilot/tools/auto-update-tools.py --audit-runtime
 - Default provider rollout recommendation: Neon (backing Postgres) + Railway (thin gateway host), while keeping the same HTTP gateway contract.
 - Browse sync status is read-only: `/healthz` → `sync_status_endpoint: "/api/sync/status"`.
 
+## Trend Scout (automation contract)
+
+Use Trend Scout as explicit/scheduled automation, not an interactive hook:
+
+```bash
+python3 ~/.copilot/tools/trend-scout.py --search-only
+python3 ~/.copilot/tools/trend-scout.py --dry-run --limit 1 --force
+python3 ~/.copilot/tools/trend-scout.py --limit 1 --force
+```
+
+- It creates or updates marker-linked issues in the target repo.
+- Veto + grace behavior are config-driven (`trend-scout-config.json`).
+- Do **not** attach Trend Scout to `preToolUse`/`postToolUse` hooks (avoid noisy per-tool spam).
+
 ## Recall Telemetry (Phase 5)
 
 ```bash

@@ -17,6 +17,7 @@ Tests:
   T9: /api/compare returns CompareResponse with session data
   T10: /api/sessions returns 200 with empty items on empty DB
   T17: /api/sync/status returns sync diagnostics payload
+  T18: /api/scout/status returns trend scout diagnostics payload
 """
 
 import http.client
@@ -495,6 +496,53 @@ def run_all_tests() -> int:
                 and isinstance(action.get("command"), str)
                 and action.get("command")
                 and "--clear" not in action.get("command")
+                for action in actions
+            ),
+        )
+    finally:
+        server.shutdown()
+
+    # ── T18: /api/scout/status diagnostics shape ──────────────────────────────
+    print("\n-- T18: /api/scout/status diagnostics")
+    db = _make_test_db()
+    server, host, port = _start_server(db)
+    try:
+        status, hdrs, data = _get(host, port, "/api/scout/status")
+        test("T18: status 200", status == 200)
+        test("T18: content-type json", "application/json" in hdrs.get("content-type", ""))
+        test("T18: has status", isinstance(data, dict) and "status" in data)
+        test("T18: has config object", isinstance(data.get("config"), dict))
+        test("T18: has analysis object", isinstance(data.get("analysis"), dict))
+        test("T18: has grace_window object", isinstance(data.get("grace_window"), dict))
+        test("T18: has audit object", isinstance(data.get("audit"), dict))
+        test("T18: has runtime object", isinstance(data.get("runtime"), dict))
+        test("T18: config path present", isinstance(data.get("config", {}).get("config_path"), str))
+        test("T18: script path present", isinstance(data.get("config", {}).get("script_path"), str))
+        test(
+            "T18: analysis token preview present",
+            isinstance(data.get("analysis", {}).get("token_env"), str)
+            and isinstance(data.get("analysis", {}).get("token_present"), bool),
+        )
+        test(
+            "T18: grace diagnostics include skip flag",
+            isinstance(data.get("grace_window", {}).get("would_skip_without_force"), bool),
+        )
+        checks = data.get("audit", {}).get("checks", [])
+        test("T18: audit checks present", isinstance(checks, list) and len(checks) >= 1)
+        actions = data.get("operator_actions") or []
+        test("T18: has operator actions", isinstance(actions, list) and len(actions) >= 3)
+        test(
+            "T18: operator actions remain safe copy-only commands",
+            bool(actions)
+            and all(
+                isinstance(action, dict)
+                and action.get("safe") is True
+                and isinstance(action.get("command"), str)
+                and bool(action.get("command"))
+                and (
+                    "--search-only" in action.get("command")
+                    or "--dry-run" in action.get("command")
+                )
                 for action in actions
             ),
         )

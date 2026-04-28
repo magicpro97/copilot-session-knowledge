@@ -17,6 +17,7 @@ import {
   sessionDetailResponseSchema,
   sessionListResponseSchema,
   syncStatusResponseSchema,
+  trendScoutStatusResponseSchema,
   similarityResponseSchema,
   sessionsResponseSchema,
 } from "@/lib/api/schemas";
@@ -33,6 +34,7 @@ import type {
   SearchResponse,
   SimilarityResponse,
   SyncStatusResponse,
+  TrendScoutStatusResponse,
   SessionDetailResponse,
   SessionListResponse,
   SessionsResponse,
@@ -76,6 +78,7 @@ export const queryKeys = {
   search: (params: SearchQueryParams) => ["search", params] as const,
   health: () => ["health"] as const,
   syncStatus: () => ["sync-status"] as const,
+  scoutStatus: () => ["scout-status"] as const,
   dashboard: () => ["dashboard"] as const,
   graphLegacy: (params: GraphQueryParams = {}) => ["graph-legacy", params] as const,
   graph: (params: GraphQueryParams = {}) => ["graph", params] as const,
@@ -278,6 +281,18 @@ export function useSyncStatus() {
     queryFn: async (): Promise<SyncStatusResponse> => {
       const data = await apiFetch<SyncStatusResponse>(withLeadingSlash("/api/sync/status"));
       return syncStatusResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useScoutStatus() {
+  return useQuery({
+    queryKey: queryKeys.scoutStatus(),
+    staleTime: STALE_TIMES.health,
+    gcTime: CACHE_TIMES.health,
+    queryFn: async (): Promise<TrendScoutStatusResponse> => {
+      const data = await apiFetch<TrendScoutStatusResponse>(withLeadingSlash("/api/scout/status"));
+      return trendScoutStatusResponseSchema.parse(data);
     },
   });
 }

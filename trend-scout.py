@@ -126,8 +126,11 @@ DEFAULT_CONFIG: dict = {
     "veto": {
         # Rowboat veto gate: set require_domain_signals>=1 to skip repos whose
         # heuristic learning engine produces only the generic fallback bullet.
+        # min_distinct_learnings>=2 additionally requires multiple distinct
+        # insights so single generic-ish bullets do not create an issue.
         # 0 = disabled (all shortlisted repos are written).
         "require_domain_signals": 0,
+        "min_distinct_learnings": 0,
     },
     "run_control": {
         # Grace window prevents repeated runs too close together.
@@ -315,9 +318,13 @@ class GitHubClient:
         topic: str,
         min_stars: int = 5,
         max_results: int = 10,
+        language: str | None = None,
     ) -> list[dict]:
         """Search GitHub repos by topic tag."""
-        q = f"topic:{topic} stars:>={min_stars}"
+        q_parts = [f"topic:{topic}", f"stars:>={min_stars}"]
+        if language:
+            q_parts.append(f"language:{language}")
+        q = " ".join(q_parts)[:MAX_QUERY_LEN]
         params: dict = {
             "q": q,
             "sort": "updated",
@@ -757,6 +764,59 @@ _MAX_HEURISTIC_LEARNINGS = 5  # cap to prevent wall-of-text bullet dumps
 # Prefix of the generic fallback bullet returned by _derive_learnings() when
 # no domain-specific signals fire.  Used by the Rowboat veto gate.
 _VETO_FALLBACK_PREFIX = "Review the source for architectural patterns"
+_IMPLEMENTED_LEARNING_HINTS: tuple[str, ...] = (
+    "cli verb patterns",
+    "structured reflexion workflow",
+    "cross environment sync patterns",
+    "git hook workflow patterns",
+    "offline first design",
+)
+
+
+def _normalize_learning_text(text: str) -> str:
+    """Normalize learning text for de-dup and heuristic quality checks."""
+    lowered = text.lower()
+    lowered = re.sub(r"`[^`]+`", " ", lowered)
+    lowered = re.sub(r"[^a-z0-9]+", " ", lowered)
+    return " ".join(lowered.split())
+
+
+def _is_already_implemented_learning(learning: str) -> bool:
+    """Return True when a learning bullet is an already-shipped capability."""
+    normalized = _normalize_learning_text(learning)
+    return any(hint in normalized for hint in _IMPLEMENTED_LEARNING_HINTS)
+
+
+def _dedupe_learning_bullets(learnings: list[str]) -> list[str]:
+    """Drop duplicate learning bullets while preserving signal coverage."""
+    seen: set[str] = set()
+    filtered: list[str] = []
+    for learning in learnings:
+        bullet = learning.strip()
+        if not bullet:
+            continue
+        sig = _normalize_learning_text(bullet)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        filtered.append(bullet)
+    return filtered
+
+
+def _count_distinct_learning_signals(learnings: list[str]) -> int:
+    """Count distinct insight families in a learnings list (fallback excluded)."""
+    signatures: set[str] = set()
+    for learning in learnings:
+        if learning.startswith(_VETO_FALLBACK_PREFIX):
+            continue
+        heading_match = re.search(r"\*\*(.+?)\*\*", learning)
+        if heading_match:
+            signature = _normalize_learning_text(heading_match.group(1))
+        else:
+            signature = " ".join(_normalize_learning_text(learning).split()[:8])
+        if signature:
+            signatures.add(signature)
+    return len(signatures)
 
 
 def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "") -> list[str]:
@@ -978,6 +1038,8 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
         )
 
     # ── Fallback: concrete, architecture-specific ─────────────────────────────
+    out = _dedupe_learning_bullets(out)
+
     if not out:
         out.append(
             "Review the source for architectural patterns applicable to FTS5 / knowledge-base "
@@ -1002,9 +1064,10 @@ def _should_veto_candidate(
 ) -> tuple[bool, str]:
     """Rowboat veto gate: evaluate whether a candidate should be skipped.
 
-    Returns (should_veto, reason).  Vetoes when the heuristic learning engine
-    produces only the generic fallback bullet (i.e., no domain-specific signals
-    matched), and the veto config requires at least one domain signal.
+    Returns (should_veto, reason). Vetoes when:
+    - the heuristic learning engine produces only the generic fallback bullet
+      (i.e., no domain-specific signals matched), and/or
+    - configured distinct-insight quality gates are not met.
 
     If ``learnings`` is provided (e.g. pre-computed in ``create_stage``), it is
     used directly instead of re-running ``_derive_learnings``.  This ensures the
@@ -1012,11 +1075,21 @@ def _should_veto_candidate(
     learnings are evaluated when available.
     """
     min_signals: int = int(veto_cfg.get("require_domain_signals", 0))
-    if min_signals <= 0:
+    min_distinct: int = int(veto_cfg.get("min_distinct_learnings", 0))
+    if min_signals <= 0 and min_distinct <= 0:
         return False, ""
     effective = learnings if learnings is not None else _derive_learnings(repo, our_topics, readme)
-    if _is_only_fallback_learnings(effective):
+    if min_signals > 0 and _is_only_fallback_learnings(effective):
         return True, "no domain-specific signals matched"
+    if min_signals > 0:
+        domain_signals = sum(1 for learning in effective if not learning.startswith(_VETO_FALLBACK_PREFIX))
+        if domain_signals < min_signals:
+            return True, f"insufficient domain signals ({domain_signals} < {min_signals})"
+    if min_distinct > 0:
+        novel = [learning for learning in effective if not _is_already_implemented_learning(learning)]
+        distinct_signals = _count_distinct_learning_signals(novel)
+        if distinct_signals < min_distinct:
+            return True, f"insufficient distinct insights ({distinct_signals} < {min_distinct})"
     return False, ""
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1386,7 +1459,9 @@ def search_stage(client: GitHubClient, config: dict) -> list[dict]:
     # Topic searches
     for topic in topics:
         print(f"  🏷  Topic search: {topic!r}", flush=True)
-        results = client.search_repos_by_topic(topic, min_stars=min_stars, max_results=max_per_query)
+        results = client.search_repos_by_topic(
+            topic, min_stars=min_stars, max_results=max_per_query, language=language or None
+        )
         _collect(results)
         time.sleep(1.2)
 

@@ -20,6 +20,9 @@ Usage:
     python auto-update-tools.py --watch-status   # Show watcher runtime status
     python auto-update-tools.py --health-check   # Run sync runtime health check
     python auto-update-tools.py --audit-runtime  # Run runtime operations audit
+    python auto-update-tools.py --scout-status   # Show Trend Scout runtime status
+    python auto-update-tools.py --scout-health-check  # Run Trend Scout health check
+    python auto-update-tools.py --scout-audit-runtime  # Run Trend Scout audit
     python auto-update-tools.py --list-coverage  # Print all tracked paths/patterns
     python auto-update-tools.py --skip-pull    # Run pipeline without pulling (used by self-exec)
 """
@@ -1457,6 +1460,15 @@ def _run_runtime_surface(args: list[str]) -> int:
     return int(result.returncode)
 
 
+def _run_trend_scout_surface(args: list[str]) -> int:
+    script = TOOLS_DIR / "scout-status.py"
+    if not script.exists():
+        err("scout-status.py not found")
+        return 1
+    result = subprocess.run([sys.executable, str(script), *args])
+    return int(result.returncode)
+
+
 # ---------------------------------------------------------------------------
 # Cooldown
 # ---------------------------------------------------------------------------
@@ -1511,6 +1523,15 @@ def main():
             raise SystemExit(code)
         elif arg == "--audit-runtime":
             code = _run_runtime_surface(["--audit"])
+            raise SystemExit(code)
+        elif arg == "--scout-status":
+            code = _run_trend_scout_surface([])
+            raise SystemExit(code)
+        elif arg == "--scout-health-check":
+            code = _run_trend_scout_surface(["--health-check"])
+            raise SystemExit(code)
+        elif arg == "--scout-audit-runtime":
+            code = _run_trend_scout_surface(["--audit"])
             raise SystemExit(code)
         elif arg == "--list-coverage":
             list_coverage()

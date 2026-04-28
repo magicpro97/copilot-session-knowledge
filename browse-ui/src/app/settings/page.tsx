@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDensity } from "@/hooks/use-density";
-import { useHealth, useSyncStatus } from "@/lib/api/hooks";
+import { useHealth, useScoutStatus, useSyncStatus } from "@/lib/api/hooks";
 import { SHORTCUT_GROUPS } from "@/lib/constants";
 import { formatNumber } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
@@ -46,6 +46,7 @@ export default function SettingsPage() {
   const [density] = useDensity();
   const health = useHealth();
   const syncStatus = useSyncStatus();
+  const scoutStatus = useScoutStatus();
 
   const activeTheme = theme ?? "system";
   const healthStatus = health.data?.status;
@@ -255,6 +256,206 @@ export default function SettingsPage() {
                 </p>
                 <div className="space-y-2">
                   {syncStatus.data.operator_actions.map((action) => (
+                    <div key={action.id} className="rounded-md border bg-background p-2 text-xs">
+                      <p className="font-medium text-foreground">{action.title}</p>
+                      <p className="text-muted-foreground">{action.description}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+                          {action.command}
+                        </code>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-6 px-2 text-[11px]"
+                          onClick={() => void copyCommand(action.command)}
+                        >
+                          <Copy className="size-3" />
+                          Copy
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Trend Scout diagnostics</CardTitle>
+          <CardDescription>
+            Read-only Trend Scout diagnostics from <code>/api/scout/status</code>.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {scoutStatus.isLoading ? (
+            <div className="grid gap-2 sm:grid-cols-4">
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+            </div>
+          ) : null}
+
+          {scoutStatus.isError ? (
+            <Banner
+              tone="warning"
+              title="Trend Scout diagnostics unavailable"
+              description={
+                scoutStatus.error instanceof Error
+                  ? scoutStatus.error.message
+                  : "Could not fetch /api/scout/status."
+              }
+              actions={
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => scoutStatus.refetch()}
+                >
+                  Retry
+                </Button>
+              }
+            />
+          ) : null}
+
+          {scoutStatus.data ? (
+            <>
+              <div className="grid gap-2 sm:grid-cols-4">
+                <div className="rounded-lg border bg-card p-3">
+                  <p className="text-xs text-muted-foreground">Mode</p>
+                  <p className="mt-1 text-sm font-medium">{scoutStatus.data.status}</p>
+                </div>
+                <div className="rounded-lg border bg-card p-3">
+                  <p className="text-xs text-muted-foreground">Target repo</p>
+                  <p className="mt-1 text-sm font-medium">
+                    {scoutStatus.data.config.target_repo ?? "Not configured"}
+                  </p>
+                </div>
+                <div className="rounded-lg border bg-card p-3">
+                  <p className="text-xs text-muted-foreground">Grace window</p>
+                  <p className="mt-1 text-sm font-medium">
+                    {scoutStatus.data.grace_window.enabled
+                      ? `${scoutStatus.data.grace_window.grace_window_hours}h`
+                      : "Disabled"}
+                  </p>
+                </div>
+                <div className="rounded-lg border bg-card p-3">
+                  <p className="text-xs text-muted-foreground">Warning checks</p>
+                  <p className="mt-1 flex items-center gap-2 text-sm font-medium">
+                    {scoutStatus.data.audit.summary.warning_checks > 0 ? (
+                      <AlertTriangle className="size-3.5 text-amber-500" />
+                    ) : (
+                      <CheckCircle2 className="size-3.5 text-emerald-500" />
+                    )}
+                    {formatNumber(scoutStatus.data.audit.summary.warning_checks)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-1 rounded-lg border bg-card p-3 text-xs text-muted-foreground">
+                <p>
+                  Config file:{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+                    {scoutStatus.data.config.config_path}
+                  </code>
+                </p>
+                <p>
+                  Script file:{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+                    {scoutStatus.data.config.script_path}
+                  </code>
+                </p>
+                <p>
+                  Runtime snapshot:{" "}
+                  <span className="font-medium text-foreground">
+                    {scoutStatus.data.runtime.generated_at}
+                  </span>
+                </p>
+              </div>
+
+              <div className="space-y-1 rounded-lg border bg-card p-3 text-xs text-muted-foreground">
+                <p className="font-medium text-foreground">Analysis preview</p>
+                <p>
+                  Enabled:{" "}
+                  <span className="font-medium text-foreground">
+                    {scoutStatus.data.analysis.enabled ? "yes" : "no"}
+                  </span>
+                </p>
+                <p>
+                  Model: <span className="font-medium text-foreground">{scoutStatus.data.analysis.model}</span>
+                </p>
+                <p>
+                  Token env:{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+                    {scoutStatus.data.analysis.token_env}
+                  </code>
+                </p>
+                <p>
+                  Token present:{" "}
+                  <span className="font-medium text-foreground">
+                    {scoutStatus.data.analysis.token_present ? "yes" : "no"}
+                  </span>
+                </p>
+              </div>
+
+              <div className="space-y-1 rounded-lg border bg-card p-3 text-xs text-muted-foreground">
+                <p className="font-medium text-foreground">Grace-window diagnostics</p>
+                <p>
+                  State file:{" "}
+                  <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+                    {scoutStatus.data.grace_window.state_file}
+                  </code>
+                </p>
+                <p>
+                  Last run UTC:{" "}
+                  <span className="font-medium text-foreground">
+                    {scoutStatus.data.grace_window.last_run_utc ?? "No state recorded"}
+                  </span>
+                </p>
+                <p>
+                  Skip without force:{" "}
+                  <span className="font-medium text-foreground">
+                    {scoutStatus.data.grace_window.would_skip_without_force ? "yes" : "no"}
+                  </span>
+                </p>
+                {scoutStatus.data.grace_window.reason ? (
+                  <p>
+                    Reason:{" "}
+                    <span className="font-medium text-foreground">
+                      {scoutStatus.data.grace_window.reason}
+                    </span>
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="space-y-2 rounded-lg border bg-card p-3">
+                <p className="text-xs font-medium text-foreground">Audit checks</p>
+                <div className="space-y-2">
+                  {scoutStatus.data.audit.checks.map((check) => (
+                    <div key={check.id} className="rounded-md border bg-background p-2 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-medium text-foreground">{check.title}</p>
+                        <Badge variant={check.status === "ok" ? "outline" : "secondary"}>
+                          {check.status}
+                        </Badge>
+                      </div>
+                      <p className="text-muted-foreground">{check.detail}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-2 rounded-lg border bg-card p-3">
+                <p className="text-xs font-medium text-foreground">Operator checks (read-only)</p>
+                <p className="text-xs text-muted-foreground">
+                  Copy-only safe commands. Browser does not execute Trend Scout operations.
+                </p>
+                <div className="space-y-2">
+                  {scoutStatus.data.operator_actions.map((action) => (
                     <div key={action.id} className="rounded-md border bg-background p-2 text-xs">
                       <p className="font-medium text-foreground">{action.title}</p>
                       <p className="text-muted-foreground">{action.description}</p>
