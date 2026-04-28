@@ -89,8 +89,7 @@ A set of standalone Python CLI scripts that index AI coding sessions (Copilot CL
 3. `query-session.py` / `briefing.py` — Search and retrieve from the knowledge base
 4. `watch-sessions.py` — Polls for file changes, triggers incremental re-indexing
 5. `learn.py` — Manual knowledge entry (CLI interface for agents to record learnings)
-6. `tentacle.py` — Delegated-agent recall prefers structured `[KNOWLEDGE EVIDENCE]` from
-   `briefing.py --task <id> --json` with `--pack` fallback; `--for-subagent` remains manual compatibility
+6. `tentacle.py` — Multi-agent orchestration: `create` → `todo add` → `bundle` (optional isolated context) → `swarm [--bundle]` → `complete` (verification/closure). Operator view: `tentacle.py status`. Delegated-agent recall prefers structured `[KNOWLEDGE EVIDENCE]` from `briefing.py --task <id> --json` with `--pack` fallback; `--for-subagent` remains manual compatibility
 
 **Supporting tools:**
 - `embed.py` — Optional semantic search via external embedding APIs (OpenAI, Fireworks, etc.) with TF-IDF fallback

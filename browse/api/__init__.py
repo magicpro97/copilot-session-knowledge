@@ -11,6 +11,8 @@ Endpoints exposed:
   GET /api/eval/stats          → EvalResponse
   GET /api/compare             → CompareResponse
   GET /api/scout/status        → TrendScoutStatusResponse
+  GET /api/tentacles/status    → TentacleStatusResponse
+  GET /api/skills/metrics      → SkillMetricsResponse
 
 Existing routes (?format=json on HTML routes, /api/dashboard/stats,
 /api/embeddings/points, /api/diff, /api/feedback) are UNCHANGED.
@@ -30,3 +32,5 @@ from browse.api import embeddings      # noqa: F401
 from browse.api import eval as eval_api  # noqa: F401
 from browse.api import compare         # noqa: F401
 from browse.routes import scout        # noqa: F401
+from browse.routes import tentacles    # noqa: F401
+from browse.routes import skills       # noqa: F401

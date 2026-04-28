@@ -459,6 +459,151 @@ export interface TrendScoutStatusResponse {
   };
 }
 
+// ── Tentacles (/api/tentacles/status) ───────────────────────────────
+
+export interface TentacleWorktreeInfo {
+  prepared: boolean;
+  path: string;
+  stale: boolean;
+}
+
+export interface TentacleVerificationInfo {
+  coverage_exists: boolean;
+  total: number;
+  passed: number;
+  failed: number;
+}
+
+export interface TentacleEntry {
+  name: string;
+  tentacle_id: string;
+  status: string;
+  created_at: string;
+  description: string;
+  scope: string[];
+  skills: string[];
+  worktree: TentacleWorktreeInfo;
+  verification: TentacleVerificationInfo;
+}
+
+export interface TentacleMarkerInfo {
+  active: boolean;
+  path: string;
+  age_hours: number | null;
+  stale: boolean;
+}
+
+export interface TentacleAuditCheck {
+  id: string;
+  title: string;
+  status: "ok" | "warning" | (string & {});
+  detail: string;
+}
+
+export interface TentacleOperatorAction {
+  id: string;
+  title: string;
+  description: string;
+  command: string;
+  safe: boolean;
+}
+
+export interface TentacleStatusResponse {
+  status: string;
+  configured: boolean;
+  active_count: number;
+  total_count: number;
+  worktrees_prepared: number;
+  verification_covered: number;
+  marker: TentacleMarkerInfo;
+  tentacles: TentacleEntry[];
+  audit: {
+    summary: {
+      ok: boolean;
+      total_checks: number;
+      warning_checks: number;
+    };
+    checks: TentacleAuditCheck[];
+  };
+  operator_actions: TentacleOperatorAction[];
+  runtime: {
+    generated_at: string;
+  };
+}
+
+// ── Skill Metrics (/api/skills/metrics) ─────────────────────────────
+
+export interface SkillMetricsSummary {
+  total_outcomes: number;
+  outcomes_with_skills: number;
+  outcomes_with_verification: number;
+  outcomes_with_worktree: number;
+  pass_rate: number | null;
+}
+
+export interface SkillOutcomeEntry {
+  id: number;
+  tentacle_name: string;
+  tentacle_id: string;
+  outcome_status: string;
+  recorded_at: string;
+  worktree_used: boolean;
+  verification_total: number;
+  verification_passed: number;
+  verification_failed: number;
+  todo_total: number;
+  todo_done: number;
+  learned: boolean;
+  duration_seconds: number | null;
+  summary: string | null;
+}
+
+export interface SkillUsageEntry {
+  skill_name: string;
+  usage_count: number;
+}
+
+export interface SkillMetricsAuditCheck {
+  id: string;
+  title: string;
+  status: "ok" | "warning" | (string & {});
+  detail: string;
+}
+
+export interface SkillMetricsOperatorAction {
+  id: string;
+  title: string;
+  description: string;
+  command: string;
+  safe: boolean;
+}
+
+export interface SkillMetricsResponse {
+  status: string;
+  configured: boolean;
+  db_path: string;
+  tables: {
+    tentacle_outcomes: boolean;
+    tentacle_outcome_skills: boolean;
+    tentacle_verifications: boolean;
+  };
+  summary: SkillMetricsSummary;
+  recent_outcomes: SkillOutcomeEntry[];
+  skill_usage: SkillUsageEntry[];
+  audit: {
+    summary: {
+      ok: boolean;
+      total_checks: number;
+      warning_checks: number;
+    };
+    checks: SkillMetricsAuditCheck[];
+  };
+  operator_actions: SkillMetricsOperatorAction[];
+  runtime: {
+    generated_at: string;
+  };
+}
+
 // ── Feedback (/api/feedback  POST) ──────────────────────────────────
 
 export interface FeedbackRequest {

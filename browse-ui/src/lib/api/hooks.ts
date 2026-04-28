@@ -18,6 +18,8 @@ import {
   sessionListResponseSchema,
   syncStatusResponseSchema,
   trendScoutStatusResponseSchema,
+  tentacleStatusResponseSchema,
+  skillMetricsResponseSchema,
   similarityResponseSchema,
   sessionsResponseSchema,
 } from "@/lib/api/schemas";
@@ -35,6 +37,8 @@ import type {
   SimilarityResponse,
   SyncStatusResponse,
   TrendScoutStatusResponse,
+  TentacleStatusResponse,
+  SkillMetricsResponse,
   SessionDetailResponse,
   SessionListResponse,
   SessionsResponse,
@@ -79,6 +83,8 @@ export const queryKeys = {
   health: () => ["health"] as const,
   syncStatus: () => ["sync-status"] as const,
   scoutStatus: () => ["scout-status"] as const,
+  tentacleStatus: () => ["tentacle-status"] as const,
+  skillMetrics: () => ["skill-metrics"] as const,
   dashboard: () => ["dashboard"] as const,
   graphLegacy: (params: GraphQueryParams = {}) => ["graph-legacy", params] as const,
   graph: (params: GraphQueryParams = {}) => ["graph", params] as const,
@@ -422,6 +428,30 @@ export function useEval() {
     queryFn: async (): Promise<EvalResponse> => {
       const data = await apiFetch<EvalResponse>(withLeadingSlash("/api/eval/stats"));
       return evalResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useTentacleStatus() {
+  return useQuery({
+    queryKey: queryKeys.tentacleStatus(),
+    staleTime: STALE_TIMES.health,
+    gcTime: CACHE_TIMES.health,
+    queryFn: async (): Promise<TentacleStatusResponse> => {
+      const data = await apiFetch<TentacleStatusResponse>(withLeadingSlash("/api/tentacles/status"));
+      return tentacleStatusResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useSkillMetrics() {
+  return useQuery({
+    queryKey: queryKeys.skillMetrics(),
+    staleTime: STALE_TIMES.health,
+    gcTime: CACHE_TIMES.health,
+    queryFn: async (): Promise<SkillMetricsResponse> => {
+      const data = await apiFetch<SkillMetricsResponse>(withLeadingSlash("/api/skills/metrics"));
+      return skillMetricsResponseSchema.parse(data);
     },
   });
 }

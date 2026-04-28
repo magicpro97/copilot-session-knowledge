@@ -3926,5 +3926,575 @@ class TestWindowsEncodingFix(unittest.TestCase):
         self.assertIn("✅", buf.getvalue())
 
 
+# ---------------------------------------------------------------------------
+# New tests: declared skills, worktree primitives, verify, outcome metrics
+# ---------------------------------------------------------------------------
+
+def _make_scratch_git_repo(base: Path) -> Path:
+    """Create a minimal real git repo (init + initial commit) for worktree tests."""
+    repo_dir = base / "scratch-repo"
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    for cmd in [
+        ["git", "init", "--initial-branch=main"],
+        ["git", "config", "user.email", "test@test.com"],
+        ["git", "config", "user.name", "Test"],
+    ]:
+        subprocess.run(cmd, cwd=str(repo_dir), capture_output=True)
+    # Fall back for older git that doesn't support --initial-branch
+    subprocess.run(["git", "init"], cwd=str(repo_dir), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(repo_dir), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo_dir), capture_output=True)
+    (repo_dir / "README.md").write_text("init\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=str(repo_dir), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo_dir), capture_output=True)
+    return repo_dir
+
+
+class TestDeclaredSkills(unittest.TestCase):
+    """Declared --skill flags must be persisted in meta.json."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "skills"
+        self.base.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def test_no_skills_creates_empty_list(self):
+        args = fake_args(name="no-skills", scope=None, desc="test", briefing=False, skill=None)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_create(args)
+        meta = json.loads((self.base / "no-skills" / "meta.json").read_text(encoding="utf-8"))
+        self.assertIn("skills", meta)
+        self.assertEqual(meta["skills"], [])
+
+    def test_single_skill_persisted(self):
+        args = fake_args(name="one-skill", scope=None, desc="test", briefing=False, skill=["myskill"])
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_create(args)
+        meta = json.loads((self.base / "one-skill" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta["skills"], ["myskill"])
+
+    def test_multiple_skills_persisted(self):
+        args = fake_args(name="multi-skills", scope=None, desc="test", briefing=False,
+                         skill=["skill-a", "skill-b", "skill-c"])
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_create(args)
+        meta = json.loads((self.base / "multi-skills" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta["skills"], ["skill-a", "skill-b", "skill-c"])
+
+    def test_skills_visible_in_create_output(self):
+        args = fake_args(name="vis-skills", scope=None, desc="test", briefing=False,
+                         skill=["tool-a", "tool-b"])
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_create(args)
+        combined = "\n".join(captured)
+        self.assertIn("tool-a", combined)
+        self.assertIn("tool-b", combined)
+
+
+class TestWorktreePrimitives(unittest.TestCase):
+    """Real git worktree operations: prepare / status / cleanup."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "worktree"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.tentacle_dir = make_tentacle("wt-test", self.base)
+        self.repo_dir = _make_scratch_git_repo(SCRATCH_DIR)
+
+    def tearDown(self):
+        import shutil
+        # Clean up any leftover worktrees before removing scratch dir
+        wt_root = T._WORKTREE_STATE_ROOT
+        repo_slug = T._repo_slug(self.repo_dir)
+        tentacle_slug = T._tentacle_slug("wt-test")
+        wt_path = wt_root / repo_slug / tentacle_slug / "repo"
+        if wt_path.exists():
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(wt_path)],
+                cwd=str(self.repo_dir), capture_output=True,
+            )
+            shutil.rmtree(wt_path, ignore_errors=True)
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def test_worktree_prepare_creates_real_worktree(self):
+        state = T._worktree_prepare(self.tentacle_dir, "wt-test", self.repo_dir)
+        self.assertTrue(state["prepared"], f"Expected prepared=True, got: {state}")
+        self.assertIsNotNone(state.get("path"))
+        wt_path = Path(state["path"])
+        self.assertTrue(wt_path.exists(), f"Worktree directory should exist: {wt_path}")
+        # Should contain .git file (worktrees use a .git file not a .git dir)
+        self.assertTrue((wt_path / ".git").exists(), "Worktree should have a .git file")
+
+    def test_worktree_prepare_persists_state_in_meta(self):
+        T._worktree_prepare(self.tentacle_dir, "wt-test", self.repo_dir)
+        meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
+        self.assertIn("worktree", meta)
+        wt = meta["worktree"]
+        self.assertTrue(wt["prepared"])
+        self.assertIsNotNone(wt["path"])
+
+    def test_worktree_prepare_is_idempotent(self):
+        """Calling prepare twice reuses the existing worktree."""
+        state1 = T._worktree_prepare(self.tentacle_dir, "wt-test", self.repo_dir)
+        state2 = T._worktree_prepare(self.tentacle_dir, "wt-test", self.repo_dir)
+        self.assertTrue(state2["prepared"])
+        self.assertTrue(state2.get("reused"))
+        self.assertEqual(state1["path"], state2["path"])
+
+    def test_worktree_status_reports_prepared(self):
+        T._worktree_prepare(self.tentacle_dir, "wt-test", self.repo_dir)
+        status = T._worktree_status(self.tentacle_dir)
+        self.assertTrue(status["prepared"])
+        self.assertTrue(status["exists"])
+        self.assertIsNotNone(status["path"])
+
+    def test_worktree_status_unprepared(self):
+        status = T._worktree_status(self.tentacle_dir)
+        self.assertFalse(status["prepared"])
+        self.assertIsNone(status["path"])
+        self.assertFalse(status["exists"])
+
+    def test_worktree_cleanup_removes_worktree(self):
+        T._worktree_prepare(self.tentacle_dir, "wt-test", self.repo_dir)
+        status_before = T._worktree_status(self.tentacle_dir)
+        wt_path = Path(status_before["path"])
+        self.assertTrue(wt_path.exists())
+
+        result = T._worktree_cleanup(self.tentacle_dir, "wt-test", self.repo_dir)
+        self.assertTrue(result["cleaned"])
+        self.assertFalse(wt_path.exists(), "Worktree directory should be removed")
+
+    def test_worktree_cleanup_clears_meta(self):
+        T._worktree_prepare(self.tentacle_dir, "wt-test", self.repo_dir)
+        T._worktree_cleanup(self.tentacle_dir, "wt-test", self.repo_dir)
+        meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
+        self.assertNotIn("worktree", meta)
+
+    def test_worktree_cleanup_already_removed_is_ok(self):
+        result = T._worktree_cleanup(self.tentacle_dir, "wt-test", self.repo_dir)
+        self.assertTrue(result["cleaned"])
+
+    def test_cmd_worktree_prepare_creates_and_prints(self):
+        captured = []
+        args = fake_args(name="wt-test", action="prepare")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "find_git_root", return_value=self.repo_dir):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.cmd_worktree(args)
+        combined = "\n".join(captured)
+        self.assertTrue(any("Worktree" in c for c in captured))
+
+    def test_cmd_worktree_status_shows_ready(self):
+        T._worktree_prepare(self.tentacle_dir, "wt-test", self.repo_dir)
+        captured = []
+        args = fake_args(name="wt-test", action="status")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "find_git_root", return_value=self.repo_dir):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.cmd_worktree(args)
+        combined = "\n".join(captured)
+        self.assertIn("ready", combined.lower())
+
+    def test_cmd_worktree_cleanup_removes(self):
+        T._worktree_prepare(self.tentacle_dir, "wt-test", self.repo_dir)
+        captured = []
+        args = fake_args(name="wt-test", action="cleanup")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "find_git_root", return_value=self.repo_dir):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.cmd_worktree(args)
+        combined = "\n".join(captured)
+        self.assertIn("cleanup", combined.lower())
+
+    def test_worktree_path_is_deterministic(self):
+        p1 = T._worktree_path_for("wt-test", self.repo_dir)
+        p2 = T._worktree_path_for("wt-test", self.repo_dir)
+        self.assertEqual(p1, p2)
+
+    def test_worktree_prepare_no_git_root_fails_gracefully(self):
+        state = T._worktree_prepare(self.tentacle_dir, "wt-test", None)
+        self.assertFalse(state["prepared"])
+        self.assertIn("error", state)
+
+
+class TestWorktreeInBundleSwarmDispatch(unittest.TestCase):
+    """--worktree flag in bundle/swarm/dispatch surfaces the worktree path."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "wt-surface"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.tentacle_dir = make_tentacle("wt-surface", self.base)
+        self.repo_dir = _make_scratch_git_repo(SCRATCH_DIR)
+
+    def tearDown(self):
+        import shutil
+        # Clean up worktrees
+        repo_slug = T._repo_slug(self.repo_dir)
+        tentacle_slug = T._tentacle_slug("wt-surface")
+        wt_path = T._WORKTREE_STATE_ROOT / repo_slug / tentacle_slug / "repo"
+        if wt_path.exists():
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(wt_path)],
+                cwd=str(self.repo_dir), capture_output=True,
+            )
+            shutil.rmtree(wt_path, ignore_errors=True)
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def test_swarm_worktree_flag_surfaces_path_in_prompt(self):
+        args = fake_args(
+            name="wt-surface", agent_type="general-purpose",
+            model="claude-sonnet-4.6", output="prompt",
+            briefing=False, bundle=False, worktree=True,
+        )
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "find_git_root", return_value=self.repo_dir):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.cmd_swarm(args)
+        combined = "\n".join(captured)
+        self.assertIn("Worktree", combined)
+
+    def test_swarm_worktree_flag_surfaces_path_in_json(self):
+        args = fake_args(
+            name="wt-surface", agent_type="general-purpose",
+            model="claude-sonnet-4.6", output="json",
+            briefing=False, bundle=False, worktree=True,
+        )
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "find_git_root", return_value=self.repo_dir):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.cmd_swarm(args)
+        combined = "\n".join(captured)
+        json_start = combined.find("{")
+        parsed = json.loads(combined[json_start:])
+        self.assertIn("worktree_path", parsed)
+
+    def test_bundle_worktree_flag_surfaces_path_in_manifest(self):
+        args = fake_args(
+            name="wt-surface",
+            no_briefing=True, no_checkpoint=True,
+            output="json", worktree=True,
+        )
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "find_git_root", return_value=self.repo_dir):
+                with patch.object(T, "_write_dispatched_subagent_marker", return_value=True):
+                    with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                        T.cmd_bundle(args)
+        combined = "\n".join(captured)
+        json_start = combined.find("{")
+        parsed = json.loads(combined[json_start:])
+        self.assertIn("worktree_path", parsed)
+
+    def test_bundle_without_worktree_flag_has_no_worktree_path(self):
+        args = fake_args(
+            name="wt-surface",
+            no_briefing=True, no_checkpoint=True,
+            output="json", worktree=False,
+        )
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "find_git_root", return_value=self.repo_dir):
+                with patch.object(T, "_write_dispatched_subagent_marker", return_value=True):
+                    with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                        T.cmd_bundle(args)
+        combined = "\n".join(captured)
+        json_start = combined.find("{")
+        parsed = json.loads(combined[json_start:])
+        self.assertNotIn("worktree_path", parsed)
+
+
+class TestVerifyCommand(unittest.TestCase):
+    """verify subcommand runs a real command, records metadata."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "verify"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.tentacle_dir = make_tentacle("vtest", self.base)
+
+    def tearDown(self):
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def _args(self, cmd, label=None, timeout=30):
+        return fake_args(name="vtest", command=cmd, label=label, timeout=timeout)
+
+    def test_verify_passing_command_records_exit_zero(self):
+        args = self._args("echo hello", label="echo-test")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_verify(args)
+        meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
+        verif = meta["verifications"][-1]
+        self.assertEqual(verif["exit_code"], 0)
+        self.assertEqual(verif["label"], "echo-test")
+        self.assertEqual(verif["command"], "echo hello")
+
+    def test_verify_failing_command_records_nonzero_exit(self):
+        args = self._args("exit 42", label="fail-test")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                with self.assertRaises(SystemExit) as cm:
+                    T.cmd_verify(args)
+        self.assertNotEqual(cm.exception.code, 0)
+        meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
+        verif = meta["verifications"][-1]
+        self.assertNotEqual(verif["exit_code"], 0)
+
+    def test_verify_writes_log_file(self):
+        args = self._args("echo log-content", label="log-test")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_verify(args)
+        meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
+        log_path = Path(meta["verifications"][-1]["log_path"])
+        self.assertTrue(log_path.exists())
+        log_content = log_path.read_text(encoding="utf-8")
+        self.assertIn("log-content", log_content)
+
+    def test_verify_records_cwd_as_git_root_when_no_worktree(self):
+        fake_root = self.base
+        args = self._args("echo test", label="cwd-test")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "find_git_root", return_value=fake_root):
+                with patch("builtins.print"):
+                    T.cmd_verify(args)
+        meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
+        verif = meta["verifications"][-1]
+        self.assertEqual(verif["cwd"], str(fake_root))
+
+    def test_verify_uses_worktree_path_when_available(self):
+        """verify should prefer worktree cwd when meta.json has a valid worktree."""
+        wt_path = self.base / "fake-worktree"
+        wt_path.mkdir()
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["worktree"] = {"prepared": True, "path": str(wt_path)}
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        args = self._args("echo worktree-cwd", label="wt-cwd-test")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_verify(args)
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        verif = meta["verifications"][-1]
+        self.assertEqual(verif["cwd"], str(wt_path))
+
+    def test_verify_accumulates_multiple_runs(self):
+        for i in range(3):
+            args = self._args(f"echo run-{i}", label=f"run-{i}")
+            with patch.object(T, "get_tentacles_dir", return_value=self.base):
+                with patch("builtins.print"):
+                    T.cmd_verify(args)
+        meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(meta["verifications"]), 3)
+
+    def test_verify_records_timing(self):
+        args = self._args("echo timing", label="timing-test")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_verify(args)
+        meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
+        verif = meta["verifications"][-1]
+        self.assertIn("started_at", verif)
+        self.assertIn("finished_at", verif)
+        self.assertIn("duration_seconds", verif)
+        self.assertGreaterEqual(verif["duration_seconds"], 0.0)
+
+    def test_verify_log_in_verification_subdir(self):
+        args = self._args("echo subdir", label="subdir-test")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_verify(args)
+        verif_dir = self.tentacle_dir / "verification"
+        self.assertTrue(verif_dir.exists())
+        logs = list(verif_dir.iterdir())
+        self.assertGreater(len(logs), 0)
+
+    def test_verify_cli_dispatch_via_main_parser(self):
+        captured = []
+        argv = [
+            "tentacle.py",
+            "verify",
+            "vtest",
+            "echo cli-dispatch",
+            "--label",
+            "cli-dispatch",
+        ]
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(sys, "argv", argv):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.main()
+
+        meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
+        self.assertIn("verifications", meta)
+        self.assertGreater(len(meta["verifications"]), 0)
+        self.assertEqual(meta["verifications"][-1]["command"], "echo cli-dispatch")
+        self.assertTrue((self.tentacle_dir / "verification").exists())
+        self.assertTrue(any("verify [cli-dispatch]" in line for line in captured))
+
+
+class TestCompleteOutcomePersistence(unittest.TestCase):
+    """cmd_complete writes durable outcome rows to skill-metrics.db."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "metrics"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.tentacle_dir = make_tentacle("metrics-test", self.base)
+        # Use a temp metrics db scoped to this test
+        self.metrics_db = SCRATCH_DIR / "test-skill-metrics.db"
+
+    def tearDown(self):
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def test_complete_writes_outcome_row(self):
+        args = fake_args(name="metrics-test", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "SKILL_METRICS_DB", self.metrics_db):
+                with patch.object(T, "_run_learn", return_value=False):
+                    with patch("builtins.print"):
+                        T.cmd_complete(args)
+
+        import sqlite3
+        con = sqlite3.connect(str(self.metrics_db))
+        rows = con.execute("SELECT tentacle_name, outcome_status FROM tentacle_outcomes").fetchall()
+        con.close()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "metrics-test")
+        self.assertEqual(rows[0][1], "completed")
+
+    def test_complete_writes_skill_rows(self):
+        # Add skills to meta.json
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["skills"] = ["skill-a", "skill-b"]
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        args = fake_args(name="metrics-test", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "SKILL_METRICS_DB", self.metrics_db):
+                with patch.object(T, "_run_learn", return_value=False):
+                    with patch("builtins.print"):
+                        T.cmd_complete(args)
+
+        import sqlite3
+        con = sqlite3.connect(str(self.metrics_db))
+        rows = con.execute("SELECT skill_name FROM tentacle_outcome_skills ORDER BY skill_name").fetchall()
+        con.close()
+        skills = [r[0] for r in rows]
+        self.assertIn("skill-a", skills)
+        self.assertIn("skill-b", skills)
+
+    def test_complete_writes_verification_rows(self):
+        # Inject a verification record into meta.json
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["verifications"] = [{
+            "label": "test run",
+            "command": "echo ok",
+            "cwd": str(self.tentacle_dir),
+            "exit_code": 0,
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": "2026-01-01T00:00:01+00:00",
+            "duration_seconds": 1.0,
+            "log_path": None,
+        }]
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        args = fake_args(name="metrics-test", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "SKILL_METRICS_DB", self.metrics_db):
+                with patch.object(T, "_run_learn", return_value=False):
+                    with patch("builtins.print"):
+                        T.cmd_complete(args)
+
+        import sqlite3
+        con = sqlite3.connect(str(self.metrics_db))
+        rows = con.execute("SELECT label, exit_code FROM tentacle_verifications").fetchall()
+        con.close()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "test run")
+        self.assertEqual(rows[0][1], 0)
+
+    def test_complete_outcome_has_todo_stats(self):
+        # todo.md has 2 tasks; both will be marked done by complete
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        # Already has Task A (pending) and Task B (done) from make_tentacle
+        args = fake_args(name="metrics-test", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "SKILL_METRICS_DB", self.metrics_db):
+                with patch.object(T, "_run_learn", return_value=False):
+                    with patch("builtins.print"):
+                        T.cmd_complete(args)
+
+        import sqlite3
+        con = sqlite3.connect(str(self.metrics_db))
+        row = con.execute("SELECT todo_total, todo_done FROM tentacle_outcomes").fetchone()
+        con.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], 2)   # 2 todos total
+        self.assertEqual(row[1], 2)   # all marked done by complete
+
+    def test_complete_outcome_worktree_fields(self):
+        # Inject worktree state
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        fake_wt = str(self.base / "fake-wt")
+        meta["worktree"] = {"prepared": True, "path": fake_wt}
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        args = fake_args(name="metrics-test", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "SKILL_METRICS_DB", self.metrics_db):
+                with patch.object(T, "_run_learn", return_value=False):
+                    with patch("builtins.print"):
+                        T.cmd_complete(args)
+
+        import sqlite3
+        con = sqlite3.connect(str(self.metrics_db))
+        row = con.execute("SELECT worktree_used, worktree_path FROM tentacle_outcomes").fetchone()
+        con.close()
+        self.assertEqual(row[0], 1)
+        self.assertEqual(row[1], fake_wt)
+
+    def test_persist_outcome_metrics_creates_schema(self):
+        """_persist_outcome_metrics creates all three tables."""
+        result = T._persist_outcome_metrics(
+            tentacle_name="schema-test",
+            tentacle_dir=self.tentacle_dir,
+            outcome_status="completed",
+        )
+        # Even if no db path override, check using direct call with patched db
+        with patch.object(T, "SKILL_METRICS_DB", self.metrics_db):
+            result = T._persist_outcome_metrics(
+                tentacle_name="schema-test",
+                tentacle_dir=self.tentacle_dir,
+                outcome_status="completed",
+            )
+        self.assertTrue(result)
+        import sqlite3
+        con = sqlite3.connect(str(self.metrics_db))
+        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        con.close()
+        self.assertIn("tentacle_outcomes", tables)
+        self.assertIn("tentacle_outcome_skills", tables)
+        self.assertIn("tentacle_verifications", tables)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

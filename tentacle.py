@@ -32,6 +32,7 @@ import hmac
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import textwrap
@@ -68,6 +69,12 @@ _DISPATCHED_MARKER_PATH = MARKERS_DIR / _DISPATCHED_MARKER_NAME
 # Default TTL: 4 h. Downstream enforcement surfaces should treat older markers as stale.
 _DISPATCHED_MARKER_TTL = 4 * 3600
 _MARKER_SECRET_PATH = Path.home() / ".copilot" / "hooks" / ".marker-secret"
+
+# Shared metrics database for the ops/metrics lane to consume
+SKILL_METRICS_DB = Path.home() / ".copilot" / "session-state" / "skill-metrics.db"
+
+# Root directory for per-tentacle git worktrees
+_WORKTREE_STATE_ROOT = Path.home() / ".copilot" / "session-state" / "worktrees"
 
 
 
@@ -817,6 +824,7 @@ def _build_runtime_bundle(
     name: str,
     briefing_text: str = "",
     checkpoint_text: str = "",
+    worktree_path: str | None = None,
 ) -> Path:
     """Materialize a per-run context bundle under the tentacle workspace.
 
@@ -979,9 +987,436 @@ def _build_runtime_bundle(
     }
 
     # ── 5. Manifest ───────────────────────────────────────────────────────────
+    if worktree_path:
+        manifest["worktree_path"] = worktree_path
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     return bundle_dir
+
+
+# ---------------------------------------------------------------------------
+# Git worktree helpers
+# ---------------------------------------------------------------------------
+
+def _repo_slug(git_root: Path) -> str:
+    """Convert a git root path to a safe directory name component."""
+    return re.sub(r"[^a-z0-9]+", "-", git_root.name.lower()).strip("-") or "repo"
+
+
+def _tentacle_slug(name: str) -> str:
+    """Sanitize tentacle name to a safe directory name component."""
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "tentacle"
+
+
+def _worktree_path_for(name: str, git_root: Path) -> Path:
+    """Return the deterministic worktree path for a tentacle in a given repo."""
+    return (
+        _WORKTREE_STATE_ROOT
+        / _repo_slug(git_root)
+        / _tentacle_slug(name)
+        / "repo"
+    )
+
+
+def _update_meta_worktree(tentacle_dir: Path, state: dict) -> None:
+    """Persist worktree state into meta.json (atomic read-modify-write)."""
+    meta_path = tentacle_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    meta["worktree"] = state
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+
+def _worktree_prepare(tentacle_dir: Path, name: str, git_root: "Path | None") -> dict:
+    """Prepare an isolated git worktree for a tentacle.
+
+    Uses ``git worktree add --detach`` at HEAD so the worktree starts clean with
+    no active branch (detached HEAD).  Idempotent: if the worktree directory
+    already exists, it is reused without re-running git.
+
+    Returns a state dict:
+        prepared:  bool
+        path:      str  (absolute worktree path)
+        reused:    bool (True when an existing worktree was reused)
+        error:     str  (only present when prepared=False)
+    """
+    if git_root is None:
+        return {"prepared": False, "error": "no git root found"}
+
+    wt_path = _worktree_path_for(name, git_root)
+
+    # Idempotent: reuse if the directory already exists
+    if wt_path.exists():
+        state: dict = {"prepared": True, "path": str(wt_path), "reused": True}
+        _update_meta_worktree(tentacle_dir, state)
+        return state
+
+    wt_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        result = subprocess.run(
+            ["git", "worktree", "add", "--detach", str(wt_path), "HEAD"],
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            cwd=str(git_root), timeout=30,
+        )
+        if result.returncode != 0:
+            return {"prepared": False, "error": result.stderr.strip()}
+        state = {"prepared": True, "path": str(wt_path), "reused": False}
+        _update_meta_worktree(tentacle_dir, state)
+        return state
+    except FileNotFoundError:
+        return {"prepared": False, "error": "git binary not found"}
+    except subprocess.TimeoutExpired:
+        return {"prepared": False, "error": "git worktree add timed out"}
+    except Exception as e:
+        return {"prepared": False, "error": str(e)}
+
+
+def _worktree_status(tentacle_dir: Path) -> dict:
+    """Read worktree state recorded in meta.json.
+
+    Returns:
+        prepared: bool
+        path:     str or None
+        exists:   bool (whether the path exists on disk)
+    """
+    meta_path = tentacle_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    wt = meta.get("worktree") or {}
+    path = wt.get("path")
+    exists = bool(path) and Path(path).exists()
+    return {
+        "prepared": bool(wt.get("prepared")),
+        "path": path,
+        "exists": exists,
+    }
+
+
+def _worktree_cleanup(tentacle_dir: Path, name: str, git_root: "Path | None") -> dict:
+    """Remove the worktree for a tentacle and clear the recorded state.
+
+    Tries ``git worktree remove --force`` first; falls back to shutil.rmtree
+    when git is unavailable or the worktree is already gone.  Always clears
+    the worktree record from meta.json.
+    """
+    import shutil
+    status = _worktree_status(tentacle_dir)
+    path = status.get("path")
+
+    if not path:
+        return {"cleaned": True, "message": "no worktree recorded"}
+
+    wt_path = Path(path)
+
+    def _clear() -> None:
+        meta_path = tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+        meta.pop("worktree", None)
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+    if not wt_path.exists():
+        _clear()
+        return {"cleaned": True, "message": "worktree directory not found, already cleaned"}
+
+    cwd_for_git = str(git_root) if git_root else None
+    try:
+        run_kw: dict = dict(
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            timeout=30,
+        )
+        if cwd_for_git:
+            run_kw["cwd"] = cwd_for_git
+        result = subprocess.run(
+            ["git", "worktree", "remove", "--force", str(wt_path)],
+            **run_kw,
+        )
+        if result.returncode != 0 and wt_path.exists():
+            shutil.rmtree(wt_path, ignore_errors=True)
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+        shutil.rmtree(wt_path, ignore_errors=True)
+
+    _clear()
+    return {"cleaned": True, "message": "removed"}
+
+
+def cmd_worktree(args) -> None:
+    """Manage the git worktree for a tentacle (prepare / status / cleanup)."""
+    tentacles = get_tentacles_dir(args.session_dir)
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
+
+    if not tentacle_dir.exists():
+        print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    git_root = find_git_root()
+
+    if args.action == "prepare":
+        state = _worktree_prepare(tentacle_dir, args.name, git_root)
+        if state["prepared"]:
+            if state.get("reused"):
+                print(f"♻️  Worktree reused: {state['path']}")
+            else:
+                print(f"🌿 Worktree prepared: {state['path']}")
+        else:
+            print(f"ERROR: Worktree prepare failed: {state.get('error', 'unknown')}", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.action == "status":
+        status = _worktree_status(tentacle_dir)
+        if status["prepared"] and status["exists"]:
+            print(f"✅ Worktree ready: {status['path']}")
+        elif status["prepared"] and not status["exists"]:
+            print(f"⚠️  Worktree path recorded but missing on disk: {status['path']}")
+        else:
+            print("ℹ️  No worktree prepared for this tentacle")
+
+    elif args.action == "cleanup":
+        result = _worktree_cleanup(tentacle_dir, args.name, git_root)
+        print(f"🧹 Worktree cleanup: {result.get('message', 'done')}")
+
+
+# ---------------------------------------------------------------------------
+# Verification command
+# ---------------------------------------------------------------------------
+
+def cmd_verify(args) -> None:
+    """Run a shell command and persist verification metadata in meta.json."""
+    tentacles = get_tentacles_dir(args.session_dir)
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
+
+    if not tentacle_dir.exists():
+        print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    meta_path = tentacle_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+
+    # Determine working directory: worktree > git root > cwd
+    wt_info = meta.get("worktree") or {}
+    wt_path_str = wt_info.get("path") if wt_info.get("prepared") else None
+    if wt_path_str and Path(wt_path_str).exists():
+        cwd = wt_path_str
+    else:
+        git_root = find_git_root()
+        cwd = str(git_root) if git_root else str(Path.cwd())
+
+    cmd = getattr(args, "verify_command", None) or getattr(args, "command", "")
+    label = args.label if getattr(args, "label", None) else cmd[:40].strip()
+    timeout = getattr(args, "timeout", 120) or 120
+
+    # Write log to verification/ subdir
+    verif_dir = tentacle_dir / "verification"
+    verif_dir.mkdir(exist_ok=True)
+    ts_slug = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    safe_label = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")[:40]
+    log_path = verif_dir / f"{ts_slug}-{safe_label}.log"
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    t0 = time.monotonic()
+
+    try:
+        proc = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            cwd=cwd, timeout=timeout,
+        )
+        exit_code = proc.returncode
+        output = proc.stdout + proc.stderr
+    except subprocess.TimeoutExpired:
+        exit_code = -1
+        output = f"TIMEOUT after {timeout}s\n"
+    except Exception as exc:
+        exit_code = -1
+        output = f"ERROR: {exc}\n"
+
+    finished_at = datetime.now(timezone.utc).isoformat()
+    duration = round(time.monotonic() - t0, 3)
+
+    log_path.write_text(output, encoding="utf-8")
+
+    verif_record = {
+        "label": label,
+        "command": cmd,
+        "cwd": cwd,
+        "exit_code": exit_code,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_seconds": duration,
+        "log_path": str(log_path),
+    }
+
+    verifications = meta.get("verifications") or []
+    verifications.append(verif_record)
+    meta["verifications"] = verifications
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+    icon = "✅" if exit_code == 0 else "❌"
+    print(f"{icon} verify [{label}]: exit={exit_code} ({duration:.1f}s)")
+    print(f"   cwd: {cwd}")
+    print(f"   log: {log_path}")
+
+    if exit_code != 0:
+        sys.exit(exit_code if exit_code > 0 else 1)
+
+
+# ---------------------------------------------------------------------------
+# Metrics persistence helpers
+# ---------------------------------------------------------------------------
+
+def _ensure_metrics_schema(conn: sqlite3.Connection) -> None:
+    """Create the shared metrics tables if they do not exist."""
+    conn.executescript("""
+CREATE TABLE IF NOT EXISTS tentacle_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tentacle_name TEXT NOT NULL,
+    tentacle_id TEXT,
+    git_root TEXT,
+    description TEXT,
+    outcome_status TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    worktree_used INTEGER NOT NULL DEFAULT 0,
+    worktree_path TEXT,
+    verification_total INTEGER NOT NULL DEFAULT 0,
+    verification_passed INTEGER NOT NULL DEFAULT 0,
+    verification_failed INTEGER NOT NULL DEFAULT 0,
+    todo_total INTEGER NOT NULL DEFAULT 0,
+    todo_done INTEGER NOT NULL DEFAULT 0,
+    learned INTEGER NOT NULL DEFAULT 0,
+    duration_seconds REAL,
+    summary TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tentacle_outcome_skills (
+    outcome_id INTEGER NOT NULL,
+    skill_name TEXT NOT NULL,
+    PRIMARY KEY (outcome_id, skill_name)
+);
+
+CREATE TABLE IF NOT EXISTS tentacle_verifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    outcome_id INTEGER,
+    tentacle_name TEXT NOT NULL,
+    tentacle_id TEXT,
+    label TEXT NOT NULL,
+    command TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    exit_code INTEGER NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL,
+    duration_seconds REAL NOT NULL,
+    log_path TEXT
+);
+""")
+
+
+def _persist_outcome_metrics(
+    tentacle_name: str,
+    tentacle_dir: Path,
+    outcome_status: str,
+    learned: int = 0,
+    summary: str = "",
+) -> bool:
+    """Write tentacle completion data into the shared skill-metrics.db.
+
+    Fail-open: returns False on any error without raising.
+    """
+    try:
+        meta_path = tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+
+        # Todo stats
+        todo_path = tentacle_dir / "todo.md"
+        todos = parse_todos(todo_path.read_text(encoding="utf-8")) if todo_path.exists() else []
+        todo_total = len(todos)
+        todo_done = sum(1 for t in todos if t["done"])
+
+        # Verification stats
+        verifications: list[dict] = meta.get("verifications") or []
+        verif_total = len(verifications)
+        verif_passed = sum(1 for v in verifications if v.get("exit_code") == 0)
+        verif_failed = verif_total - verif_passed
+
+        # Worktree
+        wt_info = meta.get("worktree") or {}
+        worktree_used = 1 if wt_info.get("prepared") else 0
+        worktree_path = wt_info.get("path")
+
+        # Duration: from created_at to now (seconds)
+        duration_seconds: float | None = None
+        created_at_str = meta.get("created_at")
+        if created_at_str:
+            try:
+                created_dt = datetime.fromisoformat(created_at_str)
+                now_dt = datetime.now(timezone.utc)
+                if created_dt.tzinfo is None:
+                    created_dt = created_dt.replace(tzinfo=timezone.utc)
+                duration_seconds = round((now_dt - created_dt).total_seconds(), 1)
+            except Exception:
+                pass
+
+        git_root = find_git_root()
+        git_root_str = str(git_root) if git_root else None
+        tentacle_id = meta.get("tentacle_id")
+        description = meta.get("description", "")
+        skills: list[str] = meta.get("skills") or []
+        recorded_at = datetime.now(timezone.utc).isoformat()
+
+        db_path = SKILL_METRICS_DB
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with sqlite3.connect(str(db_path)) as conn:
+            _ensure_metrics_schema(conn)
+            cur = conn.execute(
+                """
+                INSERT INTO tentacle_outcomes (
+                    tentacle_name, tentacle_id, git_root, description,
+                    outcome_status, recorded_at,
+                    worktree_used, worktree_path,
+                    verification_total, verification_passed, verification_failed,
+                    todo_total, todo_done, learned,
+                    duration_seconds, summary
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    tentacle_name, tentacle_id, git_root_str, description,
+                    outcome_status, recorded_at,
+                    worktree_used, worktree_path,
+                    verif_total, verif_passed, verif_failed,
+                    todo_total, todo_done, learned,
+                    duration_seconds, summary or None,
+                ),
+            )
+            outcome_id = cur.lastrowid
+
+            for skill in skills:
+                if skill:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO tentacle_outcome_skills (outcome_id, skill_name) VALUES (?,?)",
+                        (outcome_id, skill),
+                    )
+
+            for v in verifications:
+                conn.execute(
+                    """
+                    INSERT INTO tentacle_verifications (
+                        outcome_id, tentacle_name, tentacle_id,
+                        label, command, cwd, exit_code,
+                        started_at, finished_at, duration_seconds, log_path
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        outcome_id, tentacle_name, tentacle_id,
+                        v.get("label", ""), v.get("command", ""), v.get("cwd", ""),
+                        v.get("exit_code", -1),
+                        v.get("started_at", ""), v.get("finished_at", ""),
+                        v.get("duration_seconds", 0.0),
+                        v.get("log_path"),
+                    ),
+                )
+            conn.commit()
+        return True
+    except Exception:
+        return False
 
 
 def _run_learn(category: str, title: str, content: str, tags: str = "") -> bool:
@@ -1088,6 +1523,7 @@ def cmd_create(args):
     (tentacle_dir / "todo.md").write_text(todo_content, encoding="utf-8")
 
     # Create metadata
+    skills = list(args.skill) if getattr(args, "skill", None) else []
     meta = {
         "name": args.name,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -1095,6 +1531,7 @@ def cmd_create(args):
         "description": desc,
         "status": "idle",
         "tentacle_id": tentacle_id,
+        "skills": skills,
     }
     # When dir_name differs from name (collision case), record it explicitly.
     if actual_dir_name != args.name:
@@ -1104,6 +1541,8 @@ def cmd_create(args):
     print(f"✅ Tentacle '{actual_dir_name}' created at {tentacle_dir}")
     print(f"   📄 CONTEXT.md — edit to add area-specific context")
     print(f"   📋 todo.md    — add checkbox items for delegation")
+    if skills:
+        print(f"   🔧 Skills: {', '.join(skills)}")
 
 
 def cmd_list(args):
@@ -1372,7 +1811,28 @@ def cmd_complete(args):
     if had_marker:
         print(f"🧹 Dispatched-subagent marker updated (removed '{args.name}')")
 
-    # 5. Summary
+    # 5. Persist outcome metrics to shared skill-metrics.db
+    handoff_summary = ""
+    if handoff_path.exists():
+        try:
+            raw = handoff_path.read_text(encoding="utf-8")
+            sections = re.split(r"^## \[", raw, flags=re.MULTILINE)
+            meaningful = [s.strip() for s in sections if len(s.strip()) > 30]
+            if meaningful:
+                handoff_summary = meaningful[-1][:500]
+        except Exception:
+            pass
+    metrics_ok = _persist_outcome_metrics(
+        tentacle_name=args.name,
+        tentacle_dir=tentacle_dir,
+        outcome_status="completed",
+        learned=learned,
+        summary=handoff_summary,
+    )
+    if metrics_ok:
+        print(f"📊 Outcome metrics persisted to skill-metrics.db")
+
+    # 6. Summary
     print(f"\n🏁 Tentacle '{args.name}' completed!")
     if learned:
         print(f"   🧠 {learned} knowledge entry saved to long-term memory")
@@ -1509,6 +1969,22 @@ def cmd_swarm(args):
     # Bundle materialization (--bundle flag)
     bundle_dir: Path | None = None
     bundle_section = ""
+    worktree_section = ""
+
+    # Worktree preparation (--worktree flag)
+    wt_path_str: str | None = None
+    if getattr(args, "worktree", False):
+        print(f"🌿 Preparing worktree for '{args.name}'...")
+        git_root = find_git_root()
+        wt_state = _worktree_prepare(tentacle_dir, args.name, git_root)
+        if wt_state["prepared"]:
+            wt_path_str = wt_state["path"]
+            action = "reused" if wt_state.get("reused") else "prepared"
+            print(f"   ✅ Worktree {action}: {wt_path_str}\n")
+            worktree_section = f"\n### Worktree Path\n\n`{wt_path_str}`\n"
+        else:
+            print(f"   ⚠️  Worktree prepare failed: {wt_state.get('error', 'unknown')}\n")
+
     if getattr(args, "bundle", False):
         print(f"📦 Materializing runtime bundle...")
         b_briefing = _run_briefing_for_task(
@@ -1521,6 +1997,7 @@ def cmd_swarm(args):
             name=args.name,
             briefing_text=b_briefing,
             checkpoint_text=b_checkpoint,
+            worktree_path=wt_path_str,
         )
         bundle_section = f"\n### Bundle Path\n\n`{bundle_dir}`\n"
         print(f"   ✅ Bundle: {bundle_dir}\n")
@@ -1547,7 +2024,7 @@ def cmd_swarm(args):
 
 ### Context
 {context.strip()}
-{live_briefing_section}{bundle_section}
+{live_briefing_section}{bundle_section}{worktree_section}
 ### Your Tasks (complete ALL)
 """
         for t in pending:
@@ -1601,6 +2078,8 @@ def cmd_swarm(args):
                 print(live_briefing_section.strip())
             if bundle_section:
                 print(bundle_section.strip())
+            if worktree_section:
+                print(worktree_section.strip())
             print(f'')
             print(f'### Your Task')
             print(f'{t["text"]}')
@@ -1634,6 +2113,8 @@ def cmd_swarm(args):
         }
         if bundle_dir is not None:
             dispatch["bundle_path"] = str(bundle_dir)
+        if wt_path_str is not None:
+            dispatch["worktree_path"] = wt_path_str
         print(json.dumps(dispatch, indent=2))
 
 
@@ -1769,11 +2250,25 @@ def cmd_bundle(args):
     if not getattr(args, "no_checkpoint", False):
         checkpoint_text = _load_latest_checkpoint_context()
 
+    # Worktree preparation (--worktree flag)
+    wt_path_str: str | None = None
+    if getattr(args, "worktree", False):
+        print(f"🌿 Preparing worktree for '{args.name}'...")
+        git_root = find_git_root()
+        wt_state = _worktree_prepare(tentacle_dir, args.name, git_root)
+        if wt_state["prepared"]:
+            wt_path_str = wt_state["path"]
+            action = "reused" if wt_state.get("reused") else "prepared"
+            print(f"   ✅ Worktree {action}: {wt_path_str}")
+        else:
+            print(f"   ⚠️  Worktree prepare failed: {wt_state.get('error', 'unknown')}")
+
     bundle_dir = _build_runtime_bundle(
         tentacle_dir=tentacle_dir,
         name=args.name,
         briefing_text=briefing_text,
         checkpoint_text=checkpoint_text,
+        worktree_path=wt_path_str,
     )
 
     # Write dispatched-subagent-active marker when materializing a bundle
@@ -1788,13 +2283,18 @@ def cmd_bundle(args):
     if getattr(args, "output", "text") == "json":
         manifest_path = bundle_dir / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        print(json.dumps({
+        out = {
             "bundle_path": str(bundle_dir),
             "marker_state": _get_marker_state(),
             **manifest,
-        }, indent=2))
+        }
+        if wt_path_str:
+            out["worktree_path"] = wt_path_str
+        print(json.dumps(out, indent=2))
     else:
         print(f"📦 Bundle materialized: {bundle_dir}")
+        if wt_path_str:
+            print(f"🌿 Worktree: {wt_path_str}")
         print(f"📌 Marker: {_DISPATCHED_MARKER_PATH}")
         for f in sorted(bundle_dir.iterdir()):
             print(f"   {f.name} ({f.stat().st_size} bytes)")
@@ -1826,6 +2326,8 @@ def main():
     p_create.add_argument("--desc", help="Short description")
     p_create.add_argument("--briefing", action="store_true",
                           help="Auto-inject relevant past knowledge into CONTEXT.md")
+    p_create.add_argument("--skill", action="append", metavar="SKILL",
+                          help="Declare a skill used by this tentacle (repeatable)")
 
     # list
     sub.add_parser("list", help="List all tentacles")
@@ -1861,6 +2363,8 @@ def main():
                          help="Inject live briefing into the dispatch prompt at runtime")
     p_swarm.add_argument("--bundle", action="store_true",
                          help="Materialize a runtime bundle and surface its path in the dispatch output")
+    p_swarm.add_argument("--worktree", action="store_true",
+                         help="Prepare an isolated git worktree and surface its path in the dispatch output")
 
     # dispatch (alias for swarm --output prompt)
     p_dispatch = sub.add_parser("dispatch", help="Generate single-agent dispatch prompt")
@@ -1871,6 +2375,8 @@ def main():
                             help="Inject live briefing into the dispatch prompt at runtime")
     p_dispatch.add_argument("--bundle", action="store_true",
                             help="Materialize a runtime bundle and surface its path in the dispatch output")
+    p_dispatch.add_argument("--worktree", action="store_true",
+                            help="Prepare an isolated git worktree and surface its path in the dispatch output")
 
     # resume
     p_resume = sub.add_parser("resume", help="Resume a tentacle: refresh briefing, set active")
@@ -1909,6 +2415,22 @@ def main():
                           help="Skip loading latest checkpoint context")
     p_bundle.add_argument("--output", choices=["text", "json"], default="text",
                           help="Output format: text (default) or json (manifest + bundle_path)")
+    p_bundle.add_argument("--worktree", action="store_true",
+                          help="Prepare an isolated git worktree and include its path in the bundle manifest")
+
+    # worktree subcommand
+    p_wt = sub.add_parser("worktree", help="Manage isolated git worktrees for tentacles")
+    p_wt.add_argument("name", help="Tentacle name")
+    p_wt.add_argument("action", choices=["prepare", "status", "cleanup"],
+                      help="prepare: create worktree; status: show state; cleanup: remove worktree")
+
+    # verify subcommand
+    p_verify = sub.add_parser("verify", help="Run a verification command and persist results")
+    p_verify.add_argument("name", help="Tentacle name")
+    p_verify.add_argument("verify_command", help="Shell command to run")
+    p_verify.add_argument("--label", help="Human-readable label for this verification")
+    p_verify.add_argument("--timeout", type=int, default=120,
+                          help="Command timeout in seconds (default: 120)")
 
     args = parser.parse_args()
 
@@ -1939,6 +2461,10 @@ def main():
         cmd_complete(args)
     elif args.command == "bundle":
         cmd_bundle(args)
+    elif args.command == "worktree":
+        cmd_worktree(args)
+    elif args.command == "verify":
+        cmd_verify(args)
 
 
 if __name__ == "__main__":

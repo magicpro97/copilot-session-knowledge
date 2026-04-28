@@ -70,7 +70,7 @@ This avoids noisy per-tool reminders during normal coding sessions.
 | `rules/session_lifecycle.py` | `SubagentStopRule` | `agentStop`, `subagentStop` | *(all)* | Uses stop-event hints to clear matching `dispatched-subagent-active` marker entries | Y |
 | `rules/briefing.py` | `EnforceBriefingRule` | `preToolUse` | `edit`, `create`, `bash` | Blocks edits until briefing marker is present | Y |
 | `rules/learn_gate.py` | `EnforceLearnRule` | `preToolUse` | `edit`, `create`, `bash`, `task_complete` | Blocks `git commit` / `task_complete` after ≥3 code edits without `learn.py` | Y |
-| `rules/tentacle.py` | `TentacleEnforceRule` | `preToolUse` | `edit`, `create`, `bash` | Blocks edits when ≥3 files across ≥2 modules without tentacle setup | Y |
+| `rules/tentacle.py` | `TentacleEnforceRule` | `preToolUse` | `edit`, `create`, `bash` | Blocks edits when ≥3 files across ≥2 modules without tentacle setup. Deny message guides: create → todo → swarm [--bundle] → complete | Y |
 | `rules/subagent_guard.py` | `SubagentGitGuardRule` | `preToolUse` | `bash` | Defense-in-depth: blocks `git commit`/`git push` inside dispatched subagent | Y |
 | `rules/syntax_gate.py` | `SyntaxGateRule` | `preToolUse` | `edit`, `create` | Blocks `.py` edit/create payloads that fail `py_compile` (`SyntaxError`) | Y |
 | `rules/block_edit_dist.py` | `BlockEditDistRule` | `preToolUse` | `edit`, `create` | Blocks direct edits to `browse-ui/dist/`; requires rebuild via `pnpm build` | Y |

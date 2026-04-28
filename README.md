@@ -179,52 +179,58 @@ learn --mistake "Title"  "Description" --json  # Machine-readable JSON output
 Multi-agent parallel execution via scoped work units. The runtime-bundle workflow:
 
 ```bash
-# 1. Create a tentacle with scope + briefing
+# 1. Create a tentacle with scope + briefing + skills
 python3 ~/.copilot/tools/tentacle.py create api-export \
-  --scope "src/api/*.py" --desc "Export API endpoints" --briefing
+  --scope "src/api/*.py" --desc "Export API endpoints" --briefing \
+  --skill karpathy-guidelines --skill code-reviewer
 
 # 2. Add atomic todo items (one per agent delegation unit)
 python3 ~/.copilot/tools/tentacle.py todo api-export add "Generate OpenAPI schema"
 
-# 3. Dispatch — choose output mode:
+# 3. (Optional) Prepare isolated git worktree
+python3 ~/.copilot/tools/tentacle.py worktree api-export prepare
+python3 ~/.copilot/tools/tentacle.py worktree api-export status
+
+# 4. (Optional) Pre-materialize isolated context bundle
+#    Writes briefing.md, instructions.md, skills.md, session-metadata.md to bundle/
+python3 ~/.copilot/tools/tentacle.py bundle api-export
+
+# 5. Dispatch — choose output mode; use --bundle/--worktree to surface runtime context
 python3 ~/.copilot/tools/tentacle.py swarm api-export \
   --agent-type general-purpose --model claude-sonnet-4.6              # single prompt
 python3 ~/.copilot/tools/tentacle.py swarm api-export --output parallel  # one dispatch per todo
+python3 ~/.copilot/tools/tentacle.py swarm api-export --bundle           # include bundle path reference
+python3 ~/.copilot/tools/tentacle.py swarm api-export --worktree         # include worktree path reference
+python3 ~/.copilot/tools/tentacle.py dispatch api-export --worktree      # single-agent alias with worktree
 python3 ~/.copilot/tools/tentacle.py swarm api-export --output json      # structured JSON
 
-# 4. After agents finish: record results and close
+# 6. Monitor runtime (read-only operator view)
+python3 ~/.copilot/tools/tentacle.py status           # Dashboard: all tentacles + states
+
+# 7. After agents finish: run verification commands, record results, and close (orchestrator only)
+python3 ~/.copilot/tools/tentacle.py verify api-export "python3 test_fixes.py" --label "tests"
 python3 ~/.copilot/tools/tentacle.py handoff api-export "Done. Learned X" --learn
-python3 ~/.copilot/tools/tentacle.py complete api-export
+python3 ~/.copilot/tools/tentacle.py complete api-export  # Marks done, unblocks git commit
+python3 ~/.copilot/tools/tentacle.py worktree api-export cleanup
 ```
 
 > `--output parallel` maximises parallelism (one agent per todo). `--output json` is for
-> programmatic consumption. `--briefing` injects structured live recall at dispatch time:
-> task-scoped `briefing.py --task <id> --json` first, then `--pack` fallback when needed,
-> rendered as bounded `[KNOWLEDGE EVIDENCE]` (incompatible with `--output json`).
-> Evidence bullets are unchanged; runtime may add one optional bounded `From:` provenance line.
-> Drilldown may include `query-session.py --related <entry_id>` only when the first evidence
-> bullet has related entries.
-> Resume also refreshes a single `AUTO-RECALL` block in `CONTEXT.md` instead of appending repeats.
+> programmatic consumption. `--briefing` injects bounded live recall and is incompatible with
+> `--output json`. `resume` refreshes a single `AUTO-RECALL` block in `CONTEXT.md`.
+> `tentacle.py complete` is the verification/closure step: it marks the tentacle done, clears
+> the dispatched-subagent marker (unblocking `git commit`/`git push`), and auto-learns from
+> `handoff.md`. See [docs/USAGE.md](docs/USAGE.md) for the full recall/runtime details.
 
-**Commit restriction:** Sub-agents must not run `git commit` or `git push`. When git hooks
-are installed (`install.py --install-git-hooks`), both operations are **blocked at the git level**
-while a `dispatched-subagent-active` marker is active and the marker's `git_root` matches the
-current repo. Even without hooks, this is a hard convention: only the orchestrator commits,
-after merging and verifying tentacle results. Enforcement is local-only — cloud-delegated runs
-are not covered.
+**Commit restriction:** Sub-agents must not run `git commit` or `git push`. With
+`install.py --install-git-hooks`, both are **blocked at the git level** while the
+`dispatched-subagent-active` marker is active for the current repo. Even without hooks, only the
+orchestrator should commit after review + verification. Enforcement is local-only.
 
-> **Cross-repo isolation:** Each marker entry carries a `git_root` field. If Terminal A has an
-> active tentacle in repo A, a `git commit` in repo B is **not blocked** — the hook skips
-> markers whose `git_root` doesn't match the committing repo. Markers written without `git_root`
-> (old format or dispatch from a non-git directory) conservatively block as before.
+> **Cross-repo isolation:** marker entries carry `git_root`, so repo A's active tentacle does not
+> block commits in repo B. Old entries without `git_root` conservatively block as before.
 
-> **Stuck marker:** If the orchestrator crashes before `tentacle.py complete`, the marker stays
-> active for up to 4 hours (TTL dead-man switch). To clear it manually:
-> ```bash
-> python3 ~/.copilot/tools/tentacle.py complete <name>
-> # or directly:
-> rm ~/.copilot/markers/dispatched-subagent-active
-> ```
+> **Stuck marker:** markers expire after 4 hours. Manual clear: `python3 ~/.copilot/tools/tentacle.py complete <name>`
+> (or remove `~/.copilot/markers/dispatched-subagent-active` directly).
 
 ### Tentacle Next Step
 

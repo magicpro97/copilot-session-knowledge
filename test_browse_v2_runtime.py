@@ -162,7 +162,7 @@ def _v2_dist_path(*parts: str) -> Path:
     return Path(__file__).parent / "browse-ui" / "dist" / Path(*parts)
 
 
-def run_all_tests() -> int:
+def _run_all_tests() -> int:
     print("=== test_browse_v2_runtime.py ===")
 
     # V1: Direct serve_v2 handles valid dist chunk filename containing '..js'
@@ -433,5 +433,98 @@ def run_all_tests() -> int:
     return 0 if _FAIL == 0 else 1
 
 
-if __name__ == "__main__":
-    sys.exit(run_all_tests())
+def run_all_tests() -> int:
+    _base = _run_all_tests()
+    _extra = _run_new_endpoint_tests()
+    return 0 if (_base + _extra) == 0 else 1
+
+
+def _run_new_endpoint_tests() -> int:
+    global _PASS, _FAIL
+    print("\n=== test_browse_v2_runtime.py (new endpoints) ===")
+    start_pass = _PASS
+    start_fail = _FAIL
+
+    # V11: /api/tentacles/status returns tentacle runtime diagnostics
+    print("\n-- V11: /api/tentacles/status read-only diagnostics")
+    db11 = _make_test_db()
+    server11, host11, port11 = _start_server(db11, token="tok")
+    try:
+        status11, headers11, body11 = _get(host11, port11, "/api/tentacles/status?token=tok")
+        test("V11: /api/tentacles/status returns 200", status11 == 200)
+        test(
+            "V11: content-type json",
+            "application/json" in headers11.get("content-type", ""),
+        )
+        payload11 = json.loads(body11.decode("utf-8", errors="replace"))
+        test("V11: has status field", isinstance(payload11, dict) and "status" in payload11)
+        test("V11: has configured field", isinstance(payload11.get("configured"), bool))
+        test("V11: has active_count", isinstance(payload11.get("active_count"), int))
+        test("V11: has total_count", isinstance(payload11.get("total_count"), int))
+        test("V11: has marker object", isinstance(payload11.get("marker"), dict))
+        test("V11: marker has active flag", isinstance(payload11.get("marker", {}).get("active"), bool))
+        test("V11: has tentacles list", isinstance(payload11.get("tentacles"), list))
+        test("V11: has audit checks", isinstance(payload11.get("audit", {}).get("checks"), list))
+        test("V11: has operator_actions", isinstance(payload11.get("operator_actions"), list))
+        test("V11: has runtime object", isinstance(payload11.get("runtime"), dict))
+        actions11 = payload11.get("operator_actions") or []
+        test(
+            "V11: operator actions are read-only safe commands",
+            bool(actions11)
+            and all(
+                isinstance(a, dict)
+                and a.get("safe") is True
+                and isinstance(a.get("command"), str)
+                and bool(a.get("command"))
+                for a in actions11
+            ),
+        )
+    finally:
+        server11.shutdown()
+        db11.close()
+
+    # V12: /api/skills/metrics returns skill outcome metrics
+    print("\n-- V12: /api/skills/metrics read-only diagnostics")
+    db12 = _make_test_db()
+    server12, host12, port12 = _start_server(db12, token="tok")
+    try:
+        status12, headers12, body12 = _get(host12, port12, "/api/skills/metrics?token=tok")
+        test("V12: /api/skills/metrics returns 200", status12 == 200)
+        test(
+            "V12: content-type json",
+            "application/json" in headers12.get("content-type", ""),
+        )
+        payload12 = json.loads(body12.decode("utf-8", errors="replace"))
+        test("V12: has status field", isinstance(payload12, dict) and "status" in payload12)
+        test("V12: has configured field", isinstance(payload12.get("configured"), bool))
+        test("V12: has db_path", isinstance(payload12.get("db_path"), str))
+        test("V12: has tables object", isinstance(payload12.get("tables"), dict))
+        test("V12: tables has tentacle_outcomes key", "tentacle_outcomes" in (payload12.get("tables") or {}))
+        test("V12: has summary object", isinstance(payload12.get("summary"), dict))
+        test("V12: summary has total_outcomes", isinstance(payload12.get("summary", {}).get("total_outcomes"), int))
+        test("V12: has recent_outcomes list", isinstance(payload12.get("recent_outcomes"), list))
+        test("V12: has skill_usage list", isinstance(payload12.get("skill_usage"), list))
+        test("V12: has audit checks", isinstance(payload12.get("audit", {}).get("checks"), list))
+        test("V12: has operator_actions", isinstance(payload12.get("operator_actions"), list))
+        actions12 = payload12.get("operator_actions") or []
+        test(
+            "V12: operator actions are read-only safe commands",
+            bool(actions12)
+            and all(
+                isinstance(a, dict)
+                and a.get("safe") is True
+                and isinstance(a.get("command"), str)
+                and bool(a.get("command"))
+                for a in actions12
+            ),
+        )
+        test("V12: unconfigured graceful state", payload12.get("status") in {"ok", "degraded", "unconfigured"})
+    finally:
+        server12.shutdown()
+        db12.close()
+
+    delta_pass = _PASS - start_pass
+    delta_fail = _FAIL - start_fail
+    total = delta_pass + delta_fail
+    print(f"\nNew endpoint results: {delta_pass}/{total} passed, {delta_fail} failed")
+    return delta_fail

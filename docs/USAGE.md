@@ -301,6 +301,109 @@ python3 ~/.copilot/tools/profile-import.py --file custom.json --dry-run         
 ```
 
 
+## Tentacle Orchestration
+
+Full workflow for multi-agent parallel execution across scoped work units.
+
+### Step-by-step workflow
+
+```bash
+# 1. Create tentacle with scope + briefing
+python3 ~/.copilot/tools/tentacle.py create api-export \
+  --scope "src/api/*.py" --desc "Export API endpoints" --briefing
+
+# 2. Add atomic todo items (one per sub-agent delegation unit)
+python3 ~/.copilot/tools/tentacle.py todo api-export add "Generate OpenAPI schema"
+python3 ~/.copilot/tools/tentacle.py todo api-export add "Add auth middleware"
+
+# 3. (Optional) Pre-materialize isolated context bundle before dispatch
+#    Writes briefing.md, instructions.md, skills.md, session-metadata.md, manifest.json
+#    to .octogent/tentacles/<name>/bundle/ for sub-agents that need artifacts on disk
+python3 ~/.copilot/tools/tentacle.py bundle api-export
+
+# 4. Dispatch — use --bundle to surface the bundle path in the prompt
+python3 ~/.copilot/tools/tentacle.py swarm api-export \
+  --agent-type general-purpose --model claude-sonnet-4.6 --briefing      # single prompt
+python3 ~/.copilot/tools/tentacle.py swarm api-export --output parallel  # one per todo
+python3 ~/.copilot/tools/tentacle.py dispatch api-export --briefing --bundle  # single dispatch + bundle ref
+
+# 5. Monitor runtime (read-only)
+python3 ~/.copilot/tools/tentacle.py status                # dashboard: all tentacles + states
+
+# 6. Verify results, record learnings, and close (orchestrator only)
+python3 ~/.copilot/tools/tentacle.py handoff api-export "Completed. Patterns learned." --learn
+python3 ~/.copilot/tools/tentacle.py complete api-export   # marks done, auto-learns from handoff
+```
+
+### Operator status
+
+```bash
+python3 ~/.copilot/tools/tentacle.py create api-export \
+  --scope "backend/lambda/export*" --desc "Export API" --briefing \
+  --skill karpathy-guidelines --skill code-reviewer
+python3 ~/.copilot/tools/tentacle.py status       # Dashboard: name, status, todos done/total, last update
+python3 ~/.copilot/tools/tentacle.py show api-export   # Full details for one tentacle
+python3 ~/.copilot/tools/tentacle.py list              # One-line list of all tentacles
+```
+
+### Worktree + verification runtime commands
+
+```bash
+python3 ~/.copilot/tools/tentacle.py worktree api-export prepare
+python3 ~/.copilot/tools/tentacle.py worktree api-export status
+python3 ~/.copilot/tools/tentacle.py swarm api-export --worktree
+python3 ~/.copilot/tools/tentacle.py dispatch api-export --worktree
+python3 ~/.copilot/tools/tentacle.py verify api-export "python3 test_fixes.py" --label "tests"
+python3 ~/.copilot/tools/tentacle.py worktree api-export cleanup
+```
+
+### Operator runtime (auto-update + watch)
+
+```bash
+python3 ~/.copilot/tools/auto-update-tools.py --restart-watch   # Restart session watcher
+python3 ~/.copilot/tools/auto-update-tools.py --watch-status    # Check watcher state
+python3 ~/.copilot/tools/auto-update-tools.py --health-check    # Runtime health
+python3 ~/.copilot/tools/auto-update-tools.py --audit-runtime   # Audit active runtime surfaces
+```
+
+### Bundle for isolated context
+
+`tentacle.py bundle` materializes a per-run context bundle — all artifacts needed by a
+sub-agent written to `.octogent/tentacles/<name>/bundle/`. Run before dispatch when sub-agents
+need file-backed context (rather than only inline prompt injection).
+
+```bash
+python3 ~/.copilot/tools/tentacle.py bundle api-export               # Fetch briefing + write all artifacts
+python3 ~/.copilot/tools/tentacle.py bundle api-export --no-briefing    # Skip live briefing
+python3 ~/.copilot/tools/tentacle.py bundle api-export --no-checkpoint  # Skip checkpoint context
+python3 ~/.copilot/tools/tentacle.py bundle api-export --output json    # JSON manifest + bundle_path
+```
+
+Pass `--bundle` to `swarm` or `dispatch` to materialize the bundle and surface its path in the
+prompt so sub-agents know where to find it:
+
+```bash
+python3 ~/.copilot/tools/tentacle.py swarm api-export --bundle
+python3 ~/.copilot/tools/tentacle.py dispatch api-export --bundle
+python3 ~/.copilot/tools/tentacle.py swarm api-export --bundle --worktree
+python3 ~/.copilot/tools/tentacle.py dispatch api-export --bundle --worktree
+```
+
+### Completing and verifying results
+
+`tentacle.py complete` is the orchestrator verification step — it marks the tentacle done,
+clears the active marker (unblocking `git commit`/`git push`), and auto-learns from `handoff.md`:
+
+```bash
+python3 ~/.copilot/tools/tentacle.py complete api-export          # Mark done + auto-learn
+python3 ~/.copilot/tools/tentacle.py complete api-export --no-learn  # Mark done, skip learn
+```
+
+Run `complete` only after reviewing sub-agent results and resolving any conflicts. The
+orchestrator then commits and pushes — sub-agents must never commit or push.
+
+---
+
 ## Tentacle Next Step
 
 `tentacle.py next-step` shows the grounded next step for a named tentacle — the first pending

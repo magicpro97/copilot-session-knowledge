@@ -683,6 +683,12 @@ try:
         test("TentacleEnforceRule deny message mentions git push",
              "push" in deny_msg.lower(),
              f"Deny message should mention git push; got: {deny_msg!r:.120}")
+        test("TentacleEnforceRule deny message mentions complete step",
+             "complete" in deny_msg.lower(),
+             f"Deny message should reference 'tentacle.py complete' as the closure step; got: {deny_msg!r:.120}")
+        test("TentacleEnforceRule deny message mentions status",
+             "status" in deny_msg.lower(),
+             f"Deny message should reference 'tentacle.py status' for runtime monitoring; got: {deny_msg!r:.120}")
     else:
         test("TentacleEnforceRule returned a result for 3-file/2-module edit", False,
              "Expected deny, got None")

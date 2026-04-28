@@ -38,6 +38,33 @@ first and falling back to `briefing.py "<query>" --pack --limit 3` only when tas
 keeps category buckets in `entries.<category>[]`. Drilldown may add
 `query-session.py --related <entry_id>` only when the first evidence bullet has related entries.
 
+### Full tentacle workflow
+
+```bash
+# 1. Create tentacle
+python3 ~/.copilot/tools/tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing --skill <skill-name>
+
+# 2. Add todos
+python3 ~/.copilot/tools/tentacle.py todo <name> add "<task>"
+
+# 3. (Optional) Prepare isolated worktree + bundle before dispatch
+python3 ~/.copilot/tools/tentacle.py worktree <name> prepare
+python3 ~/.copilot/tools/tentacle.py bundle <name> --worktree
+
+# 4. Dispatch (--bundle/--worktree surfaces runtime paths in the prompt)
+python3 ~/.copilot/tools/tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6 --briefing --bundle --worktree
+python3 ~/.copilot/tools/tentacle.py dispatch <name> --briefing --bundle --worktree
+
+# 5. Operator monitoring (read-only)
+python3 ~/.copilot/tools/tentacle.py status
+
+# 6. Verify, record learnings, close (orchestrator only)
+python3 ~/.copilot/tools/tentacle.py verify <name> "python3 test_fixes.py" --label "tests"
+python3 ~/.copilot/tools/tentacle.py handoff <name> "summary" --learn
+python3 ~/.copilot/tools/tentacle.py complete <name>   # marks done, clears marker, auto-learns
+python3 ~/.copilot/tools/tentacle.py worktree <name> cleanup
+```
+
 For manual compatibility or ad hoc non-tentacle prompts, inject compact context directly:
 
 ```bash

@@ -441,6 +441,147 @@ export const trendScoutStatusResponseSchema = z.object({
   }),
 });
 
+export const tentacleWorktreeInfoSchema = z.object({
+  prepared: z.boolean(),
+  path: z.string(),
+  stale: z.boolean(),
+});
+
+export const tentacleVerificationInfoSchema = z.object({
+  coverage_exists: z.boolean(),
+  total: z.number(),
+  passed: z.number(),
+  failed: z.number(),
+});
+
+export const tentacleEntrySchema = z.object({
+  name: z.string(),
+  tentacle_id: z.string(),
+  status: z.string(),
+  created_at: z.string(),
+  description: z.string(),
+  scope: z.array(z.string()),
+  skills: z.array(z.string()),
+  worktree: tentacleWorktreeInfoSchema,
+  verification: tentacleVerificationInfoSchema,
+});
+
+export const tentacleMarkerInfoSchema = z.object({
+  active: z.boolean(),
+  path: z.string(),
+  age_hours: z.number().nullable(),
+  stale: z.boolean(),
+});
+
+export const tentacleAuditCheckSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: z.string(),
+  detail: z.string(),
+});
+
+export const tentacleOperatorActionSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  description: z.string(),
+  command: z.string(),
+  safe: z.boolean(),
+});
+
+export const tentacleStatusResponseSchema = z.object({
+  status: z.string(),
+  configured: z.boolean(),
+  active_count: z.number(),
+  total_count: z.number(),
+  worktrees_prepared: z.number(),
+  verification_covered: z.number(),
+  marker: tentacleMarkerInfoSchema,
+  tentacles: z.array(tentacleEntrySchema),
+  audit: z.object({
+    summary: z.object({
+      ok: z.boolean(),
+      total_checks: z.number(),
+      warning_checks: z.number(),
+    }),
+    checks: z.array(tentacleAuditCheckSchema),
+  }),
+  operator_actions: z.array(tentacleOperatorActionSchema),
+  runtime: z.object({
+    generated_at: z.string(),
+  }),
+});
+
+export const skillMetricsSummarySchema = z.object({
+  total_outcomes: z.number(),
+  outcomes_with_skills: z.number(),
+  outcomes_with_verification: z.number(),
+  outcomes_with_worktree: z.number(),
+  pass_rate: z.number().nullable(),
+});
+
+export const skillOutcomeEntrySchema = z.object({
+  id: z.number(),
+  tentacle_name: z.string(),
+  tentacle_id: z.string(),
+  outcome_status: z.string(),
+  recorded_at: z.string(),
+  worktree_used: z.boolean(),
+  verification_total: z.number(),
+  verification_passed: z.number(),
+  verification_failed: z.number(),
+  todo_total: z.number(),
+  todo_done: z.number(),
+  learned: z.boolean(),
+  duration_seconds: z.number().nullable(),
+  summary: z.string().nullable(),
+});
+
+export const skillUsageEntrySchema = z.object({
+  skill_name: z.string(),
+  usage_count: z.number(),
+});
+
+export const skillMetricsAuditCheckSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: z.string(),
+  detail: z.string(),
+});
+
+export const skillMetricsOperatorActionSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  description: z.string(),
+  command: z.string(),
+  safe: z.boolean(),
+});
+
+export const skillMetricsResponseSchema = z.object({
+  status: z.string(),
+  configured: z.boolean(),
+  db_path: z.string(),
+  tables: z.object({
+    tentacle_outcomes: z.boolean(),
+    tentacle_outcome_skills: z.boolean(),
+    tentacle_verifications: z.boolean(),
+  }),
+  summary: skillMetricsSummarySchema,
+  recent_outcomes: z.array(skillOutcomeEntrySchema),
+  skill_usage: z.array(skillUsageEntrySchema),
+  audit: z.object({
+    summary: z.object({
+      ok: z.boolean(),
+      total_checks: z.number(),
+      warning_checks: z.number(),
+    }),
+    checks: z.array(skillMetricsAuditCheckSchema),
+  }),
+  operator_actions: z.array(skillMetricsOperatorActionSchema),
+  runtime: z.object({
+    generated_at: z.string(),
+  }),
+});
+
 export const feedbackRequestSchema = z.object({
   query: z.string(),
   result_id: z.string(),

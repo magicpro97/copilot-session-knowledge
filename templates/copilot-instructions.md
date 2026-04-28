@@ -15,6 +15,7 @@
    (`--json` optional) is recall-only; `query-session.py --detail` logs stateless `detail_open`
    (`hit_count=1` only when found, miss = `hit_count=0`); default `query-session` telemetry counts
    the full emitted search surface.
+   **Workflow**: `create` → `todo add` → `bundle` (optional isolated context) → `swarm [--bundle]` → `complete` (verification/closure). Operator view: `tentacle.py status`.
 5. **Không bỏ dở**: Fix or delegate, never abandon. Context limit → checkpoint + delegate.
 6. **AGENTS.md**: Mọi project nên có. <60 dòng, navigational. Đọc nó trước.
 7. **Ghi nhận**: Sau mỗi task → `learn.py` mistakes/patterns. Knowledge = long-term memory.

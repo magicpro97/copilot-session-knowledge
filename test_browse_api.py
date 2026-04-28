@@ -549,6 +549,72 @@ def run_all_tests() -> int:
     finally:
         server.shutdown()
 
+    # ── T19: /api/tentacles/status diagnostics shape ──────────────────────────
+    print("\n-- T19: /api/tentacles/status diagnostics")
+    db = _make_test_db()
+    server, host, port = _start_server(db)
+    try:
+        status, hdrs, data = _get(host, port, "/api/tentacles/status")
+        test("T19: status 200", status == 200)
+        test("T19: content-type json", "application/json" in hdrs.get("content-type", ""))
+        test("T19: has status", isinstance(data, dict) and "status" in data)
+        test("T19: has configured", isinstance(data.get("configured"), bool))
+        test("T19: has active_count", isinstance(data.get("active_count"), int))
+        test("T19: has total_count", isinstance(data.get("total_count"), int))
+        test("T19: has worktrees_prepared", isinstance(data.get("worktrees_prepared"), int))
+        test("T19: has verification_covered", isinstance(data.get("verification_covered"), int))
+        test("T19: has marker object", isinstance(data.get("marker"), dict))
+        test("T19: marker has active", isinstance(data.get("marker", {}).get("active"), bool))
+        test("T19: has tentacles list", isinstance(data.get("tentacles"), list))
+        test("T19: has audit object", isinstance(data.get("audit"), dict))
+        test("T19: audit has summary", isinstance(data.get("audit", {}).get("summary"), dict))
+        test("T19: has operator_actions", isinstance(data.get("operator_actions"), list))
+        test("T19: has runtime object", isinstance(data.get("runtime"), dict))
+        actions = data.get("operator_actions") or []
+        test("T19: operator actions have required fields",
+             all(
+                 isinstance(a, dict)
+                 and isinstance(a.get("id"), str)
+                 and isinstance(a.get("command"), str)
+                 and a.get("safe") is True
+                 for a in actions
+             ) if actions else True)
+    finally:
+        server.shutdown()
+
+    # ── T20: /api/skills/metrics diagnostics shape ────────────────────────────
+    print("\n-- T20: /api/skills/metrics diagnostics")
+    db = _make_test_db()
+    server, host, port = _start_server(db)
+    try:
+        status, hdrs, data = _get(host, port, "/api/skills/metrics")
+        test("T20: status 200", status == 200)
+        test("T20: content-type json", "application/json" in hdrs.get("content-type", ""))
+        test("T20: has status", isinstance(data, dict) and "status" in data)
+        test("T20: has configured", isinstance(data.get("configured"), bool))
+        test("T20: has db_path", isinstance(data.get("db_path"), str))
+        test("T20: has tables object", isinstance(data.get("tables"), dict))
+        test("T20: tables has tentacle_outcomes key", "tentacle_outcomes" in (data.get("tables") or {}))
+        test("T20: has summary object", isinstance(data.get("summary"), dict))
+        test("T20: summary has total_outcomes", isinstance(data.get("summary", {}).get("total_outcomes"), int))
+        test("T20: has recent_outcomes list", isinstance(data.get("recent_outcomes"), list))
+        test("T20: has skill_usage list", isinstance(data.get("skill_usage"), list))
+        test("T20: has audit object", isinstance(data.get("audit"), dict))
+        test("T20: has operator_actions", isinstance(data.get("operator_actions"), list))
+        test("T20: has runtime object", isinstance(data.get("runtime"), dict))
+        actions = data.get("operator_actions") or []
+        test("T20: operator actions have required fields",
+             all(
+                 isinstance(a, dict)
+                 and isinstance(a.get("id"), str)
+                 and isinstance(a.get("command"), str)
+                 and a.get("safe") is True
+                 for a in actions
+             ) if actions else True)
+        test("T20: unconfigured state reported", data.get("status") in {"ok", "degraded", "unconfigured"})
+    finally:
+        server.shutdown()
+
     print(f"\nResults: {_PASS} passed, {_FAIL} failed")
     return _FAIL
 

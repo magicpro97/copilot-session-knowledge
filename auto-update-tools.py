@@ -23,6 +23,11 @@ Usage:
     python auto-update-tools.py --scout-status   # Show Trend Scout runtime status
     python auto-update-tools.py --scout-health-check  # Run Trend Scout health check
     python auto-update-tools.py --scout-audit-runtime  # Run Trend Scout audit
+    python auto-update-tools.py --tentacle-status      # Show tentacle runtime status
+    python auto-update-tools.py --tentacle-health-check  # Run tentacle health check
+    python auto-update-tools.py --tentacle-audit-runtime  # Run tentacle runtime audit
+    python auto-update-tools.py --skill-metrics-status  # Show skill outcome metrics
+    python auto-update-tools.py --skill-metrics-audit   # Run skill metrics audit
     python auto-update-tools.py --list-coverage  # Print all tracked paths/patterns
     python auto-update-tools.py --skip-pull    # Run pipeline without pulling (used by self-exec)
 """
@@ -1469,6 +1474,24 @@ def _run_trend_scout_surface(args: list[str]) -> int:
     return int(result.returncode)
 
 
+def _run_tentacle_status_surface(args: list[str]) -> int:
+    script = TOOLS_DIR / "tentacle-status.py"
+    if not script.exists():
+        err("tentacle-status.py not found")
+        return 1
+    result = subprocess.run([sys.executable, str(script), *args])
+    return int(result.returncode)
+
+
+def _run_skill_metrics_surface(args: list[str]) -> int:
+    script = TOOLS_DIR / "skill-metrics.py"
+    if not script.exists():
+        err("skill-metrics.py not found")
+        return 1
+    result = subprocess.run([sys.executable, str(script), *args])
+    return int(result.returncode)
+
+
 # ---------------------------------------------------------------------------
 # Cooldown
 # ---------------------------------------------------------------------------
@@ -1532,6 +1555,21 @@ def main():
             raise SystemExit(code)
         elif arg == "--scout-audit-runtime":
             code = _run_trend_scout_surface(["--audit"])
+            raise SystemExit(code)
+        elif arg == "--tentacle-status":
+            code = _run_tentacle_status_surface([])
+            raise SystemExit(code)
+        elif arg == "--tentacle-health-check":
+            code = _run_tentacle_status_surface(["--health-check"])
+            raise SystemExit(code)
+        elif arg == "--tentacle-audit-runtime":
+            code = _run_tentacle_status_surface(["--audit"])
+            raise SystemExit(code)
+        elif arg == "--skill-metrics-status":
+            code = _run_skill_metrics_surface([])
+            raise SystemExit(code)
+        elif arg == "--skill-metrics-audit":
+            code = _run_skill_metrics_surface(["--audit"])
             raise SystemExit(code)
         elif arg == "--list-coverage":
             list_coverage()
