@@ -27,6 +27,13 @@ deny() {
     exit 0
 }
 
+git_push_args() {
+    # Inspect only the arguments that belong to `git push`.
+    # Wrapper options such as `powershell.exe -NoProfile` must not be treated
+    # as git push flags.
+    echo "$COMMAND" | sed -nE "s/.*(^|[;&|\"'[:space:]])git[[:space:]]+push([[:space:]\"']|\$)//p" | head -n1
+}
+
 # Privilege escalation
 echo "$COMMAND" | grep -qE '\b(sudo|su|runas)\b' && deny "Privilege escalation not allowed"
 
@@ -40,8 +47,14 @@ echo "$COMMAND" | grep -qE '\b(mkfs|diskpart)\b' && deny "Disk operations not al
 echo "$COMMAND" | grep -qE 'curl.*\|\s*(bash|sh)' && deny "Download-and-execute blocked"
 echo "$COMMAND" | grep -qE 'wget.*\|\s*(bash|sh)' && deny "Download-and-execute blocked"
 
-# Dangerous git operations
-echo "$COMMAND" | grep -qE 'git\s+push\s+.*--force\b' && deny "Force push blocked — use --force-with-lease"
+# Dangerous git operations — inspect only `git push` args; allow --force-with-lease
+if echo "$COMMAND" | grep -qE "(^|[;&|\"'[:space:]])git[[:space:]]+push([[:space:]\"']|\$)"; then
+    PUSH_ARGS="$(git_push_args)"
+    PUSH_ARGS_FOR_CHECK="$(echo "$PUSH_ARGS" | sed "s/[\"']/ /g")"
+    echo "$PUSH_ARGS_FOR_CHECK" | grep -qE '(^|[[:space:]])--force([=[:space:]]|$)' && deny "Force push blocked — use --force-with-lease"
+    echo "$PUSH_ARGS_FOR_CHECK" | grep -qE '(^|[[:space:]])-[^-[:space:]]*f[^[:space:]]*([[:space:]]|$)' && deny "Force push blocked — use --force-with-lease"
+    echo "$PUSH_ARGS_FOR_CHECK" | grep -qE '(^|[[:space:]])\+[^[:space:]]+' && deny "Force push via +refspec blocked — use --force-with-lease"
+fi
 echo "$COMMAND" | grep -qE 'git\s+reset\s+--hard\s+HEAD~[2-9]' && deny "Hard reset of multiple commits blocked"
 
 # Database destruction

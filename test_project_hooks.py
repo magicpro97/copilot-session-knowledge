@@ -58,6 +58,19 @@ def run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
     )
 
 
+def run_hook(script: Path, command: str) -> subprocess.CompletedProcess:
+    """Run a shell hook with a mock preToolUse bash payload."""
+    payload = json.dumps({"toolName": "bash", "toolArgs": {"command": command}})
+    return subprocess.run(
+        ["bash", str(script)],
+        input=payload,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
 def make_scratch_project(name: str) -> Path:
     """Create a clean scratch project directory (no git, but that's fine for --project)."""
     p = SCRATCH / name
@@ -133,6 +146,59 @@ hooks_dir = default_project / ".github" / "hooks"
 test(".github/hooks/ created", hooks_dir.is_dir())
 test("dangerous-blocker.sh installed", (hooks_dir / "dangerous-blocker.sh").exists())
 test("secret-detector.sh installed", (hooks_dir / "secret-detector.sh").exists())
+
+if (hooks_dir / "dangerous-blocker.sh").exists():
+    blocker_hook = hooks_dir / "dangerous-blocker.sh"
+
+    print("\n🛡  Dangerous Git Hook")
+    safe_push = run_hook(
+        blocker_hook,
+        'powershell.exe -NoProfile -Command "git push --force-with-lease origin feature/test"',
+    )
+    test("allows wrapper -NoProfile with git push --force-with-lease",
+         safe_push.returncode == 0 and "permissionDecision" not in safe_push.stdout,
+         safe_push.stdout + safe_push.stderr)
+
+    force_push = run_hook(blocker_hook, "git push -f origin feature/test")
+    test("blocks git push -f",
+         force_push.returncode == 0 and "permissionDecision" in force_push.stdout,
+         force_push.stdout + force_push.stderr)
+
+    long_force_push = run_hook(blocker_hook, "git push --force origin feature/test")
+    test("blocks git push --force",
+         long_force_push.returncode == 0 and "permissionDecision" in long_force_push.stdout,
+         long_force_push.stdout + long_force_push.stderr)
+
+    wrapper_force_push = run_hook(
+        blocker_hook,
+        'powershell.exe -NoProfile -Command "git push -f origin feature/test"',
+    )
+    test("blocks wrapper git push -f",
+         wrapper_force_push.returncode == 0 and "permissionDecision" in wrapper_force_push.stdout,
+         wrapper_force_push.stdout + wrapper_force_push.stderr)
+
+    wrapper_long_force_last = run_hook(
+        blocker_hook,
+        'powershell.exe -NoProfile -Command "git push origin feature/test --force"',
+    )
+    test("blocks wrapper git push --force as last arg",
+         wrapper_long_force_last.returncode == 0 and "permissionDecision" in wrapper_long_force_last.stdout,
+         wrapper_long_force_last.stdout + wrapper_long_force_last.stderr)
+
+    quoted_long_force = run_hook(blocker_hook, "git push 'origin' '--force'")
+    test("blocks quoted git push --force",
+         quoted_long_force.returncode == 0 and "permissionDecision" in quoted_long_force.stdout,
+         quoted_long_force.stdout + quoted_long_force.stderr)
+
+    force_with_lease = run_hook(blocker_hook, "git push --force-with-lease origin feature/test")
+    test("allows git push --force-with-lease",
+         force_with_lease.returncode == 0 and "permissionDecision" not in force_with_lease.stdout,
+         force_with_lease.stdout + force_with_lease.stderr)
+
+    force_refspec = run_hook(blocker_hook, "git push origin +HEAD:feature/test")
+    test("blocks git push +refspec",
+         force_refspec.returncode == 0 and "permissionDecision" in force_refspec.stdout,
+         force_refspec.stdout + force_refspec.stderr)
 
 # default profile does not include tdd hook
 test("enforce-tdd-pipeline.sh NOT installed (not in default)",
