@@ -50,6 +50,7 @@ if os.name == "nt":
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = SCRIPT_DIR / "trend-scout-config.json"
+DEFAULT_GOLDSET_PATH = SCRIPT_DIR / "trend-scout-goldset.json"
 
 GITHUB_API = "https://api.github.com"
 MODELS_API_ENDPOINT = "https://models.github.ai/inference/chat/completions"
@@ -164,6 +165,53 @@ def load_config(path: Path | None = None) -> dict:
         except Exception as e:
             print(f"  ⚠ Could not load config from {source}: {e}", file=sys.stderr)
     return cfg
+
+
+def load_goldset(path: Path | None = None) -> dict:
+    """Load the optional Trend Scout gold-set/watchlist file."""
+    source = path or DEFAULT_GOLDSET_PATH
+    out = {"path": str(source), "entries": []}
+    if not source.exists():
+        return out
+    try:
+        loaded = json.loads(source.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"  ⚠ Could not load gold-set from {source}: {e}", file=sys.stderr)
+        return out
+    if not isinstance(loaded, dict):
+        print(f"  ⚠ Gold-set file {source} must contain a JSON object", file=sys.stderr)
+        return out
+
+    entries = loaded.get("entries", [])
+    if not isinstance(entries, list):
+        print(f"  ⚠ Gold-set file {source} has non-list 'entries'; ignoring", file=sys.stderr)
+        return out
+
+    normalized: list[dict] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        repo = str(entry.get("repo", "") or "").strip()
+        if not repo or "/" not in repo:
+            continue
+        expected_lane = str(entry.get("expected_lane", "") or "").strip() or None
+        category = str(entry.get("category", "") or "").strip() or None
+        notes = str(entry.get("notes", "") or "").strip() or None
+        min_score = entry.get("min_score")
+        try:
+            min_score = float(min_score) if min_score is not None else None
+        except (TypeError, ValueError):
+            min_score = None
+        normalized.append({
+            "repo": repo,
+            "required": bool(entry.get("required", True)),
+            "expected_lane": expected_lane,
+            "category": category,
+            "min_score": min_score,
+            "notes": notes,
+        })
+    out["entries"] = normalized
+    return out
 
 
 def _deep_merge(base: dict, override: dict) -> None:
@@ -1592,6 +1640,7 @@ def build_discovery_explain(
     shortlisted: list[dict],
     run_at: str,
     config: "dict | None" = None,
+    goldset: "dict | None" = None,
 ) -> dict:
     """Build a discovery-explainability artifact from tagged search results.
 
@@ -1626,7 +1675,7 @@ def build_discovery_explain(
             "unique_new_repos": unique_count,
         })
 
-    return {
+    artifact = {
         "run_at": run_at,
         "total_raw_candidates": len(raw_repos),
         "lanes": annotated_lanes,
@@ -1646,6 +1695,97 @@ def build_discovery_explain(
             "strategic-adjacency discovery (adjacent lanes)."
         ),
     }
+
+    goldset_entries = []
+    if isinstance(goldset, dict):
+        goldset_entries = goldset.get("entries", [])
+    if isinstance(goldset_entries, list) and goldset_entries:
+        raw_index = {
+            str(repo.get("full_name", "")).lower(): repo
+            for repo in raw_repos
+            if repo.get("full_name")
+        }
+        shortlisted_index = {
+            str(repo.get("full_name", "")).lower(): repo
+            for repo in shortlisted
+            if repo.get("full_name")
+        }
+        goldset_rows = []
+        raw_matches = 0
+        shortlisted_matches = 0
+        required_missing = 0
+        lane_mismatches = 0
+        score_failures = 0
+        for entry in goldset_entries:
+            repo_name = str(entry.get("repo", "") or "").strip()
+            repo_key = repo_name.lower()
+            raw_repo = raw_index.get(repo_key)
+            shortlisted_repo = shortlisted_index.get(repo_key)
+            source_repo = shortlisted_repo or raw_repo
+            status = "missing"
+            if shortlisted_repo is not None:
+                status = "shortlisted"
+                shortlisted_matches += 1
+            if raw_repo is not None:
+                status = "raw"
+                raw_matches += 1
+            if shortlisted_repo is not None:
+                status = "shortlisted"
+
+            score = None
+            if source_repo is not None:
+                score = score_repo(source_repo, config or {}, term_set=global_terms)
+
+            expected_lane = entry.get("expected_lane")
+            actual_lane = source_repo.get("_discovery_lane") if source_repo is not None else None
+            lane_ok = None
+            if expected_lane:
+                if source_repo is not None:
+                    lane_ok = actual_lane == expected_lane
+                    if not lane_ok:
+                        lane_mismatches += 1
+
+            min_score = entry.get("min_score")
+            score_ok = None
+            if min_score is not None:
+                if source_repo is not None:
+                    score_ok = score is not None and score >= float(min_score)
+                    if not score_ok:
+                        score_failures += 1
+
+            required = bool(entry.get("required", True))
+            if required and source_repo is None:
+                required_missing += 1
+
+            goldset_rows.append({
+                "repo": repo_name,
+                "required": required,
+                "category": entry.get("category"),
+                "status": status,
+                "found_in_raw": raw_repo is not None,
+                "shortlisted": shortlisted_repo is not None,
+                "expected_lane": expected_lane,
+                "lane": actual_lane,
+                "lane_ok": lane_ok,
+                "score": score,
+                "min_score": min_score,
+                "score_ok": score_ok,
+                "notes": entry.get("notes"),
+            })
+
+        artifact["goldset"] = {
+            "path": goldset.get("path"),
+            "expected_total": len(goldset_rows),
+            "required_total": sum(1 for row in goldset_rows if row.get("required")),
+            "found_in_raw": raw_matches,
+            "found_in_shortlist": shortlisted_matches,
+            "required_missing": required_missing,
+            "lane_mismatches": lane_mismatches,
+            "score_failures": score_failures,
+            "entries": goldset_rows,
+        }
+
+    return artifact
 
 
 
@@ -1854,7 +1994,8 @@ def _write_explain_artifact(
     triage of discovery coverage gaps.
     """
     run_at = datetime.now(timezone.utc).isoformat()
-    artifact = build_discovery_explain(raw_repos, shortlisted, run_at, config=config)
+    goldset = load_goldset()
+    artifact = build_discovery_explain(raw_repos, shortlisted, run_at, config=config, goldset=goldset)
     out_path = explain_output or _EXPLAIN_OUTPUT_DEFAULT
     try:
         out_path.write_text(json.dumps(artifact, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -1863,6 +2004,15 @@ def _write_explain_artifact(
             f"{l['name']}:{l['unique_new_repos']}repos" for l in artifact.get("lanes", [])
         )
         print(f"     Lanes: {lane_summary}", flush=True)
+        goldset_summary = artifact.get("goldset")
+        if isinstance(goldset_summary, dict) and goldset_summary.get("expected_total", 0) > 0:
+            print(
+                "     Gold set: "
+                f"raw {goldset_summary.get('found_in_raw', 0)}/{goldset_summary.get('expected_total', 0)} | "
+                f"shortlisted {goldset_summary.get('found_in_shortlist', 0)}/{goldset_summary.get('expected_total', 0)} | "
+                f"required missing {goldset_summary.get('required_missing', 0)}",
+                flush=True,
+            )
     except Exception as e:
         print(f"  ⚠ Could not write explain artifact to {out_path}: {e}", file=sys.stderr)
 

@@ -47,6 +47,7 @@ PASS = 0
 FAIL = 0
 SCOUT = REPO / "trend-scout.py"
 CONFIG_FILE = REPO / "trend-scout-config.json"
+GOLDSET_FILE = REPO / "trend-scout-goldset.json"
 WORKFLOW_FILE = REPO / ".github" / "workflows" / "trend-scout.yml"
 
 # Scratch dir — project-local, no /tmp
@@ -2131,6 +2132,70 @@ _expected_explain_score = ts.score_repo(
 test("build_discovery_explain shortlisted score matches real scoring",
      _explain["shortlisted"][0].get("score") == _expected_explain_score,
      f"artifact={_explain['shortlisted'][0].get('score')} expected={_expected_explain_score}")
+_fixture_goldset = {
+    "path": str(GOLDSET_FILE),
+    "entries": [
+        {
+            "repo": "example/jcode-like-agent",
+            "required": True,
+            "expected_lane": "adjacent-ai-dev",
+            "min_score": 0.15,
+            "category": "adjacent-coding-agent",
+        }
+    ],
+}
+_goldset_explain = ts.build_discovery_explain(
+    _explain_repos,
+    _explain_repos,
+    "2025-01-01T00:00:00+00:00",
+    config=_explain_cfg,
+    goldset=_fixture_goldset,
+)
+test("build_discovery_explain includes goldset section", "goldset" in _goldset_explain)
+test("goldset marks jcode-like repo as shortlisted",
+     _goldset_explain["goldset"]["entries"][0].get("status") == "shortlisted",
+     str(_goldset_explain["goldset"]["entries"][0]))
+test("goldset lane expectation matches actual lane",
+     _goldset_explain["goldset"]["entries"][0].get("lane_ok") is True,
+     str(_goldset_explain["goldset"]["entries"][0]))
+test("goldset min_score expectation passes",
+     _goldset_explain["goldset"]["entries"][0].get("score_ok") is True,
+     str(_goldset_explain["goldset"]["entries"][0]))
+_goldset_missing = ts.build_discovery_explain(
+    [],
+    [],
+    "2025-01-01T00:00:00+00:00",
+    config=_explain_cfg,
+    goldset=_fixture_goldset,
+)
+test("goldset missing repo increments required_missing",
+     _goldset_missing["goldset"].get("required_missing") == 1,
+     str(_goldset_missing["goldset"]))
+test("goldset missing repo marks lane_ok unknown instead of false",
+     _goldset_missing["goldset"]["entries"][0].get("lane_ok") is None,
+     str(_goldset_missing["goldset"]["entries"][0]))
+test("goldset missing repo marks score_ok unknown instead of false",
+     _goldset_missing["goldset"]["entries"][0].get("score_ok") is None,
+     str(_goldset_missing["goldset"]["entries"][0]))
+test("goldset missing repo does not inflate lane mismatch summary",
+     _goldset_missing["goldset"].get("lane_mismatches") == 0,
+     str(_goldset_missing["goldset"]))
+test("goldset missing repo does not inflate score failure summary",
+     _goldset_missing["goldset"].get("score_failures") == 0,
+     str(_goldset_missing["goldset"]))
+_goldset_shortlisted_only = ts.build_discovery_explain(
+    [],
+    _explain_repos,
+    "2025-01-01T00:00:00+00:00",
+    config=_explain_cfg,
+    goldset=_fixture_goldset,
+)
+test("goldset shortlisted-only repo does not count as raw match",
+     _goldset_shortlisted_only["goldset"].get("found_in_raw") == 0,
+     str(_goldset_shortlisted_only["goldset"]))
+test("goldset shortlisted-only repo still counts as shortlist match",
+     _goldset_shortlisted_only["goldset"].get("found_in_shortlist") == 1,
+     str(_goldset_shortlisted_only["goldset"]))
 
 # 6. Disk config has lanes section with at least one adjacent lane
 _disk_cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
@@ -2150,14 +2215,30 @@ if _disk_lanes:
          f"language={_first_lane.get('language')!r}")
     test("disk config adjacent lane has min_stars",
          "min_stars" in _first_lane)
+    _lane_keywords = _first_lane.get("keywords", [])
+    test("disk config adjacent lane includes exact harness query",
+         "\"Coding Agent Harness\" in:name,description" in _lane_keywords,
+         str(_lane_keywords))
+    test("disk config adjacent lane includes topic-qualified coding-agent queries",
+         "topic:cli topic:coding-agent" in _lane_keywords and "topic:tui topic:coding-agent" in _lane_keywords,
+         str(_lane_keywords))
 
-# 7. CLI: --explain flag is present in help text
+# 7. Gold-set file exists and includes jcode
+test("trend-scout-goldset.json exists", GOLDSET_FILE.exists())
+if GOLDSET_FILE.exists():
+    _goldset_disk = ts.load_goldset(GOLDSET_FILE)
+    test("goldset file has entries", len(_goldset_disk.get("entries", [])) >= 1, str(_goldset_disk))
+    test("goldset includes jcode",
+         any(entry.get("repo") == "1jehuang/jcode" for entry in _goldset_disk.get("entries", [])),
+         str(_goldset_disk.get("entries")))
+
+# 8. CLI: --explain flag is present in help text
 _explain_help_result = run_cli("--help")
 test("CLI --explain flag appears in --help",
      "--explain" in _explain_help_result.stdout,
      _explain_help_result.stdout[:300])
 
-# 8. Workflow uploads explain artifacts for manual runs
+# 9. Workflow uploads explain artifacts for manual runs
 test("trend-scout workflow exists", WORKFLOW_FILE.exists())
 if WORKFLOW_FILE.exists():
     _workflow_text = WORKFLOW_FILE.read_text(encoding="utf-8")
@@ -2165,7 +2246,7 @@ if WORKFLOW_FILE.exists():
          "actions/upload-artifact" in _workflow_text and ".trend-scout-discovery-explain.json" in _workflow_text,
          _workflow_text)
 
-# 9. --explain writes artifact file (dry-run + search-only)
+# 10. --explain writes artifact file (dry-run + search-only)
 _explain_out = SCRATCH / "test-explain-output.json"
 with mock.patch.object(ts.GitHubClient, "search_repos", return_value=[]), \
      mock.patch.object(ts.GitHubClient, "search_repos_by_topic", return_value=[]), \
@@ -2188,8 +2269,9 @@ if _explain_out.exists():
     test("--explain artifact has run_at", "run_at" in _artifact)
     test("--explain artifact has lanes array", isinstance(_artifact.get("lanes"), list))
     test("--explain artifact has total_raw_candidates", "total_raw_candidates" in _artifact)
+    test("--explain artifact includes goldset section when file exists", "goldset" in _artifact)
 
-# 10. --explain preserves lane stats when discovery returns zero repos
+# 11. --explain preserves lane stats when discovery returns zero repos
 _empty_lane_explain_out = SCRATCH / "test-explain-empty-lanes.json"
 with mock.patch.object(ts.GitHubClient, "search_repos", return_value=[]), \
      mock.patch.object(ts.GitHubClient, "search_repos_by_topic", return_value=[]), \
@@ -2221,8 +2303,11 @@ if _empty_lane_explain_out.exists():
     test("--explain zero-result artifact keeps primary + adjacent lane metadata",
          _empty_lane_names == ["primary", "adjacent-ai-dev"],
          str(_empty_lane_names))
+    test("--explain zero-result artifact still evaluates goldset",
+         "goldset" in _empty_artifact and _empty_artifact["goldset"].get("required_missing", 0) >= 1,
+         str(_empty_artifact.get("goldset")))
 
-# 11. cross-lane term set: shortlist_repos uses keywords from all lanes
+# 12. cross-lane term set: shortlist_repos uses keywords from all lanes
 _cross_cfg = ts.load_config(None)
 _cross_cfg["search"]["seed_keywords"] = ["python fts knowledge"]
 _cross_cfg["lanes"] = [{"name": "adj", "keywords": ["coding agent rust mcp"], "topics": []}]
@@ -2235,6 +2320,36 @@ _cross_terms_jcode_score = ts.score_repo(
 test("cross-lane term set: jcode-like repo scores higher with adjacent keywords",
      _cross_terms_jcode_score > 0,
      f"score={_cross_terms_jcode_score}")
+
+# 13. disk config keyword qualifiers can surface jcode-class repos via search_stage
+def _mock_keyword_search(query, *, min_stars=0, max_results=10, created_after=None, language=None):
+    if query in {
+        "\"Coding Agent Harness\" in:name,description",
+        "topic:cli topic:coding-agent",
+        "topic:tui topic:coding-agent",
+    }:
+        return [JCODE_LIKE_REPO]
+    return []
+
+with mock.patch.object(ts.GitHubClient, "search_repos", side_effect=_mock_keyword_search), \
+     mock.patch.object(ts.GitHubClient, "search_repos_by_topic", return_value=[]), \
+     mock.patch("time.sleep", return_value=None):
+    _disk_query_cfg = ts.load_config(None)
+    _disk_query_cfg["search"]["seed_keywords"] = []
+    _disk_query_cfg["search"]["extra_topics"] = []
+    _raw_disk = ts.search_stage(ts.GitHubClient(token="ghp_test"), _disk_query_cfg)
+    _jcode_disk = next((r for r in _raw_disk if r.get("full_name") == "example/jcode-like-agent"), None)
+    test("disk config qualifier keyword queries surface jcode-like repo",
+         _jcode_disk is not None,
+         str([r.get("full_name") for r in _raw_disk]))
+    if _jcode_disk is not None:
+        test("disk config qualifier query preserves keyword provenance",
+             _jcode_disk.get("_discovery_query") in {
+                 "\"Coding Agent Harness\" in:name,description",
+                 "topic:cli topic:coding-agent",
+                 "topic:tui topic:coding-agent",
+             },
+             str(_jcode_disk))
 
 
 # ─── Cleanup ──────────────────────────────────────────────────────────────────

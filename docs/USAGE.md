@@ -544,8 +544,9 @@ Set `GITHUB_TOKEN` in the environment, or pass `--token TOKEN`, to avoid API rat
 `--limit` caps **new issue creates** only; marker-matched updates are still evaluated.
 `--explain` writes a JSON artifact listing which lanes fired, candidate scores, and which
 cross-lane term-set overlaps influenced final scoring. Combine with `--search-only` for a
-read-only discovery audit. In GitHub Actions manual runs, `explain=true` uploads this file
-as a workflow artifact.
+read-only discovery audit. When `trend-scout-goldset.json` is present, the same artifact also
+evaluates each curated watchlist repo as `missing`, `raw`, or `shortlisted`. In GitHub Actions
+manual runs, `explain=true` uploads this file as a workflow artifact.
 
 ### Multi-lane discovery
 
@@ -555,7 +556,7 @@ The pipeline supports parallel discovery lanes configured in the `lanes[]` array
 | Lane field | Effect |
 |---|---|
 | `name` | Lane identifier; tagged on each candidate as `_discovery_lane` |
-| `keywords` | Free-text GitHub Search queries for this lane |
+| `keywords` | GitHub Search queries for this lane (plain phrases or qualifier-rich expressions such as exact phrases / `topic:` filters) |
 | `topics` | Topic filters to search in parallel with keywords |
 | `language` | Language filter (`null` = language-agnostic) |
 | `min_stars` | Minimum star count for this lane (can differ from primary) |
@@ -569,6 +570,33 @@ term-set scoring adjusts composite scores for repos that appear in multiple lane
 The browse UI Settings page (`/settings`) surfaces lane metadata from `/api/scout/status`
 as `discovery_lanes[]`, showing each lane name, keyword/topic count, language, and `min_stars`
 in a read-only diagnostics card.
+
+### Gold-set / watchlist replay
+
+Trend Scout also supports a repo-local strategic watchlist in `trend-scout-goldset.json`.
+This file is not another discovery lane; it is a regression benchmark used by `--explain`.
+Each entry can define:
+
+| Gold-set field | Effect |
+|---|---|
+| `repo` | Exact `owner/name` to track |
+| `required` | Whether the repo counts toward missing-required coverage |
+| `expected_lane` | Optional expected discovery lane (for example `adjacent-ai-dev`) |
+| `min_score` | Optional minimum acceptable shortlist score |
+| `category` | Optional grouping label for operator review |
+| `notes` | Human-readable reason the repo matters |
+
+When `python3 ~/.copilot/tools/trend-scout.py --search-only --explain` runs, the explain JSON
+adds a `goldset` block summarizing:
+
+- total watchlist entries
+- how many were found in raw discovery
+- how many survived shortlist
+- which required repos are still missing
+- lane mismatches / score failures for tracked repos
+
+This is the durable guardrail for repos like `1jehuang/jcode`: even if no issue is created, the
+operator can still tell whether Trend Scout recall regressed.
 
 ### Operator-safe automation flow
 

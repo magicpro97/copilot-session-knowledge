@@ -1,0 +1,13 @@
+{
+  "_comment": "Curated strategic watchlist for Trend Scout explain/replay runs. These repos do not force issue creation; they let operators measure whether adjacent-recall lanes still surface important repo classes over time.",
+  "entries": [
+    {
+      "repo": "1jehuang/jcode",
+      "required": true,
+      "category": "adjacent-coding-agent",
+      "expected_lane": "adjacent-ai-dev",
+      "min_score": 0.15,
+      "notes": "Rust coding-agent harness with memory, MCP/provider surfaces, and orchestration patterns adjacent to this project."
+    }
+  ]
+}

@@ -39,9 +39,12 @@
   },
   "lanes": [
     {
-      "_comment": "Adjacent AI-dev tooling lane — language-agnostic, broader keyword surface. Surfaces repos like jcode (Rust coding-agent harness) that are architecturally adjacent but miss the primary Python/knowledge-base filter. Lower min_stars (2) and 365-day lookback catch emerging projects.",
+      "_comment": "Adjacent AI-dev tooling lane — language-agnostic, broader keyword surface. Surfaces repos like jcode (Rust coding-agent harness) that are architecturally adjacent but miss the primary Python/knowledge-base filter. Lower min_stars (2) and 365-day lookback catch emerging projects. Keyword entries may use full GitHub Search qualifiers when a targeted composite query outperforms plain free-text.",
       "name": "adjacent-ai-dev",
       "keywords": [
+        "\"Coding Agent Harness\" in:name,description",
+        "topic:cli topic:coding-agent",
+        "topic:tui topic:coding-agent",
         "AI coding agent harness CLI tool",
         "LLM developer workflow tool session",
         "coding agent memory MCP provider",
