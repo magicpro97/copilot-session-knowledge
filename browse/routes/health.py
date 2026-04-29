@@ -23,9 +23,7 @@ def _count_knowledge_entries(db) -> int:
 
 def _get_last_indexed_at(db) -> str | None:
     try:
-        row = db.execute(
-            "SELECT MAX(indexed_at) FROM sessions WHERE indexed_at IS NOT NULL"
-        ).fetchone()
+        row = db.execute("SELECT MAX(indexed_at) FROM sessions WHERE indexed_at IS NOT NULL").fetchone()
         return str(row[0]) if row and row[0] is not None else None
     except Exception:
         return None
