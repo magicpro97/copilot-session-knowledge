@@ -11,6 +11,7 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
+from browse.core.operator_actions import make_action
 from browse.core.registry import route
 
 _SYNC_CONFIG_PATH = Path.home() / ".copilot" / "tools" / "sync-config.json"
@@ -163,30 +164,27 @@ def handle_sync_status(db, params, token, nonce) -> tuple:
     }
 
     operator_actions = [
-        {
-            "id": "sync-status-json",
-            "title": "Local sync runtime snapshot",
-            "description": "Inspect queue + gateway health without mutating state.",
-            "command": "python3 sync-status.py --json",
-            "safe": True,
-            "requires_configured_gateway": False,
-        },
-        {
-            "id": "sync-config-status",
-            "title": "Gateway connection status",
-            "description": "Show configured sync gateway URL and target classification.",
-            "command": "python3 sync-config.py --status",
-            "safe": True,
-            "requires_configured_gateway": False,
-        },
-        {
-            "id": "sync-runtime-status",
-            "title": "Runtime table status",
-            "description": "Read-only runtime sync table and cursor diagnostics.",
-            "command": "python3 sync-knowledge.py --sync-status",
-            "safe": True,
-            "requires_configured_gateway": False,
-        },
+        make_action(
+            "sync-status-json",
+            "Local sync runtime snapshot",
+            "Inspect queue + gateway health without mutating state.",
+            "python3 sync-status.py --json",
+            requires_configured_gateway=False,
+        ),
+        make_action(
+            "sync-config-status",
+            "Gateway connection status",
+            "Show configured sync gateway URL and target classification.",
+            "python3 sync-config.py --status",
+            requires_configured_gateway=False,
+        ),
+        make_action(
+            "sync-runtime-status",
+            "Runtime table status",
+            "Read-only runtime sync table and cursor diagnostics.",
+            "python3 sync-knowledge.py --sync-status",
+            requires_configured_gateway=False,
+        ),
     ]
 
     last_failure = None

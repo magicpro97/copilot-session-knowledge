@@ -8,6 +8,9 @@ import {
   trendScoutStatusResponseSchema,
   trendScoutDiscoveryLaneSchema,
   syncStatusResponseSchema,
+  tentacleStatusResponseSchema,
+  skillMetricsResponseSchema,
+  operatorActionSchema,
   searchResponseSchema,
   sessionListResponseSchema,
 } from "@/lib/api/schemas";
@@ -320,5 +323,137 @@ describe("api schemas", () => {
     expect(lane.name).toBe("adjacent-ai-dev");
     expect(lane.language).toBeNull();
     expect(lane.keyword_count).toBe(4);
+  });
+
+  // ── Shared OperatorAction contract tests ────────────────────────────────
+
+  it("parses a minimal operator action (no route-specific fields)", () => {
+    const action = operatorActionSchema.parse({
+      id: "tentacle-list",
+      title: "List all tentacles",
+      description: "Read-only summary.",
+      command: "python3 tentacle.py list",
+      safe: true,
+    });
+    expect(action.id).toBe("tentacle-list");
+    expect(action.safe).toBe(true);
+    expect(action.requires_configured_gateway).toBeUndefined();
+    expect(action.requires_configured_target).toBeUndefined();
+  });
+
+  it("parses a sync operator action with requires_configured_gateway", () => {
+    const action = operatorActionSchema.parse({
+      id: "sync-status-json",
+      title: "Local sync runtime snapshot",
+      description: "Inspect queue + gateway health without mutating state.",
+      command: "python3 sync-status.py --json",
+      safe: true,
+      requires_configured_gateway: false,
+    });
+    expect(action.requires_configured_gateway).toBe(false);
+    expect(action.requires_configured_target).toBeUndefined();
+  });
+
+  it("parses a scout operator action with requires_configured_target", () => {
+    const action = operatorActionSchema.parse({
+      id: "trend-scout-dry-run",
+      title: "Dry-run full pipeline preview",
+      description: "Preview enrichment without creating/updating issues.",
+      command: "python3 trend-scout.py --dry-run --limit 5",
+      safe: true,
+      requires_configured_target: true,
+    });
+    expect(action.requires_configured_target).toBe(true);
+    expect(action.requires_configured_gateway).toBeUndefined();
+  });
+
+  it("rejects operator action with safe=false", () => {
+    expect(() =>
+      operatorActionSchema.parse({
+        id: "bad-action",
+        title: "Bad",
+        description: "This should fail.",
+        command: "rm -rf /",
+        safe: false,
+      })
+    ).toThrow();
+  });
+
+  it("rejects operator action missing required fields", () => {
+    // Missing command
+    expect(() =>
+      operatorActionSchema.parse({
+        id: "incomplete",
+        title: "Missing command",
+        description: "No command field",
+        safe: true,
+      })
+    ).toThrow();
+  });
+
+  it("uses shared operatorActionSchema for tentacle status operator_actions", () => {
+    const parsed = tentacleStatusResponseSchema.parse({
+      status: "ready",
+      configured: true,
+      active_count: 0,
+      total_count: 2,
+      worktrees_prepared: 1,
+      verification_covered: 1,
+      marker: { active: false, path: "/home/.copilot/markers/dispatched", age_hours: null, stale: false },
+      tentacles: [],
+      audit: {
+        summary: { ok: true, total_checks: 3, warning_checks: 0 },
+        checks: [],
+      },
+      operator_actions: [
+        {
+          id: "tentacle-list",
+          title: "List all tentacles",
+          description: "Read-only summary.",
+          command: "python3 tentacle.py list",
+          safe: true,
+        },
+      ],
+      runtime: { generated_at: "2026-01-01T00:00:00Z" },
+    });
+    expect(parsed.operator_actions[0].safe).toBe(true);
+    expect(parsed.operator_actions[0].requires_configured_gateway).toBeUndefined();
+  });
+
+  it("uses shared operatorActionSchema for skill metrics operator_actions", () => {
+    const parsed = skillMetricsResponseSchema.parse({
+      status: "unconfigured",
+      configured: false,
+      db_path: "/home/.copilot/session-state/skill-metrics.db",
+      tables: {
+        tentacle_outcomes: false,
+        tentacle_outcome_skills: false,
+        tentacle_verifications: false,
+      },
+      summary: {
+        total_outcomes: 0,
+        outcomes_with_skills: 0,
+        outcomes_with_verification: 0,
+        outcomes_with_worktree: 0,
+        pass_rate: null,
+      },
+      recent_outcomes: [],
+      skill_usage: [],
+      audit: {
+        summary: { ok: false, total_checks: 3, warning_checks: 3 },
+        checks: [],
+      },
+      operator_actions: [
+        {
+          id: "skill-metrics-json",
+          title: "Skill metrics in JSON",
+          description: "Machine-readable skill outcome metrics.",
+          command: "python3 skill-metrics.py --json",
+          safe: true,
+        },
+      ],
+      runtime: { generated_at: "2026-01-01T00:00:00Z" },
+    });
+    expect(parsed.operator_actions[0].safe).toBe(true);
   });
 });

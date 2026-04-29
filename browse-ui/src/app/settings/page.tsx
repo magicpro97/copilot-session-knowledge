@@ -1,10 +1,11 @@
 "use client";
 
-import { Activity, AlertTriangle, CheckCircle2, Copy, Moon, Monitor, Sun } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, Moon, Monitor, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 
 import { Banner } from "@/components/data/banner";
 import { DensityToggle } from "@/components/layout/density-toggle";
+import { OperatorActionsPanel } from "@/components/data/operator-actions-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,15 +31,6 @@ const THEME_OPTIONS = [
 function statusTone(status: string | undefined): "success" | "warning" {
   if (!status) return "warning";
   return status.toLowerCase().includes("ok") ? "success" : "warning";
-}
-
-async function copyCommand(command: string) {
-  if (!command || typeof navigator === "undefined" || !navigator.clipboard) return;
-  try {
-    await navigator.clipboard.writeText(command);
-  } catch (_error) {
-    // Ignore clipboard failures in unsupported environments.
-  }
 }
 
 export default function SettingsPage() {
@@ -251,35 +243,10 @@ export default function SettingsPage() {
                 </p>
               </div>
 
-              <div className="space-y-2 rounded-lg border bg-card p-3">
-                <p className="text-xs font-medium text-foreground">Operator checks (read-only)</p>
-                <p className="text-xs text-muted-foreground">
-                  Safe command-line checks for local visibility only. No write operations are listed.
-                </p>
-                <div className="space-y-2">
-                  {syncStatus.data.operator_actions.map((action) => (
-                    <div key={action.id} className="rounded-md border bg-background p-2 text-xs">
-                      <p className="font-medium text-foreground">{action.title}</p>
-                      <p className="text-muted-foreground">{action.description}</p>
-                      <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
-                          {action.command}
-                        </code>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-6 px-2 text-[11px]"
-                          onClick={() => void copyCommand(action.command)}
-                        >
-                          <Copy className="size-3" />
-                          Copy
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <OperatorActionsPanel
+                actions={syncStatus.data.operator_actions}
+                note="Safe command-line checks for local visibility only. No write operations are listed."
+              />
             </>
           ) : null}
         </CardContent>
@@ -480,35 +447,10 @@ export default function SettingsPage() {
                 </div>
               ) : null}
 
-              <div className="space-y-2 rounded-lg border bg-card p-3">
-                <p className="text-xs font-medium text-foreground">Operator checks (read-only)</p>
-                <p className="text-xs text-muted-foreground">
-                  Copy-only safe commands. Browser does not execute Trend Scout operations.
-                </p>
-                <div className="space-y-2">
-                  {scoutStatus.data.operator_actions.map((action) => (
-                    <div key={action.id} className="rounded-md border bg-background p-2 text-xs">
-                      <p className="font-medium text-foreground">{action.title}</p>
-                      <p className="text-muted-foreground">{action.description}</p>
-                      <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
-                          {action.command}
-                        </code>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-6 px-2 text-[11px]"
-                          onClick={() => void copyCommand(action.command)}
-                        >
-                          <Copy className="size-3" />
-                          Copy
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <OperatorActionsPanel
+                actions={scoutStatus.data.operator_actions}
+                note="Copy-only safe commands. Browser does not execute Trend Scout operations."
+              />
             </>
           ) : null}
         </CardContent>
@@ -662,35 +604,10 @@ export default function SettingsPage() {
                 </div>
               ) : null}
 
-              <div className="space-y-2 rounded-lg border bg-card p-3">
-                <p className="text-xs font-medium text-foreground">Operator checks (read-only)</p>
-                <p className="text-xs text-muted-foreground">
-                  Copy-only safe commands. Browser does not execute tentacle operations.
-                </p>
-                <div className="space-y-2">
-                  {tentacleStatus.data.operator_actions.map((action) => (
-                    <div key={action.id} className="rounded-md border bg-background p-2 text-xs">
-                      <p className="font-medium text-foreground">{action.title}</p>
-                      <p className="text-muted-foreground">{action.description}</p>
-                      <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
-                          {action.command}
-                        </code>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-6 px-2 text-[11px]"
-                          onClick={() => void copyCommand(action.command)}
-                        >
-                          <Copy className="size-3" />
-                          Copy
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <OperatorActionsPanel
+                actions={tentacleStatus.data.operator_actions}
+                note="Copy-only safe commands. Browser does not execute tentacle operations."
+              />
             </>
           ) : null}
         </CardContent>
@@ -851,35 +768,10 @@ export default function SettingsPage() {
                 </div>
               ) : null}
 
-              <div className="space-y-2 rounded-lg border bg-card p-3">
-                <p className="text-xs font-medium text-foreground">Operator checks (read-only)</p>
-                <p className="text-xs text-muted-foreground">
-                  Copy-only safe commands. Browser does not execute skill metric operations.
-                </p>
-                <div className="space-y-2">
-                  {skillMetrics.data.operator_actions.map((action) => (
-                    <div key={action.id} className="rounded-md border bg-background p-2 text-xs">
-                      <p className="font-medium text-foreground">{action.title}</p>
-                      <p className="text-muted-foreground">{action.description}</p>
-                      <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
-                          {action.command}
-                        </code>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-6 px-2 text-[11px]"
-                          onClick={() => void copyCommand(action.command)}
-                        >
-                          <Copy className="size-3" />
-                          Copy
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <OperatorActionsPanel
+                actions={skillMetrics.data.operator_actions}
+                note="Copy-only safe commands. Browser does not execute skill metric operations."
+              />
             </>
           ) : null}
         </CardContent>

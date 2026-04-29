@@ -358,13 +358,22 @@ export interface SyncRuntimeStatus {
   failed_txns: number;
 }
 
-export interface SyncOperatorAction {
+/**
+ * Shared operator-action shape across all browse diagnostics routes.
+ *
+ * Required: id, title, description, command, safe (always true).
+ * Optional context fields are route-specific and may be absent:
+ *   - requires_configured_gateway — only in sync actions
+ *   - requires_configured_target  — only in scout actions
+ */
+export interface OperatorAction {
   id: string;
   title: string;
   description: string;
   command: string;
   safe: boolean;
-  requires_configured_gateway: boolean;
+  requires_configured_gateway?: boolean;
+  requires_configured_target?: boolean;
 }
 
 export interface SyncStatusResponse {
@@ -385,7 +394,7 @@ export interface SyncStatusResponse {
     };
   };
   runtime: SyncRuntimeStatus;
-  operator_actions: SyncOperatorAction[];
+  operator_actions: OperatorAction[];
   local_replica_id: string | null;
   pending_txns: number;
   pending_ops: number;
@@ -430,15 +439,6 @@ export interface TrendScoutAuditCheck {
   detail: string;
 }
 
-export interface TrendScoutOperatorAction {
-  id: string;
-  title: string;
-  description: string;
-  command: string;
-  safe: boolean;
-  requires_configured_target: boolean;
-}
-
 export interface TrendScoutDiscoveryLane {
   name: string;
   keyword_count: number;
@@ -461,7 +461,7 @@ export interface TrendScoutStatusResponse {
     };
     checks: TrendScoutAuditCheck[];
   };
-  operator_actions: TrendScoutOperatorAction[];
+  operator_actions: OperatorAction[];
   discovery_lanes?: TrendScoutDiscoveryLane[];
   runtime: {
     generated_at: string;
@@ -509,14 +509,6 @@ export interface TentacleAuditCheck {
   detail: string;
 }
 
-export interface TentacleOperatorAction {
-  id: string;
-  title: string;
-  description: string;
-  command: string;
-  safe: boolean;
-}
-
 export interface TentacleStatusResponse {
   status: string;
   configured: boolean;
@@ -534,7 +526,7 @@ export interface TentacleStatusResponse {
     };
     checks: TentacleAuditCheck[];
   };
-  operator_actions: TentacleOperatorAction[];
+  operator_actions: OperatorAction[];
   runtime: {
     generated_at: string;
   };
@@ -579,14 +571,6 @@ export interface SkillMetricsAuditCheck {
   detail: string;
 }
 
-export interface SkillMetricsOperatorAction {
-  id: string;
-  title: string;
-  description: string;
-  command: string;
-  safe: boolean;
-}
-
 export interface SkillMetricsResponse {
   status: string;
   configured: boolean;
@@ -607,7 +591,7 @@ export interface SkillMetricsResponse {
     };
     checks: SkillMetricsAuditCheck[];
   };
-  operator_actions: SkillMetricsOperatorAction[];
+  operator_actions: OperatorAction[];
   runtime: {
     generated_at: string;
   };

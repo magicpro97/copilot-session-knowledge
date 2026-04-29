@@ -314,6 +314,24 @@ export const healthResponseSchema = z.object({
   sync_status_endpoint: z.string().optional(),
 });
 
+/**
+ * Shared operator-action Zod schema used across all 4 browse diagnostics routes.
+ *
+ * Required: id, title, description, command, safe (always true — enforced by literal).
+ * Optional context fields are route-specific and validated permissively:
+ *   - requires_configured_gateway — only in sync actions
+ *   - requires_configured_target  — only in scout actions
+ */
+export const operatorActionSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  description: z.string(),
+  command: z.string(),
+  safe: z.literal(true),
+  requires_configured_gateway: z.boolean().optional(),
+  requires_configured_target: z.boolean().optional(),
+});
+
 export const syncConnectionStatusSchema = z.object({
   configured: z.boolean(),
   endpoint: z.string().nullable(),
@@ -338,15 +356,6 @@ export const syncRuntimeStatusSchema = z.object({
   failed_txns: z.number(),
 });
 
-export const syncOperatorActionSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  description: z.string(),
-  command: z.string(),
-  safe: z.boolean(),
-  requires_configured_gateway: z.boolean(),
-});
-
 export const syncStatusResponseSchema = z.object({
   status: z.string(),
   configured: z.boolean(),
@@ -367,7 +376,7 @@ export const syncStatusResponseSchema = z.object({
     })
     .optional(),
   runtime: syncRuntimeStatusSchema,
-  operator_actions: z.array(syncOperatorActionSchema),
+  operator_actions: z.array(operatorActionSchema),
   local_replica_id: z.string().nullable(),
   pending_txns: z.number(),
   pending_ops: z.number(),
@@ -412,15 +421,6 @@ export const trendScoutAuditCheckSchema = z.object({
   detail: z.string(),
 });
 
-export const trendScoutOperatorActionSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  description: z.string(),
-  command: z.string(),
-  safe: z.boolean(),
-  requires_configured_target: z.boolean(),
-});
-
 export const trendScoutDiscoveryLaneSchema = z.object({
   name: z.string(),
   keyword_count: z.number(),
@@ -443,7 +443,7 @@ export const trendScoutStatusResponseSchema = z.object({
     }),
     checks: z.array(trendScoutAuditCheckSchema),
   }),
-  operator_actions: z.array(trendScoutOperatorActionSchema),
+  operator_actions: z.array(operatorActionSchema),
   discovery_lanes: z.array(trendScoutDiscoveryLaneSchema).optional(),
   runtime: z.object({
     generated_at: z.string(),
@@ -489,14 +489,6 @@ export const tentacleAuditCheckSchema = z.object({
   detail: z.string(),
 });
 
-export const tentacleOperatorActionSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  description: z.string(),
-  command: z.string(),
-  safe: z.boolean(),
-});
-
 export const tentacleStatusResponseSchema = z.object({
   status: z.string(),
   configured: z.boolean(),
@@ -514,7 +506,7 @@ export const tentacleStatusResponseSchema = z.object({
     }),
     checks: z.array(tentacleAuditCheckSchema),
   }),
-  operator_actions: z.array(tentacleOperatorActionSchema),
+  operator_actions: z.array(operatorActionSchema),
   runtime: z.object({
     generated_at: z.string(),
   }),
@@ -557,14 +549,6 @@ export const skillMetricsAuditCheckSchema = z.object({
   detail: z.string(),
 });
 
-export const skillMetricsOperatorActionSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  description: z.string(),
-  command: z.string(),
-  safe: z.boolean(),
-});
-
 export const skillMetricsResponseSchema = z.object({
   status: z.string(),
   configured: z.boolean(),
@@ -585,7 +569,7 @@ export const skillMetricsResponseSchema = z.object({
     }),
     checks: z.array(skillMetricsAuditCheckSchema),
   }),
-  operator_actions: z.array(skillMetricsOperatorActionSchema),
+  operator_actions: z.array(operatorActionSchema),
   runtime: z.object({
     generated_at: z.string(),
   }),

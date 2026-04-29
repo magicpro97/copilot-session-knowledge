@@ -11,6 +11,7 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
+from browse.core.operator_actions import make_action
 from browse.core.registry import route
 
 _SKILL_METRICS_DB = Path.home() / ".copilot" / "session-state" / "skill-metrics.db"
@@ -201,27 +202,24 @@ def handle_skills_metrics(db, params, token, nonce) -> tuple:
         overall_status = "ok"
 
     operator_actions = [
-        {
-            "id": "skill-metrics-status",
-            "title": "Show skill metrics summary",
-            "description": "Read-only overview of recorded tentacle outcome metrics.",
-            "command": "python3 skill-metrics.py",
-            "safe": True,
-        },
-        {
-            "id": "skill-metrics-json",
-            "title": "Skill metrics in JSON",
-            "description": "Machine-readable skill outcome metrics for diagnostics.",
-            "command": "python3 skill-metrics.py --json",
-            "safe": True,
-        },
-        {
-            "id": "skill-metrics-audit",
-            "title": "Skill metrics audit",
-            "description": "Audit summary for skill outcome coverage gaps.",
-            "command": "python3 skill-metrics.py --audit",
-            "safe": True,
-        },
+        make_action(
+            "skill-metrics-status",
+            "Show skill metrics summary",
+            "Read-only overview of recorded tentacle outcome metrics.",
+            "python3 skill-metrics.py",
+        ),
+        make_action(
+            "skill-metrics-json",
+            "Skill metrics in JSON",
+            "Machine-readable skill outcome metrics for diagnostics.",
+            "python3 skill-metrics.py --json",
+        ),
+        make_action(
+            "skill-metrics-audit",
+            "Skill metrics audit",
+            "Audit summary for skill outcome coverage gaps.",
+            "python3 skill-metrics.py --audit",
+        ),
     ]
 
     payload = {

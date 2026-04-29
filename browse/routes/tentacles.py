@@ -11,6 +11,7 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
+from browse.core.operator_actions import make_action
 from browse.core.registry import route
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -192,27 +193,24 @@ def handle_tentacles_status(db, params, token, nonce) -> tuple:
         overall_status = "ready"
 
     operator_actions = [
-        {
-            "id": "tentacle-list",
-            "title": "List all tentacles",
-            "description": "Read-only summary of all tentacles and their current status.",
-            "command": "python3 tentacle.py list",
-            "safe": True,
-        },
-        {
-            "id": "tentacle-status",
-            "title": "Show tentacle status overview",
-            "description": "Status summary for all tentacles including active/idle breakdown.",
-            "command": "python3 tentacle.py status",
-            "safe": True,
-        },
-        {
-            "id": "tentacle-status-json",
-            "title": "Tentacle status in JSON",
-            "description": "Machine-readable tentacle status for diagnostics.",
-            "command": "python3 tentacle-status.py --json",
-            "safe": True,
-        },
+        make_action(
+            "tentacle-list",
+            "List all tentacles",
+            "Read-only summary of all tentacles and their current status.",
+            "python3 tentacle.py list",
+        ),
+        make_action(
+            "tentacle-status",
+            "Show tentacle status overview",
+            "Status summary for all tentacles including active/idle breakdown.",
+            "python3 tentacle.py status",
+        ),
+        make_action(
+            "tentacle-status-json",
+            "Tentacle status in JSON",
+            "Machine-readable tentacle status for diagnostics.",
+            "python3 tentacle-status.py --json",
+        ),
     ]
 
     payload = {

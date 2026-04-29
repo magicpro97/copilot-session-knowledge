@@ -615,6 +615,95 @@ def run_all_tests() -> int:
     finally:
         server.shutdown()
 
+    # ── T21: Shared operator-action contract — required fields across all routes ──
+    print("\n-- T21: shared operator-action contract fields")
+    db = _make_test_db()
+    server, host, port = _start_server(db)
+    try:
+        REQUIRED_FIELDS = {"id", "title", "description", "command", "safe"}
+        for path in [
+            "/api/sync/status",
+            "/api/scout/status",
+            "/api/tentacles/status",
+            "/api/skills/metrics",
+        ]:
+            status, _, data = _get(host, port, path)
+            route_short = path.split("/")[2]
+            test(f"T21: {route_short} status 200", status == 200)
+            actions = data.get("operator_actions") or []
+            test(
+                f"T21: {route_short} operator_actions is non-empty list",
+                isinstance(actions, list) and len(actions) >= 1,
+            )
+            test(
+                f"T21: {route_short} all actions have required contract fields",
+                all(
+                    isinstance(a, dict) and REQUIRED_FIELDS.issubset(a.keys())
+                    for a in actions
+                ) if actions else True,
+            )
+            test(
+                f"T21: {route_short} all actions have safe=True",
+                all(a.get("safe") is True for a in actions) if actions else True,
+            )
+            test(
+                f"T21: {route_short} all actions have non-empty command",
+                all(
+                    isinstance(a.get("command"), str) and bool(a.get("command", "").strip())
+                    for a in actions
+                ) if actions else True,
+            )
+    finally:
+        server.shutdown()
+
+    # ── T22: Route-specific optional context fields ───────────────────────────
+    print("\n-- T22: route-specific optional context fields in operator actions")
+    db = _make_test_db()
+    server, host, port = _start_server(db)
+    try:
+        # sync.py should include requires_configured_gateway in all its actions
+        _, _, sync_data = _get(host, port, "/api/sync/status")
+        sync_actions = sync_data.get("operator_actions") or []
+        test(
+            "T22: sync actions include requires_configured_gateway",
+            bool(sync_actions) and all(
+                "requires_configured_gateway" in a for a in sync_actions
+            ),
+        )
+        test(
+            "T22: sync actions do NOT include requires_configured_target",
+            all("requires_configured_target" not in a for a in sync_actions),
+        )
+
+        # scout.py should include requires_configured_target in all its actions
+        _, _, scout_data = _get(host, port, "/api/scout/status")
+        scout_actions = scout_data.get("operator_actions") or []
+        test(
+            "T22: scout actions include requires_configured_target",
+            bool(scout_actions) and all(
+                "requires_configured_target" in a for a in scout_actions
+            ),
+        )
+        test(
+            "T22: scout actions do NOT include requires_configured_gateway",
+            all("requires_configured_gateway" not in a for a in scout_actions),
+        )
+
+        # tentacles.py and skills.py should NOT include either optional field
+        for path, label in [("/api/tentacles/status", "tentacle"), ("/api/skills/metrics", "skills")]:
+            _, _, d = _get(host, port, path)
+            acts = d.get("operator_actions") or []
+            test(
+                f"T22: {label} actions omit requires_configured_gateway",
+                all("requires_configured_gateway" not in a for a in acts),
+            )
+            test(
+                f"T22: {label} actions omit requires_configured_target",
+                all("requires_configured_target" not in a for a in acts),
+            )
+    finally:
+        server.shutdown()
+
     print(f"\nResults: {_PASS} passed, {_FAIL} failed")
     return _FAIL
 

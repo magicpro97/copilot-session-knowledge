@@ -10,6 +10,7 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
+from browse.core.operator_actions import make_action
 from browse.core.registry import route
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -167,30 +168,27 @@ def handle_scout_status(db, params, token, nonce) -> tuple:
     ]
 
     operator_actions = [
-        {
-            "id": "trend-scout-search-only",
-            "title": "Discovery-only search pass",
-            "description": "Read-only candidate discovery + shortlist without issue writes.",
-            "command": "python3 trend-scout.py --search-only",
-            "safe": True,
-            "requires_configured_target": True,
-        },
-        {
-            "id": "trend-scout-dry-run",
-            "title": "Dry-run full pipeline preview",
-            "description": "Preview enrichment + rendering outcomes without creating/updating issues.",
-            "command": "python3 trend-scout.py --dry-run --limit 5",
-            "safe": True,
-            "requires_configured_target": True,
-        },
-        {
-            "id": "trend-scout-force-dry-run",
-            "title": "Bypass grace-window preview",
-            "description": "Safe preview override when grace-window is active.",
-            "command": "python3 trend-scout.py --dry-run --force --limit 5",
-            "safe": True,
-            "requires_configured_target": True,
-        },
+        make_action(
+            "trend-scout-search-only",
+            "Discovery-only search pass",
+            "Read-only candidate discovery + shortlist without issue writes.",
+            "python3 trend-scout.py --search-only",
+            requires_configured_target=True,
+        ),
+        make_action(
+            "trend-scout-dry-run",
+            "Dry-run full pipeline preview",
+            "Preview enrichment + rendering outcomes without creating/updating issues.",
+            "python3 trend-scout.py --dry-run --limit 5",
+            requires_configured_target=True,
+        ),
+        make_action(
+            "trend-scout-force-dry-run",
+            "Bypass grace-window preview",
+            "Safe preview override when grace-window is active.",
+            "python3 trend-scout.py --dry-run --force --limit 5",
+            requires_configured_target=True,
+        ),
     ]
 
     payload = {
