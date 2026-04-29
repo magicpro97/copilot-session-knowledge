@@ -969,6 +969,10 @@ def extract_relations(db: sqlite3.Connection) -> int:
       SAME_TOPIC    — entries with same topic_key from different sessions (0.9)
       TAG_OVERLAP   — entries sharing 2+ tags (0.5 + 0.1 * shared_count)
       RESOLVED_BY   — mistake paired with pattern/tool in same session (0.8)
+
+    Ordering: entries are processed newest-first (ORDER BY id DESC) so that
+    recent context is never starved when per-type budgets fill.  A per-group
+    pair cap spreads each budget evenly across sessions/topics.
     """
     now = datetime.now().isoformat()
     MAX_PER_TYPE = 1500  # budget per relation type
@@ -985,10 +989,13 @@ def extract_relations(db: sqlite3.Connection) -> int:
         ON knowledge_relations(source_id, target_id, relation_type)
     """)
 
-    # Load all entries needed for relation detection
+    # Load entries newest-first so recent context gets first access to relation
+    # budgets.  Dict insertion order (Python 3.7+) then naturally makes
+    # by_session / by_topic iterate newest sessions/topics first.
     entries = db.execute("""
         SELECT id, session_id, category, title, tags, topic_key, COALESCE(stable_id, '')
         FROM knowledge_entries
+        ORDER BY id DESC
     """).fetchall()
 
     if not entries:
@@ -1031,35 +1038,54 @@ def extract_relations(db: sqlite3.Connection) -> int:
         return False
 
     # 1. SAME_SESSION — different categories within same session
-    for sid, group in by_session.items():
-        if len(group) < 2:
-            continue
-        done = False
+    # Per-session cap: each session contributes at most a fair share of the budget
+    # so a single large session cannot crowd out all others.
+    _active_sessions = [g for g in by_session.values() if len(g) >= 2]
+    _ss_cap = max(3, MAX_PER_TYPE // max(1, len(_active_sessions)))
+    for group in _active_sessions:
+        session_added = 0
+        budget_done = False
         for i, a in enumerate(group):
-            for b in group[i + 1:]:
-                if a[2] != b[2]:  # different category
-                    if _add(a[0], b[0], "SAME_SESSION", 0.7):
-                        done = True
-                        break
-            if done:
+            if session_added >= _ss_cap:
                 break
-        if done:
+            for b in group[i + 1:]:
+                if session_added >= _ss_cap:
+                    break
+                if a[2] != b[2]:  # different category
+                    pre_count = type_counts.get("SAME_SESSION", 0)
+                    if _add(a[0], b[0], "SAME_SESSION", 0.7):
+                        budget_done = True
+                        break
+                    if type_counts.get("SAME_SESSION", 0) > pre_count:
+                        session_added += 1
+            if budget_done:
+                break
+        if budget_done:
             break
 
     # 2. SAME_TOPIC — same topic_key, different sessions
-    for topic, group in by_topic.items():
-        if len(group) < 2:
-            continue
-        done = False
+    # Per-topic cap mirrors the SAME_SESSION coverage protection.
+    _active_topics = [g for g in by_topic.values() if len(g) >= 2]
+    _st_cap = max(3, MAX_PER_TYPE // max(1, len(_active_topics)))
+    for group in _active_topics:
+        topic_added = 0
+        budget_done = False
         for i, a in enumerate(group):
-            for b in group[i + 1:]:
-                if a[1] != b[1]:  # different session_id
-                    if _add(a[0], b[0], "SAME_TOPIC", 0.9):
-                        done = True
-                        break
-            if done:
+            if topic_added >= _st_cap:
                 break
-        if done:
+            for b in group[i + 1:]:
+                if topic_added >= _st_cap:
+                    break
+                if a[1] != b[1]:  # different session_id
+                    pre_count = type_counts.get("SAME_TOPIC", 0)
+                    if _add(a[0], b[0], "SAME_TOPIC", 0.9):
+                        budget_done = True
+                        break
+                    if type_counts.get("SAME_TOPIC", 0) > pre_count:
+                        topic_added += 1
+            if budget_done:
+                break
+        if budget_done:
             break
 
     # 3. TAG_OVERLAP — entries sharing 2+ tags

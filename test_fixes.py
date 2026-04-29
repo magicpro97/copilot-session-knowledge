@@ -1454,6 +1454,157 @@ with tempfile.TemporaryDirectory(prefix="ld-doctor-") as _ld_d_tmp:
         _au_mod_ld.platform.system = _orig_sys2
 
 
+# ─── Rg: Relation Recency / Coverage Regression ─────────────────────────
+
+print("\n🔗 Rg: Relation Recency / Coverage Regression")
+
+
+def _make_relation_test_db():
+    """Minimal in-memory DB with the schema required by extract_relations()."""
+    db = sqlite3.connect(":memory:")
+    db.executescript("""
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT '',
+            title TEXT DEFAULT '',
+            tags TEXT DEFAULT '',
+            topic_key TEXT DEFAULT '',
+            stable_id TEXT DEFAULT ''
+        );
+        CREATE TABLE knowledge_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL,
+            target_id INTEGER NOT NULL,
+            source_stable_id TEXT DEFAULT '',
+            target_stable_id TEXT DEFAULT '',
+            relation_type TEXT NOT NULL,
+            stable_id TEXT DEFAULT '',
+            confidence REAL DEFAULT 0.5,
+            created_at TEXT DEFAULT ''
+        );
+    """)
+    return db
+
+
+_RG_CATS_6 = ["mistake", "pattern", "tool", "decision", "feature", "discovery"]
+
+
+def _rg_seed_session(db, session_id, entries_per_cat):
+    """Insert entries_per_cat entries per category; return list of inserted IDs."""
+    ids = []
+    for cat in _RG_CATS_6:
+        for i in range(entries_per_cat):
+            eid = db.execute(
+                "INSERT INTO knowledge_entries (session_id, category, title) VALUES (?, ?, ?)",
+                (session_id, cat, f"{session_id}-{cat}-{i}"),
+            ).lastrowid
+            ids.append(eid)
+    db.commit()
+    return ids
+
+
+# Rg1: ORDER BY id DESC gives recent entries first crack at the SAME_SESSION budget.
+# Setup:
+#   old-session  — 10 entries × 6 categories = 60 entries
+#                  cross-category pairs = C(60,2) − 6×C(10,2) = 1770 − 270 = 1500
+#                  → exactly fills the SAME_SESSION budget when processed first (old behavior)
+#   recent-session — 3 entries in 3 different categories → 3 cross-category pairs
+#                  → assigned higher IDs (inserted after old-session)
+# Expectation with new code:
+#   - recent-session processed first (ORDER BY id DESC + dict insertion order)
+#   - recent-session entries get their 3 SAME_SESSION pairs
+#   - per-session cap limits old-session to a fair share of remaining budget
+_rg1_db = _make_relation_test_db()
+_rg_seed_session(_rg1_db, "old-session", 10)  # IDs 1..60
+for _rg_cat in ["mistake", "pattern", "tool"]:
+    _rg1_db.execute(
+        "INSERT INTO knowledge_entries (session_id, category, title) VALUES (?, ?, ?)",
+        ("recent-session", _rg_cat, f"recent-{_rg_cat}"),
+    )
+_rg1_db.commit()
+
+ek.extract_relations(_rg1_db)
+
+_rg1_recent_ids = [r[0] for r in _rg1_db.execute(
+    "SELECT id FROM knowledge_entries WHERE session_id = 'recent-session'"
+).fetchall()]
+_rg1_ph = ",".join("?" * len(_rg1_recent_ids))
+_rg1_recent_rels = _rg1_db.execute(
+    f"SELECT COUNT(*) FROM knowledge_relations "
+    f"WHERE relation_type = 'SAME_SESSION' AND "
+    f"(source_id IN ({_rg1_ph}) OR target_id IN ({_rg1_ph}))",
+    _rg1_recent_ids * 2,
+).fetchone()[0]
+test(
+    "Rg1: recent entries get SAME_SESSION relations despite old session consuming full budget",
+    _rg1_recent_rels > 0,
+    f"recent entries have {_rg1_recent_rels} SAME_SESSION relations (expected > 0)",
+)
+
+_rg1_old_ids = [r[0] for r in _rg1_db.execute(
+    "SELECT id FROM knowledge_entries WHERE session_id = 'old-session'"
+).fetchall()]
+_rg1_old_ph = ",".join("?" * len(_rg1_old_ids))
+_rg1_old_rels = _rg1_db.execute(
+    f"SELECT COUNT(*) FROM knowledge_relations "
+    f"WHERE relation_type = 'SAME_SESSION' AND "
+    f"(source_id IN ({_rg1_old_ph}) OR target_id IN ({_rg1_old_ph}))",
+    _rg1_old_ids * 2,
+).fetchone()[0]
+# Per-session cap (max(3, 1500//2)=750) prevents old-session from consuming all 1500 slots
+test(
+    "Rg1b: per-session cap prevents old session from monopolising entire SAME_SESSION budget",
+    _rg1_old_rels < 1500,
+    f"old session involved in {_rg1_old_rels} SAME_SESSION relations (expected < 1500)",
+)
+_rg1_db.close()
+
+# Rg2: Coverage — all recent sessions get SAME_SESSION relations under budget pressure.
+# Setup:
+#   dominant-old  — 60 entries (1500 potential cross-cat pairs), low IDs
+#   recent-0..3   — 3 entries each (3 cross-cat pairs each), high IDs
+# Without recency fix: dominant-old (processed first in old ordering) exhausts budget,
+#   all recent sessions receive 0 relations.
+# With recency fix:    recent sessions processed first, all receive relations;
+#   dominant-old is capped at a fair share.
+_rg2_db = _make_relation_test_db()
+_rg_seed_session(_rg2_db, "dominant-old", 10)  # IDs 1..60
+
+_rg2_recent_sessions = [f"recent-{i}" for i in range(4)]
+for _rg2_sid in _rg2_recent_sessions:
+    for _rg2_cat in ["mistake", "pattern", "tool"]:
+        _rg2_db.execute(
+            "INSERT INTO knowledge_entries (session_id, category, title) VALUES (?, ?, ?)",
+            (_rg2_sid, _rg2_cat, f"{_rg2_sid}-{_rg2_cat}"),
+        )
+_rg2_db.commit()
+
+ek.extract_relations(_rg2_db)
+
+_rg2_covered = 0
+for _rg2_sid in _rg2_recent_sessions:
+    _rg2_ids = [r[0] for r in _rg2_db.execute(
+        "SELECT id FROM knowledge_entries WHERE session_id = ?", (_rg2_sid,)
+    ).fetchall()]
+    _rg2_ph = ",".join("?" * len(_rg2_ids))
+    _rg2_cnt = _rg2_db.execute(
+        f"SELECT COUNT(*) FROM knowledge_relations "
+        f"WHERE relation_type = 'SAME_SESSION' AND "
+        f"(source_id IN ({_rg2_ph}) OR target_id IN ({_rg2_ph}))",
+        _rg2_ids * 2,
+    ).fetchone()[0]
+    if _rg2_cnt > 0:
+        _rg2_covered += 1
+
+test(
+    f"Rg2: all {len(_rg2_recent_sessions)} recent sessions get SAME_SESSION relations under budget pressure",
+    _rg2_covered == len(_rg2_recent_sessions),
+    f"{_rg2_covered}/{len(_rg2_recent_sessions)} recent sessions have relations",
+)
+_rg2_db.close()
+
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
 print(f"\n{'='*50}")

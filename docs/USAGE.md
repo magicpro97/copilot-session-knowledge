@@ -762,6 +762,8 @@ python3 ~/.copilot/tools/build-session-index.py --incremental   # Update changed
 python3 ~/.copilot/tools/build-session-index.py --no-embed      # Index only, skip embeddings
 python3 ~/.copilot/tools/extract-knowledge.py --stats           # View knowledge statistics
 python3 ~/.copilot/tools/extract-knowledge.py --relations       # View relation statistics
+# Relation extraction runs newest-first: recent entries always get graph connections
+# before older context, with a per-session cap to spread budget across sessions.
 python3 ~/.copilot/tools/watch-sessions.py --install-hint      # Show auto-start setup instructions
 python3 ~/.copilot/tools/embed.py --status                      # Embedding coverage stats
 python3 ~/.copilot/tools/embed.py --build                       # Rebuild all embeddings
