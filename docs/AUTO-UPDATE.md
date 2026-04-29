@@ -13,6 +13,66 @@ python3 ~/.copilot/tools/auto-update-tools.py --doctor   # Health check + manife
 python3 ~/.copilot/tools/auto-update-tools.py --skip-pull # Run pipeline only (post-merge)
 ```
 
+## Runtime Operator Commands
+
+Read-only commands for monitoring the watch-sessions watcher and sync runtime.
+None of these commands trigger an update or restart:
+
+```bash
+# Watcher status (delegates to sync-status.py --watch-status)
+python3 ~/.copilot/tools/auto-update-tools.py --watch-status
+
+# Sync runtime health check (delegates to sync-status.py --health-check)
+python3 ~/.copilot/tools/auto-update-tools.py --health-check
+
+# Runtime operations audit (delegates to sync-status.py --audit)
+python3 ~/.copilot/tools/auto-update-tools.py --audit-runtime
+
+# List all tracked paths/patterns used by the smart-diff coverage check
+python3 ~/.copilot/tools/auto-update-tools.py --list-coverage
+```
+
+### Lifecycle command
+
+`--restart-watch` is **not** read-only. It does not run `git pull` or the update pipeline, but it
+does issue a controlled watcher restart through the active service-manager path (launchd, systemd,
+Task Scheduler, or the manual fallback path).
+
+```bash
+# Restart the watch-sessions watcher (controlled restart, macOS/Linux/Windows)
+python3 ~/.copilot/tools/auto-update-tools.py --restart-watch
+```
+
+### Watcher status semantics
+
+`--watch-status` reports from two sources and reconciles them:
+
+| Field | Meaning |
+|---|---|
+| `pid_running` | A `.watcher.lock` file exists and the PID in it is alive. This is the ground-truth liveness check. |
+| `managed_by` | Which service manager owns the lifecycle (`launchd`, `systemd`, `task-scheduler`, or `none`). |
+| `manager_state` | What the service manager reports: `active` (systemd), `loaded` (launchd), `registered` (Task Scheduler), or `inactive`/`unavailable`. |
+
+**Normal healthy states:**
+- `pid_running=True` + `manager_state=loaded` (macOS launchd): watcher is running, managed by LaunchAgent.
+- `pid_running=True` + `managed_by=none`: watcher was started manually or by cron.
+- `pid_running=False` + `manager_state=loaded` (macOS launchd, `com.copilot.watch-sessions` only): watcher is **not running** — the LaunchAgent is loaded but the process has exited or crashed. Use `--restart-watch` to recover.
+
+**Audit exit codes:**
+- Exit 0: all critical checks pass (warnings are informational).
+- Exit 2: one or more critical checks failed (e.g. local DB missing).
+
+### Health-check vs audit
+
+| Command | Checks | Exit on failure |
+|---|---|---|
+| `--health-check` | DB exists + gateway OK (if configured) | exit 2 |
+| `--audit-runtime` | DB + gateway + watcher + sync-config | exit 2 (critical only) |
+| `--doctor` | Python + core tools + local DB + git + manifest + service-manager state + coverage audit (plus optional Copilot CLI healer check) | exit 0 (prints warnings) |
+
+Use `--health-check` or `--audit-runtime` when you need gateway-aware sync checks.
+`--doctor` is the broader local-install/runtime diagnostic surface; it does **not** replace gateway probing.
+
 ## Smart Pipeline
 
 After `git pull`, auto-update analyzes `git diff` to run only what changed:

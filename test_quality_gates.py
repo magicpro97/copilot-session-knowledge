@@ -9,6 +9,7 @@ Run: python3 test_quality_gates.py
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -246,6 +247,163 @@ test_syntax_gate_passes_valid()
 test_run_all_tests_dry()
 test_run_all_tests_help()
 test_check_syntax_is_valid_python()
+
+
+# ── Test 12–20: Ruff surface consistency ────────────────────────────────────
+# Verify that the pre-commit hook's _py_in_surface() covers the same files
+# as CI ci.yml, and that HOOKS.md documents the correct local-vs-CI boundary.
+
+PRE_COMMIT = REPO / "hooks" / "pre-commit"
+CI_WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
+HOOKS_MD = REPO / "docs" / "HOOKS.md"
+ARCH_MD = REPO / "docs" / "ARCHITECTURE.md"
+CONTRIBUTING = REPO / "CONTRIBUTING.md"
+
+# CI Ruff surface (extracted from ci.yml)
+CI_RUFF_FILES = [
+    "embed.py", "scout-config.py", "scout-status.py",
+    "sync-config.py", "sync-daemon.py", "sync-status.py",
+    "migrate.py", "generate-summary.py",
+    "briefing.py", "learn.py", "query-session.py", "extract-knowledge.py",
+    "build-session-index.py", "tentacle.py",
+    "checkpoint-diff.py", "checkpoint-restore.py", "checkpoint-save.py",
+]
+
+
+def test_ruff_surface_in_pre_commit():
+    """Pre-commit hook must cover the same Python files as CI Ruff lint."""
+    if not PRE_COMMIT.exists():
+        test("pre-commit hook exists", False, str(PRE_COMMIT))
+        return
+    content = PRE_COMMIT.read_text(encoding="utf-8")
+    for fname in CI_RUFF_FILES:
+        test(
+            f"pre-commit covers CI file: {fname}",
+            fname in content,
+            f"'{fname}' not found in pre-commit _py_in_surface()",
+        )
+    test("pre-commit covers browse/*.py", "browse/" in content or "browse/*" in content)
+    test("pre-commit covers hooks/*.py", "hooks/*.py" in content or "hooks/*/*.py" in content)
+
+
+def test_ci_workflow_ruff_surface():
+    """CI workflow must lint the documented surface."""
+    if not CI_WORKFLOW.exists():
+        test("ci.yml exists", False, str(CI_WORKFLOW))
+        return
+    content = CI_WORKFLOW.read_text(encoding="utf-8")
+    for fname in CI_RUFF_FILES:
+        test(
+            f"ci.yml Ruff surface includes {fname}",
+            fname in content,
+            f"'{fname}' missing from ci.yml Ruff step",
+        )
+
+
+def test_hooks_md_documents_local_vs_ci():
+    """HOOKS.md must document the local-vs-CI boundary and Ruff surface."""
+    if not HOOKS_MD.exists():
+        test("docs/HOOKS.md exists", False)
+        return
+    content = HOOKS_MD.read_text(encoding="utf-8")
+    test("HOOKS.md documents local-vs-CI section",
+         "Local vs CI" in content,
+         "Add 'Local vs CI enforcement boundary' section to docs/HOOKS.md")
+    # Key files from the Ruff surface should be named in HOOKS.md
+    for fname in ("briefing.py", "tentacle.py", "browse/"):
+        test(f"HOOKS.md mentions Ruff surface file: {fname}",
+             fname in content,
+             f"'{fname}' not mentioned in HOOKS.md Ruff surface")
+    test("HOOKS.md notes full test suite is NOT enforced by local hook",
+         "not" in content.lower() and "run_all_tests" in content,
+         "HOOKS.md should clarify that run_all_tests is not enforced by the local pre-commit hook")
+
+
+def test_contributing_md_local_vs_ci():
+    """CONTRIBUTING.md must document the local hook enforcement contract."""
+    if not CONTRIBUTING.exists():
+        test("CONTRIBUTING.md exists", False)
+        return
+    content = CONTRIBUTING.read_text(encoding="utf-8")
+    test("CONTRIBUTING.md mentions full Ruff scope (briefing.py)",
+         "briefing.py" in content,
+         "CONTRIBUTING.md Ruff scope is incomplete — missing briefing.py")
+    test("CONTRIBUTING.md mentions full Ruff scope (tentacle.py)",
+         "tentacle.py" in content,
+         "CONTRIBUTING.md Ruff scope is incomplete — missing tentacle.py")
+    test("CONTRIBUTING.md explains pre-commit is fast/scoped",
+         "fail-open" in content or "full test suite" in content.lower(),
+         "CONTRIBUTING.md should explain that the local pre-commit hook is scoped, not a full gate")
+
+
+def test_architecture_md_ruff_surface():
+    """ARCHITECTURE.md must name the full Ruff surface."""
+    if not ARCH_MD.exists():
+        test("docs/ARCHITECTURE.md exists", False)
+        return
+    content = ARCH_MD.read_text(encoding="utf-8")
+    for fname in ("briefing.py", "tentacle.py", "browse/", "hooks/"):
+        test(f"ARCHITECTURE.md Ruff section names {fname}",
+             fname in content,
+             f"ARCHITECTURE.md quality-gates section missing '{fname}'")
+
+
+def _registered_hook_rule_names():
+    """Return the exact registered runtime hook rule names from hooks.rules."""
+    import sys as _sys
+
+    if str(REPO) not in _sys.path:
+        _sys.path.insert(0, str(REPO))
+
+    from hooks.rules import get_rules_for_event
+
+    names = set()
+    for event in (
+        "sessionStart",
+        "preToolUse",
+        "postToolUse",
+        "errorOccurred",
+        "sessionEnd",
+        "agentStop",
+        "subagentStop",
+    ):
+        for rule in get_rules_for_event(event):
+            if rule.name:
+                names.add(rule.name)
+    return sorted(names)
+
+
+def test_hooks_md_rules_table_complete():
+    """HOOKS.md rules table must list all registered runtime rules exactly."""
+    if not HOOKS_MD.exists():
+        test("docs/HOOKS.md exists", False)
+        return
+    content = HOOKS_MD.read_text(encoding="utf-8")
+    try:
+        required_rules = _registered_hook_rule_names()
+    except Exception as exc:
+        test("hooks.rules registry imports", False, str(exc))
+        return
+    for rule in required_rules:
+        test(
+            f"HOOKS.md rules table includes '{rule}'",
+            re.search(rf"^\|\s*`{re.escape(rule)}`\s*\|", content, re.MULTILINE) is not None,
+            f"Rule '{rule}' is registered but missing from docs/HOOKS.md rules table",
+        )
+    for git_hook in ("pre-commit", "pre-push"):
+        test(
+            f"HOOKS.md rules table includes '{git_hook}'",
+            re.search(rf"^\|\s*`{re.escape(git_hook)}`\s*\|", content, re.MULTILINE) is not None,
+            f"Git hook '{git_hook}' is missing from docs/HOOKS.md rules table",
+        )
+
+
+test_ruff_surface_in_pre_commit()
+test_ci_workflow_ruff_surface()
+test_hooks_md_documents_local_vs_ci()
+test_contributing_md_local_vs_ci()
+test_architecture_md_ruff_surface()
+test_hooks_md_rules_table_complete()
 
 print(f"\n{'='*50}")
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")

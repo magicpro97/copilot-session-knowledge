@@ -41,7 +41,17 @@ python3 test_fixes.py       # 65 tests
 
 ## Testing
 
-Run before every commit:
+### Local vs CI enforcement boundary
+
+The local `pre-commit` git hook is **fast and scoped** — it does NOT run the full test suite. What it does enforce (when the respective tool is installed):
+
+- Dispatched-subagent marker guard (always)
+- `browse/routes/*.py` inline-`<style>` regression guard (always)
+- Ruff format + lint on staged files in the CI surface (fail-open when Ruff absent)
+- Prettier format check on staged `browse-ui/src/` files (fail-open when Prettier absent)
+- Skill/agent file lint (fail-open when lint-skills.py absent)
+
+The full test suite is **not** run by the hook. Run it manually before submitting a PR:
 
 ```bash
 python3 scripts/check_syntax.py
@@ -55,7 +65,19 @@ python3 test_security.py    # SQL injection, pickle, locks, paths
 python3 test_fixes.py       # Noise filter, sub-agent, launchd, DB health
 ```
 
-CI also runs a scoped **Ruff lint** on `embed.py`, `scout-*.py`, `sync-*.py`, `migrate.py`, `generate-summary.py`, and `hooks/`. If you modify those files and have Ruff installed locally, run `ruff format <file>` and `ruff check <file>` before committing. CI will catch scoped lint violations; local `pre-commit` enforces both `ruff format --check` and `ruff check` when Ruff is available. Ruff is scoped to this surface; other root scripts are not currently in scope.
+CI (`quality-gates` job) runs a scoped **Ruff lint** on the following files and directories:
+
+```
+embed.py  scout-config.py  scout-status.py
+sync-config.py  sync-daemon.py  sync-status.py
+migrate.py  generate-summary.py
+briefing.py  learn.py  query-session.py  extract-knowledge.py
+build-session-index.py  tentacle.py
+checkpoint-diff.py  checkpoint-restore.py  checkpoint-save.py
+browse/  hooks/
+```
+
+If you modify any of those files and have Ruff installed locally, run `ruff format <file>` and `ruff check <file>` before committing. CI will catch scoped lint violations; the local `pre-commit` git hook enforces both `ruff format --check` and `ruff check` on the same surface when Ruff is available locally (fail-open — silently skips when Ruff is not installed). Other root scripts outside this surface are not currently linted by CI.
 
 For `browse-ui/` changes, CI runs `pnpm format:check`. Fix formatting locally with `cd browse-ui && pnpm format` before committing.
 

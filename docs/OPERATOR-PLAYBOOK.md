@@ -249,6 +249,32 @@ python3 ~/.copilot/tools/tentacle.py complete <name>
 
 ---
 
+## Browse UI — Operator Diagnostics Settings Page
+
+The `/v2/settings/` page in the Browse UI is the primary **browser-based operator surface**.
+All diagnostic panels are read-only — no write operations are exposed.
+
+| Card | API endpoint | Shows |
+|------|-------------|-------|
+| Sync diagnostics | `/api/sync/status` | Mode, pending txns, failed ops, gateway config, rollout guidance |
+| Trend Scout diagnostics | `/api/scout/status` | Config, grace window, audit checks, discovery lanes |
+| Tentacle runtime diagnostics | `/api/tentacles/status` | Active tentacles, dispatch marker, registry, audit checks |
+| Skill outcome metrics | `/api/skills/metrics` | Pass rate, outcomes, skill usage summary |
+| System health | `/healthz` | DB schema version, session count, knowledge entries, last indexed |
+
+Each card with live data also renders an **Operator checks (read-only)** panel that lists
+safe CLI commands the operator can **copy** to their terminal. The browser never executes
+commands — the panel is display-only with copy-to-clipboard buttons.
+
+Navigate to the Settings page:
+```
+http://localhost:<port>/v2/settings/?token=<token>
+```
+
+---
+
+
+
 ## Retrospective
 
 View the composite operator score across knowledge, skills, hooks, and git signals.
@@ -273,6 +299,11 @@ python3 ~/.copilot/tools/retro.py --subreport knowledge
 Browse UI: the **Retrospective** collapsible panel on the Insights → Dashboard tab
 fetches `/api/retro/summary?mode=repo` and shows the composite score and per-section
 subscores. It fails gracefully if the API is unavailable.
+
+Standalone retro HTML page: `http://localhost:<port>/retro?token=<token>` renders
+the same payload in a lightweight page suitable for quick browser-based checks.
+The page fetches `/api/retro/summary?mode=repo` and renders grade, subscores, and
+a link to the full JSON payload. Gracefully shows an error message if unavailable.
 
 GitHub Actions: trigger **Retrospective** (`retro.yml`) via `workflow_dispatch` to run
 `retro.py --mode repo --json`, produce a markdown summary artifact, and write to the

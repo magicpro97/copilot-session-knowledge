@@ -35,14 +35,36 @@ hooks/
 | `enforce-learn` | preToolUse | Blocks git commit AND task_complete without learn.py |
 | `tentacle-enforce` | preToolUse | Blocks (deny) edits once ≥3 files across ≥2 modules are reached without tentacle setup. **Session-state paths** (`~/.copilot/session-state/`) are always exempt — `/research` outputs and other session artifacts are never blocked. **Bash redirects** are only flagged when the destination is a real source file; redirects to `.txt`, `.log`, `/dev/null`, or session-state paths are allowed. The deny message contains convention-level guidance: if you are the **orchestrator**, follow the runtime-bundle workflow — `tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing` → `tentacle.py todo <name> add "<task>"` → `tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6`; if you are a **dispatched sub-agent**, stay within your declared scope, write any scope gaps to `handoff.md`, and by convention avoid `git commit`/`git push`. |
 | `subagent-git-guard` | preToolUse | **Defense-in-depth**: blocks `git commit`/`git push` bash commands when the `dispatched-subagent-active` marker is fresh. This is a secondary surface — **not** the primary enforcement path (see §Dispatched-Subagent Git Guard below). Whether `preToolUse` fires inside a delegated subagent context is not guaranteed by the platform. |
+| `syntax-gate` | preToolUse | Blocks `edit`/`create` payloads that introduce Python syntax errors — applies the proposed change in memory and runs `py_compile`; fail-open on non-`.py` paths and missing files. Catches errors before they land on disk. |
+| `block-edit-dist` | preToolUse | Blocks `edit`/`create` targeting `browse-ui/dist/`. These are build artifacts — run `cd browse-ui && pnpm build` instead. |
+| `pnpm-lockfile-guard` | preToolUse | Blocks staging `browse-ui/package.json` changes without a matching `pnpm-lock.yaml` update. Prevents lockfile drift. |
+| `block-unsafe-html` | preToolUse | Blocks `dangerouslySetInnerHTML` usage in `.ts`/`.tsx` files without `DOMPurify.sanitize()` or the `<Highlight>` component. |
 | `track-edits` | postToolUse | Detects file changes via `git status` (language-agnostic) |
 | `learn-reminder` | postToolUse | Reminds to record learnings after task_complete |
 | `test-reminder` | postToolUse | Reminds to run tests after 3+ Python file edits |
 | `tentacle-suggest` | postToolUse | Suggests tentacle when edits reach ≥3 files across ≥2 modules (same threshold as tentacle-enforce) |
+| `nextjs-typecheck-reminder` | postToolUse | Reminds to run `pnpm typecheck` after editing `.ts`/`.tsx` files in `browse-ui/` |
 | `error-kb` | errorOccurred | Auto-searches knowledge base on errors |
-| `pre-commit` | git pre-commit | (1) Blocks commit when `dispatched-subagent-active` marker is fresh (primary subagent guard); (2) validates `.agent.md` / `SKILL.md` via `lint-skills.py`; (3) runs scoped Ruff format + lint check on staged Python files in the CI cleanliness surface (`embed.py`, `scout-*.py`, `sync-*.py`, `migrate.py`, `generate-summary.py`, `hooks/*.py`); (4) runs Prettier format check on supported staged files under `browse-ui/src/`. Both cleanliness checks are **fail-open** — they silently skip when the respective tool (`ruff`, `browse-ui/node_modules/.bin/prettier`) is not installed. Requires `install.py --install-git-hooks`. |
+| `pre-commit` | git pre-commit | (1) Blocks commit when `dispatched-subagent-active` marker is fresh (primary subagent guard); (2) validates `.agent.md` / `SKILL.md` via `lint-skills.py`; (3) runs scoped Ruff format + lint check on staged Python files in the Ruff surface (see §Local vs CI below); (4) runs Prettier format check on supported staged files under `browse-ui/src/`. Both cleanliness checks are **fail-open** — they silently skip when the respective tool (`ruff`, `browse-ui/node_modules/.bin/prettier`) is not installed. Requires `install.py --install-git-hooks`. |
 | `pre-push` | git pre-push | Blocks push when `dispatched-subagent-active` marker is fresh. Requires `install.py --install-git-hooks`. |
 
+### Local vs CI enforcement boundary
+
+**Ruff lint surface** (identical between local `pre-commit` and CI `quality-gates` job):
+
+```
+embed.py  scout-config.py  scout-status.py
+sync-config.py  sync-daemon.py  sync-status.py
+migrate.py  generate-summary.py
+briefing.py  learn.py  query-session.py  extract-knowledge.py
+build-session-index.py  tentacle.py
+checkpoint-diff.py  checkpoint-restore.py  checkpoint-save.py
+browse/  hooks/
+```
+
+Both the local hook and CI run `ruff format --check` and `ruff check` on staged/changed files in this surface. Locally, **both checks are fail-open** — they skip silently when `ruff` is not installed. CI always has Ruff and will fail hard on violations. Other root scripts (e.g., `watch-sessions.py`, `install.py`, `auto-update-tools.py`) are **not** in scope.
+
+**Full test suite** (`python3 run_all_tests.py`) is **not** enforced by the local `pre-commit` hook — it is too slow for every-commit use. CI runs it on every push/PR. Operators are expected to run it manually before submitting PRs. The local hook only enforces the fast checks listed in the table above.
 ### Platform events not currently handled
 
 The Copilot platform provides 8 hook event types (per [GitHub docs](https://docs.github.com/en/copilot/concepts/agents/cloud-agent/about-hooks)). This repo's `hooks.json` and `hook_runner.py` handle 7 of them. The only currently unhandled platform event is:

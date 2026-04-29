@@ -178,7 +178,7 @@ Add new migrations to the `MIGRATIONS` list in `migrate.py` with incrementing ve
 ### CI Quality Gates
 
 GitHub Actions runs two jobs on every push / PR:
-- **`quality-gates`** — syntax check, scoped Ruff lint (`embed.py`, `scout-*.py`, `sync-*.py`, `migrate.py`, `generate-summary.py`, `hooks/`), and the Python test suites. Ruff lint is **scoped** to this surface; legacy standalone scripts outside it are not linted by CI.
+- **`quality-gates`** — syntax check, scoped Ruff lint, and the Python test suites. The Ruff lint surface is: `embed.py`, `scout-config.py`, `scout-status.py`, `sync-config.py`, `sync-daemon.py`, `sync-status.py`, `migrate.py`, `generate-summary.py`, `briefing.py`, `learn.py`, `query-session.py`, `extract-knowledge.py`, `build-session-index.py`, `tentacle.py`, `checkpoint-diff.py`, `checkpoint-restore.py`, `checkpoint-save.py`, `browse/`, `hooks/`. Ruff lint is **scoped** to this surface; other root scripts outside it are not linted by CI.
 - **`browse-ui`** — `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test`, `pnpm build`.
 
 ### Automation Surfaces

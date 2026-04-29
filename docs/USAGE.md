@@ -844,6 +844,33 @@ SVC
 systemctl --user enable --now copilot-watch.service
 ```
 
+### Watch-sessions runtime semantics
+
+**Lock file** — `~/.copilot/session-state/.watcher.lock` ensures only one watcher instance runs at a time.
+- On startup, the watcher atomically creates this file and writes its PID.
+- On shutdown (normal or Ctrl+C), the lock is removed via an `atexit` handler.
+- If the watcher crashes (power loss, SIGKILL), a stale lock may remain. The next startup detects the stale PID, removes the lock automatically, and proceeds.
+- If a **live** lock is found (another watcher is running), the new instance exits with code 1 and a message like `Error: another watcher is already running (PID <n>)`.
+
+**To recover from a stale lock manually** (only if automatic cleanup fails):
+```bash
+rm ~/.copilot/session-state/.watcher.lock
+python3 ~/.copilot/tools/auto-update-tools.py --watch-status   # Verify no watcher running
+python3 ~/.copilot/tools/auto-update-tools.py --restart-watch  # Restart via service manager
+```
+
+**Watch state** — `~/.copilot/session-state/.watch-state.json` stores file signatures (mtime + size + content hash) and a `last_index` timestamp. This file is updated atomically after every poll cycle and drives the content-hash change detection (so touch/autosave with no edits do not trigger re-indexing).
+
+**Adaptive polling** — the watcher adjusts its poll interval automatically:
+
+| Most recent session file | Interval |
+|---|---|
+| Modified within 2 minutes | 5 seconds (active tier) |
+| Modified within 1 hour | 30 seconds (recent tier) |
+| Older than 1 hour | 5 minutes (idle tier) |
+
+Pass `--interval <seconds>` to override the adaptive tier with a fixed interval.
+
 ## Aliases
 
 Add to your `~/.zshrc` or `~/.bashrc`:

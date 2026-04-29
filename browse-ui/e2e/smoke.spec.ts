@@ -32,7 +32,7 @@ test("session detail route renders tabbed UI", async ({ page }) => {
   await expect(page).toHaveURL(/\/v2\/sessions\/_placeholder\/?(#overview)?$/);
 
   await expect(
-    page.getByRole("main").getByLabel("Breadcrumb").getByRole("link", { name: "Sessions" }),
+    page.getByRole("main").getByLabel("Breadcrumb").getByRole("link", { name: "Sessions" })
   ).toBeVisible();
   await expect(page.getByRole("tab", { name: "Overview" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Timeline" })).toBeVisible();
@@ -127,6 +127,46 @@ test("insights retrospective section loads repo-mode summary", async ({ page }) 
   await expect(retroSummary).toBeVisible();
   await retroSummary.click();
   await expect(page.getByText(/mode:\s*repo/i)).toBeVisible({ timeout: 20_000 });
+});
+
+test("settings page operator diagnostics cards render", async ({ page }) => {
+  await page.goto("/v2/settings/");
+  await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible({
+    timeout: 20_000,
+  });
+
+  // All five diagnostic card titles render unconditionally (regardless of API state).
+  await expect(page.getByText("Sync diagnostics", { exact: true })).toBeVisible();
+  await expect(page.getByText("Trend Scout diagnostics", { exact: true })).toBeVisible();
+  await expect(page.getByText("Tentacle runtime diagnostics", { exact: true })).toBeVisible();
+  await expect(page.getByText("Skill outcome metrics", { exact: true })).toBeVisible();
+  await expect(page.getByText("System health", { exact: true })).toBeVisible();
+});
+
+test("settings page operator-actions panels are display-only", async ({ page }) => {
+  await page.goto("/v2/settings/");
+  await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible({
+    timeout: 20_000,
+  });
+
+  // Allow API calls to settle (data, error, or loading state is acceptable).
+  await page.waitForLoadState("networkidle");
+
+  // At least one operator-actions panel must render in the smoke environment.
+  const operatorChecksLabel = page.getByText("Operator checks (read-only)");
+  await expect(operatorChecksLabel.first()).toBeVisible({ timeout: 15_000 });
+
+  // If operator panels are present, every action button inside them must be Copy-only.
+  const panelCount = await operatorChecksLabel.count();
+  expect(panelCount).toBeGreaterThan(0);
+  for (let i = 0; i < panelCount; i += 1) {
+    const buttons = operatorChecksLabel.nth(i).locator("..").getByRole("button");
+    const buttonCount = await buttons.count();
+    expect(buttonCount).toBeGreaterThan(0);
+    for (let j = 0; j < buttonCount; j += 1) {
+      await expect(buttons.nth(j)).toHaveAccessibleName("Copy");
+    }
+  }
 });
 
 test("search feedback submits and resets when the query changes", async ({ page }) => {

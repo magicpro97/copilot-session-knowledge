@@ -587,6 +587,33 @@ def _run_new_endpoint_tests() -> int:
         server13.shutdown()
         db13.close()
 
+    # V14: /healthz returns the core fields rendered by the settings page health card
+    print("\n-- V14: /healthz settings-page health-card fields")
+    db14 = _make_test_db()
+    server14, host14, port14 = _start_server(db14, token="tok")
+    try:
+        status14, headers14, body14 = _get(host14, port14, "/healthz")
+        test("V14: /healthz returns 200 without auth", status14 == 200)
+        test(
+            "V14: /healthz content-type json",
+            "application/json" in headers14.get("content-type", ""),
+        )
+        payload14 = json.loads(body14.decode("utf-8", errors="replace"))
+        test("V14: payload has status field", isinstance(payload14.get("status"), str))
+        test("V14: payload has schema_version int", isinstance(payload14.get("schema_version"), int))
+        test("V14: payload has sessions int", isinstance(payload14.get("sessions"), int))
+        test(
+            "V14: payload has knowledge_entries (optional int)",
+            payload14.get("knowledge_entries") is None or isinstance(payload14.get("knowledge_entries"), int),
+        )
+        test(
+            "V14: payload has last_indexed_at (optional str or null)",
+            payload14.get("last_indexed_at") is None or isinstance(payload14.get("last_indexed_at"), str),
+        )
+    finally:
+        server14.shutdown()
+        db14.close()
+
     delta_pass = _PASS - start_pass
     delta_fail = _FAIL - start_fail
     total = delta_pass + delta_fail
