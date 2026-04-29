@@ -35,25 +35,32 @@ jobs:
         env:
           DAYS_INPUT: ${{ inputs.days }}
         run: |
-          python3 retro.py --mode repo --days "$DAYS_INPUT" --json --no-cache \
-            | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-print('## Retrospective Summary')
-print(f\"Grade: {data['grade_emoji']} {data['grade']} (score {data['retro_score']})\")
-print(f\"Mode: {data['mode']} | Generated: {data['generated_at']}\")
-print()
-print('### Subscores')
-for section in data.get('available_sections', []):
-    score = data.get('subscores', {}).get(section)
-    print(f'- {section}: {score}')
-" | tee retro-summary.md
+          python3 retro.py --mode repo --days "$DAYS_INPUT" --json --no-cache > retro-report.json
+          python3 - <<'PY' | tee retro-summary.md
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("retro-report.json").read_text())
+          print("## Retrospective Summary")
+          print(
+              f"Grade: {data['grade_emoji']} {data['grade']} "
+              f"(score {data['retro_score']})"
+          )
+          print(f"Mode: {data['mode']} | Generated: {data['generated_at']}")
+          print()
+          print("### Subscores")
+          for section in data.get("available_sections", []):
+              score = data.get("subscores", {}).get(section)
+              print(f"- {section}: {score}")
+          PY
 
       - name: Upload retro artifact
         uses: actions/upload-artifact@v4
         with:
           name: retro-report
-          path: retro-summary.md
+          path: |
+            retro-report.json
+            retro-summary.md
           retention-days: 30
 
       - name: Write job summary
