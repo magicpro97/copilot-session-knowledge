@@ -255,6 +255,129 @@ high_min_cfg = {**default_cfg, "shortlist": {**default_cfg["shortlist"], "min_sc
 shortlisted_none = ts.shortlist_repos(candidates, high_min_cfg)
 test("min_score=9999 yields empty shortlist", len(shortlisted_none) == 0)
 
+# ─── Required gold-set shortlist-retention (crowd-out regression) ──────────────
+print("\n📌 Gold-set Required-Retention")
+
+_REQUIRED_REPO: dict = {
+    **REPO_FIXTURE,
+    "full_name": "test-owner/required-strategic",
+    "name": "required-strategic",
+    "description": "strategic adjacent repo that must survive crowd-out",
+    "stargazers_count": 10,
+    "topics": ["coding-agent"],
+    "fork": False,
+    "archived": False,
+}
+# Build 5 high-scoring filler repos that would crowd out _REQUIRED_REPO
+_FILLER_REPOS: list[dict] = [
+    {
+        **REPO_FIXTURE,
+        "full_name": f"filler/repo-{i}",
+        "name": f"repo-{i}",
+        "description": "Index AI coding sessions into fts5 knowledge base with session support",
+        "stargazers_count": 5000 + i,
+        "topics": ["ai-tools", "knowledge-base", "sqlite", "fts5"],
+        "fork": False,
+        "archived": False,
+    }
+    for i in range(5)
+]
+
+_retention_goldset: dict = {
+    "path": "synthetic",
+    "entries": [
+        {
+            "repo": "test-owner/required-strategic",
+            "required": True,
+            "min_score": 0.1,
+            "expected_lane": "adjacent-ai-dev",
+            "category": "adjacent-coding-agent",
+            "notes": "test required repo",
+        }
+    ],
+}
+
+# Crowd-out scenario: max_candidates=5 with 5 high-scoring fillers + 1 required repo
+_crowd_cfg = {**default_cfg, "shortlist": {**default_cfg["shortlist"], "max_candidates": 5, "min_score": 0.0}}
+_crowd_candidates = _FILLER_REPOS + [_REQUIRED_REPO]
+
+# Without goldset pinning: required repo should be displaced by fillers
+_no_pin = ts.shortlist_repos(_crowd_candidates, _crowd_cfg, goldset={"path": "synthetic", "entries": []})
+_required_in_no_pin = any(r.get("full_name") == "test-owner/required-strategic" for r in _no_pin)
+
+# With goldset pinning: required repo must survive
+_with_pin = ts.shortlist_repos(_crowd_candidates, _crowd_cfg, goldset=_retention_goldset)
+_required_in_with_pin = any(r.get("full_name") == "test-owner/required-strategic" for r in _with_pin)
+
+test("crowd-out: required repo absent from shortlist when no goldset pinning",
+     not _required_in_no_pin,
+     f"shortlisted={[r.get('full_name') for r in _no_pin]}")
+test("crowd-out: required repo retained in shortlist with goldset pinning",
+     _required_in_with_pin,
+     f"shortlisted={[r.get('full_name') for r in _with_pin]}")
+test("crowd-out: shortlist still respects max_candidates cap",
+     len(_with_pin) <= 5,
+     f"len={len(_with_pin)}")
+test("crowd-out: result is sorted descending by score",
+     all(
+         ts.score_repo(_with_pin[i], _crowd_cfg, term_set=ts._build_global_term_set(_crowd_cfg)) >=
+         ts.score_repo(_with_pin[i + 1], _crowd_cfg, term_set=ts._build_global_term_set(_crowd_cfg))
+         for i in range(len(_with_pin) - 1)
+     ),
+     f"shortlisted={[r.get('full_name') for r in _with_pin]}")
+
+# Non-required repo with required=False should NOT be pinned
+_non_req_goldset: dict = {
+    "path": "synthetic",
+    "entries": [
+        {
+            "repo": "test-owner/required-strategic",
+            "required": False,
+            "min_score": 0.1,
+        }
+    ],
+}
+_no_pin_non_req = ts.shortlist_repos(_crowd_candidates, _crowd_cfg, goldset=_non_req_goldset)
+test("crowd-out: non-required goldset repo is NOT pinned (still crowded out)",
+     not any(r.get("full_name") == "test-owner/required-strategic" for r in _no_pin_non_req),
+     f"shortlisted={[r.get('full_name') for r in _no_pin_non_req]}")
+
+# Required repos may preempt non-required repos, but the final shortlist still
+# respects max_candidates even when required entries themselves exceed the cap.
+_many_required_repos: list[dict] = [
+    {
+        **_REQUIRED_REPO,
+        "full_name": f"test-owner/required-{i}",
+        "name": f"required-{i}",
+        "description": f"strategic adjacent required repo {i}",
+        "stargazers_count": 100 + i,
+    }
+    for i in range(6)
+]
+_many_required_goldset: dict = {
+    "path": "synthetic",
+    "entries": [
+        {"repo": repo["full_name"], "required": True, "min_score": 0.1}
+        for repo in _many_required_repos
+    ],
+}
+_many_required_shortlist = ts.shortlist_repos(_many_required_repos, _crowd_cfg, goldset=_many_required_goldset)
+_many_required_terms = ts._build_global_term_set(_crowd_cfg)
+_many_required_expected = [
+    repo["full_name"]
+    for repo in sorted(
+        _many_required_repos,
+        key=lambda repo: ts.score_repo(repo, _crowd_cfg, term_set=_many_required_terms),
+        reverse=True,
+    )[: _crowd_cfg["shortlist"]["max_candidates"]]
+]
+test("crowd-out: required pinning still respects max_candidates when required repos exceed cap",
+     len(_many_required_shortlist) == _crowd_cfg["shortlist"]["max_candidates"],
+     f"len={len(_many_required_shortlist)} shortlisted={[r.get('full_name') for r in _many_required_shortlist]}")
+test("crowd-out: over-cap required retention keeps the top-scoring required repos",
+     [r.get("full_name") for r in _many_required_shortlist] == _many_required_expected,
+     f"shortlisted={[r.get('full_name') for r in _many_required_shortlist]} expected={_many_required_expected}")
+
 
 # ─── 4. Heuristic Derivation ──────────────────────────────────────────────────
 

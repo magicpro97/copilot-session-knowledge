@@ -704,12 +704,25 @@ def score_repo(repo: dict, config: dict, term_set: "set[str] | None" = None) -> 
     return round(score, 4)
 
 
-def shortlist_repos(candidates: list[dict], config: dict) -> list[dict]:
+def shortlist_repos(
+    candidates: list[dict],
+    config: dict,
+    goldset: "dict | None" = None,
+) -> list[dict]:
     """Score, filter, and deduplicate repos by full_name, returning top N.
 
     Builds a cross-lane keyword term set (primary + all additional lanes) so
     that candidates surfaced by adjacent lanes are scored fairly against the
     full multi-lane vocabulary rather than only primary-lane keywords.
+
+    Required gold-set repos (``required=true`` in the goldset file) are
+    retained in the shortlist whenever they appear in *candidates* and their
+    score is at or above their per-entry ``min_score`` (defaulting to the
+    global shortlist ``min_score``). They preempt non-required repos within
+    the ``max_candidates`` cap so they cannot be crowded out by higher-scored
+    non-required repos. If the number of required repos itself exceeds the cap,
+    the shortlist keeps the top-scoring required repos and logs a warning so
+    operators can raise ``shortlist.max_candidates`` if needed.
     """
     sl_cfg = config.get("shortlist", {})
     max_n: int = int(sl_cfg.get("max_candidates", 5))
@@ -721,6 +734,16 @@ def shortlist_repos(candidates: list[dict], config: dict) -> list[dict]:
 
     # Build global cross-lane term set for consistent multi-lane scoring.
     global_terms = _build_global_term_set(config)
+
+    # Load goldset for required-retention logic (auto-load from disk if not provided).
+    if goldset is None:
+        goldset = load_goldset()
+    required_entries: dict[str, dict] = {}
+    for entry in (goldset.get("entries") or []):
+        if entry.get("required"):
+            key = str(entry.get("repo", "")).lower()
+            if key:
+                required_entries[key] = entry
 
     seen: set[str] = set()
     scored: list[tuple[float, dict]] = []
@@ -737,12 +760,54 @@ def shortlist_repos(candidates: list[dict], config: dict) -> list[dict]:
             continue
         seen.add(full_name)
         s = score_repo(repo, config, term_set=global_terms)
-        if s >= min_score:
+        # Per-entry min_score for required repos; fall back to global min_score.
+        repo_key = full_name.lower()
+        if repo_key in required_entries:
+            entry_min = required_entries[repo_key].get("min_score")
+            effective_min = float(entry_min) if entry_min is not None else min_score
+        else:
+            effective_min = min_score
+        if s >= effective_min:
             scored.append((s, repo))
 
     # Sort descending by score
     scored.sort(key=lambda t: t[0], reverse=True)
-    return [repo for _, repo in scored[:max_n]]
+
+    # Separate required-goldset repos from regular candidates so they cannot
+    # be crowded out by non-required repos within the top-N cap.
+    pinned: list[tuple[float, dict]] = []
+    rest: list[tuple[float, dict]] = []
+    for item in scored:
+        s, repo = item
+        if repo.get("full_name", "").lower() in required_entries:
+            pinned.append(item)
+        else:
+            rest.append(item)
+
+    # Fill remaining slots: required repos first, then top-scoring rest.
+    remaining_slots = max(0, max_n - len(pinned))
+    combined = pinned + rest[:remaining_slots]
+    # Re-sort combined result by score so the final list is score-ordered.
+    combined.sort(key=lambda t: t[0], reverse=True)
+    selected = combined[:max_n]
+
+    selected_required = [
+        repo for _, repo in selected
+        if repo.get("full_name", "").lower() in required_entries
+    ]
+    if selected_required:
+        selected_names = [repo.get("full_name") for repo in selected_required]
+        if len(pinned) > len(selected_required):
+            print(
+                "  ⚠ Required gold-set repos exceed shortlist.max_candidates "
+                f"({len(pinned)} > {max_n}); retaining top {len(selected_required)} "
+                f"required repo(s): {selected_names}. Increase shortlist.max_candidates "
+                "to keep all required repos.",
+            )
+        else:
+            print(f"  📌 Retaining {len(selected_required)} required gold-set repo(s): {selected_names}")
+
+    return [repo for _, repo in selected]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

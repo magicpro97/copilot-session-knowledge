@@ -580,7 +580,7 @@ Each entry can define:
 | Gold-set field | Effect |
 |---|---|
 | `repo` | Exact `owner/name` to track |
-| `required` | Whether the repo counts toward missing-required coverage |
+| `required` | Whether the repo counts toward missing-required coverage **and gets priority in the shortlist within the cap** |
 | `expected_lane` | Optional expected discovery lane (for example `adjacent-ai-dev`) |
 | `min_score` | Optional minimum acceptable shortlist score |
 | `category` | Optional grouping label for operator review |
@@ -597,6 +597,22 @@ adds a `goldset` block summarizing:
 
 This is the durable guardrail for repos like `1jehuang/jcode`: even if no issue is created, the
 operator can still tell whether Trend Scout recall regressed.
+
+#### Required-repo shortlist retention
+
+Repos with `"required": true` are **prioritized** into the shortlist whenever they appear in raw
+discovery and meet their per-entry `min_score` (or the global `shortlist.min_score` if not set).
+They preempt non-required repos within `shortlist.max_candidates`, so high-scoring non-required
+repos can never crowd them out. The terminal output prints a `📌 Retaining N required gold-set
+repo(s)` line listing which repos were retained — this is the operator-visible confirmation that
+retention fired.
+
+If required repos themselves ever outnumber `shortlist.max_candidates`, Trend Scout keeps the
+highest-scoring required repos, emits a warning, and leaves the cap intact. Raise
+`shortlist.max_candidates` if you want to retain all required repos simultaneously.
+
+Non-required gold-set entries (or any repo absent from `trend-scout-goldset.json`) follow the
+standard top-N scoring logic unchanged.
 
 ### Operator-safe automation flow
 
