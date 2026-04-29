@@ -7,6 +7,7 @@ Edit tracking uses a per-repo-partitioned JSON payload so edits in one git
 repository never inflate counts for a different repository.  Entries carry a
 Unix timestamp and are dropped after 24 h (TTL).
 """
+
 import json
 import re
 import subprocess
@@ -15,20 +16,29 @@ import time
 from pathlib import Path
 
 from . import Rule
-from .common import MARKERS_DIR, CODE_EXTENSIONS, get_module, is_session_path, is_source_path, deny, info
+from .common import CODE_EXTENSIONS, MARKERS_DIR, deny, get_module, info, is_session_path, is_source_path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
-    from marker_auth import (verify_marker, verify_list_marker, sign_list_marker,
-                             is_secret_access, check_tamper_marker)
+    from marker_auth import check_tamper_marker, is_secret_access, sign_list_marker, verify_list_marker, verify_marker
 except ImportError:
-    def verify_marker(p, n): return False
-    def verify_list_marker(p): return set()
+
+    def verify_marker(p, n):
+        return False
+
+    def verify_list_marker(p):
+        return set()
+
     def sign_list_marker(p, lines):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("\n".join(sorted(lines)))
-    def is_secret_access(c): return True
-    def check_tamper_marker(): return False
+
+    def is_secret_access(c):
+        return True
+
+    def check_tamper_marker():
+        return False
+
 
 EDITS_FILE = MARKERS_DIR / "tentacle-edits"
 TENTACLE_DONE = MARKERS_DIR / "tentacle-done"
@@ -41,12 +51,15 @@ MIN_MODULES = 2
 
 # ── Edit-tracking helpers ──────────────────────────────────────────────────
 
+
 def _get_git_root(cwd=None):
     """Return the git root for *cwd* (or cwd()) as a string, or None."""
     try:
         r = subprocess.run(
             ["git", "-C", str(cwd or Path.cwd()), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if r.returncode == 0:
             return r.stdout.strip()
@@ -144,9 +157,22 @@ class TentacleEnforceRule(Rule):
             source_exts = tuple(CODE_EXTENSIONS)
             writes_source = False
             if any(ext in command for ext in source_exts):
-                if any(p in command for p in ("<<", "write_text", "open(",
-                                               "sed -i", "tee ", "cp ", "mv ",
-                                               "dd ", "patch ", "rsync ", "install ")):
+                if any(
+                    p in command
+                    for p in (
+                        "<<",
+                        "write_text",
+                        "open(",
+                        "sed -i",
+                        "tee ",
+                        "cp ",
+                        "mv ",
+                        "dd ",
+                        "patch ",
+                        "rsync ",
+                        "install ",
+                    )
+                ):
                     writes_source = True
                 elif re.search(r">{1,2}\s*\S+", command):
                     for m in re.finditer(r">{1,2}\s*([^\s;|&]+)", command):
@@ -192,8 +218,8 @@ class TentacleEnforceRule(Rule):
             f"\U0001f419 TENTACLE REQUIRED: {len(entries)} files across {len(modules)} modules "
             f"({', '.join(sorted(modules))}). "
             "Multi-module edits should use tentacle-orchestration. "
-            "If you are the orchestrator: (1) tentacle.py create <name> --scope \"<paths>\" --desc \"<desc>\" --briefing  "
-            "(2) tentacle.py todo <name> add \"<task>\"  "
+            'If you are the orchestrator: (1) tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing  '
+            '(2) tentacle.py todo <name> add "<task>"  '
             "(3) tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6 [--bundle]  "
             "(4) tentacle.py complete <name>  "
             "Check runtime: tentacle.py status  "
@@ -260,10 +286,7 @@ class TentacleSuggestRule(Rule):
         # Filter: only track actual code/config files, not markdown or session-state paths.
         # This prevents session-research markdown writes from accumulating in the
         # tentacle-edits marker and falsely triggering multi-module enforcement.
-        file_paths = [
-            fp for fp in file_paths
-            if Path(fp).suffix.lower() in CODE_EXTENSIONS and not is_session_path(fp)
-        ]
+        file_paths = [fp for fp in file_paths if Path(fp).suffix.lower() in CODE_EXTENSIONS and not is_session_path(fp)]
 
         if not file_paths:
             return None

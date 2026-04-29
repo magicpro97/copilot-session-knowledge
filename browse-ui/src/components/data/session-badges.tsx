@@ -5,10 +5,7 @@ import { useMemo } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { SOURCE_BADGE_CLASSNAMES, SOURCE_LABELS } from "@/lib/constants";
-import {
-  formatRelativeTime,
-  formatSessionIdBadgeText,
-} from "@/lib/formatters";
+import { formatRelativeTime, formatSessionIdBadgeText } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 
 export function normalizeSource(source: string | null | undefined): string {
@@ -26,9 +23,7 @@ type SourceBadgeProps = {
 export function SourceBadge({ source, className }: SourceBadgeProps) {
   const normalized = normalizeSource(source);
   const label =
-    normalized === "unknown"
-      ? "Unknown"
-      : SOURCE_LABELS[normalized as keyof typeof SOURCE_LABELS];
+    normalized === "unknown" ? "Unknown" : SOURCE_LABELS[normalized as keyof typeof SOURCE_LABELS];
 
   return (
     <Badge
@@ -60,7 +55,7 @@ export function IDBadge({ id, className, onCopy }: IDBadgeProps) {
       type="button"
       onClick={handleCopy}
       className={cn(
-        "inline-flex items-center gap-1 rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:bg-muted/80 hover:text-foreground",
+        "border-border bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-xs transition-colors",
         className
       )}
       title={id ?? undefined}
@@ -83,10 +78,7 @@ export function TimeRelative({ value, className }: TimeRelativeProps) {
 
   return (
     <time
-      className={cn(
-        "inline-flex items-center gap-1 text-xs text-muted-foreground",
-        className
-      )}
+      className={cn("text-muted-foreground inline-flex items-center gap-1 text-xs", className)}
       dateTime={iso}
       title={iso}
     >

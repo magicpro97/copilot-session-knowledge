@@ -9,7 +9,10 @@ export default function SettingsLoading() {
       </div>
 
       {Array.from({ length: 3 }).map((_, index) => (
-        <div key={`settings-loading-card-${index}`} className="space-y-3 rounded-xl border bg-card p-4">
+        <div
+          key={`settings-loading-card-${index}`}
+          className="bg-card space-y-3 rounded-xl border p-4"
+        >
           <Skeleton className="h-5 w-48" />
           <Skeleton className="h-4 w-96 max-w-full" />
           <div className="grid gap-2 sm:grid-cols-3">

@@ -4,9 +4,10 @@
 Remind to record learnings after task_complete.
 Creates HMAC-signed learn-done marker when learn.py is run.
 """
+
 import json
-import re
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -19,7 +20,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from marker_auth import sign_marker
 except ImportError:
-    def sign_marker(p, n): p.parent.mkdir(parents=True, exist_ok=True); p.touch()
+
+    def sign_marker(p, n):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+
 
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 LEARN_DONE = MARKERS_DIR / "learn-done"
@@ -39,7 +44,7 @@ def main():
     # Track when learn.py is run → create signed marker
     if tool_name == "bash":
         command = tool_args.get("command", "")
-        if re.search(r'python3?\s+.*learn\.py\b', command):
+        if re.search(r"python3?\s+.*learn\.py\b", command):
             sign_marker(LEARN_DONE, "learn-done")
             return
 

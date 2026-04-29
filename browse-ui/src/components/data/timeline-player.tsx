@@ -17,9 +17,7 @@ function isTypingTarget(target: EventTarget | null) {
   const element = target as HTMLElement | null;
   if (!element) return false;
   const tag = element.tagName.toLowerCase();
-  return (
-    element.isContentEditable || tag === "input" || tag === "textarea" || tag === "select"
-  );
+  return element.isContentEditable || tag === "input" || tag === "textarea" || tag === "select";
 }
 
 export function TimelinePlayer({ events, total, active = false }: TimelinePlayerProps) {
@@ -100,7 +98,7 @@ export function TimelinePlayer({ events, total, active = false }: TimelinePlayer
               aria-label="Playback speed"
               value={speed}
               onChange={(event) => setSpeed(Number(event.target.value) as (typeof SPEEDS)[number])}
-              className="h-8 rounded-lg border border-input bg-background px-2 text-sm"
+              className="border-input bg-background h-8 rounded-lg border px-2 text-sm"
             >
               {SPEEDS.map((value) => (
                 <option key={value} value={value}>
@@ -109,11 +107,13 @@ export function TimelinePlayer({ events, total, active = false }: TimelinePlayer
               ))}
             </select>
 
-            <span className="text-sm text-muted-foreground">
+            <span className="text-muted-foreground text-sm">
               Event {index + 1} / {eventCount}
             </span>
             {isTruncated ? (
-              <span className="text-sm text-muted-foreground">showing {eventCount} of {total}</span>
+              <span className="text-muted-foreground text-sm">
+                showing {eventCount} of {total}
+              </span>
             ) : null}
           </div>
         </CardHeader>
@@ -148,7 +148,7 @@ export function TimelinePlayer({ events, total, active = false }: TimelinePlayer
       </Card>
 
       {uniqueLegend.length > 1 ? (
-        <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+        <div className="text-muted-foreground flex flex-wrap items-center gap-3 text-xs">
           {uniqueLegend.map(([color, label]) => (
             <span key={`${color}-${label}`} className="inline-flex items-center gap-1.5">
               <span className="size-2 rounded-full" style={{ backgroundColor: color }} />
@@ -165,11 +165,11 @@ export function TimelinePlayer({ events, total, active = false }: TimelinePlayer
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
-          <p className="text-xs text-muted-foreground">
+          <p className="text-muted-foreground text-xs">
             byte_offset: {String(current?.byte_offset ?? "—")} · file_mtime:{" "}
             {current?.file_mtime || "—"}
           </p>
-          <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-lg bg-muted/40 p-3 text-xs">
+          <pre className="bg-muted/40 max-h-80 overflow-auto rounded-lg p-3 text-xs whitespace-pre-wrap">
             {current?.preview || "(no preview available)"}
           </pre>
         </CardContent>

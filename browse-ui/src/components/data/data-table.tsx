@@ -57,7 +57,7 @@ export function DataTable<TData, TValue>({
   }
 
   return (
-    <div className={cn("rounded-xl border bg-card", className)}>
+    <div className={cn("bg-card rounded-xl border", className)}>
       <Table>
         <TableHeader>
           {table.getHeaderGroups().map((headerGroup) => (
@@ -84,10 +84,7 @@ export function DataTable<TData, TValue>({
                         className="h-7 px-1"
                         onClick={header.column.getToggleSortingHandler()}
                       >
-                        {flexRender(
-                          header.column.columnDef.header,
-                          header.getContext()
-                        )}
+                        {flexRender(header.column.columnDef.header, header.getContext())}
                         {sortIcon}
                       </Button>
                     ) : (
@@ -105,7 +102,7 @@ export function DataTable<TData, TValue>({
                 <TableRow key={`skeleton-${index}`}>
                   {columns.map((column, cellIndex) => (
                     <TableCell key={`${column.id ?? cellIndex}-${index}`}>
-                      <div className="h-4 w-full animate-pulse rounded bg-muted" />
+                      <div className="bg-muted h-4 w-full animate-pulse rounded" />
                     </TableCell>
                   ))}
                 </TableRow>

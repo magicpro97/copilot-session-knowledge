@@ -77,7 +77,7 @@ python3 test_security.py    # 9 security tests (SQL injection, pickle, locks, pa
 python3 test_fixes.py       # 65 tests (noise filter, sub-agent, launchd, DB health)
 ```
 
-Python tests use a custom `test()` harness (not pytest). For `browse-ui/` or CI changes, also run the relevant `pnpm` gates (`typecheck`, `lint`, `test`, `build`, and `test:e2e` when intentionally validating that surface). Keep GitHub Actions CI green.
+Python validation runs through `run_all_tests.py`, but individual files use a mix of the custom `test()` helper and `unittest`/`test_*` style. For `browse-ui/` or CI changes, also run the relevant `pnpm` gates (`typecheck`, `lint`, `format:check`, `test`, `build`, and `test:e2e` when intentionally validating that surface). Keep GitHub Actions CI green.
 
 ## Architecture & Conventions
 
@@ -96,6 +96,7 @@ Key facts every agent must remember:
 - **JSON field envelopes are stable contracts** — `entries[]`, `tagged_entries[]`, `related_entries[]`, `entries.<category>[]` — do not rename
 - **Trend Scout** — scheduled/manual only; never wire to `preToolUse`/`postToolUse` hooks
 - **Sync** — local DB is authoritative; remote is transport only; `sync-config.py --setup` takes HTTP(S) URLs only
-- **Hooks** — Copilot CLI only; `hook_runner.py` is the single entry point; fail-open
+- **Hooks** — Copilot CLI only; `hook_runner.py` is the single entry point; fail-open; `pre-commit` also runs scoped Ruff + Prettier cleanliness checks (fail-open when tooling absent)
+- **Tentacle marker-cleanup** — use `tentacle.py marker-cleanup [--apply]` to inspect/remove stale dispatched-subagent marker entries without completing a tentacle
 
 For the full script inventory, data pipeline, host scope table, provider package, and all coding conventions: **[docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)**

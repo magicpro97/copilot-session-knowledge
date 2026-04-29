@@ -10,9 +10,9 @@ export default function Error({
   reset: () => void;
 }) {
   return (
-    <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4">
-      <p className="text-sm font-medium text-foreground">Search page failed to load.</p>
-      <p className="mt-1 text-sm text-muted-foreground">{error.message}</p>
+    <div className="border-destructive/30 bg-destructive/10 rounded-xl border p-4">
+      <p className="text-foreground text-sm font-medium">Search page failed to load.</p>
+      <p className="text-muted-foreground mt-1 text-sm">{error.message}</p>
       <Button type="button" variant="outline" size="sm" className="mt-3" onClick={reset}>
         Retry
       </Button>

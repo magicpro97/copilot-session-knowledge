@@ -76,10 +76,7 @@ export function ClustersTab({ active }: ClustersTabProps) {
   const [selectedPointId, setSelectedPointId] = useState<number | null>(null);
   const [selectionQuery, setSelectionQuery] = useState("");
 
-  const points = useMemo(
-    () => embeddingsQuery.data?.points ?? [],
-    [embeddingsQuery.data?.points]
-  );
+  const points = useMemo(() => embeddingsQuery.data?.points ?? [], [embeddingsQuery.data?.points]);
 
   const similarityEnabled = selectedPointId !== null;
   const similarityQuery = useSimilarity(
@@ -128,9 +125,7 @@ export function ClustersTab({ active }: ClustersTabProps) {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
       const isTypingTarget =
-        target?.tagName === "INPUT" ||
-        target?.tagName === "TEXTAREA" ||
-        target?.isContentEditable;
+        target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
       if (isTypingTarget) return;
 
       if (event.key.toLowerCase() === "r") {
@@ -259,7 +254,7 @@ export function ClustersTab({ active }: ClustersTabProps) {
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-sm text-muted-foreground">
+                <p className="text-muted-foreground text-sm">
                   {hasProjectionData
                     ? `Loaded ${loadedCount}${
                         totalCount > loadedCount ? ` of ${totalCount}` : ""
@@ -281,7 +276,7 @@ export function ClustersTab({ active }: ClustersTabProps) {
                   onChange={(event) => setSelectionQuery(event.target.value)}
                   placeholder="Search by title, category, or ID"
                 />
-                <p className="text-xs text-muted-foreground">
+                <p className="text-muted-foreground text-xs">
                   Choose an entry first to load nearest neighbors. Map click is optional.
                 </p>
               </div>
@@ -299,7 +294,7 @@ export function ClustersTab({ active }: ClustersTabProps) {
                       >
                         <span className="min-w-0">
                           <span className="block truncate">{point.title}</span>
-                          <span className="block text-xs text-muted-foreground">
+                          <span className="text-muted-foreground block text-xs">
                             {point.category} · #{point.id}
                           </span>
                         </span>
@@ -307,7 +302,9 @@ export function ClustersTab({ active }: ClustersTabProps) {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground">No entries match your current filters.</p>
+                  <p className="text-muted-foreground text-sm">
+                    No entries match your current filters.
+                  </p>
                 )}
               </div>
             </CardContent>
@@ -324,7 +321,7 @@ export function ClustersTab({ active }: ClustersTabProps) {
                   description="Use entry search above or click a point on the orientation map."
                 />
               ) : similarityQuery.isLoading ? (
-                <div className="flex min-h-48 items-center justify-center rounded-lg border bg-muted/20 text-sm text-muted-foreground">
+                <div className="bg-muted/20 text-muted-foreground flex min-h-48 items-center justify-center rounded-lg border text-sm">
                   Loading neighbors…
                 </div>
               ) : similarityQuery.isError ? (
@@ -346,8 +343,10 @@ export function ClustersTab({ active }: ClustersTabProps) {
                 />
               ) : (
                 <div className="space-y-2">
-                  <p className="text-sm text-muted-foreground">
-                    Source: <span className="font-medium text-foreground">{selectedPoint.title}</span> (#{selectedPoint.id})
+                  <p className="text-muted-foreground text-sm">
+                    Source:{" "}
+                    <span className="text-foreground font-medium">{selectedPoint.title}</span> (#
+                    {selectedPoint.id})
                     {embeddingCount !== null ? ` · ${embeddingCount} embeddings` : ""}
                     {similarityCached ? " · cached" : ""}
                   </p>
@@ -366,11 +365,11 @@ export function ClustersTab({ active }: ClustersTabProps) {
                           >
                             {neighbor.title}
                           </Button>
-                          <p className="text-xs text-muted-foreground">
+                          <p className="text-muted-foreground text-xs">
                             {neighbor.category} · #{neighbor.id}
                           </p>
                         </div>
-                        <p className="font-mono text-xs text-muted-foreground">
+                        <p className="text-muted-foreground font-mono text-xs">
                           score {formatScore(neighbor.score)}
                         </p>
                         <Button
@@ -395,11 +394,12 @@ export function ClustersTab({ active }: ClustersTabProps) {
               <CardTitle className="text-sm">Orientation map (secondary)</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              <p className="text-sm text-muted-foreground">
-                Projection map from /api/embeddings/points for orientation only. Proximity on this map is not proof of relatedness.
+              <p className="text-muted-foreground text-sm">
+                Projection map from /api/embeddings/points for orientation only. Proximity on this
+                map is not proof of relatedness.
               </p>
               {embeddingsQuery.isLoading ? (
-                <div className="flex h-[50vh] min-h-[18rem] items-center justify-center rounded-xl border bg-card text-sm text-muted-foreground">
+                <div className="bg-card text-muted-foreground flex h-[50vh] min-h-[18rem] items-center justify-center rounded-xl border text-sm">
                   Loading projection…
                 </div>
               ) : embeddingsQuery.isError ? (
@@ -449,11 +449,11 @@ export function ClustersTab({ active }: ClustersTabProps) {
                       style={{ backgroundColor: CATEGORY_COLORS[option.value] ?? "#9ca3af" }}
                     />
                     <span className="flex-1 truncate">{option.value}</span>
-                    <span className="text-xs text-muted-foreground">{option.count}</span>
+                    <span className="text-muted-foreground text-xs">{option.count}</span>
                   </div>
                 ))
               ) : (
-                <p className="text-sm text-muted-foreground">No categories to show.</p>
+                <p className="text-muted-foreground text-sm">No categories to show.</p>
               )}
             </CardContent>
           </Card>
@@ -477,7 +477,7 @@ export function ClustersTab({ active }: ClustersTabProps) {
                     <ExternalLink className="size-3.5" />
                     Open in Search
                   </Button>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-muted-foreground text-xs">
                     {neighbors.length > 0
                       ? `${neighbors.length} neighbors listed in primary view.`
                       : "No neighbors listed yet for this entry."}

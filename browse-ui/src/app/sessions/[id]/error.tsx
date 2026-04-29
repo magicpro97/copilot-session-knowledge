@@ -5,13 +5,7 @@ import { useEffect } from "react";
 import { Banner } from "@/components/data/banner";
 import { Button } from "@/components/ui/button";
 
-export default function SessionDetailError({
-  error,
-  reset,
-}: {
-  error: Error;
-  reset: () => void;
-}) {
+export default function SessionDetailError({ error, reset }: { error: Error; reset: () => void }) {
   useEffect(() => {
     console.error(error);
   }, [error]);

@@ -30,10 +30,7 @@ const ALL_KINDS = [
   "refactor",
 ] as const;
 
-function parseCsv<T extends readonly string[]>(
-  value: string | null,
-  valid: T
-): T[number][] {
+function parseCsv<T extends readonly string[]>(value: string | null, valid: T): T[number][] {
   if (!value) return [];
   const validSet = new Set(valid);
   return value
@@ -43,9 +40,7 @@ function parseCsv<T extends readonly string[]>(
 }
 
 function toggleValue<T extends string>(items: T[], value: T): T[] {
-  return items.includes(value)
-    ? items.filter((item) => item !== value)
-    : [...items, value];
+  return items.includes(value) ? items.filter((item) => item !== value) : [...items, value];
 }
 
 export default function SearchPage() {
@@ -55,18 +50,10 @@ export default function SearchPage() {
   const resultRefs = useRef<Array<HTMLDivElement | null>>([]);
 
   const [query, setQuery] = useState(() => searchParams.get("q") ?? "");
-  const [committedQuery, setCommittedQuery] = useState(
-    () => searchParams.get("q")?.trim() ?? ""
-  );
-  const [sources, setSources] = useState(() =>
-    parseCsv(searchParams.get("src"), ALL_SOURCES)
-  );
-  const [columns, setColumns] = useState(() =>
-    parseCsv(searchParams.get("in"), ALL_COLS)
-  );
-  const [kinds, setKinds] = useState(() =>
-    parseCsv(searchParams.get("kind"), ALL_KINDS)
-  );
+  const [committedQuery, setCommittedQuery] = useState(() => searchParams.get("q")?.trim() ?? "");
+  const [sources, setSources] = useState(() => parseCsv(searchParams.get("src"), ALL_SOURCES));
+  const [columns, setColumns] = useState(() => parseCsv(searchParams.get("in"), ALL_COLS));
+  const [kinds, setKinds] = useState(() => parseCsv(searchParams.get("kind"), ALL_KINDS));
   const [isFiltersOpen, setIsFiltersOpen] = useState(
     () =>
       parseCsv(searchParams.get("src"), ALL_SOURCES).length > 0 ||
@@ -204,14 +191,12 @@ export default function SearchPage() {
     <div className="space-y-6">
       <div className="space-y-2">
         <h1 className="text-2xl font-semibold">Search</h1>
-        <p className="text-muted-foreground">
-          Search across all sessions and knowledge entries.
-        </p>
+        <p className="text-muted-foreground">Search across all sessions and knowledge entries.</p>
       </div>
 
       <div className="space-y-3">
         <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
           <Input
             ref={inputRef}
             autoFocus
@@ -235,13 +220,11 @@ export default function SearchPage() {
               }
             }}
             placeholder="Search sessions + knowledge..."
-            className="pl-8 pr-16"
+            className="pr-16 pl-8"
             aria-label="Search sessions and knowledge"
           />
-          <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
-            {showLoading ? (
-              <Loader2 className="size-4 animate-spin text-muted-foreground" />
-            ) : null}
+          <div className="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-1">
+            {showLoading ? <Loader2 className="text-muted-foreground size-4 animate-spin" /> : null}
             {query ? (
               <Button
                 type="button"
@@ -262,7 +245,7 @@ export default function SearchPage() {
 
         {recentSearches.length > 0 ? (
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted-foreground">Recent:</span>
+            <span className="text-muted-foreground text-xs">Recent:</span>
             {recentSearches.map((item) => (
               <Button
                 key={item}
@@ -284,7 +267,7 @@ export default function SearchPage() {
           </div>
         ) : null}
 
-        <div className="space-y-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+        <div className="border-border/70 bg-muted/20 space-y-3 rounded-xl border p-3">
           <Button
             type="button"
             variant="ghost"
@@ -298,13 +281,10 @@ export default function SearchPage() {
           {isFiltersOpen ? (
             <div className="space-y-3">
               <div className="space-y-1.5">
-                <p className="text-xs font-medium text-muted-foreground">Scope</p>
+                <p className="text-muted-foreground text-xs font-medium">Scope</p>
                 <div className="flex flex-wrap gap-3">
                   {ALL_SOURCES.map((source) => (
-                    <label
-                      key={source}
-                      className="flex cursor-pointer items-center gap-2 text-sm"
-                    >
+                    <label key={source} className="flex cursor-pointer items-center gap-2 text-sm">
                       <Checkbox
                         checked={sources.includes(source)}
                         onCheckedChange={() => setSources((prev) => toggleValue(prev, source))}
@@ -316,13 +296,10 @@ export default function SearchPage() {
               </div>
 
               <div className="space-y-1.5">
-                <p className="text-xs font-medium text-muted-foreground">In</p>
+                <p className="text-muted-foreground text-xs font-medium">In</p>
                 <div className="flex flex-wrap gap-3">
                   {ALL_COLS.map((column) => (
-                    <label
-                      key={column}
-                      className="flex cursor-pointer items-center gap-2 text-sm"
-                    >
+                    <label key={column} className="flex cursor-pointer items-center gap-2 text-sm">
                       <Checkbox
                         checked={columns.includes(column)}
                         onCheckedChange={() => setColumns((prev) => toggleValue(prev, column))}
@@ -334,13 +311,10 @@ export default function SearchPage() {
               </div>
 
               <div className="space-y-1.5">
-                <p className="text-xs font-medium text-muted-foreground">Kind</p>
+                <p className="text-muted-foreground text-xs font-medium">Kind</p>
                 <div className="flex flex-wrap gap-3">
                   {ALL_KINDS.map((kind) => (
-                    <label
-                      key={kind}
-                      className="flex cursor-pointer items-center gap-2 text-sm"
-                    >
+                    <label key={kind} className="flex cursor-pointer items-center gap-2 text-sm">
                       <Checkbox
                         checked={kinds.includes(kind)}
                         onCheckedChange={() => setKinds((prev) => toggleValue(prev, kind))}
@@ -369,7 +343,7 @@ export default function SearchPage() {
 
       <div className="space-y-3">
         {!isIdle && search.data ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="text-muted-foreground text-sm">
             {search.data.total} results · {search.data.took_ms}ms
           </p>
         ) : null}
@@ -410,7 +384,7 @@ export default function SearchPage() {
                   query={committedQuery}
                   className={cn(
                     activeIndex === index &&
-                      "ring-2 ring-primary/40 ring-offset-1 ring-offset-background"
+                      "ring-primary/40 ring-offset-background ring-2 ring-offset-1"
                   )}
                   onSelect={() => openResult(index)}
                 />

@@ -4,6 +4,7 @@
 BLOCKS edit/create when >=3 files across >=2 modules have been edited
 without using tentacle-orchestration. Agent must call tentacle.py first.
 """
+
 import json
 import os
 import sys
@@ -16,12 +17,21 @@ if os.name == "nt":
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
-    from marker_auth import verify_marker, verify_list_marker, is_secret_access, check_tamper_marker
+    from marker_auth import check_tamper_marker, is_secret_access, verify_list_marker, verify_marker
 except ImportError:
-    def verify_marker(p, n): return False
-    def verify_list_marker(p): return set()
-    def is_secret_access(c): return True
-    def check_tamper_marker(): return False
+
+    def verify_marker(p, n):
+        return False
+
+    def verify_list_marker(p):
+        return set()
+
+    def is_secret_access(c):
+        return True
+
+    def check_tamper_marker():
+        return False
+
 
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 EDITS_FILE = MARKERS_DIR / "tentacle-edits"
@@ -34,13 +44,45 @@ MIN_MODULES = 2
 
 def get_module(file_path: str) -> str:
     parts = Path(file_path).parts
-    markers = ("src", "lib", "app", "pkg", "internal", "cmd",
-               "hooks", "skills", "templates", "tests", "test",
-               "components", "screens", "services", "utils", "models",
-               "views", "controllers", "routes", "pages", "features",
-               "presentation", "domain", "data", "core", "common",
-               "ui", "api", "db", "auth", "config", "settings",
-               "alarm", "timer", "stopwatch", "clock", "widget")
+    markers = (
+        "src",
+        "lib",
+        "app",
+        "pkg",
+        "internal",
+        "cmd",
+        "hooks",
+        "skills",
+        "templates",
+        "tests",
+        "test",
+        "components",
+        "screens",
+        "services",
+        "utils",
+        "models",
+        "views",
+        "controllers",
+        "routes",
+        "pages",
+        "features",
+        "presentation",
+        "domain",
+        "data",
+        "core",
+        "common",
+        "ui",
+        "api",
+        "db",
+        "auth",
+        "config",
+        "settings",
+        "alarm",
+        "timer",
+        "stopwatch",
+        "clock",
+        "widget",
+    )
 
     best_module = ""
     for i, p in enumerate(parts[:-1]):
@@ -70,13 +112,17 @@ def main():
     # Kill-switch: deny everything if hooks tampered
     if check_tamper_marker():
         if tool_name in ("edit", "create", "bash"):
-            print(json.dumps({
-                "permissionDecision": "deny",
-                "permissionDecisionReason": (
-                    "🚨 HOOKS TAMPERED: All modifications blocked. "
-                    "Run: sudo python3 ~/.copilot/tools/install.py --lock-hooks"
+            print(
+                json.dumps(
+                    {
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": (
+                            "🚨 HOOKS TAMPERED: All modifications blocked. "
+                            "Run: sudo python3 ~/.copilot/tools/install.py --lock-hooks"
+                        ),
+                    }
                 )
-            }))
+            )
         return
 
     if tool_name not in ("edit", "create", "bash"):
@@ -89,21 +135,55 @@ def main():
             tool_args = {}
         command = tool_args.get("command", "")
         if is_secret_access(command):
-            print(json.dumps({
-                "permissionDecision": "deny",
-                "permissionDecisionReason": "🔒 Access to protected hook files is blocked."
-            }))
+            print(
+                json.dumps(
+                    {
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": "🔒 Access to protected hook files is blocked.",
+                    }
+                )
+            )
             return
 
-        source_exts = (".py", ".js", ".ts", ".kt", ".java", ".swift", ".go",
-                       ".rs", ".c", ".cpp", ".h", ".rb", ".php", ".cs", ".tsx", ".jsx")
+        source_exts = (
+            ".py",
+            ".js",
+            ".ts",
+            ".kt",
+            ".java",
+            ".swift",
+            ".go",
+            ".rs",
+            ".c",
+            ".cpp",
+            ".h",
+            ".rb",
+            ".php",
+            ".cs",
+            ".tsx",
+            ".jsx",
+        )
         _session_state_abs = str(Path.home() / ".copilot" / "session-state")
         writes_source = False
         if any(ext in command for ext in source_exts):
             import re as _re
-            if any(p in command for p in ("<<", "write_text", "open(",
-                                           "sed -i", "tee ", "cp ", "mv ",
-                                           "dd ", "patch ", "rsync ", "install ")):
+
+            if any(
+                p in command
+                for p in (
+                    "<<",
+                    "write_text",
+                    "open(",
+                    "sed -i",
+                    "tee ",
+                    "cp ",
+                    "mv ",
+                    "dd ",
+                    "patch ",
+                    "rsync ",
+                    "install ",
+                )
+            ):
                 writes_source = True
             elif _re.search(r">{1,2}\s*\S+", command):
                 for _m in _re.finditer(r">{1,2}\s*([^\s;|&]+)", command):
@@ -153,8 +233,8 @@ def main():
             f"\xf0\x9f\x90\x99 TENTACLE REQUIRED: {len(edited)} files across {len(modules)} modules "
             f"({', '.join(sorted(modules))}). "
             f"You MUST use tentacle-orchestration for multi-module tasks. "
-            f"Run: python3 ~/.copilot/tools/tentacle.py \"your task\""
-        )
+            f'Run: python3 ~/.copilot/tools/tentacle.py "your task"'
+        ),
     }
     print(json.dumps(result))
 

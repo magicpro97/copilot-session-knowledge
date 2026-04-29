@@ -32,7 +32,7 @@ export function OverviewTab({ meta, timeline }: OverviewTabProps) {
             <CardTitle>Summary</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-sm leading-relaxed text-muted-foreground">
+            <p className="text-muted-foreground text-sm leading-relaxed">
               {meta?.summary?.trim() || "No summary available for this session."}
             </p>
           </CardContent>
@@ -53,7 +53,7 @@ export function OverviewTab({ meta, timeline }: OverviewTabProps) {
             </div>
             <div className="flex items-start justify-between gap-4">
               <span className="text-muted-foreground">Path</span>
-              <span className="max-w-[75%] break-all text-right text-xs">{meta?.path || "—"}</span>
+              <span className="max-w-[75%] text-right text-xs break-all">{meta?.path || "—"}</span>
             </div>
             <div className="flex items-start justify-between gap-4">
               <span className="text-muted-foreground">Indexed</span>
@@ -79,14 +79,14 @@ export function OverviewTab({ meta, timeline }: OverviewTabProps) {
           ) : (
             <div className="space-y-2">
               {sections.map((section) => (
-                <details key={section.key} className="rounded-lg border border-border px-3 py-2">
+                <details key={section.key} className="border-border rounded-lg border px-3 py-2">
                   <summary className="cursor-pointer list-none text-sm font-medium">
                     <span>{section.name}</span>
-                    <span className="ml-2 text-xs text-muted-foreground">
+                    <span className="text-muted-foreground ml-2 text-xs">
                       ({section.docType} · {formatNumber(section.length)} chars)
                     </span>
                   </summary>
-                  <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-xs text-muted-foreground">
+                  <pre className="text-muted-foreground mt-2 overflow-x-auto text-xs whitespace-pre-wrap">
                     {section.content.slice(0, 500) || "(empty section content)"}
                   </pre>
                 </details>

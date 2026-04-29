@@ -1,20 +1,19 @@
 "use client";
 
 import type { ColumnDef } from "@tanstack/react-table";
-import {
-  ArrowLeft,
-  ArrowRight,
-  Search,
-  ScrollText,
-  Slash,
-} from "lucide-react";
+import { ArrowLeft, ArrowRight, Search, ScrollText, Slash } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Banner } from "@/components/data/banner";
 import { DataTable } from "@/components/data/data-table";
 import { EmptyState } from "@/components/data/empty-state";
-import { IDBadge, normalizeSource, SourceBadge, TimeRelative } from "@/components/data/session-badges";
+import {
+  IDBadge,
+  normalizeSource,
+  SourceBadge,
+  TimeRelative,
+} from "@/components/data/session-badges";
 import { FilterSidebar } from "@/components/layout/filter-sidebar";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -34,13 +33,7 @@ import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 
 type TimeRange = "all" | "today" | "7d" | "30d";
 type SummaryFilter = "all" | "yes" | "no";
-type SortMode =
-  | "recent"
-  | "oldest"
-  | "events_desc"
-  | "events_asc"
-  | "summary_asc"
-  | "summary_desc";
+type SortMode = "recent" | "oldest" | "events_desc" | "events_asc" | "summary_asc" | "summary_desc";
 
 const SOURCE_ORDER = [...Object.keys(SOURCE_LABELS), "unknown"];
 
@@ -81,8 +74,16 @@ export default function SessionsPage() {
     query,
   });
 
-  const items = sessionsQuery.data?.items ?? [];
-  const nowMsForTimeFilter = useMemo(() => Date.now(), [timeRange]);
+  const items = useMemo(() => sessionsQuery.data?.items ?? [], [sessionsQuery.data]);
+  const nowMsForTimeFilter = useMemo(() => {
+    switch (timeRange) {
+      case "all":
+      case "today":
+      case "7d":
+      case "30d":
+        return Date.now();
+    }
+  }, [timeRange]);
 
   const sourceCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -171,8 +172,8 @@ export default function SessionsPage() {
     [router]
   );
 
-  useKeyboardShortcuts(
-    [
+  const keyboardShortcuts = useMemo(
+    () => [
       {
         key: "/",
         preventDefault: true,
@@ -224,8 +225,10 @@ export default function SessionsPage() {
         },
       },
     ],
-    { enabled: true }
+    [filteredAndSortedItems.length, focusedRow, openSession, searchInputId]
   );
+
+  useKeyboardShortcuts(keyboardShortcuts, { enabled: true });
 
   const clearAllFilters = () => {
     setQueryInput("");
@@ -248,10 +251,7 @@ export default function SessionsPage() {
           const isFocused = row.original.id === focusedRowId;
           return (
             <div className="flex items-center gap-2">
-              <span
-                aria-hidden
-                className={isFocused ? "text-primary" : "text-transparent"}
-              >
+              <span aria-hidden className={isFocused ? "text-primary" : "text-transparent"}>
                 ▸
               </span>
               <IDBadge id={row.original.id} />
@@ -264,7 +264,7 @@ export default function SessionsPage() {
         header: "Summary",
         accessorFn: (row) => row.summary ?? "",
         cell: ({ row }) => (
-          <span className="line-clamp-1 text-sm text-foreground/95">
+          <span className="text-foreground/95 line-clamp-1 text-sm">
             {row.original.summary?.trim() || "No summary"}
           </span>
         ),
@@ -311,7 +311,7 @@ export default function SessionsPage() {
     <div className="space-y-4">
       <div className="space-y-1">
         <h1 className="text-2xl font-semibold tracking-tight">Sessions</h1>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-muted-foreground text-sm">
           Scan recent sessions, refine by filters, and open details quickly.
         </p>
       </div>
@@ -326,7 +326,7 @@ export default function SessionsPage() {
               content: (
                 <div className="space-y-2">
                   <div className="relative">
-                    <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
                     <Input
                       id={searchInputId}
                       value={queryInput}
@@ -335,9 +335,9 @@ export default function SessionsPage() {
                       className="pl-7"
                     />
                   </div>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-muted-foreground text-xs">
                     <Slash className="mr-1 inline size-3" />
-                    Press <kbd className="rounded bg-muted px-1 py-0.5 text-[10px]">/</kbd> to focus
+                    Press <kbd className="bg-muted rounded px-1 py-0.5 text-[10px]">/</kbd> to focus
                   </p>
                 </div>
               ),
@@ -348,7 +348,7 @@ export default function SessionsPage() {
               content: (
                 <div className="space-y-2">
                   {sourceOptions.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">No source values on this page.</p>
+                    <p className="text-muted-foreground text-xs">No source values on this page.</p>
                   ) : (
                     sourceOptions.map((source) => {
                       const checked = selectedSources.includes(source);
@@ -373,7 +373,9 @@ export default function SessionsPage() {
                             }}
                           />
                           <span>{label}</span>
-                          <span className="text-xs text-muted-foreground">({formatNumber(count)})</span>
+                          <span className="text-muted-foreground text-xs">
+                            ({formatNumber(count)})
+                          </span>
                         </label>
                       );
                     })
@@ -421,11 +423,13 @@ export default function SessionsPage() {
               title: "Has summary",
               content: (
                 <div className="grid grid-cols-3 gap-1">
-                  {([
-                    ["all", "All"],
-                    ["yes", "Yes"],
-                    ["no", "No"],
-                  ] as const).map(([value, label]) => (
+                  {(
+                    [
+                      ["all", "All"],
+                      ["yes", "Yes"],
+                      ["no", "No"],
+                    ] as const
+                  ).map(([value, label]) => (
                     <Button
                       key={value}
                       type="button"
@@ -477,7 +481,12 @@ export default function SessionsPage() {
               title="Failed to load sessions"
               description="Check that the browse server is running, then retry."
               actions={
-                <Button type="button" variant="outline" size="sm" onClick={() => sessionsQuery.refetch()}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => sessionsQuery.refetch()}
+                >
                   Retry
                 </Button>
               }
@@ -492,7 +501,9 @@ export default function SessionsPage() {
             />
           ) : null}
 
-          {!sessionsQuery.isError && !sessionsQuery.isLoading && filteredAndSortedItems.length === 0 ? (
+          {!sessionsQuery.isError &&
+          !sessionsQuery.isLoading &&
+          filteredAndSortedItems.length === 0 ? (
             <EmptyState
               icon={<ScrollText className="size-5" />}
               title="No sessions found"
@@ -511,16 +522,19 @@ export default function SessionsPage() {
             />
           )}
 
-          <div className="flex flex-col gap-3 rounded-xl border bg-card px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-sm text-muted-foreground">
+          <div className="bg-card flex flex-col gap-3 rounded-xl border px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-muted-foreground text-sm">
               {hasClientSideFilters ? (
                 <>
-                  Showing {formatNumber(filteredAndSortedItems.length)} of {formatNumber(loadedCount)}{" "}
-                  loaded on this page ({formatNumber(total)} total sessions)
+                  Showing {formatNumber(filteredAndSortedItems.length)} of{" "}
+                  {formatNumber(loadedCount)} loaded on this page ({formatNumber(total)} total
+                  sessions)
                 </>
               ) : null}
               {!hasClientSideFilters ? (
-                <>Showing {loadedStart}-{loadedEnd} of {formatNumber(total)} sessions</>
+                <>
+                  Showing {loadedStart}-{loadedEnd} of {formatNumber(total)} sessions
+                </>
               ) : null}
               {hasClientSideFilters ? (
                 <span className="ml-1">(client-side filters apply to this loaded page)</span>

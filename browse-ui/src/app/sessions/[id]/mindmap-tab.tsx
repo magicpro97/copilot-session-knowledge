@@ -28,7 +28,7 @@ export function MindmapTab({ sessionId }: MindmapTabProps) {
 
   if (query.isLoading) {
     return (
-      <div className="rounded-xl border border-border p-4 text-sm text-muted-foreground">
+      <div className="border-border text-muted-foreground rounded-xl border p-4 text-sm">
         Loading mindmap...
       </div>
     );

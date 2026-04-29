@@ -1,21 +1,33 @@
 """Learn enforcement rule — blocks git commit/task_complete without learn.py."""
+
 import re
 import sys
 from pathlib import Path
 
 from . import Rule
-from .common import MARKERS_DIR, CODE_EXTENSIONS, is_session_path, deny
+from .common import CODE_EXTENSIONS, MARKERS_DIR, deny, is_session_path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
-    from marker_auth import (verify_marker, verify_counter, sign_counter,
-                             is_secret_access, check_tamper_marker)
+    from marker_auth import check_tamper_marker, is_secret_access, sign_counter, verify_counter, verify_marker
 except ImportError:
-    def verify_marker(p, n): return False
-    def verify_counter(p): return 0
-    def sign_counter(p, v): p.parent.mkdir(parents=True, exist_ok=True); p.write_text(str(v))
-    def is_secret_access(c): return True
-    def check_tamper_marker(): return False
+
+    def verify_marker(p, n):
+        return False
+
+    def verify_counter(p):
+        return 0
+
+    def sign_counter(p, v):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(str(v))
+
+    def is_secret_access(c):
+        return True
+
+    def check_tamper_marker():
+        return False
+
 
 EDIT_COUNTER = MARKERS_DIR / "code-edit-count"
 LEARN_DONE = MARKERS_DIR / "learn-done"
@@ -59,7 +71,7 @@ class EnforceLearnRule(Rule):
             command = tool_args.get("command", "")
             if is_secret_access(command):
                 return deny("\U0001f512 Access to protected hook files is blocked.")
-            if not re.search(r'\bgit\b.*\b(commit|push)\b', command):
+            if not re.search(r"\bgit\b.*\b(commit|push)\b", command):
                 return None
             if not self._should_block():
                 return None

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  auditBlockSchema,
+  auditCheckSchema,
   communitiesResponseSchema,
   evidenceGraphResponseSchema,
   compareResponseSchema,
@@ -437,7 +439,12 @@ describe("api schemas", () => {
       total_count: 2,
       worktrees_prepared: 1,
       verification_covered: 1,
-      marker: { active: false, path: "/home/.copilot/markers/dispatched", age_hours: null, stale: false },
+      marker: {
+        active: false,
+        path: "/home/.copilot/markers/dispatched",
+        age_hours: null,
+        stale: false,
+      },
       tentacles: [],
       audit: {
         summary: { ok: true, total_checks: 3, warning_checks: 0 },
@@ -493,5 +500,48 @@ describe("api schemas", () => {
       runtime: { generated_at: "2026-01-01T00:00:00Z" },
     });
     expect(parsed.operator_actions[0].safe).toBe(true);
+  });
+
+  // ── Shared audit block contract tests ───────────────────────────────
+
+  it("parses a valid audit check", () => {
+    const check = auditCheckSchema.parse({
+      id: "db-connected",
+      title: "Database connected",
+      status: "ok",
+      detail: "Connection established",
+    });
+    expect(check.id).toBe("db-connected");
+    expect(check.status).toBe("ok");
+  });
+
+  it("parses a valid audit block with checks", () => {
+    const block = auditBlockSchema.parse({
+      summary: { ok: false, total_checks: 2, warning_checks: 1 },
+      checks: [
+        { id: "check-1", title: "Check 1", status: "ok", detail: "Fine" },
+        { id: "check-2", title: "Check 2", status: "warning", detail: "Needs attention" },
+      ],
+    });
+    expect(block.summary.total_checks).toBe(2);
+    expect(block.checks).toHaveLength(2);
+    expect(block.checks[1].status).toBe("warning");
+  });
+
+  it("parses audit block with empty checks array", () => {
+    const block = auditBlockSchema.parse({
+      summary: { ok: true, total_checks: 0, warning_checks: 0 },
+      checks: [],
+    });
+    expect(block.checks).toHaveLength(0);
+    expect(block.summary.ok).toBe(true);
+  });
+
+  it("rejects audit block missing summary", () => {
+    expect(() =>
+      auditBlockSchema.parse({
+        checks: [],
+      })
+    ).toThrow();
   });
 });

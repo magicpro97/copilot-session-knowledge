@@ -18,7 +18,11 @@ vi.mock("@/lib/api/hooks", () => ({
 }));
 
 vi.mock("@/components/layout/filter-sidebar", () => ({
-  FilterSidebar: ({ sections }: { sections: Array<{ id: string; title: string; content: ReactNode }> }) => (
+  FilterSidebar: ({
+    sections,
+  }: {
+    sections: Array<{ id: string; title: string; content: ReactNode }>;
+  }) => (
     <aside>
       {sections.map((section) => (
         <section key={section.id}>
@@ -31,7 +35,13 @@ vi.mock("@/components/layout/filter-sidebar", () => ({
 }));
 
 vi.mock("@/components/data/graph-canvas", () => ({
-  GraphCanvas: ({ nodes, onNodeSelect }: { nodes: Array<{ id: string }>; onNodeSelect?: (node: { id: string }) => void }) => (
+  GraphCanvas: ({
+    nodes,
+    onNodeSelect,
+  }: {
+    nodes: Array<{ id: string }>;
+    onNodeSelect?: (node: { id: string }) => void;
+  }) => (
     <button type="button" onClick={() => onNodeSelect?.(nodes[0])}>
       Select first node
     </button>
@@ -94,7 +104,9 @@ describe("RelationshipsTab evidence mode", () => {
     expect(screen.getAllByText("Resolved by").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Tag overlap").length).toBeGreaterThan(0);
     expect(screen.queryByText("Same topic")).not.toBeInTheDocument();
-    expect(screen.getByText(/Showing 2 nodes and 1 edges from knowledge_relations\./)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Showing 2 nodes and 1 edges from knowledge_relations\./)
+    ).toBeInTheDocument();
   });
 
   it("shows typed evidence details for selected nodes", async () => {
@@ -169,6 +181,9 @@ describe("RelationshipsTab evidence mode", () => {
     render(<RelationshipsTab active />);
 
     expect(screen.getAllByText("CITED_WITH").length).toBeGreaterThan(0);
-    expect(screen.getByRole("checkbox", { name: /CITED_WITH/ })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("checkbox", { name: /CITED_WITH/ })).toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
   });
 });

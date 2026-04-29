@@ -315,6 +315,28 @@ export const healthResponseSchema = z.object({
 });
 
 /**
+ * Shared audit check Zod schema — used by TrendScout, Tentacle, and SkillMetrics routes.
+ */
+export const auditCheckSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: z.string(),
+  detail: z.string(),
+});
+
+/**
+ * Shared audit block Zod schema — wraps a summary and an array of check items.
+ */
+export const auditBlockSchema = z.object({
+  summary: z.object({
+    ok: z.boolean(),
+    total_checks: z.number(),
+    warning_checks: z.number(),
+  }),
+  checks: z.array(auditCheckSchema),
+});
+
+/**
  * Shared operator-action Zod schema used across all 4 browse diagnostics routes.
  *
  * Required: id, title, description, command, safe (always true — enforced by literal).
@@ -424,12 +446,7 @@ export const trendScoutGraceWindowStatusSchema = z.object({
   reason: z.string().nullable(),
 });
 
-export const trendScoutAuditCheckSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  status: z.string(),
-  detail: z.string(),
-});
+export const trendScoutAuditCheckSchema = auditCheckSchema;
 
 export const trendScoutDiscoveryLaneSchema = z.object({
   name: z.string(),
@@ -445,14 +462,7 @@ export const trendScoutStatusResponseSchema = z.object({
   config: trendScoutConfigStatusSchema,
   analysis: trendScoutAnalysisPreviewSchema,
   grace_window: trendScoutGraceWindowStatusSchema,
-  audit: z.object({
-    summary: z.object({
-      ok: z.boolean(),
-      total_checks: z.number(),
-      warning_checks: z.number(),
-    }),
-    checks: z.array(trendScoutAuditCheckSchema),
-  }),
+  audit: auditBlockSchema,
   operator_actions: z.array(trendScoutOperatorActionSchema),
   discovery_lanes: z.array(trendScoutDiscoveryLaneSchema).optional(),
   runtime: z.object({
@@ -492,12 +502,7 @@ export const tentacleMarkerInfoSchema = z.object({
   stale: z.boolean(),
 });
 
-export const tentacleAuditCheckSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  status: z.string(),
-  detail: z.string(),
-});
+export const tentacleAuditCheckSchema = auditCheckSchema;
 
 export const tentacleStatusResponseSchema = z.object({
   status: z.string(),
@@ -508,14 +513,7 @@ export const tentacleStatusResponseSchema = z.object({
   verification_covered: z.number(),
   marker: tentacleMarkerInfoSchema,
   tentacles: z.array(tentacleEntrySchema),
-  audit: z.object({
-    summary: z.object({
-      ok: z.boolean(),
-      total_checks: z.number(),
-      warning_checks: z.number(),
-    }),
-    checks: z.array(tentacleAuditCheckSchema),
-  }),
+  audit: auditBlockSchema,
   operator_actions: z.array(operatorActionSchema),
   runtime: z.object({
     generated_at: z.string(),
@@ -552,12 +550,7 @@ export const skillUsageEntrySchema = z.object({
   usage_count: z.number(),
 });
 
-export const skillMetricsAuditCheckSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  status: z.string(),
-  detail: z.string(),
-});
+export const skillMetricsAuditCheckSchema = auditCheckSchema;
 
 export const skillMetricsResponseSchema = z.object({
   status: z.string(),
@@ -571,14 +564,7 @@ export const skillMetricsResponseSchema = z.object({
   summary: skillMetricsSummarySchema,
   recent_outcomes: z.array(skillOutcomeEntrySchema),
   skill_usage: z.array(skillUsageEntrySchema),
-  audit: z.object({
-    summary: z.object({
-      ok: z.boolean(),
-      total_checks: z.number(),
-      warning_checks: z.number(),
-    }),
-    checks: z.array(skillMetricsAuditCheckSchema),
-  }),
+  audit: auditBlockSchema,
   operator_actions: z.array(operatorActionSchema),
   runtime: z.object({
     generated_at: z.string(),

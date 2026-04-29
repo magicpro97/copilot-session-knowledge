@@ -4,6 +4,7 @@
 Block edit/create/bash-file-writes until briefing.py has been run.
 Uses HMAC-signed markers to prevent spoofing via touch.
 """
+
 import json
 import os
 import re
@@ -18,21 +19,43 @@ if os.name == "nt":
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
-    from marker_auth import verify_marker, is_secret_access, check_tamper_marker
+    from marker_auth import check_tamper_marker, is_secret_access, verify_marker
 except ImportError:
-    def verify_marker(p, n): return False
-    def is_secret_access(c): return True
-    def check_tamper_marker(): return False
 
+    def verify_marker(p, n):
+        return False
+
+    def is_secret_access(c):
+        return True
+
+    def check_tamper_marker():
+        return False
 
 
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 MARKER = MARKERS_DIR / "briefing-done"
 
 SAFE_PATH_PREFIXES = ("/tmp/", "/var/", "/dev/", "/proc/")
-SOURCE_EXTENSIONS = {".py", ".kt", ".ts", ".tsx", ".js", ".jsx", ".swift",
-                     ".java", ".go", ".rs", ".json", ".yaml", ".yml",
-                     ".xml", ".html", ".css", ".md", ".toml"}
+SOURCE_EXTENSIONS = {
+    ".py",
+    ".kt",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".swift",
+    ".java",
+    ".go",
+    ".rs",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".xml",
+    ".html",
+    ".css",
+    ".md",
+    ".toml",
+}
 
 
 def _is_source_path(path):
@@ -75,8 +98,7 @@ def _bash_writes_source_files(command):
 
     # 6. python3/node/ruby -c with file write
     if re.search(r"\b(?:python3?|node|ruby|perl)\s+-[ce]\s", command):
-        if ("open(" in command or "writeFile" in command or
-            "File.write" in command or "File.open" in command):
+        if "open(" in command or "writeFile" in command or "File.write" in command or "File.open" in command:
             return True
 
     # 7. curl/wget — absolute and relative
@@ -129,13 +151,17 @@ def main():
     # Kill-switch: deny if hooks tampered
     if check_tamper_marker():
         if tool_name in ("edit", "create", "bash"):
-            print(json.dumps({
-                "permissionDecision": "deny",
-                "permissionDecisionReason": (
-                    "🚨 HOOKS TAMPERED: All modifications blocked. "
-                    "Run: sudo python3 ~/.copilot/tools/install.py --lock-hooks"
+            print(
+                json.dumps(
+                    {
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": (
+                            "🚨 HOOKS TAMPERED: All modifications blocked. "
+                            "Run: sudo python3 ~/.copilot/tools/install.py --lock-hooks"
+                        ),
+                    }
                 )
-            }))
+            )
         return
 
     is_file_mod = tool_name in ("edit", "create")
@@ -144,10 +170,14 @@ def main():
         command = tool_args.get("command", "")
         # Block access to protected files
         if is_secret_access(command):
-            print(json.dumps({
-                "permissionDecision": "deny",
-                "permissionDecisionReason": "🔒 Access to protected hook files is blocked."
-            }))
+            print(
+                json.dumps(
+                    {
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": "🔒 Access to protected hook files is blocked.",
+                    }
+                )
+            )
             return
         is_file_mod = _bash_writes_source_files(command)
 
@@ -157,13 +187,17 @@ def main():
     if _briefing_done():
         return
 
-    print(json.dumps({
-        "permissionDecision": "deny",
-        "permissionDecisionReason": (
-            "⚠️ BRIEFING REQUIRED: Run briefing.py before editing code. "
-            'Command: python3 ~/.copilot/tools/briefing.py "your task"'
-        ),
-    }))
+    print(
+        json.dumps(
+            {
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    "⚠️ BRIEFING REQUIRED: Run briefing.py before editing code. "
+                    'Command: python3 ~/.copilot/tools/briefing.py "your task"'
+                ),
+            }
+        )
+    )
 
 
 if __name__ == "__main__":

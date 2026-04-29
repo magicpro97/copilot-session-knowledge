@@ -36,31 +36,37 @@ export function DiffViewer({ result }: DiffViewerProps) {
         <CardTitle>
           Checkpoint diff ({result.from.seq} → {result.to.seq})
         </CardTitle>
-        <p className="text-xs text-muted-foreground">
+        <p className="text-muted-foreground text-xs">
           +{formatNumber(result.stats.added)} added · -{formatNumber(result.stats.removed)} removed
         </p>
         <div className="flex items-center gap-2">
-          <Button variant={mode === "unified" ? "default" : "outline"} onClick={() => setMode("unified")}>
+          <Button
+            variant={mode === "unified" ? "default" : "outline"}
+            onClick={() => setMode("unified")}
+          >
             Unified
           </Button>
-          <Button variant={mode === "split" ? "default" : "outline"} onClick={() => setMode("split")}>
+          <Button
+            variant={mode === "split" ? "default" : "outline"}
+            onClick={() => setMode("split")}
+          >
             Side-by-side
           </Button>
         </div>
       </CardHeader>
       <CardContent>
         {mode === "unified" ? (
-          <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap rounded-lg bg-muted/40 p-3 text-xs">
+          <pre className="bg-muted/40 max-h-[520px] overflow-auto rounded-lg p-3 text-xs whitespace-pre-wrap">
             {result.unified_diff || "(no textual diff output)"}
           </pre>
         ) : (
           <div className="grid gap-2 md:grid-cols-2">
-            <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap rounded-lg bg-muted/40 p-3 text-xs">
+            <pre className="bg-muted/40 max-h-[520px] overflow-auto rounded-lg p-3 text-xs whitespace-pre-wrap">
               {splitDiff.map((line, index) => (
                 <div key={`left-${index}`}>{line.left || " "}</div>
               ))}
             </pre>
-            <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap rounded-lg bg-muted/40 p-3 text-xs">
+            <pre className="bg-muted/40 max-h-[520px] overflow-auto rounded-lg p-3 text-xs whitespace-pre-wrap">
               {splitDiff.map((line, index) => (
                 <div key={`right-${index}`}>{line.right || " "}</div>
               ))}

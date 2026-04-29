@@ -142,7 +142,7 @@ export function ScatterCanvas({
   return (
     <div
       ref={containerRef}
-      className={cn("relative h-[65vh] min-h-[22rem] w-full rounded-xl border bg-card", className)}
+      className={cn("bg-card relative h-[65vh] min-h-[22rem] w-full rounded-xl border", className)}
     >
       <canvas
         ref={canvasRef}
@@ -162,13 +162,13 @@ export function ScatterCanvas({
 
       {hoveredPoint ? (
         <div
-          className="pointer-events-none absolute z-10 max-w-72 rounded-md border bg-background/95 px-2 py-1 text-xs shadow"
+          className="bg-background/95 pointer-events-none absolute z-10 max-w-72 rounded-md border px-2 py-1 text-xs shadow"
           style={{
             left: Math.min(hoveredPoint.px + 12, Math.max(size.width - 300, 0)),
             top: Math.max(hoveredPoint.py - 12, 8),
           }}
         >
-          <p className="font-medium text-foreground">{hoveredPoint.point.title}</p>
+          <p className="text-foreground font-medium">{hoveredPoint.point.title}</p>
           <p className="text-muted-foreground">{hoveredPoint.point.category}</p>
         </div>
       ) : null}

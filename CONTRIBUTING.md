@@ -43,11 +43,22 @@ python3 test_fixes.py       # 65 tests
 Run before every commit:
 
 ```bash
+python3 scripts/check_syntax.py
+python3 run_all_tests.py
+```
+
+For faster targeted loops, these focused checks are still useful:
+
+```bash
 python3 test_security.py    # SQL injection, pickle, locks, paths
 python3 test_fixes.py       # Noise filter, sub-agent, launchd, DB health
 ```
 
-Verify syntax of modified files:
+CI also runs a scoped **Ruff lint** on `embed.py`, `scout-*.py`, `sync-*.py`, `migrate.py`, `generate-summary.py`, and `hooks/`. If you modify those files and have Ruff installed locally, run `ruff format <file>` and `ruff check <file>` before committing. CI will catch scoped lint violations; local `pre-commit` enforces both `ruff format --check` and `ruff check` when Ruff is available. Ruff is scoped to this surface; other root scripts are not currently in scope.
+
+For `browse-ui/` changes, CI runs `pnpm format:check`. Fix formatting locally with `cd browse-ui && pnpm format` before committing.
+
+If you need a narrow syntax-only check for a modified file:
 
 ```bash
 python3 -c "import ast; ast.parse(open('your_file.py').read())"
@@ -95,6 +106,7 @@ Typical workflow:
 cd browse-ui
 pnpm install
 pnpm typecheck
+pnpm format:check
 pnpm build
 ```
 

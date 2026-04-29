@@ -9,4 +9,3 @@ export async function generateStaticParams() {
 export default function SessionDetailPage() {
   return <SessionDetailClient />;
 }
-

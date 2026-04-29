@@ -54,6 +54,7 @@ active enforcement runs through `hook_runner.py`.
 | `agentStop` | Best-effort dispatched-subagent marker cleanup |
 | `subagentStop` | Best-effort dispatched-subagent marker cleanup |
 | `errorOccurred` | KB error search |
+| `pre-commit` *(git)* | Subagent guard + skill/agent lint + scoped Ruff cleanliness + Prettier check on supported `browse-ui/src/` files (all fail-open) |
 
 ### Installation
 

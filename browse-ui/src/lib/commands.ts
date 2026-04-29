@@ -273,9 +273,7 @@ export function filterAndRankCommands(
   recentCommandIds: string[]
 ): PaletteCommand[] {
   const normalizedQuery = normalize(query);
-  const recentRank = new Map(
-    recentCommandIds.map((id, index) => [id, MAX_RECENT_ITEMS - index])
-  );
+  const recentRank = new Map(recentCommandIds.map((id, index) => [id, MAX_RECENT_ITEMS - index]));
 
   const scored = commands
     .map((command) => {

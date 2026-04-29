@@ -23,7 +23,7 @@ if os.name == "nt":
     except Exception:
         pass
 
-TOOLS_DIR = Path.home() / ".copilot" / "tools"
+TOOLS_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = TOOLS_DIR / "trend-scout-config.json"
 
 
@@ -204,7 +204,9 @@ def collect_status() -> dict:
         "lanes": lanes_info,
         "analysis": {
             "enabled": bool(analysis_cfg.get("enabled", False)),
-            "model": str(analysis_cfg.get("model", trend_scout.DEFAULT_MODELS_MODEL) or trend_scout.DEFAULT_MODELS_MODEL),
+            "model": str(
+                analysis_cfg.get("model", trend_scout.DEFAULT_MODELS_MODEL) or trend_scout.DEFAULT_MODELS_MODEL
+            ),
             "token_env": token_env,
             "token_present": bool(os.environ.get(token_env)),
         },

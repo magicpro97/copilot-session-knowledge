@@ -40,7 +40,7 @@ hooks/
 | `test-reminder` | postToolUse | Reminds to run tests after 3+ Python file edits |
 | `tentacle-suggest` | postToolUse | Suggests tentacle when edits reach ≥3 files across ≥2 modules (same threshold as tentacle-enforce) |
 | `error-kb` | errorOccurred | Auto-searches knowledge base on errors |
-| `pre-commit` | git pre-commit | (1) Blocks commit when `dispatched-subagent-active` marker is fresh (primary subagent guard); (2) validates `.agent.md` / `SKILL.md` via `lint-skills.py`. Requires `install.py --install-git-hooks`. |
+| `pre-commit` | git pre-commit | (1) Blocks commit when `dispatched-subagent-active` marker is fresh (primary subagent guard); (2) validates `.agent.md` / `SKILL.md` via `lint-skills.py`; (3) runs scoped Ruff format + lint check on staged Python files in the CI cleanliness surface (`embed.py`, `scout-*.py`, `sync-*.py`, `migrate.py`, `generate-summary.py`, `hooks/*.py`); (4) runs Prettier format check on supported staged files under `browse-ui/src/`. Both cleanliness checks are **fail-open** — they silently skip when the respective tool (`ruff`, `browse-ui/node_modules/.bin/prettier`) is not installed. Requires `install.py --install-git-hooks`. |
 | `pre-push` | git pre-push | Blocks push when `dispatched-subagent-active` marker is fresh. Requires `install.py --install-git-hooks`. |
 
 ### Platform events not currently handled
@@ -237,6 +237,16 @@ enforcement surface. If the platform ever guarantees `preToolUse` propagation in
 `tentacle.py complete <name>` removes the tentacle's entry from `active_tentacles`. The marker
 file is deleted when the list becomes empty. The 4-hour TTL acts as a dead-man switch for
 sessions that crash without calling `complete`.
+
+For inspecting stale entries without completing a tentacle, use the `marker-cleanup` subcommand:
+
+```bash
+tentacle.py marker-cleanup           # dry-run: shows stale entries that would be removed
+tentacle.py marker-cleanup --apply   # actually remove stale entries (per-entry TTL check)
+```
+
+Only entries whose per-entry timestamp exceeds the declared TTL are eligible for removal.
+Live entries and entries with no timestamp are never touched.
 
 ### Enforcement scope
 

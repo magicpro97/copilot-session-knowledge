@@ -12,15 +12,26 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
+      - name: Install dev tools
+        run: pip install "ruff>=0.5"
+
       - name: Syntax check
         run: python3 scripts/check_syntax.py
+
+      - name: Ruff lint
+        run: >
+          ruff check
+          embed.py scout-config.py scout-status.py
+          sync-config.py sync-daemon.py sync-status.py
+          migrate.py generate-summary.py
+          hooks/
 
       - name: Run tests
         run: python3 run_all_tests.py
@@ -56,6 +67,9 @@ jobs:
 
       - name: Lint
         run: pnpm lint
+
+      - name: Format check
+        run: pnpm format:check
 
       - name: Unit tests
         run: pnpm test

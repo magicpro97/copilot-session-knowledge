@@ -37,11 +37,13 @@ export function EvalSection() {
   }
 
   return (
-    <details className="rounded-xl border bg-card p-4">
+    <details className="bg-card rounded-xl border p-4">
       <summary className="cursor-pointer list-none text-sm font-medium">
         <span className="inline-flex items-center gap-2">
           Search quality
-          {rows.length > 0 ? <Badge variant="outline">{formatNumber(rows.length)} queries</Badge> : null}
+          {rows.length > 0 ? (
+            <Badge variant="outline">{formatNumber(rows.length)} queries</Badge>
+          ) : null}
         </span>
       </summary>
 
@@ -101,11 +103,14 @@ export function EvalSection() {
                 <h3 className="text-sm font-medium">Recent feedback comments</h3>
                 <div className="space-y-2">
                   {comments.slice(0, 8).map((comment, index) => (
-                    <div key={`${comment.result_id}-${index}`} className="rounded-lg border px-3 py-2">
+                    <div
+                      key={`${comment.result_id}-${index}`}
+                      className="rounded-lg border px-3 py-2"
+                    >
                       <p className="text-sm font-medium">
                         {formatVerdict(comment.verdict)} {comment.query}
                       </p>
-                      <p className="text-sm text-muted-foreground">{comment.comment}</p>
+                      <p className="text-muted-foreground text-sm">{comment.comment}</p>
                     </div>
                   ))}
                 </div>

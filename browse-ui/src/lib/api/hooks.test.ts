@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  combineQueryStrings,
   createArrayQueryString,
   createQueryString,
   normalizeSessionsResponse,
@@ -9,9 +10,7 @@ import {
 
 describe("api hooks helpers", () => {
   it("builds query strings while skipping empty values", () => {
-    expect(createQueryString({ page: 1, q: "abc", source: null })).toBe(
-      "?page=1&q=abc"
-    );
+    expect(createQueryString({ page: 1, q: "abc", source: null })).toBe("?page=1&q=abc");
     expect(createQueryString({ q: "", page: undefined })).toBe("");
   });
 
@@ -72,5 +71,34 @@ describe("api hooks helpers", () => {
     expect(queryKeys.graph({ wing: ["alpha"], limit: 10 })).not.toEqual(
       queryKeys.graphLegacy({ wing: ["alpha"], limit: 10 })
     );
+  });
+
+  it("combineQueryStrings merges filters and limit when both present", () => {
+    expect(combineQueryStrings("?wing=alpha", "?limit=50")).toBe("?wing=alpha&limit=50");
+  });
+
+  it("combineQueryStrings returns limit alone when filters are empty", () => {
+    expect(combineQueryStrings("", "?limit=50")).toBe("?limit=50");
+  });
+
+  it("combineQueryStrings returns filters alone when limit is empty", () => {
+    expect(combineQueryStrings("?wing=alpha", "")).toBe("?wing=alpha");
+  });
+
+  it("combineQueryStrings returns empty string when both are empty", () => {
+    expect(combineQueryStrings("", "")).toBe("");
+  });
+
+  it("sessions query string does not include sort param", () => {
+    // sort is applied client-side and must not be forwarded to the server
+    const qs = createQueryString({
+      page: 1,
+      page_size: 20,
+      q: "test",
+      source: "copilot",
+    });
+    expect(qs).not.toContain("sort");
+    expect(qs).toContain("page=1");
+    expect(qs).toContain("q=test");
   });
 });

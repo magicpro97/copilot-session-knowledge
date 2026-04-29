@@ -42,7 +42,11 @@ export function AppSidebar() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "b") return;
       if (event.defaultPrevented) return;
-      if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (
+        event.target instanceof HTMLElement &&
+        event.target.closest("input, textarea, select, [contenteditable='true']")
+      )
+        return;
 
       event.preventDefault();
       setCollapsed((prev) => !prev);
@@ -54,14 +58,22 @@ export function AppSidebar() {
 
   return (
     <aside
-      className="flex h-screen shrink-0 flex-col border-r bg-card transition-[width] duration-200 motion-reduce:transition-none"
+      className="bg-card flex h-screen shrink-0 flex-col border-r transition-[width] duration-200 motion-reduce:transition-none"
       style={{ width: collapsed ? "var(--sidebar-rail-width,4rem)" : "var(--sidebar-width,16rem)" }}
     >
-      <div className={cn("flex h-14 items-center border-b px-2", collapsed ? "justify-center" : "justify-between px-4")}>
+      <div
+        className={cn(
+          "flex h-14 items-center border-b px-2",
+          collapsed ? "justify-center" : "justify-between px-4"
+        )}
+      >
         <Link
           href="/sessions"
           title="Go to Sessions"
-          className={cn("text-base font-semibold text-primary", collapsed && "rounded-md px-2 py-1")}
+          className={cn(
+            "text-primary text-base font-semibold",
+            collapsed && "rounded-md px-2 py-1"
+          )}
         >
           <span className={cn(collapsed && "sr-only")}>Hindsight</span>
           {collapsed ? <span aria-hidden>H</span> : null}
@@ -117,8 +129,8 @@ export function AppSidebar() {
           );
         })}
       </nav>
-      <div className={cn("border-t p-2 text-xs text-muted-foreground", collapsed && "px-1")}>
-        <div className={cn("rounded-md bg-muted/40 px-2 py-1", collapsed && "text-center")}>
+      <div className={cn("text-muted-foreground border-t p-2 text-xs", collapsed && "px-1")}>
+        <div className={cn("bg-muted/40 rounded-md px-2 py-1", collapsed && "text-center")}>
           {collapsed ? "⌘B" : "⌘/Ctrl+B Toggle rail"}
         </div>
       </div>

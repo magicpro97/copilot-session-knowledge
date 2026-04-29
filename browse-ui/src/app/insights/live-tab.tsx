@@ -37,7 +37,7 @@ export function LiveTab({ active = true }: LiveTabProps) {
         <Button type="button" variant="outline" size="sm" onClick={toggle}>
           {paused ? "Resume" : "Pause"}
         </Button>
-        <span className="text-xs text-muted-foreground">
+        <span className="text-muted-foreground text-xs">
           {paused ? "Paused: incoming events are intentionally dropped." : "Receiving live events."}
         </span>
       </div>

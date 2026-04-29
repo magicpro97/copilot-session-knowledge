@@ -1,4 +1,5 @@
 """Briefing enforcement rules."""
+
 import os
 import subprocess
 import sys
@@ -6,16 +7,26 @@ import time
 from pathlib import Path
 
 from . import Rule
-from .common import MARKERS_DIR, TOOLS_DIR, deny, info, bash_writes_source_files
+from .common import MARKERS_DIR, TOOLS_DIR, bash_writes_source_files, deny, info
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
-    from marker_auth import sign_marker, verify_marker, is_secret_access, check_tamper_marker
+    from marker_auth import check_tamper_marker, is_secret_access, sign_marker, verify_marker
 except ImportError:
-    def sign_marker(p, n): p.parent.mkdir(parents=True, exist_ok=True); p.touch()
-    def verify_marker(p, n): return False
-    def is_secret_access(c): return True
-    def check_tamper_marker(): return False
+
+    def sign_marker(p, n):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+
+    def verify_marker(p, n):
+        return False
+
+    def is_secret_access(c):
+        return True
+
+    def check_tamper_marker():
+        return False
+
 
 MARKER = MARKERS_DIR / "briefing-done"
 BRIEFING_SCRIPT = TOOLS_DIR / "briefing.py"
@@ -59,7 +70,9 @@ class AutoBriefingRule(Rule):
         try:
             result = subprocess.run(
                 ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if result.returncode == 0:
                 project = Path(result.stdout.strip()).name
@@ -76,7 +89,8 @@ class AutoBriefingRule(Rule):
         try:
             subprocess.run(
                 [sys.executable, str(BRIEFING_SCRIPT), project, "--budget", "500"],
-                timeout=10, stderr=subprocess.DEVNULL,
+                timeout=10,
+                stderr=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired:
             lines.append("  \u23f1 Briefing timed out (10s)")

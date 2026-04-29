@@ -27,10 +27,13 @@ type KpiTileProps = {
 
 function KpiTile({ label, value, href }: KpiTileProps) {
   return (
-    <Link href={href} className="block rounded-xl outline-none ring-ring transition focus-visible:ring-2">
-      <Card className="h-full ring-1 ring-foreground/10 transition hover:bg-muted/30">
+    <Link
+      href={href}
+      className="ring-ring block rounded-xl transition outline-none focus-visible:ring-2"
+    >
+      <Card className="ring-foreground/10 hover:bg-muted/30 h-full ring-1 transition">
         <CardContent className="space-y-2">
-          <p className="text-sm text-muted-foreground">{label}</p>
+          <p className="text-muted-foreground text-sm">{label}</p>
           <p className="text-2xl font-semibold tracking-tight">{formatNumber(value)}</p>
         </CardContent>
       </Card>
@@ -49,7 +52,9 @@ export function DashboardTab() {
         header: "Session",
         accessorKey: "session_id",
         cell: ({ row }) => (
-          <span className="font-mono text-xs">{formatSessionIdBadgeText(row.original.session_id)}</span>
+          <span className="font-mono text-xs">
+            {formatSessionIdBadgeText(row.original.session_id)}
+          </span>
         ),
       },
       {
@@ -63,7 +68,7 @@ export function DashboardTab() {
         header: "Summary",
         accessorKey: "summary",
         cell: ({ row }) => (
-          <span className="line-clamp-1 max-w-[40rem] text-sm text-muted-foreground">
+          <span className="text-muted-foreground line-clamp-1 max-w-[40rem] text-sm">
             {row.original.summary?.trim() || "No summary"}
           </span>
         ),
@@ -79,7 +84,7 @@ export function DashboardTab() {
         header: "Module",
         accessorKey: "module",
         cell: ({ row }) => (
-          <span className="font-mono text-xs text-foreground">{row.original.module}</span>
+          <span className="text-foreground font-mono text-xs">{row.original.module}</span>
         ),
       },
       {
@@ -97,7 +102,7 @@ export function DashboardTab() {
       <div className="space-y-6">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {Array.from({ length: 4 }).map((_, index) => (
-            <div key={`insights-kpi-${index}`} className="rounded-xl border bg-card p-4">
+            <div key={`insights-kpi-${index}`} className="bg-card rounded-xl border p-4">
               <Skeleton className="h-4 w-24" />
               <Skeleton className="mt-4 h-8 w-24" />
             </div>
@@ -134,10 +139,12 @@ export function DashboardTab() {
   const stats = dashboard.data;
   const totalCategoryEntries = stats.by_category.reduce((sum, entry) => sum + entry.count, 0);
   const recentSessionTotal = stats.sessions_per_day.reduce((sum, entry) => sum + entry.count, 0);
-  const sessionsPerDayChartData: Record<string, unknown>[] = stats.sessions_per_day.map((entry) => ({
-    date: entry.date,
-    count: entry.count,
-  }));
+  const sessionsPerDayChartData: Record<string, unknown>[] = stats.sessions_per_day.map(
+    (entry) => ({
+      date: entry.date,
+      count: entry.count,
+    })
+  );
   const byCategoryChartData: Record<string, unknown>[] = stats.by_category.map((entry) => ({
     name: entry.name,
     count: entry.count,

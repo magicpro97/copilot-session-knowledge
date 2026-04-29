@@ -92,6 +92,10 @@ Hooks live in `hooks/` and are deployed to `~/.copilot/hooks/` (Copilot CLI only
 `.octogent/` stores local tentacle state and is gitignored in this repo.  
 Runtime-bundle workflow: `create` → `todo add` → `bundle` (optional) → `swarm` → `complete`.
 
+`tentacle.py marker-cleanup` (dry-run by default, `--apply` to act) inspects and removes stale
+entries from the dispatched-subagent marker without completing a tentacle. Only entries whose
+per-entry timestamp exceeds the declared TTL are eligible; live entries are never touched.
+
 > Full tentacle workflow reference: **[docs/USAGE.md](USAGE.md)**
 
 ## Host Scope
@@ -165,6 +169,17 @@ These conventions apply to all scripts in this repo. Follow them in every change
 ### DB Migrations
 
 Add new migrations to the `MIGRATIONS` list in `migrate.py` with incrementing version numbers and a descriptive name.
+
+### Script Guards
+
+- **`if __name__ == "__main__":`** — `migrate.py` and `generate-summary.py` are both guarded; they can be imported without side effects. New scripts that may be imported or tested should follow this pattern.
+- **`TOOLS_DIR` resolution** — root scripts that need a reliable tools-directory path use `Path(__file__).resolve().parent`. `hooks/rules/common.py` intentionally keeps the installed-hook `Path.home() / ".copilot" / "tools"` form (hooks run from `~/.copilot/hooks/`, not the source tree).
+
+### CI Quality Gates
+
+GitHub Actions runs two jobs on every push / PR:
+- **`quality-gates`** — syntax check, scoped Ruff lint (`embed.py`, `scout-*.py`, `sync-*.py`, `migrate.py`, `generate-summary.py`, `hooks/`), and the Python test suites. Ruff lint is **scoped** to this surface; legacy standalone scripts outside it are not linted by CI.
+- **`browse-ui`** — `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test`, `pnpm build`.
 
 ### Automation Surfaces
 

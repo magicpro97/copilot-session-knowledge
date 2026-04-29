@@ -39,9 +39,9 @@ export function CheckpointsTab({ sessionId }: CheckpointsTabProps) {
         description="This API supports diff execution but does not expose checkpoint options. Enter selectors manually (e.g., first, latest, or a sequence number)."
       />
 
-      <div className="grid gap-3 rounded-xl border border-border p-3 md:grid-cols-[1fr_1fr_auto]">
+      <div className="border-border grid gap-3 rounded-xl border p-3 md:grid-cols-[1fr_1fr_auto]">
         <div className="space-y-1">
-          <label className="text-xs font-medium text-muted-foreground" htmlFor="diff-from">
+          <label className="text-muted-foreground text-xs font-medium" htmlFor="diff-from">
             From
           </label>
           <Input
@@ -52,7 +52,7 @@ export function CheckpointsTab({ sessionId }: CheckpointsTabProps) {
           />
         </div>
         <div className="space-y-1">
-          <label className="text-xs font-medium text-muted-foreground" htmlFor="diff-to">
+          <label className="text-muted-foreground text-xs font-medium" htmlFor="diff-to">
             To
           </label>
           <Input
@@ -64,7 +64,9 @@ export function CheckpointsTab({ sessionId }: CheckpointsTabProps) {
         </div>
         <div className="flex items-end">
           <Button
-            onClick={() => diffMutation.mutate({ from: fromSelector.trim(), to: toSelector.trim() })}
+            onClick={() =>
+              diffMutation.mutate({ from: fromSelector.trim(), to: toSelector.trim() })
+            }
             disabled={!fromSelector.trim() || !toSelector.trim() || diffMutation.isPending}
           >
             {diffMutation.isPending ? "Loading diff..." : "Compute diff"}

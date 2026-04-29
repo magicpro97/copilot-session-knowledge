@@ -37,9 +37,7 @@ type OptionWithCount = {
 };
 
 function toggleValue(values: string[], value: string): string[] {
-  return values.includes(value)
-    ? values.filter((item) => item !== value)
-    : [...values, value];
+  return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
 }
 
 function optionCounts(nodes: GraphNode[], field: "wing" | "category"): OptionWithCount[] {
@@ -90,7 +88,10 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
   );
 
   const wingOptions = useMemo(() => optionCounts(optionSourceNodes, "wing"), [optionSourceNodes]);
-  const kindOptions = useMemo(() => optionCounts(optionSourceNodes, "category"), [optionSourceNodes]);
+  const kindOptions = useMemo(
+    () => optionCounts(optionSourceNodes, "category"),
+    [optionSourceNodes]
+  );
   const relationOptions = useMemo(() => {
     const counts = new Map<EvidenceRelationTypeValue, number>();
     for (const edge of relationEdgeSource) {
@@ -125,7 +126,8 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
       .flatMap((edge) => {
         const sourceId = edgeNodeId(edge.source);
         const targetId = edgeNodeId(edge.target);
-        const relatedNodeId = sourceId === selectedNode.id ? targetId : targetId === selectedNode.id ? sourceId : null;
+        const relatedNodeId =
+          sourceId === selectedNode.id ? targetId : targetId === selectedNode.id ? sourceId : null;
         if (!relatedNodeId) return [];
         const relatedNode = nodeById.get(relatedNodeId);
         if (!relatedNode) return [];
@@ -156,9 +158,7 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
 
       const target = event.target as HTMLElement | null;
       const isTypingTarget =
-        target?.tagName === "INPUT" ||
-        target?.tagName === "TEXTAREA" ||
-        target?.isContentEditable;
+        target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
       if (isTypingTarget) return;
 
       if (event.key.toLowerCase() === "f") {
@@ -183,9 +183,7 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
   };
 
   const hasServerFilters =
-    selectedWings.length > 0 ||
-    selectedKinds.length > 0 ||
-    selectedRelationTypes.length > 0;
+    selectedWings.length > 0 || selectedKinds.length > 0 || selectedRelationTypes.length > 0;
   const isClientLabelFiltered = normalizedLabelQuery.length > 0;
 
   const filterSections = [
@@ -196,7 +194,7 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
       content: (
         <div className="space-y-2">
           <div className="relative">
-            <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2" />
             <Input
               type="search"
               value={labelQuery}
@@ -205,7 +203,7 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
               className="pl-7"
             />
           </div>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-muted-foreground text-xs">
             Label filtering is client-side over currently loaded evidence nodes.
           </p>
         </div>
@@ -227,12 +225,12 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
                   }
                 />
                 <span className="flex-1 truncate">{option.value}</span>
-                <span className="text-xs text-muted-foreground">{option.count}</span>
+                <span className="text-muted-foreground text-xs">{option.count}</span>
               </label>
             ))}
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground">No wings in current evidence data.</p>
+          <p className="text-muted-foreground text-xs">No wings in current evidence data.</p>
         ),
     },
     {
@@ -251,12 +249,12 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
                   }
                 />
                 <span className="flex-1 truncate">{option.value}</span>
-                <span className="text-xs text-muted-foreground">{option.count}</span>
+                <span className="text-muted-foreground text-xs">{option.count}</span>
               </label>
             ))}
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground">No categories in current evidence data.</p>
+          <p className="text-muted-foreground text-xs">No categories in current evidence data.</p>
         ),
     },
     {
@@ -276,19 +274,19 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
                   }
                   onCheckedChange={() => {
                     if (!isKnownEvidenceRelationType(option.value)) return;
-                    setSelectedRelationTypes((prev) =>
-                      toggleValue(prev, option.value) as EvidenceRelationType[]
+                    setSelectedRelationTypes(
+                      (prev) => toggleValue(prev, option.value) as EvidenceRelationType[]
                     );
                   }}
                   disabled={!isKnownEvidenceRelationType(option.value)}
                 />
                 <span className="flex-1 truncate">{relationTypeLabel(option.value)}</span>
-                <span className="text-xs text-muted-foreground">{option.count}</span>
+                <span className="text-muted-foreground text-xs">{option.count}</span>
               </label>
             ))}
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-muted-foreground text-xs">
             No relation types are available from the current evidence response.
           </p>
         ),
@@ -311,7 +309,9 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
             ))}
           </ul>
         ) : (
-          <p className="text-xs text-muted-foreground">Legend is unavailable until evidence edges load.</p>
+          <p className="text-muted-foreground text-xs">
+            Legend is unavailable until evidence edges load.
+          </p>
         ),
     },
     {
@@ -320,7 +320,13 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
       defaultOpen: true,
       content: (
         <div className="space-y-2">
-          <Button type="button" variant="outline" size="sm" className="w-full" onClick={clearFilters}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-full"
+            onClick={clearFilters}
+          >
             <RotateCcw className="size-3.5" />
             Reset (R)
           </Button>
@@ -377,7 +383,7 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
 
         <div className="space-y-3">
           {graphQuery.isLoading ? (
-            <div className="flex h-[65vh] min-h-[22rem] items-center justify-center rounded-xl border bg-card text-sm text-muted-foreground">
+            <div className="bg-card text-muted-foreground flex h-[65vh] min-h-[22rem] items-center justify-center rounded-xl border text-sm">
               Loading evidence graph…
             </div>
           ) : graphQuery.isSuccess && allNodes.length === 0 ? (
@@ -404,7 +410,7 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
             />
           )}
 
-          <p className="text-xs text-muted-foreground">
+          <p className="text-muted-foreground text-xs">
             Showing {visibleNodes.length} nodes and {visibleEdges.length} edges from{" "}
             {graph?.meta?.edge_source ?? "knowledge_relations"}.
             {hasServerFilters

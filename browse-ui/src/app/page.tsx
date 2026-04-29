@@ -4,6 +4,8 @@ import { useEffect } from "react";
 
 export default function Home() {
   const router = useRouter();
-  useEffect(() => { router.replace("/sessions"); }, [router]);
+  useEffect(() => {
+    router.replace("/sessions");
+  }, [router]);
   return null;
 }

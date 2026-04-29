@@ -18,10 +18,7 @@ function getRouteContext(pathname: string): RouteContext {
     return {
       title: "Session detail",
       subtitle: "Inspect timeline, checkpoints, and exported context for one run.",
-      breadcrumbs: [
-        { label: "Sessions", href: "/sessions" },
-        { label: "Session detail" },
-      ],
+      breadcrumbs: [{ label: "Sessions", href: "/sessions" }, { label: "Session detail" }],
     };
   }
 
@@ -70,16 +67,16 @@ export function Header() {
   const routeContext = useMemo(() => getRouteContext(pathname), [pathname]);
 
   return (
-    <header className="flex h-14 items-center justify-between gap-4 border-b bg-card px-4">
+    <header className="bg-card flex h-14 items-center justify-between gap-4 border-b px-4">
       <div className="flex min-w-0 items-center gap-3">
         <Breadcrumbs items={routeContext.breadcrumbs} className="min-w-0 text-xs" />
-        <span className="hidden text-border lg:inline">•</span>
-        <p className="hidden truncate text-xs text-muted-foreground lg:block">
+        <span className="text-border hidden lg:inline">•</span>
+        <p className="text-muted-foreground hidden truncate text-xs lg:block">
           {routeContext.subtitle}
         </p>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <div className="hidden items-center gap-1 text-xs text-muted-foreground sm:flex">
+        <div className="text-muted-foreground hidden items-center gap-1 text-xs sm:flex">
           <kbd className="rounded border px-1 font-mono text-[10px]">⌘K</kbd>
           <span>command palette</span>
           <span className="text-border">•</span>
@@ -92,8 +89,8 @@ export function Header() {
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
           aria-label="Toggle theme"
         >
-          <Sun className="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
-          <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
+          <Sun className="h-4 w-4 scale-100 rotate-0 transition-all dark:scale-0 dark:-rotate-90" />
+          <Moon className="absolute h-4 w-4 scale-0 rotate-90 transition-all dark:scale-100 dark:rotate-0" />
         </Button>
       </div>
     </header>

@@ -4,10 +4,7 @@ import { useMemo } from "react";
 
 import { Banner } from "@/components/data/banner";
 import { EmptyState } from "@/components/data/empty-state";
-import {
-  relationTypeColor,
-  relationTypeLabel,
-} from "@/components/data/evidence-relations";
+import { relationTypeColor, relationTypeLabel } from "@/components/data/evidence-relations";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useCommunities } from "@/lib/api/hooks";
@@ -55,13 +52,15 @@ export function CommunitiesTab({ active, onDrillIn }: CommunitiesTabProps) {
 
       {communitiesQuery.isLoading ? (
         <Card>
-          <CardContent className="py-10 text-center text-sm text-muted-foreground">
+          <CardContent className="text-muted-foreground py-10 text-center text-sm">
             Loading communities…
           </CardContent>
         </Card>
       ) : null}
 
-      {!communitiesQuery.isLoading && !communitiesQuery.isError && usefulCommunities.length === 0 ? (
+      {!communitiesQuery.isLoading &&
+      !communitiesQuery.isError &&
+      usefulCommunities.length === 0 ? (
         <EmptyState
           title="No useful communities yet"
           description="Only singleton or disconnected groups were found, so this tab hides noise."
@@ -91,7 +90,10 @@ export function CommunitiesTab({ active, onDrillIn }: CommunitiesTabProps) {
                   {(community.top_relation_types ?? []).length > 0 ? (
                     <span className="inline-flex flex-wrap gap-x-3 gap-y-1">
                       {(community.top_relation_types ?? []).map((item) => (
-                        <span key={`${community.id}:${item.type}`} className="inline-flex items-center gap-1">
+                        <span
+                          key={`${community.id}:${item.type}`}
+                          className="inline-flex items-center gap-1"
+                        >
                           <span
                             className="inline-block size-2 rounded-full"
                             style={{ backgroundColor: relationTypeColor(item.type) }}
@@ -118,10 +120,20 @@ export function CommunitiesTab({ active, onDrillIn }: CommunitiesTabProps) {
                   </ul>
                 </div>
                 <div className="flex flex-wrap gap-2 pt-1">
-                  <Button type="button" size="sm" variant="outline" onClick={() => onDrillIn?.("evidence")}>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onDrillIn?.("evidence")}
+                  >
                     Open Evidence tab
                   </Button>
-                  <Button type="button" size="sm" variant="outline" onClick={() => onDrillIn?.("similarity")}>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onDrillIn?.("similarity")}
+                  >
                     Open Similarity tab
                   </Button>
                 </div>

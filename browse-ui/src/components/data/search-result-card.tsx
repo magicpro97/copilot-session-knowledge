@@ -28,7 +28,7 @@ export function SearchResultCard({
   return (
     <Card
       className={cn(
-        "cursor-pointer border border-border/80 transition-colors hover:bg-muted/30",
+        "border-border/80 hover:bg-muted/30 cursor-pointer border transition-colors",
         className
       )}
       onClick={() => onSelect?.(result)}
@@ -44,20 +44,18 @@ export function SearchResultCard({
       <CardHeader className="gap-2">
         <div className="flex items-center justify-between gap-3">
           <CardTitle className="flex min-w-0 items-center gap-2 text-sm">
-            <Icon className="size-4 shrink-0 text-muted-foreground" />
+            <Icon className="text-muted-foreground size-4 shrink-0" />
             <span className="truncate">{titleText}</span>
           </CardTitle>
-          <span className="shrink-0 text-xs text-muted-foreground">
+          <span className="text-muted-foreground shrink-0 text-xs">
             Score {formatNumber(result.score)}
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {isSessionId && typeof result.id === "string" ? (
-            <IDBadge id={result.id} />
-          ) : null}
+          {isSessionId && typeof result.id === "string" ? <IDBadge id={result.id} /> : null}
           {result.wing ? <SourceBadge source={result.wing} /> : null}
           {result.kind ? (
-            <span className="rounded-md border border-border bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+            <span className="border-border bg-muted text-muted-foreground rounded-md border px-1.5 py-0.5 text-xs">
               {result.kind}
             </span>
           ) : null}
@@ -65,7 +63,7 @@ export function SearchResultCard({
       </CardHeader>
       {snippet ? (
         <CardContent>
-          <p className="line-clamp-4 text-sm text-muted-foreground">
+          <p className="text-muted-foreground line-clamp-4 text-sm">
             <Highlight text={snippet} query={query} />
           </p>
         </CardContent>

@@ -36,16 +36,16 @@ export function OperatorActionsPanel({
   if (actions.length === 0) return null;
 
   return (
-    <div className="space-y-2 rounded-lg border bg-card p-3">
-      <p className="text-xs font-medium text-foreground">{label}</p>
-      <p className="text-xs text-muted-foreground">{note}</p>
+    <div className="bg-card space-y-2 rounded-lg border p-3">
+      <p className="text-foreground text-xs font-medium">{label}</p>
+      <p className="text-muted-foreground text-xs">{note}</p>
       <div className="space-y-2">
         {actions.map((action) => (
-          <div key={action.id} className="rounded-md border bg-background p-2 text-xs">
-            <p className="font-medium text-foreground">{action.title}</p>
+          <div key={action.id} className="bg-background rounded-md border p-2 text-xs">
+            <p className="text-foreground font-medium">{action.title}</p>
             <p className="text-muted-foreground">{action.description}</p>
             <div className="mt-1 flex flex-wrap items-center gap-2">
-              <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+              <code className="bg-muted rounded px-1 py-0.5 font-mono text-[11px]">
                 {action.command}
               </code>
               <Button

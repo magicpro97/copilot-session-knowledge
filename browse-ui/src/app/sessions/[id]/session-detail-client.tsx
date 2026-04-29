@@ -171,10 +171,7 @@ export function SessionDetailClient() {
   return (
     <div className="space-y-4">
       <Breadcrumbs
-        items={[
-          { label: "Sessions", href: "/sessions" },
-          { label: shortId || "Session" },
-        ]}
+        items={[{ label: "Sessions", href: "/sessions" }, { label: shortId || "Session" }]}
       />
 
       {detailQuery.error ? (
@@ -186,7 +183,9 @@ export function SessionDetailClient() {
           }
         />
       ) : null}
-      {exportError ? <Banner tone="danger" title="Export failed" description={exportError} /> : null}
+      {exportError ? (
+        <Banner tone="danger" title="Export failed" description={exportError} />
+      ) : null}
 
       <Card>
         <CardHeader className="space-y-2">
@@ -195,7 +194,7 @@ export function SessionDetailClient() {
               <CardTitle className="text-xl">
                 {detailQuery.data?.meta.summary?.trim() || `Session ${shortId}`}
               </CardTitle>
-              <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-sm">
                 <SourceBadge source={detailQuery.data?.meta.source} />
                 <span>Events: {formatNumber(detailQuery.data?.meta.event_count_estimate)}</span>
                 <TimeRelative value={detailQuery.data?.meta.fts_indexed_at} />
@@ -209,7 +208,11 @@ export function SessionDetailClient() {
                 }}
                 disabled={exporting || !sessionId}
               >
-                {exporting ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+                {exporting ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Download className="size-4" />
+                )}
                 Export .md
               </Button>
               <Button variant="outline" onClick={() => setCompareOpen(true)}>
@@ -230,7 +233,10 @@ export function SessionDetailClient() {
         </TabsList>
 
         <TabsContent value="overview">
-          <OverviewTab meta={detailQuery.data?.meta ?? null} timeline={detailQuery.data?.timeline ?? []} />
+          <OverviewTab
+            meta={detailQuery.data?.meta ?? null}
+            timeline={detailQuery.data?.timeline ?? []}
+          />
         </TabsContent>
         <TabsContent value="timeline">
           <TimelineTab sessionId={sessionId} active={activeTab === "timeline"} />

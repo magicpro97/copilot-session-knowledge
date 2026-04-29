@@ -11,21 +11,21 @@ Usage:
 """
 
 import atexit
+import hashlib
 import json
 import os
+import re
 import signal
+import socket
 import sqlite3
 import sys
 import time
-import hashlib
-import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-import re
-import uuid
 
 if os.name == "nt":
     try:
@@ -35,7 +35,7 @@ if os.name == "nt":
         pass
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
-TOOLS_DIR = Path.home() / ".copilot" / "tools"
+TOOLS_DIR = Path(__file__).resolve().parent
 DB_PATH = SESSION_STATE / "knowledge.db"
 LOCK_FILE = SESSION_STATE / ".sync-daemon.lock"
 STATE_FILE = SESSION_STATE / ".sync-daemon-state.json"
@@ -152,10 +152,9 @@ def load_sync_config() -> dict:
 def _is_pid_running(pid: int) -> bool:
     if os.name == "nt":
         import ctypes
+
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        handle = ctypes.windll.kernel32.OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION, False, pid
-        )
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if handle:
             ctypes.windll.kernel32.CloseHandle(handle)
             return True
@@ -234,18 +233,14 @@ def save_state(state: dict) -> None:
 def _sync_foundation_current(db: sqlite3.Connection) -> bool:
     tables = {
         str(row[0])
-        for row in db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'sync_%'"
-        ).fetchall()
+        for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'sync_%'").fetchall()
     }
     if not REQUIRED_SYNC_TABLES.issubset(tables):
         return False
 
     actual = {
         str(row[0]): (str(row[1] or ""), str(row[2] or ""))
-        for row in db.execute(
-            "SELECT table_name, sync_scope, stable_id_column FROM sync_table_policies"
-        ).fetchall()
+        for row in db.execute("SELECT table_name, sync_scope, stable_id_column FROM sync_table_policies").fetchall()
     }
     return all(
         actual.get(table_name) == (sync_scope, stable_id_column)
@@ -300,9 +295,7 @@ def get_local_replica_id(db: sqlite3.Connection) -> str:
         digest = hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[:16]
         return f"local-{digest}"
 
-    row = db.execute(
-        "SELECT value FROM sync_state WHERE key='local_replica_id'"
-    ).fetchone()
+    row = db.execute("SELECT value FROM sync_state WHERE key='local_replica_id'").fetchone()
     if row and row[0]:
         existing = str(row[0])
         if existing and existing != "local":
@@ -310,8 +303,7 @@ def get_local_replica_id(db: sqlite3.Connection) -> str:
     replica_id = _seed_local_replica_id()
     db.execute(
         "INSERT INTO sync_state (key, value) VALUES ('local_replica_id', ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at=datetime('now')"
-        ,
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at=datetime('now')",
         (replica_id,),
     )
     return replica_id
@@ -493,9 +485,7 @@ def _table_policy(db: sqlite3.Connection, table_name: str) -> tuple[str, str]:
     return str(row[0] or ""), str(row[1] or "")
 
 
-def _lookup_local_id_by_stable_id(
-    db: sqlite3.Connection, table_name: str, stable_id: str
-) -> int | None:
+def _lookup_local_id_by_stable_id(db: sqlite3.Connection, table_name: str, stable_id: str) -> int | None:
     if not stable_id or not _is_safe_identifier(table_name):
         return None
     row = db.execute(
@@ -510,9 +500,7 @@ def _lookup_local_id_by_stable_id(
         return None
 
 
-def _portable_apply_payload(
-    db: sqlite3.Connection, table_name: str, row_stable_id: str, payload: dict
-) -> dict:
+def _portable_apply_payload(db: sqlite3.Connection, table_name: str, row_stable_id: str, payload: dict) -> dict:
     out = dict(payload)
 
     if table_name != "sessions":
@@ -681,15 +669,11 @@ def push_once(db: sqlite3.Connection, base_url: str, replica_id: str, limit: int
     overlap = set(accepted).intersection(duplicates)
     if overlap:
         raise ValueError(
-            "gateway response listed txn_ids as both accepted and duplicate: "
-            + ", ".join(sorted(overlap)[:5])
+            "gateway response listed txn_ids as both accepted and duplicate: " + ", ".join(sorted(overlap)[:5])
         )
     unexpected = (set(accepted) | set(duplicates)) - sent_txn_ids
     if unexpected:
-        raise ValueError(
-            "gateway response referenced unsent txn_ids: "
-            + ", ".join(sorted(unexpected)[:5])
-        )
+        raise ValueError("gateway response referenced unsent txn_ids: " + ", ".join(sorted(unexpected)[:5]))
     latest = str(response.get("latest_txn_id", "") or "")
     mark_txns_committed(db, accepted + duplicates)
     if latest:
@@ -888,9 +872,7 @@ def pull_once(db: sqlite3.Connection, base_url: str, replica_id: str, limit: int
     touched_document_ids: set[int] = set()
     touched_entry_ids: set[int] = set()
     while pages < MAX_PULL_PAGES_PER_CYCLE:
-        query = urllib.parse.urlencode(
-            {"replica_id": replica_id, "after": next_after, "limit": max(1, int(limit))}
-        )
+        query = urllib.parse.urlencode({"replica_id": replica_id, "after": next_after, "limit": max(1, int(limit))})
         endpoint = base_url.rstrip("/") + "/sync/pull?" + query
         response = _request_json(endpoint, method="GET", timeout=15)
 
@@ -1010,14 +992,7 @@ def run_sync_cycle(
         set_sync_state(db, "last_sync_activity", utc_now())
         db.commit()
         return result
-    except (
-        sqlite3.DatabaseError,
-        urllib.error.URLError,
-        urllib.error.HTTPError,
-        TimeoutError,
-        socket.timeout,
-        ValueError,
-    ) as exc:
+    except (sqlite3.DatabaseError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as exc:
         result["ok"] = False
         result["error"] = str(exc)
         if db is not None:

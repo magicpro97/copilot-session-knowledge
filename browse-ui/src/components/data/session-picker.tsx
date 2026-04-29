@@ -141,7 +141,10 @@ export function SessionPicker({
 
   const rememberSessionId = (sessionId: string) => {
     if (sessionId === currentSessionId || typeof window === "undefined") return;
-    const next = [sessionId, ...recentSessionIds.filter((id) => id !== sessionId)].slice(0, RECENT_LIMIT);
+    const next = [sessionId, ...recentSessionIds.filter((id) => id !== sessionId)].slice(
+      0,
+      RECENT_LIMIT
+    );
     setRecentSessionIds(next);
     writeRecentSessionIds(window.localStorage, next);
   };
@@ -168,7 +171,7 @@ export function SessionPicker({
           <p className="truncate text-sm font-medium">
             {formatSessionIdBadgeText(candidate.id)} — {candidate.summary?.trim() || "(no summary)"}
           </p>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-xs">
             <SourceBadge source={candidate.source} />
             <TimeRelative value={candidate.fts_indexed_at} />
           </div>
@@ -183,7 +186,7 @@ export function SessionPicker({
         Compare with
       </label>
       <div className="relative">
-        <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+        <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
         <Input
           id="compare-session-search"
           value={query}
@@ -196,17 +199,21 @@ export function SessionPicker({
 
       {recentCandidates.length > 0 ? (
         <div className="space-y-2">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Recent</p>
-          <div className="space-y-2">{recentCandidates.map((candidate) => renderSessionButton(candidate, "recent"))}</div>
+          <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
+            Recent
+          </p>
+          <div className="space-y-2">
+            {recentCandidates.map((candidate) => renderSessionButton(candidate, "recent"))}
+          </div>
         </div>
       ) : null}
 
       <div className="space-y-2">
-        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
           {debouncedQuery ? "Search results" : "Latest sessions"}
         </p>
         {activeQuery.isLoading || activeQuery.isFetching ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <div className="text-muted-foreground flex items-center gap-2 text-sm">
             <Loader2 className="size-4 animate-spin" />
             Loading sessions...
           </div>
@@ -215,17 +222,21 @@ export function SessionPicker({
           <Banner
             tone="danger"
             title="Failed to load sessions"
-            description={activeQuery.error instanceof Error ? activeQuery.error.message : "Unknown error"}
+            description={
+              activeQuery.error instanceof Error ? activeQuery.error.message : "Unknown error"
+            }
           />
         ) : null}
         {!activeQuery.error ? (
-          <ScrollArea className="max-h-72 rounded-lg border border-border/50 p-1">
+          <ScrollArea className="border-border/50 max-h-72 rounded-lg border p-1">
             <div className="space-y-1">
               {listedCandidates.length > 0 ? (
                 listedCandidates.map((candidate) => renderSessionButton(candidate, "result"))
               ) : (
-                <p className="px-2 py-3 text-sm text-muted-foreground">
-                  {debouncedQuery ? "No matching sessions found." : "No sessions available to compare."}
+                <p className="text-muted-foreground px-2 py-3 text-sm">
+                  {debouncedQuery
+                    ? "No matching sessions found."
+                    : "No sessions available to compare."}
                 </p>
               )}
             </div>

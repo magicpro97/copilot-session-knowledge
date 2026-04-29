@@ -31,21 +31,18 @@ export function useSearchHistory() {
     }
   }, []);
 
-  const addSearch = useCallback(
-    (query: string) => {
-      const sanitized = sanitizeValue(query);
-      if (!sanitized) return;
-      setRecentSearches((previous) => {
-        const next = [
-          sanitized,
-          ...previous.filter((item) => item !== sanitized),
-        ].slice(0, MAX_ITEMS);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-        return next;
-      });
-    },
-    []
-  );
+  const addSearch = useCallback((query: string) => {
+    const sanitized = sanitizeValue(query);
+    if (!sanitized) return;
+    setRecentSearches((previous) => {
+      const next = [sanitized, ...previous.filter((item) => item !== sanitized)].slice(
+        0,
+        MAX_ITEMS
+      );
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
 
   const clearSearches = useCallback(() => {
     setRecentSearches([]);

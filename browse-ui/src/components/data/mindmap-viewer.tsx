@@ -93,7 +93,7 @@ export function MindmapViewer({ markdown, title }: MindmapViewerProps) {
 
         {error ? <Banner tone="danger" title="Mindmap render error" description={error} /> : null}
 
-        <div className="overflow-hidden rounded-lg border border-border bg-muted/20">
+        <div className="border-border bg-muted/20 overflow-hidden rounded-lg border">
           <svg ref={svgRef} className="h-[540px] w-full" role="img" aria-label="Session mindmap" />
         </div>
       </CardContent>

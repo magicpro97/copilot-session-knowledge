@@ -34,14 +34,14 @@ export function ToolUsageBar({ timeline }: ToolUsageBarProps) {
       </CardHeader>
       <CardContent className="space-y-3">
         <div
-          className="flex h-2 overflow-hidden rounded-full bg-muted"
+          className="bg-muted flex h-2 overflow-hidden rounded-full"
           role="img"
           aria-label="Tool usage distribution"
         >
           {entries.map(([tool, count]) => (
             <span
               key={tool}
-              className="h-full bg-primary/70"
+              className="bg-primary/70 h-full"
               style={{ width: `${(count / total) * 100}%` }}
               title={`${tool}: ${count}`}
             />
@@ -52,7 +52,7 @@ export function ToolUsageBar({ timeline }: ToolUsageBarProps) {
           {entries.map(([tool, count]) => (
             <span
               key={tool}
-              className="rounded-full border border-border bg-muted px-2 py-0.5 text-xs"
+              className="border-border bg-muted rounded-full border px-2 py-0.5 text-xs"
             >
               {tool} × {formatNumber(count)}
             </span>

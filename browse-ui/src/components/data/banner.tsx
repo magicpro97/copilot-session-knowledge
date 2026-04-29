@@ -11,8 +11,7 @@ const TONE_STYLES: Record<BannerTone, string> = {
     "border-[hsl(145_77%_24%/0.3)] bg-[hsl(142_72%_91%/0.35)] text-foreground dark:bg-[hsl(154_64%_8%/0.8)]",
   warning:
     "border-[hsl(45_78%_42%/0.3)] bg-[hsl(48_100%_90%/0.55)] text-foreground dark:bg-[hsl(45_58%_10%/0.8)]",
-  danger:
-    "border-destructive/30 bg-destructive/10 text-foreground dark:bg-destructive/20",
+  danger: "border-destructive/30 bg-destructive/10 text-foreground dark:bg-destructive/20",
 };
 
 const TONE_ICONS: Record<BannerTone, ReactNode> = {
@@ -30,13 +29,7 @@ type BannerProps = {
   actions?: ReactNode;
 };
 
-export function Banner({
-  title,
-  description,
-  tone = "info",
-  className,
-  actions,
-}: BannerProps) {
+export function Banner({ title, description, tone = "info", className, actions }: BannerProps) {
   return (
     <div
       role="status"
@@ -46,12 +39,10 @@ export function Banner({
         className
       )}
     >
-      <div className="pt-0.5 text-muted-foreground">{TONE_ICONS[tone]}</div>
+      <div className="text-muted-foreground pt-0.5">{TONE_ICONS[tone]}</div>
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium">{title}</p>
-        {description ? (
-          <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>
-        ) : null}
+        {description ? <p className="text-muted-foreground mt-0.5 text-sm">{description}</p> : null}
       </div>
       {actions ? <div className="shrink-0">{actions}</div> : null}
     </div>

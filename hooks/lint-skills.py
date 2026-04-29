@@ -23,8 +23,8 @@ Usage:
 """
 
 import os
-import sys
 import re
+import sys
 from pathlib import Path
 from typing import NamedTuple
 
@@ -37,6 +37,7 @@ if os.name == "nt":
 
 
 # ─── Auto-detect schemas from installed CLI ──────────────────────────────
+
 
 def _find_latest_app_js() -> Path | None:
     """Find the latest Copilot CLI app.js file."""
@@ -92,7 +93,7 @@ def _parse_tool_map_from_appjs(app_js: Path) -> set[str] | None:
     start = m.start()
     chunk = content[start:]
     eq_pos = chunk.index("=")
-    obj_str = chunk[eq_pos + 1:]
+    obj_str = chunk[eq_pos + 1 :]
 
     # Parse balanced braces
     depth = 0
@@ -135,7 +136,7 @@ def _parse_agent_fields_from_appjs(app_js: Path) -> set[str] | None:
     for fm in re.finditer(r'"([a-z][a-z-]*)"', chunk):
         fields.add(fm.group(1))
     # Also catch unquoted keys before Zod calls or variable references
-    for fm in re.finditer(r'(?:^|,|\{)\s*(\w+)\s*:', chunk):
+    for fm in re.finditer(r"(?:^|,|\{)\s*(\w+)\s*:", chunk):
         key = fm.group(1)
         if key and not key[0].isupper() and key not in ("ne", "De"):
             fields.add(key)
@@ -155,27 +156,63 @@ def _detect_cli_version(app_js: Path) -> str | None:
 
 # Fallback hardcoded schemas (from CLI v1.0.25, updated as needed)
 _FALLBACK_AGENT_FIELDS = {
-    "name", "description", "tools", "mcp-servers",
-    "disable-model-invocation", "user-invocable",
-    "model", "github", "skills", "handoffs",
+    "name",
+    "description",
+    "tools",
+    "mcp-servers",
+    "disable-model-invocation",
+    "user-invocable",
+    "model",
+    "github",
+    "skills",
+    "handoffs",
     "infer",  # deprecated but still parsed
 }
 
 _FALLBACK_TOOL_CATEGORIES = {
-    "execute", "shell", "bash", "powershell",
-    "read", "NotebookRead", "edit", "MultiEdit", "Write", "NotebookEdit",
-    "search", "Grep", "Glob", "grep",
-    "custom-agent", "agent", "task",
-    "runCommands", "runCommands-runInTerminal", "runInTerminal",
-    "edit-editFiles", "editFiles",
-    "create-createFile", "createFile", "createDirectory",
-    "search-codebase", "codebase",
-    "search-fileSearch", "fileSearch",
-    "search-textSearch", "textSearch",
-    "search-readFile", "readFile",
+    "execute",
+    "shell",
+    "bash",
+    "powershell",
+    "read",
+    "NotebookRead",
+    "edit",
+    "MultiEdit",
+    "Write",
+    "NotebookEdit",
+    "search",
+    "Grep",
+    "Glob",
+    "grep",
+    "custom-agent",
+    "agent",
+    "task",
+    "runCommands",
+    "runCommands-runInTerminal",
+    "runInTerminal",
+    "edit-editFiles",
+    "editFiles",
+    "create-createFile",
+    "createFile",
+    "createDirectory",
+    "search-codebase",
+    "codebase",
+    "search-fileSearch",
+    "fileSearch",
+    "search-textSearch",
+    "textSearch",
+    "search-readFile",
+    "readFile",
     # Additional known tools not in T_n but valid:
-    "create", "skill", "view", "glob",
-    "web_search", "web_fetch", "ask_user", "sql", "lsp",
+    "create",
+    "skill",
+    "view",
+    "glob",
+    "web_search",
+    "web_fetch",
+    "ask_user",
+    "sql",
+    "lsp",
 }
 
 # Try auto-detect from installed CLI
@@ -186,9 +223,17 @@ _auto_tools = _parse_tool_map_from_appjs(_APP_JS) if _APP_JS else None
 _auto_agent_fields = _parse_agent_fields_from_appjs(_APP_JS) if _APP_JS else None
 
 if _auto_tools:
-    VALID_CLI_TOOLS = _auto_tools | {"create", "skill", "view", "glob",
-                                      "web_search", "web_fetch", "ask_user",
-                                      "sql", "lsp"}
+    VALID_CLI_TOOLS = _auto_tools | {
+        "create",
+        "skill",
+        "view",
+        "glob",
+        "web_search",
+        "web_fetch",
+        "ask_user",
+        "sql",
+        "lsp",
+    }
 else:
     VALID_CLI_TOOLS = _FALLBACK_TOOL_CATEGORIES
 
@@ -198,42 +243,64 @@ else:
     AGENT_VALID_FIELDS = _FALLBACK_AGENT_FIELDS
 
 SKILL_VALID_FIELDS = {
-    "name", "description", "allowed-tools",
-    "user-invocable", "disable-model-invocation",
+    "name",
+    "description",
+    "allowed-tools",
+    "user-invocable",
+    "disable-model-invocation",
     # Cross-platform fields (Claude Code / Kiro) — not used by Copilot CLI
     # but harmless and intentional for multi-platform compatibility:
-    "aliases", "context", "model", "skills", "hooks",
-    "license", "metadata", "version",
+    "aliases",
+    "context",
+    "model",
+    "skills",
+    "hooks",
+    "license",
+    "metadata",
+    "version",
     # Vendored-skill provenance/attribution fields — intentional for vendored skills
     # (e.g. karpathy-guidelines). Silently ignored by the CLI but required here to
     # avoid false SK-007 warnings for files that legitimately carry these fields.
-    "vendored-from", "vendored-commit", "supported-hosts",
+    "vendored-from",
+    "vendored-commit",
+    "supported-hosts",
 }
 
 # VS Code tool names (NOT valid in CLI)
 VSCODE_TOOL_PATTERNS = [
-    r"^search/",      # search/codebase, search/usages
-    r"^web/",          # web/fetch
-    r"^read/",         # read/problems, read/readFile
-    r"^edit/",         # edit/editFiles
-    r"^execute/",      # execute/runTests, execute/runInTerminal
+    r"^search/",  # search/codebase, search/usages
+    r"^web/",  # web/fetch
+    r"^read/",  # read/problems, read/readFile
+    r"^edit/",  # edit/editFiles
+    r"^execute/",  # execute/runTests, execute/runInTerminal
 ]
 
 # Claude Code tool names (NOT valid in Copilot CLI)
 CLAUDE_TOOLS = {
-    "Bash", "Read", "Write", "Edit", "Grep", "Glob", "Task",
-    "WebFetch", "WebSearch", "MultiTool", "NotebookEdit",
-    "TodoRead", "TodoWrite", "AskUserQuestion",
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "Grep",
+    "Glob",
+    "Task",
+    "WebFetch",
+    "WebSearch",
+    "MultiTool",
+    "NotebookEdit",
+    "TodoRead",
+    "TodoWrite",
+    "AskUserQuestion",
 }
 
 
 class Issue(NamedTuple):
-    level: str      # "error" or "warning"
+    level: str  # "error" or "warning"
     file: str
     line: int
-    code: str       # e.g. "SK-001"
+    code: str  # e.g. "SK-001"
     message: str
-    fix: str        # suggested fix or ""
+    fix: str  # suggested fix or ""
 
 
 def parse_frontmatter(content: str) -> tuple[dict, int]:
@@ -326,18 +393,21 @@ def lint_agent_file(filepath: Path, content: str) -> list[Issue]:
     fields, _ = parse_frontmatter(content)
 
     if not fields:
-        issues.append(Issue("error", str(filepath), 1, "AG-001",
-                            "Missing YAML frontmatter (---)", "Add frontmatter block"))
+        issues.append(
+            Issue("error", str(filepath), 1, "AG-001", "Missing YAML frontmatter (---)", "Add frontmatter block")
+        )
         return issues
 
     # Required fields
     if "name" not in fields:
-        issues.append(Issue("error", str(filepath), 1, "AG-002",
-                            "Missing required field: name", "Add 'name: ...' to frontmatter"))
+        issues.append(
+            Issue("error", str(filepath), 1, "AG-002", "Missing required field: name", "Add 'name: ...' to frontmatter")
+        )
 
     if "description" not in fields:
-        issues.append(Issue("error", str(filepath), 1, "AG-003",
-                            "Missing required field: description", "Add 'description: ...'"))
+        issues.append(
+            Issue("error", str(filepath), 1, "AG-003", "Missing required field: description", "Add 'description: ...'")
+        )
 
     # Deprecated 'infer' field
     if "infer" in fields:
@@ -349,20 +419,41 @@ def lint_agent_file(filepath: Path, content: str) -> list[Issue]:
                 new_fields = "user-invocable: true"
             else:
                 new_fields = "disable-model-invocation: true"
-            issues.append(Issue("warning", str(filepath), line, "AG-004",
-                                f"Deprecated field 'infer: {val}' — use '{new_fields}' instead",
-                                f"Replace 'infer: {val}' with '{new_fields}'"))
+            issues.append(
+                Issue(
+                    "warning",
+                    str(filepath),
+                    line,
+                    "AG-004",
+                    f"Deprecated field 'infer: {val}' — use '{new_fields}' instead",
+                    f"Replace 'infer: {val}' with '{new_fields}'",
+                )
+            )
         else:
-            issues.append(Issue("error", str(filepath), line, "AG-005",
-                                f"'infer' must be boolean (true/false), got '{val}'",
-                                "Use 'infer: true' or 'infer: false'"))
+            issues.append(
+                Issue(
+                    "error",
+                    str(filepath),
+                    line,
+                    "AG-005",
+                    f"'infer' must be boolean (true/false), got '{val}'",
+                    "Use 'infer: true' or 'infer: false'",
+                )
+            )
 
     # Unknown fields
     for key, info in fields.items():
         if key not in AGENT_VALID_FIELDS:
-            issues.append(Issue("warning", str(filepath), info["line"], "AG-006",
-                                f"Unknown field '{key}' — will be silently ignored by CLI",
-                                f"Remove '{key}' or check if you meant a valid field"))
+            issues.append(
+                Issue(
+                    "warning",
+                    str(filepath),
+                    info["line"],
+                    "AG-006",
+                    f"Unknown field '{key}' — will be silently ignored by CLI",
+                    f"Remove '{key}' or check if you meant a valid field",
+                )
+            )
 
     # Tool name validation
     if "tools" in fields:
@@ -371,25 +462,53 @@ def lint_agent_file(filepath: Path, content: str) -> list[Issue]:
 
         for tool in tools:
             if is_vscode_tool(tool):
-                issues.append(Issue("error", str(filepath), line, "AG-007",
-                                    f"VS Code tool name '{tool}' — not valid in Copilot CLI",
-                                    f"Use CLI equivalent (e.g., 'read', 'edit', 'search', 'bash')"))
+                issues.append(
+                    Issue(
+                        "error",
+                        str(filepath),
+                        line,
+                        "AG-007",
+                        f"VS Code tool name '{tool}' — not valid in Copilot CLI",
+                        "Use CLI equivalent (e.g., 'read', 'edit', 'search', 'bash')",
+                    )
+                )
             elif is_claude_tool(tool):
-                issues.append(Issue("error", str(filepath), line, "AG-008",
-                                    f"Claude Code tool name '{tool}' — not valid in Copilot CLI",
-                                    f"Use CLI equivalent (lowercase: 'bash', 'read', 'edit')"))
+                issues.append(
+                    Issue(
+                        "error",
+                        str(filepath),
+                        line,
+                        "AG-008",
+                        f"Claude Code tool name '{tool}' — not valid in Copilot CLI",
+                        "Use CLI equivalent (lowercase: 'bash', 'read', 'edit')",
+                    )
+                )
             elif tool.lower() not in {t.lower() for t in VALID_CLI_TOOLS}:
                 # Check if it looks like an MCP tool
                 if not tool.startswith("mcp__"):
-                    issues.append(Issue("warning", str(filepath), line, "AG-009",
-                                        f"Unknown tool '{tool}' — may be ignored by CLI",
-                                        f"Known tools: {', '.join(sorted(VALID_CLI_TOOLS))}"))
+                    issues.append(
+                        Issue(
+                            "warning",
+                            str(filepath),
+                            line,
+                            "AG-009",
+                            f"Unknown tool '{tool}' — may be ignored by CLI",
+                            f"Known tools: {', '.join(sorted(VALID_CLI_TOOLS))}",
+                        )
+                    )
 
     # Schema confusion: skill fields used in agent
     if "allowed-tools" in fields:
-        issues.append(Issue("error", str(filepath), fields["allowed-tools"]["line"], "AG-010",
-                            "'allowed-tools' is a SKILL field — agents use 'tools' (array)",
-                            "Rename 'allowed-tools' to 'tools' and use array syntax"))
+        issues.append(
+            Issue(
+                "error",
+                str(filepath),
+                fields["allowed-tools"]["line"],
+                "AG-010",
+                "'allowed-tools' is a SKILL field — agents use 'tools' (array)",
+                "Rename 'allowed-tools' to 'tools' and use array syntax",
+            )
+        )
 
     return issues
 
@@ -400,55 +519,90 @@ def lint_skill_file(filepath: Path, content: str) -> list[Issue]:
     fields, _ = parse_frontmatter(content)
 
     if not fields:
-        issues.append(Issue("error", str(filepath), 1, "SK-001",
-                            "Missing YAML frontmatter (---)", "Add frontmatter block"))
+        issues.append(
+            Issue("error", str(filepath), 1, "SK-001", "Missing YAML frontmatter (---)", "Add frontmatter block")
+        )
         return issues
 
     # Required fields
     if "name" not in fields:
-        issues.append(Issue("error", str(filepath), 1, "SK-002",
-                            "Missing required field: name", "Add 'name: ...'"))
+        issues.append(Issue("error", str(filepath), 1, "SK-002", "Missing required field: name", "Add 'name: ...'"))
 
     if "description" not in fields:
-        issues.append(Issue("error", str(filepath), 1, "SK-003",
-                            "Missing required field: description", "Add 'description: ...'"))
+        issues.append(
+            Issue("error", str(filepath), 1, "SK-003", "Missing required field: description", "Add 'description: ...'")
+        )
 
     # Name constraints
     if "name" in fields:
         name_val = fields["name"]["value"].strip("'\"")
         if len(name_val) > 64:
-            issues.append(Issue("error", str(filepath), fields["name"]["line"], "SK-004",
-                                f"Skill name exceeds 64 chars ({len(name_val)} chars)",
-                                "Shorten the name"))
+            issues.append(
+                Issue(
+                    "error",
+                    str(filepath),
+                    fields["name"]["line"],
+                    "SK-004",
+                    f"Skill name exceeds 64 chars ({len(name_val)} chars)",
+                    "Shorten the name",
+                )
+            )
 
     # Description constraints
     if "description" in fields:
         desc_val = fields["description"]["value"].strip("'\"")
         if not desc_val.startswith(">") and len(desc_val) > 1024:
-            issues.append(Issue("warning", str(filepath), fields["description"]["line"], "SK-005",
-                                f"Description exceeds 1024 chars ({len(desc_val)} chars)",
-                                "Shorten the description"))
+            issues.append(
+                Issue(
+                    "warning",
+                    str(filepath),
+                    fields["description"]["line"],
+                    "SK-005",
+                    f"Description exceeds 1024 chars ({len(desc_val)} chars)",
+                    "Shorten the description",
+                )
+            )
 
     # Deprecated 'infer' field (silently ignored in skills!)
     if "infer" in fields:
-        issues.append(Issue("error", str(filepath), fields["infer"]["line"], "SK-006",
-                            "'infer' is NOT a valid skill field — it's silently ignored. "
-                            "Use 'user-invocable' and/or 'disable-model-invocation'",
-                            "Remove 'infer' and use 'user-invocable: true/false'"))
+        issues.append(
+            Issue(
+                "error",
+                str(filepath),
+                fields["infer"]["line"],
+                "SK-006",
+                "'infer' is NOT a valid skill field — it's silently ignored. "
+                "Use 'user-invocable' and/or 'disable-model-invocation'",
+                "Remove 'infer' and use 'user-invocable: true/false'",
+            )
+        )
 
     # Unknown fields (silently dropped by CLI for skills)
     for key, info in fields.items():
         if key not in SKILL_VALID_FIELDS:
-            issues.append(Issue("warning", str(filepath), info["line"], "SK-007",
-                                f"Unknown field '{key}' — silently ignored by CLI (skills use "
-                                f"'onUnsupportedFields: ignore')",
-                                f"Remove '{key}' — valid fields: {', '.join(sorted(SKILL_VALID_FIELDS))}"))
+            issues.append(
+                Issue(
+                    "warning",
+                    str(filepath),
+                    info["line"],
+                    "SK-007",
+                    f"Unknown field '{key}' — silently ignored by CLI (skills use 'onUnsupportedFields: ignore')",
+                    f"Remove '{key}' — valid fields: {', '.join(sorted(SKILL_VALID_FIELDS))}",
+                )
+            )
 
     # Schema confusion: agent fields used in skill
     if "tools" in fields:
-        issues.append(Issue("error", str(filepath), fields["tools"]["line"], "SK-008",
-                            "'tools' is an AGENT field — skills use 'allowed-tools' (string, comma-separated)",
-                            "Rename 'tools' to 'allowed-tools' and use comma-separated string"))
+        issues.append(
+            Issue(
+                "error",
+                str(filepath),
+                fields["tools"]["line"],
+                "SK-008",
+                "'tools' is an AGENT field — skills use 'allowed-tools' (string, comma-separated)",
+                "Rename 'tools' to 'allowed-tools' and use comma-separated string",
+            )
+        )
 
     return issues
 
@@ -529,8 +683,7 @@ def main():
         try:
             content = filepath.read_text(encoding="utf-8", errors="replace")
         except Exception as e:
-            all_issues.append(Issue("error", str(filepath), 0, "IO-001",
-                                    f"Cannot read file: {e}", ""))
+            all_issues.append(Issue("error", str(filepath), 0, "IO-001", f"Cannot read file: {e}", ""))
             continue
 
         files_checked += 1

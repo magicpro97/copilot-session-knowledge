@@ -1,9 +1,6 @@
 const NUMBER_FORMATTER = new Intl.NumberFormat();
 
-export function formatSessionIdBadgeText(
-  sessionId: string | null | undefined,
-  length = 8
-): string {
+export function formatSessionIdBadgeText(sessionId: string | null | undefined, length = 8): string {
   if (!sessionId) return "—";
   return sessionId.slice(0, length);
 }
@@ -29,9 +26,7 @@ export function formatFileSize(bytes: number | null | undefined): string {
   return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
-function parseDateInput(
-  input: string | number | Date | null | undefined
-): Date | null {
+function parseDateInput(input: string | number | Date | null | undefined): Date | null {
   if (input == null) return null;
   const date = input instanceof Date ? input : new Date(input);
   return Number.isNaN(date.getTime()) ? null : date;

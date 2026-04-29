@@ -66,7 +66,9 @@ describe("ClustersTab similarity mode", () => {
         } as any;
       }
 
-      const entryId = Number(Array.isArray(params?.entry_id) ? params.entry_id[0] : params?.entry_id);
+      const entryId = Number(
+        Array.isArray(params?.entry_id) ? params.entry_id[0] : params?.entry_id
+      );
       if (entryId === 1) {
         return {
           data: {

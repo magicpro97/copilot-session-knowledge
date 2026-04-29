@@ -19,9 +19,7 @@ export function splitHighlightParts(text: string, query: string): HighlightPart[
   ).filter(Boolean);
 
   const tokenSet = new Set(rawTokens.map((token) => token.toLowerCase()));
-  const tokens = rawTokens.map((token) =>
-    token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  );
+  const tokens = rawTokens.map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 
   if (!tokens.length) return [{ text, highlighted: false }];
 
@@ -49,7 +47,7 @@ export function Highlight({ text, query = "", className }: HighlightProps) {
         part.highlighted ? (
           <mark
             key={`${part.text}-${index}`}
-            className="rounded bg-primary/15 px-0.5 text-foreground"
+            className="bg-primary/15 text-foreground rounded px-0.5"
           >
             {part.text}
           </mark>

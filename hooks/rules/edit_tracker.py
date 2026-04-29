@@ -3,6 +3,7 @@
 Combines track-bash-edits.py and test-after-edit.py.
 Uses HMAC-signed counters consistently (fixes test-after-edit plain counter bug).
 """
+
 import os
 import re
 import subprocess
@@ -10,23 +11,33 @@ import sys
 from pathlib import Path
 
 from . import Rule
-from .common import MARKERS_DIR, CODE_EXTENSIONS, is_session_path, info
+from .common import CODE_EXTENSIONS, MARKERS_DIR, info, is_session_path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
-    from marker_auth import (sign_counter, verify_counter,
-                             sign_list_marker, verify_list_marker)
+    from marker_auth import sign_counter, sign_list_marker, verify_counter, verify_list_marker
 except ImportError:
-    def sign_counter(p, v): p.parent.mkdir(parents=True, exist_ok=True); p.write_text(str(v))
+
+    def sign_counter(p, v):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(str(v))
+
     def verify_counter(p):
-        try: return int(p.read_text().strip()) if p.is_file() else 0
-        except Exception: return 0
+        try:
+            return int(p.read_text().strip()) if p.is_file() else 0
+        except Exception:
+            return 0
+
     def sign_list_marker(p, lines):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("\n".join(sorted(lines)))
+
     def verify_list_marker(p):
-        try: return set(p.read_text().strip().splitlines()) if p.is_file() else set()
-        except Exception: return set()
+        try:
+            return set(p.read_text().strip().splitlines()) if p.is_file() else set()
+        except Exception:
+            return set()
+
 
 CODE_EDIT_COUNTER = MARKERS_DIR / "code-edit-count"
 PY_EDIT_COUNTER = MARKERS_DIR / "py-edit-count"
@@ -78,7 +89,7 @@ class TrackEditsRule(Rule):
         self._save_seen(previously_seen | current_modified)
 
         if new_code_files:
-            files_str = ', '.join(sorted(new_code_files)[:5])
+            files_str = ", ".join(sorted(new_code_files)[:5])
             msg = f"  \U0001f4dd Detected {len(new_code_files)} file change(s) via bash: {files_str}"
             if len(new_code_files) > 5:
                 msg += f"\n     ... and {len(new_code_files) - 5} more"
@@ -89,8 +100,7 @@ class TrackEditsRule(Rule):
     def _get_git_modified(self):
         try:
             result = subprocess.run(
-                ["git", "status", "--porcelain", "-uall"],
-                capture_output=True, text=True, timeout=5, cwd=os.getcwd()
+                ["git", "status", "--porcelain", "-uall"], capture_output=True, text=True, timeout=5, cwd=os.getcwd()
             )
             if result.returncode != 0:
                 return set()

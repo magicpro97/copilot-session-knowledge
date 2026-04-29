@@ -29,7 +29,7 @@ if os.name == "nt":
         pass
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
-TOOLS_DIR = Path.home() / ".copilot" / "tools"
+TOOLS_DIR = Path(__file__).resolve().parent
 DB_PATH = SESSION_STATE / "knowledge.db"
 CONFIG_PATH = TOOLS_DIR / "sync-config.json"
 
@@ -82,10 +82,9 @@ def _is_pid_running(pid: int) -> bool:
     if os.name == "nt":
         try:
             import ctypes
+
             PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            handle = ctypes.windll.kernel32.OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION, False, pid
-            )
+            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if handle:
                 ctypes.windll.kernel32.CloseHandle(handle)
                 return True
@@ -259,21 +258,11 @@ def collect_status(db_path: Path = DB_PATH, check_health: bool = True) -> dict:
         return out
 
     try:
-        has_sync_state = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_state'"
-        ).fetchone()
-        has_sync_txns = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_txns'"
-        ).fetchone()
-        has_sync_ops = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_ops'"
-        ).fetchone()
-        has_failures = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_failures'"
-        ).fetchone()
-        has_cursors = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_cursors'"
-        ).fetchone()
+        has_sync_state = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_state'").fetchone()
+        has_sync_txns = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_txns'").fetchone()
+        has_sync_ops = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_ops'").fetchone()
+        has_failures = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_failures'").fetchone()
+        has_cursors = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_cursors'").fetchone()
 
         if has_sync_state:
             state_rows = db.execute("SELECT key, value FROM sync_state").fetchall()
@@ -285,15 +274,9 @@ def collect_status(db_path: Path = DB_PATH, check_health: bool = True) -> dict:
             out["last_pulled_txn_id"] = state.get("last_pulled_txn_id", "")
 
         if has_sync_txns:
-            out["pending_txns"] = db.execute(
-                "SELECT COUNT(*) FROM sync_txns WHERE status='pending'"
-            ).fetchone()[0]
-            out["committed_txns"] = db.execute(
-                "SELECT COUNT(*) FROM sync_txns WHERE status='committed'"
-            ).fetchone()[0]
-            out["failed_txns"] = db.execute(
-                "SELECT COUNT(*) FROM sync_txns WHERE status='failed'"
-            ).fetchone()[0]
+            out["pending_txns"] = db.execute("SELECT COUNT(*) FROM sync_txns WHERE status='pending'").fetchone()[0]
+            out["committed_txns"] = db.execute("SELECT COUNT(*) FROM sync_txns WHERE status='committed'").fetchone()[0]
+            out["failed_txns"] = db.execute("SELECT COUNT(*) FROM sync_txns WHERE status='failed'").fetchone()[0]
 
         if has_sync_ops:
             out["sync_ops"] = db.execute("SELECT COUNT(*) FROM sync_ops").fetchone()[0]
@@ -342,8 +325,8 @@ def format_status(status: dict) -> str:
         f"  Configured:         {'yes' if status['configured'] else 'no'}",
         f"  Connection string:  {status['connection_string'] or '(not set)'}",
         f"  Gateway target:     {status.get('gateway_target', 'unconfigured')}",
-        f"  Client contract:    HTTP(S) gateway URL (local-first)",
-        f"  Direct DB sync:     no",
+        "  Client contract:    HTTP(S) gateway URL (local-first)",
+        "  Direct DB sync:     no",
         f"  DB exists:          {'yes' if status['db_exists'] else 'no'}",
         f"  Local replica id:   {status['local_replica_id'] or '(unset)'}",
         "",
@@ -398,7 +381,9 @@ def main() -> None:
             print(f"  Lock exists:    {'yes' if payload.get('lock_exists') else 'no'}")
             print(f"  PID:            {payload.get('pid') if payload.get('pid') is not None else '(none)'}")
             print(f"  PID running:    {'yes' if payload.get('pid_running') else 'no'}")
-            print(f"  Manager:        {payload.get('managed_by', 'none')} ({payload.get('manager_state', 'unavailable')})")
+            print(
+                f"  Manager:        {payload.get('managed_by', 'none')} ({payload.get('manager_state', 'unavailable')})"
+            )
             print(f"  Log file:       {payload.get('log_path', '(unknown)')}")
             print(f"  Log exists:     {'yes' if payload.get('log_exists') else 'no'}")
         return

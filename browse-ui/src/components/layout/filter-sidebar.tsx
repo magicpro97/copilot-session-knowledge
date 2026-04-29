@@ -35,7 +35,7 @@ export function FilterSidebar({
 
   if (collapsed) {
     return (
-      <aside className={cn("w-12 shrink-0 rounded-xl border bg-card p-2", className)}>
+      <aside className={cn("bg-card w-12 shrink-0 rounded-xl border p-2", className)}>
         <Button
           type="button"
           variant="ghost"
@@ -50,12 +50,7 @@ export function FilterSidebar({
   }
 
   return (
-    <aside
-      className={cn(
-        "w-[var(--sidebar-width)] shrink-0 rounded-xl border bg-card",
-        className
-      )}
-    >
+    <aside className={cn("bg-card w-[var(--sidebar-width)] shrink-0 rounded-xl border", className)}>
       <div className="flex items-center justify-between border-b px-3 py-2">
         <h2 className="text-sm font-medium">{title}</h2>
         {collapsible ? (
@@ -76,7 +71,7 @@ export function FilterSidebar({
           {sections.map((section) => {
             const isOpen = openSectionIds[section.id];
             return (
-              <section key={section.id} className="rounded-lg border border-border/80">
+              <section key={section.id} className="border-border/80 rounded-lg border">
                 <button
                   type="button"
                   className="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium"
@@ -89,9 +84,9 @@ export function FilterSidebar({
                 >
                   <span>{section.title}</span>
                   {isOpen ? (
-                    <ChevronDown className="size-4 text-muted-foreground" />
+                    <ChevronDown className="text-muted-foreground size-4" />
                   ) : (
-                    <ChevronRight className="size-4 text-muted-foreground" />
+                    <ChevronRight className="text-muted-foreground size-4" />
                   )}
                 </button>
                 {isOpen ? (

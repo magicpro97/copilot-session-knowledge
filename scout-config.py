@@ -21,7 +21,7 @@ if os.name == "nt":
     except Exception:
         pass
 
-TOOLS_DIR = Path.home() / ".copilot" / "tools"
+TOOLS_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = TOOLS_DIR / "trend-scout-config.json"
 
 
@@ -75,7 +75,9 @@ def get_status() -> dict:
         "lanes": lanes_info,
         "analysis": {
             "enabled": bool(analysis_cfg.get("enabled", False)),
-            "model": str(analysis_cfg.get("model", trend_scout.DEFAULT_MODELS_MODEL) or trend_scout.DEFAULT_MODELS_MODEL),
+            "model": str(
+                analysis_cfg.get("model", trend_scout.DEFAULT_MODELS_MODEL) or trend_scout.DEFAULT_MODELS_MODEL
+            ),
             "token_env": token_env,
             "token_present": bool(os.environ.get(token_env)),
         },
@@ -113,7 +115,9 @@ def main() -> None:
     print(f"  Grace window (hours): {status['run_control']['grace_window_hours']}")
     print(f"  State file:          {status['run_control']['state_file']}")
     _lanes = status.get("lanes", {})
-    print(f"  Discovery lanes:     {_lanes.get('count', 0)} additional (names: {', '.join(_lanes.get('names', [])) or '(none)'})")
+    print(
+        f"  Discovery lanes:     {_lanes.get('count', 0)} additional (names: {', '.join(_lanes.get('names', [])) or '(none)'})"
+    )
     if status["parse_error"]:
         print(f"  Parse error:         {status['parse_error']}")
 

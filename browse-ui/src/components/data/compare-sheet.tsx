@@ -26,10 +26,14 @@ type CompareSheetProps = {
 
 function buildTimelineSummary(timeline: TimelineEntry[]) {
   const sectionCount = new Set(
-    timeline.map((entry) => entry.section_name?.trim()).filter((value): value is string => Boolean(value))
+    timeline
+      .map((entry) => entry.section_name?.trim())
+      .filter((value): value is string => Boolean(value))
   ).size;
   const docTypeCount = new Set(
-    timeline.map((entry) => entry.doc_type?.trim()).filter((value): value is string => Boolean(value))
+    timeline
+      .map((entry) => entry.doc_type?.trim())
+      .filter((value): value is string => Boolean(value))
   ).size;
 
   const first = timeline[0];
@@ -78,7 +82,7 @@ export function CompareSheet({ open, onOpenChange, sessionId }: CompareSheetProp
           />
 
           {compareQuery.isLoading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <div className="text-muted-foreground flex items-center gap-2 text-sm">
               <Loader2 className="size-4 animate-spin" />
               Loading compare data...
             </div>
@@ -89,7 +93,9 @@ export function CompareSheet({ open, onOpenChange, sessionId }: CompareSheetProp
               tone="danger"
               title="Compare failed"
               description={
-                compareQuery.error instanceof Error ? compareQuery.error.message : "Unknown compare error"
+                compareQuery.error instanceof Error
+                  ? compareQuery.error.message
+                  : "Unknown compare error"
               }
             />
           ) : null}
@@ -103,9 +109,12 @@ export function CompareSheet({ open, onOpenChange, sessionId }: CompareSheetProp
                     Timeline delta
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="text-xs text-muted-foreground">
+                <CardContent className="text-muted-foreground text-xs">
                   {timelineDelta === 0 ? (
-                    <p>Both sessions have the same timeline row count ({formatNumber(summaryA.rows)}).</p>
+                    <p>
+                      Both sessions have the same timeline row count ({formatNumber(summaryA.rows)}
+                      ).
+                    </p>
                   ) : (
                     <p>
                       {timelineDelta > 0 ? "Compared session has" : "Current session has"}{" "}
@@ -119,11 +128,14 @@ export function CompareSheet({ open, onOpenChange, sessionId }: CompareSheetProp
                 <Card size="sm">
                   <CardHeader>
                     <CardTitle className="text-sm">
-                      {formatSessionIdBadgeText(sessionId)} <span className="text-muted-foreground">(current)</span>
+                      {formatSessionIdBadgeText(sessionId)}{" "}
+                      <span className="text-muted-foreground">(current)</span>
                     </CardTitle>
                   </CardHeader>
-                  <CardContent className="space-y-1.5 text-xs text-muted-foreground">
-                    <p className="text-foreground">{compareQuery.data.a.session?.summary || "(no summary)"}</p>
+                  <CardContent className="text-muted-foreground space-y-1.5 text-xs">
+                    <p className="text-foreground">
+                      {compareQuery.data.a.session?.summary || "(no summary)"}
+                    </p>
                     <div className="flex flex-wrap items-center gap-2">
                       <SourceBadge source={compareQuery.data.a.session?.source} />
                       <TimeRelative value={compareQuery.data.a.session?.fts_indexed_at} />
@@ -138,10 +150,14 @@ export function CompareSheet({ open, onOpenChange, sessionId }: CompareSheetProp
 
                 <Card size="sm">
                   <CardHeader>
-                    <CardTitle className="text-sm">{formatSessionIdBadgeText(compareSessionId)}</CardTitle>
+                    <CardTitle className="text-sm">
+                      {formatSessionIdBadgeText(compareSessionId)}
+                    </CardTitle>
                   </CardHeader>
-                  <CardContent className="space-y-1.5 text-xs text-muted-foreground">
-                    <p className="text-foreground">{compareQuery.data.b.session?.summary || "(missing session)"}</p>
+                  <CardContent className="text-muted-foreground space-y-1.5 text-xs">
+                    <p className="text-foreground">
+                      {compareQuery.data.b.session?.summary || "(missing session)"}
+                    </p>
                     <div className="flex flex-wrap items-center gap-2">
                       <SourceBadge source={compareQuery.data.b.session?.source} />
                       <TimeRelative value={compareQuery.data.b.session?.fts_indexed_at} />

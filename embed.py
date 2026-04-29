@@ -20,19 +20,19 @@ Usage:
     python embed.py --test                     # Test current provider connectivity
 """
 
+import hashlib
 import json
 import os
 import re
 import sqlite3
+import ssl
 import struct
 import sys
 import time
-import hashlib
-import urllib.request
 import urllib.error
-import ssl
-from pathlib import Path
+import urllib.request
 from math import sqrt
+from pathlib import Path
 
 # Fix Windows console encoding
 if os.name == "nt":
@@ -43,7 +43,7 @@ if os.name == "nt":
         pass
 
 # ── Paths ──────────────────────────────────────────────────────────────
-TOOLS_DIR = Path.home() / ".copilot" / "tools"
+TOOLS_DIR = Path(__file__).resolve().parent
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
 CONFIG_PATH = TOOLS_DIR / "embedding-config.json"
@@ -66,9 +66,7 @@ def _default_local_replica_id() -> str:
 def _get_local_replica_id(db: sqlite3.Connection) -> str:
     for table in ("sync_state", "sync_metadata"):
         try:
-            row = db.execute(
-                f"SELECT value FROM {table} WHERE key='local_replica_id'"
-            ).fetchone()
+            row = db.execute(f"SELECT value FROM {table} WHERE key='local_replica_id'").fetchone()
         except sqlite3.OperationalError:
             continue
         current = str(row[0]) if row and row[0] else ""
@@ -77,13 +75,16 @@ def _get_local_replica_id(db: sqlite3.Connection) -> str:
     replica_id = _default_local_replica_id()
     for table in ("sync_state", "sync_metadata"):
         try:
-            db.execute(f"""
+            db.execute(
+                f"""
                 INSERT INTO {table} (key, value)
                 VALUES ('local_replica_id', ?)
                 ON CONFLICT(key) DO UPDATE SET
                     value = excluded.value,
                     updated_at = datetime('now')
-            """, (replica_id,))
+            """,
+                (replica_id,),
+            )
         except sqlite3.OperationalError:
             pass
     return replica_id or "local"
@@ -117,14 +118,20 @@ def _enqueue_sync_op_fail_open(
             return
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         txn_id = _stable_sha256("sync-txn", replica_id, table_name, row_stable_id, time.time_ns())
-        db.execute("""
+        db.execute(
+            """
             INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at)
             VALUES (?, ?, 'pending', ?, '')
-        """, (txn_id, replica_id, now))
-        db.execute("""
+        """,
+            (txn_id, replica_id, now),
+        )
+        db.execute(
+            """
             INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
             VALUES (?, ?, ?, ?, ?, 0, ?)
-        """, (txn_id, table_name, op_type, row_stable_id, json.dumps(row_payload, ensure_ascii=False), now))
+        """,
+            (txn_id, table_name, op_type, row_stable_id, json.dumps(row_payload, ensure_ascii=False), now),
+        )
     except Exception:
         return
 
@@ -200,29 +207,32 @@ def _seed_local_only_sync_policy(db: sqlite3.Connection):
             stable_id_column TEXT DEFAULT ''
         );
     """)
-    db.executemany("""
+    db.executemany(
+        """
         INSERT INTO sync_table_policies (table_name, sync_scope, stable_id_column)
         VALUES (?, ?, ?)
         ON CONFLICT(table_name) DO UPDATE SET
             sync_scope = excluded.sync_scope,
             stable_id_column = excluded.stable_id_column
-    """, [
-        ("sessions", "canonical", "id"),
-        ("documents", "canonical", "stable_id"),
-        ("sections", "canonical", "stable_id"),
-        ("knowledge_entries", "canonical", "stable_id"),
-        ("knowledge_relations", "canonical", "stable_id"),
-        ("entity_relations", "canonical", "stable_id"),
-        ("search_feedback", "canonical", "stable_id"),
-        ("recall_events", "upload_only", ""),
-        ("embeddings", "local_only", ""),
-        ("embedding_meta", "local_only", ""),
-        ("tfidf_model", "local_only", ""),
-        ("knowledge_fts", "local_only", ""),
-        ("ke_fts", "local_only", ""),
-        ("sessions_fts", "local_only", ""),
-        ("event_offsets", "local_only", ""),
-    ])
+    """,
+        [
+            ("sessions", "canonical", "id"),
+            ("documents", "canonical", "stable_id"),
+            ("sections", "canonical", "stable_id"),
+            ("knowledge_entries", "canonical", "stable_id"),
+            ("knowledge_relations", "canonical", "stable_id"),
+            ("entity_relations", "canonical", "stable_id"),
+            ("search_feedback", "canonical", "stable_id"),
+            ("recall_events", "upload_only", ""),
+            ("embeddings", "local_only", ""),
+            ("embedding_meta", "local_only", ""),
+            ("tfidf_model", "local_only", ""),
+            ("knowledge_fts", "local_only", ""),
+            ("ke_fts", "local_only", ""),
+            ("sessions_fts", "local_only", ""),
+            ("event_offsets", "local_only", ""),
+        ],
+    )
     db.execute("""
         INSERT OR IGNORE INTO sync_metadata (key, value)
         VALUES ('local_replica_id', 'local')
@@ -232,41 +242,36 @@ def _seed_local_only_sync_policy(db: sqlite3.Connection):
         VALUES ('local_replica_id', 'local')
     """)
 
+
 # ── Default provider configs ──────────────────────────────────────────
 DEFAULT_CONFIG = {
     "active_provider": "auto",  # "auto" tries env vars in order
-    "fallback": "tfidf",        # "tfidf" or "none"
-    "batch_size": 100,          # embeddings per API call (Fireworks supports up to 2048)
+    "fallback": "tfidf",  # "tfidf" or "none"
+    "batch_size": 100,  # embeddings per API call (Fireworks supports up to 2048)
     "providers": {
         "openai": {
             "base_url": "https://api.openai.com/v1",
             "model": "text-embedding-3-small",
             "dimensions": 1536,
             "env_key": "OPENAI_API_KEY",
-            "api_key": ""
+            "api_key": "",
         },
         "fireworks": {
             "base_url": "https://api.fireworks.ai/inference/v1",
             "model": "nomic-ai/nomic-embed-text-v1.5",
             "dimensions": 768,
             "env_key": "FIREWORKS_API_KEY",
-            "api_key": ""
+            "api_key": "",
         },
         "openrouter": {
             "base_url": "https://openrouter.ai/api/v1",
             "model": "openai/text-embedding-3-small",
             "dimensions": 1536,
             "env_key": "OPENROUTER_API_KEY",
-            "api_key": ""
+            "api_key": "",
         },
-        "custom": {
-            "base_url": "",
-            "model": "",
-            "dimensions": 768,
-            "env_key": "EMBEDDING_API_KEY",
-            "api_key": ""
-        }
-    }
+        "custom": {"base_url": "", "model": "", "dimensions": 768, "env_key": "EMBEDDING_API_KEY", "api_key": ""},
+    },
 }
 
 # Provider priority for "auto" mode
@@ -276,6 +281,7 @@ AUTO_PRIORITY = ["fireworks", "openai", "openrouter", "custom"]
 # ═══════════════════════════════════════════════════════════════════════
 #  Configuration Management
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def load_config() -> dict:
     """Load config from file, merging with defaults."""
@@ -306,8 +312,7 @@ def _check_config_permissions():
     try:
         mode = CONFIG_PATH.stat().st_mode & 0o777
         if mode & 0o077:  # group or other has access
-            print(f"⚠ {CONFIG_PATH} has permissive permissions ({oct(mode)}). "
-                  f"Fixing to 0o600...", file=sys.stderr)
+            print(f"⚠ {CONFIG_PATH} has permissive permissions ({oct(mode)}). Fixing to 0o600...", file=sys.stderr)
             os.chmod(CONFIG_PATH, 0o600)
     except OSError:
         pass
@@ -316,10 +321,7 @@ def _check_config_permissions():
 def save_config(config: dict):
     """Save config to file with restrictive permissions."""
     TOOLS_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(
-        json.dumps(config, indent=2, ensure_ascii=False),
-        encoding="utf-8"
-    )
+    CONFIG_PATH.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
     # Restrict file permissions to owner-only (not world-readable)
     if os.name != "nt":
         os.chmod(CONFIG_PATH, 0o600)
@@ -363,18 +365,22 @@ def resolve_provider(config: dict) -> tuple:
 #  Embedding API (OpenAI-compatible, stdlib only)
 # ═══════════════════════════════════════════════════════════════════════
 
+
 class EmbeddingAuthError(RuntimeError):
     """Auth error — should fallback to TF-IDF, not retry."""
+
     pass
 
 
 class EmbeddingRateLimitError(RuntimeError):
     """Rate limit — should retry with backoff."""
+
     pass
 
 
 class EmbeddingNetworkError(RuntimeError):
     """Network/timeout — should retry then fallback."""
+
     pass
 
 
@@ -384,7 +390,7 @@ def _classify_api_error(e: urllib.error.HTTPError) -> tuple[str, str]:
     if e.code in (401, 403):
         return "auth", f"🔑 Auth failed ({e.code}): API key invalid or expired. Falling back to TF-IDF."
     elif e.code == 429:
-        return "rate_limit", f"⏳ Rate limited (429). Retrying with backoff..."
+        return "rate_limit", "⏳ Rate limited (429). Retrying with backoff..."
     elif e.code >= 500:
         return "server", f"🔥 Server error ({e.code}). Retrying..."
     elif e.code == 404:
@@ -393,8 +399,7 @@ def _classify_api_error(e: urllib.error.HTTPError) -> tuple[str, str]:
         return "server", f"❌ API error {e.code}: {body[:200]}"
 
 
-def call_embedding_api(texts: list[str], provider_config: dict,
-                       max_retries: int = 3) -> list[list[float]]:
+def call_embedding_api(texts: list[str], provider_config: dict, max_retries: int = 3) -> list[list[float]]:
     """Call an OpenAI-compatible embedding API with classified error handling and retry."""
     base_url = provider_config["base_url"].rstrip("/")
     model = provider_config["model"]
@@ -434,26 +439,24 @@ def call_embedding_api(texts: list[str], provider_config: dict,
             if category == "auth":
                 # Auth errors: no retry, raise specific exception for fallback
                 print(f"    {message}", file=sys.stderr)
-                raise EmbeddingAuthError(message)
+                raise EmbeddingAuthError(message) from None
             elif category == "rate_limit":
                 last_error = message
-                wait = min((2 ** attempt) + 1, 30)
+                wait = min((2**attempt) + 1, 30)
                 print(f"    {message} ({wait}s)", file=sys.stderr)
                 time.sleep(wait)
                 continue
             else:  # server error
                 last_error = message
-                wait = (2 ** attempt) + 1
-                print(f"    {message} Retry {attempt+1}/{max_retries} in {wait}s",
-                      file=sys.stderr)
+                wait = (2**attempt) + 1
+                print(f"    {message} Retry {attempt + 1}/{max_retries} in {wait}s", file=sys.stderr)
                 time.sleep(wait)
                 continue
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             reason = getattr(e, "reason", str(e))
             last_error = f"🌐 Network error: {reason}"
-            wait = (2 ** attempt) + 1
-            print(f"    {last_error} Retry {attempt+1}/{max_retries} in {wait}s",
-                  file=sys.stderr)
+            wait = (2**attempt) + 1
+            print(f"    {last_error} Retry {attempt + 1}/{max_retries} in {wait}s", file=sys.stderr)
             time.sleep(wait)
             continue
     else:
@@ -474,8 +477,9 @@ def call_embedding_api(texts: list[str], provider_config: dict,
     return embeddings
 
 
-def embed_batch(texts: list[str], config: dict, provider_name: str = None,
-                provider_config: dict = None) -> list[list[float]]:
+def embed_batch(
+    texts: list[str], config: dict, provider_name: str = None, provider_config: dict = None
+) -> list[list[float]]:
     """Embed a batch of texts, respecting batch_size limit."""
     if not provider_name or not provider_config:
         provider_name, provider_config = resolve_provider(config)
@@ -488,7 +492,7 @@ def embed_batch(texts: list[str], config: dict, provider_name: str = None,
     num_batches = (total + batch_size - 1) // batch_size
 
     for i in range(0, total, batch_size):
-        chunk = texts[i:i + batch_size]
+        chunk = texts[i : i + batch_size]
         batch_num = i // batch_size + 1
         print(f"    batch {batch_num}/{num_batches} ({len(chunk)} items)...", end="", flush=True)
         embeddings = call_embedding_api(chunk, provider_config)
@@ -504,10 +508,12 @@ def embed_batch(texts: list[str], config: dict, provider_name: str = None,
 #  TF-IDF Fallback (optional, requires scikit-learn)
 # ═══════════════════════════════════════════════════════════════════════
 
+
 def tfidf_available() -> bool:
     """Check if scikit-learn is available."""
     try:
         import sklearn  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -515,8 +521,8 @@ def tfidf_available() -> bool:
 
 def build_tfidf(texts: list[str], doc_ids: list[int]) -> bytes:
     """Build TF-IDF model and return serialized (vectorizer params, matrix, doc_ids)."""
-    from sklearn.feature_extraction.text import TfidfVectorizer
     from scipy.sparse import coo_matrix
+    from sklearn.feature_extraction.text import TfidfVectorizer
 
     vectorizer = TfidfVectorizer(
         max_features=8000,
@@ -555,15 +561,17 @@ def search_tfidf(query: str, model_blob: bytes, limit: int = 10) -> list[tuple]:
     from sklearn.metrics.pairwise import cosine_similarity
 
     # Reject old pickle format — unsafe deserialization
-    if model_blob[:2] in (b'\x80\x04', b'\x80\x05'):
-        print("⚠ TF-IDF model uses deprecated pickle format (unsafe). "
-              "Re-run embedding to upgrade: python embed.py --rebuild-tfidf",
-              file=sys.stderr)
+    if model_blob[:2] in (b"\x80\x04", b"\x80\x05"):
+        print(
+            "⚠ TF-IDF model uses deprecated pickle format (unsafe). "
+            "Re-run embedding to upgrade: python embed.py --rebuild-tfidf",
+            file=sys.stderr,
+        )
         return []
 
     # New JSON format
-    from scipy.sparse import csr_matrix
     import numpy as np
+    from scipy.sparse import csr_matrix
 
     model = json.loads(model_blob.decode("utf-8"))
 
@@ -587,10 +595,7 @@ def search_tfidf(query: str, model_blob: bytes, limit: int = 10) -> list[tuple]:
 
     # Reconstruct matrix
     shape = tuple(model["matrix_shape"])
-    matrix = csr_matrix(
-        (model["matrix_data"], (model["matrix_row"], model["matrix_col"])),
-        shape=shape
-    )
+    matrix = csr_matrix((model["matrix_data"], (model["matrix_row"], model["matrix_col"])), shape=shape)
 
     doc_ids = model["doc_ids"]
     query_vec = vectorizer.transform([query])
@@ -602,6 +607,7 @@ def search_tfidf(query: str, model_blob: bytes, limit: int = 10) -> list[tuple]:
 # ═══════════════════════════════════════════════════════════════════════
 #  Vector Storage (plain SQLite, no extensions needed)
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def serialize_vector(vec: list[float]) -> bytes:
     """Serialize a float vector to bytes (little-endian float32)."""
@@ -618,7 +624,7 @@ def cosine_similarity_vectors(a: list[float], b: list[float]) -> float:
     """Compute cosine similarity between two vectors (pure Python)."""
     if len(a) != len(b):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     norm_a = sqrt(sum(x * x for x in a))
     norm_b = sqrt(sum(x * x for x in b))
     if norm_a == 0 or norm_b == 0:
@@ -686,11 +692,14 @@ def ensure_embedding_tables(db: sqlite3.Connection):
                 origin,
             )
             if existing_stable != stable_id or origin_replica_id != origin:
-                db.execute("""
+                db.execute(
+                    """
                     UPDATE search_feedback
                     SET origin_replica_id = ?, stable_id = ?
                     WHERE id = ?
-                """, (origin, stable_id, sf_id))
+                """,
+                    (origin, stable_id, sf_id),
+                )
                 _enqueue_sync_op_fail_open(
                     db,
                     "search_feedback",
@@ -725,32 +734,38 @@ def ensure_embedding_tables(db: sqlite3.Connection):
         pass
 
 
-def store_embeddings(db: sqlite3.Connection, source_type: str,
-                     items: list[tuple], provider: str, model: str,
-                     dimensions: int):
+def store_embeddings(
+    db: sqlite3.Connection, source_type: str, items: list[tuple], provider: str, model: str, dimensions: int
+):
     """Store embeddings in DB. items = [(source_id, vector, text_preview), ...]"""
     ensure_embedding_tables(db)
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
 
     for source_id, vector, preview in items:
         blob = serialize_vector(vector)
-        db.execute("""
+        db.execute(
+            """
             INSERT OR REPLACE INTO embeddings
                 (source_type, source_id, provider, model, dimensions, vector,
                  text_preview, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (source_type, source_id, provider, model, dimensions, blob,
-              preview[:200], now))
+        """,
+            (source_type, source_id, provider, model, dimensions, blob, preview[:200], now),
+        )
 
-    db.execute("""
+    db.execute(
+        """
         INSERT OR REPLACE INTO embedding_meta (key, value)
         VALUES ('last_build', ?)
-    """, (now,))
+    """,
+        (now,),
+    )
     db.commit()
 
 
-def vector_search(db: sqlite3.Connection, query_vector: list[float],
-                  source_type: str = None, limit: int = 20) -> list[tuple]:
+def vector_search(
+    db: sqlite3.Connection, query_vector: list[float], source_type: str = None, limit: int = 20
+) -> list[tuple]:
     """Brute-force cosine similarity search. Returns [(source_type, source_id, score), ...]"""
     sql = "SELECT source_type, source_id, vector FROM embeddings"
     params = []
@@ -775,6 +790,7 @@ def vector_search(db: sqlite3.Connection, query_vector: list[float],
 # ═══════════════════════════════════════════════════════════════════════
 #  Hybrid Search: FTS5 + Vector + RRF
 # ═══════════════════════════════════════════════════════════════════════
+
 
 def reciprocal_rank_fusion(ranked_lists: list[list], k: int = 60) -> list[tuple]:
     """
@@ -902,9 +918,9 @@ def _apply_feedback_bias(
     return reranked, feedback_meta
 
 
-def hybrid_search(db: sqlite3.Connection, query: str, config: dict,
-                  limit: int = 10, fts_weight: float = 1.0,
-                  vec_weight: float = 1.0) -> list[dict]:
+def hybrid_search(
+    db: sqlite3.Connection, query: str, config: dict, limit: int = 10, fts_weight: float = 1.0, vec_weight: float = 1.0
+) -> list[dict]:
     """
     Hybrid search combining FTS5 keyword search + vector semantic search.
     Returns merged results with source info.
@@ -919,7 +935,8 @@ def hybrid_search(db: sqlite3.Connection, query: str, config: dict,
         fts_query = " ".join(f'"{t}"*' for t in terms)
 
     try:
-        fts_rows = db.execute("""
+        fts_rows = db.execute(
+            """
             SELECT fts.document_id, fts.title, fts.section_name, fts.doc_type,
                    fts.session_id,
                    snippet(knowledge_fts, 2, '>>>', '<<<', '...', 64) as excerpt,
@@ -928,15 +945,27 @@ def hybrid_search(db: sqlite3.Connection, query: str, config: dict,
             WHERE knowledge_fts MATCH ?
             ORDER BY rank
             LIMIT 30
-        """, (fts_query,)).fetchall()
+        """,
+            (fts_query,),
+        ).fetchall()
 
         for r in fts_rows:
             key = ("section", r[0], r[2])  # (type, doc_id, section_name)
-            results_fts.append((key, {
-                "document_id": r[0], "title": r[1], "section_name": r[2],
-                "doc_type": r[3], "session_id": r[4], "excerpt": r[5],
-                "fts_rank": r[6], "source": "keyword"
-            }))
+            results_fts.append(
+                (
+                    key,
+                    {
+                        "document_id": r[0],
+                        "title": r[1],
+                        "section_name": r[2],
+                        "doc_type": r[3],
+                        "session_id": r[4],
+                        "excerpt": r[5],
+                        "fts_rank": r[6],
+                        "source": "keyword",
+                    },
+                )
+            )
     except sqlite3.OperationalError:
         pass
 
@@ -962,62 +991,95 @@ def hybrid_search(db: sqlite3.Connection, query: str, config: dict,
                 continue
             # Look up document info
             if st == "section":
-                row = db.execute("""
+                row = db.execute(
+                    """
                     SELECT s.document_id, d.title, s.section_name, d.doc_type,
                            d.session_id, SUBSTR(s.content, 1, 200) as excerpt
                     FROM sections s
                     JOIN documents d ON s.document_id = d.id
                     WHERE s.id = ?
-                """, (sid,)).fetchone()
+                """,
+                    (sid,),
+                ).fetchone()
                 if row:
                     key = ("section", row[0], row[2])
-                    results_vec.append((key, {
-                        "document_id": row[0], "title": row[1],
-                        "section_name": row[2], "doc_type": row[3],
-                        "session_id": row[4], "excerpt": row[5],
-                        "vec_score": score, "source": "semantic"
-                    }))
+                    results_vec.append(
+                        (
+                            key,
+                            {
+                                "document_id": row[0],
+                                "title": row[1],
+                                "section_name": row[2],
+                                "doc_type": row[3],
+                                "session_id": row[4],
+                                "excerpt": row[5],
+                                "vec_score": score,
+                                "source": "semantic",
+                            },
+                        )
+                    )
             elif st == "knowledge":
-                row = db.execute("""
+                row = db.execute(
+                    """
                     SELECT ke.id, ke.title, ke.category, ke.session_id,
                            SUBSTR(ke.content, 1, 200) as excerpt
                     FROM knowledge_entries ke WHERE ke.id = ?
-                """, (sid,)).fetchone()
+                """,
+                    (sid,),
+                ).fetchone()
                 if row:
                     key = ("knowledge", row[0], row[2])
-                    results_vec.append((key, {
-                        "document_id": row[0], "title": row[1],
-                        "doc_type": row[2], "session_id": row[3],
-                        "excerpt": row[4], "vec_score": score,
-                        "source": "semantic"
-                    }))
+                    results_vec.append(
+                        (
+                            key,
+                            {
+                                "document_id": row[0],
+                                "title": row[1],
+                                "doc_type": row[2],
+                                "session_id": row[3],
+                                "excerpt": row[4],
+                                "vec_score": score,
+                                "source": "semantic",
+                            },
+                        )
+                    )
     elif config.get("fallback") == "tfidf" and tfidf_available():
         # TF-IDF fallback
         try:
             ensure_embedding_tables(db)
-            row = db.execute(
-                "SELECT model_blob FROM tfidf_model WHERE id = 1"
-            ).fetchone()
+            row = db.execute("SELECT model_blob FROM tfidf_model WHERE id = 1").fetchone()
             if row and row[0]:
                 tfidf_results = search_tfidf(query, row[0], limit=30)
                 for section_id, score in tfidf_results:
                     if score < 0.05:
                         continue
-                    info = db.execute("""
+                    info = db.execute(
+                        """
                         SELECT s.document_id, d.title, s.section_name, d.doc_type,
                                d.session_id, SUBSTR(s.content, 1, 200) as excerpt
                         FROM sections s
                         JOIN documents d ON s.document_id = d.id
                         WHERE s.id = ?
-                    """, (section_id,)).fetchone()
+                    """,
+                        (section_id,),
+                    ).fetchone()
                     if info:
                         key = ("section", info[0], info[2])
-                        results_vec.append((key, {
-                            "document_id": info[0], "title": info[1],
-                            "section_name": info[2], "doc_type": info[3],
-                            "session_id": info[4], "excerpt": info[5],
-                            "tfidf_score": score, "source": "tfidf"
-                        }))
+                        results_vec.append(
+                            (
+                                key,
+                                {
+                                    "document_id": info[0],
+                                    "title": info[1],
+                                    "section_name": info[2],
+                                    "doc_type": info[3],
+                                    "session_id": info[4],
+                                    "excerpt": info[5],
+                                    "tfidf_score": score,
+                                    "source": "tfidf",
+                                },
+                            )
+                        )
         except (sqlite3.OperationalError, Exception):
             pass
 
@@ -1068,6 +1130,7 @@ def hybrid_search(db: sqlite3.Connection, query: str, config: dict,
 #  Build Embeddings
 # ═══════════════════════════════════════════════════════════════════════
 
+
 def build_embeddings(config: dict = None, force: bool = False):
     """Generate embeddings for all indexed content."""
     if config is None:
@@ -1101,10 +1164,8 @@ def build_embeddings(config: dict = None, force: bool = False):
         existing = set()
         for row in db.execute("SELECT source_type, source_id FROM embeddings"):
             existing.add((row[0], row[1]))
-        new_sections = [(s[0], s[1], s[2]) for s in sections
-                        if ("section", s[0]) not in existing]
-        new_ke = [(k[0], k[1], k[2]) for k in ke_rows
-                  if ("knowledge", k[0]) not in existing]
+        new_sections = [(s[0], s[1], s[2]) for s in sections if ("section", s[0]) not in existing]
+        new_ke = [(k[0], k[1], k[2]) for k in ke_rows if ("knowledge", k[0]) not in existing]
     else:
         new_sections = [(s[0], s[1], s[2]) for s in sections]
         new_ke = [(k[0], k[1], k[2]) for k in ke_rows]
@@ -1132,15 +1193,11 @@ def build_embeddings(config: dict = None, force: bool = False):
             texts = [f"{label}: {content[:2000]}" for _, label, content in new_sections]
             try:
                 vectors = embed_batch(texts, config, provider_name, provider_config)
-                items = [
-                    (new_sections[i][0], vectors[i], new_sections[i][1])
-                    for i in range(len(vectors))
-                ]
-                store_embeddings(db, "section", items, provider_name,
-                                 provider_config["model"], dimensions)
+                items = [(new_sections[i][0], vectors[i], new_sections[i][1]) for i in range(len(vectors))]
+                store_embeddings(db, "section", items, provider_name, provider_config["model"], dimensions)
                 print(f"  ✓ {len(vectors)} section embeddings stored")
             except EmbeddingAuthError:
-                print(f"  ⚠ Auth failed — skipping API embeddings, using TF-IDF fallback")
+                print("  ⚠ Auth failed — skipping API embeddings, using TF-IDF fallback")
                 api_failed = True
             except (EmbeddingRateLimitError, EmbeddingNetworkError) as e:
                 print(f"  ⚠ {e} — falling back to TF-IDF")
@@ -1154,15 +1211,11 @@ def build_embeddings(config: dict = None, force: bool = False):
             texts = [f"{title}: {content[:2000]}" for _, title, content in new_ke]
             try:
                 vectors = embed_batch(texts, config, provider_name, provider_config)
-                items = [
-                    (new_ke[i][0], vectors[i], new_ke[i][1])
-                    for i in range(len(vectors))
-                ]
-                store_embeddings(db, "knowledge", items, provider_name,
-                                 provider_config["model"], dimensions)
+                items = [(new_ke[i][0], vectors[i], new_ke[i][1]) for i in range(len(vectors))]
+                store_embeddings(db, "knowledge", items, provider_name, provider_config["model"], dimensions)
                 print(f"  ✓ {len(vectors)} knowledge embeddings stored")
             except EmbeddingAuthError:
-                print(f"  ⚠ Auth failed — using TF-IDF fallback")
+                print("  ⚠ Auth failed — using TF-IDF fallback")
                 api_failed = True
             except (EmbeddingRateLimitError, EmbeddingNetworkError) as e:
                 print(f"  ⚠ {e} — falling back to TF-IDF")
@@ -1180,10 +1233,13 @@ def build_embeddings(config: dict = None, force: bool = False):
         all_ids = [s[0] for s in sections]
         try:
             model_blob = build_tfidf(all_texts, all_ids)
-            db.execute("""
+            db.execute(
+                """
                 INSERT OR REPLACE INTO tfidf_model (id, model_blob, doc_count, built_at)
                 VALUES (1, ?, ?, ?)
-            """, (model_blob, len(all_texts), time.strftime("%Y-%m-%dT%H:%M:%S")))
+            """,
+                (model_blob, len(all_texts), time.strftime("%Y-%m-%dT%H:%M:%S")),
+            )
             db.commit()
             print(f"  ✓ TF-IDF model built ({len(all_texts)} documents)")
         except Exception as e:
@@ -1200,6 +1256,7 @@ def build_embeddings(config: dict = None, force: bool = False):
 #  CLI Commands
 # ═══════════════════════════════════════════════════════════════════════
 
+
 def cmd_setup():
     """Interactive provider setup."""
     config = load_config()
@@ -1215,8 +1272,7 @@ def cmd_setup():
     print()
 
     choice = input("Select provider [1-5, default=5]: ").strip() or "5"
-    provider_map = {"1": "fireworks", "2": "openai", "3": "openrouter",
-                    "4": "custom", "5": "auto"}
+    provider_map = {"1": "fireworks", "2": "openai", "3": "openrouter", "4": "custom", "5": "auto"}
     provider_name = provider_map.get(choice, "auto")
 
     if provider_name == "auto":
@@ -1231,8 +1287,16 @@ def cmd_setup():
         prov = config["providers"][provider_name]
 
         if provider_name == "custom":
-            prov["base_url"] = input(f"Base URL [{prov['base_url'] or 'http://localhost:11434/v1'}]: ").strip() or prov.get("base_url") or "http://localhost:11434/v1"
-            prov["model"] = input(f"Model name [{prov['model'] or 'nomic-embed-text'}]: ").strip() or prov.get("model") or "nomic-embed-text"
+            prov["base_url"] = (
+                input(f"Base URL [{prov['base_url'] or 'http://localhost:11434/v1'}]: ").strip()
+                or prov.get("base_url")
+                or "http://localhost:11434/v1"
+            )
+            prov["model"] = (
+                input(f"Model name [{prov['model'] or 'nomic-embed-text'}]: ").strip()
+                or prov.get("model")
+                or "nomic-embed-text"
+            )
             dims = input(f"Dimensions [{prov['dimensions']}]: ").strip()
             if dims:
                 prov["dimensions"] = int(dims)
@@ -1305,8 +1369,8 @@ def cmd_status():
     if name:
         print(f"Active provider: {name} ({prov['model']})")
     else:
-        print(f"Active provider: none configured")
-        print(f"  Tip: Run 'python embed.py --setup' or set an env var:")
+        print("Active provider: none configured")
+        print("  Tip: Run 'python embed.py --setup' or set an env var:")
         for pname in AUTO_PRIORITY:
             p = config["providers"][pname]
             print(f"    export {p['env_key']}=your-key  # → {pname}")
@@ -1315,11 +1379,11 @@ def cmd_status():
     fallback = config.get("fallback", "none")
     if fallback == "tfidf":
         if tfidf_available():
-            print(f"Fallback: TF-IDF (scikit-learn) ✓")
+            print("Fallback: TF-IDF (scikit-learn) ✓")
         else:
-            print(f"Fallback: TF-IDF (scikit-learn NOT installed)")
+            print("Fallback: TF-IDF (scikit-learn NOT installed)")
     else:
-        print(f"Fallback: none")
+        print("Fallback: none")
 
     # DB stats
     if not DB_PATH.exists():

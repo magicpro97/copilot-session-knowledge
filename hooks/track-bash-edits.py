@@ -4,6 +4,7 @@
 After ANY bash command, run git status to detect file modifications.
 Updates HMAC-signed counters and list markers.
 """
+
 import json
 import os
 import subprocess
@@ -17,16 +18,29 @@ if os.name == "nt":
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
-    from marker_auth import sign_counter, verify_counter, sign_list_marker, verify_list_marker
+    from marker_auth import sign_counter, sign_list_marker, verify_counter, verify_list_marker
 except ImportError:
-    def sign_counter(p, v): p.parent.mkdir(parents=True, exist_ok=True); p.write_text(str(v), encoding="utf-8")
+
+    def sign_counter(p, v):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(str(v), encoding="utf-8")
+
     def verify_counter(p):
-        try: return int(p.read_text(encoding="utf-8").strip()) if p.is_file() else 0
-        except: return 0
-    def sign_list_marker(p, l): p.parent.mkdir(parents=True, exist_ok=True); p.write_text("\n".join(sorted(l)))
+        try:
+            return int(p.read_text(encoding="utf-8").strip()) if p.is_file() else 0
+        except Exception:
+            return 0
+
+    def sign_list_marker(p, l):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("\n".join(sorted(l)))
+
     def verify_list_marker(p):
-        try: return set(p.read_text(encoding="utf-8").strip().splitlines()) if p.is_file() else set()
-        except: return set()
+        try:
+            return set(p.read_text(encoding="utf-8").strip().splitlines()) if p.is_file() else set()
+        except Exception:
+            return set()
+
 
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 CODE_EDIT_COUNTER = MARKERS_DIR / "code-edit-count"
@@ -36,9 +50,28 @@ TENTACLE_EDITS = MARKERS_DIR / "tentacle-edits"
 
 # Markdown (.md) intentionally excluded: session-research writes must not count
 # as multi-module code edits and trigger false tentacle enforcement.
-CODE_EXTENSIONS = {".py", ".kt", ".ts", ".tsx", ".js", ".jsx", ".swift", ".java",
-                   ".go", ".rs", ".json", ".yaml", ".yml", ".xml", ".html",
-                   ".css", ".toml", ".sh", ".bat", ".ps1"}
+CODE_EXTENSIONS = {
+    ".py",
+    ".kt",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".swift",
+    ".java",
+    ".go",
+    ".rs",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".xml",
+    ".html",
+    ".css",
+    ".toml",
+    ".sh",
+    ".bat",
+    ".ps1",
+}
 
 _SESSION_STATE_ABS = str(Path.home() / ".copilot" / "session-state")
 
@@ -51,8 +84,7 @@ def _is_session_path(path: str) -> bool:
 def _get_git_modified():
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain", "-uall"],
-            capture_output=True, text=True, timeout=5, cwd=os.getcwd()
+            ["git", "status", "--porcelain", "-uall"], capture_output=True, text=True, timeout=5, cwd=os.getcwd()
         )
         if result.returncode != 0:
             return set()

@@ -6,9 +6,7 @@ import { liveEventSchema } from "@/lib/api/schemas";
 
 export function useSSE(url: string, options?: { enabled?: boolean }) {
   const [events, setEvents] = useState<LiveEvent[]>([]);
-  const [status, setStatus] = useState<"connecting" | "open" | "closed">(
-    "connecting"
-  );
+  const [status, setStatus] = useState<"connecting" | "open" | "closed">("connecting");
   const [paused, setPaused] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const pausedRef = useRef(false);
@@ -43,9 +41,7 @@ export function useSSE(url: string, options?: { enabled?: boolean }) {
       setEvents((prev) => [parsed.data, ...prev].slice(0, 200));
     };
     es.onerror = () => {
-      setStatus(
-        es.readyState === EventSource.CLOSED ? "closed" : "connecting"
-      );
+      setStatus(es.readyState === EventSource.CLOSED ? "closed" : "connecting");
     };
     return () => {
       es.close();

@@ -2389,6 +2389,113 @@ def cmd_bundle(args):
             print(f"   {f.name} ({f.stat().st_size} bytes)")
 
 
+def cmd_marker_cleanup(args):
+    """Show active dispatched-subagent marker state and optionally remove stale entries.
+
+    By default runs in dry-run mode: prints stale entries that would be removed.
+    Pass --apply to actually remove them via the standard clear mechanism.
+    Only entries whose per-entry ts exceeds the marker's declared TTL are eligible.
+    Live entries and entries with no ts are never touched.
+    """
+    state = _get_marker_state()
+    if not state["active"]:
+        print("ℹ️  No active dispatched-subagent marker found.")
+        return
+
+    marker_data = _read_dispatched_subagent_marker()
+    ttl = (
+        int(marker_data.get("ttl_seconds", _DISPATCHED_MARKER_TTL))
+        if marker_data
+        else _DISPATCHED_MARKER_TTL
+    )
+    now = time.time()
+
+    def _entry_age_seconds(ts_value):
+        if not ts_value:
+            return None
+        try:
+            return int(now - int(ts_value))
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def _same_cleanup_target(candidate: dict, target: dict) -> bool:
+        if candidate.get("name") != target.get("name"):
+            return False
+        candidate_id = candidate.get("tentacle_id")
+        target_id = target.get("tentacle_id")
+        if candidate_id is not None or target_id is not None:
+            return candidate_id == target_id
+        candidate_root = candidate.get("git_root")
+        target_root = target.get("git_root")
+        if candidate_root is None or target_root is None:
+            return candidate_root == target_root
+        return _same_canonical_root(candidate_root, target_root)
+
+    def _entry_still_present(target: dict) -> bool:
+        refreshed_state = _get_marker_state()
+        for current in refreshed_state.get("active_tentacle_entries", []):
+            if _same_cleanup_target(current, target):
+                return True
+        return False
+
+    stale_entries = []
+    live_entries = []
+    for entry in state.get("active_tentacle_entries", []):
+        age_seconds = _entry_age_seconds(entry.get("ts"))
+        if age_seconds is not None and age_seconds > ttl:
+            stale_entries.append((entry, age_seconds))
+        else:
+            live_entries.append((entry, age_seconds))
+
+    print(f"📌 Marker: {state['path']}")
+    print(f"   Written: {state.get('written_at', 'unknown')}")
+    print(f"   TTL: {ttl}s | Global stale: {state['stale']}")
+    print()
+
+    if live_entries:
+        print(f"✅ Live entries ({len(live_entries)}):")
+        for entry, age in live_entries:
+            age_str = f"{age}s" if age is not None else "unknown age"
+            print(
+                f"   • {entry['name']} "
+                f"(age: {age_str}, repo: {entry.get('git_root') or 'unknown'})"
+            )
+
+    if stale_entries:
+        print(f"\n⚠️  Stale entries ({len(stale_entries)}) — exceeded TTL of {ttl}s:")
+        for entry, age in stale_entries:
+            print(
+                f"   • {entry['name']} "
+                f"(age: {age}s, repo: {entry.get('git_root') or 'unknown'})"
+            )
+
+    if not stale_entries:
+        print("\n✅ No stale entries to clean up.")
+        return
+
+    dry_run = not getattr(args, "apply", False)
+    if dry_run:
+        print(f"\n🔍 Dry-run: {len(stale_entries)} stale entry(ies) would be removed.")
+        print("   Run with --apply to remove them.")
+    else:
+        removed = 0
+        for entry, _ in stale_entries:
+            name = entry.get("name")
+            tid = entry.get("tentacle_id")
+            ok = _clear_dispatched_subagent_marker(name, tentacle_id=tid)
+            if ok and not _entry_still_present(entry):
+                print(f"   🗑️  Removed stale entry: {name}")
+                removed += 1
+            elif not ok:
+                print(f"   ⚠️  Failed to remove entry: {name}", file=sys.stderr)
+            else:
+                print(
+                    f"   ⚠️  Left stale entry in place (ownership not confirmed): {name}",
+                    file=sys.stderr,
+                )
+        print(f"\n✅ Removed {removed}/{len(stale_entries)} stale entries.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Tentacle Pattern Manager for Copilot CLI",
@@ -2513,6 +2620,17 @@ def main():
     p_wt.add_argument("action", choices=["prepare", "status", "cleanup"],
                       help="prepare: create worktree; status: show state; cleanup: remove worktree")
 
+    # marker-cleanup
+    p_marker_cleanup = sub.add_parser(
+        "marker-cleanup",
+        help="Show active marker state; remove stale entries with --apply",
+    )
+    p_marker_cleanup.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually remove stale entries (default is dry-run)",
+    )
+
     # verify subcommand
     p_verify = sub.add_parser("verify", help="Run a verification command and persist results")
     p_verify.add_argument("name", help="Tentacle name")
@@ -2554,6 +2672,8 @@ def main():
         cmd_worktree(args)
     elif args.command == "verify":
         cmd_verify(args)
+    elif args.command == "marker-cleanup":
+        cmd_marker_cleanup(args)
 
 
 if __name__ == "__main__":

@@ -52,3 +52,9 @@ publish.sh
 .backup/
 .upstream/
 migrate-knowledge-v2.py
+
+# Test / run artifacts (machine-local, should not be tracked)
+_hook_test_out.txt
+hook_test_output.txt
+browse_out.txt
+sync.log

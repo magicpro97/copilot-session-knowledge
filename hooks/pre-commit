@@ -64,6 +64,55 @@ if [ -n "$CHANGED_ROUTES" ]; then
 fi
 # ──────────────────────────────────────────────────────────────────────────
 
+# ── Python cleanliness check (ruff format + lint) ──────────────────────────
+# Scope: staged Python files in the CI cleanliness surface.
+# Fail-open: silently skip when ruff is not installed.
+_py_in_surface() {
+    case "$1" in
+        embed.py|scout-config.py|scout-status.py|sync-config.py|sync-daemon.py|sync-status.py|migrate.py|generate-summary.py|hooks/*.py)
+            return 0 ;;
+    esac
+    return 1
+}
+
+if command -v ruff >/dev/null 2>&1; then
+    SURFACE_PY_STAGED=""
+    for _f in $(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true); do
+        if _py_in_surface "$_f"; then
+            SURFACE_PY_STAGED="$SURFACE_PY_STAGED $_f"
+        fi
+    done
+    if [ -n "$SURFACE_PY_STAGED" ]; then
+        echo "🧹 Checking Python cleanliness (ruff)..."
+        if ! ruff format --check $SURFACE_PY_STAGED 2>&1; then
+            echo "✖ ruff format check failed. Run: ruff format$SURFACE_PY_STAGED"
+            exit 1
+        fi
+        if ! ruff check $SURFACE_PY_STAGED 2>&1; then
+            echo "✖ ruff lint check failed. Fix violations above before committing."
+            exit 1
+        fi
+    fi
+fi
+# ──────────────────────────────────────────────────────────────────────────
+
+# ── browse-ui Prettier check ───────────────────────────────────────────────
+# Scope: staged Prettier-supported files under browse-ui/src.
+# Fail-open: skip when Prettier is not installed in browse-ui/node_modules.
+STAGED_UI_SRC=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^browse-ui/src/.*\.(css|js|jsx|json|md|ts|tsx|yaml|yml)$' || true)
+if [ -n "$STAGED_UI_SRC" ]; then
+    PRETTIER_BIN="browse-ui/node_modules/.bin/prettier"
+    if [ -f "$PRETTIER_BIN" ]; then
+        RELATIVE_UI_SRC=$(printf '%s\n' "$STAGED_UI_SRC" | sed 's|^browse-ui/||')
+        echo "🎨 Checking browse-ui/src formatting (Prettier)..."
+        if ! (cd browse-ui && ./node_modules/.bin/prettier --config .prettierrc --check $RELATIVE_UI_SRC) 2>&1; then
+            echo "✖ Prettier check failed. Run: cd browse-ui && pnpm format"
+            exit 1
+        fi
+    fi
+fi
+# ──────────────────────────────────────────────────────────────────────────
+
 # Skill/agent lint — only meaningful in the tools repo itself; silently skips
 # in other repos where lint-skills.py is absent.
 TOOLS_DIR="$HOME/.copilot/tools"

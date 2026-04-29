@@ -2,13 +2,7 @@ import Link from "next/link";
 import { Compass, Search, ScrollText } from "lucide-react";
 
 import { buttonVariants } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 export default function NotFound() {
@@ -16,7 +10,7 @@ export default function NotFound() {
     <div className="mx-auto flex min-h-[calc(100vh-10rem)] w-full max-w-2xl items-center justify-center">
       <Card className="w-full border-dashed">
         <CardHeader className="space-y-3">
-          <div className="inline-flex w-fit items-center gap-2 rounded-md border bg-muted/40 px-2 py-1 text-xs font-medium text-muted-foreground">
+          <div className="bg-muted/40 text-muted-foreground inline-flex w-fit items-center gap-2 rounded-md border px-2 py-1 text-xs font-medium">
             <Compass className="size-3.5" />
             404 · Route not found
           </div>
@@ -31,18 +25,15 @@ export default function NotFound() {
               <ScrollText className="size-4" />
               Go to Sessions
             </Link>
-            <Link
-              href="/search"
-              className={cn(buttonVariants({ variant: "outline" }))}
-            >
+            <Link href="/search" className={cn(buttonVariants({ variant: "outline" }))}>
               <Search className="size-4" />
               Open Search
             </Link>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Tip: press <kbd className="rounded border px-1 font-mono text-[10px]">⌘K</kbd>{" "}
-            (or <kbd className="rounded border px-1 font-mono text-[10px]">Ctrl+K</kbd>) for
-            command palette navigation.
+          <p className="text-muted-foreground text-xs">
+            Tip: press <kbd className="rounded border px-1 font-mono text-[10px]">⌘K</kbd> (or{" "}
+            <kbd className="rounded border px-1 font-mono text-[10px]">Ctrl+K</kbd>) for command
+            palette navigation.
           </p>
         </CardContent>
       </Card>

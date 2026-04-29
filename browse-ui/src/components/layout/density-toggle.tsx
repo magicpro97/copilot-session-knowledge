@@ -10,7 +10,7 @@ export function DensityToggle() {
   const [density, setDensity] = useDensity();
 
   return (
-    <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-card p-1">
+    <div className="border-border bg-card inline-flex items-center gap-1 rounded-lg border p-1">
       <Button
         type="button"
         size="sm"

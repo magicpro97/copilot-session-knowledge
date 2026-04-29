@@ -88,10 +88,8 @@ export const queryKeys = {
   dashboard: () => ["dashboard"] as const,
   graphLegacy: (params: GraphQueryParams = {}) => ["graph-legacy", params] as const,
   graph: (params: GraphQueryParams = {}) => ["graph", params] as const,
-  graphEvidence: (params: EvidenceGraphQueryParams = {}) =>
-    ["graph-evidence", params] as const,
-  graphSimilarity: (params: SimilarityQueryParams = {}) =>
-    ["graph-similarity", params] as const,
+  graphEvidence: (params: EvidenceGraphQueryParams = {}) => ["graph-evidence", params] as const,
+  graphSimilarity: (params: SimilarityQueryParams = {}) => ["graph-similarity", params] as const,
   graphCommunities: () => ["graph-communities"] as const,
   embeddings: () => ["embeddings"] as const,
   eval: () => ["eval"] as const,
@@ -100,6 +98,11 @@ export const queryKeys = {
 
 function withLeadingSlash(path: string): string {
   return path.startsWith("/") ? path : `/${path}`;
+}
+
+/** Merge a filters query string and a limit query string into one. */
+export function combineQueryStrings(filtersQs: string, limitQs: string): string {
+  return filtersQs ? `${filtersQs}${limitQs ? `&${limitQs.slice(1)}` : ""}` : limitQs;
 }
 
 export function createQueryString(
@@ -135,11 +138,7 @@ export function createArrayQueryString(
 function normalizeListParam(values?: string[]): string[] | undefined {
   if (!values?.length) return undefined;
   const normalized = Array.from(
-    new Set(
-      values
-        .map((value) => value.trim())
-        .filter((value) => value.length > 0)
-    )
+    new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))
   ).sort((a, b) => a.localeCompare(b));
   return normalized.length > 0 ? normalized : undefined;
 }
@@ -191,9 +190,7 @@ function createSoftQueryString(input: SimilarityQueryParams = {}): string {
   return serialized ? `?${serialized}` : "";
 }
 
-export function normalizeSessionsResponse(
-  input: SessionsResponse
-): SessionListResponse {
+export function normalizeSessionsResponse(input: SessionsResponse): SessionListResponse {
   const parsed = sessionsResponseSchema.parse(input);
   if (Array.isArray(parsed)) {
     return {
@@ -208,13 +205,13 @@ export function normalizeSessionsResponse(
 }
 
 export function useSessions(params: SessionsQueryParams = {}) {
+  // sort is applied client-side; do not forward to the backend
   const queryString = createQueryString({
     page: params.page,
     page_size: params.pageSize,
     q: params.query,
     source: params.source,
     has_summary: params.hasSummary,
-    sort: params.sort,
   });
 
   return useQuery({
@@ -259,9 +256,7 @@ export function useSearch(params: SearchQueryParams, enabled = true) {
     gcTime: CACHE_TIMES.search,
     enabled: enabled && params.query.trim().length > 0,
     queryFn: async (): Promise<SearchResponse> => {
-      const data = await apiFetch<SearchResponse>(
-        withLeadingSlash(`/api/search${queryString}`)
-      );
+      const data = await apiFetch<SearchResponse>(withLeadingSlash(`/api/search${queryString}`));
       return searchResponseSchema.parse(data);
     },
   });
@@ -309,9 +304,7 @@ export function useDashboard() {
     staleTime: STALE_TIMES.dashboard,
     gcTime: CACHE_TIMES.dashboard,
     queryFn: async (): Promise<DashboardStats> => {
-      const data = await apiFetch<DashboardStats>(
-        withLeadingSlash("/api/dashboard/stats")
-      );
+      const data = await apiFetch<DashboardStats>(withLeadingSlash("/api/dashboard/stats"));
       return dashboardStatsSchema.parse(data);
     },
   });
@@ -325,18 +318,14 @@ export function useGraph(params: GraphQueryParams = {}) {
     kind: normalizedParams.kind,
   });
   const graphLimitQueryString = createQueryString({ limit: normalizedParams.limit });
-  const graphQueryString = graphFiltersQueryString
-    ? `${graphFiltersQueryString}${graphLimitQueryString ? `&${graphLimitQueryString.slice(1)}` : ""}`
-    : graphLimitQueryString;
+  const graphQueryString = combineQueryStrings(graphFiltersQueryString, graphLimitQueryString);
 
   return useQuery({
     queryKey: queryKeys.graphLegacy(normalizedParams),
     staleTime: STALE_TIMES.graph,
     gcTime: CACHE_TIMES.graph,
     queryFn: async (): Promise<GraphResponse> => {
-      const data = await apiFetch<GraphResponse>(
-        withLeadingSlash(`/api/graph${graphQueryString}`)
-      );
+      const data = await apiFetch<GraphResponse>(withLeadingSlash(`/api/graph${graphQueryString}`));
       return graphResponseSchema.parse(data);
     },
   });
@@ -352,9 +341,7 @@ export function useEvidenceGraph(params: EvidenceGraphQueryParams = {}) {
     relation_type: normalizedRelationTypes,
   });
   const graphLimitQueryString = createQueryString({ limit: normalizedParams.limit });
-  const graphQueryString = graphFiltersQueryString
-    ? `${graphFiltersQueryString}${graphLimitQueryString ? `&${graphLimitQueryString.slice(1)}` : ""}`
-    : graphLimitQueryString;
+  const graphQueryString = combineQueryStrings(graphFiltersQueryString, graphLimitQueryString);
 
   return useQuery({
     queryKey: queryKeys.graphEvidence({
@@ -378,18 +365,13 @@ export function useEmbeddings() {
     staleTime: STALE_TIMES.embeddings,
     gcTime: CACHE_TIMES.embeddings,
     queryFn: async (): Promise<EmbeddingProjection> => {
-      const data = await apiFetch<EmbeddingProjection>(
-        withLeadingSlash("/api/embeddings/points")
-      );
+      const data = await apiFetch<EmbeddingProjection>(withLeadingSlash("/api/embeddings/points"));
       return embeddingProjectionSchema.parse(data);
     },
   });
 }
 
-export function useSimilarity(
-  params: SimilarityQueryParams = {},
-  enabled = true
-) {
+export function useSimilarity(params: SimilarityQueryParams = {}, enabled = true) {
   const queryString = createSoftQueryString(params);
   return useQuery({
     queryKey: queryKeys.graphSimilarity(params),
@@ -412,9 +394,7 @@ export function useCommunities(enabled = true) {
     gcTime: CACHE_TIMES.graph,
     enabled,
     queryFn: async (): Promise<CommunitiesResponse> => {
-      const data = await apiFetch<CommunitiesResponse>(
-        withLeadingSlash("/api/graph/communities")
-      );
+      const data = await apiFetch<CommunitiesResponse>(withLeadingSlash("/api/graph/communities"));
       return communitiesResponseSchema.parse(data);
     },
   });
@@ -438,7 +418,9 @@ export function useTentacleStatus() {
     staleTime: STALE_TIMES.health,
     gcTime: CACHE_TIMES.health,
     queryFn: async (): Promise<TentacleStatusResponse> => {
-      const data = await apiFetch<TentacleStatusResponse>(withLeadingSlash("/api/tentacles/status"));
+      const data = await apiFetch<TentacleStatusResponse>(
+        withLeadingSlash("/api/tentacles/status")
+      );
       return tentacleStatusResponseSchema.parse(data);
     },
   });
@@ -468,9 +450,7 @@ export function useCompare(sessionA: string, sessionB: string, enabled = true) {
     gcTime: CACHE_TIMES.compare,
     enabled: enabled && Boolean(sessionA) && Boolean(sessionB),
     queryFn: async (): Promise<CompareResponse> => {
-      const data = await apiFetch<CompareResponse>(
-        withLeadingSlash(`/api/compare${queryString}`)
-      );
+      const data = await apiFetch<CompareResponse>(withLeadingSlash(`/api/compare${queryString}`));
       return compareResponseSchema.parse(data);
     },
   });

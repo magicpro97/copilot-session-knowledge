@@ -26,7 +26,7 @@ if os.name == "nt":
     except Exception:
         pass
 
-TOOLS_DIR = Path.home() / ".copilot" / "tools"
+TOOLS_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = TOOLS_DIR / "sync-config.json"
 
 
@@ -129,8 +129,8 @@ def main() -> None:
         print("Sync configuration")
         print(f"  Config file: {status['config_path']}")
         print(f"  Configured:  {'yes' if status['configured'] else 'no'}")
-        print(f"  Contract:    HTTP(S) gateway URL (local-first)")
-        print(f"  Direct DB:   no (CLI core does not sync to Postgres/libSQL directly)")
+        print("  Contract:    HTTP(S) gateway URL (local-first)")
+        print("  Direct DB:   no (CLI core does not sync to Postgres/libSQL directly)")
         if status["configured"]:
             print(f"  URL:         {status['connection_string']}")
             print(f"  Target:      {status['gateway_target']}")

@@ -35,11 +35,7 @@ export function BarChart<TData extends Record<string, unknown>>({
           <XAxis dataKey={String(xKey)} className="fill-muted-foreground text-xs" />
           <YAxis className="fill-muted-foreground text-xs" />
           <Tooltip />
-          <Bar
-            dataKey={String(yKey)}
-            fill="hsl(var(--chart-2))"
-            radius={[6, 6, 0, 0]}
-          />
+          <Bar dataKey={String(yKey)} fill="hsl(var(--chart-2))" radius={[6, 6, 0, 0]} />
         </RechartsBarChart>
       </ResponsiveContainer>
     </ChartContainer>

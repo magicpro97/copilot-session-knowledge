@@ -405,8 +405,15 @@ class TestSwarmBriefingFlag(unittest.TestCase):
         self.base = SCRATCH_DIR / "swarm"
         self.base.mkdir(parents=True, exist_ok=True)
         self.tentacle_dir = make_tentacle("test-swarm", self.base)
+        self.marker_path = self.base / "dispatched-subagent-active"
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
 
     def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
         import shutil
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
@@ -527,8 +534,15 @@ class TestExistingBehaviorUnchanged(unittest.TestCase):
     def setUp(self):
         self.base = SCRATCH_DIR / "existing"
         self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / "dispatched-subagent-active"
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
 
     def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
         import shutil
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
@@ -1455,8 +1469,15 @@ class TestCmdBundle(unittest.TestCase):
     def setUp(self):
         self.base = SCRATCH_DIR / "cmd_bundle_tests"
         self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / "dispatched-subagent-active"
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
 
     def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
         import shutil
         if self.base.exists():
             shutil.rmtree(self.base)
@@ -1573,8 +1594,15 @@ class TestSwarmBundleFlag(unittest.TestCase):
     def setUp(self):
         self.base = SCRATCH_DIR / "swarm_bundle_tests"
         self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / "dispatched-subagent-active"
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
 
     def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
         import shutil
         if self.base.exists():
             shutil.rmtree(self.base)
@@ -1702,8 +1730,15 @@ class TestSwarmGuardrails(unittest.TestCase):
         self.base = SCRATCH_DIR / "guardrails"
         self.base.mkdir(parents=True, exist_ok=True)
         self.tentacle_dir = make_tentacle("gr-test", self.base)
+        self.marker_path = self.base / "dispatched-subagent-active"
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
 
     def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
         import shutil
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
@@ -1999,6 +2034,87 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
         with patch("pathlib.Path.unlink", side_effect=PermissionError("busy")):
             result = T._clear_dispatched_subagent_marker("any-tent")
         self.assertFalse(result)
+
+    # ── cmd_marker_cleanup ─────────────────────────────────────────────────────
+
+    def test_marker_cleanup_apply_removes_stale_identity_entry(self):
+        stale_ts = str(int(time.time()) - (T._DISPATCHED_MARKER_TTL + 30))
+        data = {
+            "name": self.MARKER_NAME,
+            "ts": stale_ts,
+            "ttl_seconds": T._DISPATCHED_MARKER_TTL,
+            "active_tentacles": [
+                {
+                    "name": "phase5-stale",
+                    "ts": stale_ts,
+                    "git_root": "/tmp/other-repo",
+                    "tentacle_id": "tid-stale",
+                }
+            ],
+        }
+        self.marker_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        args = fake_args(apply=True)
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            T.cmd_marker_cleanup(args)
+        self.assertFalse(self.marker_path.exists())
+        self.assertIn("Removed 1/1 stale entries", buf.getvalue())
+
+    def test_marker_cleanup_apply_does_not_claim_cross_repo_legacy_entry_removed(self):
+        stale_ts = str(int(time.time()) - (T._DISPATCHED_MARKER_TTL + 30))
+        data = {
+            "name": self.MARKER_NAME,
+            "ts": stale_ts,
+            "ttl_seconds": T._DISPATCHED_MARKER_TTL,
+            "active_tentacles": [
+                {
+                    "name": "legacy-stale",
+                    "ts": stale_ts,
+                    "git_root": "/tmp/other-repo",
+                }
+            ],
+        }
+        self.marker_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        args = fake_args(apply=True)
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch.object(T, "find_git_root", return_value=Path("/tmp/current-repo")):
+            with redirect_stdout(out), redirect_stderr(err):
+                T.cmd_marker_cleanup(args)
+        remaining = json.loads(self.marker_path.read_text(encoding="utf-8"))
+        self.assertIn("legacy-stale", _names_from_entries(remaining["active_tentacles"]))
+        self.assertIn("Removed 0/1 stale entries", out.getvalue())
+        self.assertIn("Left stale entry in place", err.getvalue())
+
+    def test_marker_cleanup_treats_corrupted_ts_as_live_unknown_age(self):
+        data = {
+            "name": self.MARKER_NAME,
+            "ts": str(int(time.time())),
+            "ttl_seconds": T._DISPATCHED_MARKER_TTL,
+            "active_tentacles": [
+                {
+                    "name": "corrupted-entry",
+                    "ts": "corrupted",
+                    "git_root": "/tmp/current-repo",
+                }
+            ],
+        }
+        self.marker_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        args = fake_args(apply=False)
+        import io
+        from contextlib import redirect_stdout
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            T.cmd_marker_cleanup(args)
+        self.assertIn("unknown age", out.getvalue())
+        self.assertIn("No stale entries to clean up", out.getvalue())
 
     # ── _read_dispatched_subagent_marker ──────────────────────────────────────
 
@@ -4306,8 +4422,15 @@ class TestWorktreeInBundleSwarmDispatch(unittest.TestCase):
         self.base.mkdir(parents=True, exist_ok=True)
         self.tentacle_dir = make_tentacle("wt-surface", self.base)
         self.repo_dir = _make_scratch_git_repo(SCRATCH_DIR)
+        self.marker_path = self.base / "dispatched-subagent-active"
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
 
     def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
         import shutil
         # Clean up worktrees
         repo_slug = T._repo_slug(self.repo_dir)
@@ -4666,6 +4789,104 @@ class TestCompleteOutcomePersistence(unittest.TestCase):
         self.assertIn("tentacle_outcomes", tables)
         self.assertIn("tentacle_outcome_skills", tables)
         self.assertIn("tentacle_verifications", tables)
+
+
+# ---------------------------------------------------------------------------
+# Regression guard: tests must never touch the real production marker
+# ---------------------------------------------------------------------------
+
+class TestNoProductionMarkerPollution(unittest.TestCase):
+    """Verifies that cmd_swarm() and cmd_bundle() never write to the real
+    ~/.copilot/markers/dispatched-subagent-active path during test runs.
+
+    Any test that calls these functions without redirecting T._DISPATCHED_MARKER_PATH
+    and T.MARKERS_DIR first will cause this class's tests to fail, providing a
+    clear signal that test isolation has been broken.
+    """
+
+    _REAL_MARKER = Path.home() / ".copilot" / "markers" / "dispatched-subagent-active"
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "pollution_guard"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / "dispatched-subagent-active"
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+        # Snapshot mtime of real marker before the test
+        self._real_mtime = (
+            self._REAL_MARKER.stat().st_mtime if self._REAL_MARKER.is_file() else None
+        )
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def _real_marker_unchanged(self) -> bool:
+        """True if the real production marker has not been touched since setUp."""
+        if self._real_mtime is None:
+            return not self._REAL_MARKER.is_file()
+        return (
+            self._REAL_MARKER.is_file()
+            and self._REAL_MARKER.stat().st_mtime == self._real_mtime
+        )
+
+    def test_redirect_is_active(self):
+        """T._DISPATCHED_MARKER_PATH must differ from the real production path."""
+        self.assertNotEqual(
+            T._DISPATCHED_MARKER_PATH,
+            self._REAL_MARKER,
+            "T._DISPATCHED_MARKER_PATH must be redirected to a test-local path",
+        )
+
+    def test_cmd_swarm_does_not_touch_real_marker(self):
+        """cmd_swarm() must write only to the redirected test marker path."""
+        make_tentacle("poll-swarm", self.base)
+        args = fake_args(
+            name="poll-swarm",
+            agent_type="general-purpose",
+            model="claude-sonnet-4.6",
+            output="json",
+            briefing=False,
+            bundle=False,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_swarm(args)
+        self.assertTrue(
+            self._real_marker_unchanged(),
+            f"cmd_swarm() wrote to real production marker at {self._REAL_MARKER}",
+        )
+        self.assertTrue(
+            self.marker_path.is_file(),
+            "cmd_swarm() must write to the redirected test marker path",
+        )
+
+    def test_cmd_bundle_does_not_touch_real_marker(self):
+        """cmd_bundle() must write only to the redirected test marker path."""
+        make_tentacle("poll-bundle", self.base)
+        args = fake_args(
+            name="poll-bundle",
+            no_briefing=True,
+            no_checkpoint=True,
+            output="json",
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
+                with patch("builtins.print"):
+                    T.cmd_bundle(args)
+        self.assertTrue(
+            self._real_marker_unchanged(),
+            f"cmd_bundle() wrote to real production marker at {self._REAL_MARKER}",
+        )
+        self.assertTrue(
+            self.marker_path.is_file(),
+            "cmd_bundle() must write to the redirected test marker path",
+        )
 
 
 if __name__ == "__main__":

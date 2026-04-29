@@ -41,7 +41,7 @@ python3 test_fixes.py       # If touching: any script
 
 Do NOT mark a task complete until the relevant tests pass. If you hit a baseline failure, separate pre-existing breakage from regressions you introduced before proceeding.
 
-Python tests use a custom `test()` harness (not pytest). The repo also has GitHub Actions CI and browse-ui quality gates (`pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm build`); run the surfaces relevant to the files you changed.
+Python validation runs through `run_all_tests.py`, but individual files use a mix of the custom `test()` helper and `unittest`/`test_*` style. The repo also has GitHub Actions CI and browse-ui quality gates (`pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test`, `pnpm build`); run the surfaces relevant to the files you changed.
 
 ## Rule 4 — Verify Before Committing
 

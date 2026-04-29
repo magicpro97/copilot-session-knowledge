@@ -108,7 +108,10 @@ export function CommandPalette() {
 
     command.run();
 
-    const nextRecent = [command.id, ...recentCommandIds.filter((id) => id !== command.id)].slice(0, 5);
+    const nextRecent = [command.id, ...recentCommandIds.filter((id) => id !== command.id)].slice(
+      0,
+      5
+    );
     setRecentCommandIds(nextRecent);
     writeRecentCommandIds(window.localStorage, nextRecent);
 
@@ -147,7 +150,9 @@ export function CommandPalette() {
                     disabled={command.disabled}
                   >
                     <span>{command.title}</span>
-                    {command.shortcut ? <CommandShortcut>{command.shortcut}</CommandShortcut> : null}
+                    {command.shortcut ? (
+                      <CommandShortcut>{command.shortcut}</CommandShortcut>
+                    ) : null}
                   </CommandItem>
                 ))}
               </CommandGroup>
@@ -168,12 +173,14 @@ export function CommandPalette() {
                     <div className="flex min-w-0 flex-col">
                       <span>{command.title}</span>
                       {command.subtitle ? (
-                        <span className="truncate text-xs text-muted-foreground">
+                        <span className="text-muted-foreground truncate text-xs">
                           {command.subtitle}
                         </span>
                       ) : null}
                     </div>
-                    {command.shortcut ? <CommandShortcut>{command.shortcut}</CommandShortcut> : null}
+                    {command.shortcut ? (
+                      <CommandShortcut>{command.shortcut}</CommandShortcut>
+                    ) : null}
                   </CommandItem>
                 ))}
               </CommandGroup>

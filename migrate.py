@@ -32,9 +32,7 @@ def _default_local_replica_id() -> str:
 def _get_local_replica_id(db: sqlite3.Connection) -> str:
     for table in ("sync_state", "sync_metadata"):
         try:
-            row = db.execute(
-                f"SELECT value FROM {table} WHERE key='local_replica_id'"
-            ).fetchone()
+            row = db.execute(f"SELECT value FROM {table} WHERE key='local_replica_id'").fetchone()
         except sqlite3.OperationalError:
             continue
         current = str(row[0]).strip() if row and row[0] else ""
@@ -43,13 +41,16 @@ def _get_local_replica_id(db: sqlite3.Connection) -> str:
     replica_id = _default_local_replica_id()
     for table in ("sync_state", "sync_metadata"):
         try:
-            db.execute(f"""
+            db.execute(
+                f"""
                 INSERT INTO {table} (key, value)
                 VALUES ('local_replica_id', ?)
                 ON CONFLICT(key) DO UPDATE SET
                     value = excluded.value,
                     updated_at = datetime('now')
-            """, (replica_id,))
+            """,
+                (replica_id,),
+            )
         except sqlite3.OperationalError:
             pass
     return replica_id or "local"
@@ -154,13 +155,16 @@ def _seed_sync_table_policies(db: sqlite3.Connection):
         ("embedding_meta", "local_only", ""),
         ("tfidf_model", "local_only", ""),
     ]
-    db.executemany("""
+    db.executemany(
+        """
         INSERT INTO sync_table_policies (table_name, sync_scope, stable_id_column)
         VALUES (?, ?, ?)
         ON CONFLICT(table_name) DO UPDATE SET
             sync_scope = excluded.sync_scope,
             stable_id_column = excluded.stable_id_column
-    """, policies)
+    """,
+        policies,
+    )
     db.execute("""
         INSERT OR IGNORE INTO sync_metadata (key, value)
         VALUES ('local_replica_id', 'local')
@@ -172,10 +176,13 @@ def _seed_sync_table_policies(db: sqlite3.Connection):
 
 
 def _backfill_stable_ids(db: sqlite3.Connection):
-    has_table = lambda t: db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (t,),
-    ).fetchone() is not None
+    has_table = lambda t: (
+        db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (t,),
+        ).fetchone()
+        is not None
+    )
 
     if has_table("documents"):
         for row in db.execute("""
@@ -183,9 +190,7 @@ def _backfill_stable_ids(db: sqlite3.Connection):
             FROM documents
         """).fetchall():
             did, session_id, doc_type, seq, title, existing = row
-            stable = _stable_sha256(
-                "document", session_id, doc_type, int(seq or 0), _normalize_title(title)
-            )
+            stable = _stable_sha256("document", session_id, doc_type, int(seq or 0), _normalize_title(title))
             if existing != stable:
                 db.execute("UPDATE documents SET stable_id = ? WHERE id = ?", (stable, did))
 
@@ -231,11 +236,14 @@ def _backfill_stable_ids(db: sqlite3.Connection):
                 continue
             stable = _stable_sha256("knowledge_relation", src_sid, tgt_sid, relation_type or "")
             if src_existing != src_sid or tgt_existing != tgt_sid or existing != stable:
-                db.execute("""
+                db.execute(
+                    """
                     UPDATE knowledge_relations
                     SET source_stable_id = ?, target_stable_id = ?, stable_id = ?
                     WHERE id = ?
-                """, (src_sid, tgt_sid, stable, kr_id))
+                """,
+                    (src_sid, tgt_sid, stable, kr_id),
+                )
 
     if has_table("entity_relations"):
         for row in db.execute("""
@@ -266,11 +274,14 @@ def _backfill_stable_ids(db: sqlite3.Connection):
                 origin,
             )
             if existing != stable or origin_replica_id != origin:
-                db.execute("""
+                db.execute(
+                    """
                     UPDATE search_feedback
                     SET origin_replica_id = ?, stable_id = ?
                     WHERE id = ?
-                """, (origin, stable, sf_id))
+                """,
+                    (origin, stable, sf_id),
+                )
 
 
 def _dedupe_stable_rows(db: sqlite3.Connection, table: str):
@@ -301,10 +312,13 @@ def _dedupe_stable_rows(db: sqlite3.Connection, table: str):
 
 
 def _enforce_stable_id_uniqueness(db: sqlite3.Connection):
-    has_table = lambda t: db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (t,),
-    ).fetchone() is not None
+    has_table = lambda t: (
+        db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (t,),
+        ).fetchone()
+        is not None
+    )
 
     index_specs = [
         ("documents", "uq_documents_stable_id"),
@@ -321,306 +335,368 @@ def _enforce_stable_id_uniqueness(db: sqlite3.Connection):
         db.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table}(stable_id)")
 
 
-if len(sys.argv) < 2:
-    sys.argv.append(os.path.expanduser("~/.copilot/session-state/knowledge.db"))
-db = sqlite3.connect(sys.argv[1])
-db.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, migrated_at TEXT DEFAULT (datetime('now')))")
-try:
-    db.execute("ALTER TABLE schema_version ADD COLUMN name TEXT DEFAULT ''")
-except sqlite3.OperationalError:
-    pass
-current = db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] or 0
-MIGRATIONS = [
-    (2, "add_wing_room", [
-        "ALTER TABLE knowledge_entries ADD COLUMN wing TEXT DEFAULT ''",
-        "ALTER TABLE knowledge_entries ADD COLUMN room TEXT DEFAULT ''",
-    ]),
-    (3, "entity_relations", [
-        "CREATE TABLE IF NOT EXISTS entity_relations (id INTEGER PRIMARY KEY AUTOINCREMENT, subject TEXT NOT NULL, predicate TEXT NOT NULL, object TEXT NOT NULL, noted_at TEXT DEFAULT (datetime('now')), session_id TEXT DEFAULT '', UNIQUE(subject, predicate, object))",
-        "CREATE INDEX IF NOT EXISTS idx_er_subject ON entity_relations(subject)",
-        "CREATE INDEX IF NOT EXISTS idx_er_object ON entity_relations(object)",
-    ]),
-    (4, "wakeup_config", [
-        "CREATE TABLE IF NOT EXISTS wakeup_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')))",
-    ]),
-    (5, "add_facts_column", [
-        "ALTER TABLE knowledge_entries ADD COLUMN facts TEXT DEFAULT '[]'",
-    ]),
-    (6, "add_est_tokens_column", [
-        "ALTER TABLE knowledge_entries ADD COLUMN est_tokens INTEGER DEFAULT 0",
-        "UPDATE knowledge_entries SET est_tokens = LENGTH(COALESCE(title,'') || ' ' || COALESCE(content,'')) / 4 WHERE est_tokens = 0",
-    ]),
-    # v7: Batch B — two-phase indexing.
-    # B-BL-07: CREATE TABLE IF NOT EXISTS sessions first so ALTERs don't fail on fresh DB.
-    # B-BL-02: event_offsets.event_id is INTEGER NOT NULL (not TEXT).
-    # B-BL-05: event_offsets has file_mtime REAL column.
-    (7, "two_phase_indexing", [
-        # Guard: ensure sessions table exists with current schema before ALTERs.
-        """CREATE TABLE IF NOT EXISTS sessions (
-            id TEXT PRIMARY KEY,
-            path TEXT NOT NULL,
-            summary TEXT DEFAULT '',
-            total_checkpoints INTEGER DEFAULT 0,
-            total_research INTEGER DEFAULT 0,
-            total_files INTEGER DEFAULT 0,
-            has_plan INTEGER DEFAULT 0,
-            source TEXT DEFAULT 'copilot',
-            indexed_at TEXT
-        )""",
-        # Add new Phase-1 / Phase-2 tracking columns (idempotent: runner catches 'duplicate').
-        "ALTER TABLE sessions ADD COLUMN file_mtime REAL",
-        "ALTER TABLE sessions ADD COLUMN indexed_at_r REAL",
-        "ALTER TABLE sessions ADD COLUMN fts_indexed_at REAL",
-        "ALTER TABLE sessions ADD COLUMN event_count_estimate INTEGER DEFAULT 0",
-        "ALTER TABLE sessions ADD COLUMN file_size_bytes INTEGER DEFAULT 0",
-        # event_offsets: byte-offset seek table.
-        # event_id INTEGER NOT NULL (B-BL-02); file_mtime REAL (B-BL-05).
-        """CREATE TABLE IF NOT EXISTS event_offsets (
-            session_id TEXT NOT NULL,
-            event_id INTEGER NOT NULL,
-            byte_offset INTEGER NOT NULL,
-            file_mtime REAL NOT NULL,
-            PRIMARY KEY (session_id, event_id)
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_event_offsets_session ON event_offsets(session_id)",
-    ]),
-    # v8: Batch C — sessions_fts for BM25 + role-based column-scoped search.
-    # C-BL-02: version = 8 (B already took v7).
-    # Contentless FTS5: session_id UNINDEXED (col 0, still counted by snippet/bm25),
-    # title (col 1), user_messages (col 2), assistant_messages (col 3), tool_names (col 4).
-    # Empirically verified column indices before committing (see _fts5_empirical.py).
-    (8, "add_sessions_fts", [
-        """CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
-            session_id UNINDEXED,
-            title,
-            user_messages,
-            assistant_messages,
-            tool_names,
-            tokenize='porter unicode61 remove_diacritics 2'
-        )""",
-    ]),
-    # v9: F15 Eval/Feedback — records thumbs up/down on search results.
-    (9, "search_feedback_table", [
-        """CREATE TABLE IF NOT EXISTS search_feedback (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            query TEXT,
-            result_id TEXT,
-            result_kind TEXT,
-            verdict INTEGER NOT NULL CHECK(verdict IN (-1,0,1)),
-            comment TEXT,
-            user_agent TEXT,
-            created_at TEXT NOT NULL
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_sf_query ON search_feedback(query)",
-        "CREATE INDEX IF NOT EXISTS idx_sf_created ON search_feedback(created_at)",
-    ]),
-    (10, "phase3_schema_provenance", [
-        "ALTER TABLE knowledge_entries ADD COLUMN task_id TEXT DEFAULT ''",
-        "ALTER TABLE knowledge_entries ADD COLUMN affected_files TEXT DEFAULT '[]'",
-        "ALTER TABLE knowledge_entries ADD COLUMN source_section TEXT DEFAULT ''",
-        "ALTER TABLE knowledge_entries ADD COLUMN source_file TEXT DEFAULT ''",
-        "ALTER TABLE knowledge_entries ADD COLUMN start_line INTEGER DEFAULT 0",
-        "ALTER TABLE knowledge_entries ADD COLUMN end_line INTEGER DEFAULT 0",
-        "ALTER TABLE knowledge_entries ADD COLUMN code_language TEXT DEFAULT ''",
-        "ALTER TABLE knowledge_entries ADD COLUMN code_snippet TEXT DEFAULT ''",
-        "CREATE INDEX IF NOT EXISTS idx_ke_task ON knowledge_entries(task_id)",
-    ]),
-    (11, "phase5_recall_events", [
-        """CREATE TABLE IF NOT EXISTS recall_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT NOT NULL,
-            event_kind TEXT NOT NULL,
-            tool TEXT NOT NULL,
-            surface TEXT NOT NULL,
-            mode TEXT DEFAULT '',
-            raw_query TEXT DEFAULT '',
-            rewritten_query TEXT DEFAULT '',
-            task_id TEXT DEFAULT '',
-            files TEXT DEFAULT '[]',
-            selected_entry_ids TEXT DEFAULT '[]',
-            selected_snippet_ids TEXT DEFAULT '[]',
-            opened_entry_id INTEGER,
-            hit_count INTEGER DEFAULT 0,
-            output_chars INTEGER DEFAULT 0,
-            output_est_tokens INTEGER DEFAULT 0
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_recall_events_created_at ON recall_events(created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_recall_events_tool_surface ON recall_events(tool, surface)",
-        "CREATE INDEX IF NOT EXISTS idx_recall_events_rewritten_query ON recall_events(rewritten_query)",
-        "CREATE INDEX IF NOT EXISTS idx_recall_events_opened_entry_id ON recall_events(opened_entry_id)",
-    ]),
-    (12, "stable_ids_and_sync_metadata", [
-        """CREATE TABLE IF NOT EXISTS documents (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
-            doc_type TEXT NOT NULL,
-            seq INTEGER DEFAULT 0,
-            title TEXT NOT NULL,
-            file_path TEXT NOT NULL UNIQUE,
-            file_hash TEXT,
-            size_bytes INTEGER DEFAULT 0,
-            content_preview TEXT DEFAULT '',
-            source TEXT DEFAULT 'copilot',
-            indexed_at TEXT
-        )""",
-        """CREATE TABLE IF NOT EXISTS sections (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            document_id INTEGER NOT NULL,
-            section_name TEXT NOT NULL,
-            content TEXT NOT NULL,
-            UNIQUE(document_id, section_name)
-        )""",
-        """CREATE TABLE IF NOT EXISTS knowledge_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
-            category TEXT NOT NULL,
-            title TEXT NOT NULL,
-            content TEXT NOT NULL,
-            topic_key TEXT
-        )""",
-        """CREATE TABLE IF NOT EXISTS knowledge_relations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_id INTEGER,
-            target_id INTEGER,
-            relation_type TEXT NOT NULL
-        )""",
-        """CREATE TABLE IF NOT EXISTS entity_relations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            subject TEXT NOT NULL,
-            predicate TEXT NOT NULL,
-            object TEXT NOT NULL
-        )""",
-        """CREATE TABLE IF NOT EXISTS search_feedback (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            query TEXT,
-            result_id TEXT,
-            result_kind TEXT,
-            verdict INTEGER NOT NULL CHECK(verdict IN (-1,0,1)),
-            comment TEXT,
-            user_agent TEXT,
-            created_at TEXT NOT NULL
-        )""",
-        "ALTER TABLE documents ADD COLUMN stable_id TEXT",
-        "ALTER TABLE sections ADD COLUMN stable_id TEXT",
-        "ALTER TABLE knowledge_entries ADD COLUMN stable_id TEXT",
-        "ALTER TABLE knowledge_relations ADD COLUMN source_stable_id TEXT",
-        "ALTER TABLE knowledge_relations ADD COLUMN target_stable_id TEXT",
-        "ALTER TABLE knowledge_relations ADD COLUMN stable_id TEXT",
-        "ALTER TABLE entity_relations ADD COLUMN stable_id TEXT",
-        "ALTER TABLE search_feedback ADD COLUMN origin_replica_id TEXT DEFAULT 'local'",
-        "ALTER TABLE search_feedback ADD COLUMN stable_id TEXT",
-        "CREATE INDEX IF NOT EXISTS idx_documents_stable_id ON documents(stable_id)",
-        "CREATE INDEX IF NOT EXISTS idx_sections_stable_id ON sections(stable_id)",
-        "CREATE INDEX IF NOT EXISTS idx_ke_stable_id ON knowledge_entries(stable_id)",
-        "CREATE INDEX IF NOT EXISTS idx_kr_source_stable ON knowledge_relations(source_stable_id)",
-        "CREATE INDEX IF NOT EXISTS idx_kr_target_stable ON knowledge_relations(target_stable_id)",
-        "CREATE INDEX IF NOT EXISTS idx_kr_stable_id ON knowledge_relations(stable_id)",
-        "CREATE INDEX IF NOT EXISTS idx_er_stable_id ON entity_relations(stable_id)",
-        "CREATE INDEX IF NOT EXISTS idx_sf_stable_id ON search_feedback(stable_id)",
-        "CREATE INDEX IF NOT EXISTS idx_sf_origin_replica ON search_feedback(origin_replica_id)",
-        """CREATE TABLE IF NOT EXISTS sync_metadata (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL,
-            updated_at TEXT DEFAULT (datetime('now'))
-        )""",
-        """CREATE TABLE IF NOT EXISTS sync_table_policies (
-            table_name TEXT PRIMARY KEY,
-            sync_scope TEXT NOT NULL CHECK(sync_scope IN ('canonical', 'local_only', 'upload_only')),
-            stable_id_column TEXT DEFAULT ''
-        )""",
-    ]),
-    (13, "sync_foundation_tables", [
-        """CREATE TABLE IF NOT EXISTS sync_state (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL,
-            updated_at TEXT DEFAULT (datetime('now'))
-        )""",
-        """CREATE TABLE IF NOT EXISTS sync_txns (
-            txn_id TEXT PRIMARY KEY,
-            replica_id TEXT NOT NULL,
-            status TEXT NOT NULL CHECK(status IN ('pending', 'committed', 'failed')),
-            created_at TEXT NOT NULL,
-            committed_at TEXT DEFAULT ''
-        )""",
-        """CREATE TABLE IF NOT EXISTS sync_ops (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            txn_id TEXT NOT NULL,
-            table_name TEXT NOT NULL,
-            op_type TEXT NOT NULL CHECK(op_type IN ('insert', 'update', 'delete', 'upsert')),
-            row_stable_id TEXT NOT NULL,
-            row_payload TEXT NOT NULL,
-            op_index INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            UNIQUE(txn_id, op_index)
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_sync_ops_txn ON sync_ops(txn_id)",
-        "CREATE INDEX IF NOT EXISTS idx_sync_ops_table_row ON sync_ops(table_name, row_stable_id)",
-        """CREATE TABLE IF NOT EXISTS sync_cursors (
-            replica_id TEXT PRIMARY KEY,
-            last_txn_id TEXT DEFAULT '',
-            updated_at TEXT DEFAULT (datetime('now'))
-        )""",
-        """CREATE TABLE IF NOT EXISTS sync_failures (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            txn_id TEXT DEFAULT '',
-            table_name TEXT DEFAULT '',
-            row_stable_id TEXT DEFAULT '',
-            error_code TEXT DEFAULT '',
-            error_message TEXT DEFAULT '',
-            failed_at TEXT NOT NULL,
-            retry_count INTEGER DEFAULT 0
-        )""",
-        "CREATE INDEX IF NOT EXISTS idx_sync_failures_txn ON sync_failures(txn_id)",
-    ]),
-]
-applied = 0
-for ver, name, stmts in MIGRATIONS:
-    if ver <= current: continue
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        sys.argv.append(os.path.expanduser("~/.copilot/session-state/knowledge.db"))
+    db = sqlite3.connect(sys.argv[1])
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, migrated_at TEXT DEFAULT (datetime('now')))"
+    )
     try:
-        for sql in stmts:
-            try: db.execute(sql)
-            except sqlite3.OperationalError as e:
-                if "duplicate" in str(e).lower() or "already exists" in str(e).lower(): pass
-                else: raise
-        db.execute("INSERT OR IGNORE INTO schema_version (version, name) VALUES (?, ?)", (ver, name))
-        db.commit(); applied += 1
-        print(f"  [migrate] v{ver}: {name}")
-    except Exception as e:
-        print(f"  [migrate] v{ver} {name}: {e}", file=sys.stderr)
-try:
-    _backfill_stable_ids(db)
-    _seed_sync_table_policies(db)
-    _enforce_stable_id_uniqueness(db)
-    db.commit()
-except Exception as e:
-    print(f"  [migrate] stable-id backfill: {e}", file=sys.stderr)
-try:
-    fts_sql = db.execute("SELECT sql FROM sqlite_master WHERE name='ke_fts'").fetchone()
-    needs_rebuild = False
-    if fts_sql:
-        fts_def = fts_sql[0] or ''
-        if 'wing' not in fts_def or 'facts' not in fts_def:
-            needs_rebuild = True
-    if needs_rebuild:
-        print("  [migrate] Rebuilding FTS5 (adding facts column)...")
-        # P0-9: use BEGIN EXCLUSIVE so the DROP→RENAME is atomic;
-        # prevents FTS permanent loss if watch-sessions holds a read transaction.
-        db.execute("BEGIN EXCLUSIVE")
+        db.execute("ALTER TABLE schema_version ADD COLUMN name TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    current = db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] or 0
+    MIGRATIONS = [
+        (
+            2,
+            "add_wing_room",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN wing TEXT DEFAULT ''",
+                "ALTER TABLE knowledge_entries ADD COLUMN room TEXT DEFAULT ''",
+            ],
+        ),
+        (
+            3,
+            "entity_relations",
+            [
+                "CREATE TABLE IF NOT EXISTS entity_relations (id INTEGER PRIMARY KEY AUTOINCREMENT, subject TEXT NOT NULL, predicate TEXT NOT NULL, object TEXT NOT NULL, noted_at TEXT DEFAULT (datetime('now')), session_id TEXT DEFAULT '', UNIQUE(subject, predicate, object))",
+                "CREATE INDEX IF NOT EXISTS idx_er_subject ON entity_relations(subject)",
+                "CREATE INDEX IF NOT EXISTS idx_er_object ON entity_relations(object)",
+            ],
+        ),
+        (
+            4,
+            "wakeup_config",
+            [
+                "CREATE TABLE IF NOT EXISTS wakeup_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')))",
+            ],
+        ),
+        (
+            5,
+            "add_facts_column",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN facts TEXT DEFAULT '[]'",
+            ],
+        ),
+        (
+            6,
+            "add_est_tokens_column",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN est_tokens INTEGER DEFAULT 0",
+                "UPDATE knowledge_entries SET est_tokens = LENGTH(COALESCE(title,'') || ' ' || COALESCE(content,'')) / 4 WHERE est_tokens = 0",
+            ],
+        ),
+        # v7: Batch B — two-phase indexing.
+        # B-BL-07: CREATE TABLE IF NOT EXISTS sessions first so ALTERs don't fail on fresh DB.
+        # B-BL-02: event_offsets.event_id is INTEGER NOT NULL (not TEXT).
+        # B-BL-05: event_offsets has file_mtime REAL column.
+        (
+            7,
+            "two_phase_indexing",
+            [
+                # Guard: ensure sessions table exists with current schema before ALTERs.
+                """CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                summary TEXT DEFAULT '',
+                total_checkpoints INTEGER DEFAULT 0,
+                total_research INTEGER DEFAULT 0,
+                total_files INTEGER DEFAULT 0,
+                has_plan INTEGER DEFAULT 0,
+                source TEXT DEFAULT 'copilot',
+                indexed_at TEXT
+            )""",
+                # Add new Phase-1 / Phase-2 tracking columns (idempotent: runner catches 'duplicate').
+                "ALTER TABLE sessions ADD COLUMN file_mtime REAL",
+                "ALTER TABLE sessions ADD COLUMN indexed_at_r REAL",
+                "ALTER TABLE sessions ADD COLUMN fts_indexed_at REAL",
+                "ALTER TABLE sessions ADD COLUMN event_count_estimate INTEGER DEFAULT 0",
+                "ALTER TABLE sessions ADD COLUMN file_size_bytes INTEGER DEFAULT 0",
+                # event_offsets: byte-offset seek table.
+                # event_id INTEGER NOT NULL (B-BL-02); file_mtime REAL (B-BL-05).
+                """CREATE TABLE IF NOT EXISTS event_offsets (
+                session_id TEXT NOT NULL,
+                event_id INTEGER NOT NULL,
+                byte_offset INTEGER NOT NULL,
+                file_mtime REAL NOT NULL,
+                PRIMARY KEY (session_id, event_id)
+            )""",
+                "CREATE INDEX IF NOT EXISTS idx_event_offsets_session ON event_offsets(session_id)",
+            ],
+        ),
+        # v8: Batch C — sessions_fts for BM25 + role-based column-scoped search.
+        # C-BL-02: version = 8 (B already took v7).
+        # Contentless FTS5: session_id UNINDEXED (col 0, still counted by snippet/bm25),
+        # title (col 1), user_messages (col 2), assistant_messages (col 3), tool_names (col 4).
+        # Empirically verified column indices before committing (see _fts5_empirical.py).
+        (
+            8,
+            "add_sessions_fts",
+            [
+                """CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
+                session_id UNINDEXED,
+                title,
+                user_messages,
+                assistant_messages,
+                tool_names,
+                tokenize='porter unicode61 remove_diacritics 2'
+            )""",
+            ],
+        ),
+        # v9: F15 Eval/Feedback — records thumbs up/down on search results.
+        (
+            9,
+            "search_feedback_table",
+            [
+                """CREATE TABLE IF NOT EXISTS search_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT,
+                result_id TEXT,
+                result_kind TEXT,
+                verdict INTEGER NOT NULL CHECK(verdict IN (-1,0,1)),
+                comment TEXT,
+                user_agent TEXT,
+                created_at TEXT NOT NULL
+            )""",
+                "CREATE INDEX IF NOT EXISTS idx_sf_query ON search_feedback(query)",
+                "CREATE INDEX IF NOT EXISTS idx_sf_created ON search_feedback(created_at)",
+            ],
+        ),
+        (
+            10,
+            "phase3_schema_provenance",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN task_id TEXT DEFAULT ''",
+                "ALTER TABLE knowledge_entries ADD COLUMN affected_files TEXT DEFAULT '[]'",
+                "ALTER TABLE knowledge_entries ADD COLUMN source_section TEXT DEFAULT ''",
+                "ALTER TABLE knowledge_entries ADD COLUMN source_file TEXT DEFAULT ''",
+                "ALTER TABLE knowledge_entries ADD COLUMN start_line INTEGER DEFAULT 0",
+                "ALTER TABLE knowledge_entries ADD COLUMN end_line INTEGER DEFAULT 0",
+                "ALTER TABLE knowledge_entries ADD COLUMN code_language TEXT DEFAULT ''",
+                "ALTER TABLE knowledge_entries ADD COLUMN code_snippet TEXT DEFAULT ''",
+                "CREATE INDEX IF NOT EXISTS idx_ke_task ON knowledge_entries(task_id)",
+            ],
+        ),
+        (
+            11,
+            "phase5_recall_events",
+            [
+                """CREATE TABLE IF NOT EXISTS recall_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                event_kind TEXT NOT NULL,
+                tool TEXT NOT NULL,
+                surface TEXT NOT NULL,
+                mode TEXT DEFAULT '',
+                raw_query TEXT DEFAULT '',
+                rewritten_query TEXT DEFAULT '',
+                task_id TEXT DEFAULT '',
+                files TEXT DEFAULT '[]',
+                selected_entry_ids TEXT DEFAULT '[]',
+                selected_snippet_ids TEXT DEFAULT '[]',
+                opened_entry_id INTEGER,
+                hit_count INTEGER DEFAULT 0,
+                output_chars INTEGER DEFAULT 0,
+                output_est_tokens INTEGER DEFAULT 0
+            )""",
+                "CREATE INDEX IF NOT EXISTS idx_recall_events_created_at ON recall_events(created_at)",
+                "CREATE INDEX IF NOT EXISTS idx_recall_events_tool_surface ON recall_events(tool, surface)",
+                "CREATE INDEX IF NOT EXISTS idx_recall_events_rewritten_query ON recall_events(rewritten_query)",
+                "CREATE INDEX IF NOT EXISTS idx_recall_events_opened_entry_id ON recall_events(opened_entry_id)",
+            ],
+        ),
+        (
+            12,
+            "stable_ids_and_sync_metadata",
+            [
+                """CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                doc_type TEXT NOT NULL,
+                seq INTEGER DEFAULT 0,
+                title TEXT NOT NULL,
+                file_path TEXT NOT NULL UNIQUE,
+                file_hash TEXT,
+                size_bytes INTEGER DEFAULT 0,
+                content_preview TEXT DEFAULT '',
+                source TEXT DEFAULT 'copilot',
+                indexed_at TEXT
+            )""",
+                """CREATE TABLE IF NOT EXISTS sections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id INTEGER NOT NULL,
+                section_name TEXT NOT NULL,
+                content TEXT NOT NULL,
+                UNIQUE(document_id, section_name)
+            )""",
+                """CREATE TABLE IF NOT EXISTS knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                topic_key TEXT
+            )""",
+                """CREATE TABLE IF NOT EXISTS knowledge_relations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER,
+                target_id INTEGER,
+                relation_type TEXT NOT NULL
+            )""",
+                """CREATE TABLE IF NOT EXISTS entity_relations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject TEXT NOT NULL,
+                predicate TEXT NOT NULL,
+                object TEXT NOT NULL
+            )""",
+                """CREATE TABLE IF NOT EXISTS search_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT,
+                result_id TEXT,
+                result_kind TEXT,
+                verdict INTEGER NOT NULL CHECK(verdict IN (-1,0,1)),
+                comment TEXT,
+                user_agent TEXT,
+                created_at TEXT NOT NULL
+            )""",
+                "ALTER TABLE documents ADD COLUMN stable_id TEXT",
+                "ALTER TABLE sections ADD COLUMN stable_id TEXT",
+                "ALTER TABLE knowledge_entries ADD COLUMN stable_id TEXT",
+                "ALTER TABLE knowledge_relations ADD COLUMN source_stable_id TEXT",
+                "ALTER TABLE knowledge_relations ADD COLUMN target_stable_id TEXT",
+                "ALTER TABLE knowledge_relations ADD COLUMN stable_id TEXT",
+                "ALTER TABLE entity_relations ADD COLUMN stable_id TEXT",
+                "ALTER TABLE search_feedback ADD COLUMN origin_replica_id TEXT DEFAULT 'local'",
+                "ALTER TABLE search_feedback ADD COLUMN stable_id TEXT",
+                "CREATE INDEX IF NOT EXISTS idx_documents_stable_id ON documents(stable_id)",
+                "CREATE INDEX IF NOT EXISTS idx_sections_stable_id ON sections(stable_id)",
+                "CREATE INDEX IF NOT EXISTS idx_ke_stable_id ON knowledge_entries(stable_id)",
+                "CREATE INDEX IF NOT EXISTS idx_kr_source_stable ON knowledge_relations(source_stable_id)",
+                "CREATE INDEX IF NOT EXISTS idx_kr_target_stable ON knowledge_relations(target_stable_id)",
+                "CREATE INDEX IF NOT EXISTS idx_kr_stable_id ON knowledge_relations(stable_id)",
+                "CREATE INDEX IF NOT EXISTS idx_er_stable_id ON entity_relations(stable_id)",
+                "CREATE INDEX IF NOT EXISTS idx_sf_stable_id ON search_feedback(stable_id)",
+                "CREATE INDEX IF NOT EXISTS idx_sf_origin_replica ON search_feedback(origin_replica_id)",
+                """CREATE TABLE IF NOT EXISTS sync_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT DEFAULT (datetime('now'))
+            )""",
+                """CREATE TABLE IF NOT EXISTS sync_table_policies (
+                table_name TEXT PRIMARY KEY,
+                sync_scope TEXT NOT NULL CHECK(sync_scope IN ('canonical', 'local_only', 'upload_only')),
+                stable_id_column TEXT DEFAULT ''
+            )""",
+            ],
+        ),
+        (
+            13,
+            "sync_foundation_tables",
+            [
+                """CREATE TABLE IF NOT EXISTS sync_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT DEFAULT (datetime('now'))
+            )""",
+                """CREATE TABLE IF NOT EXISTS sync_txns (
+                txn_id TEXT PRIMARY KEY,
+                replica_id TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('pending', 'committed', 'failed')),
+                created_at TEXT NOT NULL,
+                committed_at TEXT DEFAULT ''
+            )""",
+                """CREATE TABLE IF NOT EXISTS sync_ops (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                txn_id TEXT NOT NULL,
+                table_name TEXT NOT NULL,
+                op_type TEXT NOT NULL CHECK(op_type IN ('insert', 'update', 'delete', 'upsert')),
+                row_stable_id TEXT NOT NULL,
+                row_payload TEXT NOT NULL,
+                op_index INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(txn_id, op_index)
+            )""",
+                "CREATE INDEX IF NOT EXISTS idx_sync_ops_txn ON sync_ops(txn_id)",
+                "CREATE INDEX IF NOT EXISTS idx_sync_ops_table_row ON sync_ops(table_name, row_stable_id)",
+                """CREATE TABLE IF NOT EXISTS sync_cursors (
+                replica_id TEXT PRIMARY KEY,
+                last_txn_id TEXT DEFAULT '',
+                updated_at TEXT DEFAULT (datetime('now'))
+            )""",
+                """CREATE TABLE IF NOT EXISTS sync_failures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                txn_id TEXT DEFAULT '',
+                table_name TEXT DEFAULT '',
+                row_stable_id TEXT DEFAULT '',
+                error_code TEXT DEFAULT '',
+                error_message TEXT DEFAULT '',
+                failed_at TEXT NOT NULL,
+                retry_count INTEGER DEFAULT 0
+            )""",
+                "CREATE INDEX IF NOT EXISTS idx_sync_failures_txn ON sync_failures(txn_id)",
+            ],
+        ),
+    ]
+    applied = 0
+    for ver, name, stmts in MIGRATIONS:
+        if ver <= current:
+            continue
         try:
-            db.execute("DROP TABLE IF EXISTS ke_fts_new")
-            db.execute("CREATE VIRTUAL TABLE ke_fts_new USING fts5(title, content, tags, category, wing, room, facts, tokenize='unicode61 remove_diacritics 2')")
-            db.execute("INSERT INTO ke_fts_new(rowid, title, content, tags, category, wing, room, facts) SELECT id, title, content, tags, category, COALESCE(wing,''), COALESCE(room,''), COALESCE(facts,'[]') FROM knowledge_entries")
-            db.execute("DROP TABLE IF EXISTS ke_fts")
-            db.execute("ALTER TABLE ke_fts_new RENAME TO ke_fts")
-            db.execute("COMMIT")
-            print("  [migrate] FTS5 rebuilt with facts column")
+            for sql in stmts:
+                try:
+                    db.execute(sql)
+                except sqlite3.OperationalError as e:
+                    if "duplicate" in str(e).lower() or "already exists" in str(e).lower():
+                        pass
+                    else:
+                        raise
+            db.execute("INSERT OR IGNORE INTO schema_version (version, name) VALUES (?, ?)", (ver, name))
+            db.commit()
+            applied += 1
+            print(f"  [migrate] v{ver}: {name}")
         except Exception as e:
-            db.execute("ROLLBACK")
-            db.execute("DROP TABLE IF EXISTS ke_fts_new")
-            print(f"  [migrate] FTS5 rebuild failed: {e}", file=sys.stderr)
-            raise
-except Exception as e:
-    print(f"  [migrate] FTS5: {e}", file=sys.stderr)
-if applied == 0: print(f"  [migrate] Schema up to date (v{current})")
-else: print(f"  [migrate] Applied {applied} migration(s)")
-db.close()
+            print(f"  [migrate] v{ver} {name}: {e}", file=sys.stderr)
+    try:
+        _backfill_stable_ids(db)
+        _seed_sync_table_policies(db)
+        _enforce_stable_id_uniqueness(db)
+        db.commit()
+    except Exception as e:
+        print(f"  [migrate] stable-id backfill: {e}", file=sys.stderr)
+    try:
+        fts_sql = db.execute("SELECT sql FROM sqlite_master WHERE name='ke_fts'").fetchone()
+        needs_rebuild = False
+        if fts_sql:
+            fts_def = fts_sql[0] or ""
+            if "wing" not in fts_def or "facts" not in fts_def:
+                needs_rebuild = True
+        if needs_rebuild:
+            print("  [migrate] Rebuilding FTS5 (adding facts column)...")
+            # P0-9: use BEGIN EXCLUSIVE so the DROP→RENAME is atomic;
+            # prevents FTS permanent loss if watch-sessions holds a read transaction.
+            db.execute("BEGIN EXCLUSIVE")
+            try:
+                db.execute("DROP TABLE IF EXISTS ke_fts_new")
+                db.execute(
+                    "CREATE VIRTUAL TABLE ke_fts_new USING fts5(title, content, tags, category, wing, room, facts, tokenize='unicode61 remove_diacritics 2')"
+                )
+                db.execute(
+                    "INSERT INTO ke_fts_new(rowid, title, content, tags, category, wing, room, facts) SELECT id, title, content, tags, category, COALESCE(wing,''), COALESCE(room,''), COALESCE(facts,'[]') FROM knowledge_entries"
+                )
+                db.execute("DROP TABLE IF EXISTS ke_fts")
+                db.execute("ALTER TABLE ke_fts_new RENAME TO ke_fts")
+                db.execute("COMMIT")
+                print("  [migrate] FTS5 rebuilt with facts column")
+            except Exception as e:
+                db.execute("ROLLBACK")
+                db.execute("DROP TABLE IF EXISTS ke_fts_new")
+                print(f"  [migrate] FTS5 rebuild failed: {e}", file=sys.stderr)
+                raise
+    except Exception as e:
+        print(f"  [migrate] FTS5: {e}", file=sys.stderr)
+    if applied == 0:
+        print(f"  [migrate] Schema up to date (v{current})")
+    else:
+        print(f"  [migrate] Applied {applied} migration(s)")
+    db.close()

@@ -9,7 +9,7 @@ export default function SessionsLoading() {
       </div>
 
       <div className="flex gap-4">
-        <aside className="hidden w-[240px] shrink-0 rounded-xl border bg-card p-3 lg:block">
+        <aside className="bg-card hidden w-[240px] shrink-0 rounded-xl border p-3 lg:block">
           <div className="space-y-3">
             <Skeleton className="h-4 w-20" />
             <Skeleton className="h-8 w-full" />
@@ -21,7 +21,7 @@ export default function SessionsLoading() {
         </aside>
 
         <div className="min-w-0 flex-1 space-y-3">
-          <div className="rounded-xl border bg-card p-3">
+          <div className="bg-card rounded-xl border p-3">
             <div className="space-y-2">
               {Array.from({ length: 8 }).map((_, rowIndex) => (
                 <div key={rowIndex} className="grid grid-cols-5 gap-3">
@@ -33,7 +33,7 @@ export default function SessionsLoading() {
             </div>
           </div>
 
-          <div className="rounded-xl border bg-card p-3">
+          <div className="bg-card rounded-xl border p-3">
             <Skeleton className="h-8 w-80 max-w-full" />
           </div>
         </div>

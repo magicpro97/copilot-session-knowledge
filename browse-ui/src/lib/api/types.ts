@@ -325,6 +325,24 @@ export interface CompareResponse {
   b: SessionCompareData;
 }
 
+// ── Shared audit block (TrendScout, Tentacle, SkillMetrics) ──────────
+
+export interface AuditCheck {
+  id: string;
+  title: string;
+  status: "ok" | "warning" | (string & {});
+  detail: string;
+}
+
+export interface AuditBlock {
+  summary: {
+    ok: boolean;
+    total_checks: number;
+    warning_checks: number;
+  };
+  checks: AuditCheck[];
+}
+
 // ── Health (/healthz) ───────────────────────────────────────────────
 
 export interface HealthResponse {
@@ -440,12 +458,7 @@ export interface TrendScoutGraceWindowStatus {
   reason: string | null;
 }
 
-export interface TrendScoutAuditCheck {
-  id: string;
-  title: string;
-  status: "ok" | "warning" | (string & {});
-  detail: string;
-}
+export type TrendScoutAuditCheck = AuditCheck;
 
 export interface TrendScoutDiscoveryLane {
   name: string;
@@ -461,14 +474,7 @@ export interface TrendScoutStatusResponse {
   config: TrendScoutConfigStatus;
   analysis: TrendScoutAnalysisPreview;
   grace_window: TrendScoutGraceWindowStatus;
-  audit: {
-    summary: {
-      ok: boolean;
-      total_checks: number;
-      warning_checks: number;
-    };
-    checks: TrendScoutAuditCheck[];
-  };
+  audit: AuditBlock;
   operator_actions: TrendScoutOperatorAction[];
   discovery_lanes?: TrendScoutDiscoveryLane[];
   runtime: {
@@ -510,12 +516,7 @@ export interface TentacleMarkerInfo {
   stale: boolean;
 }
 
-export interface TentacleAuditCheck {
-  id: string;
-  title: string;
-  status: "ok" | "warning" | (string & {});
-  detail: string;
-}
+export type TentacleAuditCheck = AuditCheck;
 
 export interface TentacleStatusResponse {
   status: string;
@@ -526,14 +527,7 @@ export interface TentacleStatusResponse {
   verification_covered: number;
   marker: TentacleMarkerInfo;
   tentacles: TentacleEntry[];
-  audit: {
-    summary: {
-      ok: boolean;
-      total_checks: number;
-      warning_checks: number;
-    };
-    checks: TentacleAuditCheck[];
-  };
+  audit: AuditBlock;
   operator_actions: OperatorAction[];
   runtime: {
     generated_at: string;
@@ -572,12 +566,7 @@ export interface SkillUsageEntry {
   usage_count: number;
 }
 
-export interface SkillMetricsAuditCheck {
-  id: string;
-  title: string;
-  status: "ok" | "warning" | (string & {});
-  detail: string;
-}
+export type SkillMetricsAuditCheck = AuditCheck;
 
 export interface SkillMetricsResponse {
   status: string;
@@ -591,14 +580,7 @@ export interface SkillMetricsResponse {
   summary: SkillMetricsSummary;
   recent_outcomes: SkillOutcomeEntry[];
   skill_usage: SkillUsageEntry[];
-  audit: {
-    summary: {
-      ok: boolean;
-      total_checks: number;
-      warning_checks: number;
-    };
-    checks: SkillMetricsAuditCheck[];
-  };
+  audit: AuditBlock;
   operator_actions: OperatorAction[];
   runtime: {
     generated_at: string;

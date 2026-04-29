@@ -2,10 +2,7 @@ import { getToken, clearToken } from "@/lib/auth";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 
-export async function apiFetch<T>(
-  path: string,
-  init?: RequestInit
-): Promise<T> {
+export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken();
   const base = API_BASE || (typeof window !== "undefined" ? window.location.origin : "");
   const url = new URL(path, base);
