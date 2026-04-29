@@ -296,15 +296,68 @@ python3 ~/.copilot/tools/retro.py --score
 python3 ~/.copilot/tools/retro.py --subreport knowledge
 ```
 
-Browse UI: the **Retrospective** collapsible panel on the Insights → Dashboard tab
-fetches `/api/retro/summary?mode=repo` and shows the composite score and per-section
-subscores. It fails gracefully if the API is unavailable.
+### Local vs CI (repo-mode) retro
+
+| | Local (`--mode local`) | CI / repo (`--mode repo`) |
+|---|---|---|
+| Knowledge section | ✅ included (reads `knowledge.db`) | ❌ skipped (no DB in CI) |
+| Skills section | ✅ included (reads tentacle outcomes) | ❌ skipped |
+| Hooks section | ✅ included (reads hook audit log) | ❌ skipped |
+| Git section | ✅ included | ✅ included |
+| Typical score | 61.2 / Good (low confidence) | 78.6 / Good (medium confidence) |
+| `score_confidence` | `low` — multi-source but unverified | `medium` — git only, no local noise |
+
+**Use repo-mode retro for trend tracking.** Local-mode scores are useful for drilling into
+specific sections but may reflect distortions (see below) that inflate or deflate the result.
+
+### Score confidence
+
+The `score_confidence` field (`low` / `medium` / `high`) indicates how much to trust the
+composite score:
+
+- **`high`** — all sections present, outcomes verified, no distortion flags.
+- **`medium`** — reduced section coverage or minor caveats (common in repo-only mode).
+- **`low`** — significant distortions present; treat score as a rough signal only.
+
+### Distortion flags
+
+When `distortion_flags` is non-empty, the score has known accuracy issues:
+
+| Flag | Meaning | Action |
+|------|---------|--------|
+| `hook_deny_dry_noise` | Dry-run/test `deny-dry` entries excluded from `deny_rate` — not real enforcement denials | Ignore elevated deny_rate; re-run without HOOK_DRY_RUN in a live session |
+| `skills_unverified` | Skill outcomes exist but verification evidence is missing | Run `tentacle.py verify <name>` to add verification coverage |
+
+> **Note:** parse errors in the retro payload are reported through `accuracy_notes`, not as
+> a dedicated distortion flag. They are still penalising in the score.
+
+### Improvement actions
+
+When `improvement_actions` is present, it contains concrete next steps surfaced by the
+retro engine (e.g. "Run `tentacle.py verify` on unverified tentacles", "Add hook coverage
+for new scripts"). These are read-only suggestions — the operator decides whether to act.
+
+### Browse UI
+
+The **Retrospective** collapsible panel on the Insights → Dashboard tab fetches
+`/api/retro/summary?mode=repo` and renders:
+
+- composite grade + score badge
+- `score_confidence` badge (absent on older payloads)
+- per-section subscore cards
+- summary narrative (if present)
+- distortion flags with explanations (if present)
+- accuracy notes (if present)
+- improvement actions list (if present)
+
+All new fields degrade gracefully — missing fields are silently omitted.
 
 Standalone retro HTML page: `http://localhost:<port>/retro?token=<token>` renders
 the same payload in a lightweight page suitable for quick browser-based checks.
-The page fetches `/api/retro/summary?mode=repo` and renders grade, subscores, and
-a link to the full JSON payload. Gracefully shows an error message if unavailable.
+The page fetches `/api/retro/summary?mode=repo` and renders grade, confidence,
+subscores, distortions, actions, and a link to the full JSON payload.
 
 GitHub Actions: trigger **Retrospective** (`retro.yml`) via `workflow_dispatch` to run
-`retro.py --mode repo --json`, produce a markdown summary artifact, and write to the
+`retro.py --mode repo --json`, produce a markdown summary artifact with confidence,
+distortion explanations, accuracy notes, and improvement actions, then write to the
 job summary. Read-only — no issues, commits, or DB writes.

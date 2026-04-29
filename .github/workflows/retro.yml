@@ -48,12 +48,62 @@ jobs:
               f"Grade: {data['grade_emoji']} {data['grade']} "
               f"(score {data['retro_score']})"
           )
+
+          # Score confidence (additive field; absent on older payloads)
+          confidence = data.get("score_confidence")
+          if confidence:
+              confidence_icon = {"high": "✅", "medium": "⚠️", "low": "🔴"}.get(confidence, "ℹ️")
+              print(f"Score confidence: {confidence_icon} {confidence}")
+
           print(f"Mode: {data['mode']} | Generated: {data['generated_at']}")
           print()
           print("### Subscores")
           for section in data.get("available_sections", []):
               score = data.get("subscores", {}).get(section)
               print(f"- {section}: {score}")
+
+          # Summary narrative (additive field)
+          summary = data.get("summary")
+          if summary:
+              print()
+              print("### Summary")
+              print(summary)
+
+          # Distortion flags (additive field)
+          flags = data.get("distortion_flags") or []
+          if flags:
+              print()
+              print("### ⚠️ Score Distortions")
+              flag_explanations = {
+                  "hook_deny_dry_noise": (
+                      "Dry-run/test `deny-dry` entries were excluded from `deny_rate`. "
+                      "These are not real enforcement denials — the hook enforcement rate "
+                      "may appear higher than in a live session."
+                  ),
+                  "skills_unverified": (
+                      "Skill outcomes exist but verification evidence is missing. "
+                      "Confidence is lower until outcomes are verified."
+                  ),
+              }
+              for flag in flags:
+                  explanation = flag_explanations.get(flag, flag)
+                  print(f"- **{flag}**: {explanation}")
+
+          # Accuracy notes (additive field)
+          accuracy_notes = data.get("accuracy_notes")
+          if accuracy_notes:
+              print()
+              print("### Accuracy Notes")
+              for note in accuracy_notes:
+                  print(f"- {note}")
+
+          # Improvement actions (additive field)
+          actions = data.get("improvement_actions") or []
+          if actions:
+              print()
+              print("### Recommended Actions")
+              for action in actions:
+                  print(f"- {action}")
           PY
 
       - name: Upload retro artifact

@@ -177,6 +177,8 @@ def collect_audit_signals(audit_path: Path = AUDIT_JSONL) -> dict:
         "top_rules": [],
         "top_denied_tools": [],
         "deny_rate": 0.0,
+        "deny_dry_count": 0,
+        "deny_dry_rate": 0.0,
         "parse_error_rate": 0.0,
     }
     if not audit_path.exists():
@@ -211,13 +213,15 @@ def collect_audit_signals(audit_path: Path = AUDIT_JSONL) -> dict:
         rule = e.get("rule", "")
         if rule:
             rules[rule] = rules.get(rule, 0) + 1
-        if d in ("deny", "deny-dry"):
+        if d == "deny":
             tool = e.get("tool", "")
             if tool:
                 denied_tools[tool] = denied_tools.get(tool, 0) + 1
 
     total = len(entries)
-    denied = decisions.get("deny", 0) + decisions.get("deny-dry", 0)
+    # Real denials only — deny-dry is test/dry-run noise and must not penalise the hook score
+    denied_real = decisions.get("deny", 0)
+    denied_dry = decisions.get("deny-dry", 0)
     parse_errors = decisions.get("parse-error", 0)
 
     top_rules = sorted(rules.items(), key=lambda x: -x[1])[:10]
@@ -229,7 +233,9 @@ def collect_audit_signals(audit_path: Path = AUDIT_JSONL) -> dict:
         "decisions": decisions,
         "top_rules": [{"rule": r, "count": c} for r, c in top_rules],
         "top_denied_tools": [{"tool": t, "count": c} for t, c in top_denied],
-        "deny_rate": round(denied / total * 100, 1) if total > 0 else 0.0,
+        "deny_rate": round(denied_real / total * 100, 1) if total > 0 else 0.0,
+        "deny_dry_count": denied_dry,
+        "deny_dry_rate": round(denied_dry / total * 100, 1) if total > 0 else 0.0,
         "parse_error_rate": round(parse_errors / total * 100, 1) if total > 0 else 0.0,
     }
 
@@ -318,15 +324,32 @@ def _score_knowledge(k: dict) -> float:
 
 
 def _score_skills(s: dict) -> float:
-    """Subscore 0-100 from skill/tentacle signals."""
+    """Subscore 0-100 from skill/tentacle signals.
+
+    Evidence priority:
+    1. Detailed tentacle_verifications rows (most reliable)
+    2. Outcome-level verification_passed inline fields (coarser but valid)
+    3. Outcomes with zero verification evidence → sub-neutral 30.0 (not a false 50)
+    """
     if not s.get("available"):
         return 0.0
+    total_o = int(s.get("total_outcomes", 0))
+    if total_o == 0:
+        return 0.0
+
+    # Tier 1: detailed per-command verification rows
     total_v = int(s.get("total_verifications", 0))
-    if total_v == 0:
-        # No verifications yet — neutral 50 if we have any outcomes
-        return 50.0 if int(s.get("total_outcomes", 0)) > 0 else 0.0
-    passed = int(s.get("verifications_passed", 0))
-    return round(passed / total_v * 100, 1)
+    if total_v > 0:
+        passed = int(s.get("verifications_passed", 0))
+        return round(passed / total_v * 100, 1)
+
+    # Tier 2: outcome-level inline verification_passed fields
+    outcomes_with_passing = int(s.get("outcomes_with_passing_verification", 0))
+    if outcomes_with_passing > 0:
+        return round(outcomes_with_passing / total_o * 100, 1)
+
+    # Tier 3: genuinely unverified — sub-neutral to avoid masking the gap
+    return 30.0
 
 
 def _score_hooks(h: dict) -> float:
@@ -420,6 +443,68 @@ def compute_retro(
     else:
         grade, grade_emoji = "Needs Work", "🔴"
 
+    # ── Calibration / interpretation fields ─────────────────────────────────
+    distortion_flags: list = []
+    accuracy_notes: list = []
+    improvement_actions: list = []
+
+    # Hook dry-run noise
+    deny_dry = int(hooks.get("deny_dry_count", 0)) if hooks.get("available") else 0
+    if deny_dry > 0:
+        distortion_flags.append("hook_deny_dry_noise")
+        accuracy_notes.append(
+            f"{deny_dry} deny-dry entries excluded from hook deny rate "
+            "(test/dry-run noise — not real enforcement denials)"
+        )
+        improvement_actions.append(
+            "Filter synthetic deny-dry entries from audit.jsonl to keep hook stats clean"
+        )
+
+    # Parse errors are legitimate (informational only)
+    if hooks.get("available"):
+        parse_count = int(hooks.get("decisions", {}).get("parse-error", 0))
+        if parse_count > 0:
+            accuracy_notes.append(
+                f"{parse_count} parse-error entries remain penalising "
+                "(indicate malformed input or runtime drift)"
+            )
+
+    # Skills verification evidence gap
+    if skills.get("available"):
+        total_o = int(skills.get("total_outcomes", 0))
+        total_v = int(skills.get("total_verifications", 0))
+        outcomes_with_passing = int(skills.get("outcomes_with_passing_verification", 0))
+        if total_o > 0 and total_v == 0 and outcomes_with_passing == 0:
+            distortion_flags.append("skills_unverified")
+            accuracy_notes.append(
+                f"{total_o} outcomes recorded but no verification evidence "
+                "(tentacle_verifications is empty, inline verification_passed=0); "
+                "skills subscore uses 30.0 (sub-neutral) to reflect unverified state"
+            )
+            improvement_actions.append(
+                "Complete tentacles with explicit verification steps to populate "
+                "tentacle_verifications rows and raise the skills subscore"
+            )
+        elif total_o > 0 and total_v == 0 and outcomes_with_passing > 0:
+            accuracy_notes.append(
+                f"Skills score derived from outcome-level verification_passed fields "
+                f"({outcomes_with_passing}/{total_o} outcomes with passing verify)"
+            )
+
+    if not improvement_actions:
+        improvement_actions.append("No critical calibration gaps detected")
+
+    # Confidence: lower when distortions present or in repo-only mode
+    if len(distortion_flags) >= 2:
+        score_confidence = "low"
+    elif distortion_flags or mode == "repo":
+        score_confidence = "medium"
+    else:
+        score_confidence = "high"
+
+    flag_str = (f" — distortions: {', '.join(distortion_flags)}" if distortion_flags else "")
+    summary = f"Retro score {composite}/100 ({grade}), mode={mode}{flag_str}"
+
     return {
         "retro_score": round(composite, 1),
         "grade": grade,
@@ -434,6 +519,11 @@ def compute_retro(
             "hooks": h_score,
             "git": g_score,
         },
+        "summary": summary,
+        "score_confidence": score_confidence,
+        "distortion_flags": distortion_flags,
+        "accuracy_notes": accuracy_notes,
+        "improvement_actions": improvement_actions,
         "knowledge": knowledge,
         "skills": skills,
         "hooks": hooks,
@@ -552,11 +642,15 @@ def format_hooks_section(h: dict) -> list:
         return lines
     decisions = h.get("decisions", {})
     deny_rate = h.get("deny_rate", 0.0)
+    dry_count = h.get("deny_dry_count", 0)
+    dry_rate = h.get("deny_dry_rate", 0.0)
     parse_rate = h.get("parse_error_rate", 0.0)
     lines.append(f"  Total entries:  {total}")
     decision_parts = "  ".join(f"{d}={n}" for d, n in sorted(decisions.items()))
     lines.append(f"  Decisions:      {decision_parts}")
     lines.append(f"  Deny rate:      {deny_rate}%   Parse-error rate: {parse_rate}%")
+    if dry_count > 0:
+        lines.append(f"  Dry-run noise:  {dry_count} deny-dry ({dry_rate}%)  [excluded from deny rate]")
     top_rules = h.get("top_rules", [])
     if top_rules:
         lines.append("  Top rules:      " + "  ".join(f"{e['rule']}×{e['count']}" for e in top_rules[:5]))
@@ -603,6 +697,18 @@ def format_text_report(payload: dict) -> str:
         "╚══════════════════════════════════════════════════════╝",
         "",
     ]
+
+    # Calibration summary line
+    confidence = payload.get("score_confidence", "")
+    flags = payload.get("distortion_flags", [])
+    if confidence or flags:
+        flag_str = f"  flags: {', '.join(flags)}" if flags else ""
+        lines.append(f"Calibration:  confidence={confidence}{flag_str}")
+        for note in payload.get("accuracy_notes", []):
+            lines.append(f"  ⚠  {note}")
+        for action in payload.get("improvement_actions", []):
+            lines.append(f"  →  {action}")
+        lines.append("")
 
     subscores = payload.get("subscores", {})
     weights = payload.get("weights", {})

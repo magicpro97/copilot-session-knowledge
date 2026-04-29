@@ -57,10 +57,17 @@ print("\n🔌 Section 1: Hook Runner")
 
 RUNNER = REPO / "hooks" / "hook_runner.py"
 
+# Isolation setup: hook_runner.py writes audit entries to Path.home()/.copilot/markers/audit.jsonl.
+# All subprocess tests in this section use an isolated HOME so they never touch the operator audit log.
+_isolated_home = Path(tempfile.mkdtemp(prefix="test-hooks-home-"))
+_isolated_env = {**os.environ, "HOME": str(_isolated_home)}
+_isolated_audit_path = _isolated_home / ".copilot" / "markers" / "audit.jsonl"
+
 # 1a. Empty stdin → allow (fail-open)
 r = subprocess.run(
     [sys.executable, str(RUNNER), "preToolUse"],
-    input="", capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+    input="", capture_output=True, text=True, encoding="utf-8", errors="replace",
+    env=_isolated_env, timeout=10,
 )
 test("Empty stdin → allow (exit 0)", r.returncode == 0)
 test("Empty stdin → no JSON output", r.stdout.strip() == "")
@@ -68,34 +75,36 @@ test("Empty stdin → no JSON output", r.stdout.strip() == "")
 # 1b. Invalid JSON → allow (fail-open)
 r = subprocess.run(
     [sys.executable, str(RUNNER), "preToolUse"],
-    input="{invalid json!!!", capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+    input="{invalid json!!!", capture_output=True, text=True, encoding="utf-8", errors="replace",
+    env=_isolated_env, timeout=10,
 )
 test("Invalid JSON → allow (exit 0)", r.returncode == 0)
 
 # 1c. Unknown event → allow (no matching rules)
 r = subprocess.run(
     [sys.executable, str(RUNNER), "unknownEvent"],
-    input='{"toolName":"edit"}', capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+    input='{"toolName":"edit"}', capture_output=True, text=True, encoding="utf-8", errors="replace",
+    env=_isolated_env, timeout=10,
 )
 test("Unknown event → allow", r.returncode == 0)
 
 # 1d. No event argument → silent exit
 r = subprocess.run(
     [sys.executable, str(RUNNER)],
-    input='{}', capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+    input='{}', capture_output=True, text=True, encoding="utf-8", errors="replace",
+    env=_isolated_env, timeout=10,
 )
 test("No event arg → silent exit", r.returncode == 0)
 
 # 1e. Dry-run mode (HOOK_DRY_RUN=1) → allows even denied actions
-env = os.environ.copy()
-env["HOOK_DRY_RUN"] = "1"
+_dry_env = {**_isolated_env, "HOOK_DRY_RUN": "1"}
 r = subprocess.run(
     [sys.executable, str(RUNNER), "preToolUse"],
     input=json.dumps({
         "toolName": "bash",
         "toolArgs": {"command": "cat ~/.copilot/hooks/.marker-secret"}
     }),
-    capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=10,
+    capture_output=True, text=True, encoding="utf-8", errors="replace", env=_dry_env, timeout=10,
 )
 test("Dry-run mode → no deny JSON", "permissionDecision" not in r.stdout)
 test("Dry-run mode → has DRY RUN label", "DRY RUN" in r.stdout or r.returncode == 0)
@@ -104,7 +113,8 @@ test("Dry-run mode → has DRY RUN label", "DRY RUN" in r.stdout or r.returncode
 r = subprocess.run(
     [sys.executable, str(RUNNER), "preToolUse"],
     input=json.dumps({"toolName": "view", "toolArgs": {"path": "/tmp/test.txt"}}),
-    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+    capture_output=True, text=True, encoding="utf-8", errors="replace",
+    env=_isolated_env, timeout=10,
 )
 test("View tool → allowed", r.returncode == 0 and "deny" not in r.stdout)
 
@@ -116,7 +126,8 @@ r = subprocess.run(
         "toolArgs": {"path": "/tmp/test.py"},
         "toolResult": {"success": True}
     }),
-    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+    capture_output=True, text=True, encoding="utf-8", errors="replace",
+    env=_isolated_env, timeout=10,
 )
 test("postToolUse → no error", r.returncode == 0)
 
@@ -124,9 +135,36 @@ test("postToolUse → no error", r.returncode == 0)
 r = subprocess.run(
     [sys.executable, str(RUNNER), "errorOccurred"],
     input=json.dumps({"error": "Something broke", "toolName": "bash"}),
-    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+    capture_output=True, text=True, encoding="utf-8", errors="replace",
+    env=_isolated_env, timeout=10,
 )
 test("errorOccurred → no crash", r.returncode == 0)
+
+# 1i. Isolation regression: audit side effects must land in the isolated HOME, not operator state
+_isolated_audit_entries = []
+if _isolated_audit_path.exists():
+    for _line in _isolated_audit_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        _line = _line.strip()
+        if not _line:
+            continue
+        _isolated_audit_entries.append(json.loads(_line))
+_isolated_decisions = [entry.get("decision", "") for entry in _isolated_audit_entries]
+test(
+    "Section 1 subprocess tests write audit entries under isolated HOME",
+    bool(_isolated_audit_entries),
+    f"Missing isolated audit entries at {_isolated_audit_path}",
+)
+test(
+    "Section 1 isolated audit captures parse-error entry",
+    "parse-error" in _isolated_decisions,
+    f"decisions={_isolated_decisions}",
+)
+test(
+    "Section 1 isolated audit captures deny-dry entry",
+    "deny-dry" in _isolated_decisions,
+    f"decisions={_isolated_decisions}",
+)
+shutil.rmtree(_isolated_home, ignore_errors=True)
 
 
 # ═══════════════════════════════════════════════════════════════════

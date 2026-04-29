@@ -635,6 +635,12 @@ export interface RetroResponse {
   skills: Record<string, unknown> | null;
   hooks: Record<string, unknown> | null;
   git: Record<string, unknown> | null;
+  /** Additive fields from Tentacle 1 — absent on older payloads; treat as optional. */
+  summary?: string | null;
+  score_confidence?: "low" | "medium" | "high" | null;
+  distortion_flags?: string[];
+  accuracy_notes?: string[];
+  improvement_actions?: string[];
 }
 
 // ── Sessions response (flat array compat shim) ───────────────────────

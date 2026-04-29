@@ -13,9 +13,24 @@ const SECTION_LABELS: Record<string, string> = {
   git: "Git",
 };
 
+const DISTORTION_EXPLANATIONS: Record<string, string> = {
+  hook_deny_dry_noise:
+    "Dry-run/test deny-dry entries were excluded from deny_rate — these are not real enforcement denials.",
+  skills_unverified:
+    "Skill outcomes exist but verification evidence is missing — confidence is lower until outcomes are verified.",
+};
+
 function scoreBadgeVariant(score: number): "outline" | "secondary" | "destructive" {
   if (score >= 80) return "outline";
   if (score >= 50) return "secondary";
+  return "destructive";
+}
+
+function confidenceBadgeVariant(
+  confidence: "low" | "medium" | "high"
+): "outline" | "secondary" | "destructive" {
+  if (confidence === "high") return "outline";
+  if (confidence === "medium") return "secondary";
   return "destructive";
 }
 
@@ -34,6 +49,11 @@ export function RetroSection() {
           {retro.isSuccess && retro.data ? (
             <Badge variant={scoreBadgeVariant(retro.data.retro_score)}>
               {retro.data.grade_emoji} {retro.data.grade} ({formatNumber(retro.data.retro_score)})
+            </Badge>
+          ) : null}
+          {retro.isSuccess && retro.data?.score_confidence ? (
+            <Badge variant={confidenceBadgeVariant(retro.data.score_confidence)}>
+              confidence: {retro.data.score_confidence}
             </Badge>
           ) : null}
         </span>
@@ -58,6 +78,10 @@ export function RetroSection() {
           />
         ) : retro.data ? (
           <>
+            {retro.data.summary ? (
+              <p className="text-muted-foreground text-sm">{retro.data.summary}</p>
+            ) : null}
+
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {retro.data.available_sections.map((section) => {
                 const score = retro.data!.subscores[section];
@@ -73,6 +97,52 @@ export function RetroSection() {
                 );
               })}
             </div>
+
+            {retro.data.distortion_flags && retro.data.distortion_flags.length > 0 ? (
+              <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-3 py-2">
+                <p className="text-xs font-medium text-yellow-600 dark:text-yellow-400">
+                  ⚠️ Score distortions
+                </p>
+                <ul className="mt-1 space-y-1">
+                  {retro.data.distortion_flags.map((flag) => (
+                    <li key={flag} className="text-xs">
+                      <span className="font-mono font-semibold">{flag}</span>
+                      {DISTORTION_EXPLANATIONS[flag] ? (
+                        <span className="text-muted-foreground ml-1">
+                          — {DISTORTION_EXPLANATIONS[flag]}
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {retro.data.accuracy_notes && retro.data.accuracy_notes.length > 0 ? (
+              <div>
+                <p className="text-muted-foreground text-xs font-medium">Accuracy notes</p>
+                <ul className="text-muted-foreground mt-1 list-disc space-y-0.5 pl-4">
+                  {retro.data.accuracy_notes.map((note, i) => (
+                    <li key={i} className="text-xs">
+                      {note}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {retro.data.improvement_actions && retro.data.improvement_actions.length > 0 ? (
+              <div>
+                <p className="text-xs font-medium">Recommended actions</p>
+                <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                  {retro.data.improvement_actions.map((action, i) => (
+                    <li key={i} className="text-xs">
+                      {action}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
 
             <p className="text-muted-foreground text-xs">
               mode: {retro.data.mode} · generated {retro.data.generated_at}

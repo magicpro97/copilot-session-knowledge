@@ -94,6 +94,38 @@ The **actual platform sends `toolArgs` as a parsed JSON object (dict)**, not a s
 - **Dry-run mode** — set `HOOK_DRY_RUN=1` to test without blocking
 - **Merged duplicates** — tentacle enforce+suggest, track+test share code
 
+## Test Isolation
+
+`hook_runner.py` writes audit entries to `Path.home() / ".copilot" / "markers" / "audit.jsonl"`.
+Since `Path.home()` reads `$HOME` at runtime, subprocess-based tests **must** override `HOME` to
+prevent polluting the operator audit log (which feeds `retro.py` and `knowledge-health.py`).
+
+**Pattern for any subprocess test that invokes `hook_runner.py`:**
+
+```python
+import tempfile, shutil
+
+_isolated_home = Path(tempfile.mkdtemp(prefix="test-hooks-home-"))
+_isolated_env = {**os.environ, "HOME": str(_isolated_home)}
+
+r = subprocess.run(
+    [sys.executable, str(RUNNER), "preToolUse"],
+    input=..., capture_output=True, text=True,
+    env=_isolated_env,   # ← required; keeps audit writes off the real log
+    timeout=10,
+)
+# ... assertions ...
+
+shutil.rmtree(_isolated_home, ignore_errors=True)
+```
+
+**Regression test** — `test_hooks.py` Section 1 (test 1i) reads the audit file under the isolated
+HOME and asserts that dry-run / parse-error entries land there, proving the HOME override
+redirected audit writes away from operator state.
+
+Do **not** rely on `HOOK_DRY_RUN=1` alone for isolation: dry-run suppresses `deny` output but
+still writes `deny-dry` and `parse-error` entries to the audit log.
+
 ## `hooks.json` Schema Notes
 
 ### `comment` field

@@ -4,7 +4,7 @@ Calls `retro.py --json` as a subprocess and proxies the JSON payload.
 Defaults to `--mode repo` (no local-DB assumptions); pass ?mode=local to
 include knowledge/skills/hooks sections when the server has access to them.
 
-Response shape mirrors retro.py --json:
+Response shape mirrors retro.py --json (base fields always present):
   {
     "retro_score":        float,
     "grade":              str,
@@ -18,6 +18,15 @@ Response shape mirrors retro.py --json:
     "skills":             { ... } | null,
     "hooks":              { ... } | null,
     "git":                { ... } | null
+  }
+
+Additive fields (present when retro.py emits them; absent on older payloads):
+  {
+    "summary":             str | null,   -- narrative summary of the retro
+    "score_confidence":    "low" | "medium" | "high" | null,
+    "distortion_flags":    [str, ...],   -- e.g. ["hook_deny_dry_noise", "skills_unverified"]
+    "accuracy_notes":      [str, ...],   -- prose explanations of parse errors / caveats
+    "improvement_actions": [str, ...]    -- concrete next steps for the operator
   }
 
 Returns HTTP 503 with error envelope if retro.py is unavailable or fails.

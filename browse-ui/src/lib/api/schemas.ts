@@ -599,6 +599,12 @@ export const retroResponseSchema = z.object({
   skills: z.record(z.string(), z.unknown()).nullable().default(null),
   hooks: z.record(z.string(), z.unknown()).nullable().default(null),
   git: z.record(z.string(), z.unknown()).nullable().default(null),
+  // Additive fields from Tentacle 1 — optional/nullable for graceful degradation
+  summary: z.string().nullable().optional(),
+  score_confidence: z.enum(["low", "medium", "high"]).nullable().optional(),
+  distortion_flags: z.array(z.string()).optional(),
+  accuracy_notes: z.array(z.string()).optional(),
+  improvement_actions: z.array(z.string()).optional(),
 });
 
 export const sessionsResponseSchema = z.union([

@@ -503,11 +503,12 @@ Requires a `GITHUB_TOKEN` env var (or `--token TOKEN` flag) to avoid rate limits
 
 **Tune discovery:** edit `trend-scout-config.json` to adjust seed keywords, topic filters, scoring weights, `min_stars`, `enrichment.readme_max_chars`, the optional `analysis.*` settings (`model`, `temperature`, `max_learnings`, `token_env`), `veto.require_domain_signals`, `veto.min_distinct_learnings`, `run_control.grace_window_hours`, and `lanes[]` for multi-lane discovery channels.
 
-**GitHub Actions workflow** — `.github/workflows/trend-scout.yml` runs daily at 07:00 UTC with permissions `contents: read`, `issues: write`, and `models: read`. It also maps `secrets.GITHUB_TOKEN` into `GITHUB_MODELS_TOKEN`, so enabling `analysis.enabled` in config works in Actions without a separate secret. Manual runs via `workflow_dispatch` support `dry_run`, `search_only`, `repo`, `limit`, `force`, and `explain` inputs; when `explain=true`, the workflow uploads `.trend-scout-discovery-explain.json` as an artifact for later inspection.
+**GitHub Actions workflow** — `.github/workflows/trend-scout.yml` runs daily at 07:00 UTC with permissions `contents: read`, `issues: write`, and `models: read`. It also maps `secrets.GITHUB_TOKEN` into `GITHUB_MODELS_TOKEN`, so enabling `analysis.enabled` in config works in Actions without a separate secret. Manual runs via `workflow_dispatch` support `dry_run`, `search_only`, `repo`, `limit`, `force`, and `explain` inputs; when `explain=true`, the workflow uploads `.trend-scout-discovery-explain.json` as an artifact for later inspection. **Hook noise control:** Trend Scout is intentionally **not** wired to Copilot `preToolUse`/`postToolUse` hooks; keep it cron/workflow driven (`trend-scout.yml`) to avoid per-tool reminder spam. 📖 **Details:** [docs/USAGE.md#trend-scout](docs/USAGE.md#trend-scout)
+## Retrospective
+`retro.py` computes a composite operator score (0–100) across knowledge, skills, hooks, and git signals; run `python3 ~/.copilot/tools/retro.py`, `python3 ~/.copilot/tools/retro.py --mode repo`, `python3 ~/.copilot/tools/retro.py --json`, or `python3 ~/.copilot/tools/retro.py --score`.
+Local mode (`--mode local`) includes knowledge, skills, hooks, and git, but may report `score_confidence=low` with distortion flags like `hook_deny_dry_noise` or `skills_unverified`; repo mode (`--mode repo`) is git-only, cleaner, and CI-safe for trend tracking.
 
-**Hook noise control:** Trend Scout is intentionally **not** wired to Copilot `preToolUse`/`postToolUse` hooks. Keep it cron/workflow driven (`trend-scout.yml`) to avoid per-tool reminder spam.
-
-📖 **Details:** [docs/USAGE.md#trend-scout](docs/USAGE.md#trend-scout)
+Browse surfaces: `/v2/insights` (Retrospective card), `http://localhost:<port>/retro?token=<token>`, and `/api/retro/summary?mode=repo`. Trigger `retro.yml` via `workflow_dispatch` for a read-only markdown artifact/job summary with score, confidence, distortions, accuracy notes, and recommended actions. 📖 **Operator details:** [docs/OPERATOR-PLAYBOOK.md#retrospective](docs/OPERATOR-PLAYBOOK.md#retrospective)
 
 ## Security
 

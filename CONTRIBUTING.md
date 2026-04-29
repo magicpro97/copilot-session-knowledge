@@ -65,6 +65,26 @@ python3 test_security.py    # SQL injection, pickle, locks, paths
 python3 test_fixes.py       # Noise filter, sub-agent, launchd, DB health
 ```
 
+### Hook subprocess test isolation
+
+Any test that invokes `hook_runner.py` in a subprocess **must** override `HOME` with a temp
+directory. `hook_runner.py` writes to `Path.home()/.copilot/markers/audit.jsonl`, and
+`Path.home()` reads `$HOME` at runtime, so without the override every test run appends
+`parse-error`, `deny-dry`, and `errorOccurred` entries to the real operator audit log — polluting
+the retro pipeline.
+
+Required pattern (see `test_hooks.py` Section 1 for a complete example):
+
+```python
+_isolated_home = Path(tempfile.mkdtemp(prefix="test-hooks-home-"))
+_isolated_env = {**os.environ, "HOME": str(_isolated_home)}
+subprocess.run([sys.executable, str(RUNNER), "preToolUse"], ..., env=_isolated_env)
+shutil.rmtree(_isolated_home, ignore_errors=True)
+```
+
+> **Do not** rely on `HOOK_DRY_RUN=1` alone for isolation — dry-run suppresses deny output but
+> still writes `deny-dry` and `parse-error` audit entries.
+
 CI (`quality-gates` job) runs a scoped **Ruff lint** on the following files and directories:
 
 ```

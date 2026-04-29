@@ -182,6 +182,8 @@ def test_audit_signals_empty_file():
     test("audit signals: empty file → available=True", result.get("available") is True)
     test("audit signals: empty file → total_entries=0", result.get("total_entries") == 0)
     test("audit signals: empty file → deny_rate=0", result.get("deny_rate") == 0.0)
+    test("audit signals: empty file → deny_dry_count=0", result.get("deny_dry_count") == 0)
+    test("audit signals: empty file → deny_dry_rate=0", result.get("deny_dry_rate") == 0.0)
 
 
 def test_audit_signals_synthetic():
@@ -245,6 +247,8 @@ def test_audit_signals_missing_file():
     result = retro.collect_audit_signals(audit_path=fake_path)
     test("audit signals: missing file → available=False", result.get("available") is False)
     test("audit signals: missing file → total_entries=0", result.get("total_entries") == 0)
+    test("audit signals: missing file → deny_dry_count=0", result.get("deny_dry_count") == 0)
+    test("audit signals: missing file → deny_dry_rate=0", result.get("deny_dry_rate") == 0.0)
 
 
 # ── Section 4: collect_knowledge_signals (with synthetic DB) ────────────────
@@ -841,7 +845,365 @@ def test_format_subreport_invalid():
     test("format_subreport(invalid): returns error message", "Unknown section" in out or "Valid" in out)
 
 
-# ── Runner ────────────────────────────────────────────────────────────────────
+def test_audit_deny_dry_excluded_from_deny_rate():
+    """deny-dry must NOT count toward deny_rate; only real 'deny' decisions should."""
+    retro = load_retro()
+    reset_artifacts()
+    audit_file = ARTIFACT_DIR / "audit_dry.jsonl"
+    entries = [
+        {"ts": 1, "event": "preToolUse", "tool": "bash", "rule": "r1", "decision": "deny"},
+        {"ts": 2, "event": "preToolUse", "tool": "edit", "rule": "r1", "decision": "deny-dry"},
+        {"ts": 3, "event": "preToolUse", "tool": "edit", "rule": "r1", "decision": "deny-dry"},
+        {"ts": 4, "event": "preToolUse", "tool": "view", "rule": "none", "decision": "allow"},
+        {"ts": 5, "event": "preToolUse", "tool": "view", "rule": "none", "decision": "allow"},
+    ]
+    audit_file.write_text("\n".join(json.dumps(e) for e in entries), encoding="utf-8")
+    result = retro.collect_audit_signals(audit_path=audit_file)
+    # deny_rate must reflect only the 1 real deny out of 5 total
+    test(
+        "audit: deny-dry excluded — deny_rate=20.0 not 60.0",
+        result.get("deny_rate") == 20.0,
+        f"got {result.get('deny_rate')}",
+    )
+    test(
+        "audit: deny_dry_count=2",
+        result.get("deny_dry_count") == 2,
+        f"got {result.get('deny_dry_count')}",
+    )
+    test(
+        "audit: deny_dry_rate=40.0",
+        result.get("deny_dry_rate") == 40.0,
+        f"got {result.get('deny_dry_rate')}",
+    )
+
+
+def test_audit_deny_dry_reported_separately():
+    """deny_dry_count and deny_dry_rate must be present in the output dict."""
+    retro = load_retro()
+    reset_artifacts()
+    audit_file = ARTIFACT_DIR / "audit_dry2.jsonl"
+    # All allow — still check the keys exist with 0 values
+    entries = [{"ts": 1, "event": "preToolUse", "tool": "view", "rule": "none", "decision": "allow"}]
+    audit_file.write_text("\n".join(json.dumps(e) for e in entries), encoding="utf-8")
+    result = retro.collect_audit_signals(audit_path=audit_file)
+    test("audit: deny_dry_count key present", "deny_dry_count" in result)
+    test("audit: deny_dry_rate key present", "deny_dry_rate" in result)
+    test("audit: deny_dry_count=0 when none", result.get("deny_dry_count") == 0)
+
+
+def test_audit_top_denied_tools_excludes_deny_dry():
+    """top_denied_tools must reflect only real denies, not dry-run noise."""
+    retro = load_retro()
+    reset_artifacts()
+    audit_file = ARTIFACT_DIR / "audit_dry3.jsonl"
+    entries = [
+        {"ts": 1, "event": "preToolUse", "tool": "bash", "rule": "r1", "decision": "deny"},
+        {"ts": 2, "event": "preToolUse", "tool": "edit", "rule": "r2", "decision": "deny-dry"},
+        {"ts": 3, "event": "preToolUse", "tool": "edit", "rule": "r2", "decision": "deny-dry"},
+    ]
+    audit_file.write_text("\n".join(json.dumps(e) for e in entries), encoding="utf-8")
+    result = retro.collect_audit_signals(audit_path=audit_file)
+    denied_tools = result.get("top_denied_tools", [])
+    test(
+        "audit: top_denied_tools contains real deny tool",
+        any(e.get("tool") == "bash" for e in denied_tools),
+        f"got {denied_tools}",
+    )
+    test(
+        "audit: top_denied_tools excludes deny-dry-only tools",
+        not any(e.get("tool") == "edit" for e in denied_tools),
+        f"got {denied_tools}",
+    )
+
+
+def test_score_skills_unverified_outcomes_below_neutral():
+    """When outcomes exist but zero verifications, skills subscore must be < 50 (not neutral 50)."""
+    retro = load_retro()
+    s = {
+        "available": True,
+        "total_outcomes": 278,
+        "outcomes_complete": 278,
+        "outcomes_failed": 0,
+        "total_verifications": 0,
+        "verifications_passed": 0,
+        "verifications_failed": 0,
+        "outcomes_with_passing_verification": 0,
+        "skill_usage": [],
+        "recent_outcomes": [],
+    }
+    score = retro._score_skills(s)
+    test(
+        "skills: unverified outcomes score < 50 (not false-neutral 50)",
+        score < 50,
+        f"got {score} — should be sub-neutral to reflect unverified state",
+    )
+    test("skills: unverified outcomes score > 0", score > 0, f"got {score}")
+
+
+def test_score_skills_outcome_level_fallback():
+    """When tentacle_verifications empty but outcome-level verification_passed > 0, use that."""
+    retro = load_retro()
+    s = {
+        "available": True,
+        "total_outcomes": 10,
+        "outcomes_complete": 10,
+        "outcomes_failed": 0,
+        "total_verifications": 0,
+        "verifications_passed": 0,
+        "verifications_failed": 0,
+        "outcomes_with_passing_verification": 8,
+        "skill_usage": [],
+        "recent_outcomes": [],
+    }
+    score = retro._score_skills(s)
+    test(
+        "skills: outcome-level fallback score = 80.0",
+        score == 80.0,
+        f"got {score}",
+    )
+
+
+def test_score_skills_detailed_verifications_take_priority():
+    """Detailed tentacle_verifications rows take priority over outcome-level fields."""
+    retro = load_retro()
+    s = {
+        "available": True,
+        "total_outcomes": 10,
+        "outcomes_with_passing_verification": 9,  # would give 90.0 if used
+        "total_verifications": 4,
+        "verifications_passed": 3,
+        "verifications_failed": 1,
+        "skill_usage": [],
+        "recent_outcomes": [],
+    }
+    score = retro._score_skills(s)
+    test(
+        "skills: detailed verifications have priority (75.0 not 90.0)",
+        score == 75.0,
+        f"got {score}",
+    )
+
+
+def test_compute_retro_interpretation_fields_present():
+    """compute_retro payload must include all 5 required interpretation fields."""
+    retro = load_retro()
+    payload = retro.compute_retro(
+        {"available": False},
+        {"available": False},
+        {"available": False},
+        {
+            "available": True,
+            "lookback_days": 30,
+            "commit_count": 30,
+            "test_files_changed": 5,
+            "py_files_changed": 10,
+            "distinct_files_changed": 15,
+            "recent_commits": [],
+            "top_changed_files": [],
+            "authors": [],
+        },
+        mode="repo",
+    )
+    for key in ("summary", "score_confidence", "distortion_flags", "accuracy_notes", "improvement_actions"):
+        test(
+            f"compute_retro: '{key}' present in payload",
+            key in payload,
+            f"missing key: {key}",
+        )
+    test(
+        "compute_retro: summary is non-empty string",
+        isinstance(payload.get("summary"), str) and bool(payload.get("summary")),
+    )
+    test(
+        "compute_retro: score_confidence in {low, medium, high}",
+        payload.get("score_confidence") in ("low", "medium", "high"),
+        f"got {payload.get('score_confidence')}",
+    )
+    test("compute_retro: distortion_flags is a list", isinstance(payload.get("distortion_flags"), list))
+    test("compute_retro: accuracy_notes is a list", isinstance(payload.get("accuracy_notes"), list))
+    test("compute_retro: improvement_actions is a list", isinstance(payload.get("improvement_actions"), list))
+
+
+def test_distortion_flag_skills_unverified():
+    """skills_unverified flag must be set when outcomes exist but no verification evidence."""
+    retro = load_retro()
+    skills = {
+        "available": True,
+        "total_outcomes": 50,
+        "total_verifications": 0,
+        "verifications_passed": 0,
+        "verifications_failed": 0,
+        "outcomes_with_passing_verification": 0,
+        "skill_usage": [],
+        "recent_outcomes": [],
+    }
+    payload = retro.compute_retro(
+        {"available": False},
+        skills,
+        {"available": False},
+        {"available": False},
+        mode="local",
+    )
+    test(
+        "distortion: skills_unverified flag present",
+        "skills_unverified" in payload.get("distortion_flags", []),
+        f"flags: {payload.get('distortion_flags')}",
+    )
+    test(
+        "distortion: skills_unverified → score_confidence not high",
+        payload.get("score_confidence") != "high",
+        f"got {payload.get('score_confidence')}",
+    )
+    test(
+        "distortion: accuracy_notes mentions unverified",
+        any("unverified" in n.lower() or "no verification" in n.lower() for n in payload.get("accuracy_notes", [])),
+    )
+
+
+def test_distortion_flag_hook_deny_dry_noise():
+    """hook_deny_dry_noise flag must be set when deny-dry entries are present."""
+    retro = load_retro()
+    hooks = {
+        "available": True,
+        "total_entries": 100,
+        "decisions": {"allow": 60, "deny-dry": 40},
+        "deny_rate": 0.0,
+        "deny_dry_count": 40,
+        "deny_dry_rate": 40.0,
+        "parse_error_rate": 0.0,
+        "top_rules": [],
+        "top_denied_tools": [],
+    }
+    payload = retro.compute_retro(
+        {"available": False},
+        {"available": False},
+        hooks,
+        {"available": False},
+        mode="local",
+    )
+    test(
+        "distortion: hook_deny_dry_noise flag present",
+        "hook_deny_dry_noise" in payload.get("distortion_flags", []),
+        f"flags: {payload.get('distortion_flags')}",
+    )
+    test(
+        "distortion: hook_deny_dry_noise → score_confidence not high",
+        payload.get("score_confidence") != "high",
+    )
+
+
+def test_distortion_flags_empty_when_clean():
+    """When data is clean, distortion_flags must be empty."""
+    retro = load_retro()
+    knowledge = {
+        "available": True, "score": 85.0, "total": 100, "categories": {},
+        "mistakes": 5, "patterns": 10, "mp_ratio": 2.0, "fresh_7d": 5,
+        "stale_count": 2, "stale_pct": 2.0, "sessions": 3,
+        "embed_pct": 50.0, "relation_density": 0.5, "subscores": {},
+    }
+    skills = {
+        "available": True,
+        "total_outcomes": 5,
+        "total_verifications": 5,
+        "verifications_passed": 5,
+        "verifications_failed": 0,
+        "outcomes_with_passing_verification": 5,
+        "skill_usage": [],
+        "recent_outcomes": [],
+    }
+    hooks = {
+        "available": True,
+        "total_entries": 100,
+        "decisions": {"allow": 95, "deny": 5},
+        "deny_rate": 5.0,
+        "deny_dry_count": 0,
+        "deny_dry_rate": 0.0,
+        "parse_error_rate": 0.0,
+        "top_rules": [],
+        "top_denied_tools": [],
+    }
+    git = {
+        "available": True, "lookback_days": 30, "commit_count": 30,
+        "test_files_changed": 10, "py_files_changed": 20,
+        "distinct_files_changed": 30, "recent_commits": [], "top_changed_files": [], "authors": [],
+    }
+    payload = retro.compute_retro(knowledge, skills, hooks, git, mode="local")
+    test(
+        "distortion: no flags on clean data",
+        payload.get("distortion_flags") == [],
+        f"flags: {payload.get('distortion_flags')}",
+    )
+    test(
+        "distortion: score_confidence=high on clean data",
+        payload.get("score_confidence") == "high",
+        f"got {payload.get('score_confidence')}",
+    )
+
+
+def test_json_output_interpretation_fields():
+    """Subprocess --json must include all 5 new interpretation fields."""
+    result = subprocess.run(
+        [sys.executable, str(RETRO_PY), "--json", "--mode", "repo", "--no-cache"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    test("retro.py --json --mode repo: exits 0 (interpretation fields)", result.returncode == 0)
+    try:
+        data = json.loads(result.stdout)
+        for key in ("summary", "score_confidence", "distortion_flags", "accuracy_notes", "improvement_actions"):
+            test(
+                f"retro.py --json: '{key}' present in output",
+                key in data,
+                f"missing from JSON output",
+            )
+        test(
+            "retro.py --json: score_confidence in {low,medium,high}",
+            data.get("score_confidence") in ("low", "medium", "high"),
+            f"got {data.get('score_confidence')}",
+        )
+    except json.JSONDecodeError as e:
+        test("retro.py --json: valid JSON (interpretation fields)", False, str(e))
+
+
+def test_hook_score_not_penalised_by_deny_dry():
+    """_score_hooks must NOT be penalised by deny-dry entries (only real deny counts)."""
+    retro = load_retro()
+    # All entries are deny-dry — real deny count is 0
+    h_all_dry = {
+        "available": True,
+        "total_entries": 100,
+        "decisions": {"allow": 50, "deny-dry": 50},
+        "deny_rate": 0.0,          # correctly 0 — no real denies
+        "deny_dry_count": 50,
+        "deny_dry_rate": 50.0,
+        "parse_error_rate": 0.0,
+        "top_rules": [],
+        "top_denied_tools": [],
+    }
+    score_dry_only = retro._score_hooks(h_all_dry)
+    # Equivalent with no deny-dry
+    h_clean = {
+        "available": True,
+        "total_entries": 100,
+        "decisions": {"allow": 100},
+        "deny_rate": 0.0,
+        "deny_dry_count": 0,
+        "deny_dry_rate": 0.0,
+        "parse_error_rate": 0.0,
+        "top_rules": [],
+        "top_denied_tools": [],
+    }
+    score_clean = retro._score_hooks(h_clean)
+    test(
+        "hook_score: deny-dry-only gives same score as fully clean (no real deny penalty)",
+        score_dry_only == score_clean,
+        f"dry_only={score_dry_only}, clean={score_clean}",
+    )
+    test("hook_score: score=100 when deny_rate=0 and parse_rate=0", score_clean == 100.0, f"got {score_clean}")
+
+
+
 
 
 def main():
@@ -900,6 +1262,23 @@ def main():
     test_format_text_report_complete()
     test_format_subreport_all_valid()
     test_format_subreport_invalid()
+
+    print("13. Calibration: deny-dry separation")
+    test_audit_deny_dry_excluded_from_deny_rate()
+    test_audit_deny_dry_reported_separately()
+    test_hook_score_not_penalised_by_deny_dry()
+
+    print("14. Calibration: skills verification evidence tiers")
+    test_score_skills_unverified_outcomes_below_neutral()
+    test_score_skills_outcome_level_fallback()
+    test_score_skills_detailed_verifications_take_priority()
+
+    print("15. Calibration: interpretation fields")
+    test_compute_retro_interpretation_fields_present()
+    test_distortion_flag_skills_unverified()
+    test_distortion_flag_hook_deny_dry_noise()
+    test_distortion_flags_empty_when_clean()
+    test_json_output_interpretation_fields()
 
     # Cleanup
     reset_artifacts()
