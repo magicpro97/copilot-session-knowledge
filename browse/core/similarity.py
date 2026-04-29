@@ -1,4 +1,5 @@
 """browse/core/similarity.py — cosine kNN over knowledge embeddings (pure stdlib)."""
+
 import hashlib
 import heapq
 import json
@@ -121,9 +122,7 @@ def _is_better_neighbor(score: float, entry_id: int, worst: tuple[float, int, st
     return False
 
 
-def _build_top_neighbors_for_source(
-    src: dict, rows: list[dict], max_neighbors: int
-) -> tuple[list[dict], int]:
+def _build_top_neighbors_for_source(src: dict, rows: list[dict], max_neighbors: int) -> tuple[list[dict], int]:
     src_norm = src["norm"]
     heap: list[tuple[float, int, str, str]] = []
     pairs = 0
@@ -179,9 +178,7 @@ def _compute_missing_neighbors(
     neighbors: dict[str, list[dict]] = {}
     computed_pairs = 0
     for source_id in computed_ids:
-        top_neighbors, pair_count = _build_top_neighbors_for_source(
-            rows_by_entry_id[source_id], rows, max_neighbors
-        )
+        top_neighbors, pair_count = _build_top_neighbors_for_source(rows_by_entry_id[source_id], rows, max_neighbors)
         computed_pairs += pair_count
         neighbors[str(source_id)] = top_neighbors
     return neighbors, skipped_ids, computed_pairs

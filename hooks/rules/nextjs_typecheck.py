@@ -1,4 +1,5 @@
 """nextjs_typecheck.py — postToolUse: suggest typecheck after TS edits."""
+
 import os
 import sys
 
@@ -50,7 +51,6 @@ class NextjsTypecheckRule(Rule):
 
         if count >= 3 and count % 3 == 0:
             return info(
-                f"\n  ⚠️ TS REMINDER: {count} browse-ui .ts/.tsx files edited.\n"
-                "  Run: cd browse-ui && pnpm typecheck\n"
+                f"\n  ⚠️ TS REMINDER: {count} browse-ui .ts/.tsx files edited.\n  Run: cd browse-ui && pnpm typecheck\n"
             )
         return None

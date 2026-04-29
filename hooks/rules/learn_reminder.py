@@ -1,4 +1,5 @@
 """Learn reminder rule — reminds to record learnings after task_complete."""
+
 import re
 import sys
 from pathlib import Path
@@ -10,7 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
     from marker_auth import sign_marker
 except ImportError:
-    def sign_marker(p, n): p.parent.mkdir(parents=True, exist_ok=True); p.touch()
+
+    def sign_marker(p, n):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+
 
 LEARN_DONE = MARKERS_DIR / "learn-done"
 
@@ -31,7 +36,7 @@ class LearnReminderRule(Rule):
         # Track when learn.py is run
         if tool_name == "bash":
             command = tool_args.get("command", "")
-            if re.search(r'python3?\s+.*learn\.py\b', command):
+            if re.search(r"python3?\s+.*learn\.py\b", command):
                 sign_marker(LEARN_DONE, "learn-done")
             return None
 

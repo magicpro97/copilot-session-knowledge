@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 
 import { CACHE_TIMES, DEFAULT_PAGE_SIZE, STALE_TIMES } from "@/lib/constants";
 import { apiFetch } from "@/lib/api/client";
@@ -11,6 +11,9 @@ import {
   evidenceGraphResponseSchema,
   embeddingProjectionSchema,
   evalResponseSchema,
+  feedbackRequestSchema,
+  feedbackResponseSchema,
+  retroResponseSchema,
   graphResponseSchema,
   healthResponseSchema,
   searchResponseSchema,
@@ -31,6 +34,9 @@ import type {
   EvidenceRelationType,
   EmbeddingProjection,
   EvalResponse,
+  FeedbackRequest,
+  FeedbackResponse,
+  RetroResponse,
   GraphResponse,
   HealthResponse,
   SearchResponse,
@@ -93,6 +99,7 @@ export const queryKeys = {
   graphCommunities: () => ["graph-communities"] as const,
   embeddings: () => ["embeddings"] as const,
   eval: () => ["eval"] as const,
+  retro: (mode: "repo" | "local" = "repo") => ["retro", mode] as const,
   compare: (a: string, b: string) => ["compare", a, b] as const,
 };
 
@@ -452,6 +459,33 @@ export function useCompare(sessionA: string, sessionB: string, enabled = true) {
     queryFn: async (): Promise<CompareResponse> => {
       const data = await apiFetch<CompareResponse>(withLeadingSlash(`/api/compare${queryString}`));
       return compareResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useSubmitFeedback() {
+  return useMutation({
+    mutationFn: async (payload: FeedbackRequest): Promise<FeedbackResponse> => {
+      const data = await apiFetch<FeedbackResponse>(withLeadingSlash("/api/feedback"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(feedbackRequestSchema.parse(payload)),
+      });
+      return feedbackResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useRetro(mode: "repo" | "local" = "repo") {
+  return useQuery({
+    queryKey: queryKeys.retro(mode),
+    staleTime: STALE_TIMES.retro,
+    gcTime: CACHE_TIMES.retro,
+    queryFn: async (): Promise<RetroResponse> => {
+      const data = await apiFetch<RetroResponse>(
+        withLeadingSlash(`/api/retro/summary?mode=${mode}`)
+      );
+      return retroResponseSchema.parse(data);
     },
   });
 }

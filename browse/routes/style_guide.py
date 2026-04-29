@@ -1,4 +1,5 @@
 """browse/routes/style_guide.py — GET /style-guide — Visual reference for all primitive components."""
+
 import os
 import sys
 
@@ -7,9 +8,9 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
+from browse.components import badge, banner, card, data_table, empty_state, page_header, stat_grid
 from browse.core.registry import route
 from browse.core.templates import base_page
-from browse.components import page_header, stat_grid, data_table, empty_state, badge, banner, card
 
 
 @route("/style-guide", methods=["GET"])
@@ -21,9 +22,12 @@ def handle_style_guide(db, params, token, nonce) -> tuple:
         "<section>"
         "<h2>badge</h2>"
         "<p>Inline status indicators.</p>"
-        + badge("info", variant="info") + " "
-        + badge("success", variant="success") + " "
-        + badge("warning", variant="warning") + " "
+        + badge("info", variant="info")
+        + " "
+        + badge("success", variant="success")
+        + " "
+        + badge("warning", variant="warning")
+        + " "
         + badge("danger", variant="danger")
         + "</section>"
     )
@@ -43,11 +47,13 @@ def handle_style_guide(db, params, token, nonce) -> tuple:
         "<section>"
         "<h2>stat_grid</h2>"
         "<p>KPI tile row.</p>"
-        + stat_grid([
-            ("123", "Sessions"),
-            ("456", "Knowledge items"),
-            ("789 MB", "Size"),
-        ])
+        + stat_grid(
+            [
+                ("123", "Sessions"),
+                ("456", "Knowledge items"),
+                ("789 MB", "Size"),
+            ]
+        )
         + "</section>"
     )
 

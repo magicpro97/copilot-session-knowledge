@@ -1,4 +1,5 @@
 """browse/routes/sync.py — read-only sync diagnostics endpoints."""
+
 import json
 import os
 import sys
@@ -138,9 +139,7 @@ def handle_sync_status(db, params, token, nonce) -> tuple:
 
     local_replica_id = ""
     if _table_exists(db, "sync_state"):
-        local_replica_id = _safe_value(
-            db, "SELECT value FROM sync_state WHERE key = ? LIMIT 1", ("local_replica_id",)
-        )
+        local_replica_id = _safe_value(db, "SELECT value FROM sync_state WHERE key = ? LIMIT 1", ("local_replica_id",))
 
     last_committed_at = ""
     if _table_exists(db, "sync_txns"):

@@ -1,4 +1,5 @@
 """browse/routes/eval.py — GET /eval (admin) + POST /api/feedback (F15 Eval/Feedback)."""
+
 import html
 import json
 import os
@@ -10,10 +11,10 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
-from browse.core.fts import _esc
-from browse.core.templates import base_page
 from browse.components import banner
+from browse.core.fts import _esc
+from browse.core.registry import route
+from browse.core.templates import base_page
 
 _VERDICT_VALUES = frozenset({-1, 0, 1})
 _MAX_QUERY = 500
@@ -36,12 +37,8 @@ def _ensure_feedback_table(db) -> None:
             created_at TEXT NOT NULL
         )
     """)
-    db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_sf_query ON search_feedback(query)"
-    )
-    db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_sf_created ON search_feedback(created_at)"
-    )
+    db.execute("CREATE INDEX IF NOT EXISTS idx_sf_query ON search_feedback(query)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_sf_created ON search_feedback(created_at)")
     db.commit()
 
 
@@ -51,7 +48,7 @@ def handle_eval(db, params, token, nonce) -> tuple:
     _ensure_feedback_table(db)
     tok_qs = f"?token={_esc(token)}" if token else ""
     legacy_notice = banner(
-        f'Legacy v1 HTML page (/eval) is deprecated and kept for backward compatibility. '
+        f"Legacy v1 HTML page (/eval) is deprecated and kept for backward compatibility. "
         f'There is no 1:1 /v2 replacement yet; use <a href="/v2/search{tok_qs}">/v2/search</a> for primary search UX.',
         variant="warning",
         icon="⚠",
@@ -77,10 +74,7 @@ def handle_eval(db, params, token, nonce) -> tuple:
         table_rows = []
         for r in agg_rows:
             q = html.escape(str(r[0] or ""), quote=True)
-            table_rows.append(
-                f"<tr><td>{q}</td>"
-                f"<td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td><td>{r[4]}</td></tr>"
-            )
+            table_rows.append(f"<tr><td>{q}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td><td>{r[4]}</td></tr>")
         agg_html = (
             '<table id="eval-table">\n'
             "<thead><tr>"
@@ -112,10 +106,7 @@ def handle_eval(db, params, token, nonce) -> tuple:
             rid = html.escape(str(r[1] or ""), quote=True)
             cmt = html.escape(str(r[3] or ""), quote=True)
             ts = html.escape(str(r[4] or ""), quote=True)
-            comment_rows.append(
-                f"<tr><td>{q}</td><td>{rid}</td>"
-                f"<td>{v_label}</td><td>{cmt}</td><td>{ts}</td></tr>"
-            )
+            comment_rows.append(f"<tr><td>{q}</td><td>{rid}</td><td>{v_label}</td><td>{cmt}</td><td>{ts}</td></tr>")
         comments_html = (
             "<h2>Recent Comments</h2>\n"
             '<table id="eval-comments">\n'
@@ -129,26 +120,22 @@ def handle_eval(db, params, token, nonce) -> tuple:
     else:
         comments_html = ""
 
-    main_content = (
-        legacy_notice
-        + "<h2>Feedback Aggregation</h2>\n"
-        + agg_html
-        + "\n"
-        + comments_html
-    )
+    main_content = legacy_notice + "<h2>Feedback Aggregation</h2>\n" + agg_html + "\n" + comments_html
 
     nonce_esc = _esc(nonce)
-    body_scripts = (
-        f'<script nonce="{nonce_esc}" src="/static/js/eval.js"></script>\n'
-    )
+    body_scripts = f'<script nonce="{nonce_esc}" src="/static/js/eval.js"></script>\n'
 
-    return base_page(
-        nonce,
-        "Eval / Feedback",
-        main_content=main_content,
-        body_scripts=body_scripts,
-        token=token,
-    ), "text/html; charset=utf-8", 200
+    return (
+        base_page(
+            nonce,
+            "Eval / Feedback",
+            main_content=main_content,
+            body_scripts=body_scripts,
+            token=token,
+        ),
+        "text/html; charset=utf-8",
+        200,
+    )
 
 
 @route("/api/feedback", methods=["POST"])
@@ -233,6 +220,7 @@ def handle_feedback(db, params, token, nonce) -> tuple:
         db.commit()
     except Exception as exc:
         import sys as _sys
+
         print(f"[eval] db error: {exc}", file=_sys.stderr)
         return (
             json.dumps({"error": "database error"}).encode("utf-8"),

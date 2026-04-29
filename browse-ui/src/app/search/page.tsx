@@ -1,6 +1,6 @@
 "use client";
 
-import { Filter, Loader2, Search, SearchX, X } from "lucide-react";
+import { Filter, Loader2, Search, SearchX, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -15,7 +15,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useDebounce } from "@/hooks/use-debounce";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useSearchHistory } from "@/hooks/use-search-history";
-import { useSearch } from "@/lib/api/hooks";
+import { useSearch, useSubmitFeedback } from "@/lib/api/hooks";
+import type { SearchResult } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
 
 const ALL_SOURCES = ["sessions", "knowledge"] as const;
@@ -29,6 +30,66 @@ const ALL_KINDS = [
   "feature",
   "refactor",
 ] as const;
+
+type Verdict = -1 | 1;
+
+function FeedbackRow({ result, query }: { result: SearchResult; query: string }) {
+  const [submitted, setSubmitted] = useState<Verdict | null>(null);
+  const feedback = useSubmitFeedback();
+
+  const submit = useCallback(
+    (verdict: Verdict) => {
+      if (submitted !== null || feedback.isPending) return;
+      feedback.mutate(
+        {
+          query,
+          result_id: String(result.id),
+          result_kind: result.type,
+          verdict,
+        },
+        { onSuccess: () => setSubmitted(verdict) }
+      );
+    },
+    [feedback, query, result.id, result.type, submitted]
+  );
+
+  return (
+    <div
+      className="flex items-center gap-1 px-1"
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      {submitted !== null ? (
+        <span className="text-muted-foreground text-xs">
+          {submitted === 1 ? "👍 Thanks!" : "👎 Noted"}
+        </span>
+      ) : (
+        <>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Helpful result"
+            disabled={feedback.isPending}
+            onClick={() => submit(1)}
+          >
+            <ThumbsUp className="size-3" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Unhelpful result"
+            disabled={feedback.isPending}
+            onClick={() => submit(-1)}
+          >
+            <ThumbsDown className="size-3" />
+          </Button>
+        </>
+      )}
+    </div>
+  );
+}
 
 function parseCsv<T extends readonly string[]>(value: string | null, valid: T): T[number][] {
   if (!value) return [];
@@ -374,7 +435,7 @@ export default function SearchPage() {
           <div className="grid gap-3">
             {results.map((result, index) => (
               <div
-                key={`${result.type}-${String(result.id)}-${index}`}
+                key={`${committedQuery}-${result.type}-${String(result.id)}-${index}`}
                 ref={(node) => {
                   resultRefs.current[index] = node;
                 }}
@@ -388,6 +449,9 @@ export default function SearchPage() {
                   )}
                   onSelect={() => openResult(index)}
                 />
+                <div className="mt-1 flex justify-end">
+                  <FeedbackRow result={result} query={committedQuery} />
+                </div>
               </div>
             ))}
           </div>

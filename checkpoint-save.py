@@ -29,10 +29,10 @@ Environment:
     COPILOT_SESSION_STATE  Override session-state directory path
 """
 
+import argparse
 import os
 import re
 import sys
-import argparse
 from datetime import datetime
 from pathlib import Path
 
@@ -44,10 +44,7 @@ if os.name == "nt":
 _env_state = os.environ.get("COPILOT_SESSION_STATE")
 SESSION_STATE = Path(_env_state) if _env_state else Path.home() / ".copilot" / "session-state"
 
-CHECKPOINT_SECTIONS = [
-    "overview", "history", "work_done", "technical_details",
-    "important_files", "next_steps"
-]
+CHECKPOINT_SECTIONS = ["overview", "history", "work_done", "technical_details", "important_files", "next_steps"]
 
 INDEX_HEADER = """\
 # Checkpoint History
@@ -133,11 +130,13 @@ def parse_index(index_path: Path) -> list[dict]:
     for line in index_path.read_text(encoding="utf-8", errors="ignore").splitlines():
         m = re.match(r"\|\s*(\d+)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|", line)
         if m:
-            entries.append({
-                "seq": int(m.group(1)),
-                "title": m.group(2).strip(),
-                "file": m.group(3).strip(),
-            })
+            entries.append(
+                {
+                    "seq": int(m.group(1)),
+                    "title": m.group(2).strip(),
+                    "file": m.group(3).strip(),
+                }
+            )
     return entries
 
 
@@ -292,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"✓ Checkpoint saved: {cp_path}")
         print(f"  Session: {session_dir.name}")
         # Suggest re-indexing
-        print(f"  Run: python3 ~/.copilot/tools/build-session-index.py --incremental")
+        print("  Run: python3 ~/.copilot/tools/build-session-index.py --incremental")
 
     return 0
 

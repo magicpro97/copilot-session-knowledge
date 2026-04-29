@@ -30,12 +30,12 @@ Usage:
     python learn.py --stats                       # Show knowledge stats
 """
 
+import hashlib
 import json
 import os
 import sqlite3
 import sys
 import time
-import hashlib
 from pathlib import Path
 
 if os.name == "nt":
@@ -51,17 +51,28 @@ DB_PATH = SESSION_STATE / "knowledge.db"
 
 # Wing auto-detection rules: tag patterns → wing
 _WING_RULES = [
-    ({"lambda", "dynamodb", "sqs", "cdk", "api", "cognito", "s3",
-      "eventbridge", "cloudwatch", "sns", "websocket", "nefoap"}, "backend"),
-    ({"expo", "react", "react-native", "screen", "component", "css",
-      "ui", "navigation", "hook"}, "frontend"),
+    (
+        {
+            "lambda",
+            "dynamodb",
+            "sqs",
+            "cdk",
+            "api",
+            "cognito",
+            "s3",
+            "eventbridge",
+            "cloudwatch",
+            "sns",
+            "websocket",
+            "nefoap",
+        },
+        "backend",
+    ),
+    ({"expo", "react", "react-native", "screen", "component", "css", "ui", "navigation", "hook"}, "frontend"),
     ({"jest", "playwright", "e2e", "test", "testing", "coverage"}, "testing"),
-    ({"vpc", "cloudwatch", "cdk", "cloudformation", "infrastructure",
-      "deploy", "pipeline"}, "infrastructure"),
-    ({"git", "ci", "cd", "docker", "devops", "proxy", "tls", "npm",
-      "yarn", "package-manager"}, "devops"),
-    ({"typescript", "javascript", "eslint", "prettier", "i18n",
-      "mermaid", "openapi"}, "shared"),
+    ({"vpc", "cloudwatch", "cdk", "cloudformation", "infrastructure", "deploy", "pipeline"}, "infrastructure"),
+    ({"git", "ci", "cd", "docker", "devops", "proxy", "tls", "npm", "yarn", "package-manager"}, "devops"),
+    ({"typescript", "javascript", "eslint", "prettier", "i18n", "mermaid", "openapi"}, "shared"),
 ]
 
 # Room auto-detection rules: tag/title patterns → room
@@ -113,13 +124,19 @@ def _detect_room(tags: str, title: str, content: str) -> str:
 import re
 
 _INJECTION_PATTERNS = [
-    (re.compile(r"(?i)\bignore\s+(all\s+)?previous\s+instructions?\b"), "prompt injection: 'ignore previous instructions'"),
+    (
+        re.compile(r"(?i)\bignore\s+(all\s+)?previous\s+instructions?\b"),
+        "prompt injection: 'ignore previous instructions'",
+    ),
     (re.compile(r"(?i)\byou\s+are\s+now\b"), "role hijacking: 'you are now'"),
     (re.compile(r"(?i)\bsystem\s*:\s*"), "role injection: 'system:' prefix"),
     (re.compile(r"(?i)\b(assistant|user|human)\s*:\s*"), "role injection: fake role prefix"),
     (re.compile(r"(?i)\bforget\s+(everything|all|your)\b"), "memory manipulation: 'forget everything'"),
     (re.compile(r"(?i)\bdo\s+not\s+follow\b"), "instruction override: 'do not follow'"),
-    (re.compile(r"(?i)\b(api[_-]?key|secret[_-]?key|password|token)\s*[:=]\s*\S+"), "credential leak: API key/password/token"),
+    (
+        re.compile(r"(?i)\b(api[_-]?key|secret[_-]?key|password|token)\s*[:=]\s*\S+"),
+        "credential leak: API key/password/token",
+    ),
     (re.compile(r"(?i)ssh-rsa\s+AAAA"), "credential leak: SSH public key"),
     (re.compile(r"(?i)-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----"), "credential leak: private key"),
     (re.compile(r"(?i)\beval\s*\("), "code injection: eval()"),
@@ -168,21 +185,27 @@ def _get_local_replica_id(db: sqlite3.Connection) -> str:
         if current and current != "local":
             return current
         replica_id = _default_local_replica_id()
-        db.execute("""
+        db.execute(
+            """
             INSERT INTO sync_state (key, value)
             VALUES ('local_replica_id', ?)
             ON CONFLICT(key) DO UPDATE SET
                 value = excluded.value,
                 updated_at = datetime('now')
-        """, (replica_id,))
+        """,
+            (replica_id,),
+        )
         try:
-            db.execute("""
+            db.execute(
+                """
                 INSERT INTO sync_metadata (key, value)
                 VALUES ('local_replica_id', ?)
                 ON CONFLICT(key) DO UPDATE SET
                     value = excluded.value,
                     updated_at = datetime('now')
-            """, (replica_id,))
+            """,
+                (replica_id,),
+            )
         except sqlite3.OperationalError:
             pass
         return replica_id
@@ -211,14 +234,20 @@ def _enqueue_sync_op_fail_open(
             return
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         txn_id = _stable_sha256("sync-txn", replica_id, table_name, row_stable_id, time.time_ns())
-        db.execute("""
+        db.execute(
+            """
             INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at)
             VALUES (?, ?, 'pending', ?, '')
-        """, (txn_id, replica_id, now))
-        db.execute("""
+        """,
+            (txn_id, replica_id, now),
+        )
+        db.execute(
+            """
             INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
             VALUES (?, ?, ?, ?, ?, 0, ?)
-        """, (txn_id, table_name, op_type, row_stable_id, json.dumps(row_payload, ensure_ascii=False), now))
+        """,
+            (txn_id, table_name, op_type, row_stable_id, json.dumps(row_payload, ensure_ascii=False), now),
+        )
     except Exception:
         return
 
@@ -250,8 +279,7 @@ def _detect_code_language(source_file: str) -> str:
     return _CODE_LANGUAGE_MAP.get(Path(source_file).suffix.lower(), "")
 
 
-def _extract_code_snippet(source_file: str, start_line: int, end_line: int,
-                          quiet: bool = False) -> tuple[str, str]:
+def _extract_code_snippet(source_file: str, start_line: int, end_line: int, quiet: bool = False) -> tuple[str, str]:
     """Best-effort snippet extraction; never raises for unreadable files."""
     code_language = _detect_code_language(source_file)
     path = Path(source_file)
@@ -260,15 +288,14 @@ def _extract_code_snippet(source_file: str, start_line: int, end_line: int,
             raise OSError("missing or not a regular file")
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
-        print(f"  [warn] Could not read code location '{source_file}': {e}",
-              file=sys.stderr if quiet else sys.stdout)
+        print(f"  [warn] Could not read code location '{source_file}': {e}", file=sys.stderr if quiet else sys.stdout)
         return "", code_language
 
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = normalized.split("\n")
     if start_line > len(lines):
         return "", code_language
-    snippet = "\n".join(lines[start_line - 1:end_line])
+    snippet = "\n".join(lines[start_line - 1 : end_line])
     if len(snippet) > 2000:
         snippet = snippet[:1999] + "…"
     return snippet, code_language
@@ -276,8 +303,7 @@ def _extract_code_snippet(source_file: str, start_line: int, end_line: int,
 
 def get_db() -> sqlite3.Connection:
     if not DB_PATH.exists():
-        print("Error: Knowledge DB not found. Run build-session-index.py first.",
-              file=sys.stderr)
+        print("Error: Knowledge DB not found. Run build-session-index.py first.", file=sys.stderr)
         sys.exit(1)
     db = sqlite3.connect(str(DB_PATH))
     db.row_factory = sqlite3.Row
@@ -312,31 +338,38 @@ def detect_session_id() -> str:
     return "manual"
 
 
-def add_entry(category: str, title: str, content: str,
-              tags: str = "", session_id: str = None,
-              confidence: float = None,
-              wing: str = "", room: str = "",
-              facts: list = None, skip_gate: bool = False,
-              skip_scan: bool = False,
-              task_id: str = "",
-              affected_files: list = None,
-              source_file: str = "",
-              start_line: int = 0,
-              end_line: int = 0,
-              code_language: str = "",
-              code_snippet: str = "",
-              code_location_set: bool = False,
-              quiet: bool = False) -> int:
+def add_entry(
+    category: str,
+    title: str,
+    content: str,
+    tags: str = "",
+    session_id: str = None,
+    confidence: float = None,
+    wing: str = "",
+    room: str = "",
+    facts: list = None,
+    skip_gate: bool = False,
+    skip_scan: bool = False,
+    task_id: str = "",
+    affected_files: list = None,
+    source_file: str = "",
+    start_line: int = 0,
+    end_line: int = 0,
+    code_language: str = "",
+    code_snippet: str = "",
+    code_location_set: bool = False,
+    quiet: bool = False,
+) -> int:
     """Add a knowledge entry to the database. Returns entry ID.
-    
+
     Quality gate (for mistake/pattern/discovery): 3 questions must all be YES:
     1. "Could someone Google this in 5 minutes?" → NO (otherwise not worth recording)
     2. "Is this specific to THIS codebase?" → YES (generic knowledge doesn't belong)
     3. "Did this require real debugging/investigation?" → YES (trivial findings = noise)
-    
+
     Gate is auto-skipped for decision/tool/feature/refactor (always worth recording)
     and for bulk imports (--from-file). Use --skip-gate to bypass manually.
-    
+
     Injection scanning: All entries are scanned for prompt injection, role hijacking,
     credential leaks, and invisible Unicode. Matching entries are REJECTED unless
     --skip-scan is passed (for documenting injection patterns themselves).
@@ -349,29 +382,35 @@ def add_entry(category: str, title: str, content: str,
     has_stable_id_column = "stable_id" in ke_columns
     has_topic_key_column = "topic_key" in ke_columns
     if code_location_set and not has_code_location_columns:
-        print("  [warn] DB schema missing code-location columns; run migrate.py to persist snippets",
-              file=sys.stderr if quiet else sys.stdout)
+        print(
+            "  [warn] DB schema missing code-location columns; run migrate.py to persist snippets",
+            file=sys.stderr if quiet else sys.stdout,
+        )
         code_location_set = False
 
     # Injection scanning (before any DB writes) — always runs unless --skip-scan
     if not skip_scan:
         injection_warnings = scan_content_for_injection(title, content)
         if injection_warnings:
-            print(f"  ⚠ REJECTED — injection pattern detected:", file=sys.stderr)
+            print("  ⚠ REJECTED — injection pattern detected:", file=sys.stderr)
             for w in injection_warnings:
                 print(f"    ✗ {w}", file=sys.stderr)
-            print(f"  Use --skip-scan to bypass (only for documenting injection patterns)", file=sys.stderr)
+            print("  Use --skip-scan to bypass (only for documenting injection patterns)", file=sys.stderr)
             return -1
-
 
     if not session_id:
         session_id = detect_session_id()
 
     if confidence is None:
-        confidence = {"mistake": 0.7, "pattern": 0.6,
-                      "decision": 0.8, "tool": 0.5,
-                      "feature": 0.7, "refactor": 0.6,
-                      "discovery": 0.6}.get(category, 0.5)
+        confidence = {
+            "mistake": 0.7,
+            "pattern": 0.6,
+            "decision": 0.8,
+            "tool": 0.5,
+            "feature": 0.7,
+            "refactor": 0.6,
+            "discovery": 0.6,
+        }.get(category, 0.5)
 
     # Auto-detect wing/room if not provided
     if not wing:
@@ -424,9 +463,24 @@ def add_entry(category: str, title: str, content: str,
                 task_id = CASE WHEN ? != '' THEN ? ELSE task_id END,
                 affected_files = CASE WHEN ? != '[]' THEN ? ELSE affected_files END,
         """
-        update_params = [new_content, new_count, new_confidence, now,
-                         tags, tags, wing, wing, room, room,
-                         facts_json, facts_json, task_id, task_id, files_json, files_json]
+        update_params = [
+            new_content,
+            new_count,
+            new_confidence,
+            now,
+            tags,
+            tags,
+            wing,
+            wing,
+            room,
+            room,
+            facts_json,
+            facts_json,
+            task_id,
+            task_id,
+            files_json,
+            files_json,
+        ]
         if has_stable_id_column:
             stable_id = _knowledge_stable_id(
                 existing["session_id"], category, title, existing["topic_key"] if has_topic_key_column else ""
@@ -441,13 +495,20 @@ def add_entry(category: str, title: str, content: str,
                 code_language = CASE WHEN ? THEN ? ELSE code_language END,
                 code_snippet = CASE WHEN ? THEN ? ELSE code_snippet END,
             """
-            update_params.extend([
-                int(code_location_set), source_file,
-                int(code_location_set), start_line,
-                int(code_location_set), end_line,
-                int(code_location_set), code_language,
-                int(code_location_set), code_snippet
-            ])
+            update_params.extend(
+                [
+                    int(code_location_set),
+                    source_file,
+                    int(code_location_set),
+                    start_line,
+                    int(code_location_set),
+                    end_line,
+                    int(code_location_set),
+                    code_language,
+                    int(code_location_set),
+                    code_snippet,
+                ]
+            )
         update_sql += " est_tokens = ? WHERE id = ?"
         update_params.extend([est_tokens, existing["id"]])
         db.execute(update_sql, update_params)
@@ -476,8 +537,7 @@ def add_entry(category: str, title: str, content: str,
                 },
             )
         loc = f" [{wing}/{room}]" if wing or room else ""
-        msg = (f"  Updated existing entry #{entry_id} (seen {new_count}x, "
-               f"confidence → {new_confidence:.2f}){loc}")
+        msg = f"  Updated existing entry #{entry_id} (seen {new_count}x, confidence → {new_confidence:.2f}){loc}"
         print(msg, file=sys.stderr if quiet else sys.stdout)
     else:
         # Estimate token cost for new entry
@@ -487,51 +547,125 @@ def add_entry(category: str, title: str, content: str,
         if has_code_location_columns:
             if has_stable_id_column:
                 stable_id = _knowledge_stable_id(session_id, category, title, "")
-                db.execute("""
+                db.execute(
+                    """
                 INSERT INTO knowledge_entries
                     (category, title, stable_id, content, tags, confidence, session_id,
                      occurrence_count, first_seen, last_seen, wing, room,
                      facts, est_tokens, task_id, affected_files,
                      source_file, start_line, end_line, code_language, code_snippet)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (category, title, stable_id, content, tags, confidence,
-                  session_id, now, now, wing, room, facts_json, est_tokens,
-                  task_id, files_json, source_file, start_line, end_line,
-                  code_language, code_snippet))
+            """,
+                    (
+                        category,
+                        title,
+                        stable_id,
+                        content,
+                        tags,
+                        confidence,
+                        session_id,
+                        now,
+                        now,
+                        wing,
+                        room,
+                        facts_json,
+                        est_tokens,
+                        task_id,
+                        files_json,
+                        source_file,
+                        start_line,
+                        end_line,
+                        code_language,
+                        code_snippet,
+                    ),
+                )
             else:
-                db.execute("""
+                db.execute(
+                    """
                 INSERT INTO knowledge_entries
                     (category, title, content, tags, confidence, session_id,
                      occurrence_count, first_seen, last_seen, wing, room,
                      facts, est_tokens, task_id, affected_files,
                      source_file, start_line, end_line, code_language, code_snippet)
                 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (category, title, content, tags, confidence,
-                  session_id, now, now, wing, room, facts_json, est_tokens,
-                  task_id, files_json, source_file, start_line, end_line,
-                  code_language, code_snippet))
+            """,
+                    (
+                        category,
+                        title,
+                        content,
+                        tags,
+                        confidence,
+                        session_id,
+                        now,
+                        now,
+                        wing,
+                        room,
+                        facts_json,
+                        est_tokens,
+                        task_id,
+                        files_json,
+                        source_file,
+                        start_line,
+                        end_line,
+                        code_language,
+                        code_snippet,
+                    ),
+                )
         else:
             if has_stable_id_column:
                 stable_id = _knowledge_stable_id(session_id, category, title, "")
-                db.execute("""
+                db.execute(
+                    """
                 INSERT INTO knowledge_entries
                     (category, title, stable_id, content, tags, confidence, session_id,
                      occurrence_count, first_seen, last_seen, wing, room,
                      facts, est_tokens, task_id, affected_files)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (category, title, stable_id, content, tags, confidence,
-                  session_id, now, now, wing, room, facts_json, est_tokens,
-                  task_id, files_json))
+            """,
+                    (
+                        category,
+                        title,
+                        stable_id,
+                        content,
+                        tags,
+                        confidence,
+                        session_id,
+                        now,
+                        now,
+                        wing,
+                        room,
+                        facts_json,
+                        est_tokens,
+                        task_id,
+                        files_json,
+                    ),
+                )
             else:
-                db.execute("""
+                db.execute(
+                    """
                 INSERT INTO knowledge_entries
                     (category, title, content, tags, confidence, session_id,
                      occurrence_count, first_seen, last_seen, wing, room,
                      facts, est_tokens, task_id, affected_files)
                 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (category, title, content, tags, confidence,
-                  session_id, now, now, wing, room, facts_json, est_tokens,
-                  task_id, files_json))
+            """,
+                    (
+                        category,
+                        title,
+                        content,
+                        tags,
+                        confidence,
+                        session_id,
+                        now,
+                        now,
+                        wing,
+                        room,
+                        facts_json,
+                        est_tokens,
+                        task_id,
+                        files_json,
+                    ),
+                )
         entry_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
         if has_stable_id_column:
             inserted_stable_id = db.execute(
@@ -582,27 +716,36 @@ def add_entry(category: str, title: str, content: str,
     return entry_id
 
 
-def _update_fts(db: sqlite3.Connection, entry_id: int,
-                title: str, content: str, tags: str, category: str,
-                wing: str = "", room: str = "", facts_json: str = "[]"):
+def _update_fts(
+    db: sqlite3.Connection,
+    entry_id: int,
+    title: str,
+    content: str,
+    tags: str,
+    category: str,
+    wing: str = "",
+    room: str = "",
+    facts_json: str = "[]",
+):
     """Update the standalone FTS5 table for this entry."""
     try:
         db.execute("DELETE FROM ke_fts WHERE rowid = ?", (entry_id,))
-        db.execute("""
+        db.execute(
+            """
             INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (entry_id, title, content, tags, category, wing, room, facts_json))
+        """,
+            (entry_id, title, content, tags, category, wing, room, facts_json),
+        )
     except sqlite3.OperationalError:
         pass  # ke_fts might not exist yet
 
 
-def _embed_entry(db: sqlite3.Connection, entry_id: int,
-                 title: str, content: str, quiet: bool = False):
+def _embed_entry(db: sqlite3.Connection, entry_id: int, title: str, content: str, quiet: bool = False):
     """Generate and store embedding for a single entry."""
     try:
         sys.path.insert(0, str(TOOLS_DIR))
-        from embed import (load_config, resolve_provider, call_embedding_api,
-                           ensure_embedding_tables, serialize_vector)
+        from embed import call_embedding_api, ensure_embedding_tables, load_config, resolve_provider, serialize_vector
 
         config = load_config()
         provider_name, provider_config = resolve_provider(config)
@@ -617,16 +760,24 @@ def _embed_entry(db: sqlite3.Connection, entry_id: int,
         if vecs:
             blob = serialize_vector(vecs[0])
             now = time.strftime("%Y-%m-%dT%H:%M:%S")
-            db.execute("""
+            db.execute(
+                """
                 INSERT OR REPLACE INTO embeddings
                     (source_type, source_id, provider, model, dimensions,
                      vector, text_preview, created_at)
                 VALUES ('knowledge', ?, ?, ?, ?, ?, ?, ?)
-            """, (entry_id, provider_name, provider_config["model"],
-                  provider_config.get("dimensions", 768), blob,
-                  title[:200], now))
-            print(f"  Embedded with {provider_name}",
-                  file=sys.stderr if quiet else sys.stdout)
+            """,
+                (
+                    entry_id,
+                    provider_name,
+                    provider_config["model"],
+                    provider_config.get("dimensions", 768),
+                    blob,
+                    title[:200],
+                    now,
+                ),
+            )
+            print(f"  Embedded with {provider_name}", file=sys.stderr if quiet else sys.stdout)
     except Exception as e:
         print(f"  [info] Embedding skipped: {e}", file=sys.stderr)
 
@@ -659,8 +810,7 @@ def import_from_file(filepath: str):
             if ":" in rest:
                 cat, title = rest.split(":", 1)
                 cat = cat.strip().lower()
-                if cat in ("mistake", "pattern", "decision", "tool",
-                           "feature", "refactor", "discovery"):
+                if cat in ("mistake", "pattern", "decision", "tool", "feature", "refactor", "discovery"):
                     current = {"category": cat, "title": title.strip(), "lines": []}
                 else:
                     current = None
@@ -690,21 +840,23 @@ def list_recent(limit: int = 10):
     db = get_db()
 
     print(f"\nRecent Knowledge Entries (last {limit})\n")
-    rows = db.execute("""
+    rows = db.execute(
+        """
         SELECT id, category, title, confidence, occurrence_count,
                last_seen, session_id, est_tokens
         FROM knowledge_entries
         ORDER BY last_seen DESC
         LIMIT ?
-    """, (limit,)).fetchall()
+    """,
+        (limit,),
+    ).fetchall()
 
     for r in rows:
         sid = r["session_id"][:8] if r["session_id"] else "?"
         count = f" ×{r['occurrence_count']}" if r["occurrence_count"] > 1 else ""
         tok = f"  ~{r['est_tokens']}tok" if r["est_tokens"] else ""
         print(f"  #{r['id']:3d} [{r['category']:8s}] {r['title'][:60]}")
-        print(f"       conf={r['confidence']:.2f}{count}{tok}  "
-              f"session={sid}..  {r['last_seen'] or '?'}")
+        print(f"       conf={r['confidence']:.2f}{count}{tok}  session={sid}..  {r['last_seen'] or '?'}")
 
     db.close()
 
@@ -725,8 +877,10 @@ def show_stats():
         FROM knowledge_entries
         GROUP BY category ORDER BY cnt DESC
     """):
-        print(f"  {row['category']:10s}: {row['cnt']:3d} entries  "
-              f"avg_conf={row['avg_conf']}  total_seen={row['total_seen']}")
+        print(
+            f"  {row['category']:10s}: {row['cnt']:3d} entries  "
+            f"avg_conf={row['avg_conf']}  total_seen={row['total_seen']}"
+        )
 
     # Wing breakdown
     wings = db.execute("""
@@ -734,7 +888,7 @@ def show_stats():
         WHERE wing != '' GROUP BY wing ORDER BY cnt DESC
     """).fetchall()
     if wings:
-        print(f"\nWings:")
+        print("\nWings:")
         for w in wings:
             print(f"  {w['wing']:15s}: {w['cnt']:3d}")
 
@@ -744,7 +898,7 @@ def show_stats():
         WHERE room != '' GROUP BY room ORDER BY cnt DESC LIMIT 10
     """).fetchall()
     if rooms:
-        print(f"\nTop rooms:")
+        print("\nTop rooms:")
         for r in rooms:
             print(f"  {r['room']:15s}: {r['cnt']:3d}")
 
@@ -757,9 +911,7 @@ def show_stats():
 
     # Embedding coverage
     try:
-        emb_count = db.execute(
-            "SELECT COUNT(*) FROM embeddings WHERE source_type='knowledge'"
-        ).fetchone()[0]
+        emb_count = db.execute("SELECT COUNT(*) FROM embeddings WHERE source_type='knowledge'").fetchone()[0]
         print(f"Embedded: {emb_count}/{total}")
     except sqlite3.OperationalError:
         pass
@@ -767,8 +919,7 @@ def show_stats():
     db.close()
 
 
-def add_relation(subject: str, predicate: str, obj: str,
-                 session_id: str = None):
+def add_relation(subject: str, predicate: str, obj: str, session_id: str = None):
     """Add a knowledge relation (lightweight knowledge graph)."""
     db = get_db()
     er_columns = {row[1] for row in db.execute("PRAGMA table_info(entity_relations)").fetchall()}
@@ -780,17 +931,23 @@ def add_relation(subject: str, predicate: str, obj: str,
 
     try:
         if has_stable_id_column:
-            db.execute("""
+            db.execute(
+                """
             INSERT OR IGNORE INTO entity_relations
                 (subject, predicate, object, stable_id, noted_at, session_id)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (subject, predicate, obj, stable_id, now, session_id))
+        """,
+                (subject, predicate, obj, stable_id, now, session_id),
+            )
         else:
-            db.execute("""
+            db.execute(
+                """
             INSERT OR IGNORE INTO entity_relations
                 (subject, predicate, object, noted_at, session_id)
             VALUES (?, ?, ?, ?, ?)
-        """, (subject, predicate, obj, now, session_id))
+        """,
+                (subject, predicate, obj, now, session_id),
+            )
         inserted = db.execute("SELECT changes()").fetchone()[0] > 0
         if inserted and has_stable_id_column:
             _enqueue_sync_op_fail_open(
@@ -810,7 +967,7 @@ def add_relation(subject: str, predicate: str, obj: str,
         if db.total_changes:
             print(f"  ✅ Relation: {subject} --[{predicate}]--> {obj}")
         else:
-            print(f"  — Relation already exists")
+            print("  — Relation already exists")
     except sqlite3.OperationalError as e:
         print(f"  ❌ Error: {e}. Run migrate-knowledge-v2.py first.")
     db.close()
@@ -846,9 +1003,9 @@ def main():
     # Handle --relate command
     if "--relate" in args:
         idx = args.index("--relate")
-        positional = [a for a in args[idx + 1:] if not a.startswith("--")]
+        positional = [a for a in args[idx + 1 :] if not a.startswith("--")]
         if len(positional) < 3:
-            print('Error: --relate needs 3 args: subject predicate object')
+            print("Error: --relate needs 3 args: subject predicate object")
             print('  Example: python learn.py --relate "copyToGroup" "reads_from" "config.json"')
             return
         add_relation(positional[0], positional[1], positional[2])
@@ -856,10 +1013,15 @@ def main():
 
     # Parse category flag
     category = None
-    for flag, cat in [("--mistake", "mistake"), ("--pattern", "pattern"),
-                      ("--decision", "decision"), ("--tool", "tool"),
-                      ("--feature", "feature"), ("--refactor", "refactor"),
-                      ("--discovery", "discovery")]:
+    for flag, cat in [
+        ("--mistake", "mistake"),
+        ("--pattern", "pattern"),
+        ("--decision", "decision"),
+        ("--tool", "tool"),
+        ("--feature", "feature"),
+        ("--refactor", "refactor"),
+        ("--discovery", "discovery"),
+    ]:
         if flag in args:
             category = cat
             break
@@ -937,11 +1099,20 @@ def main():
         if skip_next:
             skip_next = False
             continue
-        if a in ("--mistake", "--pattern", "--decision", "--tool",
-                 "--feature", "--refactor", "--discovery"):
+        if a in ("--mistake", "--pattern", "--decision", "--tool", "--feature", "--refactor", "--discovery"):
             continue
-        if a in ("--tags", "--session", "--confidence", "--limit",
-                 "--wing", "--room", "--fact", "--task", "--file", "--code-location"):
+        if a in (
+            "--tags",
+            "--session",
+            "--confidence",
+            "--limit",
+            "--wing",
+            "--room",
+            "--fact",
+            "--task",
+            "--file",
+            "--code-location",
+        ):
             skip_next = True
             continue
         if a.startswith("--"):
@@ -949,7 +1120,7 @@ def main():
         positional.append(a)
 
     if len(positional) < 2:
-        print(f'Error: Need title and content. Example:')
+        print("Error: Need title and content. Example:")
         print(f'  python learn.py --{category} "Title" "Description"')
         return
 
@@ -964,35 +1135,51 @@ def main():
     if not json_mode:
         if category in gate_categories and not skip_gate:
             print(f"Recording {category}...")
-            print(f"  ℹ Quality gate (bypass with --skip-gate):")
-            print(f"    ✓ Could someone Google this in 5 min? → Must be NO")
-            print(f"    ✓ Specific to THIS codebase/project? → Must be YES")
-            print(f"    ✓ Required real debugging/investigation? → Must be YES")
-            print(f"  Gate passed (agent responsibility — record honestly)")
+            print("  ℹ Quality gate (bypass with --skip-gate):")
+            print("    ✓ Could someone Google this in 5 min? → Must be NO")
+            print("    ✓ Specific to THIS codebase/project? → Must be YES")
+            print("    ✓ Required real debugging/investigation? → Must be YES")
+            print("  Gate passed (agent responsibility — record honestly)")
         else:
             print(f"Recording {category}...")
 
-    entry_id = add_entry(category, title, content, tags=tags,
-                         session_id=session_id, confidence=confidence,
-                         wing=wing, room=room, facts=facts, skip_gate=skip_gate,
-                         skip_scan=skip_scan, task_id=task_id,
-                         affected_files=affected_files,
-                         source_file=source_file, start_line=start_line, end_line=end_line,
-                         code_language=code_language, code_snippet=code_snippet,
-                         code_location_set=code_location_set, quiet=json_mode)
+    entry_id = add_entry(
+        category,
+        title,
+        content,
+        tags=tags,
+        session_id=session_id,
+        confidence=confidence,
+        wing=wing,
+        room=room,
+        facts=facts,
+        skip_gate=skip_gate,
+        skip_scan=skip_scan,
+        task_id=task_id,
+        affected_files=affected_files,
+        source_file=source_file,
+        start_line=start_line,
+        end_line=end_line,
+        code_language=code_language,
+        code_snippet=code_snippet,
+        code_location_set=code_location_set,
+        quiet=json_mode,
+    )
 
     if json_mode:
         # Machine-readable output: emit structured JSON with write result
         if entry_id < 0:
-            print(json.dumps({"status": "rejected", "reason": "injection_scan_failed"},
-                             indent=2))
+            print(json.dumps({"status": "rejected", "reason": "injection_scan_failed"}, indent=2))
             return
         db = get_db()
-        row = db.execute("""
+        row = db.execute(
+            """
             SELECT id, category, title, confidence, session_id, task_id,
                    affected_files, facts, occurrence_count, last_seen
             FROM knowledge_entries WHERE id = ?
-        """, (entry_id,)).fetchone()
+        """,
+            (entry_id,),
+        ).fetchone()
         db.close()
         if row:
             try:
@@ -1004,22 +1191,27 @@ def main():
             except Exception:
                 facts_out = []
             status = "added" if row["occurrence_count"] == 1 else "updated"
-            print(json.dumps({
-                "status": status,
-                "id": row["id"],
-                "category": row["category"],
-                "title": row["title"],
-                "confidence": row["confidence"],
-                "session_id": row["session_id"],
-                "task_id": row["task_id"] or "",
-                "affected_files": files,
-                "facts": facts_out,
-                "occurrence_count": row["occurrence_count"],
-                "last_seen": row["last_seen"],
-            }, indent=2, ensure_ascii=False))
+            print(
+                json.dumps(
+                    {
+                        "status": status,
+                        "id": row["id"],
+                        "category": row["category"],
+                        "title": row["title"],
+                        "confidence": row["confidence"],
+                        "session_id": row["session_id"],
+                        "task_id": row["task_id"] or "",
+                        "affected_files": files,
+                        "facts": facts_out,
+                        "occurrence_count": row["occurrence_count"],
+                        "last_seen": row["last_seen"],
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
         else:
-            print(json.dumps({"status": "error", "id": entry_id,
-                              "reason": "entry_not_found_after_write"}, indent=2))
+            print(json.dumps({"status": "error", "id": entry_id, "reason": "entry_not_found_after_write"}, indent=2))
         return
 
     if facts:

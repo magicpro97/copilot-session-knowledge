@@ -1,4 +1,5 @@
 """browse/routes/diff.py — GET /diff (HTML) + GET /api/diff (JSON) — F6 Checkpoint Diff."""
+
 import difflib
 import json
 import os
@@ -11,10 +12,10 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
-from browse.core.fts import _esc
-from browse.core.templates import base_page
 from browse.components import banner
+from browse.core.fts import _esc
+from browse.core.registry import route
+from browse.core.templates import base_page
 
 # Validation: session id — alphanumeric + dashes, ≤64 chars
 _DIFF_SESSION_RE = re.compile(r"^[a-zA-Z0-9-]{1,64}$")
@@ -37,11 +38,13 @@ def _parse_index(index_path: Path) -> list[dict]:
     for line in index_path.read_text(encoding="utf-8", errors="ignore").splitlines():
         m = re.match(r"\|\s*(\d+)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|", line)
         if m:
-            entries.append({
-                "seq": int(m.group(1)),
-                "title": m.group(2).strip(),
-                "file": m.group(3).strip(),
-            })
+            entries.append(
+                {
+                    "seq": int(m.group(1)),
+                    "title": m.group(2).strip(),
+                    "file": m.group(3).strip(),
+                }
+            )
     return entries
 
 
@@ -76,23 +79,20 @@ def _load_text(path: Path) -> str:
 def _unified_diff(text_a: str, text_b: str, label_a: str, label_b: str) -> str:
     lines_a = text_a.splitlines(keepends=True)
     lines_b = text_b.splitlines(keepends=True)
-    return "".join(difflib.unified_diff(
-        lines_a, lines_b,
-        fromfile=label_a,
-        tofile=label_b,
-        lineterm="\n",
-    ))
+    return "".join(
+        difflib.unified_diff(
+            lines_a,
+            lines_b,
+            fromfile=label_a,
+            tofile=label_b,
+            lineterm="\n",
+        )
+    )
 
 
 def _diff_stats(unified: str) -> dict:
-    added = sum(
-        1 for line in unified.splitlines()
-        if line.startswith("+") and not line.startswith("+++")
-    )
-    removed = sum(
-        1 for line in unified.splitlines()
-        if line.startswith("-") and not line.startswith("---")
-    )
+    added = sum(1 for line in unified.splitlines() if line.startswith("+") and not line.startswith("+++"))
+    removed = sum(1 for line in unified.splitlines() if line.startswith("-") and not line.startswith("---"))
     return {"added": added, "removed": removed}
 
 
@@ -229,7 +229,7 @@ def handle_diff(db, params, token, nonce) -> tuple:
     stats = data["stats"]
     tok_qs = f"?token={_esc(token)}" if token else ""
     legacy_notice = banner(
-        f'Legacy v1 HTML page (/diff) is deprecated and kept for backward compatibility. '
+        f"Legacy v1 HTML page (/diff) is deprecated and kept for backward compatibility. "
         f'There is no 1:1 /v2 replacement yet; start from <a href="/v2/sessions{tok_qs}">/v2/sessions</a>.',
         variant="warning",
         icon="⚠",
@@ -258,7 +258,7 @@ def handle_diff(db, params, token, nonce) -> tuple:
         f'  <label style="margin-right:1rem;">'
         f'<input type="radio" name="diff-view" value="side-by-side" checked> Side-by-side'
         f"</label>\n"
-        f'  <label>'
+        f"  <label>"
         f'<input type="radio" name="diff-view" value="line-by-line"> Line-by-line'
         f"</label>\n"
         f"</div>\n"
@@ -275,10 +275,7 @@ def handle_diff(db, params, token, nonce) -> tuple:
         f'<script nonce="{nonce}" src="/static/js/diff.js"></script>\n'
     )
 
-    page_title = (
-        f"Diff \u2014 {session_id[:8]} "
-        f"[{data['from']['seq']} \u2192 {data['to']['seq']}]"
-    )
+    page_title = f"Diff \u2014 {session_id[:8]} [{data['from']['seq']} \u2192 {data['to']['seq']}]"
 
     return (
         base_page(

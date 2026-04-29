@@ -1,4 +1,5 @@
 """browse/routes/sessions.py — GET /sessions with FTS search."""
+
 import os
 import sqlite3
 import sys
@@ -8,10 +9,11 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
+from browse.components import banner as _banner
+from browse.components import data_table
+from browse.core.fts import _esc, _probe_sessions_fts, _sanitize_fts_query
 from browse.core.registry import route
-from browse.core.fts import _esc, _sanitize_fts_query, _probe_sessions_fts
 from browse.core.templates import base_page
-from browse.components import data_table, banner as _banner
 
 
 @route("/sessions", methods=["GET"])
@@ -34,47 +36,54 @@ def handle_sessions(db, params, token, nonce) -> tuple:
     if q and not has_fts:
         banner_html = _banner(
             "Session index not ready &mdash; run build-session-index.py to enable session search.",
-            variant="warning", icon="⚠",
+            variant="warning",
+            icon="⚠",
         )
         q = ""
 
     if q and has_fts:
         safe_q = _sanitize_fts_query(q)
         try:
-            rows = list(db.execute(
-                """SELECT s.id, s.path, s.summary, s.source, s.event_count_estimate,
+            rows = list(
+                db.execute(
+                    """SELECT s.id, s.path, s.summary, s.source, s.event_count_estimate,
                           s.fts_indexed_at
                    FROM sessions s
                    WHERE s.id IN (
                        SELECT session_id FROM sessions_fts WHERE sessions_fts MATCH ?
                    )
                    LIMIT ? OFFSET ?""",
-                (safe_q, limit, offset),
-            ))
+                    (safe_q, limit, offset),
+                )
+            )
         except sqlite3.OperationalError:
             banner_html = _banner(
                 "Session FTS search error &mdash; showing all sessions.",
-                variant="warning", icon="⚠",
+                variant="warning",
+                icon="⚠",
             )
             rows = []
 
     if not rows:
-        rows = list(db.execute(
-            """SELECT id, path, summary, source, event_count_estimate, fts_indexed_at
+        rows = list(
+            db.execute(
+                """SELECT id, path, summary, source, event_count_estimate, fts_indexed_at
                FROM sessions
                ORDER BY COALESCE(fts_indexed_at, indexed_at_r, 0) DESC
                LIMIT ? OFFSET ?""",
-            (limit, offset),
-        ))
+                (limit, offset),
+            )
+        )
 
     if fmt == "json":
         import json
+
         data = [dict(r) for r in rows]
         return json.dumps(data).encode("utf-8"), "application/json", 200
 
     tok_qs = f"?token={_esc(token)}" if token else ""
     legacy_notice = _banner(
-        f'Legacy v1 HTML page (/sessions) is deprecated and kept for backward compatibility. '
+        f"Legacy v1 HTML page (/sessions) is deprecated and kept for backward compatibility. "
         f'Use <a href="/v2/sessions{tok_qs}">/v2/sessions</a> as the primary UI.',
         variant="warning",
         icon="⚠",
@@ -87,10 +96,15 @@ def handle_sessions(db, params, token, nonce) -> tuple:
         source = _esc(r["source"] or "")
         path_val = _esc(r["path"] or "")
         ec = _esc(r["event_count_estimate"] or "")
-        table_rows.append([
-            f'<a href="/session/{sid}{tok_qs}">{sid_short}</a>',
-            summary, source, path_val, ec,
-        ])
+        table_rows.append(
+            [
+                f'<a href="/session/{sid}{tok_qs}">{sid_short}</a>',
+                summary,
+                source,
+                path_val,
+                ec,
+            ]
+        )
 
     tok_esc = _esc(token)
     body = (

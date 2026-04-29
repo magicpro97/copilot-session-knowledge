@@ -4,6 +4,7 @@
 When ≥3 files across ≥2 modules are edited, suggest tentacle orchestration.
 Detects edits via edit/create tools AND bash file writes.
 """
+
 import json
 import os
 import re
@@ -19,13 +20,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from marker_auth import sign_list_marker, verify_list_marker
 except ImportError:
+
     def sign_list_marker(p, lines):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("\n".join(sorted(lines)))
+
     def verify_list_marker(p):
-        if not p.is_file(): return set()
+        if not p.is_file():
+            return set()
         raw = p.read_text(encoding="utf-8").strip()
         return set(raw.splitlines()) if raw else set()
+
 
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 EDITS_FILE = MARKERS_DIR / "tentacle-edits"
@@ -41,13 +46,45 @@ def get_module(file_path: str) -> str:
     Falls back to parent directory name if no marker matches.
     """
     parts = Path(file_path).parts
-    markers = ("src", "lib", "app", "pkg", "internal", "cmd",
-               "hooks", "skills", "templates", "tests", "test",
-               "components", "screens", "services", "utils", "models",
-               "views", "controllers", "routes", "pages", "features",
-               "presentation", "domain", "data", "core", "common",
-               "ui", "api", "db", "auth", "config", "settings",
-               "alarm", "timer", "stopwatch", "clock", "widget")
+    markers = (
+        "src",
+        "lib",
+        "app",
+        "pkg",
+        "internal",
+        "cmd",
+        "hooks",
+        "skills",
+        "templates",
+        "tests",
+        "test",
+        "components",
+        "screens",
+        "services",
+        "utils",
+        "models",
+        "views",
+        "controllers",
+        "routes",
+        "pages",
+        "features",
+        "presentation",
+        "domain",
+        "data",
+        "core",
+        "common",
+        "ui",
+        "api",
+        "db",
+        "auth",
+        "config",
+        "settings",
+        "alarm",
+        "timer",
+        "stopwatch",
+        "clock",
+        "widget",
+    )
 
     # Find DEEPEST marker (skip the filename itself)
     best_module = ""

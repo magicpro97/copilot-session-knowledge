@@ -3,6 +3,7 @@
 Serves static files from browse-ui/dist/ with SPA fallback to index.html.
 Called from browse/core/server.py for /v2/* paths.
 """
+
 import os
 import sys
 from pathlib import Path
@@ -16,18 +17,18 @@ _V2_DIST = (Path(__file__).parent.parent.parent / "browse-ui" / "dist").resolve(
 
 _CT: dict = {
     ".html": "text/html; charset=utf-8",
-    ".js":   "application/javascript",
-    ".css":  "text/css",
+    ".js": "application/javascript",
+    ".css": "text/css",
     ".json": "application/json",
-    ".svg":  "image/svg+xml",
-    ".png":  "image/png",
-    ".ico":  "image/x-icon",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
     ".woff2": "font/woff2",
-    ".txt":  "text/plain; charset=utf-8",
-    ".map":  "application/json",
+    ".txt": "text/plain; charset=utf-8",
+    ".map": "application/json",
     ".webp": "image/webp",
     ".jpeg": "image/jpeg",
-    ".jpg":  "image/jpeg",
+    ".jpg": "image/jpeg",
 }
 
 
@@ -57,10 +58,7 @@ def serve_v2(rel_path: str) -> tuple:
     Returns (body_bytes, content_type, status_code).
     """
     if not _V2_DIST.exists():
-        msg = (
-            b"404 browse-ui/dist/ not found.\n"
-            b"Run: cd browse-ui && pnpm build"
-        )
+        msg = b"404 browse-ui/dist/ not found.\nRun: cd browse-ui && pnpm build"
         return msg, "text/plain", 404
 
     # Security: reject NUL byte; traversal guarded below via resolve()+relative_to()

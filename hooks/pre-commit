@@ -69,7 +69,13 @@ fi
 # Fail-open: silently skip when ruff is not installed.
 _py_in_surface() {
     case "$1" in
-        embed.py|scout-config.py|scout-status.py|sync-config.py|sync-daemon.py|sync-status.py|migrate.py|generate-summary.py|hooks/*.py)
+        embed.py|scout-config.py|scout-status.py|sync-config.py|sync-daemon.py|sync-status.py|migrate.py|generate-summary.py|hooks/*.py|hooks/*/*.py)
+            return 0 ;;
+        briefing.py|learn.py|query-session.py|extract-knowledge.py|build-session-index.py|tentacle.py)
+            return 0 ;;
+        checkpoint-diff.py|checkpoint-restore.py|checkpoint-save.py)
+            return 0 ;;
+        browse/*.py|browse/*/*.py|browse/*/*/*.py)
             return 0 ;;
     esac
     return 1

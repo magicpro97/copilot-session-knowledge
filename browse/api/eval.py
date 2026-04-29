@@ -16,6 +16,7 @@ Response shape: EvalResponse.
 
 Returns empty lists if search_feedback table doesn't exist yet.
 """
+
 import os
 import sys
 
@@ -24,8 +25,8 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
 from browse.api._common import json_ok
+from browse.core.registry import route
 from browse.routes.eval import _ensure_feedback_table
 
 

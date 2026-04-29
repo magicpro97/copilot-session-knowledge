@@ -1,4 +1,5 @@
 """browse/core/communities.py — deterministic communities over evidence edges."""
+
 from collections import Counter
 
 
@@ -93,13 +94,10 @@ def get_communities(db, min_entry_count: int = 2) -> dict:
         category_counts = Counter(entries[entry_id]["category"] for entry_id in members)
         wing_counts = Counter(entries[entry_id]["wing"] for entry_id in members)
         relation_type_counts = Counter(
-            relation_type
-            for src, tgt, relation_type in relation_edges
-            if src in member_set and tgt in member_set
+            relation_type for src, tgt, relation_type in relation_edges if src in member_set and tgt in member_set
         )
         local_degree = {
-            entry_id: len([n for n in adjacency.get(entry_id, ()) if n in member_set])
-            for entry_id in members
+            entry_id: len([n for n in adjacency.get(entry_id, ()) if n in member_set]) for entry_id in members
         }
         representative_ids = sorted(members, key=lambda entry_id: (-local_degree[entry_id], entry_id))[:3]
 

@@ -349,6 +349,8 @@ export interface HealthResponse {
   status: string;
   schema_version: number;
   sessions: number;
+  knowledge_entries?: number;
+  last_indexed_at?: string | null;
   sync_status_endpoint?: string;
 }
 
@@ -600,6 +602,39 @@ export interface FeedbackRequest {
 export interface FeedbackResponse {
   ok: boolean;
   id: number;
+}
+
+// ── Retro (/api/retro/summary) ──────────────────────────────────────
+
+export interface RetroSubscores {
+  [key: string]: number | null | undefined;
+  knowledge?: number | null;
+  skills?: number | null;
+  hooks?: number | null;
+  git?: number | null;
+}
+
+export interface RetroWeights {
+  [key: string]: number | null | undefined;
+  knowledge?: number | null;
+  skills?: number | null;
+  hooks?: number | null;
+  git?: number | null;
+}
+
+export interface RetroResponse {
+  retro_score: number;
+  grade: string;
+  grade_emoji: string;
+  mode: "local" | "repo";
+  generated_at: string;
+  available_sections: string[];
+  weights: RetroWeights;
+  subscores: RetroSubscores;
+  knowledge: Record<string, unknown> | null;
+  skills: Record<string, unknown> | null;
+  hooks: Record<string, unknown> | null;
+  git: Record<string, unknown> | null;
 }
 
 // ── Sessions response (flat array compat shim) ───────────────────────

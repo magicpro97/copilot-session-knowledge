@@ -14,6 +14,7 @@ export const STALE_TIMES = {
   embeddings: 60_000,
   eval: 60_000,
   compare: 15_000,
+  retro: 120_000,
 } as const;
 
 export const CACHE_TIMES = {
@@ -26,6 +27,7 @@ export const CACHE_TIMES = {
   embeddings: 10 * 60_000,
   eval: 10 * 60_000,
   compare: 60_000,
+  retro: 10 * 60_000,
 } as const;
 
 export const SOURCE_LABELS = {

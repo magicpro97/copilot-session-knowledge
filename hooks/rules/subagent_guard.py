@@ -42,7 +42,9 @@ except ImportError:
     # Fallback when marker_auth is unavailable: existence-only check,
     # matching the no-secret semantics of check_subagent_marker.py.
     # This keeps the preToolUse guard enabled rather than silently disabling it.
-    def verify_marker(p, n): return p.is_file()  # noqa: E731
+    def verify_marker(p, n):
+        return p.is_file()  # noqa: E731
+
 
 SUBAGENT_MARKER = MARKERS_DIR / "dispatched-subagent-active"
 MARKER_NAME = "dispatched-subagent-active"
@@ -54,7 +56,9 @@ def _get_current_git_root() -> "str | None":
     try:
         r = _subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if r.returncode == 0:
             return r.stdout.strip()

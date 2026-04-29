@@ -26,13 +26,13 @@ Environment:
                             Must be one of: less, more, most
 """
 
+import argparse
 import difflib
 import os
 import re
 import shlex
 import subprocess
 import sys
-import argparse
 from pathlib import Path
 
 if os.name == "nt":
@@ -68,9 +68,14 @@ def _resolve_pager() -> list[str]:
         )
     return args
 
+
 CHECKPOINT_SECTIONS = [
-    "overview", "history", "work_done", "technical_details",
-    "important_files", "next_steps",
+    "overview",
+    "history",
+    "work_done",
+    "technical_details",
+    "important_files",
+    "next_steps",
 ]
 
 
@@ -147,11 +152,13 @@ def parse_index(index_path: Path) -> list[dict]:
     for line in index_path.read_text(encoding="utf-8", errors="ignore").splitlines():
         m = re.match(r"\|\s*(\d+)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|", line)
         if m:
-            entries.append({
-                "seq": int(m.group(1)),
-                "title": m.group(2).strip(),
-                "file": m.group(3).strip(),
-            })
+            entries.append(
+                {
+                    "seq": int(m.group(1)),
+                    "title": m.group(2).strip(),
+                    "file": m.group(3).strip(),
+                }
+            )
     return entries
 
 
@@ -191,7 +198,7 @@ def parse_checkpoint_sections(cp_path: Path) -> dict[str, str]:
                 content_start = m.end()
         else:
             if current == name:
-                sections[name] = text[content_start:m.start()].strip()
+                sections[name] = text[content_start : m.start()].strip()
                 current = None
     return sections
 
@@ -250,8 +257,11 @@ def diff_sections(
         b_text = b_sections.get(section, "")
         if a_text == b_text:
             result[section] = {
-                "a": a_text, "b": b_text,
-                "changed": False, "added": False, "removed": False,
+                "a": a_text,
+                "b": b_text,
+                "changed": False,
+                "added": False,
+                "removed": False,
                 "lines": [],
             }
             continue
@@ -259,15 +269,21 @@ def diff_sections(
         removed = bool(a_text) and not b_text
         a_lines = a_text.splitlines(keepends=True)
         b_lines = b_text.splitlines(keepends=True)
-        diff_lines = list(difflib.unified_diff(
-            a_lines, b_lines,
-            fromfile=f"a/{section}",
-            tofile=f"b/{section}",
-            lineterm="",
-        ))
+        diff_lines = list(
+            difflib.unified_diff(
+                a_lines,
+                b_lines,
+                fromfile=f"a/{section}",
+                tofile=f"b/{section}",
+                lineterm="",
+            )
+        )
         result[section] = {
-            "a": a_text, "b": b_text,
-            "changed": True, "added": added, "removed": removed,
+            "a": a_text,
+            "b": b_text,
+            "changed": True,
+            "added": added,
+            "removed": removed,
             "lines": diff_lines,
         }
     return result
@@ -334,27 +350,23 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("--from", dest="from_sel", metavar="SELECTOR",
-                   help="Base checkpoint ('first', 'latest', or seq number)")
-    p.add_argument("--to", dest="to_sel", metavar="SELECTOR",
-                   help="Target checkpoint ('first', 'latest', or seq number)")
-    p.add_argument("--consecutive", action="store_true",
-                   help="Diff all consecutive checkpoint pairs")
-    p.add_argument("--summary", action="store_true",
-                   help="Show progression summary across all checkpoints")
-    p.add_argument("--show-unchanged", action="store_true",
-                   help="Include unchanged sections in diff output")
-    p.add_argument("--session", metavar="SESSION_ID", default=None,
-                   help="Specific session ID")
-    p.add_argument("--session-dir", metavar="DIR", default=None,
-                   help="Session-state root directory")
-    p.add_argument("--pager", action="store_true",
-                   help="Pipe output through pager (see CHECKPOINT_DIFF_PAGER env var)")
+    p.add_argument(
+        "--from", dest="from_sel", metavar="SELECTOR", help="Base checkpoint ('first', 'latest', or seq number)"
+    )
+    p.add_argument(
+        "--to", dest="to_sel", metavar="SELECTOR", help="Target checkpoint ('first', 'latest', or seq number)"
+    )
+    p.add_argument("--consecutive", action="store_true", help="Diff all consecutive checkpoint pairs")
+    p.add_argument("--summary", action="store_true", help="Show progression summary across all checkpoints")
+    p.add_argument("--show-unchanged", action="store_true", help="Include unchanged sections in diff output")
+    p.add_argument("--session", metavar="SESSION_ID", default=None, help="Specific session ID")
+    p.add_argument("--session-dir", metavar="DIR", default=None, help="Session-state root directory")
+    p.add_argument("--pager", action="store_true", help="Pipe output through pager (see CHECKPOINT_DIFF_PAGER env var)")
     color_group = p.add_mutually_exclusive_group()
-    color_group.add_argument("--color", dest="color", action="store_true", default=None,
-                             help="Force ANSI color output")
-    color_group.add_argument("--no-color", dest="color", action="store_false",
-                             help="Disable ANSI color output (default: auto-detect TTY)")
+    color_group.add_argument("--color", dest="color", action="store_true", default=None, help="Force ANSI color output")
+    color_group.add_argument(
+        "--no-color", dest="color", action="store_false", help="Disable ANSI color output (default: auto-detect TTY)"
+    )
     return p
 
 
@@ -418,9 +430,7 @@ def main(argv: list[str] | None = None) -> int:
             sa = parse_checkpoint_sections(cp_dir / ea["file"])
             sb = parse_checkpoint_sections(cp_dir / eb["file"])
             diffs = diff_sections(sa, sb)
-            output_lines.append(
-                format_diff_output(ea, eb, diffs, show_unchanged=args.show_unchanged)
-            )
+            output_lines.append(format_diff_output(ea, eb, diffs, show_unchanged=args.show_unchanged))
             output_lines.append("")
 
     # --from / --to
@@ -448,9 +458,7 @@ def main(argv: list[str] | None = None) -> int:
         sa = parse_checkpoint_sections(cp_dir / entry_a["file"])
         sb = parse_checkpoint_sections(cp_dir / entry_b["file"])
         diffs = diff_sections(sa, sb)
-        output_lines.append(
-            format_diff_output(entry_a, entry_b, diffs, show_unchanged=args.show_unchanged)
-        )
+        output_lines.append(format_diff_output(entry_a, entry_b, diffs, show_unchanged=args.show_unchanged))
 
     diff_text = "\n".join(output_lines)
 

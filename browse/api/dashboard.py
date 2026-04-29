@@ -13,24 +13,26 @@ Response shape: DashboardStats (same as existing /api/dashboard/stats).
     "top_modules":     [{ module, count }, ...]
   }
 """
+
 import json
 import os
 import sys
+
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
 from browse.api._common import json_ok
+from browse.core.registry import route
 from browse.routes.dashboard import (
-    _query_totals,
     _query_by_category,
-    _query_sessions_per_day,
-    _query_top_wings,
     _query_red_flags,
-    _query_weekly_mistakes,
+    _query_sessions_per_day,
     _query_top_modules,
+    _query_top_wings,
+    _query_totals,
+    _query_weekly_mistakes,
 )
 
 

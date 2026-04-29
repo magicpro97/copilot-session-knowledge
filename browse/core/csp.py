@@ -1,4 +1,5 @@
 """browse/core/csp.py — CSP nonce generation and header builder."""
+
 import os
 import secrets
 import sys

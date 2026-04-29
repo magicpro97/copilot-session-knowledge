@@ -1,4 +1,5 @@
 """browse/routes/session_compare.py — GET /compare?a={id}&b={id} side-by-side view."""
+
 import os
 import sys
 
@@ -7,10 +8,10 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
-from browse.core.fts import _esc, _SESSION_ID_RE
-from browse.core.templates import base_page
 from browse.components import banner
+from browse.core.fts import _SESSION_ID_RE, _esc
+from browse.core.registry import route
+from browse.core.templates import base_page
 
 
 def _fetch_session_data(db, session_id: str) -> tuple:
@@ -23,14 +24,16 @@ def _fetch_session_data(db, session_id: str) -> tuple:
     ).fetchone()
     if sess is None:
         return None, []
-    timeline_rows = list(db.execute(
-        """SELECT d.seq, d.title, d.doc_type, s.section_name, s.content
+    timeline_rows = list(
+        db.execute(
+            """SELECT d.seq, d.title, d.doc_type, s.section_name, s.content
            FROM documents d
            LEFT JOIN sections s ON s.document_id = d.id
            WHERE d.session_id = ?
            ORDER BY d.seq, s.id""",
-        (session_id,),
-    ))
+            (session_id,),
+        )
+    )
     return sess, timeline_rows
 
 
@@ -68,9 +71,7 @@ def _render_column(session_id: str, sess, timeline_rows: list) -> str:
 
 def _render_form(db, token: str, a_val: str, b_val: str) -> str:
     """Render session selection form with recent 50 sessions."""
-    rows = list(db.execute(
-        "SELECT id, summary FROM sessions ORDER BY COALESCE(fts_indexed_at, 0) DESC LIMIT 50"
-    ))
+    rows = list(db.execute("SELECT id, summary FROM sessions ORDER BY COALESCE(fts_indexed_at, 0) DESC LIMIT 50"))
     token_esc = _esc(token)
 
     options = ""
@@ -88,7 +89,7 @@ def _render_form(db, token: str, a_val: str, b_val: str) -> str:
             summary = (r["summary"] or "")[:40]
             opt_val = _esc(sid)
             opt_label = _esc(f"{sid[:8]} — {summary}")
-            sel = ' selected' if sid == selected else ''
+            sel = " selected" if sid == selected else ""
             parts.append(f'<option value="{opt_val}"{sel}>{opt_label}</option>')
         return f'<select name="{name}">\n' + "\n".join(parts) + "\n</select>"
 
@@ -97,7 +98,7 @@ def _render_form(db, token: str, a_val: str, b_val: str) -> str:
         f'  <input type="hidden" name="token" value="{token_esc}">\n'
         f"  <label>Session A\n    {_make_select('a', a_val)}\n  </label>\n"
         f"  <label>Session B\n    {_make_select('b', b_val)}\n  </label>\n"
-        f"  <button type=\"submit\">Compare</button>\n"
+        f'  <button type="submit">Compare</button>\n'
         f"</form>"
     )
 
@@ -108,7 +109,7 @@ def handle_session_compare(db, params, token, nonce) -> tuple:
     b = params.get("b", [""])[0]
     tok_qs = f"?token={_esc(token)}" if token else ""
     legacy_notice = banner(
-        f'Legacy v1 HTML page (/compare) is deprecated and kept for backward compatibility. '
+        f"Legacy v1 HTML page (/compare) is deprecated and kept for backward compatibility. "
         f'There is no 1:1 /v2 replacement yet; start from <a href="/v2/sessions{tok_qs}">/v2/sessions</a>.',
         variant="warning",
         icon="⚠",
@@ -125,9 +126,7 @@ def handle_session_compare(db, params, token, nonce) -> tuple:
         col_b = _render_column(b, sess_b, tl_b)
 
         body = (
-            legacy_notice
-            +
-            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">\n'
+            legacy_notice + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">\n'
             f"  <div>{col_a}</div>\n"
             f"  <div>{col_b}</div>\n"
             "</div>"

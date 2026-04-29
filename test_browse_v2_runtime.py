@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """test_browse_v2_runtime.py — Regression tests for /v2 runtime serving and CSP."""
 
-import http.client
 import errno
+import http.client
 import json
 import os
 import re
@@ -220,12 +220,8 @@ def _run_all_tests() -> int:
     db5 = _make_test_db()
     server5, host5, port5 = _start_server(db5, token="tok")
     try:
-        status5_get, headers5_get, body5_get = _get(
-            host5, port5, "/v2/search/?token=tok&src=knowledge"
-        )
-        status5_head, headers5_head, body5_head = _head(
-            host5, port5, "/v2/search/?token=tok&src=knowledge"
-        )
+        status5_get, headers5_get, body5_get = _get(host5, port5, "/v2/search/?token=tok&src=knowledge")
+        status5_head, headers5_head, body5_head = _head(host5, port5, "/v2/search/?token=tok&src=knowledge")
         test("V5: GET baseline /v2/search/ is 200", status5_get == 200)
         test("V5: HEAD /v2/search/ is 200 (not 501)", status5_head == 200)
         test("V5: HEAD body is empty", body5_head == b"")
@@ -242,12 +238,8 @@ def _run_all_tests() -> int:
             "set-cookie" in headers5_head,
         )
 
-        status5_settings, _headers5_settings, body5_settings = _head(
-            host5, port5, "/v2/settings/?token=tok"
-        )
-        status5_graph, _headers5_graph, body5_graph = _head(
-            host5, port5, "/v2/graph/?token=tok"
-        )
+        status5_settings, _headers5_settings, body5_settings = _head(host5, port5, "/v2/settings/?token=tok")
+        status5_graph, _headers5_graph, body5_graph = _head(host5, port5, "/v2/graph/?token=tok")
         test("V5: HEAD /v2/settings/ no longer 501", status5_settings == 200)
         test("V5: HEAD /v2/graph/ no longer 501", status5_graph == 200)
         test("V5: HEAD /v2/settings/ body is empty", body5_settings == b"")
@@ -257,9 +249,7 @@ def _run_all_tests() -> int:
         test("V5: unauth HEAD /v2/search/ is 401", status5_unauth == 401)
         test("V5: unauth HEAD still not 501", status5_unauth != 501)
         test("V5: unauth HEAD body is empty", body5_unauth == b"")
-        script_src5_unauth = _directive(
-            headers5_unauth.get("content-security-policy", ""), "script-src"
-        )
+        script_src5_unauth = _directive(headers5_unauth.get("content-security-policy", ""), "script-src")
         test("V5: unauth HEAD keeps /v2 CSP inline compatibility", "'unsafe-inline'" in script_src5_unauth)
     finally:
         server5.shutdown()
@@ -416,10 +406,7 @@ def _run_all_tests() -> int:
                 and action.get("safe") is True
                 and isinstance(action.get("command"), str)
                 and bool(action.get("command"))
-                and (
-                    "--search-only" in action.get("command")
-                    or "--dry-run" in action.get("command")
-                )
+                and ("--search-only" in action.get("command") or "--dry-run" in action.get("command"))
                 for action in actions10
             ),
         )
@@ -427,7 +414,7 @@ def _run_all_tests() -> int:
         server10.shutdown()
         db10.close()
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     total = _PASS + _FAIL
     print(f"Results: {_PASS}/{total} passed, {_FAIL} failed")
     return 0 if _FAIL == 0 else 1
@@ -522,6 +509,83 @@ def _run_new_endpoint_tests() -> int:
     finally:
         server12.shutdown()
         db12.close()
+
+    # V13: /api/retro/summary + /retro surface stay read-only and repo-default
+    print("\n-- V13: /api/retro/summary and /retro retrospective surfaces")
+    import browse.api.retro as _retro_api
+
+    db13 = _make_test_db()
+    server13, host13, port13 = _start_server(db13, token="tok")
+    original_run13 = _retro_api.subprocess.run
+    calls13 = []
+
+    class _FakeCompletedProcess:
+        def __init__(self, stdout: str, returncode: int = 0):
+            self.stdout = stdout
+            self.returncode = returncode
+
+    def _fake_run13(args, capture_output, text, timeout, cwd):
+        del capture_output, text, timeout, cwd
+        calls13.append(list(args))
+        mode = "repo"
+        if "--mode" in args:
+            mode = str(args[args.index("--mode") + 1])
+        payload = {
+            "retro_score": 72.5,
+            "grade": "Good",
+            "grade_emoji": "✅",
+            "mode": mode,
+            "generated_at": "2026-04-29T16:18:00Z",
+            "available_sections": ["git"] if mode == "repo" else ["knowledge", "git"],
+            "weights": {"git": 1.0} if mode == "repo" else {"knowledge": 0.5, "git": 0.5},
+            "subscores": {"knowledge": 81.0, "skills": 0.0, "hooks": 0.0, "git": 72.5},
+            "knowledge": None,
+            "skills": None,
+            "hooks": None,
+            "git": {"available": True, "commit_count": 3},
+        }
+        return _FakeCompletedProcess(json.dumps(payload))
+
+    _retro_api.subprocess.run = _fake_run13
+    try:
+        status13a, headers13a, body13a = _get(host13, port13, "/api/retro/summary?token=tok")
+        test("V13: /api/retro/summary returns 200", status13a == 200)
+        test(
+            "V13: /api/retro/summary content-type json",
+            "application/json" in headers13a.get("content-type", ""),
+        )
+        payload13a = json.loads(body13a.decode("utf-8", errors="replace"))
+        test("V13: retro API defaults to repo mode", payload13a.get("mode") == "repo")
+        test(
+            "V13: retro API includes git-only available sections by default",
+            payload13a.get("available_sections") == ["git"],
+        )
+        test(
+            "V13: retro API invokes retro.py with --no-cache and repo mode",
+            bool(calls13)
+            and "--no-cache" in calls13[0]
+            and "--mode" in calls13[0]
+            and calls13[0][calls13[0].index("--mode") + 1] == "repo",
+        )
+
+        status13b, _, body13b = _get(host13, port13, "/api/retro/summary?token=tok&mode=local")
+        payload13b = json.loads(body13b.decode("utf-8", errors="replace"))
+        test("V13: retro API accepts local mode explicitly", status13b == 200 and payload13b.get("mode") == "local")
+        test(
+            "V13: retro API forwards explicit local mode to retro.py",
+            len(calls13) >= 2 and "--mode" in calls13[1] and calls13[1][calls13[1].index("--mode") + 1] == "local",
+        )
+
+        status13c, headers13c, body13c = _get(host13, port13, "/retro?token=tok")
+        html13c = body13c.decode("utf-8", errors="replace")
+        test("V13: /retro returns 200", status13c == 200)
+        test("V13: /retro content-type html", "text/html" in headers13c.get("content-type", ""))
+        test("V13: /retro page fetches repo retro summary", "/api/retro/summary?mode=repo" in html13c)
+        test("V13: /retro page shows retrospective shell", "Loading retrospective summary" in html13c)
+    finally:
+        _retro_api.subprocess.run = original_run13
+        server13.shutdown()
+        db13.close()
 
     delta_pass = _PASS - start_pass
     delta_fail = _FAIL - start_fail

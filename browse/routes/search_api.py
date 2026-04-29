@@ -1,4 +1,5 @@
 """browse/routes/search_api.py — /api/search JSON endpoint (F7)."""
+
 import html
 import json
 import os
@@ -11,19 +12,27 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
 from browse.core.fts import (
-    _sanitize_fts_query,
+    _SESSION_COL_MAP,
     _build_column_scoped_query,
     _probe_sessions_fts,
-    _SESSION_COL_MAP,
+    _sanitize_fts_query,
 )
+from browse.core.registry import route
 
 _VALID_SOURCES = frozenset({"sessions", "knowledge"})
 _VALID_COLS = frozenset(_SESSION_COL_MAP.keys())  # user, assistant, tools, title
-_VALID_KINDS = frozenset({
-    "mistake", "pattern", "decision", "discovery", "tool", "feature", "refactor",
-})
+_VALID_KINDS = frozenset(
+    {
+        "mistake",
+        "pattern",
+        "decision",
+        "discovery",
+        "tool",
+        "feature",
+        "refactor",
+    }
+)
 
 
 def _knowledge_table(db) -> str:
@@ -33,11 +42,7 @@ def _knowledge_table(db) -> str:
     'knowledge' is used by test DBs (test_browse.py fixture).
     """
     try:
-        tables = {
-            r[0] for r in db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
-        }
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "knowledge_entries" in tables:
             return "knowledge_entries"
     except Exception:
@@ -109,17 +114,16 @@ def handle_search_api(db, params, token, nonce) -> tuple:
     if "sessions" in src_list and _probe_sessions_fts(db):
         col_names = [_SESSION_COL_MAP[c][0] for c in in_cols if c in _SESSION_COL_MAP]
         all_cols = list(_SESSION_COL_MAP.keys())
-        if col_names and sorted(col_names) != sorted(
-            _SESSION_COL_MAP[c][0] for c in all_cols
-        ):
+        if col_names and sorted(col_names) != sorted(_SESSION_COL_MAP[c][0] for c in all_cols):
             fts_query = _build_column_scoped_query(safe_q, col_names)
         else:
             fts_query = safe_q
 
         try:
-            rows = list(db.execute(
-                # snippet col -1 = auto-pick best matching column
-                """SELECT s.id, s.summary, s.source,
+            rows = list(
+                db.execute(
+                    # snippet col -1 = auto-pick best matching column
+                    """SELECT s.id, s.summary, s.source,
                           snippet(sessions_fts, -1, '<mark>', '</mark>', '...', 15) AS snip,
                           bm25(sessions_fts) AS score
                    FROM sessions_fts
@@ -127,16 +131,19 @@ def handle_search_api(db, params, token, nonce) -> tuple:
                    WHERE sessions_fts MATCH ?
                    ORDER BY bm25(sessions_fts)
                    LIMIT ?""",
-                (fts_query, limit),
-            ))
+                    (fts_query, limit),
+                )
+            )
             for r in rows:
-                results.append({
-                    "type": "session",
-                    "id": r["id"],
-                    "title": r["summary"] or r["id"],
-                    "snippet": _safe_snippet(r["snip"] or ""),
-                    "score": r["score"],
-                })
+                results.append(
+                    {
+                        "type": "session",
+                        "id": r["id"],
+                        "title": r["summary"] or r["id"],
+                        "snippet": _safe_snippet(r["snip"] or ""),
+                        "score": r["score"],
+                    }
+                )
         except sqlite3.OperationalError:
             pass
 
@@ -169,15 +176,17 @@ def handle_search_api(db, params, token, nonce) -> tuple:
             )
             rows = list(db.execute(sql, (ke_query, *kind_args, limit)))
             for r in rows:
-                results.append({
-                    "type": "knowledge",
-                    "id": r["id"],
-                    "title": r["title"] or "",
-                    "wing": r["wing"] or "",
-                    "kind": r["category"] or "",
-                    "snippet": _safe_snippet(r["snip"] or ""),
-                    "score": r["score"],
-                })
+                results.append(
+                    {
+                        "type": "knowledge",
+                        "id": r["id"],
+                        "title": r["title"] or "",
+                        "wing": r["wing"] or "",
+                        "kind": r["category"] or "",
+                        "snippet": _safe_snippet(r["snip"] or ""),
+                        "score": r["score"],
+                    }
+                )
         except sqlite3.OperationalError:
             pass
 
@@ -186,10 +195,12 @@ def handle_search_api(db, params, token, nonce) -> tuple:
     results = results[:limit]
 
     took_ms = round((time.perf_counter() - t0) * 1000)
-    payload = json.dumps({
-        "query": safe_q,
-        "results": results,
-        "total": len(results),
-        "took_ms": took_ms,
-    })
+    payload = json.dumps(
+        {
+            "query": safe_q,
+            "results": results,
+            "total": len(results),
+            "took_ms": took_ms,
+        }
+    )
     return payload.encode("utf-8"), "application/json", 200

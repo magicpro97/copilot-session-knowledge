@@ -1,4 +1,5 @@
 """block_edit_dist.py — Block direct edits to browse-ui/dist/."""
+
 import os
 import sys
 from pathlib import Path
@@ -33,8 +34,7 @@ class BlockEditDistRule(Rule):
         # Normalise: resolve relative to browse-ui/dist or absolute
         rel = file_path
         try:
-            rel = str(Path(file_path).resolve().relative_to(
-                Path.home() / ".copilot" / "tools"))
+            rel = str(Path(file_path).resolve().relative_to(Path.home() / ".copilot" / "tools"))
         except (ValueError, RuntimeError):
             pass
 

@@ -1,4 +1,5 @@
 """browse/routes/mindmap.py — GET /session/{id}/mindmap + GET /api/session/{id}/mindmap."""
+
 import json
 import os
 import sys
@@ -8,10 +9,10 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
-from browse.core.fts import _esc, _SESSION_ID_RE
-from browse.core.templates import base_page
 from browse.components import banner
+from browse.core.fts import _SESSION_ID_RE, _esc
+from browse.core.registry import route
+from browse.core.templates import base_page
 
 _MAX_MARKDOWN = 100 * 1024  # 100 KB hard cap to avoid browser freeze
 
@@ -19,6 +20,7 @@ _MAX_MARKDOWN = 100 * 1024  # 100 KB hard cap to avoid browser freeze
 def _parse_headings_to_outline(text: str) -> str:
     """Extract heading lines from markdown and return as compact outline string."""
     import re
+
     lines = text.splitlines()
     outline = []
     for line in lines:
@@ -30,14 +32,16 @@ def _parse_headings_to_outline(text: str) -> str:
 def _sections_to_outline(db, session_id: str) -> str:
     """Synthesise a heading outline from the sections table (fallback when file absent)."""
     try:
-        rows = list(db.execute(
-            """SELECT d.title, s.section_name
+        rows = list(
+            db.execute(
+                """SELECT d.title, s.section_name
                FROM documents d
                LEFT JOIN sections s ON s.document_id = d.id
                WHERE d.session_id = ?
                ORDER BY d.seq, s.id""",
-            (session_id,),
-        ))
+                (session_id,),
+            )
+        )
     except Exception:
         rows = []
     if not rows:
@@ -65,7 +69,7 @@ def _build_mindmap_data(db, session_id: str, sess_row) -> tuple:
 
     if path:
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            with open(path, encoding="utf-8", errors="replace") as fh:
                 content = fh.read(_MAX_MARKDOWN)
             outline = _parse_headings_to_outline(content)
             if outline.strip():
@@ -93,7 +97,7 @@ def handle_session_mindmap(db, params, token, nonce, session_id: str = "") -> tu
     tok_esc = _esc(token)
     tok_qs = f"?token={tok_esc}" if token else ""
     legacy_notice = banner(
-        f'Legacy v1 HTML page (/session/&lt;id&gt;/mindmap) is deprecated and kept for backward compatibility. '
+        f"Legacy v1 HTML page (/session/&lt;id&gt;/mindmap) is deprecated and kept for backward compatibility. "
         f'Use <a href="/v2/sessions/{sid_esc}{tok_qs}">/v2/sessions/{sid_esc}</a> as the primary UI.',
         variant="warning",
         icon="⚠",
@@ -108,14 +112,14 @@ def handle_session_mindmap(db, params, token, nonce, session_id: str = "") -> tu
         f'    <button id="mm-expand" title="Expand all">+ Expand</button>\n'
         f'    <button id="mm-collapse" title="Collapse all">&#8722; Collapse</button>\n'
         f'    <span id="mm-status">Loading&#8230;</span>\n'
-        f'  </div>\n'
+        f"  </div>\n"
         f'  <svg id="mindmap-svg"></svg>\n'
-        f'</div>\n'
+        f"</div>\n"
     )
 
     body_scripts = (
         f'<script nonce="{nonce}">\n'
-        f'window.__paletteCommands.push({{'
+        f"window.__paletteCommands.push({{"
         f"id:'mindmap-fit',"
         f"title:'Fit mindmap to screen',"
         f"section:'Mindmap',"

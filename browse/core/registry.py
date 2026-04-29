@@ -1,8 +1,9 @@
 """browse/core/registry.py — @route decorator and route matching."""
+
 import os
 import re
 import sys
-from typing import Callable
+from collections.abc import Callable
 
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
@@ -53,12 +54,8 @@ def match_route(path: str, method: str) -> tuple:
 
     # Prefix pattern for /session/{id} (legacy fallback — catches unknown sub-paths → 400)
     for route_path, route_methods, handler in ROUTES:
-        if (
-            route_path == "/session/{id}"
-            and path.startswith("/session/")
-            and method in route_methods
-        ):
-            session_id = path[len("/session/"):]
+        if route_path == "/session/{id}" and path.startswith("/session/") and method in route_methods:
+            session_id = path[len("/session/") :]
             return handler, {"session_id": session_id}
 
     return None, {}

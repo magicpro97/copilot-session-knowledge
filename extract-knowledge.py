@@ -17,15 +17,15 @@ Usage:
 Cross-platform: Windows, macOS, Linux. Pure Python stdlib.
 """
 
-import sqlite3
-import re
-import sys
-import os
 import hashlib
 import json
+import os
+import re
+import sqlite3
+import sys
 import time
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 # Fix Windows console encoding for Unicode output
 if os.name == "nt":
@@ -74,20 +74,26 @@ def _get_local_replica_id(db: sqlite3.Connection) -> str:
         if current and current != "local":
             return current
         replica_id = _default_local_replica_id()
-        db.execute("""
+        db.execute(
+            """
             INSERT INTO sync_state (key, value)
             VALUES ('local_replica_id', ?)
             ON CONFLICT(key) DO UPDATE SET
                 value = excluded.value,
                 updated_at = datetime('now')
-        """, (replica_id,))
-        db.execute("""
+        """,
+            (replica_id,),
+        )
+        db.execute(
+            """
             INSERT INTO sync_metadata (key, value)
             VALUES ('local_replica_id', ?)
             ON CONFLICT(key) DO UPDATE SET
                 value = excluded.value,
                 updated_at = datetime('now')
-        """, (replica_id,))
+        """,
+            (replica_id,),
+        )
         return replica_id
     except Exception:
         return ""
@@ -114,14 +120,20 @@ def _enqueue_sync_op_fail_open(
             return
         now = _utc_now()
         txn_id = _stable_sha256("sync-txn", replica_id, table_name, row_stable_id, time.time_ns())
-        db.execute("""
+        db.execute(
+            """
             INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at)
             VALUES (?, ?, 'pending', ?, '')
-        """, (txn_id, replica_id, now))
-        db.execute("""
+        """,
+            (txn_id, replica_id, now),
+        )
+        db.execute(
+            """
             INSERT INTO sync_ops (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at)
             VALUES (?, ?, ?, ?, ?, 0, ?)
-        """, (txn_id, table_name, op_type, row_stable_id, json.dumps(row_payload, ensure_ascii=False), now))
+        """,
+            (txn_id, table_name, op_type, row_stable_id, json.dumps(row_payload, ensure_ascii=False), now),
+        )
     except Exception:
         return
 
@@ -214,13 +226,16 @@ def _seed_sync_table_policies(db: sqlite3.Connection):
             stable_id_column TEXT DEFAULT ''
         );
     """)
-    db.executemany("""
+    db.executemany(
+        """
         INSERT INTO sync_table_policies (table_name, sync_scope, stable_id_column)
         VALUES (?, ?, ?)
         ON CONFLICT(table_name) DO UPDATE SET
             sync_scope = excluded.sync_scope,
             stable_id_column = excluded.stable_id_column
-    """, rows)
+    """,
+        rows,
+    )
     db.execute("""
         INSERT OR IGNORE INTO sync_metadata (key, value)
         VALUES ('local_replica_id', 'local')
@@ -292,17 +307,21 @@ def _backfill_stable_ids(db: sqlite3.Connection):
             continue
         stable = _knowledge_relation_stable_id(src_stable, tgt_stable, relation_type)
         if src_existing != src_stable or tgt_existing != tgt_stable or existing != stable:
-            db.execute("""
+            db.execute(
+                """
                 UPDATE knowledge_relations
                 SET source_stable_id = ?, target_stable_id = ?, stable_id = ?
                 WHERE id = ?
-            """, (src_stable, tgt_stable, stable, rel_id))
+            """,
+                (src_stable, tgt_stable, stable, rel_id),
+            )
 
 
 def _dedupe_stable_rows(db: sqlite3.Connection, table: str):
     if table not in {"knowledge_entries", "knowledge_relations", "entity_relations"}:
         return
-    db.execute("""
+    db.execute(
+        """
         DELETE FROM {table}
         WHERE id IN (
             SELECT dupe.id
@@ -316,14 +335,18 @@ def _dedupe_stable_rows(db: sqlite3.Connection, table: str):
             ) grouped ON grouped.stable_id = dupe.stable_id
             WHERE dupe.id != grouped.keep_id
         )
-    """.replace("{table}", table))
+    """.replace("{table}", table)
+    )
 
 
 def _enforce_stable_id_uniqueness(db: sqlite3.Connection):
-    has_table = lambda t: db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (t,),
-    ).fetchone() is not None
+    has_table = lambda t: (
+        db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (t,),
+        ).fetchone()
+        is not None
+    )
     for table, index_name in [
         ("knowledge_entries", "uq_knowledge_entries_stable_id"),
         ("knowledge_relations", "uq_knowledge_relations_stable_id"),
@@ -332,6 +355,7 @@ def _enforce_stable_id_uniqueness(db: sqlite3.Connection):
         if has_table(table):
             _dedupe_stable_rows(db, table)
             db.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table}(stable_id)")
+
 
 # Extraction patterns — regex + heuristics for each category
 MISTAKE_INDICATORS = [
@@ -475,10 +499,25 @@ def ensure_tables(db: sqlite3.Connection):
     """)
 
     # Migrate existing databases: add new columns if missing
-    _ALLOWED_COLUMNS = {"stable_id", "source", "topic_key", "revision_count", "content_hash",
-                        "wing", "room", "facts", "est_tokens", "task_id",
-                        "affected_files", "source_section", "source_file",
-                        "start_line", "end_line", "code_language", "code_snippet"}
+    _ALLOWED_COLUMNS = {
+        "stable_id",
+        "source",
+        "topic_key",
+        "revision_count",
+        "content_hash",
+        "wing",
+        "room",
+        "facts",
+        "est_tokens",
+        "task_id",
+        "affected_files",
+        "source_section",
+        "source_file",
+        "start_line",
+        "end_line",
+        "code_language",
+        "code_snippet",
+    }
     for col, col_def in [
         ("stable_id", "TEXT"),
         ("source", "TEXT DEFAULT 'copilot'"),
@@ -671,7 +710,7 @@ def extract_title(text: str, max_len: int = 100) -> str:
 
         if len(title) >= 10:
             if len(title) > max_len:
-                title = title[:max_len - 3] + "..."
+                title = title[: max_len - 3] + "..."
             return title
 
     # Fallback: first 100 chars of text
@@ -746,9 +785,11 @@ def _slugify(text: str) -> str:
 def _compute_content_hash(category: str, title: str, content: str) -> str:
     """Compute dedup hash from normalized category + title + key content."""
     normalized = (
-        category.lower().strip() + "|" +
-        re.sub(r"\s+", " ", title.lower().strip()) + "|" +
-        re.sub(r"\s+", " ", content[:200].lower().strip())
+        category.lower().strip()
+        + "|"
+        + re.sub(r"\s+", " ", title.lower().strip())
+        + "|"
+        + re.sub(r"\s+", " ", content[:200].lower().strip())
     )
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
@@ -758,9 +799,148 @@ def _generate_topic_key(category: str, title: str) -> str:
     return f"{category}/{_slugify(title)}"
 
 
+def _parse_file_list(content: str) -> list:
+    """Parse file paths from an important_files section content."""
+    files = []
+    for line in content.splitlines():
+        line = line.strip()
+        # Strip leading bullet markers
+        if line.startswith(("- ", "* ", "+ ")):
+            path = line[2:].strip()
+        elif line.startswith(("  - ", "  * ")):
+            path = line[4:].strip()
+        else:
+            path = line
+        # Strip backtick wrapping
+        path = path.strip("`")
+        # Strip inline comments and table separators
+        path = path.split("#")[0].strip()
+        path = path.split("|")[0].strip()
+        # Skip empty, too long, or URL-like lines
+        if not path or len(path) > 256:
+            continue
+        if path.startswith(("http://", "https://", "[")):
+            continue
+        # Must resemble a file path: contains a dot (extension) or a slash
+        if "." in path or "/" in path:
+            files.append(path)
+    return files
+
+
+# Matches explicit task/tentacle slug markers in text, e.g. "task: fix-auth" or "tentacle=wave3-signal"
+_TASK_ID_MARKER_RE = re.compile(
+    r"(?:task|tentacle)\s*[=:]\s*([a-z][a-z0-9]*(?:-[a-z0-9]+)+)\b",
+    re.IGNORECASE,
+)
+# Valid kebab-case slug: lowercase, at least one hyphen, min 5 chars total
+_KEBAB_SLUG_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$")
+
+
+def _backfill_affected_files_from_session_evidence(db: sqlite3.Connection, session_ids: list | None = None) -> int:
+    """Backfill affected_files from the same session's important_files section.
+
+    Only updates entries where affected_files is empty.
+    Does NOT overwrite manually populated affected_files.
+    Safe evidence only: same-session important_files checkpoint section.
+    Returns count of updated rows.
+    """
+    query = """
+        SELECT id, session_id FROM knowledge_entries
+        WHERE (affected_files IS NULL OR affected_files = '[]' OR affected_files = '')
+        AND session_id IS NOT NULL AND session_id != ''
+    """
+    params = []
+    if session_ids:
+        placeholders = ",".join("?" for _ in session_ids)
+        query += f" AND session_id IN ({placeholders})"
+        params.extend(session_ids)
+    empty_entries = db.execute(query, params).fetchall()
+
+    if not empty_entries:
+        return 0
+
+    # Group entry IDs by session
+    by_session: dict = {}
+    for row in empty_entries:
+        by_session.setdefault(row[1], []).append(row[0])
+
+    updated = 0
+    for session_id, entry_ids in by_session.items():
+        # Fetch most recent important_files section for this session
+        try:
+            row = db.execute(
+                """
+                SELECT s.content FROM sections s
+                JOIN documents d ON s.document_id = d.id
+                WHERE d.session_id = ? AND s.section_name = 'important_files'
+                ORDER BY d.seq DESC LIMIT 1
+            """,
+                (session_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            continue
+
+        if not row or not row[0]:
+            continue
+
+        files = _parse_file_list(row[0])
+        if not files:
+            continue
+
+        files_json = json.dumps(files[:20])  # cap per-entry at 20 files
+        for entry_id in entry_ids:
+            db.execute(
+                "UPDATE knowledge_entries SET affected_files = ? "
+                "WHERE id = ? AND (affected_files IS NULL OR affected_files = '[]' OR affected_files = '')",
+                (files_json, entry_id),
+            )
+            updated += 1
+
+    return updated
+
+
+def _infer_task_ids_from_content(db: sqlite3.Connection, session_ids: list | None = None) -> int:
+    """Infer task_id from explicit task/tentacle markers in content.
+
+    Only assigns when exactly ONE kebab-case slug candidate is found.
+    Does NOT overwrite existing task_id values.
+    Returns count of updated rows.
+    """
+    query = """
+        SELECT id, title, content FROM knowledge_entries
+        WHERE (task_id IS NULL OR task_id = '')
+        AND (title IS NOT NULL OR content IS NOT NULL)
+    """
+    params = []
+    if session_ids:
+        placeholders = ",".join("?" for _ in session_ids)
+        query += f" AND session_id IN ({placeholders})"
+        params.extend(session_ids)
+    rows = db.execute(query, params).fetchall()
+
+    updated = 0
+    for entry_id, title, content in rows:
+        text = f"{title or ''} {content or ''}"
+        candidates = set()
+        for m in _TASK_ID_MARKER_RE.finditer(text):
+            slug = m.group(1).lower().strip()
+            if _KEBAB_SLUG_RE.match(slug) and 5 <= len(slug) <= 50:
+                candidates.add(slug)
+
+        if len(candidates) == 1:
+            slug = next(iter(candidates))
+            db.execute(
+                "UPDATE knowledge_entries SET task_id = ? WHERE id = ? AND (task_id IS NULL OR task_id = '')",
+                (slug, entry_id),
+            )
+            updated += 1
+
+    return updated
+
+
 def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
     """Extract knowledge entries from indexed sections.
-    
+
     Args:
         session_ids: If provided, only extract from these sessions (selective mode).
     """
@@ -789,7 +969,10 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
         query_params.extend(session_ids)
 
     base_query += " ORDER BY d.session_id, d.seq"
-    rows = db.execute(base_query, query_params).fetchall()
+    try:
+        rows = db.execute(base_query, query_params).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
 
     # Pre-load existing content hashes for fast dedup
     existing_hashes = set()
@@ -819,23 +1002,27 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
                 # Topic key upsert: if same topic exists, update instead of insert
                 existing = db.execute(
                     "SELECT id, revision_count FROM knowledge_entries WHERE topic_key = ? AND session_id != ?",
-                    (topic_key, session_id)
+                    (topic_key, session_id),
                 ).fetchone()
 
                 if existing:
                     stable_id = _knowledge_stable_id(session_id, category, title, topic_key)
                     # Upsert: update existing entry with newer content
-                    db.execute("""
+                    db.execute(
+                        """
                         UPDATE knowledge_entries
                         SET content = ?, confidence = MAX(confidence, ?),
                             revision_count = revision_count + 1,
+                            occurrence_count = occurrence_count + 1,
                             last_seen = ?, content_hash = ?, tags = ?,
                             source_section = ?, stable_id = CASE
                                 WHEN COALESCE(stable_id, '') = '' THEN ?
                                 ELSE stable_id
                             END
                         WHERE id = ?
-                    """, (chunk[:3000], confidence, now, content_hash, tags, section_name, stable_id, existing[0]))
+                    """,
+                        (chunk[:3000], confidence, now, content_hash, tags, section_name, stable_id, existing[0]),
+                    )
                     _enqueue_sync_op_fail_open(
                         db,
                         "knowledge_entries",
@@ -863,7 +1050,8 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
                 try:
                     est_tokens = len(f"{title} {chunk[:3000]}") // 4
                     stable_id = _knowledge_stable_id(session_id, category, title, topic_key)
-                    db.execute("""
+                    db.execute(
+                        """
                         INSERT INTO knowledge_entries
                         (session_id, document_id, category, title, stable_id, content, tags,
                          confidence, first_seen, last_seen, source, topic_key,
@@ -871,16 +1059,31 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                         ON CONFLICT(category, title, session_id) DO UPDATE SET
                             confidence = MAX(knowledge_entries.confidence, excluded.confidence),
-                            occurrence_count = knowledge_entries.occurrence_count + 1,
                             last_seen = excluded.last_seen,
                             content_hash = excluded.content_hash,
                             topic_key = excluded.topic_key,
                             est_tokens = excluded.est_tokens,
                             source_section = excluded.source_section,
                             stable_id = excluded.stable_id
-                    """, (session_id, doc_id, category, title, stable_id, chunk[:3000], tags,
-                          confidence, now, now, source, topic_key, content_hash,
-                          est_tokens, section_name))
+                    """,
+                        (
+                            session_id,
+                            doc_id,
+                            category,
+                            title,
+                            stable_id,
+                            chunk[:3000],
+                            tags,
+                            confidence,
+                            now,
+                            now,
+                            source,
+                            topic_key,
+                            content_hash,
+                            est_tokens,
+                            section_name,
+                        ),
+                    )
                     _enqueue_sync_op_fail_open(
                         db,
                         "knowledge_entries",
@@ -910,36 +1113,44 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
                     print(f"⚠ Duplicate entry skipped: {e}", file=sys.stderr)
                     skipped += 1
 
+    # Signal backfill: populate affected_files and task_id from safe session-local evidence
+    _backfill_affected_files_from_session_evidence(db, session_ids=session_ids)
+    _infer_task_ids_from_content(db, session_ids=session_ids)
+
     # Confidence decay: entries not seen recently get slightly lower confidence
     # Apply at most once per day to prevent compounding from repeated runs
     try:
         today = now[:10]
         last_decay = None
         try:
-            row = db.execute(
-                "SELECT value FROM embedding_meta WHERE key = 'last_decay_date'"
-            ).fetchone()
+            row = db.execute("SELECT value FROM embedding_meta WHERE key = 'last_decay_date'").fetchone()
             if row:
                 last_decay = row[0]
         except sqlite3.OperationalError:
             pass  # embedding_meta table may not exist
 
         if last_decay != today:
-            db.execute("""
+            db.execute(
+                """
                 UPDATE knowledge_entries
                 SET confidence = MAX(0.3, confidence * 0.95)
                 WHERE last_seen < ? AND confidence > 0.3
-            """, (today,))
+            """,
+                (today,),
+            )
             try:
                 db.execute("""
                     CREATE TABLE IF NOT EXISTS embedding_meta (
                         key TEXT PRIMARY KEY, value TEXT
                     )
                 """)
-                db.execute("""
+                db.execute(
+                    """
                     INSERT OR REPLACE INTO embedding_meta (key, value)
                     VALUES ('last_decay_date', ?)
-                """, (today,))
+                """,
+                    (today,),
+                )
             except sqlite3.OperationalError:
                 pass
     except sqlite3.OperationalError:
@@ -1001,7 +1212,9 @@ def extract_relations(db: sqlite3.Connection) -> int:
     if not entries:
         return 0
 
-    relations: list[tuple] = []  # (source_id, target_id, src_stable, tgt_stable, relation_type, stable_id, confidence, created_at)
+    relations: list[
+        tuple
+    ] = []  # (source_id, target_id, src_stable, tgt_stable, relation_type, stable_id, confidence, created_at)
 
     # Build indexes for efficient lookups
     by_session: dict[str, list[tuple]] = {}
@@ -1048,7 +1261,7 @@ def extract_relations(db: sqlite3.Connection) -> int:
         for i, a in enumerate(group):
             if session_added >= _ss_cap:
                 break
-            for b in group[i + 1:]:
+            for b in group[i + 1 :]:
                 if session_added >= _ss_cap:
                     break
                 if a[2] != b[2]:  # different category
@@ -1073,7 +1286,7 @@ def extract_relations(db: sqlite3.Connection) -> int:
         for i, a in enumerate(group):
             if topic_added >= _st_cap:
                 break
-            for b in group[i + 1:]:
+            for b in group[i + 1 :]:
                 if topic_added >= _st_cap:
                     break
                 if a[1] != b[1]:  # different session_id
@@ -1098,7 +1311,7 @@ def extract_relations(db: sqlite3.Connection) -> int:
 
     for i, (aid, atags) in enumerate(entry_tags):
         done = False
-        for bid, btags in entry_tags[i + 1:]:
+        for bid, btags in entry_tags[i + 1 :]:
             shared = len(atags & btags)
             if shared >= 2:
                 conf = min(1.0, 0.5 + 0.1 * min(shared, 5))
@@ -1125,11 +1338,14 @@ def extract_relations(db: sqlite3.Connection) -> int:
 
     # Batch insert all relations
     if relations:
-        db.executemany("""
+        db.executemany(
+            """
             INSERT OR IGNORE INTO knowledge_relations
             (source_id, target_id, source_stable_id, target_stable_id, relation_type, stable_id, confidence, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, relations)
+        """,
+            relations,
+        )
         for rel in relations:
             _enqueue_sync_op_fail_open(
                 db,
@@ -1150,9 +1366,9 @@ def extract_relations(db: sqlite3.Connection) -> int:
 
 def show_stats(db: sqlite3.Connection):
     """Show extraction statistics."""
-    print(f"\n{'='*50}")
-    print(f"  Knowledge Extraction Statistics")
-    print(f"{'='*50}")
+    print(f"\n{'=' * 50}")
+    print("  Knowledge Extraction Statistics")
+    print(f"{'=' * 50}")
 
     total = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
     print(f"  Total entries: {total}")
@@ -1175,7 +1391,7 @@ def show_stats(db: sqlite3.Connection):
     for tag, count in sorted(tag_counts.items(), key=lambda x: -x[1])[:15]:
         print(f"    {tag:20s}: {count}")
 
-    print(f"\n  Cross-session patterns (appearing in 2+ sessions):")
+    print("\n  Cross-session patterns (appearing in 2+ sessions):")
     for row in db.execute("""
         SELECT title, category, COUNT(DISTINCT session_id) as sessions
         FROM knowledge_entries
@@ -1198,7 +1414,7 @@ def list_entries(db: sqlite3.Connection, category: str = None, limit: int = 20):
     params.append(limit)
 
     print(f"\n{'ID':>4s} {'Category':12s} {'Conf':>5s} {'Session':10s} Title")
-    print(f"{'─'*4} {'─'*12} {'─'*5} {'─'*10} {'─'*50}")
+    print(f"{'─' * 4} {'─' * 12} {'─' * 5} {'─' * 10} {'─' * 50}")
 
     for row in db.execute(sql, params):
         sid = row[5][:8] + ".."
@@ -1241,9 +1457,9 @@ def main():
     if "--relations" in args:
         try:
             total = db.execute("SELECT COUNT(*) FROM knowledge_relations").fetchone()[0]
-            print(f"\n{'='*50}")
-            print(f"  Knowledge Relations Statistics")
-            print(f"{'='*50}")
+            print(f"\n{'=' * 50}")
+            print("  Knowledge Relations Statistics")
+            print(f"{'=' * 50}")
             print(f"  Total relations: {total}")
             print("\n  By type:")
             for row in db.execute("""

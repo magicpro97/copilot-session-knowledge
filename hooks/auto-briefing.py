@@ -3,6 +3,7 @@
 
 Auto-run briefing.py at session start. Creates HMAC-signed marker.
 """
+
 import json
 import os
 import subprocess
@@ -18,7 +19,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from marker_auth import sign_marker
 except ImportError:
-    def sign_marker(p, n): p.parent.mkdir(parents=True, exist_ok=True); p.touch()
+
+    def sign_marker(p, n):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+
 
 TOOLS_DIR = Path(__file__).resolve().parent.parent
 BRIEFING = TOOLS_DIR / "briefing.py"
@@ -67,7 +72,9 @@ def main():
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0:
             project = Path(result.stdout.strip()).name
@@ -82,8 +89,10 @@ def main():
     try:
         subprocess.run(
             [sys.executable, str(BRIEFING), project, "--budget", "500"],
-            timeout=10, stderr=subprocess.DEVNULL,
-            encoding="utf-8", errors="replace",  # P1-4: prevent UnicodeDecodeError on Windows cp1252
+            timeout=10,
+            stderr=subprocess.DEVNULL,
+            encoding="utf-8",
+            errors="replace",  # P1-4: prevent UnicodeDecodeError on Windows cp1252
         )
     except subprocess.TimeoutExpired:
         print("  ⏱ Briefing timed out (10s)")

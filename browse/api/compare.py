@@ -12,6 +12,7 @@ Returns 400 if params missing or invalid.
 Session not found → session field is null (not a 404), so callers can compare
 a valid session against a missing one gracefully.
 """
+
 import json
 import os
 import sys
@@ -21,9 +22,9 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
-from browse.core.fts import _SESSION_ID_RE
 from browse.api._common import json_error
+from browse.core.fts import _SESSION_ID_RE
+from browse.core.registry import route
 from browse.routes.session_compare import _fetch_session_data
 
 

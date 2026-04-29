@@ -30,6 +30,7 @@ Use --full for complete content with tags, confidence scores, and full text.
 """
 
 import json
+import math
 import os
 import re
 import sqlite3
@@ -37,7 +38,6 @@ import subprocess
 import sys
 import textwrap
 import time
-import math
 from pathlib import Path
 
 # Fix Windows console encoding
@@ -53,14 +53,22 @@ SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
 
 BASE_CATEGORIES = {
-    "mistake": {"emoji": "⚠️", "title": "Past Mistakes to Avoid",
-                "desc": "These mistakes were encountered before. Avoid repeating them."},
-    "pattern": {"emoji": "✅", "title": "Proven Patterns to Follow",
-                "desc": "These patterns worked well in the past."},
-    "decision": {"emoji": "🏗️", "title": "Architecture Decisions",
-                 "desc": "Past decisions for reference — respect unless requirements changed."},
-    "tool": {"emoji": "🔧", "title": "Relevant Tools & Configs",
-             "desc": "Tools and configurations used in similar work."},
+    "mistake": {
+        "emoji": "⚠️",
+        "title": "Past Mistakes to Avoid",
+        "desc": "These mistakes were encountered before. Avoid repeating them.",
+    },
+    "pattern": {"emoji": "✅", "title": "Proven Patterns to Follow", "desc": "These patterns worked well in the past."},
+    "decision": {
+        "emoji": "🏗️",
+        "title": "Architecture Decisions",
+        "desc": "Past decisions for reference — respect unless requirements changed.",
+    },
+    "tool": {
+        "emoji": "🔧",
+        "title": "Relevant Tools & Configs",
+        "desc": "Tools and configurations used in similar work.",
+    },
 }
 
 MODE_PROFILES = {
@@ -93,8 +101,7 @@ MODE_PROFILES = {
 
 def get_db() -> sqlite3.Connection:
     if not DB_PATH.exists():
-        print("Error: Knowledge database not found. Run build-session-index.py first.",
-              file=sys.stderr)
+        print("Error: Knowledge database not found. Run build-session-index.py first.", file=sys.stderr)
         sys.exit(1)
     db = sqlite3.connect(str(DB_PATH))
     db.row_factory = sqlite3.Row
@@ -176,31 +183,31 @@ def auto_detect_context() -> str:
     # Git branch name → extract feature keywords
     try:
         branch = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=5
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, timeout=5
         ).stdout.strip()
         if branch and branch != "HEAD":
             # "feature/model-management" → "model management"
             parts = branch.replace("/", "-").replace("_", "-").split("-")
-            keywords.update(p for p in parts if len(p) > 2
-                           and p not in ("feature", "fix", "chore", "update", "and"))
+            keywords.update(p for p in parts if len(p) > 2 and p not in ("feature", "fix", "chore", "update", "and"))
     except Exception as e:
         print(f"⚠ Git branch detection failed: {e}", file=sys.stderr)
 
     # Git recent commit messages → extract subject words
     try:
         log = subprocess.run(
-            ["git", "--no-pager", "log", "--oneline", "-5", "--format=%s"],
-            capture_output=True, text=True, timeout=5
+            ["git", "--no-pager", "log", "--oneline", "-5", "--format=%s"], capture_output=True, text=True, timeout=5
         ).stdout.strip()
         if log:
             for line in log.splitlines():
                 # Strip conventional commit prefix
                 msg = line.split(":", 1)[-1].strip() if ":" in line else line
                 words = msg.split()
-                keywords.update(w for w in words if len(w) > 2
-                               and w.lower() not in ("the", "and", "for", "add", "fix",
-                                                      "update", "with", "from", "that"))
+                keywords.update(
+                    w
+                    for w in words
+                    if len(w) > 2
+                    and w.lower() not in ("the", "and", "for", "add", "fix", "update", "with", "from", "that")
+                )
     except Exception as e:
         print(f"⚠ Git log parsing failed: {e}", file=sys.stderr)
 
@@ -221,18 +228,16 @@ def auto_detect_context() -> str:
     # Git modified file paths → extract module/feature names
     try:
         status = subprocess.run(
-            ["git", "diff", "--name-only", "HEAD"],
-            capture_output=True, text=True, timeout=5
+            ["git", "diff", "--name-only", "HEAD"], capture_output=True, text=True, timeout=5
         ).stdout.strip()
         if status:
             for fpath in status.splitlines()[:10]:
                 parts = Path(fpath).parts
-                keywords.update(p for p in parts if len(p) > 3
-                               and not p.startswith(".") and "." not in p)
+                keywords.update(p for p in parts if len(p) > 3 and not p.startswith(".") and "." not in p)
     except Exception as e:
         print(f"⚠ Git status parsing failed: {e}", file=sys.stderr)
 
-    query = " ".join(sorted(keywords)[:15])if keywords else "general development"
+    query = " ".join(sorted(keywords)[:15]) if keywords else "general development"
     return query
 
 
@@ -262,6 +267,7 @@ def _analyze_query_strictness(query: str) -> str:
     No network or LLM calls.  Pure Python stdlib.
     """
     import re as _re
+
     words = query.strip().split()
     if not words:
         return "medium"
@@ -276,7 +282,7 @@ def _analyze_query_strictness(query: str) -> str:
         broad_score += 2
 
     # Technical path/identifier signals (file extensions, separators, long numeric IDs)
-    _tech = _re.compile(r'\.[a-z]{1,5}(?:\b|$)|[/\\]|\d{4,}|_[a-z]')
+    _tech = _re.compile(r"\.[a-z]{1,5}(?:\b|$)|[/\\]|\d{4,}|_[a-z]")
     if any(_tech.search(w) for w in words):
         strict_score += 2
 
@@ -287,12 +293,51 @@ def _analyze_query_strictness(query: str) -> str:
         broad_score += 1
 
     # Natural-language stopwords → query reads like a sentence → broad recall
-    _STOPWORDS = frozenset({"the", "for", "and", "with", "that", "this", "when",
-                            "how", "what", "why", "should", "use", "using", "from",
-                            "into", "over", "not", "does", "have", "are", "was",
-                            "we", "our", "they", "them", "it", "its", "by", "as",
-                            "at", "an", "a", "is", "in", "on", "to", "be", "or",
-                            "do", "so", "if"})
+    _STOPWORDS = frozenset(
+        {
+            "the",
+            "for",
+            "and",
+            "with",
+            "that",
+            "this",
+            "when",
+            "how",
+            "what",
+            "why",
+            "should",
+            "use",
+            "using",
+            "from",
+            "into",
+            "over",
+            "not",
+            "does",
+            "have",
+            "are",
+            "was",
+            "we",
+            "our",
+            "they",
+            "them",
+            "it",
+            "its",
+            "by",
+            "as",
+            "at",
+            "an",
+            "a",
+            "is",
+            "in",
+            "on",
+            "to",
+            "be",
+            "or",
+            "do",
+            "so",
+            "if",
+        }
+    )
     stopword_count = sum(1 for w in words if w.lower() in _STOPWORDS)
     if stopword_count >= 2:
         broad_score += 2
@@ -334,15 +379,52 @@ def _build_adaptive_fts_query(query: str) -> tuple:
         confidence_delta = 0.2
     elif strictness == "broad" and len(terms) > 1:
         # OR-conjunction: any term match is sufficient (recall over precision)
-        _BROAD_STOPWORDS = frozenset({"the", "for", "and", "with", "that", "this",
-                                      "when", "how", "what", "why", "should", "use",
-                                      "using", "from", "into", "over", "not", "does",
-                                      "have", "are", "was", "we", "our", "they",
-                                      "them", "it", "its", "by", "as", "at", "an",
-                                      "a", "is", "in", "on", "to", "be", "or",
-                                      "do", "so", "if"})
-        content_terms = [t for t in terms
-                         if t.strip('"*').lower() not in _BROAD_STOPWORDS]
+        _BROAD_STOPWORDS = frozenset(
+            {
+                "the",
+                "for",
+                "and",
+                "with",
+                "that",
+                "this",
+                "when",
+                "how",
+                "what",
+                "why",
+                "should",
+                "use",
+                "using",
+                "from",
+                "into",
+                "over",
+                "not",
+                "does",
+                "have",
+                "are",
+                "was",
+                "we",
+                "our",
+                "they",
+                "them",
+                "it",
+                "its",
+                "by",
+                "as",
+                "at",
+                "an",
+                "a",
+                "is",
+                "in",
+                "on",
+                "to",
+                "be",
+                "or",
+                "do",
+                "so",
+                "if",
+            }
+        )
+        content_terms = [t for t in terms if t.strip('"*').lower() not in _BROAD_STOPWORDS]
         fts_query = " OR ".join(content_terms if content_terms else terms)
         confidence_delta = -0.2
     else:
@@ -355,18 +437,72 @@ def _build_adaptive_fts_query(query: str) -> tuple:
 def _rewrite_query_local(query: str, max_terms: int = 15) -> str:
     """Conservative local query condensation while preserving technical tokens."""
     import re as _re
+
     if not query.strip():
         return query
 
-    _SHORT_TECH = frozenset({
-        "go", "db", "ui", "js", "py", "io", "rx", "vm", "os", "ci", "cd", "tf", "qa",
-    })
-    _FILLER = frozenset({
-        "please", "help", "me", "i", "need", "to", "for", "the", "a", "an", "and", "or",
-        "with", "without", "that", "this", "these", "those", "in", "on", "at", "of", "from",
-        "by", "about", "into", "it", "is", "are", "be", "can", "should", "would", "could",
-        "how", "what", "why", "when", "where", "which", "want",
-    })
+    _SHORT_TECH = frozenset(
+        {
+            "go",
+            "db",
+            "ui",
+            "js",
+            "py",
+            "io",
+            "rx",
+            "vm",
+            "os",
+            "ci",
+            "cd",
+            "tf",
+            "qa",
+        }
+    )
+    _FILLER = frozenset(
+        {
+            "please",
+            "help",
+            "me",
+            "i",
+            "need",
+            "to",
+            "for",
+            "the",
+            "a",
+            "an",
+            "and",
+            "or",
+            "with",
+            "without",
+            "that",
+            "this",
+            "these",
+            "those",
+            "in",
+            "on",
+            "at",
+            "of",
+            "from",
+            "by",
+            "about",
+            "into",
+            "it",
+            "is",
+            "are",
+            "be",
+            "can",
+            "should",
+            "would",
+            "could",
+            "how",
+            "what",
+            "why",
+            "when",
+            "where",
+            "which",
+            "want",
+        }
+    )
 
     raw_tokens = query.split()
     condensed = []
@@ -445,8 +581,7 @@ def _resolve_mode_profile(mode: str, query: str, infer_auto: bool = True) -> tup
     return mode, MODE_PROFILES[mode]
 
 
-def _mode_category_config(limit: int, mode: str, query: str,
-                          infer_auto: bool = True) -> tuple[str, dict, dict]:
+def _mode_category_config(limit: int, mode: str, query: str, infer_auto: bool = True) -> tuple[str, dict, dict]:
     """Compute active mode, ordered category metadata, and per-category limits."""
     active_mode, profile = _resolve_mode_profile(mode, query, infer_auto=infer_auto)
     order = [c for c in profile["order"] if c in BASE_CATEGORIES]
@@ -586,7 +721,7 @@ def _compute_snippet_freshness(row: dict) -> str:
     if end_line > len(lines):
         return "unknown"
 
-    current = "\n".join(lines[start_line - 1:end_line])
+    current = "\n".join(lines[start_line - 1 : end_line])
     if not current:
         return "unknown"
     current_cmp = current.rstrip()
@@ -725,14 +860,17 @@ def _extract_task_matches(db: sqlite3.Connection, rewritten_query: str, limit: i
     out = []
     for term in terms[:8]:
         try:
-            rows = db.execute("""
+            rows = db.execute(
+                """
                 SELECT task_id, title, category, confidence
                 FROM knowledge_entries
                 WHERE task_id != ''
                   AND (task_id LIKE ? OR title LIKE ?)
                 ORDER BY confidence DESC, occurrence_count DESC
                 LIMIT ?
-            """, (f"%{term}%", f"%{term}%", limit)).fetchall()
+            """,
+                (f"%{term}%", f"%{term}%", limit),
+            ).fetchall()
         except sqlite3.OperationalError:
             rows = []
         for r in rows:
@@ -740,12 +878,14 @@ def _extract_task_matches(db: sqlite3.Connection, rewritten_query: str, limit: i
             if not tid or tid in seen:
                 continue
             seen.add(tid)
-            out.append({
-                "task_id": tid,
-                "title": r["title"] or "",
-                "category": r["category"] or "",
-                "confidence": r["confidence"] or 0,
-            })
+            out.append(
+                {
+                    "task_id": tid,
+                    "title": r["title"] or "",
+                    "category": r["category"] or "",
+                    "confidence": r["confidence"] or 0,
+                }
+            )
             if len(out) >= limit:
                 return out
     return out
@@ -754,6 +894,7 @@ def _extract_task_matches(db: sqlite3.Connection, rewritten_query: str, limit: i
 def _extract_file_matches(db: sqlite3.Connection, rewritten_query: str, limit: int = 5) -> list[dict]:
     """Find likely file/module matches for pack output."""
     import re as _re
+
     tokens = []
     for raw in rewritten_query.split():
         tok = raw.strip(" \t\r\n\"'`()[]{}<>.,;!?")
@@ -765,13 +906,16 @@ def _extract_file_matches(db: sqlite3.Connection, rewritten_query: str, limit: i
     out = []
     for tok in tokens[:8]:
         try:
-            rows = db.execute("""
+            rows = db.execute(
+                """
                 SELECT id, title, category, confidence
                 FROM knowledge_entries
                 WHERE affected_files LIKE ? OR content LIKE ? OR title LIKE ?
                 ORDER BY confidence DESC, occurrence_count DESC
                 LIMIT ?
-            """, (f"%{tok}%", f"%{tok}%", f"%{tok}%", limit)).fetchall()
+            """,
+                (f"%{tok}%", f"%{tok}%", f"%{tok}%", limit),
+            ).fetchall()
         except sqlite3.OperationalError:
             rows = []
         hits = 0
@@ -794,16 +938,17 @@ def _extract_next_open(limit: int = 5) -> list[dict]:
     return []
 
 
-def search_knowledge_entries(db: sqlite3.Connection, query: str,
-                             category: str, limit: int = 3,
-                             min_confidence: float = 0.0) -> list[dict]:
+def search_knowledge_entries(
+    db: sqlite3.Connection, query: str, category: str, limit: int = 3, min_confidence: float = 0.0
+) -> list[dict]:
     """Search knowledge entries by category using FTS5 with adaptive strictness."""
     fts_query, strictness, confidence_delta = _build_adaptive_fts_query(query)
     effective_confidence = max(0.0, min(1.0, min_confidence + confidence_delta))
 
     results = []
     try:
-        rows = db.execute("""
+        rows = db.execute(
+            """
             SELECT ke.id, ke.title, ke.content, ke.tags,
                    ke.confidence, ke.session_id, ke.occurrence_count,
                    ke.document_id, ke.source_section,
@@ -821,11 +966,14 @@ def search_knowledge_entries(db: sqlite3.Connection, query: str,
             AND ke.confidence >= ?
             ORDER BY ke.confidence DESC, rank
             LIMIT ?
-        """, (fts_query, category, effective_confidence, limit)).fetchall()
+        """,
+            (fts_query, category, effective_confidence, limit),
+        ).fetchall()
         results.extend([dict(r) for r in rows])
     except sqlite3.OperationalError:
         try:
-            rows = db.execute("""
+            rows = db.execute(
+                """
                 SELECT ke.id, ke.title, ke.content, ke.tags,
                        ke.confidence, ke.session_id, ke.occurrence_count
                 FROM ke_fts fts
@@ -835,7 +983,9 @@ def search_knowledge_entries(db: sqlite3.Connection, query: str,
                 AND ke.confidence >= ?
                 ORDER BY ke.confidence DESC, rank
                 LIMIT ?
-            """, (fts_query, category, effective_confidence, limit)).fetchall()
+            """,
+                (fts_query, category, effective_confidence, limit),
+            ).fetchall()
             results.extend([dict(r) for r in rows])
         except sqlite3.OperationalError:
             pass
@@ -844,7 +994,8 @@ def search_knowledge_entries(db: sqlite3.Connection, query: str,
     if not results and strictness == "strict":
         base_query = _sanitize_fts_query(query)
         try:
-            rows = db.execute("""
+            rows = db.execute(
+                """
                 SELECT ke.id, ke.title, ke.content, ke.tags,
                        ke.confidence, ke.session_id, ke.occurrence_count,
                        ke.document_id, ke.source_section,
@@ -862,11 +1013,14 @@ def search_knowledge_entries(db: sqlite3.Connection, query: str,
                 AND ke.confidence >= ?
                 ORDER BY ke.confidence DESC, rank
                 LIMIT ?
-            """, (base_query, category, min_confidence, limit)).fetchall()
+            """,
+                (base_query, category, min_confidence, limit),
+            ).fetchall()
             results.extend([dict(r) for r in rows])
         except sqlite3.OperationalError:
             try:
-                rows = db.execute("""
+                rows = db.execute(
+                    """
                     SELECT ke.id, ke.title, ke.content, ke.tags,
                            ke.confidence, ke.session_id, ke.occurrence_count
                     FROM ke_fts fts
@@ -876,7 +1030,9 @@ def search_knowledge_entries(db: sqlite3.Connection, query: str,
                     AND ke.confidence >= ?
                     ORDER BY ke.confidence DESC, rank
                     LIMIT ?
-                """, (base_query, category, min_confidence, limit)).fetchall()
+                """,
+                    (base_query, category, min_confidence, limit),
+                ).fetchall()
                 results.extend([dict(r) for r in rows])
             except sqlite3.OperationalError:
                 pass
@@ -884,14 +1040,20 @@ def search_knowledge_entries(db: sqlite3.Connection, query: str,
     return results
 
 
-def search_semantic(db: sqlite3.Connection, query: str,
-                    category: str, limit: int = 3,
-                    min_confidence: float = 0.0) -> list[dict]:
+def search_semantic(
+    db: sqlite3.Connection, query: str, category: str, limit: int = 3, min_confidence: float = 0.0
+) -> list[dict]:
     """Search knowledge entries using vector embeddings."""
     try:
         sys.path.insert(0, str(TOOLS_DIR))
-        from embed import load_config, resolve_provider, call_embedding_api
-        from embed import vector_search, ensure_embedding_tables, search_tfidf
+        from embed import (
+            call_embedding_api,
+            ensure_embedding_tables,
+            load_config,
+            resolve_provider,
+            search_tfidf,
+            vector_search,
+        )
 
         config = load_config()
         ensure_embedding_tables(db)
@@ -908,18 +1070,20 @@ def search_semantic(db: sqlite3.Connection, query: str,
                 print(f"⚠ Embedding API call failed: {e}", file=sys.stderr)
 
         if query_vector:
-            vec_results = vector_search(db, query_vector,
-                                        source_type="knowledge", limit=limit * 3)
+            vec_results = vector_search(db, query_vector, source_type="knowledge", limit=limit * 3)
             results = []
             for st, sid, score in vec_results:
                 if score < 0.3:
                     continue
-                row = db.execute("""
+                row = db.execute(
+                    """
                     SELECT id, title, content, tags, confidence,
                            session_id, occurrence_count, category
                     FROM knowledge_entries WHERE id = ? AND category = ?
                     AND confidence >= ?
-                """, (sid, category, min_confidence)).fetchone()
+                """,
+                    (sid, category, min_confidence),
+                ).fetchone()
                 if row:
                     d = dict(row)
                     d["_semantic_score"] = float(score)
@@ -929,9 +1093,7 @@ def search_semantic(db: sqlite3.Connection, query: str,
 
         # TF-IDF fallback
         if config.get("fallback") == "tfidf":
-            row = db.execute(
-                "SELECT model_blob FROM tfidf_model WHERE id = 1"
-            ).fetchone()
+            row = db.execute("SELECT model_blob FROM tfidf_model WHERE id = 1").fetchone()
             if row and row[0]:
                 tfidf_results = search_tfidf(query, row[0], limit=limit * 3)
                 results = []
@@ -940,7 +1102,8 @@ def search_semantic(db: sqlite3.Connection, query: str,
                     if score < 0.05:
                         continue
                     # Map TF-IDF section match to knowledge entries from the same session
-                    ke_rows = db.execute("""
+                    ke_rows = db.execute(
+                        """
                         SELECT ke.* FROM knowledge_entries ke
                         WHERE ke.category = ?
                           AND ke.session_id IN (
@@ -950,15 +1113,20 @@ def search_semantic(db: sqlite3.Connection, query: str,
                           )
                         ORDER BY ke.confidence DESC
                         LIMIT ?
-                    """, (category, section_id, limit)).fetchall()
+                    """,
+                        (category, section_id, limit),
+                    ).fetchall()
                     if not ke_rows:
                         # Fallback: get top entries by confidence for this category
-                        ke_rows = db.execute("""
+                        ke_rows = db.execute(
+                            """
                             SELECT ke.* FROM knowledge_entries ke
                             WHERE ke.category = ?
                             ORDER BY ke.confidence DESC
                             LIMIT ?
-                        """, (category, limit)).fetchall()
+                        """,
+                            (category, limit),
+                        ).fetchall()
                     for r in ke_rows:
                         d = dict(r)
                         eid = d.get("id")
@@ -984,7 +1152,8 @@ def search_past_work(db: sqlite3.Connection, query: str, limit: int = 3) -> list
 
     results = []
     try:
-        rows = db.execute("""
+        rows = db.execute(
+            """
             SELECT fts.title, fts.doc_type, fts.session_id,
                    snippet(knowledge_fts, 2, '', '', '...', 40) as excerpt
             FROM knowledge_fts fts
@@ -992,7 +1161,9 @@ def search_past_work(db: sqlite3.Connection, query: str, limit: int = 3) -> list
             AND fts.doc_type IN ('checkpoint', 'research')
             ORDER BY rank
             LIMIT ?
-        """, (fts_query, limit)).fetchall()
+        """,
+            (fts_query, limit),
+        ).fetchall()
         results = [dict(r) for r in rows]
     except sqlite3.OperationalError:
         pass
@@ -1008,6 +1179,7 @@ def load_codebase_map_files() -> set:
     failure so callers degrade gracefully when the artifact is absent.
     """
     import re as _re
+
     try:
         if not SESSION_STATE.exists():
             return set()
@@ -1046,16 +1218,33 @@ def blast_radius(db: sqlite3.Connection, query: str) -> list[dict]:
 
     # Extract file paths from the query (e.g., "fix src/auth.py and models/user.py")
     file_patterns = re.findall(
-        r'(?:^|\s)((?:[\w.-]+/)*[\w.-]+\.(?:py|js|ts|jsx|tsx|kt|java|swift|rb|go|rs|sh|json|yaml|yml|toml|md|sql|css|html))\b',
-        query
+        r"(?:^|\s)((?:[\w.-]+/)*[\w.-]+\.(?:py|js|ts|jsx|tsx|kt|java|swift|rb|go|rs|sh|json|yaml|yml|toml|md|sql|css|html))\b",
+        query,
     )
 
     if not file_patterns:
         # Try extracting module/feature names for broader matching
-        words = [w for w in query.split() if len(w) > 3
-                 and w.lower() not in ("implement", "create", "update", "modify",
-                                        "refactor", "review", "check", "build",
-                                        "that", "this", "with", "from", "have")]
+        words = [
+            w
+            for w in query.split()
+            if len(w) > 3
+            and w.lower()
+            not in (
+                "implement",
+                "create",
+                "update",
+                "modify",
+                "refactor",
+                "review",
+                "check",
+                "build",
+                "that",
+                "this",
+                "with",
+                "from",
+                "have",
+            )
+        ]
         if not words:
             return []
         file_patterns = words[:5]
@@ -1068,11 +1257,14 @@ def blast_radius(db: sqlite3.Connection, query: str) -> list[dict]:
 
         for category in counts:
             try:
-                row = db.execute("""
+                row = db.execute(
+                    """
                     SELECT COUNT(*) FROM knowledge_entries
                     WHERE category = ?
                     AND (content LIKE ? OR title LIKE ?)
-                """, (category, f"%{safe_pattern}%", f"%{safe_pattern}%")).fetchone()
+                """,
+                    (category, f"%{safe_pattern}%", f"%{safe_pattern}%"),
+                ).fetchone()
                 if row:
                     counts[category] = row[0]
             except sqlite3.OperationalError:
@@ -1089,14 +1281,16 @@ def blast_radius(db: sqlite3.Connection, query: str) -> list[dict]:
         else:
             risk_level, risk_emoji = "LOW", "🟢"
 
-        results.append({
-            "file": pattern,
-            "mistakes": counts["mistake"],
-            "patterns": counts["pattern"],
-            "decisions": counts["decision"],
-            "risk_level": risk_level,
-            "risk_emoji": risk_emoji,
-        })
+        results.append(
+            {
+                "file": pattern,
+                "mistakes": counts["mistake"],
+                "patterns": counts["pattern"],
+                "decisions": counts["decision"],
+                "risk_level": risk_level,
+                "risk_emoji": risk_emoji,
+            }
+        )
 
     # Cross-reference with codebase-map.md to mark stale blast-radius entries.
     # An entry is "stale" when the pattern looks like a real file path (has an
@@ -1105,25 +1299,19 @@ def blast_radius(db: sqlite3.Connection, query: str) -> list[dict]:
     for r in results:
         fname = r["file"]
         if tracked and "." in Path(fname).name:
-            r["stale"] = (
-                fname not in tracked
-                and not any(f.endswith("/" + fname) for f in tracked)
-            )
+            r["stale"] = fname not in tracked and not any(f.endswith("/" + fname) for f in tracked)
         else:
             r["stale"] = False  # keywords or no map available → no stale flag
 
     # Sort: risk tier first (HIGH → MEDIUM → LOW); stale entries last within tier
     risk_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
-    results.sort(
-        key=lambda x: (risk_order.get(x["risk_level"], 3), 1 if x.get("stale") else 0)
-    )
+    results.sort(key=lambda x: (risk_order.get(x["risk_level"], 3), 1 if x.get("stale") else 0))
     return results
 
 
-def generate_subagent_context(query: str, limit: int = 3,
-                              min_confidence: float = 0.5,
-                              mode: str = "auto",
-                              infer_auto_mode: bool = True) -> str:
+def generate_subagent_context(
+    query: str, limit: int = 3, min_confidence: float = 0.5, mode: str = "auto", infer_auto_mode: bool = True
+) -> str:
     """Generate compact context block for injecting into sub-agent prompts.
 
     Output is ~200-400 tokens — minimal overhead for sub-agent context windows.
@@ -1132,18 +1320,14 @@ def generate_subagent_context(query: str, limit: int = 3,
     db = get_db()
     lines = ["[KNOWLEDGE CONTEXT — from past sessions]"]
     rewritten_query = _rewrite_query_local(query)
-    _, categories, per_cat_limit = _mode_category_config(
-        limit, mode, query, infer_auto=infer_auto_mode
-    )
+    _, categories, per_cat_limit = _mode_category_config(limit, mode, query, infer_auto=infer_auto_mode)
     labels = {"mistake": "AVOID", "pattern": "USE", "decision": "NOTE", "tool": "CONFIG"}
 
     for cat in categories:
         label = labels.get(cat, cat.upper())
         cat_limit = per_cat_limit.get(cat, limit)
-        fts = search_knowledge_entries(db, rewritten_query, cat, cat_limit,
-                                       min_confidence=min_confidence)
-        sem = search_semantic(db, query, cat, cat_limit,
-                              min_confidence=min_confidence)
+        fts = search_knowledge_entries(db, rewritten_query, cat, cat_limit, min_confidence=min_confidence)
+        sem = search_semantic(db, query, cat, cat_limit, min_confidence=min_confidence)
         # Merge and dedup by id
         seen = set()
         entries = []
@@ -1169,17 +1353,20 @@ def generate_subagent_context(query: str, limit: int = 3,
     return "\n".join(lines)
 
 
-def generate_briefing(query: str, limit: int = 3, fmt: str = "md",
-                      full: bool = False, min_confidence: float = 0.5,
-                      mode: str = "auto",
-                      infer_auto_mode: bool = True,
-                      with_meta: bool = False):
+def generate_briefing(
+    query: str,
+    limit: int = 3,
+    fmt: str = "md",
+    full: bool = False,
+    min_confidence: float = 0.5,
+    mode: str = "auto",
+    infer_auto_mode: bool = True,
+    with_meta: bool = False,
+):
     """Generate a structured briefing from the knowledge base."""
     db = get_db()
     rewritten_query = _rewrite_query_local(query)
-    active_mode, categories, per_cat_limit = _mode_category_config(
-        limit, mode, query, infer_auto=infer_auto_mode
-    )
+    active_mode, categories, per_cat_limit = _mode_category_config(limit, mode, query, infer_auto=infer_auto_mode)
 
     briefing_data = {}
     global_seen_titles = set()  # Cross-category dedup
@@ -1187,10 +1374,8 @@ def generate_briefing(query: str, limit: int = 3, fmt: str = "md",
     for cat in categories:
         # Combine FTS5 + semantic results, deduplicate
         cat_limit = per_cat_limit.get(cat, limit)
-        fts_results = search_knowledge_entries(db, rewritten_query, cat, cat_limit,
-                                                 min_confidence=min_confidence)
-        sem_results = search_semantic(db, query, cat, cat_limit,
-                                      min_confidence=min_confidence)
+        fts_results = search_knowledge_entries(db, rewritten_query, cat, cat_limit, min_confidence=min_confidence)
+        sem_results = search_semantic(db, query, cat, cat_limit, min_confidence=min_confidence)
 
         merged = []
         for r in fts_results + sem_results:
@@ -1219,10 +1404,7 @@ def generate_briefing(query: str, limit: int = 3, fmt: str = "md",
     db.close()
 
     selected_entry_ids = _safe_int_list(
-        row.get("id")
-        for rows in briefing_data.values()
-        for row in rows
-        if isinstance(row, dict)
+        row.get("id") for rows in briefing_data.values() for row in rows if isinstance(row, dict)
     )
 
     # Check if we have anything
@@ -1230,12 +1412,15 @@ def generate_briefing(query: str, limit: int = 3, fmt: str = "md",
     output = ""
     if total_entries == 0:
         if fmt == "json":
-            output = json.dumps({
-                "query": query,
-                "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "sections": {},
-                "message": "No relevant past experience found.",
-            }, indent=2)
+            output = json.dumps(
+                {
+                    "query": query,
+                    "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "sections": {},
+                    "message": "No relevant past experience found.",
+                },
+                indent=2,
+            )
         elif fmt == "pack":
             pack = {
                 "query": query,
@@ -1256,8 +1441,10 @@ def generate_briefing(query: str, limit: int = 3, fmt: str = "md",
         if fmt == "json":
             output = _format_json(query, briefing_data, past_work, categories, blast)
         elif fmt == "pack":
-            pack_entries = {k: [_serialize_pack_entry(e) for e in briefing_data.get(k, [])]
-                            for k in ("mistake", "pattern", "decision", "tool")}
+            pack_entries = {
+                k: [_serialize_pack_entry(e) for e in briefing_data.get(k, [])]
+                for k in ("mistake", "pattern", "decision", "tool")
+            }
             pack = {
                 "query": query,
                 "rewritten_query": rewritten_query,
@@ -1309,8 +1496,7 @@ def generate_briefing(query: str, limit: int = 3, fmt: str = "md",
     return output
 
 
-def _format_default(query: str, data: dict, past_work: list, categories: dict,
-                    blast: list = None) -> str:
+def _format_default(query: str, data: dict, past_work: list, categories: dict, blast: list = None) -> str:
     """Compact default format: titles + 1-line summaries (~500 tokens)."""
     lines = []
     lines.append(f"📋 Briefing: {query}")
@@ -1332,11 +1518,14 @@ def _format_default(query: str, data: dict, past_work: list, categories: dict,
             summary = ""
             for ln in content.split("\n"):
                 ln = ln.strip().lstrip("-").lstrip("*").lstrip("0123456789.").strip()
-                if (ln and len(ln) > 15
-                        and not ln.startswith("#")
-                        and not ln.startswith("|")
-                        and not ln.startswith(">")
-                        and not ln.startswith("```")):
+                if (
+                    ln
+                    and len(ln) > 15
+                    and not ln.startswith("#")
+                    and not ln.startswith("|")
+                    and not ln.startswith(">")
+                    and not ln.startswith("```")
+                ):
                     summary = ln[:80]
                     break
             if summary:
@@ -1364,22 +1553,21 @@ def _format_default(query: str, data: dict, past_work: list, categories: dict,
         lines.append("")
 
     total = sum(len(v) for v in data.values()) + len(past_work)
-    lines.append(f"({total} entries) "
-                 f"Use --full for complete content, "
-                 f"or query-session.py --detail <id> for specific entry")
+    lines.append(
+        f"({total} entries) Use --full for complete content, or query-session.py --detail <id> for specific entry"
+    )
 
     return "\n".join(lines)
 
 
-def _format_markdown(query: str, data: dict, past_work: list, categories: dict,
-                     blast: list = None) -> str:
+def _format_markdown(query: str, data: dict, past_work: list, categories: dict, blast: list = None) -> str:
     """Format briefing as Markdown."""
     lines = []
-    lines.append(f"# 📋 Pre-Task Briefing")
-    lines.append(f"")
+    lines.append("# 📋 Pre-Task Briefing")
+    lines.append("")
     lines.append(f"**Task**: {query}")
     lines.append(f"**Generated**: {time.strftime('%Y-%m-%d %H:%M')}")
-    lines.append(f"")
+    lines.append("")
     lines.append("---")
     lines.append("")
 
@@ -1389,7 +1577,7 @@ def _format_markdown(query: str, data: dict, past_work: list, categories: dict,
             continue
 
         lines.append(f"## {meta['emoji']} {meta['title']}")
-        lines.append(f"")
+        lines.append("")
         lines.append(f"_{meta['desc']}_")
         lines.append("")
 
@@ -1402,8 +1590,9 @@ def _format_markdown(query: str, data: dict, past_work: list, categories: dict,
 
             lines.append(f"### {i}. {title}")
             if tags:
-                lines.append(f"Tags: `{tags}` | Confidence: {confidence:.1f}"
-                             + (f" | Seen {count}x" if count > 1 else ""))
+                lines.append(
+                    f"Tags: `{tags}` | Confidence: {confidence:.1f}" + (f" | Seen {count}x" if count > 1 else "")
+                )
             lines.append("")
 
             # Limit content preview
@@ -1422,8 +1611,7 @@ def _format_markdown(query: str, data: dict, past_work: list, categories: dict,
         lines.append("")
         for i, work in enumerate(past_work, 1):
             sid = work.get("session_id", "?")[:8]
-            lines.append(f"{i}. **{work.get('title', '?')}** "
-                         f"({work.get('doc_type', '?')}, session `{sid}..`)")
+            lines.append(f"{i}. **{work.get('title', '?')}** ({work.get('doc_type', '?')}, session `{sid}..`)")
             excerpt = work.get("excerpt", "")[:200]
             if excerpt:
                 lines.append(f"   {excerpt}")
@@ -1436,26 +1624,23 @@ def _format_markdown(query: str, data: dict, past_work: list, categories: dict,
         lines.append("|------|------|----------|----------|-----------|")
         for b in blast:
             file_label = f"`{b['file']}`" + (" *(stale)*" if b.get("stale") else "")
-            lines.append(f"| {file_label} | {b['risk_emoji']} {b['risk_level']} "
-                         f"| {b['mistakes']} | {b['patterns']} | {b['decisions']} |")
+            lines.append(
+                f"| {file_label} | {b['risk_emoji']} {b['risk_level']} "
+                f"| {b['mistakes']} | {b['patterns']} | {b['decisions']} |"
+            )
         lines.append("")
 
     lines.append("---")
-    lines.append(f"_Briefing from knowledge.db — "
-                 f"{sum(len(v) for v in data.values())} entries + "
-                 f"{len(past_work)} past work refs_")
+    lines.append(
+        f"_Briefing from knowledge.db — {sum(len(v) for v in data.values())} entries + {len(past_work)} past work refs_"
+    )
 
     return "\n".join(lines)
 
 
-def _format_json(query: str, data: dict, past_work: list, categories: dict,
-                 blast: list = None) -> str:
+def _format_json(query: str, data: dict, past_work: list, categories: dict, blast: list = None) -> str:
     """Format briefing as JSON."""
-    output = {
-        "query": query,
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "sections": {}
-    }
+    output = {"query": query, "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "sections": {}}
 
     for cat, meta in categories.items():
         entries = data.get(cat, [])
@@ -1470,7 +1655,7 @@ def _format_json(query: str, data: dict, past_work: list, categories: dict,
                         "confidence": e.get("confidence", 0),
                     }
                     for e in entries
-                ]
+                ],
             }
 
     if past_work:
@@ -1484,7 +1669,7 @@ def _format_json(query: str, data: dict, past_work: list, categories: dict,
                     "excerpt": w.get("excerpt", "")[:200],
                 }
                 for w in past_work
-            ]
+            ],
         }
 
     if blast:
@@ -1493,8 +1678,7 @@ def _format_json(query: str, data: dict, past_work: list, categories: dict,
     return json.dumps(output, indent=2, ensure_ascii=False)
 
 
-def _format_compact(query: str, data: dict, past_work: list, categories: dict,
-                    blast: list = None) -> str:
+def _format_compact(query: str, data: dict, past_work: list, categories: dict, blast: list = None) -> str:
     """Compact format optimized for AI agent context injection.
 
     Minimal-first ordering: mistakes → blast_radius → patterns/decisions/tools → past_work.
@@ -1503,7 +1687,7 @@ def _format_compact(query: str, data: dict, past_work: list, categories: dict,
     """
     lines = []
     safe_query = query[:100].replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
-    lines.append(f"<briefing task=\"{safe_query}\">\n")
+    lines.append(f'<briefing task="{safe_query}">\n')
 
     def _cat_block(cat: str) -> None:
         """Append one XML-style category block to *lines*."""
@@ -1517,13 +1701,16 @@ def _format_compact(query: str, data: dict, past_work: list, categories: dict,
             first_line = ""
             for ln in content.split("\n"):
                 ln = ln.strip().lstrip("-").lstrip("*").lstrip("0123456789.").strip()
-                if (ln and len(ln) > 15
-                        and not ln.startswith("#")
-                        and not ln.startswith("|")
-                        and not ln.startswith(">")
-                        and not ln.startswith("```")
-                        and "phỏng vấn" not in ln.lower()
-                        and "điểm" not in ln.lower()[:20]):
+                if (
+                    ln
+                    and len(ln) > 15
+                    and not ln.startswith("#")
+                    and not ln.startswith("|")
+                    and not ln.startswith(">")
+                    and not ln.startswith("```")
+                    and "phỏng vấn" not in ln.lower()
+                    and "điểm" not in ln.lower()[:20]
+                ):
                     first_line = ln[:200]
                     break
             if not first_line:
@@ -1554,16 +1741,14 @@ def _format_compact(query: str, data: dict, past_work: list, categories: dict,
         lines.append("<past_work>")
         for w in past_work:
             sid = w.get("session_id", "?")[:8]
-            lines.append(f"- [{w.get('doc_type', '?')}] {w.get('title', '?')} "
-                         f"(session {sid})")
+            lines.append(f"- [{w.get('doc_type', '?')}] {w.get('title', '?')} (session {sid})")
         lines.append("</past_work>\n")
 
     lines.append("</briefing>")
     return "\n".join(lines)
 
 
-def generate_titles_only(query: str = "", limit: int = 20,
-                         min_confidence: float = 0.3) -> str:
+def generate_titles_only(query: str = "", limit: int = 20, min_confidence: float = 0.3) -> str:
     """Progressive disclosure layer 1: titles + type + token cost only.
 
     Ultra-compact index (~10 tokens/entry) for scanning before drill-down.
@@ -1576,7 +1761,8 @@ def generate_titles_only(query: str = "", limit: int = 20,
         # Search mode
         safe_query = _sanitize_fts_query(query)
         if safe_query:
-            rows = db.execute("""
+            rows = db.execute(
+                """
                 SELECT ke.id, ke.category, ke.title, ke.est_tokens, ke.wing, ke.room
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
@@ -1584,18 +1770,23 @@ def generate_titles_only(query: str = "", limit: int = 20,
                   AND ke.confidence >= ?
                 ORDER BY rank
                 LIMIT ?
-            """, (safe_query, min_confidence, limit)).fetchall()
+            """,
+                (safe_query, min_confidence, limit),
+            ).fetchall()
         else:
             rows = []
     else:
         # Recent mode (no query)
-        rows = db.execute("""
+        rows = db.execute(
+            """
             SELECT id, category, title, est_tokens, wing, room
             FROM knowledge_entries
             WHERE confidence >= ?
             ORDER BY last_seen DESC
             LIMIT ?
-        """, (min_confidence, limit)).fetchall()
+        """,
+            (min_confidence, limit),
+        ).fetchall()
 
     if not rows:
         db.close()
@@ -1608,10 +1799,10 @@ def generate_titles_only(query: str = "", limit: int = 20,
     lines.append("")
 
     for r in rows:
-        tok = f"~{r['est_tokens']}tok" if r['est_tokens'] else ""
+        tok = f"~{r['est_tokens']}tok" if r["est_tokens"] else ""
         loc = ""
-        if r['wing'] or r['room']:
-            parts = [r['wing'], r['room']]
+        if r["wing"] or r["room"]:
+            parts = [r["wing"], r["room"]]
             loc = f" [{'/'.join(p for p in parts if p)}]"
         lines.append(f"  #{r['id']:4d} [{r['category']:9s}] {r['title'][:60]} {tok}{loc}")
 
@@ -1645,18 +1836,17 @@ def generate_wakeup() -> str:
     # Current branch
     try:
         import subprocess
+
         branch = subprocess.check_output(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            stderr=subprocess.DEVNULL, text=True, timeout=5).strip()
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], stderr=subprocess.DEVNULL, text=True, timeout=5
+        ).strip()
         lines.append(f"BRANCH: {branch}")
     except (subprocess.TimeoutExpired, Exception):
         lines.append("BRANCH: (unknown)")
 
     # Wakeup config overrides
     try:
-        rows = db.execute(
-            "SELECT key, value FROM wakeup_config ORDER BY key"
-        ).fetchall()
+        rows = db.execute("SELECT key, value FROM wakeup_config ORDER BY key").fetchall()
         for r in rows:
             lines.append(f"{r['key'].upper()}: {r['value']}")
     except sqlite3.OperationalError:
@@ -1671,7 +1861,7 @@ def generate_wakeup() -> str:
             LIMIT 3
         """).fetchall()
         if rows:
-            items = " | ".join(f"({i+1}) {r['title'][:50]}" for i, r in enumerate(rows))
+            items = " | ".join(f"({i + 1}) {r['title'][:50]}" for i, r in enumerate(rows))
             lines.append(f"TOP-MISTAKES: {items}")
     except sqlite3.OperationalError:
         pass
@@ -1685,7 +1875,7 @@ def generate_wakeup() -> str:
             LIMIT 3
         """).fetchall()
         if rows:
-            items = " | ".join(f"({i+1}) {r['title'][:50]}" for i, r in enumerate(rows))
+            items = " | ".join(f"({i + 1}) {r['title'][:50]}" for i, r in enumerate(rows))
             lines.append(f"TOP-PATTERNS: {items}")
     except sqlite3.OperationalError:
         pass
@@ -1699,7 +1889,7 @@ def generate_wakeup() -> str:
             LIMIT 3
         """).fetchall()
         if rows:
-            items = " | ".join(f"({i+1}) {r['title'][:50]}" for i, r in enumerate(rows))
+            items = " | ".join(f"({i + 1}) {r['title'][:50]}" for i, r in enumerate(rows))
             lines.append(f"RECENT-DECISIONS: {items}")
     except sqlite3.OperationalError:
         pass
@@ -1751,7 +1941,7 @@ def _add_session_summary(lines: list) -> None:
         if marker in content:
             start = content.index(marker) + len(marker)
             # Get the first paragraph after the heading
-            rest = content[start:start + 500].strip()
+            rest = content[start : start + 500].strip()
             first_para = rest.split("\n\n")[0].replace("\n", " ").strip()
             if first_para and len(first_para) > 10:
                 summary_parts.append(f"LAST-TASK: {first_para[:120]}")
@@ -1785,8 +1975,7 @@ def _add_session_summary(lines: list) -> None:
     lines.extend(summary_parts)
 
 
-def search_by_wing_room(wing: str = "", room: str = "",
-                        limit: int = 10) -> str:
+def search_by_wing_room(wing: str = "", room: str = "", limit: int = 10) -> str:
     """Search knowledge entries filtered by wing and/or room."""
     db = get_db()
     conditions = []
@@ -1806,13 +1995,16 @@ def search_by_wing_room(wing: str = "", room: str = "",
     where = " AND ".join(conditions)
     params.append(limit)
 
-    rows = db.execute(f"""
+    rows = db.execute(
+        f"""
         SELECT id, category, title, content, tags, wing, room, confidence
         FROM knowledge_entries
         WHERE {where}
         ORDER BY confidence DESC, occurrence_count DESC
         LIMIT ?
-    """, params).fetchall()
+    """,
+        params,
+    ).fetchall()
 
     if not rows:
         db.close()
@@ -1827,8 +2019,7 @@ def search_by_wing_room(wing: str = "", room: str = "",
     return "\n".join(lines)
 
 
-def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text",
-                           with_meta: bool = False):
+def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text", with_meta: bool = False):
     """Generate a focused briefing for a specific task ID.
 
     Pulls all knowledge entries tagged with this task_id and formats them
@@ -1840,7 +2031,8 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text",
 
     # Primary: entries explicitly tagged with this task_id
     try:
-        tagged_rows = db.execute("""
+        tagged_rows = db.execute(
+            """
             SELECT id, category, title, content, confidence,
                    affected_files, tags, occurrence_count,
                    document_id, source_section,
@@ -1859,17 +2051,22 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text",
                 ORDER BY ke.confidence DESC, ke.occurrence_count DESC
                 LIMIT ?
             )
-        """, (safe_task, limit)).fetchall()
+        """,
+            (safe_task, limit),
+        ).fetchall()
     except sqlite3.OperationalError:
         try:
-            tagged_rows = db.execute("""
+            tagged_rows = db.execute(
+                """
                 SELECT id, category, title, content, confidence,
                        affected_files, tags, occurrence_count
                 FROM knowledge_entries
                 WHERE task_id = ?
                 ORDER BY confidence DESC, occurrence_count DESC
                 LIMIT ?
-            """, (safe_task, limit)).fetchall()
+            """,
+                (safe_task, limit),
+            ).fetchall()
         except sqlite3.OperationalError:
             tagged_rows = []
 
@@ -1879,7 +2076,8 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text",
     tagged_ids = {r["id"] for r in tagged_rows}
     if fts_query and fts_query != '""':
         try:
-            rows = db.execute("""
+            rows = db.execute(
+                """
                 SELECT ke.id, ke.category, ke.title, ke.content, ke.confidence,
                        ke.affected_files, ke.tags, ke.occurrence_count,
                        ke.document_id, ke.source_section,
@@ -1892,13 +2090,16 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text",
                 WHERE ke_fts MATCH ?
                 ORDER BY rank
                 LIMIT ?
-            """, (fts_query, min(limit, 10))).fetchall()
+            """,
+                (fts_query, min(limit, 10)),
+            ).fetchall()
             for r in rows:
                 if r["id"] not in tagged_ids:
                     fts_rows.append(r)
         except sqlite3.OperationalError:
             try:
-                rows = db.execute("""
+                rows = db.execute(
+                    """
                     SELECT ke.id, ke.category, ke.title, ke.content, ke.confidence,
                            ke.affected_files, ke.tags, ke.occurrence_count
                     FROM ke_fts fts
@@ -1906,16 +2107,16 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text",
                     WHERE ke_fts MATCH ?
                     ORDER BY rank
                     LIMIT ?
-                """, (fts_query, min(limit, 10))).fetchall()
+                """,
+                    (fts_query, min(limit, 10)),
+                ).fetchall()
                 for r in rows:
                     if r["id"] not in tagged_ids:
                         fts_rows.append(r)
             except sqlite3.OperationalError:
                 pass
 
-    selected_entry_ids = _safe_int_list(
-        [r["id"] for r in tagged_rows] + [r["id"] for r in fts_rows[:5]]
-    )
+    selected_entry_ids = _safe_int_list([r["id"] for r in tagged_rows] + [r["id"] for r in fts_rows[:5]])
     hit_count = len(selected_entry_ids)
 
     if not tagged_rows and not fts_rows:
@@ -1945,9 +2146,11 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text",
                 }
             return output
         db.close()
-        return (f"No knowledge entries found for task: '{task_id}'\n"
-                f"Tip: Use 'learn.py --task {task_id!r} ...' to tag entries.\n"
-                f"Or try: briefing.py '{task_id}' for FTS-based briefing.")
+        return (
+            f"No knowledge entries found for task: '{task_id}'\n"
+            f"Tip: Use 'learn.py --task {task_id!r} ...' to tag entries.\n"
+            f"Or try: briefing.py '{task_id}' for FTS-based briefing."
+        )
 
     lines = [f"📋 Task recall: {task_id}\n"]
 
@@ -2128,8 +2331,7 @@ def main():
         if "--limit" in args:
             idx = args.index("--limit")
             limit = int(args[idx + 1]) if idx + 1 < len(args) else 20
-        query_parts = [a for a in args if not a.startswith("--")
-                       and a != str(limit)]
+        query_parts = [a for a in args if not a.startswith("--") and a != str(limit)]
         query = " ".join(query_parts)
         print(generate_titles_only(query=query, limit=limit))
         return
@@ -2155,9 +2357,7 @@ def main():
                 budget = 3000
         task_meta = None
         if task_fmt == "json":
-            output, task_meta = generate_task_briefing(
-                task_id, limit=limit, fmt=task_fmt, with_meta=True
-            )
+            output, task_meta = generate_task_briefing(task_id, limit=limit, fmt=task_fmt, with_meta=True)
         else:
             output = generate_task_briefing(task_id, limit=limit, fmt=task_fmt)
         if budget > 0 and len(output) > budget and task_fmt != "json":
@@ -2193,8 +2393,7 @@ def main():
         if "--limit" in args:
             idx = args.index("--limit")
             limit = int(args[idx + 1]) if idx + 1 < len(args) else 10
-        print(search_by_wing_room(wing=wing_filter, room=room_filter,
-                                  limit=limit))
+        print(search_by_wing_room(wing=wing_filter, room=room_filter, limit=limit))
         return
 
     # Parse arguments
@@ -2246,10 +2445,13 @@ def main():
         for i, a in enumerate(args):
             if a in ("--format", "--limit", "--min-confidence", "--budget", "--mode") and i + 1 < len(args):
                 consumed_value_indices.add(i + 1)
-        query_parts = [a for i, a in enumerate(args)
-                       if i not in consumed_value_indices
-                       and not a.startswith("--")
-                       and a not in ("md", "json", "compact", "pack", str(limit))]
+        query_parts = [
+            a
+            for i, a in enumerate(args)
+            if i not in consumed_value_indices
+            and not a.startswith("--")
+            and a not in ("md", "json", "compact", "pack", str(limit))
+        ]
         query = " ".join(query_parts)
 
     if not query:
@@ -2271,17 +2473,21 @@ def main():
 
     if subagent_mode:
         infer_auto_mode = mode_explicit
-        output = generate_subagent_context(query, limit=limit,
-                                           min_confidence=min_confidence,
-                                           mode=mode,
-                                           infer_auto_mode=infer_auto_mode)
+        output = generate_subagent_context(
+            query, limit=limit, min_confidence=min_confidence, mode=mode, infer_auto_mode=infer_auto_mode
+        )
         output_meta = None
     else:
         infer_auto_mode = mode_explicit or fmt == "pack"
         output, output_meta = generate_briefing(
-            query, limit=limit, fmt=fmt, full=full_mode,
-            min_confidence=min_confidence, mode=mode,
-            infer_auto_mode=infer_auto_mode, with_meta=True
+            query,
+            limit=limit,
+            fmt=fmt,
+            full=full_mode,
+            min_confidence=min_confidence,
+            mode=mode,
+            infer_auto_mode=infer_auto_mode,
+            with_meta=True,
         )
 
     if budget > 0 and len(output) > budget:
@@ -2290,13 +2496,18 @@ def main():
         # relevant entries are preserved (search is ordered by confidence + relevance).
         for reduced_limit in range(max(1, limit - 1), 0, -1):
             if subagent_mode:
-                output = generate_subagent_context(query, limit=reduced_limit,
-                                                   min_confidence=min_confidence,
-                                                   mode=mode,
-                                                   infer_auto_mode=infer_auto_mode)
+                output = generate_subagent_context(
+                    query,
+                    limit=reduced_limit,
+                    min_confidence=min_confidence,
+                    mode=mode,
+                    infer_auto_mode=infer_auto_mode,
+                )
             else:
                 output, output_meta = generate_briefing(
-                    query, limit=reduced_limit, fmt=fmt,
+                    query,
+                    limit=reduced_limit,
+                    fmt=fmt,
                     full=full_mode,
                     min_confidence=min_confidence,
                     mode=mode,

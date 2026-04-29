@@ -7,6 +7,7 @@ Secret stored in ~/.copilot/hooks/.marker-secret (protected by OS immutable flag
 If secret doesn't exist, falls back to simple file existence check (backward compat).
 Once secret exists (after --lock-hooks), unsigned markers are rejected.
 """
+
 import hashlib
 import hmac
 import json
@@ -24,8 +25,10 @@ SECRET_PATH = Path.home() / ".copilot" / "hooks" / ".marker-secret"
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 
 PROTECTED_PATTERNS = (
-    ".marker-secret", "integrity-manifest",
-    "marker_auth.py", "marker_auth ",
+    ".marker-secret",
+    "integrity-manifest",
+    "marker_auth.py",
+    "marker_auth ",
     ".copilot/hooks/.",
 )
 
@@ -63,8 +66,7 @@ def verify_marker(marker_path, name):
         sig = data.get("sig", "")
         if m_name != name:
             return False
-        expected = hmac.new(secret.encode(), f"{name}:{ts}".encode(),
-                            hashlib.sha256).hexdigest()
+        expected = hmac.new(secret.encode(), f"{name}:{ts}".encode(), hashlib.sha256).hexdigest()
         return hmac.compare_digest(sig, expected)
     except (json.JSONDecodeError, KeyError, TypeError):
         return False
@@ -100,8 +102,7 @@ def verify_counter(counter_path):
         value = data.get("value", 0)
         ts = data.get("ts", "")
         sig = data.get("sig", "")
-        expected = hmac.new(secret.encode(), f"{name}:{value}:{ts}".encode(),
-                            hashlib.sha256).hexdigest()
+        expected = hmac.new(secret.encode(), f"{name}:{value}:{ts}".encode(), hashlib.sha256).hexdigest()
         if hmac.compare_digest(sig, expected):
             return int(value)
         return 0
@@ -117,8 +118,7 @@ def sign_list_marker(marker_path, lines):
         marker_path.write_text(content, encoding="utf-8")
         return
     name = marker_path.name
-    sig = hmac.new(secret.encode(), f"{name}:{content}".encode(),
-                   hashlib.sha256).hexdigest()
+    sig = hmac.new(secret.encode(), f"{name}:{content}".encode(), hashlib.sha256).hexdigest()
     marker_path.write_text(json.dumps({"name": name, "content": content, "sig": sig}), encoding="utf-8")
 
 
@@ -134,8 +134,7 @@ def verify_list_marker(marker_path):
         content = data.get("content", "")
         sig = data.get("sig", "")
         name = data.get("name", "")
-        expected = hmac.new(secret.encode(), f"{name}:{content}".encode(),
-                            hashlib.sha256).hexdigest()
+        expected = hmac.new(secret.encode(), f"{name}:{content}".encode(), hashlib.sha256).hexdigest()
         if hmac.compare_digest(sig, expected):
             return set(content.splitlines()) if content else set()
         return set()
@@ -170,6 +169,7 @@ if __name__ == "__main__":
     cmd = sys.argv[1]
     if cmd == "gen-secret":
         import secrets
+
         s = secrets.token_hex(32)
         SECRET_PATH.parent.mkdir(parents=True, exist_ok=True)
         SECRET_PATH.write_text(s, encoding="utf-8")
@@ -177,7 +177,8 @@ if __name__ == "__main__":
         sys.exit(0)
     elif cmd == "verify":
         if len(sys.argv) < 3:
-            print("Need marker name"); sys.exit(1)
+            print("Need marker name")
+            sys.exit(1)
         name = sys.argv[2]
         marker = MARKERS_DIR / name
         valid = verify_marker(marker, name)

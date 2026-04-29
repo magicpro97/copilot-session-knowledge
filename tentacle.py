@@ -77,8 +77,8 @@ SKILL_METRICS_DB = Path.home() / ".copilot" / "session-state" / "skill-metrics.d
 _WORKTREE_STATE_ROOT = Path.home() / ".copilot" / "session-state" / "worktrees"
 
 
-
 from contextlib import contextmanager
+
 
 @contextmanager
 def file_locked(lock_path):
@@ -194,18 +194,21 @@ def get_tentacles_dir(session_dir: str | None = None) -> Path:
 
 # --- Todo parsing ---
 
+
 def parse_todos(content: str) -> list[dict]:
     """Parse markdown checkbox items from todo.md content."""
     todos = []
     for i, line in enumerate(content.splitlines()):
         m = re.match(r"^(\s*)-\s+\[([ xX])\]\s+(.+)$", line)
         if m:
-            todos.append({
-                "index": len(todos),
-                "done": m.group(2).lower() == "x",
-                "text": m.group(3).strip(),
-                "line_number": i,
-            })
+            todos.append(
+                {
+                    "index": len(todos),
+                    "done": m.group(2).lower() == "x",
+                    "text": m.group(3).strip(),
+                    "line_number": i,
+                }
+            )
     return todos
 
 
@@ -221,6 +224,7 @@ def render_todos(todos: list[dict]) -> str:
 
 # --- Commands ---
 
+
 def _run_briefing(query: str) -> str:
     """Run briefing.py with a text query and return compact output. Returns empty string on failure."""
     if not BRIEFING_PY.exists():
@@ -228,8 +232,10 @@ def _run_briefing(query: str) -> str:
     try:
         result = subprocess.run(
             [sys.executable, str(BRIEFING_PY), query, "--compact", "--limit", "3"],
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",  # P1-3: prevent UnicodeDecodeError on Windows cp1252
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",  # P1-3: prevent UnicodeDecodeError on Windows cp1252
             timeout=15,
         )
         output = result.stdout.strip()
@@ -247,6 +253,7 @@ def _render_knowledge_evidence(
     file_matches: list[dict] | None = None,
 ) -> str:
     """Render deterministic compact evidence block for prompt injection."""
+
     def _source_label(entry: dict) -> str:
         src = entry.get("source_document") or {}
         if not isinstance(src, dict):
@@ -320,21 +327,21 @@ def _extract_pack_entries(pack_data: dict) -> list[dict]:
     out = []
     for category in ("mistake", "pattern", "decision", "tool"):
         for entry in entries.get(category, []):
-            out.append({
-                "id": entry.get("id", "?"),
-                "category": entry.get("category", category),
-                "title": entry.get("title", "(no title)"),
-                "source_document": entry.get("source_document"),
-                "related_entry_ids": entry.get("related_entry_ids", []),
-            })
+            out.append(
+                {
+                    "id": entry.get("id", "?"),
+                    "category": entry.get("category", category),
+                    "title": entry.get("title", "(no title)"),
+                    "source_document": entry.get("source_document"),
+                    "related_entry_ids": entry.get("related_entry_ids", []),
+                }
+            )
     return out
 
 
 def _run_briefing_for_task(task_id: str, fallback_query: str = "") -> str:
     """Load evidence block for task recall using task-json then pack fallback."""
-    recall_pack_data, recall_source_mode = _fetch_recall_pack_json(
-        task_id, fallback_query=fallback_query
-    )
+    recall_pack_data, recall_source_mode = _fetch_recall_pack_json(task_id, fallback_query=fallback_query)
     return _render_recall_payload(task_id, recall_pack_data, recall_source_mode)
 
 
@@ -391,8 +398,10 @@ def _fetch_recall_pack_json(task_id: str, fallback_query: str = "") -> tuple[dic
     try:
         result = subprocess.run(
             [sys.executable, str(BRIEFING_PY), "--task", task_id, "--json"],
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -406,8 +415,10 @@ def _fetch_recall_pack_json(task_id: str, fallback_query: str = "") -> tuple[dic
         try:
             result = subprocess.run(
                 [sys.executable, str(BRIEFING_PY), fallback_query, "--pack", "--limit", "3"],
-                capture_output=True, text=True,
-                encoding="utf-8", errors="replace",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=15,
             )
             if result.returncode == 0 and result.stdout.strip():
@@ -461,8 +472,10 @@ def _load_latest_checkpoint_context() -> str:
     try:
         result = subprocess.run(
             [sys.executable, str(CHECKPOINT_RESTORE_PY), "--export", "latest", "--format", "json"],
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",  # P1-3
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",  # P1-3
             timeout=15,
         )
         if result.returncode != 0 or not result.stdout.strip():
@@ -476,6 +489,7 @@ def _load_latest_checkpoint_context() -> str:
 # ---------------------------------------------------------------------------
 # Dispatched-subagent marker helpers
 # ---------------------------------------------------------------------------
+
 
 def _read_marker_secret() -> str | None:
     """Read the shared HMAC secret used by marker_auth. Returns None if absent."""
@@ -593,13 +607,17 @@ def _write_dispatched_subagent_marker(
             # branch below handles (None == None) correctly.
             if current_git_root_str is not None:
                 active = [
-                    e for e in active
+                    e
+                    for e in active
                     if not (
                         e.get("name") == tentacle_name
                         and e.get("tentacle_id") is None
                         and (
                             e.get("git_root") is None
-                            or (tentacle_id is not None and _same_canonical_root(e.get("git_root"), current_git_root_str))
+                            or (
+                                tentacle_id is not None
+                                and _same_canonical_root(e.get("git_root"), current_git_root_str)
+                            )
                         )
                     )
                 ]
@@ -842,16 +860,20 @@ def _get_marker_state() -> dict:
                 continue
             names.append(name)
             # Include tentacle_id in the enriched entry (None for old entries)
-            enriched = {"name": name, "ts": entry.get("ts"), "git_root": entry.get("git_root"),
-                        "tentacle_id": entry.get("tentacle_id")}
+            enriched = {
+                "name": name,
+                "ts": entry.get("ts"),
+                "git_root": entry.get("git_root"),
+                "tentacle_id": entry.get("tentacle_id"),
+            }
             entries.append(enriched)
 
     return {
         "active": len(names) > 0,
         "path": str(_DISPATCHED_MARKER_PATH),
-        "active_tentacles": names,           # backward compat: list of names
+        "active_tentacles": names,  # backward compat: list of names
         "active_tentacle_entries": entries,  # new: enriched per-entry data
-        "git_root": data.get("git_root"),    # top-level git_root of last writer
+        "git_root": data.get("git_root"),  # top-level git_root of last writer
         "dispatch_mode": data.get("dispatch_mode"),
         "stale": _is_marker_stale(data),
         "written_at": data.get("written_at"),
@@ -902,7 +924,7 @@ def _build_runtime_bundle(
         briefing_content = (
             f"# Briefing: {name}\n\n"
             "<!-- No briefing data available for this tentacle. -->\n\n"
-            f"Fetch manually:  python3 ~/.copilot/tools/briefing.py \"{name}\" --compact\n"
+            f'Fetch manually:  python3 ~/.copilot/tools/briefing.py "{name}" --compact\n'
         )
     (bundle_dir / "briefing.md").write_text(briefing_content, encoding="utf-8")
     manifest["artifacts"]["briefing"] = {
@@ -1052,6 +1074,7 @@ def _build_runtime_bundle(
 # Git worktree helpers
 # ---------------------------------------------------------------------------
 
+
 def _repo_slug(git_root: Path) -> str:
     """Convert a git root path to a safe directory name component."""
     return re.sub(r"[^a-z0-9]+", "-", git_root.name.lower()).strip("-") or "repo"
@@ -1064,12 +1087,7 @@ def _tentacle_slug(name: str) -> str:
 
 def _worktree_path_for(name: str, git_root: Path) -> Path:
     """Return the deterministic worktree path for a tentacle in a given repo."""
-    return (
-        _WORKTREE_STATE_ROOT
-        / _repo_slug(git_root)
-        / _tentacle_slug(name)
-        / "repo"
-    )
+    return _WORKTREE_STATE_ROOT / _repo_slug(git_root) / _tentacle_slug(name) / "repo"
 
 
 def _update_meta_worktree(tentacle_dir: Path, state: dict) -> None:
@@ -1108,9 +1126,12 @@ def _worktree_prepare(tentacle_dir: Path, name: str, git_root: "Path | None") ->
     try:
         result = subprocess.run(
             ["git", "worktree", "add", "--detach", str(wt_path), "HEAD"],
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            cwd=str(git_root), timeout=30,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(git_root),
+            timeout=30,
         )
         if result.returncode != 0:
             return {"prepared": False, "error": result.stderr.strip()}
@@ -1153,6 +1174,7 @@ def _worktree_cleanup(tentacle_dir: Path, name: str, git_root: "Path | None") ->
     the worktree record from meta.json.
     """
     import shutil
+
     status = _worktree_status(tentacle_dir)
     path = status.get("path")
 
@@ -1174,8 +1196,10 @@ def _worktree_cleanup(tentacle_dir: Path, name: str, git_root: "Path | None") ->
     cwd_for_git = str(git_root) if git_root else None
     try:
         run_kw: dict = dict(
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
         if cwd_for_git:
@@ -1233,6 +1257,7 @@ def cmd_worktree(args) -> None:
 # Verification command
 # ---------------------------------------------------------------------------
 
+
 def cmd_verify(args) -> None:
     """Run a shell command and persist verification metadata in meta.json."""
     tentacles = get_tentacles_dir(args.session_dir)
@@ -1270,9 +1295,14 @@ def cmd_verify(args) -> None:
 
     try:
         proc = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            cwd=cwd, timeout=timeout,
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=cwd,
+            timeout=timeout,
         )
         exit_code = proc.returncode
         output = proc.stdout + proc.stderr
@@ -1316,6 +1346,7 @@ def cmd_verify(args) -> None:
 # ---------------------------------------------------------------------------
 # Metrics persistence helpers
 # ---------------------------------------------------------------------------
+
 
 def _ensure_metrics_schema(conn: sqlite3.Connection) -> None:
     """Create the shared metrics tables if they do not exist."""
@@ -1432,12 +1463,22 @@ def _persist_outcome_metrics(
                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    tentacle_name, tentacle_id, git_root_str, description,
-                    outcome_status, recorded_at,
-                    worktree_used, worktree_path,
-                    verif_total, verif_passed, verif_failed,
-                    todo_total, todo_done, learned,
-                    duration_seconds, summary or None,
+                    tentacle_name,
+                    tentacle_id,
+                    git_root_str,
+                    description,
+                    outcome_status,
+                    recorded_at,
+                    worktree_used,
+                    worktree_path,
+                    verif_total,
+                    verif_passed,
+                    verif_failed,
+                    todo_total,
+                    todo_done,
+                    learned,
+                    duration_seconds,
+                    summary or None,
                 ),
             )
             outcome_id = cur.lastrowid
@@ -1459,10 +1500,15 @@ def _persist_outcome_metrics(
                     ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
-                        outcome_id, tentacle_name, tentacle_id,
-                        v.get("label", ""), v.get("command", ""), v.get("cwd", ""),
+                        outcome_id,
+                        tentacle_name,
+                        tentacle_id,
+                        v.get("label", ""),
+                        v.get("command", ""),
+                        v.get("cwd", ""),
                         v.get("exit_code", -1),
-                        v.get("started_at", ""), v.get("finished_at", ""),
+                        v.get("started_at", ""),
+                        v.get("finished_at", ""),
                         v.get("duration_seconds", 0.0),
                         v.get("log_path"),
                     ),
@@ -1490,7 +1536,7 @@ def _run_learn(category: str, title: str, content: str, tags: str = "") -> bool:
 def _validate_tentacle_name(name: str, tentacles: Path) -> Path:
     """Validate tentacle name is safe and resolve the directory path."""
     # Reject names with path separators or traversal components
-    if '/' in name or '\\' in name or '..' in name:
+    if "/" in name or "\\" in name or ".." in name:
         print(f"ERROR: Invalid tentacle name '{name}' — must not contain '/', '\\', or '..'", file=sys.stderr)
         sys.exit(1)
     tentacle_dir = tentacles / name
@@ -1534,13 +1580,11 @@ def cmd_create(args):
         briefing = _run_briefing(query)
         if briefing:
             briefing_section = (
-                "\n## Past Knowledge (auto-injected)\n\n"
-                "<!-- From session-knowledge briefing -->\n\n"
-                f"{briefing}\n"
+                f"\n## Past Knowledge (auto-injected)\n\n<!-- From session-knowledge briefing -->\n\n{briefing}\n"
             )
             print(f"   ✅ Injected {len(briefing)} chars of past knowledge")
         else:
-            print(f"   ℹ️  No relevant past knowledge found")
+            print("   ℹ️  No relevant past knowledge found")
 
     # Create CONTEXT.md
     scope_section = ""
@@ -1593,8 +1637,8 @@ def cmd_create(args):
     (tentacle_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
     print(f"✅ Tentacle '{actual_dir_name}' created at {tentacle_dir}")
-    print(f"   📄 CONTEXT.md — edit to add area-specific context")
-    print(f"   📋 todo.md    — add checkbox items for delegation")
+    print("   📄 CONTEXT.md — edit to add area-specific context")
+    print("   📋 todo.md    — add checkbox items for delegation")
     if skills:
         print(f"   🔧 Skills: {', '.join(skills)}")
 
@@ -1677,7 +1721,7 @@ def cmd_status(args):
                 print(f"     ☐ {t['text']}")
 
         if has_handoff:
-            print(f"   📨 Handoff available")
+            print("   📨 Handoff available")
 
     print(f"\n{'─' * 40}")
     pct = int(total_done / total_todos * 100) if total_todos > 0 else 0
@@ -1767,7 +1811,7 @@ def cmd_todo(args):
 
         elif args.action == "list":
             if not todos:
-                print("No todos yet. Add with: tentacle.py todo <name> add \"task\"")
+                print('No todos yet. Add with: tentacle.py todo <name> add "task"')
                 return
             for t in todos:
                 mark = "✅" if t["done"] else "☐"
@@ -1806,7 +1850,7 @@ def cmd_handoff(args):
         if _run_learn("discovery", title, args.message, tags):
             print(f"🧠 Knowledge recorded: {title[:50]}...")
         else:
-            print(f"⚠️  Could not record knowledge (learn.py unavailable)")
+            print("⚠️  Could not record knowledge (learn.py unavailable)")
 
 
 def cmd_complete(args):
@@ -1856,7 +1900,7 @@ def cmd_complete(args):
             title = f"Tentacle [{args.name}]: {meta.get('description', '')[:50]}"
             if _run_learn("feature", title, combined[:2000], tags):
                 learned = 1
-                print(f"🧠 Knowledge recorded from handoff")
+                print("🧠 Knowledge recorded from handoff")
 
     # 4. Clear dispatched-subagent-active marker entry for this tentacle
     had_marker = _DISPATCHED_MARKER_PATH.is_file()
@@ -1884,7 +1928,7 @@ def cmd_complete(args):
         summary=handoff_summary,
     )
     if metrics_ok:
-        print(f"📊 Outcome metrics persisted to skill-metrics.db")
+        print("📊 Outcome metrics persisted to skill-metrics.db")
 
     # 6. Summary
     print(f"\n🏁 Tentacle '{args.name}' completed!")
@@ -1926,10 +1970,10 @@ def cmd_resume(args):
         if briefing_text:
             print(f"   ✅ Got {len(briefing_text)} chars of relevant knowledge")
         else:
-            print(f"   ℹ️  No relevant past knowledge found")
+            print("   ℹ️  No relevant past knowledge found")
         checkpoint_text = _load_latest_checkpoint_context()
         if checkpoint_text:
-            print(f"   📌 Latest checkpoint context injected")
+            print("   📌 Latest checkpoint context injected")
 
     # 3. Replace a bounded AUTO-RECALL block in CONTEXT.md
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -2014,7 +2058,7 @@ def cmd_swarm(args):
     briefing_recall_mode: str | None = None
     if getattr(args, "briefing", False):
         fallback = meta.get("description", "") or args.name.replace("-", " ")
-        print(f"🧠 Fetching live briefing for dispatch...")
+        print("🧠 Fetching live briefing for dispatch...")
         if getattr(args, "bundle", False):
             briefing_recall_data, briefing_recall_mode = _fetch_recall_pack_json(
                 args.name,
@@ -2031,7 +2075,7 @@ def cmd_swarm(args):
             live_briefing_section = f"\n{briefing_text}\n"
             print(f"   ✅ Injected {len(briefing_text)} chars of live knowledge\n")
         else:
-            print(f"   ℹ️  No relevant past knowledge found\n")
+            print("   ℹ️  No relevant past knowledge found\n")
 
     # Bundle materialization (--bundle flag)
     bundle_dir: Path | None = None
@@ -2053,7 +2097,7 @@ def cmd_swarm(args):
             print(f"   ⚠️  Worktree prepare failed: {wt_state.get('error', 'unknown')}\n")
 
     if getattr(args, "bundle", False):
-        print(f"📦 Materializing runtime bundle...")
+        print("📦 Materializing runtime bundle...")
         b_fallback = meta.get("description", "") or args.name.replace("-", " ")
         b_checkpoint = _load_latest_checkpoint_context()
         if getattr(args, "briefing", False):
@@ -2087,7 +2131,7 @@ def cmd_swarm(args):
     if marker_written:
         print(f"📌 Marker: {_DISPATCHED_MARKER_PATH}")
         print(f"   Active until tentacle.py complete OR {_DISPATCHED_MARKER_TTL // 3600}h TTL.")
-        print(f"   Local enforcement surfaces (git hooks, preToolUse guards) may observe this.\n")
+        print("   Local enforcement surfaces (git hooks, preToolUse guards) may observe this.\n")
 
     if args.output == "prompt":
         # Output as a single dispatch prompt with all todos
@@ -2102,71 +2146,73 @@ def cmd_swarm(args):
         for t in pending:
             prompt += f"- [ ] {t['text']}\n"
 
-        prompt += """
+        prompt += f"""
 ### Rules
 - Complete all tasks above
 - Stay within the scoped files only — DO NOT modify files outside your declared scope
 - **DO NOT run `git commit` or `git push`** — the orchestrator owns all git operations
 - **DO NOT widen your scope** beyond the files listed above without explicit escalation to the orchestrator
 - If a task cannot be completed within your scope, stop that task and write a scope escalation note to handoff before continuing
-- Write results to handoff: run `python3 ~/.copilot/tools/tentacle.py handoff "{name}" "<summary>"`
-- Mark todos done: run `python3 ~/.copilot/tools/tentacle.py todo "{name}" done <index>`
-- Record learnings: run `python3 ~/.copilot/tools/tentacle.py handoff "{name}" "<what you learned>" --learn`
-""".format(name=args.name)
+- Write results to handoff: run `python3 ~/.copilot/tools/tentacle.py handoff "{args.name}" "<summary>"`
+- Mark todos done: run `python3 ~/.copilot/tools/tentacle.py todo "{args.name}" done <index>`
+- Record learnings: run `python3 ~/.copilot/tools/tentacle.py handoff "{args.name}" "<what you learned>" --learn`
+"""
 
         print(prompt)
 
         # Also output the task() call
         print("\n─── COPILOT CLI DISPATCH ───\n")
         escaped_prompt = prompt.replace('"', '\\"').replace("\n", "\\n")
-        print(f'task(')
+        print("task(")
         print(f'    name="swarm-{args.name}",')
         print(f'    agent_type="{agent_type}",')
         print(f'    model="{model}",')
-        print(f'    mode="background",')
+        print('    mode="background",')
         print(f'    description="Swarm: {args.name}",')
-        print(f'    prompt="""')
+        print('    prompt="""')
         print(prompt)
-        print(f'"""')
-        print(f')')
+        print('"""')
+        print(")")
 
     elif args.output == "parallel":
         # Output one dispatch per todo (max parallelism)
         print("─── PARALLEL DISPATCH (one agent per todo) ───\n")
         for t in pending:
-            print(f'# Todo [{t["index"]}]: {t["text"]}')
-            print(f'task(')
+            print(f"# Todo [{t['index']}]: {t['text']}")
+            print("task(")
             print(f'    name="worker-{args.name}-{t["index"]}",')
             print(f'    agent_type="{agent_type}",')
             print(f'    model="{model}",')
-            print(f'    mode="background",')
+            print('    mode="background",')
             print(f'    description="{t["text"][:50]}",')
-            print(f'    prompt="""')
-            print(f'## Tentacle: {args.name}')
-            print(f'')
-            print(f'### Context')
-            print(f'{context.strip()[:500]}')
+            print('    prompt="""')
+            print(f"## Tentacle: {args.name}")
+            print("")
+            print("### Context")
+            print(f"{context.strip()[:500]}")
             if live_briefing_section:
                 print(live_briefing_section.strip())
             if bundle_section:
                 print(bundle_section.strip())
             if worktree_section:
                 print(worktree_section.strip())
-            print(f'')
-            print(f'### Your Task')
-            print(f'{t["text"]}')
-            print(f'')
-            print(f'### Guardrails')
-            print(f'- Stay within the scoped files only — DO NOT modify files outside your declared scope')
-            print(f'- **DO NOT run `git commit` or `git push`** — the orchestrator owns all git operations')
-            print(f'- **DO NOT widen your scope** without explicit escalation to the orchestrator')
-            print(f'- If the task requires files outside your scope, stop and write a scope escalation note to handoff')
-            print(f'')
-            print(f'### When done')
+            print("")
+            print("### Your Task")
+            print(f"{t['text']}")
+            print("")
+            print("### Guardrails")
+            print("- Stay within the scoped files only — DO NOT modify files outside your declared scope")
+            print("- **DO NOT run `git commit` or `git push`** — the orchestrator owns all git operations")
+            print("- **DO NOT widen your scope** without explicit escalation to the orchestrator")
+            print("- If the task requires files outside your scope, stop and write a scope escalation note to handoff")
+            print("")
+            print("### When done")
             print(f'python3 ~/.copilot/tools/tentacle.py todo "{args.name}" done {t["index"]}')
-            print(f'python3 ~/.copilot/tools/tentacle.py handoff "{args.name}" "Completed: {t["text"]}. Key learnings: <summary>" --learn')
-            print(f'"""')
-            print(f')\n')
+            print(
+                f'python3 ~/.copilot/tools/tentacle.py handoff "{args.name}" "Completed: {t["text"]}. Key learnings: <summary>" --learn'
+            )
+            print('"""')
+            print(")\n")
 
     elif args.output == "json":
         # Output structured JSON for programmatic use
@@ -2290,6 +2336,7 @@ def cmd_delete(args):
         _clear_dispatched_subagent_marker(args.name, tentacle_id=tentacle_id)
 
     import shutil
+
     shutil.rmtree(tentacle_dir)
     print(f"🗑️  Tentacle '{args.name}' deleted.")
 
@@ -2309,9 +2356,7 @@ def cmd_bundle(args):
 
     # Fetch briefing + recall pack
     fallback = meta.get("description", "") or args.name.replace("-", " ")
-    recall_pack_data, recall_source_mode = _fetch_recall_pack_json(
-        args.name, fallback_query=fallback
-    )
+    recall_pack_data, recall_source_mode = _fetch_recall_pack_json(args.name, fallback_query=fallback)
     briefing_text = ""
     if not getattr(args, "no_briefing", False):
         if not json_output:
@@ -2325,7 +2370,7 @@ def cmd_bundle(args):
             if briefing_text:
                 print(f"   ✅ Briefing: {len(briefing_text)} chars")
             else:
-                print(f"   ℹ️  No briefing data — placeholder will be written")
+                print("   ℹ️  No briefing data — placeholder will be written")
     if recall_pack_data and not json_output:
         print(f"   ✅ Recall pack: {recall_source_mode} ({len(json.dumps(recall_pack_data))} chars)")
 
@@ -2403,11 +2448,7 @@ def cmd_marker_cleanup(args):
         return
 
     marker_data = _read_dispatched_subagent_marker()
-    ttl = (
-        int(marker_data.get("ttl_seconds", _DISPATCHED_MARKER_TTL))
-        if marker_data
-        else _DISPATCHED_MARKER_TTL
-    )
+    ttl = int(marker_data.get("ttl_seconds", _DISPATCHED_MARKER_TTL)) if marker_data else _DISPATCHED_MARKER_TTL
     now = time.time()
 
     def _entry_age_seconds(ts_value):
@@ -2456,18 +2497,12 @@ def cmd_marker_cleanup(args):
         print(f"✅ Live entries ({len(live_entries)}):")
         for entry, age in live_entries:
             age_str = f"{age}s" if age is not None else "unknown age"
-            print(
-                f"   • {entry['name']} "
-                f"(age: {age_str}, repo: {entry.get('git_root') or 'unknown'})"
-            )
+            print(f"   • {entry['name']} (age: {age_str}, repo: {entry.get('git_root') or 'unknown'})")
 
     if stale_entries:
         print(f"\n⚠️  Stale entries ({len(stale_entries)}) — exceeded TTL of {ttl}s:")
         for entry, age in stale_entries:
-            print(
-                f"   • {entry['name']} "
-                f"(age: {age}s, repo: {entry.get('git_root') or 'unknown'})"
-            )
+            print(f"   • {entry['name']} (age: {age}s, repo: {entry.get('git_root') or 'unknown'})")
 
     if not stale_entries:
         print("\n✅ No stale entries to clean up.")
@@ -2520,10 +2555,10 @@ def main():
     p_create.add_argument("name", help="Tentacle name (kebab-case)")
     p_create.add_argument("--scope", help="Comma-separated file paths/patterns")
     p_create.add_argument("--desc", help="Short description")
-    p_create.add_argument("--briefing", action="store_true",
-                          help="Auto-inject relevant past knowledge into CONTEXT.md")
-    p_create.add_argument("--skill", action="append", metavar="SKILL",
-                          help="Declare a skill used by this tentacle (repeatable)")
+    p_create.add_argument("--briefing", action="store_true", help="Auto-inject relevant past knowledge into CONTEXT.md")
+    p_create.add_argument(
+        "--skill", action="append", metavar="SKILL", help="Declare a skill used by this tentacle (repeatable)"
+    )
 
     # list
     sub.add_parser("list", help="List all tentacles")
@@ -2545,52 +2580,62 @@ def main():
     p_handoff = sub.add_parser("handoff", help="Write handoff message")
     p_handoff.add_argument("name", help="Tentacle name")
     p_handoff.add_argument("message", help="Handoff message content")
-    p_handoff.add_argument("--learn", action="store_true",
-                           help="Also record this handoff as a knowledge entry")
+    p_handoff.add_argument("--learn", action="store_true", help="Also record this handoff as a knowledge entry")
 
     # swarm
     p_swarm = sub.add_parser("swarm", help="Generate dispatch from pending todos")
     p_swarm.add_argument("name", help="Tentacle name")
     p_swarm.add_argument("--agent-type", default="general-purpose", help="Agent type for workers")
     p_swarm.add_argument("--model", default="claude-sonnet-4.6", help="Model for workers")
-    p_swarm.add_argument("--output", choices=["prompt", "parallel", "json"], default="prompt",
-                         help="Output format: prompt (single agent), parallel (one per todo), json")
-    p_swarm.add_argument("--briefing", action="store_true",
-                         help="Inject live briefing into the dispatch prompt at runtime")
-    p_swarm.add_argument("--bundle", action="store_true",
-                         help="Materialize a runtime bundle and surface its path in the dispatch output")
-    p_swarm.add_argument("--worktree", action="store_true",
-                         help="Prepare an isolated git worktree and surface its path in the dispatch output")
+    p_swarm.add_argument(
+        "--output",
+        choices=["prompt", "parallel", "json"],
+        default="prompt",
+        help="Output format: prompt (single agent), parallel (one per todo), json",
+    )
+    p_swarm.add_argument(
+        "--briefing", action="store_true", help="Inject live briefing into the dispatch prompt at runtime"
+    )
+    p_swarm.add_argument(
+        "--bundle", action="store_true", help="Materialize a runtime bundle and surface its path in the dispatch output"
+    )
+    p_swarm.add_argument(
+        "--worktree",
+        action="store_true",
+        help="Prepare an isolated git worktree and surface its path in the dispatch output",
+    )
 
     # dispatch (alias for swarm --output prompt)
     p_dispatch = sub.add_parser("dispatch", help="Generate single-agent dispatch prompt")
     p_dispatch.add_argument("name", help="Tentacle name")
     p_dispatch.add_argument("--agent-type", default="general-purpose", help="Agent type")
     p_dispatch.add_argument("--model", default="claude-sonnet-4.6", help="Model")
-    p_dispatch.add_argument("--briefing", action="store_true",
-                            help="Inject live briefing into the dispatch prompt at runtime")
-    p_dispatch.add_argument("--bundle", action="store_true",
-                            help="Materialize a runtime bundle and surface its path in the dispatch output")
-    p_dispatch.add_argument("--worktree", action="store_true",
-                            help="Prepare an isolated git worktree and surface its path in the dispatch output")
+    p_dispatch.add_argument(
+        "--briefing", action="store_true", help="Inject live briefing into the dispatch prompt at runtime"
+    )
+    p_dispatch.add_argument(
+        "--bundle", action="store_true", help="Materialize a runtime bundle and surface its path in the dispatch output"
+    )
+    p_dispatch.add_argument(
+        "--worktree",
+        action="store_true",
+        help="Prepare an isolated git worktree and surface its path in the dispatch output",
+    )
 
     # resume
     p_resume = sub.add_parser("resume", help="Resume a tentacle: refresh briefing, set active")
     p_resume.add_argument("name", help="Tentacle name")
-    p_resume.add_argument("--no-briefing", action="store_true",
-                          help="Skip live briefing injection on resume")
+    p_resume.add_argument("--no-briefing", action="store_true", help="Skip live briefing injection on resume")
 
     # next-step
     p_next = sub.add_parser("next-step", help="Show grounded next step: first pending todo + checkpoint context")
     p_next.add_argument("name", help="Tentacle name")
-    p_next.add_argument("--briefing", action="store_true",
-                        help="Inject live knowledge briefing alongside the next step")
-    p_next.add_argument("--no-checkpoint", action="store_true",
-                        help="Skip loading latest checkpoint context")
-    p_next.add_argument("--all", action="store_true",
-                        help="Show all pending todos, not just the first")
-    p_next.add_argument("--format", choices=["text", "json"], default="text",
-                        help="Output format (default: text)")
+    p_next.add_argument(
+        "--briefing", action="store_true", help="Inject live knowledge briefing alongside the next step"
+    )
+    p_next.add_argument("--no-checkpoint", action="store_true", help="Skip loading latest checkpoint context")
+    p_next.add_argument("--all", action="store_true", help="Show all pending todos, not just the first")
+    p_next.add_argument("--format", choices=["text", "json"], default="text", help="Output format (default: text)")
 
     # delete
     p_delete = sub.add_parser("delete", help="Delete a tentacle")
@@ -2599,26 +2644,37 @@ def main():
     # complete
     p_complete = sub.add_parser("complete", help="Complete tentacle: mark done + learn from handoff")
     p_complete.add_argument("name", help="Tentacle name")
-    p_complete.add_argument("--no-learn", action="store_true",
-                            help="Skip auto-learning from handoff")
+    p_complete.add_argument("--no-learn", action="store_true", help="Skip auto-learning from handoff")
 
     # bundle (standalone command)
     p_bundle = sub.add_parser("bundle", help="Materialize a per-run context bundle for a tentacle subagent")
     p_bundle.add_argument("name", help="Tentacle name")
-    p_bundle.add_argument("--no-briefing", action="store_true",
-                          help="Skip live prose briefing fetch; machine-readable recall pack is still fetched")
-    p_bundle.add_argument("--no-checkpoint", action="store_true",
-                          help="Skip loading latest checkpoint context")
-    p_bundle.add_argument("--output", choices=["text", "json"], default="text",
-                          help="Output format: text (default) or json (manifest + bundle_path)")
-    p_bundle.add_argument("--worktree", action="store_true",
-                          help="Prepare an isolated git worktree and include its path in the bundle manifest")
+    p_bundle.add_argument(
+        "--no-briefing",
+        action="store_true",
+        help="Skip live prose briefing fetch; machine-readable recall pack is still fetched",
+    )
+    p_bundle.add_argument("--no-checkpoint", action="store_true", help="Skip loading latest checkpoint context")
+    p_bundle.add_argument(
+        "--output",
+        choices=["text", "json"],
+        default="text",
+        help="Output format: text (default) or json (manifest + bundle_path)",
+    )
+    p_bundle.add_argument(
+        "--worktree",
+        action="store_true",
+        help="Prepare an isolated git worktree and include its path in the bundle manifest",
+    )
 
     # worktree subcommand
     p_wt = sub.add_parser("worktree", help="Manage isolated git worktrees for tentacles")
     p_wt.add_argument("name", help="Tentacle name")
-    p_wt.add_argument("action", choices=["prepare", "status", "cleanup"],
-                      help="prepare: create worktree; status: show state; cleanup: remove worktree")
+    p_wt.add_argument(
+        "action",
+        choices=["prepare", "status", "cleanup"],
+        help="prepare: create worktree; status: show state; cleanup: remove worktree",
+    )
 
     # marker-cleanup
     p_marker_cleanup = sub.add_parser(
@@ -2636,8 +2692,7 @@ def main():
     p_verify.add_argument("name", help="Tentacle name")
     p_verify.add_argument("verify_command", help="Shell command to run")
     p_verify.add_argument("--label", help="Human-readable label for this verification")
-    p_verify.add_argument("--timeout", type=int, default=120,
-                          help="Command timeout in seconds (default: 120)")
+    p_verify.add_argument("--timeout", type=int, default=120, help="Command timeout in seconds (default: 120)")
 
     args = parser.parse_args()
 

@@ -2,6 +2,7 @@
 
 Exports: page_header, stat_grid, data_table, empty_state, badge, banner, card
 """
+
 import os
 import sys
 
@@ -30,8 +31,8 @@ def page_header(title_html: str, subtitle_html: str = "", actions_html: str = ""
     return (
         f'<header class="page-header">'
         f'<div class="page-header-text"><h{lv}>{title_html}</h{lv}>{subtitle}</div>'
-        f'{actions}'
-        f'</header>\n'
+        f"{actions}"
+        f"</header>\n"
     )
 
 
@@ -41,10 +42,7 @@ def stat_grid(items: list) -> str:
     if not items:
         return ""
     cards = "".join(
-        f'<div class="stat-card">'
-        f'<div class="stat-value">{value}</div>'
-        f'<div class="stat-label">{_esc(label)}</div>'
-        f'</div>'
+        f'<div class="stat-card"><div class="stat-value">{value}</div><div class="stat-label">{_esc(label)}</div></div>'
         for value, label in items
     )
     return f'<div class="stat-grid">{cards}</div>\n'
@@ -58,8 +56,8 @@ def empty_state(icon: str, title: str, message: str = "", action_html: str = "")
         f'<div class="empty-state">'
         f'<div class="empty-state-icon">{icon}</div>'
         f'<div class="empty-state-title">{_esc(title)}</div>'
-        f'{msg_html}{action_html}'
-        f'</div>\n'
+        f"{msg_html}{action_html}"
+        f"</div>\n"
     )
 
 
@@ -77,15 +75,10 @@ def data_table(
     if not rows:
         return empty_state(empty_icon, empty_title, empty_message)
     th = "".join(f"<th>{_esc(h)}</th>" for h in headers)
-    tbody = "".join(
-        "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>\n"
-        for row in rows
-    )
+    tbody = "".join("<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>\n" for row in rows)
     caption = f'<p class="meta">{caption_html}</p>' if caption_html else ""
     return (
-        f'<div class="table-wrapper">'
-        f"<table><thead><tr>{th}</tr></thead><tbody>{tbody}</tbody></table>"
-        f"</div>\n{caption}"
+        f'<div class="table-wrapper"><table><thead><tr>{th}</tr></thead><tbody>{tbody}</tbody></table></div>\n{caption}'
     )
 
 

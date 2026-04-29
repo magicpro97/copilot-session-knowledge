@@ -1,4 +1,5 @@
 """browse/routes/session_detail.py — GET /session/{id} detail page."""
+
 import json
 import os
 import re
@@ -9,10 +10,10 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
-from browse.core.fts import _esc, _SESSION_ID_RE
-from browse.core.templates import base_page
 from browse.components import banner
+from browse.core.fts import _SESSION_ID_RE, _esc
+from browse.core.registry import route
+from browse.core.templates import base_page
 
 
 @route("/session/{id}", methods=["GET"])
@@ -31,14 +32,16 @@ def handle_session_detail(db, params, token, nonce, session_id: str = "") -> tup
 
     fmt = params.get("format", ["html"])[0]
 
-    timeline_rows = list(db.execute(
-        """SELECT d.seq, d.title, d.doc_type, s.section_name, s.content
+    timeline_rows = list(
+        db.execute(
+            """SELECT d.seq, d.title, d.doc_type, s.section_name, s.content
            FROM documents d
            LEFT JOIN sections s ON s.document_id = d.id
            WHERE d.session_id = ?
            ORDER BY d.seq, s.id""",
-        (session_id,),
-    ))
+            (session_id,),
+        )
+    )
 
     if fmt == "json":
         meta = dict(sess)
@@ -87,7 +90,7 @@ def handle_session_detail(db, params, token, nonce, session_id: str = "") -> tup
     tok_qs = f"?token={_esc(token)}" if token else ""
     token_part = f"&token={_esc(token)}" if token else ""
     legacy_notice = banner(
-        f'Legacy v1 HTML page (/session/&lt;id&gt;) is deprecated and kept for backward compatibility. '
+        f"Legacy v1 HTML page (/session/&lt;id&gt;) is deprecated and kept for backward compatibility. "
         f'Use <a href="/v2/sessions/{_esc(session_id)}{tok_qs}">/v2/sessions/{_esc(session_id)}</a> as the primary UI.',
         variant="warning",
         icon="⚠",
@@ -99,10 +102,10 @@ def handle_session_detail(db, params, token, nonce, session_id: str = "") -> tup
         f'<a role="button" class="secondary" href="/embeddings?session={session_id}{token_part}">🔍 Find similar</a>'
         f'<a role="button" class="secondary" href="/session/{session_id}.md{tok_qs}">📄 Export Markdown</a>'
         f'<a role="button" class="secondary" href="/compare?a={session_id}{token_part}">⚖️ Compare…</a>'
-        f'</div>'
+        f"</div>"
     )
 
-    _TOOL_RE = re.compile(r'\b(edit|view|bash|grep|glob|write_bash|task|create)\s*\(')
+    _TOOL_RE = re.compile(r"\b(edit|view|bash|grep|glob|write_bash|task|create)\s*\(")
     all_content = "\n".join(r["content"] or "" for r in timeline_rows)
     tool_matches = _TOOL_RE.findall(all_content)
     tool_counts: dict[str, int] = {}
@@ -110,10 +113,7 @@ def handle_session_detail(db, params, token, nonce, session_id: str = "") -> tup
         tool_counts[t] = tool_counts.get(t, 0) + 1
     total_tools = sum(tool_counts.values())
     if total_tools > 0:
-        items = "".join(
-            f"<li>{_esc(t)} × {c}</li>"
-            for t, c in sorted(tool_counts.items(), key=lambda x: -x[1])
-        )
+        items = "".join(f"<li>{_esc(t)} × {c}</li>" for t, c in sorted(tool_counts.items(), key=lambda x: -x[1]))
         tool_html = (
             f'<details class="tool-usage" style="margin:1rem 0">'
             f"<summary><b>Tool usage</b> ({total_tools} invocations)</summary>"

@@ -4,6 +4,7 @@
 Verify hook files haven't been tampered with. Auto-updates manifest when
 hook files change legitimately. Only blocks on config poisoning.
 """
+
 import hashlib
 import json
 import os
@@ -19,10 +20,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from marker_auth import create_tamper_marker
 except ImportError:
+
     def create_tamper_marker():
         p = Path.home() / ".copilot" / "markers" / "hooks-tampered"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.touch()
+
 
 HOOKS_DIR = Path.home() / ".copilot" / "tools" / "hooks"
 HOOKS_DST_DIR = Path.home() / ".copilot" / "hooks"
@@ -68,9 +71,7 @@ def _regenerate_manifest():
                 manifest["files"][f"rules/{hf.name}"] = h
     hooks_json_path = HOOKS_DST_DIR / "hooks.json"
     if hooks_json_path.is_file():
-        manifest["hooks_json"] = hashlib.sha256(
-            hooks_json_path.read_bytes()
-        ).hexdigest()
+        manifest["hooks_json"] = hashlib.sha256(hooks_json_path.read_bytes()).hexdigest()
     HOOKS_DST_DIR.mkdir(parents=True, exist_ok=True)
     # P1-6: atomic write + explicit encoding to prevent false tamper on partial read
     tmp = MANIFEST.with_suffix(".tmp")

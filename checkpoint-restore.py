@@ -27,11 +27,11 @@ Environment:
     COPILOT_SESSION_STATE  Override session-state root directory
 """
 
+import argparse
 import json
 import os
 import re
 import sys
-import argparse
 from pathlib import Path
 
 if os.name == "nt":
@@ -43,8 +43,12 @@ _env_state = os.environ.get("COPILOT_SESSION_STATE")
 SESSION_STATE = Path(_env_state) if _env_state else Path.home() / ".copilot" / "session-state"
 
 CHECKPOINT_SECTIONS = [
-    "overview", "history", "work_done", "technical_details",
-    "important_files", "next_steps",
+    "overview",
+    "history",
+    "work_done",
+    "technical_details",
+    "important_files",
+    "next_steps",
 ]
 
 
@@ -121,11 +125,13 @@ def parse_index(index_path: Path) -> list[dict]:
     for line in index_path.read_text(encoding="utf-8", errors="ignore").splitlines():
         m = re.match(r"\|\s*(\d+)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|", line)
         if m:
-            entries.append({
-                "seq": int(m.group(1)),
-                "title": m.group(2).strip(),
-                "file": m.group(3).strip(),
-            })
+            entries.append(
+                {
+                    "seq": int(m.group(1)),
+                    "title": m.group(2).strip(),
+                    "file": m.group(3).strip(),
+                }
+            )
     return entries
 
 
@@ -165,7 +171,7 @@ def parse_checkpoint_sections(cp_path: Path) -> dict[str, str]:
                 content_start = m.end()
         else:
             if current == name:
-                sections[name] = text[content_start:m.start()].strip()
+                sections[name] = text[content_start : m.start()].strip()
                 current = None
     return sections
 
@@ -253,18 +259,14 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("--list", action="store_true",
-                   help="List all checkpoints for the session")
-    p.add_argument("--show", metavar="SELECTOR",
-                   help="Show a checkpoint ('latest', 'first', or seq number)")
-    p.add_argument("--export", metavar="SELECTOR",
-                   help="Export a checkpoint in the chosen format")
-    p.add_argument("--format", choices=["text", "md", "json"], default="text",
-                   help="Output format for --export (default: text)")
-    p.add_argument("--session", metavar="SESSION_ID", default=None,
-                   help="Specific session ID")
-    p.add_argument("--session-dir", metavar="DIR", default=None,
-                   help="Session-state root directory")
+    p.add_argument("--list", action="store_true", help="List all checkpoints for the session")
+    p.add_argument("--show", metavar="SELECTOR", help="Show a checkpoint ('latest', 'first', or seq number)")
+    p.add_argument("--export", metavar="SELECTOR", help="Export a checkpoint in the chosen format")
+    p.add_argument(
+        "--format", choices=["text", "md", "json"], default="text", help="Output format for --export (default: text)"
+    )
+    p.add_argument("--session", metavar="SESSION_ID", default=None, help="Specific session ID")
+    p.add_argument("--session-dir", metavar="DIR", default=None, help="Session-state root directory")
     return p
 
 

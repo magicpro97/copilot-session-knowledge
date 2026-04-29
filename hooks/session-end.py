@@ -9,6 +9,7 @@ Checkpoint reminder (opt-in):
     without any saved checkpoints.  This is purely informational — it never
     writes checkpoint files automatically.
 """
+
 import json
 import os
 import re

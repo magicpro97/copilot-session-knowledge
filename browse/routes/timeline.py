@@ -1,4 +1,5 @@
 """browse/routes/timeline.py — GET /session/{id}/timeline + GET /api/session/{id}/events."""
+
 import json
 import os
 import sys
@@ -10,10 +11,10 @@ if os.name == "nt":
 
 import re as _re
 
-from browse.core.registry import route
-from browse.core.fts import _esc, _SESSION_ID_RE
-from browse.core.templates import base_page
 from browse.components import banner
+from browse.core.fts import _SESSION_ID_RE, _esc
+from browse.core.registry import route
+from browse.core.templates import base_page
 
 _MAX_LIMIT = 200
 _DEFAULT_LIMIT = 50
@@ -22,14 +23,14 @@ _PREVIEW_LEN = 200
 # ── Colour palette (merged from agents.py) ────────────────────────────────────
 _COLOR = {
     "orchestrator": "#7c3aed",
-    "agent_sonnet":  "#3b82f6",
-    "agent_opus":    "#4f46e5",
-    "agent_haiku":   "#eab308",
+    "agent_sonnet": "#3b82f6",
+    "agent_opus": "#4f46e5",
+    "agent_haiku": "#eab308",
     "agent_default": "#6b7280",
-    "tool":          "#9ca3af",
+    "tool": "#9ca3af",
 }
 
-_MODEL_RE = _re.compile(r'claude-(?:sonnet|opus|haiku)[-\d.]*', _re.IGNORECASE)
+_MODEL_RE = _re.compile(r"claude-(?:sonnet|opus|haiku)[-\d.]*", _re.IGNORECASE)
 
 
 def _agent_color(model: str) -> str:
@@ -75,14 +76,16 @@ def _fetch_events(db, session_id: str, from_idx: int, limit: int) -> tuple:
             (session_id,),
         ).fetchone()[0]
 
-        rows = list(db.execute(
-            """SELECT event_id, byte_offset, file_mtime
+        rows = list(
+            db.execute(
+                """SELECT event_id, byte_offset, file_mtime
                FROM event_offsets
                WHERE session_id = ?
                ORDER BY event_id
                LIMIT ? OFFSET ?""",
-            (session_id, limit, from_idx),
-        ))
+                (session_id, limit, from_idx),
+            )
+        )
 
         if not rows:
             return [], total
@@ -128,14 +131,16 @@ def _fetch_events(db, session_id: str, from_idx: int, limit: int) -> tuple:
                 model_match = _MODEL_RE.search(preview)
                 color = _agent_color(model_match.group(0) if model_match else "")
 
-                events.append({
-                    "event_id": event_id,
-                    "kind": kind,
-                    "preview": preview,
-                    "byte_offset": byte_offset,
-                    "file_mtime": file_mtime,
-                    "color": color,
-                })
+                events.append(
+                    {
+                        "event_id": event_id,
+                        "kind": kind,
+                        "preview": preview,
+                        "byte_offset": byte_offset,
+                        "file_mtime": file_mtime,
+                        "color": color,
+                    }
+                )
         finally:
             if fh is not None:
                 fh.close()
@@ -161,13 +166,13 @@ def handle_session_timeline(db, params, token, nonce, session_id: str = "") -> t
     sid_esc = _esc(session_id)
     tok_qs = f"?token={_esc(token)}" if token else ""
     legacy_notice = banner(
-        f'Legacy v1 HTML page (/session/&lt;id&gt;/timeline) is deprecated and kept for backward compatibility. '
+        f"Legacy v1 HTML page (/session/&lt;id&gt;/timeline) is deprecated and kept for backward compatibility. "
         f'Use <a href="/v2/sessions/{sid_esc}{tok_qs}">/v2/sessions/{sid_esc}</a> as the primary UI.',
         variant="warning",
         icon="⚠",
     )
     slider_max = max(total - 1, 0)
-    slider_disabled = ' disabled' if total == 0 else ''
+    slider_disabled = " disabled" if total == 0 else ""
     no_events_msg = "(no events for this session)" if total == 0 else "Loading..."
 
     main_content = (
@@ -178,7 +183,7 @@ def handle_session_timeline(db, params, token, nonce, session_id: str = "") -> t
         f'<span style="color:#3b82f6">&#9632; Sonnet</span> '
         f'<span style="color:#4f46e5">&#9632; Opus</span> '
         f'<span style="color:#eab308">&#9632; Haiku</span>'
-        f'</div>\n'
+        f"</div>\n"
         f'<div id="timeline-wrap">\n'
         f'  <div id="timeline-heatmap"></div>\n'
         f'  <input id="timeline-slider" type="range" min="0" max="{slider_max}" '
@@ -186,16 +191,16 @@ def handle_session_timeline(db, params, token, nonce, session_id: str = "") -> t
         f'  <div id="timeline-controls">\n'
         f'    <button id="play-pause">&#9654;</button>\n'
         f'    <select id="play-speed">'
-        f'<option>1x</option><option>2x</option><option>4x</option></select>\n'
+        f"<option>1x</option><option>2x</option><option>4x</option></select>\n"
         f'    <span id="event-position">'
-        f'{"Event 1 / " + str(total) if total > 0 else "No events"}'
-        f'</span>\n'
-        f'  </div>\n'
+        f"{'Event 1 / ' + str(total) if total > 0 else 'No events'}"
+        f"</span>\n"
+        f"  </div>\n"
         f'  <article id="timeline-event">\n'
         f'    <header id="event-meta"></header>\n'
         f'    <pre id="event-content">{_esc(no_events_msg)}</pre>\n'
-        f'  </article>\n'
-        f'</div>\n'
+        f"  </article>\n"
+        f"</div>\n"
     )
 
     api_base = f"/api/session/{sid_esc}/events"
@@ -203,7 +208,7 @@ def handle_session_timeline(db, params, token, nonce, session_id: str = "") -> t
 
     body_scripts = (
         f'<script nonce="{nonce}">\n'
-        f'window.__paletteCommands.push({{'
+        f"window.__paletteCommands.push({{"
         f"id:'timeline-play',"
         f"title:'Play/Pause timeline',"
         f"section:'Timeline',"

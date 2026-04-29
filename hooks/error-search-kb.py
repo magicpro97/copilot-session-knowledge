@@ -4,6 +4,7 @@
 When an error occurs, auto-search the knowledge base for solutions.
 Surfaces past fixes so the agent doesn't debug from scratch.
 """
+
 import json
 import os
 import subprocess
@@ -38,7 +39,9 @@ def main():
     try:
         result = subprocess.run(
             [sys.executable, str(QUERY_SCRIPT), search_term],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         output = result.stdout.strip()
         if output and "No results" not in output:

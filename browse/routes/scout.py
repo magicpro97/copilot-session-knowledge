@@ -1,4 +1,5 @@
 """browse/routes/scout.py — read-only Trend Scout diagnostics endpoints."""
+
 import json
 import os
 import sys
@@ -78,21 +79,11 @@ def handle_scout_status(db, params, token, nonce) -> tuple:
     state = _load_json(state_file)
     last_run_utc_raw = str(state.get("last_run_utc", "") or "")
     last_run_utc = _safe_iso(last_run_utc_raw)
-    elapsed_hours = (
-        max((now_utc - last_run_utc).total_seconds() / 3600.0, 0.0)
-        if last_run_utc is not None
-        else None
-    )
+    elapsed_hours = max((now_utc - last_run_utc).total_seconds() / 3600.0, 0.0) if last_run_utc is not None else None
 
-    grace_window_active = (
-        grace_window_hours > 0
-        and elapsed_hours is not None
-        and elapsed_hours < grace_window_hours
-    )
+    grace_window_active = grace_window_hours > 0 and elapsed_hours is not None and elapsed_hours < grace_window_hours
     grace_remaining_hours = (
-        max(grace_window_hours - elapsed_hours, 0.0)
-        if grace_window_active and elapsed_hours is not None
-        else None
+        max(grace_window_hours - elapsed_hours, 0.0) if grace_window_active and elapsed_hours is not None else None
     )
 
     grace_reason = ""

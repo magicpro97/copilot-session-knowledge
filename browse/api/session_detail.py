@@ -9,6 +9,7 @@ Response shape (SessionDetailResponse):
 
 Returns 400 for invalid session ID, 404 if not found.
 """
+
 import json
 import os
 import sys
@@ -18,9 +19,9 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
-from browse.core.fts import _SESSION_ID_RE
 from browse.api._common import json_error
+from browse.core.fts import _SESSION_ID_RE
+from browse.core.registry import route
 
 
 @route("/api/sessions/{id}", methods=["GET"])
@@ -37,14 +38,16 @@ def handle_api_session_detail(db, params, token, nonce, session_id: str = "") ->
     if sess is None:
         return json_error(f"session '{session_id}' not found", "SESSION_NOT_FOUND", 404)
 
-    timeline_rows = list(db.execute(
-        """SELECT d.seq, d.title, d.doc_type, s.section_name, s.content
+    timeline_rows = list(
+        db.execute(
+            """SELECT d.seq, d.title, d.doc_type, s.section_name, s.content
            FROM documents d
            LEFT JOIN sections s ON s.document_id = d.id
            WHERE d.session_id = ?
            ORDER BY d.seq, s.id""",
-        (session_id,),
-    ))
+            (session_id,),
+        )
+    )
 
     meta = dict(sess)
     timeline = [

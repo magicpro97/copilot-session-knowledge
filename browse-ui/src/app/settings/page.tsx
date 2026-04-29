@@ -820,7 +820,7 @@ export default function SettingsPage() {
 
           {health.data ? (
             <>
-              <div className="grid gap-2 sm:grid-cols-3">
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="bg-card rounded-lg border p-3">
                   <p className="text-muted-foreground text-xs">Status</p>
                   <p className="mt-1 flex items-center gap-2 text-sm font-medium">
@@ -843,13 +843,22 @@ export default function SettingsPage() {
                   <p className="text-muted-foreground text-xs">Indexed sessions</p>
                   <p className="mt-1 text-sm font-medium">{formatNumber(health.data.sessions)}</p>
                 </div>
+                <div className="bg-card rounded-lg border p-3">
+                  <p className="text-muted-foreground text-xs">Knowledge entries</p>
+                  <p className="mt-1 text-sm font-medium">
+                    {health.data.knowledge_entries !== undefined
+                      ? formatNumber(health.data.knowledge_entries)
+                      : "—"}
+                  </p>
+                </div>
               </div>
 
-              <Banner
-                tone="info"
-                title="Backend diagnostics are intentionally minimal"
-                description="Current contract exposes status, schema version, and session count only. Database path and last-indexed timestamp are not available from /healthz."
-              />
+              {health.data.last_indexed_at ? (
+                <p className="text-muted-foreground text-xs">
+                  Last indexed:{" "}
+                  <span className="text-foreground font-medium">{health.data.last_indexed_at}</span>
+                </p>
+              ) : null}
             </>
           ) : null}
         </CardContent>

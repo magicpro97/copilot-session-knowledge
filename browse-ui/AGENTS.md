@@ -1,3 +1,5 @@
+<!-- Root instruction surface: see ../AGENTS.md for repo-wide agent rules. -->
+
 <!-- BEGIN:nextjs-agent-rules -->
 # This is NOT the Next.js you know
 

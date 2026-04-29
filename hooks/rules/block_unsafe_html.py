@@ -1,4 +1,5 @@
 """block_unsafe_html.py — Block dangerouslySetInnerHTML without sanitize."""
+
 import os
 import re
 import sys
@@ -25,8 +26,7 @@ class BlockUnsafeHtmlRule(Rule):
             return None
 
         file_path = tool_args.get("path", "")
-        if not file_path or not any(file_path.endswith(ext)
-                                     for ext in (".tsx", ".jsx", ".ts", ".js")):
+        if not file_path or not any(file_path.endswith(ext) for ext in (".tsx", ".jsx", ".ts", ".js")):
             return None
 
         # Check new content for dangerouslySetInnerHTML

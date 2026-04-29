@@ -2,6 +2,7 @@
 
 Single source of truth for constants, path helpers, and result constructors.
 """
+
 import re
 from pathlib import Path
 
@@ -14,17 +15,49 @@ SAFE_PATH_PREFIXES = ("/tmp/", "/var/", "/dev/", "/proc/")
 # Markdown (.md) is intentionally excluded: session-research and documentation writes
 # must not inflate multi-module edit counters and trigger false tentacle enforcement.
 CODE_EXTENSIONS = {
-    ".py", ".kt", ".ts", ".tsx", ".js", ".jsx", ".swift", ".java",
-    ".go", ".rs", ".json", ".yaml", ".yml", ".xml", ".html", ".css",
-    ".toml", ".sh", ".bat", ".ps1",
+    ".py",
+    ".kt",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".swift",
+    ".java",
+    ".go",
+    ".rs",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".xml",
+    ".html",
+    ".css",
+    ".toml",
+    ".sh",
+    ".bat",
+    ".ps1",
 }
 
 # SOURCE_EXTENSIONS: broader set used by is_source_path() for bash-write detection.
 # Keeps .md so bash commands writing markdown are still visible to safety helpers.
 SOURCE_EXTENSIONS = {
-    ".py", ".kt", ".ts", ".tsx", ".js", ".jsx", ".swift", ".java",
-    ".go", ".rs", ".json", ".yaml", ".yml", ".xml", ".html", ".css",
-    ".md", ".toml",
+    ".py",
+    ".kt",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".swift",
+    ".java",
+    ".go",
+    ".rs",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".xml",
+    ".html",
+    ".css",
+    ".md",
+    ".toml",
 }
 
 # Absolute prefix for session-state files (e.g. research markdown under ~/.copilot/session-state/).
@@ -41,14 +74,45 @@ def is_session_path(path: str) -> bool:
     p = str(path)
     return p.startswith(_SESSION_STATE_ABS) or ".copilot/session-state" in p
 
+
 MODULE_MARKERS = (
-    "src", "lib", "app", "pkg", "internal", "cmd",
-    "hooks", "skills", "templates", "tests", "test",
-    "components", "screens", "services", "utils", "models",
-    "views", "controllers", "routes", "pages", "features",
-    "presentation", "domain", "data", "core", "common",
-    "ui", "api", "db", "auth", "config", "settings",
-    "alarm", "timer", "stopwatch", "clock", "widget",
+    "src",
+    "lib",
+    "app",
+    "pkg",
+    "internal",
+    "cmd",
+    "hooks",
+    "skills",
+    "templates",
+    "tests",
+    "test",
+    "components",
+    "screens",
+    "services",
+    "utils",
+    "models",
+    "views",
+    "controllers",
+    "routes",
+    "pages",
+    "features",
+    "presentation",
+    "domain",
+    "data",
+    "core",
+    "common",
+    "ui",
+    "api",
+    "db",
+    "auth",
+    "config",
+    "settings",
+    "alarm",
+    "timer",
+    "stopwatch",
+    "clock",
+    "widget",
 )
 
 
@@ -115,8 +179,7 @@ def bash_writes_source_files(command):
             return True
 
     if re.search(r"\b(?:python3?|node|ruby|perl)\s+-[ce]\s", command):
-        if ("open(" in command or "writeFile" in command or
-                "File.write" in command or "File.open" in command):
+        if "open(" in command or "writeFile" in command or "File.write" in command or "File.open" in command:
             return True
 
     for m in re.finditer(r"\b(?:curl\s+-o|wget\s+-O)\s+([^\s;|&]+)", command):

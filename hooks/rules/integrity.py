@@ -1,4 +1,5 @@
 """Hook integrity verification rule."""
+
 import hashlib
 import json
 import sys
@@ -11,10 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
     from marker_auth import create_tamper_marker
 except ImportError:
+
     def create_tamper_marker():
         p = Path.home() / ".copilot" / "markers" / "hooks-tampered"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.touch()
+
 
 HOOKS_DIR = Path.home() / ".copilot" / "tools" / "hooks"
 HOOKS_DST_DIR = Path.home() / ".copilot" / "hooks"
@@ -117,9 +120,7 @@ class IntegrityRule(Rule):
         # hooks.json
         hooks_json_path = HOOKS_DST_DIR / "hooks.json"
         if hooks_json_path.is_file():
-            manifest["hooks_json"] = hashlib.sha256(
-                hooks_json_path.read_bytes()
-            ).hexdigest()
+            manifest["hooks_json"] = hashlib.sha256(hooks_json_path.read_bytes()).hexdigest()
         HOOKS_DST_DIR.mkdir(parents=True, exist_ok=True)
         MANIFEST.write_text(json.dumps(manifest, indent=2))
 

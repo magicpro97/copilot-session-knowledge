@@ -1,4 +1,5 @@
 """browse/routes/live.py — F11 Live Feed: GET /live (HTML) + GET /api/live (SSE)."""
+
 import json
 import os
 import sys
@@ -10,18 +11,19 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
-from browse.core.fts import _esc
-from browse.core.templates import base_page
 from browse.components import banner
+from browse.core.fts import _esc
+from browse.core.registry import route
+from browse.core.templates import base_page
 
-_MAX_SECONDS = 600      # 10 minutes max SSE connection lifetime
-_POLL_INTERVAL = 2.0    # seconds between DB polls
-_HEARTBEAT = 15         # seconds between heartbeat comments (used by streaming.py)
-_POLL_TICK = 0.1        # inner sleep granularity for stop_event responsiveness
+_MAX_SECONDS = 600  # 10 minutes max SSE connection lifetime
+_POLL_INTERVAL = 2.0  # seconds between DB polls
+_HEARTBEAT = 15  # seconds between heartbeat comments (used by streaming.py)
+_POLL_TICK = 0.1  # inner sleep granularity for stop_event responsiveness
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
+
 
 def _get_max_id(db) -> int:
     """Return MAX(id) from knowledge_entries, or 0 if table missing/empty."""
@@ -46,6 +48,7 @@ def _fetch_new_entries(db, last_id: int) -> list:
 
 # ── SSE generator factory ─────────────────────────────────────────────────────
 
+
 def _live_generator_factory(db):
     """Return a callable(stop_event) → generator that yields JSON SSE chunks."""
 
@@ -62,11 +65,11 @@ def _live_generator_factory(db):
                 if stop_event.is_set():
                     return
                 payload = {
-                    "id":         row[0],
-                    "category":   row[1] or "",
-                    "title":      row[2] or "",
-                    "wing":       row[3] or "",
-                    "room":       row[4] or "",
+                    "id": row[0],
+                    "category": row[1] or "",
+                    "title": row[2] or "",
+                    "wing": row[3] or "",
+                    "room": row[4] or "",
                     "created_at": row[5] or "",
                 }
                 # json.dumps with ensure_ascii=False is safe: no raw \n\n can appear
@@ -85,6 +88,7 @@ def _live_generator_factory(db):
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+
 @route("/api/live", methods=["GET"])
 def handle_api_live(db, params, token, nonce) -> tuple:
     """SSE stream: yields JSON events for every new knowledge_entry."""
@@ -101,7 +105,7 @@ def handle_live(db, params, token, nonce) -> tuple:
     nonce_esc = _esc(nonce)
     tok_esc = _esc(token)
     legacy_notice = banner(
-        f'Legacy v1 HTML page (/live) is deprecated and kept for backward compatibility. '
+        f"Legacy v1 HTML page (/live) is deprecated and kept for backward compatibility. "
         f'There is no 1:1 /v2 replacement yet; start from <a href="/v2/insights{tok_qs}">/v2/insights</a>.',
         variant="warning",
         icon="⚠",
@@ -124,13 +128,13 @@ def handle_live(db, params, token, nonce) -> tuple:
         f'<script nonce="{nonce_esc}" src="/static/js/live.js"></script>\n'
         f'<script nonce="{nonce_esc}">\n'
         f"window.__paletteCommands = window.__paletteCommands || [];\n"
-        f"window.__paletteCommands.push({{id:\"goto-live\","
-        f"title:\"Go to Live Feed\","
-        f"section:\"Navigate\","
+        f'window.__paletteCommands.push({{id:"goto-live",'
+        f'title:"Go to Live Feed",'
+        f'section:"Navigate",'
         f'handler:function(){{location.href="/live{tok_qs}";}}}});\n'
-        f"window.__paletteCommands.push({{id:\"live-pause-resume\","
-        f"title:\"Live Feed: Pause/Resume\","
-        f"section:\"Live Feed\","
+        f'window.__paletteCommands.push({{id:"live-pause-resume",'
+        f'title:"Live Feed: Pause/Resume",'
+        f'section:"Live Feed",'
         f"handler:function(){{livePauseToggle();}}}});\n"
         f'initLiveFeed("/api/live{tok_qs}");\n'
         f"</script>\n"

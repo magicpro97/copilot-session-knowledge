@@ -1,0 +1,60 @@
+name: Retrospective
+
+# Manual-only in Wave 3. Do not add a schedule until retro core
+# supports all output modes under CI constraints.
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Lookback window in days (default: 30)"
+        type: string
+        default: "30"
+
+concurrency:
+  group: retro
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  retro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run retrospective (repo-only mode)
+        env:
+          DAYS_INPUT: ${{ inputs.days }}
+        run: |
+          python3 retro.py --mode repo --days "$DAYS_INPUT" --json --no-cache \
+            | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print('## Retrospective Summary')
+print(f\"Grade: {data['grade_emoji']} {data['grade']} (score {data['retro_score']})\")
+print(f\"Mode: {data['mode']} | Generated: {data['generated_at']}\")
+print()
+print('### Subscores')
+for section in data.get('available_sections', []):
+    score = data.get('subscores', {}).get(section)
+    print(f'- {section}: {score}')
+" | tee retro-summary.md
+
+      - name: Upload retro artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: retro-report
+          path: retro-summary.md
+          retention-days: 30
+
+      - name: Write job summary
+        run: cat retro-summary.md >> "$GITHUB_STEP_SUMMARY"

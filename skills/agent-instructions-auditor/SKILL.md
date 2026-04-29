@@ -1,8 +1,17 @@
 ---
 name: ln-014-agent-instructions-manager
-description: "Creates AGENTS.md canonical and CLAUDE.md/GEMINI.md/ANTIGRAVITY.md @AGENTS.md stubs; audits token budget, cache safety, and import-pattern compliance. Use when instruction files need alignment or when a project's AI instruction set is out of sync."
+description: "Audits AGENTS.md/CLAUDE.md/GEMINI.md/ANTIGRAVITY.md for token budget, cache safety, and import-pattern compliance. Designed for the external ln-* skills ecosystem — requires shared/references/ and skills-catalog/ln-111-root-docs-creator/ paths that are NOT present in this repo. Use when instruction files need alignment in a project that has the full ln-* ecosystem installed."
 license: MIT
 ---
+
+> **⚠️ External ecosystem dependency:** This skill is designed for the `ln-*` skills ecosystem
+> and relies on paths (`shared/references/`, `skills-catalog/ln-111-root-docs-creator/`, etc.)
+> that **do not exist** in this repo (`copilot-session-knowledge`). Phases that require those
+> paths (template creation, MCP Tool Preferences insertion, plugin conflict checks) will fail
+> when run standalone here. The audit-only phases (token budget, cache safety, import-pattern
+> compliance) remain usable without the external ecosystem.
+>
+> For instruction-file creation in this repo, see root [`AGENTS.md`](../../AGENTS.md).
 
 > **Paths:** All file refs relative to skills repo root.
 

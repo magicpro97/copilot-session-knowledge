@@ -13,7 +13,16 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   projects: [
-    { name: "chromium", use: devices["Desktop Chrome"] },
+    {
+      name: "behavioral",
+      testMatch: ["**/smoke.spec.ts", "**/shortcuts.spec.ts"],
+      use: devices["Desktop Chrome"],
+    },
+    {
+      name: "visual",
+      testMatch: ["**/visual.spec.ts"],
+      use: devices["Desktop Chrome"],
+    },
   ],
   webServer: {
     command:

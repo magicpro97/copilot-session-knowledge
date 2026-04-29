@@ -1,4 +1,5 @@
 """browse/core/fts.py — FTS helpers, DB helpers, HTML escape. Verbatim from browse.py."""
+
 import html
 import os
 import re
@@ -18,10 +19,10 @@ _SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9._-]{1,128}$")
 # sessions_fts layout: 0=session_id(UNINDEXED), 1=title, 2=user_messages,
 #                      3=assistant_messages, 4=tool_names
 _SESSION_COL_MAP: dict = {
-    "user":      ("user_messages",      2),
+    "user": ("user_messages", 2),
     "assistant": ("assistant_messages", 3),
-    "tools":     ("tool_names",         4),
-    "title":     ("title",              1),
+    "tools": ("tool_names", 4),
+    "title": ("title", 1),
 }
 
 

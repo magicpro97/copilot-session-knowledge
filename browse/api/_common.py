@@ -1,4 +1,5 @@
 """browse/api/_common.py — Shared helpers for browse/api/* endpoints."""
+
 import json
 import os
 import sys

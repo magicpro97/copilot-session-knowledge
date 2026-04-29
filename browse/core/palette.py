@@ -4,6 +4,7 @@ Returns JSON-serializable command dicts consumed by the ninja-keys palette.
 Each dict has: id, title, hotkey, handler (string action type), and optional href.
 palette.js converts the string handler values into real JS functions at runtime.
 """
+
 import os
 import sys
 

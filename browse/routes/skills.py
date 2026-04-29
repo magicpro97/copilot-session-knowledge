@@ -1,4 +1,5 @@
 """browse/routes/skills.py — read-only skill outcome metrics endpoint."""
+
 import json
 import os
 import sqlite3
@@ -31,9 +32,7 @@ def _open_db(path: Path) -> sqlite3.Connection | None:
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     try:
-        row = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
-        ).fetchone()
+        row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
         return row is not None
     except Exception:
         return False
@@ -54,25 +53,17 @@ def _query_summary(conn: sqlite3.Connection) -> dict:
         summary["total_outcomes"] = int(row[0]) if row else 0
 
         if _table_exists(conn, "tentacle_outcome_skills"):
-            row2 = conn.execute(
-                "SELECT COUNT(DISTINCT outcome_id) FROM tentacle_outcome_skills"
-            ).fetchone()
+            row2 = conn.execute("SELECT COUNT(DISTINCT outcome_id) FROM tentacle_outcome_skills").fetchone()
             summary["outcomes_with_skills"] = int(row2[0]) if row2 else 0
 
-        row3 = conn.execute(
-            "SELECT COUNT(*) FROM tentacle_outcomes WHERE verification_total > 0"
-        ).fetchone()
+        row3 = conn.execute("SELECT COUNT(*) FROM tentacle_outcomes WHERE verification_total > 0").fetchone()
         summary["outcomes_with_verification"] = int(row3[0]) if row3 else 0
 
-        row4 = conn.execute(
-            "SELECT COUNT(*) FROM tentacle_outcomes WHERE worktree_used = 1"
-        ).fetchone()
+        row4 = conn.execute("SELECT COUNT(*) FROM tentacle_outcomes WHERE worktree_used = 1").fetchone()
         summary["outcomes_with_worktree"] = int(row4[0]) if row4 else 0
 
         if summary["total_outcomes"] > 0:
-            row5 = conn.execute(
-                "SELECT COUNT(*) FROM tentacle_outcomes WHERE outcome_status = 'completed'"
-            ).fetchone()
+            row5 = conn.execute("SELECT COUNT(*) FROM tentacle_outcomes WHERE outcome_status = 'completed'").fetchone()
             success_count = int(row5[0]) if row5 else 0
             summary["pass_rate"] = round(success_count / summary["total_outcomes"], 3)
     except Exception:
@@ -97,22 +88,24 @@ def _query_recent_outcomes(conn: sqlite3.Connection) -> list[dict]:
             (_RECENT_LIMIT,),
         ).fetchall()
         for row in rows:
-            outcomes.append({
-                "id": int(row["id"]),
-                "tentacle_name": str(row["tentacle_name"] or ""),
-                "tentacle_id": str(row["tentacle_id"] or ""),
-                "outcome_status": str(row["outcome_status"] or ""),
-                "recorded_at": str(row["recorded_at"] or ""),
-                "worktree_used": bool(row["worktree_used"]),
-                "verification_total": int(row["verification_total"] or 0),
-                "verification_passed": int(row["verification_passed"] or 0),
-                "verification_failed": int(row["verification_failed"] or 0),
-                "todo_total": int(row["todo_total"] or 0),
-                "todo_done": int(row["todo_done"] or 0),
-                "learned": bool(row["learned"]),
-                "duration_seconds": float(row["duration_seconds"]) if row["duration_seconds"] is not None else None,
-                "summary": str(row["summary"] or "") if row["summary"] else None,
-            })
+            outcomes.append(
+                {
+                    "id": int(row["id"]),
+                    "tentacle_name": str(row["tentacle_name"] or ""),
+                    "tentacle_id": str(row["tentacle_id"] or ""),
+                    "outcome_status": str(row["outcome_status"] or ""),
+                    "recorded_at": str(row["recorded_at"] or ""),
+                    "worktree_used": bool(row["worktree_used"]),
+                    "verification_total": int(row["verification_total"] or 0),
+                    "verification_passed": int(row["verification_passed"] or 0),
+                    "verification_failed": int(row["verification_failed"] or 0),
+                    "todo_total": int(row["todo_total"] or 0),
+                    "todo_done": int(row["todo_done"] or 0),
+                    "learned": bool(row["learned"]),
+                    "duration_seconds": float(row["duration_seconds"]) if row["duration_seconds"] is not None else None,
+                    "summary": str(row["summary"] or "") if row["summary"] else None,
+                }
+            )
     except Exception:
         pass
     return outcomes
@@ -133,10 +126,12 @@ def _query_skill_usage(conn: sqlite3.Connection) -> list[dict]:
             """
         ).fetchall()
         for row in rows:
-            skills.append({
-                "skill_name": str(row["skill_name"] or ""),
-                "usage_count": int(row["usage_count"]),
-            })
+            skills.append(
+                {
+                    "skill_name": str(row["skill_name"] or ""),
+                    "usage_count": int(row["usage_count"]),
+                }
+            )
     except Exception:
         pass
     return skills
@@ -154,13 +149,17 @@ def handle_skills_metrics(db, params, token, nonce) -> tuple:
     skills_table_exists = _table_exists(conn, "tentacle_outcome_skills") if conn else False
     verif_table_exists = _table_exists(conn, "tentacle_verifications") if conn else False
 
-    summary = _query_summary(conn) if conn and outcomes_table_exists else {
-        "total_outcomes": 0,
-        "outcomes_with_skills": 0,
-        "outcomes_with_verification": 0,
-        "outcomes_with_worktree": 0,
-        "pass_rate": None,
-    }
+    summary = (
+        _query_summary(conn)
+        if conn and outcomes_table_exists
+        else {
+            "total_outcomes": 0,
+            "outcomes_with_skills": 0,
+            "outcomes_with_verification": 0,
+            "outcomes_with_worktree": 0,
+            "pass_rate": None,
+        }
+    )
     recent_outcomes = _query_recent_outcomes(conn) if conn and outcomes_table_exists else []
     skill_usage = _query_skill_usage(conn) if conn and skills_table_exists else []
 
@@ -175,7 +174,9 @@ def handle_skills_metrics(db, params, token, nonce) -> tuple:
             "id": "metrics-db",
             "title": "Skill metrics database present",
             "status": "ok" if db_exists else "warning",
-            "detail": str(_SKILL_METRICS_DB) if db_exists else "skill-metrics.db not found (normal before first tentacle completion with runtime-isolation-core)",
+            "detail": str(_SKILL_METRICS_DB)
+            if db_exists
+            else "skill-metrics.db not found (normal before first tentacle completion with runtime-isolation-core)",
         },
         {
             "id": "outcomes-table",
@@ -187,7 +188,9 @@ def handle_skills_metrics(db, params, token, nonce) -> tuple:
             "id": "skills-table",
             "title": "Outcome skills table",
             "status": "ok" if skills_table_exists else "warning",
-            "detail": "tentacle_outcome_skills table present" if skills_table_exists else "Table absent or DB unavailable",
+            "detail": "tentacle_outcome_skills table present"
+            if skills_table_exists
+            else "Table absent or DB unavailable",
         },
     ]
     warning_count = sum(1 for c in checks if c.get("status") == "warning")

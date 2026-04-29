@@ -2,7 +2,8 @@
 
 Thank you for your interest in contributing! This guide will help you get started.
 
-> **Agent contributors:** read [docs/AGENT-RULES.md](docs/AGENT-RULES.md) before starting any task.  
+> **Agent contributors:** read [`AGENTS.md`](AGENTS.md) (root instruction surface) and [`docs/AGENT-RULES.md`](docs/AGENT-RULES.md) (full rule text) before starting any task.  
+> **Claude Code users:** `CLAUDE.md` at the repo root imports `AGENTS.md` automatically via `@AGENTS.md`.  
 > **Architecture & conventions reference:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## Reporting Bugs

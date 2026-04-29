@@ -1,4 +1,5 @@
 """browse/routes/tentacles.py — read-only tentacle runtime diagnostics endpoint."""
+
 import json
 import os
 import sys
@@ -116,17 +117,19 @@ def _read_tentacles() -> list[dict]:
             if not isinstance(skills, list):
                 skills = []
 
-            tentacles.append({
-                "name": str(meta.get("name", "")),
-                "tentacle_id": str(meta.get("tentacle_id", "") or ""),
-                "status": str(meta.get("status", "idle") or "idle"),
-                "created_at": str(meta.get("created_at", "") or ""),
-                "description": str(meta.get("description", "") or ""),
-                "scope": meta.get("scope", []) if isinstance(meta.get("scope"), list) else [],
-                "skills": [str(s) for s in skills if isinstance(s, str)],
-                "worktree": worktree,
-                "verification": verification,
-            })
+            tentacles.append(
+                {
+                    "name": str(meta.get("name", "")),
+                    "tentacle_id": str(meta.get("tentacle_id", "") or ""),
+                    "status": str(meta.get("status", "idle") or "idle"),
+                    "created_at": str(meta.get("created_at", "") or ""),
+                    "description": str(meta.get("description", "") or ""),
+                    "scope": meta.get("scope", []) if isinstance(meta.get("scope"), list) else [],
+                    "skills": [str(s) for s in skills if isinstance(s, str)],
+                    "worktree": worktree,
+                    "verification": verification,
+                }
+            )
     except Exception:
         pass
     return tentacles
@@ -144,9 +147,7 @@ def handle_tentacles_status(db, params, token, nonce) -> tuple:
 
     marker_active = _DISPATCHED_MARKER.is_file()
     marker_age_hours = _marker_age_hours(_DISPATCHED_MARKER)
-    marker_stale = (
-        marker_age_hours is not None and marker_age_hours > (_DISPATCHED_MARKER_TTL / 3600.0)
-    )
+    marker_stale = marker_age_hours is not None and marker_age_hours > (_DISPATCHED_MARKER_TTL / 3600.0)
 
     worktrees_prepared = sum(1 for t in tentacles if t.get("worktree", {}).get("prepared"))
     verification_covered = sum(1 for t in tentacles if t.get("verification", {}).get("coverage_exists"))

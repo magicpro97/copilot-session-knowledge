@@ -1,4 +1,5 @@
 """Session lifecycle rules."""
+
 import os
 import re
 import sys
@@ -16,12 +17,21 @@ except Exception:
     _tentacle_mod = None
 
 _NAME_KEYS = {
-    "tentacle", "tentacleName", "tentacle_name",
-    "subagentName", "subagent_name", "agentName", "agent_name",
+    "tentacle",
+    "tentacleName",
+    "tentacle_name",
+    "subagentName",
+    "subagent_name",
+    "agentName",
+    "agent_name",
 }
 _ID_KEYS = {
-    "tentacleId", "tentacle_id", "subagentId", "subagent_id",
-    "agentId", "agent_id",
+    "tentacleId",
+    "tentacle_id",
+    "subagentId",
+    "subagent_id",
+    "agentId",
+    "agent_id",
 }
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
@@ -149,9 +159,7 @@ class SubagentStopRule(Rule):
         cleared = []
         for name, tid in sorted(clear_targets):
             try:
-                ok = _tentacle_mod._clear_dispatched_subagent_marker(
-                    name, tentacle_id=tid
-                )
+                ok = _tentacle_mod._clear_dispatched_subagent_marker(name, tentacle_id=tid)
                 if ok:
                     cleared.append(name)
             except Exception:

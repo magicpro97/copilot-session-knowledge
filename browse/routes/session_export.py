@@ -1,4 +1,5 @@
 """browse/routes/session_export.py — GET /session/{id}.md export as Markdown."""
+
 import os
 import sys
 
@@ -7,8 +8,8 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
 from browse.core.fts import _SESSION_ID_RE
+from browse.core.registry import route
 
 
 @route("/session/{id}.md", methods=["GET"])
@@ -25,14 +26,16 @@ def handle_session_export(db, params, token, nonce, session_id: str = "") -> tup
     if sess is None:
         return b"404 Not Found", "text/plain", 404
 
-    rows = list(db.execute(
-        """SELECT d.seq, d.title, d.doc_type, s.section_name, s.content
+    rows = list(
+        db.execute(
+            """SELECT d.seq, d.title, d.doc_type, s.section_name, s.content
            FROM documents d
            LEFT JOIN sections s ON s.document_id = d.id
            WHERE d.session_id = ?
            ORDER BY d.seq, s.id""",
-        (session_id,),
-    ))
+            (session_id,),
+        )
+    )
 
     lines = [
         f"# Session {session_id}",

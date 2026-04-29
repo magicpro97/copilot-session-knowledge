@@ -15,7 +15,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -31,7 +31,21 @@ jobs:
           embed.py scout-config.py scout-status.py
           sync-config.py sync-daemon.py sync-status.py
           migrate.py generate-summary.py
-          hooks/
+          briefing.py learn.py query-session.py extract-knowledge.py
+          build-session-index.py tentacle.py checkpoint-diff.py
+          checkpoint-restore.py checkpoint-save.py
+          browse/ hooks/
+
+      - name: Ruff format check
+        run: >
+          ruff format --check
+          embed.py scout-config.py scout-status.py
+          sync-config.py sync-daemon.py sync-status.py
+          migrate.py generate-summary.py
+          briefing.py learn.py query-session.py extract-knowledge.py
+          build-session-index.py tentacle.py checkpoint-diff.py
+          checkpoint-restore.py checkpoint-save.py
+          browse/ hooks/
 
       - name: Run tests
         run: python3 run_all_tests.py
@@ -100,7 +114,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 

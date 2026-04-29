@@ -3,6 +3,7 @@
 
 After 3+ Python file edits (via edit/create OR bash), remind to run tests.
 """
+
 import json
 import os
 import re

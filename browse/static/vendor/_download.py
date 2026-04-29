@@ -8,6 +8,7 @@ Run once from the repo root or this directory:
 Re-running is safe: files are skipped if already present (use --force to re-download).
 SHA-384 hashes are computed from downloaded content and written to VENDOR.md.
 """
+
 import argparse
 import base64
 import hashlib
@@ -106,8 +107,7 @@ def write_vendor_md(results: list) -> None:
     for r in results:
         sha = r.get("sha384", "N/A")
         lines.append(
-            f"| `{r['name']}` | {r['package']} | {r['version']} "
-            f"| {r['license']} | `{sha}` | [{r['url']}]({r['url']}) |"
+            f"| `{r['name']}` | {r['package']} | {r['version']} | {r['license']} | `{sha}` | [{r['url']}]({r['url']}) |"
         )
     lines += [
         "",

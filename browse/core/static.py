@@ -1,4 +1,5 @@
 """browse/core/static.py — Hardened static file handler."""
+
 import os
 import sys
 from pathlib import Path
@@ -13,22 +14,22 @@ _STATIC_ROOT = (Path(__file__).parent.parent / "static").resolve()
 
 # Allowed content types by extension
 _CONTENT_TYPES: dict[str, str] = {
-    ".js":          "application/javascript",
-    ".mjs":         "application/javascript",
-    ".css":         "text/css",
-    ".woff2":       "font/woff2",
-    ".woff":        "font/woff",
-    ".ttf":         "font/ttf",
-    ".png":         "image/png",
-    ".jpg":         "image/jpeg",
-    ".jpeg":        "image/jpeg",
-    ".gif":         "image/gif",
-    ".svg":         "image/svg+xml",
-    ".ico":         "image/x-icon",
+    ".js": "application/javascript",
+    ".mjs": "application/javascript",
+    ".css": "text/css",
+    ".woff2": "font/woff2",
+    ".woff": "font/woff",
+    ".ttf": "font/ttf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
     ".webmanifest": "application/manifest+json",
-    ".html":        "text/html; charset=utf-8",
-    ".txt":         "text/plain; charset=utf-8",
-    ".map":         "application/json",
+    ".html": "text/html; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+    ".map": "application/json",
 }
 
 
@@ -53,6 +54,7 @@ def serve_static(handler, rel_path: str) -> tuple:
     # URL-decode and check again
     try:
         import urllib.parse
+
         decoded = urllib.parse.unquote(rel_path)
     except Exception:
         decoded = rel_path
@@ -71,7 +73,7 @@ def serve_static(handler, rel_path: str) -> tuple:
 
     try:
         # Resolve without following symlinks first, then check
-        candidate = (_STATIC_ROOT / rel_path)
+        candidate = _STATIC_ROOT / rel_path
         target = candidate.resolve()
 
         # Reject symlinks

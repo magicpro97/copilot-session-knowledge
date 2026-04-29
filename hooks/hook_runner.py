@@ -20,6 +20,7 @@ Environment variables:
   HOOK_DRY_RUN=1       — Log denials but allow through (testing mode)
   HOOK_LOG_LEVEL=DEBUG — Enable verbose audit logging
 """
+
 import json
 import os
 import sys
@@ -53,14 +54,16 @@ def _audit_log(event, tool, rule_name, decision, detail=""):
                 log_file.rename(rotated)
             except Exception:
                 pass
-        entry = json.dumps({
-            "ts": int(time.time()),
-            "event": event,
-            "tool": tool,
-            "rule": rule_name,
-            "decision": decision,
-            "detail": str(detail)[:200],
-        })
+        entry = json.dumps(
+            {
+                "ts": int(time.time()),
+                "event": event,
+                "tool": tool,
+                "rule": rule_name,
+                "decision": decision,
+                "detail": str(detail)[:200],
+            }
+        )
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(entry + "\n")
     except Exception:
@@ -121,6 +124,7 @@ def main():
     # Import rules for this event
     try:
         from rules import get_rules_for_event
+
         rules = get_rules_for_event(event)
     except Exception as e:
         # Fail-open: import error → allow through

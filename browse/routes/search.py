@@ -1,4 +1,5 @@
 """browse/routes/search.py — GET /search knowledge + session search (F7 rich UX)."""
+
 import os
 import sys
 
@@ -7,25 +8,22 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
-from browse.core.fts import _esc
-from browse.core.templates import base_page
 from browse.components import banner
+from browse.core.fts import _esc
+from browse.core.registry import route
+from browse.core.templates import base_page
 
 
 def _checkbox(value: str, label: str, checked: bool = False) -> str:
     chk = " checked" if checked else ""
-    return (
-        f'<label><input type="checkbox" value="{_esc(value)}"{chk}> '
-        f"{_esc(label)}</label>\n"
-    )
+    return f'<label><input type="checkbox" value="{_esc(value)}"{chk}> {_esc(label)}</label>\n'
 
 
 def _search_page_html(token: str, nonce: str) -> bytes:
     tok_esc = _esc(token)
     tok_qs = f"?token={tok_esc}" if token else ""
     legacy_notice = banner(
-        f'Legacy v1 HTML page (/search) is deprecated and kept for backward compatibility. '
+        f"Legacy v1 HTML page (/search) is deprecated and kept for backward compatibility. "
         f'Use <a href="/v2/search{tok_qs}">/v2/search</a> as the primary UI.',
         variant="warning",
         icon="⚠",
@@ -62,9 +60,7 @@ def _search_page_html(token: str, nonce: str) -> bytes:
         f"{legacy_notice}"
         '<div id="search-wrap">\n'
         '  <input id="q" type="search" placeholder="Search sessions + knowledge..."'
-        ' autofocus autocomplete="off">\n'
-        + facets
-        + '  <ul id="search-results"></ul>\n'
+        ' autofocus autocomplete="off">\n' + facets + '  <ul id="search-results"></ul>\n'
         '  <div id="search-status"></div>\n'
         "</div>\n"
     )
@@ -113,7 +109,13 @@ def handle_search(db, params, token, nonce) -> tuple:
     if fmt == "json":
         import json
         import sqlite3
-        from browse.core.fts import _sanitize_fts_query, _probe_sessions_fts, _SESSION_COL_MAP, _build_column_scoped_query
+
+        from browse.core.fts import (
+            _SESSION_COL_MAP,
+            _build_column_scoped_query,
+            _probe_sessions_fts,
+            _sanitize_fts_query,
+        )
 
         q = params.get("q", [""])[0].strip()
         in_col = params.get("in", [""])[0].strip().lower()
@@ -123,20 +125,25 @@ def handle_search(db, params, token, nonce) -> tuple:
             safe_q = _sanitize_fts_query(q)
             try:
                 from browse.routes.search_api import _knowledge_table
+
                 ktable = _knowledge_table(db)
-                krows = list(db.execute(
-                    f"""SELECT title, content, category, wing, room
+                krows = list(
+                    db.execute(
+                        f"""SELECT title, content, category, wing, room
                        FROM {ktable}
                        WHERE rowid IN (SELECT rowid FROM ke_fts WHERE ke_fts MATCH ?)
                        LIMIT 10""",
-                    (safe_q,),
-                ))
+                        (safe_q,),
+                    )
+                )
                 for r in krows:
-                    json_results.append({
-                        "type": "knowledge",
-                        "title": r["title"],
-                        "category": r["category"],
-                    })
+                    json_results.append(
+                        {
+                            "type": "knowledge",
+                            "title": r["title"],
+                            "category": r["category"],
+                        }
+                    )
             except sqlite3.OperationalError:
                 pass
 
@@ -147,21 +154,25 @@ def handle_search(db, params, token, nonce) -> tuple:
                 else:
                     fts_query = safe_q
                 try:
-                    srows = list(db.execute(
-                        """SELECT s.id, s.summary, s.source
+                    srows = list(
+                        db.execute(
+                            """SELECT s.id, s.summary, s.source
                            FROM sessions s
                            WHERE s.id IN (
                                SELECT session_id FROM sessions_fts WHERE sessions_fts MATCH ?
                            )
                            LIMIT 10""",
-                        (fts_query,),
-                    ))
+                            (fts_query,),
+                        )
+                    )
                     for r in srows:
-                        json_results.append({
-                            "type": "session",
-                            "id": r["id"],
-                            "summary": r["summary"],
-                        })
+                        json_results.append(
+                            {
+                                "type": "session",
+                                "id": r["id"],
+                                "summary": r["summary"],
+                            }
+                        )
                 except sqlite3.OperationalError:
                     pass
 

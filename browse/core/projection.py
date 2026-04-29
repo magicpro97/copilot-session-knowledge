@@ -1,4 +1,5 @@
 """browse/core/projection.py — PCA-to-2D projection for knowledge embeddings (pure stdlib)."""
+
 import json
 import math
 import os
@@ -14,22 +15,23 @@ if os.name == "nt":
             _s.reconfigure(encoding="utf-8", errors="replace")
 
 _CACHE_PATH = Path.home() / ".copilot" / "session-state" / "embeddings_2d_cache.json"
-_MAX_RENDER = 2000   # cap points for rendering
-_PCA_SAMPLE = 500    # rows used to compute eigenvectors (for speed)
-_POWER_ITERS = 50    # power iteration count
+_MAX_RENDER = 2000  # cap points for rendering
+_PCA_SAMPLE = 500  # rows used to compute eigenvectors (for speed)
+_POWER_ITERS = 50  # power iteration count
 
 CATEGORY_COLORS: dict = {
-    "mistake":   "#ff6b6b",
-    "pattern":   "#51cf66",
-    "decision":  "#339af0",
+    "mistake": "#ff6b6b",
+    "pattern": "#51cf66",
+    "decision": "#339af0",
     "discovery": "#cc5de8",
-    "feature":   "#fcc419",
-    "refactor":  "#ff922b",
-    "tool":      "#20c997",
+    "feature": "#fcc419",
+    "refactor": "#ff922b",
+    "tool": "#20c997",
 }
 
 
 # ── Vector math helpers ──────────────────────────────────────────────────────
+
 
 def _dot(a, b) -> float:
     return sum(x * y for x, y in zip(a, b))
@@ -75,8 +77,8 @@ def _power_iter(X, n_iters: int, seed: int = 1) -> list:
     rng = random.Random(seed)
     v = _normalize([rng.gauss(0, 1) for _ in range(n_dims)])
     for _ in range(n_iters):
-        w = _mat_vec(X, v)       # X @ v   →  n_samples-dim
-        u = _mat_T_vec(X, w)     # X^T @ w →  n_dims-dim
+        w = _mat_vec(X, v)  # X @ v   →  n_samples-dim
+        u = _mat_T_vec(X, w)  # X^T @ w →  n_dims-dim
         v = _normalize(u)
     return v
 
@@ -95,6 +97,7 @@ def _decode_vector(blob: bytes, n_dims: int) -> list:
 
 
 # ── PCA 2D ───────────────────────────────────────────────────────────────────
+
 
 def pca_2d(vectors: list) -> tuple:
     """
@@ -136,11 +139,10 @@ def pca_2d(vectors: list) -> tuple:
 
 # ── DB helpers ───────────────────────────────────────────────────────────────
 
+
 def _count_db_embeddings(db) -> int:
     try:
-        row = db.execute(
-            "SELECT COUNT(*) FROM embeddings WHERE source_type = 'knowledge'"
-        ).fetchone()
+        row = db.execute("SELECT COUNT(*) FROM embeddings WHERE source_type = 'knowledge'").fetchone()
         return row[0] if row else 0
     except Exception:
         return 0
@@ -169,17 +171,20 @@ def _load_raw(db) -> list:
         vec = _decode_vector(bytes(blob), int(dims))
         if not vec:
             continue
-        result.append({
-            "id": eid,
-            "source_id": src_id,
-            "category": cat or "unknown",
-            "title": (title or f"entry-{src_id}")[:200],
-            "vec": vec,
-        })
+        result.append(
+            {
+                "id": eid,
+                "source_id": src_id,
+                "category": cat or "unknown",
+                "title": (title or f"entry-{src_id}")[:200],
+                "vec": vec,
+            }
+        )
     return result
 
 
 # ── Cache helpers ─────────────────────────────────────────────────────────────
+
 
 def _load_cache(cache_path: Path) -> dict | None:
     try:
@@ -197,16 +202,16 @@ def _save_cache(data: dict, cache_path: Path) -> None:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         # Atomic write: tmp + os.replace prevents readers from seeing partial JSON
         tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
-        tmp_path.write_text(
-            json.dumps(data, separators=(",", ":")), encoding="utf-8"
-        )
+        tmp_path.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
         import os as _os
+
         _os.replace(str(tmp_path), str(cache_path))
     except Exception:
         pass
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 def get_projection(db, timeout: float = 30.0, cache_path: Path | None = None) -> dict:
     """

@@ -48,6 +48,7 @@ def _normalize_posix_home(val: str) -> str:
     if os.name != "nt":
         return val
     import re
+
     # /c/Users/... → C:\Users\...
     m = re.match(r"^/([a-zA-Z])/(.*)", val)
     if m:
@@ -92,12 +93,13 @@ MARKER_TTL = 14400  # 4 hours
 # .git/hooks/pre-commit (CWD = repo root) and when run directly from the
 # tools directory.
 # ---------------------------------------------------------------------------
-_TOOLS_DIR = Path(__file__).resolve().parent.parent   # hooks/../ == tools/
+_TOOLS_DIR = Path(__file__).resolve().parent.parent  # hooks/../ == tools/
 sys.path.insert(0, str(_TOOLS_DIR / "hooks"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # hooks/ itself
 
 try:
     import marker_auth as _marker_auth_mod  # type: ignore
+
     # Patch SECRET_PATH so imported verify_marker uses the same home
     # resolution as this script (honours COPILOT_HOME / HOME env vars).
     _marker_auth_mod.SECRET_PATH = _copilot_home() / ".copilot" / "hooks" / ".marker-secret"
@@ -131,9 +133,7 @@ except ImportError:
             sig = data.get("sig", "")
             if m_name != name:
                 return False
-            expected = _hmac.new(
-                secret.encode(), f"{name}:{ts}".encode(), hashlib.sha256
-            ).hexdigest()
+            expected = _hmac.new(secret.encode(), f"{name}:{ts}".encode(), hashlib.sha256).hexdigest()
             return _hmac.compare_digest(sig, expected)
         except Exception:
             return False
@@ -195,7 +195,9 @@ def _get_current_git_root() -> "str | None":
     try:
         r = _subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if r.returncode == 0:
             return r.stdout.strip()

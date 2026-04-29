@@ -158,6 +158,9 @@ def run_all_tests() -> int:
         test("T2: status=ok", data.get("status") == "ok")
         test("T2: schema_version present", "schema_version" in data)
         test("T2: sessions count present", "sessions" in data)
+        test("T2: knowledge_entries count present", "knowledge_entries" in data)
+        test("T2: knowledge_entries is integer", isinstance(data.get("knowledge_entries"), int))
+        test("T2: last_indexed_at key present", "last_indexed_at" in data)
     finally:
         server.shutdown()
 

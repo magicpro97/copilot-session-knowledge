@@ -10,6 +10,7 @@ Response shape: EmbeddingProjection.
 
 Returns 503 if projections not available (no embeddings in DB).
 """
+
 import logging
 import os
 import sys
@@ -20,9 +21,9 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
-from browse.core.projection import get_projection
 from browse.api._common import json_error, json_ok
+from browse.core.projection import get_projection
+from browse.core.registry import route
 
 logger = logging.getLogger(__name__)
 

@@ -5,6 +5,7 @@ Fast check (<500ms): detect stale Copilot CLI pkg state, warn to stderr.
 Does NOT auto-heal inside a session (would surprise users) — only notifies.
 Register under sessionStart in hooks.json.
 """
+
 import os
 import sys
 from pathlib import Path

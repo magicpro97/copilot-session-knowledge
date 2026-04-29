@@ -1,4 +1,5 @@
 """browse/__init__.py — Hindsight local web UI package entry point."""
+
 import os
 import sys
 
@@ -8,27 +9,23 @@ if os.name == "nt":
             _s.reconfigure(encoding="utf-8", errors="replace")
 
 # Re-export for test + shim compatibility
-from browse.core.server import _make_handler_class  # noqa: F401
-from browse.core.fts import (  # noqa: F401
-    _sanitize_fts_query,
-    _esc,
-    _SESSION_ID_RE,
-    _DEFAULT_DB,
-    _open_db,
-)
-
 # Register all routes (triggers @route decorators)
 import browse.routes  # noqa: F401
+from browse.core.fts import (  # noqa: F401
+    _DEFAULT_DB,
+    _SESSION_ID_RE,
+    _esc,
+    _open_db,
+    _sanitize_fts_query,
+)
+from browse.core.server import _make_handler_class  # noqa: F401
 
 
 def main() -> None:
     import argparse
     import urllib.parse
-    from pathlib import Path
     from http.server import ThreadingHTTPServer
-
-    from browse.core.fts import _DEFAULT_DB, _open_db
-    from browse.core.server import _make_handler_class
+    from pathlib import Path
 
     p = argparse.ArgumentParser(
         description="Hindsight local web UI (read-only)",
@@ -37,7 +34,9 @@ def main() -> None:
     p.add_argument("--port", type=int, default=0, help="Port (0 = random free port)")
     p.add_argument("--token", default="", help="Auth token")
     p.add_argument(
-        "--token-env", metavar="VARNAME", default="",
+        "--token-env",
+        metavar="VARNAME",
+        default="",
         help="Read auth token from this environment variable",
     )
     p.add_argument("--db", default=str(_DEFAULT_DB), help="Path to knowledge.db")

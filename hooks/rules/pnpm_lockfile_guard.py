@@ -1,4 +1,5 @@
 """pnpm_lockfile_guard.py — Block commit when package.json changed without lockfile."""
+
 import os
 import re
 import subprocess
@@ -31,8 +32,7 @@ class PnpmLockfileGuardRule(Rule):
 
         try:
             result = subprocess.run(
-                ["git", "diff", "--cached", "--name-only"],
-                capture_output=True, text=True, timeout=5
+                ["git", "diff", "--cached", "--name-only"], capture_output=True, text=True, timeout=5
             )
             staged = set(result.stdout.strip().splitlines())
         except Exception:

@@ -1,4 +1,5 @@
 """browse/core/templates.py — Base HTML page template with named slots."""
+
 import os
 import sys
 
@@ -30,8 +31,9 @@ def base_page(
     FROZEN after W0 — do not add fields without bumping TEMPLATE_VERSION.
     """
     import json as _json
-    from browse.core.fts import _esc
+
     from browse.core import palette as _palette
+    from browse.core.fts import _esc
 
     title_esc = _esc(title)
     tok_qs = f"?token={_esc(token)}" if token else ""

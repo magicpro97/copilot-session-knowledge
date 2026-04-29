@@ -311,6 +311,8 @@ export const healthResponseSchema = z.object({
   status: z.string(),
   schema_version: z.number(),
   sessions: z.number(),
+  knowledge_entries: z.number().optional(),
+  last_indexed_at: z.string().nullable().optional(),
   sync_status_endpoint: z.string().optional(),
 });
 
@@ -582,6 +584,21 @@ export const feedbackRequestSchema = z.object({
 export const feedbackResponseSchema = z.object({
   ok: z.boolean(),
   id: z.number(),
+});
+
+export const retroResponseSchema = z.object({
+  retro_score: z.number(),
+  grade: z.string(),
+  grade_emoji: z.string(),
+  mode: z.union([z.literal("local"), z.literal("repo")]),
+  generated_at: z.string(),
+  available_sections: z.array(z.string()),
+  weights: z.record(z.string(), z.number().nullable()).default({}),
+  subscores: z.record(z.string(), z.number().nullable()).default({}),
+  knowledge: z.record(z.string(), z.unknown()).nullable().default(null),
+  skills: z.record(z.string(), z.unknown()).nullable().default(null),
+  hooks: z.record(z.string(), z.unknown()).nullable().default(null),
+  git: z.record(z.string(), z.unknown()).nullable().default(null),
 });
 
 export const sessionsResponseSchema = z.union([

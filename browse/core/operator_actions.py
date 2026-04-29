@@ -11,6 +11,7 @@ Contract invariants:
 
 This module is imported by browse/routes/* to build action lists consistently.
 """
+
 import os
 import sys
 
@@ -61,8 +62,7 @@ def make_action(
     """
     if not safe:
         raise ValueError(
-            f"operator_action '{action_id}': safe must be True — "
-            "operator actions must never be write operations."
+            f"operator_action '{action_id}': safe must be True — operator actions must never be write operations."
         )
     if not command or not command.strip():
         raise ValueError(f"operator_action '{action_id}': command must not be empty.")

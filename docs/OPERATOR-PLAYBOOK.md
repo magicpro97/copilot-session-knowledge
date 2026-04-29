@@ -246,3 +246,34 @@ python3 ~/.copilot/tools/tentacle.py complete <name>
 ```
 
 > Full tentacle workflow: **[docs/USAGE.md](USAGE.md#tentacle-orchestration)**
+
+---
+
+## Retrospective
+
+View the composite operator score across knowledge, skills, hooks, and git signals.
+
+```bash
+# CLI — full text report
+python3 ~/.copilot/tools/retro.py
+
+# Repo-only (safe in CI; no local DB needed)
+python3 ~/.copilot/tools/retro.py --mode repo
+
+# JSON payload (stable contract consumed by the browse API)
+python3 ~/.copilot/tools/retro.py --json
+
+# Single score line
+python3 ~/.copilot/tools/retro.py --score
+
+# One section only: knowledge | skills | hooks | git
+python3 ~/.copilot/tools/retro.py --subreport knowledge
+```
+
+Browse UI: the **Retrospective** collapsible panel on the Insights → Dashboard tab
+fetches `/api/retro/summary?mode=repo` and shows the composite score and per-section
+subscores. It fails gracefully if the API is unavailable.
+
+GitHub Actions: trigger **Retrospective** (`retro.yml`) via `workflow_dispatch` to run
+`retro.py --mode repo --json`, produce a markdown summary artifact, and write to the
+job summary. Read-only — no issues, commits, or DB writes.

@@ -1,4 +1,5 @@
 """browse/core/auth.py — Token + cookie authentication."""
+
 import hmac
 import http.cookies
 import os
@@ -37,9 +38,7 @@ def check_token(token: str, params: dict, cookie_header: str) -> tuple:
         morsel = jar.get("browse_token")
         if morsel:
             try:
-                if hmac.compare_digest(
-                    morsel.value.encode("utf-8"), token.encode("utf-8")
-                ):
+                if hmac.compare_digest(morsel.value.encode("utf-8"), token.encode("utf-8")):
                     return True, morsel.value, False
             except Exception:
                 pass
@@ -49,9 +48,7 @@ def check_token(token: str, params: dict, cookie_header: str) -> tuple:
 
 def make_cookie_header(token: str) -> str:
     """Return Set-Cookie header value for browse_token."""
-    return (
-        f"browse_token={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400"
-    )
+    return f"browse_token={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400"
 
 
 def check_origin(request_headers: object, host: str) -> bool:

@@ -1,4 +1,5 @@
 """Error knowledge base search rule."""
+
 import subprocess
 import sys
 from pathlib import Path
@@ -31,7 +32,9 @@ class ErrorKBRule(Rule):
         try:
             result = subprocess.run(
                 [sys.executable, str(QUERY_SCRIPT), search_term],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             output = result.stdout.strip()
             if output and "No results" not in output:

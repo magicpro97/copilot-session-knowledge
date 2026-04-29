@@ -1,4 +1,5 @@
 """browse/core/server.py — ThreadingHTTPServer wrapper and request dispatcher."""
+
 import errno
 import os
 import sqlite3
@@ -14,6 +15,7 @@ if os.name == "nt":
 
 class _BrowseHandler(BaseHTTPRequestHandler):
     """Read-only HTTP request handler. db and token set on class by _make_handler_class."""
+
     timeout = 15  # slow-loris guard: drops sockets that idle/dribble more than 15s
 
     db: sqlite3.Connection
@@ -50,6 +52,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
 
         if set_cookie:
             from browse.core.auth import make_cookie_header
+
             self.send_header("Set-Cookie", make_cookie_header(set_cookie))
 
         self.end_headers()
@@ -87,7 +90,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
 
         # /static/ — no auth required; hardened path check
         if path.startswith("/static/"):
-            rel_path = path[len("/static/"):]
+            rel_path = path[len("/static/") :]
             body, ct, status = serve_static(self, rel_path)
             self._send(body, ct, status, nonce, send_body=send_body)
             return
@@ -96,7 +99,8 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         if path.startswith("/v2/") or path == "/v2":
             from browse.core.csp import build_v2_csp_header
             from browse.routes.serve_v2 import serve_v2
-            rel_path = path[len("/v2/"):] if path.startswith("/v2/") else ""
+
+            rel_path = path[len("/v2/") :] if path.startswith("/v2/") else ""
             v2_csp = build_v2_csp_header()
             # Static assets (_next/) and public files are served without auth
             if rel_path.startswith("_next/") or rel_path in ("favicon.ico", "robots.txt"):
@@ -105,9 +109,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 return
             # Pages require auth
             cookie_header = self.headers.get("Cookie", "")
-            valid, _token_val, should_set_cookie = check_token(
-                self.token, params, cookie_header
-            )
+            valid, _token_val, should_set_cookie = check_token(self.token, params, cookie_header)
             if not valid:
                 self._send(
                     b"401 Unauthorized",
@@ -132,9 +134,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
 
         # Auth check
         cookie_header = self.headers.get("Cookie", "")
-        valid, token_val, should_set_cookie = check_token(
-            self.token, params, cookie_header
-        )
+        valid, token_val, should_set_cookie = check_token(self.token, params, cookie_header)
 
         if not valid:
             self._send(b"401 Unauthorized", "text/plain", 401, nonce, send_body=send_body)
@@ -149,7 +149,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         try:
             body, ct, status = handler_fn(self.db, params, token_val, nonce, **kwargs)
         except Exception as exc:
-            body = f"500 Internal Server Error: {_esc(str(exc))}".encode("utf-8")
+            body = f"500 Internal Server Error: {_esc(str(exc))}".encode()
             ct = "text/plain"
             status = 500
 
@@ -164,7 +164,9 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             import threading as _th
+
             from browse.core.streaming import sse_response
+
             _stop = _th.Event()
             try:
                 _gen = body(_stop) if callable(body) else iter(body)
@@ -191,7 +193,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         self._handle_get_like(send_body=False)
 
     def do_POST(self) -> None:
-        from browse.core.auth import check_token, check_origin
+        from browse.core.auth import check_origin, check_token
         from browse.core.csp import generate_nonce
         from browse.core.fts import _esc
         from browse.core.registry import match_route
@@ -203,9 +205,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
 
         # Auth check (cookie or query-string token)
         cookie_header = self.headers.get("Cookie", "")
-        valid, token_val, should_set_cookie = check_token(
-            self.token, params, cookie_header
-        )
+        valid, token_val, should_set_cookie = check_token(self.token, params, cookie_header)
         if not valid:
             self._send(b"401 Unauthorized", "text/plain", 401, nonce)
             return
@@ -240,7 +240,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         try:
             body, ct, status = handler_fn(self.db, params, token_val, nonce, **kwargs)
         except Exception as exc:
-            body = f"500 Internal Server Error: {_esc(str(exc))}".encode("utf-8")
+            body = f"500 Internal Server Error: {_esc(str(exc))}".encode()
             ct = "text/plain"
             status = 500
 
@@ -261,4 +261,5 @@ def _make_handler_class(db: sqlite3.Connection, token: str) -> type:
 def _open_db(db_path) -> sqlite3.Connection:
     """Open a SQLite connection. Re-exported for convenience."""
     from browse.core.fts import _open_db as _fts_open_db
+
     return _fts_open_db(db_path)

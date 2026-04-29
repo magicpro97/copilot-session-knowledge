@@ -1,4 +1,5 @@
 """browse/routes/embeddings.py — GET /embeddings (HTML) + GET /api/embeddings/points (JSON)."""
+
 import json
 import os
 import sys
@@ -8,11 +9,11 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
-from browse.core.fts import _esc
-from browse.core.templates import base_page
-from browse.core.projection import get_projection
 from browse.components import banner
+from browse.core.fts import _esc
+from browse.core.projection import get_projection
+from browse.core.registry import route
+from browse.core.templates import base_page
 
 
 @route("/api/embeddings/points", methods=["GET"])
@@ -35,7 +36,7 @@ def handle_embeddings(db, params, token, nonce) -> tuple:
     tok_qs = f"?token={_esc(token)}" if token else ""
     nonce_esc = _esc(nonce)
     legacy_notice = banner(
-        f'Legacy v1 HTML page (/embeddings) is deprecated and kept for backward compatibility. '
+        f"Legacy v1 HTML page (/embeddings) is deprecated and kept for backward compatibility. "
         f'There is no 1:1 /v2 replacement yet; start from <a href="/v2/insights{tok_qs}">/v2/insights</a>.',
         variant="warning",
         icon="⚠",
@@ -55,35 +56,35 @@ def handle_embeddings(db, params, token, nonce) -> tuple:
         '    <option value="feature">Feature</option>\n'
         '    <option value="refactor">Refactor</option>\n'
         '    <option value="tool">Tool</option>\n'
-        '  </select>\n'
+        "  </select>\n"
         '  <span id="emb-status" style="color:var(--pico-muted-color,#6c757d);'
         'font-size:0.875rem;"></span>\n'
-        '</div>\n'
+        "</div>\n"
         '<div id="emb-legend" style="display:flex;gap:0.75rem;flex-wrap:wrap;'
         'margin-bottom:0.5rem;font-size:0.8rem;"></div>\n'
         '<div id="emb-tooltip" style="'
-        'position:fixed;pointer-events:none;display:none;'
-        'background:var(--pico-card-background-color,#f8f9fa);'
-        'border:1px solid var(--pico-muted-border-color,#dee2e6);'
-        'border-radius:6px;padding:0.4rem 0.65rem;font-size:0.82rem;'
-        'max-width:280px;word-break:break-word;z-index:100;'
+        "position:fixed;pointer-events:none;display:none;"
+        "background:var(--pico-card-background-color,#f8f9fa);"
+        "border:1px solid var(--pico-muted-border-color,#dee2e6);"
+        "border-radius:6px;padding:0.4rem 0.65rem;font-size:0.82rem;"
+        "max-width:280px;word-break:break-word;z-index:100;"
         '"></div>\n'
         '<canvas id="emb-scatter" style="display:block;width:100%;cursor:crosshair;'
         'border:1px solid var(--pico-muted-border-color,#dee2e6);border-radius:4px;">'
-        '</canvas>\n'
+        "</canvas>\n"
     )
 
     body_scripts = (
         f'<script nonce="{nonce_esc}" src="/static/js/embeddings.js"></script>\n'
         f'<script nonce="{nonce_esc}">\n'
-        f'window.__paletteCommands = window.__paletteCommands || [];\n'
-        f'window.__paletteCommands.push({{'
+        f"window.__paletteCommands = window.__paletteCommands || [];\n"
+        f"window.__paletteCommands.push({{"
         f'id:"goto-embeddings",title:"Go to Embeddings 2D",'
         f'section:"Navigate",'
         f'handler:function(){{location.href="/embeddings{tok_qs}";}}'
-        f'}});\n'
+        f"}});\n"
         f'initEmbeddings("/api/embeddings/points{tok_qs}");\n'
-        f'</script>\n'
+        f"</script>\n"
     )
 
     return (

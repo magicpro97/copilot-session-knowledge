@@ -1,4 +1,5 @@
 """browse/core/streaming.py — SSE streaming helper with heartbeat + stop flag."""
+
 import os
 import sys
 import threading
@@ -53,7 +54,7 @@ def sse_response(
         for chunk in generator:
             if stop_event.is_set():
                 break
-            msg = f"data: {chunk}\n\n".encode("utf-8")
+            msg = f"data: {chunk}\n\n".encode()
             try:
                 handler.wfile.write(msg)
                 handler.wfile.flush()

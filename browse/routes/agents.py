@@ -3,6 +3,7 @@
 Retained for backward compatibility with legacy imports/tests.
 No routes are registered from this module.
 """
+
 import os
 import sys
 

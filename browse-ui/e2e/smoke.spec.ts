@@ -103,3 +103,45 @@ test("graph evidence and similarity tabs render live product surfaces", async ({
   await expect(similaritySignal.first()).toBeVisible();
   await expect(page.getByText("Clusters shell ready")).toHaveCount(0);
 });
+
+test("graph communities tab renders and is not a placeholder shell", async ({ page }) => {
+  await page.goto("/v2/graph/");
+  await expect(page.getByRole("heading", { level: 1, name: "Graph" })).toBeVisible({
+    timeout: 20_000,
+  });
+
+  const communitiesTab = page.getByRole("tab", { name: "Communities" });
+  await expect(communitiesTab).toBeVisible();
+  await communitiesTab.click();
+  await expect(communitiesTab).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText("Communities shell ready")).toHaveCount(0);
+});
+
+test("insights retrospective section loads repo-mode summary", async ({ page }) => {
+  await page.goto("/v2/insights/");
+  await expect(page.getByRole("tab", { name: "Dashboard" })).toBeVisible({
+    timeout: 20_000,
+  });
+
+  const retroSummary = page.locator("summary").filter({ hasText: "Retrospective" }).first();
+  await expect(retroSummary).toBeVisible();
+  await retroSummary.click();
+  await expect(page.getByText(/mode:\s*repo/i)).toBeVisible({ timeout: 20_000 });
+});
+
+test("search feedback submits and resets when the query changes", async ({ page }) => {
+  await page.goto("/v2/search/?q=deterministic");
+  const searchInput = page.getByRole("searchbox", { name: "Search sessions and knowledge" });
+  const helpfulButton = page.getByRole("button", { name: "Helpful result" }).first();
+
+  await expect(helpfulButton).toBeVisible({ timeout: 20_000 });
+  await helpfulButton.click();
+  await expect(page.getByText("👍 Thanks!").first()).toBeVisible();
+
+  await searchInput.fill("e2e");
+  await expect(searchInput).toHaveValue("e2e");
+  await searchInput.press("Enter");
+  await expect(page.getByRole("button", { name: "Helpful result" }).first()).toBeVisible({
+    timeout: 20_000,
+  });
+});

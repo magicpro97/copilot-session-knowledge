@@ -1,4 +1,5 @@
 """browse/routes/graph.py — GET /graph (HTML) + GET /api/graph (JSON)."""
+
 import json
 import os
 import sys
@@ -8,22 +9,22 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.core.registry import route
-from browse.core.fts import _esc
-from browse.core.templates import base_page
-from browse.core.similarity import get_similarity
-from browse.core.communities import get_communities
 from browse.components import banner
+from browse.core.communities import get_communities
+from browse.core.fts import _esc
+from browse.core.registry import route
+from browse.core.similarity import get_similarity
+from browse.core.templates import base_page
 
 # Node color palette keyed by knowledge category
 CATEGORY_COLORS: dict[str, str] = {
-    "mistake":   "#ff6b6b",
-    "pattern":   "#51cf66",
-    "decision":  "#339af0",
+    "mistake": "#ff6b6b",
+    "pattern": "#51cf66",
+    "decision": "#339af0",
     "discovery": "#cc5de8",
-    "feature":   "#fcc419",
-    "refactor":  "#ff922b",
-    "tool":      "#20c997",
+    "feature": "#fcc419",
+    "refactor": "#ff922b",
+    "tool": "#20c997",
 }
 _DEFAULT_COLOR = "#adb5bd"
 
@@ -103,15 +104,17 @@ def _build_graph_data(db, wing: str, room: str, kind: str, limit: int) -> dict:
         w = r[3] or ""
         rm = r[4] or ""
         entry_titles[eid] = title
-        nodes.append({
-            "id": f"e-{eid}",
-            "kind": "entry",
-            "label": title[:80],
-            "wing": w,
-            "room": rm,
-            "category": cat,
-            "color": CATEGORY_COLORS.get(cat, _DEFAULT_COLOR),
-        })
+        nodes.append(
+            {
+                "id": f"e-{eid}",
+                "kind": "entry",
+                "label": title[:80],
+                "wing": w,
+                "room": rm,
+                "category": cat,
+                "color": CATEGORY_COLORS.get(cat, _DEFAULT_COLOR),
+            }
+        )
 
     # Build edges from entity_relations
     # entity_relations: subject (title), predicate, object (title or entity name)
@@ -124,10 +127,12 @@ def _build_graph_data(db, wing: str, room: str, kind: str, limit: int) -> dict:
         title_to_eid: dict[str, int] = {v: k for k, v in entry_titles.items()}
 
         try:
-            rel_rows = list(db.execute(
-                "SELECT subject, predicate, object FROM entity_relations LIMIT ?",
-                (limit * 2,),
-            ))
+            rel_rows = list(
+                db.execute(
+                    "SELECT subject, predicate, object FROM entity_relations LIMIT ?",
+                    (limit * 2,),
+                )
+            )
         except Exception:
             rel_rows = []
 
@@ -173,12 +178,11 @@ def _build_graph_data(db, wing: str, room: str, kind: str, limit: int) -> dict:
 def _safe_id(name: str) -> str:
     """Convert entity name to a safe node id fragment."""
     import hashlib
+
     return hashlib.md5(name.encode("utf-8", errors="replace")).hexdigest()[:12]
 
 
-def _build_evidence_graph_data(
-    db, wing: str, room: str, kind: str, relation_type: str, limit: int
-) -> dict:
+def _build_evidence_graph_data(db, wing: str, room: str, kind: str, relation_type: str, limit: int) -> dict:
     """Query DB and return evidence payload backed by knowledge_relations."""
     limit = min(max(1, limit), _NODE_CAP)
     conditions, binds = _build_entry_filters(wing, room, kind)
@@ -201,15 +205,17 @@ def _build_evidence_graph_data(
         eid = int(r[0])
         cat = r[1] or "unknown"
         entry_ids.append(eid)
-        nodes.append({
-            "id": f"e-{eid}",
-            "kind": "entry",
-            "label": (r[2] or "")[:80],
-            "wing": r[3] or "",
-            "room": r[4] or "",
-            "category": cat,
-            "color": CATEGORY_COLORS.get(cat, _DEFAULT_COLOR),
-        })
+        nodes.append(
+            {
+                "id": f"e-{eid}",
+                "kind": "entry",
+                "label": (r[2] or "")[:80],
+                "wing": r[3] or "",
+                "room": r[4] or "",
+                "category": cat,
+                "color": CATEGORY_COLORS.get(cat, _DEFAULT_COLOR),
+            }
+        )
 
     edges: list[dict] = []
     relation_types_seen: set[str] = set()
@@ -223,9 +229,7 @@ def _build_evidence_graph_data(
 
         relation_types = _csv_values(relation_type)
         if relation_types:
-            rel_conditions.append(
-                f"kr.relation_type IN ({','.join('?' * len(relation_types))})"
-            )
+            rel_conditions.append(f"kr.relation_type IN ({','.join('?' * len(relation_types))})")
             rel_binds.extend(relation_types)
 
         rel_sql = f"""
@@ -242,12 +246,14 @@ def _build_evidence_graph_data(
             rel_rows = []
         for src, tgt, rel_type, confidence in rel_rows:
             relation_types_seen.add(rel_type)
-            edges.append({
-                "source": f"e-{src}",
-                "target": f"e-{tgt}",
-                "relation_type": rel_type,
-                "confidence": confidence,
-            })
+            edges.append(
+                {
+                    "source": f"e-{src}",
+                    "target": f"e-{tgt}",
+                    "relation_type": rel_type,
+                    "confidence": confidence,
+                }
+            )
 
     return {
         "nodes": nodes,
@@ -320,7 +326,7 @@ def handle_graph(db, params, token, nonce) -> tuple:
     tok_qs = f"?token={_esc(token)}" if token else ""
     nonce_esc = _esc(nonce)
     legacy_notice = banner(
-        f'Legacy v1 HTML page (/graph) is deprecated and kept for backward compatibility. '
+        f"Legacy v1 HTML page (/graph) is deprecated and kept for backward compatibility. "
         f'Use <a href="/v2/graph{tok_qs}">/v2/graph</a> as the primary UI.',
         variant="warning",
         icon="⚠",
@@ -328,22 +334,22 @@ def handle_graph(db, params, token, nonce) -> tuple:
 
     # Collect distinct wings for filter sidebar
     try:
-        wings = [r[0] for r in db.execute(
-            "SELECT DISTINCT wing FROM knowledge_entries WHERE wing != '' ORDER BY wing"
-        )]
+        wings = [r[0] for r in db.execute("SELECT DISTINCT wing FROM knowledge_entries WHERE wing != '' ORDER BY wing")]
     except Exception:
         wings = []
 
     try:
-        categories = [r[0] for r in db.execute(
-            "SELECT DISTINCT category FROM knowledge_entries WHERE category != '' ORDER BY category"
-        )]
+        categories = [
+            r[0]
+            for r in db.execute(
+                "SELECT DISTINCT category FROM knowledge_entries WHERE category != '' ORDER BY category"
+            )
+        ]
     except Exception:
         categories = list(CATEGORY_COLORS.keys())
 
     wing_checkboxes = "\n".join(
-        f'<label><input type="checkbox" class="filter-wing" value="{_esc(w)}" checked> {_esc(w)}</label>'
-        for w in wings
+        f'<label><input type="checkbox" class="filter-wing" value="{_esc(w)}" checked> {_esc(w)}</label>' for w in wings
     )
     cat_checkboxes = "\n".join(
         f'<label><input type="checkbox" class="filter-kind" value="{_esc(c)}" checked> {_esc(c)}</label>'
@@ -359,9 +365,9 @@ def handle_graph(db, params, token, nonce) -> tuple:
         "  <details open><summary>Category</summary>\n"
         f"  <div id='kind-filters'>{cat_checkboxes}</div>\n"
         "  </details>\n"
-        '  <hr>\n'
+        "  <hr>\n"
         '  <div id="node-detail" style="display:none;">\n'
-        '    <h4>Node</h4>\n'
+        "    <h4>Node</h4>\n"
         '    <p id="node-title"></p>\n'
         '    <a id="node-link" href="#">Open in Search</a>\n'
         "  </div>\n"
@@ -375,24 +381,26 @@ def handle_graph(db, params, token, nonce) -> tuple:
         "</div>\n"
     )
 
-    head_extra = (
-        f'<script nonce="{nonce_esc}" src="/static/vendor/cytoscape.min.js"></script>\n'
-    )
+    head_extra = f'<script nonce="{nonce_esc}" src="/static/vendor/cytoscape.min.js"></script>\n'
 
     body_scripts = (
         f'<script nonce="{nonce_esc}" src="/static/js/graph.js"></script>\n'
         f'<script nonce="{nonce_esc}">\n'
-        f'window.__paletteCommands = window.__paletteCommands || [];\n'
+        f"window.__paletteCommands = window.__paletteCommands || [];\n"
         f'window.__paletteCommands.push({{id:"goto-graph",title:"Go to Knowledge Graph",section:"Navigate",'
         f'handler:function(){{location.href="/graph{tok_qs}";}}}});\n'
-        f'</script>\n'
+        f"</script>\n"
     )
 
-    return base_page(
-        nonce,
-        "Knowledge Graph",
-        main_content=legacy_notice + canvas,
-        head_extra=head_extra,
-        body_scripts=body_scripts,
-        token=token,
-    ), "text/html; charset=utf-8", 200
+    return (
+        base_page(
+            nonce,
+            "Knowledge Graph",
+            main_content=legacy_notice + canvas,
+            head_extra=head_extra,
+            body_scripts=body_scripts,
+            token=token,
+        ),
+        "text/html; charset=utf-8",
+        200,
+    )
