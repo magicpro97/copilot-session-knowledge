@@ -20,7 +20,7 @@ hooks/
     edit_tracker.py       # Track bash edits + test reminder (merged)
     error_kb.py           # Auto-search KB on errors
     integrity.py          # Verify hook file integrity
-    session_lifecycle.py  # Session end cleanup
+    session_lifecycle.py  # Session end + subagent/agent stop marker cleanup
 ```
 
 ## Rules
@@ -30,6 +30,7 @@ hooks/
 | `auto-briefing` | sessionStart | Auto-runs briefing.py + refreshes codebase-map.py, creates HMAC-signed marker |
 | `integrity` | sessionStart | Verifies hook files via SHA256 manifest |
 | `session-end` | sessionEnd | Cleans up marker files, writes session.log entry, opt-in checkpoint reminder (`COPILOT_CHECKPOINT_REMIND=1`) |
+| `subagent-stop-cleanup` | agentStop + subagentStop | Best-effort dispatched-subagent marker cleanup from stop-event payload hints |
 | `enforce-briefing` | preToolUse | Blocks edit/create/bash-writes until briefing done |
 | `enforce-learn` | preToolUse | Blocks git commit AND task_complete without learn.py |
 | `tentacle-enforce` | preToolUse | Blocks (deny) edits once ≥3 files across ≥2 modules are reached without tentacle setup. **Session-state paths** (`~/.copilot/session-state/`) are always exempt — `/research` outputs and other session artifacts are never blocked. **Bash redirects** are only flagged when the destination is a real source file; redirects to `.txt`, `.log`, `/dev/null`, or session-state paths are allowed. The deny message contains convention-level guidance: if you are the **orchestrator**, follow the runtime-bundle workflow — `tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing` → `tentacle.py todo <name> add "<task>"` → `tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6`; if you are a **dispatched sub-agent**, stay within your declared scope, write any scope gaps to `handoff.md`, and by convention avoid `git commit`/`git push`. |
@@ -44,15 +45,13 @@ hooks/
 
 ### Platform events not currently handled
 
-The Copilot platform provides 8 hook event types (per [GitHub docs](https://docs.github.com/en/copilot/concepts/agents/cloud-agent/about-hooks)). This repo's `hooks.json` and `hook_runner.py` handle 5 of them. The remaining 3 are available but have no rules registered:
+The Copilot platform provides 8 hook event types (per [GitHub docs](https://docs.github.com/en/copilot/concepts/agents/cloud-agent/about-hooks)). This repo's `hooks.json` and `hook_runner.py` handle 7 of them. The only currently unhandled platform event is:
 
 | Event | Available since | Status | Notes |
 |-------|----------------|--------|-------|
 | `userPromptSubmitted` | 2024 | **Not handled** — no rules registered | Fires when user submits a prompt; input includes `prompt` field. Could be used for prompt logging/auditing. Deliberately excluded for now; add a rule in `hooks/rules/` to use it. |
-| `agentStop` | 2024 | **Not handled** — no rules registered | Fires when the main agent finishes responding. Could be used for post-response cleanup or checkpointing. |
-| `subagentStop` | 2024 | **Not handled** — no rules registered | Fires when a subagent completes, before returning results to the parent. Could be used for subagent result processing. |
 
-These events are registered in `hooks/hook_runner.py`'s docstring for discovery but will silently no-op until rules are added.
+`agentStop` and `subagentStop` are handled by `SubagentStopRule` in `hooks/rules/session_lifecycle.py` and are registered in `hooks/hooks.json` for best-effort dispatched-subagent marker cleanup.
 
 ### `toolArgs` type: platform sends dict, docs show string
 

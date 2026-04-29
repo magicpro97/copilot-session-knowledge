@@ -24,6 +24,16 @@
 - [Contributing](#contributing)
 - [License](#license)
 
+**Canonical docs:**
+[Architecture & Conventions](docs/ARCHITECTURE.md) ·
+[Agent Rules](docs/AGENT-RULES.md) ·
+[Install Guide](docs/INSTALL.md) ·
+[Usage](docs/USAGE.md) ·
+[Hooks](docs/HOOKS.md) ·
+[Skills](docs/SKILLS.md) ·
+[Telemetry & Contracts](docs/TELEMETRY.md) ·
+[Operator Playbook](docs/OPERATOR-PLAYBOOK.md)
+
 ## Why?
 
 Each Copilot CLI / Claude Code session accumulates valuable experience — bugs encountered, patterns discovered, architecture decisions made. But every new session starts from zero, repeating past mistakes.
@@ -47,6 +57,8 @@ That's it. Your AI agent now has memory across sessions.
 
 ## Installation
 
+> 📖 **Full install guide (all methods, verification, upgrade, uninstall):** [docs/INSTALL.md](docs/INSTALL.md)
+
 ### Prerequisites
 
 - Python 3.10+ (no pip packages needed — pure stdlib)
@@ -69,23 +81,15 @@ bash ~/.copilot/tools/launchd/install-launchd.sh
 
 ### Alternative (manual copy)
 
-```bash
-git clone https://github.com/magicpro97/copilot-session-knowledge.git
-cd copilot-session-knowledge
-mkdir -p ~/.copilot/tools && cp *.py *.sh ~/.copilot/tools/
-```
+Use the canonical install guide for manual-copy installs and caveats:
+
+- [Method 2 — Manual Copy](docs/INSTALL.md#method-2--manual-copy)
 
 ### Windows (PowerShell)
 
-```powershell
-git clone https://github.com/magicpro97/copilot-session-knowledge.git
-cd copilot-session-knowledge
-New-Item -ItemType Directory -Force "$env:USERPROFILE\.copilot\tools"
-Copy-Item *.py,*.sh "$env:USERPROFILE\.copilot\tools\"
-python "$env:USERPROFILE\.copilot\tools\build-session-index.py"
-python "$env:USERPROFILE\.copilot\tools\extract-knowledge.py"
-python "$env:USERPROFILE\.copilot\tools\migrate.py"
-```
+Use the canonical install guide for the full Windows walkthrough:
+
+- [Method 3 — Windows (PowerShell)](docs/INSTALL.md#method-3--windows-powershell)
 
 ### Aliases (optional)
 
@@ -366,6 +370,8 @@ Sync is **local-first and optional**: local `knowledge.db` remains the primary r
 
 ## Architecture
 
+> 📖 **Full architecture, script inventory, and conventions:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
 ```mermaid
 flowchart TD
   subgraph Data["📁 ~/.copilot/session-state/"]
@@ -390,22 +396,17 @@ flowchart TD
   style DB fill:#f59e0b,color:#000
 ```
 
-### How it works
+**How it works:**
 
-1. **Index** — `build-session-index.py` Phase 1 (session metadata) + Phase 2 (event content) via `providers/` (`SessionProvider` ABC, `CopilotProvider`, `ClaudeProvider`) → SQLite FTS5 (schema v8)
-2. **Extract** — `extract-knowledge.py` classifies into 7 types, dedup by content hash
-3. **Graph** — Auto-detect relations: same session, same tag, mistake→fix
-4. **Search** — `sessions_fts` BM25 + column-scoped (`--in user/assistant/tool`) + optional semantic vector (RRF)
-5. **Watch** — `watch-sessions.py` adaptive polling (5 s/30 s/300 s tiers), auto re-indexes
-6. **Browse** — `browse.py` read-only local web UI (127.0.0.1, token auth, CSP)
-7. **Health** — `index-status.py` reports row counts, FTS integrity, event-offset coverage
-8. **Update** — `auto-update-tools.py` smart pipeline: git pull → diff-based update
-9. **Host metadata** — `host_manifest.py` is the single source of truth for supported hosts (Copilot CLI + Claude Code only) and their file-system paths; imported by `install.py`, `setup-project.py`, `watch-sessions.py`, and `auto-update-tools.py`
-10. **Tentacle workspace** — `.octogent/` stores local tentacle state and is gitignored in this repo
+1. **Index** — `build-session-index.py` Phase 1+2 via `providers/` → SQLite FTS5 (schema v8)
+2. **Extract** — `extract-knowledge.py` classifies into 7 types, deduplicates by content hash
+3. **Search** — BM25 keyword + column-scoped (`--in user/assistant/tool`) + optional semantic vector (RRF)
+4. **Watch** — `watch-sessions.py` adaptive polling (5 s/30 s/300 s tiers), auto re-indexes
+5. **Hooks** — unified `hook_runner.py` (1 process/event), fail-open, HMAC-signed markers
+6. **Host metadata** — `host_manifest.py` is the single source of truth (Copilot CLI + Claude Code only)
+7. **Tentacles** — `.octogent/` stores local multi-agent orchestration state (gitignored)
 
-**Schema versions:** v1–v6 (legacy indexing) → v7 (two-phase indexing + `event_offsets`) → v8 (current: `sessions_fts` contentless FTS5 + BM25). Run `python3 migrate.py` to upgrade.
-
-**`providers/` package:** `SessionProvider` ABC defines `iter_sessions()` and `iter_events_with_offset()`. `CopilotProvider` handles `.md` checkpoints; `ClaudeProvider` handles JSONL with real byte-offset seeks for Phase 2.
+**Schema:** v1–v6 (legacy) → v7 (two-phase + `event_offsets`) → **v8** (current: `sessions_fts` contentless FTS5). Run `python3 ~/.copilot/tools/migrate.py` to upgrade.
 
 ## Auto-Update
 

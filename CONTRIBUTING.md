@@ -2,6 +2,9 @@
 
 Thank you for your interest in contributing! This guide will help you get started.
 
+> **Agent contributors:** read [docs/AGENT-RULES.md](docs/AGENT-RULES.md) before starting any task.  
+> **Architecture & conventions reference:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
 ## Reporting Bugs
 
 1. [Open a GitHub issue](https://github.com/magicpro97/copilot-session-knowledge/issues/new)
@@ -27,10 +30,12 @@ python3 test_fixes.py       # 65 tests
 
 ## Code Style
 
+> Full conventions reference: [docs/ARCHITECTURE.md#conventions](docs/ARCHITECTURE.md#conventions)
+
 - **Pure stdlib Python 3.10+** — zero pip dependencies required
 - **Each script is standalone** — no shared library imports between scripts
 - **Parameterized SQL only** — all user input uses `?` placeholders, never string interpolation
-- **Windows encoding fix** — every script starts with `os.name == "nt"` block for UTF-8 stdout/stderr
+- **Windows encoding fix** — every script starts with `if os.name == "nt": sys.stdout.reconfigure(encoding="utf-8")`
 - **JSON serialization only** — never use pickle
 
 ## Testing

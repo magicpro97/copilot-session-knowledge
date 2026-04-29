@@ -1,6 +1,8 @@
 # Skills & Templates
 
 > Skills, agents, hooks, and project setup tools.
+>
+> **Architecture & conventions:** [docs/ARCHITECTURE.md](ARCHITECTURE.md) · **Agent rules:** [docs/AGENT-RULES.md](AGENT-RULES.md) · **Hook reference:** [docs/HOOKS.md](HOOKS.md)
 
 ## Skills vs Agents — Important Distinction
 

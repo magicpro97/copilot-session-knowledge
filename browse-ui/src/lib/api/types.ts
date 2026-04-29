@@ -376,6 +376,14 @@ export interface OperatorAction {
   requires_configured_target?: boolean;
 }
 
+export interface SyncOperatorAction extends OperatorAction {
+  requires_configured_gateway: boolean;
+}
+
+export interface TrendScoutOperatorAction extends OperatorAction {
+  requires_configured_target: boolean;
+}
+
 export interface SyncStatusResponse {
   status: string;
   configured: boolean;
@@ -394,7 +402,7 @@ export interface SyncStatusResponse {
     };
   };
   runtime: SyncRuntimeStatus;
-  operator_actions: OperatorAction[];
+  operator_actions: SyncOperatorAction[];
   local_replica_id: string | null;
   pending_txns: number;
   pending_ops: number;
@@ -461,7 +469,7 @@ export interface TrendScoutStatusResponse {
     };
     checks: TrendScoutAuditCheck[];
   };
-  operator_actions: OperatorAction[];
+  operator_actions: TrendScoutOperatorAction[];
   discovery_lanes?: TrendScoutDiscoveryLane[];
   runtime: {
     generated_at: string;

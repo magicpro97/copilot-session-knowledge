@@ -9,7 +9,7 @@ async function copyCommand(command: string) {
   if (!command || typeof navigator === "undefined" || !navigator.clipboard) return;
   try {
     await navigator.clipboard.writeText(command);
-  } catch (_error) {
+  } catch {
     // Ignore clipboard failures in unsupported environments.
   }
 }

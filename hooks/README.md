@@ -1,145 +1,67 @@
 # Hooks
 
 > Copilot CLI enforcement hooks for session knowledge, quality gates, and workflow guards.
+>
+> **📖 Canonical reference: [docs/HOOKS.md](../docs/HOOKS.md)**
 
-## Architecture
+This file is a concise directory summary. For the full architecture, rule inventory, dispatched-subagent guard design, tamper protection details, and compliance notes, see [`docs/HOOKS.md`](../docs/HOOKS.md).
 
-All hooks are dispatched through a **single entry point** — `hook_runner.py` — instead of
-separate scripts per event. One Python process fires per event instead of up to 11.
+---
+
+## Directory Layout
 
 ```
 hooks/
-  hook_runner.py         # Unified dispatcher: reads stdin, routes to rules/
-  marker_auth.py         # HMAC-signed marker auth (shared by all hooks)
-  rules/                 # Rule modules — one class per guard
-    __init__.py          # Rule base class + get_rules_for_event()
-    common.py            # Shared constants (MARKERS_DIR, CODE_EXTENSIONS, …)
-    briefing.py          # auto-briefing + enforce-briefing rules
-    learn_gate.py        # enforce-learn rule
-    learn_reminder.py    # learn-reminder rule
-    tentacle.py          # tentacle-enforce + tentacle-suggest rules
-    edit_tracker.py      # track-edits + test-reminder rules
-    error_kb.py          # error-kb rule
-    integrity.py         # integrity check rule
-    session_lifecycle.py # session-end rule
-    subagent_guard.py    # subagent git guard rule
-    syntax_gate.py       # Syntax gate for Python edit/create payloads
-    block_edit_dist.py   # Blocks direct edits to browse-ui/dist/ artifacts
-    pnpm_lockfile_guard.py # Blocks commit when browse-ui/package.json staged without pnpm-lock.yaml
-    block_unsafe_html.py # Blocks dangerouslySetInnerHTML without sanitization
-    nextjs_typecheck.py  # Reminds to run pnpm typecheck after TS edits
+  hook_runner.py          # Unified dispatcher — single entry point for all hook events
+  marker_auth.py          # HMAC-signed marker auth (shared by all rules)
+  rules/                  # Rule modules — one class per guard
+    __init__.py           # Rule base class + get_rules_for_event()
+    common.py             # Shared constants (MARKERS_DIR, CODE_EXTENSIONS, …)
+    briefing.py           # auto-briefing + enforce-briefing
+    learn_gate.py         # enforce-learn
+    learn_reminder.py     # learn-reminder
+    tentacle.py           # tentacle-enforce + tentacle-suggest
+    edit_tracker.py       # track-edits + test-reminder
+    error_kb.py           # error-kb
+    integrity.py          # integrity check
+    session_lifecycle.py  # session-end + subagentStop cleanup
+    subagent_guard.py     # subagent git guard (defense-in-depth)
+    syntax_gate.py        # Blocks .py edits that fail py_compile
+    block_edit_dist.py    # Blocks direct edits to browse-ui/dist/
+    pnpm_lockfile_guard.py # Blocks commit without pnpm-lock.yaml when package.json staged
+    block_unsafe_html.py  # Blocks dangerouslySetInnerHTML without sanitization
+    nextjs_typecheck.py   # Reminds to run pnpm typecheck after TS edits
   references/
-    docs-reminder.py     # Hook template: remind to update docs after edits
+    docs-reminder.py      # Hook template: remind to update docs after edits
 ```
 
-Legacy standalone scripts (`auto-briefing.py`, `enforce-briefing.py`, `enforce-learn.py`,
-`enforce-tentacle.py`, `tentacle-suggest.py`, `test-after-edit.py`, `track-bash-edits.py`,
-`error-search-kb.py`, `verify-integrity.py`, `session-end.py`) are kept for reference and
-direct invocation but are **not registered** in `hooks.json`. All active enforcement runs
-through `hook_runner.py`.
+Legacy standalone scripts (`auto-briefing.py`, `enforce-briefing.py`, `enforce-learn.py`, etc.)
+are kept for reference and direct invocation but are **not registered** in `hooks.json`. All
+active enforcement runs through `hook_runner.py`.
 
 ---
 
-## Registered Hooks (`hooks.json`)
+## Quick Reference
 
-All seven configured event types are handled by `hook_runner.py`:
+### Registered events
 
-| Event | Command | Timeout | Notes |
-|-------|---------|---------|-------|
-| `sessionStart` | `hook_runner.py sessionStart` | 20 s | Auto-briefing + integrity check |
-| `sessionEnd` | `hook_runner.py sessionEnd` | 5 s | Marker cleanup |
-| `preToolUse` | `hook_runner.py preToolUse` | 10 s | Briefing/learn/tentacle + syntax/dist/lockfile/XSS guards |
-| `postToolUse` | `hook_runner.py postToolUse` | 10 s | Edit tracking + learn/test/tentacle + Next.js typecheck reminders |
-| `agentStop` | `hook_runner.py agentStop` | 5 s | Best-effort dispatched-subagent marker cleanup from stop payload hints |
-| `subagentStop` | `hook_runner.py subagentStop` | 5 s | Best-effort dispatched-subagent marker cleanup from stop payload hints |
-| `errorOccurred` | `hook_runner.py errorOccurred` | 10 s | KB error search |
+| Event | Purpose |
+|-------|---------|
+| `sessionStart` | Auto-briefing + integrity check |
+| `sessionEnd` | Marker cleanup |
+| `preToolUse` | Briefing/learn/tentacle/syntax/dist/lockfile/XSS guards |
+| `postToolUse` | Edit tracking + learn/test/tentacle + Next.js typecheck reminders |
+| `agentStop` | Best-effort dispatched-subagent marker cleanup |
+| `subagentStop` | Best-effort dispatched-subagent marker cleanup |
+| `errorOccurred` | KB error search |
 
-Trend Scout is intentionally **not** in this table. It is a scheduled/manual automation surface
-(`trend-scout.py`, `.github/workflows/trend-scout.yml`), not an interactive tool-event hook.
-This avoids noisy per-tool reminders during normal coding sessions. The multi-lane discovery
-architecture (`lanes[]` in config) and `--explain` flag are CLI/workflow-only features; they are
-never triggered from hook events.
-
----
-
-## Rule Inventory
-
-| File | Rule class | Event | Tools covered | Purpose | Default? |
-|------|-----------|-------|---------------|---------|---------|
-| `rules/briefing.py` | `AutoBriefingRule` | `sessionStart` | *(all)* | Auto-runs `briefing.py`; writes HMAC-signed marker | Y |
-| `rules/integrity.py` | `IntegrityRule` | `sessionStart` | *(all)* | SHA256 manifest check for hook tamper detection | Y |
-| `rules/session_lifecycle.py` | `SessionEndRule` | `sessionEnd` | *(all)* | Deletes this-session markers; writes `session.log` | Y |
-| `rules/session_lifecycle.py` | `SubagentStopRule` | `agentStop`, `subagentStop` | *(all)* | Uses stop-event hints to clear matching `dispatched-subagent-active` marker entries | Y |
-| `rules/briefing.py` | `EnforceBriefingRule` | `preToolUse` | `edit`, `create`, `bash` | Blocks edits until briefing marker is present | Y |
-| `rules/learn_gate.py` | `EnforceLearnRule` | `preToolUse` | `edit`, `create`, `bash`, `task_complete` | Blocks `git commit` / `task_complete` after ≥3 code edits without `learn.py` | Y |
-| `rules/tentacle.py` | `TentacleEnforceRule` | `preToolUse` | `edit`, `create`, `bash` | Blocks edits when ≥3 files across ≥2 modules without tentacle setup. Deny message guides: create → todo → swarm [--bundle] → complete | Y |
-| `rules/subagent_guard.py` | `SubagentGitGuardRule` | `preToolUse` | `bash` | Defense-in-depth: blocks `git commit`/`git push` inside dispatched subagent | Y |
-| `rules/syntax_gate.py` | `SyntaxGateRule` | `preToolUse` | `edit`, `create` | Blocks `.py` edit/create payloads that fail `py_compile` (`SyntaxError`) | Y |
-| `rules/block_edit_dist.py` | `BlockEditDistRule` | `preToolUse` | `edit`, `create` | Blocks direct edits to `browse-ui/dist/`; requires rebuild via `pnpm build` | Y |
-| `rules/pnpm_lockfile_guard.py` | `PnpmLockfileGuardRule` | `preToolUse` | `bash` | Blocks `git commit` when `browse-ui/package.json` is staged without `browse-ui/pnpm-lock.yaml` | Y |
-| `rules/block_unsafe_html.py` | `BlockUnsafeHtmlRule` | `preToolUse` | `edit`, `create` | Blocks `dangerouslySetInnerHTML` without in-payload sanitization (`DOMPurify`/`sanitize`) | Y |
-| `rules/edit_tracker.py` | `TrackEditsRule` | `postToolUse` | `bash` | Runs `git status` after bash to detect all file writes (language-agnostic) | Y |
-| `rules/edit_tracker.py` | `TestReminderRule` | `postToolUse` | `edit`, `create`, `bash` | Reminds to run tests after ≥3 Python file edits | Y |
-| `rules/learn_reminder.py` | `LearnReminderRule` | `postToolUse` | `bash`, `task_complete` | Reminds to record learnings; creates marker when `learn.py` runs | Y |
-| `rules/tentacle.py` | `TentacleSuggestRule` | `postToolUse` | `edit`, `create`, `bash` | Suggests tentacle orchestration at ≥3 files / ≥2 modules threshold | Y |
-| `rules/nextjs_typecheck.py` | `NextjsTypecheckRule` | `postToolUse` | `edit`, `create` | Reminds to run `cd browse-ui && pnpm typecheck` after repeated TS edits | Y |
-| `rules/error_kb.py` | `ErrorKBRule` | `errorOccurred` | *(all)* | Auto-searches knowledge base for past solutions when an error fires | Y |
-
----
-
-## Standalone Helper Scripts (not in hooks.json)
-
-| File | Purpose | Event / trigger |
-|------|---------|----------------|
-| `hook_runner.py` | Unified dispatcher — entry point for all hook.json entries | All events |
-| `marker_auth.py` | HMAC-signed marker creation / verification | Imported by all rules |
-| `lint-skills.py` | Validates `.agent.md` / `SKILL.md` frontmatter; called by `pre-commit` git hook | `git pre-commit` |
-| `check_subagent_marker.py` | Blocks `git commit`/`git push` in dispatched-subagent mode | `git pre-commit`, `git pre-push` |
-| `copilot-cli-healer-check.py` | Detects stale Copilot CLI state and flags it at session start (companion to `copilot-cli-healer.py`) | `sessionStart` |
-| `learn-reminder.py` | Legacy standalone learn-reminder hook. Superseded by `rules/learn_reminder.py` but retained for compatibility. | `postToolUse` |
-| `auto-briefing.py` | Legacy standalone auto-briefing (superseded by `rules/briefing.py`) | `sessionStart` |
-| `enforce-briefing.py` | Legacy standalone enforce-briefing (superseded by `rules/briefing.py`) | `preToolUse` |
-| `enforce-learn.py` | Legacy standalone learn gate (superseded by `rules/learn_gate.py`) | `preToolUse` |
-| `enforce-tentacle.py` | Legacy standalone tentacle enforce (superseded by `rules/tentacle.py`) | `preToolUse` |
-| `tentacle-suggest.py` | Legacy standalone tentacle suggest (superseded by `rules/tentacle.py`) | `postToolUse` |
-| `test-after-edit.py` | Legacy standalone test reminder (superseded by `rules/edit_tracker.py`) | `postToolUse` |
-| `track-bash-edits.py` | Legacy standalone bash edit tracker (superseded by `rules/edit_tracker.py`) | `postToolUse` |
-| `error-search-kb.py` | Legacy standalone KB error search (superseded by `rules/error_kb.py`) | `errorOccurred` |
-| `verify-integrity.py` | Legacy standalone integrity check (superseded by `rules/integrity.py`) | `sessionStart` |
-| `session-end.py` | Legacy standalone session-end cleanup (superseded by `rules/session_lifecycle.py`) | `sessionEnd` |
-| `references/docs-reminder.py` | Template hook: reminds to update docs after edits | `postToolUse` |
-
----
-
-## Installation
+### Installation
 
 ```bash
-# Deploy Copilot CLI global hooks
-python3 ~/.copilot/tools/install.py --deploy-hooks
-
-# Lock hooks against AI modification (uses OS immutable flags)
-python3 ~/.copilot/tools/install.py --lock-hooks
-
-# Unlock for updates
-python3 ~/.copilot/tools/install.py --unlock-hooks
-
-# Install git-level subagent guard (per repo)
-python3 ~/.copilot/tools/install.py --install-git-hooks
+python3 ~/.copilot/tools/install.py --deploy-hooks        # Deploy to ~/.copilot/hooks/
+python3 ~/.copilot/tools/install.py --lock-hooks          # Lock with OS immutable flags
+python3 ~/.copilot/tools/install.py --unlock-hooks        # Unlock for updates
+python3 ~/.copilot/tools/install.py --install-git-hooks   # Install pre-commit/pre-push (per repo)
 ```
 
-The `hooks.json` file lives at `.github/hooks/hooks.json` and is read by Copilot CLI.
-`--deploy-hooks` copies it to `~/.copilot/hooks/hooks.json`.
-
----
-
-## Compliance Notes
-
-- **stdlib-only**: All standalone hook scripts (`hooks/*.py`) use only Python standard library.  
-  `rules/*.py` modules are loaded inside `hook_runner.py` — no external pip packages required.  
-  Exception: `hook_runner.py` itself includes the Windows UTF-8 reconfigure block at module level.
-- **Exit codes**: `hook_runner.py` exits `0` to allow, or writes a `deny` JSON object to stdout
-  to block (Copilot CLI interprets non-empty stdout with `decision: deny` as a block).
-- **Windows UTF-8**: All standalone `hooks/*.py` scripts include the `if os.name == "nt"` UTF-8
-  reconfigure block at module top. `rules/*.py` are not standalone executables — encoding is
-  configured once by `hook_runner.py`.
-- **Fail-open**: Exceptions in any rule silently pass; individual rule crashes never block the agent.
+📖 **Full rule inventory, architecture, and dispatched-subagent guard:** [docs/HOOKS.md](../docs/HOOKS.md)

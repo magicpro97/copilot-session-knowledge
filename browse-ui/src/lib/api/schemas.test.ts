@@ -11,8 +11,10 @@ import {
   tentacleStatusResponseSchema,
   skillMetricsResponseSchema,
   operatorActionSchema,
+  syncOperatorActionSchema,
   searchResponseSchema,
   sessionListResponseSchema,
+  trendScoutOperatorActionSchema,
 } from "@/lib/api/schemas";
 
 describe("api schemas", () => {
@@ -342,7 +344,7 @@ describe("api schemas", () => {
   });
 
   it("parses a sync operator action with requires_configured_gateway", () => {
-    const action = operatorActionSchema.parse({
+    const action = syncOperatorActionSchema.parse({
       id: "sync-status-json",
       title: "Local sync runtime snapshot",
       description: "Inspect queue + gateway health without mutating state.",
@@ -355,7 +357,7 @@ describe("api schemas", () => {
   });
 
   it("parses a scout operator action with requires_configured_target", () => {
-    const action = operatorActionSchema.parse({
+    const action = trendScoutOperatorActionSchema.parse({
       id: "trend-scout-dry-run",
       title: "Dry-run full pipeline preview",
       description: "Preview enrichment without creating/updating issues.",
@@ -386,6 +388,42 @@ describe("api schemas", () => {
         id: "incomplete",
         title: "Missing command",
         description: "No command field",
+        safe: true,
+      })
+    ).toThrow();
+  });
+
+  it("rejects operator action with blank command text", () => {
+    expect(() =>
+      operatorActionSchema.parse({
+        id: "blank-command",
+        title: "Blank",
+        description: "This should fail.",
+        command: "   ",
+        safe: true,
+      })
+    ).toThrow();
+  });
+
+  it("rejects sync operator action without requires_configured_gateway", () => {
+    expect(() =>
+      syncOperatorActionSchema.parse({
+        id: "sync-status-json",
+        title: "Local sync runtime snapshot",
+        description: "Inspect queue + gateway health without mutating state.",
+        command: "python3 sync-status.py --json",
+        safe: true,
+      })
+    ).toThrow();
+  });
+
+  it("rejects scout operator action without requires_configured_target", () => {
+    expect(() =>
+      trendScoutOperatorActionSchema.parse({
+        id: "trend-scout-dry-run",
+        title: "Dry-run full pipeline preview",
+        description: "Preview enrichment without creating/updating issues.",
+        command: "python3 trend-scout.py --dry-run --limit 5",
         safe: true,
       })
     ).toThrow();

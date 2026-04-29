@@ -10,6 +10,17 @@ Usage:
     python3 run_all_tests.py --dry    # list test files without running
 
 Exits 0 if all pass, 1 if any fail. Total wall-time budget: 5 minutes.
+
+Note: This runner covers Python tests only.  To mirror CI fully, also run the
+browse-ui quality gates from the browse-ui/ directory:
+
+    pnpm typecheck   # TypeScript type checking
+    pnpm lint        # ESLint
+    pnpm test        # Vitest unit tests
+    pnpm build       # Next.js static build
+
+E2E (Playwright) is gated to manual CI runs; local use:
+    pnpm test:e2e
 """
 
 import os

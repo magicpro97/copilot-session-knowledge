@@ -326,10 +326,20 @@ export const operatorActionSchema = z.object({
   id: z.string(),
   title: z.string(),
   description: z.string(),
-  command: z.string(),
+  command: z.string().refine((value) => value.trim().length > 0, {
+    message: "Operator actions must provide a non-empty command.",
+  }),
   safe: z.literal(true),
   requires_configured_gateway: z.boolean().optional(),
   requires_configured_target: z.boolean().optional(),
+});
+
+export const syncOperatorActionSchema = operatorActionSchema.extend({
+  requires_configured_gateway: z.boolean(),
+});
+
+export const trendScoutOperatorActionSchema = operatorActionSchema.extend({
+  requires_configured_target: z.boolean(),
 });
 
 export const syncConnectionStatusSchema = z.object({
@@ -376,7 +386,7 @@ export const syncStatusResponseSchema = z.object({
     })
     .optional(),
   runtime: syncRuntimeStatusSchema,
-  operator_actions: z.array(operatorActionSchema),
+  operator_actions: z.array(syncOperatorActionSchema),
   local_replica_id: z.string().nullable(),
   pending_txns: z.number(),
   pending_ops: z.number(),
@@ -443,7 +453,7 @@ export const trendScoutStatusResponseSchema = z.object({
     }),
     checks: z.array(trendScoutAuditCheckSchema),
   }),
-  operator_actions: z.array(operatorActionSchema),
+  operator_actions: z.array(trendScoutOperatorActionSchema),
   discovery_lanes: z.array(trendScoutDiscoveryLaneSchema).optional(),
   runtime: z.object({
     generated_at: z.string(),
