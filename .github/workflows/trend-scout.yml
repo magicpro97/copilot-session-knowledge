@@ -26,6 +26,10 @@ on:
         description: "Bypass grace window and force a full run"
         type: boolean
         default: false
+      explain:
+        description: "Write discovery explainability artifact (.trend-scout-discovery-explain.json)"
+        type: boolean
+        default: false
 
 # Prevent concurrent scheduled runs from overlapping
 concurrency:
@@ -94,4 +98,16 @@ jobs:
             ARGS="$ARGS --force"
           fi
 
+          if [ "${{ inputs.explain }}" = "true" ]; then
+            ARGS="$ARGS --explain"
+          fi
+
           python3 trend-scout.py $ARGS
+
+      - name: Upload discovery explain artifact
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.explain == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: trend-scout-discovery-explain-${{ github.run_id }}
+          path: .trend-scout-discovery-explain.json
+          if-no-files-found: warn

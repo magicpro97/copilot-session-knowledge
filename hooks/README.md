@@ -56,7 +56,9 @@ All seven configured event types are handled by `hook_runner.py`:
 
 Trend Scout is intentionally **not** in this table. It is a scheduled/manual automation surface
 (`trend-scout.py`, `.github/workflows/trend-scout.yml`), not an interactive tool-event hook.
-This avoids noisy per-tool reminders during normal coding sessions.
+This avoids noisy per-tool reminders during normal coding sessions. The multi-lane discovery
+architecture (`lanes[]` in config) and `--explain` flag are CLI/workflow-only features; they are
+never triggered from hook events.
 
 ---
 

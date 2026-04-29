@@ -59,6 +59,12 @@ def get_status() -> dict:
     grace_window_hours = float(run_control_cfg.get("grace_window_hours") or 0)
     state_file = trend_scout._resolve_state_file(run_control_cfg)
 
+    lanes = cfg.get("lanes") if isinstance(cfg.get("lanes"), list) else []
+    lanes_info = {
+        "count": len(lanes),
+        "names": [str(ln.get("name", "")) for ln in lanes if isinstance(ln, dict)],
+    }
+
     return {
         "configured": bool(exists and not parse_error and target_repo),
         "exists": exists,
@@ -66,6 +72,7 @@ def get_status() -> dict:
         "parse_error": parse_error,
         "config_path": str(CONFIG_PATH),
         "target_repo": target_repo,
+        "lanes": lanes_info,
         "analysis": {
             "enabled": bool(analysis_cfg.get("enabled", False)),
             "model": str(analysis_cfg.get("model", trend_scout.DEFAULT_MODELS_MODEL) or trend_scout.DEFAULT_MODELS_MODEL),
@@ -105,6 +112,8 @@ def main() -> None:
     print(f"  Analysis token set:  {'yes' if status['analysis']['token_present'] else 'no'}")
     print(f"  Grace window (hours): {status['run_control']['grace_window_hours']}")
     print(f"  State file:          {status['run_control']['state_file']}")
+    _lanes = status.get("lanes", {})
+    print(f"  Discovery lanes:     {_lanes.get('count', 0)} additional (names: {', '.join(_lanes.get('names', [])) or '(none)'})")
     if status["parse_error"]:
         print(f"  Parse error:         {status['parse_error']}")
 

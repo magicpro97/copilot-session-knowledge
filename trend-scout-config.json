@@ -37,6 +37,30 @@
     "lookback_days": 730,
     "language": "python"
   },
+  "lanes": [
+    {
+      "_comment": "Adjacent AI-dev tooling lane — language-agnostic, broader keyword surface. Surfaces repos like jcode (Rust coding-agent harness) that are architecturally adjacent but miss the primary Python/knowledge-base filter. Lower min_stars (2) and 365-day lookback catch emerging projects.",
+      "name": "adjacent-ai-dev",
+      "keywords": [
+        "AI coding agent harness CLI tool",
+        "LLM developer workflow tool session",
+        "coding agent memory MCP provider",
+        "AI terminal assistant session capture"
+      ],
+      "topics": [
+        "coding-agent",
+        "ai-coding",
+        "code-assistant",
+        "llm-tools",
+        "mcp",
+        "developer-tools"
+      ],
+      "min_stars": 2,
+      "max_per_query": 10,
+      "lookback_days": 365,
+      "language": null
+    }
+  ],
   "shortlist": {
     "max_candidates": 5,
     "min_score": 0.15,

@@ -451,6 +451,35 @@ export default function SettingsPage() {
                 </div>
               </div>
 
+              {scoutStatus.data.discovery_lanes && scoutStatus.data.discovery_lanes.length > 0 ? (
+                <div className="space-y-2 rounded-lg border bg-card p-3">
+                  <p className="text-xs font-medium text-foreground">
+                    Discovery lanes ({scoutStatus.data.discovery_lanes.length})
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Multi-lane search runs language-specific and language-agnostic queries in parallel to
+                    surface a broader candidate set.
+                  </p>
+                  <div className="space-y-2">
+                    {scoutStatus.data.discovery_lanes.map((lane) => (
+                      <div key={lane.name} className="rounded-md border bg-background p-2 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="font-medium text-foreground">{lane.name}</p>
+                          <span className="text-muted-foreground">
+                            {lane.language ?? "any language"}
+                          </span>
+                        </div>
+                        <p className="text-muted-foreground">
+                          {lane.keyword_count} keyword{lane.keyword_count !== 1 ? "s" : ""} ·{" "}
+                          {lane.topic_count} topic{lane.topic_count !== 1 ? "s" : ""} · min{" "}
+                          {lane.min_stars} ★
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
               <div className="space-y-2 rounded-lg border bg-card p-3">
                 <p className="text-xs font-medium text-foreground">Operator checks (read-only)</p>
                 <p className="text-xs text-muted-foreground">

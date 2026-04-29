@@ -139,6 +139,13 @@ DEFAULT_CONFIG: dict = {
         "grace_window_hours": 0,
         "state_file": None,
     },
+    # Additional discovery lanes beyond the primary search lane.
+    # Each lane has the same shape as the "search" section but runs independently
+    # so that repos with a different language/keyword surface area are not
+    # crowded out by primary-lane candidates.  All lane results pool into the
+    # same shortlist stage.  Discovery source is tagged on each repo for
+    # explainability.  An empty list (default) means single-lane mode.
+    "lanes": [],
 }
 
 
@@ -576,8 +583,27 @@ def _build_term_set(seed_keywords: list[str], min_len: int = 4) -> set[str]:
     return terms
 
 
-def score_repo(repo: dict, config: dict) -> float:
-    """Compute a deterministic relevance score for a repo given config."""
+def _build_global_term_set(config: dict) -> set[str]:
+    """Build a cross-lane keyword term set for consistent scoring."""
+    all_kw: list[str] = list(config.get("search", {}).get("seed_keywords", []))
+    for lane in config.get("lanes", []):
+        if isinstance(lane, dict):
+            all_kw.extend(lane.get("keywords", []))
+    return _build_term_set(all_kw)
+
+
+def score_repo(repo: dict, config: dict, term_set: "set[str] | None" = None) -> float:
+    """Compute a deterministic relevance score for a repo given config.
+
+    Args:
+        repo: Repository metadata dict from GitHub Search API.
+        config: Loaded pipeline config.
+        term_set: Pre-built keyword term set.  When provided (e.g. a cross-lane
+            set built by ``shortlist_repos``), it replaces the default per-run
+            build from ``config["search"]["seed_keywords"]``.  Pass this to
+            ensure repos found by adjacent lanes are scored against the full
+            multi-lane vocabulary instead of only primary-lane keywords.
+    """
     s_cfg = config.get("shortlist", {}).get("scoring", {})
     kw_weight: float = float(s_cfg.get("keyword_match_weight", 2.0))
     topic_weight: float = float(s_cfg.get("topic_match_weight", 1.5))
@@ -593,14 +619,18 @@ def score_repo(repo: dict, config: dict) -> float:
         repo.get("full_name", ""),
     ])).lower()
 
-    seed_keywords: list[str] = config.get("search", {}).get("seed_keywords", [])
-    terms = _build_term_set(seed_keywords)
-    matched = sum(1 for t in terms if t in search_text)
+    if term_set is None:
+        seed_keywords: list[str] = config.get("search", {}).get("seed_keywords", [])
+        term_set = _build_term_set(seed_keywords)
+    matched = sum(1 for t in term_set if t in search_text)
     score += matched * kw_weight
 
-    # Topic overlap
+    # Topic overlap — combine primary and additional lane topics so repos found
+    # by an adjacent lane are not penalised for missing primary-lane topics.
     repo_topics: set[str] = set(repo.get("topics", []))
     config_topics: set[str] = set(config.get("search", {}).get("extra_topics", []))
+    for _lane in config.get("lanes", []):
+        config_topics.update(_lane.get("topics", []))
     score += len(repo_topics & config_topics) * topic_weight
 
     # Stars (log-scale to avoid viral outliers dominating)
@@ -627,7 +657,12 @@ def score_repo(repo: dict, config: dict) -> float:
 
 
 def shortlist_repos(candidates: list[dict], config: dict) -> list[dict]:
-    """Score, filter, and deduplicate repos by full_name, returning top N."""
+    """Score, filter, and deduplicate repos by full_name, returning top N.
+
+    Builds a cross-lane keyword term set (primary + all additional lanes) so
+    that candidates surfaced by adjacent lanes are scored fairly against the
+    full multi-lane vocabulary rather than only primary-lane keywords.
+    """
     sl_cfg = config.get("shortlist", {})
     max_n: int = int(sl_cfg.get("max_candidates", 5))
     min_score: float = float(sl_cfg.get("min_score", 0.15))
@@ -635,6 +670,9 @@ def shortlist_repos(candidates: list[dict], config: dict) -> list[dict]:
     exclude_archived: bool = bool(sl_cfg.get("exclude_archived", False))
     # Never scout ourselves — exclude the target repo from candidates
     target_repo: str = config.get("target_repo", "").lower()
+
+    # Build global cross-lane term set for consistent multi-lane scoring.
+    global_terms = _build_global_term_set(config)
 
     seen: set[str] = set()
     scored: list[tuple[float, dict]] = []
@@ -650,7 +688,7 @@ def shortlist_repos(candidates: list[dict], config: dict) -> list[dict]:
         if exclude_archived and repo.get("archived"):
             continue
         seen.add(full_name)
-        s = score_repo(repo, config)
+        s = score_repo(repo, config, term_set=global_terms)
         if s >= min_score:
             scored.append((s, repo))
 
@@ -1417,55 +1455,198 @@ def _check_grace_window(grace_window_hours: float, state: dict) -> tuple[bool, s
     return False, ""
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def search_stage(client: GitHubClient, config: dict) -> list[dict]:
-    """Stage 1: collect raw candidate repos from GitHub Search API."""
+def _run_single_lane(
+    client: "GitHubClient",
+    lane_name: str,
+    keywords: list[str],
+    topics: list[str],
+    min_stars: int,
+    max_per_query: int,
+    created_after: "str | None",
+    language: "str | None",
+    collect_fn: "callable",
+) -> dict:
+    """Execute one discovery lane (keyword + topic searches).
+
+    Calls ``collect_fn(batch, lane_name, query)`` for each search batch.
+    Returns a lane stats dict: ``{name, keywords: [{query, count}], topics: [{query, count}]}``.
+    """
+    stats: dict = {"name": lane_name, "keywords": [], "topics": []}
+    for kw in keywords:
+        print(f"  🔍 [{lane_name}] Keyword: {kw!r}", flush=True)
+        results = client.search_repos(
+            kw,
+            min_stars=min_stars,
+            max_results=max_per_query,
+            created_after=created_after,
+            language=language,
+        )
+        stats["keywords"].append({"query": kw, "count": len(results)})
+        collect_fn(results, lane_name, kw)
+        time.sleep(1.2)
+    for topic in topics:
+        print(f"  🏷  [{lane_name}] Topic: {topic!r}", flush=True)
+        results = client.search_repos_by_topic(
+            topic, min_stars=min_stars, max_results=max_per_query, language=language,
+        )
+        stats["topics"].append({"query": topic, "count": len(results)})
+        collect_fn(results, lane_name, topic)
+        time.sleep(1.2)
+    return stats
+
+
+class DiscoveryResults(list):
+    """List-like container for search results plus per-lane explain metadata."""
+
+    def __init__(
+        self,
+        items: "list[dict] | None" = None,
+        *,
+        lane_stats: "list[dict] | None" = None,
+    ) -> None:
+        super().__init__(items or [])
+        self.lane_stats = list(lane_stats or [])
+
+
+def search_stage(client: "GitHubClient", config: dict) -> list[dict]:
+    """Stage 1: collect raw candidate repos from GitHub Search API.
+
+    Runs the primary lane (config["search"]) plus any additional lanes defined
+    in config["lanes"].  Each repo is tagged with ``_discovery_lane`` and
+    ``_discovery_query`` for downstream explainability.  Returns a list-like
+    ``DiscoveryResults`` object carrying per-lane stats so explainability works
+    even when zero candidates are found.
+    """
+    from datetime import timedelta
+
     s_cfg = config.get("search", {})
-    keywords: list[str] = s_cfg.get("seed_keywords", [])
-    topics: list[str] = s_cfg.get("extra_topics", [])
     min_stars: int = int(s_cfg.get("min_stars", 5))
     max_per_query: int = int(s_cfg.get("max_per_query", 10))
     lookback_days: int = int(s_cfg.get("lookback_days", 730))
     language: str = s_cfg.get("language", "")
 
-    from datetime import timedelta
     created_after = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).strftime(
         "%Y-%m-%d"
     )
 
     all_repos: list[dict] = []
     seen_names: set[str] = set()
+    all_lane_stats: list[dict] = []
 
-    def _collect(batch: list[dict]) -> None:
+    def _collect(batch: list[dict], lane_name: str, query: str) -> None:
         for repo in batch:
             fn = repo.get("full_name", "")
             if fn and fn not in seen_names:
                 seen_names.add(fn)
+                repo["_discovery_lane"] = lane_name
+                repo["_discovery_query"] = query
                 all_repos.append(repo)
 
-    # Keyword searches (shortlist candidates first — do fewer heavier calls)
-    for kw in keywords:
-        print(f"  🔍 Keyword search: {kw!r}", flush=True)
-        results = client.search_repos(
-            kw,
-            min_stars=min_stars,
-            max_results=max_per_query,
-            created_after=created_after,
-            language=language or None,
-        )
-        _collect(results)
-        # Respect GitHub Search API secondary rate limit (1 req/s for search)
-        time.sleep(1.2)
+    # ── Primary lane ──────────────────────────────────────────────────────────
+    primary_keywords: list[str] = s_cfg.get("seed_keywords", [])
+    primary_topics: list[str] = s_cfg.get("extra_topics", [])
+    print(
+        f"  🛤  Lane [primary] — {len(primary_keywords)} keyword(s), "
+        f"{len(primary_topics)} topic(s)"
+        + (f", language={language}" if language else ""),
+        flush=True,
+    )
+    primary_stats = _run_single_lane(
+        client, "primary", primary_keywords, primary_topics,
+        min_stars, max_per_query, created_after, language or None, _collect,
+    )
+    all_lane_stats.append(primary_stats)
 
-    # Topic searches
-    for topic in topics:
-        print(f"  🏷  Topic search: {topic!r}", flush=True)
-        results = client.search_repos_by_topic(
-            topic, min_stars=min_stars, max_results=max_per_query, language=language or None
+    # ── Additional lanes ──────────────────────────────────────────────────────
+    for lane_cfg in config.get("lanes", []):
+        lane_name = str(lane_cfg.get("name", "lane")).strip() or "lane"
+        lane_keywords = [str(k) for k in lane_cfg.get("keywords", [])]
+        lane_topics = [str(t) for t in lane_cfg.get("topics", [])]
+        lane_min_stars = int(lane_cfg.get("min_stars", min_stars))
+        lane_max_per_query = int(lane_cfg.get("max_per_query", max_per_query))
+        lane_lookback_days = int(lane_cfg.get("lookback_days", lookback_days))
+        lane_language = lane_cfg.get("language")
+        if isinstance(lane_language, str):
+            lane_language = lane_language.strip() or None
+        lane_created_after = (
+            datetime.now(timezone.utc) - timedelta(days=lane_lookback_days)
+        ).strftime("%Y-%m-%d")
+        print(
+            f"  🛤  Lane [{lane_name}] — {len(lane_keywords)} keyword(s), "
+            f"{len(lane_topics)} topic(s)"
+            + (f", language={lane_language}" if lane_language else ", any language"),
+            flush=True,
         )
-        _collect(results)
-        time.sleep(1.2)
+        lane_stats = _run_single_lane(
+            client, lane_name, lane_keywords, lane_topics,
+            lane_min_stars, lane_max_per_query, lane_created_after, lane_language,
+            _collect,
+        )
+        all_lane_stats.append(lane_stats)
 
-    return all_repos
+    return DiscoveryResults(all_repos, lane_stats=all_lane_stats)
+
+
+def build_discovery_explain(
+    raw_repos: list[dict],
+    shortlisted: list[dict],
+    run_at: str,
+    config: "dict | None" = None,
+) -> dict:
+    """Build a discovery-explainability artifact from tagged search results.
+
+    Returns a JSON-serialisable dict with per-lane query stats and shortlist
+    annotations.  Suitable for saving as ``.trend-scout-discovery-explain.json``
+    so operators can diagnose coverage gaps (e.g. the jcode-class miss).
+    """
+    lane_stats = getattr(raw_repos, "lane_stats", None)
+    if not isinstance(lane_stats, list):
+        lane_stats = []
+        if raw_repos:
+            lane_stats = raw_repos[0].get("_lane_stats", [])
+
+    global_terms = _build_global_term_set(config or {}) if config else None
+
+    raw_by_lane: dict[str, list[str]] = {}
+    for repo in raw_repos:
+        lane = repo.get("_discovery_lane", "primary")
+        raw_by_lane.setdefault(lane, []).append(repo.get("full_name", ""))
+
+    annotated_lanes = []
+    for stats in lane_stats:
+        name = stats.get("name", "primary")
+        unique_count = len(raw_by_lane.get(name, []))
+        kw_total = sum(q.get("count", 0) for q in stats.get("keywords", []))
+        topic_total = sum(q.get("count", 0) for q in stats.get("topics", []))
+        annotated_lanes.append({
+            "name": name,
+            "keywords": stats.get("keywords", []),
+            "topics": stats.get("topics", []),
+            "raw_hits": kw_total + topic_total,
+            "unique_new_repos": unique_count,
+        })
+
+    return {
+        "run_at": run_at,
+        "total_raw_candidates": len(raw_repos),
+        "lanes": annotated_lanes,
+        "shortlisted": [
+            {
+                "full_name": r.get("full_name", ""),
+                "discovery_lane": r.get("_discovery_lane", "primary"),
+                "discovery_query": r.get("_discovery_query", ""),
+                "score": score_repo(r, config or {}, term_set=global_terms),
+            }
+            for r in shortlisted
+        ],
+        "coverage_note": (
+            "Repos tagged with discovery_lane='adjacent-*' were surfaced by "
+            "broader adjacent lanes, not primary-lane keyword/topic matching.  "
+            "This distinguishes near-duplicate discovery (primary) from "
+            "strategic-adjacency discovery (adjacent lanes)."
+        ),
+    }
+
 
 
 def enrich_stage(repos: list[dict], client: GitHubClient, config: dict) -> list[tuple[dict, str]]:
@@ -1657,12 +1838,55 @@ def create_stage(
 #  Entry Point
 # ═══════════════════════════════════════════════════════════════════════════════
 
+_EXPLAIN_OUTPUT_DEFAULT = SCRIPT_DIR / ".trend-scout-discovery-explain.json"
+
+
+def _write_explain_artifact(
+    raw_repos: list[dict],
+    shortlisted: list[dict],
+    config: dict,
+    explain_output: "Path | None" = None,
+) -> None:
+    """Write the discovery explainability JSON to disk.
+
+    The artifact captures per-lane query stats, raw candidate counts, and
+    shortlist annotations.  Useful for CI replay assertions and operator
+    triage of discovery coverage gaps.
+    """
+    run_at = datetime.now(timezone.utc).isoformat()
+    artifact = build_discovery_explain(raw_repos, shortlisted, run_at, config=config)
+    out_path = explain_output or _EXPLAIN_OUTPUT_DEFAULT
+    try:
+        out_path.write_text(json.dumps(artifact, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"\n  📊 Discovery explain artifact written → {out_path}", flush=True)
+        lane_summary = ", ".join(
+            f"{l['name']}:{l['unique_new_repos']}repos" for l in artifact.get("lanes", [])
+        )
+        print(f"     Lanes: {lane_summary}", flush=True)
+    except Exception as e:
+        print(f"  ⚠ Could not write explain artifact to {out_path}: {e}", file=sys.stderr)
+
+
 def run(config: dict, dry_run: bool = False, search_only: bool = False,
-        limit: int | None = None, token: str | None = None, force: bool = False) -> int:
-    """Execute the full trend-scout pipeline. Returns exit code."""
+        limit: int | None = None, token: str | None = None, force: bool = False,
+        explain: bool = False, explain_output: "Path | None" = None) -> int:
+    """Execute the full trend-scout pipeline. Returns exit code.
+
+    Args:
+        explain: When True, writes a discovery explainability artifact to
+            ``explain_output`` (default: ``.trend-scout-discovery-explain.json``
+            adjacent to the script).  The artifact records per-lane query stats,
+            raw candidate counts, and shortlist annotations so operators can
+            diagnose coverage gaps (e.g. which lane found which repo).
+    """
     target_repo = config["target_repo"]
+    lanes_count = len(config.get("lanes", []))
     print(f"\n🔭 Trend Scout — target: {target_repo}")
-    print(f"   Mode: {'dry-run' if dry_run else 'live'}{' [force]' if force else ''}", flush=True)
+    print(
+        f"   Mode: {'dry-run' if dry_run else 'live'}{' [force]' if force else ''}"
+        + (f" | lanes: 1 primary + {lanes_count} additional" if lanes_count else ""),
+        flush=True,
+    )
 
     # ── Grace window check ─────────────────────────────────────────────────────
     run_control_cfg: dict = config.get("run_control", {})
@@ -1718,10 +1942,13 @@ def run(config: dict, dry_run: bool = False, search_only: bool = False,
     shortlisted = shortlist_repos(candidates, config)
     print(f"  → {len(shortlisted)} shortlisted repos:")
     for repo in shortlisted:
-        s = score_repo(repo, config)
-        print(f"    • {repo['full_name']} (score={s}, ⭐{repo.get('stargazers_count', 0)})")
+        s = score_repo(repo, config, term_set=_build_global_term_set(config))
+        lane_tag = repo.get("_discovery_lane", "primary")
+        print(f"    • {repo['full_name']} (score={s}, ⭐{repo.get('stargazers_count', 0)}, lane={lane_tag})")
 
     if search_only:
+        if explain:
+            _write_explain_artifact(candidates, shortlisted, config, explain_output)
         print("\n✅ --search-only: stopping before enrichment/issue creation.")
         return 0
 
@@ -1751,6 +1978,10 @@ def run(config: dict, dry_run: bool = False, search_only: bool = False,
 
     mode_tag = "[dry-run] " if dry_run else ""
     print(f"\n✅ Done — {mode_tag}{len(created)} issue(s) {'would be ' if dry_run else ''}created/updated.")
+
+    # Write explain artifact if requested (includes final shortlist annotations).
+    if explain:
+        _write_explain_artifact(candidates, shortlisted, config, explain_output)
 
     # Persist last-run timestamp to enable grace-window protection on next run.
     if grace_hours > 0 and not dry_run and not search_only:
@@ -1787,6 +2018,12 @@ Examples:
                         help="GitHub personal access token (overrides GITHUB_TOKEN env var)")
     parser.add_argument("--force", action="store_true",
                         help="Bypass grace window and force a new run regardless of last-run state")
+    parser.add_argument("--explain", action="store_true",
+                        help="Write a discovery explainability artifact (.trend-scout-discovery-explain.json) "
+                             "showing per-lane query stats and shortlist annotations")
+    parser.add_argument("--explain-output", default=None, metavar="PATH",
+                        help="Path for the --explain artifact (default: .trend-scout-discovery-explain.json "
+                             "adjacent to this script)")
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve() if args.config else None
@@ -1798,6 +2035,8 @@ Examples:
             sys.exit(1)
         config["target_repo"] = args.repo
 
+    explain_output = Path(args.explain_output).resolve() if args.explain_output else None
+
     sys.exit(run(
         config,
         dry_run=args.dry_run,
@@ -1805,6 +2044,8 @@ Examples:
         limit=args.limit,
         token=args.token,
         force=args.force,
+        explain=args.explain,
+        explain_output=explain_output,
     ))
 
 

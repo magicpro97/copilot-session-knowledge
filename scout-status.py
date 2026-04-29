@@ -99,6 +99,19 @@ def _runtime_audit(status: dict) -> dict:
     gh_token = bool(os.environ.get("GITHUB_TOKEN"))
     _push("github-token", gh_token, "warning", "env=GITHUB_TOKEN present=" + str(gh_token))
 
+    lanes = status.get("lanes", {})
+    lane_count = int(lanes.get("count", 0) or 0)
+    lane_names = ", ".join(lanes.get("names", [])) or "none"
+    lane_detail = f"additional discovery lanes: {lane_count} configured ({lane_names})"
+    if lane_count == 0:
+        lane_detail += "; primary lane remains active"
+    _push(
+        "lanes-configured",
+        True,
+        "warning",
+        lane_detail,
+    )
+
     grace_active = bool(rc.get("grace_active", False))
     _push(
         "grace-window-active",
@@ -172,6 +185,12 @@ def collect_status() -> dict:
     if status == "ok" and (grace_active or (analysis_cfg.get("enabled", False) and not os.environ.get(token_env))):
         status = "warning"
 
+    _lanes_list = cfg.get("lanes") if isinstance(cfg.get("lanes"), list) else []
+    lanes_info = {
+        "count": len(_lanes_list),
+        "names": [str(ln.get("name", "")) for ln in _lanes_list if isinstance(ln, dict)],
+    }
+
     out = {
         "status": status,
         "configured": configured,
@@ -182,6 +201,7 @@ def collect_status() -> dict:
         "script_exists": script_exists,
         "script_path": script_path,
         "target_repo": target_repo,
+        "lanes": lanes_info,
         "analysis": {
             "enabled": bool(analysis_cfg.get("enabled", False)),
             "model": str(analysis_cfg.get("model", trend_scout.DEFAULT_MODELS_MODEL) or trend_scout.DEFAULT_MODELS_MODEL),

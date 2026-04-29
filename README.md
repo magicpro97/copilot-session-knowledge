@@ -471,12 +471,13 @@ Excessive context load in Copilot sessions comes primarily from **duplicate skil
 
 ## Trend Scout
 
-`trend-scout.py` discovers relevant GitHub repositories daily via the **GitHub Search API** (not the unofficial trending page — there is no official GitHub Trending API) and creates or updates structured issues in the target repo for review.
+`trend-scout.py` discovers relevant GitHub repositories via the **GitHub Search API** using a **multi-lane discovery** architecture and creates or updates structured issues in the target repo for review. Each lane is an independent search channel with its own keyword set, topic filters, language constraint, and `min_stars` threshold — allowing the pipeline to surface both language-specific repos and language-agnostic adjacent projects in parallel.
 
 ```bash
 python3 ~/.copilot/tools/trend-scout.py                 # Full pipeline
 python3 ~/.copilot/tools/trend-scout.py --dry-run       # Preview without creating issues
 python3 ~/.copilot/tools/trend-scout.py --search-only   # Discovery + shortlist, no issues
+python3 ~/.copilot/tools/trend-scout.py --explain       # Emit a discovery explainability artifact
 python3 ~/.copilot/tools/trend-scout.py --limit 3       # Cap issues created this run
 python3 ~/.copilot/tools/trend-scout.py --repo owner/repo  # Override target repo
 python3 ~/.copilot/tools/trend-scout.py --config path.json # Custom config file
@@ -484,9 +485,11 @@ python3 ~/.copilot/tools/trend-scout.py --token TOKEN   # Explicit GitHub token 
 python3 ~/.copilot/tools/trend-scout.py --force         # Bypass grace window; force a new run
 ```
 
-`--limit` caps **new issue creates** only; marker-matched **open-issue** updates are still processed.
+`--limit` caps **new issue creates** only; marker-matched **open-issue** updates are still processed. `--explain` writes a JSON artifact documenting which lanes fired, how candidates were scored, and which cross-lane term-set overlaps were used — useful for debugging discovery gaps without running the full pipeline. In GitHub Actions manual runs, `explain=true` uploads that JSON as a workflow artifact.
 
 Requires a `GITHUB_TOKEN` env var (or `--token TOKEN` flag) to avoid rate limits. The tool auto-creates the `trend-scout` label and deduplicates against both open and closed issues using hidden deterministic markers — each marker is a 16-character truncated SHA-256 hash of the lowercased `owner/name`. If a marker already exists on an **open** issue, Trend Scout updates that issue in place when content changed. Marker-matched **closed** issues are treated as suppressors and skipped (no update write).
+
+**Multi-lane discovery:** configure `lanes[]` in `trend-scout-config.json` to define additional search channels beyond the primary `search.*` config. Each lane entry can set `name`, `keywords`, `topics`, `language` (or `null` for language-agnostic), `min_stars`, `max_per_query`, and `lookback_days`. The primary `search.*` section still acts as the default lane; extra `lanes[]` entries run in parallel and tag discovered candidates with their originating lane (`_discovery_lane`). Lane configuration is reflected in `/api/scout/status` as `discovery_lanes[]`, surfaced in the browse Settings diagnostics card.
 
 **Optional GitHub Models analysis:** set `analysis.enabled=true` in `trend-scout-config.json` to replace the repetitive heuristic learning bullets with repo-specific LLM analysis. The models path calls `https://models.github.ai/inference/chat/completions`, expects a publisher-qualified model ID such as `openai/gpt-4o-mini`, and reads its credential from `analysis.token_env` (default `GITHUB_MODELS_TOKEN`). If the token is missing, the model ID is invalid, or the response cannot be parsed, Trend Scout falls back to the heuristic engine automatically.
 
@@ -494,9 +497,9 @@ Requires a `GITHUB_TOKEN` env var (or `--token TOKEN` flag) to avoid rate limits
 
 **Grace window:** set `run_control.grace_window_hours` in config to prevent runs that are too close together. The last-run timestamp is persisted locally in `.trend-scout-state.json` (adjacent to the script). Use `--force` to bypass the grace window. Script default is `0` (disabled); this repository's bundled config currently sets `20` for daily automation. In GitHub Actions, the `.trend-scout-state.json` file is cached between runs via `actions/cache` so the grace window persists across GitHub-hosted runner instances.
 
-**Tune discovery:** edit `trend-scout-config.json` to adjust seed keywords, topic filters, scoring weights, `min_stars`, `enrichment.readme_max_chars`, the optional `analysis.*` settings (`model`, `temperature`, `max_learnings`, `token_env`), `veto.require_domain_signals`, `veto.min_distinct_learnings`, and `run_control.grace_window_hours`.
+**Tune discovery:** edit `trend-scout-config.json` to adjust seed keywords, topic filters, scoring weights, `min_stars`, `enrichment.readme_max_chars`, the optional `analysis.*` settings (`model`, `temperature`, `max_learnings`, `token_env`), `veto.require_domain_signals`, `veto.min_distinct_learnings`, `run_control.grace_window_hours`, and `lanes[]` for multi-lane discovery channels.
 
-**GitHub Actions workflow** — `.github/workflows/trend-scout.yml` runs daily at 07:00 UTC with permissions `contents: read`, `issues: write`, and `models: read`. It also maps `secrets.GITHUB_TOKEN` into `GITHUB_MODELS_TOKEN`, so enabling `analysis.enabled` in config works in Actions without a separate secret. Manual runs via `workflow_dispatch` support `dry_run`, `search_only`, `repo`, `limit`, and `force` inputs.
+**GitHub Actions workflow** — `.github/workflows/trend-scout.yml` runs daily at 07:00 UTC with permissions `contents: read`, `issues: write`, and `models: read`. It also maps `secrets.GITHUB_TOKEN` into `GITHUB_MODELS_TOKEN`, so enabling `analysis.enabled` in config works in Actions without a separate secret. Manual runs via `workflow_dispatch` support `dry_run`, `search_only`, `repo`, `limit`, `force`, and `explain` inputs; when `explain=true`, the workflow uploads `.trend-scout-discovery-explain.json` as an artifact for later inspection.
 
 **Hook noise control:** Trend Scout is intentionally **not** wired to Copilot `preToolUse`/`postToolUse` hooks. Keep it cron/workflow driven (`trend-scout.yml`) to avoid per-tool reminder spam.
 

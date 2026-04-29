@@ -100,6 +100,7 @@ profiles are defined in `presets/` (`default`, `python`, `typescript`, `mobile`,
 Trend Scout automation is intentionally separate from profile hooks: run
 `trend-scout.py` directly (or via `.github/workflows/trend-scout.yml`) rather than attaching
 it to interactive `preToolUse`/`postToolUse` hooks, to avoid output spam during coding sessions.
+Multi-lane discovery (`lanes[]` config) and `--explain` are CLI/workflow-only features.
 
 When deploying skills, `setup-project.py` copies each skill's `SKILL.md` **and** all auxiliary
 asset subdirectories found alongside it (`references/`, `templates/`, `evals/`, or any other

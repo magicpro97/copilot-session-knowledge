@@ -507,10 +507,7 @@ time) is used as the timestamp, so re-running without new commits produces an id
 
 ## Trend Scout
 
-`trend-scout.py` queries the **GitHub Search API** (keyword + topic searches) to discover
-relevant repos, scores and deduplicates candidates, then creates or updates structured issues in
-the target repo. There is no official GitHub Trending API; results are ranked by keyword match,
-topic overlap, star count, and recency.
+`trend-scout.py` queries the **GitHub Search API** (keyword + topic searches) using a **multi-lane discovery** architecture to find relevant repos, scores and deduplicates candidates across lanes, then creates or updates structured issues in the target repo. There is no official GitHub Trending API; results are ranked by keyword match, topic overlap, star count, and recency. Each lane is an independent search channel — lanes run in parallel and their candidate sets are merged, deduplicated, and re-scored with cross-lane term-set signals before shortlisting.
 
 ### Basic usage
 
@@ -523,6 +520,9 @@ python3 ~/.copilot/tools/trend-scout.py --dry-run
 
 # Discovery + shortlist only; skip issue creation
 python3 ~/.copilot/tools/trend-scout.py --search-only
+
+# Emit a discovery explainability artifact (JSON) documenting lane results and scoring
+python3 ~/.copilot/tools/trend-scout.py --explain
 
 # Cap the number of issues created this run
 python3 ~/.copilot/tools/trend-scout.py --limit 3
@@ -542,6 +542,33 @@ python3 ~/.copilot/tools/trend-scout.py --force
 
 Set `GITHUB_TOKEN` in the environment, or pass `--token TOKEN`, to avoid API rate limits.
 `--limit` caps **new issue creates** only; marker-matched updates are still evaluated.
+`--explain` writes a JSON artifact listing which lanes fired, candidate scores, and which
+cross-lane term-set overlaps influenced final scoring. Combine with `--search-only` for a
+read-only discovery audit. In GitHub Actions manual runs, `explain=true` uploads this file
+as a workflow artifact.
+
+### Multi-lane discovery
+
+The pipeline supports parallel discovery lanes configured in the `lanes[]` array of
+`trend-scout-config.json`. Each lane can specify:
+
+| Lane field | Effect |
+|---|---|
+| `name` | Lane identifier; tagged on each candidate as `_discovery_lane` |
+| `keywords` | Free-text GitHub Search queries for this lane |
+| `topics` | Topic filters to search in parallel with keywords |
+| `language` | Language filter (`null` = language-agnostic) |
+| `min_stars` | Minimum star count for this lane (can differ from primary) |
+| `max_per_query` | Result cap per individual search query |
+| `lookback_days` | Repo-age window for this lane |
+
+The primary `search.*` section still defines the default lane. `lanes[]` entries are additional
+channels that run independently and merge into the same candidate pool. After merge, cross-lane
+term-set scoring adjusts composite scores for repos that appear in multiple lanes.
+
+The browse UI Settings page (`/settings`) surfaces lane metadata from `/api/scout/status`
+as `discovery_lanes[]`, showing each lane name, keyword/topic count, language, and `min_stars`
+in a read-only diagnostics card.
 
 ### Operator-safe automation flow
 
@@ -551,10 +578,13 @@ Use this sequence to keep automation practical and low-noise:
 # 1) Discovery sanity check (no issue writes)
 python3 ~/.copilot/tools/trend-scout.py --search-only
 
-# 2) Render verification (body previews only)
+# 2) Explainability audit (shows lane contributions + scoring)
+python3 ~/.copilot/tools/trend-scout.py --search-only --explain
+
+# 3) Render verification (body previews only)
 python3 ~/.copilot/tools/trend-scout.py --dry-run --limit 1 --force
 
-# 3) Controlled live write
+# 4) Controlled live write
 python3 ~/.copilot/tools/trend-scout.py --limit 1 --force
 ```
 
@@ -628,16 +658,17 @@ hash of the lowercased `owner/name` embedded as an HTML comment:
 
 | Key | Effect |
 |-----|--------|
-| `search.seed_keywords` | Free-text queries sent to GitHub Search API |
-| `search.extra_topics` | Additional topic filters |
-| `search.min_stars` | Minimum star count to consider a repo |
+| `search.seed_keywords` | Free-text queries for the primary lane |
+| `search.extra_topics` | Additional topic filters for the primary lane |
+| `search.min_stars` | Minimum star count for the primary lane |
+| `lanes[]` | Array of additional discovery lanes (each with `name`, `keywords`, `topics`, `language`, `min_stars`, `max_per_query`, `lookback_days`) |
 | `shortlist.max_candidates` | How many repos advance to enrichment |
 | `shortlist.min_score` | Minimum composite score threshold (unbounded sum; default `0.15`) |
 | `shortlist.scoring.*_weight` | Adjust keyword, topic, star, and recency weights |
 | `enrichment.readme_max_chars` | Characters of README to fetch and pass to the heuristic engine (default `3000`); increase for feature-dense READMEs, decrease to reduce issue size |
 | `dedup.search_closed_issues` | Whether to scan closed issues for markers |
 | `dedup.max_issues_scan` | Max issues scanned per dedup pass (default 300); increase on busy repos to avoid missing old markers |
-| `search.lookback_days` | Repo age window for search results (default 730 days); lower to focus on recently active repos |
+| `search.lookback_days` | Repo age window for the primary lane (default 730 days); lower to focus on recently active repos |
 | `analysis.enabled` | Enables GitHub Models per-repo learning analysis before issue rendering |
 | `analysis.model` | GitHub Models model ID in `publisher/model` format (default `openai/gpt-4o-mini`) |
 | `analysis.token_env` | Environment variable that holds the models-capable token (default `GITHUB_MODELS_TOKEN`) |
@@ -652,7 +683,7 @@ hash of the lowercased `owner/name` embedded as an HTML comment:
 
 - Uses GitHub Search API heuristics — not an official trending list.
 - Freshness depends on GitHub's search index; very new repos may not appear immediately.
-- Results are filtered to `language: python` by default (configurable).
+- The primary lane defaults to `language: python`; other lanes can be language-agnostic.
 
 ### GitHub Actions workflow
 
@@ -668,6 +699,7 @@ The workflow exports both `GITHUB_TOKEN` and `GITHUB_MODELS_TOKEN` from `secrets
 |-------|------|-------------|
 | `dry_run` | boolean | Preview without creating issues |
 | `search_only` | boolean | Discovery + shortlist only |
+| `explain` | boolean | Emit and upload the discovery explainability artifact |
 | `repo` | string | Override target repo (`OWNER/REPO`) |
 | `limit` | string | Max issues to create this run |
 | `force` | boolean | Bypass grace window and force a full run |
@@ -677,6 +709,7 @@ The workflow exports both `GITHUB_TOKEN` and `GITHUB_MODELS_TOKEN` from `secrets
 Trend Scout is intentionally **not** registered in Copilot runtime hooks (`hooks/hooks.json`).
 Keep scouting in explicit CLI runs or scheduled workflow automation; avoid per-tool hook triggers
 that would spam session output.
+
 
 ## Maintenance
 

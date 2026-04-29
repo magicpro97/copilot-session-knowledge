@@ -439,6 +439,14 @@ export interface TrendScoutOperatorAction {
   requires_configured_target: boolean;
 }
 
+export interface TrendScoutDiscoveryLane {
+  name: string;
+  keyword_count: number;
+  topic_count: number;
+  language: string | null;
+  min_stars: number;
+}
+
 export interface TrendScoutStatusResponse {
   status: string;
   configured: boolean;
@@ -454,6 +462,7 @@ export interface TrendScoutStatusResponse {
     checks: TrendScoutAuditCheck[];
   };
   operator_actions: TrendScoutOperatorAction[];
+  discovery_lanes?: TrendScoutDiscoveryLane[];
   runtime: {
     generated_at: string;
   };

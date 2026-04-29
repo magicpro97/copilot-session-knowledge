@@ -98,6 +98,11 @@ test("scout-status uses warning status during active grace window", status_obj["
 test("scout-status marks grace window active", status_obj["run_control"]["grace_active"] is True)
 test("scout-status includes next eligible timestamp", bool(status_obj["run_control"]["next_eligible_at"]))
 test("scout-status audit contains checks", len(status_obj["audit"].get("checks", [])) > 0)
+_lane_check = next((check for check in status_obj["audit"].get("checks", []) if check.get("name") == "lanes-configured"), None)
+test("scout-status audit includes lanes-configured check", _lane_check is not None, str(status_obj["audit"].get("checks", [])))
+test("scout-status does not warn when no additional lanes configured",
+     _lane_check is not None and _lane_check.get("ok") is True,
+     str(_lane_check))
 
 health_obj = scout_status.runtime_health(status_obj)
 test("scout-status health remains ok with warning-only grace window", health_obj["ok"] is True)
@@ -136,6 +141,35 @@ missing_code = auto_update._run_trend_scout_surface(["--json"]) if False else No
 fake_scout_status.unlink(missing_ok=True)
 missing_code = auto_update._run_trend_scout_surface(["--json"])
 test("auto-update trend runtime proxy fails when scout-status.py missing", missing_code == 1)
+
+
+# ─── scout-config.py lane count exposure ──────────────────────────────────────
+
+print("\n── scout-config.py lane count")
+
+_sc_mod_path = REPO / "scout-config.py"
+if _sc_mod_path.is_file():
+    import importlib.util as _ilu
+    _sc_spec = _ilu.spec_from_file_location("scout_config", str(_sc_mod_path))
+    _sc_mod = _ilu.module_from_spec(_sc_spec)
+    _sc_spec.loader.exec_module(_sc_mod)
+
+    _sc_status = _sc_mod.get_status()
+    test("scout-config get_status() includes 'lanes' key", "lanes" in _sc_status, str(list(_sc_status.keys())))
+    _lanes_info = _sc_status.get("lanes", {})
+    test("scout-config lanes has 'count' field", "count" in _lanes_info, str(_lanes_info))
+    test("scout-config lanes has 'names' field", "names" in _lanes_info, str(_lanes_info))
+    test("scout-config lanes.count is int >= 0", isinstance(_lanes_info.get("count"), int) and _lanes_info["count"] >= 0)
+    test("scout-config lanes.names is list", isinstance(_lanes_info.get("names"), list))
+    # disk config has adjacent-ai-dev lane; get_status() must reflect it
+    test("scout-config lanes.count matches disk config",
+         _lanes_info.get("count") >= 1,
+         f"count={_lanes_info.get('count')}")
+    test("scout-config lanes.names contains adjacent-ai-dev",
+         "adjacent-ai-dev" in _lanes_info.get("names", []),
+         str(_lanes_info.get("names")))
+else:
+    test("scout-config.py exists", False, str(_sc_mod_path))
 
 print("\n" + "=" * 72)
 print(f"PASS: {PASS}")

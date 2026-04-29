@@ -12,8 +12,10 @@ Tests (no network calls — all GitHub API interactions are mocked):
   - render_issue_body: marker included, required sections present
   - GitHubClient: rate-limit awareness, error handling (mocked)
   - get_existing_markers: pagination and state handling (mocked)
-  - CLI: --dry-run, --search-only, --repo, --limit (subprocess)
+  - CLI: --dry-run, --search-only, --repo, --limit, --explain (subprocess)
   - JSON config file roundtrip
+  - Multi-lane discovery: adjacent lane, jcode-class replay, cross-lane scoring
+  - build_discovery_explain: per-lane stats, shortlist annotations
 
 Run: python3 test_trend_scout.py
 """
@@ -45,6 +47,7 @@ PASS = 0
 FAIL = 0
 SCOUT = REPO / "trend-scout.py"
 CONFIG_FILE = REPO / "trend-scout-config.json"
+WORKFLOW_FILE = REPO / ".github" / "workflows" / "trend-scout.yml"
 
 # Scratch dir — project-local, no /tmp
 SCRATCH = REPO / ".test-scratch" / "trend-scout-tests"
@@ -967,7 +970,7 @@ with mock.patch("urllib.request.urlopen") as mock_open:
     ok = client.ensure_label("owner/repo", "trend-scout")
     test("ensure_label returns True when label exists", ok is True)
 
-# search_stage forwards language filter to topic queries
+# search_stage forwards language filter to primary-lane topic queries
 with mock.patch.object(ts.GitHubClient, "search_repos", return_value=[]), \
      mock.patch.object(ts.GitHubClient, "search_repos_by_topic", return_value=[]) as _mock_topic_call, \
      mock.patch("time.sleep", return_value=None):
@@ -976,10 +979,14 @@ with mock.patch.object(ts.GitHubClient, "search_repos", return_value=[]), \
     _search_cfg["search"]["extra_topics"] = ["knowledge-base"]
     _search_cfg["search"]["language"] = "python"
     ts.search_stage(ts.GitHubClient(token="ghp_test"), _search_cfg)
-    _topic_kwargs = _mock_topic_call.call_args.kwargs if _mock_topic_call.call_args else {}
-    test("search_stage topic search receives configured language",
-         _topic_kwargs.get("language") == "python",
-         str(_topic_kwargs))
+    # check all calls: the primary lane must have forwarded language="python"
+    _all_topic_calls = _mock_topic_call.call_args_list
+    _primary_lang_calls = [
+        c for c in _all_topic_calls if c.kwargs.get("language") == "python"
+    ]
+    test("search_stage primary-lane topic search receives configured language",
+         len(_primary_lang_calls) > 0,
+         f"no calls with language='python'; calls={[c.kwargs for c in _all_topic_calls]}")
 
 
 # ─── 7. get_existing_markers (mocked) ─────────────────────────────────────────
@@ -1990,6 +1997,244 @@ if _workflow_path.exists():
          "trend-scout-state- prefix not found in trend-scout.yml")
 else:
     test("workflow file exists", False, f"{_workflow_path} not found")
+
+
+# ─── Multi-lane discovery & jcode-class replay ────────────────────────────────
+
+print("\n🛤  Multi-Lane Discovery (mocked)")
+
+# jcode-class fixture: Rust coding-agent harness, 920+ stars, MCP, multi-session
+JCODE_LIKE_REPO: dict = {
+    "full_name": "example/jcode-like-agent",
+    "name": "jcode-like-agent",
+    "description": "Next-generation coding agent harness with memory, MCP, and multi-session support",
+    "html_url": "https://github.com/example/jcode-like-agent",
+    "created_at": "2024-01-01T00:00:00Z",
+    "pushed_at": "2025-01-10T12:00:00Z",
+    "stargazers_count": 920,
+    "forks_count": 103,
+    "watchers_count": 920,
+    "open_issues_count": 15,
+    "language": "Rust",
+    "topics": ["coding-agent", "ai-coding", "mcp", "llm", "terminal"],
+    "fork": False,
+    "archived": False,
+    "license": {"spdx_id": "MIT"},
+}
+
+# 1. jcode-class repo should score > 0 with multi-lane config (MCP topic included)
+_ml_cfg = ts.load_config(None)  # includes adjacent-ai-dev lane from disk config
+jcode_score = ts.score_repo(JCODE_LIKE_REPO, _ml_cfg)
+test("jcode-class repo scores > 0 with multi-lane config",
+     jcode_score > 0.0,
+     f"score={jcode_score}")
+test("jcode-class repo scores above primary-config minimum (0.15)",
+     jcode_score >= 0.15,
+     f"score={jcode_score}")
+
+# 2. jcode-class repo should NOT be vetoed (it has MCP + memory signals in description)
+_ml_veto, _ml_veto_reason = ts._should_veto_candidate(
+    JCODE_LIKE_REPO,
+    "Hybrid FTS+semantic retrieval and MCP server interface for coding agent memory.",
+    _ml_cfg.get("search", {}).get("our_topics", []),
+    {"require_domain_signals": 1, "min_distinct_learnings": 2},
+)
+test("jcode-class repo passes veto gate (domain signals present)",
+     not _ml_veto,
+     f"reason={_ml_veto_reason}")
+
+# 3. Multi-lane search_stage: adjacent lane results pool into candidates
+with mock.patch.object(ts.GitHubClient, "search_repos", return_value=[]) as _mock_kw, \
+     mock.patch.object(ts.GitHubClient, "search_repos_by_topic",
+                       return_value=[JCODE_LIKE_REPO]) as _mock_topic, \
+     mock.patch("time.sleep", return_value=None):
+    _lane_cfg = ts.load_config(None)
+    # Primary lane has no topic matches for jcode; adjacent lane has mcp/coding-agent
+    _lane_cfg["search"]["extra_topics"] = []
+    _lane_cfg["search"]["seed_keywords"] = []
+    _lane_cfg["lanes"] = [{
+        "name": "adjacent-ai-dev",
+        "keywords": [],
+        "topics": ["coding-agent", "mcp"],
+        "min_stars": 2,
+        "max_per_query": 10,
+        "lookback_days": 365,
+        "language": None,
+    }]
+    _raw_repos = ts.search_stage(ts.GitHubClient(token="ghp_test"), _lane_cfg)
+    test("multi-lane: adjacent lane results appear in raw candidates",
+         any(r.get("full_name") == "example/jcode-like-agent" for r in _raw_repos),
+         f"raw_repos={[r.get('full_name') for r in _raw_repos]}")
+    _jcode_in_raw = next(
+        (r for r in _raw_repos if r.get("full_name") == "example/jcode-like-agent"), None
+    )
+    if _jcode_in_raw:
+        test("multi-lane: adjacent lane repo tagged with correct lane",
+             _jcode_in_raw.get("_discovery_lane") == "adjacent-ai-dev",
+             f"lane={_jcode_in_raw.get('_discovery_lane')}")
+    else:
+        test("multi-lane: adjacent lane repo tagged with correct lane", False, "not found in raw")
+
+# 4. jcode-class repo survives shortlisting with adjacent-lane config
+with mock.patch.object(ts.GitHubClient, "search_repos", return_value=[]) as _mock_kw2, \
+     mock.patch.object(ts.GitHubClient, "search_repos_by_topic",
+                       return_value=[JCODE_LIKE_REPO]) as _mock_topic2, \
+     mock.patch("time.sleep", return_value=None):
+    _shortlist_cfg = ts.load_config(None)
+    _shortlist_cfg["search"]["extra_topics"] = []
+    _shortlist_cfg["search"]["seed_keywords"] = []
+    _shortlist_cfg["shortlist"]["min_score"] = 0.1
+    _shortlist_cfg["shortlist"]["max_candidates"] = 5
+    _shortlist_cfg["lanes"] = [{
+        "name": "adjacent-ai-dev",
+        "keywords": [],
+        "topics": ["coding-agent"],
+        "min_stars": 2,
+        "max_per_query": 10,
+        "lookback_days": 365,
+        "language": None,
+    }]
+    _raw2 = ts.search_stage(ts.GitHubClient(token="ghp_test"), _shortlist_cfg)
+    _shortlisted2 = ts.shortlist_repos(_raw2, _shortlist_cfg)
+    test("multi-lane: jcode-class repo survives shortlisting",
+         any(r.get("full_name") == "example/jcode-like-agent" for r in _shortlisted2),
+         f"shortlisted={[r.get('full_name') for r in _shortlisted2]}")
+
+# 5. build_discovery_explain produces per-lane stats
+_explain_repos = [
+    {**JCODE_LIKE_REPO, "_discovery_lane": "adjacent-ai-dev", "_discovery_query": "coding-agent",
+     "_lane_stats": [
+         {"name": "primary", "keywords": [], "topics": [{"query": "ai-tools", "count": 0}]},
+         {"name": "adjacent-ai-dev", "keywords": [], "topics": [{"query": "coding-agent", "count": 1}]},
+     ]},
+]
+_explain_cfg = ts.load_config(None)
+_explain = ts.build_discovery_explain(
+    _explain_repos,
+    _explain_repos,
+    "2025-01-01T00:00:00+00:00",
+    config=_explain_cfg,
+)
+test("build_discovery_explain has 'lanes' key", "lanes" in _explain)
+test("build_discovery_explain has total_raw_candidates", _explain.get("total_raw_candidates") == 1)
+test("build_discovery_explain has per-lane entries", len(_explain.get("lanes", [])) == 2)
+test("build_discovery_explain has shortlisted entries", len(_explain.get("shortlisted", [])) == 1)
+_adj_lane_explain = next((l for l in _explain["lanes"] if l["name"] == "adjacent-ai-dev"), None)
+test("build_discovery_explain adjacent lane has unique_new_repos=1",
+     _adj_lane_explain is not None and _adj_lane_explain.get("unique_new_repos") == 1,
+     str(_adj_lane_explain))
+_expected_explain_score = ts.score_repo(
+    JCODE_LIKE_REPO,
+    _explain_cfg,
+    term_set=ts._build_global_term_set(_explain_cfg),
+)
+test("build_discovery_explain shortlisted score matches real scoring",
+     _explain["shortlisted"][0].get("score") == _expected_explain_score,
+     f"artifact={_explain['shortlisted'][0].get('score')} expected={_expected_explain_score}")
+
+# 6. Disk config has lanes section with at least one adjacent lane
+_disk_cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+_disk_lanes = _disk_cfg.get("lanes", [])
+test("disk config has 'lanes' section", "lanes" in _disk_cfg)
+test("disk config lanes is a list", isinstance(_disk_lanes, list))
+test("disk config has at least one additional lane",
+     len(_disk_lanes) >= 1,
+     f"found {len(_disk_lanes)} lanes")
+if _disk_lanes:
+    _first_lane = _disk_lanes[0]
+    test("disk config lane has 'name' field", "name" in _first_lane)
+    test("disk config lane has 'keywords' field", "keywords" in _first_lane)
+    test("disk config lane has 'topics' field", "topics" in _first_lane)
+    test("disk config adjacent lane has language=null (any language)",
+         _first_lane.get("language") is None,
+         f"language={_first_lane.get('language')!r}")
+    test("disk config adjacent lane has min_stars",
+         "min_stars" in _first_lane)
+
+# 7. CLI: --explain flag is present in help text
+_explain_help_result = run_cli("--help")
+test("CLI --explain flag appears in --help",
+     "--explain" in _explain_help_result.stdout,
+     _explain_help_result.stdout[:300])
+
+# 8. Workflow uploads explain artifacts for manual runs
+test("trend-scout workflow exists", WORKFLOW_FILE.exists())
+if WORKFLOW_FILE.exists():
+    _workflow_text = WORKFLOW_FILE.read_text(encoding="utf-8")
+    test("workflow uploads explain artifact",
+         "actions/upload-artifact" in _workflow_text and ".trend-scout-discovery-explain.json" in _workflow_text,
+         _workflow_text)
+
+# 9. --explain writes artifact file (dry-run + search-only)
+_explain_out = SCRATCH / "test-explain-output.json"
+with mock.patch.object(ts.GitHubClient, "search_repos", return_value=[]), \
+     mock.patch.object(ts.GitHubClient, "search_repos_by_topic", return_value=[]), \
+     mock.patch("time.sleep", return_value=None):
+    _artifact_cfg = ts.load_config(None)
+    _artifact_cfg["search"]["seed_keywords"] = []
+    _artifact_cfg["search"]["extra_topics"] = []
+    _artifact_cfg["lanes"] = []
+    ts.run(
+        _artifact_cfg,
+        search_only=True,
+        explain=True,
+        explain_output=_explain_out,
+    )
+test("--explain: artifact file written",
+     _explain_out.exists(),
+     f"path={_explain_out}")
+if _explain_out.exists():
+    _artifact = json.loads(_explain_out.read_text(encoding="utf-8"))
+    test("--explain artifact has run_at", "run_at" in _artifact)
+    test("--explain artifact has lanes array", isinstance(_artifact.get("lanes"), list))
+    test("--explain artifact has total_raw_candidates", "total_raw_candidates" in _artifact)
+
+# 10. --explain preserves lane stats when discovery returns zero repos
+_empty_lane_explain_out = SCRATCH / "test-explain-empty-lanes.json"
+with mock.patch.object(ts.GitHubClient, "search_repos", return_value=[]), \
+     mock.patch.object(ts.GitHubClient, "search_repos_by_topic", return_value=[]), \
+     mock.patch("time.sleep", return_value=None):
+    _empty_lane_cfg = ts.load_config(None)
+    _empty_lane_cfg["search"]["seed_keywords"] = []
+    _empty_lane_cfg["search"]["extra_topics"] = ["knowledge-base"]
+    _empty_lane_cfg["lanes"] = [
+        {
+            "name": "adjacent-ai-dev",
+            "keywords": [],
+            "topics": ["coding-agent"],
+            "min_stars": 2,
+            "language": None,
+        }
+    ]
+    ts.run(
+        _empty_lane_cfg,
+        search_only=True,
+        explain=True,
+        explain_output=_empty_lane_explain_out,
+    )
+test("--explain preserves lane stats on zero-result search",
+     _empty_lane_explain_out.exists(),
+     f"path={_empty_lane_explain_out}")
+if _empty_lane_explain_out.exists():
+    _empty_artifact = json.loads(_empty_lane_explain_out.read_text(encoding="utf-8"))
+    _empty_lane_names = [lane.get("name") for lane in _empty_artifact.get("lanes", [])]
+    test("--explain zero-result artifact keeps primary + adjacent lane metadata",
+         _empty_lane_names == ["primary", "adjacent-ai-dev"],
+         str(_empty_lane_names))
+
+# 11. cross-lane term set: shortlist_repos uses keywords from all lanes
+_cross_cfg = ts.load_config(None)
+_cross_cfg["search"]["seed_keywords"] = ["python fts knowledge"]
+_cross_cfg["lanes"] = [{"name": "adj", "keywords": ["coding agent rust mcp"], "topics": []}]
+# jcode-like repo has 'coding' and 'agent' in name/desc → should match cross-lane terms
+_cross_terms_jcode_score = ts.score_repo(
+    JCODE_LIKE_REPO,
+    _cross_cfg,
+    term_set=ts._build_term_set(["coding agent rust mcp"]),
+)
+test("cross-lane term set: jcode-like repo scores higher with adjacent keywords",
+     _cross_terms_jcode_score > 0,
+     f"score={_cross_terms_jcode_score}")
 
 
 # ─── Cleanup ──────────────────────────────────────────────────────────────────

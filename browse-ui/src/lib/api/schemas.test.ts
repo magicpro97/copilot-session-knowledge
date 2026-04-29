@@ -6,6 +6,7 @@ import {
   compareResponseSchema,
   evalResponseSchema,
   trendScoutStatusResponseSchema,
+  trendScoutDiscoveryLaneSchema,
   syncStatusResponseSchema,
   searchResponseSchema,
   sessionListResponseSchema,
@@ -212,7 +213,7 @@ describe("api schemas", () => {
       audit: {
         summary: {
           ok: false,
-          total_checks: 4,
+          total_checks: 5,
           warning_checks: 1,
         },
         checks: [
@@ -221,6 +222,12 @@ describe("api schemas", () => {
             title: "Analysis token availability",
             status: "warning",
             detail: "analysis enabled but env GITHUB_MODELS_TOKEN is not set",
+          },
+          {
+            id: "lanes-configured",
+            title: "Discovery lanes configured",
+            status: "ok",
+            detail: "2 lane(s): primary, adjacent-ai-dev",
           },
         ],
       },
@@ -234,6 +241,22 @@ describe("api schemas", () => {
           requires_configured_target: true,
         },
       ],
+      discovery_lanes: [
+        {
+          name: "primary",
+          keyword_count: 6,
+          topic_count: 6,
+          language: "python",
+          min_stars: 5,
+        },
+        {
+          name: "adjacent-ai-dev",
+          keyword_count: 4,
+          topic_count: 6,
+          language: null,
+          min_stars: 2,
+        },
+      ],
       runtime: {
         generated_at: "2026-01-01T01:00:00Z",
       },
@@ -242,5 +265,60 @@ describe("api schemas", () => {
     expect(parsed.config.target_repo).toBe("magicpro97/copilot-session-knowledge");
     expect(parsed.grace_window.would_skip_without_force).toBe(true);
     expect(parsed.operator_actions[0].safe).toBe(true);
+    expect(parsed.discovery_lanes).toHaveLength(2);
+    expect(parsed.discovery_lanes?.[0].name).toBe("primary");
+    expect(parsed.discovery_lanes?.[1].language).toBeNull();
+  });
+
+  it("parses trend scout status response without discovery_lanes (pre-multi-lane compat)", () => {
+    const parsed = trendScoutStatusResponseSchema.parse({
+      status: "ready",
+      configured: true,
+      config: {
+        configured: true,
+        config_path: "/home/user/repo/trend-scout-config.json",
+        script_path: "/home/user/repo/trend-scout.py",
+        target_repo: "magicpro97/copilot-session-knowledge",
+      },
+      analysis: {
+        enabled: false,
+        model: "openai/gpt-4o-mini",
+        token_env: "GITHUB_MODELS_TOKEN",
+        token_present: false,
+      },
+      grace_window: {
+        enabled: false,
+        grace_window_hours: 0,
+        state_file: "/home/user/repo/.trend-scout-state.json",
+        state_file_exists: false,
+        last_run_utc: null,
+        elapsed_hours: null,
+        remaining_hours: null,
+        would_skip_without_force: false,
+        reason: null,
+      },
+      audit: {
+        summary: { ok: true, total_checks: 4, warning_checks: 0 },
+        checks: [],
+      },
+      operator_actions: [],
+      runtime: { generated_at: "2026-01-01T01:00:00Z" },
+    });
+
+    expect(parsed.discovery_lanes).toBeUndefined();
+    expect(parsed.status).toBe("ready");
+  });
+
+  it("parses a single discovery lane", () => {
+    const lane = trendScoutDiscoveryLaneSchema.parse({
+      name: "adjacent-ai-dev",
+      keyword_count: 4,
+      topic_count: 6,
+      language: null,
+      min_stars: 2,
+    });
+    expect(lane.name).toBe("adjacent-ai-dev");
+    expect(lane.language).toBeNull();
+    expect(lane.keyword_count).toBe(4);
   });
 });

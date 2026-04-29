@@ -153,6 +153,19 @@ def handle_scout_status(db, params, token, nonce) -> tuple:
     elif warning_count > 0:
         status = "degraded"
 
+    lanes_list = config.get("lanes") if isinstance(config.get("lanes"), list) else []
+    discovery_lanes = [
+        {
+            "name": str(ln.get("name", "")),
+            "keyword_count": len(ln.get("keywords", [])) if isinstance(ln.get("keywords"), list) else 0,
+            "topic_count": len(ln.get("topics", [])) if isinstance(ln.get("topics"), list) else 0,
+            "language": ln.get("language"),
+            "min_stars": int(ln.get("min_stars", 0) or 0),
+        }
+        for ln in lanes_list
+        if isinstance(ln, dict)
+    ]
+
     operator_actions = [
         {
             "id": "trend-scout-search-only",
@@ -215,6 +228,7 @@ def handle_scout_status(db, params, token, nonce) -> tuple:
             "checks": checks,
         },
         "operator_actions": operator_actions,
+        "discovery_lanes": discovery_lanes,
         "runtime": {
             "generated_at": now_utc.isoformat().replace("+00:00", "Z"),
         },

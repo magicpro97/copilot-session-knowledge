@@ -421,6 +421,14 @@ export const trendScoutOperatorActionSchema = z.object({
   requires_configured_target: z.boolean(),
 });
 
+export const trendScoutDiscoveryLaneSchema = z.object({
+  name: z.string(),
+  keyword_count: z.number(),
+  topic_count: z.number(),
+  language: z.string().nullable(),
+  min_stars: z.number(),
+});
+
 export const trendScoutStatusResponseSchema = z.object({
   status: z.string(),
   configured: z.boolean(),
@@ -436,6 +444,7 @@ export const trendScoutStatusResponseSchema = z.object({
     checks: z.array(trendScoutAuditCheckSchema),
   }),
   operator_actions: z.array(trendScoutOperatorActionSchema),
+  discovery_lanes: z.array(trendScoutDiscoveryLaneSchema).optional(),
   runtime: z.object({
     generated_at: z.string(),
   }),

@@ -27,9 +27,11 @@ Thumbs.db
 KNOWLEDGE.md
 .watch-state.json
 .trend-scout-state.json
+.trend-scout-discovery-explain.json
 
 # Local tentacle / multi-agent orchestration artifacts
 .octogent/
+.*-test-artifacts/
 
 # browse-ui Node.js artifacts (dist/ is committed)
 browse-ui/node_modules/
