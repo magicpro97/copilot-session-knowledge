@@ -192,7 +192,8 @@ python3 ~/.copilot/tools/tentacle.py worktree api-export prepare
 python3 ~/.copilot/tools/tentacle.py worktree api-export status
 
 # 4. (Optional) Pre-materialize isolated context bundle
-#    Writes briefing.md, instructions.md, skills.md, session-metadata.md to bundle/
+#    Writes briefing.md, instructions.md, skills.md, session-metadata.md,
+#    recall-pack.json (machine-readable JSON recall), and manifest.json to bundle/
 python3 ~/.copilot/tools/tentacle.py bundle api-export
 
 # 5. Dispatch — choose output mode; use --bundle/--worktree to surface runtime context

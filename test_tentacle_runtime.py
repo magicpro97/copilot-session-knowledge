@@ -173,6 +173,64 @@ class TestRunBriefingForTask(unittest.TestCase):
         self.assertEqual(mock_run.call_count, 1)
 
 
+class TestFetchRecallPackJson(unittest.TestCase):
+    """Unit tests for _fetch_recall_pack_json helper."""
+
+    def test_returns_empty_when_briefing_py_missing(self):
+        with patch.object(T, "BRIEFING_PY", Path("/nonexistent/briefing.py")):
+            data, source_mode = T._fetch_recall_pack_json("my-task", fallback_query="foo")
+        self.assertEqual(data, {})
+        self.assertIsNone(source_mode)
+
+    def test_returns_task_json_payload_when_entries_exist(self):
+        task_result = MagicMock()
+        task_result.stdout = json.dumps({
+            "task_id": "my-task",
+            "generated_at": "2026-01-01T00:00:00",
+            "total_entries": 1,
+            "tagged_entries": [{"id": 1, "category": "pattern", "title": "Use X"}],
+            "related_entries": [],
+        })
+        task_result.returncode = 0
+        with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
+            with patch("subprocess.run", return_value=task_result):
+                data, source_mode = T._fetch_recall_pack_json("my-task", fallback_query="fallback")
+        self.assertEqual(source_mode, "task_json")
+        self.assertEqual(data["tagged_entries"][0]["title"], "Use X")
+
+    def test_pack_fallback_accepts_payload_with_file_matches_even_when_entries_empty(self):
+        task_empty = MagicMock()
+        task_empty.stdout = json.dumps({
+            "task_id": "my-task",
+            "generated_at": "2026-01-01T00:00:00",
+            "total_entries": 0,
+            "tagged_entries": [],
+            "related_entries": [],
+        })
+        task_empty.returncode = 0
+
+        pack_result = MagicMock()
+        pack_result.stdout = json.dumps({
+            "query": "fallback",
+            "rewritten_query": "fallback",
+            "mode": "fts",
+            "risk": [],
+            "entries": {"mistake": [], "pattern": [], "decision": [], "tool": []},
+            "task_matches": [],
+            "file_matches": [{"file_or_module": "tentacle.py", "hits": 2}],
+            "past_work": [{"title": "Prior fix", "type": "checkpoint", "session": "abcd1234"}],
+            "next_open": None,
+        })
+        pack_result.returncode = 0
+
+        with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
+            with patch("subprocess.run", side_effect=[task_empty, pack_result]):
+                data, source_mode = T._fetch_recall_pack_json("my-task", fallback_query="fallback")
+        self.assertEqual(source_mode, "pack")
+        self.assertEqual(data["file_matches"][0]["file_or_module"], "tentacle.py")
+        self.assertEqual(data["past_work"][0]["title"], "Prior fix")
+
+
 class TestCmdResume(unittest.TestCase):
 
     def setUp(self):
@@ -1161,11 +1219,11 @@ class TestBuildRuntimeBundle(unittest.TestCase):
         self.assertTrue(bundle_dir.exists())
         self.assertEqual(bundle_dir.name, "bundle")
 
-    def test_creates_all_five_artifacts(self):
+    def test_creates_all_six_artifacts(self):
         d = self._make()
         bundle_dir = T._build_runtime_bundle(d, "test-bundle")
         for fname in ("briefing.md", "instructions.md", "skills.md",
-                      "session-metadata.md", "manifest.json"):
+                      "session-metadata.md", "recall-pack.json", "manifest.json"):
             self.assertTrue((bundle_dir / fname).exists(), f"Missing: {fname}")
 
     def test_manifest_is_valid_json(self):
@@ -1181,7 +1239,7 @@ class TestBuildRuntimeBundle(unittest.TestCase):
         d = self._make()
         bundle_dir = T._build_runtime_bundle(d, "test-bundle")
         data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
-        for key in ("briefing", "instructions", "skills", "session_metadata"):
+        for key in ("briefing", "instructions", "skills", "session_metadata", "recall_pack"):
             self.assertIn(key, data["artifacts"], f"Missing artifact key: {key}")
 
     # ── briefing content ─────────────────────────────────────────────────────
@@ -1323,6 +1381,73 @@ class TestBuildRuntimeBundle(unittest.TestCase):
         self.assertIn("second run", content)
         self.assertNotIn("first run", content)
 
+    # ── recall-pack ───────────────────────────────────────────────────────────
+
+    def test_recall_pack_file_always_created(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        self.assertTrue((bundle_dir / "recall-pack.json").exists())
+
+    def test_recall_pack_is_valid_json(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        raw = (bundle_dir / "recall-pack.json").read_text(encoding="utf-8")
+        data = json.loads(raw)
+        self.assertEqual(data["tentacle"], "test-bundle")
+        self.assertIn("created_at", data)
+        self.assertIn("source_mode", data)
+
+    def test_recall_pack_not_populated_when_no_data(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertFalse(manifest["artifacts"]["recall_pack"]["populated"])
+        self.assertIsNone(manifest["artifacts"]["recall_pack"]["source_mode"])
+
+    def test_recall_pack_populated_with_task_json_data(self):
+        d = self._make()
+        pack = {"tagged_entries": [{"id": 1, "category": "pattern", "title": "Do X not Y"}],
+                "related_entries": []}
+        bundle_dir = T._build_runtime_bundle(
+            d, "test-bundle", recall_pack_data=pack, recall_source_mode="task_json"
+        )
+        raw = json.loads((bundle_dir / "recall-pack.json").read_text(encoding="utf-8"))
+        self.assertEqual(raw["source_mode"], "task_json")
+        self.assertIn("tagged_entries", raw)
+        self.assertEqual(raw["tagged_entries"][0]["title"], "Do X not Y")
+
+    def test_recall_pack_populated_flag_in_manifest(self):
+        d = self._make()
+        pack = {"tagged_entries": [{"id": 2, "category": "mistake", "title": "Avoid Z"}],
+                "related_entries": []}
+        bundle_dir = T._build_runtime_bundle(
+            d, "test-bundle", recall_pack_data=pack, recall_source_mode="task_json"
+        )
+        manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertTrue(manifest["artifacts"]["recall_pack"]["populated"])
+        self.assertEqual(manifest["artifacts"]["recall_pack"]["source_mode"], "task_json")
+
+    def test_recall_pack_populated_with_pack_mode(self):
+        d = self._make()
+        pack = {"entries": {"mistake": [{"id": 3, "title": "Never foo"}]}, "file_matches": []}
+        bundle_dir = T._build_runtime_bundle(
+            d, "test-bundle", recall_pack_data=pack, recall_source_mode="pack"
+        )
+        raw = json.loads((bundle_dir / "recall-pack.json").read_text(encoding="utf-8"))
+        self.assertEqual(raw["source_mode"], "pack")
+        self.assertIn("entries", raw)
+        manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["artifacts"]["recall_pack"]["source_mode"], "pack")
+
+    def test_recall_pack_overwritten_on_second_call(self):
+        d = self._make()
+        pack1 = {"tagged_entries": [{"id": 10, "title": "first"}], "related_entries": []}
+        pack2 = {"tagged_entries": [{"id": 20, "title": "second"}], "related_entries": []}
+        T._build_runtime_bundle(d, "test-bundle", recall_pack_data=pack1, recall_source_mode="task_json")
+        T._build_runtime_bundle(d, "test-bundle", recall_pack_data=pack2, recall_source_mode="task_json")
+        raw = json.loads((d / "bundle" / "recall-pack.json").read_text(encoding="utf-8"))
+        self.assertEqual(raw["tagged_entries"][0]["title"], "second")
+
 
 class TestCmdBundle(unittest.TestCase):
     """Tests for cmd_bundle standalone command."""
@@ -1348,18 +1473,20 @@ class TestCmdBundle(unittest.TestCase):
         d = make_tentacle("my-tentacle", self.base)
         args = self._args("my-tentacle")
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
-            T.cmd_bundle(args)
+            with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
+                T.cmd_bundle(args)
         self.assertTrue((d / "bundle").exists())
 
     def test_cmd_bundle_json_output_contains_bundle_path(self):
         make_tentacle("my-tentacle", self.base)
         args = self._args("my-tentacle", output="json")
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
-            import io
-            from contextlib import redirect_stdout
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                T.cmd_bundle(args)
+            with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
+                import io
+                from contextlib import redirect_stdout
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    T.cmd_bundle(args)
         out = buf.getvalue()
         data = json.loads(out.strip())
         self.assertIn("bundle_path", data)
@@ -1375,27 +1502,66 @@ class TestCmdBundle(unittest.TestCase):
         d = make_tentacle("my-tentacle", self.base)
         args = self._args("my-tentacle", no_briefing=True)
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
-            T.cmd_bundle(args)
+            with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
+                T.cmd_bundle(args)
         content = (d / "bundle" / "briefing.md").read_text(encoding="utf-8")
         self.assertIn("No briefing data", content)
 
-    def test_cmd_bundle_with_briefing_fetches_knowledge(self):
-        make_tentacle("my-tentacle", self.base)
+    def test_cmd_bundle_with_briefing_renders_knowledge_from_recall_pack(self):
+        d = make_tentacle("my-tentacle", self.base)
         args = self._args("my-tentacle", no_briefing=False)
+        pack = {
+            "tagged_entries": [{"id": 8, "category": "pattern", "title": "Key pattern: always X"}],
+            "related_entries": [],
+        }
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
-            with patch.object(T, "_run_briefing_for_task", return_value="Key pattern: always X") as mock_b:
+            with patch.object(T, "_fetch_recall_pack_json", return_value=(pack, "task_json")):
                 T.cmd_bundle(args)
-        mock_b.assert_called_once()
+        content = (d / "bundle" / "briefing.md").read_text(encoding="utf-8")
+        self.assertIn("Key pattern: always X", content)
+
+    def test_cmd_bundle_with_briefing_fetches_recall_pack(self):
+        d = make_tentacle("my-tentacle", self.base)
+        args = self._args("my-tentacle", no_briefing=False)
+        pack = {"tagged_entries": [{"id": 5, "category": "pattern", "title": "Use X"}], "related_entries": []}
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_fetch_recall_pack_json", return_value=(pack, "task_json")) as mock_rp:
+                T.cmd_bundle(args)
+        mock_rp.assert_called_once()
+        manifest = json.loads((d / "bundle" / "manifest.json").read_text(encoding="utf-8"))
+        self.assertTrue(manifest["artifacts"]["recall_pack"]["populated"])
+        self.assertEqual(manifest["artifacts"]["recall_pack"]["source_mode"], "task_json")
+
+    def test_cmd_bundle_no_briefing_still_fetches_recall_pack(self):
+        d = make_tentacle("my-tentacle", self.base)
+        args = self._args("my-tentacle", no_briefing=True)
+        pack = {"tagged_entries": [{"id": 7, "category": "pattern", "title": "Use recall pack"}], "related_entries": []}
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_fetch_recall_pack_json", return_value=(pack, "task_json")) as mock_rp:
+                T.cmd_bundle(args)
+        mock_rp.assert_called_once()
+        manifest = json.loads((d / "bundle" / "manifest.json").read_text(encoding="utf-8"))
+        self.assertTrue(manifest["artifacts"]["recall_pack"]["populated"])
+        self.assertEqual(manifest["artifacts"]["recall_pack"]["source_mode"], "task_json")
+
+    def test_cmd_bundle_recall_pack_json_file_created(self):
+        d = make_tentacle("my-tentacle", self.base)
+        args = self._args("my-tentacle", no_briefing=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
+                T.cmd_bundle(args)
+        self.assertTrue((d / "bundle" / "recall-pack.json").exists())
 
     def test_cmd_bundle_text_output_shows_artifacts(self):
         make_tentacle("my-tentacle", self.base)
         args = self._args("my-tentacle", output="text")
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
-            import io
-            from contextlib import redirect_stdout
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                T.cmd_bundle(args)
+            with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
+                import io
+                from contextlib import redirect_stdout
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    T.cmd_bundle(args)
         out = buf.getvalue()
         self.assertIn("Bundle materialized", out)
         self.assertIn("manifest.json", out)
@@ -1443,7 +1609,7 @@ class TestSwarmBundleFlag(unittest.TestCase):
         make_tentacle("sw-test", self.base)
         args = self._swarm_args("sw-test", output="json", bundle=True)
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
-            with patch.object(T, "_run_briefing_for_task", return_value=""):
+            with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
                 with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                     import io
                     from contextlib import redirect_stdout
@@ -1461,7 +1627,7 @@ class TestSwarmBundleFlag(unittest.TestCase):
         d = make_tentacle("sw-test2", self.base)
         args = self._swarm_args("sw-test2", output="json", bundle=True)
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
-            with patch.object(T, "_run_briefing_for_task", return_value=""):
+            with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
                 with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                     import io
                     from contextlib import redirect_stdout
@@ -1473,7 +1639,7 @@ class TestSwarmBundleFlag(unittest.TestCase):
         make_tentacle("sw-test3", self.base)
         args = self._swarm_args("sw-test3", output="prompt", bundle=True)
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
-            with patch.object(T, "_run_briefing_for_task", return_value=""):
+            with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
                 with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                     import io
                     from contextlib import redirect_stdout
@@ -1487,7 +1653,7 @@ class TestSwarmBundleFlag(unittest.TestCase):
         make_tentacle("sw-test4", self.base)
         args = self._swarm_args("sw-test4", output="parallel", bundle=True)
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
-            with patch.object(T, "_run_briefing_for_task", return_value=""):
+            with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
                 with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                     import io
                     from contextlib import redirect_stdout
@@ -1508,8 +1674,12 @@ class TestSwarmBundleFlag(unittest.TestCase):
             briefing=True,
             bundle=True,
         )
+        pack = {
+            "tagged_entries": [{"id": 12, "category": "pattern", "title": "Pattern: keep raw briefing"}],
+            "related_entries": [],
+        }
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
-            with patch.object(T, "_run_briefing_for_task", return_value="Pattern: keep raw briefing"):
+            with patch.object(T, "_fetch_recall_pack_json", return_value=(pack, "task_json")):
                 with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                     import io
                     from contextlib import redirect_stdout
@@ -2047,8 +2217,9 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
         make_tentacle("bm-test", bundle_base)
         args = fake_args(name="bm-test", no_briefing=True, no_checkpoint=True, output="text")
         with patch.object(T, "get_tentacles_dir", return_value=bundle_base):
-            with patch("builtins.print"):
-                T.cmd_bundle(args)
+            with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
+                with patch("builtins.print"):
+                    T.cmd_bundle(args)
         self.assertTrue(self.marker_path.is_file())
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         self.assertEqual(data["dispatch_mode"], "bundle")
@@ -2064,8 +2235,9 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
         args = fake_args(name="bjm-test", no_briefing=True, no_checkpoint=True, output="json")
         buf = io.StringIO()
         with patch.object(T, "get_tentacles_dir", return_value=bundle_base):
-            with redirect_stdout(buf):
-                T.cmd_bundle(args)
+            with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
+                with redirect_stdout(buf):
+                    T.cmd_bundle(args)
         data = json.loads(buf.getvalue().strip())
         self.assertIn("marker_state", data)
         self.assertTrue(data["marker_state"]["active"])

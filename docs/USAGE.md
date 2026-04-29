@@ -317,7 +317,8 @@ python3 ~/.copilot/tools/tentacle.py todo api-export add "Generate OpenAPI schem
 python3 ~/.copilot/tools/tentacle.py todo api-export add "Add auth middleware"
 
 # 3. (Optional) Pre-materialize isolated context bundle before dispatch
-#    Writes briefing.md, instructions.md, skills.md, session-metadata.md, manifest.json
+#    Writes briefing.md, instructions.md, skills.md, session-metadata.md,
+#    recall-pack.json (machine-readable JSON recall), and manifest.json
 #    to .octogent/tentacles/<name>/bundle/ for sub-agents that need artifacts on disk
 python3 ~/.copilot/tools/tentacle.py bundle api-export
 
@@ -374,10 +375,23 @@ need file-backed context (rather than only inline prompt injection).
 
 ```bash
 python3 ~/.copilot/tools/tentacle.py bundle api-export               # Fetch briefing + write all artifacts
-python3 ~/.copilot/tools/tentacle.py bundle api-export --no-briefing    # Skip live briefing
+python3 ~/.copilot/tools/tentacle.py bundle api-export --no-briefing    # Skip live prose briefing
 python3 ~/.copilot/tools/tentacle.py bundle api-export --no-checkpoint  # Skip checkpoint context
 python3 ~/.copilot/tools/tentacle.py bundle api-export --output json    # JSON manifest + bundle_path
 ```
+
+Bundle artifacts:
+
+| File | Description |
+|------|-------------|
+| `briefing.md` | Prose session-knowledge briefing (or placeholder) |
+| `instructions.md` | Instruction-file surface (host AI config files) |
+| `skills.md` | Skill-file catalogue (SKILL.md files) |
+| `session-metadata.md` | Context, todos, handoff, checkpoint |
+| `recall-pack.json` | **Machine-readable JSON recall** (task_json or pack mode; envelope includes `tentacle`, `created_at`, `source_mode`, and the raw briefing.py payload) |
+| `manifest.json` | Index of all artifacts with `populated`/`source_mode` flags |
+
+`recall-pack.json` is written on every bundle run. When recall data is available, `manifest.artifacts.recall_pack.populated` is `true` and `source_mode` is `"task_json"` (from `briefing.py --task --json`) or `"pack"` (from `briefing.py --pack` fallback). When both sources are empty or unavailable, `populated` is `false` and `source_mode` is `null`. `--no-briefing` only skips the prose `briefing.md` fetch; the machine-readable recall pack is still attempted.
 
 Pass `--bundle` to `swarm` or `dispatch` to materialize the bundle and surface its path in the
 prompt so sub-agents know where to find it:
@@ -473,18 +487,23 @@ These apply to every dispatched sub-agent.
 
 `tentacle.py bundle` materializes a per-run context bundle for a tentacle subagent — a local
 `bundle/` directory containing `briefing.md`, `instructions.md`, `skills.md`,
-`session-metadata.md`, and a `manifest.json`. Useful when a sub-agent needs all context
-artifacts written to disk before execution.
+`session-metadata.md`, `recall-pack.json` (machine-readable JSON recall), and a `manifest.json`.
+Useful when a sub-agent needs all context artifacts written to disk before execution.
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py bundle api-export              # Materialize bundle (fetches briefing)
-python3 ~/.copilot/tools/tentacle.py bundle api-export --no-briefing   # Skip live briefing fetch
+python3 ~/.copilot/tools/tentacle.py bundle api-export              # Materialize bundle (fetches briefing + recall pack)
+python3 ~/.copilot/tools/tentacle.py bundle api-export --no-briefing   # Skip live prose briefing fetch (recall pack still fetched)
 python3 ~/.copilot/tools/tentacle.py bundle api-export --no-checkpoint # Skip checkpoint context
 python3 ~/.copilot/tools/tentacle.py bundle api-export --output json   # JSON output (manifest + bundle_path)
 ```
 
 The bundle is written under `.octogent/tentacles/<name>/bundle/`. Existing files are
 overwritten on each run. JSON output returns `manifest` and `bundle_path` fields.
+
+`recall-pack.json` contains the raw JSON payload from `briefing.py --task --json` (preferred) or
+`briefing.py --pack` (fallback), wrapped in an envelope: `{tentacle, created_at, source_mode, ...data}`.
+The manifest exposes `artifacts.recall_pack` with `file`, `populated`, and `source_mode` fields so
+tools and sub-agents can inspect recall provenance without parsing the pack payload.
 
 ## Project Context
 

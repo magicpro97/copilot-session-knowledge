@@ -332,34 +332,76 @@ def _extract_pack_entries(pack_data: dict) -> list[dict]:
 
 def _run_briefing_for_task(task_id: str, fallback_query: str = "") -> str:
     """Load evidence block for task recall using task-json then pack fallback."""
-    if not BRIEFING_PY.exists():
+    recall_pack_data, recall_source_mode = _fetch_recall_pack_json(
+        task_id, fallback_query=fallback_query
+    )
+    return _render_recall_payload(task_id, recall_pack_data, recall_source_mode)
+
+
+def _pack_payload_has_signal(pack_data: dict) -> bool:
+    """Return True when a --pack payload carries actionable recall content."""
+    entries = pack_data.get("entries", {})
+    if any(entries.get(cat) for cat in ("mistake", "pattern", "decision", "tool")):
+        return True
+    for key in ("task_matches", "file_matches", "past_work", "risk"):
+        if pack_data.get(key):
+            return True
+    return bool(pack_data.get("next_open"))
+
+
+def _render_recall_payload(task_id: str, recall_data: dict, source_mode: str | None) -> str:
+    """Render a fetched recall payload into the bounded prose evidence block."""
+    if not recall_data or not source_mode:
         return ""
+    if source_mode == "task_json":
+        tagged = recall_data.get("tagged_entries", [])
+        related = recall_data.get("related_entries", [])
+        if not (tagged or related):
+            return ""
+        task_entries = [
+            {
+                "id": e.get("id", "?"),
+                "category": e.get("category", "unknown"),
+                "title": e.get("title", "(no title)"),
+                "source_document": e.get("source_document"),
+                "related_entry_ids": e.get("related_entry_ids", []),
+            }
+            for e in [*tagged, *related]
+        ]
+        return _render_knowledge_evidence(task_entries, task_id=task_id)
+    if source_mode == "pack":
+        pack_entries = _extract_pack_entries(recall_data)
+        return _render_knowledge_evidence(
+            pack_entries,
+            file_matches=recall_data.get("file_matches", []),
+        )
+    return ""
+
+
+def _fetch_recall_pack_json(task_id: str, fallback_query: str = "") -> tuple[dict, str | None]:
+    """Fetch machine-readable recall JSON for task_id from briefing.py.
+
+    Tries --task --json first (source_mode="task_json"), then --pack fallback
+    (source_mode="pack").  Returns ({}, None) when both sources are empty or
+    briefing.py is unavailable.
+    """
+    if not BRIEFING_PY.exists():
+        return {}, None
+    # Try task-json first
     try:
         result = subprocess.run(
             [sys.executable, str(BRIEFING_PY), "--task", task_id, "--json"],
             capture_output=True, text=True,
-            encoding="utf-8", errors="replace",  # P1-3
+            encoding="utf-8", errors="replace",
             timeout=15,
         )
         if result.returncode == 0 and result.stdout.strip():
             data = json.loads(result.stdout)
-            tagged = data.get("tagged_entries", [])
-            related = data.get("related_entries", [])
-            if tagged or related:
-                task_entries = [
-                    {
-                        "id": e.get("id", "?"),
-                        "category": e.get("category", "unknown"),
-                        "title": e.get("title", "(no title)"),
-                        "source_document": e.get("source_document"),
-                        "related_entry_ids": e.get("related_entry_ids", []),
-                    }
-                    for e in [*tagged, *related]
-                ]
-                return _render_knowledge_evidence(task_entries, task_id=task_id)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
+            if data.get("tagged_entries") or data.get("related_entries"):
+                return data, "task_json"
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
         pass
-    # Fallback to --pack query when task-scoped recall is empty
+    # Fallback to --pack
     if fallback_query:
         try:
             result = subprocess.run(
@@ -369,15 +411,12 @@ def _run_briefing_for_task(task_id: str, fallback_query: str = "") -> str:
                 timeout=15,
             )
             if result.returncode == 0 and result.stdout.strip():
-                pack_data = json.loads(result.stdout)
-                pack_entries = _extract_pack_entries(pack_data)
-                return _render_knowledge_evidence(
-                    pack_entries,
-                    file_matches=pack_data.get("file_matches", []),
-                )
-        except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
+                data = json.loads(result.stdout)
+                if _pack_payload_has_signal(data):
+                    return data, "pack"
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
             pass
-    return ""
+    return {}, None
 
 
 def _upsert_auto_recall_block(context_text: str, recall_content: str) -> str:
@@ -825,15 +864,18 @@ def _build_runtime_bundle(
     briefing_text: str = "",
     checkpoint_text: str = "",
     worktree_path: str | None = None,
+    recall_pack_data: dict | None = None,
+    recall_source_mode: str | None = None,
 ) -> Path:
     """Materialize a per-run context bundle under the tentacle workspace.
 
     Creates bundle/ inside the tentacle directory with explicit artifacts:
-      briefing.md       — session-knowledge briefing learnings (or placeholder)
-      instructions.md   — instruction-file surface (host AI config files)
-      skills.md         — skill-file surface (SKILL.md catalogue)
+      briefing.md         — session-knowledge briefing learnings (or placeholder)
+      instructions.md     — instruction-file surface (host AI config files)
+      skills.md           — skill-file surface (SKILL.md catalogue)
       session-metadata.md — context, todos, handoff, checkpoint
-      manifest.json     — machine-readable index of all artifacts
+      recall-pack.json    — machine-readable recall JSON (task_json or pack mode)
+      manifest.json       — machine-readable index of all artifacts
 
     Always writes fallback placeholder content for absent surfaces.
     Returns the bundle directory path.
@@ -986,7 +1028,19 @@ def _build_runtime_bundle(
         "has_checkpoint": bool(checkpoint_text),
     }
 
-    # ── 5. Manifest ───────────────────────────────────────────────────────────
+    # ── 5. Recall pack ────────────────────────────────────────────────────────
+    pack_obj: dict = dict(recall_pack_data or {})
+    pack_obj["tentacle"] = name
+    pack_obj["created_at"] = ts
+    pack_obj["source_mode"] = recall_source_mode
+    (bundle_dir / "recall-pack.json").write_text(json.dumps(pack_obj, indent=2) + "\n", encoding="utf-8")
+    manifest["artifacts"]["recall_pack"] = {
+        "file": "recall-pack.json",
+        "populated": bool(recall_pack_data),
+        "source_mode": recall_source_mode,
+    }
+
+    # ── 6. Manifest ───────────────────────────────────────────────────────────
     if worktree_path:
         manifest["worktree_path"] = worktree_path
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -1956,10 +2010,23 @@ def cmd_swarm(args):
     # Live briefing injection at dispatch time
     briefing_text = ""
     live_briefing_section = ""
+    briefing_recall_data: dict = {}
+    briefing_recall_mode: str | None = None
     if getattr(args, "briefing", False):
         fallback = meta.get("description", "") or args.name.replace("-", " ")
         print(f"🧠 Fetching live briefing for dispatch...")
-        briefing_text = _run_briefing_for_task(args.name, fallback_query=fallback)
+        if getattr(args, "bundle", False):
+            briefing_recall_data, briefing_recall_mode = _fetch_recall_pack_json(
+                args.name,
+                fallback_query=fallback,
+            )
+            briefing_text = _render_recall_payload(
+                args.name,
+                briefing_recall_data,
+                briefing_recall_mode,
+            )
+        else:
+            briefing_text = _run_briefing_for_task(args.name, fallback_query=fallback)
         if briefing_text:
             live_briefing_section = f"\n{briefing_text}\n"
             print(f"   ✅ Injected {len(briefing_text)} chars of live knowledge\n")
@@ -1987,17 +2054,22 @@ def cmd_swarm(args):
 
     if getattr(args, "bundle", False):
         print(f"📦 Materializing runtime bundle...")
-        b_briefing = _run_briefing_for_task(
-            args.name,
-            fallback_query=meta.get("description", "") or args.name.replace("-", " "),
-        ) if not getattr(args, "briefing", False) else briefing_text
+        b_fallback = meta.get("description", "") or args.name.replace("-", " ")
         b_checkpoint = _load_latest_checkpoint_context()
+        if getattr(args, "briefing", False):
+            b_recall, b_recall_mode = briefing_recall_data, briefing_recall_mode
+            b_briefing = briefing_text
+        else:
+            b_recall, b_recall_mode = _fetch_recall_pack_json(args.name, fallback_query=b_fallback)
+            b_briefing = _render_recall_payload(args.name, b_recall, b_recall_mode)
         bundle_dir = _build_runtime_bundle(
             tentacle_dir=tentacle_dir,
             name=args.name,
             briefing_text=b_briefing,
             checkpoint_text=b_checkpoint,
             worktree_path=wt_path_str,
+            recall_pack_data=b_recall,
+            recall_source_mode=b_recall_mode,
         )
         bundle_section = f"\n### Bundle Path\n\n`{bundle_dir}`\n"
         print(f"   ✅ Bundle: {bundle_dir}\n")
@@ -2226,6 +2298,7 @@ def cmd_bundle(args):
     """Materialize a per-run context bundle for a tentacle subagent."""
     tentacles = get_tentacles_dir(args.session_dir)
     tentacle_dir = _validate_tentacle_name(args.name, tentacles)
+    json_output = getattr(args, "output", "text") == "json"
 
     if not tentacle_dir.exists():
         print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
@@ -2234,16 +2307,27 @@ def cmd_bundle(args):
     meta_path = tentacle_dir / "meta.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
 
-    # Fetch briefing
+    # Fetch briefing + recall pack
+    fallback = meta.get("description", "") or args.name.replace("-", " ")
+    recall_pack_data, recall_source_mode = _fetch_recall_pack_json(
+        args.name, fallback_query=fallback
+    )
     briefing_text = ""
     if not getattr(args, "no_briefing", False):
-        fallback = meta.get("description", "") or args.name.replace("-", " ")
-        print(f"🧠 Fetching briefing for '{args.name}'...")
-        briefing_text = _run_briefing_for_task(args.name, fallback_query=fallback)
-        if briefing_text:
-            print(f"   ✅ Briefing: {len(briefing_text)} chars")
-        else:
-            print(f"   ℹ️  No briefing data — placeholder will be written")
+        if not json_output:
+            print(f"🧠 Fetching briefing for '{args.name}'...")
+        briefing_text = _render_recall_payload(
+            args.name,
+            recall_pack_data,
+            recall_source_mode,
+        )
+        if not json_output:
+            if briefing_text:
+                print(f"   ✅ Briefing: {len(briefing_text)} chars")
+            else:
+                print(f"   ℹ️  No briefing data — placeholder will be written")
+    if recall_pack_data and not json_output:
+        print(f"   ✅ Recall pack: {recall_source_mode} ({len(json.dumps(recall_pack_data))} chars)")
 
     # Load checkpoint
     checkpoint_text = ""
@@ -2253,15 +2337,18 @@ def cmd_bundle(args):
     # Worktree preparation (--worktree flag)
     wt_path_str: str | None = None
     if getattr(args, "worktree", False):
-        print(f"🌿 Preparing worktree for '{args.name}'...")
+        if not json_output:
+            print(f"🌿 Preparing worktree for '{args.name}'...")
         git_root = find_git_root()
         wt_state = _worktree_prepare(tentacle_dir, args.name, git_root)
         if wt_state["prepared"]:
             wt_path_str = wt_state["path"]
             action = "reused" if wt_state.get("reused") else "prepared"
-            print(f"   ✅ Worktree {action}: {wt_path_str}")
+            if not json_output:
+                print(f"   ✅ Worktree {action}: {wt_path_str}")
         else:
-            print(f"   ⚠️  Worktree prepare failed: {wt_state.get('error', 'unknown')}")
+            if not json_output:
+                print(f"   ⚠️  Worktree prepare failed: {wt_state.get('error', 'unknown')}")
 
     bundle_dir = _build_runtime_bundle(
         tentacle_dir=tentacle_dir,
@@ -2269,6 +2356,8 @@ def cmd_bundle(args):
         briefing_text=briefing_text,
         checkpoint_text=checkpoint_text,
         worktree_path=wt_path_str,
+        recall_pack_data=recall_pack_data,
+        recall_source_mode=recall_source_mode,
     )
 
     # Write dispatched-subagent-active marker when materializing a bundle
@@ -2280,7 +2369,7 @@ def cmd_bundle(args):
         tentacle_id=tentacle_id,
     )
 
-    if getattr(args, "output", "text") == "json":
+    if json_output:
         manifest_path = bundle_dir / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         out = {
@@ -2410,7 +2499,7 @@ def main():
     p_bundle = sub.add_parser("bundle", help="Materialize a per-run context bundle for a tentacle subagent")
     p_bundle.add_argument("name", help="Tentacle name")
     p_bundle.add_argument("--no-briefing", action="store_true",
-                          help="Skip live briefing fetch (placeholder written instead)")
+                          help="Skip live prose briefing fetch; machine-readable recall pack is still fetched")
     p_bundle.add_argument("--no-checkpoint", action="store_true",
                           help="Skip loading latest checkpoint context")
     p_bundle.add_argument("--output", choices=["text", "json"], default="text",
