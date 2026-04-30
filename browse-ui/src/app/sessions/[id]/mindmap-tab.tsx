@@ -8,6 +8,7 @@ import { mindmapResponseSchema } from "@/lib/api/schemas";
 
 type MindmapTabProps = {
   sessionId: string;
+  active: boolean;
 };
 
 function headingCount(markdown: string): number {
@@ -15,16 +16,18 @@ function headingCount(markdown: string): number {
   return matches ? matches.length : 0;
 }
 
-export function MindmapTab({ sessionId }: MindmapTabProps) {
+export function MindmapTab({ sessionId, active }: MindmapTabProps) {
   const query = useQuery({
     queryKey: ["session-mindmap", sessionId],
-    enabled: Boolean(sessionId),
+    enabled: Boolean(sessionId) && active,
     queryFn: async () => {
       const encoded = encodeURIComponent(sessionId);
       const data = await apiFetch(`/api/session/${encoded}/mindmap`);
       return mindmapResponseSchema.parse(data);
     },
   });
+
+  if (!active) return null;
 
   if (query.isLoading) {
     return (

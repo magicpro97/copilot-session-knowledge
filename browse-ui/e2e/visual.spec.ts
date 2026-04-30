@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 test("settings shortcuts card visual snapshot", async ({ page }) => {
   await page.goto("/v2/settings/#shortcuts");

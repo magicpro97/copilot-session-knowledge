@@ -1,7 +1,7 @@
 "use client";
 
 import { Clock3, Copy } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { SOURCE_BADGE_CLASSNAMES, SOURCE_LABELS } from "@/lib/constants";
@@ -73,8 +73,14 @@ type TimeRelativeProps = {
 };
 
 export function TimeRelative({ value, className }: TimeRelativeProps) {
+  const [mounted, setMounted] = useState(false);
   const date = useMemo(() => (value ? new Date(value) : null), [value]);
   const iso = date && !Number.isNaN(date.getTime()) ? date.toISOString() : undefined;
+  const stableLabel = iso ? iso.slice(0, 10) : "—";
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   return (
     <time
@@ -83,7 +89,7 @@ export function TimeRelative({ value, className }: TimeRelativeProps) {
       title={iso}
     >
       <Clock3 className="size-3" aria-hidden />
-      {formatRelativeTime(value)}
+      {mounted ? formatRelativeTime(value) : stableLabel}
     </time>
   );
 }

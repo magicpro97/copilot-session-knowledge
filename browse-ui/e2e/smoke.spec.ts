@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import {
   aliasPlaceholderSession,
   assertSeededSessionAvailable,
@@ -36,7 +36,9 @@ test("sidebar navigation updates the top route subtitle", async ({ page }) => {
   ] as const;
 
   await page.goto("/v2/sessions/");
-  await expect(page.getByText("Review indexed sessions and drill into details quickly.", { exact: true })).toBeVisible({
+  await expect(
+    page.getByText("Review indexed sessions and drill into details quickly.", { exact: true })
+  ).toBeVisible({
     timeout: 20_000,
   });
 
@@ -82,6 +84,19 @@ test("direct real UUID session detail route renders tabbed UI", async ({ page })
   await expect(page.getByRole("tab", { name: "Checkpoints" })).toBeVisible();
   await page.getByRole("tab", { name: "Timeline" }).click();
   await page.getByRole("tab", { name: "Mindmap" }).click();
+  await expect(page.getByRole("button", { name: "Zoom In" })).toBeEnabled({
+    timeout: 20_000,
+  });
+  await page.getByRole("button", { name: "Zoom In" }).click();
+  await page.getByRole("button", { name: "Zoom Out" }).click();
+  const invalidTransforms = await page
+    .locator('svg[aria-label="Session mindmap"] [transform]')
+    .evaluateAll((nodes) =>
+      nodes
+        .map((node) => node.getAttribute("transform") || "")
+        .filter((transform) => /NaN|Infinity/.test(transform))
+    );
+  expect(invalidTransforms).toEqual([]);
   await page.getByRole("tab", { name: "Checkpoints" }).click();
   await page.waitForLoadState("networkidle");
   expect(placeholderSessionRequests).toEqual([]);

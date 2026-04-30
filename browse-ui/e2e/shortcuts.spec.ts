@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { aliasPlaceholderSession } from "./session-detail-alias";
 
 const modKey = process.platform === "darwin" ? "Meta" : "Control";
@@ -36,11 +36,17 @@ test("global shortcuts route to shipped pages", async ({ page }) => {
   await page.keyboard.press("g");
   await expect(page).toHaveURL(/\/v2\/graph\/?#evidence$/);
   await expect(page.getByRole("heading", { level: 1, name: "Graph" })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Evidence" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Evidence" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
 
   await page.goto("/v2/graph/#relationships");
   await expect(page).toHaveURL(/\/v2\/graph\/?#relationships$/);
-  await expect(page.getByRole("tab", { name: "Evidence" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Evidence" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
   await page.keyboard.press("2");
   await expect(page).toHaveURL(/\/v2\/graph\/?#similarity$/);
   await page.keyboard.press("1");
@@ -48,7 +54,10 @@ test("global shortcuts route to shipped pages", async ({ page }) => {
 
   await page.goto("/v2/graph/#clusters");
   await expect(page).toHaveURL(/\/v2\/graph\/?#similarity$/);
-  await expect(page.getByRole("tab", { name: "Similarity" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Similarity" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
 
   await page.keyboard.press("g");
   await page.keyboard.press(",");

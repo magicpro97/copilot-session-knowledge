@@ -30,6 +30,20 @@ vi.mock("@/lib/api/hooks", () => ({
 
 import { useSessionDetail } from "@/lib/api/hooks";
 
+const defaultSessionDetail = {
+  data: {
+    meta: {
+      summary: "A short session summary",
+      source: "copilot",
+      event_count_estimate: 42,
+      fts_indexed_at: "2024-01-01T00:00:00Z",
+    },
+    timeline: [],
+  },
+  error: null,
+  isLoading: false,
+};
+
 // ── heavy tab content ────────────────────────────────────────────────────────
 vi.mock("./overview-tab", () => ({
   OverviewTab: () => <div data-testid="overview-tab">Overview content</div>,
@@ -80,6 +94,7 @@ const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation
 describe("SessionDetailClient – layout/nav", () => {
   beforeEach(() => {
     replaceState.mockClear();
+    (useSessionDetail as Mock).mockImplementation(() => defaultSessionDetail);
     // Reset hash
     Object.defineProperty(window, "location", {
       writable: true,
@@ -114,7 +129,7 @@ describe("SessionDetailClient – layout/nav", () => {
   });
 
   it("header CardTitle clamps long summaries (line-clamp-2 applied)", () => {
-    (useSessionDetail as Mock).mockReturnValueOnce({
+    (useSessionDetail as Mock).mockReturnValue({
       data: {
         meta: {
           summary: "A".repeat(300),

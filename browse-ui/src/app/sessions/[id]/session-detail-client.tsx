@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams, usePathname } from "next/navigation";
 import { Download, GitCompare, Loader2 } from "lucide-react";
 
@@ -61,17 +61,7 @@ function sessionIdFromHref(href: string | null): string {
 export function SessionDetailClient() {
   const params = useParams<{ id: string }>();
   const pathname = usePathname();
-  const sessionId = useMemo(() => {
-    const routeSessionId = safeDecodeSegment(params.id ?? "");
-    const browserSessionId =
-      typeof window === "undefined" ? "" : sessionIdFromHref(window.location.href);
-    if (browserSessionId) return browserSessionId;
-    if (routeSessionId && routeSessionId !== PLACEHOLDER_SESSION_ID) return routeSessionId;
-    const browserPathname = typeof window === "undefined" ? null : window.location.pathname;
-    const pathnameSessionId = sessionIdFromPathname(browserPathname ?? pathname);
-    if (pathnameSessionId && pathnameSessionId !== PLACEHOLDER_SESSION_ID) return pathnameSessionId;
-    return routeSessionId || pathnameSessionId;
-  }, [params.id, pathname]);
+  const [sessionId, setSessionId] = useState("");
 
   const [activeTab, setActiveTab] = useState<SessionTab>("overview");
   const [compareOpen, setCompareOpen] = useState(false);
@@ -82,6 +72,19 @@ export function SessionDetailClient() {
   const shortId = formatSessionIdBadgeText(sessionId);
   const exportHref = `/session/${encodeURIComponent(sessionId)}.md`;
   const exportFileName = `${sessionId || "session"}.md`;
+
+  useEffect(() => {
+    const routeSessionId = safeDecodeSegment(params.id ?? "");
+    const browserSessionId =
+      typeof window === "undefined" ? "" : sessionIdFromHref(window.location.href);
+    const browserPathname = typeof window === "undefined" ? null : window.location.pathname;
+    const pathnameSessionId = sessionIdFromPathname(browserPathname ?? pathname);
+    const nextSessionId =
+      [browserSessionId, pathnameSessionId, routeSessionId].find(
+        (value) => value && value !== PLACEHOLDER_SESSION_ID
+      ) || "";
+    setSessionId(nextSessionId);
+  }, [params.id, pathname]);
 
   const handleExport = useCallback(async () => {
     if (!sessionId || typeof window === "undefined" || exporting) return;
@@ -245,7 +248,7 @@ export function SessionDetailClient() {
           <TimelineTab sessionId={sessionId} active={activeTab === "timeline"} />
         </TabsContent>
         <TabsContent value="mindmap">
-          <MindmapTab sessionId={sessionId} />
+          <MindmapTab sessionId={sessionId} active={activeTab === "mindmap"} />
         </TabsContent>
         <TabsContent value="checkpoints">
           <CheckpointsTab sessionId={sessionId} />
