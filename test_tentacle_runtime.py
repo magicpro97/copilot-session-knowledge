@@ -1641,7 +1641,7 @@ class TestCmdBundle(unittest.TestCase):
 
 
 class TestSwarmBundleFlag(unittest.TestCase):
-    """Tests for --bundle flag in swarm/dispatch."""
+    """Tests for default runtime-bundle behavior in swarm/dispatch."""
 
     def setUp(self):
         self.base = SCRATCH_DIR / "swarm_bundle_tests"
@@ -1670,7 +1670,7 @@ class TestSwarmBundleFlag(unittest.TestCase):
             bundle=bundle,
         )
 
-    def test_swarm_json_no_bundle_lacks_bundle_path(self):
+    def test_swarm_json_explicit_no_bundle_lacks_bundle_path(self):
         make_tentacle("sw-test", self.base)
         args = self._swarm_args("sw-test", output="json", bundle=False)
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
@@ -1686,6 +1686,27 @@ class TestSwarmBundleFlag(unittest.TestCase):
         idx = output.find("{")
         data, _ = decoder.raw_decode(output, idx)
         self.assertNotIn("bundle_path", data)
+
+    def test_swarm_prompt_with_bundle_keeps_inline_context_lean(self):
+        d = make_tentacle("sw-lean", self.base)
+        large_context = "# sw-lean\n\n" + ("UNIQUE_FULL_CONTEXT_SHOULD_STAY_IN_BUNDLE " * 80)
+        (d / "CONTEXT.md").write_text(large_context, encoding="utf-8")
+        args = self._swarm_args("sw-lean", output="prompt", bundle=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                    import io
+                    from contextlib import redirect_stdout
+
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        T.cmd_swarm(args)
+        out = buf.getvalue()
+        self.assertIn("Runtime bundle is authoritative", out)
+        self.assertIn("Bundle Path", out)
+        self.assertLess(out.count("UNIQUE_FULL_CONTEXT_SHOULD_STAY_IN_BUNDLE"), 15)
+        bundle_metadata = (d / "bundle" / "session-metadata.md").read_text(encoding="utf-8")
+        self.assertIn("UNIQUE_FULL_CONTEXT_SHOULD_STAY_IN_BUNDLE", bundle_metadata)
 
     def test_swarm_json_with_bundle_includes_bundle_path(self):
         make_tentacle("sw-test", self.base)
@@ -1775,6 +1796,39 @@ class TestSwarmBundleFlag(unittest.TestCase):
         content = (d / "bundle" / "briefing.md").read_text(encoding="utf-8")
         self.assertIn("Pattern: keep raw briefing", content)
         self.assertNotIn("### Past Knowledge (live briefing at dispatch)", content)
+
+    def test_swarm_json_with_briefing_and_bundle_succeeds(self):
+        d = make_tentacle("sw-json-brief", self.base)
+        args = fake_args(
+            name="sw-json-brief",
+            output="json",
+            agent_type="general-purpose",
+            model="claude-sonnet-4.6",
+            briefing=True,
+            bundle=True,
+        )
+        pack = {
+            "tagged_entries": [{"id": 88, "category": "tool", "title": "Use runtime bundle"}],
+            "related_entries": [],
+        }
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_fetch_recall_pack_json", return_value=(pack, "task_json")):
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                    import io
+                    from contextlib import redirect_stdout
+
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        T.cmd_swarm(args)
+        out = buf.getvalue()
+        decoder = json.JSONDecoder()
+        idx = out.find("{")
+        data, _ = decoder.raw_decode(out, idx)
+        self.assertIn("bundle_path", data)
+        self.assertIn("context_bundle", data["execution_guidance"])
+        recall = json.loads((d / "bundle" / "recall-pack.json").read_text(encoding="utf-8"))
+        self.assertEqual(recall["source_mode"], "task_json")
+        self.assertEqual(recall["tagged_entries"][0]["title"], "Use runtime bundle")
 
 
 class TestSwarmGuardrails(unittest.TestCase):

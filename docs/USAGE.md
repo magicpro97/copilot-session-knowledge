@@ -322,11 +322,13 @@ python3 ~/.copilot/tools/tentacle.py todo api-export add "Add auth middleware"
 #    to .octogent/tentacles/<name>/bundle/ for sub-agents that need artifacts on disk
 python3 ~/.copilot/tools/tentacle.py bundle api-export
 
-# 4. Dispatch — use --bundle to surface the bundle path in the prompt
+# 4. Dispatch — bundle is the default; prompts stay lean and surface bundle_path
 python3 ~/.copilot/tools/tentacle.py swarm api-export \
   --agent-type general-purpose --model claude-sonnet-4.6 --briefing      # single prompt
-python3 ~/.copilot/tools/tentacle.py swarm api-export --output parallel  # one per todo
-python3 ~/.copilot/tools/tentacle.py dispatch api-export --briefing --bundle  # single dispatch + bundle ref
+python3 ~/.copilot/tools/tentacle.py swarm api-export --output parallel --briefing  # one per todo
+python3 ~/.copilot/tools/tentacle.py swarm api-export --output json --briefing      # JSON + bundle_path
+python3 ~/.copilot/tools/tentacle.py dispatch api-export --briefing                 # single dispatch + bundle ref
+python3 ~/.copilot/tools/tentacle.py swarm api-export --no-bundle                   # rare tiny-prompt opt-out
 
 # 5. Monitor runtime (read-only)
 python3 ~/.copilot/tools/tentacle.py status                # dashboard: all tentacles + states
@@ -370,8 +372,9 @@ python3 ~/.copilot/tools/auto-update-tools.py --audit-runtime   # Audit active r
 ### Bundle for isolated context
 
 `tentacle.py bundle` materializes a per-run context bundle — all artifacts needed by a
-sub-agent written to `.octogent/tentacles/<name>/bundle/`. Run before dispatch when sub-agents
-need file-backed context (rather than only inline prompt injection).
+sub-agent written to `.octogent/tentacles/<name>/bundle/`. `swarm` and `dispatch` now
+create this bundle by default and keep generated prompts token-lean; run `bundle` directly
+only when you want to inspect or pre-warm the artifacts before dispatch.
 
 ```bash
 python3 ~/.copilot/tools/tentacle.py bundle api-export               # Fetch briefing + write all artifacts
@@ -393,14 +396,15 @@ Bundle artifacts:
 
 `recall-pack.json` is written on every bundle run. When recall data is available, `manifest.artifacts.recall_pack.populated` is `true` and `source_mode` is `"task_json"` (from `briefing.py --task --json`) or `"pack"` (from `briefing.py --pack` fallback). When both sources are empty or unavailable, `populated` is `false` and `source_mode` is `null`. `--no-briefing` only skips the prose `briefing.md` fetch; the machine-readable recall pack is still attempted.
 
-Pass `--bundle` to `swarm` or `dispatch` to materialize the bundle and surface its path in the
-prompt so sub-agents know where to find it:
+`swarm` and `dispatch` materialize the bundle and surface its path in the prompt by default
+so sub-agents know where to find full context. Use `--no-bundle` only for tiny/manual prompts:
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py swarm api-export --bundle
-python3 ~/.copilot/tools/tentacle.py dispatch api-export --bundle
-python3 ~/.copilot/tools/tentacle.py swarm api-export --bundle --worktree
-python3 ~/.copilot/tools/tentacle.py dispatch api-export --bundle --worktree
+python3 ~/.copilot/tools/tentacle.py swarm api-export --briefing
+python3 ~/.copilot/tools/tentacle.py dispatch api-export --briefing
+python3 ~/.copilot/tools/tentacle.py swarm api-export --briefing --worktree
+python3 ~/.copilot/tools/tentacle.py dispatch api-export --briefing --worktree
+python3 ~/.copilot/tools/tentacle.py swarm api-export --no-bundle
 ```
 
 ### Completing and verifying results
@@ -488,7 +492,8 @@ These apply to every dispatched sub-agent.
 `tentacle.py bundle` materializes a per-run context bundle for a tentacle subagent — a local
 `bundle/` directory containing `briefing.md`, `instructions.md`, `skills.md`,
 `session-metadata.md`, `recall-pack.json` (machine-readable JSON recall), and a `manifest.json`.
-Useful when a sub-agent needs all context artifacts written to disk before execution.
+`swarm` and `dispatch` create this bundle by default; this command is useful when you want to
+inspect or pre-warm all context artifacts before execution.
 
 ```bash
 python3 ~/.copilot/tools/tentacle.py bundle api-export              # Materialize bundle (fetches briefing + recall pack)

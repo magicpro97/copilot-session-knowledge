@@ -47,13 +47,13 @@ python3 ~/.copilot/tools/tentacle.py create <name> --scope "<paths>" --desc "<de
 # 2. Add todos
 python3 ~/.copilot/tools/tentacle.py todo <name> add "<task>"
 
-# 3. (Optional) Prepare isolated worktree + bundle before dispatch
+# 3. (Optional) Prepare isolated worktree + pre-warm bundle before dispatch
 python3 ~/.copilot/tools/tentacle.py worktree <name> prepare
 python3 ~/.copilot/tools/tentacle.py bundle <name> --worktree
 
-# 4. Dispatch (--bundle/--worktree surfaces runtime paths in the prompt)
-python3 ~/.copilot/tools/tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6 --briefing --bundle --worktree
-python3 ~/.copilot/tools/tentacle.py dispatch <name> --briefing --bundle --worktree
+# 4. Dispatch (bundle is default; --worktree surfaces isolated repo path too)
+python3 ~/.copilot/tools/tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6 --briefing --worktree
+python3 ~/.copilot/tools/tentacle.py dispatch <name> --briefing --worktree
 
 # 5. Operator monitoring (read-only)
 python3 ~/.copilot/tools/tentacle.py status

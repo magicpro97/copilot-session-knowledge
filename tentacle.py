@@ -15,8 +15,8 @@ Usage:
     python3 ~/.copilot/tools/tentacle.py todo <name> done <index>
     python3 ~/.copilot/tools/tentacle.py todo <name> undone <index>
     python3 ~/.copilot/tools/tentacle.py handoff <name> "<message>" [--learn]
-    python3 ~/.copilot/tools/tentacle.py swarm <name> [--agent-type <type>] [--model <model>] [--briefing]
-    python3 ~/.copilot/tools/tentacle.py dispatch <name> [--agent-type <type>] [--model <model>] [--briefing]
+    python3 ~/.copilot/tools/tentacle.py swarm <name> [--agent-type <type>] [--model <model>] [--briefing] [--no-bundle]
+    python3 ~/.copilot/tools/tentacle.py dispatch <name> [--agent-type <type>] [--model <model>] [--briefing] [--no-bundle]
     python3 ~/.copilot/tools/tentacle.py resume <name> [--no-briefing]
     python3 ~/.copilot/tools/tentacle.py next-step <name> [--briefing] [--no-checkpoint] [--all] [--format text|json]
     python3 ~/.copilot/tools/tentacle.py complete <name> [--no-learn]
@@ -484,6 +484,60 @@ def _load_latest_checkpoint_context() -> str:
         return _render_checkpoint_context(data)
     except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
         return ""
+
+
+def _bundle_enabled(args) -> bool:
+    """Return whether dispatch should materialize a runtime bundle.
+
+    The CLI parser defaults this to True for swarm/dispatch. Older direct
+    callers/tests that do not provide the attribute retain the historical
+    behavior.
+    """
+    return bool(getattr(args, "bundle", False))
+
+
+def _scope_summary(meta: dict) -> str:
+    raw_scope = meta.get("scope") or []
+    if isinstance(raw_scope, str):
+        items = [raw_scope]
+    elif isinstance(raw_scope, list):
+        items = [str(item) for item in raw_scope if str(item).strip()]
+    else:
+        items = []
+    return ", ".join(items[:6]) if items else "See bundle/session-metadata.md"
+
+
+def _context_excerpt(context: str, limit: int = 180) -> str:
+    lines = [line.strip() for line in context.splitlines() if line.strip()]
+    if not lines:
+        return "See bundle/session-metadata.md"
+    text = " ".join(lines)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _render_dispatch_context(context: str, meta: dict, bundle_dir: Path | None) -> str:
+    """Render token-lean context for dispatch prompts.
+
+    With a bundle, the file-backed artifact is authoritative; keep the inline
+    prompt small so sub-agents spend tokens on code, not duplicated context.
+    """
+    if not bundle_dir:
+        return context.strip()
+    return textwrap.dedent(
+        f"""\
+        Runtime bundle is authoritative; inline context is intentionally minimal.
+        Read first:
+        1. `{bundle_dir}/manifest.json`
+        2. `{bundle_dir}/session-metadata.md`
+        3. `{bundle_dir}/recall-pack.json`
+        4. `{bundle_dir}/instructions.md` and relevant source files
+
+        Scope: {_scope_summary(meta)}
+        Context excerpt: {_context_excerpt(context)}
+        """
+    ).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -2034,11 +2088,13 @@ def cmd_swarm(args):
         print(f"✅ All todos done for '{args.name}'. Nothing to swarm.")
         return
 
-    if args.output == "json" and getattr(args, "briefing", False):
+    bundle_enabled = _bundle_enabled(args)
+
+    if args.output == "json" and getattr(args, "briefing", False) and not bundle_enabled:
         print(
             "ERROR: --briefing is not supported with --output json. "
-            "Briefing content cannot be represented in the JSON payload. "
-            "Use --output prompt or --output parallel to inject briefing.",
+            "Use the default runtime bundle (or pass --bundle) so briefing "
+            "can be represented via recall-pack.json, or use --output prompt/parallel.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -2060,7 +2116,7 @@ def cmd_swarm(args):
     if getattr(args, "briefing", False):
         fallback = meta.get("description", "") or args.name.replace("-", " ")
         print("🧠 Fetching live briefing for dispatch...")
-        if getattr(args, "bundle", False):
+        if bundle_enabled:
             briefing_recall_data, briefing_recall_mode = _fetch_recall_pack_json(
                 args.name,
                 fallback_query=fallback,
@@ -2073,12 +2129,18 @@ def cmd_swarm(args):
         else:
             briefing_text = _run_briefing_for_task(args.name, fallback_query=fallback)
         if briefing_text:
-            live_briefing_section = f"\n{briefing_text}\n"
+            if bundle_enabled:
+                live_briefing_section = (
+                    "\n### Live Knowledge\n\n"
+                    "Bundled in `briefing.md` and `recall-pack.json`; read those before editing.\n"
+                )
+            else:
+                live_briefing_section = f"\n{briefing_text}\n"
             print(f"   ✅ Injected {len(briefing_text)} chars of live knowledge\n")
         else:
             print("   ℹ️  No relevant past knowledge found\n")
 
-    # Bundle materialization (--bundle flag)
+    # Bundle materialization (default for CLI swarm/dispatch; opt out with --no-bundle)
     bundle_dir: Path | None = None
     bundle_section = ""
     worktree_section = ""
@@ -2097,7 +2159,7 @@ def cmd_swarm(args):
         else:
             print(f"   ⚠️  Worktree prepare failed: {wt_state.get('error', 'unknown')}\n")
 
-    if getattr(args, "bundle", False):
+    if bundle_enabled:
         print("📦 Materializing runtime bundle...")
         b_fallback = meta.get("description", "") or args.name.replace("-", " ")
         b_checkpoint = _load_latest_checkpoint_context()
@@ -2116,7 +2178,11 @@ def cmd_swarm(args):
             recall_pack_data=b_recall,
             recall_source_mode=b_recall_mode,
         )
-        bundle_section = f"\n### Bundle Path\n\n`{bundle_dir}`\n"
+        bundle_section = (
+            "\n### Bundle Path\n\n"
+            f"`{bundle_dir}`\n\n"
+            "Use this bundle as the source of truth for full context; do not duplicate it into the prompt.\n"
+        )
         print(f"   ✅ Bundle: {bundle_dir}\n")
 
     # Write dispatched-subagent-active marker so local enforcement surfaces can
@@ -2137,10 +2203,11 @@ def cmd_swarm(args):
     if args.output == "prompt":
         # Output as a single dispatch prompt with all todos
         print("─── DISPATCH PROMPT ───\n")
+        context_for_prompt = _render_dispatch_context(context, meta, bundle_dir)
         prompt = f"""## Tentacle: {args.name}
 
 ### Context
-{context.strip()}
+{context_for_prompt}
 {live_briefing_section}{bundle_section}{worktree_section}
 ### Your Tasks (complete ALL)
 """
@@ -2150,6 +2217,7 @@ def cmd_swarm(args):
         prompt += f"""
 ### Rules
 - Complete all tasks above
+- If a Bundle Path is present, read `manifest.json` first and use the bundle files as authoritative context
 - Stay within the scoped files only — DO NOT modify files outside your declared scope
 - **DO NOT run `git commit` or `git push`** — the orchestrator owns all git operations
 - **DO NOT widen your scope** beyond the files listed above without explicit escalation to the orchestrator
@@ -2190,7 +2258,8 @@ def cmd_swarm(args):
             print(f"## Tentacle: {args.name}")
             print("")
             print("### Context")
-            print(f"{context.strip()[:500]}")
+            context_for_prompt = _render_dispatch_context(context, meta, bundle_dir)
+            print(f"{context_for_prompt[:900]}")
             if live_briefing_section:
                 print(live_briefing_section.strip())
             if bundle_section:
@@ -2202,6 +2271,9 @@ def cmd_swarm(args):
             print(f"{t['text']}")
             print("")
             print("### Guardrails")
+            print(
+                "- If a Bundle Path is present, read `manifest.json` first and use the bundle files as authoritative context"
+            )
             print("- Stay within the scoped files only — DO NOT modify files outside your declared scope")
             print("- **DO NOT run `git commit` or `git push`** — the orchestrator owns all git operations")
             print("- **DO NOT widen your scope** without explicit escalation to the orchestrator")
@@ -2227,6 +2299,12 @@ def cmd_swarm(args):
                 "git_ops": "Do not run git commit or git push — the orchestrator owns all git operations",
                 "scope": "Stay within declared files — do not widen scope without escalating to the orchestrator",
                 "escalation": "If scope is insufficient, stop and write a scope escalation note to handoff",
+                "context_bundle": (
+                    "Runtime bundles are the default. Read bundle_path/manifest.json first, then "
+                    "session-metadata.md and recall-pack.json before editing."
+                    if bundle_dir is not None
+                    else "No runtime bundle was requested; rely on context_file and inline prompt."
+                ),
             },
             "marker_state": _get_marker_state(),
         }
@@ -2542,6 +2620,7 @@ def main():
               tentacle.py todo api-export add "Implement GET /export/patients"
               tentacle.py todo api-export done 0
               tentacle.py swarm api-export --agent-type lambda-developer --briefing
+              tentacle.py swarm api-export --no-bundle  # opt out of default runtime bundle
               tentacle.py resume api-export
               tentacle.py status
               tentacle.py handoff api-export "Completed handler, tests pass" --learn
@@ -2598,8 +2677,18 @@ def main():
         "--briefing", action="store_true", help="Inject live briefing into the dispatch prompt at runtime"
     )
     p_swarm.add_argument(
-        "--bundle", action="store_true", help="Materialize a runtime bundle and surface its path in the dispatch output"
+        "--bundle",
+        dest="bundle",
+        action="store_true",
+        help="Materialize a runtime bundle and surface its path in the dispatch output (default)",
     )
+    p_swarm.add_argument(
+        "--no-bundle",
+        dest="bundle",
+        action="store_false",
+        help="Opt out of the default runtime bundle and use inline prompt context only",
+    )
+    p_swarm.set_defaults(bundle=True)
     p_swarm.add_argument(
         "--worktree",
         action="store_true",
@@ -2615,8 +2704,18 @@ def main():
         "--briefing", action="store_true", help="Inject live briefing into the dispatch prompt at runtime"
     )
     p_dispatch.add_argument(
-        "--bundle", action="store_true", help="Materialize a runtime bundle and surface its path in the dispatch output"
+        "--bundle",
+        dest="bundle",
+        action="store_true",
+        help="Materialize a runtime bundle and surface its path in the dispatch output (default)",
     )
+    p_dispatch.add_argument(
+        "--no-bundle",
+        dest="bundle",
+        action="store_false",
+        help="Opt out of the default runtime bundle and use inline prompt context only",
+    )
+    p_dispatch.set_defaults(bundle=True)
     p_dispatch.add_argument(
         "--worktree",
         action="store_true",

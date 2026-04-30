@@ -202,14 +202,16 @@ This adds a `🧠 Session Knowledge — MANDATORY` section to `~/.github/copilot
 
 ### Sub-agent Context Injection
 
-For tentacle dispatch, prefer the structured recall path in `tentacle.py`:
+For tentacle dispatch, prefer the bundle-first structured recall path in `tentacle.py`:
 
 ```bash
 python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
 ```
 
-This path injects a bounded `[KNOWLEDGE EVIDENCE]` block by trying task-scoped recall first
-(`briefing.py --task <id> --json`) and using `briefing.py "<query>" --pack --limit 3` only as fallback.
+This path materializes `.octogent/tentacles/<name>/bundle/` by default, keeps the prompt lean,
+and writes bounded evidence to `briefing.md` plus machine-readable `recall-pack.json` by trying
+task-scoped recall first (`briefing.py --task <id> --json`) and using
+`briefing.py "<query>" --pack --limit 3` only as fallback.
 
 For manual compatibility or ad hoc non-tentacle prompts, inject context directly:
 

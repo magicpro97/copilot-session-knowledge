@@ -96,7 +96,8 @@ python3 ~/.copilot/tools/install.py --install-git-hooks
 - ❌ Skipping `--briefing` on create → past mistakes not injected into CONTEXT.md
 - ❌ Skipping `complete` before `delete` → learnings from handoff.md lost permanently
 - ❌ Overlapping tentacle scopes → agents overwrite each other's work
-- ❌ Using `--briefing` with `--output json` → not supported; briefing content cannot be represented in JSON payload
+- ❌ Skipping the runtime bundle on multi-agent work → agents lose file-backed context and `recall-pack.json`
+- ❌ Using `--briefing --output json --no-bundle` → briefing cannot be represented without the bundle
 - ❌ Sub-agent commits or pushes → blocked by git hooks when installed (and risky regardless: corrupts orchestrator's merge/verify flow)
 - ❌ Sub-agent edits files outside declared scope → silent conflicts with other parallel agents
 - ❌ Sub-agent silently expands scope instead of escalating → orchestrator loses visibility
@@ -111,7 +112,14 @@ A **tentacle** is a scoped work unit stored as files:
 ├── CONTEXT.md    ← What the agent needs to know (scope, constraints, key files)
 ├── todo.md       ← Checkbox items — each is a delegation unit
 ├── handoff.md    ← Agent writes results here when done
-└── meta.json     ← Metadata (scope, status, timestamps)
+├── meta.json     ← Metadata (scope, status, timestamps)
+└── bundle/       ← Runtime context artifacts (created by dispatch by default)
+    ├── manifest.json
+    ├── session-metadata.md
+    ├── recall-pack.json
+    ├── briefing.md
+    ├── instructions.md
+    └── skills.md
 ```
 
 The octopus metaphor: one orchestrator (you), multiple tentacles (agents), each handling a distinct code region.
@@ -186,14 +194,22 @@ This is the most important step. Agent quality is directly proportional to CONTE
 #### Step 5: Dispatch agents (swarm)
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py swarm <name> --agent-type <type> --model <model>
 python3 ~/.copilot/tools/tentacle.py swarm <name> --agent-type <type> --model <model> --briefing
+python3 ~/.copilot/tools/tentacle.py swarm <name> --output parallel --briefing
+python3 ~/.copilot/tools/tentacle.py dispatch <name> --agent-type <type> --model <model> --briefing
 ```
 
-`--briefing` fetches live past knowledge from session-knowledge at dispatch time and injects it
-into the dispatch prompt. Use it when picking up a tentacle after a gap or when past mistakes are
-likely to be relevant. **`--briefing` is not supported with `--output json`** — use
-`--output prompt` or `--output parallel` when briefing injection is needed.
+`swarm` and `dispatch` materialize a runtime bundle by default. The dispatch prompt stays
+token-lean and points agents at `.octogent/tentacles/<name>/bundle/manifest.json` first.
+The bundle carries the full `CONTEXT.md`, todos, latest checkpoint, instruction snippets,
+skills catalogue, and `recall-pack.json`.
+
+`--briefing` fetches live past knowledge from session-knowledge at dispatch time. With the
+default bundle, briefing is stored in `briefing.md` and machine-readable recall is stored in
+`recall-pack.json` by trying `briefing.py --task <id> --json` first and falling back to
+`briefing.py "<query>" --pack --limit 3`. Use `--no-bundle` only for tiny/manual prompts; if
+you combine `--output json --briefing`, keep the default bundle enabled so JSON output can
+surface `bundle_path`.
 
 Use the output as the prompt for `task()`. Launch independent tentacles in parallel.
 
@@ -289,11 +305,11 @@ Quick reference:
 ```bash
 tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing
 tentacle.py todo <name> add "<task>"
-tentacle.py swarm <name> --agent-type <type> --model <model>
-tentacle.py swarm <name> --agent-type <type> --model <model> --briefing   # live knowledge injection
-# NOTE: --briefing is not compatible with --output json
-tentacle.py swarm <name> --output json                                     # JSON output (no --briefing)
-tentacle.py dispatch <name> --agent-type <type> --briefing                 # single-todo dispatch + briefing
+tentacle.py swarm <name> --agent-type <type> --model <model> --briefing    # bundle-first default
+tentacle.py swarm <name> --output parallel --briefing                      # one worker per todo
+tentacle.py swarm <name> --output json --briefing                          # JSON + bundle_path
+tentacle.py dispatch <name> --agent-type <type> --briefing                 # single-agent dispatch
+tentacle.py swarm <name> --no-bundle                                       # rare opt-out for tiny prompts
 tentacle.py resume <name>                  # resume interrupted tentacle (refreshes briefing)
 tentacle.py resume <name> --no-briefing    # resume without re-fetching briefing
 tentacle.py status

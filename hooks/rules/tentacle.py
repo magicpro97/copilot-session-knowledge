@@ -220,10 +220,10 @@ class TentacleEnforceRule(Rule):
             "Multi-module edits should use tentacle-orchestration. "
             'If you are the orchestrator: (1) tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing  '
             '(2) tentacle.py todo <name> add "<task>"  '
-            "(3) tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6 [--bundle]  "
+            "(3) tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6 --briefing  "
             "(4) tentacle.py complete <name>  "
             "Check runtime: tentacle.py status  "
-            "If you are a dispatched sub-agent: stay within your assigned scope, write results to "
+            "If you are a dispatched sub-agent: read bundle/manifest.json first, stay within your assigned scope, write results to "
             "handoff.md, and avoid git commit or git push — by convention the orchestrator "
             "commits and pushes after all tentacles are verified."
         )

@@ -8,14 +8,14 @@
 1. **KHÔNG ship lỗi**: CODE → COMPILE → TEST → VERIFY → COMMIT. Không compile = không commit. 100% hoặc 0%.
 2. **Bám workflow**: Đọc WORKFLOW.md → xác định phase → plan.md → implement. Không có workflow → PLAN → BUILD → TEST → VERIFY → COMMIT.
 3. **Perfect pixel**: Screenshot trước/sau. Verify text, color hex, spacing dp, touch ≥44dp. Design-first.
-4. **Orchestrate — Tentacle**: Task ≥3 files, ≥2 modules → **BẮT BUỘC** dùng `tentacle-orchestration`. Decompose → parallel agents → verify. Ưu tiên `tentacle.py ... --briefing` để inject structured `[KNOWLEDGE EVIDENCE]`; `--for-subagent` chỉ dùng manual compatibility/ad hoc prompts. Single-module nhỏ → làm trực tiếp.
+4. **Orchestrate — Tentacle**: Task ≥3 files, ≥2 modules → **BẮT BUỘC** dùng `tentacle-orchestration`. Decompose → parallel agents → verify. Ưu tiên `tentacle.py ... --briefing` để tạo runtime bundle + structured `[KNOWLEDGE EVIDENCE]`; `--for-subagent` chỉ dùng manual compatibility/ad hoc prompts. Single-module nhỏ → làm trực tiếp.
    Structured memory contracts stay fixed: `query-session.py --task --export json` surfaces `entries[]`;
    `briefing.py --task --json` surfaces `tagged_entries[]` / `related_entries[]`; `briefing.py --pack`
    surfaces `entries.<category>[]`. Phase 5 telemetry is lean: `knowledge-health.py --recall`
    (`--json` optional) is recall-only; `query-session.py --detail` logs stateless `detail_open`
    (`hit_count=1` only when found, miss = `hit_count=0`); default `query-session` telemetry counts
    the full emitted search surface.
-   **Workflow**: `create` → `todo add` → `bundle` (optional isolated context) → `swarm [--bundle]` → `complete` (verification/closure). Operator view: `tentacle.py status`.
+   **Workflow**: `create` → `todo add` → `swarm/dispatch --briefing` (bundle-first by default) → `complete` (verification/closure). Operator view: `tentacle.py status`. Opt out with `--no-bundle` only for tiny/manual prompts.
 5. **Không bỏ dở**: Fix or delegate, never abandon. Context limit → checkpoint + delegate.
 6. **AGENTS.md**: Mọi project nên có. <60 dòng, navigational. Đọc nó trước.
 7. **Ghi nhận**: Sau mỗi task → `learn.py` mistakes/patterns. Knowledge = long-term memory.

@@ -23,11 +23,17 @@ tentacle.py todo <name> done <index>
 # Record agent output (--learn saves to long-term knowledge)
 tentacle.py handoff <name> "<message>" --learn
 
-# Generate dispatch prompt for an agent
-tentacle.py swarm <name> --agent-type <type> --model <model>
+# Generate bundle-first dispatch prompt for an agent
+tentacle.py swarm <name> --agent-type <type> --model <model> --briefing
 
-# Generate parallel dispatch (one agent per todo)
-tentacle.py swarm <name> --output parallel
+# Generate parallel dispatch (one agent per todo, bundle-first by default)
+tentacle.py swarm <name> --output parallel --briefing
+
+# Structured JSON dispatch; includes bundle_path by default
+tentacle.py swarm <name> --output json --briefing
+
+# Rare opt-out for tiny/manual prompts
+tentacle.py swarm <name> --no-bundle
 
 # Complete tentacle (auto-learn from handoff)
 tentacle.py complete <name>
@@ -41,10 +47,12 @@ tentacle.py delete <name>
 | Flag | When | Effect |
 |------|------|--------|
 | `create --briefing` | Creating tentacle | Fetches past mistakes/patterns → injects into CONTEXT.md |
+| `swarm/dispatch` | Dispatching agent | Materializes bundle/ by default and surfaces `bundle_path` |
+| `swarm/dispatch --no-bundle` | Tiny/manual dispatch | Opts out of file-backed context and uses inline prompt context |
 | `handoff --learn` | Agent finishes | Saves handoff to long-term knowledge base |
 | `complete` | Closing tentacle | Marks done + auto-extracts learnings from handoff.md |
 
-Lifecycle: `briefing → create → dispatch → handoff --learn → complete → delete`
+Lifecycle: `briefing → create → todo add → swarm/dispatch (bundle-first) → handoff --learn → complete → delete`
 
 ## CONTEXT.md Template
 

@@ -200,14 +200,14 @@ python3 ~/.copilot/tools/tentacle.py worktree api-export status
 #    recall-pack.json (machine-readable JSON recall), and manifest.json to bundle/
 python3 ~/.copilot/tools/tentacle.py bundle api-export
 
-# 5. Dispatch — choose output mode; use --bundle/--worktree to surface runtime context
+# 5. Dispatch — bundle is default; prompt stays lean and surfaces bundle_path
 python3 ~/.copilot/tools/tentacle.py swarm api-export \
-  --agent-type general-purpose --model claude-sonnet-4.6              # single prompt
-python3 ~/.copilot/tools/tentacle.py swarm api-export --output parallel  # one dispatch per todo
-python3 ~/.copilot/tools/tentacle.py swarm api-export --bundle           # include bundle path reference
+  --agent-type general-purpose --model claude-sonnet-4.6 --briefing      # single prompt
+python3 ~/.copilot/tools/tentacle.py swarm api-export --output parallel --briefing  # one dispatch per todo
+python3 ~/.copilot/tools/tentacle.py swarm api-export --output json --briefing      # structured JSON + bundle_path
 python3 ~/.copilot/tools/tentacle.py swarm api-export --worktree         # include worktree path reference
 python3 ~/.copilot/tools/tentacle.py dispatch api-export --worktree      # single-agent alias with worktree
-python3 ~/.copilot/tools/tentacle.py swarm api-export --output json      # structured JSON
+python3 ~/.copilot/tools/tentacle.py swarm api-export --no-bundle        # rare tiny-prompt opt-out
 
 # 6. Monitor runtime (read-only operator view)
 python3 ~/.copilot/tools/tentacle.py status           # Dashboard: all tentacles + states
@@ -219,9 +219,11 @@ python3 ~/.copilot/tools/tentacle.py complete api-export  # Marks done, unblocks
 python3 ~/.copilot/tools/tentacle.py worktree api-export cleanup
 ```
 
-> `--output parallel` maximises parallelism (one agent per todo). `--output json` is for
-> programmatic consumption. `--briefing` injects bounded live recall and is incompatible with
-> `--output json`. `resume` refreshes a single `AUTO-RECALL` block in `CONTEXT.md`.
+> `--output parallel` maximises parallelism (one agent per todo). `swarm` and `dispatch`
+> materialize a runtime bundle by default; `--briefing` writes bounded live recall into
+> `briefing.md` and machine-readable `recall-pack.json`. `--output json --briefing` is
+> supported when the default bundle is enabled and returns `bundle_path`. `resume` refreshes
+> a single `AUTO-RECALL` block in `CONTEXT.md`.
 > `tentacle.py complete` is the verification/closure step: it marks the tentacle done, clears
 > the dispatched-subagent marker (unblocking `git commit`/`git push`), and auto-learns from
 > `handoff.md`. See [docs/USAGE.md](docs/USAGE.md) for the full recall/runtime details.

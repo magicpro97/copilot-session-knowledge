@@ -57,15 +57,16 @@ Output includes: relevant mistakes to avoid, patterns to follow, related past wo
 
 ### 1b. Sub-agent Context Injection
 
-When dispatching tentacle agents, prefer the structured recall path:
+When dispatching tentacle agents, prefer the bundle-first structured recall path:
 
 ```bash
 python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
 ```
 
-This injects bounded `[KNOWLEDGE EVIDENCE]` by running task-scoped
-`briefing.py --task <id> --json` first, then `briefing.py "<query>" --pack --limit 3`
-only when task recall is empty.
+This materializes `.octogent/tentacles/<name>/bundle/` by default, keeps the dispatch prompt
+lean, and writes bounded `[KNOWLEDGE EVIDENCE]` to `briefing.md` plus machine-readable
+`recall-pack.json` by running task-scoped `briefing.py --task <id> --json` first, then
+`briefing.py "<query>" --pack --limit 3` only when task recall is empty.
 `--task --json` exposes `tagged_entries[]` / `related_entries[]`; `--pack` keeps
 `entries.<category>[]`. Drilldown may append `query-session.py --related <entry_id>`
 only when the first evidence bullet has related entries.
