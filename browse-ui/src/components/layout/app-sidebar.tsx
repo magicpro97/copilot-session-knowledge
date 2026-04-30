@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import {
   Search,
   ScrollText,
@@ -13,6 +12,8 @@ import {
   PanelLeftOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useResolvedPathname } from "@/hooks/use-resolved-pathname";
+import { matchesAppPath } from "@/lib/pathname";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -26,7 +27,7 @@ const navItems = [
 const SIDEBAR_COLLAPSED_KEY = "browse-sidebar-collapsed";
 
 export function AppSidebar() {
-  const pathname = usePathname();
+  const pathname = useResolvedPathname();
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
@@ -107,7 +108,7 @@ export function AppSidebar() {
       ) : null}
       <nav className="flex-1 space-y-1 p-2">
         {navItems.map(({ href, label, icon: Icon }) => {
-          const active = pathname === href || pathname.startsWith(href + "/");
+          const active = matchesAppPath(pathname, href);
           return (
             <Link
               key={href}

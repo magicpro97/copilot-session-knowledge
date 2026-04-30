@@ -26,6 +26,28 @@ test("shipped /v2 routes render expected headings", async ({ page }) => {
   await expect(page.getByText("Keyboard shortcuts reference", { exact: true })).toBeVisible();
 });
 
+test("sidebar navigation updates the top route subtitle", async ({ page }) => {
+  const routeExpectations = [
+    ["Search", "Query extracted knowledge and jump directly to matching sessions."],
+    ["Insights", "Track knowledge trends, live feed status, and evaluation health."],
+    ["Graph", "Explore relationships and embedding clusters in one network workspace."],
+    ["Settings", "Tune preferences, diagnostics, and shortcut references."],
+    ["Sessions", "Review indexed sessions and drill into details quickly."],
+  ] as const;
+
+  await page.goto("/v2/sessions/");
+  await expect(page.getByText("Review indexed sessions and drill into details quickly.", { exact: true })).toBeVisible({
+    timeout: 20_000,
+  });
+
+  for (const [label, subtitle] of routeExpectations) {
+    await page.getByRole("link", { name: label, exact: true }).click();
+    await expect(page.getByText(subtitle, { exact: true })).toBeVisible({
+      timeout: 20_000,
+    });
+  }
+});
+
 test("session detail route renders tabbed UI", async ({ page }) => {
   await aliasPlaceholderSession(page);
   await page.goto("/v2/sessions/_placeholder/");

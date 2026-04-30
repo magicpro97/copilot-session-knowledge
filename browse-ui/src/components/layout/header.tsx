@@ -1,11 +1,12 @@
 "use client";
 
 import { useMemo } from "react";
-import { usePathname } from "next/navigation";
 import { Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Breadcrumbs, type BreadcrumbItem } from "@/components/layout/breadcrumbs";
 import { Button } from "@/components/ui/button";
+import { useResolvedPathname } from "@/hooks/use-resolved-pathname";
+import { normalizeAppPathname } from "@/lib/pathname";
 
 type RouteContext = {
   title: string;
@@ -62,9 +63,9 @@ function getRouteContext(pathname: string): RouteContext {
 }
 
 export function Header() {
-  const pathname = usePathname();
+  const pathname = useResolvedPathname();
   const { theme, setTheme } = useTheme();
-  const routeContext = useMemo(() => getRouteContext(pathname), [pathname]);
+  const routeContext = useMemo(() => getRouteContext(normalizeAppPathname(pathname)), [pathname]);
 
   return (
     <header className="bg-card flex h-14 items-center justify-between gap-4 border-b px-4">
