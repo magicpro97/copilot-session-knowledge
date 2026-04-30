@@ -18,7 +18,9 @@ def _fetch_session_data(db, session_id: str) -> tuple:
     """Return (sess_row, timeline_rows) or (None, []) if not found."""
     sess = db.execute(
         """SELECT id, path, summary, source, event_count_estimate,
-                  fts_indexed_at, file_mtime, indexed_at_r
+                  fts_indexed_at, file_mtime, indexed_at_r, indexed_at,
+                  total_checkpoints, total_research, total_files, has_plan,
+                  (SELECT COUNT(*) FROM documents d WHERE d.session_id = sessions.id) AS doc_count
            FROM sessions WHERE id = ?""",
         (session_id,),
     ).fetchone()

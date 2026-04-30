@@ -48,13 +48,23 @@ def handle_api_sessions(db, params, token, nonce) -> tuple:
             rows = list(
                 db.execute(
                     """SELECT s.id, s.path, s.summary, s.source,
-                          s.event_count_estimate, s.fts_indexed_at, s.indexed_at_r
+                          s.event_count_estimate, s.fts_indexed_at, s.indexed_at_r,
+                          s.indexed_at, s.file_mtime,
+                          s.total_checkpoints, s.total_research, s.total_files, s.has_plan,
+                          (SELECT COUNT(*) FROM documents d WHERE d.session_id = s.id) AS doc_count
                    FROM sessions s
-                   WHERE s.id IN (
-                       SELECT session_id FROM sessions_fts WHERE sessions_fts MATCH ?
-                   )
-                   ORDER BY COALESCE(s.fts_indexed_at, s.indexed_at_r, 0) DESC
-                   LIMIT ? OFFSET ?""",
+                    WHERE s.id IN (
+                        SELECT session_id FROM sessions_fts WHERE sessions_fts MATCH ?
+                    )
+                    ORDER BY CASE
+                        WHEN COALESCE(s.event_count_estimate, 0) > 0
+                          OR COALESCE(s.total_checkpoints, 0) + COALESCE(s.total_research, 0)
+                             + COALESCE(s.total_files, 0) + COALESCE(s.has_plan, 0) > 0
+                          OR doc_count > 0
+                        THEN COALESCE(CAST(s.fts_indexed_at AS REAL), CAST(s.indexed_at_r AS REAL), unixepoch(s.indexed_at), CAST(s.file_mtime AS REAL), 0)
+                        ELSE COALESCE(CAST(s.fts_indexed_at AS REAL), CAST(s.indexed_at_r AS REAL), CAST(s.file_mtime AS REAL), 0)
+                    END DESC
+                    LIMIT ? OFFSET ?""",
                     (safe_q, page_size, offset),
                 )
             )
@@ -66,10 +76,19 @@ def handle_api_sessions(db, params, token, nonce) -> tuple:
         rows = list(
             db.execute(
                 """SELECT id, path, summary, source, event_count_estimate,
-                      fts_indexed_at, indexed_at_r
+                      fts_indexed_at, indexed_at_r, indexed_at, file_mtime,
+                      total_checkpoints, total_research, total_files, has_plan,
+                      (SELECT COUNT(*) FROM documents d WHERE d.session_id = sessions.id) AS doc_count
                FROM sessions
-               ORDER BY COALESCE(fts_indexed_at, indexed_at_r, 0) DESC
-               LIMIT ? OFFSET ?""",
+                 ORDER BY CASE
+                     WHEN COALESCE(event_count_estimate, 0) > 0
+                       OR COALESCE(total_checkpoints, 0) + COALESCE(total_research, 0)
+                          + COALESCE(total_files, 0) + COALESCE(has_plan, 0) > 0
+                       OR doc_count > 0
+                     THEN COALESCE(CAST(fts_indexed_at AS REAL), CAST(indexed_at_r AS REAL), unixepoch(indexed_at), CAST(file_mtime AS REAL), 0)
+                     ELSE COALESCE(CAST(fts_indexed_at AS REAL), CAST(indexed_at_r AS REAL), CAST(file_mtime AS REAL), 0)
+                 END DESC
+                LIMIT ? OFFSET ?""",
                 (page_size, offset),
             )
         )

@@ -658,7 +658,9 @@ def phase2_index_events(
     _tool_names: set = set()
 
     inserted = 0
+    total_events_seen = 0
     for event, byte_offset in provider.iter_events_with_offset(session_meta, from_event=0):
+        total_events_seen += 1
         # Noise filter: skip system boilerplate and notes (scope cut).
         if _is_system_boilerplate(event):
             continue
@@ -724,7 +726,10 @@ def phase2_index_events(
         pass  # sessions_fts table may not exist on very old DBs without v8 migration
 
     # Mark Phase 2 complete
-    db.execute("UPDATE sessions SET fts_indexed_at = ? WHERE id = ?", (datetime.now().timestamp(), session_id))
+    db.execute(
+        "UPDATE sessions SET fts_indexed_at = ?, event_count_estimate = ? WHERE id = ?",
+        (datetime.now().timestamp(), total_events_seen, session_id),
+    )
 
     return inserted
 
@@ -1220,6 +1225,83 @@ def _run_two_phase_claude(db: sqlite3.Connection, incremental: bool) -> None:
         )
 
 
+def _run_two_phase_copilot(db: sqlite3.Connection, incremental: bool) -> None:
+    """Two-phase Copilot session indexing using CopilotProvider."""
+    tools_dir = Path(__file__).parent
+    sys.path.insert(0, str(tools_dir))
+    try:
+        from providers import CopilotProvider
+    except ImportError as exc:
+        print(f"  [two-phase] Cannot import CopilotProvider: {exc}")
+        return
+
+    provider = CopilotProvider()
+    sessions_found = 0
+    phase1_count = 0
+    phase2_count = 0
+
+    for session_meta in provider.list_sessions():
+        sessions_found += 1
+        try:
+            file_size = sum(f.stat().st_size for f in session_meta.path.rglob("*") if f.is_file())
+        except OSError:
+            file_size = 0
+
+        existing = db.execute(
+            """
+            SELECT event_count_estimate, total_checkpoints, total_research, total_files, has_plan
+            FROM sessions WHERE id = ?
+            """,
+            (session_meta.id,),
+        ).fetchone()
+        if existing is not None:
+            stored_event_count = int(existing[0] or 0)
+            derived_event_count = (
+                int(existing[1] or 0) + int(existing[2] or 0) + int(existing[3] or 0) + (1 if existing[4] else 0)
+            )
+            event_count_est = stored_event_count if stored_event_count > 0 else derived_event_count
+        else:
+            event_count_est = 0
+
+        phase1_upsert_session(
+            db,
+            session_id=session_meta.id,
+            path_str=str(session_meta.path),
+            source=session_meta.provider,
+            file_mtime=session_meta.mtime,
+            file_size_bytes=file_size,
+            event_count_estimate=event_count_est,
+        )
+        phase1_count += 1
+
+        if incremental and should_skip_session(db, session_meta.id, session_meta.mtime):
+            continue
+
+        try:
+            inserted = phase2_index_events(
+                db,
+                session_id=session_meta.id,
+                file_mtime=session_meta.mtime,
+                provider=provider,
+                session_meta=session_meta,
+            )
+            if inserted > 0:
+                print(f"  {session_meta.id[:8]}... Phase 2: {inserted} events indexed")
+            phase2_count += 1
+        except Exception as exc:
+            print(f"  {session_meta.id[:8]}... Phase 2 ERROR: {exc}", file=sys.stderr)
+
+    db.commit()
+
+    if sessions_found == 0:
+        print("  No Copilot sessions found.")
+    else:
+        print(
+            f"Copilot (two-phase): {sessions_found} sessions scanned, "
+            f"{phase1_count} Phase-1, {phase2_count} Phase-2 re-indexed"
+        )
+
+
 def main():
     incremental = "--incremental" in sys.argv
     stats_only = "--stats" in sys.argv
@@ -1281,6 +1363,8 @@ def main():
             f"(cp:{total_stats['checkpoints']} res:{total_stats['research']} "
             f"files:{total_stats['files']} plan:{total_stats['plan']})"
         )
+        print("\n── Refreshing Copilot session metadata + FTS ──")
+        _run_two_phase_copilot(db, incremental)
 
     # Index Claude Code sessions (--claude or --all)
     if with_claude or all_sources:

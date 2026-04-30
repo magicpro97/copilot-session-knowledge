@@ -191,6 +191,68 @@ def _make_test_db() -> sqlite3.Connection:
     return db
 
 
+def _insert_legacy_copilot_session(db: sqlite3.Connection) -> str:
+    session_id = "11111111-2222-4333-8444-555555555555"
+    db.execute(
+        """
+        INSERT INTO sessions (
+            id, path, summary, source, file_mtime, indexed_at_r, fts_indexed_at,
+            event_count_estimate, file_size_bytes, total_checkpoints, total_research,
+            total_files, has_plan, indexed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            session_id,
+            "/legacy/copilot/session",
+            "Legacy Copilot session",
+            "copilot",
+            None,
+            None,
+            None,
+            0,
+            512,
+            3,
+            1,
+            2,
+            1,
+            "2026-02-03T04:05:06",
+        ),
+    )
+    db.commit()
+    return session_id
+
+
+def _insert_empty_stub_copilot_session(db: sqlite3.Connection) -> str:
+    session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    db.execute(
+        """
+        INSERT INTO sessions (
+            id, path, summary, source, file_mtime, indexed_at_r, fts_indexed_at,
+            event_count_estimate, file_size_bytes, total_checkpoints, total_research,
+            total_files, has_plan, indexed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            session_id,
+            "/legacy/copilot/stub",
+            "",
+            "copilot",
+            None,
+            None,
+            None,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            "2026-12-31T23:59:59Z",
+        ),
+    )
+    db.commit()
+    return session_id
+
+
 def _make_empty_db() -> sqlite3.Connection:
     """Create a minimal schema with no data."""
     db = sqlite3.connect(":memory:", check_same_thread=False)
@@ -461,6 +523,38 @@ def run_all_tests() -> int:
         test("T10: items empty list", data.get("items") == [])
         test("T10: total=0", data.get("total") == 0)
         test("T10: has_more=False", data.get("has_more") is False)
+    finally:
+        server.shutdown()
+
+    # ── T10b: legacy Copilot rows get sessions-list fallbacks ─────────────────
+    print("\n-- T10b: legacy Copilot list/detail fallbacks")
+    db = _make_test_db()
+    legacy_id = _insert_legacy_copilot_session(db)
+    stub_id = _insert_empty_stub_copilot_session(db)
+    server, host, port = _start_server(db)
+    try:
+        status, _, data = _get(host, port, "/api/sessions?page=1&page_size=10")
+        test("T10b: list status 200", status == 200)
+        legacy = next((item for item in data.get("items", []) if item.get("id") == legacy_id), None)
+        stub = next((item for item in data.get("items", []) if item.get("id") == stub_id), None)
+        test("T10b: legacy row present in list", isinstance(legacy, dict))
+        test("T10b: empty stub row present in list", isinstance(stub, dict))
+        test("T10b: empty stub does not outrank real sessions", data.get("items", [{}])[0].get("id") != stub_id)
+        if legacy:
+            test("T10b: list derives non-zero event estimate", legacy.get("event_count_estimate") == 7)
+            test("T10b: list falls back fts_indexed_at from indexed_at", legacy.get("fts_indexed_at") == "2026-02-03T04:05:06Z")
+            test("T10b: list falls back indexed_at_r from indexed_at", legacy.get("indexed_at_r") == "2026-02-03T04:05:06Z")
+        if stub:
+            test("T10b: empty stub keeps zero event estimate", stub.get("event_count_estimate") == 0)
+            test("T10b: empty stub does not get fake fts_indexed_at", stub.get("fts_indexed_at") is None)
+            test("T10b: empty stub does not get fake indexed_at_r", stub.get("indexed_at_r") is None)
+
+        status, _, detail = _get(host, port, f"/api/sessions/{legacy_id}")
+        test("T10b: detail status 200", status == 200)
+        meta = detail.get("meta", {})
+        test("T10b: detail derives non-zero event estimate", meta.get("event_count_estimate") == 7)
+        test("T10b: detail falls back fts_indexed_at from indexed_at", meta.get("fts_indexed_at") == "2026-02-03T04:05:06Z")
+        test("T10b: detail falls back indexed_at_r from indexed_at", meta.get("indexed_at_r") == "2026-02-03T04:05:06Z")
     finally:
         server.shutdown()
 

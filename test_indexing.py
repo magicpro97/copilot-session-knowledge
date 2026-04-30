@@ -90,6 +90,7 @@ def _fresh_db() -> sqlite3.Connection:
             doc_type TEXT NOT NULL,
             seq INTEGER DEFAULT 0,
             title TEXT NOT NULL,
+            stable_id TEXT DEFAULT '',
             file_path TEXT NOT NULL UNIQUE,
             file_hash TEXT,
             size_bytes INTEGER DEFAULT 0,
@@ -555,16 +556,84 @@ test(
 )
 
 
+def _test_copilot_two_phase_backfills_metadata():
+    """Copilot two-phase pass should populate metadata columns for local sessions."""
+    import tempfile
+
+    db = _fresh_db()
+    _apply_v7(db)
+
+    session_id = "11111111-2222-4333-8444-555555555555"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        session_dir = root / session_id
+        checkpoints_dir = session_dir / "checkpoints"
+        research_dir = session_dir / "research"
+        files_dir = session_dir / "files"
+        checkpoints_dir.mkdir(parents=True)
+        research_dir.mkdir()
+        files_dir.mkdir()
+
+        (checkpoints_dir / "index.md").write_text(
+            "| 1 | First Checkpoint | checkpoint_001.md |\n",
+            encoding="utf-8",
+        )
+        (checkpoints_dir / "checkpoint_001.md").write_text(
+            "<overview>Overview text</overview>\n"
+            "<work_done>Implemented feature A</work_done>\n"
+            "<technical_details>Technical detail block</technical_details>\n"
+            "<next_steps>Ship it</next_steps>\n",
+            encoding="utf-8",
+        )
+        (research_dir / "note.md").write_text("Research note", encoding="utf-8")
+        (files_dir / "artifact.md").write_text("Artifact note", encoding="utf-8")
+        (session_dir / "plan.md").write_text(
+            "# Local plan\n\nDetail line\n" + ("x" * 1200),
+            encoding="utf-8",
+        )
+
+        original = os.environ.get("COPILOT_SESSION_STATE")
+        os.environ["COPILOT_SESSION_STATE"] = str(root)
+        try:
+            _bsi._run_two_phase_copilot(db, incremental=False)
+        finally:
+            if original is None:
+                os.environ.pop("COPILOT_SESSION_STATE", None)
+            else:
+                os.environ["COPILOT_SESSION_STATE"] = original
+
+    row = db.execute(
+        "SELECT source, file_mtime, indexed_at_r, fts_indexed_at, event_count_estimate "
+        "FROM sessions WHERE id = ?",
+        (session_id,),
+    ).fetchone()
+    assert row is not None, "Copilot two-phase should create/update the sessions row"
+    assert row[0] == "copilot", f"Expected source=copilot, got {row[0]!r}"
+    assert isinstance(row[1], float) and row[1] > 0, f"file_mtime missing: {row[1]!r}"
+    assert isinstance(row[2], float) and row[2] > 0, f"indexed_at_r missing: {row[2]!r}"
+    assert isinstance(row[3], float) and row[3] > 0, f"fts_indexed_at missing: {row[3]!r}"
+    assert row[4] == 7, f"Expected 7 Copilot events, got {row[4]!r}"
+
+    fts_rows = db.execute(
+        "SELECT COUNT(*) FROM knowledge_fts WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()[0]
+    assert fts_rows == 4, f"Expected 4 FTS rows after note filtering, got {fts_rows}"
+
+
+test("I8: Copilot two-phase backfills metadata", _test_copilot_two_phase_backfills_metadata)
+
+
 # ──────────────────────────────────────────────
 # Signal-correction regression tests (wave3-knowledge-signal)
-# I8. occurrence_count: re-extraction must NOT inflate the count
-# I9. occurrence_count: cross-session topic match DOES increment count
-# I10. _backfill_affected_files: empty entries get session's important_files
-# I11. _backfill_affected_files: non-empty affected_files not overwritten
-# I12. _infer_task_ids_from_content: single explicit slug assigned
-# I13. _infer_task_ids_from_content: ambiguous (multiple slugs) → not assigned
-# I14. signal backfill/inference: selective session_ids do not touch other sessions
-# I15. signal backfill: missing sections/documents tables does not crash extraction
+# I9. occurrence_count: re-extraction must NOT inflate the count
+# I10. occurrence_count: cross-session topic match DOES increment count
+# I11. _backfill_affected_files: empty entries get session's important_files
+# I12. _backfill_affected_files: non-empty affected_files not overwritten
+# I13. _infer_task_ids_from_content: single explicit slug assigned
+# I14. _infer_task_ids_from_content: ambiguous (multiple slugs) → not assigned
+# I15. signal backfill/inference: selective session_ids do not touch other sessions
+# I16. signal backfill: missing sections/documents tables does not crash extraction
 # ──────────────────────────────────────────────
 
 import importlib.util as _ilu3
