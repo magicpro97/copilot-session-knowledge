@@ -522,6 +522,34 @@ export const tentacleStatusResponseSchema = z.object({
   }),
 });
 
+// ── Research Pack (/api/scout/research-pack) ─────────────────────────
+
+export const researchPackRepoSchema = z.object({
+  full_name: z.string(),
+  html_url: z.string(),
+  discovery_lane: z.string(),
+  score: z.number(),
+  stars: z.number(),
+  language: z.string().nullable(),
+  why_discovered: z.array(z.string()),
+  novelty_signals: z.array(z.string()),
+  risk_signals: z.array(z.string()),
+  recommended_followups: z.array(z.string()),
+  tentacle_handoff: z.string().nullable(),
+});
+
+export const researchPackResponseSchema = z.object({
+  available: z.boolean(),
+  path: z.string().optional(),
+  generated_at: z.string().nullable().optional(),
+  schema_version: z.number().nullable().optional(),
+  run_skipped: z.boolean().optional(),
+  skip_reason: z.string().nullable().optional(),
+  repo_count: z.number(),
+  repos: z.array(researchPackRepoSchema),
+  error: z.string().nullable().optional(),
+});
+
 export const skillMetricsSummarySchema = z.object({
   total_outcomes: z.number(),
   outcomes_with_skills: z.number(),

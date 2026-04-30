@@ -40,9 +40,9 @@ hooks/
 | `pnpm-lockfile-guard` | preToolUse | Blocks staging `browse-ui/package.json` changes without a matching `pnpm-lock.yaml` update. Prevents lockfile drift. |
 | `block-unsafe-html` | preToolUse | Blocks `dangerouslySetInnerHTML` usage in `.ts`/`.tsx` files without `DOMPurify.sanitize()` or the `<Highlight>` component. |
 | `track-edits` | postToolUse | Detects file changes via `git status` (language-agnostic) |
-| `learn-reminder` | postToolUse | Reminds to record learnings after task_complete |
+| `learn-reminder` | postToolUse | Reminds to record learnings after task_complete; also surfaces [docs/SYNC-MATRIX.md](SYNC-MATRIX.md) for docs/memory follow-ups |
 | `test-reminder` | postToolUse | Reminds to run tests after 3+ Python file edits |
-| `tentacle-suggest` | postToolUse | Suggests tentacle when edits reach ≥3 files across ≥2 modules (same threshold as tentacle-enforce) |
+| `tentacle-suggest` | postToolUse | Suggests tentacle when edits reach ≥3 files across ≥2 modules (same threshold as tentacle-enforce); also references [docs/SYNC-MATRIX.md](SYNC-MATRIX.md) |
 | `nextjs-typecheck-reminder` | postToolUse | Reminds to run `pnpm typecheck` after editing `.ts`/`.tsx` files in `browse-ui/` |
 | `error-kb` | errorOccurred | Auto-searches knowledge base on errors |
 | `pre-commit` | git pre-commit | (1) Blocks commit when `dispatched-subagent-active` marker is fresh (primary subagent guard); (2) validates `.agent.md` / `SKILL.md` via `lint-skills.py`; (3) runs `scripts/check_syntax.py` on **all** staged `.py` files — fail-open when `check_syntax.py` is absent; (4) runs scoped Ruff format + lint check on staged Python files in the Ruff surface (see §Local vs CI below); (5) runs Prettier format check on supported staged files under `browse-ui/src/`. Checks (3)–(5) are **fail-open** — they silently skip when the respective tool is not installed. Requires `install.py --install-git-hooks`. |

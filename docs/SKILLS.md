@@ -102,7 +102,10 @@ profiles are defined in `presets/` (`default`, `python`, `typescript`, `mobile`,
 Trend Scout automation is intentionally separate from profile hooks: run
 `trend-scout.py` directly (or via `.github/workflows/trend-scout.yml`) rather than attaching
 it to interactive `preToolUse`/`postToolUse` hooks, to avoid output spam during coding sessions.
-Multi-lane discovery (`lanes[]` config) and `--explain` are CLI/workflow-only features.
+Multi-lane discovery (`lanes[]` config), `--explain`, and `--research-pack` are CLI/workflow-only features.
+Use `--research-pack` to write `.trend-scout-research-pack.json` — a structured follow-up artifact
+with novelty signals, risk signals, recommended follow-ups, and tentacle-handoff hints for each
+shortlisted repo. See the [Operator Playbook](OPERATOR-PLAYBOOK.md) for the full research pack schema.
 
 When deploying skills, `setup-project.py` copies each skill's `SKILL.md` **and** all auxiliary
 asset subdirectories found alongside it (`references/`, `templates/`, `evals/`, or any other
@@ -233,6 +236,7 @@ When writing project setup/instruction guidance, keep sync wording aligned to sh
 - `sync-config.py --setup` expects an HTTP(S) gateway URL, not a raw Postgres/libSQL DSN.
 - Default provider rollout recommendation: Neon (backing Postgres) + Railway (thin gateway host); treat this as default guidance, not a hard vendor lock.
 - Browse diagnostics are read-only: `/healthz` advertises `/api/sync/status`, and `/api/sync/status` reports local queue/failure/config/cursor state.
+- **Sync discipline:** see [docs/SYNC-MATRIX.md](SYNC-MATRIX.md) for the canonical follow-up matrix (docs · memory · operator surfaces) after code, config, or behavior changes.
 
 ## Context Load Guidance
 

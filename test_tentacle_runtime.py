@@ -37,6 +37,7 @@ from hooks.rules import session_lifecycle as session_lifecycle_rules
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _names_from_entries(entries):
     """Extract tentacle names from active_tentacles entries.
 
@@ -45,6 +46,7 @@ def _names_from_entries(entries):
     on-disk representation.
     """
     return [e["name"] if isinstance(e, dict) else e for e in entries]
+
 
 SCRATCH_DIR = TOOLS_DIR / "_test_tentacle_runtime_scratch"
 
@@ -75,6 +77,7 @@ def fake_args(**kwargs):
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestRunBriefingForTask(unittest.TestCase):
     """Unit tests for _run_briefing_for_task helper."""
 
@@ -84,14 +87,17 @@ class TestRunBriefingForTask(unittest.TestCase):
         self.assertEqual(result, "")
 
     def test_returns_output_on_success(self):
-        json_payload = json.dumps({
-            "task_id": "my-task",
-            "generated_at": "2026-01-01T00:00:00",
-            "total_entries": 1,
-            "tagged_entries": [{"id": 1, "category": "pattern", "title": "use X not Y",
-                                 "confidence": 0.9, "affected_files": []}],
-            "related_entries": [],
-        })
+        json_payload = json.dumps(
+            {
+                "task_id": "my-task",
+                "generated_at": "2026-01-01T00:00:00",
+                "total_entries": 1,
+                "tagged_entries": [
+                    {"id": 1, "category": "pattern", "title": "use X not Y", "confidence": 0.9, "affected_files": []}
+                ],
+                "related_entries": [],
+            }
+        )
         mock_result = MagicMock()
         mock_result.stdout = json_payload
         mock_result.returncode = 0
@@ -111,25 +117,29 @@ class TestRunBriefingForTask(unittest.TestCase):
     def test_falls_back_to_pack_query_when_task_returns_empty(self):
         """When --task JSON returns no entries, fall back to --pack query."""
         no_result = MagicMock()
-        no_result.stdout = json.dumps({
-            "task_id": "unknown-task",
-            "generated_at": "2026-01-01T00:00:00",
-            "total_entries": 0,
-            "tagged_entries": [],
-            "related_entries": [],
-        })
+        no_result.stdout = json.dumps(
+            {
+                "task_id": "unknown-task",
+                "generated_at": "2026-01-01T00:00:00",
+                "total_entries": 0,
+                "tagged_entries": [],
+                "related_entries": [],
+            }
+        )
         no_result.returncode = 0
 
         pack_result = MagicMock()
-        pack_result.stdout = json.dumps({
-            "entries": {
-                "mistake": [{"id": 22, "title": "Always validate inputs"}],
-                "pattern": [],
-                "decision": [],
-                "tool": [],
-            },
-            "file_matches": [{"file_or_module": "src/validator.py", "hits": 2}],
-        })
+        pack_result.stdout = json.dumps(
+            {
+                "entries": {
+                    "mistake": [{"id": 22, "title": "Always validate inputs"}],
+                    "pattern": [],
+                    "decision": [],
+                    "tool": [],
+                },
+                "file_matches": [{"file_or_module": "src/validator.py", "hits": 2}],
+            }
+        )
         pack_result.returncode = 0
 
         with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
@@ -157,13 +167,15 @@ class TestRunBriefingForTask(unittest.TestCase):
     def test_no_fallback_when_fallback_query_empty(self):
         """When fallback_query is empty and task JSON returns no entries, return ''."""
         no_result = MagicMock()
-        no_result.stdout = json.dumps({
-            "task_id": "my-task",
-            "generated_at": "2026-01-01T00:00:00",
-            "total_entries": 0,
-            "tagged_entries": [],
-            "related_entries": [],
-        })
+        no_result.stdout = json.dumps(
+            {
+                "task_id": "my-task",
+                "generated_at": "2026-01-01T00:00:00",
+                "total_entries": 0,
+                "tagged_entries": [],
+                "related_entries": [],
+            }
+        )
         no_result.returncode = 0
         with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
             with patch("subprocess.run", return_value=no_result) as mock_run:
@@ -184,13 +196,15 @@ class TestFetchRecallPackJson(unittest.TestCase):
 
     def test_returns_task_json_payload_when_entries_exist(self):
         task_result = MagicMock()
-        task_result.stdout = json.dumps({
-            "task_id": "my-task",
-            "generated_at": "2026-01-01T00:00:00",
-            "total_entries": 1,
-            "tagged_entries": [{"id": 1, "category": "pattern", "title": "Use X"}],
-            "related_entries": [],
-        })
+        task_result.stdout = json.dumps(
+            {
+                "task_id": "my-task",
+                "generated_at": "2026-01-01T00:00:00",
+                "total_entries": 1,
+                "tagged_entries": [{"id": 1, "category": "pattern", "title": "Use X"}],
+                "related_entries": [],
+            }
+        )
         task_result.returncode = 0
         with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
             with patch("subprocess.run", return_value=task_result):
@@ -200,27 +214,31 @@ class TestFetchRecallPackJson(unittest.TestCase):
 
     def test_pack_fallback_accepts_payload_with_file_matches_even_when_entries_empty(self):
         task_empty = MagicMock()
-        task_empty.stdout = json.dumps({
-            "task_id": "my-task",
-            "generated_at": "2026-01-01T00:00:00",
-            "total_entries": 0,
-            "tagged_entries": [],
-            "related_entries": [],
-        })
+        task_empty.stdout = json.dumps(
+            {
+                "task_id": "my-task",
+                "generated_at": "2026-01-01T00:00:00",
+                "total_entries": 0,
+                "tagged_entries": [],
+                "related_entries": [],
+            }
+        )
         task_empty.returncode = 0
 
         pack_result = MagicMock()
-        pack_result.stdout = json.dumps({
-            "query": "fallback",
-            "rewritten_query": "fallback",
-            "mode": "fts",
-            "risk": [],
-            "entries": {"mistake": [], "pattern": [], "decision": [], "tool": []},
-            "task_matches": [],
-            "file_matches": [{"file_or_module": "tentacle.py", "hits": 2}],
-            "past_work": [{"title": "Prior fix", "type": "checkpoint", "session": "abcd1234"}],
-            "next_open": None,
-        })
+        pack_result.stdout = json.dumps(
+            {
+                "query": "fallback",
+                "rewritten_query": "fallback",
+                "mode": "fts",
+                "risk": [],
+                "entries": {"mistake": [], "pattern": [], "decision": [], "tool": []},
+                "task_matches": [],
+                "file_matches": [{"file_or_module": "tentacle.py", "hits": 2}],
+                "past_work": [{"title": "Prior fix", "type": "checkpoint", "session": "abcd1234"}],
+                "next_open": None,
+            }
+        )
         pack_result.returncode = 0
 
         with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
@@ -232,7 +250,6 @@ class TestFetchRecallPackJson(unittest.TestCase):
 
 
 class TestCmdResume(unittest.TestCase):
-
     def setUp(self):
         self.base = SCRATCH_DIR / "resume"
         self.base.mkdir(parents=True, exist_ok=True)
@@ -240,6 +257,7 @@ class TestCmdResume(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -362,10 +380,7 @@ class TestCmdResume(unittest.TestCase):
     def test_resume_replaces_existing_auto_recall_block(self):
         args = self._args(no_briefing=False)
         manual = "# test-resume\n\nManual context line.\n\n"
-        initial = (
-            f"{manual}{T.AUTO_RECALL_START}\nold recall\n{T.AUTO_RECALL_END}\n"
-            "Trailing manual line.\n"
-        )
+        initial = f"{manual}{T.AUTO_RECALL_START}\nold recall\n{T.AUTO_RECALL_END}\nTrailing manual line.\n"
         (self.tentacle_dir / "CONTEXT.md").write_text(initial, encoding="utf-8")
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             with patch.object(T, "_run_briefing_for_task", return_value="[KNOWLEDGE EVIDENCE]\n- #1 [pattern] New"):
@@ -383,9 +398,7 @@ class TestCmdResume(unittest.TestCase):
         args = self._args(no_briefing=False)
         prefix = "# test-resume\n\nManual A\n\n"
         suffix = "\n\nManual Z\n"
-        original = (
-            f"{prefix}{T.AUTO_RECALL_START}\nold\n{T.AUTO_RECALL_END}{suffix}"
-        )
+        original = f"{prefix}{T.AUTO_RECALL_START}\nold\n{T.AUTO_RECALL_END}{suffix}"
         (self.tentacle_dir / "CONTEXT.md").write_text(original, encoding="utf-8")
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             with patch.object(T, "_run_briefing_for_task", return_value=""):
@@ -415,6 +428,7 @@ class TestSwarmBriefingFlag(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -447,7 +461,9 @@ class TestSwarmBriefingFlag(unittest.TestCase):
         args = self._swarm_args(briefing=True)
         captured = []
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
-            with patch.object(T, "_run_briefing_for_task", return_value="[KNOWLEDGE EVIDENCE]\n- #7 [pattern] X before Y"):
+            with patch.object(
+                T, "_run_briefing_for_task", return_value="[KNOWLEDGE EVIDENCE]\n- #7 [pattern] X before Y"
+            ):
                 with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
                     T.cmd_swarm(args)
         combined = "\n".join(captured)
@@ -544,6 +560,7 @@ class TestExistingBehaviorUnchanged(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -587,20 +604,35 @@ class TestExistingBehaviorUnchanged(unittest.TestCase):
         meta = json.loads(((self.base / "complete-test") / "meta.json").read_text(encoding="utf-8"))
         self.assertEqual(meta["status"], "completed")
 
+    def test_cmd_complete_prints_sync_matrix_reference(self):
+        """cmd_complete must print a reference to docs/SYNC-MATRIX.md."""
+        make_tentacle("sync-ref-test", self.base)
+        args = fake_args(name="sync-ref-test", no_learn=True)
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_complete(args)
+        combined = "\n".join(captured)
+        self.assertIn("SYNC-MATRIX", combined, "cmd_complete must reference SYNC-MATRIX.md")
+
 
 class TestRunBriefingForTaskStructured(unittest.TestCase):
     """Tests for the structured JSON path in _run_briefing_for_task."""
 
     def test_structured_json_with_entries_renders_evidence_block(self):
-        payload = json.dumps({
-            "task_id": "my-task",
-            "generated_at": "2026-01-01T00:00:00",
-            "total_entries": 2,
-            "tagged_entries": [{"id": 10, "category": "mistake", "title": "Do not use X",
-                                 "confidence": 1.0, "affected_files": []}],
-            "related_entries": [{"id": 11, "category": "pattern", "title": "Use Y instead",
-                                  "confidence": 0.8, "affected_files": []}],
-        })
+        payload = json.dumps(
+            {
+                "task_id": "my-task",
+                "generated_at": "2026-01-01T00:00:00",
+                "total_entries": 2,
+                "tagged_entries": [
+                    {"id": 10, "category": "mistake", "title": "Do not use X", "confidence": 1.0, "affected_files": []}
+                ],
+                "related_entries": [
+                    {"id": 11, "category": "pattern", "title": "Use Y instead", "confidence": 0.8, "affected_files": []}
+                ],
+            }
+        )
         mock_r = MagicMock()
         mock_r.stdout = payload
         mock_r.returncode = 0
@@ -614,26 +646,30 @@ class TestRunBriefingForTaskStructured(unittest.TestCase):
         self.assertIn("Drilldown: query-session.py --detail 10", result)
 
     def test_structured_json_empty_total_entries_triggers_fallback(self):
-        empty_json = json.dumps({
-            "task_id": "empty-task",
-            "generated_at": "2026-01-01T00:00:00",
-            "total_entries": 0,
-            "tagged_entries": [],
-            "related_entries": [],
-        })
+        empty_json = json.dumps(
+            {
+                "task_id": "empty-task",
+                "generated_at": "2026-01-01T00:00:00",
+                "total_entries": 0,
+                "tagged_entries": [],
+                "related_entries": [],
+            }
+        )
         empty_mock = MagicMock()
         empty_mock.stdout = empty_json
         empty_mock.returncode = 0
         fallback_result = MagicMock()
-        fallback_result.stdout = json.dumps({
-            "entries": {
-                "mistake": [],
-                "pattern": [{"id": 21, "title": "validate before processing"}],
-                "decision": [],
-                "tool": [],
-            },
-            "file_matches": [{"file_or_module": "src/processor.py", "hits": 1}],
-        })
+        fallback_result.stdout = json.dumps(
+            {
+                "entries": {
+                    "mistake": [],
+                    "pattern": [{"id": 21, "title": "validate before processing"}],
+                    "decision": [],
+                    "tool": [],
+                },
+                "file_matches": [{"file_or_module": "src/processor.py", "hits": 1}],
+            }
+        )
         fallback_result.returncode = 0
         with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
             with patch("subprocess.run", side_effect=[empty_mock, fallback_result]):
@@ -645,13 +681,17 @@ class TestRunBriefingForTaskStructured(unittest.TestCase):
     def test_uses_json_flag_not_compact_flag(self):
         """Structured path must use --json, not --compact."""
         mock_r = MagicMock()
-        mock_r.stdout = json.dumps({
-            "task_id": "t", "generated_at": "2026-01-01T00:00:00",
-            "total_entries": 1,
-            "tagged_entries": [{"id": 1, "category": "tool", "title": "T",
-                                 "confidence": 1.0, "affected_files": []}],
-            "related_entries": [],
-        })
+        mock_r.stdout = json.dumps(
+            {
+                "task_id": "t",
+                "generated_at": "2026-01-01T00:00:00",
+                "total_entries": 1,
+                "tagged_entries": [
+                    {"id": 1, "category": "tool", "title": "T", "confidence": 1.0, "affected_files": []}
+                ],
+                "related_entries": [],
+            }
+        )
         mock_r.returncode = 0
         with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
             with patch("subprocess.run", return_value=mock_r) as mock_run:
@@ -666,10 +706,17 @@ class TestRunBriefingForTaskStructured(unittest.TestCase):
         bad_mock.stdout = "Traceback (most recent call last):\n  ..."
         bad_mock.returncode = 0
         fallback_mock = MagicMock()
-        fallback_mock.stdout = json.dumps({
-            "entries": {"mistake": [], "pattern": [{"id": 31, "title": "validate inputs"}], "decision": [], "tool": []},
-            "file_matches": [],
-        })
+        fallback_mock.stdout = json.dumps(
+            {
+                "entries": {
+                    "mistake": [],
+                    "pattern": [{"id": 31, "title": "validate inputs"}],
+                    "decision": [],
+                    "tool": [],
+                },
+                "file_matches": [],
+            }
+        )
         fallback_mock.returncode = 0
         with patch.object(T, "BRIEFING_PY", TOOLS_DIR / "briefing.py"):
             with patch("subprocess.run", side_effect=[bad_mock, fallback_mock]):
@@ -866,6 +913,7 @@ class TestCmdResumeWithCheckpoint(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -923,6 +971,7 @@ class TestCmdNextStep(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -1028,7 +1077,9 @@ class TestCmdNextStep(unittest.TestCase):
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                 with patch.object(T, "_run_briefing_for_task", return_value="Pattern: test early") as mock_brief:
-                    with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    with patch(
+                        "builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))
+                    ):
                         T.cmd_next_step(args)
         mock_brief.assert_called_once()
         combined = "\n".join(captured)
@@ -1046,8 +1097,8 @@ class TestCmdNextStep(unittest.TestCase):
 
     def test_all_flag_shows_all_pending(self):
         (self.tentacle_dir / "todo.md").write_text(
-            "# Todo\n\n- [ ] Step 1\n- [ ] Step 2\n- [ ] Step 3\n- [x] Done task\n"
-        , encoding="utf-8")
+            "# Todo\n\n- [ ] Step 1\n- [ ] Step 2\n- [ ] Step 3\n- [x] Done task\n", encoding="utf-8"
+        )
         captured = []
         args = self._args(show_all=True)
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
@@ -1062,9 +1113,7 @@ class TestCmdNextStep(unittest.TestCase):
         self.assertNotIn("Done task", combined)
 
     def test_without_all_flag_only_first_todo_highlighted(self):
-        (self.tentacle_dir / "todo.md").write_text(
-            "# Todo\n\n- [ ] First\n- [ ] Second\n"
-        , encoding="utf-8")
+        (self.tentacle_dir / "todo.md").write_text("# Todo\n\n- [ ] First\n- [ ] Second\n", encoding="utf-8")
         captured = []
         args = self._args(show_all=False)
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
@@ -1127,6 +1176,7 @@ class TestFileLocked(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -1201,14 +1251,14 @@ class TestFileLocked(unittest.TestCase):
     def test_import_no_fcntl_error(self):
         """Importing tentacle must not raise ModuleNotFoundError on any platform."""
         import tentacle  # noqa: F401
+
         self.assertIsNotNone(tentacle)
-
-
 
 
 # ---------------------------------------------------------------------------
 # Bundle tests
 # ---------------------------------------------------------------------------
+
 
 class TestBuildRuntimeBundle(unittest.TestCase):
     """Tests for _build_runtime_bundle helper."""
@@ -1219,6 +1269,7 @@ class TestBuildRuntimeBundle(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         if self.base.exists():
             shutil.rmtree(self.base)
 
@@ -1236,8 +1287,14 @@ class TestBuildRuntimeBundle(unittest.TestCase):
     def test_creates_all_six_artifacts(self):
         d = self._make()
         bundle_dir = T._build_runtime_bundle(d, "test-bundle")
-        for fname in ("briefing.md", "instructions.md", "skills.md",
-                      "session-metadata.md", "recall-pack.json", "manifest.json"):
+        for fname in (
+            "briefing.md",
+            "instructions.md",
+            "skills.md",
+            "session-metadata.md",
+            "recall-pack.json",
+            "manifest.json",
+        ):
             self.assertTrue((bundle_dir / fname).exists(), f"Missing: {fname}")
 
     def test_manifest_is_valid_json(self):
@@ -1420,11 +1477,8 @@ class TestBuildRuntimeBundle(unittest.TestCase):
 
     def test_recall_pack_populated_with_task_json_data(self):
         d = self._make()
-        pack = {"tagged_entries": [{"id": 1, "category": "pattern", "title": "Do X not Y"}],
-                "related_entries": []}
-        bundle_dir = T._build_runtime_bundle(
-            d, "test-bundle", recall_pack_data=pack, recall_source_mode="task_json"
-        )
+        pack = {"tagged_entries": [{"id": 1, "category": "pattern", "title": "Do X not Y"}], "related_entries": []}
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle", recall_pack_data=pack, recall_source_mode="task_json")
         raw = json.loads((bundle_dir / "recall-pack.json").read_text(encoding="utf-8"))
         self.assertEqual(raw["source_mode"], "task_json")
         self.assertIn("tagged_entries", raw)
@@ -1432,11 +1486,8 @@ class TestBuildRuntimeBundle(unittest.TestCase):
 
     def test_recall_pack_populated_flag_in_manifest(self):
         d = self._make()
-        pack = {"tagged_entries": [{"id": 2, "category": "mistake", "title": "Avoid Z"}],
-                "related_entries": []}
-        bundle_dir = T._build_runtime_bundle(
-            d, "test-bundle", recall_pack_data=pack, recall_source_mode="task_json"
-        )
+        pack = {"tagged_entries": [{"id": 2, "category": "mistake", "title": "Avoid Z"}], "related_entries": []}
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle", recall_pack_data=pack, recall_source_mode="task_json")
         manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
         self.assertTrue(manifest["artifacts"]["recall_pack"]["populated"])
         self.assertEqual(manifest["artifacts"]["recall_pack"]["source_mode"], "task_json")
@@ -1444,9 +1495,7 @@ class TestBuildRuntimeBundle(unittest.TestCase):
     def test_recall_pack_populated_with_pack_mode(self):
         d = self._make()
         pack = {"entries": {"mistake": [{"id": 3, "title": "Never foo"}]}, "file_matches": []}
-        bundle_dir = T._build_runtime_bundle(
-            d, "test-bundle", recall_pack_data=pack, recall_source_mode="pack"
-        )
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle", recall_pack_data=pack, recall_source_mode="pack")
         raw = json.loads((bundle_dir / "recall-pack.json").read_text(encoding="utf-8"))
         self.assertEqual(raw["source_mode"], "pack")
         self.assertIn("entries", raw)
@@ -1479,6 +1528,7 @@ class TestCmdBundle(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if self.base.exists():
             shutil.rmtree(self.base)
 
@@ -1505,6 +1555,7 @@ class TestCmdBundle(unittest.TestCase):
             with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
                 import io
                 from contextlib import redirect_stdout
+
                 buf = io.StringIO()
                 with redirect_stdout(buf):
                     T.cmd_bundle(args)
@@ -1580,6 +1631,7 @@ class TestCmdBundle(unittest.TestCase):
             with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
                 import io
                 from contextlib import redirect_stdout
+
                 buf = io.StringIO()
                 with redirect_stdout(buf):
                     T.cmd_bundle(args)
@@ -1604,6 +1656,7 @@ class TestSwarmBundleFlag(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if self.base.exists():
             shutil.rmtree(self.base)
 
@@ -1623,6 +1676,7 @@ class TestSwarmBundleFlag(unittest.TestCase):
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             import io
             from contextlib import redirect_stdout
+
             buf = io.StringIO()
             with redirect_stdout(buf):
                 T.cmd_swarm(args)
@@ -1641,6 +1695,7 @@ class TestSwarmBundleFlag(unittest.TestCase):
                 with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                     import io
                     from contextlib import redirect_stdout
+
                     buf = io.StringIO()
                     with redirect_stdout(buf):
                         T.cmd_swarm(args)
@@ -1659,6 +1714,7 @@ class TestSwarmBundleFlag(unittest.TestCase):
                 with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                     import io
                     from contextlib import redirect_stdout
+
                     with redirect_stdout(io.StringIO()):
                         T.cmd_swarm(args)
         self.assertTrue((d / "bundle").exists())
@@ -1671,6 +1727,7 @@ class TestSwarmBundleFlag(unittest.TestCase):
                 with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                     import io
                     from contextlib import redirect_stdout
+
                     buf = io.StringIO()
                     with redirect_stdout(buf):
                         T.cmd_swarm(args)
@@ -1685,6 +1742,7 @@ class TestSwarmBundleFlag(unittest.TestCase):
                 with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                     import io
                     from contextlib import redirect_stdout
+
                     buf = io.StringIO()
                     with redirect_stdout(buf):
                         T.cmd_swarm(args)
@@ -1711,6 +1769,7 @@ class TestSwarmBundleFlag(unittest.TestCase):
                 with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
                     import io
                     from contextlib import redirect_stdout
+
                     with redirect_stdout(io.StringIO()):
                         T.cmd_swarm(args)
         content = (d / "bundle" / "briefing.md").read_text(encoding="utf-8")
@@ -1740,6 +1799,7 @@ class TestSwarmGuardrails(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -1845,6 +1905,7 @@ class TestSwarmGuardrails(unittest.TestCase):
     def _capture_json(self, args):
         import io
         from contextlib import redirect_stdout
+
         buf = io.StringIO()
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             with redirect_stdout(buf):
@@ -1910,8 +1971,8 @@ class TestSwarmGuardrails(unittest.TestCase):
     def test_advisory_text_present_with_multiple_todos(self):
         """Advisory guidance is injected with multiple pending todos."""
         (self.tentacle_dir / "todo.md").write_text(
-            "# Todo\n\n- [ ] Task 1\n- [ ] Task 2\n- [ ] Task 3\n"
-        , encoding="utf-8")
+            "# Todo\n\n- [ ] Task 1\n- [ ] Task 2\n- [ ] Task 3\n", encoding="utf-8"
+        )
         combined = self._capture(self._swarm_args(output="prompt"))
         self.assertIn("git commit", combined)
         self.assertIn("orchestrator", combined)
@@ -1934,6 +1995,7 @@ class TestSwarmGuardrails(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Phase-3 dispatched-subagent marker tests
 # ---------------------------------------------------------------------------
+
 
 class TestDispatchedSubagentMarker(unittest.TestCase):
     """Tests for the dispatched-subagent-active marker contract.
@@ -1958,6 +2020,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -1999,6 +2062,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
     def test_write_sig_matches_expected_hmac(self):
         """Sig must be HMAC-SHA256 over 'name:ts' — same formula as marker_auth."""
         import hashlib, hmac as _hmac
+
         with patch.object(T, "_read_marker_secret", return_value="my-secret"):
             T._write_dispatched_subagent_marker("my-tent", [], "prompt")
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
@@ -2176,9 +2240,12 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
     def test_get_state_stale_flag_reflects_age(self):
         old_ts = int(time.time()) - 6 * 3600
         data = {
-            "name": self.MARKER_NAME, "ts": str(old_ts),
-            "active_tentacles": ["old-tent"], "dispatch_mode": "prompt",
-            "ttl_seconds": 14400, "written_at": "2025-01-01T00:00:00+00:00",
+            "name": self.MARKER_NAME,
+            "ts": str(old_ts),
+            "active_tentacles": ["old-tent"],
+            "dispatch_mode": "prompt",
+            "ttl_seconds": 14400,
+            "written_at": "2025-01-01T00:00:00+00:00",
         }
         self.marker_path.write_text(json.dumps(data), encoding="utf-8")
         state = T._get_marker_state()
@@ -2227,6 +2294,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
         """cmd_swarm --output json writes marker and includes marker_state in output."""
         import io
         from contextlib import redirect_stdout
+
         swarm_base = self.base / "swarm_json"
         swarm_base.mkdir()
         make_tentacle("json-test", swarm_base)
@@ -2251,6 +2319,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
         """marker_state in JSON output must have all required machine-readable keys."""
         import io
         from contextlib import redirect_stdout
+
         swarm_base = self.base / "swarm_json_keys"
         swarm_base.mkdir()
         make_tentacle("jk-test", swarm_base)
@@ -2345,6 +2414,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
         """cmd_bundle --output json must include marker_state in the JSON output."""
         import io
         from contextlib import redirect_stdout
+
         bundle_base = self.base / "bundle_json_marker"
         bundle_base.mkdir()
         make_tentacle("bjm-test", bundle_base)
@@ -2397,6 +2467,7 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -2461,6 +2532,7 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
     def test_hmac_valid_after_second_dispatch(self):
         """sig must remain a valid HMAC-SHA256 over 'name:ts' after merging."""
         import hashlib, hmac as _hmac
+
         with patch.object(T, "_read_marker_secret", return_value="shared-secret"):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
             T._write_dispatched_subagent_marker("tent-b", [], "json")
@@ -2484,6 +2556,7 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
     def test_hmac_valid_after_partial_clear(self):
         """sig must remain valid after one tentacle is cleared and file is rewritten."""
         import hashlib, hmac as _hmac
+
         with patch.object(T, "_read_marker_secret", return_value="shared-secret"):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
             T._write_dispatched_subagent_marker("tent-b", [], "prompt")
@@ -2500,9 +2573,16 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
 
     def test_old_single_owner_format_is_promoted_on_write(self):
         """Old marker with 'tentacle' field must be promoted to active_tentacles list."""
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME, "ts": "1000", "tentacle": "legacy-tent",
-        }), encoding="utf-8")
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": "1000",
+                    "tentacle": "legacy-tent",
+                }
+            ),
+            encoding="utf-8",
+        )
         # New dispatch merges old owner into set
         T._write_dispatched_subagent_marker("new-tent", [], "prompt")
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
@@ -2511,17 +2591,24 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
 
     def test_old_single_owner_format_cleared_correctly(self):
         """Old marker with 'tentacle' field is deleted when that owner clears."""
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME, "ts": "1000", "tentacle": "legacy-tent",
-        }), encoding="utf-8")
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": "1000",
+                    "tentacle": "legacy-tent",
+                }
+            ),
+            encoding="utf-8",
+        )
         T._clear_dispatched_subagent_marker("legacy-tent")
         self.assertFalse(self.marker_path.is_file())
-
 
 
 # ---------------------------------------------------------------------------
 # Phase-4 new-format marker tests
 # ---------------------------------------------------------------------------
+
 
 class TestMarkerNewFormat(unittest.TestCase):
     """Tests for the new dict-list active_tentacles format and git_root field."""
@@ -2541,6 +2628,7 @@ class TestMarkerNewFormat(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -2595,8 +2683,8 @@ class TestMarkerNewFormat(unittest.TestCase):
         T._write_dispatched_subagent_marker("my-tent", [], "prompt")
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         # Both exist — they are separate fields serving separate purposes
-        self.assertIn("ts", data)                            # global HMAC anchor
-        self.assertIn("ts", data["active_tentacles"][0])     # per-entry TTL anchor
+        self.assertIn("ts", data)  # global HMAC anchor
+        self.assertIn("ts", data["active_tentacles"][0])  # per-entry TTL anchor
 
     # ── per-entry ts independence across different entries ────────────────────
 
@@ -2710,17 +2798,22 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
     def test_old_string_list_readable_via_get_state(self):
         """_get_marker_state must return names from an old string-list marker."""
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "active_tentacles": ["old-tent-a", "old-tent-b"],
-            "dispatch_mode": "prompt",
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "active_tentacles": ["old-tent-a", "old-tent-b"],
+                    "dispatch_mode": "prompt",
+                }
+            )
+        )
         state = T._get_marker_state()
         self.assertTrue(state["active"])
         self.assertIn("old-tent-a", state["active_tentacles"])
@@ -2728,11 +2821,15 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
 
     def test_old_string_list_entries_normalised_in_state(self):
         """active_tentacle_entries must normalise old string entries to dicts."""
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "active_tentacles": ["old-tent"],
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "active_tentacles": ["old-tent"],
+                }
+            )
+        )
         state = T._get_marker_state()
         entries = state["active_tentacle_entries"]
         self.assertEqual(len(entries), 1)
@@ -2742,21 +2839,30 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
 
     def test_old_string_list_clear_by_name(self):
         """Clearing an old-format string entry must work (conservative name-only match)."""
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": "1000",
-            "active_tentacles": ["old-tent"],
-        }), encoding="utf-8")
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": "1000",
+                    "active_tentacles": ["old-tent"],
+                }
+            ),
+            encoding="utf-8",
+        )
         T._clear_dispatched_subagent_marker("old-tent")
         self.assertFalse(self.marker_path.is_file())
 
     def test_old_string_list_partial_clear_leaves_other_entries(self):
         """Clearing one entry from an old string-list marker preserves other entries."""
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "active_tentacles": ["tent-keep", "tent-remove"],
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "active_tentacles": ["tent-keep", "tent-remove"],
+                }
+            )
+        )
         T._clear_dispatched_subagent_marker("tent-remove")
         self.assertTrue(self.marker_path.is_file())
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
@@ -2766,11 +2872,16 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
 
     def test_new_write_on_old_marker_normalises_to_dict_list(self):
         """A new write on top of an old string-list marker must produce dict entries."""
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": "1000",
-            "active_tentacles": ["old-string-tent"],
-        }), encoding="utf-8")
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": "1000",
+                    "active_tentacles": ["old-string-tent"],
+                }
+            ),
+            encoding="utf-8",
+        )
         T._write_dispatched_subagent_marker("new-tent", [], "prompt")
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         for entry in data["active_tentacles"]:
@@ -2778,14 +2889,18 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
 
     def test_mixed_format_entries_handled_gracefully(self):
         """Marker with a mix of dict and string entries must not raise."""
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "active_tentacles": [
-                "old-string",
-                {"name": "new-dict", "ts": "12345", "git_root": None},
-            ],
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "active_tentacles": [
+                        "old-string",
+                        {"name": "new-dict", "ts": "12345", "git_root": None},
+                    ],
+                }
+            )
+        )
         # Reading must not raise
         state = T._get_marker_state()
         self.assertIn("old-string", state["active_tentacles"])
@@ -2793,14 +2908,18 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
 
     def test_clear_after_mixed_format_write_normalises(self):
         """Clearing from a mixed-format marker must write back clean dict entries."""
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "active_tentacles": [
-                "string-to-keep",
-                {"name": "dict-to-remove", "ts": "123", "git_root": None},
-            ],
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "active_tentacles": [
+                        "string-to-keep",
+                        {"name": "dict-to-remove", "ts": "123", "git_root": None},
+                    ],
+                }
+            )
+        )
         T._clear_dispatched_subagent_marker("dict-to-remove")
         self.assertTrue(self.marker_path.is_file())
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
@@ -2817,11 +2936,16 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
         """Old string entry for tent-a + new dispatch of tent-a from /repo-a
         must produce exactly one entry with git_root=/repo-a (not two entries)."""
         repo_a = self.base / "repo-a"
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": "1000",
-            "active_tentacles": ["tent-a"],
-        }), encoding="utf-8")
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": "1000",
+                    "active_tentacles": ["tent-a"],
+                }
+            ),
+            encoding="utf-8",
+        )
         with patch.object(T, "find_git_root", return_value=repo_a):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
@@ -2835,34 +2959,39 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
         dispatching tent-a from /repo-b must collapse them into a single entry
         rather than producing a duplicate."""
         repo_b = self.base / "repo-b"
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "active_tentacles": [
-                {"name": "tent-a", "ts": None, "git_root": None},
-                {"name": "tent-a", "ts": "1000", "git_root": str(repo_b)},
-            ],
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "active_tentacles": [
+                        {"name": "tent-a", "ts": None, "git_root": None},
+                        {"name": "tent-a", "ts": "1000", "git_root": str(repo_b)},
+                    ],
+                }
+            )
+        )
         with patch.object(T, "find_git_root", return_value=repo_b):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
-        self.assertEqual(
-            names.count("tent-a"), 1,
-            "Legacy None entry + real-repo entry must collapse to one entry"
-        )
+        self.assertEqual(names.count("tent-a"), 1, "Legacy None entry + real-repo entry must collapse to one entry")
         self.assertEqual(data["active_tentacles"][0]["git_root"], str(repo_b))
 
     def test_legacy_cleanup_only_affects_dispatching_tentacle_name(self):
         """Legacy (tent-b, None) must NOT be removed when dispatching tent-a."""
         repo_a = self.base / "repo-a"
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "active_tentacles": [
-                {"name": "tent-b", "ts": None, "git_root": None},
-            ],
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "active_tentacles": [
+                        {"name": "tent-b", "ts": None, "git_root": None},
+                    ],
+                }
+            )
+        )
         with patch.object(T, "find_git_root", return_value=repo_a):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
@@ -2876,13 +3005,17 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
     def test_no_legacy_cleanup_when_dispatching_from_unknown_git_root(self):
         """When current_git_root is None, existing (name, None) entries are handled
         by normal dedup (None==None) rather than being removed."""
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "active_tentacles": [
-                {"name": "tent-a", "ts": "1000", "git_root": None},
-            ],
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "active_tentacles": [
+                        {"name": "tent-a", "ts": "1000", "git_root": None},
+                    ],
+                }
+            )
+        )
         with patch.object(T, "find_git_root", return_value=None):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
@@ -2910,6 +3043,7 @@ class TestMarkerCrossRepoIsolation(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -2998,6 +3132,7 @@ class TestMarkerCrossRepoIsolation(unittest.TestCase):
         """marker_state in swarm JSON output must include git_root field."""
         import io
         from contextlib import redirect_stdout
+
         swarm_base = self.base / "swarm_test"
         swarm_base.mkdir()
         make_tentacle("xr-test", swarm_base)
@@ -3026,6 +3161,7 @@ class TestMarkerCrossRepoIsolation(unittest.TestCase):
 # Legacy-entry upgrade path tests (cross-review fix)
 # ---------------------------------------------------------------------------
 
+
 class TestMarkerLegacyUpgradePath(unittest.TestCase):
     """When a known git_root dispatch encounters a legacy git_root=None entry with the
     same tentacle name, it must absorb/replace the legacy entry rather than appending
@@ -3048,16 +3184,21 @@ class TestMarkerLegacyUpgradePath(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
     def _write_legacy_entry(self, name):
         """Write an old-format dict entry with git_root=None directly to the marker."""
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "active_tentacles": [{"name": name, "ts": None, "git_root": None}],
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "active_tentacles": [{"name": name, "ts": None, "git_root": None}],
+                }
+            )
+        )
 
     # ── core upgrade-path behaviour ───────────────────────────────────────────
 
@@ -3096,14 +3237,18 @@ class TestMarkerLegacyUpgradePath(unittest.TestCase):
 
     def test_other_entries_preserved_during_upgrade(self):
         """Absorption of one legacy entry must not disturb unrelated entries."""
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "active_tentacles": [
-                {"name": "tent-a", "ts": None, "git_root": None},   # legacy → will be upgraded
-                {"name": "tent-b", "ts": "9999", "git_root": "/other/repo"},  # real → untouched
-            ],
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "active_tentacles": [
+                        {"name": "tent-a", "ts": None, "git_root": None},  # legacy → will be upgraded
+                        {"name": "tent-b", "ts": "9999", "git_root": "/other/repo"},  # real → untouched
+                    ],
+                }
+            )
+        )
         repo_a = self.base / "repo-a"
         with patch.object(T, "find_git_root", return_value=repo_a):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
@@ -3116,11 +3261,16 @@ class TestMarkerLegacyUpgradePath(unittest.TestCase):
 
     def test_old_string_list_entry_absorbed_by_known_repo_dispatch(self):
         """An old string-list entry (promoted to git_root=None dict) is also absorbed."""
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": "1000",
-            "active_tentacles": ["tent-a"],   # old string format
-        }), encoding="utf-8")
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": "1000",
+                    "active_tentacles": ["tent-a"],  # old string format
+                }
+            ),
+            encoding="utf-8",
+        )
         repo_a = self.base / "repo-a"
         with patch.object(T, "find_git_root", return_value=repo_a):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
@@ -3135,11 +3285,15 @@ class TestMarkerLegacyUpgradePath(unittest.TestCase):
         """A real-repo entry must NOT be absorbed by a different real-repo dispatch."""
         repo_a = self.base / "repo-a"
         repo_b = self.base / "repo-b"
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "active_tentacles": [{"name": "tent-x", "ts": "9999", "git_root": str(repo_a)}],
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "active_tentacles": [{"name": "tent-x", "ts": "9999", "git_root": str(repo_a)}],
+                }
+            )
+        )
         with patch.object(T, "find_git_root", return_value=repo_b):
             T._write_dispatched_subagent_marker("tent-x", [], "prompt")
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
@@ -3195,6 +3349,7 @@ class TestSameRepoMultiSession(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -3293,8 +3448,7 @@ class TestSameRepoMultiSession(unittest.TestCase):
         with patch.object(T, "get_tentacles_dir", return_value=tentacles_dir):
             T.cmd_create(args)
 
-        slug_dirs = [d for d in tentacles_dir.iterdir()
-                     if d.is_dir() and d.name.startswith("beta-")]
+        slug_dirs = [d for d in tentacles_dir.iterdir() if d.is_dir() and d.name.startswith("beta-")]
         self.assertEqual(len(slug_dirs), 1)
         slug_dir = slug_dirs[0]
         self.assertTrue((slug_dir / "CONTEXT.md").exists())
@@ -3316,8 +3470,7 @@ class TestSameRepoMultiSession(unittest.TestCase):
         with patch.object(T, "get_tentacles_dir", return_value=tentacles_dir):
             T.cmd_create(args)
 
-        slug_dirs = [d for d in tentacles_dir.iterdir()
-                     if d.is_dir() and d.name.startswith("gamma-")]
+        slug_dirs = [d for d in tentacles_dir.iterdir() if d.is_dir() and d.name.startswith("gamma-")]
         meta = json.loads((slug_dirs[0] / "meta.json").read_text(encoding="utf-8"))
         self.assertEqual(meta["name"], "gamma")
         self.assertIn("dir_name", meta, "meta must record the actual dir name")
@@ -3410,6 +3563,7 @@ class TestSameRepoMultiSession(unittest.TestCase):
 # Cross-review bug fixes — regression tests
 # ---------------------------------------------------------------------------
 
+
 class TestCrossReviewFixes(unittest.TestCase):
     """Regression tests for three cross-review findings.
 
@@ -3434,6 +3588,7 @@ class TestCrossReviewFixes(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -3516,8 +3671,7 @@ class TestCrossReviewFixes(unittest.TestCase):
             T._write_dispatched_subagent_marker("work", [], "prompt", tentacle_id=tid)
             T._clear_dispatched_subagent_marker("work")  # no tentacle_id — legacy clear
         # Phase-5 entry must survive: legacy caller cannot prove it owns this entry
-        self.assertTrue(self.marker_path.is_file(),
-                        "Phase-5 entry must not be removed by a legacy clear")
+        self.assertTrue(self.marker_path.is_file(), "Phase-5 entry must not be removed by a legacy clear")
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         ids = [e.get("tentacle_id") for e in data["active_tentacles"]]
         self.assertIn(tid, ids, "Phase-5 tentacle_id must still be in the active set")
@@ -3607,6 +3761,7 @@ class TestMigrationCleanupGap(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -3619,12 +3774,16 @@ class TestMigrationCleanupGap(unittest.TestCase):
         entry = {"name": name, "ts": str(int(time.time())), "git_root": str(git_root)}
         if tentacle_id_sentinel is not ...:
             entry["tentacle_id"] = tentacle_id_sentinel
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "git_root": str(git_root),
-            "active_tentacles": [entry],
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "git_root": str(git_root),
+                    "active_tentacles": [entry],
+                }
+            )
+        )
 
     # ── core gap fix ──────────────────────────────────────────────────────────
 
@@ -3638,11 +3797,9 @@ class TestMigrationCleanupGap(unittest.TestCase):
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = data["active_tentacles"]
         self.assertEqual(
-            len(entries), 1,
-            "Phase-5 dispatch must absorb the stale phase-4 entry, leaving exactly one entry"
+            len(entries), 1, "Phase-5 dispatch must absorb the stale phase-4 entry, leaving exactly one entry"
         )
-        self.assertEqual(entries[0].get("tentacle_id"), tid,
-                         "The surviving entry must be the new phase-5 entry")
+        self.assertEqual(entries[0].get("tentacle_id"), tid, "The surviving entry must be the new phase-5 entry")
 
     def test_phase5_dispatch_absorbs_same_repo_entry_with_null_tentacle_id(self):
         """Explicit null tentacle_id must be treated as legacy identity-less state."""
@@ -3664,8 +3821,7 @@ class TestMigrationCleanupGap(unittest.TestCase):
             T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
             T._clear_dispatched_subagent_marker("feature-x", tentacle_id=tid)
         self.assertFalse(
-            self.marker_path.is_file(),
-            "Marker must be deleted after complete — no stale phase-4 entry should remain"
+            self.marker_path.is_file(), "Marker must be deleted after complete — no stale phase-4 entry should remain"
         )
 
     def test_phase5_dispatch_does_not_absorb_different_name_phase4_entry(self):
@@ -3689,10 +3845,7 @@ class TestMigrationCleanupGap(unittest.TestCase):
             T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = data["active_tentacles"]
-        self.assertEqual(
-            len(entries), 2,
-            "Phase-4 entry from a different repo must NOT be absorbed"
-        )
+        self.assertEqual(len(entries), 2, "Phase-4 entry from a different repo must NOT be absorbed")
         git_roots = {e.get("git_root") for e in entries}
         self.assertIn(str(other_repo), git_roots, "Other-repo entry must survive")
         self.assertIn(str(self.repo), git_roots, "Current-repo entry must exist")
@@ -3706,10 +3859,7 @@ class TestMigrationCleanupGap(unittest.TestCase):
             T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = data["active_tentacles"]
-        self.assertEqual(
-            len(entries), 2,
-            "Different-repo null-tentacle_id entry must not be absorbed"
-        )
+        self.assertEqual(len(entries), 2, "Different-repo null-tentacle_id entry must not be absorbed")
         git_roots = {e.get("git_root") for e in entries}
         self.assertIn(str(other_repo), git_roots, "Other-repo entry must survive")
         self.assertIn(str(self.repo), git_roots, "Current-repo entry must exist")
@@ -3723,30 +3873,34 @@ class TestMigrationCleanupGap(unittest.TestCase):
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         # Legacy dedup: same (name, git_root), no tentacle_id on either side → merge to 1
-        self.assertEqual(names.count("feature-x"), 1,
-                         "Legacy-on-phase-4 dedup must still collapse to a single entry")
+        self.assertEqual(names.count("feature-x"), 1, "Legacy-on-phase-4 dedup must still collapse to a single entry")
 
     def test_phase5_dispatch_does_not_absorb_phase4_entry_with_tentacle_id(self):
         """A phase-4-shaped entry that already has a tentacle_id (edge case: partial
         upgrade) must NOT be absorbed — it belongs to a live instance."""
         sibling_tid = str(uuid.uuid4())
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "active_tentacles": [
-                {"name": "feature-x", "ts": str(int(time.time())),
-                 "git_root": str(self.repo), "tentacle_id": sibling_tid},
-            ],
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "active_tentacles": [
+                        {
+                            "name": "feature-x",
+                            "ts": str(int(time.time())),
+                            "git_root": str(self.repo),
+                            "tentacle_id": sibling_tid,
+                        },
+                    ],
+                }
+            )
+        )
         tid = str(uuid.uuid4())
         with patch.object(T, "find_git_root", return_value=self.repo):
             T._write_dispatched_subagent_marker("feature-x", [], "prompt", tentacle_id=tid)
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         entries = data["active_tentacles"]
-        self.assertEqual(
-            len(entries), 2,
-            "Entry with tentacle_id must NOT be absorbed even if same (name, git_root)"
-        )
+        self.assertEqual(len(entries), 2, "Entry with tentacle_id must NOT be absorbed even if same (name, git_root)")
         ids = {e.get("tentacle_id") for e in entries}
         self.assertIn(sibling_tid, ids, "Sibling phase-5 entry must survive")
         self.assertIn(tid, ids, "New phase-5 entry must be present")
@@ -3755,6 +3909,7 @@ class TestMigrationCleanupGap(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Path-canonicalization regression tests
 # ---------------------------------------------------------------------------
+
 
 class TestCanonicalRootComparison(unittest.TestCase):
     """Regression tests for _same_canonical_root and canonical-path marker operations.
@@ -3782,6 +3937,7 @@ class TestCanonicalRootComparison(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -3820,14 +3976,18 @@ class TestCanonicalRootComparison(unittest.TestCase):
         sibling = self.base / "sibling"
         sibling.mkdir(exist_ok=True)
         alt_git_root = str(sibling / ".." / "my-repo")
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "git_root": alt_git_root,
-            "active_tentacles": [
-                {"name": "work", "ts": str(int(time.time())), "git_root": alt_git_root},
-            ],
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "git_root": alt_git_root,
+                    "active_tentacles": [
+                        {"name": "work", "ts": str(int(time.time())), "git_root": alt_git_root},
+                    ],
+                }
+            )
+        )
         with patch.object(T, "find_git_root", return_value=self.repo):
             result = T._clear_dispatched_subagent_marker("work")
         self.assertTrue(result)
@@ -3840,14 +4000,18 @@ class TestCanonicalRootComparison(unittest.TestCase):
         """A different-repo entry must NOT be removed even if clear is called."""
         other_repo = self.base / "other-repo"
         other_repo.mkdir(exist_ok=True)
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "git_root": str(other_repo),
-            "active_tentacles": [
-                {"name": "work", "ts": str(int(time.time())), "git_root": str(other_repo)},
-            ],
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "git_root": str(other_repo),
+                    "active_tentacles": [
+                        {"name": "work", "ts": str(int(time.time())), "git_root": str(other_repo)},
+                    ],
+                }
+            )
+        )
         # Clear from self.repo — different from other_repo
         with patch.object(T, "find_git_root", return_value=self.repo):
             T._clear_dispatched_subagent_marker("work")
@@ -3861,21 +4025,26 @@ class TestCanonicalRootComparison(unittest.TestCase):
         sibling = self.base / "sibling"
         sibling.mkdir(exist_ok=True)
         alt_git_root = str(sibling / ".." / "my-repo")
-        self.marker_path.write_text(json.dumps({
-            "name": self.MARKER_NAME,
-            "ts": str(int(time.time())),
-            "git_root": alt_git_root,
-            "active_tentacles": [
-                {"name": "work", "ts": str(int(time.time())), "git_root": alt_git_root},
-            ],
-        }))
+        self.marker_path.write_text(
+            json.dumps(
+                {
+                    "name": self.MARKER_NAME,
+                    "ts": str(int(time.time())),
+                    "git_root": alt_git_root,
+                    "active_tentacles": [
+                        {"name": "work", "ts": str(int(time.time())), "git_root": alt_git_root},
+                    ],
+                }
+            )
+        )
         # Write again using canonical path — should dedup (not add a second entry)
         with patch.object(T, "find_git_root", return_value=self.repo):
             T._write_dispatched_subagent_marker("work", [], "prompt")
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         names = _names_from_entries(data["active_tentacles"])
         self.assertEqual(
-            names.count("work"), 1,
+            names.count("work"),
+            1,
             "Dotdot path and canonical path to same dir must dedup to one entry",
         )
 
@@ -3926,6 +4095,7 @@ class TestCanonicalRootComparison(unittest.TestCase):
 # Collision-renamed tentacle lifecycle and bundle metadata regression tests
 # ---------------------------------------------------------------------------
 
+
 class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
     """Regression tests for collision-renamed tentacle lifecycle and bundle metadata.
 
@@ -3950,6 +4120,7 @@ class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -3998,10 +4169,8 @@ class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
         with patch.object(T, "find_git_root", return_value=None):
             bundle_dir = T._build_runtime_bundle(d, "beta")
         content = (bundle_dir / "session-metadata.md").read_text(encoding="utf-8")
-        self.assertIn("beta-xyz99999", content,
-                      "session-metadata.md must show the collision slug")
-        self.assertIn("Slug:", content,
-                      "session-metadata.md must have an explicit Slug label")
+        self.assertIn("beta-xyz99999", content, "session-metadata.md must show the collision slug")
+        self.assertIn("Slug:", content, "session-metadata.md must have an explicit Slug label")
 
     def test_bundle_session_metadata_no_slug_line_for_normal_tentacle(self):
         """session-metadata.md must NOT have a Slug line for non-collision tentacles."""
@@ -4019,9 +4188,7 @@ class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
         meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
         tid = meta["tentacle_id"]
         with patch.object(T, "find_git_root", return_value=self.base):
-            T._write_dispatched_subagent_marker(
-                "gamma", [], "prompt", tentacle_id=tid
-            )
+            T._write_dispatched_subagent_marker("gamma", [], "prompt", tentacle_id=tid)
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         ids = [e.get("tentacle_id") for e in data["active_tentacles"]]
         self.assertIn(tid, ids, "Collision tentacle's tentacle_id must be in marker")
@@ -4034,12 +4201,10 @@ class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
         sibling_tid = str(uuid.uuid4())
         with patch.object(T, "find_git_root", return_value=self.base):
             T._write_dispatched_subagent_marker("delta", [], "prompt", tentacle_id=tid)
-            T._write_dispatched_subagent_marker("sibling", [], "prompt",
-                                                tentacle_id=sibling_tid)
+            T._write_dispatched_subagent_marker("sibling", [], "prompt", tentacle_id=sibling_tid)
             T._clear_dispatched_subagent_marker("delta", tentacle_id=tid)
         # delta's entry must be gone; sibling must survive
-        self.assertTrue(self.marker_path.is_file(),
-                        "Marker must survive while sibling is active")
+        self.assertTrue(self.marker_path.is_file(), "Marker must survive while sibling is active")
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         ids = [e.get("tentacle_id") for e in data["active_tentacles"]]
         self.assertNotIn(tid, ids, "Completed collision tentacle entry must be removed")
@@ -4058,8 +4223,9 @@ class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
             T._write_dispatched_subagent_marker("epsilon", [], "prompt", tentacle_id=tid1)
             T._write_dispatched_subagent_marker("epsilon", [], "prompt", tentacle_id=tid2)
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
-        self.assertEqual(len(data["active_tentacles"]), 2,
-                         "Two collision tentacles with same logical name must produce 2 entries")
+        self.assertEqual(
+            len(data["active_tentacles"]), 2, "Two collision tentacles with same logical name must produce 2 entries"
+        )
         written_ids = {e.get("tentacle_id") for e in data["active_tentacles"]}
         self.assertIn(tid1, written_ids)
         self.assertIn(tid2, written_ids)
@@ -4093,9 +4259,7 @@ class TestHookSubagentStopCleanup(unittest.TestCase):
         fake = self._fake_tentacle(marker)
         with patch.object(session_lifecycle_rules, "_tentacle_mod", fake):
             rule = session_lifecycle_rules.SubagentStopRule()
-            result = rule.evaluate("subagentStop", {
-                "subagent": {"tentacleName": "agent-guardrails-automation"}
-            })
+            result = rule.evaluate("subagentStop", {"subagent": {"tentacleName": "agent-guardrails-automation"}})
         self.assertEqual(fake.calls, [("agent-guardrails-automation", "tid-1")])
         self.assertIsInstance(result, dict)
         self.assertIn("cleared", result.get("message", ""))
@@ -4110,9 +4274,7 @@ class TestHookSubagentStopCleanup(unittest.TestCase):
         fake = self._fake_tentacle(marker)
         with patch.object(session_lifecycle_rules, "_tentacle_mod", fake):
             rule = session_lifecycle_rules.SubagentStopRule()
-            result = rule.evaluate("subagentStop", {
-                "result": {"tentacleId": "tid-2"}
-            })
+            result = rule.evaluate("subagentStop", {"result": {"tentacleId": "tid-2"}})
         self.assertEqual(fake.calls, [("second", "tid-2")])
         self.assertIsInstance(result, dict)
 
@@ -4135,9 +4297,7 @@ class TestHookSubagentStopCleanup(unittest.TestCase):
         fake = self._fake_tentacle(marker)
         with patch.object(session_lifecycle_rules, "_tentacle_mod", fake):
             rule = session_lifecycle_rules.SubagentStopRule()
-            result = rule.evaluate("subagentStop", {
-                "subagent": {"tentacleName": "shared-name"}
-            })
+            result = rule.evaluate("subagentStop", {"subagent": {"tentacleName": "shared-name"}})
         self.assertEqual(fake.calls, [])
         self.assertIsNone(result)
 
@@ -4146,9 +4306,7 @@ class TestHookSubagentStopCleanup(unittest.TestCase):
         fake = self._fake_tentacle(marker)
         with patch.object(session_lifecycle_rules, "_tentacle_mod", fake):
             rule = session_lifecycle_rules.SubagentStopRule()
-            result = rule.evaluate("subagentStop", {
-                "result": {"metadata": {"id": "tid-1"}}
-            })
+            result = rule.evaluate("subagentStop", {"result": {"metadata": {"id": "tid-1"}}})
         self.assertEqual(fake.calls, [])
         self.assertIsNone(result)
 
@@ -4157,9 +4315,7 @@ class TestHookSubagentStopCleanup(unittest.TestCase):
         fake = self._fake_tentacle(marker)
         with patch.object(session_lifecycle_rules, "_tentacle_mod", fake):
             rule = session_lifecycle_rules.SubagentStopRule()
-            result = rule.evaluate("subagentStop", {
-                "result": {"metadata": {"name": "only"}}
-            })
+            result = rule.evaluate("subagentStop", {"result": {"metadata": {"name": "only"}}})
         self.assertEqual(fake.calls, [])
         self.assertIsNone(result)
 
@@ -4168,9 +4324,7 @@ class TestHookSubagentStopCleanup(unittest.TestCase):
         fake = self._fake_tentacle(marker)
         with patch.object(session_lifecycle_rules, "_tentacle_mod", fake):
             rule = session_lifecycle_rules.SubagentStopRule()
-            result = rule.evaluate("subagentStop", {
-                "result": {"subagent": {"tentacle_name": "only"}}
-            })
+            result = rule.evaluate("subagentStop", {"result": {"subagent": {"tentacle_name": "only"}}})
         self.assertEqual(fake.calls, [("only", "tid-1")])
         self.assertIsInstance(result, dict)
 
@@ -4188,6 +4342,7 @@ class TestHookSubagentStopCleanup(unittest.TestCase):
         rules = session_lifecycle_rules
         with patch.object(rules, "_tentacle_mod", None):
             from hooks.rules import get_rules_for_event
+
             event_rules = get_rules_for_event("subagentStop")
         self.assertTrue(
             any(r.name == "subagent-stop-cleanup" for r in event_rules),
@@ -4207,6 +4362,7 @@ class TestWindowsEncodingFix(unittest.TestCase):
     def test_emoji_in_print_does_not_raise(self):
         """Printing emoji via the module must not raise UnicodeEncodeError in-process."""
         import io
+
         buf = io.StringIO()
         # Simulate what Windows reconfigure protects: writing emoji to a text stream
         buf.write("✅ done\n")
@@ -4217,6 +4373,7 @@ class TestWindowsEncodingFix(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # New tests: declared skills, worktree primitives, verify, outcome metrics
 # ---------------------------------------------------------------------------
+
 
 def _make_scratch_git_repo(base: Path) -> Path:
     """Create a minimal real git repo (init + initial commit) for worktree tests."""
@@ -4247,6 +4404,7 @@ class TestDeclaredSkills(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -4268,8 +4426,9 @@ class TestDeclaredSkills(unittest.TestCase):
         self.assertEqual(meta["skills"], ["myskill"])
 
     def test_multiple_skills_persisted(self):
-        args = fake_args(name="multi-skills", scope=None, desc="test", briefing=False,
-                         skill=["skill-a", "skill-b", "skill-c"])
+        args = fake_args(
+            name="multi-skills", scope=None, desc="test", briefing=False, skill=["skill-a", "skill-b", "skill-c"]
+        )
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             with patch("builtins.print"):
                 T.cmd_create(args)
@@ -4277,8 +4436,7 @@ class TestDeclaredSkills(unittest.TestCase):
         self.assertEqual(meta["skills"], ["skill-a", "skill-b", "skill-c"])
 
     def test_skills_visible_in_create_output(self):
-        args = fake_args(name="vis-skills", scope=None, desc="test", briefing=False,
-                         skill=["tool-a", "tool-b"])
+        args = fake_args(name="vis-skills", scope=None, desc="test", briefing=False, skill=["tool-a", "tool-b"])
         captured = []
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
@@ -4299,6 +4457,7 @@ class TestWorktreePrimitives(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         # Clean up any leftover worktrees before removing scratch dir
         wt_root = T._WORKTREE_STATE_ROOT
         repo_slug = T._repo_slug(self.repo_dir)
@@ -4307,7 +4466,8 @@ class TestWorktreePrimitives(unittest.TestCase):
         if wt_path.exists():
             subprocess.run(
                 ["git", "worktree", "remove", "--force", str(wt_path)],
-                cwd=str(self.repo_dir), capture_output=True,
+                cwd=str(self.repo_dir),
+                capture_output=True,
             )
             shutil.rmtree(wt_path, ignore_errors=True)
         if SCRATCH_DIR.exists():
@@ -4432,6 +4592,7 @@ class TestWorktreeInBundleSwarmDispatch(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         # Clean up worktrees
         repo_slug = T._repo_slug(self.repo_dir)
         tentacle_slug = T._tentacle_slug("wt-surface")
@@ -4439,7 +4600,8 @@ class TestWorktreeInBundleSwarmDispatch(unittest.TestCase):
         if wt_path.exists():
             subprocess.run(
                 ["git", "worktree", "remove", "--force", str(wt_path)],
-                cwd=str(self.repo_dir), capture_output=True,
+                cwd=str(self.repo_dir),
+                capture_output=True,
             )
             shutil.rmtree(wt_path, ignore_errors=True)
         if SCRATCH_DIR.exists():
@@ -4447,9 +4609,13 @@ class TestWorktreeInBundleSwarmDispatch(unittest.TestCase):
 
     def test_swarm_worktree_flag_surfaces_path_in_prompt(self):
         args = fake_args(
-            name="wt-surface", agent_type="general-purpose",
-            model="claude-sonnet-4.6", output="prompt",
-            briefing=False, bundle=False, worktree=True,
+            name="wt-surface",
+            agent_type="general-purpose",
+            model="claude-sonnet-4.6",
+            output="prompt",
+            briefing=False,
+            bundle=False,
+            worktree=True,
         )
         captured = []
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
@@ -4461,9 +4627,13 @@ class TestWorktreeInBundleSwarmDispatch(unittest.TestCase):
 
     def test_swarm_worktree_flag_surfaces_path_in_json(self):
         args = fake_args(
-            name="wt-surface", agent_type="general-purpose",
-            model="claude-sonnet-4.6", output="json",
-            briefing=False, bundle=False, worktree=True,
+            name="wt-surface",
+            agent_type="general-purpose",
+            model="claude-sonnet-4.6",
+            output="json",
+            briefing=False,
+            bundle=False,
+            worktree=True,
         )
         captured = []
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
@@ -4478,14 +4648,18 @@ class TestWorktreeInBundleSwarmDispatch(unittest.TestCase):
     def test_bundle_worktree_flag_surfaces_path_in_manifest(self):
         args = fake_args(
             name="wt-surface",
-            no_briefing=True, no_checkpoint=True,
-            output="json", worktree=True,
+            no_briefing=True,
+            no_checkpoint=True,
+            output="json",
+            worktree=True,
         )
         captured = []
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             with patch.object(T, "find_git_root", return_value=self.repo_dir):
                 with patch.object(T, "_write_dispatched_subagent_marker", return_value=True):
-                    with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    with patch(
+                        "builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))
+                    ):
                         T.cmd_bundle(args)
         combined = "\n".join(captured)
         json_start = combined.find("{")
@@ -4495,14 +4669,18 @@ class TestWorktreeInBundleSwarmDispatch(unittest.TestCase):
     def test_bundle_without_worktree_flag_has_no_worktree_path(self):
         args = fake_args(
             name="wt-surface",
-            no_briefing=True, no_checkpoint=True,
-            output="json", worktree=False,
+            no_briefing=True,
+            no_checkpoint=True,
+            output="json",
+            worktree=False,
         )
         captured = []
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             with patch.object(T, "find_git_root", return_value=self.repo_dir):
                 with patch.object(T, "_write_dispatched_subagent_marker", return_value=True):
-                    with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    with patch(
+                        "builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))
+                    ):
                         T.cmd_bundle(args)
         combined = "\n".join(captured)
         json_start = combined.find("{")
@@ -4520,6 +4698,7 @@ class TestVerifyCommand(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -4653,6 +4832,7 @@ class TestCompleteOutcomePersistence(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -4665,6 +4845,7 @@ class TestCompleteOutcomePersistence(unittest.TestCase):
                         T.cmd_complete(args)
 
         import sqlite3
+
         con = sqlite3.connect(str(self.metrics_db))
         rows = con.execute("SELECT tentacle_name, outcome_status FROM tentacle_outcomes").fetchall()
         con.close()
@@ -4687,6 +4868,7 @@ class TestCompleteOutcomePersistence(unittest.TestCase):
                         T.cmd_complete(args)
 
         import sqlite3
+
         con = sqlite3.connect(str(self.metrics_db))
         rows = con.execute("SELECT skill_name FROM tentacle_outcome_skills ORDER BY skill_name").fetchall()
         con.close()
@@ -4698,16 +4880,18 @@ class TestCompleteOutcomePersistence(unittest.TestCase):
         # Inject a verification record into meta.json
         meta_path = self.tentacle_dir / "meta.json"
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        meta["verifications"] = [{
-            "label": "test run",
-            "command": "echo ok",
-            "cwd": str(self.tentacle_dir),
-            "exit_code": 0,
-            "started_at": "2026-01-01T00:00:00+00:00",
-            "finished_at": "2026-01-01T00:00:01+00:00",
-            "duration_seconds": 1.0,
-            "log_path": None,
-        }]
+        meta["verifications"] = [
+            {
+                "label": "test run",
+                "command": "echo ok",
+                "cwd": str(self.tentacle_dir),
+                "exit_code": 0,
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "finished_at": "2026-01-01T00:00:01+00:00",
+                "duration_seconds": 1.0,
+                "log_path": None,
+            }
+        ]
         meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
         args = fake_args(name="metrics-test", no_learn=True)
@@ -4718,6 +4902,7 @@ class TestCompleteOutcomePersistence(unittest.TestCase):
                         T.cmd_complete(args)
 
         import sqlite3
+
         con = sqlite3.connect(str(self.metrics_db))
         rows = con.execute("SELECT label, exit_code FROM tentacle_verifications").fetchall()
         con.close()
@@ -4738,12 +4923,13 @@ class TestCompleteOutcomePersistence(unittest.TestCase):
                         T.cmd_complete(args)
 
         import sqlite3
+
         con = sqlite3.connect(str(self.metrics_db))
         row = con.execute("SELECT todo_total, todo_done FROM tentacle_outcomes").fetchone()
         con.close()
         self.assertIsNotNone(row)
-        self.assertEqual(row[0], 2)   # 2 todos total
-        self.assertEqual(row[1], 2)   # all marked done by complete
+        self.assertEqual(row[0], 2)  # 2 todos total
+        self.assertEqual(row[1], 2)  # all marked done by complete
 
     def test_complete_outcome_worktree_fields(self):
         # Inject worktree state
@@ -4761,6 +4947,7 @@ class TestCompleteOutcomePersistence(unittest.TestCase):
                         T.cmd_complete(args)
 
         import sqlite3
+
         con = sqlite3.connect(str(self.metrics_db))
         row = con.execute("SELECT worktree_used, worktree_path FROM tentacle_outcomes").fetchone()
         con.close()
@@ -4783,6 +4970,7 @@ class TestCompleteOutcomePersistence(unittest.TestCase):
             )
         self.assertTrue(result)
         import sqlite3
+
         con = sqlite3.connect(str(self.metrics_db))
         tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         con.close()
@@ -4794,6 +4982,7 @@ class TestCompleteOutcomePersistence(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Regression guard: tests must never touch the real production marker
 # ---------------------------------------------------------------------------
+
 
 class TestNoProductionMarkerPollution(unittest.TestCase):
     """Verifies that cmd_swarm() and cmd_bundle() never write to the real
@@ -4815,14 +5004,13 @@ class TestNoProductionMarkerPollution(unittest.TestCase):
         self._orig_markers_dir = T.MARKERS_DIR
         T.MARKERS_DIR = self.base
         # Snapshot mtime of real marker before the test
-        self._real_mtime = (
-            self._REAL_MARKER.stat().st_mtime if self._REAL_MARKER.is_file() else None
-        )
+        self._real_mtime = self._REAL_MARKER.stat().st_mtime if self._REAL_MARKER.is_file() else None
 
     def tearDown(self):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR)
 
@@ -4830,10 +5018,7 @@ class TestNoProductionMarkerPollution(unittest.TestCase):
         """True if the real production marker has not been touched since setUp."""
         if self._real_mtime is None:
             return not self._REAL_MARKER.is_file()
-        return (
-            self._REAL_MARKER.is_file()
-            and self._REAL_MARKER.stat().st_mtime == self._real_mtime
-        )
+        return self._REAL_MARKER.is_file() and self._REAL_MARKER.stat().st_mtime == self._real_mtime
 
     def test_redirect_is_active(self):
         """T._DISPATCHED_MARKER_PATH must differ from the real production path."""

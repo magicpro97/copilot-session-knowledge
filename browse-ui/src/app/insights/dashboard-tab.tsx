@@ -7,6 +7,7 @@ import { useMemo } from "react";
 
 import { EvalSection } from "@/app/insights/eval-section";
 import { KnowledgeInsightsSection } from "@/app/insights/knowledge-insights-section";
+import { ResearchPackSection } from "@/app/insights/research-pack-section";
 import { RetroSection } from "@/app/insights/retro-section";
 import { AreaChart } from "@/components/charts/area-chart";
 import { BarChart } from "@/components/charts/bar-chart";
@@ -255,6 +256,7 @@ export function DashboardTab() {
       <EvalSection />
       <RetroSection />
       <KnowledgeInsightsSection />
+      <ResearchPackSection />
     </div>
   );
 }

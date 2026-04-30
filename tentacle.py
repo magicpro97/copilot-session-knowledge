@@ -1935,6 +1935,7 @@ def cmd_complete(args):
     if learned:
         print(f"   🧠 {learned} knowledge entry saved to long-term memory")
     print(f"   💡 Run `tentacle.py delete {args.name}` to clean up when ready")
+    print("   📋 Sync check: review docs/SYNC-MATRIX.md for docs/memory follow-ups")
 
 
 def cmd_resume(args):

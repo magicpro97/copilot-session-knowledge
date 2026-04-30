@@ -72,7 +72,9 @@ CREATE TABLE knowledge_entries (
 """
 
 _RELATIONS_SCHEMA = "CREATE TABLE knowledge_relations (id INTEGER PRIMARY KEY, source_id INTEGER, target_id INTEGER, relation_type TEXT)"
-_ENTITY_REL_SCHEMA = "CREATE TABLE entity_relations (id INTEGER PRIMARY KEY, source TEXT, target TEXT, relation_type TEXT)"
+_ENTITY_REL_SCHEMA = (
+    "CREATE TABLE entity_relations (id INTEGER PRIMARY KEY, source TEXT, target TEXT, relation_type TEXT)"
+)
 _EMBEDDINGS_SCHEMA = (
     "CREATE TABLE embeddings ("
     "id INTEGER PRIMARY KEY, "
@@ -100,10 +102,12 @@ def _make_db(uri, with_relations=True, with_embeddings=True):
 
 def _get_db_factory(uri):
     """Return a get_db() replacement that returns a new connection to uri."""
+
     def _get_db():
         conn = sqlite3.connect(uri, uri=True)
         conn.row_factory = sqlite3.Row
         return conn
+
     return _get_db
 
 
@@ -226,43 +230,81 @@ section("compute_insights — synthetic DB with entries")
 uri_syn = _new_uri()
 db_syn = _make_db(uri_syn)
 
-_insert_entries(db_syn, [
-    # High-confidence mistakes
-    {"category": "mistake", "title": "Used wrong API endpoint", "confidence": 0.9,
-     "occurrence_count": 3, "session_id": "s1",
-     "affected_files": '["src/api.py", "tests/test_api.py"]'},
-    {"category": "mistake", "title": "Forgot await on async call", "confidence": 0.85,
-     "occurrence_count": 2, "session_id": "s1",
-     "affected_files": '["src/main.py"]'},
-    # Low-confidence noise (3+ duplicates of same title)
-    {"category": "mistake", "title": "generic noise title", "confidence": 0.2,
-     "occurrence_count": 1, "session_id": "s2"},
-    {"category": "mistake", "title": "generic noise title", "confidence": 0.2,
-     "occurrence_count": 1, "session_id": "s3"},
-    {"category": "mistake", "title": "generic noise title", "confidence": 0.2,
-     "occurrence_count": 1, "session_id": "s4"},
-    # Cross-category noise should collapse into one mixed row
-    {"category": "mistake", "title": "cross-category noise", "confidence": 0.2,
-     "occurrence_count": 1, "session_id": "s5"},
-    {"category": "pattern", "title": "cross-category noise", "confidence": 0.2,
-     "occurrence_count": 1, "session_id": "s6"},
-    {"category": "decision", "title": "cross-category noise", "confidence": 0.2,
-     "occurrence_count": 1, "session_id": "s7"},
-    # Patterns
-    {"category": "pattern", "title": "Always use async/await for IO", "confidence": 0.8,
-     "session_id": "s1"},
-    {"category": "pattern", "title": "Validate inputs at boundaries", "confidence": 0.75,
-     "session_id": "s2"},
-    # Decisions
-    {"category": "decision", "title": "Use SQLite for local state", "confidence": 0.9,
-     "session_id": "s1"},
-    # Tools
-    {"category": "tool", "title": "ripgrep for code search", "confidence": 0.8,
-     "session_id": "s1"},
-    # More low confidence to trigger alert
-    *[{"category": "mistake", "title": f"noise_{i}", "confidence": 0.3,
-       "session_id": "s2"} for i in range(20)],
-])
+_insert_entries(
+    db_syn,
+    [
+        # High-confidence mistakes
+        {
+            "category": "mistake",
+            "title": "Used wrong API endpoint",
+            "confidence": 0.9,
+            "occurrence_count": 3,
+            "session_id": "s1",
+            "affected_files": '["src/api.py", "tests/test_api.py"]',
+        },
+        {
+            "category": "mistake",
+            "title": "Forgot await on async call",
+            "confidence": 0.85,
+            "occurrence_count": 2,
+            "session_id": "s1",
+            "affected_files": '["src/main.py"]',
+        },
+        # Low-confidence noise (3+ duplicates of same title)
+        {
+            "category": "mistake",
+            "title": "generic noise title",
+            "confidence": 0.2,
+            "occurrence_count": 1,
+            "session_id": "s2",
+        },
+        {
+            "category": "mistake",
+            "title": "generic noise title",
+            "confidence": 0.2,
+            "occurrence_count": 1,
+            "session_id": "s3",
+        },
+        {
+            "category": "mistake",
+            "title": "generic noise title",
+            "confidence": 0.2,
+            "occurrence_count": 1,
+            "session_id": "s4",
+        },
+        # Cross-category noise should collapse into one mixed row
+        {
+            "category": "mistake",
+            "title": "cross-category noise",
+            "confidence": 0.2,
+            "occurrence_count": 1,
+            "session_id": "s5",
+        },
+        {
+            "category": "pattern",
+            "title": "cross-category noise",
+            "confidence": 0.2,
+            "occurrence_count": 1,
+            "session_id": "s6",
+        },
+        {
+            "category": "decision",
+            "title": "cross-category noise",
+            "confidence": 0.2,
+            "occurrence_count": 1,
+            "session_id": "s7",
+        },
+        # Patterns
+        {"category": "pattern", "title": "Always use async/await for IO", "confidence": 0.8, "session_id": "s1"},
+        {"category": "pattern", "title": "Validate inputs at boundaries", "confidence": 0.75, "session_id": "s2"},
+        # Decisions
+        {"category": "decision", "title": "Use SQLite for local state", "confidence": 0.9, "session_id": "s1"},
+        # Tools
+        {"category": "tool", "title": "ripgrep for code search", "confidence": 0.8, "session_id": "s1"},
+        # More low confidence to trigger alert
+        *[{"category": "mistake", "title": f"noise_{i}", "confidence": 0.3, "session_id": "s2"} for i in range(20)],
+    ],
+)
 # Add a repeated hot file path
 for i in range(3):
     db_syn.execute(
@@ -371,10 +413,13 @@ section("compute_insights — missing optional tables")
 
 uri_no_opt = _new_uri()
 db_no_opt = _make_db(uri_no_opt, with_relations=False, with_embeddings=False)
-_insert_entries(db_no_opt, [
-    {"category": "mistake", "title": "Something went wrong", "confidence": 0.7},
-    {"category": "pattern", "title": "Always check return values", "confidence": 0.8},
-])
+_insert_entries(
+    db_no_opt,
+    [
+        {"category": "mistake", "title": "Something went wrong", "confidence": 0.7},
+        {"category": "pattern", "title": "Always check return values", "confidence": 0.8},
+    ],
+)
 
 kh.get_db = _get_db_factory(uri_no_opt)
 
@@ -424,8 +469,17 @@ sample_insights = {
         {"path": "src/main.py", "references": 5},
     ],
     "entries": {
-        "mistakes": [{"id": 1, "title": "A mistake", "confidence": 0.9, "occurrence_count": 2,
-                       "last_seen": "2025-01-01", "summary": "short summary", "session_id": "s1"}],
+        "mistakes": [
+            {
+                "id": 1,
+                "title": "A mistake",
+                "confidence": 0.9,
+                "occurrence_count": 2,
+                "last_seen": "2025-01-01",
+                "summary": "short summary",
+                "session_id": "s1",
+            }
+        ],
         "patterns": [],
         "decisions": [],
         "tools": [],
@@ -447,16 +501,18 @@ test("warning emoji in alerts", "🟡" in report)
 test("critical emoji in alerts", "🔴" in report)
 
 # Empty insights — no crash
-empty_report = kh.format_insights_report({
-    "generated_at": "",
-    "summary": "",
-    "overview": {},
-    "quality_alerts": [],
-    "recommended_actions": [],
-    "recurring_noise_titles": [],
-    "hot_files": [],
-    "entries": {},
-})
+empty_report = kh.format_insights_report(
+    {
+        "generated_at": "",
+        "summary": "",
+        "overview": {},
+        "quality_alerts": [],
+        "recommended_actions": [],
+        "recurring_noise_titles": [],
+        "hot_files": [],
+        "entries": {},
+    }
+)
 test("format with empty insights does not crash", isinstance(empty_report, str))
 
 # ===========================================================================
@@ -467,10 +523,13 @@ section("JSON contract — required keys and types")
 
 uri_contract = _new_uri()
 db_contract = _make_db(uri_contract)
-_insert_entries(db_contract, [
-    {"category": "mistake", "title": "Test mistake", "confidence": 0.8, "session_id": "s1"},
-    {"category": "pattern", "title": "Test pattern", "confidence": 0.7, "session_id": "s1"},
-])
+_insert_entries(
+    db_contract,
+    [
+        {"category": "mistake", "title": "Test mistake", "confidence": 0.8, "session_id": "s1"},
+        {"category": "pattern", "title": "Test pattern", "confidence": 0.7, "session_id": "s1"},
+    ],
+)
 
 kh.get_db = _get_db_factory(uri_contract)
 
@@ -479,20 +538,47 @@ ins_contract = kh.compute_insights()
 kh.get_db = orig_get_db
 db_contract.close()
 
-REQUIRED_TOP = {"generated_at", "summary", "overview", "quality_alerts",
-                "recommended_actions", "recurring_noise_titles", "hot_files", "entries"}
-REQUIRED_OVERVIEW = {"health_score", "total_entries", "sessions", "high_confidence_pct",
-                     "low_confidence_pct", "stale_pct", "relation_density", "embedding_pct"}
+REQUIRED_TOP = {
+    "generated_at",
+    "summary",
+    "overview",
+    "quality_alerts",
+    "recommended_actions",
+    "recurring_noise_titles",
+    "hot_files",
+    "entries",
+}
+REQUIRED_OVERVIEW = {
+    "health_score",
+    "total_entries",
+    "sessions",
+    "high_confidence_pct",
+    "low_confidence_pct",
+    "stale_pct",
+    "relation_density",
+    "embedding_pct",
+}
 REQUIRED_ENTRY_CATS = {"mistakes", "patterns", "decisions", "tools"}
 
-test("all top-level keys present", REQUIRED_TOP <= set(ins_contract.keys()),
-     f"missing: {REQUIRED_TOP - set(ins_contract.keys())}")
-test("all overview keys present", REQUIRED_OVERVIEW <= set(ins_contract["overview"].keys()),
-     f"missing: {REQUIRED_OVERVIEW - set(ins_contract['overview'].keys())}")
-test("all entry categories present", REQUIRED_ENTRY_CATS <= set(ins_contract["entries"].keys()),
-     f"missing: {REQUIRED_ENTRY_CATS - set(ins_contract['entries'].keys())}")
+test(
+    "all top-level keys present",
+    REQUIRED_TOP <= set(ins_contract.keys()),
+    f"missing: {REQUIRED_TOP - set(ins_contract.keys())}",
+)
+test(
+    "all overview keys present",
+    REQUIRED_OVERVIEW <= set(ins_contract["overview"].keys()),
+    f"missing: {REQUIRED_OVERVIEW - set(ins_contract['overview'].keys())}",
+)
+test(
+    "all entry categories present",
+    REQUIRED_ENTRY_CATS <= set(ins_contract["entries"].keys()),
+    f"missing: {REQUIRED_ENTRY_CATS - set(ins_contract['entries'].keys())}",
+)
 
-test("generated_at is ISO string", isinstance(ins_contract["generated_at"], str) and "T" in ins_contract["generated_at"])
+test(
+    "generated_at is ISO string", isinstance(ins_contract["generated_at"], str) and "T" in ins_contract["generated_at"]
+)
 test("summary is string", isinstance(ins_contract["summary"], str))
 test("overview.health_score is number", isinstance(ins_contract["overview"]["health_score"], (int, float)))
 test("overview.total_entries is int", isinstance(ins_contract["overview"]["total_entries"], int))
@@ -518,6 +604,130 @@ except TypeError as e:
     test("output is JSON serializable", False, str(e))
 
 # ===========================================================================
+# sync_advisory — advisory signal tests (does NOT affect score)
+# ===========================================================================
+
+section("sync_advisory — advisory signal in compute_insights")
+
+test(
+    "sync_advisory key present in compute_insights output",
+    "sync_advisory" in ins_contract,
+)
+adv = ins_contract.get("sync_advisory", {})
+test("sync_advisory is dict", isinstance(adv, dict))
+test("sync_advisory has status", adv.get("status") in ("ok", "suggest", "review"))
+test("sync_advisory has reasons list", isinstance(adv.get("reasons"), list))
+test("sync_advisory has checklist key", "checklist" in adv)
+test("sync_advisory checklist references SYNC-MATRIX.md", "SYNC-MATRIX" in adv.get("checklist", ""))
+
+# Advisory with empty DB: should be "ok" (no hot files, no mistakes)
+test(
+    "sync_advisory status ok for empty DB",
+    ins_empty.get("sync_advisory", {}).get("status") == "ok",
+)
+
+# Advisory should appear in format_insights_report when status is suggest/review
+_adv_suggest_insights = {
+    "generated_at": "2025-01-01T00:00:00+00:00",
+    "summary": "Test",
+    "overview": {
+        "health_score": 50,
+        "total_entries": 10,
+        "sessions": 2,
+        "high_confidence_pct": 20.0,
+        "low_confidence_pct": 30.0,
+        "stale_pct": 20.0,
+        "relation_density": 0.1,
+        "embedding_pct": 5.0,
+    },
+    "quality_alerts": [],
+    "recommended_actions": [],
+    "recurring_noise_titles": [],
+    "hot_files": [],
+    "entries": {},
+    "sync_advisory": {
+        "status": "suggest",
+        "reasons": ["Test reason for suggestion."],
+        "checklist": "docs/SYNC-MATRIX.md",
+    },
+}
+_adv_report = kh.format_insights_report(_adv_suggest_insights)
+test(
+    "format_insights_report renders sync advisory when status is suggest",
+    "Sync Advisory" in _adv_report,
+)
+test(
+    "format_insights_report includes advisory reason text",
+    "Test reason for suggestion." in _adv_report,
+)
+test(
+    "format_insights_report includes SYNC-MATRIX.md reference",
+    "SYNC-MATRIX.md" in _adv_report,
+)
+
+# Advisory should NOT appear when status is ok
+_adv_ok_insights = dict(_adv_suggest_insights)
+_adv_ok_insights["sync_advisory"] = {"status": "ok", "reasons": [], "checklist": "docs/SYNC-MATRIX.md"}
+_ok_report = kh.format_insights_report(_adv_ok_insights)
+test(
+    "format_insights_report suppresses sync advisory when status is ok",
+    "Sync Advisory" not in _ok_report,
+)
+
+# Verify score is not affected by sync advisory
+uri_adv = _new_uri()
+db_adv = _make_db(uri_adv)
+_insert_entries(
+    db_adv,
+    [
+        # Many hot-file mistakes to potentially trigger the advisory
+        *[
+            {
+                "category": "mistake",
+                "title": f"churn mistake {i}",
+                "confidence": 0.7,
+                "affected_files": '["src/core.py", "src/api.py", "src/utils.py"]',
+            }
+            for i in range(10)
+        ],
+    ],
+)
+kh.get_db = _get_db_factory(uri_adv)
+
+_health_before = kh.compute_health()
+_ins_adv = kh.compute_insights()
+_health_after = kh.compute_health()
+
+kh.get_db = orig_get_db
+db_adv.close()
+
+test("score unchanged by sync_advisory", _health_before["score"] == _health_after["score"])
+test("subscores unchanged by sync_advisory", _health_before.get("subscores") == _health_after.get("subscores"))
+
+# Regression: "No decision entries" advisory must NOT fire when decision entries exist
+# (fix: _compute_sync_advisory reads categories.decision, not the absent top-level "decisions" key)
+uri_nodecision_bug = _new_uri()
+db_nodecision_bug = _make_db(uri_nodecision_bug)
+_insert_entries(
+    db_nodecision_bug,
+    [
+        *[{"category": "mistake", "title": f"m{i}", "confidence": 0.7} for i in range(8)],
+        *[{"category": "decision", "title": f"d{i}", "confidence": 0.8} for i in range(3)],
+    ],
+)
+kh.get_db = _get_db_factory(uri_nodecision_bug)
+_ins_nodecision_bug = kh.compute_insights()
+kh.get_db = orig_get_db
+db_nodecision_bug.close()
+_adv_nodecision_bug = _ins_nodecision_bug.get("sync_advisory", {})
+_adv_reasons_nodecision = _adv_nodecision_bug.get("reasons", [])
+test(
+    "sync_advisory no-decision advisory absent when decision entries exist (regression)",
+    not any("No decision entries" in r for r in _adv_reasons_nodecision),
+    f"reasons={_adv_reasons_nodecision}",
+)
+
+# ===========================================================================
 # Existing mode non-regression
 # ===========================================================================
 
@@ -525,10 +735,13 @@ section("Non-regression — existing CLI flags not affected")
 
 uri_nr = _new_uri()
 db_nr = _make_db(uri_nr)
-_insert_entries(db_nr, [
-    {"category": "mistake", "title": "Old mistake", "confidence": 0.6},
-    {"category": "pattern", "title": "Good pattern", "confidence": 0.75},
-])
+_insert_entries(
+    db_nr,
+    [
+        {"category": "mistake", "title": "Old mistake", "confidence": 0.6},
+        {"category": "pattern", "title": "Good pattern", "confidence": 0.75},
+    ],
+)
 
 kh.get_db = _get_db_factory(uri_nr)
 
@@ -552,7 +765,7 @@ db_nr.close()
 # Summary
 # ===========================================================================
 
-print(f"\n{'='*50}")
+print(f"\n{'=' * 50}")
 print(f"Results: {_PASS} passed, {_FAIL} failed")
 if _ERRORS:
     print("\nFailed tests:")

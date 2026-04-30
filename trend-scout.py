@@ -20,6 +20,7 @@ Usage:
     python3 trend-scout.py --search-only        # Discovery + shortlist only, no issues
     python3 trend-scout.py --limit N            # Cap number of issues created
     python3 trend-scout.py --token TOKEN        # Explicit GitHub token
+    python3 trend-scout.py --research-pack      # Write .trend-scout-research-pack.json artifact
 
 Environment:
     GITHUB_TOKEN — GitHub personal access token (recommended to avoid rate limits)
@@ -79,8 +80,14 @@ DEFAULT_CONFIG: dict = {
         ],
         "extra_topics": ["ai-tools", "knowledge-base", "semantic-search", "copilot"],
         "our_topics": [
-            "ai-tools", "copilot", "fts5", "github-copilot",
-            "knowledge-base", "python", "semantic-search", "sqlite",
+            "ai-tools",
+            "copilot",
+            "fts5",
+            "github-copilot",
+            "knowledge-base",
+            "python",
+            "semantic-search",
+            "sqlite",
         ],
         "min_stars": 5,
         "max_per_query": 10,
@@ -154,6 +161,7 @@ DEFAULT_CONFIG: dict = {
 #  Config
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def load_config(path: Path | None = None) -> dict:
     """Load config from JSON file, merging with defaults (file wins for non-null values)."""
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy
@@ -202,14 +210,16 @@ def load_goldset(path: Path | None = None) -> dict:
             min_score = float(min_score) if min_score is not None else None
         except (TypeError, ValueError):
             min_score = None
-        normalized.append({
-            "repo": repo,
-            "required": bool(entry.get("required", True)),
-            "expected_lane": expected_lane,
-            "category": category,
-            "min_score": min_score,
-            "notes": notes,
-        })
+        normalized.append(
+            {
+                "repo": repo,
+                "required": bool(entry.get("required", True)),
+                "expected_lane": expected_lane,
+                "category": category,
+                "min_score": min_score,
+                "notes": notes,
+            }
+        )
     out["entries"] = normalized
     return out
 
@@ -230,6 +240,7 @@ def _deep_merge(base: dict, override: dict) -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 #  GitHub API Client
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class GitHubClient:
     """Minimal stdlib GitHub REST v3 client with rate-limit awareness."""
@@ -266,8 +277,7 @@ class GitHubClient:
             if self._reset_at > now:
                 sleep_secs = min(self._reset_at - now + 2, RATE_LIMIT_SLEEP_CAP)
                 print(
-                    f"  ⏳ Rate limit low ({self._remaining} remaining) — "
-                    f"sleeping {sleep_secs:.0f}s until reset…",
+                    f"  ⏳ Rate limit low ({self._remaining} remaining) — sleeping {sleep_secs:.0f}s until reset…",
                     flush=True,
                 )
                 time.sleep(sleep_secs)
@@ -276,9 +286,7 @@ class GitHubClient:
     def get(self, url: str, params: dict | None = None, _retries: int = 1) -> dict | list | None:
         """Make an authenticated GET request. Returns parsed JSON or None on error."""
         if params:
-            url = url + "?" + urllib.parse.urlencode(
-                {k: v for k, v in params.items() if v is not None}
-            )
+            url = url + "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
         self._wait_if_rate_limited()
         req = urllib.request.Request(url, headers=self._headers())
         try:
@@ -467,9 +475,7 @@ class GitHubClient:
         description: str = "",
     ) -> bool:
         """Ensure label exists in repo; create if missing. Returns True on success."""
-        existing = self.get(
-            f"{GITHUB_API}/repos/{repo}/labels/{urllib.parse.quote(name, safe='')}"
-        )
+        existing = self.get(f"{GITHUB_API}/repos/{repo}/labels/{urllib.parse.quote(name, safe='')}")
         if isinstance(existing, dict) and existing.get("name"):
             return True
         result = self.post(
@@ -482,6 +488,7 @@ class GitHubClient:
 # ═══════════════════════════════════════════════════════════════════════════════
 #  GitHub Models Client (OpenAI-compatible chat completions)
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class ModelsClient:
     """Minimal client for GitHub Models (OpenAI-compatible) chat completions.
@@ -545,6 +552,7 @@ class ModelsClient:
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Deduplication
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def repo_marker(full_name: str, marker_prefix: str = "trend-scout:repo:") -> str:
     """Compute a deterministic hidden HTML-comment marker for a repo full name."""
@@ -620,6 +628,7 @@ def get_existing_markers(client: GitHubClient, target_repo: str, config: dict) -
 #  Scoring / Shortlisting
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def _build_term_set(seed_keywords: list[str], min_len: int = 4) -> set[str]:
     """Extract meaningful terms from seed keyword phrases."""
     terms: set[str] = set()
@@ -661,11 +670,16 @@ def score_repo(repo: dict, config: dict, term_set: "set[str] | None" = None) -> 
     score = 0.0
 
     # Keyword matches in name, description
-    search_text = " ".join(filter(None, [
-        repo.get("name", ""),
-        repo.get("description", ""),
-        repo.get("full_name", ""),
-    ])).lower()
+    search_text = " ".join(
+        filter(
+            None,
+            [
+                repo.get("name", ""),
+                repo.get("description", ""),
+                repo.get("full_name", ""),
+            ],
+        )
+    ).lower()
 
     if term_set is None:
         seed_keywords: list[str] = config.get("search", {}).get("seed_keywords", [])
@@ -739,7 +753,7 @@ def shortlist_repos(
     if goldset is None:
         goldset = load_goldset()
     required_entries: dict[str, dict] = {}
-    for entry in (goldset.get("entries") or []):
+    for entry in goldset.get("entries") or []:
         if entry.get("required"):
             key = str(entry.get("repo", "")).lower()
             if key:
@@ -791,10 +805,7 @@ def shortlist_repos(
     combined.sort(key=lambda t: t[0], reverse=True)
     selected = combined[:max_n]
 
-    selected_required = [
-        repo for _, repo in selected
-        if repo.get("full_name", "").lower() in required_entries
-    ]
+    selected_required = [repo for _, repo in selected if repo.get("full_name", "").lower() in required_entries]
     if selected_required:
         selected_names = [repo.get("full_name") for repo in selected_required]
         if len(pinned) > len(selected_required):
@@ -813,6 +824,7 @@ def shortlist_repos(
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Issue Rendering
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def _fmt_date(d: str) -> str:
     if not d:
@@ -863,8 +875,7 @@ def _derive_strengths(repo: dict) -> list[str]:
     pushed = repo.get("pushed_at") or ""
     if pushed:
         try:
-            age_days = (datetime.now(timezone.utc) -
-                        datetime.fromisoformat(pushed.replace("Z", "+00:00"))).days
+            age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(pushed.replace("Z", "+00:00"))).days
             if age_days < 30:
                 out.append("Actively maintained (pushed within 30 days)")
             elif age_days < 90:
@@ -892,8 +903,7 @@ def _derive_weaknesses(repo: dict) -> list[str]:
     pushed = repo.get("pushed_at") or ""
     if pushed:
         try:
-            age_days = (datetime.now(timezone.utc) -
-                        datetime.fromisoformat(pushed.replace("Z", "+00:00"))).days
+            age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(pushed.replace("Z", "+00:00"))).days
             if age_days > 365:
                 out.append(f"Inactive: last pushed {age_days} days ago (>1 year)")
             elif age_days > 180:
@@ -989,9 +999,13 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
     hint = f"{desc} {readme_excerpt[:3000].lower()}"
 
     # ── Claude Code integration (highest priority — directly affects claude-adapter.py) ──
-    if "claude-code" in repo_topics or any(kw in hint for kw in (
-        "claude code", "claude-code",
-    )):
+    if "claude-code" in repo_topics or any(
+        kw in hint
+        for kw in (
+            "claude code",
+            "claude-code",
+        )
+    ):
         out.append(
             "**Claude Code session patterns**: this repo's Claude Code integration approach "
             "could improve `claude-adapter.py`'s JSONL parsing — e.g., handling new session "
@@ -999,10 +1013,20 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
         )
 
     # ── Hybrid / semantic retrieval ──────────────────────────────────────────
-    if any(kw in hint for kw in (
-        "hybrid search", "fts+semantic", "fts + semantic", "semantic search",
-        "vector search", "embedding", "ann ", "faiss", "hnswlib",
-    )):
+    if any(
+        kw in hint
+        for kw in (
+            "hybrid search",
+            "fts+semantic",
+            "fts + semantic",
+            "semantic search",
+            "vector search",
+            "embedding",
+            "ann ",
+            "faiss",
+            "hnswlib",
+        )
+    ):
         out.append(
             "**Hybrid FTS+semantic retrieval**: combining keyword and embedding-based search "
             "could improve recall in `query-session.py` / `briefing.py` — e.g., a query for "
@@ -1011,9 +1035,18 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
         )
 
     # ── Knowledge graph / graph intelligence ────────────────────────────────
-    if any(kw in hint for kw in (
-        "graph intelligence", "knowledge graph", "knowledge-graph", "knowledge_graph",
-    )) or "knowledge-graph" in repo_topics:
+    if (
+        any(
+            kw in hint
+            for kw in (
+                "graph intelligence",
+                "knowledge graph",
+                "knowledge-graph",
+                "knowledge_graph",
+            )
+        )
+        or "knowledge-graph" in repo_topics
+    ):
         out.append(
             "**Graph-based knowledge linking**: a relation graph over session entries could let "
             "`briefing.py` surface related decisions and mistakes by topic proximity — e.g., "
@@ -1022,10 +1055,19 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
         )
 
     # ── Memory consolidation / dedup ─────────────────────────────────────────
-    if any(kw in hint for kw in (
-        "consolidate", "consolidat", "dream", "dedup", "deduplicate",
-        "memory consolidat", "detect conflicts", "conflicts",
-    )):
+    if any(
+        kw in hint
+        for kw in (
+            "consolidate",
+            "consolidat",
+            "dream",
+            "dedup",
+            "deduplicate",
+            "memory consolidat",
+            "detect conflicts",
+            "conflicts",
+        )
+    ):
         out.append(
             "**Automated knowledge consolidation**: a background consolidation pass (like this "
             "repo's `dream` command) could extend `extract-knowledge.py` to merge near-duplicate "
@@ -1033,9 +1075,15 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
         )
 
     # ── CLI ergonomics ────────────────────────────────────────────────────────
-    if any(kw in hint for kw in (
-        "memory-tool", "memory tool", "argparse", "typer",
-    )) or bool(re.search(r"\bcli\b", hint)):
+    if any(
+        kw in hint
+        for kw in (
+            "memory-tool",
+            "memory tool",
+            "argparse",
+            "typer",
+        )
+    ) or bool(re.search(r"\bcli\b", hint)):
         out.append(
             "**CLI verb patterns**: a clear add/search/update/delete verb model (like "
             "`memory-tool add` / `search` / `dream`) could streamline the UX of "
@@ -1043,10 +1091,17 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
         )
 
     # ── Structured reflexion / reflection workflow ────────────────────────────
-    if any(kw in hint for kw in (
-        "reflexion", "reflect-load", "structured reflection", "structured refle",
-        "post-mortem", "lessons learned",
-    )):
+    if any(
+        kw in hint
+        for kw in (
+            "reflexion",
+            "reflect-load",
+            "structured reflection",
+            "structured refle",
+            "post-mortem",
+            "lessons learned",
+        )
+    ):
         out.append(
             "**Structured reflexion workflow**: pre-task failure recall and post-task "
             "structured reflection (worked/failed/next fields) could extend `learn.py --mistake` "
@@ -1054,10 +1109,18 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
         )
 
     # ── Multi-agent coordination ──────────────────────────────────────────────
-    if any(kw in hint for kw in (
-        "multi-agent", "multi agent", "agent commons", "agent pool",
-        "agents discover", "join rooms", "build trust",
-    )):
+    if any(
+        kw in hint
+        for kw in (
+            "multi-agent",
+            "multi agent",
+            "agent commons",
+            "agent pool",
+            "agents discover",
+            "join rooms",
+            "build trust",
+        )
+    ):
         out.append(
             "**Multi-agent coordination**: the agent commons / trust model could inform how "
             "`learn.py` and `watch-sessions.py` handle concurrent writes from multiple "
@@ -1065,10 +1128,17 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
         )
 
     # ── Zero-config / one-command install ────────────────────────────────────
-    if any(kw in hint for kw in (
-        "zero config", "zero-config", "one command", "1 command",
-        "plugin marketplace", "pip install ai",
-    )):
+    if any(
+        kw in hint
+        for kw in (
+            "zero config",
+            "zero-config",
+            "one command",
+            "1 command",
+            "plugin marketplace",
+            "pip install ai",
+        )
+    ):
         out.append(
             "**Zero-config install UX**: `install.py` / `setup-project.py` could adopt a "
             "single-command bootstrap pattern (similar to this repo's one-command install) to "
@@ -1076,9 +1146,17 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
         )
 
     # ── Offline / no-cloud posture ────────────────────────────────────────────
-    if any(kw in hint for kw in (
-        "offline", "no cloud", "no-cloud", "owns your data", "zero api key", "zero api keys",
-    )):
+    if any(
+        kw in hint
+        for kw in (
+            "offline",
+            "no cloud",
+            "no-cloud",
+            "owns your data",
+            "zero api key",
+            "zero api keys",
+        )
+    ):
         out.append(
             "**Offline-first design**: this repo's no-cloud/no-server posture directly mirrors "
             "our local-SQLite approach — could validate that `knowledge.db` workflows never "
@@ -1125,11 +1203,7 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
     # ── MCP tool server ───────────────────────────────────────────────────────
     # Require "mcp server", "mcp-server", "model context protocol", or an explicit
     # "mcp" topic — bare substring matches on "mcp" are too noisy.
-    if (
-        "mcp server" in hint or "mcp-server" in hint
-        or "model context protocol" in hint
-        or "mcp" in repo_topics
-    ):
+    if "mcp server" in hint or "mcp-server" in hint or "model context protocol" in hint or "mcp" in repo_topics:
         out.append(
             "**MCP tool-server surface**: the MCP server interface here could expose "
             "`query-session.py` and `briefing.py` as directly callable MCP tools — "
@@ -1138,10 +1212,18 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
         )
 
     # ── Multi-source ingestion / connector adapters ───────────────────────────
-    if any(kw in hint for kw in (
-        "confluence", "jira", "multi-source", "multi source",
-        "ingestion adapter", "source connector", "data connector",
-    )):
+    if any(
+        kw in hint
+        for kw in (
+            "confluence",
+            "jira",
+            "multi-source",
+            "multi source",
+            "ingestion adapter",
+            "source connector",
+            "data connector",
+        )
+    ):
         out.append(
             "**Source connector / ingestion adapter**: the multi-source ingestion "
             "pattern here could inform a pluggable connector layer in "
@@ -1151,9 +1233,15 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
         )
 
     # ── Frontmatter-aware markdown indexing ──────────────────────────────────
-    if any(kw in hint for kw in (
-        "frontmatter", "front matter", "front-matter", "obsidian",
-    )):
+    if any(
+        kw in hint
+        for kw in (
+            "frontmatter",
+            "front matter",
+            "front-matter",
+            "obsidian",
+        )
+    ):
         out.append(
             "**Frontmatter-aware indexing**: parsing YAML frontmatter in session "
             "markdown files could extend `build-session-index.py` and "
@@ -1164,10 +1252,16 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
 
     # ── Incremental reindex / changed-file tracking ───────────────────────────
     # "reindex" is domain-specific enough on its own; compound phrases add coverage.
-    if any(kw in hint for kw in (
-        "incremental reindex", "incremental index", "reindex",
-        "changed files", "change detection",
-    )):
+    if any(
+        kw in hint
+        for kw in (
+            "incremental reindex",
+            "incremental index",
+            "reindex",
+            "changed files",
+            "change detection",
+        )
+    ):
         out.append(
             "**Incremental reindex / changed-file tracking**: the change-detection "
             "approach here could improve `watch-sessions.py`'s polling loop — e.g., "
@@ -1177,10 +1271,16 @@ def _derive_learnings(repo: dict, our_topics: list[str], readme_excerpt: str = "
         )
 
     # ── Document / attachment conversion pipeline ─────────────────────────────
-    if any(kw in hint for kw in (
-        "document conversion", "file conversion", "attachment support",
-        "html export", "office document",
-    )):
+    if any(
+        kw in hint
+        for kw in (
+            "document conversion",
+            "file conversion",
+            "attachment support",
+            "html export",
+            "office document",
+        )
+    ):
         out.append(
             "**Document conversion pipeline**: the file/attachment ingestion approach "
             "here could extend `build-session-index.py` to normalise non-markdown "
@@ -1210,7 +1310,10 @@ def _is_only_fallback_learnings(learnings: list[str]) -> bool:
 
 
 def _should_veto_candidate(
-    repo: dict, readme: str, our_topics: list[str], veto_cfg: dict,
+    repo: dict,
+    readme: str,
+    our_topics: list[str],
+    veto_cfg: dict,
     learnings: "list[str] | None" = None,
 ) -> tuple[bool, str]:
     """Rowboat veto gate: evaluate whether a candidate should be skipped.
@@ -1242,6 +1345,8 @@ def _should_veto_candidate(
         if distinct_signals < min_distinct:
             return True, f"insufficient distinct insights ({distinct_signals} < {min_distinct})"
     return False, ""
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Hard cap on individual LLM-generated bullet length to bound output size.
@@ -1263,7 +1368,7 @@ _MODELS_PROMPT_TEMPLATE = (
     "what our project can adopt or adapt from this repository. Each bullet should name "
     "a specific pattern, technique, or design decision and describe exactly how it could "
     "improve one of our scripts or workflows. Be specific — not generic.\n\n"
-    'Respond with ONLY valid JSON, no markdown fences, no explanation:\n'
+    "Respond with ONLY valid JSON, no markdown fences, no explanation:\n"
     '{{"learnings": ["**Pattern**: description...", "..."]}}'
 )
 
@@ -1414,10 +1519,7 @@ def _analyze_repo_with_models(
         print("  ⚠ Models API: 'learnings' is not a list — falling back", file=sys.stderr)
         return None
 
-    sanitized = [
-        s for raw in raw_bullets[:max_learnings]
-        if (s := _sanitize_learning_bullet(raw))
-    ]
+    sanitized = [s for raw in raw_bullets[:max_learnings] if (s := _sanitize_learning_bullet(raw))]
 
     if not sanitized:
         print("  ⚠ Models API: no valid bullets after sanitisation — falling back", file=sys.stderr)
@@ -1455,10 +1557,7 @@ def render_issue_body(
         excerpt = readme_excerpt[:1500].strip()
         if len(readme_excerpt) > 1500:
             excerpt += "\n\n*(truncated)*"
-        readme_block = (
-            "\n<details>\n<summary>README excerpt</summary>\n\n"
-            f"```\n{excerpt}\n```\n</details>\n"
-        )
+        readme_block = f"\n<details>\n<summary>README excerpt</summary>\n\n```\n{excerpt}\n```\n</details>\n"
 
     strengths_md = "".join(f"- {s}\n" for s in strengths)
     weaknesses_md = "".join(f"- {w}\n" for w in weaknesses)
@@ -1566,7 +1665,10 @@ def _check_grace_window(grace_window_hours: float, state: dict) -> tuple[bool, s
     except Exception:
         pass
     return False, ""
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def _run_single_lane(
     client: "GitHubClient",
@@ -1600,7 +1702,10 @@ def _run_single_lane(
     for topic in topics:
         print(f"  🏷  [{lane_name}] Topic: {topic!r}", flush=True)
         results = client.search_repos_by_topic(
-            topic, min_stars=min_stars, max_results=max_per_query, language=language,
+            topic,
+            min_stars=min_stars,
+            max_results=max_per_query,
+            language=language,
         )
         stats["topics"].append({"query": topic, "count": len(results)})
         collect_fn(results, lane_name, topic)
@@ -1638,9 +1743,7 @@ def search_stage(client: "GitHubClient", config: dict) -> list[dict]:
     lookback_days: int = int(s_cfg.get("lookback_days", 730))
     language: str = s_cfg.get("language", "")
 
-    created_after = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).strftime(
-        "%Y-%m-%d"
-    )
+    created_after = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
 
     all_repos: list[dict] = []
     seen_names: set[str] = set()
@@ -1660,13 +1763,19 @@ def search_stage(client: "GitHubClient", config: dict) -> list[dict]:
     primary_topics: list[str] = s_cfg.get("extra_topics", [])
     print(
         f"  🛤  Lane [primary] — {len(primary_keywords)} keyword(s), "
-        f"{len(primary_topics)} topic(s)"
-        + (f", language={language}" if language else ""),
+        f"{len(primary_topics)} topic(s)" + (f", language={language}" if language else ""),
         flush=True,
     )
     primary_stats = _run_single_lane(
-        client, "primary", primary_keywords, primary_topics,
-        min_stars, max_per_query, created_after, language or None, _collect,
+        client,
+        "primary",
+        primary_keywords,
+        primary_topics,
+        min_stars,
+        max_per_query,
+        created_after,
+        language or None,
+        _collect,
     )
     all_lane_stats.append(primary_stats)
 
@@ -1681,18 +1790,21 @@ def search_stage(client: "GitHubClient", config: dict) -> list[dict]:
         lane_language = lane_cfg.get("language")
         if isinstance(lane_language, str):
             lane_language = lane_language.strip() or None
-        lane_created_after = (
-            datetime.now(timezone.utc) - timedelta(days=lane_lookback_days)
-        ).strftime("%Y-%m-%d")
+        lane_created_after = (datetime.now(timezone.utc) - timedelta(days=lane_lookback_days)).strftime("%Y-%m-%d")
         print(
             f"  🛤  Lane [{lane_name}] — {len(lane_keywords)} keyword(s), "
-            f"{len(lane_topics)} topic(s)"
-            + (f", language={lane_language}" if lane_language else ", any language"),
+            f"{len(lane_topics)} topic(s)" + (f", language={lane_language}" if lane_language else ", any language"),
             flush=True,
         )
         lane_stats = _run_single_lane(
-            client, lane_name, lane_keywords, lane_topics,
-            lane_min_stars, lane_max_per_query, lane_created_after, lane_language,
+            client,
+            lane_name,
+            lane_keywords,
+            lane_topics,
+            lane_min_stars,
+            lane_max_per_query,
+            lane_created_after,
+            lane_language,
             _collect,
         )
         all_lane_stats.append(lane_stats)
@@ -1738,13 +1850,15 @@ def build_discovery_explain(
         unique_count = len(raw_by_lane.get(name, []))
         kw_total = sum(q.get("count", 0) for q in stats.get("keywords", []))
         topic_total = sum(q.get("count", 0) for q in stats.get("topics", []))
-        annotated_lanes.append({
-            "name": name,
-            "keywords": stats.get("keywords", []),
-            "topics": stats.get("topics", []),
-            "raw_hits": kw_total + topic_total,
-            "unique_new_repos": unique_count,
-        })
+        annotated_lanes.append(
+            {
+                "name": name,
+                "keywords": stats.get("keywords", []),
+                "topics": stats.get("topics", []),
+                "raw_hits": kw_total + topic_total,
+                "unique_new_repos": unique_count,
+            }
+        )
 
     artifact: dict = {
         "run_at": run_at,
@@ -1780,15 +1894,9 @@ def build_discovery_explain(
     if isinstance(goldset, dict):
         goldset_entries = goldset.get("entries", [])
     if isinstance(goldset_entries, list) and goldset_entries:
-        raw_index = {
-            str(repo.get("full_name", "")).lower(): repo
-            for repo in raw_repos
-            if repo.get("full_name")
-        }
+        raw_index = {str(repo.get("full_name", "")).lower(): repo for repo in raw_repos if repo.get("full_name")}
         shortlisted_index = {
-            str(repo.get("full_name", "")).lower(): repo
-            for repo in shortlisted
-            if repo.get("full_name")
+            str(repo.get("full_name", "")).lower(): repo for repo in shortlisted if repo.get("full_name")
         }
         goldset_rows = []
         raw_matches = 0
@@ -1837,21 +1945,23 @@ def build_discovery_explain(
             if required and source_repo is None:
                 required_missing += 1
 
-            goldset_rows.append({
-                "repo": repo_name,
-                "required": required,
-                "category": entry.get("category"),
-                "status": status,
-                "found_in_raw": raw_repo is not None,
-                "shortlisted": shortlisted_repo is not None,
-                "expected_lane": expected_lane,
-                "lane": actual_lane,
-                "lane_ok": lane_ok,
-                "score": score,
-                "min_score": min_score,
-                "score_ok": score_ok,
-                "notes": entry.get("notes"),
-            })
+            goldset_rows.append(
+                {
+                    "repo": repo_name,
+                    "required": required,
+                    "category": entry.get("category"),
+                    "status": status,
+                    "found_in_raw": raw_repo is not None,
+                    "shortlisted": shortlisted_repo is not None,
+                    "expected_lane": expected_lane,
+                    "lane": actual_lane,
+                    "lane_ok": lane_ok,
+                    "score": score,
+                    "min_score": min_score,
+                    "score_ok": score_ok,
+                    "notes": entry.get("notes"),
+                }
+            )
 
         artifact["goldset"] = {
             "path": goldset.get("path"),
@@ -1874,28 +1984,23 @@ def build_discovery_explain(
             reasons.append("raw_miss: not found in any search lane")
         else:
             if row.get("lane_ok") is False:
-                reasons.append(
-                    f"lane_miss: found via '{row.get('lane')}', "
-                    f"expected '{row.get('expected_lane')}'"
-                )
+                reasons.append(f"lane_miss: found via '{row.get('lane')}', expected '{row.get('expected_lane')}'")
             if row.get("score_ok") is False:
-                reasons.append(
-                    f"score_miss: score={row.get('score')} below "
-                    f"min_score={row.get('min_score')}"
-                )
+                reasons.append(f"score_miss: score={row.get('score')} below min_score={row.get('min_score')}")
         if reasons:
-            goldset_misses.append({
-                "repo": row["repo"],
-                "required": row["required"],
-                "expected_lane": row.get("expected_lane"),
-                "found_in_raw": bool(row.get("found_in_raw")),
-                "found_in_shortlist": bool(row.get("shortlisted")),
-                "reason": "; ".join(reasons),
-            })
+            goldset_misses.append(
+                {
+                    "repo": row["repo"],
+                    "required": row["required"],
+                    "expected_lane": row.get("expected_lane"),
+                    "found_in_raw": bool(row.get("found_in_raw")),
+                    "found_in_shortlist": bool(row.get("shortlisted")),
+                    "reason": "; ".join(reasons),
+                }
+            )
     artifact["goldset_misses"] = goldset_misses
 
     return artifact
-
 
 
 def enrich_stage(repos: list[dict], client: GitHubClient, config: dict) -> list[tuple[dict, str]]:
@@ -1989,9 +2094,14 @@ def create_stage(
         if models_client is not None and analysis_cfg:
             print(f"  🤖 Analyzing with GitHub Models ({analysis_model})…", flush=True)
             llm_learnings = _analyze_repo_with_models(
-                repo, readme, our_topics, models_client,
-                model=analysis_model, temperature=analysis_temp,
-                max_tokens=analysis_max_tok, max_learnings=analysis_max_learn,
+                repo,
+                readme,
+                our_topics,
+                models_client,
+                model=analysis_model,
+                temperature=analysis_temp,
+                max_tokens=analysis_max_tok,
+                max_learnings=analysis_max_learn,
             )
             if llm_learnings:
                 print(f"  ✓ LLM learnings: {len(llm_learnings)} bullet(s)", flush=True)
@@ -2000,8 +2110,7 @@ def create_stage(
 
         # Compute effective learnings before veto check and rendering.
         effective_learnings: list[str] = (
-            llm_learnings if llm_learnings is not None
-            else _derive_learnings(repo, our_topics, readme)
+            llm_learnings if llm_learnings is not None else _derive_learnings(repo, our_topics, readme)
         )
 
         # ── Rowboat veto gate (new creates only) ──────────────────────────────
@@ -2033,9 +2142,7 @@ def create_stage(
                 print(f"    {preview}")
                 if len(body) > 600:
                     print(f"    … ({len(body) - 600} more chars)")
-                created_urls.append(
-                    f"[dry-run] https://github.com/{target_repo}/issues/{issue_number}"
-                )
+                created_urls.append(f"[dry-run] https://github.com/{target_repo}/issues/{issue_number}")
                 continue
 
             print(f"  🔄 Updating issue #{issue_number}: {title!r}", flush=True)
@@ -2088,6 +2195,224 @@ def create_stage(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _EXPLAIN_OUTPUT_DEFAULT = SCRIPT_DIR / ".trend-scout-discovery-explain.json"
+_RESEARCH_PACK_DEFAULT = SCRIPT_DIR / ".trend-scout-research-pack.json"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Research Pack
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _build_why_discovered(repo: dict) -> list[str]:
+    """Explain why a repo was surfaced (lane + query + keyword/topic signals)."""
+    reasons: list[str] = []
+    lane = repo.get("_discovery_lane", "primary")
+    query = repo.get("_discovery_query", "")
+    if lane and query:
+        reasons.append(f"Discovered via lane '{lane}' using query '{query}'")
+    elif lane:
+        reasons.append(f"Discovered via lane '{lane}'")
+    topics = repo.get("topics", [])
+    if topics:
+        reasons.append(f"Relevant topics: {', '.join(topics[:6])}")
+    desc = (repo.get("description") or "").strip()
+    if desc:
+        reasons.append(f"Description: {desc[:200]}")
+    return reasons or ["No discovery metadata available"]
+
+
+def _build_novelty_signals(repo: dict) -> list[str]:
+    """Derive novelty/positive signals from a shortlisted repo."""
+    out: list[str] = []
+    stars: int = repo.get("stargazers_count", 0)
+    forks: int = repo.get("forks_count", 0)
+    lang: str = repo.get("language") or ""
+    topics: list[str] = repo.get("topics", [])
+    pushed = repo.get("pushed_at") or ""
+
+    if stars >= 1000:
+        out.append(f"High community adoption ({stars:,} ⭐)")
+    elif stars >= 100:
+        out.append(f"Solid traction ({stars:,} ⭐)")
+    elif stars >= 10:
+        out.append(f"Emerging interest ({stars:,} ⭐)")
+
+    if forks >= 50:
+        out.append(f"Widely forked ({forks:,}) — active derivative work")
+
+    if topics:
+        out.append(f"Well-tagged for discovery: {', '.join(topics[:5])}")
+
+    if lang:
+        out.append(f"Primary language: {lang}")
+
+    if pushed:
+        try:
+            age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(pushed.replace("Z", "+00:00"))).days
+            if age_days < 30:
+                out.append("Actively maintained (pushed < 30 days ago)")
+            elif age_days < 90:
+                out.append("Recently active (pushed < 90 days ago)")
+        except Exception:
+            pass
+
+    if repo.get("license"):
+        lic = (repo.get("license") or {}).get("spdx_id") or "present"
+        out.append(f"License: {lic}")
+
+    return out or ["Insufficient metadata for novelty analysis"]
+
+
+def _build_risk_signals(repo: dict) -> list[str]:
+    """Derive risk/caution signals from a shortlisted repo."""
+    out: list[str] = []
+    stars: int = repo.get("stargazers_count", 0)
+    open_issues: int = repo.get("open_issues_count", 0)
+    pushed = repo.get("pushed_at") or ""
+
+    if repo.get("archived"):
+        out.append("⚠ Repository is archived — no active development expected")
+
+    if repo.get("fork"):
+        out.append("Fork — may not be the canonical upstream source")
+
+    if stars < 20:
+        out.append(f"Low star count ({stars}) — limited community validation")
+
+    if pushed:
+        try:
+            age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(pushed.replace("Z", "+00:00"))).days
+            if age_days > 365:
+                out.append(f"Stale: last pushed {age_days} days ago (>1 year)")
+            elif age_days > 180:
+                out.append(f"Low activity: last pushed {age_days} days ago")
+        except Exception:
+            pass
+
+    if open_issues > 50:
+        out.append(f"High open issue count ({open_issues}) — possible maintenance backlog")
+
+    if not repo.get("license"):
+        out.append("No license detected — usage rights unclear")
+
+    return out or ["No significant risk signals from available metadata"]
+
+
+def _build_recommended_followups(repo: dict, learnings: list[str]) -> list[str]:
+    """Generate recommended follow-up actions for a shortlisted repo."""
+    full_name = repo.get("full_name", "")
+    html_url = repo.get("html_url") or f"https://github.com/{full_name}"
+    followups: list[str] = [
+        f"Review README at {html_url}#readme",
+        f"Check open issues and recent commits at {html_url}/issues",
+    ]
+    if learnings and not (len(learnings) == 1 and learnings[0].startswith(_VETO_FALLBACK_PREFIX)):
+        followups.append(
+            f"Create a tentacle or spike to evaluate the adoption path for the learnings identified for {full_name}"
+        )
+    if repo.get("topics"):
+        followups.append(f"Search GitHub for similar repos with topics: {', '.join(repo['topics'][:3])}")
+    return followups
+
+
+def _build_tentacle_handoff(repo: dict, learnings: list[str]) -> str:
+    """Build a brief tentacle-handoff hint for a shortlisted repo."""
+    full_name = repo.get("full_name", "")
+    if not learnings or (len(learnings) == 1 and learnings[0].startswith(_VETO_FALLBACK_PREFIX)):
+        return (
+            f"Investigate {full_name} manually: read the README and check whether "
+            "any patterns apply to build-session-index.py, query-session.py, or the hooks chain."
+        )
+    bullets = "; ".join(f"'{l[:120]}'" for l in learnings[:2])
+    return (
+        f"Spawn a research tentacle for {full_name} to evaluate: {bullets}. "
+        "Prioritise the highest-signal learning and validate applicability with a spike."
+    )
+
+
+def build_research_pack_entry(
+    repo: dict,
+    readme: str,
+    config: dict,
+    global_terms: "set[str] | None" = None,
+) -> dict:
+    """Build a single research-pack repo entry from enriched metadata.
+
+    Combines discovery provenance, scoring, and analysis signals into the
+    canonical repo-analysis schema for ``.trend-scout-research-pack.json``.
+    """
+    our_topics: list[str] = config.get("search", {}).get("our_topics", [])
+    if global_terms is None:
+        global_terms = _build_global_term_set(config)
+
+    score = score_repo(repo, config, term_set=global_terms)
+    learnings = _derive_learnings(repo, our_topics, readme)
+
+    return {
+        "full_name": repo.get("full_name", ""),
+        "html_url": repo.get("html_url") or f"https://github.com/{repo.get('full_name', '')}",
+        "discovery_lane": repo.get("_discovery_lane", "primary"),
+        "discovery_query": repo.get("_discovery_query", ""),
+        "score": score,
+        "stars": repo.get("stargazers_count", 0),
+        "language": repo.get("language") or "",
+        "topics": list(repo.get("topics", [])),
+        "why_discovered": _build_why_discovered(repo),
+        "novelty_signals": _build_novelty_signals(repo),
+        "risk_signals": _build_risk_signals(repo),
+        "recommended_followups": _build_recommended_followups(repo, learnings),
+        "tentacle_handoff": _build_tentacle_handoff(repo, learnings),
+    }
+
+
+def build_research_pack(
+    enriched: "list[tuple[dict, str]]",
+    config: dict,
+    skip_reason: "str | None" = None,
+) -> dict:
+    """Build the full research-pack artifact from enriched (repo, readme) pairs.
+
+    When *skip_reason* is set (e.g. grace-window active), the pack is written
+    with ``run_skipped=True`` and an empty ``repos`` list rather than fabricating
+    analysis for a run that did not happen.
+    """
+    generated_at = datetime.now(timezone.utc).isoformat()
+    pack: dict = {
+        "generated_at": generated_at,
+        "source": "trend-scout.py",
+        "schema_version": 1,
+    }
+    if skip_reason:
+        pack["run_skipped"] = True
+        pack["skip_reason"] = skip_reason
+        pack["repos"] = []
+        return pack
+
+    global_terms = _build_global_term_set(config)
+    pack["repos"] = [
+        build_research_pack_entry(repo, readme, config, global_terms=global_terms) for repo, readme in enriched
+    ]
+    return pack
+
+
+def _write_research_pack_artifact(
+    enriched: "list[tuple[dict, str]]",
+    config: dict,
+    output: "Path | None" = None,
+    skip_reason: "str | None" = None,
+) -> None:
+    """Write the research-pack JSON artifact to disk."""
+    pack = build_research_pack(enriched, config, skip_reason=skip_reason)
+    out_path = output or _RESEARCH_PACK_DEFAULT
+    try:
+        out_path.write_text(json.dumps(pack, indent=2, ensure_ascii=False), encoding="utf-8")
+        if pack.get("run_skipped"):
+            print(f"\n  📦 Research pack written (skipped run) → {out_path}", flush=True)
+        else:
+            n = len(pack.get("repos", []))
+            print(f"\n  📦 Research pack written ({n} repo(s)) → {out_path}", flush=True)
+    except Exception as e:
+        print(f"  ⚠ Could not write research pack to {out_path}: {e}", file=sys.stderr)
 
 
 def _write_explain_artifact(
@@ -2109,16 +2434,18 @@ def _write_explain_artifact(
     run_at = datetime.now(timezone.utc).isoformat()
     goldset = load_goldset()
     artifact = build_discovery_explain(
-        raw_repos, shortlisted, run_at,
-        config=config, goldset=goldset, skip_reason=skip_reason,
+        raw_repos,
+        shortlisted,
+        run_at,
+        config=config,
+        goldset=goldset,
+        skip_reason=skip_reason,
     )
     out_path = explain_output or _EXPLAIN_OUTPUT_DEFAULT
     try:
         out_path.write_text(json.dumps(artifact, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"\n  📊 Discovery explain artifact written → {out_path}", flush=True)
-        lane_summary = ", ".join(
-            f"{l['name']}:{l['unique_new_repos']}repos" for l in artifact.get("lanes", [])
-        )
+        lane_summary = ", ".join(f"{l['name']}:{l['unique_new_repos']}repos" for l in artifact.get("lanes", []))
         print(f"     Lanes: {lane_summary}", flush=True)
         goldset_summary = artifact.get("goldset")
         if isinstance(goldset_summary, dict) and goldset_summary.get("expected_total", 0) > 0:
@@ -2133,9 +2460,18 @@ def _write_explain_artifact(
         print(f"  ⚠ Could not write explain artifact to {out_path}: {e}", file=sys.stderr)
 
 
-def run(config: dict, dry_run: bool = False, search_only: bool = False,
-        limit: int | None = None, token: str | None = None, force: bool = False,
-        explain: bool = False, explain_output: "Path | None" = None) -> int:
+def run(
+    config: dict,
+    dry_run: bool = False,
+    search_only: bool = False,
+    limit: int | None = None,
+    token: str | None = None,
+    force: bool = False,
+    explain: bool = False,
+    explain_output: "Path | None" = None,
+    research_pack: bool = False,
+    research_pack_output: "Path | None" = None,
+) -> int:
     """Execute the full trend-scout pipeline. Returns exit code.
 
     Args:
@@ -2144,6 +2480,12 @@ def run(config: dict, dry_run: bool = False, search_only: bool = False,
             adjacent to the script).  The artifact records per-lane query stats,
             raw candidate counts, and shortlist annotations so operators can
             diagnose coverage gaps (e.g. which lane found which repo).
+        research_pack: When True, writes a structured follow-up research artifact to
+            ``research_pack_output`` (default: ``.trend-scout-research-pack.json``
+            adjacent to the script).  The artifact records repo-analysis fields
+            (novelty signals, risk signals, recommended follow-ups, tentacle handoff)
+            for all shortlisted/enriched repos.  When a grace-window skip occurs,
+            the pack is written with ``run_skipped=True`` rather than omitted.
     """
     target_repo = config["target_repo"]
     lanes_count = len(config.get("lanes", []))
@@ -2168,6 +2510,8 @@ def run(config: dict, dry_run: bool = False, search_only: bool = False,
                 print(f"   Use --force to override.")
                 if explain:
                     _write_explain_artifact([], [], config, explain_output, skip_reason=reason)
+                if research_pack:
+                    _write_research_pack_artifact([], config, research_pack_output, skip_reason=reason)
                 return 0
 
     client = GitHubClient(token=token)
@@ -2178,25 +2522,27 @@ def run(config: dict, dry_run: bool = False, search_only: bool = False,
     models_client: ModelsClient | None = None
     analysis_cfg: dict = config.get("analysis", {})
     if analysis_cfg.get("enabled", False):
-        token_env = str(_analysis_value(analysis_cfg, "token_env", "GITHUB_MODELS_TOKEN")).strip() or "GITHUB_MODELS_TOKEN"
+        token_env = (
+            str(_analysis_value(analysis_cfg, "token_env", "GITHUB_MODELS_TOKEN")).strip() or "GITHUB_MODELS_TOKEN"
+        )
         models_token = os.environ.get(token_env)
         model_name = str(_analysis_value(analysis_cfg, "model", DEFAULT_MODELS_MODEL)).strip() or DEFAULT_MODELS_MODEL
         if models_token:
             if not _is_valid_models_model_id(model_name):
                 print(
-                    f"   Analysis: invalid model id {model_name!r} "
-                    "(expected 'publisher/model') — skipping LLM path",
+                    f"   Analysis: invalid model id {model_name!r} (expected 'publisher/model') — skipping LLM path",
                     flush=True,
                 )
             else:
-                endpoint = str(_analysis_value(analysis_cfg, "endpoint", MODELS_API_ENDPOINT)).strip() or MODELS_API_ENDPOINT
+                endpoint = (
+                    str(_analysis_value(analysis_cfg, "endpoint", MODELS_API_ENDPOINT)).strip() or MODELS_API_ENDPOINT
+                )
                 timeout = int(_analysis_number(analysis_cfg, "timeout", 30, int))
                 models_client = ModelsClient(token=models_token, endpoint=endpoint, timeout=timeout)
                 print(f"   Analysis: GitHub Models enabled (model: {model_name})", flush=True)
         else:
             print(
-                f"   Analysis: enabled in config but no token found in {token_env!r} "
-                "— skipping LLM path",
+                f"   Analysis: enabled in config but no token found in {token_env!r} — skipping LLM path",
                 flush=True,
             )
 
@@ -2217,12 +2563,18 @@ def run(config: dict, dry_run: bool = False, search_only: bool = False,
     if search_only:
         if explain:
             _write_explain_artifact(candidates, shortlisted, config, explain_output)
+        if research_pack:
+            # search-only runs have no enriched data; build pack from shortlist with empty readme
+            _so_enriched = [(r, "") for r in shortlisted]
+            _write_research_pack_artifact(_so_enriched, config, research_pack_output)
         print("\n✅ --search-only: stopping before enrichment/issue creation.")
         return 0
 
     if not shortlisted:
         if explain:
             _write_explain_artifact(candidates, shortlisted, config, explain_output)
+        if research_pack:
+            _write_research_pack_artifact([], config, research_pack_output)
         print("\nℹ Nothing shortlisted — no issues to create.")
         return 0
 
@@ -2239,8 +2591,12 @@ def run(config: dict, dry_run: bool = False, search_only: bool = False,
     # Stage 5: Create/update issues (with optional LLM analysis per-repo)
     print("\n[Stage 4b] Creating/updating issues…")
     created = create_stage(
-        enriched, client, config, existing_markers,
-        dry_run=dry_run, limit=limit,
+        enriched,
+        client,
+        config,
+        existing_markers,
+        dry_run=dry_run,
+        limit=limit,
         models_client=models_client,
         analysis_cfg=analysis_cfg if models_client else None,
         issue_map=issue_map,
@@ -2252,6 +2608,10 @@ def run(config: dict, dry_run: bool = False, search_only: bool = False,
     # Write explain artifact if requested (includes final shortlist annotations).
     if explain:
         _write_explain_artifact(candidates, shortlisted, config, explain_output)
+
+    # Write research pack artifact if requested (enriched repos with analysis signals).
+    if research_pack:
+        _write_research_pack_artifact(enriched, config, research_pack_output)
 
     # Persist last-run timestamp to enable grace-window protection on next run.
     if grace_hours > 0 and not dry_run and not search_only:
@@ -2274,26 +2634,49 @@ Examples:
   GITHUB_TOKEN=ghp_... python3 trend-scout.py
 """,
     )
-    parser.add_argument("--config", default=None, metavar="PATH",
-                        help=f"Config JSON file (default: {DEFAULT_CONFIG_PATH.name})")
-    parser.add_argument("--repo", default=None, metavar="OWNER/REPO",
-                        help="Override target issues repo (default from config)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Preview issue bodies without creating anything")
-    parser.add_argument("--search-only", action="store_true",
-                        help="Only run search + shortlist stages; print results and exit")
-    parser.add_argument("--limit", type=int, default=None, metavar="N",
-                        help="Maximum number of issues to create in one run")
-    parser.add_argument("--token", default=None, metavar="TOKEN",
-                        help="GitHub personal access token (overrides GITHUB_TOKEN env var)")
-    parser.add_argument("--force", action="store_true",
-                        help="Bypass grace window and force a new run regardless of last-run state")
-    parser.add_argument("--explain", action="store_true",
-                        help="Write a discovery explainability artifact (.trend-scout-discovery-explain.json) "
-                             "showing per-lane query stats and shortlist annotations")
-    parser.add_argument("--explain-output", default=None, metavar="PATH",
-                        help="Path for the --explain artifact (default: .trend-scout-discovery-explain.json "
-                             "adjacent to this script)")
+    parser.add_argument(
+        "--config", default=None, metavar="PATH", help=f"Config JSON file (default: {DEFAULT_CONFIG_PATH.name})"
+    )
+    parser.add_argument(
+        "--repo", default=None, metavar="OWNER/REPO", help="Override target issues repo (default from config)"
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Preview issue bodies without creating anything")
+    parser.add_argument(
+        "--search-only", action="store_true", help="Only run search + shortlist stages; print results and exit"
+    )
+    parser.add_argument(
+        "--limit", type=int, default=None, metavar="N", help="Maximum number of issues to create in one run"
+    )
+    parser.add_argument(
+        "--token", default=None, metavar="TOKEN", help="GitHub personal access token (overrides GITHUB_TOKEN env var)"
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="Bypass grace window and force a new run regardless of last-run state"
+    )
+    parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="Write a discovery explainability artifact (.trend-scout-discovery-explain.json) "
+        "showing per-lane query stats and shortlist annotations",
+    )
+    parser.add_argument(
+        "--explain-output",
+        default=None,
+        metavar="PATH",
+        help="Path for the --explain artifact (default: .trend-scout-discovery-explain.json adjacent to this script)",
+    )
+    parser.add_argument(
+        "--research-pack",
+        action="store_true",
+        help="Write a structured research-pack artifact (.trend-scout-research-pack.json) "
+        "with repo-analysis fields for all shortlisted repos",
+    )
+    parser.add_argument(
+        "--research-pack-output",
+        default=None,
+        metavar="PATH",
+        help="Path for the --research-pack artifact (default: .trend-scout-research-pack.json adjacent to this script)",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve() if args.config else None
@@ -2306,17 +2689,22 @@ Examples:
         config["target_repo"] = args.repo
 
     explain_output = Path(args.explain_output).resolve() if args.explain_output else None
+    research_pack_output = Path(args.research_pack_output).resolve() if args.research_pack_output else None
 
-    sys.exit(run(
-        config,
-        dry_run=args.dry_run,
-        search_only=args.search_only,
-        limit=args.limit,
-        token=args.token,
-        force=args.force,
-        explain=args.explain,
-        explain_output=explain_output,
-    ))
+    sys.exit(
+        run(
+            config,
+            dry_run=args.dry_run,
+            search_only=args.search_only,
+            limit=args.limit,
+            token=args.token,
+            force=args.force,
+            explain=args.explain,
+            explain_output=explain_output,
+            research_pack=args.research_pack,
+            research_pack_output=research_pack_output,
+        )
+    )
 
 
 if __name__ == "__main__":

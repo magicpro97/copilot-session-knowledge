@@ -13,6 +13,7 @@ import {
   evalResponseSchema,
   feedbackRequestSchema,
   feedbackResponseSchema,
+  researchPackResponseSchema,
   retroResponseSchema,
   graphResponseSchema,
   healthResponseSchema,
@@ -38,6 +39,7 @@ import type {
   FeedbackRequest,
   FeedbackResponse,
   KnowledgeInsightsResponse,
+  ResearchPackResponse,
   RetroResponse,
   GraphResponse,
   HealthResponse,
@@ -91,6 +93,7 @@ export const queryKeys = {
   health: () => ["health"] as const,
   syncStatus: () => ["sync-status"] as const,
   scoutStatus: () => ["scout-status"] as const,
+  scoutResearchPack: () => ["scout-research-pack"] as const,
   tentacleStatus: () => ["tentacle-status"] as const,
   skillMetrics: () => ["skill-metrics"] as const,
   dashboard: () => ["dashboard"] as const,
@@ -304,6 +307,20 @@ export function useScoutStatus() {
     queryFn: async (): Promise<TrendScoutStatusResponse> => {
       const data = await apiFetch<TrendScoutStatusResponse>(withLeadingSlash("/api/scout/status"));
       return trendScoutStatusResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useScoutResearchPack() {
+  return useQuery({
+    queryKey: queryKeys.scoutResearchPack(),
+    staleTime: STALE_TIMES.health,
+    gcTime: CACHE_TIMES.health,
+    queryFn: async (): Promise<ResearchPackResponse> => {
+      const data = await apiFetch<ResearchPackResponse>(
+        withLeadingSlash("/api/scout/research-pack")
+      );
+      return researchPackResponseSchema.parse(data);
     },
   });
 }

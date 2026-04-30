@@ -134,22 +134,33 @@ def _make_test_db() -> sqlite3.Connection:
         sid = f"session-id-{i:04d}-abcdef"
         db.execute(
             "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (sid, f"/path/to/session{i}", f"Test session {i}", "copilot",
-             float(i), float(i) + 1, float(i) + 2, 10 + i, 1024,
-             1, 0, 3, 0, f"2026-01-0{i + 1}"),
+            (
+                sid,
+                f"/path/to/session{i}",
+                f"Test session {i}",
+                "copilot",
+                float(i),
+                float(i) + 1,
+                float(i) + 2,
+                10 + i,
+                1024,
+                1,
+                0,
+                3,
+                0,
+                f"2026-01-0{i + 1}",
+            ),
         )
         db.execute(
             "INSERT INTO sessions_fts VALUES (?,?,?,?,?)",
-            (sid, f"Test session {i}", f"user message {i}",
-             f"assistant reply {i}", "bash"),
+            (sid, f"Test session {i}", f"user message {i}", f"assistant reply {i}", "bash"),
         )
 
     # Insert documents + sections for session 0
     sid0 = "session-id-0000-abcdef"
     db.execute(
         "INSERT INTO documents VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (1, sid0, "checkpoint", 1, "Checkpoint 1",
-         "/path", "abc", 100, "preview", "2026-01-01", "copilot"),
+        (1, sid0, "checkpoint", 1, "Checkpoint 1", "/path", "abc", 100, "preview", "2026-01-01", "copilot"),
     )
     db.execute(
         "INSERT INTO sections VALUES (?,?,?,?)",
@@ -442,7 +453,9 @@ def run_all_tests() -> int:
         test("T5: has 'timeline' key", isinstance(data, dict) and "timeline" in data)
         test("T5: meta has 'id'", isinstance(data.get("meta"), dict) and "id" in data["meta"])
         test("T5: meta id correct", data.get("meta", {}).get("id") == "session-id-0000-abcdef")
-        test("T5: meta fts_indexed_at normalized to string", isinstance(data.get("meta", {}).get("fts_indexed_at"), str))
+        test(
+            "T5: meta fts_indexed_at normalized to string", isinstance(data.get("meta", {}).get("fts_indexed_at"), str)
+        )
         test("T5: meta indexed_at_r normalized to string", isinstance(data.get("meta", {}).get("indexed_at_r"), str))
         test("T5: meta file_mtime normalized to string", isinstance(data.get("meta", {}).get("file_mtime"), str))
         test("T5: timeline is list", isinstance(data.get("timeline"), list))
@@ -510,8 +523,14 @@ def run_all_tests() -> int:
         test("T9: b.session not None", data.get("b", {}).get("session") is not None)
         test("T9: a has timeline", "timeline" in data.get("a", {}))
         test("T9: b has timeline", "timeline" in data.get("b", {}))
-        test("T9: compare a indexed_at_r normalized to string", isinstance(data.get("a", {}).get("session", {}).get("indexed_at_r"), str))
-        test("T9: compare b indexed_at_r normalized to string", isinstance(data.get("b", {}).get("session", {}).get("indexed_at_r"), str))
+        test(
+            "T9: compare a indexed_at_r normalized to string",
+            isinstance(data.get("a", {}).get("session", {}).get("indexed_at_r"), str),
+        )
+        test(
+            "T9: compare b indexed_at_r normalized to string",
+            isinstance(data.get("b", {}).get("session", {}).get("indexed_at_r"), str),
+        )
     finally:
         server.shutdown()
 
@@ -544,8 +563,14 @@ def run_all_tests() -> int:
         test("T10b: empty stub does not outrank real sessions", data.get("items", [{}])[0].get("id") != stub_id)
         if legacy:
             test("T10b: list derives non-zero event estimate", legacy.get("event_count_estimate") == 7)
-            test("T10b: list falls back fts_indexed_at from indexed_at", legacy.get("fts_indexed_at") == "2026-02-03T04:05:06Z")
-            test("T10b: list falls back indexed_at_r from indexed_at", legacy.get("indexed_at_r") == "2026-02-03T04:05:06Z")
+            test(
+                "T10b: list falls back fts_indexed_at from indexed_at",
+                legacy.get("fts_indexed_at") == "2026-02-03T04:05:06Z",
+            )
+            test(
+                "T10b: list falls back indexed_at_r from indexed_at",
+                legacy.get("indexed_at_r") == "2026-02-03T04:05:06Z",
+            )
         if stub:
             test("T10b: empty stub keeps zero event estimate", stub.get("event_count_estimate") == 0)
             test("T10b: empty stub does not get fake fts_indexed_at", stub.get("fts_indexed_at") is None)
@@ -555,7 +580,10 @@ def run_all_tests() -> int:
         test("T10b: detail status 200", status == 200)
         meta = detail.get("meta", {})
         test("T10b: detail derives non-zero event estimate", meta.get("event_count_estimate") == 7)
-        test("T10b: detail falls back fts_indexed_at from indexed_at", meta.get("fts_indexed_at") == "2026-02-03T04:05:06Z")
+        test(
+            "T10b: detail falls back fts_indexed_at from indexed_at",
+            meta.get("fts_indexed_at") == "2026-02-03T04:05:06Z",
+        )
         test("T10b: detail falls back indexed_at_r from indexed_at", meta.get("indexed_at_r") == "2026-02-03T04:05:06Z")
     finally:
         server.shutdown()
@@ -576,14 +604,17 @@ def run_all_tests() -> int:
         test("T17: has local_replica_id", data.get("local_replica_id") == "local")
         test(
             "T17: connection target present",
-            data.get("connection", {}).get("target") in {
+            data.get("connection", {}).get("target")
+            in {
                 "unconfigured",
                 "reference-mock",
                 "provider-backed-or-custom",
             },
         )
         test("T17: has rollout object", isinstance(data.get("rollout"), dict))
-        test("T17: rollout keeps http gateway contract", data.get("rollout", {}).get("client_contract") == "http-gateway")
+        test(
+            "T17: rollout keeps http gateway contract", data.get("rollout", {}).get("client_contract") == "http-gateway"
+        )
         test("T17: rollout direct_db_sync is false", data.get("rollout", {}).get("direct_db_sync") is False)
         runtime = data.get("runtime") or {}
         test("T17: has runtime object", isinstance(runtime, dict))
@@ -644,10 +675,7 @@ def run_all_tests() -> int:
                 and action.get("safe") is True
                 and isinstance(action.get("command"), str)
                 and bool(action.get("command"))
-                and (
-                    "--search-only" in action.get("command")
-                    or "--dry-run" in action.get("command")
-                )
+                and ("--search-only" in action.get("command") or "--dry-run" in action.get("command"))
                 for action in actions
             ),
         )
@@ -676,14 +704,18 @@ def run_all_tests() -> int:
         test("T19: has operator_actions", isinstance(data.get("operator_actions"), list))
         test("T19: has runtime object", isinstance(data.get("runtime"), dict))
         actions = data.get("operator_actions") or []
-        test("T19: operator actions have required fields",
-             all(
-                 isinstance(a, dict)
-                 and isinstance(a.get("id"), str)
-                 and isinstance(a.get("command"), str)
-                 and a.get("safe") is True
-                 for a in actions
-             ) if actions else True)
+        test(
+            "T19: operator actions have required fields",
+            all(
+                isinstance(a, dict)
+                and isinstance(a.get("id"), str)
+                and isinstance(a.get("command"), str)
+                and a.get("safe") is True
+                for a in actions
+            )
+            if actions
+            else True,
+        )
     finally:
         server.shutdown()
 
@@ -708,14 +740,18 @@ def run_all_tests() -> int:
         test("T20: has operator_actions", isinstance(data.get("operator_actions"), list))
         test("T20: has runtime object", isinstance(data.get("runtime"), dict))
         actions = data.get("operator_actions") or []
-        test("T20: operator actions have required fields",
-             all(
-                 isinstance(a, dict)
-                 and isinstance(a.get("id"), str)
-                 and isinstance(a.get("command"), str)
-                 and a.get("safe") is True
-                 for a in actions
-             ) if actions else True)
+        test(
+            "T20: operator actions have required fields",
+            all(
+                isinstance(a, dict)
+                and isinstance(a.get("id"), str)
+                and isinstance(a.get("command"), str)
+                and a.get("safe") is True
+                for a in actions
+            )
+            if actions
+            else True,
+        )
         test("T20: unconfigured state reported", data.get("status") in {"ok", "degraded", "unconfigured"})
     finally:
         server.shutdown()
@@ -742,10 +778,7 @@ def run_all_tests() -> int:
             )
             test(
                 f"T21: {route_short} all actions have required contract fields",
-                all(
-                    isinstance(a, dict) and REQUIRED_FIELDS.issubset(a.keys())
-                    for a in actions
-                ) if actions else True,
+                all(isinstance(a, dict) and REQUIRED_FIELDS.issubset(a.keys()) for a in actions) if actions else True,
             )
             test(
                 f"T21: {route_short} all actions have safe=True",
@@ -753,10 +786,9 @@ def run_all_tests() -> int:
             )
             test(
                 f"T21: {route_short} all actions have non-empty command",
-                all(
-                    isinstance(a.get("command"), str) and bool(a.get("command", "").strip())
-                    for a in actions
-                ) if actions else True,
+                all(isinstance(a.get("command"), str) and bool(a.get("command", "").strip()) for a in actions)
+                if actions
+                else True,
             )
     finally:
         server.shutdown()
@@ -771,9 +803,7 @@ def run_all_tests() -> int:
         sync_actions = sync_data.get("operator_actions") or []
         test(
             "T22: sync actions include requires_configured_gateway",
-            bool(sync_actions) and all(
-                "requires_configured_gateway" in a for a in sync_actions
-            ),
+            bool(sync_actions) and all("requires_configured_gateway" in a for a in sync_actions),
         )
         test(
             "T22: sync actions do NOT include requires_configured_target",
@@ -785,9 +815,7 @@ def run_all_tests() -> int:
         scout_actions = scout_data.get("operator_actions") or []
         test(
             "T22: scout actions include requires_configured_target",
-            bool(scout_actions) and all(
-                "requires_configured_target" in a for a in scout_actions
-            ),
+            bool(scout_actions) and all("requires_configured_target" in a for a in scout_actions),
         )
         test(
             "T22: scout actions do NOT include requires_configured_gateway",
@@ -825,19 +853,37 @@ def run_all_tests() -> int:
             "embedding_pct": 30.0,
         },
         "quality_alerts": [
-            {"id": "low-confidence", "title": "Low confidence entries", "severity": "warning", "detail": "15% of entries have low confidence."}
+            {
+                "id": "low-confidence",
+                "title": "Low confidence entries",
+                "severity": "warning",
+                "detail": "15% of entries have low confidence.",
+            }
         ],
         "recommended_actions": [
-            {"id": "run-extract", "title": "Re-extract knowledge", "detail": "Run extract-knowledge.py", "command": "python3 extract-knowledge.py"}
+            {
+                "id": "run-extract",
+                "title": "Re-extract knowledge",
+                "detail": "Run extract-knowledge.py",
+                "command": "python3 extract-knowledge.py",
+            }
         ],
         "recurring_noise_titles": [
             {"title": "Test entry", "category": "mistake", "entry_count": 5, "avg_confidence": 0.3}
         ],
-        "hot_files": [
-            {"path": "browse/api/__init__.py", "references": 8}
-        ],
+        "hot_files": [{"path": "browse/api/__init__.py", "references": 8}],
         "entries": {
-            "mistakes": [{"id": 1, "title": "Fix X", "confidence": 0.9, "occurrence_count": 2, "last_seen": "2026-01-01", "summary": "Fixed X", "session_id": "abc"}],
+            "mistakes": [
+                {
+                    "id": 1,
+                    "title": "Fix X",
+                    "confidence": 0.9,
+                    "occurrence_count": 2,
+                    "last_seen": "2026-01-01",
+                    "summary": "Fixed X",
+                    "session_id": "abc",
+                }
+            ],
             "patterns": [],
             "decisions": [],
             "tools": [],
@@ -845,6 +891,7 @@ def run_all_tests() -> int:
     }
 
     import browse.api.insights as _insights_mod
+
     _mock_proc = unittest.mock.MagicMock()
     _mock_proc.returncode = 0
     _mock_proc.stdout = json.dumps(_MOCK_INSIGHTS)
@@ -888,6 +935,161 @@ def run_all_tests() -> int:
         test("T23b: error body has 'error'", isinstance(data2, dict) and "error" in data2)
     finally:
         server.shutdown()
+
+    # ── T24a: /api/scout/research-pack — missing file → available=false ───────
+    print("\n-- T24a: /api/scout/research-pack missing file")
+    import browse.routes.scout as _scout_mod
+    import pathlib as _pathlib
+
+    db = _make_test_db()
+    server, host, port = _start_server(db)
+    try:
+        with unittest.mock.patch.object(
+            _scout_mod, "_RESEARCH_PACK_PATH", Path("/nonexistent/.trend-scout-research-pack.json")
+        ):
+            status, hdrs, data = _get(host, port, "/api/scout/research-pack")
+        test("T24a: status 200", status == 200)
+        test("T24a: content-type json", "application/json" in hdrs.get("content-type", ""))
+        test("T24a: available=false", data.get("available") is False)
+        test("T24a: repo_count=0", data.get("repo_count") == 0)
+        test("T24a: repos is empty list", data.get("repos") == [])
+        test("T24a: error is None", data.get("error") is None)
+    finally:
+        server.shutdown()
+
+    # ── T24b: /api/scout/research-pack — valid pack → available=true ──────────
+    print("\n-- T24b: /api/scout/research-pack valid pack")
+    _MOCK_PACK = {
+        "generated_at": "2026-01-01T00:00:00Z",
+        "source": "trend-scout.py",
+        "schema_version": 1,
+        "run_skipped": False,
+        "skip_reason": None,
+        "repos": [
+            {
+                "full_name": "owner/repo-a",
+                "html_url": "https://github.com/owner/repo-a",
+                "discovery_lane": "token-efficiency-cli",
+                "score": 0.42,
+                "stars": 123,
+                "language": "Python",
+                "topics": ["ai-tools"],
+                "why_discovered": ["Discovered via lane"],
+                "novelty_signals": ["Strong adoption"],
+                "risk_signals": ["No risk signals"],
+                "recommended_followups": ["Review README"],
+                "tentacle_handoff": "Spawn research tentacle",
+            }
+        ],
+    }
+    _pack_file = _pathlib.Path("_test_research_pack_tmp.json")
+    try:
+        _pack_file.write_text(json.dumps(_MOCK_PACK), encoding="utf-8")
+        db = _make_test_db()
+        server, host, port = _start_server(db)
+        try:
+            with unittest.mock.patch.object(_scout_mod, "_RESEARCH_PACK_PATH", _pack_file):
+                status, hdrs, data = _get(host, port, "/api/scout/research-pack")
+            test("T24b: status 200", status == 200)
+            test("T24b: content-type json", "application/json" in hdrs.get("content-type", ""))
+            test("T24b: available=true", data.get("available") is True)
+            test("T24b: repo_count=1", data.get("repo_count") == 1)
+            test("T24b: repos is list", isinstance(data.get("repos"), list))
+            test("T24b: schema_version=1", data.get("schema_version") == 1)
+            test("T24b: generated_at present", isinstance(data.get("generated_at"), str))
+            test("T24b: run_skipped=false", data.get("run_skipped") is False)
+            repos = data.get("repos") or []
+            test("T24b: first repo full_name", repos[0].get("full_name") == "owner/repo-a" if repos else False)
+            test(
+                "T24b: first repo has novelty_signals list",
+                isinstance(repos[0].get("novelty_signals"), list) if repos else False,
+            )
+            test(
+                "T24b: first repo has risk_signals list",
+                isinstance(repos[0].get("risk_signals"), list) if repos else False,
+            )
+        finally:
+            server.shutdown()
+    finally:
+        if _pack_file.exists():
+            _pack_file.unlink()
+
+    # ── T24c: /api/scout/research-pack — wrong schema_version → available=false ─
+    print("\n-- T24c: /api/scout/research-pack wrong schema_version")
+    _BAD_VERSION_PACK = {"schema_version": 99, "repos": []}
+    _bad_file = _pathlib.Path("_test_research_pack_bad_ver_tmp.json")
+    try:
+        _bad_file.write_text(json.dumps(_BAD_VERSION_PACK), encoding="utf-8")
+        db = _make_test_db()
+        server, host, port = _start_server(db)
+        try:
+            with unittest.mock.patch.object(_scout_mod, "_RESEARCH_PACK_PATH", _bad_file):
+                status, hdrs, data = _get(host, port, "/api/scout/research-pack")
+            test("T24c: status 200", status == 200)
+            test("T24c: available=false for bad version", data.get("available") is False)
+            test("T24c: error mentions schema_version", "schema_version" in str(data.get("error") or ""))
+        finally:
+            server.shutdown()
+    finally:
+        if _bad_file.exists():
+            _bad_file.unlink()
+
+    # ── T24d: /api/scout/research-pack — malformed JSON → available=false ──────
+    print("\n-- T24d: /api/scout/research-pack malformed JSON")
+    _malformed_file = _pathlib.Path("_test_research_pack_malformed_tmp.json")
+    try:
+        _malformed_file.write_text("{not valid json", encoding="utf-8")
+        db = _make_test_db()
+        server, host, port = _start_server(db)
+        try:
+            with unittest.mock.patch.object(_scout_mod, "_RESEARCH_PACK_PATH", _malformed_file):
+                status, hdrs, data = _get(host, port, "/api/scout/research-pack")
+            test("T24d: status 200 for malformed", status == 200)
+            test("T24d: available=false for malformed", data.get("available") is False)
+            test("T24d: error field present", isinstance(data.get("error"), str))
+        finally:
+            server.shutdown()
+    finally:
+        if _malformed_file.exists():
+            _malformed_file.unlink()
+
+    # ── T24e: /api/scout/research-pack — invalid repo numeric fields ───────────
+    print("\n-- T24e: /api/scout/research-pack invalid repo fields")
+    _invalid_repo_file = _pathlib.Path("_test_research_pack_invalid_repo_tmp.json")
+    try:
+        _invalid_repo_file.write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-01-01T00:00:00Z",
+                    "source": "trend-scout.py",
+                    "schema_version": 1,
+                    "repos": [
+                        {
+                            "full_name": "owner/bad-repo",
+                            "html_url": "https://github.com/owner/bad-repo",
+                            "score": "N/A",
+                            "stars": 10,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        db = _make_test_db()
+        server, host, port = _start_server(db)
+        try:
+            with unittest.mock.patch.object(_scout_mod, "_RESEARCH_PACK_PATH", _invalid_repo_file):
+                status, hdrs, data = _get(host, port, "/api/scout/research-pack")
+            test("T24e: status 200 for invalid repo field", status == 200)
+            test("T24e: content-type json", "application/json" in hdrs.get("content-type", ""))
+            test("T24e: available=false for invalid repo field", data.get("available") is False)
+            test("T24e: error mentions repo field", "repo field" in str(data.get("error") or ""))
+            test("T24e: repos is empty list", data.get("repos") == [])
+        finally:
+            server.shutdown()
+    finally:
+        if _invalid_repo_file.exists():
+            _invalid_repo_file.unlink()
 
     print(f"\nResults: {_PASS} passed, {_FAIL} failed")
     return _FAIL
@@ -960,8 +1162,10 @@ def run_edge_case_tests() -> int:
         test("T13: content-type json", "application/json" in hdrs.get("content-type", ""))
         test("T13: has a key", "a" in d)
         test("T13: has b key", "b" in d)
-        test("T13: a and b same id", d.get("a", {}).get("session", {}).get("id") ==
-             d.get("b", {}).get("session", {}).get("id"))
+        test(
+            "T13: a and b same id",
+            d.get("a", {}).get("session", {}).get("id") == d.get("b", {}).get("session", {}).get("id"),
+        )
     finally:
         server.shutdown()
 
@@ -1001,8 +1205,14 @@ def run_edge_case_tests() -> int:
         s2, _, d2 = _get(host, port, f"/api/compare?a={a}&b={b}")
         test("T15: compare a has indexed_at_r", "indexed_at_r" in d2.get("a", {}).get("session", {}))
         test("T15: compare b has indexed_at_r", "indexed_at_r" in d2.get("b", {}).get("session", {}))
-        test("T15: compare a indexed_at_r is string", isinstance(d2.get("a", {}).get("session", {}).get("indexed_at_r"), str))
-        test("T15: compare b indexed_at_r is string", isinstance(d2.get("b", {}).get("session", {}).get("indexed_at_r"), str))
+        test(
+            "T15: compare a indexed_at_r is string",
+            isinstance(d2.get("a", {}).get("session", {}).get("indexed_at_r"), str),
+        )
+        test(
+            "T15: compare b indexed_at_r is string",
+            isinstance(d2.get("b", {}).get("session", {}).get("indexed_at_r"), str),
+        )
     finally:
         server.shutdown()
 

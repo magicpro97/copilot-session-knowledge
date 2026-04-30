@@ -330,4 +330,5 @@ class TentacleSuggestRule(Rule):
             f"{len(modules)} modules detected.\n"
             "  Consider using tentacle-orchestration for parallel multi-agent execution.\n"
             f"  Modules: {', '.join(sorted(modules))}\n"
+            "  \U0001f4cb After completing: check docs/SYNC-MATRIX.md for docs/memory follow-ups.\n"
         )

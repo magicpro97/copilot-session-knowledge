@@ -536,6 +536,34 @@ export interface TentacleStatusResponse {
   };
 }
 
+// ── Research Pack (/api/scout/research-pack) ─────────────────────────
+
+export interface ResearchPackRepo {
+  full_name: string;
+  html_url: string;
+  discovery_lane: string;
+  score: number;
+  stars: number;
+  language: string | null;
+  why_discovered: string[];
+  novelty_signals: string[];
+  risk_signals: string[];
+  recommended_followups: string[];
+  tentacle_handoff: string | null;
+}
+
+export interface ResearchPackResponse {
+  available: boolean;
+  path?: string;
+  generated_at?: string | null;
+  schema_version?: number | null;
+  run_skipped?: boolean;
+  skip_reason?: string | null;
+  repo_count: number;
+  repos: ResearchPackRepo[];
+  error?: string | null;
+}
+
 // ── Skill Metrics (/api/skills/metrics) ─────────────────────────────
 
 export interface SkillMetricsSummary {

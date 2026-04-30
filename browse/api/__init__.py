@@ -14,6 +14,7 @@ Endpoints exposed:
   GET /api/retro/summary       → Retrospective summary (repo/local mode)
   GET /api/knowledge/insights  → Knowledge insights (proxied from knowledge-health.py)
   GET /api/scout/status        → TrendScoutStatusResponse
+  GET /api/scout/research-pack → ResearchPackResponse (latest .trend-scout-research-pack.json)
   GET /api/tentacles/status    → TentacleStatusResponse
   GET /api/skills/metrics      → SkillMetricsResponse
 

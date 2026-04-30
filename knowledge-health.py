@@ -84,18 +84,24 @@ def compute_health(stale_days: int = 30) -> dict:
 
     # Staleness: entries older than stale_days
     cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - stale_days * 86400))
-    stale = db.execute("""
+    stale = db.execute(
+        """
         SELECT COUNT(*) FROM knowledge_entries
         WHERE last_seen < ? AND last_seen IS NOT NULL AND last_seen != ''
-    """, (cutoff,)).fetchone()[0]
+    """,
+        (cutoff,),
+    ).fetchone()[0]
     stale_pct = (stale / total) * 100 if total > 0 else 0
 
     # Freshness: entries from last 7 days
     week_ago = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 7 * 86400))
-    fresh = db.execute("""
+    fresh = db.execute(
+        """
         SELECT COUNT(*) FROM knowledge_entries
         WHERE first_seen >= ? AND first_seen IS NOT NULL
-    """, (week_ago,)).fetchone()[0]
+    """,
+        (week_ago,),
+    ).fetchone()[0]
 
     # Knowledge relations
     relations = 0
@@ -115,9 +121,7 @@ def compute_health(stale_days: int = 30) -> dict:
     # Embedding coverage
     embeddings = 0
     try:
-        embedding_columns = {
-            str(row["name"]) for row in db.execute("PRAGMA table_info(embeddings)").fetchall()
-        }
+        embedding_columns = {str(row["name"]) for row in db.execute("PRAGMA table_info(embeddings)").fetchall()}
         if "source_type" in embedding_columns:
             embeddings = db.execute(
                 """
@@ -165,11 +169,11 @@ def compute_health(stale_days: int = 30) -> dict:
 
     # Compute composite score (0-100)
     scores = {
-        "categorization": min(categorized_pct, 100) * 0.20,           # 20%
-        "learning_curve": min(mp_ratio * 50, 100) * 0.20,             # 20% — higher ratio = better
+        "categorization": min(categorized_pct, 100) * 0.20,  # 20%
+        "learning_curve": min(mp_ratio * 50, 100) * 0.20,  # 20% — higher ratio = better
         "freshness": min((fresh / max(total, 1)) * 500, 100) * 0.15,  # 15%
         "relation_density": min(relation_density * 100, 100) * 0.15,  # 15%
-        "embedding_coverage": min(embed_pct, 100) * 0.15,             # 15%
+        "embedding_coverage": min(embed_pct, 100) * 0.15,  # 15%
         "confidence_quality": (high_conf / max(total, 1)) * 100 * 0.15,  # 15%
     }
     total_score = sum(scores.values())
@@ -204,9 +208,7 @@ def compute_recall_stats() -> dict:
     """Compute lean recall telemetry aggregates."""
     db = get_db()
     try:
-        table_exists = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recall_events'"
-        ).fetchone()
+        table_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='recall_events'").fetchone()
         if not table_exists:
             return {
                 "available": False,
@@ -229,7 +231,8 @@ def compute_recall_stats() -> dict:
             }
 
         events_by_surface = [
-            dict(row) for row in db.execute(
+            dict(row)
+            for row in db.execute(
                 """
                 SELECT tool, surface, COUNT(*) AS event_count
                 FROM recall_events
@@ -239,7 +242,8 @@ def compute_recall_stats() -> dict:
             ).fetchall()
         ]
         avg_output = [
-            dict(row) for row in db.execute(
+            dict(row)
+            for row in db.execute(
                 """
                 SELECT tool, surface, mode,
                        AVG(output_chars) AS avg_output_chars,
@@ -252,7 +256,8 @@ def compute_recall_stats() -> dict:
             ).fetchall()
         ]
         no_hit_queries = [
-            dict(row) for row in db.execute(
+            dict(row)
+            for row in db.execute(
                 """
                 SELECT rewritten_query, COUNT(*) AS event_count
                 FROM recall_events
@@ -266,7 +271,8 @@ def compute_recall_stats() -> dict:
             ).fetchall()
         ]
         repeated_detail = [
-            dict(row) for row in db.execute(
+            dict(row)
+            for row in db.execute(
                 """
                 SELECT opened_entry_id, COUNT(*) AS open_count
                 FROM recall_events
@@ -294,18 +300,12 @@ def compute_sync_stats() -> dict:
     """Compute sync runtime diagnostics for local-first status surfaces."""
     db = get_db()
     try:
-        has_sync_state = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_state'"
-        ).fetchone()
-        has_sync_txns = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_txns'"
-        ).fetchone()
+        has_sync_state = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_state'").fetchone()
+        has_sync_txns = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_txns'").fetchone()
         has_sync_failures = db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_failures'"
         ).fetchone()
-        has_cursors = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_cursors'"
-        ).fetchone()
+        has_cursors = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_cursors'").fetchone()
         if not (has_sync_state and has_sync_txns and has_sync_failures and has_cursors):
             return {
                 "available": False,
@@ -331,15 +331,9 @@ def compute_sync_stats() -> dict:
             ).fetchone()
             cursor = str((row[0] if row else "") or "")
 
-        pending = db.execute(
-            "SELECT COUNT(*) FROM sync_txns WHERE status='pending'"
-        ).fetchone()[0]
-        committed = db.execute(
-            "SELECT COUNT(*) FROM sync_txns WHERE status='committed'"
-        ).fetchone()[0]
-        failed = db.execute(
-            "SELECT COUNT(*) FROM sync_txns WHERE status='failed'"
-        ).fetchone()[0]
+        pending = db.execute("SELECT COUNT(*) FROM sync_txns WHERE status='pending'").fetchone()[0]
+        committed = db.execute("SELECT COUNT(*) FROM sync_txns WHERE status='committed'").fetchone()[0]
+        failed = db.execute("SELECT COUNT(*) FROM sync_txns WHERE status='failed'").fetchone()[0]
         failure_count = db.execute("SELECT COUNT(*) FROM sync_failures").fetchone()[0]
         last_failure_row = db.execute(
             """
@@ -369,7 +363,7 @@ def compute_sync_stats() -> dict:
         db.close()
 
 
-_FILE_RE = re.compile(r'^[a-zA-Z0-9_./@+\-~]+$')
+_FILE_RE = re.compile(r"^[a-zA-Z0-9_./@+\-~]+$")
 
 
 def _is_file_path(s: str) -> bool:
@@ -377,14 +371,70 @@ def _is_file_path(s: str) -> bool:
     s = s.strip()
     if not s or len(s) > 150 or len(s) < 2:
         return False
-    if ' ' in s or ':' in s or s.startswith('/') or s.startswith('\\'):
+    if " " in s or ":" in s or s.startswith("/") or s.startswith("\\"):
         return False
-    normalized = s[2:] if s.startswith('./') else s
+    normalized = s[2:] if s.startswith("./") else s
     if normalized.startswith("../") or normalized == "..":
         return False
-    if '.' not in normalized and '/' not in s:
+    if "." not in normalized and "/" not in s:
         return False
     return bool(_FILE_RE.match(s))
+
+
+def _compute_sync_advisory(
+    total: int,
+    mp_ratio,
+    hot_files: list,
+    health: dict,
+) -> dict:
+    """Return an advisory sync-contract signal for --insights.
+
+    This function is purely read-only and advisory.  It does NOT alter
+    compute_health() composite score, subscores, or any DB state.
+
+    Returns a dict with:
+      - ``status``: "ok" | "suggest" | "review"
+      - ``reasons``: list of human-readable reason strings
+      - ``checklist``: reference to docs/SYNC-MATRIX.md
+    """
+    reasons = []
+
+    # Signal 1: many hot files but low pattern extraction (code churn without learning)
+    if len(hot_files) >= 3 and isinstance(mp_ratio, (int, float)) and mp_ratio < 0.5 and health.get("mistakes", 0) >= 3:
+        reasons.append(
+            f"{len(hot_files)} hot file(s) with low pattern/mistake ratio ({mp_ratio:.2f}x) "
+            "— consider extracting patterns from recent mistakes."
+        )
+
+    # Signal 2: knowledge base has many entries but no decisions recorded
+    _cats = health.get("categories", {})
+    decisions = int(_cats.get("decision", 0)) if isinstance(_cats, dict) else 0
+    if total >= 10 and decisions == 0:
+        reasons.append(
+            "No decision entries recorded despite active knowledge base "
+            "— consider documenting key architecture/approach decisions."
+        )
+
+    # Signal 3: high staleness with active hot files (docs/knowledge out of date)
+    stale_pct = health.get("stale_pct", 0.0)
+    if stale_pct >= 50 and len(hot_files) >= 2:
+        reasons.append(
+            f"{stale_pct:.0f}% of entries are stale while {len(hot_files)} hot file(s) are active "
+            "— knowledge may be out of sync with recent code changes."
+        )
+
+    if not reasons:
+        status = "ok"
+    elif len(reasons) >= 2:
+        status = "review"
+    else:
+        status = "suggest"
+
+    return {
+        "status": status,
+        "reasons": reasons,
+        "checklist": "docs/SYNC-MATRIX.md",
+    }
 
 
 def compute_insights(stale_days: int = 30) -> dict:
@@ -417,78 +467,93 @@ def compute_insights(stale_days: int = 30) -> dict:
     alerts = []
 
     if total == 0:
-        alerts.append({
-            "id": "empty-db",
-            "title": "Knowledge base is empty",
-            "severity": "critical",
-            "detail": "No entries found. Run build-session-index.py and extract-knowledge.py to populate it.",
-        })
+        alerts.append(
+            {
+                "id": "empty-db",
+                "title": "Knowledge base is empty",
+                "severity": "critical",
+                "detail": "No entries found. Run build-session-index.py and extract-knowledge.py to populate it.",
+            }
+        )
     else:
         if low_conf_pct >= 50:
-            alerts.append({
-                "id": "low-confidence-dominant",
-                "title": f"{low_conf_pct:.0f}% of entries have low confidence (<0.5)",
-                "severity": "warning",
-                "detail": (
-                    f"{low_conf} of {total} entries have confidence below 0.5. "
-                    "This often indicates noisy automated extraction with weak signal."
-                ),
-            })
+            alerts.append(
+                {
+                    "id": "low-confidence-dominant",
+                    "title": f"{low_conf_pct:.0f}% of entries have low confidence (<0.5)",
+                    "severity": "warning",
+                    "detail": (
+                        f"{low_conf} of {total} entries have confidence below 0.5. "
+                        "This often indicates noisy automated extraction with weak signal."
+                    ),
+                }
+            )
         elif low_conf_pct >= 25:
-            alerts.append({
-                "id": "low-confidence-elevated",
-                "title": f"{low_conf_pct:.0f}% of entries have low confidence (<0.5)",
-                "severity": "info",
-                "detail": f"{low_conf} entries below 0.5 confidence. Consider pruning weak entries.",
-            })
+            alerts.append(
+                {
+                    "id": "low-confidence-elevated",
+                    "title": f"{low_conf_pct:.0f}% of entries have low confidence (<0.5)",
+                    "severity": "info",
+                    "detail": f"{low_conf} entries below 0.5 confidence. Consider pruning weak entries.",
+                }
+            )
 
         if stale_pct >= 70:
-            alerts.append({
-                "id": "high-staleness",
-                "title": f"{stale_pct:.0f}% of entries are stale (>{stale_days}d)",
-                "severity": "critical",
-                "detail": f"Most entries haven't been seen in over {stale_days} days. The knowledge base may be stale.",
-            })
+            alerts.append(
+                {
+                    "id": "high-staleness",
+                    "title": f"{stale_pct:.0f}% of entries are stale (>{stale_days}d)",
+                    "severity": "critical",
+                    "detail": f"Most entries haven't been seen in over {stale_days} days. The knowledge base may be stale.",
+                }
+            )
         elif stale_pct >= 40:
-            alerts.append({
-                "id": "moderate-staleness",
-                "title": f"{stale_pct:.0f}% of entries are stale (>{stale_days}d)",
-                "severity": "warning",
-                "detail": f"Many entries are over {stale_days} days old. Review for continued relevance.",
-            })
+            alerts.append(
+                {
+                    "id": "moderate-staleness",
+                    "title": f"{stale_pct:.0f}% of entries are stale (>{stale_days}d)",
+                    "severity": "warning",
+                    "detail": f"Many entries are over {stale_days} days old. Review for continued relevance.",
+                }
+            )
 
         if relation_density < 0.1 and total >= 10:
-            alerts.append({
-                "id": "sparse-relations",
-                "title": "Knowledge graph is sparse",
-                "severity": "warning",
-                "detail": (
-                    f"Only {relation_density:.2f} relations per entry. "
-                    "Entries are isolated islands; semantic connections are missing."
-                ),
-            })
+            alerts.append(
+                {
+                    "id": "sparse-relations",
+                    "title": "Knowledge graph is sparse",
+                    "severity": "warning",
+                    "detail": (
+                        f"Only {relation_density:.2f} relations per entry. "
+                        "Entries are isolated islands; semantic connections are missing."
+                    ),
+                }
+            )
 
         if embed_pct < 10 and total >= 5:
-            alerts.append({
-                "id": "no-embeddings",
-                "title": "Semantic search unavailable (embeddings missing)",
-                "severity": "warning" if total >= 20 else "info",
-                "detail": (
-                    f"Only {embed_pct:.0f}% of entries have embeddings. "
-                    "Keyword-only search has poor recall."
-                ),
-            })
+            alerts.append(
+                {
+                    "id": "no-embeddings",
+                    "title": "Semantic search unavailable (embeddings missing)",
+                    "severity": "warning" if total >= 20 else "info",
+                    "detail": (
+                        f"Only {embed_pct:.0f}% of entries have embeddings. Keyword-only search has poor recall."
+                    ),
+                }
+            )
 
         if isinstance(mp_ratio, (int, float)) and mp_ratio < 0.3 and health.get("mistakes", 0) >= 5:
-            alerts.append({
-                "id": "low-pattern-extraction",
-                "title": "Few patterns extracted from mistakes",
-                "severity": "info",
-                "detail": (
-                    f"Pattern/mistake ratio is {mp_ratio:.2f}x. "
-                    "Mistakes are being logged but patterns are rarely extracted."
-                ),
-            })
+            alerts.append(
+                {
+                    "id": "low-pattern-extraction",
+                    "title": "Few patterns extracted from mistakes",
+                    "severity": "info",
+                    "detail": (
+                        f"Pattern/mistake ratio is {mp_ratio:.2f}x. "
+                        "Mistakes are being logged but patterns are rarely extracted."
+                    ),
+                }
+            )
 
         try:
             noise_count = db.execute("""
@@ -501,25 +566,29 @@ def compute_insights(stale_days: int = 30) -> dict:
                 )
             """).fetchone()[0]
             if noise_count >= 5:
-                alerts.append({
-                    "id": "noisy-repeated-titles",
-                    "title": f"{noise_count} repeated low-confidence titles detected",
-                    "severity": "warning",
-                    "detail": (
-                        f"{noise_count} distinct low-confidence titles appear 3+ times. "
-                        "This indicates noisy extraction; consider tuning extract-knowledge.py thresholds."
-                    ),
-                })
+                alerts.append(
+                    {
+                        "id": "noisy-repeated-titles",
+                        "title": f"{noise_count} repeated low-confidence titles detected",
+                        "severity": "warning",
+                        "detail": (
+                            f"{noise_count} distinct low-confidence titles appear 3+ times. "
+                            "This indicates noisy extraction; consider tuning extract-knowledge.py thresholds."
+                        ),
+                    }
+                )
             elif noise_count >= 2:
-                alerts.append({
-                    "id": "noisy-repeated-titles",
-                    "title": f"{noise_count} repeated low-confidence titles detected",
-                    "severity": "info",
-                    "detail": (
-                        f"{noise_count} distinct low-confidence titles appear 3+ times. "
-                        "Some noise in extraction pipeline."
-                    ),
-                })
+                alerts.append(
+                    {
+                        "id": "noisy-repeated-titles",
+                        "title": f"{noise_count} repeated low-confidence titles detected",
+                        "severity": "info",
+                        "detail": (
+                            f"{noise_count} distinct low-confidence titles appear 3+ times. "
+                            "Some noise in extraction pipeline."
+                        ),
+                    }
+                )
         except sqlite3.OperationalError:
             pass
 
@@ -532,66 +601,80 @@ def compute_insights(stale_days: int = 30) -> dict:
         return f"action-{_action_seq[0]:02d}"
 
     if total == 0:
-        actions.append({
-            "id": _next_id(),
-            "title": "Populate the knowledge base",
-            "detail": "Index sessions and extract knowledge to start building your knowledge base.",
-            "command": "python3 build-session-index.py && python3 extract-knowledge.py",
-        })
+        actions.append(
+            {
+                "id": _next_id(),
+                "title": "Populate the knowledge base",
+                "detail": "Index sessions and extract knowledge to start building your knowledge base.",
+                "command": "python3 build-session-index.py && python3 extract-knowledge.py",
+            }
+        )
     else:
         if embed_pct < 30 and total >= 5:
-            actions.append({
-                "id": _next_id(),
-                "title": "Build semantic embeddings",
-                "detail": f"Only {embed_pct:.0f}% of entries have embeddings. Semantic search needs more coverage.",
-                "command": "python3 embed.py --build",
-            })
+            actions.append(
+                {
+                    "id": _next_id(),
+                    "title": "Build semantic embeddings",
+                    "detail": f"Only {embed_pct:.0f}% of entries have embeddings. Semantic search needs more coverage.",
+                    "command": "python3 embed.py --build",
+                }
+            )
 
         if relation_density < 0.2 and total >= 10:
-            actions.append({
-                "id": _next_id(),
-                "title": "Add knowledge relations",
-                "detail": (
-                    f"Relation density is low ({relation_density:.2f}). "
-                    "Connect related entries to improve cross-session recall."
-                ),
-                "command": "python3 learn.py --help",
-            })
+            actions.append(
+                {
+                    "id": _next_id(),
+                    "title": "Add knowledge relations",
+                    "detail": (
+                        f"Relation density is low ({relation_density:.2f}). "
+                        "Connect related entries to improve cross-session recall."
+                    ),
+                    "command": "python3 learn.py --help",
+                }
+            )
 
         if health.get("categorized_pct", 100) < 80:
-            actions.append({
-                "id": _next_id(),
-                "title": "Re-run knowledge extraction",
-                "detail": "Many entries are uncategorized. Re-extracting can improve signal.",
-                "command": "python3 extract-knowledge.py --force",
-            })
+            actions.append(
+                {
+                    "id": _next_id(),
+                    "title": "Re-run knowledge extraction",
+                    "detail": "Many entries are uncategorized. Re-extracting can improve signal.",
+                    "command": "python3 extract-knowledge.py --force",
+                }
+            )
 
         if stale_pct >= 40:
-            actions.append({
-                "id": _next_id(),
-                "title": "Review stale entries",
-                "detail": f"{stale_pct:.0f}% of entries are stale. Review and prune outdated knowledge.",
-                "command": "python3 query-session.py --mistakes --limit 20",
-            })
+            actions.append(
+                {
+                    "id": _next_id(),
+                    "title": "Review stale entries",
+                    "detail": f"{stale_pct:.0f}% of entries are stale. Review and prune outdated knowledge.",
+                    "command": "python3 query-session.py --mistakes --limit 20",
+                }
+            )
 
         if isinstance(mp_ratio, (int, float)) and mp_ratio < 0.5 and health.get("mistakes", 0) >= 3:
-            actions.append({
-                "id": _next_id(),
-                "title": "Extract patterns from mistakes",
-                "detail": f"Low pattern/mistake ratio ({mp_ratio:.2f}x). Review mistakes and document learnings.",
-                "command": "python3 query-session.py --mistakes --limit 10",
-            })
+            actions.append(
+                {
+                    "id": _next_id(),
+                    "title": "Extract patterns from mistakes",
+                    "detail": f"Low pattern/mistake ratio ({mp_ratio:.2f}x). Review mistakes and document learnings.",
+                    "command": "python3 query-session.py --mistakes --limit 10",
+                }
+            )
 
         if high_conf_pct < 20 and total >= 10:
-            actions.append({
-                "id": _next_id(),
-                "title": "Increase entry confidence through reinforcement",
-                "detail": (
-                    f"Only {high_conf_pct:.0f}% of entries have high confidence. "
-                    "Use learn.py to add manual high-quality entries."
-                ),
-                "command": "python3 learn.py --help",
-            })
+            actions.append(
+                {
+                    "id": _next_id(),
+                    "title": "Increase entry confidence through reinforcement",
+                    "detail": (
+                        f"Only {high_conf_pct:.0f}% of entries have high confidence. "
+                        "Use learn.py to add manual high-quality entries."
+                    ),
+                    "command": "python3 learn.py --help",
+                }
+            )
 
     # ---- Recurring noise titles ----
     recurring_noise = []
@@ -612,12 +695,14 @@ def compute_insights(stale_days: int = 30) -> dict:
             LIMIT 15
         """).fetchall()
         for row in noise_rows:
-            recurring_noise.append({
-                "title": str(row["title"] or ""),
-                "category": str(row["category"] or ""),
-                "entry_count": int(row["entry_count"]),
-                "avg_confidence": round(float(row["avg_confidence"] or 0), 3),
-            })
+            recurring_noise.append(
+                {
+                    "title": str(row["title"] or ""),
+                    "category": str(row["category"] or ""),
+                    "entry_count": int(row["entry_count"]),
+                    "avg_confidence": round(float(row["avg_confidence"] or 0), 3),
+                }
+            )
     except sqlite3.OperationalError:
         pass
 
@@ -644,9 +729,7 @@ def compute_insights(stale_days: int = 30) -> dict:
                     path = item.strip()
                     file_refs[path] = file_refs.get(path, 0) + 1
         hot_files = [
-            {"path": p, "references": c}
-            for p, c in sorted(file_refs.items(), key=lambda x: (-x[1], x[0]))
-            if c >= 2
+            {"path": p, "references": c} for p, c in sorted(file_refs.items(), key=lambda x: (-x[1], x[0])) if c >= 2
         ][:20]
     except sqlite3.OperationalError:
         pass
@@ -655,27 +738,32 @@ def compute_insights(stale_days: int = 30) -> dict:
     entries = {}
     for cat in ("mistake", "pattern", "decision", "tool"):
         try:
-            cat_rows = db.execute("""
+            cat_rows = db.execute(
+                """
                 SELECT id, title, confidence, occurrence_count,
                        last_seen, content, session_id
                 FROM knowledge_entries
                 WHERE category = ?
                 ORDER BY confidence DESC, occurrence_count DESC
                 LIMIT 10
-            """, (cat,)).fetchall()
+            """,
+                (cat,),
+            ).fetchall()
             cat_entries = []
             for r in cat_rows:
                 content = str(r["content"] or "")
                 summary = content[:200].replace("\n", " ").strip()
-                cat_entries.append({
-                    "id": int(r["id"]),
-                    "title": str(r["title"] or ""),
-                    "confidence": round(float(r["confidence"] or 0), 3),
-                    "occurrence_count": int(r["occurrence_count"] or 0),
-                    "last_seen": r["last_seen"],
-                    "summary": summary,
-                    "session_id": r["session_id"],
-                })
+                cat_entries.append(
+                    {
+                        "id": int(r["id"]),
+                        "title": str(r["title"] or ""),
+                        "confidence": round(float(r["confidence"] or 0), 3),
+                        "occurrence_count": int(r["occurrence_count"] or 0),
+                        "last_seen": r["last_seen"],
+                        "summary": summary,
+                        "session_id": r["session_id"],
+                    }
+                )
             entries[f"{cat}s"] = cat_entries
         except sqlite3.OperationalError:
             entries[f"{cat}s"] = []
@@ -695,11 +783,21 @@ def compute_insights(stale_days: int = 30) -> dict:
 
     if alerts:
         top_sev = (
-            "critical" if any(a["severity"] == "critical" for a in alerts)
-            else "warning" if any(a["severity"] == "warning" for a in alerts)
+            "critical"
+            if any(a["severity"] == "critical" for a in alerts)
+            else "warning"
+            if any(a["severity"] == "warning" for a in alerts)
             else "info"
         )
         summary += f" {len(alerts)} alert(s) including {top_sev}-level issues."
+
+    # ---- Advisory sync-contract signal (read-only; does NOT alter score) ----
+    sync_advisory = _compute_sync_advisory(
+        total=total,
+        mp_ratio=mp_ratio,
+        hot_files=hot_files,
+        health=health,
+    )
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -710,6 +808,7 @@ def compute_insights(stale_days: int = 30) -> dict:
         "recurring_noise_titles": recurring_noise,
         "hot_files": hot_files,
         "entries": entries,
+        "sync_advisory": sync_advisory,
     }
 
 
@@ -772,12 +871,10 @@ def format_insights_report(insights: dict) -> str:
     if noise:
         lines.append("🔄 Recurring Low-Quality Titles (noise candidates)")
         lines.append(f"  {'Title':<40} {'Cat':<10} {'Count':>5}  {'AvgConf':>7}")
-        lines.append(f"  {'-'*40} {'-'*10} {'-'*5}  {'-'*7}")
+        lines.append(f"  {'-' * 40} {'-' * 10} {'-' * 5}  {'-' * 7}")
         for n in noise[:10]:
             title = (n["title"] or "")[:39]
-            lines.append(
-                f"  {title:<40} {n['category']:<10} {n['entry_count']:>5}  {n['avg_confidence']:>7.3f}"
-            )
+            lines.append(f"  {title:<40} {n['category']:<10} {n['entry_count']:>5}  {n['avg_confidence']:>7.3f}")
         lines.append("")
 
     hot = insights.get("hot_files", [])
@@ -797,6 +894,17 @@ def format_insights_report(insights: dict) -> str:
                 title = (e["title"] or "")[:60]
                 lines.append(f"  [{conf}] {title}")
             lines.append("")
+
+    sync_adv = insights.get("sync_advisory", {})
+    if sync_adv and sync_adv.get("status") in ("suggest", "review"):
+        status = sync_adv["status"].upper()
+        icon = "🔵" if sync_adv["status"] == "suggest" else "🟡"
+        lines.append(f"{icon} Sync Advisory [{status}]")
+        for reason in sync_adv.get("reasons", []):
+            lines.append(f"  • {reason}")
+        checklist = sync_adv.get("checklist", "docs/SYNC-MATRIX.md")
+        lines.append(f"  Reference: {checklist}")
+        lines.append("")
 
     return "\n".join(lines)
 
@@ -847,24 +955,26 @@ def format_report(health: dict) -> str:
     else:
         lines.append(f"  → 🔴 No patterns extracted from mistakes yet")
 
-    lines.extend([
-        "",
-        f"🔗 Knowledge Graph",
-        f"  Relations:         {health['relations']:,}",
-        f"  Entity relations:  {health['entity_relations']:,}",
-        f"  Density:           {health['relation_density']} rel/entry",
-        "",
-        f"🧠 Embeddings",
-        f"  Embedded:          {health['embeddings']:,} / {health['total']:,} ({health['embed_pct']}%)",
-        "",
-        f"🏗️ Organization",
-        f"  Wings:             {health['wings']}",
-        f"  Rooms:             {health['rooms']}",
-        f"  High confidence:   {health['high_confidence']:,}",
-        f"  Low confidence:    {health['low_confidence']:,}",
-        "",
-        f"📦 Category Breakdown",
-    ])
+    lines.extend(
+        [
+            "",
+            f"🔗 Knowledge Graph",
+            f"  Relations:         {health['relations']:,}",
+            f"  Entity relations:  {health['entity_relations']:,}",
+            f"  Density:           {health['relation_density']} rel/entry",
+            "",
+            f"🧠 Embeddings",
+            f"  Embedded:          {health['embeddings']:,} / {health['total']:,} ({health['embed_pct']}%)",
+            "",
+            f"🏗️ Organization",
+            f"  Wings:             {health['wings']}",
+            f"  Rooms:             {health['rooms']}",
+            f"  High confidence:   {health['high_confidence']:,}",
+            f"  Low confidence:    {health['low_confidence']:,}",
+            "",
+            f"📦 Category Breakdown",
+        ]
+    )
 
     for cat, cnt in sorted(health["categories"].items(), key=lambda x: -x[1]):
         pct = (cnt / health["total"]) * 100
@@ -874,9 +984,14 @@ def format_report(health: dict) -> str:
     # Subscores
     lines.extend(["", "📐 Subscores (weighted)"])
     for name, val in health["subscores"].items():
-        max_val = {"categorization": 20, "learning_curve": 20, "freshness": 15,
-                   "relation_density": 15, "embedding_coverage": 15,
-                   "confidence_quality": 15}
+        max_val = {
+            "categorization": 20,
+            "learning_curve": 20,
+            "freshness": 15,
+            "relation_density": 15,
+            "embedding_coverage": 15,
+            "confidence_quality": 15,
+        }
         mx = max_val.get(name, 20)
         lines.append(f"  {name:25s} {val:5.1f}/{mx}")
 
@@ -978,11 +1093,13 @@ def format_sync_report(stats: dict) -> str:
         lines.extend(["", f"Last daemon error:   {stats['last_error']}"])
     if stats.get("last_failure"):
         lf = stats["last_failure"]
-        lines.extend([
-            "",
-            "Most recent failure:",
-            f"  {lf.get('failed_at', '')} {lf.get('error_code', '')} {lf.get('error_message', '')}".strip(),
-        ])
+        lines.extend(
+            [
+                "",
+                "Most recent failure:",
+                f"  {lf.get('failed_at', '')} {lf.get('error_code', '')} {lf.get('error_message', '')}".strip(),
+            ]
+        )
     return "\n".join(lines)
 
 

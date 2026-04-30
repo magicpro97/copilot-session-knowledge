@@ -175,6 +175,10 @@ Add new migrations to the `MIGRATIONS` list in `migrate.py` with incrementing ve
 - **`if __name__ == "__main__":`** — `migrate.py` and `generate-summary.py` are both guarded; they can be imported without side effects. New scripts that may be imported or tested should follow this pattern.
 - **`TOOLS_DIR` resolution** — root scripts that need a reliable tools-directory path use `Path(__file__).resolve().parent`. `hooks/rules/common.py` intentionally keeps the installed-hook `Path.home() / ".copilot" / "tools"` form (hooks run from `~/.copilot/hooks/`, not the source tree).
 
+### Docs Quality Gates
+
+Agent-authored docs and operator/research outputs (tentacle handoffs, retro summaries, knowledge-health reports) must follow the four-layer QA rubric defined in [docs/AGENT-RULES.md](AGENT-RULES.md#rule-7--docs-output-quality): facts, interpretation, actions, and verification evidence are kept distinct. Contributor-facing docs (`CONTRIBUTING.md`) use the existing concise tone and are not in scope for this rubric.
+
 ### CI Quality Gates
 
 GitHub Actions runs two jobs on every push / PR:

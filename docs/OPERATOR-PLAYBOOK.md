@@ -186,6 +186,35 @@ python3 ~/.copilot/tools/auto-update-tools.py --watch-status
 
 ---
 
+## Reading Research and Operator Outputs
+
+All agent-authored outputs — tentacle handoffs, retro summaries, research-pack
+summaries, knowledge-health reports — use the four-layer QA format defined in
+[docs/AGENT-RULES.md](AGENT-RULES.md#rule-7--docs-output-quality).
+
+When reviewing any such output, apply this checklist:
+
+| ✔ | Check |
+|---|-------|
+| □ | Are counts/timestamps **facts** backed by a cited source or command? |
+| □ | Are inferences clearly **qualified** ("suggests", "indicates") rather than stated as fact? |
+| □ | Does every action item include a **concrete, executable command**? |
+| □ | Is every verification claim backed by **evidence** (test log, CI link, git ref)? |
+
+**What to do when evidence is missing:**
+
+- For test claims: re-run the named test and paste the pass/fail count.
+- For CI claims: link the workflow run URL.
+- For retro scores: note `score_confidence` — a `low` confidence score is a signal, not a verdict.
+
+**Research-pack outputs** follow the same rules.
+Each repo entry distinguishes discovery facts (score, stars, language) from interpretation
+(why discovered, novelty signals) and recommended follow-ups (actionable tentacle handoffs).
+When `.trend-scout-research-pack.json` has been produced, the browse UI insights dashboard
+and `GET /api/scout/research-pack` expose a compact read-only summary automatically.
+
+---
+
 ## Quality Gates
 
 | Gate | What it checks | How to run |
@@ -258,6 +287,7 @@ All diagnostic panels are read-only — no write operations are exposed.
 |------|-------------|-------|
 | Sync diagnostics | `/api/sync/status` | Mode, pending txns, failed ops, gateway config, rollout guidance |
 | Trend Scout diagnostics | `/api/scout/status` | Config, grace window, audit checks, discovery lanes |
+| Trend Scout research pack | `/api/scout/research-pack` | Latest pack summary, repo count, novelty/risk/follow-up snippets |
 | Tentacle runtime diagnostics | `/api/tentacles/status` | Active tentacles, dispatch marker, registry, audit checks |
 | Skill outcome metrics | `/api/skills/metrics` | Pass rate, outcomes, skill usage summary |
 | System health | `/healthz` | DB schema version, session count, knowledge entries, last indexed |
@@ -270,6 +300,84 @@ Navigate to the Settings page:
 ```
 http://localhost:<port>/v2/settings/?token=<token>
 ```
+
+---
+
+
+
+## Trend Scout Research Pack
+
+The `--research-pack` flag writes a structured JSON artifact with per-repo analysis fields
+that go beyond the GitHub issue body: novelty signals, risk signals, recommended follow-ups,
+and a tentacle-handoff hint.
+
+```bash
+# Combine with --search-only --dry-run for a safe local preview (no network writes)
+python3 ~/.copilot/tools/trend-scout.py --search-only --dry-run --research-pack
+
+# Combine with --explain for full explainability coverage
+python3 ~/.copilot/tools/trend-scout.py --search-only --dry-run --research-pack --explain
+
+# Full pipeline run with research pack written after issue creation
+python3 ~/.copilot/tools/trend-scout.py --research-pack
+
+# Custom output path
+python3 ~/.copilot/tools/trend-scout.py --research-pack --research-pack-output my-pack.json
+```
+
+The artifact is written to `.trend-scout-research-pack.json` adjacent to the script.
+When the grace window is active and the run is skipped, the pack is still written with
+`run_skipped: true` and an empty `repos` list so CI consumers can distinguish intentional
+skips from real zero-result runs.
+
+### Research pack schema
+
+```json
+{
+  "generated_at": "2025-07-10T03:00:00+00:00",
+  "source": "trend-scout.py",
+  "schema_version": 1,
+  "repos": [
+    {
+      "full_name": "owner/repo",
+      "html_url": "https://github.com/owner/repo",
+      "discovery_lane": "token-efficiency-cli",
+      "discovery_query": "token efficient cli agent",
+      "score": 0.42,
+      "stars": 123,
+      "language": "Python",
+      "topics": ["ai-tools"],
+      "why_discovered": ["Discovered via lane 'token-efficiency-cli' using query '...'"],
+      "novelty_signals": ["Strong community adoption (123 ⭐)", "License: MIT"],
+      "risk_signals": ["No significant risk signals from available metadata"],
+      "recommended_followups": ["Review README at ...", "Check open issues at ..."],
+      "tentacle_handoff": "Spawn a research tentacle for owner/repo to evaluate: ..."
+    }
+  ]
+}
+```
+
+When a run is skipped by the grace window:
+
+```json
+{
+  "generated_at": "...",
+  "source": "trend-scout.py",
+  "schema_version": 1,
+  "run_skipped": true,
+  "skip_reason": "last run 2.0h ago, grace window 20h (18.0h remaining)",
+  "repos": []
+}
+```
+
+### Using the pack for follow-up research
+
+1. **Inspect `tentacle_handoff`** — each entry has a brief text you can feed directly to
+   `tentacle.py` as a task description to spawn a research spike.
+2. **Filter by `novelty_signals` / `risk_signals`** — prioritise repos with low risk and
+   high novelty; deprioritise stale or archived repos.
+3. **Use `recommended_followups`** — the list includes direct links to the repo README and
+   issues, plus suggestions for follow-up searches.
 
 ---
 

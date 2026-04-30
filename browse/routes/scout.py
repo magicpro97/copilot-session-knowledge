@@ -18,6 +18,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TREND_SCOUT_SCRIPT = _REPO_ROOT / "trend-scout.py"
 _TREND_SCOUT_CONFIG_PATH = _REPO_ROOT / "trend-scout-config.json"
 _DEFAULT_STATE_FILE = _REPO_ROOT / ".trend-scout-state.json"
+_RESEARCH_PACK_PATH = _REPO_ROOT / ".trend-scout-research-pack.json"
 
 
 def _load_json(path: Path) -> dict:
@@ -53,6 +54,29 @@ def _resolve_state_file(run_control_cfg: dict) -> Path:
     except Exception:
         pass
     return _DEFAULT_STATE_FILE
+
+
+def _research_pack_unavailable(error: str | None = None) -> tuple:
+    payload = {"available": False, "repo_count": 0, "repos": [], "error": error}
+    return json.dumps(payload).encode("utf-8"), "application/json", 200
+
+
+def _coerce_pack_float(value, field_name: str) -> float:
+    if value is None or value == "":
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid {field_name}: {value!r}") from exc
+
+
+def _coerce_pack_int(value, field_name: str) -> int:
+    if value is None or value == "":
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid {field_name}: {value!r}") from exc
 
 
 @route("/api/scout/status", methods=["GET"])
@@ -223,4 +247,76 @@ def handle_scout_status(db, params, token, nonce) -> tuple:
         },
     }
 
+    return json.dumps(payload).encode("utf-8"), "application/json", 200
+
+
+@route("/api/scout/research-pack", methods=["GET"])
+def handle_scout_research_pack(db, params, token, nonce) -> tuple:
+    """Return the latest .trend-scout-research-pack.json as a read-only envelope.
+
+    Missing file → {available: false, repo_count: 0, repos: [], error: null}
+    Malformed or wrong schema_version → {available: false, error: "<reason>"}
+    """
+    del db, params, token, nonce
+
+    if not _RESEARCH_PACK_PATH.is_file():
+        return _research_pack_unavailable()
+
+    try:
+        raw = _RESEARCH_PACK_PATH.read_text(encoding="utf-8")
+        pack = json.loads(raw)
+    except Exception as exc:
+        return _research_pack_unavailable(f"parse error: {exc}")
+
+    if not isinstance(pack, dict):
+        return _research_pack_unavailable("not a JSON object")
+
+    schema_version = pack.get("schema_version")
+    if schema_version != 1:
+        return _research_pack_unavailable(f"unsupported schema_version: {schema_version!r} (expected 1)")
+
+    raw_repos = pack.get("repos")
+    repos_list = raw_repos if isinstance(raw_repos, list) else []
+
+    safe_repos = []
+    for repo in repos_list:
+        if not isinstance(repo, dict):
+            continue
+        try:
+            safe_repos.append(
+                {
+                    "full_name": str(repo.get("full_name") or ""),
+                    "html_url": str(repo.get("html_url") or ""),
+                    "discovery_lane": str(repo.get("discovery_lane") or ""),
+                    "score": _coerce_pack_float(repo.get("score"), "score"),
+                    "stars": _coerce_pack_int(repo.get("stars"), "stars"),
+                    "language": repo.get("language"),
+                    "why_discovered": list(repo.get("why_discovered") or [])
+                    if isinstance(repo.get("why_discovered"), list)
+                    else [],
+                    "novelty_signals": list(repo.get("novelty_signals") or [])
+                    if isinstance(repo.get("novelty_signals"), list)
+                    else [],
+                    "risk_signals": list(repo.get("risk_signals") or [])
+                    if isinstance(repo.get("risk_signals"), list)
+                    else [],
+                    "recommended_followups": list(repo.get("recommended_followups") or [])
+                    if isinstance(repo.get("recommended_followups"), list)
+                    else [],
+                    "tentacle_handoff": repo.get("tentacle_handoff"),
+                }
+            )
+        except ValueError as exc:
+            return _research_pack_unavailable(f"repo field error: {exc}")
+
+    payload = {
+        "available": True,
+        "path": str(_RESEARCH_PACK_PATH),
+        "generated_at": pack.get("generated_at"),
+        "schema_version": schema_version,
+        "run_skipped": bool(pack.get("run_skipped", False)),
+        "skip_reason": pack.get("skip_reason"),
+        "repo_count": len(safe_repos),
+        "repos": safe_repos,
+    }
     return json.dumps(payload).encode("utf-8"), "application/json", 200
