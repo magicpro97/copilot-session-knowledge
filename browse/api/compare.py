@@ -22,7 +22,7 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.api._common import json_error
+from browse.api._common import json_error, normalize_session_meta
 from browse.core.fts import _SESSION_ID_RE
 from browse.core.registry import route
 from browse.routes.session_compare import _fetch_session_data
@@ -31,7 +31,7 @@ from browse.routes.session_compare import _fetch_session_data
 def _session_compare_data(db, session_id: str) -> dict:
     """Return SessionCompareData dict for one session side."""
     sess, timeline_rows = _fetch_session_data(db, session_id)
-    session_meta = dict(sess) if sess is not None else None
+    session_meta = normalize_session_meta(dict(sess)) if sess is not None else None
     timeline = [
         {
             "seq": r["seq"],

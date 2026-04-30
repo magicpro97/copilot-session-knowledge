@@ -306,6 +306,10 @@ def run_all_tests() -> int:
         test("T1: page_size=5", data.get("page_size") == 5)
         test("T1: total=3", data.get("total") == 3)
         test("T1: items count ≤ page_size", len(data.get("items", [])) <= 5)
+        if data.get("items"):
+            first = data["items"][0]
+            test("T1: fts_indexed_at normalized to string", isinstance(first.get("fts_indexed_at"), str))
+            test("T1: indexed_at_r normalized to string", isinstance(first.get("indexed_at_r"), str))
     finally:
         server.shutdown()
 
@@ -374,6 +378,9 @@ def run_all_tests() -> int:
         test("T5: has 'timeline' key", isinstance(data, dict) and "timeline" in data)
         test("T5: meta has 'id'", isinstance(data.get("meta"), dict) and "id" in data["meta"])
         test("T5: meta id correct", data.get("meta", {}).get("id") == "session-id-0000-abcdef")
+        test("T5: meta fts_indexed_at normalized to string", isinstance(data.get("meta", {}).get("fts_indexed_at"), str))
+        test("T5: meta indexed_at_r normalized to string", isinstance(data.get("meta", {}).get("indexed_at_r"), str))
+        test("T5: meta file_mtime normalized to string", isinstance(data.get("meta", {}).get("file_mtime"), str))
         test("T5: timeline is list", isinstance(data.get("timeline"), list))
         if data.get("timeline"):
             entry = data["timeline"][0]
@@ -439,6 +446,8 @@ def run_all_tests() -> int:
         test("T9: b.session not None", data.get("b", {}).get("session") is not None)
         test("T9: a has timeline", "timeline" in data.get("a", {}))
         test("T9: b has timeline", "timeline" in data.get("b", {}))
+        test("T9: compare a indexed_at_r normalized to string", isinstance(data.get("a", {}).get("session", {}).get("indexed_at_r"), str))
+        test("T9: compare b indexed_at_r normalized to string", isinstance(data.get("b", {}).get("session", {}).get("indexed_at_r"), str))
     finally:
         server.shutdown()
 
@@ -804,12 +813,15 @@ def run_edge_case_tests() -> int:
     try:
         s, _, d = _get(host, port, "/api/sessions/session-id-0000-abcdef")
         test("T15: detail has indexed_at_r", "indexed_at_r" in d.get("meta", {}))
+        test("T15: detail indexed_at_r is string", isinstance(d.get("meta", {}).get("indexed_at_r"), str))
 
         a = "session-id-0000-abcdef"
         b = "session-id-0001-abcdef"
         s2, _, d2 = _get(host, port, f"/api/compare?a={a}&b={b}")
         test("T15: compare a has indexed_at_r", "indexed_at_r" in d2.get("a", {}).get("session", {}))
         test("T15: compare b has indexed_at_r", "indexed_at_r" in d2.get("b", {}).get("session", {}))
+        test("T15: compare a indexed_at_r is string", isinstance(d2.get("a", {}).get("session", {}).get("indexed_at_r"), str))
+        test("T15: compare b indexed_at_r is string", isinstance(d2.get("b", {}).get("session", {}).get("indexed_at_r"), str))
     finally:
         server.shutdown()
 

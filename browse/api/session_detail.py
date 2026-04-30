@@ -19,7 +19,7 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.api._common import json_error
+from browse.api._common import json_error, normalize_session_meta
 from browse.core.fts import _SESSION_ID_RE
 from browse.core.registry import route
 
@@ -49,7 +49,7 @@ def handle_api_session_detail(db, params, token, nonce, session_id: str = "") ->
         )
     )
 
-    meta = dict(sess)
+    meta = normalize_session_meta(dict(sess))
     timeline = [
         {
             "seq": r["seq"],

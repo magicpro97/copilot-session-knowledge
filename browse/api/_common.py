@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+from datetime import datetime, timezone
 
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
@@ -19,6 +20,26 @@ def json_error(message: str, code: str, status: int) -> tuple:
 def json_ok(data: dict | list) -> tuple:
     """Return a JSON 200 response tuple: (body, content_type, 200)."""
     return json.dumps(data, default=str).encode("utf-8"), "application/json", 200
+
+
+def normalize_session_meta(meta: dict | None) -> dict | None:
+    """Normalize session timestamp fields to the JSON string contract used by browse-ui."""
+    if meta is None:
+        return None
+
+    normalized = dict(meta)
+    for key in ("file_mtime", "indexed_at_r", "fts_indexed_at"):
+        value = normalized.get(key)
+        if isinstance(value, bool) or value is None or isinstance(value, str):
+            continue
+        if isinstance(value, (int, float)):
+            ts = float(value)
+            if abs(ts) >= 100_000_000_000:
+                ts /= 1000.0
+            normalized[key] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+            continue
+        normalized[key] = str(value)
+    return normalized
 
 
 def parse_int_param(params: dict, key: str, default: int, min_val: int, max_val: int) -> int:

@@ -23,7 +23,7 @@ if os.name == "nt":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-from browse.api._common import json_error, parse_int_param
+from browse.api._common import json_error, normalize_session_meta, parse_int_param
 from browse.core.fts import _probe_sessions_fts, _sanitize_fts_query
 from browse.core.registry import route
 
@@ -94,7 +94,7 @@ def handle_api_sessions(db, params, token, nonce) -> tuple:
     else:
         total = db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] or 0
 
-    items = [dict(r) for r in rows]
+    items = [normalize_session_meta(dict(r)) for r in rows]
     has_more = (offset + len(items)) < total
 
     data = {
