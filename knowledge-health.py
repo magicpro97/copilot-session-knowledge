@@ -14,13 +14,17 @@ Usage:
     python knowledge-health.py --recall --json  # Recall telemetry as JSON
     python knowledge-health.py --sync         # Sync runtime dashboard
     python knowledge-health.py --sync --json  # Sync runtime as JSON
+    python knowledge-health.py --insights     # Derived actionable insights dashboard
+    python knowledge-health.py --insights --json  # Insights as JSON
 """
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Fix Windows console encoding
@@ -353,6 +357,431 @@ def compute_sync_stats() -> dict:
         db.close()
 
 
+_FILE_RE = re.compile(r'^[a-zA-Z0-9_./@+\-~]+$')
+
+
+def _is_file_path(s: str) -> bool:
+    """Return True only for strings that look like repo-local file paths (not prose)."""
+    s = s.strip()
+    if not s or len(s) > 150 or len(s) < 2:
+        return False
+    if ' ' in s or ':' in s:
+        return False
+    if '.' not in s and '/' not in s:
+        return False
+    return bool(_FILE_RE.match(s))
+
+
+def compute_insights(stale_days: int = 30) -> dict:
+    """Derive actionable insights from the knowledge base."""
+    health = compute_health(stale_days=stale_days)
+    db = get_db()
+
+    total = health.get("total", 0)
+    high_conf = health.get("high_confidence", 0)
+    low_conf = health.get("low_confidence", 0)
+    stale_pct = health.get("stale_pct", 0.0)
+    relation_density = health.get("relation_density", 0.0)
+    embed_pct = health.get("embed_pct", 0.0)
+    mp_ratio = health.get("mp_ratio", 0)
+    high_conf_pct = round((high_conf / total) * 100, 1) if total else 0.0
+    low_conf_pct = round((low_conf / total) * 100, 1) if total else 0.0
+
+    overview = {
+        "health_score": health.get("score", 0),
+        "total_entries": total,
+        "sessions": health.get("sessions", 0),
+        "high_confidence_pct": high_conf_pct,
+        "low_confidence_pct": low_conf_pct,
+        "stale_pct": stale_pct,
+        "relation_density": relation_density,
+        "embedding_pct": embed_pct,
+    }
+
+    # ---- Quality alerts ----
+    alerts = []
+
+    if total == 0:
+        alerts.append({
+            "id": "empty-db",
+            "title": "Knowledge base is empty",
+            "severity": "critical",
+            "detail": "No entries found. Run build-session-index.py and extract-knowledge.py to populate it.",
+        })
+    else:
+        if low_conf_pct >= 50:
+            alerts.append({
+                "id": "low-confidence-dominant",
+                "title": f"{low_conf_pct:.0f}% of entries have low confidence (<0.5)",
+                "severity": "warning",
+                "detail": (
+                    f"{low_conf} of {total} entries have confidence below 0.5. "
+                    "This often indicates noisy automated extraction with weak signal."
+                ),
+            })
+        elif low_conf_pct >= 25:
+            alerts.append({
+                "id": "low-confidence-elevated",
+                "title": f"{low_conf_pct:.0f}% of entries have low confidence (<0.5)",
+                "severity": "info",
+                "detail": f"{low_conf} entries below 0.5 confidence. Consider pruning weak entries.",
+            })
+
+        if stale_pct >= 70:
+            alerts.append({
+                "id": "high-staleness",
+                "title": f"{stale_pct:.0f}% of entries are stale (>{stale_days}d)",
+                "severity": "critical",
+                "detail": f"Most entries haven't been seen in over {stale_days} days. The knowledge base may be stale.",
+            })
+        elif stale_pct >= 40:
+            alerts.append({
+                "id": "moderate-staleness",
+                "title": f"{stale_pct:.0f}% of entries are stale (>{stale_days}d)",
+                "severity": "warning",
+                "detail": f"Many entries are over {stale_days} days old. Review for continued relevance.",
+            })
+
+        if relation_density < 0.1 and total >= 10:
+            alerts.append({
+                "id": "sparse-relations",
+                "title": "Knowledge graph is sparse",
+                "severity": "warning",
+                "detail": (
+                    f"Only {relation_density:.2f} relations per entry. "
+                    "Entries are isolated islands; semantic connections are missing."
+                ),
+            })
+
+        if embed_pct < 10 and total >= 5:
+            alerts.append({
+                "id": "no-embeddings",
+                "title": "Semantic search unavailable (embeddings missing)",
+                "severity": "warning" if total >= 20 else "info",
+                "detail": (
+                    f"Only {embed_pct:.0f}% of entries have embeddings. "
+                    "Keyword-only search has poor recall."
+                ),
+            })
+
+        if isinstance(mp_ratio, (int, float)) and mp_ratio < 0.3 and health.get("mistakes", 0) >= 5:
+            alerts.append({
+                "id": "low-pattern-extraction",
+                "title": "Few patterns extracted from mistakes",
+                "severity": "info",
+                "detail": (
+                    f"Pattern/mistake ratio is {mp_ratio:.2f}x. "
+                    "Mistakes are being logged but patterns are rarely extracted."
+                ),
+            })
+
+        try:
+            noise_count = db.execute("""
+                SELECT COUNT(*) FROM (
+                    SELECT title, COUNT(*) as cnt
+                    FROM knowledge_entries
+                    WHERE confidence < 0.5
+                    GROUP BY title
+                    HAVING cnt >= 3
+                )
+            """).fetchone()[0]
+            if noise_count >= 5:
+                alerts.append({
+                    "id": "noisy-repeated-titles",
+                    "title": f"{noise_count} repeated low-confidence titles detected",
+                    "severity": "warning",
+                    "detail": (
+                        f"{noise_count} distinct low-confidence titles appear 3+ times. "
+                        "This indicates noisy extraction; consider tuning extract-knowledge.py thresholds."
+                    ),
+                })
+            elif noise_count >= 2:
+                alerts.append({
+                    "id": "noisy-repeated-titles",
+                    "title": f"{noise_count} repeated low-confidence titles detected",
+                    "severity": "info",
+                    "detail": (
+                        f"{noise_count} distinct low-confidence titles appear 3+ times. "
+                        "Some noise in extraction pipeline."
+                    ),
+                })
+        except sqlite3.OperationalError:
+            pass
+
+    # ---- Recommended actions ----
+    actions = []
+    _action_seq = [0]
+
+    def _next_id():
+        _action_seq[0] += 1
+        return f"action-{_action_seq[0]:02d}"
+
+    if total == 0:
+        actions.append({
+            "id": _next_id(),
+            "title": "Populate the knowledge base",
+            "detail": "Index sessions and extract knowledge to start building your knowledge base.",
+            "command": "python3 build-session-index.py && python3 extract-knowledge.py",
+        })
+    else:
+        if embed_pct < 30 and total >= 5:
+            actions.append({
+                "id": _next_id(),
+                "title": "Build semantic embeddings",
+                "detail": f"Only {embed_pct:.0f}% of entries have embeddings. Semantic search needs more coverage.",
+                "command": "python3 embed.py --build",
+            })
+
+        if relation_density < 0.2 and total >= 10:
+            actions.append({
+                "id": _next_id(),
+                "title": "Add knowledge relations",
+                "detail": (
+                    f"Relation density is low ({relation_density:.2f}). "
+                    "Connect related entries to improve cross-session recall."
+                ),
+                "command": "python3 learn.py --relate",
+            })
+
+        if health.get("categorized_pct", 100) < 80:
+            actions.append({
+                "id": _next_id(),
+                "title": "Re-run knowledge extraction",
+                "detail": "Many entries are uncategorized. Re-extracting can improve signal.",
+                "command": "python3 extract-knowledge.py --force",
+            })
+
+        if stale_pct >= 40:
+            actions.append({
+                "id": _next_id(),
+                "title": "Review stale entries",
+                "detail": f"{stale_pct:.0f}% of entries are stale. Review and prune outdated knowledge.",
+                "command": "python3 query-session.py --mistakes --limit 20",
+            })
+
+        if isinstance(mp_ratio, (int, float)) and mp_ratio < 0.5 and health.get("mistakes", 0) >= 3:
+            actions.append({
+                "id": _next_id(),
+                "title": "Extract patterns from mistakes",
+                "detail": f"Low pattern/mistake ratio ({mp_ratio:.2f}x). Review mistakes and document learnings.",
+                "command": "python3 query-session.py --mistakes --limit 10",
+            })
+
+        if high_conf_pct < 20 and total >= 10:
+            actions.append({
+                "id": _next_id(),
+                "title": "Increase entry confidence through reinforcement",
+                "detail": (
+                    f"Only {high_conf_pct:.0f}% of entries have high confidence. "
+                    "Use learn.py to add manual high-quality entries."
+                ),
+                "command": "python3 learn.py --add",
+            })
+
+    # ---- Recurring noise titles ----
+    recurring_noise = []
+    try:
+        noise_rows = db.execute("""
+            SELECT title, category,
+                   COUNT(*) as entry_count,
+                   AVG(confidence) as avg_confidence
+            FROM knowledge_entries
+            WHERE confidence < 0.5
+            GROUP BY title
+            HAVING entry_count >= 2
+            ORDER BY entry_count DESC, avg_confidence ASC
+            LIMIT 15
+        """).fetchall()
+        for row in noise_rows:
+            recurring_noise.append({
+                "title": str(row["title"] or ""),
+                "category": str(row["category"] or ""),
+                "entry_count": int(row["entry_count"]),
+                "avg_confidence": round(float(row["avg_confidence"] or 0), 3),
+            })
+    except sqlite3.OperationalError:
+        pass
+
+    # ---- Hot files ----
+    hot_files = []
+    try:
+        file_refs: dict = {}
+        rows = db.execute("""
+            SELECT affected_files FROM knowledge_entries
+            WHERE affected_files IS NOT NULL AND affected_files != ''
+        """).fetchall()
+        for row in rows:
+            raw = row[0]
+            if not raw:
+                continue
+            try:
+                items = json.loads(raw)
+                if not isinstance(items, list):
+                    items = [str(items)]
+            except (json.JSONDecodeError, TypeError):
+                items = [raw]
+            for item in items:
+                if isinstance(item, str) and _is_file_path(item):
+                    path = item.strip()
+                    file_refs[path] = file_refs.get(path, 0) + 1
+        hot_files = [
+            {"path": p, "references": c}
+            for p, c in sorted(file_refs.items(), key=lambda x: -x[1])
+            if c >= 2
+        ][:20]
+    except sqlite3.OperationalError:
+        pass
+
+    # ---- Entries per category ----
+    entries = {}
+    for cat in ("mistake", "pattern", "decision", "tool"):
+        try:
+            cat_rows = db.execute("""
+                SELECT id, title, confidence, occurrence_count,
+                       last_seen, content, session_id
+                FROM knowledge_entries
+                WHERE category = ?
+                ORDER BY confidence DESC, occurrence_count DESC
+                LIMIT 10
+            """, (cat,)).fetchall()
+            cat_entries = []
+            for r in cat_rows:
+                content = str(r["content"] or "")
+                summary = content[:200].replace("\n", " ").strip()
+                cat_entries.append({
+                    "id": int(r["id"]),
+                    "title": str(r["title"] or ""),
+                    "confidence": round(float(r["confidence"] or 0), 3),
+                    "occurrence_count": int(r["occurrence_count"] or 0),
+                    "last_seen": r["last_seen"],
+                    "summary": summary,
+                    "session_id": r["session_id"],
+                })
+            entries[f"{cat}s"] = cat_entries
+        except sqlite3.OperationalError:
+            entries[f"{cat}s"] = []
+
+    db.close()
+
+    # ---- Summary ----
+    score = health.get("score", 0)
+    if score >= 80:
+        summary = f"Knowledge base is in excellent health ({score}/100) with {total} entries."
+    elif score >= 60:
+        summary = f"Knowledge base is in good health ({score}/100) with {total} entries. Some areas need attention."
+    elif score >= 40:
+        summary = f"Knowledge base has fair health ({score}/100) with {total} entries. Several quality issues detected."
+    else:
+        summary = f"Knowledge base needs work ({score}/100) with {total} entries. Multiple quality issues detected."
+
+    if alerts:
+        top_sev = (
+            "critical" if any(a["severity"] == "critical" for a in alerts)
+            else "warning" if any(a["severity"] == "warning" for a in alerts)
+            else "info"
+        )
+        summary += f" {len(alerts)} alert(s) including {top_sev}-level issues."
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "summary": summary,
+        "overview": overview,
+        "quality_alerts": alerts,
+        "recommended_actions": actions,
+        "recurring_noise_titles": recurring_noise,
+        "hot_files": hot_files,
+        "entries": entries,
+    }
+
+
+def format_insights_report(insights: dict) -> str:
+    """Format insights as a human-readable dashboard."""
+    ov = insights.get("overview", {})
+    score = ov.get("health_score", 0)
+    total = ov.get("total_entries", 0)
+
+    if score >= 80:
+        grade, emoji = "Excellent", "🏆"
+    elif score >= 60:
+        grade, emoji = "Good", "✅"
+    elif score >= 40:
+        grade, emoji = "Fair", "🟡"
+    else:
+        grade, emoji = "Needs Work", "🔴"
+
+    filled = int(score / 5)
+    bar = "█" * filled + "░" * (20 - filled)
+
+    lines = [
+        "╔══════════════════════════════════════════╗",
+        f"║  {emoji} Knowledge Insights: {score}/100 ({grade})",
+        f"║  [{bar}]",
+        "╚══════════════════════════════════════════╝",
+        "",
+        insights.get("summary", ""),
+        "",
+        "📊 Overview",
+        f"  Total entries:    {total:,}",
+        f"  Sessions:         {ov.get('sessions', 0):,}",
+        f"  High confidence:  {ov.get('high_confidence_pct', 0):.1f}%",
+        f"  Low confidence:   {ov.get('low_confidence_pct', 0):.1f}%",
+        f"  Stale entries:    {ov.get('stale_pct', 0):.1f}%",
+        f"  Relation density: {ov.get('relation_density', 0):.2f} rel/entry",
+        f"  Embedding cov.:   {ov.get('embedding_pct', 0):.1f}%",
+        "",
+    ]
+
+    alerts = insights.get("quality_alerts", [])
+    if alerts:
+        lines.append("🚨 Quality Alerts")
+        for alert in alerts:
+            sev_icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(alert["severity"], "•")
+            lines.append(f"  {sev_icon} [{alert['severity'].upper()}] {alert['title']}")
+            lines.append(f"       {alert['detail']}")
+        lines.append("")
+
+    actions = insights.get("recommended_actions", [])
+    if actions:
+        lines.append("💡 Recommended Actions")
+        for i, action in enumerate(actions, 1):
+            lines.append(f"  {i}. {action['title']}")
+            lines.append(f"     {action['detail']}")
+            lines.append(f"     $ {action['command']}")
+        lines.append("")
+
+    noise = insights.get("recurring_noise_titles", [])
+    if noise:
+        lines.append("🔄 Recurring Low-Quality Titles (noise candidates)")
+        lines.append(f"  {'Title':<40} {'Cat':<10} {'Count':>5}  {'AvgConf':>7}")
+        lines.append(f"  {'-'*40} {'-'*10} {'-'*5}  {'-'*7}")
+        for n in noise[:10]:
+            title = (n["title"] or "")[:39]
+            lines.append(
+                f"  {title:<40} {n['category']:<10} {n['entry_count']:>5}  {n['avg_confidence']:>7.3f}"
+            )
+        lines.append("")
+
+    hot = insights.get("hot_files", [])
+    if hot:
+        lines.append("🔥 Hot Files (most referenced)")
+        for hf in hot[:10]:
+            lines.append(f"  {hf['references']:>4}x  {hf['path']}")
+        lines.append("")
+
+    entries = insights.get("entries", {})
+    for cat_key in ("mistakes", "patterns", "decisions", "tools"):
+        cat_entries = entries.get(cat_key, [])
+        if cat_entries:
+            lines.append(f"📌 Top {cat_key.title()} (by confidence)")
+            for e in cat_entries[:5]:
+                conf = f"{e['confidence']:.2f}"
+                title = (e["title"] or "")[:60]
+                lines.append(f"  [{conf}] {title}")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
 def format_report(health: dict) -> str:
     """Format health metrics as a text dashboard."""
     score = health["score"]
@@ -559,6 +988,18 @@ def main():
             print(json.dumps(sync_stats, indent=2, ensure_ascii=False))
         else:
             print(format_sync_report(sync_stats))
+        return
+
+    if "--insights" in args:
+        stale_days = 30
+        if "--stale" in args:
+            idx = args.index("--stale")
+            stale_days = int(args[idx + 1]) if idx + 1 < len(args) else 30
+        insights = compute_insights(stale_days=stale_days)
+        if "--json" in args:
+            print(json.dumps(insights, indent=2, ensure_ascii=False))
+        else:
+            print(format_insights_report(insights))
         return
 
     stale_days = 30
