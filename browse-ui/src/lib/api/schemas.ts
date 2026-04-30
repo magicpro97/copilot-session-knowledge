@@ -42,7 +42,8 @@ export const timelineEventSchema = z.object({
   kind: z.string(),
   preview: z.string(),
   byte_offset: z.number().nullable(),
-  file_mtime: z.string().nullable(),
+  // Coerce numeric legacy payloads (REAL from SQLite) to string; null passes through.
+  file_mtime: z.preprocess((v) => (typeof v === "number" ? String(v) : v), z.string().nullable()),
   color: z.string(),
 });
 

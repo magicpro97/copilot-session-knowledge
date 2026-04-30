@@ -137,7 +137,7 @@ def _fetch_events(db, session_id: str, from_idx: int, limit: int) -> tuple:
                         "kind": kind,
                         "preview": preview,
                         "byte_offset": byte_offset,
-                        "file_mtime": file_mtime,
+                        "file_mtime": str(file_mtime) if file_mtime is not None else None,
                         "color": color,
                     }
                 )

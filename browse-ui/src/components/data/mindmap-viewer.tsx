@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ZoomIn, ZoomOut, Maximize } from "lucide-react";
+import { ZoomIn, ZoomOut, Maximize, Plus, Minus } from "lucide-react";
 import { Markmap } from "markmap-view";
 import { Transformer } from "markmap-lib";
 
@@ -11,6 +11,8 @@ type MindmapViewerProps = {
   markdown: string;
   title?: string;
 };
+
+const ZOOM_STEP = 1.25;
 
 function setFoldState(node: any, folded: boolean) {
   if (!node) return;
@@ -58,6 +60,18 @@ export function MindmapViewer({ markdown, title }: MindmapViewerProps) {
     mapRef.current?.fit?.();
   };
 
+  const zoomIn = () => {
+    if (!mapRef.current) return;
+    const currentScale = (svgRef.current as any)?.__zoom?.k ?? 1;
+    mapRef.current.rescale?.(currentScale * ZOOM_STEP);
+  };
+
+  const zoomOut = () => {
+    if (!mapRef.current) return;
+    const currentScale = (svgRef.current as any)?.__zoom?.k ?? 1;
+    mapRef.current.rescale?.(currentScale / ZOOM_STEP);
+  };
+
   const expandMap = () => {
     if (!rootRef.current || !mapRef.current) return;
     setFoldState(rootRef.current, false);
@@ -77,6 +91,14 @@ export function MindmapViewer({ markdown, title }: MindmapViewerProps) {
     <Card>
       <CardContent className="space-y-3 p-3">
         <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" onClick={zoomIn}>
+            <Plus className="size-4" />
+            Zoom In
+          </Button>
+          <Button variant="outline" onClick={zoomOut}>
+            <Minus className="size-4" />
+            Zoom Out
+          </Button>
           <Button variant="outline" onClick={fitMap}>
             <Maximize className="size-4" />
             Fit

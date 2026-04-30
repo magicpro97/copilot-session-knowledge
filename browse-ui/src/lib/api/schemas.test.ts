@@ -18,6 +18,8 @@ import {
   searchResponseSchema,
   sessionListResponseSchema,
   trendScoutOperatorActionSchema,
+  timelineEventSchema,
+  timelineEventsResponseSchema,
 } from "@/lib/api/schemas";
 
 describe("api schemas", () => {
@@ -544,6 +546,64 @@ describe("api schemas", () => {
         checks: [],
       })
     ).toThrow();
+  });
+
+  // ── Timeline event file_mtime coercion tests ─────────────────────────────
+
+  it("coerces numeric file_mtime to string (legacy numeric DB payload)", () => {
+    const ev = timelineEventSchema.parse({
+      event_id: 1,
+      kind: "unknown",
+      preview: "test",
+      byte_offset: 0,
+      file_mtime: 1777303726.969462,
+      color: "#6b7280",
+    });
+    expect(typeof ev.file_mtime).toBe("string");
+    expect(ev.file_mtime).toBe("1777303726.969462");
+  });
+
+  it("accepts string file_mtime unchanged", () => {
+    const ev = timelineEventSchema.parse({
+      event_id: 2,
+      kind: "unknown",
+      preview: "test",
+      byte_offset: 0,
+      file_mtime: "1777303726.969462",
+      color: "#6b7280",
+    });
+    expect(ev.file_mtime).toBe("1777303726.969462");
+  });
+
+  it("accepts null file_mtime as null", () => {
+    const ev = timelineEventSchema.parse({
+      event_id: 3,
+      kind: "unknown",
+      preview: "test",
+      byte_offset: null,
+      file_mtime: null,
+      color: "#6b7280",
+    });
+    expect(ev.file_mtime).toBeNull();
+  });
+
+  it("parses full timeline events response with numeric file_mtime", () => {
+    const parsed = timelineEventsResponseSchema.parse({
+      session_id: "de480029-0e37-4133-8ab1-61baa36be36f",
+      total: 1,
+      events: [
+        {
+          event_id: 0,
+          kind: "unknown",
+          preview: "some preview text",
+          byte_offset: 0,
+          file_mtime: 1777303726.969462,
+          color: "#6b7280",
+        },
+      ],
+    });
+    expect(parsed.events[0].file_mtime).toBe("1777303726.969462");
+    expect(typeof parsed.events[0].file_mtime).toBe("string");
   });
 });
 

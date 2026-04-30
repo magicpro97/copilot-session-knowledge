@@ -9,6 +9,7 @@ test_browse_timeline.py — Tests for F3 Session Timeline Replay
   TL4: Invalid session_id (special chars) returns 400
   TL5: Token auth enforced on both timeline endpoints
 """
+
 import http.client
 import json
 import os
@@ -84,8 +85,22 @@ def _make_test_db(n_events: int = 12) -> sqlite3.Connection:
     )
     db.execute(
         "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        ("test-session-abc", None, "Test session for timeline", "copilot",
-         1.0, 2.0, 3.0, n_events, 1024, 1, 0, 3, 0, "2026-01-01"),
+        (
+            "test-session-abc",
+            None,
+            "Test session for timeline",
+            "copilot",
+            1.0,
+            2.0,
+            3.0,
+            n_events,
+            1024,
+            1,
+            0,
+            3,
+            0,
+            "2026-01-01",
+        ),
     )
     # Insert synthetic event_offsets rows (file path is None so preview will
     # fall back to "(source file missing)" — that is the correct graceful behavior)
@@ -145,9 +160,7 @@ def run_all_tests() -> int:
     db = _make_test_db(n_events=12)
     server, host, port = _start_server(db, token="tok")
     try:
-        status, hdrs, body = _get(
-            host, port, "/api/session/test-session-abc/events?token=tok"
-        )
+        status, hdrs, body = _get(host, port, "/api/session/test-session-abc/events?token=tok")
         test("TL2: status 200", status == 200)
         ct = hdrs.get("content-type", "")
         test("TL2: content-type JSON", "application/json" in ct)
@@ -177,10 +190,7 @@ def run_all_tests() -> int:
     db = _make_test_db(n_events=12)
     server, host, port = _start_server(db, token="tok")
     try:
-        status, _, body = _get(
-            host, port,
-            "/api/session/test-session-abc/events?token=tok&from=0&limit=5"
-        )
+        status, _, body = _get(host, port, "/api/session/test-session-abc/events?token=tok&from=0&limit=5")
         test("TL3: status 200", status == 200)
         try:
             data = json.loads(body)
@@ -197,8 +207,8 @@ def run_all_tests() -> int:
     server, host, port = _start_server(db, token="tok")
     try:
         bad_ids = [
-            ("/session/../etc/timeline?token=tok",          "path traversal in timeline"),
-            ("/api/session/<bad>/events?token=tok",         "angle bracket in api"),
+            ("/session/../etc/timeline?token=tok", "path traversal in timeline"),
+            ("/api/session/<bad>/events?token=tok", "angle bracket in api"),
             ("/session/" + "a" * 200 + "/timeline?token=tok", "too-long id in timeline"),
         ]
         for bad_path, label in bad_ids:
@@ -223,6 +233,45 @@ def run_all_tests() -> int:
         test("TL5: timeline with correct token → 200", s3 == 200)
         s4, _, _ = _get(host, port, "/api/session/test-session-abc/events?token=secret")
         test("TL5: events API with correct token → 200", s4 == 200)
+    finally:
+        server.shutdown()
+
+    # ── TL6: file_mtime contract — numeric REAL → JSON string ─────────────────
+    print("\n-- TL6: file_mtime serialised as string or null")
+    db = _make_test_db(n_events=3)
+    # Patch one row with NULL file_mtime to exercise both branches
+    db.execute("UPDATE event_offsets SET file_mtime = NULL WHERE event_id = 1")
+    db.commit()
+    server, host, port = _start_server(db, token="tok")
+    try:
+        status, _, body = _get(host, port, "/api/session/test-session-abc/events?token=tok&from=0&limit=5")
+        test("TL6: status 200", status == 200)
+        try:
+            data = json.loads(body)
+            events = data.get("events", [])
+            non_null_mtimes = [ev["file_mtime"] for ev in events if ev.get("file_mtime") is not None]
+            null_mtimes = [ev for ev in events if ev.get("file_mtime") is None]
+            test(
+                "TL6: non-null file_mtime values are JSON strings",
+                all(isinstance(m, str) for m in non_null_mtimes),
+            )
+            test(
+                "TL6: at least one non-null file_mtime (numeric DB row → string)",
+                len(non_null_mtimes) >= 1,
+            )
+            test(
+                "TL6: null file_mtime preserved as null",
+                len(null_mtimes) >= 1,
+            )
+            # Spot-check: the numeric 1700000000.0 must round-trip as a string
+            if non_null_mtimes:
+                test(
+                    "TL6: string value contains numeric content",
+                    any("17" in m for m in non_null_mtimes),
+                )
+        except (json.JSONDecodeError, KeyError) as exc:
+            test("TL6: valid JSON", False)
+            print(f"    exception: {exc}")
     finally:
         server.shutdown()
 

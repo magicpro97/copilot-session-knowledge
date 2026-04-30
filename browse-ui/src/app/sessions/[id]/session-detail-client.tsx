@@ -190,8 +190,8 @@ export function SessionDetailClient() {
       <Card>
         <CardHeader className="space-y-2">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="space-y-1">
-              <CardTitle className="text-xl">
+            <div className="min-w-0 flex-1 space-y-1">
+              <CardTitle className="line-clamp-2 text-xl">
                 {detailQuery.data?.meta.summary?.trim() || `Session ${shortId}`}
               </CardTitle>
               <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-sm">
@@ -225,12 +225,15 @@ export function SessionDetailClient() {
       </Card>
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as SessionTab)}>
-        <TabsList variant="line">
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="timeline">Timeline</TabsTrigger>
-          <TabsTrigger value="mindmap">Mindmap</TabsTrigger>
-          <TabsTrigger value="checkpoints">Checkpoints</TabsTrigger>
-        </TabsList>
+        <div className="bg-background/95 supports-[backdrop-filter]:bg-background/80 sticky top-0 z-10 -mx-1 overflow-x-auto px-1 pt-1 pb-px backdrop-blur">
+          <TabsList variant="line">
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="timeline">Timeline</TabsTrigger>
+            <TabsTrigger value="mindmap">Mindmap</TabsTrigger>
+            <TabsTrigger value="checkpoints">Checkpoints</TabsTrigger>
+          </TabsList>
+          <div className="border-border -mx-1 border-b" />
+        </div>
 
         <TabsContent value="overview">
           <OverviewTab
