@@ -15,6 +15,7 @@ export const STALE_TIMES = {
   eval: 60_000,
   compare: 15_000,
   retro: 120_000,
+  insights: 120_000,
 } as const;
 
 export const CACHE_TIMES = {
@@ -28,6 +29,7 @@ export const CACHE_TIMES = {
   eval: 10 * 60_000,
   compare: 60_000,
   retro: 10 * 60_000,
+  insights: 10 * 60_000,
 } as const;
 
 export const SOURCE_LABELS = {

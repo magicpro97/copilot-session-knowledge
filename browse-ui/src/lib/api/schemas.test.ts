@@ -7,6 +7,7 @@ import {
   evidenceGraphResponseSchema,
   compareResponseSchema,
   evalResponseSchema,
+  knowledgeInsightsResponseSchema,
   trendScoutStatusResponseSchema,
   trendScoutDiscoveryLaneSchema,
   syncStatusResponseSchema,
@@ -543,5 +544,136 @@ describe("api schemas", () => {
         checks: [],
       })
     ).toThrow();
+  });
+});
+
+// ── Knowledge Insights schema tests ───────────────────────────────────────────
+
+const _validInsights = {
+  generated_at: "2026-01-01T00:00:00Z",
+  summary: "All looks healthy.",
+  overview: {
+    health_score: 82.5,
+    total_entries: 120,
+    sessions: 15,
+    high_confidence_pct: 70.0,
+    low_confidence_pct: 8.0,
+    stale_pct: 3.0,
+    relation_density: 1.5,
+    embedding_pct: 45.0,
+  },
+  quality_alerts: [
+    {
+      id: "low-conf",
+      title: "Low confidence entries",
+      severity: "warning" as const,
+      detail: "8% of entries are low confidence.",
+    },
+  ],
+  recommended_actions: [
+    {
+      id: "run-extract",
+      title: "Re-extract knowledge",
+      detail: "Run extraction to refresh.",
+      command: "python3 extract-knowledge.py",
+    },
+  ],
+  recurring_noise_titles: [
+    { title: "Noisy title", category: "mistake", entry_count: 4, avg_confidence: 0.25 },
+  ],
+  hot_files: [{ path: "browse/api/__init__.py", references: 8 }],
+  entries: {
+    mistakes: [
+      {
+        id: 1,
+        title: "Fix X",
+        confidence: 0.9,
+        occurrence_count: 2,
+        last_seen: "2026-01-01",
+        summary: "Fixed X by doing Y",
+        session_id: "abc",
+      },
+    ],
+    patterns: [],
+    decisions: [],
+    tools: [],
+  },
+};
+
+describe("knowledgeInsightsResponseSchema", () => {
+  it("parses a valid full insights response", () => {
+    const parsed = knowledgeInsightsResponseSchema.parse(_validInsights);
+    expect(parsed.generated_at).toBe("2026-01-01T00:00:00Z");
+    expect(parsed.overview.health_score).toBe(82.5);
+    expect(parsed.overview.total_entries).toBe(120);
+    expect(parsed.quality_alerts).toHaveLength(1);
+    expect(parsed.quality_alerts[0].severity).toBe("warning");
+    expect(parsed.recommended_actions).toHaveLength(1);
+    expect(parsed.hot_files[0].references).toBe(8);
+    expect(parsed.entries.mistakes).toHaveLength(1);
+    expect(parsed.entries.patterns).toHaveLength(0);
+  });
+
+  it("defaults empty arrays for list fields when absent", () => {
+    const minimal = {
+      generated_at: "2026-01-01T00:00:00Z",
+      summary: "Ok",
+      overview: {
+        health_score: 50,
+        total_entries: 0,
+        sessions: 0,
+        high_confidence_pct: 0,
+        low_confidence_pct: 0,
+        stale_pct: 0,
+        relation_density: 0,
+        embedding_pct: 0,
+      },
+      entries: { mistakes: [], patterns: [], decisions: [], tools: [] },
+    };
+    const parsed = knowledgeInsightsResponseSchema.parse(minimal);
+    expect(parsed.quality_alerts).toEqual([]);
+    expect(parsed.recommended_actions).toEqual([]);
+    expect(parsed.recurring_noise_titles).toEqual([]);
+    expect(parsed.hot_files).toEqual([]);
+  });
+
+  it("rejects unknown alert severity", () => {
+    expect(() =>
+      knowledgeInsightsResponseSchema.parse({
+        ..._validInsights,
+        quality_alerts: [{ id: "x", title: "Y", severity: "unknown", detail: "d" }],
+      })
+    ).toThrow();
+  });
+
+  it("rejects missing overview", () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { overview: _o, ...noOverview } = _validInsights;
+    expect(() => knowledgeInsightsResponseSchema.parse(noOverview)).toThrow();
+  });
+
+  it("entry last_seen and summary accept null", () => {
+    const withNull = {
+      ..._validInsights,
+      entries: {
+        mistakes: [
+          {
+            id: 2,
+            title: "T",
+            confidence: 0.5,
+            occurrence_count: 1,
+            last_seen: null,
+            summary: null,
+            session_id: null,
+          },
+        ],
+        patterns: [],
+        decisions: [],
+        tools: [],
+      },
+    };
+    const parsed = knowledgeInsightsResponseSchema.parse(withNull);
+    expect(parsed.entries.mistakes[0].last_seen).toBeNull();
+    expect(parsed.entries.mistakes[0].summary).toBeNull();
   });
 });

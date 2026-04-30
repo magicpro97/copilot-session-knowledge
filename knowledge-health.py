@@ -115,10 +115,22 @@ def compute_health(stale_days: int = 30) -> dict:
     # Embedding coverage
     embeddings = 0
     try:
-        embeddings = db.execute("SELECT COUNT(DISTINCT source_id) FROM embeddings").fetchone()[0]
+        embedding_columns = {
+            str(row["name"]) for row in db.execute("PRAGMA table_info(embeddings)").fetchall()
+        }
+        if "source_type" in embedding_columns:
+            embeddings = db.execute(
+                """
+                SELECT COUNT(DISTINCT source_id)
+                FROM embeddings
+                WHERE source_type = 'knowledge'
+                """
+            ).fetchone()[0]
+        else:
+            embeddings = db.execute("SELECT COUNT(DISTINCT source_id) FROM embeddings").fetchone()[0]
     except sqlite3.OperationalError:
         pass
-    embed_pct = (embeddings / total) * 100 if total > 0 else 0
+    embed_pct = min((embeddings / total) * 100, 100) if total > 0 else 0
 
     # Confidence distribution
     high_conf = db.execute("""
@@ -365,9 +377,12 @@ def _is_file_path(s: str) -> bool:
     s = s.strip()
     if not s or len(s) > 150 or len(s) < 2:
         return False
-    if ' ' in s or ':' in s:
+    if ' ' in s or ':' in s or s.startswith('/') or s.startswith('\\'):
         return False
-    if '.' not in s and '/' not in s:
+    normalized = s[2:] if s.startswith('./') else s
+    if normalized.startswith("../") or normalized == "..":
+        return False
+    if '.' not in normalized and '/' not in s:
         return False
     return bool(_FILE_RE.match(s))
 
@@ -540,7 +555,7 @@ def compute_insights(stale_days: int = 30) -> dict:
                     f"Relation density is low ({relation_density:.2f}). "
                     "Connect related entries to improve cross-session recall."
                 ),
-                "command": "python3 learn.py --relate",
+                "command": "python3 learn.py --help",
             })
 
         if health.get("categorized_pct", 100) < 80:
@@ -575,21 +590,25 @@ def compute_insights(stale_days: int = 30) -> dict:
                     f"Only {high_conf_pct:.0f}% of entries have high confidence. "
                     "Use learn.py to add manual high-quality entries."
                 ),
-                "command": "python3 learn.py --add",
+                "command": "python3 learn.py --help",
             })
 
     # ---- Recurring noise titles ----
     recurring_noise = []
     try:
         noise_rows = db.execute("""
-            SELECT title, category,
+            SELECT title,
+                   CASE
+                       WHEN COUNT(DISTINCT category) = 1 THEN MIN(category)
+                       ELSE 'mixed'
+                   END as category,
                    COUNT(*) as entry_count,
                    AVG(confidence) as avg_confidence
             FROM knowledge_entries
             WHERE confidence < 0.5
             GROUP BY title
             HAVING entry_count >= 2
-            ORDER BY entry_count DESC, avg_confidence ASC
+            ORDER BY entry_count DESC, avg_confidence ASC, title ASC
             LIMIT 15
         """).fetchall()
         for row in noise_rows:
@@ -626,7 +645,7 @@ def compute_insights(stale_days: int = 30) -> dict:
                     file_refs[path] = file_refs.get(path, 0) + 1
         hot_files = [
             {"path": p, "references": c}
-            for p, c in sorted(file_refs.items(), key=lambda x: -x[1])
+            for p, c in sorted(file_refs.items(), key=lambda x: (-x[1], x[0]))
             if c >= 2
         ][:20]
     except sqlite3.OperationalError:

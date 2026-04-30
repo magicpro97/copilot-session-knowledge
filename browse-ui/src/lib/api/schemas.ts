@@ -629,3 +629,70 @@ export const sessionsResponseSchema = z.union([
   sessionListResponseSchema,
   z.array(sessionRowSchema),
 ]);
+
+// ── Knowledge Insights (/api/knowledge/insights) ─────────────────────
+
+export const knowledgeInsightsOverviewSchema = z.object({
+  health_score: z.number(),
+  total_entries: z.number(),
+  sessions: z.number(),
+  high_confidence_pct: z.number(),
+  low_confidence_pct: z.number(),
+  stale_pct: z.number(),
+  relation_density: z.number(),
+  embedding_pct: z.number(),
+});
+
+export const knowledgeInsightsAlertSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  severity: z.enum(["info", "warning", "critical"]),
+  detail: z.string(),
+});
+
+export const knowledgeInsightsActionSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  detail: z.string(),
+  command: z.string(),
+});
+
+export const knowledgeInsightsNoiseTitleSchema = z.object({
+  title: z.string(),
+  category: z.string(),
+  entry_count: z.number(),
+  avg_confidence: z.number(),
+});
+
+export const knowledgeInsightsHotFileSchema = z.object({
+  path: z.string(),
+  references: z.number(),
+});
+
+export const knowledgeInsightsEntrySchema = z.object({
+  id: z.number(),
+  title: z.string(),
+  confidence: z.number(),
+  occurrence_count: z.number(),
+  last_seen: z.string().nullable(),
+  summary: z.string().nullable(),
+  session_id: z.string().nullable(),
+});
+
+export const knowledgeInsightsEntriesSchema = z.object({
+  mistakes: z.array(knowledgeInsightsEntrySchema).default([]),
+  patterns: z.array(knowledgeInsightsEntrySchema).default([]),
+  decisions: z.array(knowledgeInsightsEntrySchema).default([]),
+  tools: z.array(knowledgeInsightsEntrySchema).default([]),
+});
+
+export const knowledgeInsightsResponseSchema = z.object({
+  generated_at: z.string(),
+  summary: z.string(),
+  overview: knowledgeInsightsOverviewSchema,
+  quality_alerts: z.array(knowledgeInsightsAlertSchema).default([]),
+  recommended_actions: z.array(knowledgeInsightsActionSchema).default([]),
+  recurring_noise_titles: z.array(knowledgeInsightsNoiseTitleSchema).default([]),
+  hot_files: z.array(knowledgeInsightsHotFileSchema).default([]),
+  entries: knowledgeInsightsEntriesSchema,
+});

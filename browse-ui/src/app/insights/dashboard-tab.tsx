@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 
 import { EvalSection } from "@/app/insights/eval-section";
+import { KnowledgeInsightsSection } from "@/app/insights/knowledge-insights-section";
 import { RetroSection } from "@/app/insights/retro-section";
 import { AreaChart } from "@/components/charts/area-chart";
 import { BarChart } from "@/components/charts/bar-chart";
@@ -253,6 +254,7 @@ export function DashboardTab() {
 
       <EvalSection />
       <RetroSection />
+      <KnowledgeInsightsSection />
     </div>
   );
 }

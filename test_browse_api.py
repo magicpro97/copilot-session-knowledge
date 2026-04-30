@@ -18,6 +18,7 @@ Tests:
   T10: /api/sessions returns 200 with empty items on empty DB
   T17: /api/sync/status returns sync diagnostics payload
   T18: /api/scout/status returns trend scout diagnostics payload
+  T23: /api/knowledge/insights returns mocked knowledge-health.py output
 """
 
 import http.client
@@ -27,6 +28,7 @@ import sqlite3
 import sys
 import threading
 import time
+import unittest.mock
 import urllib.parse
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -807,8 +809,93 @@ def run_all_tests() -> int:
     finally:
         server.shutdown()
 
+    # ── T23: /api/knowledge/insights with mocked subprocess output ────────────
+    print("\n-- T23: /api/knowledge/insights mocked subprocess")
+    _MOCK_INSIGHTS = {
+        "generated_at": "2026-01-01T00:00:00Z",
+        "summary": "Test summary",
+        "overview": {
+            "health_score": 75.0,
+            "total_entries": 42,
+            "sessions": 10,
+            "high_confidence_pct": 60.0,
+            "low_confidence_pct": 15.0,
+            "stale_pct": 5.0,
+            "relation_density": 1.2,
+            "embedding_pct": 30.0,
+        },
+        "quality_alerts": [
+            {"id": "low-confidence", "title": "Low confidence entries", "severity": "warning", "detail": "15% of entries have low confidence."}
+        ],
+        "recommended_actions": [
+            {"id": "run-extract", "title": "Re-extract knowledge", "detail": "Run extract-knowledge.py", "command": "python3 extract-knowledge.py"}
+        ],
+        "recurring_noise_titles": [
+            {"title": "Test entry", "category": "mistake", "entry_count": 5, "avg_confidence": 0.3}
+        ],
+        "hot_files": [
+            {"path": "browse/api/__init__.py", "references": 8}
+        ],
+        "entries": {
+            "mistakes": [{"id": 1, "title": "Fix X", "confidence": 0.9, "occurrence_count": 2, "last_seen": "2026-01-01", "summary": "Fixed X", "session_id": "abc"}],
+            "patterns": [],
+            "decisions": [],
+            "tools": [],
+        },
+    }
+
+    import browse.api.insights as _insights_mod
+    _mock_proc = unittest.mock.MagicMock()
+    _mock_proc.returncode = 0
+    _mock_proc.stdout = json.dumps(_MOCK_INSIGHTS)
+
+    db = _make_test_db()
+    server, host, port = _start_server(db)
+    try:
+        with (
+            unittest.mock.patch.object(_insights_mod, "_HEALTH_SCRIPT", Path("knowledge-health.py")),
+            unittest.mock.patch.object(_insights_mod, "subprocess") as _mock_sub,
+        ):
+            _mock_sub.run.return_value = _mock_proc
+            _mock_sub.TimeoutExpired = subprocess_TimeoutExpired_sentinel
+            status, hdrs, data = _get(host, port, "/api/knowledge/insights")
+            _mock_sub.run.assert_called_once()
+        test("T23: status 200", status == 200)
+        test("T23: content-type json", "application/json" in hdrs.get("content-type", ""))
+        test("T23: has generated_at", isinstance(data, dict) and isinstance(data.get("generated_at"), str))
+        test("T23: has summary", isinstance(data.get("summary"), str))
+        test("T23: has overview", isinstance(data.get("overview"), dict))
+        test("T23: overview has health_score", isinstance(data.get("overview", {}).get("health_score"), (int, float)))
+        test("T23: overview has total_entries", isinstance(data.get("overview", {}).get("total_entries"), int))
+        test("T23: has quality_alerts list", isinstance(data.get("quality_alerts"), list))
+        test("T23: quality_alerts have severity", all("severity" in a for a in data.get("quality_alerts", [])))
+        test("T23: has recommended_actions list", isinstance(data.get("recommended_actions"), list))
+        test("T23: has recurring_noise_titles list", isinstance(data.get("recurring_noise_titles"), list))
+        test("T23: has hot_files list", isinstance(data.get("hot_files"), list))
+        test("T23: has entries object", isinstance(data.get("entries"), dict))
+        test("T23: entries has mistakes", isinstance(data.get("entries", {}).get("mistakes"), list))
+    finally:
+        server.shutdown()
+
+    # ── T23b: /api/knowledge/insights returns 503 when script missing ──────────
+    print("\n-- T23b: /api/knowledge/insights script missing → 503")
+    db = _make_test_db()
+    server, host, port = _start_server(db)
+    try:
+        with unittest.mock.patch.object(_insights_mod, "_HEALTH_SCRIPT", Path("/nonexistent/knowledge-health.py")):
+            status2, _, data2 = _get(host, port, "/api/knowledge/insights")
+        test("T23b: status 503 when script missing", status2 == 503)
+        test("T23b: error body has 'error'", isinstance(data2, dict) and "error" in data2)
+    finally:
+        server.shutdown()
+
     print(f"\nResults: {_PASS} passed, {_FAIL} failed")
     return _FAIL
+
+
+# Sentinel for subprocess.TimeoutExpired patching — just needs to be a class
+class subprocess_TimeoutExpired_sentinel(Exception):
+    pass
 
 
 def run_edge_case_tests() -> int:

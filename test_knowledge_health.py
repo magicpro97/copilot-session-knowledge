@@ -73,7 +73,13 @@ CREATE TABLE knowledge_entries (
 
 _RELATIONS_SCHEMA = "CREATE TABLE knowledge_relations (id INTEGER PRIMARY KEY, source_id INTEGER, target_id INTEGER, relation_type TEXT)"
 _ENTITY_REL_SCHEMA = "CREATE TABLE entity_relations (id INTEGER PRIMARY KEY, source TEXT, target TEXT, relation_type TEXT)"
-_EMBEDDINGS_SCHEMA = "CREATE TABLE embeddings (id INTEGER PRIMARY KEY, source_id INTEGER, vector BLOB)"
+_EMBEDDINGS_SCHEMA = (
+    "CREATE TABLE embeddings ("
+    "id INTEGER PRIMARY KEY, "
+    "source_type TEXT NOT NULL DEFAULT 'knowledge', "
+    "source_id INTEGER, "
+    "vector BLOB)"
+)
 _SCHEMA_VER_SCHEMA = "CREATE TABLE schema_version (version INTEGER, name TEXT)"
 
 
@@ -154,19 +160,21 @@ def section(title):
 
 section("_is_file_path — valid file paths")
 test("plain script", kh._is_file_path("scripts/fix-ssl.sh"))
-test("absolute path", kh._is_file_path("/Users/linhn/project/main.py"))
 test("nested path with dots", kh._is_file_path("composeApp/src/main/kotlin/Foo.kt"))
 test("config file", kh._is_file_path("cloudflared/config.yml"))
-test("plist file", kh._is_file_path("/Library/LaunchAgents/com.foo.plist"))
 test("dot-relative", kh._is_file_path("./scripts/run.sh"))
+test("dot-relative extensionless build file", kh._is_file_path("./Makefile"))
 test("pbxproj", kh._is_file_path("iosApp/iosApp.xcodeproj/project.pbxproj"))
 test("plain extension", kh._is_file_path("main.py"))
 
 section("_is_file_path — prose/noise strings (should return False)")
+test("absolute path", not kh._is_file_path("/Users/linhn/project/main.py"))
+test("system plist path", not kh._is_file_path("/Library/LaunchAgents/com.foo.plist"))
 test("sentence with colon", not kh._is_file_path("Usage: run this script"))
 test("long prose", not kh._is_file_path("Changed: custom sound selection (line ~29-32), scheduleReminders() method"))
 test("prose with spaces", not kh._is_file_path("macOS LaunchAgent that triggers autostart-screener.sh"))
 test("colon in middle", not kh._is_file_path("iosApp: changed entitlements"))
+test("parent-relative path", not kh._is_file_path("../outside-repo.py"))
 test("empty string", not kh._is_file_path(""))
 test("only whitespace", not kh._is_file_path("   "))
 test("very long string", not kh._is_file_path("a" * 200 + ".py"))
@@ -233,6 +241,13 @@ _insert_entries(db_syn, [
      "occurrence_count": 1, "session_id": "s3"},
     {"category": "mistake", "title": "generic noise title", "confidence": 0.2,
      "occurrence_count": 1, "session_id": "s4"},
+    # Cross-category noise should collapse into one mixed row
+    {"category": "mistake", "title": "cross-category noise", "confidence": 0.2,
+     "occurrence_count": 1, "session_id": "s5"},
+    {"category": "pattern", "title": "cross-category noise", "confidence": 0.2,
+     "occurrence_count": 1, "session_id": "s6"},
+    {"category": "decision", "title": "cross-category noise", "confidence": 0.2,
+     "occurrence_count": 1, "session_id": "s7"},
     # Patterns
     {"category": "pattern", "title": "Always use async/await for IO", "confidence": 0.8,
      "session_id": "s1"},
@@ -256,6 +271,18 @@ for i in range(3):
     )
 db_syn.commit()
 
+# Mixed embedding source types should not inflate knowledge coverage.
+db_syn.execute(
+    "INSERT INTO embeddings (source_type, source_id, vector) VALUES (?, ?, ?)",
+    ("knowledge", 1, b"k"),
+)
+for i in range(50):
+    db_syn.execute(
+        "INSERT INTO embeddings (source_type, source_id, vector) VALUES (?, ?, ?)",
+        ("session", 1000 + i, b"s"),
+    )
+db_syn.commit()
+
 kh.get_db = _get_db_factory(uri_syn)
 
 ins_syn = kh.compute_insights()
@@ -269,6 +296,7 @@ test("low_confidence_pct in [0,100]", 0 <= ins_syn["overview"]["low_confidence_p
 test("stale_pct in [0,100]", 0 <= ins_syn["overview"]["stale_pct"] <= 100)
 test("relation_density >= 0", ins_syn["overview"]["relation_density"] >= 0)
 test("embedding_pct >= 0", ins_syn["overview"]["embedding_pct"] >= 0)
+test("embedding_pct only counts knowledge embeddings", 0 < ins_syn["overview"]["embedding_pct"] < 10)
 
 # Verify entries shape
 for cat_key in ("mistakes", "patterns", "decisions", "tools"):
@@ -294,6 +322,10 @@ if noise:
     test("noise item has entry_count", "entry_count" in n)
     test("noise item has avg_confidence", "avg_confidence" in n)
     test("noise avg_confidence < 0.5", n["avg_confidence"] < 0.5)
+mixed_noise = [n for n in noise if n["title"] == "cross-category noise"]
+test("cross-category noise collapses to one row", len(mixed_noise) == 1)
+if mixed_noise:
+    test("cross-category noise category is mixed", mixed_noise[0]["category"] == "mixed")
 
 # Verify hot_files filter prose out
 hot = ins_syn["hot_files"]
@@ -323,6 +355,11 @@ if actions:
     test("action has title", "title" in ac)
     test("action has detail", "detail" in ac)
     test("action has command", "command" in ac)
+    test("actions never use nonexistent --add flag", all("--add" not in a["command"] for a in actions))
+    test(
+        "actions never use bare --relate command",
+        all(a["command"].strip() != "python3 learn.py --relate" for a in actions),
+    )
 
 db_syn.close()
 

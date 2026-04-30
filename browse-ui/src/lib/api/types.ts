@@ -664,3 +664,70 @@ export interface RetroResponse {
 // ── Sessions response (flat array compat shim) ───────────────────────
 
 export type SessionsResponse = SessionListResponse | SessionRow[];
+
+// ── Knowledge Insights (/api/knowledge/insights) ─────────────────────
+
+export interface KnowledgeInsightsOverview {
+  health_score: number;
+  total_entries: number;
+  sessions: number;
+  high_confidence_pct: number;
+  low_confidence_pct: number;
+  stale_pct: number;
+  relation_density: number;
+  embedding_pct: number;
+}
+
+export interface KnowledgeInsightsAlert {
+  id: string;
+  title: string;
+  severity: "info" | "warning" | "critical";
+  detail: string;
+}
+
+export interface KnowledgeInsightsAction {
+  id: string;
+  title: string;
+  detail: string;
+  command: string;
+}
+
+export interface KnowledgeInsightsNoiseTitle {
+  title: string;
+  category: string;
+  entry_count: number;
+  avg_confidence: number;
+}
+
+export interface KnowledgeInsightsHotFile {
+  path: string;
+  references: number;
+}
+
+export interface KnowledgeInsightsEntry {
+  id: number;
+  title: string;
+  confidence: number;
+  occurrence_count: number;
+  last_seen: string | null;
+  summary: string | null;
+  session_id: string | null;
+}
+
+export interface KnowledgeInsightsEntries {
+  mistakes: KnowledgeInsightsEntry[];
+  patterns: KnowledgeInsightsEntry[];
+  decisions: KnowledgeInsightsEntry[];
+  tools: KnowledgeInsightsEntry[];
+}
+
+export interface KnowledgeInsightsResponse {
+  generated_at: string;
+  summary: string;
+  overview: KnowledgeInsightsOverview;
+  quality_alerts: KnowledgeInsightsAlert[];
+  recommended_actions: KnowledgeInsightsAction[];
+  recurring_noise_titles: KnowledgeInsightsNoiseTitle[];
+  hot_files: KnowledgeInsightsHotFile[];
+  entries: KnowledgeInsightsEntries;
+}

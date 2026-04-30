@@ -16,6 +16,7 @@ import {
   retroResponseSchema,
   graphResponseSchema,
   healthResponseSchema,
+  knowledgeInsightsResponseSchema,
   searchResponseSchema,
   sessionDetailResponseSchema,
   sessionListResponseSchema,
@@ -36,6 +37,7 @@ import type {
   EvalResponse,
   FeedbackRequest,
   FeedbackResponse,
+  KnowledgeInsightsResponse,
   RetroResponse,
   GraphResponse,
   HealthResponse,
@@ -100,6 +102,7 @@ export const queryKeys = {
   embeddings: () => ["embeddings"] as const,
   eval: () => ["eval"] as const,
   retro: (mode: "repo" | "local" = "repo") => ["retro", mode] as const,
+  knowledgeInsights: () => ["knowledge-insights"] as const,
   compare: (a: string, b: string) => ["compare", a, b] as const,
 };
 
@@ -486,6 +489,20 @@ export function useRetro(mode: "repo" | "local" = "repo") {
         withLeadingSlash(`/api/retro/summary?mode=${mode}`)
       );
       return retroResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useKnowledgeInsights() {
+  return useQuery({
+    queryKey: queryKeys.knowledgeInsights(),
+    staleTime: STALE_TIMES.insights,
+    gcTime: CACHE_TIMES.insights,
+    queryFn: async (): Promise<KnowledgeInsightsResponse> => {
+      const data = await apiFetch<KnowledgeInsightsResponse>(
+        withLeadingSlash("/api/knowledge/insights")
+      );
+      return knowledgeInsightsResponseSchema.parse(data);
     },
   });
 }
