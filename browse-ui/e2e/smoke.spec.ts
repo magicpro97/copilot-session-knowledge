@@ -81,6 +81,50 @@ test("sessions list click-through opens real UUID session detail", async ({ page
   await expect(page.getByRole("tab", { name: "Overview" })).toBeVisible();
 });
 
+test("checkpoint diff viewer loads diff results and supports both modes", async ({ page }) => {
+  await assertSeededSessionAvailable(page);
+  await page.route("**/api/diff*", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        session_id: SEEDED_SESSION_ID,
+        from: { seq: 1, title: "Checkpoint 1", file: "checkpoint_001.md" },
+        to: { seq: 3, title: "Checkpoint 3", file: "checkpoint_003.md" },
+        unified_diff: [
+          "--- checkpoint_001.md",
+          "+++ checkpoint_003.md",
+          "@@ -1,2 +1,2 @@",
+          "-Removed detail",
+          " context line",
+          "+Added detail",
+        ].join("\\n"),
+        files: [{ from: "checkpoint_001.md", to: "checkpoint_003.md" }],
+        stats: { added: 1, removed: 1 },
+      }),
+    });
+  });
+
+  await page.goto(`/v2/sessions/${SEEDED_SESSION_ID}/#checkpoints`);
+  await expect(page.getByRole("tab", { name: "Checkpoints" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await page.getByRole("button", { name: "Compute diff" }).click();
+
+  await expect(page.getByText("Checkpoint diff (1 → 3)", { exact: true })).toBeVisible();
+  await expect(page.getByText("+1 added · -1 removed", { exact: true })).toBeVisible();
+  await expect(page.getByText("Added detail")).toBeVisible();
+  await expect(page.getByText("Removed detail")).toBeVisible();
+
+  await page.getByRole("button", { name: "Side-by-side" }).click();
+  const splitSummary = await page.evaluate(() => ({
+    left: document.querySelectorAll('[data-diff-side="left"]').length,
+    right: document.querySelectorAll('[data-diff-side="right"]').length,
+  }));
+  expect(splitSummary.left).toBeGreaterThan(0);
+  expect(splitSummary.right).toBeGreaterThan(0);
+});
+
 test("graph evidence and similarity tabs render live product surfaces", async ({ page }) => {
   await page.goto("/v2/graph/");
   await expect(page.getByRole("heading", { level: 1, name: "Graph" })).toBeVisible({
