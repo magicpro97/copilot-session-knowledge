@@ -606,6 +606,22 @@ export interface FeedbackResponse {
 
 // ── Retro (/api/retro/summary) ──────────────────────────────────────
 
+export interface RetroScout {
+  available: boolean;
+  configured: boolean;
+  script_exists: boolean;
+  config_path: string;
+  target_repo: string | null;
+  issue_label: string | null;
+  grace_window_hours: number;
+  state_file: string;
+  state_file_exists: boolean;
+  last_run_utc: string | null;
+  elapsed_hours: number | null;
+  remaining_hours: number | null;
+  would_skip_without_force: boolean;
+}
+
 export interface RetroSubscores {
   [key: string]: number | null | undefined;
   knowledge?: number | null;
@@ -641,6 +657,8 @@ export interface RetroResponse {
   distortion_flags?: string[];
   accuracy_notes?: string[];
   improvement_actions?: string[];
+  /** Trend Scout coverage signal — absent on older payloads; degrade gracefully. */
+  scout?: RetroScout;
 }
 
 // ── Sessions response (flat array compat shim) ───────────────────────

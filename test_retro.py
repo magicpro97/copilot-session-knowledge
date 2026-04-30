@@ -916,6 +916,398 @@ def test_audit_top_denied_tools_excludes_deny_dry():
     )
 
 
+# ── Section 13+: Scout signals ────────────────────────────────────────────────
+
+
+def test_scout_signals_missing_config():
+    """collect_scout_signals returns available=False when config file is absent."""
+    retro = load_retro()
+    reset_artifacts()
+    result = retro.collect_scout_signals(
+        config_path=ARTIFACT_DIR / "no_scout_config.json",
+        script_path=ARTIFACT_DIR / "no_trend_scout.py",
+    )
+    test("scout signals: missing config → available=False", result.get("available") is False)
+    test("scout signals: missing config → configured=False", result.get("configured") is False)
+    test("scout signals: missing config → state_file_exists=False", result.get("state_file_exists") is False)
+    test("scout signals: missing config → last_run_utc=None", result.get("last_run_utc") is None)
+
+
+def test_scout_signals_config_only():
+    """collect_scout_signals reads target_repo/label from config; state absent → available=True."""
+    retro = load_retro()
+    reset_artifacts()
+    cfg = {
+        "target_repo": "owner/test-repo",
+        "issue_label": "trend-scout",
+        "run_control": {"grace_window_hours": 20, "state_file": None},
+    }
+    config_file = ARTIFACT_DIR / "scout_config.json"
+    config_file.write_text(json.dumps(cfg), encoding="utf-8")
+    result = retro.collect_scout_signals(
+        config_path=config_file,
+        script_path=ARTIFACT_DIR / "no_script.py",
+    )
+    test("scout signals: config present → available=True", result.get("available") is True)
+    test("scout signals: config present → configured=True", result.get("configured") is True)
+    test("scout signals: target_repo read correctly", result.get("target_repo") == "owner/test-repo")
+    test("scout signals: issue_label read correctly", result.get("issue_label") == "trend-scout")
+    test("scout signals: grace_window_hours=20", result.get("grace_window_hours") == 20)
+    test("scout signals: state_file_exists=False when no state file", result.get("state_file_exists") is False)
+    test("scout signals: last_run_utc=None when no state file", result.get("last_run_utc") is None)
+    test("scout signals: script_exists=False for missing script", result.get("script_exists") is False)
+
+
+def test_scout_signals_with_state_file():
+    """collect_scout_signals reads last_run_utc and computes elapsed_hours from state file."""
+    retro = load_retro()
+    reset_artifacts()
+    import time as _time
+
+    # Write a state file with a recent run (1 hour ago)
+    from datetime import datetime, timezone as _tz, timedelta
+
+    last_run_dt = datetime.now(_tz.utc) - timedelta(hours=1)
+    last_run_str = last_run_dt.isoformat()
+    state = {"last_run_utc": last_run_str}
+    state_file = ARTIFACT_DIR / ".trend-scout-state.json"
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+
+    cfg = {
+        "target_repo": "owner/repo",
+        "issue_label": "trend-scout",
+        "run_control": {"grace_window_hours": 20, "state_file": str(state_file)},
+    }
+    config_file = ARTIFACT_DIR / "scout_cfg2.json"
+    config_file.write_text(json.dumps(cfg), encoding="utf-8")
+
+    result = retro.collect_scout_signals(config_path=config_file)
+    test("scout signals: state present → state_file_exists=True", result.get("state_file_exists") is True)
+    test("scout signals: last_run_utc populated", result.get("last_run_utc") is not None)
+    elapsed = result.get("elapsed_hours")
+    test("scout signals: elapsed_hours ~1h", elapsed is not None and 0.8 < elapsed < 1.5, f"got {elapsed}")
+    remaining = result.get("remaining_hours")
+    test(
+        "scout signals: remaining_hours ~19h",
+        remaining is not None and 18.0 < remaining < 20.0,
+        f"got {remaining}",
+    )
+    test(
+        "scout signals: would_skip_without_force=True within grace window",
+        result.get("would_skip_without_force") is True,
+    )
+
+
+def test_scout_signals_grace_expired():
+    """would_skip_without_force=False when elapsed_hours > grace_window_hours."""
+    retro = load_retro()
+    reset_artifacts()
+    from datetime import datetime, timezone as _tz, timedelta
+
+    # Last run was 25 hours ago; grace window is 20 hours
+    last_run_dt = datetime.now(_tz.utc) - timedelta(hours=25)
+    state = {"last_run_utc": last_run_dt.isoformat()}
+    state_file = ARTIFACT_DIR / ".scout-state-expired.json"
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+
+    cfg = {
+        "target_repo": "owner/repo",
+        "issue_label": "trend-scout",
+        "run_control": {"grace_window_hours": 20, "state_file": str(state_file)},
+    }
+    config_file = ARTIFACT_DIR / "scout_cfg3.json"
+    config_file.write_text(json.dumps(cfg), encoding="utf-8")
+
+    result = retro.collect_scout_signals(config_path=config_file)
+    test(
+        "scout signals: grace expired → would_skip_without_force=False",
+        result.get("would_skip_without_force") is False,
+        f"got {result.get('would_skip_without_force')}",
+    )
+    test(
+        "scout signals: grace expired → remaining_hours=0",
+        result.get("remaining_hours") == 0.0,
+        f"got {result.get('remaining_hours')}",
+    )
+
+
+def test_compute_retro_scout_in_payload():
+    """compute_retro must include 'scout' top-level key in the payload."""
+    retro = load_retro()
+    git = {
+        "available": True,
+        "lookback_days": 30,
+        "commit_count": 30,
+        "test_files_changed": 5,
+        "py_files_changed": 10,
+        "distinct_files_changed": 15,
+        "recent_commits": [],
+        "top_changed_files": [],
+        "authors": [],
+    }
+    scout = {"available": False, "configured": False}
+    payload = retro.compute_retro(
+        {"available": False},
+        {"available": False},
+        {"available": False},
+        git,
+        mode="repo",
+        scout=scout,
+    )
+    test("compute_retro: 'scout' key present", "scout" in payload, f"keys: {list(payload.keys())}")
+    test("compute_retro: scout.available preserved", payload["scout"].get("available") is False)
+
+
+def test_compute_retro_scout_absent_defaults():
+    """compute_retro without scout arg must still include scout key with available=False."""
+    retro = load_retro()
+    payload = retro.compute_retro(
+        {"available": False},
+        {"available": False},
+        {"available": False},
+        {"available": False},
+        mode="repo",
+    )
+    test("compute_retro: scout present even when not passed", "scout" in payload)
+    test("compute_retro: scout.available=False by default", payload.get("scout", {}).get("available") is False)
+
+
+def test_json_output_has_scout_field():
+    """Subprocess --json must include 'scout' top-level key."""
+    result = subprocess.run(
+        [sys.executable, str(RETRO_PY), "--json", "--mode", "repo", "--no-cache"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    test("retro.py --json (scout): exits 0", result.returncode == 0)
+    try:
+        data = json.loads(result.stdout)
+        test("retro.py --json: 'scout' key present", "scout" in data, f"keys: {list(data.keys())}")
+        scout = data.get("scout", {})
+        test("retro.py --json: scout.available is bool", isinstance(scout.get("available"), bool))
+        test("retro.py --json: scout does not affect retro_score", 0 <= data.get("retro_score", -1) <= 100)
+        # Scout must NOT appear in subscores or weights
+        test(
+            "retro.py --json: scout not in subscores",
+            "scout" not in data.get("subscores", {}),
+            f"subscores: {list(data.get('subscores', {}).keys())}",
+        )
+        test(
+            "retro.py --json: scout not in weights",
+            "scout" not in data.get("weights", {}),
+            f"weights: {list(data.get('weights', {}).keys())}",
+        )
+    except json.JSONDecodeError as e:
+        test("retro.py --json: valid JSON (scout field)", False, str(e))
+
+
+def test_scout_signals_relative_state_file_anchored_to_config_dir():
+    """Relative state_file in run_control must resolve relative to config directory, not CWD.
+
+    Regression test for: state_file was resolved against process CWD when a
+    relative path was given, causing the file to be silently missed unless the
+    process happened to run from the config directory.
+    """
+    retro = load_retro()
+    reset_artifacts()
+    from datetime import datetime, timezone as _tz, timedelta
+
+    last_run_dt = datetime.now(_tz.utc) - timedelta(hours=2)
+    state = {"last_run_utc": last_run_dt.isoformat()}
+
+    # Write state file next to the config file (in ARTIFACT_DIR)
+    state_file = ARTIFACT_DIR / ".scout-relative-state.json"
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+
+    # Use a bare filename (relative) — must be resolved against config dir
+    cfg = {
+        "target_repo": "owner/rel-repo",
+        "issue_label": "rel-label",
+        "run_control": {
+            "grace_window_hours": 10,
+            "state_file": ".scout-relative-state.json",
+        },
+    }
+    config_file = ARTIFACT_DIR / "scout_cfg_rel.json"
+    config_file.write_text(json.dumps(cfg), encoding="utf-8")
+
+    result = retro.collect_scout_signals(config_path=config_file)
+    test(
+        "scout signals (relative path): state_file_exists=True",
+        result.get("state_file_exists") is True,
+        f"resolved to: {result.get('state_file')} — CWD={Path.cwd()}",
+    )
+    test(
+        "scout signals (relative path): last_run_utc populated",
+        result.get("last_run_utc") is not None,
+    )
+    elapsed = result.get("elapsed_hours")
+    test(
+        "scout signals (relative path): elapsed_hours ~2h",
+        elapsed is not None and 1.5 < elapsed < 3.0,
+        f"got {elapsed}",
+    )
+
+
+def test_scout_signals_absolute_state_file_still_works():
+    """Absolute state_file override must continue to resolve correctly (no regression)."""
+    retro = load_retro()
+    reset_artifacts()
+    from datetime import datetime, timezone as _tz, timedelta
+
+    last_run_dt = datetime.now(_tz.utc) - timedelta(hours=3)
+    state = {"last_run_utc": last_run_dt.isoformat()}
+    state_file = ARTIFACT_DIR / ".scout-abs-state.json"
+    state_file.write_text(json.dumps(state), encoding="utf-8")
+
+    cfg = {
+        "target_repo": "owner/abs-repo",
+        "issue_label": "abs-label",
+        "run_control": {
+            "grace_window_hours": 10,
+            "state_file": str(state_file),
+        },
+    }
+    config_file = ARTIFACT_DIR / "scout_cfg_abs.json"
+    config_file.write_text(json.dumps(cfg), encoding="utf-8")
+
+    result = retro.collect_scout_signals(config_path=config_file)
+    test(
+        "scout signals (absolute path): state_file_exists=True",
+        result.get("state_file_exists") is True,
+        f"resolved to: {result.get('state_file')}",
+    )
+    elapsed = result.get("elapsed_hours")
+    test(
+        "scout signals (absolute path): elapsed_hours ~3h",
+        elapsed is not None and 2.5 < elapsed < 4.0,
+        f"got {elapsed}",
+    )
+
+
+def test_scout_signals_malformed_grace_window_string():
+    """Malformed (non-numeric string) grace_window_hours must not crash — fail-open to 0."""
+    retro = load_retro()
+    reset_artifacts()
+
+    cfg = {
+        "target_repo": "owner/repo",
+        "run_control": {"grace_window_hours": "not-a-number"},
+    }
+    config_file = ARTIFACT_DIR / "scout_cfg_malformed_str.json"
+    config_file.write_text(json.dumps(cfg), encoding="utf-8")
+
+    try:
+        result = retro.collect_scout_signals(config_path=config_file)
+        crashed = False
+    except Exception as exc:
+        result = {}
+        crashed = True
+        _crash_detail = str(exc)
+
+    test(
+        "scout signals (malformed grace_window string): does not crash",
+        not crashed,
+        _crash_detail if crashed else "",
+    )
+    test(
+        "scout signals (malformed grace_window string): grace_window_hours defaults to 0",
+        result.get("grace_window_hours") == 0.0,
+        f"got {result.get('grace_window_hours')}",
+    )
+    test(
+        "scout signals (malformed grace_window string): available=True (config was valid JSON)",
+        result.get("available") is True,
+        f"got available={result.get('available')}",
+    )
+
+
+def test_scout_signals_malformed_grace_window_list():
+    """List value for grace_window_hours must not crash — fail-open to 0."""
+    retro = load_retro()
+    reset_artifacts()
+
+    cfg = {
+        "target_repo": "owner/repo",
+        "run_control": {"grace_window_hours": [1, 2, 3]},
+    }
+    config_file = ARTIFACT_DIR / "scout_cfg_malformed_list.json"
+    config_file.write_text(json.dumps(cfg), encoding="utf-8")
+
+    try:
+        result = retro.collect_scout_signals(config_path=config_file)
+        crashed = False
+    except Exception as exc:
+        result = {}
+        crashed = True
+        _crash_detail = str(exc)
+
+    test(
+        "scout signals (grace_window is list): does not crash",
+        not crashed,
+        _crash_detail if crashed else "",
+    )
+    test(
+        "scout signals (grace_window is list): grace_window_hours defaults to 0",
+        result.get("grace_window_hours") == 0.0,
+        f"got {result.get('grace_window_hours')}",
+    )
+
+
+def test_scout_signals_malformed_json_config():
+    """Malformed (unparseable) config JSON → configured=True, available=False."""
+    retro = load_retro()
+    reset_artifacts()
+
+    config_file = ARTIFACT_DIR / "scout_cfg_malformed_json.json"
+    config_file.write_text("{not valid json!!!", encoding="utf-8")
+
+    try:
+        result = retro.collect_scout_signals(config_path=config_file)
+        crashed = False
+    except Exception as exc:
+        result = {}
+        crashed = True
+        _crash_detail = str(exc)
+
+    test(
+        "scout signals (malformed JSON): does not crash",
+        not crashed,
+        _crash_detail if crashed else "",
+    )
+    test(
+        "scout signals (malformed JSON): configured=True (file exists)",
+        result.get("configured") is True,
+        f"got configured={result.get('configured')}",
+    )
+    test(
+        "scout signals (malformed JSON): available=False (parse failed)",
+        result.get("available") is False,
+        f"got available={result.get('available')}",
+    )
+
+
+def test_scout_signals_valid_grace_window_unchanged():
+    """Valid numeric grace_window_hours must still be parsed correctly (no regression)."""
+    retro = load_retro()
+    reset_artifacts()
+
+    cfg = {
+        "target_repo": "owner/repo",
+        "run_control": {"grace_window_hours": 20},
+    }
+    config_file = ARTIFACT_DIR / "scout_cfg_valid_grace.json"
+    config_file.write_text(json.dumps(cfg), encoding="utf-8")
+
+    result = retro.collect_scout_signals(config_path=config_file)
+    test(
+        "scout signals (valid grace_window=20): parsed correctly",
+        result.get("grace_window_hours") == 20.0,
+        f"got {result.get('grace_window_hours')}",
+    )
+
+
 def test_score_skills_unverified_outcomes_below_neutral():
     """When outcomes exist but zero verifications, skills subscore must be < 50 (not neutral 50)."""
     retro = load_retro()
@@ -1279,6 +1671,21 @@ def main():
     test_distortion_flag_hook_deny_dry_noise()
     test_distortion_flags_empty_when_clean()
     test_json_output_interpretation_fields()
+
+    print("16. Scout coverage signals")
+    test_scout_signals_missing_config()
+    test_scout_signals_config_only()
+    test_scout_signals_with_state_file()
+    test_scout_signals_grace_expired()
+    test_compute_retro_scout_in_payload()
+    test_compute_retro_scout_absent_defaults()
+    test_json_output_has_scout_field()
+    test_scout_signals_relative_state_file_anchored_to_config_dir()
+    test_scout_signals_absolute_state_file_still_works()
+    test_scout_signals_malformed_grace_window_string()
+    test_scout_signals_malformed_grace_window_list()
+    test_scout_signals_malformed_json_config()
+    test_scout_signals_valid_grace_window_unchanged()
 
     # Cleanup
     reset_artifacts()

@@ -45,10 +45,12 @@ hooks/
 | `tentacle-suggest` | postToolUse | Suggests tentacle when edits reach ≥3 files across ≥2 modules (same threshold as tentacle-enforce) |
 | `nextjs-typecheck-reminder` | postToolUse | Reminds to run `pnpm typecheck` after editing `.ts`/`.tsx` files in `browse-ui/` |
 | `error-kb` | errorOccurred | Auto-searches knowledge base on errors |
-| `pre-commit` | git pre-commit | (1) Blocks commit when `dispatched-subagent-active` marker is fresh (primary subagent guard); (2) validates `.agent.md` / `SKILL.md` via `lint-skills.py`; (3) runs scoped Ruff format + lint check on staged Python files in the Ruff surface (see §Local vs CI below); (4) runs Prettier format check on supported staged files under `browse-ui/src/`. Both cleanliness checks are **fail-open** — they silently skip when the respective tool (`ruff`, `browse-ui/node_modules/.bin/prettier`) is not installed. Requires `install.py --install-git-hooks`. |
+| `pre-commit` | git pre-commit | (1) Blocks commit when `dispatched-subagent-active` marker is fresh (primary subagent guard); (2) validates `.agent.md` / `SKILL.md` via `lint-skills.py`; (3) runs `scripts/check_syntax.py` on **all** staged `.py` files — fail-open when `check_syntax.py` is absent; (4) runs scoped Ruff format + lint check on staged Python files in the Ruff surface (see §Local vs CI below); (5) runs Prettier format check on supported staged files under `browse-ui/src/`. Checks (3)–(5) are **fail-open** — they silently skip when the respective tool is not installed. Requires `install.py --install-git-hooks`. |
 | `pre-push` | git pre-push | Blocks push when `dispatched-subagent-active` marker is fresh. Requires `install.py --install-git-hooks`. |
 
 ### Local vs CI enforcement boundary
+
+**Syntax gate** (`scripts/check_syntax.py`): the local `pre-commit` hook runs `check_syntax.py` on **all** staged `.py` files — this is a bounded check (staged files only, not full repo) and is fail-open when the script is absent. CI does not run a separate syntax-only pass (syntax errors would also fail the Ruff step), but the local hook catches them faster. Root scripts outside the Ruff surface (e.g., `watch-sessions.py`, `auto-update-tools.py`) **are** covered by this syntax gate even though they are not in the Ruff surface.
 
 **Ruff lint surface** (identical between local `pre-commit` and CI `quality-gates` job):
 

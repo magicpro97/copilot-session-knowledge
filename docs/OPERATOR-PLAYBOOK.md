@@ -349,13 +349,54 @@ The **Retrospective** collapsible panel on the Insights → Dashboard tab fetche
 - distortion flags with explanations (if present)
 - accuracy notes (if present)
 - improvement actions list (if present)
+- **Scout coverage panel** — repo, label, grace-window status, and last-run time (absent on older payloads)
 
 All new fields degrade gracefully — missing fields are silently omitted.
+
+### Scout coverage signal
+
+The `scout` top-level field in the retro JSON payload is a **read-only, informational-only**
+snapshot of Trend Scout configuration health.  It does **not** affect `retro_score`,
+`weights`, or any existing subscore.
+
+```json
+{
+  "scout": {
+    "available":               true,
+    "configured":              true,
+    "script_exists":           true,
+    "config_path":             "~/.copilot/tools/trend-scout-config.json",
+    "target_repo":             "owner/repo",
+    "issue_label":             "trend-scout",
+    "grace_window_hours":      20,
+    "state_file":              "~/.copilot/tools/.trend-scout-state.json",
+    "state_file_exists":       true,
+    "last_run_utc":            "2025-07-10T03:00:00+00:00",
+    "elapsed_hours":           8.3,
+    "remaining_hours":         11.7,
+    "would_skip_without_force": true
+  }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `available` | `true` if `trend-scout-config.json` was found and readable |
+| `configured` | `true` if config file exists on disk |
+| `script_exists` | `true` if `trend-scout.py` script is present |
+| `grace_window_hours` | grace period from config (`0` = disabled) |
+| `state_file_exists` | `true` if state file (`.trend-scout-state.json`) exists |
+| `last_run_utc` | ISO-8601 timestamp of last successful run, or `null` |
+| `elapsed_hours` | hours since last run, or `null` |
+| `remaining_hours` | hours until grace window expires (capped at 0), or `null` |
+| `would_skip_without_force` | `true` if a run now would be skipped by the grace window |
+
+When `scout` is absent (older retro payloads), all surfaces degrade gracefully.
 
 Standalone retro HTML page: `http://localhost:<port>/retro?token=<token>` renders
 the same payload in a lightweight page suitable for quick browser-based checks.
 The page fetches `/api/retro/summary?mode=repo` and renders grade, confidence,
-subscores, distortions, actions, and a link to the full JSON payload.
+subscores, distortions, actions, the scout coverage section, and a link to the full JSON payload.
 
 GitHub Actions: trigger **Retrospective** (`retro.yml`) via `workflow_dispatch` to run
 `retro.py --mode repo --json`, produce a markdown summary artifact with confidence,

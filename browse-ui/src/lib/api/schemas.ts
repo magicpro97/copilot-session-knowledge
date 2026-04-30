@@ -586,6 +586,22 @@ export const feedbackResponseSchema = z.object({
   id: z.number(),
 });
 
+export const retroScoutSchema = z.object({
+  available: z.boolean(),
+  configured: z.boolean(),
+  script_exists: z.boolean(),
+  config_path: z.string(),
+  target_repo: z.string().nullable(),
+  issue_label: z.string().nullable(),
+  grace_window_hours: z.number(),
+  state_file: z.string(),
+  state_file_exists: z.boolean(),
+  last_run_utc: z.string().nullable(),
+  elapsed_hours: z.number().nullable(),
+  remaining_hours: z.number().nullable(),
+  would_skip_without_force: z.boolean(),
+});
+
 export const retroResponseSchema = z.object({
   retro_score: z.number(),
   grade: z.string(),
@@ -605,6 +621,8 @@ export const retroResponseSchema = z.object({
   distortion_flags: z.array(z.string()).optional(),
   accuracy_notes: z.array(z.string()).optional(),
   improvement_actions: z.array(z.string()).optional(),
+  // Additive Trend Scout coverage signal — absent on older payloads
+  scout: retroScoutSchema.optional(),
 });
 
 export const sessionsResponseSchema = z.union([

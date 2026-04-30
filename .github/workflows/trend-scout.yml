@@ -102,10 +102,15 @@ jobs:
             ARGS="$ARGS --explain"
           fi
 
+          # Always emit explain artifact for CI evidence (scheduled + manual runs alike)
+          if [[ "$ARGS" != *"--explain"* ]]; then
+            ARGS="$ARGS --explain"
+          fi
+
           python3 trend-scout.py $ARGS
 
       - name: Upload discovery explain artifact
-        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.explain == true }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: trend-scout-discovery-explain-${{ github.run_id }}

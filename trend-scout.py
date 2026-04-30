@@ -1706,12 +1706,18 @@ def build_discovery_explain(
     run_at: str,
     config: "dict | None" = None,
     goldset: "dict | None" = None,
+    skip_reason: "str | None" = None,
 ) -> dict:
     """Build a discovery-explainability artifact from tagged search results.
 
     Returns a JSON-serialisable dict with per-lane query stats and shortlist
     annotations.  Suitable for saving as ``.trend-scout-discovery-explain.json``
     so operators can diagnose coverage gaps (e.g. the jcode-class miss).
+
+    When *skip_reason* is provided (e.g. grace-window skip) the artifact is
+    marked with ``run_skipped=True`` and ``skip_reason`` so CI consumers can
+    distinguish intentional skips from real zero-result discovery runs.
+    ``goldset_misses`` is kept as an empty list to avoid false failure signals.
     """
     lane_stats = getattr(raw_repos, "lane_stats", None)
     if not isinstance(lane_stats, list):
@@ -1740,7 +1746,7 @@ def build_discovery_explain(
             "unique_new_repos": unique_count,
         })
 
-    artifact = {
+    artifact: dict = {
         "run_at": run_at,
         "total_raw_candidates": len(raw_repos),
         "lanes": annotated_lanes,
@@ -1761,6 +1767,15 @@ def build_discovery_explain(
         ),
     }
 
+    # Grace-window (or other intentional) skips must not pollute goldset_misses
+    # with false raw_miss failures.  Mark the artifact clearly and bail early.
+    if skip_reason:
+        artifact["run_skipped"] = True
+        artifact["skip_reason"] = skip_reason
+        artifact["goldset_misses"] = []
+        return artifact
+
+    goldset_rows: list[dict] = []
     goldset_entries = []
     if isinstance(goldset, dict):
         goldset_entries = goldset.get("entries", [])
@@ -1849,6 +1864,35 @@ def build_discovery_explain(
             "score_failures": score_failures,
             "entries": goldset_rows,
         }
+
+    # Top-level miss analysis: one entry per goldset repo that failed any expected condition.
+    # Raw discovery is the hard gate (raw_miss); lane/score failures are secondary signals.
+    goldset_misses: list[dict] = []
+    for row in goldset_rows:
+        reasons: list[str] = []
+        if not row.get("found_in_raw"):
+            reasons.append("raw_miss: not found in any search lane")
+        else:
+            if row.get("lane_ok") is False:
+                reasons.append(
+                    f"lane_miss: found via '{row.get('lane')}', "
+                    f"expected '{row.get('expected_lane')}'"
+                )
+            if row.get("score_ok") is False:
+                reasons.append(
+                    f"score_miss: score={row.get('score')} below "
+                    f"min_score={row.get('min_score')}"
+                )
+        if reasons:
+            goldset_misses.append({
+                "repo": row["repo"],
+                "required": row["required"],
+                "expected_lane": row.get("expected_lane"),
+                "found_in_raw": bool(row.get("found_in_raw")),
+                "found_in_shortlist": bool(row.get("shortlisted")),
+                "reason": "; ".join(reasons),
+            })
+    artifact["goldset_misses"] = goldset_misses
 
     return artifact
 
@@ -2051,16 +2095,23 @@ def _write_explain_artifact(
     shortlisted: list[dict],
     config: dict,
     explain_output: "Path | None" = None,
+    skip_reason: "str | None" = None,
 ) -> None:
     """Write the discovery explainability JSON to disk.
 
     The artifact captures per-lane query stats, raw candidate counts, and
     shortlist annotations.  Useful for CI replay assertions and operator
     triage of discovery coverage gaps.
+
+    Pass *skip_reason* (e.g. the grace-window reason string) so the artifact
+    clearly encodes intentional skips and avoids false ``goldset_misses``.
     """
     run_at = datetime.now(timezone.utc).isoformat()
     goldset = load_goldset()
-    artifact = build_discovery_explain(raw_repos, shortlisted, run_at, config=config, goldset=goldset)
+    artifact = build_discovery_explain(
+        raw_repos, shortlisted, run_at,
+        config=config, goldset=goldset, skip_reason=skip_reason,
+    )
     out_path = explain_output or _EXPLAIN_OUTPUT_DEFAULT
     try:
         out_path.write_text(json.dumps(artifact, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -2115,6 +2166,8 @@ def run(config: dict, dry_run: bool = False, search_only: bool = False,
             if skip:
                 print(f"⏭  Grace window active — {reason}")
                 print(f"   Use --force to override.")
+                if explain:
+                    _write_explain_artifact([], [], config, explain_output, skip_reason=reason)
                 return 0
 
     client = GitHubClient(token=token)
@@ -2168,6 +2221,8 @@ def run(config: dict, dry_run: bool = False, search_only: bool = False,
         return 0
 
     if not shortlisted:
+        if explain:
+            _write_explain_artifact(candidates, shortlisted, config, explain_output)
         print("\nℹ Nothing shortlisted — no issues to create.")
         return 0
 

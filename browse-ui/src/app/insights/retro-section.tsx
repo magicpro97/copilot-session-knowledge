@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useRetro } from "@/lib/api/hooks";
 import { formatNumber } from "@/lib/formatters";
+import type { RetroScout } from "@/lib/api/types";
 
 const SECTION_LABELS: Record<string, string> = {
   knowledge: "Knowledge",
@@ -32,6 +33,49 @@ function confidenceBadgeVariant(
   if (confidence === "high") return "outline";
   if (confidence === "medium") return "secondary";
   return "destructive";
+}
+
+function ScoutCoveragePanel({ scout }: { scout: RetroScout }) {
+  if (!scout.available) {
+    return (
+      <div className="rounded-lg border px-3 py-2">
+        <p className="text-muted-foreground text-xs font-medium">🔭 Trend Scout</p>
+        <p className="text-muted-foreground mt-1 text-xs">Not configured</p>
+      </div>
+    );
+  }
+
+  const graceActive = scout.would_skip_without_force;
+  const graceLabel =
+    graceActive && scout.remaining_hours != null
+      ? `active (${scout.remaining_hours.toFixed(1)}h remaining)`
+      : scout.grace_window_hours
+        ? "inactive — eligible to run"
+        : "disabled";
+
+  const lastRunLabel = scout.last_run_utc
+    ? `${scout.last_run_utc}${scout.elapsed_hours != null ? ` (${scout.elapsed_hours.toFixed(1)}h ago)` : ""}`
+    : "(never / state file missing)";
+
+  return (
+    <div className="rounded-lg border px-3 py-2">
+      <p className="text-xs font-medium">🔭 Trend Scout</p>
+      <ul className="text-muted-foreground mt-1 space-y-0.5 text-xs">
+        <li>
+          Repo:{" "}
+          <span className="text-foreground font-medium">{scout.target_repo ?? "(unset)"}</span>
+        </li>
+        <li>
+          Label: <code className="text-xs">{scout.issue_label ?? "(unset)"}</code>
+        </li>
+        <li>
+          Grace window: {scout.grace_window_hours}h ·{" "}
+          <span className={graceActive ? "text-yellow-500" : "text-green-500"}>{graceLabel}</span>
+        </li>
+        <li>Last run: {lastRunLabel}</li>
+      </ul>
+    </div>
+  );
 }
 
 export function RetroSection() {
@@ -143,6 +187,8 @@ export function RetroSection() {
                 </ul>
               </div>
             ) : null}
+
+            {retro.data.scout ? <ScoutCoveragePanel scout={retro.data.scout} /> : null}
 
             <p className="text-muted-foreground text-xs">
               mode: {retro.data.mode} · generated {retro.data.generated_at}

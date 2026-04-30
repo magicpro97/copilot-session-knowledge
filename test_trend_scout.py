@@ -2430,6 +2430,92 @@ if _empty_lane_explain_out.exists():
          "goldset" in _empty_artifact and _empty_artifact["goldset"].get("required_missing", 0) >= 1,
          str(_empty_artifact.get("goldset")))
 
+# 11b. --explain: not-shortlisted early-return path still writes artifact
+_no_shortlist_explain_out = SCRATCH / "test-explain-no-shortlist.json"
+with mock.patch.object(ts.GitHubClient, "search_repos", return_value=[]), \
+     mock.patch.object(ts.GitHubClient, "search_repos_by_topic", return_value=[]), \
+     mock.patch("time.sleep", return_value=None):
+    _ns_cfg = ts.load_config(None)
+    _ns_cfg["search"]["seed_keywords"] = ["trend-scout-zero-match-xyz"]
+    _ns_cfg["search"]["extra_topics"] = []
+    _ns_cfg["lanes"] = []
+    # No search_only → hits the "if not shortlisted" early-return path
+    ts.run(
+        _ns_cfg,
+        search_only=False,
+        explain=True,
+        explain_output=_no_shortlist_explain_out,
+    )
+test("--explain not-shortlisted path: artifact written",
+     _no_shortlist_explain_out.exists(),
+     f"path={_no_shortlist_explain_out}")
+if _no_shortlist_explain_out.exists():
+    _ns_artifact = json.loads(_no_shortlist_explain_out.read_text(encoding="utf-8"))
+    test("--explain not-shortlisted artifact has run_at", "run_at" in _ns_artifact)
+    test("--explain not-shortlisted artifact total_raw_candidates == 0",
+         _ns_artifact.get("total_raw_candidates") == 0,
+         str(_ns_artifact.get("total_raw_candidates")))
+    test("--explain not-shortlisted artifact shortlisted is empty list",
+         _ns_artifact.get("shortlisted") == [],
+         str(_ns_artifact.get("shortlisted")))
+
+# 11c. --explain: grace-window early-return path still writes artifact
+_grace_explain_out = SCRATCH / "test-explain-grace-window.json"
+_grace_cfg = ts.load_config(None)
+_grace_cfg["run_control"] = {"grace_window_hours": 48}
+_recent_run_state = {"last_run_utc": ts.datetime.now(ts.timezone.utc).isoformat()}
+with mock.patch.object(ts, "load_run_state", return_value=_recent_run_state), \
+     mock.patch("time.sleep", return_value=None):
+    ts.run(
+        _grace_cfg,
+        force=False,
+        explain=True,
+        explain_output=_grace_explain_out,
+    )
+test("--explain grace-window path: artifact written",
+     _grace_explain_out.exists(),
+     f"path={_grace_explain_out}")
+if _grace_explain_out.exists():
+    _gw_artifact = json.loads(_grace_explain_out.read_text(encoding="utf-8"))
+    test("--explain grace-window artifact has run_at", "run_at" in _gw_artifact)
+    test("--explain grace-window artifact total_raw_candidates == 0",
+         _gw_artifact.get("total_raw_candidates") == 0,
+         str(_gw_artifact.get("total_raw_candidates")))
+    test("--explain grace-window artifact shortlisted is empty list",
+         _gw_artifact.get("shortlisted") == [],
+         str(_gw_artifact.get("shortlisted")))
+    # Regression: grace-window skip must not emit false goldset_misses
+    test("--explain grace-window artifact goldset_misses is empty (no false failures)",
+         _gw_artifact.get("goldset_misses") == [],
+         f"goldset_misses={_gw_artifact.get('goldset_misses')}")
+    test("--explain grace-window artifact has run_skipped=True",
+         _gw_artifact.get("run_skipped") is True,
+         f"run_skipped={_gw_artifact.get('run_skipped')}")
+    test("--explain grace-window artifact has non-empty skip_reason",
+         bool(_gw_artifact.get("skip_reason")),
+         f"skip_reason={_gw_artifact.get('skip_reason')!r}")
+
+# 11c-unit. build_discovery_explain with skip_reason: direct unit coverage
+_skip_goldset = {"entries": [{"repo": "some-org/some-repo", "required": True}]}
+_skip_artifact = ts.build_discovery_explain(
+    [], [], "2024-01-01T00:00:00+00:00",
+    config=None,
+    goldset=_skip_goldset,
+    skip_reason="last run 5.0h ago, grace window 48h (43.0h remaining)",
+)
+test("build_discovery_explain skip_reason → run_skipped=True",
+     _skip_artifact.get("run_skipped") is True,
+     str(_skip_artifact.get("run_skipped")))
+test("build_discovery_explain skip_reason → skip_reason preserved in artifact",
+     "grace window 48h" in str(_skip_artifact.get("skip_reason", "")),
+     f"skip_reason={_skip_artifact.get('skip_reason')!r}")
+test("build_discovery_explain skip_reason → goldset_misses is [] (no false raw_miss)",
+     _skip_artifact.get("goldset_misses") == [],
+     f"goldset_misses={_skip_artifact.get('goldset_misses')}")
+test("build_discovery_explain skip_reason → goldset block absent (not computed for skipped run)",
+     "goldset" not in _skip_artifact,
+     f"goldset keys: {list(_skip_artifact.keys())}")
+
 # 12. cross-lane term set: shortlist_repos uses keywords from all lanes
 _cross_cfg = ts.load_config(None)
 _cross_cfg["search"]["seed_keywords"] = ["python fts knowledge"]
@@ -2473,6 +2559,230 @@ with mock.patch.object(ts.GitHubClient, "search_repos", side_effect=_mock_keywor
                  "topic:tui topic:coding-agent",
              },
              str(_jcode_disk))
+
+
+# ─── Token-Efficiency-CLI Lane (RTK-class) ────────────────────────────────────
+
+print("\n🛤  Token-Efficiency-CLI Lane (RTK-class)")
+
+# A. Disk config has token-efficiency-cli lane
+_disk_cfg_rtk = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+_rtk_lane = next(
+    (l for l in _disk_cfg_rtk.get("lanes", []) if l.get("name") == "token-efficiency-cli"),
+    None,
+)
+test(
+    "disk config has token-efficiency-cli lane",
+    _rtk_lane is not None,
+    f"lanes={[l.get('name') for l in _disk_cfg_rtk.get('lanes', [])]}",
+)
+if _rtk_lane:
+    test("token-efficiency-cli lane is language-agnostic (language=null)",
+         _rtk_lane.get("language") is None, f"language={_rtk_lane.get('language')!r}")
+    test("token-efficiency-cli lane has keywords",
+         len(_rtk_lane.get("keywords", [])) > 0, str(_rtk_lane.get("keywords")))
+    test("token-efficiency-cli lane has topics",
+         len(_rtk_lane.get("topics", [])) > 0, str(_rtk_lane.get("topics")))
+    test("token-efficiency-cli lane includes rtk name qualifier",
+         any("rtk" in str(k).lower() for k in _rtk_lane.get("keywords", [])),
+         str(_rtk_lane.get("keywords")))
+
+# B. Goldset includes rtk-ai/rtk
+_goldset_disk_rtk = ts.load_goldset(GOLDSET_FILE)
+_rtk_entry = next(
+    (e for e in _goldset_disk_rtk.get("entries", []) if e.get("repo") == "rtk-ai/rtk"),
+    None,
+)
+test("goldset includes rtk-ai/rtk", _rtk_entry is not None,
+     str(_goldset_disk_rtk.get("entries")))
+if _rtk_entry:
+    test("rtk-ai/rtk goldset expected_lane is token-efficiency-cli",
+         _rtk_entry.get("expected_lane") == "token-efficiency-cli",
+         str(_rtk_entry))
+    test("rtk-ai/rtk goldset entry is required",
+         bool(_rtk_entry.get("required", True)), str(_rtk_entry))
+
+# C. build_discovery_explain produces goldset_misses top-level key (raw miss)
+_rtk_explain_no_raw = ts.build_discovery_explain(
+    [], [], "2025-01-01T00:00:00+00:00",
+    config=ts.load_config(None),
+    goldset={
+        "path": "synthetic",
+        "entries": [
+            {
+                "repo": "rtk-ai/rtk",
+                "required": True,
+                "expected_lane": "token-efficiency-cli",
+                "min_score": 0.1,
+            }
+        ],
+    },
+)
+test("build_discovery_explain has goldset_misses top-level key",
+     "goldset_misses" in _rtk_explain_no_raw)
+test("goldset_misses is a list",
+     isinstance(_rtk_explain_no_raw.get("goldset_misses"), list))
+test("goldset_misses has 1 entry for raw miss",
+     len(_rtk_explain_no_raw.get("goldset_misses", [])) == 1,
+     str(_rtk_explain_no_raw.get("goldset_misses")))
+_miss_row = _rtk_explain_no_raw["goldset_misses"][0] if _rtk_explain_no_raw.get("goldset_misses") else {}
+test("goldset_miss row has all required fields",
+     all(k in _miss_row for k in ("repo", "required", "expected_lane", "found_in_raw", "found_in_shortlist", "reason")),
+     str(list(_miss_row.keys())))
+test("goldset_miss found_in_raw=False for raw miss",
+     _miss_row.get("found_in_raw") is False, str(_miss_row))
+test("goldset_miss reason mentions raw_miss",
+     "raw_miss" in str(_miss_row.get("reason", "")), str(_miss_row))
+
+# D. RTK-class repo fixture surfaced by token-efficiency-cli lane via mocked search
+RTK_LIKE_REPO: dict = {
+    "full_name": "rtk-ai/rtk",
+    "name": "rtk",
+    "description": "RTK: token efficiency streaming CLI for LLM context management",
+    "html_url": "https://github.com/rtk-ai/rtk",
+    "created_at": "2024-06-01T00:00:00Z",
+    "pushed_at": "2025-01-05T12:00:00Z",
+    "stargazers_count": 45,
+    "forks_count": 5,
+    "watchers_count": 45,
+    "open_issues_count": 3,
+    "language": "TypeScript",
+    "topics": ["cli", "token-efficiency", "llm", "streaming"],
+    "fork": False,
+    "archived": False,
+    "license": {"spdx_id": "MIT"},
+}
+
+
+def _mock_rtk_kw(query, *, min_stars=0, max_results=10, created_after=None, language=None):
+    if "rtk" in str(query).lower() or "token" in str(query).lower():
+        return [RTK_LIKE_REPO]
+    return []
+
+
+def _mock_rtk_topic(topic, *, min_stars=0, max_results=10, language=None):
+    if topic in ("token-efficiency", "cli", "streaming"):
+        return [RTK_LIKE_REPO]
+    return []
+
+
+with mock.patch.object(ts.GitHubClient, "search_repos", side_effect=_mock_rtk_kw), \
+     mock.patch.object(ts.GitHubClient, "search_repos_by_topic", side_effect=_mock_rtk_topic), \
+     mock.patch("time.sleep", return_value=None):
+    _rtk_cfg = ts.load_config(None)
+    _rtk_cfg["search"]["seed_keywords"] = []
+    _rtk_cfg["search"]["extra_topics"] = []
+    _rtk_cfg["lanes"] = [{
+        "name": "token-efficiency-cli",
+        "keywords": ["\"rtk\" in:name,description"],
+        "topics": ["token-efficiency"],
+        "min_stars": 2,
+        "max_per_query": 10,
+        "lookback_days": 365,
+        "language": None,
+    }]
+    _raw_rtk = ts.search_stage(ts.GitHubClient(token="ghp_test"), _rtk_cfg)
+    test("token-efficiency-cli lane surfaces RTK-class repo via mocked search",
+         any(r.get("full_name") == "rtk-ai/rtk" for r in _raw_rtk),
+         str([r.get("full_name") for r in _raw_rtk]))
+    _rtk_in_raw = next((r for r in _raw_rtk if r.get("full_name") == "rtk-ai/rtk"), None)
+    if _rtk_in_raw:
+        test("RTK-class repo tagged with token-efficiency-cli discovery lane",
+             _rtk_in_raw.get("_discovery_lane") == "token-efficiency-cli",
+             str(_rtk_in_raw.get("_discovery_lane")))
+    else:
+        test("RTK-class repo tagged with token-efficiency-cli discovery lane",
+             False, "not found in raw")
+
+# E. goldset_misses empty when RTK repo found in raw with correct lane
+_rtk_explain_with_raw = ts.build_discovery_explain(
+    [{**RTK_LIKE_REPO, "_discovery_lane": "token-efficiency-cli",
+      "_discovery_query": "\"rtk\" in:name,description"}],
+    [],
+    "2025-01-01T00:00:00+00:00",
+    config=ts.load_config(None),
+    goldset={
+        "path": "synthetic",
+        "entries": [
+            {"repo": "rtk-ai/rtk", "required": True,
+             "expected_lane": "token-efficiency-cli", "min_score": 0.0}
+        ],
+    },
+)
+test("goldset_misses empty when RTK-class repo found in raw with correct lane",
+     len(_rtk_explain_with_raw.get("goldset_misses", [])) == 0,
+     str(_rtk_explain_with_raw.get("goldset_misses")))
+
+# F. goldset_misses captures lane mismatch (found in raw, but wrong lane)
+_rtk_explain_wrong_lane = ts.build_discovery_explain(
+    [{**RTK_LIKE_REPO, "_discovery_lane": "primary", "_discovery_query": "ai tools"}],
+    [],
+    "2025-01-01T00:00:00+00:00",
+    config=ts.load_config(None),
+    goldset={
+        "path": "synthetic",
+        "entries": [
+            {"repo": "rtk-ai/rtk", "required": True,
+             "expected_lane": "token-efficiency-cli", "min_score": 0.0}
+        ],
+    },
+)
+test("goldset_misses captures lane mismatch (found in raw but wrong lane)",
+     len(_rtk_explain_wrong_lane.get("goldset_misses", [])) == 1,
+     str(_rtk_explain_wrong_lane.get("goldset_misses")))
+_lane_miss_row = (_rtk_explain_wrong_lane["goldset_misses"][0]
+                  if _rtk_explain_wrong_lane.get("goldset_misses") else {})
+test("goldset_miss lane_miss: found_in_raw=True",
+     _lane_miss_row.get("found_in_raw") is True, str(_lane_miss_row))
+test("goldset_miss lane_miss: reason mentions lane_miss",
+     "lane_miss" in str(_lane_miss_row.get("reason", "")), str(_lane_miss_row))
+
+# G. goldset_misses is empty list when goldset has no entries (graceful no-op)
+_empty_goldset_explain = ts.build_discovery_explain(
+    [], [], "2025-01-01T00:00:00+00:00",
+    config=ts.load_config(None),
+    goldset={"path": "synthetic", "entries": []},
+)
+test("goldset_misses is empty list when goldset has no entries",
+     _empty_goldset_explain.get("goldset_misses") == [],
+     str(_empty_goldset_explain.get("goldset_misses")))
+
+# H. Adjacent jcode lane regression: jcode still found after adding token-efficiency-cli
+with mock.patch.object(ts.GitHubClient, "search_repos", return_value=[]) as _mock_kw_reg, \
+     mock.patch.object(
+         ts.GitHubClient, "search_repos_by_topic",
+         side_effect=lambda t, **kw: [JCODE_LIKE_REPO] if t in ("coding-agent", "mcp") else [],
+     ) as _mock_t_reg, \
+     mock.patch("time.sleep", return_value=None):
+    _reg_cfg = ts.load_config(None)  # loads disk config with both lanes
+    _reg_cfg["search"]["seed_keywords"] = []
+    _reg_cfg["search"]["extra_topics"] = []
+    _reg_raw = ts.search_stage(ts.GitHubClient(token="ghp_test"), _reg_cfg)
+    test(
+        "adjacent-ai-dev jcode regression: jcode still found with both lanes active",
+        any(r.get("full_name") == "example/jcode-like-agent" for r in _reg_raw),
+        str([r.get("full_name") for r in _reg_raw]),
+    )
+    _jcode_reg = next(
+        (r for r in _reg_raw if r.get("full_name") == "example/jcode-like-agent"), None
+    )
+    if _jcode_reg:
+        test("adjacent-ai-dev jcode regression: jcode lane tag unchanged",
+             _jcode_reg.get("_discovery_lane") == "adjacent-ai-dev",
+             str(_jcode_reg.get("_discovery_lane")))
+    else:
+        test("adjacent-ai-dev jcode regression: jcode lane tag unchanged",
+             False, "jcode not found in raw")
+
+# I. Workflow always uploads explain artifact (not only on workflow_dispatch+explain)
+if WORKFLOW_FILE.exists():
+    _wf_rtk = WORKFLOW_FILE.read_text(encoding="utf-8")
+    test("workflow upload condition covers scheduled runs (always())",
+         "if: ${{ always() }}" in _wf_rtk or "always()" in _wf_rtk,
+         _wf_rtk[_wf_rtk.find("Upload discovery"):_wf_rtk.find("Upload discovery") + 200]
+         if "Upload discovery" in _wf_rtk else _wf_rtk[-200:])
+else:
+    test("workflow file exists for RTK lane checks", False, str(WORKFLOW_FILE))
 
 
 # ─── Cleanup ──────────────────────────────────────────────────────────────────

@@ -49,6 +49,8 @@ AUDIT_JSONL = MARKERS_DIR / "audit.jsonl"
 KNOWLEDGE_DB = SESSION_STATE / "knowledge.db"
 SKILL_METRICS_DB = SESSION_STATE / "skill-metrics.db"
 RETRO_STATE = SCRIPT_DIR / ".retro-state.json"
+SCOUT_CONFIG = SCRIPT_DIR / "trend-scout-config.json"
+SCOUT_SCRIPT = SCRIPT_DIR / "trend-scout.py"
 
 _VALID_SECTIONS = ("knowledge", "skills", "hooks", "git")
 _VALID_MODES = ("local", "repo")
@@ -313,6 +315,118 @@ def collect_git_signals(repo_root: Path = SCRIPT_DIR, days: int = 30) -> dict:
     return out
 
 
+def collect_scout_signals(
+    config_path: Path = SCOUT_CONFIG,
+    script_path: Path = SCOUT_SCRIPT,
+) -> dict:
+    """Collect Trend Scout coverage signals — read-only, no API calls.
+
+    Reads ``trend-scout-config.json`` for static metadata and the adjacent
+    state file (``.trend-scout-state.json`` or the path specified in config)
+    for run-time metadata.  Never modifies any file.
+
+    Returns a dict with keys:
+      available          — True if config file was found **and** successfully parsed
+      configured         — True if config file exists (regardless of parse success)
+      script_exists      — True if trend-scout.py script exists
+      config_path        — absolute path string of the config file
+      target_repo        — GitHub repo slug from config, or null
+      issue_label        — issue label from config, or null
+      grace_window_hours — grace window hours from config (0 = disabled)
+      state_file         — absolute path string of the state file
+      state_file_exists  — True if state file exists on disk
+      last_run_utc       — ISO-8601 string from state file, or null
+      elapsed_hours      — hours since last_run_utc, or null
+      remaining_hours    — hours until grace window expires (>=0), or null
+      would_skip_without_force — True if grace window is currently active
+    """
+    base: dict = {
+        "available": False,
+        "configured": False,
+        "script_exists": script_path.is_file(),
+        "config_path": str(config_path),
+        "target_repo": None,
+        "issue_label": None,
+        "grace_window_hours": 0,
+        "state_file": str(config_path.parent / ".trend-scout-state.json"),
+        "state_file_exists": False,
+        "last_run_utc": None,
+        "elapsed_hours": None,
+        "remaining_hours": None,
+        "would_skip_without_force": False,
+    }
+
+    if not config_path.exists():
+        return base
+
+    # Config file exists → mark configured regardless of parse success.
+    base["configured"] = True
+
+    try:
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return base
+
+    base["available"] = True
+    base["target_repo"] = cfg.get("target_repo") or None
+    base["issue_label"] = cfg.get("issue_label") or None
+
+    run_control = cfg.get("run_control") or {}
+    try:
+        grace_window_hours = float(run_control.get("grace_window_hours") or 0)
+    except (ValueError, TypeError):
+        grace_window_hours = 0.0
+    base["grace_window_hours"] = grace_window_hours
+
+    # Resolve state file path (config may override the default location).
+    # Relative paths are anchored to the config file's directory, not CWD.
+    raw_sf = run_control.get("state_file")
+    if raw_sf:
+        sf_path = Path(raw_sf)
+        state_file = sf_path if sf_path.is_absolute() else config_path.parent / sf_path
+    else:
+        state_file = config_path.parent / ".trend-scout-state.json"
+    base["state_file"] = str(state_file)
+    base["state_file_exists"] = state_file.exists()
+
+    if not state_file.exists():
+        return base
+
+    try:
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+    except Exception:
+        return base
+
+    last_run_str: str = state.get("last_run_utc", "") or ""
+    if not last_run_str.strip():
+        return base
+
+    base["last_run_utc"] = last_run_str.strip()
+
+    # Compute elapsed / remaining hours using stdlib only (no dateutil)
+    try:
+        import time as _time
+        # Parse ISO-8601 with optional timezone suffix
+        ts_str = last_run_str.strip().replace("Z", "+00:00")
+        # Python 3.7+ fromisoformat handles "+00:00" but not "Z" directly
+        from datetime import datetime, timezone as _tz
+
+        last_run_dt = datetime.fromisoformat(ts_str)
+        if last_run_dt.tzinfo is None:
+            last_run_dt = last_run_dt.replace(tzinfo=_tz.utc)
+        now_dt = datetime.now(_tz.utc)
+        elapsed = (now_dt - last_run_dt).total_seconds() / 3600.0
+        base["elapsed_hours"] = round(elapsed, 2)
+        if grace_window_hours > 0:
+            remaining = grace_window_hours - elapsed
+            base["remaining_hours"] = round(max(0.0, remaining), 2)
+            base["would_skip_without_force"] = remaining > 0
+    except Exception:
+        pass
+
+    return base
+
+
 # ── Scoring ──────────────────────────────────────────────────────────────────
 
 
@@ -393,6 +507,7 @@ def compute_retro(
     hooks: dict,
     git: dict,
     mode: str = "local",
+    scout: dict | None = None,
 ) -> dict:
     """Compute the full retrospective payload with composite score."""
     k_score = _score_knowledge(knowledge)
@@ -528,6 +643,7 @@ def compute_retro(
         "skills": skills,
         "hooks": hooks,
         "git": git,
+        "scout": scout if scout is not None else {"available": False},
     }
 
 
@@ -689,6 +805,38 @@ def format_git_section(g: dict) -> list:
     return lines
 
 
+def format_scout_section(s: dict) -> list:
+    """Format Trend Scout coverage section for the text report."""
+    lines = ["Trend Scout Coverage"]
+    if not s.get("available"):
+        status = "(not configured)" if not s.get("configured") else "(config unreadable)"
+        lines.append(f"  {status}")
+        lines.append(f"  Config path:    {s.get('config_path', '(unknown)')}")
+        return lines
+    target = s.get("target_repo") or "(unset)"
+    label = s.get("issue_label") or "(unset)"
+    grace = s.get("grace_window_hours", 0)
+    lines.append(f"  Target repo:    {target}")
+    lines.append(f"  Issue label:    {label}")
+    lines.append(f"  Script:         {'found' if s.get('script_exists') else 'MISSING'}")
+    lines.append(f"  Grace window:   {grace}h {'(disabled)' if not grace else ''}")
+    state_exists = s.get("state_file_exists", False)
+    last_run = s.get("last_run_utc")
+    if last_run:
+        elapsed = s.get("elapsed_hours")
+        remaining = s.get("remaining_hours")
+        would_skip = s.get("would_skip_without_force", False)
+        elapsed_str = f"{elapsed:.1f}h ago" if elapsed is not None else ""
+        lines.append(f"  Last run:       {last_run}  ({elapsed_str})")
+        if would_skip and remaining is not None:
+            lines.append(f"  Grace status:   active  ({remaining:.1f}h remaining)")
+        else:
+            lines.append(f"  Grace status:   {'inactive — eligible to run' if grace else 'disabled'}")
+    else:
+        lines.append(f"  Last run:       {'(state file missing)' if not state_exists else '(never recorded)'}")
+    return lines
+
+
 def format_text_report(payload: dict) -> str:
     lines = [
         "╔══════════════════════════════════════════════════════╗",
@@ -729,6 +877,11 @@ def format_text_report(payload: dict) -> str:
     lines.extend(format_hooks_section(payload.get("hooks", {})))
     lines.append("")
     lines.extend(format_git_section(payload.get("git", {})))
+
+    scout = payload.get("scout")
+    if scout is not None:
+        lines.append("")
+        lines.extend(format_scout_section(scout))
 
     return "\n".join(lines)
 
@@ -824,8 +977,9 @@ def main() -> None:
         hooks = collect_audit_signals()
 
     git = collect_git_signals(days=days)
+    scout = collect_scout_signals()
 
-    payload = compute_retro(knowledge, skills, hooks, git, mode=mode)
+    payload = compute_retro(knowledge, skills, hooks, git, mode=mode, scout=scout)
 
     # Cache state (best-effort, skips if --no-cache)
     if not args["no_cache"]:

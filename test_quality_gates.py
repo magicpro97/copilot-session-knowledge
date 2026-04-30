@@ -405,6 +405,57 @@ test_contributing_md_local_vs_ci()
 test_architecture_md_ruff_surface()
 test_hooks_md_rules_table_complete()
 
+# ── Test 21–24: Syntax gate in pre-commit ───────────────────────────────────
+
+
+def test_pre_commit_syntax_gate_present():
+    """Pre-commit hook must contain the check_syntax.py syntax gate."""
+    if not PRE_COMMIT.exists():
+        test("pre-commit hook exists", False, str(PRE_COMMIT))
+        return
+    content = PRE_COMMIT.read_text(encoding="utf-8")
+    test(
+        "pre-commit references check_syntax.py",
+        "check_syntax.py" in content,
+        "hooks/pre-commit missing check_syntax.py syntax gate — add it before the Ruff section",
+    )
+    test(
+        "pre-commit syntax gate is fail-open (checks for script existence)",
+        "SYNTAX_CHECKER" in content and '[ -f "$SYNTAX_CHECKER" ]' in content,
+        "hooks/pre-commit syntax gate should skip silently when check_syntax.py is absent",
+    )
+
+
+def test_hooks_md_syntax_gate_documented():
+    """HOOKS.md must document the syntax gate in the local-vs-CI section."""
+    if not HOOKS_MD.exists():
+        test("docs/HOOKS.md exists", False)
+        return
+    content = HOOKS_MD.read_text(encoding="utf-8")
+    test(
+        "HOOKS.md documents syntax gate in local-vs-CI section",
+        "check_syntax" in content,
+        "docs/HOOKS.md should document check_syntax.py in 'Local vs CI enforcement boundary' section",
+    )
+
+
+def test_contributing_md_syntax_gate():
+    """CONTRIBUTING.md must document the syntax gate in the enforcement list."""
+    if not CONTRIBUTING.exists():
+        test("CONTRIBUTING.md exists", False)
+        return
+    content = CONTRIBUTING.read_text(encoding="utf-8")
+    test(
+        "CONTRIBUTING.md documents syntax gate",
+        "check_syntax" in content,
+        "CONTRIBUTING.md should list Python syntax gate in the pre-commit enforcement bullets",
+    )
+
+
+test_pre_commit_syntax_gate_present()
+test_hooks_md_syntax_gate_documented()
+test_contributing_md_syntax_gate()
+
 print(f"\n{'='*50}")
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")
 if FAIL == 0:

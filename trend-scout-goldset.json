@@ -8,6 +8,14 @@
       "expected_lane": "adjacent-ai-dev",
       "min_score": 0.15,
       "notes": "Rust coding-agent harness with memory, MCP/provider surfaces, and orchestration patterns adjacent to this project."
+    },
+    {
+      "repo": "rtk-ai/rtk",
+      "required": true,
+      "category": "token-efficiency-cli",
+      "expected_lane": "token-efficiency-cli",
+      "min_score": 0.1,
+      "notes": "RTK-class token-efficiency CLI tool; validates that the token-efficiency-cli lane surfaces streaming/token-management repos adjacent to this project's context-window concerns."
     }
   ]
 }

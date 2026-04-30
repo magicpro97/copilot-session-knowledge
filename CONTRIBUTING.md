@@ -47,6 +47,7 @@ The local `pre-commit` git hook is **fast and scoped** — it does NOT run the f
 
 - Dispatched-subagent marker guard (always)
 - `browse/routes/*.py` inline-`<style>` regression guard (always)
+- Python syntax gate on all staged `.py` files via `scripts/check_syntax.py` (fail-open when script absent)
 - Ruff format + lint on staged files in the CI surface (fail-open when Ruff absent)
 - Prettier format check on staged `browse-ui/src/` files (fail-open when Prettier absent)
 - Skill/agent file lint (fail-open when lint-skills.py absent)

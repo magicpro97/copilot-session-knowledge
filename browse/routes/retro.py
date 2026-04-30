@@ -28,25 +28,34 @@ def handle_retro_page(db, params, token, nonce) -> tuple:
 </div>"""
     body_scripts = f"""<script nonce="{_nonce}">
 (function () {{
+  function esc(s) {{
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }}
+
   fetch('/api/retro/summary?mode=repo')
     .then(function(r) {{ return r.json(); }})
     .then(function(data) {{
       var root = document.getElementById('retro-root');
-      var grade = (data.grade_emoji || '') + ' ' + (data.grade || '') + ' (' + (data.retro_score || 0) + ')';
+      var grade = esc(data.grade_emoji || '') + ' ' + esc(data.grade || '') + ' (' + esc(data.retro_score || 0) + ')';
       var items = (data.available_sections || []).map(function(s) {{
-        var sub = (data.subscores && data.subscores[s] != null) ? data.subscores[s] : '–';
-        return '<li><strong>' + s + '</strong>: ' + sub + '</li>';
+        var sub = (data.subscores && data.subscores[s] != null) ? esc(data.subscores[s]) : '–';
+        return '<li><strong>' + esc(s) + '</strong>: ' + sub + '</li>';
       }}).join('');
 
       var confidenceHtml = '';
       if (data.score_confidence) {{
         var confColor = {{low: '#ef4444', medium: '#f59e0b', high: '#22c55e'}}[data.score_confidence] || '#6b7280';
-        confidenceHtml = '<p class="text-sm mt-1">Score confidence: <span style="color:' + confColor + ';font-weight:600">' + data.score_confidence + '</span></p>';
+        confidenceHtml = '<p class="text-sm mt-1">Score confidence: <span style="color:' + confColor + ';font-weight:600">' + esc(data.score_confidence) + '</span></p>';
       }}
 
       var summaryHtml = '';
       if (data.summary) {{
-        summaryHtml = '<p class="text-sm mt-3">' + data.summary + '</p>';
+        summaryHtml = '<p class="text-sm mt-3">' + esc(data.summary) + '</p>';
       }}
 
       var distortionHtml = '';
@@ -57,7 +66,7 @@ def handle_retro_page(db, params, token, nonce) -> tuple:
           skills_unverified: 'Skill outcomes exist but verification evidence is missing — confidence is lower until outcomes are verified.'
         }};
         var flagItems = flags.map(function(f) {{
-          return '<li><strong>' + f + '</strong>: ' + (flagExplanations[f] || f) + '</li>';
+          return '<li><strong>' + esc(f) + '</strong>: ' + esc(flagExplanations[f] || f) + '</li>';
         }}).join('');
         distortionHtml = '<p class="text-sm font-medium mt-3" style="color:#f59e0b">⚠️ Score distortions</p><ul class="mt-1 text-xs list-disc pl-4">' + flagItems + '</ul>';
       }}
@@ -65,31 +74,58 @@ def handle_retro_page(db, params, token, nonce) -> tuple:
       var accuracyHtml = '';
       var notes = Array.isArray(data.accuracy_notes) ? data.accuracy_notes : [];
       if (notes.length > 0) {{
-        var noteItems = notes.map(function(note) {{ return '<li>' + note + '</li>'; }}).join('');
+        var noteItems = notes.map(function(note) {{ return '<li>' + esc(note) + '</li>'; }}).join('');
         accuracyHtml = '<p class="text-sm font-medium mt-3">Accuracy notes</p><ul class="mt-1 text-xs list-disc pl-4">' + noteItems + '</ul>';
       }}
 
       var actionsHtml = '';
       var actions = data.improvement_actions || [];
       if (actions.length > 0) {{
-        var actionItems = actions.map(function(a) {{ return '<li>' + a + '</li>'; }}).join('');
+        var actionItems = actions.map(function(a) {{ return '<li>' + esc(a) + '</li>'; }}).join('');
         actionsHtml = '<p class="text-sm font-medium mt-3">Recommended actions</p><ul class="mt-1 text-sm list-disc pl-4">' + actionItems + '</ul>';
+      }}
+
+      var scoutHtml = '';
+      var scout = data.scout;
+      if (scout) {{
+        var scoutStatus = '';
+        if (!scout.available) {{
+          scoutStatus = '<span style="color:#6b7280">not configured</span>';
+        }} else {{
+          var scoutRepo = esc(scout.target_repo || '(unset)');
+          var scoutLabel = esc(scout.issue_label || '(unset)');
+          var graceH = esc(scout.grace_window_hours || 0);
+          var lastRunText = scout.last_run_utc
+            ? esc(scout.last_run_utc) + (scout.elapsed_hours != null ? ' (' + esc(scout.elapsed_hours.toFixed(1)) + 'h ago)' : '')
+            : '(never / state file missing)';
+          var graceText = scout.would_skip_without_force && scout.remaining_hours != null
+            ? '<span style="color:#f59e0b">active (' + esc(scout.remaining_hours.toFixed(1)) + 'h remaining)</span>'
+            : '<span style="color:#22c55e">' + (scout.grace_window_hours ? 'inactive — eligible to run' : 'disabled') + '</span>';
+          scoutStatus = '<ul class="mt-1 text-xs list-none pl-0 space-y-0.5">' +
+            '<li>Repo: <strong>' + scoutRepo + '</strong></li>' +
+            '<li>Label: <code>' + scoutLabel + '</code></li>' +
+            '<li>Grace window: ' + graceH + 'h · ' + graceText + '</li>' +
+            '<li>Last run: ' + lastRunText + '</li>' +
+            '</ul>';
+        }}
+        scoutHtml = '<p class="text-sm font-medium mt-3">🔭 Trend Scout</p>' + scoutStatus;
       }}
 
       root.innerHTML =
         '<p class="text-lg font-bold">' + grade + '</p>' +
         confidenceHtml +
-        '<p class="text-sm text-muted">mode: ' + (data.mode||'') + ' · ' + (data.generated_at||'') + '</p>' +
+        '<p class="text-sm text-muted">mode: ' + esc(data.mode||'') + ' · ' + esc(data.generated_at||'') + '</p>' +
         summaryHtml +
         '<ul class="mt-4 space-y-1 text-sm list-disc pl-4">' + items + '</ul>' +
         distortionHtml +
         accuracyHtml +
         actionsHtml +
+        scoutHtml +
         '<p class="mt-6 text-xs text-muted">Full payload: <a href="/api/retro/summary">/api/retro/summary</a></p>';
     }})
     .catch(function(err) {{
       document.getElementById('retro-root').innerHTML =
-        '<p class="text-sm" style="color:red">Retrospective unavailable: ' + err.message + '</p>';
+        '<p class="text-sm" style="color:red">Retrospective unavailable: ' + esc(err.message) + '</p>';
     }});
 }})();
 </script>"""

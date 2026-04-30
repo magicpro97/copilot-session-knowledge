@@ -27,6 +27,21 @@ Additive fields (present when retro.py emits them; absent on older payloads):
     "distortion_flags":    [str, ...],   -- e.g. ["hook_deny_dry_noise", "skills_unverified"]
     "accuracy_notes":      [str, ...],   -- prose explanations of parse errors / caveats
     "improvement_actions": [str, ...]    -- concrete next steps for the operator
+    "scout": {                           -- Trend Scout coverage (read-only, informational)
+      "available":              bool,    -- True if config exists AND was successfully parsed
+      "configured":             bool,    -- True if config file exists (regardless of parse success)
+      "script_exists":          bool,
+      "config_path":            str,
+      "target_repo":            str | null,
+      "issue_label":            str | null,
+      "grace_window_hours":     number,
+      "state_file":             str,
+      "state_file_exists":      bool,
+      "last_run_utc":           str | null,
+      "elapsed_hours":          number | null,
+      "remaining_hours":        number | null,
+      "would_skip_without_force": bool
+    }
   }
 
 Returns HTTP 503 with error envelope if retro.py is unavailable or fails.
