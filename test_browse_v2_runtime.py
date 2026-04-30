@@ -302,8 +302,8 @@ def _run_all_tests() -> int:
         raised_unrelated = exc.errno == errno.EINVAL
     test("V6: unrelated OSError still raises", raised_unrelated)
 
-    # V7: Real session UUID route serves session detail placeholder shell (not root index)
-    print("\n-- V7: /v2/sessions/{uuid}/ serves placeholder session shell")
+    # V7: Real session UUID route rewrites placeholder shell with the requested session ID
+    print("\n-- V7: /v2/sessions/{uuid}/ rewrites placeholder shell")
     db7 = _make_test_db()
     server7, host7, port7 = _start_server(db7, token="tok")
     try:
@@ -315,14 +315,16 @@ def _run_all_tests() -> int:
         )
         placeholder_html = _v2_dist_path("sessions", "_placeholder", "index.html").read_bytes()
         root_html = _v2_dist_path("index.html").read_bytes()
-        test("V7: body matches sessions/_placeholder/index.html", body7 == placeholder_html)
+        test("V7: body includes requested session ID", b"v2-test-session" in body7)
+        test("V7: body no longer leaks _placeholder", b"_placeholder" not in body7)
+        test("V7: body is rewritten from placeholder shell", body7 != placeholder_html)
         test("V7: body is not root dist/index.html", body7 != root_html)
     finally:
         server7.shutdown()
         db7.close()
 
-    # V8: Real session UUID RSC payload falls back to placeholder payload
-    print("\n-- V8: /v2/sessions/{uuid}/__next.* payload serves placeholder file")
+    # V8: Real session UUID RSC payload rewrites placeholder content to the requested session ID
+    print("\n-- V8: /v2/sessions/{uuid}/__next.* payload rewrites placeholder file")
     db8 = _make_test_db()
     server8, host8, port8 = _start_server(db8, token="tok")
     try:
@@ -337,7 +339,9 @@ def _run_all_tests() -> int:
             "sessions", "_placeholder", "__next.sessions.$d$id.__PAGE__.txt"
         ).read_bytes()
         root_html8 = _v2_dist_path("index.html").read_bytes()
-        test("V8: body matches placeholder payload", body8 == placeholder_payload)
+        test("V8: payload includes requested session ID", b"v2-test-session" in body8)
+        test("V8: payload no longer leaks _placeholder", b"_placeholder" not in body8)
+        test("V8: payload is rewritten from placeholder payload", body8 != placeholder_payload)
         test("V8: payload is not root HTML", body8 != root_html8)
     finally:
         server8.shutdown()

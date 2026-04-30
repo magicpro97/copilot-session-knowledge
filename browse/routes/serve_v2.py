@@ -7,6 +7,7 @@ Called from browse/core/server.py for /v2/* paths.
 import os
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
@@ -36,10 +37,10 @@ def _content_type(path: Path) -> str:
     return _CT.get(path.suffix.lower(), "application/octet-stream")
 
 
-def _session_placeholder_fallback_paths(rel_path: str) -> list[Path]:
+def _session_placeholder_fallback_paths(rel_path: str) -> tuple[str, list[Path]]:
     parts = Path(rel_path).parts
     if len(parts) < 2 or parts[0] != "sessions" or parts[1] == "_placeholder":
-        return []
+        return "", []
 
     placeholder_base = _V2_DIST / "sessions" / "_placeholder"
     suffix_parts = list(parts[2:])
@@ -48,7 +49,19 @@ def _session_placeholder_fallback_paths(rel_path: str) -> list[Path]:
     if suffix_parts:
         fallback_paths.append(placeholder_base.joinpath(*suffix_parts))
     fallback_paths.append(placeholder_base / "index.html")
-    return fallback_paths
+    return unquote(parts[1]), fallback_paths
+
+
+def _rewrite_session_placeholder(body: bytes, content_type: str, session_id: str) -> bytes:
+    if not session_id:
+        return body
+    if not (
+        content_type.startswith("text/html")
+        or content_type.startswith("text/plain")
+        or content_type.startswith("application/json")
+    ):
+        return body
+    return body.replace(b"_placeholder", session_id.encode("utf-8"))
 
 
 def serve_v2(rel_path: str) -> tuple:
@@ -79,14 +92,17 @@ def serve_v2(rel_path: str) -> tuple:
         return candidate.read_bytes(), _content_type(candidate), 200
 
     # Dynamic session detail fallback: /sessions/{id}/... -> /sessions/_placeholder/...
-    for try_path in _session_placeholder_fallback_paths(rel_path):
+    session_id, fallback_paths = _session_placeholder_fallback_paths(rel_path)
+    for try_path in fallback_paths:
         resolved = try_path.resolve()
         try:
             resolved.relative_to(_V2_DIST)
         except ValueError:
             continue
         if resolved.is_file():
-            return resolved.read_bytes(), _content_type(resolved), 200
+            content_type = _content_type(resolved)
+            body = _rewrite_session_placeholder(resolved.read_bytes(), content_type, session_id)
+            return body, content_type, 200
 
     # SPA fallback: try {rel_path}/index.html, then {rel_path}.html, then dist/index.html
     for try_path in [
