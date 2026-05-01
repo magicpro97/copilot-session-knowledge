@@ -1,11 +1,12 @@
 "use client";
 
-import { CheckCircle } from "lucide-react";
+import { CheckCircle, Loader2, RefreshCcw } from "lucide-react";
 
 import { InsightFindingCard } from "@/components/data/insight-finding-card";
 import { Banner } from "@/components/data/banner";
 import { EmptyState } from "@/components/data/empty-state";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useWorkflowHealth } from "@/lib/api/hooks";
 import type { WorkflowFinding } from "@/lib/api/types";
@@ -29,6 +30,12 @@ function toInsightFinding(f: WorkflowFinding): InsightFinding {
 
 export function WorkflowTab() {
   const workflow = useWorkflowHealth();
+  const isReloading = workflow.isFetching && !workflow.isLoading;
+
+  function handleReload() {
+    if (isReloading) return;
+    void workflow.refetch();
+  }
 
   return (
     <div className="space-y-4">
@@ -52,6 +59,22 @@ export function WorkflowTab() {
           tone="danger"
           title="Workflow health unavailable"
           description="Could not load workflow health data. Run workflow-health.py to generate a report."
+          actions={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={isReloading}
+              onClick={handleReload}
+            >
+              {isReloading ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <RefreshCcw className="size-3.5" />
+              )}
+              {isReloading ? "Reloading…" : "Reload"}
+            </Button>
+          }
         />
       ) : workflow.data?.findings.length === 0 ? (
         <EmptyState

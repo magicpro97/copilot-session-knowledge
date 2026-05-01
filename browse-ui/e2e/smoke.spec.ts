@@ -375,6 +375,26 @@ test("insights workflow tab renders workflow health findings from API", async ({
   ).toBeVisible();
 });
 
+test("insights workflow tab can reload from unavailable to findings", async ({ page }) => {
+  let attempts = 0;
+  await page.route("**/api/workflow/health*", async (route) => {
+    attempts += 1;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(attempts <= 2 ? { invalid: true } : WORKFLOW_HEALTH_FIXTURE),
+    });
+  });
+
+  await page.goto("/v2/insights/#workflow");
+  await expect(page.getByText("Workflow health unavailable", { exact: true })).toBeVisible({
+    timeout: 20_000,
+  });
+  await page.getByRole("button", { name: "Reload" }).click();
+  await expect(page.getByText(/Heavy sessions need summarization/)).toBeVisible({
+    timeout: 20_000,
+  });
+});
+
 test("insights retro tab renders session behavior metrics when provided", async ({ page }) => {
   await page.route("**/api/retro/summary*", async (route) => {
     await route.fulfill({

@@ -70,6 +70,16 @@ function BehaviorMetricsGrid({ behavior }: { behavior: RetroBehavior | undefined
   );
 }
 
+function formatScoutLastRunLabel(scout: RetroScout): string {
+  if (scout.last_run_utc) {
+    return `${scout.last_run_utc}${scout.elapsed_hours != null ? ` (${scout.elapsed_hours.toFixed(1)}h ago)` : ""}`;
+  }
+  if (!scout.state_file_exists) {
+    return "never run yet (no state file found)";
+  }
+  return "unknown (state file exists, but no last-run timestamp)";
+}
+
 function ScoutCoveragePanel({ scout }: { scout: RetroScout }) {
   if (!scout.available) {
     return (
@@ -88,9 +98,7 @@ function ScoutCoveragePanel({ scout }: { scout: RetroScout }) {
         ? "inactive — eligible to run"
         : "disabled";
 
-  const lastRunLabel = scout.last_run_utc
-    ? `${scout.last_run_utc}${scout.elapsed_hours != null ? ` (${scout.elapsed_hours.toFixed(1)}h ago)` : ""}`
-    : "(never / state file missing)";
+  const lastRunLabel = formatScoutLastRunLabel(scout);
 
   return (
     <div className="rounded-lg border px-3 py-2">

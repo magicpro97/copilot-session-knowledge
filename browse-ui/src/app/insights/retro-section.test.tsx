@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { RetroBody } from "@/app/insights/retro-section";
 import { useRetro } from "@/lib/api/hooks";
-import type { RetroResponse } from "@/lib/api/types";
+import type { RetroResponse, RetroScout } from "@/lib/api/types";
 
 vi.mock("@/lib/api/hooks", () => ({
   useRetro: vi.fn(),
@@ -41,6 +41,25 @@ function makeRetroData(overrides: Partial<RetroResponse> = {}): RetroResponse {
     improvement_actions: [],
     ...overrides,
   } as RetroResponse;
+}
+
+function makeScout(overrides: Partial<RetroScout> = {}): RetroScout {
+  return {
+    available: true,
+    configured: true,
+    script_exists: true,
+    config_path: "/tmp/trend-scout.json",
+    target_repo: "magicpro97/copilot-session-knowledge",
+    issue_label: "trend-scout",
+    grace_window_hours: 20,
+    state_file: "/tmp/trend-scout-state.json",
+    state_file_exists: false,
+    last_run_utc: null,
+    elapsed_hours: null,
+    remaining_hours: null,
+    would_skip_without_force: false,
+    ...overrides,
+  };
 }
 
 describe("BehaviorMetricsGrid via RetroBody", () => {
@@ -96,5 +115,35 @@ describe("BehaviorMetricsGrid via RetroBody", () => {
     // one_shot_rate=0.5 → "50.0%"
     expect(screen.getByText("One-Shot Rate")).toBeInTheDocument();
     expect(screen.getByText("50.0")).toBeInTheDocument();
+  });
+
+  it("clarifies when Trend Scout has never run because no state file exists", () => {
+    const data = makeRetroData({
+      scout: makeScout({
+        state_file_exists: false,
+        last_run_utc: null,
+      }),
+    });
+
+    render(<RetroBody retro={makeQuery({ isSuccess: true, data })} />);
+
+    expect(screen.getByText(/Last run:/)).toHaveTextContent(
+      "Last run: never run yet (no state file found)"
+    );
+  });
+
+  it("clarifies when Trend Scout state exists but the last-run timestamp is missing", () => {
+    const data = makeRetroData({
+      scout: makeScout({
+        state_file_exists: true,
+        last_run_utc: null,
+      }),
+    });
+
+    render(<RetroBody retro={makeQuery({ isSuccess: true, data })} />);
+
+    expect(screen.getByText(/Last run:/)).toHaveTextContent(
+      "Last run: unknown (state file exists, but no last-run timestamp)"
+    );
   });
 });
