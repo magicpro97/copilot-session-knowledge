@@ -7,13 +7,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useRetro } from "@/lib/api/hooks";
 import { deriveActionsFromStrings } from "@/lib/insight-derive";
 import { formatNumber } from "@/lib/formatters";
-import type { RetroScout } from "@/lib/api/types";
+import type { RetroBehavior, RetroScout } from "@/lib/api/types";
 
 const SECTION_LABELS: Record<string, string> = {
   knowledge: "Knowledge",
   skills: "Skills",
   hooks: "Hooks",
   git: "Git",
+  behavior: "Behavior",
 };
 
 const DISTORTION_EXPLANATIONS: Record<string, string> = {
@@ -35,6 +36,38 @@ function confidenceBadgeVariant(
   if (confidence === "high") return "outline";
   if (confidence === "medium") return "secondary";
   return "destructive";
+}
+
+function BehaviorMetricsGrid({ behavior }: { behavior: RetroBehavior | undefined }) {
+  if (!behavior) return null;
+
+  const metrics = [
+    { label: "Completion Rate", value: (behavior.completion_rate * 100).toFixed(1), unit: "%" },
+    {
+      label: "Knowledge Yield",
+      value: behavior.knowledge_yield.toFixed(2),
+      unit: " entries/session",
+    },
+    { label: "Efficiency Ratio", value: (behavior.efficiency_ratio * 100).toFixed(1), unit: "%" },
+    { label: "One-Shot Rate", value: (behavior.one_shot_rate * 100).toFixed(1), unit: "%" },
+  ];
+
+  return (
+    <div className="rounded-lg border px-3 py-2">
+      <p className="mb-2 text-xs font-medium">📊 Session Behavior</p>
+      <div className="grid grid-cols-2 gap-2">
+        {metrics.map((m) => (
+          <div key={m.label}>
+            <p className="text-muted-foreground text-xs">{m.label}</p>
+            <p className="text-sm font-semibold">
+              {m.value}
+              <span className="text-muted-foreground text-xs font-normal">{m.unit}</span>
+            </p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function ScoutCoveragePanel({ scout }: { scout: RetroScout }) {
@@ -122,6 +155,8 @@ export function RetroBody({ retro }: { retro: ReturnType<typeof useRetro> }) {
           );
         })}
       </div>
+
+      <BehaviorMetricsGrid behavior={retro.data.behavior} />
 
       {retro.data.distortion_flags && retro.data.distortion_flags.length > 0 ? (
         <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-3 py-2">

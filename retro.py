@@ -427,6 +427,80 @@ def collect_scout_signals(
     return base
 
 
+def collect_session_behavior_signals(db_path) -> "dict | None":
+    """Collect session behavior metrics from sessions + documents tables.
+
+    Returns a dict with:
+      completion_rate         — sessions with ≥1 checkpoint / total sessions
+      knowledge_yield         — avg knowledge entries per session
+      efficiency_ratio        — entries / event_count (capped at 1.0)
+      one_shot_rate           — sessions with exactly 1 checkpoint / sessions with ≥1
+      session_count           — total sessions
+      sessions_with_checkpoints — sessions with ≥1 checkpoint
+
+    Returns None if tables are absent or any error occurs (fail-open).
+    """
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type=?"
+                , ("table",)).fetchall()
+            }
+            if "sessions" not in tables or "documents" not in tables:
+                return None
+
+            total_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+            if total_sessions == 0:
+                return {
+                    "completion_rate": 0.0,
+                    "knowledge_yield": 0.0,
+                    "efficiency_ratio": 0.0,
+                    "one_shot_rate": 0.0,
+                    "session_count": 0,
+                    "sessions_with_checkpoints": 0,
+                }
+
+            sessions_with_checkpoints = conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE total_checkpoints >= 1"
+            ).fetchone()[0]
+
+            sessions_with_one_checkpoint = conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE total_checkpoints = 1"
+            ).fetchone()[0]
+
+            total_entries = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+
+            raw_events = conn.execute(
+                "SELECT SUM(event_count_estimate) FROM sessions WHERE indexed_at IS NOT NULL"
+            ).fetchone()[0]
+            total_events = raw_events or 0
+
+            completion_rate = sessions_with_checkpoints / total_sessions
+            knowledge_yield = total_entries / total_sessions
+            efficiency_ratio = (
+                min(total_entries / total_events, 1.0) if total_events > 0 else 0.0
+            )
+            one_shot_rate = (
+                sessions_with_one_checkpoint / sessions_with_checkpoints
+                if sessions_with_checkpoints > 0
+                else 0.0
+            )
+
+            return {
+                "completion_rate": round(completion_rate, 4),
+                "knowledge_yield": round(knowledge_yield, 4),
+                "efficiency_ratio": round(efficiency_ratio, 4),
+                "one_shot_rate": round(one_shot_rate, 4),
+                "session_count": total_sessions,
+                "sessions_with_checkpoints": sessions_with_checkpoints,
+            }
+    except Exception:
+        return None
+
+
 # ── Scoring ──────────────────────────────────────────────────────────────────
 
 
@@ -501,6 +575,19 @@ def _score_git(g: dict) -> float:
     return round(min(100.0, max(0.0, score)), 1)
 
 
+def _score_behavior(b: dict) -> float:
+    """Subscore 0-100 from session behavior signals.
+
+    Weighted average of completion_rate (50 %) and efficiency_ratio (50 %),
+    scaled to 0–100.
+    """
+    if not b:
+        return 0.0
+    cr = float(b.get("completion_rate", 0.0))
+    er = float(b.get("efficiency_ratio", 0.0))
+    return round((cr * 0.5 + er * 0.5) * 100.0, 1)
+
+
 def compute_retro(
     knowledge: dict,
     skills: dict,
@@ -508,6 +595,7 @@ def compute_retro(
     git: dict,
     mode: str = "local",
     scout: dict | None = None,
+    db_path: "Path | None" = None,
 ) -> dict:
     """Compute the full retrospective payload with composite score."""
     k_score = _score_knowledge(knowledge)
@@ -515,8 +603,14 @@ def compute_retro(
     h_score = _score_hooks(hooks)
     g_score = _score_git(git)
 
+    # Collect session behavior signals (always, regardless of mode)
+    behavior: dict | None = None
+    if db_path is not None and Path(db_path).exists():
+        behavior = collect_session_behavior_signals(db_path)
+    b_score = _score_behavior(behavior) if behavior is not None else 0.0
+
     if mode == "repo":
-        # Repo-only: only git is available
+        # Repo-only: only git is available; behavior is included in payload but not scored
         composite = g_score
         weights = {"git": 1.0}
         available_sections = ["git"]
@@ -536,6 +630,9 @@ def compute_retro(
         if git.get("available"):
             available.append("git")
             weights_raw["git"] = (g_score, 0.20)
+        if behavior is not None:
+            available.append("behavior")
+            weights_raw["behavior"] = (b_score, 0.10)
 
         available_sections = available
 
@@ -633,6 +730,7 @@ def compute_retro(
             "skills": s_score,
             "hooks": h_score,
             "git": g_score,
+            **({"behavior": b_score} if behavior is not None and mode != "repo" else {}),
         },
         "summary": summary,
         "score_confidence": score_confidence,
@@ -643,7 +741,8 @@ def compute_retro(
         "skills": skills,
         "hooks": hooks,
         "git": git,
-        "scout": scout if scout is not None else {"available": False},
+        **({"scout": scout} if scout is not None else {}),
+        **({"behavior": behavior} if behavior is not None else {}),
     }
 
 
@@ -979,7 +1078,7 @@ def main() -> None:
     git = collect_git_signals(days=days)
     scout = collect_scout_signals()
 
-    payload = compute_retro(knowledge, skills, hooks, git, mode=mode, scout=scout)
+    payload = compute_retro(knowledge, skills, hooks, git, mode=mode, scout=scout, db_path=KNOWLEDGE_DB)
 
     # Cache state (best-effort, skips if --no-cache)
     if not args["no_cache"]:

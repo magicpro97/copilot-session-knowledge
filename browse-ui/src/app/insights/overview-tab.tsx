@@ -16,7 +16,13 @@ import type { InsightFinding } from "@/lib/insight-models";
 import { formatNumber } from "@/lib/formatters";
 import { ResearchPackSection } from "./research-pack-section";
 
-export type InsightsTabKey = "overview" | "knowledge" | "retro" | "search-quality" | "live";
+export type InsightsTabKey =
+  | "overview"
+  | "knowledge"
+  | "retro"
+  | "search-quality"
+  | "live"
+  | "workflow";
 
 type OverviewTabProps = {
   /** Called when the user clicks a "Go to tab" CTA inside the overview. */

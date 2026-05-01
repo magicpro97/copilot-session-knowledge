@@ -1068,8 +1068,7 @@ def test_compute_retro_scout_absent_defaults():
         {"available": False},
         mode="repo",
     )
-    test("compute_retro: scout present even when not passed", "scout" in payload)
-    test("compute_retro: scout.available=False by default", payload.get("scout", {}).get("available") is False)
+    test("compute_retro: scout absent when not passed", "scout" not in payload)
 
 
 def test_json_output_has_scout_field():
@@ -1595,9 +1594,255 @@ def test_hook_score_not_penalised_by_deny_dry():
     test("hook_score: score=100 when deny_rate=0 and parse_rate=0", score_clean == 100.0, f"got {score_clean}")
 
 
+# ── Section 17: collect_session_behavior_signals ─────────────────────────────
 
 
+def _make_behavior_db(path: Path, sessions=(), documents=()) -> None:
+    """Helper: create a minimal sessions+documents DB for behavior signal tests."""
+    with sqlite3.connect(str(path)) as conn:
+        conn.execute(
+            """CREATE TABLE sessions (
+               id TEXT PRIMARY KEY,
+               total_checkpoints INTEGER DEFAULT 0,
+               indexed_at TEXT,
+               event_count_estimate INTEGER DEFAULT 0
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE documents (
+               id TEXT PRIMARY KEY,
+               session_id TEXT
+            )"""
+        )
+        for s in sessions:
+            conn.execute(
+                "INSERT INTO sessions (id, total_checkpoints, indexed_at, event_count_estimate) VALUES (?,?,?,?)",
+                s,
+            )
+        for d in documents:
+            conn.execute("INSERT INTO documents (id, session_id) VALUES (?,?)", d)
+        conn.commit()
 
+
+def test_behavior_signals_empty_db():
+    """Empty sessions table → all zeros, no crash."""
+    retro = load_retro()
+    reset_artifacts()
+    db_path = ARTIFACT_DIR / "behavior_empty.db"
+    _make_behavior_db(db_path)
+    result = retro.collect_session_behavior_signals(db_path)
+    test("behavior signals: empty DB → not None", result is not None)
+    test("behavior signals: empty DB → session_count=0", result.get("session_count") == 0)
+    test("behavior signals: empty DB → completion_rate=0.0", result.get("completion_rate") == 0.0)
+    test("behavior signals: empty DB → one_shot_rate=0.0", result.get("one_shot_rate") == 0.0)
+
+
+def test_behavior_signals_sessions_no_docs():
+    """Sessions with checkpoints but no documents → knowledge_yield=0, efficiency_ratio=0."""
+    retro = load_retro()
+    reset_artifacts()
+    db_path = ARTIFACT_DIR / "behavior_nodocs.db"
+    sessions = [
+        ("s1", 1, "2026-01-01", 10),
+        ("s2", 2, "2026-01-02", 20),
+        ("s3", 0, "2026-01-03", 5),
+    ]
+    _make_behavior_db(db_path, sessions=sessions)
+    result = retro.collect_session_behavior_signals(db_path)
+    test("behavior signals: no docs → not None", result is not None)
+    test("behavior signals: no docs → session_count=3", result.get("session_count") == 3)
+    test(
+        "behavior signals: no docs → sessions_with_checkpoints=2",
+        result.get("sessions_with_checkpoints") == 2,
+        f"got {result.get('sessions_with_checkpoints')}",
+    )
+    test(
+        "behavior signals: no docs → completion_rate=2/3",
+        abs(result.get("completion_rate", -1) - round(2 / 3, 4)) < 0.001,
+        f"got {result.get('completion_rate')}",
+    )
+    test("behavior signals: no docs → knowledge_yield=0.0", result.get("knowledge_yield") == 0.0)
+    test("behavior signals: no docs → efficiency_ratio=0.0", result.get("efficiency_ratio") == 0.0)
+
+
+def test_behavior_signals_mixed():
+    """Mixed sessions: verify all 4 metrics are computed correctly."""
+    retro = load_retro()
+    reset_artifacts()
+    db_path = ARTIFACT_DIR / "behavior_mixed.db"
+    sessions = [
+        ("s1", 1, "2026-01-01", 10),  # exactly 1 checkpoint → counts toward one_shot
+        ("s2", 3, "2026-01-02", 20),  # >1 checkpoints → not one-shot
+        ("s3", 0, "2026-01-03", 5),   # no checkpoint → not counted
+    ]
+    documents = [
+        ("d1", "s1"),
+        ("d2", "s1"),
+        ("d3", "s2"),
+    ]
+    _make_behavior_db(db_path, sessions=sessions, documents=documents)
+    result = retro.collect_session_behavior_signals(db_path)
+    test("behavior signals: mixed → not None", result is not None)
+    # total_sessions=3, sessions_with_checkpoints=2
+    test(
+        "behavior signals: mixed → completion_rate=2/3",
+        abs(result.get("completion_rate", -1) - round(2 / 3, 4)) < 0.001,
+        f"got {result.get('completion_rate')}",
+    )
+    # total_entries=3, total_sessions=3 → knowledge_yield=1.0
+    test(
+        "behavior signals: mixed → knowledge_yield=1.0",
+        abs(result.get("knowledge_yield", -1) - 1.0) < 0.001,
+        f"got {result.get('knowledge_yield')}",
+    )
+    # total_events=35, total_entries=3 → efficiency_ratio=3/35 ≈ 0.0857
+    expected_er = round(3 / 35, 4)
+    test(
+        "behavior signals: mixed → efficiency_ratio correct",
+        abs(result.get("efficiency_ratio", -1) - expected_er) < 0.001,
+        f"got {result.get('efficiency_ratio')}, expected {expected_er}",
+    )
+    # sessions_with_exactly_1_checkpoint=1 (s1), sessions_with_any=2 → one_shot=0.5
+    test(
+        "behavior signals: mixed → one_shot_rate=0.5",
+        abs(result.get("one_shot_rate", -1) - 0.5) < 0.001,
+        f"got {result.get('one_shot_rate')}",
+    )
+
+
+def test_behavior_signals_all_zero_edge_case():
+    """Sessions exist with event_count_estimate=0 → efficiency_ratio=0, no divide-by-zero."""
+    retro = load_retro()
+    reset_artifacts()
+    db_path = ARTIFACT_DIR / "behavior_zero_events.db"
+    sessions = [
+        ("s1", 1, "2026-01-01", 0),  # event_count=0
+        ("s2", 0, "2026-01-02", 0),
+    ]
+    documents = [("d1", "s1")]
+    _make_behavior_db(db_path, sessions=sessions, documents=documents)
+    result = retro.collect_session_behavior_signals(db_path)
+    test("behavior signals: zero events → not None", result is not None)
+    test(
+        "behavior signals: zero events → efficiency_ratio=0.0 (no divide-by-zero)",
+        result.get("efficiency_ratio") == 0.0,
+        f"got {result.get('efficiency_ratio')}",
+    )
+    test("behavior signals: zero events → session_count=2", result.get("session_count") == 2)
+
+
+def test_behavior_signals_missing_tables():
+    """DB with no sessions/documents tables → returns None (graceful)."""
+    retro = load_retro()
+    reset_artifacts()
+    db_path = ARTIFACT_DIR / "behavior_no_tables.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE unrelated (id TEXT)")
+        conn.commit()
+    result = retro.collect_session_behavior_signals(db_path)
+    test("behavior signals: missing tables → returns None", result is None)
+
+
+def test_score_behavior_function():
+    """_score_behavior: weighted average of completion_rate and efficiency_ratio × 100."""
+    retro = load_retro()
+    b = {"completion_rate": 0.8, "efficiency_ratio": 0.6}
+    score = retro._score_behavior(b)
+    expected = round((0.8 * 0.5 + 0.6 * 0.5) * 100.0, 1)
+    test(
+        "_score_behavior: correct weighted average",
+        abs(score - expected) < 0.01,
+        f"got {score}, expected {expected}",
+    )
+    test("_score_behavior: empty dict → 0.0", retro._score_behavior({}) == 0.0)
+    test("_score_behavior: None → 0.0", retro._score_behavior(None) == 0.0)
+
+
+def test_compute_retro_behavior_in_payload():
+    """compute_retro includes behavior key when db_path is valid."""
+    retro = load_retro()
+    reset_artifacts()
+    db_path = ARTIFACT_DIR / "behavior_payload.db"
+    sessions = [("s1", 1, "2026-01-01", 10)]
+    documents = [("d1", "s1")]
+    _make_behavior_db(db_path, sessions=sessions, documents=documents)
+
+    git = {"available": False}
+    payload = retro.compute_retro(
+        {"available": False},
+        {"available": False},
+        {"available": False},
+        git,
+        mode="local",
+        db_path=db_path,
+    )
+    test(
+        "compute_retro: behavior key present when db_path valid",
+        "behavior" in payload,
+        f"keys: {list(payload.keys())}",
+    )
+    b = payload.get("behavior", {})
+    test("compute_retro: behavior.session_count=1", b.get("session_count") == 1)
+    test(
+        "compute_retro(local): behavior subscore in subscores",
+        "behavior" in payload.get("subscores", {}),
+        f"subscores keys: {list(payload.get('subscores', {}).keys())}",
+    )
+    test(
+        "compute_retro(local): behavior in available_sections",
+        "behavior" in payload.get("available_sections", []),
+        f"available: {payload.get('available_sections')}",
+    )
+
+
+def test_compute_retro_behavior_repo_mode_no_subscore():
+    """In repo mode, behavior object is present but NOT in subscores/available_sections."""
+    retro = load_retro()
+    reset_artifacts()
+    db_path = ARTIFACT_DIR / "behavior_repo_mode.db"
+    sessions = [("s1", 1, "2026-01-01", 10)]
+    documents = [("d1", "s1")]
+    _make_behavior_db(db_path, sessions=sessions, documents=documents)
+
+    git = {
+        "available": True,
+        "lookback_days": 30,
+        "commit_count": 5,
+        "test_files_changed": 1,
+        "py_files_changed": 2,
+        "distinct_files_changed": 3,
+        "recent_commits": [],
+        "top_changed_files": [],
+        "authors": [],
+    }
+    payload = retro.compute_retro(
+        {"available": False},
+        {"available": False},
+        {"available": False},
+        git,
+        mode="repo",
+        db_path=db_path,
+    )
+    test(
+        "compute_retro(repo): behavior object present in payload",
+        "behavior" in payload,
+        f"keys: {list(payload.keys())}",
+    )
+    test(
+        "compute_retro(repo): behavior NOT in subscores",
+        "behavior" not in payload.get("subscores", {}),
+        f"subscores: {list(payload.get('subscores', {}).keys())}",
+    )
+    test(
+        "compute_retro(repo): behavior NOT in available_sections",
+        "behavior" not in payload.get("available_sections", []),
+        f"available: {payload.get('available_sections')}",
+    )
+
+
+def main():
+    print("test_retro.py — retro.py targeted tests")
+    print()
 def main():
     print("test_retro.py — retro.py targeted tests")
     print()
@@ -1686,6 +1931,16 @@ def main():
     test_scout_signals_malformed_grace_window_list()
     test_scout_signals_malformed_json_config()
     test_scout_signals_valid_grace_window_unchanged()
+
+    print("17. Session behavior signals")
+    test_behavior_signals_empty_db()
+    test_behavior_signals_sessions_no_docs()
+    test_behavior_signals_mixed()
+    test_behavior_signals_all_zero_edge_case()
+    test_behavior_signals_missing_tables()
+    test_score_behavior_function()
+    test_compute_retro_behavior_in_payload()
+    test_compute_retro_behavior_repo_mode_no_subscore()
 
     # Cleanup
     reset_artifacts()

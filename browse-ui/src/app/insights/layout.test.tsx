@@ -38,6 +38,9 @@ vi.mock("@/app/insights/live-tab", () => ({
     </div>
   ),
 }));
+vi.mock("@/app/insights/workflow-tab", () => ({
+  WorkflowTab: () => <div data-testid="workflow-tab-content">Workflow tab content</div>,
+}));
 
 // ── Keyboard shortcuts (no-op in tests) ──────────────────────────────────────
 vi.mock("@/hooks/use-keyboard-shortcuts", () => ({
@@ -57,13 +60,14 @@ describe("InsightsLayout — tab navigation", () => {
     mockedUseKeyboardShortcuts.mockImplementation(() => {});
   });
 
-  it("renders all five tab triggers", () => {
+  it("renders all six tab triggers", () => {
     render(<InsightsLayout>children</InsightsLayout>);
     expect(screen.getByRole("tab", { name: "Overview" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Knowledge" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Retro" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Search Quality" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Live feed" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Workflow" })).toBeInTheDocument();
   });
 
   it("uses vertical tab orientation for the menu list", () => {
@@ -100,6 +104,12 @@ describe("InsightsLayout — tab navigation", () => {
     expect(await screen.findByTestId("live-tab-content")).toBeInTheDocument();
   });
 
+  it("shows Workflow tab content when Workflow tab is clicked", async () => {
+    render(<InsightsLayout>children</InsightsLayout>);
+    fireEvent.click(screen.getByRole("tab", { name: "Workflow" }));
+    expect(await screen.findByTestId("workflow-tab-content")).toBeInTheDocument();
+  });
+
   it("passes active=true to LiveTab only when live tab is active", async () => {
     render(<InsightsLayout>children</InsightsLayout>);
     fireEvent.click(screen.getByRole("tab", { name: "Live feed" }));
@@ -107,7 +117,7 @@ describe("InsightsLayout — tab navigation", () => {
     expect(liveEl).toHaveAttribute("data-active", "true");
   });
 
-  it("registers keyboard shortcuts for keys 1–5", () => {
+  it("registers keyboard shortcuts for keys 1–6", () => {
     render(<InsightsLayout>children</InsightsLayout>);
     expect(mockedUseKeyboardShortcuts).toHaveBeenCalledWith(
       expect.arrayContaining([
@@ -116,6 +126,7 @@ describe("InsightsLayout — tab navigation", () => {
         expect.objectContaining({ key: "3" }),
         expect.objectContaining({ key: "4" }),
         expect.objectContaining({ key: "5" }),
+        expect.objectContaining({ key: "6" }),
       ])
     );
   });
@@ -214,6 +225,12 @@ describe("InsightsLayout — hash-based deep-linking", () => {
     window.location.hash = "#unknown-tab";
     render(<InsightsLayout>overview content</InsightsLayout>);
     expect(screen.getByText("overview content")).toBeInTheDocument();
+  });
+
+  it("reads #workflow hash on mount to activate Workflow tab", () => {
+    window.location.hash = "#workflow";
+    render(<InsightsLayout>children</InsightsLayout>);
+    expect(screen.getByTestId("workflow-tab-content")).toBeInTheDocument();
   });
 
   it("calls window.history.replaceState with the active tab hash", () => {

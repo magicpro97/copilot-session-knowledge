@@ -12,6 +12,7 @@ import { KnowledgeTab } from "./knowledge-tab";
 import { LiveTab } from "./live-tab";
 import { RetroTab } from "./retro-tab";
 import { SearchQualityTab } from "./search-quality-tab";
+import { WorkflowTab } from "./workflow-tab";
 import type { InsightsTabKey } from "./overview-tab";
 import { InsightsTabContext } from "./insights-tab-context";
 
@@ -35,6 +36,7 @@ function hashToInsightsTab(hash: string): InsightsTabKey | null {
   if (cleaned === "retro") return "retro";
   if (cleaned === "search-quality") return "search-quality";
   if (cleaned === "live") return "live";
+  if (cleaned === "workflow") return "workflow";
   return null;
 }
 
@@ -88,6 +90,11 @@ export default function InsightsLayout({ children }: InsightsLayoutProps) {
       preventDefault: true,
       handler: () => setActiveTab("live"),
     },
+    {
+      key: "6",
+      preventDefault: true,
+      handler: () => setActiveTab("workflow"),
+    },
   ]);
 
   return (
@@ -123,6 +130,7 @@ export default function InsightsLayout({ children }: InsightsLayoutProps) {
           <TabsTrigger value="retro">Retro</TabsTrigger>
           <TabsTrigger value="search-quality">Search Quality</TabsTrigger>
           <TabsTrigger value="live">Live feed</TabsTrigger>
+          <TabsTrigger value="workflow">Workflow</TabsTrigger>
         </TabsList>
         <InsightsTabContext.Provider value={{ setActiveTab }}>
           <TabsContent value="overview" className="min-w-0">
@@ -140,6 +148,9 @@ export default function InsightsLayout({ children }: InsightsLayoutProps) {
         </TabsContent>
         <TabsContent value="live" className="min-w-0">
           <LiveTab active={activeTab === "live"} />
+        </TabsContent>
+        <TabsContent value="workflow" className="min-w-0">
+          <WorkflowTab />
         </TabsContent>
       </Tabs>
     </div>
