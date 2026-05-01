@@ -360,6 +360,38 @@ test(
     str(findings),
 )
 
+test(
+    "regression: default research-pack path points to the script-adjacent artifact",
+    wh.DEFAULT_RESEARCH_PACK_PATH == _HERE / ".trend-scout-research-pack.json",
+    f"default={wh.DEFAULT_RESEARCH_PACK_PATH!s}",
+)
+
+# Regression: default pack path matches trend-scout script output location
+with tempfile.TemporaryDirectory() as td:
+    tdir = Path(td)
+    config_path = tdir / "trend-scout-config.json"
+    config_path.write_text('{"target_repo": "foo/bar"}', encoding="utf-8")
+    pack_path = tdir / ".trend-scout-research-pack.json"
+    pack_path.write_text('{"repos": []}', encoding="utf-8")
+    recent_ts = time.time() - 60
+    os.utime(str(pack_path), (recent_ts, recent_ts))
+
+    _orig_config = wh.DEFAULT_SCOUT_CONFIG_PATH
+    _orig_pack = wh.DEFAULT_RESEARCH_PACK_PATH
+    wh.DEFAULT_SCOUT_CONFIG_PATH = config_path
+    wh.DEFAULT_RESEARCH_PACK_PATH = pack_path
+    try:
+        findings = wh.check_stale_research_packs()
+    finally:
+        wh.DEFAULT_SCOUT_CONFIG_PATH = _orig_config
+        wh.DEFAULT_RESEARCH_PACK_PATH = _orig_pack
+
+test(
+    "regression: no-arg stale-pack check uses module-level default paths",
+    len(findings) == 0,
+    str(findings),
+)
+
 # Edge: pack is exactly at threshold (just under 7 days) → no findings
 with tempfile.TemporaryDirectory() as td:
     tdir = Path(td)

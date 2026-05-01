@@ -30,7 +30,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DEFAULT_DB_PATH = SESSION_STATE / "knowledge.db"
 DEFAULT_SKILL_METRICS_DB = SESSION_STATE / "skill-metrics.db"
-DEFAULT_RESEARCH_PACK_PATH = SESSION_STATE / ".trend-scout-research-pack.json"
+DEFAULT_RESEARCH_PACK_PATH = _SCRIPT_DIR / ".trend-scout-research-pack.json"
 DEFAULT_SCOUT_CONFIG_PATH = _SCRIPT_DIR / "trend-scout-config.json"
 DEFAULT_SKILLS_DIR = Path.home() / ".copilot" / "skills"
 
