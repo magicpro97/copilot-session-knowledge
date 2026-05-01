@@ -664,12 +664,40 @@ export const retroResponseSchema = z.object({
   improvement_actions: z.array(z.string()).optional(),
   // Additive Trend Scout coverage signal — absent on older payloads
   scout: retroScoutSchema.optional(),
+  // Additive session behavior metrics — absent when DB unavailable
+  behavior: z
+    .object({
+      completion_rate: z.number(),
+      knowledge_yield: z.number(),
+      efficiency_ratio: z.number(),
+      one_shot_rate: z.number(),
+      session_count: z.number(),
+      sessions_with_checkpoints: z.number(),
+    })
+    .optional(),
 });
 
 export const sessionsResponseSchema = z.union([
   sessionListResponseSchema,
   z.array(sessionRowSchema),
 ]);
+
+// ── Workflow Health (/api/workflow/health) ────────────────────────────
+
+export const workflowFindingSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  detail: z.string(),
+  severity: z.enum(["critical", "warning", "info"]),
+  impact: z.string(),
+  action: z.string(),
+});
+
+export const workflowHealthResponseSchema = z.object({
+  findings: z.array(workflowFindingSchema).default([]),
+  health_grade: z.string(),
+  generated_at: z.string(),
+});
 
 // ── Knowledge Insights (/api/knowledge/insights) ─────────────────────
 

@@ -28,6 +28,7 @@ import {
   skillMetricsResponseSchema,
   similarityResponseSchema,
   sessionsResponseSchema,
+  workflowHealthResponseSchema,
 } from "@/lib/api/schemas";
 import type {
   CompareResponse,
@@ -54,6 +55,7 @@ import type {
   SessionDetailResponse,
   SessionListResponse,
   SessionsResponse,
+  WorkflowHealthResponse,
 } from "@/lib/api/types";
 
 export type SessionsQueryParams = {
@@ -109,6 +111,7 @@ export const queryKeys = {
   retro: (mode: "repo" | "local" = "repo") => ["retro", mode] as const,
   knowledgeInsights: () => ["knowledge-insights"] as const,
   compare: (a: string, b: string) => ["compare", a, b] as const,
+  workflowHealth: () => ["workflow-health"] as const,
 };
 
 function withLeadingSlash(path: string): string {
@@ -544,6 +547,18 @@ export function useKnowledgeInsights() {
         withLeadingSlash("/api/knowledge/insights")
       );
       return knowledgeInsightsResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useWorkflowHealth() {
+  return useQuery({
+    queryKey: queryKeys.workflowHealth(),
+    staleTime: STALE_TIMES.health,
+    gcTime: CACHE_TIMES.health,
+    queryFn: async (): Promise<WorkflowHealthResponse> => {
+      const data = await apiFetch<WorkflowHealthResponse>(withLeadingSlash("/api/workflow/health"));
+      return workflowHealthResponseSchema.parse(data);
     },
   });
 }

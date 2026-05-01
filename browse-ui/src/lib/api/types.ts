@@ -699,6 +699,17 @@ export interface RetroResponse {
   improvement_actions?: string[];
   /** Trend Scout coverage signal — absent on older payloads; degrade gracefully. */
   scout?: RetroScout;
+  /** Session behavior metrics — absent when DB unavailable; degrade gracefully. */
+  behavior?: RetroBehavior;
+}
+
+export interface RetroBehavior {
+  completion_rate: number;
+  knowledge_yield: number;
+  efficiency_ratio: number;
+  one_shot_rate: number;
+  session_count: number;
+  sessions_with_checkpoints: number;
 }
 
 // ── Sessions response (flat array compat shim) ───────────────────────
@@ -760,6 +771,25 @@ export interface KnowledgeInsightsEntries {
   decisions: KnowledgeInsightsEntry[];
   tools: KnowledgeInsightsEntry[];
 }
+
+// ── Workflow Health (/api/workflow/health) ────────────────────────────
+
+export interface WorkflowFinding {
+  id: string;
+  title: string;
+  detail: string;
+  severity: "critical" | "warning" | "info";
+  impact: string;
+  action: string;
+}
+
+export interface WorkflowHealthResponse {
+  findings: WorkflowFinding[];
+  health_grade: string;
+  generated_at: string;
+}
+
+// ── Knowledge Insights (/api/knowledge/insights) ─────────────────────
 
 export interface KnowledgeInsightsResponse {
   generated_at: string;
