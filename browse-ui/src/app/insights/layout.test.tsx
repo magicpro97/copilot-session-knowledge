@@ -184,6 +184,50 @@ describe("InsightsLayout — tab navigation", () => {
   });
 });
 
+describe("InsightsLayout — hash-based deep-linking", () => {
+  beforeEach(() => {
+    mockedUseKeyboardShortcuts.mockReset();
+    mockedUseKeyboardShortcuts.mockImplementation(() => {});
+    window.location.hash = "";
+    vi.spyOn(window.history, "replaceState").mockImplementation(() => undefined);
+  });
+
+  it("reads #knowledge hash on mount to activate Knowledge tab", () => {
+    window.location.hash = "#knowledge";
+    render(<InsightsLayout>children</InsightsLayout>);
+    expect(screen.getByTestId("knowledge-tab-content")).toBeInTheDocument();
+  });
+
+  it("reads #retro hash on mount to activate Retro tab", () => {
+    window.location.hash = "#retro";
+    render(<InsightsLayout>children</InsightsLayout>);
+    expect(screen.getByTestId("retro-tab-content")).toBeInTheDocument();
+  });
+
+  it("reads #overview hash on mount and stays on Overview tab", () => {
+    window.location.hash = "#overview";
+    render(<InsightsLayout>overview content</InsightsLayout>);
+    expect(screen.getByText("overview content")).toBeInTheDocument();
+  });
+
+  it("ignores unknown hash values and defaults to overview", () => {
+    window.location.hash = "#unknown-tab";
+    render(<InsightsLayout>overview content</InsightsLayout>);
+    expect(screen.getByText("overview content")).toBeInTheDocument();
+  });
+
+  it("calls window.history.replaceState with the active tab hash", () => {
+    render(<InsightsLayout>children</InsightsLayout>);
+    expect(window.history.replaceState).toHaveBeenCalledWith(null, "", "#overview");
+  });
+
+  it("updates hash when tab changes via click", async () => {
+    render(<InsightsLayout>children</InsightsLayout>);
+    fireEvent.click(screen.getByRole("tab", { name: "Knowledge" }));
+    expect(window.history.replaceState).toHaveBeenCalledWith(null, "", "#knowledge");
+  });
+});
+
 describe("InsightsLayout — health badge", () => {
   beforeEach(() => {
     mockedUseKeyboardShortcuts.mockReset();

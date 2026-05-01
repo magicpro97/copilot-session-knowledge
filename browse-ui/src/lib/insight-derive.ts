@@ -87,6 +87,60 @@ export function sortFindingsBySeverity(findings: InsightFinding[]): InsightFindi
 }
 
 /**
+ * Attempt to extract a consequence/impact clause from an alert detail string.
+ *
+ * Recognizes two patterns (checked in order):
+ *   1. Em-dash separator: "Metric is high — this affects retrieval quality." → "this affects retrieval quality."
+ *   2. Multi-sentence:    "Metric is high. This degrades results." → "This degrades results."
+ *
+ * Returns undefined when no extractable consequence clause is found.
+ */
+export function deriveWhyFromDetail(detail: string): string | undefined {
+  const emDash = detail.indexOf(" — ");
+  if (emDash !== -1) {
+    const remainder = detail.slice(emDash + 3).trim();
+    if (remainder.length > 0) return remainder;
+  }
+  // Match sentence-ending punctuation only after a word of 3+ lowercase letters
+  // to avoid splitting on abbreviations like "e.g.", "approx.", "vs."
+  const sentenceRe = /(?<=[a-z]{3})[.!?]\s+/;
+  const sentenceMatch = sentenceRe.exec(detail);
+  if (sentenceMatch && sentenceMatch.index !== undefined) {
+    const remainder = detail.slice(sentenceMatch.index + 1).trimStart();
+    if (remainder.length > 0) return remainder;
+  }
+  return undefined;
+}
+
+/**
+ * Convert an array of natural-language improvement action strings into InsightAction objects.
+ *
+ * Derivation rules per item:
+ *   - id:     `retro-action-{index}`
+ *   - title:  first sentence (up to first sentence-ending punctuation), truncated to 80 chars
+ *   - detail: remainder after the first sentence (omitted when absent)
+ */
+export function deriveActionsFromStrings(actions: string[]): InsightAction[] {
+  return actions.map((text, i) => {
+    const match = text.match(/[.!?]\s+/);
+    if (match && match.index !== undefined) {
+      const splitAt = match.index + 1;
+      const rawTitle = text.slice(0, splitAt).trim();
+      const detail = text.slice(splitAt).trim();
+      return {
+        id: `retro-action-${i}`,
+        title: rawTitle.length > 80 ? `${rawTitle.slice(0, 79)}…` : rawTitle,
+        detail: detail.length > 0 ? detail : undefined,
+      };
+    }
+    return {
+      id: `retro-action-${i}`,
+      title: text.length > 80 ? `${text.slice(0, 79)}…` : text,
+    };
+  });
+}
+
+/**
  * Compute per-severity counts from a list of findings.
  * Useful for rendering summary badges without iterating multiple times.
  */

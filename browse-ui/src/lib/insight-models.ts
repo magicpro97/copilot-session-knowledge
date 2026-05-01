@@ -16,6 +16,8 @@ export interface InsightFinding {
   title: string;
   detail: string;
   severity: InsightSeverity;
+  /** Optional explanation of why this finding matters — rendered below detail as muted text. */
+  why?: string;
 }
 
 /** A recommended remediation action. */

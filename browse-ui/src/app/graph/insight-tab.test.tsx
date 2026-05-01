@@ -306,6 +306,36 @@ describe("InsightTab", () => {
     expect(link).toHaveAttribute("href", "/insights");
   });
 
+  it("renders drill-down link to /insights#knowledge for cross-session finding", () => {
+    render(<InsightTab active onNavigate={vi.fn()} />);
+
+    // cross-session-signal finding is present with TAG_OVERLAP in default mock
+    const links = screen.getAllByRole("link");
+    const knowledgeLinks = links.filter((l) =>
+      l.getAttribute("href")?.includes("/insights#knowledge")
+    );
+    expect(knowledgeLinks.length).toBeGreaterThan(0);
+  });
+
+  it("renders drill-down link to /insights#overview for no-graph-data finding", () => {
+    mockedUseEvidenceGraph.mockReturnValue({
+      data: { nodes: [], edges: [], truncated: false, meta: undefined },
+      error: null,
+      isLoading: false,
+      isSuccess: true,
+      isError: false,
+      refetch: vi.fn(),
+    } as any);
+
+    render(<InsightTab active onNavigate={vi.fn()} />);
+
+    const links = screen.getAllByRole("link");
+    const overviewLinks = links.filter((l) =>
+      l.getAttribute("href")?.includes("/insights#overview")
+    );
+    expect(overviewLinks.length).toBeGreaterThan(0);
+  });
+
   it("shows no community finding while communities are loading", () => {
     mockedUseCommunities.mockReturnValue({
       data: undefined,

@@ -65,4 +65,36 @@ describe("InsightFindingCard", () => {
     render(<InsightFindingCard finding={infoFinding} />);
     expect(screen.getByRole("listitem")).toBeInTheDocument();
   });
+
+  it("renders the why text as a muted paragraph below detail when provided", () => {
+    const withWhy: InsightFinding = {
+      id: "f5",
+      title: "Low confidence entries",
+      detail: "8% of entries are low confidence.",
+      severity: "warning",
+      why: "This reduces retrieval accuracy for related queries.",
+    };
+    render(<InsightFindingCard finding={withWhy} />);
+    expect(
+      screen.getByText(/This reduces retrieval accuracy for related queries./)
+    ).toBeInTheDocument();
+  });
+
+  it("does not render a why paragraph when why is absent", () => {
+    const { container } = render(<InsightFindingCard finding={infoFinding} />);
+    // title + detail = 2 paragraphs; no why
+    expect(container.querySelectorAll("p")).toHaveLength(2);
+  });
+
+  it("renders three paragraphs when title, detail, and why are all present", () => {
+    const withWhy: InsightFinding = {
+      id: "f6",
+      title: "Stale entries",
+      detail: "15% of entries are stale.",
+      severity: "info",
+      why: "Old entries may reduce search relevance.",
+    };
+    const { container } = render(<InsightFindingCard finding={withWhy} />);
+    expect(container.querySelectorAll("p")).toHaveLength(3);
+  });
 });

@@ -29,6 +29,9 @@ export function InsightFindingCard({ finding, className }: InsightFindingCardPro
         {SEVERITY_EMOJI[finding.severity]} {finding.title}
       </p>
       {finding.detail ? <p className="mt-0.5 text-xs opacity-80">{finding.detail}</p> : null}
+      {finding.why ? (
+        <p className="text-muted-foreground mt-0.5 text-xs italic">{finding.why}</p>
+      ) : null}
     </div>
   );
 }

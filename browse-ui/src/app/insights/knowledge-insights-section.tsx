@@ -12,6 +12,7 @@ import type {
   KnowledgeInsightsEntry,
   KnowledgeInsightsResponse,
 } from "@/lib/api/types";
+import { deriveWhyFromDetail } from "@/lib/insight-derive";
 import { formatNumber } from "@/lib/formatters";
 
 const ENTRY_CATEGORY_LABELS: Record<string, string> = {
@@ -58,6 +59,7 @@ function AlertsList({ alerts }: { alerts: KnowledgeInsightsAlert[] }) {
               title: alert.title,
               detail: alert.detail,
               severity: alert.severity,
+              why: deriveWhyFromDetail(alert.detail),
             }}
           />
         ))}

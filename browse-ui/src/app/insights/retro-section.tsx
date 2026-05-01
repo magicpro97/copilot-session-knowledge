@@ -1,9 +1,11 @@
 "use client";
 
 import { Banner } from "@/components/data/banner";
+import { InsightActionList } from "@/components/data/insight-action-list";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useRetro } from "@/lib/api/hooks";
+import { deriveActionsFromStrings } from "@/lib/insight-derive";
 import { formatNumber } from "@/lib/formatters";
 import type { RetroScout } from "@/lib/api/types";
 
@@ -155,16 +157,10 @@ export function RetroBody({ retro }: { retro: ReturnType<typeof useRetro> }) {
       ) : null}
 
       {retro.data.improvement_actions && retro.data.improvement_actions.length > 0 ? (
-        <div>
-          <p className="text-xs font-medium">Recommended actions</p>
-          <ul className="mt-1 list-disc space-y-0.5 pl-4">
-            {retro.data.improvement_actions.map((action, i) => (
-              <li key={i} className="text-xs">
-                {action}
-              </li>
-            ))}
-          </ul>
-        </div>
+        <InsightActionList
+          actions={deriveActionsFromStrings(retro.data.improvement_actions)}
+          title="Recommended actions"
+        />
       ) : null}
 
       {retro.data.scout ? <ScoutCoveragePanel scout={retro.data.scout} /> : null}

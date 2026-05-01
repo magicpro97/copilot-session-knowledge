@@ -1,7 +1,7 @@
 "use client";
 
 import { Activity } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -28,9 +28,39 @@ function getHealthTone(status: string | undefined): string {
   return "text-[hsl(12_76%_46%)]";
 }
 
+function hashToInsightsTab(hash: string): InsightsTabKey | null {
+  const cleaned = hash.replace(/^#/, "").toLowerCase();
+  if (cleaned === "overview") return "overview";
+  if (cleaned === "knowledge") return "knowledge";
+  if (cleaned === "retro") return "retro";
+  if (cleaned === "search-quality") return "search-quality";
+  if (cleaned === "live") return "live";
+  return null;
+}
+
 export default function InsightsLayout({ children }: InsightsLayoutProps) {
   const health = useHealth();
-  const [activeTab, setActiveTab] = useState<InsightsTabKey>("overview");
+  const [activeTab, setActiveTab] = useState<InsightsTabKey>(() => {
+    if (typeof window === "undefined") return "overview";
+    return hashToInsightsTab(window.location.hash) ?? "overview";
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const onHashChange = () => {
+      const next = hashToInsightsTab(window.location.hash);
+      if (next) setActiveTab(next);
+    };
+
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.history.replaceState(null, "", `#${activeTab}`);
+  }, [activeTab]);
 
   useKeyboardShortcuts([
     {

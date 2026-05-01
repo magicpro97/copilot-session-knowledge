@@ -220,6 +220,21 @@ const GRAPH_REMEDIATION_ACTIONS: InsightAction[] = [
   },
 ];
 
+/** Map a graph finding ID to a drill-down href on the /insights page. */
+function findingDrillDownHref(finding: InsightFinding): string | undefined {
+  const KNOWLEDGE_IDS = new Set([
+    "no-cross-session",
+    "cross-session-signal",
+    "low-embedding-coverage",
+    "partial-embedding-coverage",
+    "low-graph-coverage",
+  ]);
+  const OVERVIEW_IDS = new Set(["no-graph-data", "no-edges", "sparse-graph", "graph-populated"]);
+  if (KNOWLEDGE_IDS.has(finding.id)) return "/insights#knowledge";
+  if (OVERVIEW_IDS.has(finding.id)) return "/insights#overview";
+  return undefined;
+}
+
 export function InsightTab({ active, onNavigate }: InsightTabProps) {
   const evidenceQ = useEvidenceGraph({});
   const communitiesQ = useCommunities(active);
@@ -334,9 +349,16 @@ export function InsightTab({ active, onNavigate }: InsightTabProps) {
                 </p>
               ) : (
                 <div role="list" className="space-y-2">
-                  {findings.map((finding) => (
-                    <InsightFindingCard key={finding.id} finding={finding} />
-                  ))}
+                  {findings.map((finding) => {
+                    const href = findingDrillDownHref(finding);
+                    return href ? (
+                      <Link key={finding.id} href={href} className="block">
+                        <InsightFindingCard finding={finding} />
+                      </Link>
+                    ) : (
+                      <InsightFindingCard key={finding.id} finding={finding} />
+                    );
+                  })}
                 </div>
               )}
               {remediationActions.length > 0 ? (

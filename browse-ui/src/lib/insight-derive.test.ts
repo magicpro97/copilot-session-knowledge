@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  deriveActionsFromStrings,
   deriveSeverityFromScore,
   deriveConfidenceLevel,
+  deriveWhyFromDetail,
   formatInsightConfidence,
   formatHealthScore,
   isActionable,
@@ -143,5 +145,65 @@ describe("summarizeFindingsCount", () => {
 
   it("returns zeros for an empty list", () => {
     expect(summarizeFindingsCount([])).toEqual({ total: 0, critical: 0, warning: 0, info: 0 });
+  });
+});
+
+describe("deriveWhyFromDetail", () => {
+  it("extracts consequence after em-dash separator", () => {
+    const detail = "Embedding coverage is low — similarity search quality degrades significantly.";
+    expect(deriveWhyFromDetail(detail)).toBe("similarity search quality degrades significantly.");
+  });
+
+  it("extracts second sentence as consequence in multi-sentence detail", () => {
+    const detail = "12% of entries are stale. This reduces retrieval result freshness.";
+    expect(deriveWhyFromDetail(detail)).toBe("This reduces retrieval result freshness.");
+  });
+
+  it("returns undefined for single-sentence detail with no em-dash", () => {
+    expect(deriveWhyFromDetail("8% of entries are low confidence.")).toBeUndefined();
+  });
+
+  it("returns undefined for empty string", () => {
+    expect(deriveWhyFromDetail("")).toBeUndefined();
+  });
+
+  it("prefers em-dash over sentence split when both are present", () => {
+    const detail = "Score dropped — quality is low. More info here.";
+    expect(deriveWhyFromDetail(detail)).toBe("quality is low. More info here.");
+  });
+});
+
+describe("deriveActionsFromStrings", () => {
+  it("returns empty array for empty input", () => {
+    expect(deriveActionsFromStrings([])).toEqual([]);
+  });
+
+  it("uses first sentence as title and remainder as detail for multi-sentence strings", () => {
+    const actions = ["Run embed.py to fix coverage. This will regenerate all missing embeddings."];
+    const result = deriveActionsFromStrings(actions);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("retro-action-0");
+    expect(result[0].title).toBe("Run embed.py to fix coverage.");
+    expect(result[0].detail).toBe("This will regenerate all missing embeddings.");
+  });
+
+  it("uses the whole string as title when no sentence break is found", () => {
+    const actions = ["Improve tagging consistency across sessions"];
+    const result = deriveActionsFromStrings(actions);
+    expect(result[0].title).toBe("Improve tagging consistency across sessions");
+    expect(result[0].detail).toBeUndefined();
+  });
+
+  it("truncates long titles to 80 chars with ellipsis", () => {
+    const long = "A".repeat(90);
+    const result = deriveActionsFromStrings([long]);
+    expect(result[0].title).toHaveLength(80);
+    expect(result[0].title.endsWith("…")).toBe(true);
+  });
+
+  it("assigns sequential ids retro-action-0, retro-action-1, …", () => {
+    const result = deriveActionsFromStrings(["First action.", "Second action."]);
+    expect(result[0].id).toBe("retro-action-0");
+    expect(result[1].id).toBe("retro-action-1");
   });
 });

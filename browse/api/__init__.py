@@ -17,6 +17,7 @@ Endpoints exposed:
   GET /api/scout/research-pack → ResearchPackResponse (latest .trend-scout-research-pack.json)
   GET /api/tentacles/status    → TentacleStatusResponse
   GET /api/skills/metrics      → SkillMetricsResponse
+  GET /api/workflow/health     → WorkflowHealthResponse (proxied from workflow-health.py)
 
 Existing routes (?format=json on HTML routes, /api/dashboard/stats,
 /api/embeddings/points, /api/diff, /api/feedback) are UNCHANGED.
@@ -38,6 +39,7 @@ from browse.api import (
     retro,  # noqa: F401
     session_detail,  # noqa: F401
     sessions,  # noqa: F401
+    workflow,  # noqa: F401
 )
 from browse.api import eval as eval_api  # noqa: F401
 from browse.routes import (
