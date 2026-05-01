@@ -26,9 +26,9 @@ export default defineConfig({
   ],
   webServer: {
     command:
-      "python3 ./scripts/create-e2e-db.py && python3 ../browse.py --port 8765 --db ./e2e/.fixtures/playwright.db",
+      "pnpm build && python3 ./scripts/create-e2e-db.py && python3 ../browse.py --port 8765 --db ./e2e/.fixtures/playwright.db",
     port: 8765,
     reuseExistingServer: false,
-    timeout: 30_000,
+    timeout: 180_000,
   },
 });

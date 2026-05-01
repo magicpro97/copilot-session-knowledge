@@ -1,7 +1,7 @@
 "use client";
 
 import { Activity } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -42,13 +42,13 @@ function hashToInsightsTab(hash: string): InsightsTabKey | null {
 
 export default function InsightsLayout({ children }: InsightsLayoutProps) {
   const health = useHealth();
-  const [activeTab, setActiveTab] = useState<InsightsTabKey>(() => {
-    if (typeof window === "undefined") return "overview";
-    return hashToInsightsTab(window.location.hash) ?? "overview";
-  });
+  const [activeTab, setActiveTab] = useState<InsightsTabKey>("overview");
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (typeof window === "undefined") return;
+
+    const initial = hashToInsightsTab(window.location.hash);
+    if (initial) setActiveTab(initial);
 
     const onHashChange = () => {
       const next = hashToInsightsTab(window.location.hash);

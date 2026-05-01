@@ -23,7 +23,7 @@ test("global shortcuts route to shipped pages", async ({ page }) => {
 
   await page.keyboard.press("g");
   await page.keyboard.press("i");
-  await expect(page).toHaveURL(/\/v2\/insights\/?$/);
+  await expect(page).toHaveURL(/\/v2\/insights\/?(#overview)?$/);
   await expect(page.getByRole("heading", { level: 1, name: "Insights" })).toBeVisible();
 
   await page.keyboard.press("g");
@@ -36,10 +36,7 @@ test("global shortcuts route to shipped pages", async ({ page }) => {
   await page.keyboard.press("g");
   await expect(page).toHaveURL(/\/v2\/graph\/?#insight$/);
   await expect(page.getByRole("heading", { level: 1, name: "Graph" })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Insight" })).toHaveAttribute(
-    "aria-selected",
-    "true"
-  );
+  await expect(page.getByRole("tab", { name: "Insight" })).toHaveAttribute("aria-selected", "true");
 
   // Legacy alias: #relationships → #evidence (redirect happens on mount)
   await page.goto("/v2/graph/#relationships");
@@ -84,8 +81,9 @@ test("insights and session detail keyboard shortcuts switch tabs", async ({ page
   const retroTab = page.getByRole("tab", { name: "Retro" });
   const searchQualityTab = page.getByRole("tab", { name: "Search Quality" });
   const liveTab = page.getByRole("tab", { name: "Live feed" });
+  const workflowTab = page.getByRole("tab", { name: "Workflow" });
 
-  // 1 = Overview (default), 2 = Knowledge, 3 = Retro, 4 = Search Quality, 5 = Live
+  // 1 = Overview (default), 2 = Knowledge, 3 = Retro, 4 = Search Quality, 5 = Live, 6 = Workflow
   await expect(overviewTab).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("2");
   await expect(knowledgeTab).toHaveAttribute("aria-selected", "true");
@@ -95,6 +93,9 @@ test("insights and session detail keyboard shortcuts switch tabs", async ({ page
   await expect(searchQualityTab).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("5");
   await expect(liveTab).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("6");
+  await expect(workflowTab).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(/#workflow$/);
   await page.keyboard.press("1");
   await expect(overviewTab).toHaveAttribute("aria-selected", "true");
 

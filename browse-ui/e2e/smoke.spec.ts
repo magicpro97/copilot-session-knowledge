@@ -5,6 +5,69 @@ import {
   SEEDED_SESSION_ID,
 } from "./session-detail-alias";
 
+const WORKFLOW_HEALTH_FIXTURE = {
+  findings: [
+    {
+      id: "heavy-sessions",
+      title: "Heavy sessions need summarization",
+      detail: "2 sessions crossed the event budget without fresh checkpoints.",
+      severity: "warning",
+      impact: "Long sessions become hard to reuse.",
+      action: "Run distill on sessions that exceed the event budget.",
+    },
+  ],
+  health_grade: "B",
+  generated_at: "2026-05-01T00:00:00Z",
+};
+
+const RETRO_BEHAVIOR_FIXTURE = {
+  retro_score: 72,
+  grade: "Good",
+  grade_emoji: "🟢",
+  mode: "repo",
+  generated_at: "2026-05-01T00:00:00Z",
+  available_sections: ["knowledge"],
+  weights: { knowledge: 1 },
+  subscores: { knowledge: 72 },
+  knowledge: { health_score: 72 },
+  skills: null,
+  hooks: null,
+  git: { commits: 4 },
+  summary: "Recent sessions are yielding reusable knowledge, but completion habits can improve.",
+  score_confidence: "medium",
+  distortion_flags: [],
+  accuracy_notes: [],
+  improvement_actions: ["Add checkpoints earlier in long sessions."],
+  behavior: {
+    completion_rate: 0.75,
+    knowledge_yield: 1.5,
+    efficiency_ratio: 0.4,
+    one_shot_rate: 0.5,
+    session_count: 4,
+    sessions_with_checkpoints: 3,
+  },
+};
+
+const KNOWLEDGE_INSIGHTS_FIXTURE = {
+  generated_at: "2026-05-01T00:00:00Z",
+  summary: "Knowledge coverage is healthy enough to render diagnostics.",
+  overview: {
+    health_score: 82,
+    total_entries: 120,
+    sessions: 18,
+    high_confidence_pct: 70,
+    low_confidence_pct: 8,
+    stale_pct: 6,
+    relation_density: 2.4,
+    embedding_pct: 78,
+  },
+  quality_alerts: [],
+  recommended_actions: [],
+  recurring_noise_titles: [],
+  hot_files: [],
+  entries: { mistakes: [], patterns: [], decisions: [], tools: [] },
+};
+
 test("shipped /v2 routes render expected headings", async ({ page }) => {
   const headingByRoute = [
     ["/v2/sessions/", "Sessions"],
@@ -287,6 +350,111 @@ test("insights search quality tab shows empty state when no data is available", 
   await expect(page.getByRole("table")).toHaveCount(0);
 });
 
+test("insights workflow tab renders workflow health findings from API", async ({ page }) => {
+  await page.route("**/api/workflow/health*", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(WORKFLOW_HEALTH_FIXTURE),
+    });
+  });
+
+  await page.goto("/v2/insights/#workflow");
+  await expect(page.getByRole("tab", { name: "Workflow" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await expect(page.getByText("Grade: B", { exact: true })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText(/Heavy sessions need summarization/)).toBeVisible();
+  await expect(
+    page.getByText("2 sessions crossed the event budget without fresh checkpoints.", {
+      exact: true,
+    })
+  ).toBeVisible();
+  await expect(
+    page.getByText("Run distill on sessions that exceed the event budget.", { exact: true })
+  ).toBeVisible();
+});
+
+test("insights retro tab renders session behavior metrics when provided", async ({ page }) => {
+  await page.route("**/api/retro/summary*", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(RETRO_BEHAVIOR_FIXTURE),
+    });
+  });
+
+  await page.goto("/v2/insights/#retro");
+  await expect(page.getByRole("tab", { name: "Retro" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("heading", { level: 2, name: "Retrospective" })).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(page.getByText(/Session Behavior/)).toBeVisible();
+  await expect(page.getByText("Completion Rate", { exact: true })).toBeVisible();
+  await expect(page.getByText("75.0%")).toBeVisible();
+  await expect(page.getByText("Knowledge Yield", { exact: true })).toBeVisible();
+  await expect(page.getByText("1.50 entries/session", { exact: true })).toBeVisible();
+  await expect(page.getByText("One-Shot Rate", { exact: true })).toBeVisible();
+  await expect(page.getByText("50.0%")).toBeVisible();
+});
+
+test("insights search quality tab renders Wave 2 diagnostics", async ({ page }) => {
+  const now = new Date();
+  const oneDayAgo = new Date(now);
+  oneDayAgo.setDate(now.getDate() - 1);
+  const threeDaysAgo = new Date(now);
+  threeDaysAgo.setDate(now.getDate() - 3);
+
+  await page.route("**/api/eval/stats*", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        aggregation: [
+          { query: "find bugs", up: 3, down: 1, neutral: 0, total: 4 },
+          { query: "summarize sessions", up: 1, down: 0, neutral: 0, total: 1 },
+        ],
+        recent_comments: [
+          {
+            query: "find bugs",
+            result_id: "r1",
+            verdict: 1,
+            comment: "Very helpful!",
+            created_at: oneDayAgo.toISOString(),
+          },
+          {
+            query: "summarize sessions",
+            result_id: "r2",
+            verdict: -1,
+            comment: "Missed the key checkpoint.",
+            created_at: threeDaysAgo.toISOString(),
+          },
+        ],
+      }),
+    });
+  });
+  await page.route("**/api/knowledge/insights*", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(KNOWLEDGE_INSIGHTS_FIXTURE),
+    });
+  });
+
+  await page.goto("/v2/insights/#search-quality");
+  await expect(page.getByRole("tab", { name: "Search Quality" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await expect(page.getByText("Approval rate distribution", { exact: true })).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(page.getByText("Embedding coverage", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("78% of knowledge entries have embeddings", { exact: true })
+  ).toBeVisible();
+  await expect(page.getByText("Feedback activity (14 days)", { exact: true })).toBeVisible();
+  await expect(page.getByText("find bugs", { exact: true })).toBeVisible();
+  await expect(page.getByText("Very helpful!", { exact: true })).toBeVisible();
+});
+
 test("insights tabs render first-class surfaces and retro loads repo-mode summary", async ({
   page,
 }) => {
@@ -303,6 +471,7 @@ test("insights tabs render first-class surfaces and retro loads repo-mode summar
   await expect(page.getByRole("tab", { name: "Retro" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Search Quality" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Live feed" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Workflow" })).toBeVisible();
   await expect(page.getByRole("tablist")).toHaveCSS("flex-direction", "column");
   // Old Dashboard tab must not exist
   await expect(page.getByRole("tab", { name: "Dashboard" })).toHaveCount(0);
