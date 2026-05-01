@@ -25,6 +25,7 @@ import http.client
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -355,6 +356,28 @@ def _get(host: str, port: int, path: str, token: str = "tok") -> tuple:
             data = json.loads(body)
         except (json.JSONDecodeError, ValueError):
             data = body
+        return resp.status, headers, data
+    finally:
+        conn.close()
+
+
+def _post(host: str, port: int, path: str, payload: dict | None = None, token: str = "tok") -> tuple:
+    """Perform a POST request with a JSON body; return (status, headers_dict, body_parsed_json)."""
+    if "?" in path:
+        full_path = f"{path}&token={urllib.parse.quote(token)}"
+    else:
+        full_path = f"{path}?token={urllib.parse.quote(token)}"
+    body = json.dumps(payload or {}).encode("utf-8")
+    conn = http.client.HTTPConnection(host, port, timeout=5)
+    try:
+        conn.request("POST", full_path, body=body, headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        body_bytes = resp.read()
+        headers = {k.lower(): v for k, v in resp.getheaders()}
+        try:
+            data = json.loads(body_bytes)
+        except (json.JSONDecodeError, ValueError):
+            data = body_bytes
         return resp.status, headers, data
     finally:
         conn.close()
@@ -1090,6 +1113,67 @@ def run_all_tests() -> int:
     finally:
         if _invalid_repo_file.exists():
             _invalid_repo_file.unlink()
+
+    # ── T24f: /api/scout/research-pack/reload — success envelope ──────────────
+    print("\n-- T24f: /api/scout/research-pack/reload success")
+    _reload_pack_file = _pathlib.Path("_test_research_pack_reload_tmp.json")
+    try:
+        _reload_pack_file.write_text(json.dumps(_MOCK_PACK), encoding="utf-8")
+        db = _make_test_db()
+        server, host, port = _start_server(db)
+        try:
+            _completed = subprocess.CompletedProcess(
+                args=["python3", "trend-scout.py", "--research-pack"],
+                returncode=0,
+                stdout="ok",
+                stderr="",
+            )
+            with (
+                unittest.mock.patch.object(_scout_mod, "_TREND_SCOUT_SCRIPT", Path(__file__)),
+                unittest.mock.patch.object(_scout_mod, "_RESEARCH_PACK_PATH", _reload_pack_file),
+                unittest.mock.patch.object(_scout_mod.subprocess, "run", return_value=_completed),
+            ):
+                status, hdrs, data = _post(host, port, "/api/scout/research-pack/reload")
+            test("T24f: status 200", status == 200)
+            test("T24f: content-type json", "application/json" in hdrs.get("content-type", ""))
+            test("T24f: ok=true", data.get("ok") is True)
+            test("T24f: command mentions research-pack", "--research-pack" in str(data.get("command") or ""))
+            test("T24f: artifact_available=true", data.get("artifact_available") is True)
+            test("T24f: repo_count=1", data.get("repo_count") == 1)
+            test("T24f: error is None", data.get("error") is None)
+        finally:
+            server.shutdown()
+    finally:
+        if _reload_pack_file.exists():
+            _reload_pack_file.unlink()
+
+    # ── T24g: /api/scout/research-pack/reload — command failure envelope ──────
+    print("\n-- T24g: /api/scout/research-pack/reload failure")
+    db = _make_test_db()
+    server, host, port = _start_server(db)
+    try:
+        _failed = subprocess.CompletedProcess(
+            args=["python3", "trend-scout.py", "--research-pack"],
+            returncode=1,
+            stdout="",
+            stderr="boom",
+        )
+        with (
+            unittest.mock.patch.object(_scout_mod, "_TREND_SCOUT_SCRIPT", Path(__file__)),
+            unittest.mock.patch.object(
+                _scout_mod, "_RESEARCH_PACK_PATH", Path("/nonexistent/.trend-scout-research-pack.json")
+            ),
+            unittest.mock.patch.object(_scout_mod.subprocess, "run", return_value=_failed),
+        ):
+            status, hdrs, data = _post(host, port, "/api/scout/research-pack/reload")
+        test("T24g: status 200", status == 200)
+        test("T24g: content-type json", "application/json" in hdrs.get("content-type", ""))
+        test("T24g: ok=false", data.get("ok") is False)
+        test("T24g: exit_code=1", data.get("exit_code") == 1)
+        test("T24g: error reflects stderr", "boom" in str(data.get("error") or ""))
+        test("T24g: artifact_available=false", data.get("artifact_available") is False)
+    finally:
+        server.shutdown()
 
     print(f"\nResults: {_PASS} passed, {_FAIL} failed")
     return _FAIL

@@ -8,6 +8,7 @@ import {
   compareResponseSchema,
   evalResponseSchema,
   knowledgeInsightsResponseSchema,
+  researchPackReloadResponseSchema,
   trendScoutStatusResponseSchema,
   trendScoutDiscoveryLaneSchema,
   syncStatusResponseSchema,
@@ -330,6 +331,24 @@ describe("api schemas", () => {
     expect(lane.name).toBe("adjacent-ai-dev");
     expect(lane.language).toBeNull();
     expect(lane.keyword_count).toBe(4);
+  });
+
+  it("parses a research pack reload response", () => {
+    const parsed = researchPackReloadResponseSchema.parse({
+      ok: true,
+      command: "python3 trend-scout.py --research-pack",
+      exit_code: 0,
+      artifact_available: true,
+      generated_at: "2026-01-01T01:00:00Z",
+      repo_count: 3,
+      run_skipped: false,
+      skip_reason: null,
+      error: null,
+    });
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.command).toContain("--research-pack");
+    expect(parsed.repo_count).toBe(3);
   });
 
   // ── Shared OperatorAction contract tests ────────────────────────────────

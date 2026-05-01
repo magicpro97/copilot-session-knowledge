@@ -66,6 +66,11 @@ describe("InsightsLayout — tab navigation", () => {
     expect(screen.getByRole("tab", { name: "Live feed" })).toBeInTheDocument();
   });
 
+  it("uses vertical tab orientation for the menu list", () => {
+    render(<InsightsLayout>children</InsightsLayout>);
+    expect(screen.getByRole("tablist").closest("[data-orientation='vertical']")).not.toBeNull();
+  });
+
   it("renders children (Overview content) by default", () => {
     render(<InsightsLayout>overview children</InsightsLayout>);
     expect(screen.getByText("overview children")).toBeInTheDocument();

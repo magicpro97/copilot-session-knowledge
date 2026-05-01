@@ -82,11 +82,12 @@ export default function InsightsLayout({ children }: InsightsLayoutProps) {
       </div>
 
       <Tabs
+        orientation="vertical"
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as InsightsTabKey)}
-        className="space-y-4"
+        className="flex-col gap-4 md:flex-row md:items-start md:gap-6"
       >
-        <TabsList variant="line">
+        <TabsList variant="line" className="w-full shrink-0 md:w-56">
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="knowledge">Knowledge</TabsTrigger>
           <TabsTrigger value="retro">Retro</TabsTrigger>
@@ -94,18 +95,20 @@ export default function InsightsLayout({ children }: InsightsLayoutProps) {
           <TabsTrigger value="live">Live feed</TabsTrigger>
         </TabsList>
         <InsightsTabContext.Provider value={{ setActiveTab }}>
-          <TabsContent value="overview">{children}</TabsContent>
+          <TabsContent value="overview" className="min-w-0">
+            {children}
+          </TabsContent>
         </InsightsTabContext.Provider>
-        <TabsContent value="knowledge">
+        <TabsContent value="knowledge" className="min-w-0">
           <KnowledgeTab />
         </TabsContent>
-        <TabsContent value="retro">
+        <TabsContent value="retro" className="min-w-0">
           <RetroTab />
         </TabsContent>
-        <TabsContent value="search-quality">
+        <TabsContent value="search-quality" className="min-w-0">
           <SearchQualityTab />
         </TabsContent>
-        <TabsContent value="live">
+        <TabsContent value="live" className="min-w-0">
           <LiveTab active={activeTab === "live"} />
         </TabsContent>
       </Tabs>

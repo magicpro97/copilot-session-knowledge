@@ -564,6 +564,18 @@ export interface ResearchPackResponse {
   error?: string | null;
 }
 
+export interface ResearchPackReloadResponse {
+  ok: boolean;
+  command: string;
+  exit_code: number | null;
+  artifact_available: boolean;
+  generated_at: string | null;
+  repo_count: number;
+  run_skipped: boolean;
+  skip_reason: string | null;
+  error: string | null;
+}
+
 // ── Skill Metrics (/api/skills/metrics) ─────────────────────────────
 
 export interface SkillMetricsSummary {

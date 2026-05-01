@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,8 @@ _TREND_SCOUT_SCRIPT = _REPO_ROOT / "trend-scout.py"
 _TREND_SCOUT_CONFIG_PATH = _REPO_ROOT / "trend-scout-config.json"
 _DEFAULT_STATE_FILE = _REPO_ROOT / ".trend-scout-state.json"
 _RESEARCH_PACK_PATH = _REPO_ROOT / ".trend-scout-research-pack.json"
+_RESEARCH_PACK_RELOAD_TIMEOUT_S = 300
+_RESEARCH_PACK_COMMAND = "python3 trend-scout.py --research-pack"
 
 
 def _load_json(path: Path) -> dict:
@@ -56,9 +59,8 @@ def _resolve_state_file(run_control_cfg: dict) -> Path:
     return _DEFAULT_STATE_FILE
 
 
-def _research_pack_unavailable(error: str | None = None) -> tuple:
-    payload = {"available": False, "repo_count": 0, "repos": [], "error": error}
-    return json.dumps(payload).encode("utf-8"), "application/json", 200
+def _research_pack_unavailable_payload(error: str | None = None) -> dict:
+    return {"available": False, "repo_count": 0, "repos": [], "error": error}
 
 
 def _coerce_pack_float(value, field_name: str) -> float:
@@ -77,6 +79,70 @@ def _coerce_pack_int(value, field_name: str) -> int:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"invalid {field_name}: {value!r}") from exc
+
+
+def _load_research_pack_payload() -> dict:
+    if not _RESEARCH_PACK_PATH.is_file():
+        return _research_pack_unavailable_payload()
+
+    try:
+        raw = _RESEARCH_PACK_PATH.read_text(encoding="utf-8")
+        pack = json.loads(raw)
+    except Exception as exc:
+        return _research_pack_unavailable_payload(f"parse error: {exc}")
+
+    if not isinstance(pack, dict):
+        return _research_pack_unavailable_payload("not a JSON object")
+
+    schema_version = pack.get("schema_version")
+    if schema_version != 1:
+        return _research_pack_unavailable_payload(f"unsupported schema_version: {schema_version!r} (expected 1)")
+
+    raw_repos = pack.get("repos")
+    repos_list = raw_repos if isinstance(raw_repos, list) else []
+
+    safe_repos = []
+    for repo in repos_list:
+        if not isinstance(repo, dict):
+            continue
+        try:
+            safe_repos.append(
+                {
+                    "full_name": str(repo.get("full_name") or ""),
+                    "html_url": str(repo.get("html_url") or ""),
+                    "discovery_lane": str(repo.get("discovery_lane") or ""),
+                    "score": _coerce_pack_float(repo.get("score"), "score"),
+                    "stars": _coerce_pack_int(repo.get("stars"), "stars"),
+                    "language": repo.get("language"),
+                    "why_discovered": list(repo.get("why_discovered") or [])
+                    if isinstance(repo.get("why_discovered"), list)
+                    else [],
+                    "novelty_signals": list(repo.get("novelty_signals") or [])
+                    if isinstance(repo.get("novelty_signals"), list)
+                    else [],
+                    "risk_signals": list(repo.get("risk_signals") or [])
+                    if isinstance(repo.get("risk_signals"), list)
+                    else [],
+                    "recommended_followups": list(repo.get("recommended_followups") or [])
+                    if isinstance(repo.get("recommended_followups"), list)
+                    else [],
+                    "tentacle_handoff": repo.get("tentacle_handoff"),
+                }
+            )
+        except ValueError as exc:
+            return _research_pack_unavailable_payload(f"repo field error: {exc}")
+
+    return {
+        "available": True,
+        "path": str(_RESEARCH_PACK_PATH),
+        "generated_at": pack.get("generated_at"),
+        "schema_version": schema_version,
+        "run_skipped": bool(pack.get("run_skipped", False)),
+        "skip_reason": pack.get("skip_reason"),
+        "repo_count": len(safe_repos),
+        "repos": safe_repos,
+        "error": None,
+    }
 
 
 @route("/api/scout/status", methods=["GET"])
@@ -258,65 +324,62 @@ def handle_scout_research_pack(db, params, token, nonce) -> tuple:
     Malformed or wrong schema_version → {available: false, error: "<reason>"}
     """
     del db, params, token, nonce
+    payload = _load_research_pack_payload()
+    return json.dumps(payload).encode("utf-8"), "application/json", 200
 
-    if not _RESEARCH_PACK_PATH.is_file():
-        return _research_pack_unavailable()
 
-    try:
-        raw = _RESEARCH_PACK_PATH.read_text(encoding="utf-8")
-        pack = json.loads(raw)
-    except Exception as exc:
-        return _research_pack_unavailable(f"parse error: {exc}")
-
-    if not isinstance(pack, dict):
-        return _research_pack_unavailable("not a JSON object")
-
-    schema_version = pack.get("schema_version")
-    if schema_version != 1:
-        return _research_pack_unavailable(f"unsupported schema_version: {schema_version!r} (expected 1)")
-
-    raw_repos = pack.get("repos")
-    repos_list = raw_repos if isinstance(raw_repos, list) else []
-
-    safe_repos = []
-    for repo in repos_list:
-        if not isinstance(repo, dict):
-            continue
-        try:
-            safe_repos.append(
-                {
-                    "full_name": str(repo.get("full_name") or ""),
-                    "html_url": str(repo.get("html_url") or ""),
-                    "discovery_lane": str(repo.get("discovery_lane") or ""),
-                    "score": _coerce_pack_float(repo.get("score"), "score"),
-                    "stars": _coerce_pack_int(repo.get("stars"), "stars"),
-                    "language": repo.get("language"),
-                    "why_discovered": list(repo.get("why_discovered") or [])
-                    if isinstance(repo.get("why_discovered"), list)
-                    else [],
-                    "novelty_signals": list(repo.get("novelty_signals") or [])
-                    if isinstance(repo.get("novelty_signals"), list)
-                    else [],
-                    "risk_signals": list(repo.get("risk_signals") or [])
-                    if isinstance(repo.get("risk_signals"), list)
-                    else [],
-                    "recommended_followups": list(repo.get("recommended_followups") or [])
-                    if isinstance(repo.get("recommended_followups"), list)
-                    else [],
-                    "tentacle_handoff": repo.get("tentacle_handoff"),
-                }
-            )
-        except ValueError as exc:
-            return _research_pack_unavailable(f"repo field error: {exc}")
+@route("/api/scout/research-pack/reload", methods=["POST"])
+def handle_scout_research_pack_reload(db, params, token, nonce) -> tuple:
+    del db, params, token, nonce
 
     payload = {
-        "available": True,
-        "path": str(_RESEARCH_PACK_PATH),
-        "generated_at": pack.get("generated_at"),
-        "schema_version": schema_version,
-        "run_skipped": bool(pack.get("run_skipped", False)),
-        "skip_reason": pack.get("skip_reason"),
-        "repo_count": len(safe_repos),
-        "repos": safe_repos,
+        "ok": False,
+        "command": _RESEARCH_PACK_COMMAND,
+        "exit_code": None,
+        "artifact_available": False,
+        "generated_at": None,
+        "repo_count": 0,
+        "run_skipped": False,
+        "skip_reason": None,
+        "error": None,
     }
+
+    if not _TREND_SCOUT_SCRIPT.is_file():
+        payload["error"] = f"trend-scout.py not found at {_TREND_SCOUT_SCRIPT}"
+        return json.dumps(payload).encode("utf-8"), "application/json", 200
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(_TREND_SCOUT_SCRIPT), "--research-pack"],
+            capture_output=True,
+            text=True,
+            timeout=_RESEARCH_PACK_RELOAD_TIMEOUT_S,
+            cwd=str(_REPO_ROOT),
+        )
+    except subprocess.TimeoutExpired:
+        payload["error"] = "trend-scout.py timed out while generating the research pack."
+        return json.dumps(payload).encode("utf-8"), "application/json", 200
+    except Exception as exc:  # noqa: BLE001
+        payload["error"] = f"trend-scout.py invocation failed: {exc}"
+        return json.dumps(payload).encode("utf-8"), "application/json", 200
+
+    payload["exit_code"] = result.returncode
+    artifact = _load_research_pack_payload()
+    payload["artifact_available"] = bool(artifact.get("available"))
+    payload["generated_at"] = artifact.get("generated_at")
+    payload["repo_count"] = int(artifact.get("repo_count") or 0)
+    payload["run_skipped"] = bool(artifact.get("run_skipped", False))
+    payload["skip_reason"] = artifact.get("skip_reason")
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        payload["error"] = stderr or stdout or f"trend-scout.py exited with code {result.returncode}"
+        return json.dumps(payload).encode("utf-8"), "application/json", 200
+
+    if not payload["artifact_available"]:
+        payload["error"] = str(artifact.get("error") or "Research pack was not written.")
+        return json.dumps(payload).encode("utf-8"), "application/json", 200
+
+    payload["ok"] = True
     return json.dumps(payload).encode("utf-8"), "application/json", 200

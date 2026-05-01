@@ -1,9 +1,12 @@
 "use client";
 
+import { Loader2, RefreshCcw } from "lucide-react";
+
 import { Banner } from "@/components/data/banner";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useScoutResearchPack } from "@/lib/api/hooks";
+import { useReloadScoutResearchPack, useScoutResearchPack } from "@/lib/api/hooks";
 import type { ResearchPackRepo } from "@/lib/api/types";
 
 function RepoCard({ repo }: { repo: ResearchPackRepo }) {
@@ -59,6 +62,24 @@ function RepoCard({ repo }: { repo: ResearchPackRepo }) {
 
 export function ResearchPackSection() {
   const pack = useScoutResearchPack();
+  const reloadPack = useReloadScoutResearchPack();
+  const reloadFailureDescription =
+    reloadPack.error instanceof Error
+      ? reloadPack.error.message
+      : "Trend Scout reload request failed before a refreshed research-pack response was returned.";
+
+  function handleReload() {
+    if (reloadPack.isPending) return;
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(
+        "Run python3 trend-scout.py --research-pack now?\n\nThis may create or update Trend Scout issues if your current Trend Scout config is live."
+      )
+    ) {
+      return;
+    }
+    reloadPack.mutate();
+  }
 
   return (
     <details className="bg-card rounded-xl border p-4">
@@ -79,6 +100,62 @@ export function ResearchPackSection() {
       </summary>
 
       <div className="mt-4 space-y-4">
+        <div className="space-y-2 rounded-lg border border-dashed px-3 py-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={reloadPack.isPending}
+              onClick={handleReload}
+            >
+              {reloadPack.isPending ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <RefreshCcw className="size-3.5" />
+              )}
+              {reloadPack.isPending ? "Running Trend Scout…" : "Reload pack"}
+            </Button>
+            <p className="text-muted-foreground text-xs">
+              Runs <code>python3 trend-scout.py --research-pack</code> locally.
+            </p>
+          </div>
+          <p className="text-muted-foreground text-xs">
+            This is a live Trend Scout action and may create or update Trend Scout issues if the
+            current config is active.
+          </p>
+        </div>
+
+        {reloadPack.isError ? (
+          <Banner
+            tone="warning"
+            title="Research pack reload failed"
+            description={reloadFailureDescription}
+          />
+        ) : reloadPack.data ? (
+          reloadPack.data.ok ? (
+            <Banner
+              tone="info"
+              title="Research pack reloaded"
+              description={
+                reloadPack.data.run_skipped
+                  ? (reloadPack.data.skip_reason ??
+                    "Trend Scout wrote a skipped research-pack artifact because the grace window is active.")
+                  : `Trend Scout refreshed the research pack with ${reloadPack.data.repo_count} repo(s).`
+              }
+            />
+          ) : (
+            <Banner
+              tone="warning"
+              title="Research pack reload failed"
+              description={
+                reloadPack.data.error ??
+                "Trend Scout did not produce a refreshed research pack artifact."
+              }
+            />
+          )
+        ) : null}
+
         {pack.isLoading ? (
           <div className="space-y-2">
             <Skeleton className="h-6 w-64" />

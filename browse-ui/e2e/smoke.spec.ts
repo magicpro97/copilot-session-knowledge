@@ -303,6 +303,11 @@ test("insights tabs render first-class surfaces and retro loads repo-mode summar
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "Full Retrospective →" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Full Search Quality →" })).toBeVisible();
+  await page.getByRole("button", { name: "Full Knowledge insights →" }).click();
+  await expect(page.getByRole("tab", { name: "Knowledge" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
 
   // Navigate to Retro tab and verify it loads repo-mode summary
   await page.getByRole("tab", { name: "Retro" }).click();

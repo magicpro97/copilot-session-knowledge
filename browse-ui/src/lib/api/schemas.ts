@@ -551,6 +551,18 @@ export const researchPackResponseSchema = z.object({
   error: z.string().nullable().optional(),
 });
 
+export const researchPackReloadResponseSchema = z.object({
+  ok: z.boolean(),
+  command: z.string(),
+  exit_code: z.number().nullable(),
+  artifact_available: z.boolean(),
+  generated_at: z.string().nullable(),
+  repo_count: z.number(),
+  run_skipped: z.boolean(),
+  skip_reason: z.string().nullable(),
+  error: z.string().nullable(),
+});
+
 export const skillMetricsSummarySchema = z.object({
   total_outcomes: z.number(),
   outcomes_with_skills: z.number(),

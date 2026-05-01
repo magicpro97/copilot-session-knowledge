@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { CACHE_TIMES, DEFAULT_PAGE_SIZE, STALE_TIMES } from "@/lib/constants";
 import { apiFetch } from "@/lib/api/client";
@@ -14,6 +14,7 @@ import {
   feedbackRequestSchema,
   feedbackResponseSchema,
   researchPackResponseSchema,
+  researchPackReloadResponseSchema,
   retroResponseSchema,
   graphResponseSchema,
   healthResponseSchema,
@@ -40,6 +41,7 @@ import type {
   FeedbackResponse,
   KnowledgeInsightsResponse,
   ResearchPackResponse,
+  ResearchPackReloadResponse,
   RetroResponse,
   GraphResponse,
   HealthResponse,
@@ -321,6 +323,28 @@ export function useScoutResearchPack() {
         withLeadingSlash("/api/scout/research-pack")
       );
       return researchPackResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useReloadScoutResearchPack() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (): Promise<ResearchPackReloadResponse> => {
+      const data = await apiFetch<ResearchPackReloadResponse>(
+        withLeadingSlash("/api/scout/research-pack/reload"),
+        { method: "POST" }
+      );
+      return researchPackReloadResponseSchema.parse(data);
+    },
+    onSuccess: async (data) => {
+      if (!data.ok) return;
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.scoutResearchPack() }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.scoutStatus() }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.retro("repo") }),
+      ]);
     },
   });
 }

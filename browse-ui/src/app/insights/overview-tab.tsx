@@ -123,6 +123,7 @@ export function OverviewTab({ onNavigate }: OverviewTabProps) {
           ) : null}
 
           <Button
+            type="button"
             variant="ghost"
             size="sm"
             className="w-full justify-between"
@@ -172,6 +173,7 @@ export function OverviewTab({ onNavigate }: OverviewTabProps) {
           ) : null}
 
           <Button
+            type="button"
             variant="ghost"
             size="sm"
             className="w-full justify-between"
@@ -216,6 +218,7 @@ export function OverviewTab({ onNavigate }: OverviewTabProps) {
           )}
 
           <Button
+            type="button"
             variant="ghost"
             size="sm"
             className="w-full justify-between"
