@@ -27,6 +27,21 @@ import type {
 
 const GRAPH_NODE_LIMIT = 500;
 
+/**
+ * Plain-language descriptions for each relation type shown in the legend.
+ * These explain provenance and confidence so users understand what each edge means.
+ */
+const RELATION_TYPE_DESCRIPTIONS: Record<string, string> = {
+  SAME_SESSION:
+    "Entries that appeared in the same session. Intra-session only. Heuristic confidence ~0.70.",
+  RESOLVED_BY:
+    "One entry was resolved or answered by another in the same session. Intra-session only. Heuristic confidence ~0.80.",
+  TAG_OVERLAP:
+    "Entries share one or more tags. Can span sessions — the primary cross-session signal. Confidence varies with tag overlap count.",
+  SAME_TOPIC:
+    "Entries share a cross-session topic key. Rare in practice — most topic keys are session-unique so this edge type currently has very low coverage.",
+};
+
 type RelationshipsTabProps = {
   active: boolean;
 };
@@ -297,17 +312,31 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
       defaultOpen: true,
       content:
         relationOptions.length > 0 ? (
-          <ul className="space-y-2 text-sm">
-            {relationOptions.map((option) => (
-              <li key={`legend-${option.value}`} className="flex items-center gap-2">
-                <span
-                  className="inline-block size-2 rounded-full"
-                  style={{ backgroundColor: relationTypeColor(option.value) }}
-                />
-                <span>{relationTypeLabel(option.value)}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="space-y-3">
+            <p className="text-muted-foreground text-xs">
+              Edges are derived from <span className="font-mono">knowledge_relations</span> —
+              heuristic signals, not hand-curated facts.
+            </p>
+            <ul className="space-y-3 text-sm">
+              {relationOptions.map((option) => (
+                <li key={`legend-${option.value}`} className="flex items-start gap-2">
+                  <span
+                    className="mt-1 inline-block size-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: relationTypeColor(option.value) }}
+                    aria-hidden
+                  />
+                  <div className="min-w-0 space-y-0.5">
+                    <span className="font-medium">{relationTypeLabel(option.value)}</span>
+                    {RELATION_TYPE_DESCRIPTIONS[option.value] ? (
+                      <p className="text-muted-foreground text-xs">
+                        {RELATION_TYPE_DESCRIPTIONS[option.value]}
+                      </p>
+                    ) : null}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : (
           <p className="text-muted-foreground text-xs">
             Legend is unavailable until evidence edges load.
@@ -412,7 +441,8 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
 
           <p className="text-muted-foreground text-xs">
             Showing {visibleNodes.length} nodes and {visibleEdges.length} edges from{" "}
-            {graph?.meta?.edge_source ?? "knowledge_relations"}.
+            {graph?.meta?.edge_source ?? "knowledge_relations"}. Edges are heuristically derived —
+            they indicate possible relationships, not verified facts.
             {hasServerFilters
               ? " Wing/category/relation filters are server-side."
               : " Wing/category/relation filters are not applied."}

@@ -1,5 +1,9 @@
-import { DashboardTab } from "@/app/insights/dashboard-tab";
+"use client";
+
+import { OverviewTab } from "@/app/insights/overview-tab";
+import { useInsightsTab } from "@/app/insights/insights-tab-context";
 
 export default function InsightsPage() {
-  return <DashboardTab />;
+  const { setActiveTab } = useInsightsTab();
+  return <OverviewTab onNavigate={setActiveTab} />;
 }

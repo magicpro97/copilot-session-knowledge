@@ -53,7 +53,7 @@
 
 **Secondary navigation (contextual):**
 - Session detail tabs: Overview → Timeline → Mindmap → Diff (within `/sessions/[id]`)
-- Insights sub-tabs: Dashboard → Live Feed (within `/insights`)
+- Insights sub-tabs: Overview → Knowledge → Retro → Search Quality → Live feed (within `/insights`)
 
 ### 2.2 Sitemap — MERGE/REMOVE Decisions
 
@@ -83,8 +83,8 @@
 /sessions                    ← Landing page (was /)
 /sessions/[id]               ← Session detail (tabs: Overview, Timeline, Mindmap, Checkpoints)
 /search                      ← Full-text search with facets
-/insights                    ← Dashboard + Live Feed + Search Quality (tabs)
-/graph                       ← Evidence + Similarity + Communities (tabs)
+/insights                    ← Overview + Knowledge + Retro + Search Quality + Live feed (5-tab workspace)
+/graph                       ← Insight (default) + Evidence + Similarity + Communities (4-tab workspace)
 /settings                    ← Theme, density, style guide (dev), system health
 /healthz                     ← API-only, no UI page
 /api/*                       ← All JSON endpoints preserved, no changes
@@ -474,10 +474,10 @@ Answer J3 ("what knowledge have I accumulated?") and J5 ("is my pipeline healthy
 ├──────────────────────────────────────────────────────────────────┤
 │ Insights                                    🟢 Healthy · v12   │
 │                                                                  │
-│ [Dashboard] [Live Feed]                                          │
-│ ────────────────────────                                         │
+│ [Overview] [Knowledge] [Retro] [Search Quality] [Live feed]     │
+│ ──────────────────────────────────────────────────              │
 │                                                                  │
-│ ── Tab: Dashboard ──────────────────────────────────────────────│
+│ ── Tab: Overview (default) ─────────────────────────────────────│
 │                                                                  │
 │ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐                            │
 │ │  342 │ │ 1.2K │ │  890 │ │  456 │                            │
@@ -502,13 +502,16 @@ Answer J3 ("what knowledge have I accumulated?") and J5 ("is my pipeline healthy
 │ │       at least one learning. Nice work."                     ││
 │ └──────────────────────────────────────────────────────────────┘│
 │                                                                  │
-│ ┌─ Mistakes/week (8w) ─────────┐ ┌─ Top modules ──────────────┐│
-│ │  ▂▃▅▃▂▁▁▂  (bar chart)      │ │  browse.py        12       ││
-│ └──────────────────────────────┘ │  embed.py          9       ││
-│                                   │  query-session.py  7       ││
-│ ▸ Search Quality (expand)        └────────────────────────────┘│
+│ ── Tab: Knowledge ──────────────────────────────────────────────│
+│ Knowledge entry explorer with category/wing filters.            │
 │                                                                  │
-│ ── Tab: Live Feed ──────────────────────────────────────────────│
+│ ── Tab: Retro ──────────────────────────────────────────────────│
+│ Retrospective score, Trend Scout coverage panel, weekly charts. │
+│                                                                  │
+│ ── Tab: Search Quality ─────────────────────────────────────────│
+│ Eval/feedback metrics — thumbs ratings, precision indicators.   │
+│                                                                  │
+│ ── Tab: Live feed ──────────────────────────────────────────────│
 │                                                                  │
 │ 🟢 Connected · Receiving                     [Pause]            │
 │                                                                  │
@@ -521,7 +524,7 @@ Answer J3 ("what knowledge have I accumulated?") and J5 ("is my pipeline healthy
 ```
 
 ### Components dùng (shadcn list)
-- `<Tabs>`: Dashboard / Live Feed.
+- `<Tabs>`: Overview / Knowledge / Retro / Search Quality / Live feed.
 - `<Card>` (custom `KPITile`): 4 stat tiles in a grid.
 <!-- FIXED in cross-review pass: BLOCKER-1 — changed uPlot → Recharts -->
 - `<ChartContainer>` (custom): wrapper for Recharts charts — handles resize, theme, loading.
@@ -541,7 +544,7 @@ Answer J3 ("what knowledge have I accumulated?") and J5 ("is my pipeline healthy
 
 ### Interactions
 - `G I`: global shortcut to Insights.
-- `1`/`2`: switch Dashboard / Live tabs.
+- `1`/`2`/`3`/`4`/`5`: switch Overview / Knowledge / Retro / Search Quality / Live feed.
 - Click red flag row → navigate to session detail.
 - Click KPI tile → contextual action (e.g., click "Sessions" → go to `/sessions`).
 - Live feed auto-scrolls; `Pause` stops auto-scroll.
@@ -600,8 +603,13 @@ Explore connections between knowledge entries (J4) with three distinct questions
 ├──────────────────────────────────────────────────────────────────┤
 │ Knowledge Graph                                                  │
 │                                                                  │
-│ [Evidence] [Similarity] [Communities]                            │
-│ ──────────────────────────                                       │
+│ [Insight] [Evidence] [Similarity] [Communities]                  │
+│ ──────────────────────────────────────────────                   │
+│                                                                  │
+│ ── Tab: Insight (default) ──────────────────────────────────────│
+│ Cross-graph summary: node/edge counts, truncation warnings,      │
+│ relation-type health, community count, embedding coverage.       │
+│ Actionable findings cards (e.g. missing data, density alerts).   │
 │                                                                  │
 │ ── Tab: Evidence ───────────────────────────────────────────────│
 │ ┌─ Filters (sidebar) ──┐ ┌─ Canvas ────────────────────────────┐│
@@ -644,7 +652,7 @@ Explore connections between knowledge entries (J4) with three distinct questions
 ```
 
 ### Components dùng (shadcn list)
-- `<Tabs>`: Evidence / Similarity / Communities.
+- `<Tabs>`: Insight / Evidence / Similarity / Communities.
 - `<Checkbox>`: wing and category filters in Evidence sidebar.
 - `<Checkbox>`: relation-type filters (`SAME_SESSION`, `RESOLVED_BY`, `TAG_OVERLAP`, `SAME_TOPIC` when available).
 - `<ScrollArea>`: sidebar scrollable when many wings.
@@ -664,7 +672,7 @@ Explore connections between knowledge entries (J4) with three distinct questions
 - Mouse: pan/zoom evidence graph canvas. Click node → show detail in sidebar.
 - `F`: fit graph to viewport.
 - `R`: reset filters.
-- `1` / `2` / `3`: switch Evidence / Similarity / Communities.
+- `1` / `2` / `3` / `4`: switch Insight / Evidence / Similarity / Communities.
 - Hover similarity map point → tooltip with title + category.
 - Click similarity map point or neighbor entry → highlight, show detail.
 - `V` keyboard shortcut is intentionally **not** part of the frozen contract.

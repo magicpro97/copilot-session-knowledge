@@ -44,9 +44,12 @@ test("graph tabs visual snapshot", async ({ page }) => {
   });
   const tabsList = page.getByRole("tablist");
   await expect(tabsList).toBeVisible();
+  // Four tabs: Insight (new default first), Evidence, Similarity, Communities
+  await expect(page.getByRole("tab", { name: "Insight" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Evidence" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Similarity" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Communities" })).toBeVisible();
+  // Legacy alias names must not appear as rendered tabs
   await expect(page.getByRole("tab", { name: "Relationships" })).toHaveCount(0);
   await expect(page.getByRole("tab", { name: "Clusters" })).toHaveCount(0);
   await expect(tabsList).toHaveScreenshot("graph-tabs.png", {

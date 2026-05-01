@@ -162,20 +162,52 @@ test("checkpoint diff viewer loads diff results and supports both modes", async 
   expect(splitSummary.right).toBeGreaterThan(0);
 });
 
-test("graph evidence and similarity tabs render live product surfaces", async ({ page }) => {
+test("graph defaults to Insight tab and evidence/similarity tabs render live surfaces", async ({
+  page,
+}) => {
   await page.goto("/v2/graph/");
   await expect(page.getByRole("heading", { level: 1, name: "Graph" })).toBeVisible({
     timeout: 20_000,
   });
 
-  await expect(page.getByRole("tab", { name: /^(Evidence|Relationships)$/ })).toBeVisible();
-  await expect(page.getByRole("tab", { name: /^(Similarity|Clusters)$/ })).toBeVisible();
+  // New default: Insight tab is active
+  await expect(page.getByRole("tab", { name: "Insight" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await expect(page).toHaveURL(/\/v2\/graph\/?#insight$/);
+
+  // All four tabs must be present in the tab bar
+  await expect(page.getByRole("tab", { name: "Insight" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Evidence" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Similarity" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Communities" })).toBeVisible();
+  // Legacy tab names must not appear as tabs
+  await expect(page.getByRole("tab", { name: "Relationships" })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "Clusters" })).toHaveCount(0);
+
+  // Insight tab shows metric tiles and the Graph findings card
+  await expect(page.getByText("Graph findings", { exact: true })).toBeVisible();
+  await expect(page.getByText("Entries in graph", { exact: true })).toBeVisible();
+  // CTA buttons link to deeper tabs
+  await expect(page.getByRole("button", { name: "Evidence graph →" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Similarity →" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Communities →" })).toBeVisible();
+  // Shell-ready placeholder must not appear
+  await expect(page.getByText("Relationships shell ready")).toHaveCount(0);
+
+  // Navigate to Evidence tab and verify its live content
+  await page.getByRole("tab", { name: "Evidence" }).click();
+  await expect(page.getByRole("tab", { name: "Evidence" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
   await expect(page.getByText("Filters", { exact: true })).toBeVisible();
   await expect(page.getByText("Label search", { exact: true })).toBeVisible();
   await expect(page.getByText(/Showing \d+ nodes and \d+ edges/)).toBeVisible();
-  await expect(page.getByText("Relationships shell ready")).toHaveCount(0);
 
-  await page.getByRole("tab", { name: /^(Similarity|Clusters)$/ }).click();
+  // Navigate to Similarity tab and verify its live content
+  await page.getByRole("tab", { name: "Similarity" }).click();
   await expect(page.getByText(/Selected (entry|point)/)).toBeVisible();
   const similaritySignal = page
     .getByText("Orientation map (secondary)", { exact: true })
@@ -198,15 +230,87 @@ test("graph communities tab renders and is not a placeholder shell", async ({ pa
   await expect(page.getByText("Communities shell ready")).toHaveCount(0);
 });
 
-test("insights retrospective section loads repo-mode summary", async ({ page }) => {
-  await page.goto("/v2/insights/");
-  await expect(page.getByRole("tab", { name: "Dashboard" })).toBeVisible({
+test("graph deep-link aliases redirect to canonical tab hashes", async ({ page }) => {
+  // #relationships is a legacy alias for #evidence
+  await page.goto("/v2/graph/#relationships");
+  await expect(page.getByRole("heading", { level: 1, name: "Graph" })).toBeVisible({
     timeout: 20_000,
   });
+  await expect(page).toHaveURL(/\/v2\/graph\/?#evidence$/);
+  await expect(page.getByRole("tab", { name: "Evidence" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
 
-  const retroSummary = page.locator("summary").filter({ hasText: "Retrospective" }).first();
-  await expect(retroSummary).toBeVisible();
-  await retroSummary.click();
+  // #clusters is a legacy alias for #similarity
+  await page.goto("/v2/graph/#clusters");
+  await expect(page).toHaveURL(/\/v2\/graph\/?#similarity$/);
+  await expect(page.getByRole("tab", { name: "Similarity" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+});
+
+test("insights search quality tab shows empty state when no data is available", async ({
+  page,
+}) => {
+  // Intercept eval/stats to return an empty aggregation so the empty state is deterministic
+  await page.route("**/api/eval/stats*", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ aggregation: [], recent_comments: [] }),
+    });
+  });
+
+  await page.goto("/v2/insights/");
+  await expect(page.getByRole("tab", { name: "Search Quality" })).toBeVisible({
+    timeout: 20_000,
+  });
+  await page.getByRole("tab", { name: "Search Quality" }).click();
+  await expect(page.getByRole("tab", { name: "Search Quality" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+
+  // Empty state (not a headers-only table) must be visible
+  await expect(page.getByText("No search evaluations yet")).toBeVisible({ timeout: 20_000 });
+  // Table must not be rendered when there is no data
+  await expect(page.getByRole("table")).toHaveCount(0);
+});
+
+test("insights tabs render first-class surfaces and retro loads repo-mode summary", async ({
+  page,
+}) => {
+  await page.goto("/v2/insights/");
+
+  // Overview is the new default tab (no Dashboard tab)
+  await expect(page.getByRole("tab", { name: "Overview" })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole("tab", { name: "Overview" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  // All five first-class tabs must be present
+  await expect(page.getByRole("tab", { name: "Knowledge" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Retro" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Search Quality" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Live feed" })).toBeVisible();
+  // Old Dashboard tab must not exist
+  await expect(page.getByRole("tab", { name: "Dashboard" })).toHaveCount(0);
+
+  // Overview tab shows KPI tiles and CTA links to other tabs
+  await expect(
+    page.getByRole("button", { name: "Full Knowledge insights →" })
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Full Retrospective →" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Full Search Quality →" })).toBeVisible();
+
+  // Navigate to Retro tab and verify it loads repo-mode summary
+  await page.getByRole("tab", { name: "Retro" }).click();
+  await expect(page.getByRole("tab", { name: "Retro" })).toHaveAttribute("aria-selected", "true");
+  // "Retrospective" heading renders inside the Retro tab
+  await expect(page.getByRole("heading", { level: 2, name: "Retrospective" })).toBeVisible({
+    timeout: 20_000,
+  });
   await expect(page.getByText(/mode:\s*repo/i)).toBeVisible({ timeout: 20_000 });
 });
 

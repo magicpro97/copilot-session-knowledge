@@ -4,13 +4,15 @@ import { useEffect, useState } from "react";
 
 import { ClustersTab } from "./clusters-tab";
 import { CommunitiesTab } from "./communities-tab";
+import { InsightTab } from "./insight-tab";
 import { RelationshipsTab } from "./relationships-tab";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-type GraphTab = "evidence" | "similarity" | "communities";
+type GraphTab = "insight" | "evidence" | "similarity" | "communities";
 
 function hashToGraphTab(hash: string): GraphTab | null {
   const cleaned = hash.replace(/^#/, "").toLowerCase();
+  if (cleaned === "insight") return "insight";
   if (cleaned === "evidence" || cleaned === "relationships") return "evidence";
   if (cleaned === "similarity" || cleaned === "clusters") return "similarity";
   if (cleaned === "communities") return "communities";
@@ -18,7 +20,8 @@ function hashToGraphTab(hash: string): GraphTab | null {
 }
 
 export default function GraphPage() {
-  const [activeTab, setActiveTab] = useState<GraphTab>("evidence");
+  // "insight" is the default — graph-specific summary surfaces first.
+  const [activeTab, setActiveTab] = useState<GraphTab>("insight");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -44,13 +47,17 @@ export default function GraphPage() {
         target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
       if (isTypingTarget) return;
 
+      // 1 = Insight (default/first), 2 = Evidence, 3 = Similarity, 4 = Communities
       if (event.key === "1") {
         event.preventDefault();
-        setActiveTab("evidence");
+        setActiveTab("insight");
       } else if (event.key === "2") {
         event.preventDefault();
-        setActiveTab("similarity");
+        setActiveTab("evidence");
       } else if (event.key === "3") {
+        event.preventDefault();
+        setActiveTab("similarity");
+      } else if (event.key === "4") {
         event.preventDefault();
         setActiveTab("communities");
       }
@@ -68,10 +75,15 @@ export default function GraphPage() {
   return (
     <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as GraphTab)}>
       <TabsList variant="line">
+        <TabsTrigger value="insight">Insight</TabsTrigger>
         <TabsTrigger value="evidence">Evidence</TabsTrigger>
         <TabsTrigger value="similarity">Similarity</TabsTrigger>
         <TabsTrigger value="communities">Communities</TabsTrigger>
       </TabsList>
+
+      <TabsContent value="insight">
+        <InsightTab active={activeTab === "insight"} onNavigate={(tab) => setActiveTab(tab)} />
+      </TabsContent>
 
       <TabsContent value="evidence">
         <RelationshipsTab active={activeTab === "evidence"} />

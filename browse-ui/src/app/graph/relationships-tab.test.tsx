@@ -105,7 +105,9 @@ describe("RelationshipsTab evidence mode", () => {
     expect(screen.getAllByText("Tag overlap").length).toBeGreaterThan(0);
     expect(screen.queryByText("Same topic")).not.toBeInTheDocument();
     expect(
-      screen.getByText(/Showing 2 nodes and 1 edges from knowledge_relations\./)
+      screen.getByText(
+        /Showing 2 nodes and 1 edges from knowledge_relations\. Edges are heuristically derived/
+      )
     ).toBeInTheDocument();
   });
 

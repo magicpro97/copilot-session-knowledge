@@ -1,27 +1,18 @@
 "use client";
 
 import { Banner } from "@/components/data/banner";
+import { InsightActionList } from "@/components/data/insight-action-list";
+import { InsightExplainer } from "@/components/data/insight-explainer";
+import { InsightFindingCard } from "@/components/data/insight-finding-card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useKnowledgeInsights } from "@/lib/api/hooks";
-import { formatNumber } from "@/lib/formatters";
 import type {
   KnowledgeInsightsAlert,
   KnowledgeInsightsEntry,
   KnowledgeInsightsResponse,
 } from "@/lib/api/types";
-
-const SEVERITY_STYLES: Record<KnowledgeInsightsAlert["severity"], string> = {
-  info: "border-blue-500/30 bg-blue-500/5 text-blue-700 dark:text-blue-400",
-  warning: "border-yellow-500/30 bg-yellow-500/5 text-yellow-700 dark:text-yellow-400",
-  critical: "border-red-500/30 bg-red-500/5 text-red-700 dark:text-red-400",
-};
-
-const SEVERITY_EMOJI: Record<KnowledgeInsightsAlert["severity"], string> = {
-  info: "ℹ️",
-  warning: "⚠️",
-  critical: "🚨",
-};
+import { formatNumber } from "@/lib/formatters";
 
 const ENTRY_CATEGORY_LABELS: Record<string, string> = {
   mistakes: "Mistakes",
@@ -58,40 +49,33 @@ function AlertsList({ alerts }: { alerts: KnowledgeInsightsAlert[] }) {
   return (
     <div className="space-y-2">
       <p className="text-xs font-medium">Quality alerts</p>
-      {alerts.map((alert) => (
-        <div
-          key={alert.id}
-          className={`rounded-lg border px-3 py-2 ${SEVERITY_STYLES[alert.severity]}`}
-        >
-          <p className="text-xs font-medium">
-            {SEVERITY_EMOJI[alert.severity]} {alert.title}
-          </p>
-          <p className="mt-0.5 text-xs opacity-80">{alert.detail}</p>
-        </div>
-      ))}
+      <div role="list" className="space-y-1">
+        {alerts.map((alert) => (
+          <InsightFindingCard
+            key={alert.id}
+            finding={{
+              id: alert.id,
+              title: alert.title,
+              detail: alert.detail,
+              severity: alert.severity,
+            }}
+          />
+        ))}
+      </div>
     </div>
   );
 }
 
 function ActionsList({ actions }: { actions: KnowledgeInsightsResponse["recommended_actions"] }) {
-  if (actions.length === 0) return null;
   return (
-    <div>
-      <p className="text-xs font-medium">Recommended actions</p>
-      <ul className="mt-1 list-disc space-y-1 pl-4">
-        {actions.map((action) => (
-          <li key={action.id} className="text-xs">
-            <span className="font-medium">{action.title}</span>
-            {action.detail ? (
-              <span className="text-muted-foreground ml-1">— {action.detail}</span>
-            ) : null}
-            {action.command ? (
-              <code className="text-muted-foreground ml-1 text-[10px]">{action.command}</code>
-            ) : null}
-          </li>
-        ))}
-      </ul>
-    </div>
+    <InsightActionList
+      actions={actions.map((a) => ({
+        id: a.id,
+        title: a.title,
+        detail: a.detail,
+        command: a.command,
+      }))}
+    />
   );
 }
 
@@ -180,6 +164,55 @@ function EntriesByCategory({ entries }: { entries: KnowledgeInsightsResponse["en
   );
 }
 
+/**
+ * Reusable inner content for the Knowledge Insights panel.
+ * Used by both KnowledgeInsightsSection (collapsible) and KnowledgeTab (full view).
+ */
+export function KnowledgeInsightsBody({
+  insights,
+}: {
+  insights: ReturnType<typeof useKnowledgeInsights>;
+}) {
+  if (insights.isLoading) {
+    return (
+      <div className="space-y-2">
+        <Skeleton className="h-6 w-48" />
+        <Skeleton className="h-20 w-full" />
+        <Skeleton className="h-20 w-full" />
+      </div>
+    );
+  }
+  if (insights.isError) {
+    return (
+      <Banner
+        tone="warning"
+        title="Knowledge insights unavailable"
+        description={
+          insights.error instanceof Error
+            ? insights.error.message
+            : "Could not load /api/knowledge/insights."
+        }
+      />
+    );
+  }
+  if (!insights.data) return null;
+  return (
+    <div className="space-y-4">
+      {insights.data.summary ? (
+        <InsightExplainer text={insights.data.summary} generatedAt={insights.data.generated_at} />
+      ) : (
+        <p className="text-muted-foreground text-xs">generated {insights.data.generated_at}</p>
+      )}
+      <OverviewGrid overview={insights.data.overview} />
+      <AlertsList alerts={insights.data.quality_alerts} />
+      <ActionsList actions={insights.data.recommended_actions} />
+      <HotFiles files={insights.data.hot_files} />
+      <NoiseTitles titles={insights.data.recurring_noise_titles} />
+      <EntriesByCategory entries={insights.data.entries} />
+    </div>
+  );
+}
+
 export function KnowledgeInsightsSection() {
   const insights = useKnowledgeInsights();
 
@@ -209,7 +242,7 @@ export function KnowledgeInsightsSection() {
         </span>
       </summary>
 
-      <div className="mt-4 space-y-4">
+      <div className="mt-4">
         {insights.isLoading ? (
           <div className="space-y-2">
             <Skeleton className="h-6 w-48" />
@@ -232,14 +265,18 @@ export function KnowledgeInsightsSection() {
               <p className="text-muted-foreground text-sm">{insights.data.summary}</p>
             ) : null}
 
-            <OverviewGrid overview={insights.data.overview} />
-            <AlertsList alerts={insights.data.quality_alerts} />
-            <ActionsList actions={insights.data.recommended_actions} />
-            <HotFiles files={insights.data.hot_files} />
-            <NoiseTitles titles={insights.data.recurring_noise_titles} />
-            <EntriesByCategory entries={insights.data.entries} />
+            <div className="mt-4 space-y-4">
+              <OverviewGrid overview={insights.data.overview} />
+              <AlertsList alerts={insights.data.quality_alerts} />
+              <ActionsList actions={insights.data.recommended_actions} />
+              <HotFiles files={insights.data.hot_files} />
+              <NoiseTitles titles={insights.data.recurring_noise_titles} />
+              <EntriesByCategory entries={insights.data.entries} />
+            </div>
 
-            <p className="text-muted-foreground text-xs">generated {insights.data.generated_at}</p>
+            <p className="text-muted-foreground mt-4 text-xs">
+              generated {insights.data.generated_at}
+            </p>
           </>
         ) : null}
       </div>

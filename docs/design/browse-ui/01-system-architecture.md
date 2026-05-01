@@ -80,9 +80,10 @@ copilot-session-knowledge/
 │   │   │   ├── search/
 │   │   │   │   └── page.tsx         # Full-text search with facets
 │   │   │   ├── insights/
-│   │   │   │   └── page.tsx         # Dashboard + Live Feed + Search Quality (tabs)
+│   │   │   │   ├── layout.tsx       # 5-tab workspace: Overview + Knowledge + Retro + Search Quality + Live feed
+│   │   │   │   └── page.tsx         # Default tab → Overview
 │   │   │   ├── graph/
-│   │   │   │   └── page.tsx         # Graph workspace: Evidence / Similarity / Communities
+│   │   │   │   └── page.tsx         # 4-tab workspace: Insight (default) + Evidence + Similarity + Communities
 │   │   │   ├── settings/
 │   │   │   │   └── page.tsx         # Preferences: theme, density, default landing, token storage
 │   │   │   └── not-found.tsx        # Custom 404 page
@@ -791,8 +792,8 @@ if path.startswith("/v2/"):
 | `/session/{id}/timeline` | `/v2/sessions/[id]/timeline` (tab) | P2 | 2 |
 | `/session/{id}/mindmap` | `/v2/sessions/[id]/mindmap` (tab) | P3 | 3 |
 | `/search` | `/v2/search` | P1 | 1 |
-| `/dashboard` | `/v2/insights` (Dashboard tab) | P2 | 2 |
-| `/live` | `/v2/insights` (Live Feed tab) | P2 | 2 |
+| `/dashboard` | `/v2/insights` (Overview tab) | P2 | 2 |
+| `/live` | `/v2/insights` (Live feed tab) | P2 | 2 |
 | `/graph` | `/v2/graph` (Knowledge Graph tab) | P3 | 3 |
 | `/embeddings` | `/v2/graph` (Similarity orientation map, via `/api/embeddings/points`) | P3 | 3 |
 | `/eval` | `/v2/insights` (Search Quality tab) | P4 | 4 |
@@ -1505,7 +1506,7 @@ fi
 
 | Task | Files | Risk | Rollback |
 |------|-------|------|----------|
-| Insights page (Dashboard + Live Feed tabs, Recharts) | `app/insights/page.tsx` | Medium: chart integration | — |
+| Insights page (Overview + Knowledge + Retro + Search Quality + Live feed tabs, Recharts) | `app/insights/layout.tsx` + `app/insights/page.tsx` | Medium: chart integration | — |
 | Timeline tab | `app/sessions/[id]/timeline/page.tsx` | High: paginated event replay | — |
 | Update Python `/sessions?format=json` to return pagination envelope | `browse/routes/sessions.py` | Medium | — |
 | Add `/api/eval/stats` Python endpoint | `browse/routes/eval.py` | Low | — |
@@ -1517,7 +1518,7 @@ fi
 
 | Task | Files | Risk | Rollback |
 |------|-------|------|----------|
-| Graph page — Evidence tab (typed edges) + Similarity tab (neighbors primary + `/api/embeddings/points` map) + Communities tab | `app/graph/page.tsx` | High: graph lib integration | Keep old `/graph` |
+| Graph page — Insight tab (default, cross-graph summary) + Evidence tab (typed edges) + Similarity tab (neighbors primary + `/api/embeddings/points` map) + Communities tab | `app/graph/page.tsx` | High: graph lib integration | Keep old `/graph` |
 | Mindmap tab (markmap) | `app/sessions/[id]/mindmap/page.tsx` | Medium: D3 integration | — |
 
 **Exit criteria Phase 3:** All routes functional. Playwright E2E full-suite green.
