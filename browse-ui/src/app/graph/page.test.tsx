@@ -61,6 +61,11 @@ describe("GraphPage", () => {
     expect(screen.getByRole("tab", { name: "Communities" })).toBeInTheDocument();
   });
 
+  it("uses vertical tab orientation for the menu list", () => {
+    render(<GraphPage />);
+    expect(screen.getByRole("tablist").closest("[data-orientation='vertical']")).not.toBeNull();
+  });
+
   it("activates Evidence tab via #evidence hash on mount", () => {
     window.location.hash = "#evidence";
     render(<GraphPage />);

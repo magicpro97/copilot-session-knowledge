@@ -73,27 +73,32 @@ export default function GraphPage() {
   }, [activeTab]);
 
   return (
-    <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as GraphTab)}>
-      <TabsList variant="line">
+    <Tabs
+      orientation="vertical"
+      value={activeTab}
+      onValueChange={(value) => setActiveTab(value as GraphTab)}
+      className="flex-col gap-4 md:flex-row md:items-start md:gap-6"
+    >
+      <TabsList variant="line" className="w-full shrink-0 md:w-56">
         <TabsTrigger value="insight">Insight</TabsTrigger>
         <TabsTrigger value="evidence">Evidence</TabsTrigger>
         <TabsTrigger value="similarity">Similarity</TabsTrigger>
         <TabsTrigger value="communities">Communities</TabsTrigger>
       </TabsList>
 
-      <TabsContent value="insight">
+      <TabsContent value="insight" className="min-w-0">
         <InsightTab active={activeTab === "insight"} onNavigate={(tab) => setActiveTab(tab)} />
       </TabsContent>
 
-      <TabsContent value="evidence">
+      <TabsContent value="evidence" className="min-w-0">
         <RelationshipsTab active={activeTab === "evidence"} />
       </TabsContent>
 
-      <TabsContent value="similarity">
+      <TabsContent value="similarity" className="min-w-0">
         <ClustersTab active={activeTab === "similarity"} />
       </TabsContent>
 
-      <TabsContent value="communities">
+      <TabsContent value="communities" className="min-w-0">
         <CommunitiesTab
           active={activeTab === "communities"}
           onDrillIn={(target) => {
