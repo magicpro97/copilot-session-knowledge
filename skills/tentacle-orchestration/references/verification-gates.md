@@ -94,3 +94,22 @@ Skip when changes are purely internal refactors with no public API or behavior c
 For changes touching auth, data integrity, financial logic, or infrastructure, add a cross-check by a different agent. This catches errors that code-review misses because the reviewer may share the same blind spots as the author.
 
 Skip this step for low-risk changes (documentation, formatting, simple refactors).
+
+---
+
+## Orchestrator Triage (Handoff Status)
+
+After a sub-agent writes its handoff, `tentacle.py handoff` and `tentacle.py complete` emit a
+visible triage signal when `--status` is a non-`DONE` value. The orchestrator must act on these
+before running the standard verification gates.
+
+| Status | Signal | Orchestrator action |
+|--------|--------|---------------------|
+| `DONE` | None | Proceed to Build → Lint → Test → Review gates |
+| `BLOCKED` | `⚠️  TRIAGE: terminal_status=BLOCKED — orchestrator review required` | Read handoff.md prose. Decide: create a new tentacle for the missing scope, adjust this tentacle's scope, or cancel. |
+| `TOO_BIG` | `⚠️  TRIAGE: terminal_status=TOO_BIG — orchestrator review required` | Re-decompose: split this tentacle into 2+ smaller tentacles with non-overlapping scopes. |
+| `AMBIGUOUS` | `⚠️  TRIAGE: terminal_status=AMBIGUOUS — orchestrator review required` | Clarify the spec or constraints with the user, then re-dispatch with an updated CONTEXT.md. |
+| `REGRESSED` | `⚠️  TRIAGE: terminal_status=REGRESSED — orchestrator review required` | Examine what regressed (see handoff.md for details). Fix before proceeding to other gates. |
+
+**Triage precedes verification gates.** Do not run Build/Lint/Test/Review on a tentacle with a
+triage status until the underlying issue is resolved.

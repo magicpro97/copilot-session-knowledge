@@ -3276,6 +3276,270 @@ if _rp_so_out.exists():
     test("search_only pack has repos list", isinstance(_rp_so_loaded.get("repos"), list))
 
 
+# ─── Claude-Code-Skills Lane (caveman-class) ─────────────────────────────────
+
+print("\n🦴 Claude-Code-Skills Lane (caveman-class)")
+
+# A. Disk config has claude-code-skills lane
+_disk_cfg_ccs = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+_ccs_lane = next(
+    (l for l in _disk_cfg_ccs.get("lanes", []) if l.get("name") == "claude-code-skills"),
+    None,
+)
+test(
+    "disk config has claude-code-skills lane",
+    _ccs_lane is not None,
+    f"lanes={[l.get('name') for l in _disk_cfg_ccs.get('lanes', [])]}",
+)
+if _ccs_lane:
+    test(
+        "claude-code-skills lane is language-agnostic (language=null)",
+        _ccs_lane.get("language") is None,
+        f"language={_ccs_lane.get('language')!r}",
+    )
+    test(
+        "claude-code-skills lane has keywords",
+        len(_ccs_lane.get("keywords", [])) > 0,
+        str(_ccs_lane.get("keywords")),
+    )
+    test(
+        "claude-code-skills lane has topics",
+        len(_ccs_lane.get("topics", [])) > 0,
+        str(_ccs_lane.get("topics")),
+    )
+    _ccs_topics = _ccs_lane.get("topics", [])
+    for _required_topic in ("claude-code", "skill", "prompt-engineering", "anthropic", "claude"):
+        test(
+            f"claude-code-skills lane topics include '{_required_topic}'",
+            _required_topic in _ccs_topics,
+            str(_ccs_topics),
+        )
+    test(
+        "claude-code-skills lane keywords mention claude-code or skill",
+        any("claude" in str(k).lower() or "skill" in str(k).lower() for k in _ccs_lane.get("keywords", [])),
+        str(_ccs_lane.get("keywords")),
+    )
+
+# B. Goldset includes JuliusBrussee/caveman
+_goldset_disk_ccs = ts.load_goldset(GOLDSET_FILE)
+_caveman_entry = next(
+    (e for e in _goldset_disk_ccs.get("entries", []) if e.get("repo") == "JuliusBrussee/caveman"),
+    None,
+)
+test("goldset includes JuliusBrussee/caveman", _caveman_entry is not None, str(_goldset_disk_ccs.get("entries")))
+if _caveman_entry:
+    test(
+        "caveman goldset expected_lane is claude-code-skills",
+        _caveman_entry.get("expected_lane") == "claude-code-skills",
+        str(_caveman_entry),
+    )
+    test("caveman goldset entry is required", bool(_caveman_entry.get("required", True)), str(_caveman_entry))
+    test(
+        "caveman goldset entry has category claude-code-skills",
+        _caveman_entry.get("category") == "claude-code-skills",
+        str(_caveman_entry),
+    )
+    test(
+        "caveman goldset notes mention discovery gap",
+        "gap" in str(_caveman_entry.get("notes", "")).lower()
+        or "vocabulary" in str(_caveman_entry.get("notes", "")).lower(),
+        str(_caveman_entry.get("notes")),
+    )
+
+# C. Caveman-class repo fixture definition
+CAVEMAN_LIKE_REPO: dict = {
+    "full_name": "JuliusBrussee/caveman",
+    "name": "caveman",
+    "description": "Claude Code skill: caveman communication style to reduce token consumption",
+    "html_url": "https://github.com/JuliusBrussee/caveman",
+    "created_at": "2025-01-15T10:00:00Z",
+    "pushed_at": "2025-04-01T12:00:00Z",
+    "stargazers_count": 18,
+    "forks_count": 2,
+    "watchers_count": 18,
+    "open_issues_count": 1,
+    "language": None,
+    "topics": ["claude-code", "skill", "tokens", "prompt-engineering", "anthropic", "claude"],
+    "fork": False,
+    "archived": False,
+    "license": {"spdx_id": "MIT"},
+}
+
+
+def _mock_ccs_kw(query, *, min_stars=0, max_results=10, created_after=None, language=None):
+    _q = str(query).lower()
+    if "claude" in _q or "skill" in _q or "anthropic" in _q or "prompt" in _q:
+        return [CAVEMAN_LIKE_REPO]
+    return []
+
+
+def _mock_ccs_topic(topic, *, min_stars=0, max_results=10, language=None):
+    if topic in ("claude-code", "skill", "prompt-engineering", "anthropic", "claude", "tokens"):
+        return [CAVEMAN_LIKE_REPO]
+    return []
+
+
+# D. claude-code-skills lane surfaces caveman-class repo via mocked search
+with (
+    mock.patch.object(ts.GitHubClient, "search_repos", side_effect=_mock_ccs_kw),
+    mock.patch.object(ts.GitHubClient, "search_repos_by_topic", side_effect=_mock_ccs_topic),
+    mock.patch("time.sleep", return_value=None),
+):
+    _ccs_cfg = ts.load_config(None)
+    _ccs_cfg["search"]["seed_keywords"] = []
+    _ccs_cfg["search"]["extra_topics"] = []
+    _ccs_cfg["lanes"] = [
+        {
+            "name": "claude-code-skills",
+            "keywords": ["topic:claude-code topic:skill"],
+            "topics": ["claude-code", "skill"],
+            "min_stars": 2,
+            "max_per_query": 10,
+            "lookback_days": 365,
+            "language": None,
+        }
+    ]
+    _raw_ccs = ts.search_stage(ts.GitHubClient(token="ghp_test"), _ccs_cfg)
+    test(
+        "claude-code-skills lane surfaces caveman-class repo via mocked search",
+        any(r.get("full_name") == "JuliusBrussee/caveman" for r in _raw_ccs),
+        str([r.get("full_name") for r in _raw_ccs]),
+    )
+    _caveman_in_raw = next((r for r in _raw_ccs if r.get("full_name") == "JuliusBrussee/caveman"), None)
+    if _caveman_in_raw:
+        test(
+            "caveman-class repo tagged with claude-code-skills discovery lane",
+            _caveman_in_raw.get("_discovery_lane") == "claude-code-skills",
+            str(_caveman_in_raw.get("_discovery_lane")),
+        )
+    else:
+        test("caveman-class repo tagged with claude-code-skills discovery lane", False, "not found in raw")
+
+# E. Caveman-class repo scores > 0 with claude-code-skills lane config
+_ccs_score_cfg = ts.load_config(None)
+_ccs_score_cfg["lanes"] = [
+    {
+        "name": "claude-code-skills",
+        "keywords": ["claude code skill"],
+        "topics": ["claude-code", "skill", "prompt-engineering", "anthropic", "claude", "tokens"],
+        "min_stars": 2,
+        "max_per_query": 10,
+        "lookback_days": 365,
+        "language": None,
+    }
+]
+_caveman_score = ts.score_repo(CAVEMAN_LIKE_REPO, _ccs_score_cfg)
+test(
+    "caveman-class repo scores > 0 with claude-code-skills lane config",
+    _caveman_score > 0.0,
+    f"score={_caveman_score}",
+)
+
+# F. goldset_misses captures raw miss for caveman (synthetic no-raw case)
+_ccs_explain_no_raw = ts.build_discovery_explain(
+    [],
+    [],
+    "2025-01-01T00:00:00+00:00",
+    config=ts.load_config(None),
+    goldset={
+        "path": "synthetic",
+        "entries": [
+            {
+                "repo": "JuliusBrussee/caveman",
+                "required": True,
+                "expected_lane": "claude-code-skills",
+                "min_score": 0.1,
+            }
+        ],
+    },
+)
+test(
+    "goldset_misses captures raw miss for caveman",
+    len(_ccs_explain_no_raw.get("goldset_misses", [])) == 1,
+    str(_ccs_explain_no_raw.get("goldset_misses")),
+)
+_ccs_miss_row = _ccs_explain_no_raw["goldset_misses"][0] if _ccs_explain_no_raw.get("goldset_misses") else {}
+test(
+    "caveman goldset_miss reason mentions raw_miss",
+    "raw_miss" in str(_ccs_miss_row.get("reason", "")),
+    str(_ccs_miss_row),
+)
+
+# G. goldset_misses empty when caveman found in raw with correct lane
+_ccs_explain_found = ts.build_discovery_explain(
+    [{**CAVEMAN_LIKE_REPO, "_discovery_lane": "claude-code-skills", "_discovery_query": "topic:claude-code topic:skill"}],
+    [],
+    "2025-01-01T00:00:00+00:00",
+    config=ts.load_config(None),
+    goldset={
+        "path": "synthetic",
+        "entries": [
+            {"repo": "JuliusBrussee/caveman", "required": True, "expected_lane": "claude-code-skills", "min_score": 0.0}
+        ],
+    },
+)
+test(
+    "goldset_misses empty when caveman found in raw with correct lane",
+    len(_ccs_explain_found.get("goldset_misses", [])) == 0,
+    str(_ccs_explain_found.get("goldset_misses")),
+)
+
+# H. Regression: existing lanes not displaced — adjacent-ai-dev and token-efficiency-cli still present
+_ccs_all_lanes = [l.get("name") for l in _disk_cfg_ccs.get("lanes", [])]
+for _existing_lane in ("adjacent-ai-dev", "token-efficiency-cli"):
+    test(
+        f"existing lane '{_existing_lane}' still present after adding claude-code-skills",
+        _existing_lane in _ccs_all_lanes,
+        str(_ccs_all_lanes),
+    )
+
+# I. claude-code-skills lane negative: generic "token" repo without claude topics NOT favored
+_GENERIC_TOKEN_REPO: dict = {
+    "full_name": "example/generic-token-counter",
+    "name": "generic-token-counter",
+    "description": "Count tokens in text files",
+    "html_url": "https://github.com/example/generic-token-counter",
+    "created_at": "2023-06-01T00:00:00Z",
+    "pushed_at": "2024-01-01T12:00:00Z",
+    "stargazers_count": 3,
+    "forks_count": 0,
+    "watchers_count": 3,
+    "open_issues_count": 0,
+    "language": "Python",
+    "topics": ["tokenizer", "nlp"],
+    "fork": False,
+    "archived": False,
+    "license": None,
+}
+_generic_score = ts.score_repo(_GENERIC_TOKEN_REPO, _ccs_score_cfg)
+_caveman_score2 = ts.score_repo(CAVEMAN_LIKE_REPO, _ccs_score_cfg)
+test(
+    "caveman-class repo scores higher than generic token-counter repo (negative test)",
+    _caveman_score2 > _generic_score,
+    f"caveman={_caveman_score2:.3f}, generic={_generic_score:.3f}",
+)
+
+# J. Jcode and RTK regressions still pass with three lanes active (no displacement)
+with (
+    mock.patch.object(ts.GitHubClient, "search_repos", return_value=[]) as _mock_kw_3lane,
+    mock.patch.object(
+        ts.GitHubClient,
+        "search_repos_by_topic",
+        side_effect=lambda t, **kw: [JCODE_LIKE_REPO] if t in ("coding-agent", "mcp") else [],
+    ) as _mock_t_3lane,
+    mock.patch("time.sleep", return_value=None),
+):
+    _three_lane_cfg = ts.load_config(None)  # disk config now has 3 lanes
+    _three_lane_cfg["search"]["seed_keywords"] = []
+    _three_lane_cfg["search"]["extra_topics"] = []
+    _raw_3lane = ts.search_stage(ts.GitHubClient(token="ghp_test"), _three_lane_cfg)
+    test(
+        "3-lane regression: jcode still found with claude-code-skills lane added",
+        any(r.get("full_name") == "example/jcode-like-agent" for r in _raw_3lane),
+        str([r.get("full_name") for r in _raw_3lane]),
+    )
+
+
 # ─── Cleanup ──────────────────────────────────────────────────────────────────
 
 import shutil

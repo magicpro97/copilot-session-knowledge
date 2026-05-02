@@ -3,6 +3,8 @@
 > Canonical root instruction surface for all AI agents (Claude Code, Codex, Amp, Factory).
 >
 > **Full rules:** [docs/AGENT-RULES.md](docs/AGENT-RULES.md) · **Copilot CLI runtime:** [.github/copilot-instructions.md](.github/copilot-instructions.md)
+>
+> **Drift-lock:** `docs/AGENT-RULES.md` is the canonical source for all agent rules. This file is a concise summary — when in doubt, defer to `docs/AGENT-RULES.md`.
 
 ## Mandatory Rules
 
@@ -12,6 +14,7 @@
 4. **Verify before committing** — AST-parse every modified `.py` file; run both test suites; `git diff --stat` before commit.
 5. **Sub-agent model selection** — use `claude-sonnet-4.6` for code generation; `claude-opus-4.6` for security audits; never dispatch sub-agents with the default (haiku) model for code changes.
 6. **No guessing** — verify table names, function signatures, and file paths from source; never assume.
+7. **Docs output quality** — distinguish Facts / Interpretation / Actions / Verification evidence; never present inference as fact; every action must include the executable command.
 
 See [docs/AGENT-RULES.md](docs/AGENT-RULES.md) for the complete rule text and hook-enforcement table.
 
@@ -26,6 +29,10 @@ See [docs/AGENT-RULES.md](docs/AGENT-RULES.md) for the complete rule text and ho
 - **FTS5 sanitization** — strip operators (`OR`, `AND`, `NOT`, `NEAR`, `*`, `"`) before MATCH
 - **DB migrations** — add to `MIGRATIONS` list in `migrate.py` with incrementing version numbers
 - **JSON field envelopes are stable contracts** — do not rename `entries[]`, `tagged_entries[]`, `related_entries[]`, `entries.<category>[]`
+- **Trend Scout** — scheduled/manual only; never wire to `preToolUse`/`postToolUse` hooks
+- **Sync** — local DB is authoritative; remote is transport only; `sync-config.py --setup` takes HTTP(S) URLs only
+- **Hooks** — Copilot CLI only; `hook_runner.py` is the single entry point; fail-open; `pre-commit` also runs scoped Ruff + Prettier cleanliness checks (fail-open when tooling absent)
+- **Tentacle marker-cleanup** — use `tentacle.py marker-cleanup [--apply]` to inspect/remove stale dispatched-subagent marker entries without completing a tentacle
 
 > Full conventions, data pipeline, and script inventory: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 

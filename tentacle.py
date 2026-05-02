@@ -76,6 +76,13 @@ SKILL_METRICS_DB = Path.home() / ".copilot" / "session-state" / "skill-metrics.d
 # Root directory for per-tentacle git worktrees
 _WORKTREE_STATE_ROOT = Path.home() / ".copilot" / "session-state" / "worktrees"
 
+# ---------------------------------------------------------------------------
+# Structured handoff contract constants
+# ---------------------------------------------------------------------------
+HANDOFF_STATUS_ALLOWLIST: frozenset[str] = frozenset({"DONE", "BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"})
+# Statuses that require visible orchestrator triage (all non-DONE statuses)
+HANDOFF_TRIAGE_STATUSES: frozenset[str] = frozenset({"BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"})
+
 
 from contextlib import contextmanager
 
@@ -1412,6 +1419,7 @@ CREATE TABLE IF NOT EXISTS tentacle_outcomes (
     git_root TEXT,
     description TEXT,
     outcome_status TEXT NOT NULL,
+    terminal_status TEXT,
     recorded_at TEXT NOT NULL,
     worktree_used INTEGER NOT NULL DEFAULT 0,
     worktree_path TEXT,
@@ -1446,6 +1454,9 @@ CREATE TABLE IF NOT EXISTS tentacle_verifications (
     log_path TEXT
 );
 """)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(tentacle_outcomes)").fetchall()}
+    if "terminal_status" not in columns:
+        conn.execute("ALTER TABLE tentacle_outcomes ADD COLUMN terminal_status TEXT")
 
 
 def _persist_outcome_metrics(
@@ -1497,6 +1508,7 @@ def _persist_outcome_metrics(
         git_root_str = str(git_root) if git_root else None
         tentacle_id = meta.get("tentacle_id")
         description = meta.get("description", "")
+        terminal_status = meta.get("terminal_status")
         skills: list[str] = meta.get("skills") or []
         recorded_at = datetime.now(timezone.utc).isoformat()
 
@@ -1509,12 +1521,12 @@ def _persist_outcome_metrics(
                 """
                 INSERT INTO tentacle_outcomes (
                     tentacle_name, tentacle_id, git_root, description,
-                    outcome_status, recorded_at,
+                    outcome_status, terminal_status, recorded_at,
                     worktree_used, worktree_path,
                     verification_total, verification_passed, verification_failed,
                     todo_total, todo_done, learned,
                     duration_seconds, summary
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     tentacle_name,
@@ -1522,6 +1534,7 @@ def _persist_outcome_metrics(
                     git_root_str,
                     description,
                     outcome_status,
+                    terminal_status,
                     recorded_at,
                     worktree_used,
                     worktree_path,
@@ -1872,6 +1885,38 @@ def cmd_todo(args):
                 print(f"  [{t['index']}] {mark} {t['text']}")
 
 
+def _parse_handoff_status(handoff_content: str) -> "str | None":
+    """Return the STATUS value from the latest handoff section that contains one.
+
+    Scans sections in reverse order so the most recent STATUS wins.
+    Returns None when no STATUS: line is found (backward-compat free-form handoffs).
+    """
+    sections = re.split(r"^## \[", handoff_content, flags=re.MULTILINE)
+    for section in reversed(sections):
+        m = re.search(r"^STATUS:\s*(\S+)", section, flags=re.MULTILINE)
+        if m:
+            status = m.group(1)
+            if status in HANDOFF_STATUS_ALLOWLIST:
+                return status
+    return None
+
+
+def _parse_handoff_changed_files(handoff_content: str) -> "list[str]":
+    """Return all Changed: file paths from handoff sections.
+
+    Preserves first-seen handoff order while deduplicating repeated paths.
+    Returns [] for free-form handoffs.
+    """
+    seen: set[str] = set()
+    changed_files: list[str] = []
+    for raw_path in re.findall(r"^Changed:\s*(.+)", handoff_content, flags=re.MULTILINE):
+        path = raw_path.strip()
+        if path and path not in seen:
+            changed_files.append(path)
+            seen.add(path)
+    return changed_files
+
+
 def cmd_handoff(args):
     """Write a handoff message for a tentacle (agent output)."""
     tentacles = get_tentacles_dir(args.session_dir)
@@ -1881,10 +1926,26 @@ def cmd_handoff(args):
         print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
         sys.exit(1)
 
+    # Validate optional structured status
+    status = getattr(args, "status", None)
+    changed_files: list[str] = list(getattr(args, "changed_file", None) or [])
+
+    if status is not None and status not in HANDOFF_STATUS_ALLOWLIST:
+        allowed = ", ".join(sorted(HANDOFF_STATUS_ALLOWLIST))
+        print(
+            f"ERROR: Invalid status '{status}'. Allowed values: {allowed}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     handoff_path = tentacle_dir / "handoff.md"
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     entry = f"\n## [{timestamp}]\n\n{args.message}\n"
+    if status:
+        entry += f"STATUS: {status}\n"
+    for cf in changed_files:
+        entry += f"Changed: {cf}\n"
 
     with file_locked(handoff_path):
         if handoff_path.exists():
@@ -1894,6 +1955,10 @@ def cmd_handoff(args):
             handoff_path.write_text(f"# Handoff Notes\n{entry}", encoding="utf-8")
 
     print(f"📨 Handoff recorded for '{args.name}'")
+
+    # Triage signal for non-DONE statuses
+    if status in HANDOFF_TRIAGE_STATUSES:
+        print(f"⚠️  TRIAGE: terminal_status={status} — orchestrator review required")
 
     # Auto-learn if --learn flag
     if args.learn:
@@ -1937,6 +2002,19 @@ def cmd_complete(args):
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
     meta["status"] = "completed"
     meta["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+    # 2a. Extract structured handoff fields (terminal_status, changed_files)
+    terminal_status = None
+    changed_files: list[str] = []
+    if handoff_path.exists():
+        raw_handoff = handoff_path.read_text(encoding="utf-8")
+        terminal_status = _parse_handoff_status(raw_handoff)
+        changed_files = _parse_handoff_changed_files(raw_handoff)
+    if terminal_status:
+        meta["terminal_status"] = terminal_status
+    if changed_files:
+        meta["changed_files"] = changed_files
+
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
     # 3. Auto-learn from handoff (unless --no-learn)
@@ -1986,6 +2064,8 @@ def cmd_complete(args):
 
     # 6. Summary
     print(f"\n🏁 Tentacle '{args.name}' completed!")
+    if terminal_status in HANDOFF_TRIAGE_STATUSES:
+        print(f"⚠️  TRIAGE: terminal_status={terminal_status} — orchestrator review required")
     if learned:
         print(f"   🧠 {learned} knowledge entry saved to long-term memory")
     print(f"   💡 Run `tentacle.py delete {args.name}` to clean up when ready")
@@ -2661,6 +2741,21 @@ def main():
     p_handoff.add_argument("name", help="Tentacle name")
     p_handoff.add_argument("message", help="Handoff message content")
     p_handoff.add_argument("--learn", action="store_true", help="Also record this handoff as a knowledge entry")
+    p_handoff.add_argument(
+        "--status",
+        choices=sorted(HANDOFF_STATUS_ALLOWLIST),
+        default=None,
+        metavar="STATUS",
+        help=f"Optional terminal status ({', '.join(sorted(HANDOFF_STATUS_ALLOWLIST))})",
+    )
+    p_handoff.add_argument(
+        "--changed-file",
+        action="append",
+        dest="changed_file",
+        metavar="FILE",
+        default=[],
+        help="Changed file receipt (repeatable); e.g. --changed-file src/foo.py",
+    )
 
     # swarm
     p_swarm = sub.add_parser("swarm", help="Generate dispatch from pending todos")

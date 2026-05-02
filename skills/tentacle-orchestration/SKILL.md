@@ -87,7 +87,7 @@ python3 ~/.copilot/tools/install.py --install-git-hooks
 | **Stay in scope** | Do not edit files outside your tentacle's declared `scope`. If you discover that more files are needed, escalate — do not expand unilaterally. |
 | **Escalate, don't expand** | If your scope is insufficient to complete the task, write the gap to `handoff.md` (e.g. "blocked: need changes in `src/db/` which is outside my scope") and stop. The orchestrator decides whether to create a new tentacle or adjust scope. |
 | **No over-implementation** | Implement only what your todos specify. Do not add features, refactors, or improvements that are not in your todo list — even if they seem obvious. |
-| **Handoff before stopping** | Always write a `handoff.md` summary before marking your work done, even if the session ends early. The orchestrator reads this to decide next steps. |
+| **Handoff before stopping** | Always write a structured handoff before marking your work done — even if the session ends early. Use `tentacle.py handoff <name> "<prose summary>" --status <STATUS> --changed-file <path> --learn`. Required fields: a prose summary and `--status` (one of `DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, `REGRESSED`). Add one `--changed-file` per modified file; omit it when no files changed (common for `BLOCKED`, `TOO_BIG`, or `AMBIGUOUS`). Old form `handoff <name> "<message>" --learn` still works when no structured status is needed. The orchestrator reads `STATUS:` and `Changed:` receipts to decide next steps and triage. |
 
 ## Anti-patterns
 
@@ -310,6 +310,7 @@ tentacle.py swarm <name> --output parallel --briefing                      # one
 tentacle.py swarm <name> --output json --briefing                          # JSON + bundle_path
 tentacle.py dispatch <name> --agent-type <type> --briefing                 # single-agent dispatch
 tentacle.py swarm <name> --no-bundle                                       # rare opt-out for tiny prompts
+tentacle.py handoff <name> "<summary>" --status DONE --changed-file <path> --learn
 tentacle.py resume <name>                  # resume interrupted tentacle (refreshes briefing)
 tentacle.py resume <name> --no-briefing    # resume without re-fetching briefing
 tentacle.py status

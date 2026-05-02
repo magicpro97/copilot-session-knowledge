@@ -131,7 +131,48 @@ Do **not** implement write behavior in browse diagnostics routes.
 
 ---
 
+## Tentacle Outcome Metrics
+
+Metrics for structured handoff status and file receipts are persisted in `skill-metrics.db`.
+
+### `tentacle_outcomes` table
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `tentacle_name` | TEXT | Tentacle name |
+| `outcome_status` | TEXT | Lifecycle status at completion (e.g., `completed`) |
+| `terminal_status` | TEXT | Structured handoff status: `DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED`; NULL when handoff has no `STATUS:` line |
+| `recorded_at` | TEXT | ISO 8601 timestamp of `tentacle.py complete` |
+
+`terminal_status` is populated by `tentacle.py complete` from the latest `STATUS:` line in
+`handoff.md`. Free-form handoffs without a `STATUS:` line leave this column NULL.
+
+### `meta.json` fields (written by `complete`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `terminal_status` | string or absent | Latest `STATUS:` value from handoff.md (only present if a valid status was found) |
+| `changed_files` | string[] or absent | Deduplicated paths from all `Changed:` receipt lines in handoff.md, preserving first-seen handoff order (only present if receipts exist) |
+
+These fields are extracted by `_parse_handoff_status` and `_parse_handoff_changed_files` in
+`tentacle.py` and written into the tentacle's `meta.json` before metrics recording.
+
+### Triage signal
+
+`tentacle.py handoff` and `tentacle.py complete` print a triage line when `terminal_status` is a
+non-`DONE` value:
+
+```
+⚠️  TRIAGE: terminal_status=BLOCKED — orchestrator review required
+```
+
+`DONE` does not produce a triage signal.
+
+---
+
+
 ## Dispatched-Subagent Marker Contract
+
 
 The `dispatched-subagent-active` marker at `~/.copilot/markers/dispatched-subagent-active` is a JSON file with this contract:
 

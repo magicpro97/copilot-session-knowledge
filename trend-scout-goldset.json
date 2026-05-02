@@ -16,6 +16,14 @@
       "expected_lane": "token-efficiency-cli",
       "min_score": 0.1,
       "notes": "RTK-class token-efficiency CLI tool; validates that the token-efficiency-cli lane surfaces streaming/token-management repos adjacent to this project's context-window concerns."
+    },
+    {
+      "repo": "JuliusBrussee/caveman",
+      "required": true,
+      "category": "claude-code-skills",
+      "expected_lane": "claude-code-skills",
+      "min_score": 0.1,
+      "notes": "Caveman-class Claude Code skill repo. Publishes a reusable AGENTS.md skill that enforces terse/caveman communication style to reduce token consumption. Topics: claude-code, skill, tokens, prompt-engineering, anthropic, claude. Previously skipped by Trend Scout due to discovery vocabulary/topic gap — primary and adjacent lanes lacked claude-code/skill/anthropic topic coverage."
     }
   ]
 }

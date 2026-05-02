@@ -64,6 +64,30 @@
       "language": null
     },
     {
+      "_comment": "Claude Code skills lane — language-agnostic, targets repos in the Claude Code skill/prompt-engineering space. Surfaces caveman-class repos that publish reusable Claude Code skills, prompt-engineering patterns, or Anthropic/Claude-specific developer tooling. Lower min_stars (2) to catch early-stage high-signal projects. Topics and keywords drawn from verified caveman repo metadata: claude-code, skill, tokens, prompt-engineering, anthropic, claude.",
+      "name": "claude-code-skills",
+      "keywords": [
+        "topic:claude-code topic:skill",
+        "topic:claude topic:prompt-engineering",
+        "\"claude code\" skill prompt-engineering anthropic",
+        "claude code skill tokens prompt engineering",
+        "anthropic claude skill agent instruction",
+        "Claude Code AGENTS.md skill instructions"
+      ],
+      "topics": [
+        "claude-code",
+        "skill",
+        "prompt-engineering",
+        "anthropic",
+        "claude",
+        "tokens"
+      ],
+      "min_stars": 2,
+      "max_per_query": 10,
+      "lookback_days": 365,
+      "language": null
+    },
+    {
       "_comment": "Token-efficiency CLI lane — language-agnostic, targets repos in the token-streaming/token-budget/context-window tooling space. Surfaces RTK-class repos that use streaming output, token counting, or context-window management in a CLI/terminal surface. Lower min_stars (2) to catch early-stage but high-signal projects. The '\"rtk\" in:name,description' qualifier directly addresses the RTK miss proven at search stage.",
       "name": "token-efficiency-cli",
       "keywords": [

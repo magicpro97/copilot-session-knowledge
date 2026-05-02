@@ -5008,6 +5008,27 @@ class TestCompleteOutcomePersistence(unittest.TestCase):
         self.assertEqual(row[0], 1)
         self.assertEqual(row[1], fake_wt)
 
+    def test_complete_outcome_persists_terminal_status(self):
+        handoff_path = self.tentacle_dir / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nBlocked\nSTATUS: BLOCKED\n",
+            encoding="utf-8",
+        )
+        args = fake_args(name="metrics-test", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "SKILL_METRICS_DB", self.metrics_db):
+                with patch.object(T, "_run_learn", return_value=False):
+                    with patch("builtins.print"):
+                        T.cmd_complete(args)
+
+        import sqlite3
+
+        con = sqlite3.connect(str(self.metrics_db))
+        row = con.execute("SELECT terminal_status FROM tentacle_outcomes").fetchone()
+        con.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "BLOCKED")
+
     def test_persist_outcome_metrics_creates_schema(self):
         """_persist_outcome_metrics creates all three tables."""
         result = T._persist_outcome_metrics(
@@ -5125,6 +5146,393 @@ class TestNoProductionMarkerPollution(unittest.TestCase):
         self.assertTrue(
             self.marker_path.is_file(),
             "cmd_bundle() must write to the redirected test marker path",
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestHandoffContract — structured handoff STATUS + Changed receipts
+# ---------------------------------------------------------------------------
+
+
+class TestHandoffContract(unittest.TestCase):
+    """Tests for optional structured handoff STATUS and Changed: receipts.
+
+    Covers:
+      - Valid STATUS allowlist (DONE, BLOCKED, TOO_BIG, AMBIGUOUS, REGRESSED)
+      - Invalid status rejection
+      - Changed: receipts written by cmd_handoff
+      - cmd_complete extracts latest STATUS and all Changed: receipts into meta.json
+      - Backward compat: old free-form handoffs still work
+      - Triage statuses produce a visible orchestrator signal
+    """
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "handoff_contract"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / "dispatched-subagent-active"
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    # -- helpers --
+
+    def _handoff_args(self, name, message, status=None, changed_file=None, learn=False):
+        return fake_args(
+            name=name,
+            message=message,
+            status=status,
+            changed_file=changed_file or [],
+            learn=learn,
+        )
+
+    def _complete_args(self, name, no_learn=True):
+        return fake_args(name=name, no_learn=no_learn)
+
+    def _read_handoff(self, name):
+        return (self.base / name / "handoff.md").read_text(encoding="utf-8")
+
+    def _read_meta(self, name):
+        return json.loads((self.base / name / "meta.json").read_text(encoding="utf-8"))
+
+    # -- STATUS allowlist tests --
+
+    def test_valid_status_done(self):
+        make_tentacle("ho-done", self.base)
+        args = self._handoff_args("ho-done", "All done", status="DONE")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-done")
+        self.assertIn("STATUS: DONE", content)
+
+    def test_valid_status_blocked(self):
+        make_tentacle("ho-blocked", self.base)
+        args = self._handoff_args("ho-blocked", "Blocked on X", status="BLOCKED")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-blocked")
+        self.assertIn("STATUS: BLOCKED", content)
+
+    def test_valid_status_too_big(self):
+        make_tentacle("ho-toobig", self.base)
+        args = self._handoff_args("ho-toobig", "Scope too wide", status="TOO_BIG")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-toobig")
+        self.assertIn("STATUS: TOO_BIG", content)
+
+    def test_valid_status_ambiguous(self):
+        make_tentacle("ho-ambig", self.base)
+        args = self._handoff_args("ho-ambig", "Requirements unclear", status="AMBIGUOUS")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-ambig")
+        self.assertIn("STATUS: AMBIGUOUS", content)
+
+    def test_valid_status_regressed(self):
+        make_tentacle("ho-regressed", self.base)
+        args = self._handoff_args("ho-regressed", "Tests broke", status="REGRESSED")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-regressed")
+        self.assertIn("STATUS: REGRESSED", content)
+
+    # -- Invalid status rejection --
+
+    def test_invalid_status_rejected(self):
+        make_tentacle("ho-bad-status", self.base)
+        args = self._handoff_args("ho-bad-status", "Done I think", status="UNKNOWN")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with self.assertRaises(SystemExit) as ctx:
+                T.cmd_handoff(args)
+        self.assertNotEqual(ctx.exception.code, 0)
+
+    def test_invalid_status_lowercase_rejected(self):
+        make_tentacle("ho-lower", self.base)
+        args = self._handoff_args("ho-lower", "Done I think", status="done")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with self.assertRaises(SystemExit) as ctx:
+                T.cmd_handoff(args)
+        self.assertNotEqual(ctx.exception.code, 0)
+
+    # -- Changed: receipts --
+
+    def test_changed_file_single_receipt(self):
+        make_tentacle("ho-changed", self.base)
+        args = self._handoff_args("ho-changed", "Fixed it", changed_file=["src/foo.py"])
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-changed")
+        self.assertIn("Changed: src/foo.py", content)
+
+    def test_changed_file_multiple_receipts(self):
+        make_tentacle("ho-multi", self.base)
+        args = self._handoff_args(
+            "ho-multi", "Two files",
+            changed_file=["src/a.py", "tests/test_a.py"]
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-multi")
+        self.assertIn("Changed: src/a.py", content)
+        self.assertIn("Changed: tests/test_a.py", content)
+
+    def test_changed_file_and_status_together(self):
+        make_tentacle("ho-both", self.base)
+        args = self._handoff_args(
+            "ho-both", "Done and changed",
+            status="DONE",
+            changed_file=["src/foo.py"]
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-both")
+        self.assertIn("STATUS: DONE", content)
+        self.assertIn("Changed: src/foo.py", content)
+
+    # -- Backward compatibility: no status/changed_file --
+
+    def test_legacy_handoff_no_status_still_works(self):
+        make_tentacle("ho-legacy", self.base)
+        # old-style: only message and learn
+        args = fake_args(name="ho-legacy", message="Prose note", learn=False)
+        # Must not crash even though status/changed_file attrs are missing
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-legacy")
+        self.assertIn("Prose note", content)
+        self.assertNotIn("STATUS:", content)
+        self.assertNotIn("Changed:", content)
+
+    def test_legacy_handoff_preserves_prose(self):
+        make_tentacle("ho-prose", self.base)
+        args = self._handoff_args("ho-prose", "Multi-line\nprose message")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-prose")
+        self.assertIn("Multi-line", content)
+        self.assertIn("prose message", content)
+
+    # -- cmd_complete extraction into meta.json --
+
+    def test_complete_extracts_terminal_status(self):
+        make_tentacle("ho-ext-status", self.base)
+        # Write a structured handoff
+        handoff_path = self.base / "ho-ext-status" / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nAll done\nSTATUS: DONE\n",
+            encoding="utf-8",
+        )
+        args = self._complete_args("ho-ext-status")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_complete(args)
+        meta = self._read_meta("ho-ext-status")
+        self.assertEqual(meta.get("terminal_status"), "DONE")
+
+    def test_complete_extracts_changed_files(self):
+        make_tentacle("ho-ext-files", self.base)
+        handoff_path = self.base / "ho-ext-files" / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nFixed things\n"
+            "STATUS: DONE\nChanged: src/foo.py\nChanged: tests/test_foo.py\n",
+            encoding="utf-8",
+        )
+        args = self._complete_args("ho-ext-files")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_complete(args)
+        meta = self._read_meta("ho-ext-files")
+        self.assertIn("src/foo.py", meta.get("changed_files", []))
+        self.assertIn("tests/test_foo.py", meta.get("changed_files", []))
+
+    def test_complete_accumulates_changed_files_across_sections(self):
+        make_tentacle("ho-ext-files-all", self.base)
+        handoff_path = self.base / "ho-ext-files-all" / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2024-01-01 11:00 UTC]\n\nPartial\n"
+            "STATUS: BLOCKED\nChanged: src/partial.py\nChanged: src/shared.py\n"
+            "\n## [2024-01-01 12:00 UTC]\n\nResolved\n"
+            "STATUS: DONE\nChanged: src/final.py\nChanged: src/shared.py\n",
+            encoding="utf-8",
+        )
+        args = self._complete_args("ho-ext-files-all")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_complete(args)
+        meta = self._read_meta("ho-ext-files-all")
+        self.assertEqual(
+            meta.get("changed_files"),
+            ["src/partial.py", "src/shared.py", "src/final.py"],
+        )
+
+    def test_complete_uses_latest_section_status(self):
+        """When multiple sections exist, latest STATUS wins."""
+        make_tentacle("ho-latest", self.base)
+        handoff_path = self.base / "ho-latest" / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2024-01-01 11:00 UTC]\n\nFirst attempt\nSTATUS: BLOCKED\n"
+            "\n## [2024-01-01 12:00 UTC]\n\nResolved\nSTATUS: DONE\n",
+            encoding="utf-8",
+        )
+        args = self._complete_args("ho-latest")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_complete(args)
+        meta = self._read_meta("ho-latest")
+        self.assertEqual(meta.get("terminal_status"), "DONE")
+
+    def test_complete_with_legacy_handoff_no_terminal_status(self):
+        """Free-form handoff without STATUS: line → no terminal_status in meta."""
+        make_tentacle("ho-legacy-complete", self.base)
+        handoff_path = self.base / "ho-legacy-complete" / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nFree-form prose only.\n",
+            encoding="utf-8",
+        )
+        args = self._complete_args("ho-legacy-complete")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_complete(args)
+        meta = self._read_meta("ho-legacy-complete")
+        self.assertNotIn("terminal_status", meta)
+        self.assertNotIn("changed_files", meta)
+
+    def test_complete_no_handoff_still_completes(self):
+        """Complete without handoff.md must not crash."""
+        make_tentacle("ho-no-handoff", self.base)
+        args = self._complete_args("ho-no-handoff")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_complete(args)
+        meta = self._read_meta("ho-no-handoff")
+        self.assertEqual(meta.get("status"), "completed")
+        self.assertNotIn("terminal_status", meta)
+
+    # -- Triage signal for non-DONE statuses --
+
+    def test_triage_signal_on_regressed(self):
+        make_tentacle("ho-triage-reg", self.base)
+        args = self._handoff_args("ho-triage-reg", "Tests failed", status="REGRESSED")
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_handoff(args)
+        combined = "\n".join(captured)
+        self.assertIn("TRIAGE", combined)
+        self.assertIn("REGRESSED", combined)
+
+    def test_triage_signal_on_blocked(self):
+        make_tentacle("ho-triage-blk", self.base)
+        args = self._handoff_args("ho-triage-blk", "Blocked on dep", status="BLOCKED")
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_handoff(args)
+        combined = "\n".join(captured)
+        self.assertIn("TRIAGE", combined)
+        self.assertIn("terminal_status=BLOCKED", combined)
+        self.assertIn("TRIAGE: terminal_status=BLOCKED — orchestrator review required", combined)
+
+    def test_triage_signal_on_too_big(self):
+        make_tentacle("ho-triage-big", self.base)
+        args = self._handoff_args("ho-triage-big", "Too wide", status="TOO_BIG")
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_handoff(args)
+        combined = "\n".join(captured)
+        self.assertIn("TRIAGE", combined)
+
+    def test_triage_signal_on_ambiguous(self):
+        make_tentacle("ho-triage-amb", self.base)
+        args = self._handoff_args("ho-triage-amb", "Unclear", status="AMBIGUOUS")
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_handoff(args)
+        combined = "\n".join(captured)
+        self.assertIn("TRIAGE", combined)
+
+    def test_done_no_triage_signal(self):
+        """DONE status must NOT emit a triage signal."""
+        make_tentacle("ho-no-triage-done", self.base)
+        args = self._handoff_args("ho-no-triage-done", "Finished", status="DONE")
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_handoff(args)
+        combined = "\n".join(captured)
+        self.assertNotIn("TRIAGE", combined)
+
+    def test_complete_prints_triage_signal_for_non_done_status(self):
+        """cmd_complete should emit triage signal when terminal_status is BLOCKED."""
+        make_tentacle("ho-comp-triage", self.base)
+        handoff_path = self.base / "ho-comp-triage" / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nBlocked\nSTATUS: BLOCKED\n",
+            encoding="utf-8",
+        )
+        args = self._complete_args("ho-comp-triage")
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_complete(args)
+        combined = "\n".join(captured)
+        self.assertIn("TRIAGE", combined)
+
+    # -- Parser helpers --
+
+    def test_parse_handoff_status_returns_none_for_legacy(self):
+        content = "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nJust prose.\n"
+        self.assertIsNone(T._parse_handoff_status(content))
+
+    def test_parse_handoff_status_extracts_from_section(self):
+        content = "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nDone.\nSTATUS: DONE\n"
+        self.assertEqual(T._parse_handoff_status(content), "DONE")
+
+    def test_parse_handoff_status_returns_latest(self):
+        content = (
+            "# Handoff Notes\n\n## [2024-01-01 11:00 UTC]\n\nFirst.\nSTATUS: BLOCKED\n"
+            "\n## [2024-01-01 12:00 UTC]\n\nFixed.\nSTATUS: DONE\n"
+        )
+        self.assertEqual(T._parse_handoff_status(content), "DONE")
+
+    def test_parse_handoff_status_rejects_invalid_manual_status(self):
+        content = "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nNope.\nSTATUS: UNKNOWN\n"
+        self.assertIsNone(T._parse_handoff_status(content))
+
+    def test_parse_handoff_status_skips_invalid_latest_status(self):
+        content = (
+            "# Handoff Notes\n\n## [2024-01-01 11:00 UTC]\n\nDone.\nSTATUS: DONE\n"
+            "\n## [2024-01-01 12:00 UTC]\n\nTypo.\nSTATUS: done\n"
+        )
+        self.assertEqual(T._parse_handoff_status(content), "DONE")
+
+    def test_parse_handoff_changed_files_returns_empty_for_legacy(self):
+        content = "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nJust prose.\n"
+        self.assertEqual(T._parse_handoff_changed_files(content), [])
+
+    def test_parse_handoff_changed_files_extracts_files(self):
+        content = (
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nDone.\n"
+            "STATUS: DONE\nChanged: src/foo.py\nChanged: tests/bar.py\n"
+        )
+        files = T._parse_handoff_changed_files(content)
+        self.assertIn("src/foo.py", files)
+        self.assertIn("tests/bar.py", files)
+
+    def test_parse_handoff_changed_files_accumulates_sections_and_deduplicates(self):
+        content = (
+            "# Handoff Notes\n\n## [2024-01-01 11:00 UTC]\n\nPartial.\n"
+            "Changed: src/partial.py\nChanged: src/shared.py\n"
+            "\n## [2024-01-01 12:00 UTC]\n\nDone.\n"
+            "Changed: src/final.py\nChanged: src/shared.py\n"
+        )
+        self.assertEqual(
+            T._parse_handoff_changed_files(content),
+            ["src/partial.py", "src/shared.py", "src/final.py"],
         )
 
 

@@ -70,6 +70,26 @@ When dispatching sub-agents via the `task` tool:
 - Don't assume file paths — use `glob` to find them
 - If unsure about behavior, write a small test or read the source
 
+### 7. Docs Output Quality
+
+Agent-authored docs, tentacle handoffs, operator reports, and research outputs must distinguish four layers. Mixing layers silently or presenting interpretation as fact is a documentation defect.
+
+| Layer | What it contains | Marking convention |
+|-------|-----------------|-------------------|
+| **Facts** | Verified, reproducible data: row counts, timestamps, test results, git refs | State directly; cite the source or command that produced it |
+| **Interpretation** | Reasoning based on facts: patterns, risks, root causes, inferences | Qualify explicitly: "suggests", "indicates", "likely" |
+| **Actions** | Concrete next steps: commands to run, tickets to file, follow-up tentacles | Use imperative; include the executable command |
+| **Verification evidence** | Proof that work was done: test log output, CI status, measured diffs | Link or inline the evidence; do not claim verified without it |
+
+**Rules:**
+1. Do not present interpretation as fact. Every non-trivial causal claim must be qualified.
+2. Every action item must be executable — include the actual command or URL.
+3. Every verification claim must include evidence (test log excerpt, CI link, git ref, or pass/fail count).
+4. Keep operator/research docs concise. Move lengthy context into appendices or collapsible sections.
+5. Operator/research outputs (tentacle handoffs, retro summaries, knowledge-health reports) must follow all four layers. Contributor docs keep their existing concise tone.
+
+> **Drift-lock:** `docs/AGENT-RULES.md` is the canonical source for all agent rules. This file (`copilot-instructions.md`) is the Copilot CLI runtime enforcement surface — keep it in sync with `docs/AGENT-RULES.md`. Changes to agent rules should be reflected in both places.
+
 ## Testing
 
 ```bash
