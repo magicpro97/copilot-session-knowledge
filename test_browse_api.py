@@ -27,6 +27,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest.mock
@@ -741,6 +742,108 @@ def run_all_tests() -> int:
         )
     finally:
         server.shutdown()
+
+    # ── T19b: /api/tentacles/status reads STATUS from handoff before complete ──
+    print("\n-- T19b: /api/tentacles/status reads handoff STATUS before complete")
+    import browse.routes.tentacles as _tentacles_mod
+
+    with tempfile.TemporaryDirectory() as _td:
+        _tentacle_root = Path(_td)
+        _demo = _tentacle_root / "demo"
+        _demo.mkdir(parents=True, exist_ok=True)
+        (_demo / "meta.json").write_text(
+            json.dumps(
+                {
+                    "name": "demo",
+                    "status": "active",
+                    "description": "demo tentacle",
+                    "created_at": "2026-05-02T00:00:00+00:00",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (_demo / "handoff.md").write_text(
+            "# Handoff Notes\n\n"
+            "## [2026-05-02 00:00 UTC]\n\n"
+            "Waiting on orchestrator review.\n"
+            "STATUS: BLOCKED\n",
+            encoding="utf-8",
+        )
+        db = _make_test_db()
+        server, host, port = _start_server(db)
+        try:
+            with (
+                unittest.mock.patch.object(_tentacles_mod, "_OCTOGENT_DIR", _tentacle_root),
+                unittest.mock.patch.object(_tentacles_mod, "_DISPATCHED_MARKER", _tentacle_root / "no-marker"),
+                unittest.mock.patch.object(_tentacles_mod, "_WORKTREE_STATE_ROOT", _tentacle_root / "no-worktrees"),
+            ):
+                status, _, data = _get(host, port, "/api/tentacles/status")
+            test("T19b: status 200", status == 200)
+            tentacles = data.get("tentacles") or []
+            test("T19b: tentacle entry returned", len(tentacles) == 1)
+            test(
+                "T19b: terminal_status falls back to latest handoff STATUS",
+                bool(tentacles) and tentacles[0].get("terminal_status") == "BLOCKED",
+            )
+            checks = data.get("audit", {}).get("checks") or []
+            triage = next((c for c in checks if c.get("id") == "tentacle-triage"), {})
+            test(
+                "T19b: triage check warns before complete when handoff STATUS is non-DONE",
+                triage.get("status") == "warning",
+            )
+        finally:
+            server.shutdown()
+
+    # ── T19c: invalid latest STATUS falls back to earlier valid section ──────
+    print("\n-- T19c: /api/tentacles/status ignores invalid latest STATUS values")
+    with tempfile.TemporaryDirectory() as _td:
+        _tentacle_root = Path(_td)
+        _demo = _tentacle_root / "demo"
+        _demo.mkdir(parents=True, exist_ok=True)
+        (_demo / "meta.json").write_text(
+            json.dumps(
+                {
+                    "name": "demo",
+                    "status": "done",
+                    "description": "demo tentacle",
+                    "created_at": "2026-05-02T00:00:00+00:00",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (_demo / "handoff.md").write_text(
+            "# Handoff Notes\n\n"
+            "## [2026-05-02 00:00 UTC]\n\n"
+            "Completed successfully.\n"
+            "STATUS: DONE\n\n"
+            "## [2026-05-02 01:00 UTC]\n\n"
+            "Manual note added later.\n"
+            "STATUS: DONE_WITH_NOTES\n",
+            encoding="utf-8",
+        )
+        db = _make_test_db()
+        server, host, port = _start_server(db)
+        try:
+            with (
+                unittest.mock.patch.object(_tentacles_mod, "_OCTOGENT_DIR", _tentacle_root),
+                unittest.mock.patch.object(_tentacles_mod, "_DISPATCHED_MARKER", _tentacle_root / "no-marker"),
+                unittest.mock.patch.object(_tentacles_mod, "_WORKTREE_STATE_ROOT", _tentacle_root / "no-worktrees"),
+            ):
+                status, _, data = _get(host, port, "/api/tentacles/status")
+            test("T19c: status 200", status == 200)
+            tentacles = data.get("tentacles") or []
+            test(
+                "T19c: invalid latest STATUS is ignored in favor of earlier valid status",
+                bool(tentacles) and tentacles[0].get("terminal_status") == "DONE",
+            )
+            checks = data.get("audit", {}).get("checks") or []
+            triage = next((c for c in checks if c.get("id") == "tentacle-triage"), {})
+            test(
+                "T19c: triage check stays ok when latest invalid STATUS is ignored",
+                triage.get("status") == "ok",
+            )
+        finally:
+            server.shutdown()
 
     # ── T20: /api/skills/metrics diagnostics shape ────────────────────────────
     print("\n-- T20: /api/skills/metrics diagnostics")

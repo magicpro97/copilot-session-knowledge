@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ _MARKERS_DIR = Path.home() / ".copilot" / "markers"
 _DISPATCHED_MARKER = _MARKERS_DIR / "dispatched-subagent-active"
 _DISPATCHED_MARKER_TTL = 4 * 3600
 _WORKTREE_STATE_ROOT = Path.home() / ".copilot" / "session-state" / "worktrees"
+_HANDOFF_STATUS_ALLOWLIST = frozenset({"DONE", "BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"})
 
 
 def _load_json(path: Path) -> dict:
@@ -42,6 +44,23 @@ def _marker_age_hours(marker_path: Path) -> float | None:
         return elapsed / 3600.0
     except Exception:
         return None
+
+
+def _parse_handoff_status(handoff_path: Path) -> str:
+    try:
+        if not handoff_path.is_file():
+            return ""
+        handoff_content = handoff_path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    sections = re.split(r"^## \[", handoff_content, flags=re.MULTILINE)
+    for section in reversed(sections):
+        m = re.search(r"^STATUS:\s*(\S+)", section, flags=re.MULTILINE)
+        if m:
+            status = m.group(1)
+            if status in _HANDOFF_STATUS_ALLOWLIST:
+                return status
+    return ""
 
 
 def _read_tentacles() -> list[dict]:
@@ -117,6 +136,12 @@ def _read_tentacles() -> list[dict]:
             if not isinstance(skills, list):
                 skills = []
 
+            handoff_path = entry / "handoff.md"
+            has_handoff = handoff_path.is_file()
+            terminal_status = str(meta.get("terminal_status") or "").strip()
+            if not terminal_status and has_handoff:
+                terminal_status = _parse_handoff_status(handoff_path)
+
             tentacles.append(
                 {
                     "name": str(meta.get("name", "")),
@@ -128,6 +153,8 @@ def _read_tentacles() -> list[dict]:
                     "skills": [str(s) for s in skills if isinstance(s, str)],
                     "worktree": worktree,
                     "verification": verification,
+                    "has_handoff": has_handoff,
+                    "terminal_status": terminal_status,
                 }
             )
     except Exception:
@@ -152,6 +179,9 @@ def handle_tentacles_status(db, params, token, nonce) -> tuple:
     worktrees_prepared = sum(1 for t in tentacles if t.get("worktree", {}).get("prepared"))
     verification_covered = sum(1 for t in tentacles if t.get("verification", {}).get("coverage_exists"))
 
+    triage_count = sum(
+        1 for t in tentacles if (status := str(t.get("terminal_status", "")).strip()) and status != "DONE"
+    )
     checks = [
         {
             "id": "octogent-dir",
@@ -177,6 +207,16 @@ def handle_tentacles_status(db, params, token, nonce) -> tuple:
                     if marker_active and marker_age_hours is not None
                     else "no active marker"
                 )
+            ),
+        },
+        {
+            "id": "tentacle-triage",
+            "title": "Handoff triage needed",
+            "status": "warning" if triage_count > 0 else "ok",
+            "detail": (
+                f"{triage_count} tentacle(s) with non-DONE handoff status — orchestrator triage required"
+                if triage_count > 0
+                else "no pending triage"
             ),
         },
     ]
@@ -211,6 +251,12 @@ def handle_tentacles_status(db, params, token, nonce) -> tuple:
             "Tentacle status in JSON",
             "Machine-readable tentacle status for diagnostics.",
             "python3 tentacle-status.py --json",
+        ),
+        make_action(
+            "tentacle-marker-cleanup",
+            "Inspect stale dispatch markers",
+            "Dry-run inspection of stale dispatched-subagent marker entries (read-only). Add --apply to remove them.",
+            "python3 tentacle.py marker-cleanup",
         ),
     ]
 

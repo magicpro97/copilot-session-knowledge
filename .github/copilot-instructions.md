@@ -88,7 +88,34 @@ Agent-authored docs, tentacle handoffs, operator reports, and research outputs m
 4. Keep operator/research docs concise. Move lengthy context into appendices or collapsible sections.
 5. Operator/research outputs (tentacle handoffs, retro summaries, knowledge-health reports) must follow all four layers. Contributor docs keep their existing concise tone.
 
+### 8. Tentacle Execution Obligations
+
+When running inside a tentacle (dispatched by the orchestrator via `tentacle.py`):
+
+1. **Read the bundle first** — read `manifest.json`, `session-metadata.md`, `recall-pack.json`, and `instructions.md` from the bundle path before any edit.
+2. **Stay in scope** — only edit files listed in the tentacle's declared scope; write a scope escalation note to the handoff for any exception.
+3. **Mark todos as you complete them**: `python3 ~/.copilot/tools/tentacle.py todo <tentacle-name> done <index>`
+4. **No git operations** — do NOT run `git commit` or `git push`; the orchestrator owns all git operations.
+5. **Write a structured handoff before stopping**: `python3 ~/.copilot/tools/tentacle.py handoff <tentacle-name> "<summary>" --status <STATUS> [--changed-file <path>] --learn`
+6. Use one of `DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED` for `<STATUS>`. Add one `--changed-file` per modified file; omit it when no files changed. Handoff must list changed rules, source-of-truth file for each rule, and any remaining ambiguity.
+
+See [docs/AGENT-RULES.md](../docs/AGENT-RULES.md) for the complete Rule 8 text.
+
 > **Drift-lock:** `docs/AGENT-RULES.md` is the canonical source for all agent rules. This file (`copilot-instructions.md`) is the Copilot CLI runtime enforcement surface — keep it in sync with `docs/AGENT-RULES.md`. Changes to agent rules should be reflected in both places.
+
+## Hook Enforcement (Summary)
+
+Hooks **fail-open**: if a hook crashes or is unavailable, the guarded operation proceeds. Hook failures are logged but do not interrupt work.
+
+| Rule enforced | Hook | What it does |
+|--------------|------|--------------|
+| Briefing before edits | `enforce-briefing` | Blocks `edit`/`create`/`bash` until briefing marker is present |
+| Learn after code edits | `enforce-learn` | Blocks `git commit`/`task_complete` after ≥3 edits without `learn.py` |
+| Tentacle for broad changes | `tentacle-enforce` | Blocks edits across ≥3 files / ≥2 modules without tentacle setup |
+| No git ops in sub-agents | `subagent-git-guard` | Blocks `git commit`/`git push` while dispatched-subagent marker is active |
+| Syntax errors | `syntax-gate` | Blocks `.py` edit/create payloads that fail `py_compile` |
+
+> Full hook inventory: **[docs/AGENT-RULES.md](../docs/AGENT-RULES.md)** · **[docs/HOOKS.md](../docs/HOOKS.md)**
 
 ## Testing
 

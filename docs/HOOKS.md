@@ -66,6 +66,8 @@ browse/  hooks/
 
 Both the local hook and CI run `ruff format --check` and `ruff check` on staged/changed files in this surface. Locally, **both checks are fail-open** — they skip silently when `ruff` is not installed. CI always has Ruff and will fail hard on violations. Other root scripts (e.g., `watch-sessions.py`, `install.py`, `auto-update-tools.py`) are **not** in scope.
 
+The `browse/*` and `hooks/*` patterns in the local `_py_in_surface()` function match **all subdirectory depths** — consistent with CI's directory-level `ruff check browse/ hooks/` invocation. This ensures depth-4 files like `browse/static/vendor/_download.py` are covered locally as well as in CI.
+
 **Full test suite** (`python3 run_all_tests.py`) is **not** enforced by the local `pre-commit` hook — it is too slow for every-commit use. CI runs it on every push/PR. Operators are expected to run it manually before submitting PRs. The local hook only enforces the fast checks listed in the table above.
 ### Platform events not currently handled
 
@@ -336,6 +338,10 @@ python "$env:USERPROFILE\.copilot\tools\install.py" --install-git-hooks
 
 `install.py --install-git-hooks` also sets `core.hooksPath = .git/hooks` in the repository
 config to ensure the hooks fire even when a project-level override is present.
+
+> **Non-interactive mode:** When run without a terminal (e.g., from a script or CI), if a hook
+> already exists in `.git/hooks/` and differs from the source, installation is skipped with a
+> warning. Back up the existing hook and re-run interactively to overwrite it.
 
 After tool updates (`git pull` or `auto-update-tools.py --force`), re-run
 `--install-git-hooks` to refresh the hook scripts in `.git/hooks/`. `auto-update-tools.py`

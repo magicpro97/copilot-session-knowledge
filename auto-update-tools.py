@@ -124,7 +124,8 @@ COVERAGE_MANIFEST: "dict[str, list[tuple[str, str]]]" = {
         ("templates/",           "SKILL.md templates — deployed on update"),
     ],
     "Hooks": [
-        ("hooks/*.py",           "Copilot CLI hook scripts — re-run install.py --deploy-hooks after update"),
+        ("hooks/",               "all hook scripts (Python + shell) — Python hooks: install.py --deploy-hooks; "
+                                 "git hooks (pre-commit/pre-push): install.py --install-git-hooks per repo"),
         ("hooks/rules/",         "hook rule modules (auto-discovered by install.py)"),
     ],
     "Workflows": [
@@ -1267,7 +1268,8 @@ def list_coverage():
     print("  *.py / browse/ / providers/  → restart-services (if watcher running)")
     print("  skills/ / templates/         → deploy-skills (to registered projects + global)")
     print("  launchd/                     → reinstall-launchagents (macOS only)")
-    print("  hooks/                       → warn: re-run install.py --deploy-hooks")
+    print("  hooks/ (Python scripts)      → warn: re-run install.py --deploy-hooks")
+    print("  hooks/ (pre-commit/pre-push) → warn: re-run install.py --install-git-hooks per repo")
     print("  scripts/ / .github/workflows/ → tracked; no automatic post-update action")
     print()
     print("Run --doctor to verify which directories are present on this machine.")

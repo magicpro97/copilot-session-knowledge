@@ -487,6 +487,87 @@ describe("api schemas", () => {
     expect(parsed.operator_actions[0].requires_configured_gateway).toBeUndefined();
   });
 
+  it("accepts tentacle entries with optional has_handoff and terminal_status fields", () => {
+    const result = tentacleStatusResponseSchema.parse({
+      status: "active",
+      configured: true,
+      active_count: 1,
+      total_count: 1,
+      worktrees_prepared: 0,
+      verification_covered: 0,
+      marker: {
+        active: true,
+        path: "/home/.copilot/markers/dispatched",
+        age_hours: 1.2,
+        stale: false,
+      },
+      tentacles: [
+        {
+          name: "my-tentacle",
+          tentacle_id: "abc-123",
+          status: "active",
+          created_at: "2026-01-01T00:00:00Z",
+          description: "Test tentacle",
+          scope: ["src/**"],
+          skills: [],
+          worktree: { prepared: false, path: "", stale: false },
+          verification: { coverage_exists: false, total: 0, passed: 0, failed: 0 },
+          has_handoff: true,
+          terminal_status: "DONE",
+        },
+      ],
+      audit: { summary: { ok: true, total_checks: 4, warning_checks: 0 }, checks: [] },
+      operator_actions: [
+        {
+          id: "tentacle-marker-cleanup",
+          title: "Inspect stale dispatch markers",
+          description: "Dry-run inspection of stale dispatched-subagent marker entries.",
+          command: "python3 tentacle.py marker-cleanup",
+          safe: true,
+        },
+      ],
+      runtime: { generated_at: "2026-01-01T00:00:00Z" },
+    });
+    expect(result.tentacles[0].terminal_status).toBe("DONE");
+    expect(result.tentacles[0].has_handoff).toBe(true);
+    expect(result.operator_actions[0].id).toBe("tentacle-marker-cleanup");
+  });
+
+  it("accepts tentacle entries without optional handoff fields (backward compat)", () => {
+    const result = tentacleStatusResponseSchema.parse({
+      status: "idle",
+      configured: true,
+      active_count: 0,
+      total_count: 1,
+      worktrees_prepared: 0,
+      verification_covered: 0,
+      marker: {
+        active: false,
+        path: "/home/.copilot/markers/dispatched",
+        age_hours: null,
+        stale: false,
+      },
+      tentacles: [
+        {
+          name: "old-tentacle",
+          tentacle_id: "xyz-456",
+          status: "idle",
+          created_at: "2025-01-01T00:00:00Z",
+          description: "",
+          scope: [],
+          skills: [],
+          worktree: { prepared: false, path: "", stale: false },
+          verification: { coverage_exists: false, total: 0, passed: 0, failed: 0 },
+        },
+      ],
+      audit: { summary: { ok: true, total_checks: 4, warning_checks: 0 }, checks: [] },
+      operator_actions: [],
+      runtime: { generated_at: "2025-01-01T00:00:00Z" },
+    });
+    expect(result.tentacles[0].terminal_status).toBeUndefined();
+    expect(result.tentacles[0].has_handoff).toBeUndefined();
+  });
+
   it("uses shared operatorActionSchema for skill metrics operator_actions", () => {
     const parsed = skillMetricsResponseSchema.parse({
       status: "unconfigured",

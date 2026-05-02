@@ -62,6 +62,20 @@ def _run(cmd: list, home: str, timeout: int = 30) -> subprocess.CompletedProcess
     )
 
 
+def _extract_top_level_block(source: str, block_header: str) -> str:
+    """Return the text for a top-level def/class block by its header prefix."""
+    start = source.find(block_header)
+    if start == -1:
+        return ""
+    lines = source[start:].splitlines()
+    collected = []
+    for idx, line in enumerate(lines):
+        if idx > 0 and (line.startswith("def ") or line.startswith("class ")):
+            break
+        collected.append(line)
+    return "\n".join(collected)
+
+
 # ── Syntax validity of the scripts themselves ────────────────────────────────
 
 print("\n── Syntax validity ─────────────────────────────────────────────────────")
@@ -288,8 +302,256 @@ def test_pre_commit_contains_syntax_section():
     )
 
 
+def test_pre_commit_fail_open_python_detection():
+    """Verify pre-commit hook has fail-open Python interpreter detection."""
+    if not PRE_COMMIT.exists():
+        test("hooks/pre-commit exists for fail-open check", False, str(PRE_COMMIT))
+        return
+    content = PRE_COMMIT.read_text(encoding="utf-8")
+    test(
+        "pre-commit has portable Python interpreter detection",
+        "for _py in python3 python py" in content,
+        "pre-commit missing portable Python interpreter probe loop",
+    )
+    test(
+        "pre-commit exits 0 (fail-open) when no interpreter found",
+        "    # No working interpreter → fail-open (don't block commits).\n    exit 0" in content,
+        "pre-commit should exit 0 (fail-open) when Python is absent",
+    )
+
+
+def test_pre_commit_ruff_surface_covers_all_browse_depths():
+    """Verify _py_in_surface uses browse/* to cover all subdirectory depths."""
+    if not PRE_COMMIT.exists():
+        test("hooks/pre-commit exists for browse depth check", False, str(PRE_COMMIT))
+        return
+    content = PRE_COMMIT.read_text(encoding="utf-8")
+    test(
+        "pre-commit _py_in_surface uses browse/* (all depths, consistent with CI)",
+        "browse/*)" in content,
+        "pre-commit _py_in_surface should use browse/* to match all depths under browse/",
+    )
+    test(
+        "pre-commit _py_in_surface uses hooks/* (all depths, consistent with CI)",
+        "hooks/*)" in content,
+        "pre-commit _py_in_surface should use hooks/* to match all depths under hooks/",
+    )
+    # Depth-limited patterns that would miss browse/static/vendor/ should not be present
+    test(
+        "pre-commit _py_in_surface does not use depth-limited browse/* patterns",
+        "browse/*/*/*.py)" not in content,
+        "pre-commit _py_in_surface uses legacy depth-limited browse pattern; update to browse/*)",
+    )
+
+
 test_pre_commit_syntax_gate_wont_fire_on_valid_file()
 test_pre_commit_contains_syntax_section()
+test_pre_commit_fail_open_python_detection()
+test_pre_commit_ruff_surface_covers_all_browse_depths()
+
+
+# ── Pre-push hook structure compatibility ────────────────────────────────────
+
+print("\n── pre-push hook compatibility ───────────────────────────────────────────")
+
+PRE_PUSH = REPO / "hooks" / "pre-push"
+
+
+def test_pre_push_exists_and_has_subagent_guard():
+    """Verify pre-push hook exists and references the subagent marker check."""
+    if not PRE_PUSH.exists():
+        test("hooks/pre-push exists", False, str(PRE_PUSH))
+        return
+    content = PRE_PUSH.read_text(encoding="utf-8")
+    test(
+        "pre-push exists",
+        True,
+    )
+    test(
+        "pre-push references check_subagent_marker.py",
+        "check_subagent_marker.py" in content,
+        "pre-push must call check_subagent_marker.py to block pushes in subagent mode",
+    )
+    test(
+        "pre-push uses canonical $HOME/.copilot/tools path",
+        "$HOME/.copilot/tools/hooks/check_subagent_marker.py" in content,
+        "pre-push should reference canonical tools path for cross-repo portability",
+    )
+
+
+def test_pre_push_fail_open_python_detection():
+    """Verify pre-push has the same fail-open Python interpreter detection as pre-commit."""
+    if not PRE_PUSH.exists():
+        test("hooks/pre-push exists for fail-open check", False, str(PRE_PUSH))
+        return
+    content = PRE_PUSH.read_text(encoding="utf-8")
+    test(
+        "pre-push has portable Python interpreter detection",
+        "for _py in python3 python py" in content,
+        "pre-push missing portable Python interpreter probe loop",
+    )
+    test(
+        "pre-push exits 0 (fail-open) when no interpreter found",
+        "    # No working interpreter → fail-open (don't block pushes).\n    exit 0" in content,
+        "pre-push should exit 0 (fail-open) when Python is absent",
+    )
+
+
+test_pre_push_exists_and_has_subagent_guard()
+test_pre_push_fail_open_python_detection()
+
+
+# ── install.py reinstall guidance ─────────────────────────────────────────────
+
+print("\n── install.py reinstall guidance ─────────────────────────────────────────")
+
+INSTALL_PY = REPO / "install.py"
+
+
+def test_install_py_has_reinstall_note():
+    """Verify install.py --install-git-hooks prints the reinstall-after-update NOTE."""
+    if not INSTALL_PY.exists():
+        test("install.py exists", False, str(INSTALL_PY))
+        return
+    content = INSTALL_PY.read_text(encoding="utf-8")
+    install_git_hooks_block = _extract_top_level_block(content, "def install_git_hooks(")
+    test(
+        "install.py defines install_git_hooks",
+        bool(install_git_hooks_block),
+        "install.py missing install_git_hooks()",
+    )
+    test(
+        "install.py install_git_hooks prints reinstall NOTE",
+        "NOTE: After each 'auto-update-tools.py' run, re-run --install-git-hooks here" in install_git_hooks_block,
+        "install_git_hooks() should print the reinstall NOTE after hook installation",
+    )
+    test(
+        "install.py install_git_hooks explains why auto-update cannot reinstall hooks",
+        "auto-update cannot do this for you safely" in install_git_hooks_block,
+        "install_git_hooks() should explain why hook refresh remains manual",
+    )
+
+
+def test_auto_update_has_hook_reinstall_warning():
+    """Verify auto-update-tools.py emits the required hook reinstall warning."""
+    if not AUTO_UPDATE.exists():
+        test("auto-update-tools.py exists for warning check", False, str(AUTO_UPDATE))
+        return
+    content = AUTO_UPDATE.read_text(encoding="utf-8")
+    test(
+        "auto-update-tools.py warns when git hook scripts change",
+        "Git hook scripts updated" in content,
+        "auto-update-tools.py missing hook-change warning; it must inform users to re-run --install-git-hooks",
+    )
+    test(
+        "auto-update-tools.py warning mentions --install-git-hooks",
+        "--install-git-hooks" in content,
+        "auto-update-tools.py warning should instruct users to run install.py --install-git-hooks",
+    )
+    test(
+        "auto-update-tools.py checks pre-commit and pre-push change triggers",
+        '"pre-commit"' in content and '"pre-push"' in content,
+        "auto-update-tools.py should trigger the warning specifically when pre-commit or pre-push files change",
+    )
+
+
+test_install_py_has_reinstall_note()
+test_auto_update_has_hook_reinstall_warning()
+
+
+# ── Rollout compatibility smoke tests ────────────────────────────────────────
+# These verify that the hook-ci-hardening changes are compatible with the
+# auto-update, hook reinstall, and watcher surfaces.
+
+print("\n── Rollout compatibility smoke tests ────────────────────────────────────")
+
+
+def test_auto_update_coverage_manifest_tracks_all_hooks():
+    """COVERAGE_MANIFEST must track hooks/ (not just *.py) to reflect shell hooks."""
+    if not AUTO_UPDATE.exists():
+        test("auto-update-tools.py exists for coverage check", False, str(AUTO_UPDATE))
+        return
+    content = AUTO_UPDATE.read_text(encoding="utf-8")
+    test(
+        "COVERAGE_MANIFEST tracks hooks/ (not restricted to hooks/*.py)",
+        '("hooks/",' in content or '"hooks/"' in content,
+        "COVERAGE_MANIFEST should use 'hooks/' to cover pre-commit/pre-push shell scripts",
+    )
+    test(
+        "COVERAGE_MANIFEST mentions install-git-hooks for git hook scripts",
+        "install-git-hooks" in content,
+        "COVERAGE_MANIFEST Hooks entry should mention --install-git-hooks for per-repo git hooks",
+    )
+
+
+def test_auto_update_classify_catches_pre_commit_as_hooks():
+    """classify_changes() must catch hooks/pre-commit in the 'hooks' category."""
+    if not AUTO_UPDATE.exists():
+        test("auto-update-tools.py exists for classify check", False, str(AUTO_UPDATE))
+        return
+    content = AUTO_UPDATE.read_text(encoding="utf-8")
+    # The classify_changes function uses f.startswith("hooks/") — verify this is intact.
+    test(
+        'classify_changes uses f.startswith("hooks/") to catch all hook files',
+        'f.startswith("hooks/")' in content,
+        "classify_changes should use startswith('hooks/') so shell hook scripts are caught",
+    )
+
+
+def test_watcher_lock_uses_atomic_open():
+    """watch-sessions.py must use O_CREAT|O_EXCL for lock acquisition (no TOCTOU)."""
+    if not WATCH_SESSIONS.exists():
+        test("watch-sessions.py exists for lock check", False, str(WATCH_SESSIONS))
+        return
+    content = WATCH_SESSIONS.read_text(encoding="utf-8")
+    release_lock_block = _extract_top_level_block(content, "def release_lock():")
+    test(
+        "watch-sessions.py acquires lock with O_CREAT | O_EXCL",
+        "os.O_CREAT | os.O_EXCL" in content or "O_CREAT|O_EXCL" in content,
+        "watch-sessions.py lock acquisition must use O_CREAT | O_EXCL to prevent TOCTOU races",
+    )
+    test(
+        "watch-sessions.py releases lock with PID verification",
+        "if stored_pid == os.getpid():" in release_lock_block and "LOCK_FILE.unlink" in release_lock_block,
+        "watch-sessions.py must verify PID ownership before releasing the lock",
+    )
+
+
+def test_auto_update_list_coverage_shows_install_git_hooks():
+    """auto-update-tools.py --list-coverage output must mention install-git-hooks."""
+    home = _isolated_home("au-coverage-hooks")
+    r = _run([sys.executable, str(AUTO_UPDATE), "--list-coverage"], home=home)
+    test(
+        "--list-coverage mentions install-git-hooks for git hook scripts",
+        "install-git-hooks" in r.stdout,
+        f"Expected 'install-git-hooks' in --list-coverage output:\n{r.stdout[:400]}",
+    )
+
+
+def test_architecture_md_documents_structured_handoff():
+    """docs/ARCHITECTURE.md must document the structured handoff contract."""
+    arch_md = REPO / "docs" / "ARCHITECTURE.md"
+    if not arch_md.exists():
+        test("docs/ARCHITECTURE.md exists", False, str(arch_md))
+        return
+    content = arch_md.read_text(encoding="utf-8")
+    test(
+        "ARCHITECTURE.md documents --status in handoff command",
+        "--status DONE" in content,
+        "ARCHITECTURE.md Tentacle Workspace section should show '--status DONE' structured handoff",
+    )
+    test(
+        "ARCHITECTURE.md documents --changed-file in handoff command",
+        "--changed-file" in content,
+        "ARCHITECTURE.md should document --changed-file receipts in the structured handoff form",
+    )
+
+
+test_auto_update_coverage_manifest_tracks_all_hooks()
+test_auto_update_classify_catches_pre_commit_as_hooks()
+test_watcher_lock_uses_atomic_open()
+test_auto_update_list_coverage_shows_install_git_hooks()
+test_architecture_md_documents_structured_handoff()
 
 
 # ── Cleanup ──────────────────────────────────────────────────────────────────

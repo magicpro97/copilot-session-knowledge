@@ -333,8 +333,12 @@ python3 ~/.copilot/tools/tentacle.py swarm api-export --no-bundle               
 # 5. Monitor runtime (read-only)
 python3 ~/.copilot/tools/tentacle.py status                # dashboard: all tentacles + states
 
-# 6. Verify results, record learnings, and close (orchestrator only)
-python3 ~/.copilot/tools/tentacle.py handoff api-export "Completed. Patterns learned." --learn
+# 6. Sub-agent: cross-review then write structured handoff when done
+#    Re-read every changed file, then write handoff with --status and --changed-file receipts
+python3 ~/.copilot/tools/tentacle.py handoff api-export "Completed API export. OpenAPI schema written." \
+  --status DONE --changed-file src/api/schema.py --changed-file src/api/auth.py --learn
+
+# 7. Orchestrator: verify results and close
 python3 ~/.copilot/tools/tentacle.py complete api-export   # marks done, auto-learns from handoff
 ```
 

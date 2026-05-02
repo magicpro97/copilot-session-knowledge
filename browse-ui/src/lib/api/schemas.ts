@@ -496,6 +496,8 @@ export const tentacleEntrySchema = z.object({
   skills: z.array(z.string()),
   worktree: tentacleWorktreeInfoSchema,
   verification: tentacleVerificationInfoSchema,
+  has_handoff: z.boolean().optional(),
+  terminal_status: z.string().optional(),
 });
 
 export const tentacleMarkerInfoSchema = z.object({

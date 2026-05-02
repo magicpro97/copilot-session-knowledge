@@ -2302,9 +2302,22 @@ def cmd_swarm(args):
 - **DO NOT run `git commit` or `git push`** — the orchestrator owns all git operations
 - **DO NOT widen your scope** beyond the files listed above without explicit escalation to the orchestrator
 - If a task cannot be completed within your scope, stop that task and write a scope escalation note to handoff before continuing
-- Write results to handoff: run `python3 ~/.copilot/tools/tentacle.py handoff "{args.name}" "<summary>"`
-- Mark todos done: run `python3 ~/.copilot/tools/tentacle.py todo "{args.name}" done <index>`
-- Record learnings: run `python3 ~/.copilot/tools/tentacle.py handoff "{args.name}" "<what you learned>" --learn`
+
+### Cross-review (required before handoff)
+Before writing the handoff, do a self-cross-review:
+1. Re-read every file you modified and confirm correctness against the task description
+2. Verify no unintended changes outside your declared scope
+3. Confirm all todos are complete or explicitly documented as blocked/escalated
+
+### When done
+Mark each completed todo:
+  `python3 ~/.copilot/tools/tentacle.py todo "{args.name}" done <index>`
+
+Write a structured handoff with status and changed-file receipts:
+  `python3 ~/.copilot/tools/tentacle.py handoff "{args.name}" "<summary>" --status DONE --changed-file <file1> --changed-file <file2> --learn`
+
+Status values: `DONE` (all tasks complete) | `BLOCKED` (external dependency) | `TOO_BIG` (scope too wide) | `AMBIGUOUS` (spec unclear) | `REGRESSED` (tests broke)
+Add `--changed-file <path>` once per modified file. Omit if no files changed (e.g. BLOCKED with no edits).
 """
 
         print(prompt)
@@ -2359,10 +2372,16 @@ def cmd_swarm(args):
             print("- **DO NOT widen your scope** without explicit escalation to the orchestrator")
             print("- If the task requires files outside your scope, stop and write a scope escalation note to handoff")
             print("")
+            print("### Cross-review (required before handoff)")
+            print("Re-read every file you modified and confirm correctness before writing handoff.")
+            print("")
             print("### When done")
             print(f'python3 ~/.copilot/tools/tentacle.py todo "{args.name}" done {t["index"]}')
             print(
-                f'python3 ~/.copilot/tools/tentacle.py handoff "{args.name}" "Completed: {t["text"]}. Key learnings: <summary>" --learn'
+                f'python3 ~/.copilot/tools/tentacle.py handoff "{args.name}" "Completed: {t["text"]}" --status DONE --changed-file <path1> --changed-file <path2> --learn'
+            )
+            print(
+                "# Status: DONE | BLOCKED | TOO_BIG | AMBIGUOUS | REGRESSED  (use --changed-file once per modified file)"
             )
             print('"""')
             print(")\n")

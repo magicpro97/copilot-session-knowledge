@@ -15,6 +15,7 @@
 5. **Sub-agent model selection** — use `claude-sonnet-4.6` for code generation; `claude-opus-4.6` for security audits; never dispatch sub-agents with the default (haiku) model for code changes.
 6. **No guessing** — verify table names, function signatures, and file paths from source; never assume.
 7. **Docs output quality** — distinguish Facts / Interpretation / Actions / Verification evidence; never present inference as fact; every action must include the executable command.
+8. **Tentacle execution obligations** — when dispatched inside a tentacle: (a) read bundle files first, (b) stay in declared scope, (c) mark todos done with `tentacle.py todo <name> done <index>`, (d) do NOT run `git commit`/`git push`, (e) write a structured handoff with explicit `--status` (`DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED`) via `tentacle.py handoff <name> "<summary>" --status <STATUS> [--changed-file <path>] --learn` before stopping.
 
 See [docs/AGENT-RULES.md](docs/AGENT-RULES.md) for the complete rule text and hook-enforcement table.
 
@@ -51,6 +52,10 @@ For `browse-ui/` changes: `cd browse-ui && pnpm typecheck && pnpm lint && pnpm f
 - NEVER interpolate user input into SQL strings
 - NEVER use pickle for serialization
 - NEVER run `git commit` or `git push` as a dispatched sub-agent
-- NEVER modify files outside your declared tentacle scope without a scope escalation note
+- NEVER modify files outside your declared tentacle scope without a scope escalation note in the handoff
 - ALWAYS use `O_CREAT | O_EXCL` for process locks (no TOCTOU races)
 - ALWAYS run `briefing.py` before starting work on unfamiliar code
+
+## Hook Enforcement (Principle)
+
+All hooks **fail-open**: a hook crash or absence never blocks the agent. Hook failures are logged; work proceeds. See [docs/AGENT-RULES.md](docs/AGENT-RULES.md) for the full enforcement table.

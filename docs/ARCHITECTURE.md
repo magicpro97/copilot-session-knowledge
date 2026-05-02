@@ -92,6 +92,12 @@ Hooks live in `hooks/` and are deployed to `~/.copilot/hooks/` (Copilot CLI only
 `.octogent/` stores local tentacle state and is gitignored in this repo.  
 Runtime-bundle workflow: `create` → `todo add` → `bundle` (optional) → `swarm` → `complete`.
 
+Sub-agents **must** write a structured handoff before stopping:
+```
+tentacle.py handoff <name> "<summary>" --status DONE --changed-file <path> [--changed-file ...] --learn
+```
+`--status` must be one of `DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED`. Include one `--changed-file` receipt per modified file so the orchestrator can verify the handoff trail.
+
 `tentacle.py marker-cleanup` (dry-run by default, `--apply` to act) inspects and removes stale
 entries from the dispatched-subagent marker without completing a tentacle. Only entries whose
 per-entry timestamp exceeds the declared TTL are eligible; live entries are never touched.

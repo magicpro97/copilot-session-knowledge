@@ -2046,6 +2046,103 @@ class TestSwarmGuardrails(unittest.TestCase):
         self.assertLess(guardrail_pos, when_done_pos, "Advisory guidance must precede 'When done'")
 
 
+
+# ---------------------------------------------------------------------------
+# Phase-2 dispatch prompt handoff recipe tests
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchPromptHandoffRecipe(unittest.TestCase):
+    """Tests for structured handoff recipe in swarm/dispatch prompts.
+
+    Verifies that:
+    - The prompt output (single-agent) includes --status DONE and --changed-file instructions
+    - The parallel output includes --status DONE and --changed-file instructions
+    - A cross-review instruction is present in both prompt and parallel outputs
+    """
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "handoff_recipe"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.tentacle_dir = make_tentacle("hr-test", self.base)
+        self.marker_path = self.base / "dispatched-subagent-active"
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def _swarm_args(self, output="prompt"):
+        return fake_args(
+            name="hr-test",
+            agent_type="general-purpose",
+            model="claude-sonnet-4.6",
+            output=output,
+            briefing=False,
+            bundle=False,
+        )
+
+    def _capture(self, args):
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_swarm(args)
+        return "\n".join(captured)
+
+    # ── prompt output: structured handoff recipe ──────────────────────────────
+
+    def test_prompt_when_done_includes_status_done_flag(self):
+        """Prompt output must include --status DONE instruction in the when-done section."""
+        combined = self._capture(self._swarm_args(output="prompt"))
+        self.assertIn("--status DONE", combined, "Expected '--status DONE' in prompt when-done instructions")
+
+    def test_prompt_when_done_includes_changed_file_flag(self):
+        """Prompt output must include --changed-file instruction so agents know to record file receipts."""
+        combined = self._capture(self._swarm_args(output="prompt"))
+        self.assertIn("--changed-file", combined, "Expected '--changed-file' in prompt when-done instructions")
+
+    def test_prompt_when_done_includes_triage_statuses(self):
+        """Prompt output must mention triage status values (BLOCKED, TOO_BIG, etc.)."""
+        combined = self._capture(self._swarm_args(output="prompt"))
+        self.assertIn("BLOCKED", combined)
+        self.assertIn("TOO_BIG", combined)
+
+    def test_prompt_includes_cross_review_instruction(self):
+        """Prompt output must include a cross-review step before the handoff."""
+        combined = self._capture(self._swarm_args(output="prompt"))
+        self.assertTrue(
+            "cross-review" in combined.lower() or "cross review" in combined.lower(),
+            "Expected cross-review instruction in prompt output",
+        )
+
+    # ── parallel output: structured handoff recipe ────────────────────────────
+
+    def test_parallel_when_done_includes_status_done_flag(self):
+        """Parallel worker prompts must include --status DONE in the when-done section."""
+        combined = self._capture(self._swarm_args(output="parallel"))
+        self.assertIn("--status DONE", combined, "Expected '--status DONE' in parallel when-done instructions")
+
+    def test_parallel_when_done_includes_changed_file_flag(self):
+        """Parallel worker prompts must include --changed-file in the when-done section."""
+        combined = self._capture(self._swarm_args(output="parallel"))
+        self.assertIn("--changed-file", combined, "Expected '--changed-file' in parallel when-done instructions")
+
+    def test_parallel_includes_cross_review_instruction(self):
+        """Parallel worker prompts must include a cross-review step before handoff."""
+        combined = self._capture(self._swarm_args(output="parallel"))
+        self.assertTrue(
+            "cross-review" in combined.lower() or "cross review" in combined.lower(),
+            "Expected cross-review instruction in parallel output",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Phase-3 dispatched-subagent marker tests
 # ---------------------------------------------------------------------------

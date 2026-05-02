@@ -97,11 +97,32 @@ is a documentation defect.
 4. Keep operator/research docs concise. Move lengthy context into appendices or collapsible sections.
 5. Operator/research outputs (tentacle handoffs, retro summaries, knowledge-health reports, research-pack summaries) must follow all four layers. Contributor docs (`CONTRIBUTING.md`) keep their existing concise tone.
 
+## Rule 8 — Tentacle Execution Obligations
+
+When running inside a tentacle (dispatched by the orchestrator via `tentacle.py`):
+
+1. **Read the bundle first** — before any edit, read `manifest.json`, `session-metadata.md`, `recall-pack.json`, and `instructions.md` from the bundle path provided in the dispatch prompt.
+2. **Stay in scope** — only edit files listed in the tentacle's declared scope. Any edit outside that scope requires a scope escalation note written to the handoff before proceeding.
+3. **Mark todos as you complete them** — after completing each task:
+   ```bash
+   python3 ~/.copilot/tools/tentacle.py todo <tentacle-name> done <index>
+   ```
+4. **No git operations** — do NOT run `git commit` or `git push`; the orchestrator owns all git operations.
+5. **Write a structured handoff before stopping**:
+   ```bash
+   python3 ~/.copilot/tools/tentacle.py handoff <tentacle-name> "<summary>" \
+     --status <STATUS> [--changed-file <path>] --learn
+   ```
+   Use one of `DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED` for `<STATUS>`. Add one `--changed-file` per modified file; omit it when no files changed. The handoff must list: which rules changed, which file is source of truth for each rule, and any remaining ambiguity.
+6. **Review-ready handoff** — the handoff must include enough detail for an independent reviewer to verify all claims independently.
+
+> The orchestrator runtime injects the core tentacle workflow (bundle, scope, todo, handoff, and git-operation guidance) per tentacle. The canonical full text lives here.
+
 ---
 
 ## Hook Enforcement
 
-These rules are partially enforced at the tool level:
+These rules are partially enforced at the tool level. All hooks **fail-open**: if a hook itself crashes or is unavailable, the guarded operation proceeds rather than blocking the agent. Hook failures are logged but do not interrupt work.
 
 | Rule | Hook | Enforcement |
 |------|------|-------------|
@@ -109,7 +130,9 @@ These rules are partially enforced at the tool level:
 | Learn after code edits | `enforce-learn` (preToolUse) | Blocks `git commit` / `task_complete` after ≥3 code edits without `learn.py` |
 | Tentacle for broad changes | `tentacle-enforce` (preToolUse) | Blocks edits when ≥3 files across ≥2 modules without tentacle setup |
 | No git ops in sub-agents | `subagent-git-guard` (preToolUse + git hooks) | Blocks `git commit`/`git push` while dispatched-subagent marker is active |
-| Syntax errors | `syntax_gate` (preToolUse) | Blocks `.py` edit/create payloads that fail `py_compile` |
+| Syntax errors | `syntax-gate` (preToolUse) | Blocks `.py` edit/create payloads that fail `py_compile` |
+| Tentacle todo progress | runtime injection | Orchestrator expects `tentacle.py todo done` calls as tasks complete |
+| Tentacle handoff | runtime injection | Orchestrator expects `tentacle.py handoff` before agent stops |
 
 > Full hook rule inventory: **[docs/HOOKS.md](HOOKS.md)**
 

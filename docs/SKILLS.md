@@ -164,6 +164,14 @@ python3 ~/.copilot/tools/install-project-hooks.py --dry-run         # Preview wi
 script is **deprecated** — prefer `setup-project.py` which covers tentacle setup and more in one step.
 `tentacle-setup.sh` remains for backwards compatibility and simple shell-only environments.
 
+When a dispatched-subagent marker becomes stale (visible in the Settings page under **Tentacle runtime
+diagnostics** → Dispatch marker), use `marker-cleanup` to inspect and optionally remove stale entries:
+
+```bash
+python3 ~/.copilot/tools/tentacle.py marker-cleanup          # dry-run: show stale entries
+python3 ~/.copilot/tools/tentacle.py marker-cleanup --apply  # remove stale entries
+```
+
 ### Meta-skill rollout — global vs project scope
 
 `setup-project.py` deploys all 14 skills to `.github/skills/<skill-name>/SKILL.md` in the target project (project scope). The full list of skills it deploys is defined in `INSTALL_ITEMS["skills"]` in that script — `host_manifest.py` is the authoritative host-metadata source and `setup-project.py` is the authoritative skill-list source.

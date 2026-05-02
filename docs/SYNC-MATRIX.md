@@ -28,7 +28,7 @@ Run through this before calling `task_complete`:
 ```
 1. Docs         — did behavior change? update docs/ accordingly
 2. Memory       — record mistakes / patterns: python3 ~/.copilot/tools/learn.py
-3. Handoff      — if inside a tentacle: tentacle.py handoff <name> "<summary>"
+3. Handoff      — if inside a tentacle: tentacle.py handoff <name> "<summary>" --status <STATUS> [--changed-file <path>] --learn
 4. Tests        — run tests for any changed Python files
 5. Sync          — if sync config or runtime changed: python3 sync-status.py --health-check
 ```

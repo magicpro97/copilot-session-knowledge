@@ -599,6 +599,18 @@ export default function SettingsPage() {
                                 : "none"}
                             </span>
                           </span>
+                          {t.terminal_status ? (
+                            <span>
+                              Handoff:{" "}
+                              <span className="text-foreground font-medium">
+                                {t.terminal_status}
+                              </span>
+                            </span>
+                          ) : t.has_handoff ? (
+                            <span>
+                              Handoff: <span className="text-foreground font-medium">written</span>
+                            </span>
+                          ) : null}
                           {t.skills.length > 0 ? (
                             <span>
                               Skills:{" "}

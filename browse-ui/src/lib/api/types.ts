@@ -509,6 +509,8 @@ export interface TentacleEntry {
   skills: string[];
   worktree: TentacleWorktreeInfo;
   verification: TentacleVerificationInfo;
+  has_handoff?: boolean;
+  terminal_status?: string;
 }
 
 export interface TentacleMarkerInfo {
