@@ -637,6 +637,27 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_sync_failures_txn ON sync_failures(txn_id)",
             ],
         ),
+        (
+            14,
+            "benchmark_snapshots",
+            [
+                """CREATE TABLE IF NOT EXISTS benchmark_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                commit_sha TEXT NOT NULL DEFAULT '',
+                commit_msg TEXT DEFAULT '',
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                mode TEXT NOT NULL DEFAULT 'repo',
+                retro_score REAL DEFAULT 0.0,
+                score_confidence TEXT DEFAULT '',
+                subscores_json TEXT NOT NULL DEFAULT '{}',
+                health_score REAL DEFAULT NULL,
+                health_json TEXT DEFAULT NULL,
+                extra_json TEXT NOT NULL DEFAULT '{}'
+            )""",
+                "CREATE INDEX IF NOT EXISTS idx_bsnap_commit ON benchmark_snapshots(commit_sha)",
+                "CREATE INDEX IF NOT EXISTS idx_bsnap_recorded ON benchmark_snapshots(recorded_at)",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:

@@ -4070,6 +4070,173 @@ except Exception as _e18:
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  Section 22: TTL boundary conditions for _any_entry_relevant
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n── Section 22: _any_entry_relevant TTL boundary conditions ──")
+
+import time as _t22
+import importlib.util as _ilu22
+
+_MARKER_TTL_22 = 14400  # 4 hours — mirror of hook constants
+
+# Load both hook modules fresh so section isolation is clean
+try:
+    _csm_spec22 = _ilu22.spec_from_file_location("csm22", REPO / "hooks" / "check_subagent_marker.py")
+    _csm22 = _ilu22.module_from_spec(_csm_spec22)
+    _csm_spec22.loader.exec_module(_csm22)
+
+    import rules.subagent_guard as _sg22
+
+    _now22 = _t22.time()
+
+    # 22a. age == 0 (fresh) → relevant
+    _e22_age0 = {"name": "t", "ts": str(int(_now22)), "git_root": None}
+    test("22a: csm._any_entry_relevant age=0 → True (fresh)", _csm22._any_entry_relevant([_e22_age0], None, _now22))
+    test("22a-sg: sg._any_entry_relevant age=0 → True (fresh)", _sg22._any_entry_relevant([_e22_age0], None, _now22))
+
+    # 22b. age == MARKER_TTL - 1 (one second before expiry) → still relevant
+    _e22_b1 = {"name": "t", "ts": str(int(_now22) - (_MARKER_TTL_22 - 1)), "git_root": None}
+    test("22b: csm._any_entry_relevant age=TTL-1 → True", _csm22._any_entry_relevant([_e22_b1], None, _now22))
+    test("22b-sg: sg._any_entry_relevant age=TTL-1 → True", _sg22._any_entry_relevant([_e22_b1], None, _now22))
+
+    # 22c. age == MARKER_TTL (exactly at boundary) → expired (exclusive upper bound)
+    _e22_c = {"name": "t", "ts": str(int(_now22) - _MARKER_TTL_22), "git_root": None}
+    test(
+        "22c: csm._any_entry_relevant age=TTL exactly → False (expired)",
+        not _csm22._any_entry_relevant([_e22_c], None, _now22),
+    )
+    test(
+        "22c-sg: sg._any_entry_relevant age=TTL exactly → False (expired)",
+        not _sg22._any_entry_relevant([_e22_c], None, _now22),
+    )
+
+    # 22d. age > MARKER_TTL (well past expiry) → expired
+    _e22_d = {"name": "t", "ts": str(int(_now22) - _MARKER_TTL_22 - 3600), "git_root": None}
+    test("22d: csm._any_entry_relevant age>TTL → False", not _csm22._any_entry_relevant([_e22_d], None, _now22))
+    test("22d-sg: sg._any_entry_relevant age>TTL → False", not _sg22._any_entry_relevant([_e22_d], None, _now22))
+
+    # 22e. age < 0 (future timestamp) → skipped (not 0 <= age < TTL)
+    _e22_e = {"name": "t", "ts": str(int(_now22) + 3600), "git_root": None}
+    test(
+        "22e: csm._any_entry_relevant age<0 (future ts) → False",
+        not _csm22._any_entry_relevant([_e22_e], None, _now22),
+    )
+    test(
+        "22e-sg: sg._any_entry_relevant age<0 (future ts) → False",
+        not _sg22._any_entry_relevant([_e22_e], None, _now22),
+    )
+
+    # 22f. Mixed: one expired + one fresh → True (fresh one is relevant)
+    _e22_f_expired = {"name": "t1", "ts": str(int(_now22) - _MARKER_TTL_22), "git_root": None}
+    _e22_f_fresh = {"name": "t2", "ts": str(int(_now22)), "git_root": None}
+    test(
+        "22f: sg._any_entry_relevant expired+fresh → True (fresh wins)",
+        _sg22._any_entry_relevant([_e22_f_expired, _e22_f_fresh], None, _now22),
+    )
+
+    # 22g. All expired → False
+    _e22_g_list = [{"name": f"t{i}", "ts": str(int(_now22) - _MARKER_TTL_22 - i * 10), "git_root": None} for i in range(3)]
+    test(
+        "22g: sg._any_entry_relevant all-expired → False",
+        not _sg22._any_entry_relevant(_e22_g_list, None, _now22),
+    )
+
+    test("Section 22 TTL boundary tests ran without exception", True)
+except Exception as _e22ex:
+    test("Section 22 TTL boundary tests ran without exception", False, str(_e22ex))
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Section 23: session_lifecycle.py safety checks
+#   23a–23f: _extract_stop_hints token allowlist enforcement
+#   23g–23h: _iter_active_entries edge cases
+#   23i: SubagentStopRule returns None when _tentacle_mod is None
+#   23j: SubagentStopRule returns None for empty/unrecognized payload
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n── Section 23: session_lifecycle safety checks ──")
+
+sys.path.insert(0, str(REPO / "hooks"))
+try:
+    from rules import session_lifecycle as _sl23
+
+    _extract = _sl23._extract_stop_hints
+    _iter_e = _sl23._iter_active_entries
+
+    # 23a. Valid name/id tokens pass
+    _n23a, _i23a = _extract({"tentacleName": "my-tent-v2", "tentacleId": "abc-123"})
+    test("23a: valid name token accepted", "my-tent-v2" in _n23a)
+    test("23a2: valid id token accepted", "abc-123" in _i23a)
+
+    # 23b. Tokens with spaces are rejected
+    _n23b, _ = _extract({"tentacleName": "bad name"})
+    test("23b: name with space rejected", "bad name" not in _n23b)
+
+    # 23c. Tokens with shell metacharacters are rejected
+    _n23c, _ = _extract({"tentacleName": "name$(whoami)"})
+    test("23c: name with shell metachar rejected", not _n23c)
+
+    # 23d. Tokens with newlines are rejected
+    _n23d, _ = _extract({"tentacleName": "bad\nname"})
+    test("23d: name with newline rejected", not _n23d)
+
+    # 23e. Token exceeding 128 chars is rejected
+    _long_token = "a" * 129
+    _n23e, _ = _extract({"tentacleName": _long_token})
+    test("23e: name >128 chars rejected", _long_token not in _n23e)
+
+    # 23e2. Token exactly at 128 chars is accepted
+    _max_token = "a" * 128
+    _n23e2, _ = _extract({"tentacleName": _max_token})
+    test("23e2: name ==128 chars accepted", _max_token in _n23e2)
+
+    # 23f. Empty string rejected; non-string value rejected; non-dict payload gives empty sets
+    _n23f, _ = _extract({"tentacleName": ""})
+    test("23f: empty name rejected", not _n23f)
+    _n23f2, _ = _extract({"tentacleName": 42})
+    test("23f2: non-string name rejected", not _n23f2)
+    _n23f3, _i23f3 = _extract("not-a-dict")
+    test("23f3: non-dict payload → empty names", not _n23f3)
+    test("23f4: non-dict payload → empty ids", not _i23f3)
+
+    # 23g. _iter_active_entries: string entry → normalized with tentacle_id=None
+    _r23g = _iter_e({"active_tentacles": ["legacy-tent"]})
+    test("23g: string entry normalized to dict", len(_r23g) == 1 and _r23g[0]["name"] == "legacy-tent")
+    test("23g2: string entry tentacle_id is None", _r23g[0].get("tentacle_id") is None)
+
+    # 23h. _iter_active_entries: non-list / missing / integer entry
+    test("23h: non-list active_tentacles → empty", _iter_e({"active_tentacles": "nope"}) == [])
+    test("23h2: missing active_tentacles → empty", _iter_e({}) == [])
+    test("23h3: integer entry silently skipped", _iter_e({"active_tentacles": [99]}) == [])
+
+    # 23i. SubagentStopRule returns None when _tentacle_mod is None
+    _rule23 = _sl23.SubagentStopRule()
+    _orig_mod23 = _sl23._tentacle_mod
+    _sl23._tentacle_mod = None
+    _result23i = _rule23.evaluate("subagentStop", {"tentacleName": "my-tent"})
+    _sl23._tentacle_mod = _orig_mod23
+    test("23i: SubagentStopRule returns None when _tentacle_mod is None", _result23i is None)
+
+    # 23j. SubagentStopRule returns None for payload with no recognizable keys
+    class _FakeMod23:
+        def _read_dispatched_subagent_marker(self):
+            return {"active_tentacles": [{"name": "t1", "tentacle_id": "tid-1"}]}
+
+        def _clear_dispatched_subagent_marker(self, name, tentacle_id=None):
+            return True
+
+    _sl23._tentacle_mod = _FakeMod23()
+    _result23j = _rule23.evaluate("subagentStop", {"no_known_keys": "irrelevant"})
+    _sl23._tentacle_mod = _orig_mod23
+    test("23j: SubagentStopRule returns None for unrecognized payload", _result23j is None)
+
+    test("Section 23 session_lifecycle safety tests ran without exception", True)
+except Exception as _e23ex:
+    test("Section 23 session_lifecycle safety tests ran without exception", False, str(_e23ex))
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  Results
 # ═══════════════════════════════════════════════════════════════════
 

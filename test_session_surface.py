@@ -1419,7 +1419,7 @@ def test_hybrid_change_detection():
         _orig_extractor = ws.run_extractor
         indexer_calls: list = []
         ws.run_indexer = lambda incremental=True: indexer_calls.append(1) or True
-        ws.run_extractor = lambda changed_files=None: True
+        ws.run_extractor = lambda changed_files=None, session_ids=None: True
 
         try:
             # Pass 1: empty prev_sigs → file is new → should index

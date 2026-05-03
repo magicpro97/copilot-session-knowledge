@@ -85,22 +85,38 @@ def _make_test_db() -> sqlite3.Connection:
     # Sample session
     db.execute(
         "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        ("browse-test-001", "/path/browse", "browse feature test session", "copilot",
-         1.0, 2.0, 3.0, 5, 512, 1, 0, 2, 0, "2026-01-01"),
+        (
+            "browse-test-001",
+            "/path/browse",
+            "browse feature test session",
+            "copilot",
+            1.0,
+            2.0,
+            3.0,
+            5,
+            512,
+            1,
+            0,
+            2,
+            0,
+            "2026-01-01",
+        ),
     )
     db.execute(
         "INSERT INTO sessions_fts VALUES (?,?,?,?,?)",
-        ("browse-test-001", "browse feature test session",
-         "user asked about browse functionality",
-         "assistant explained browse routes and static files",
-         "bash_exec"),
+        (
+            "browse-test-001",
+            "browse feature test session",
+            "user asked about browse functionality",
+            "assistant explained browse routes and static files",
+            "bash_exec",
+        ),
     )
 
     # Sample knowledge entry
     db.execute(
         "INSERT INTO knowledge VALUES (?,?,?,?,?,?)",
-        (1, "Browse route pattern", "Use @route decorator to register browse routes",
-         "pattern", "backend", "browse"),
+        (1, "Browse route pattern", "Use @route decorator to register browse routes", "pattern", "backend", "browse"),
     )
     db.execute(
         "INSERT INTO ke_fts VALUES (?,?)",
@@ -110,8 +126,7 @@ def _make_test_db() -> sqlite3.Connection:
     # Knowledge entry with potential XSS content
     db.execute(
         "INSERT INTO knowledge VALUES (?,?,?,?,?,?)",
-        (2, "XSS test entry", "<script>alert('xss')</script> malicious content",
-         "discovery", "security", "xss"),
+        (2, "XSS test entry", "<script>alert('xss')</script> malicious content", "discovery", "security", "xss"),
     )
     db.execute(
         "INSERT INTO ke_fts VALUES (?,?)",
@@ -230,9 +245,7 @@ def run_all_tests() -> int:
     server, host, port = _start_server(db, token="tok")
     try:
         # Search for "browse" with only knowledge source
-        status, _, body = _get(
-            host, port, "/api/search?q=route&src=knowledge&token=tok"
-        )
+        status, _, body = _get(host, port, "/api/search?q=route&src=knowledge&token=tok")
         test("S5: src=knowledge → 200", status == 200)
         data = json.loads(body)
         types = [r.get("type") for r in data.get("results", [])]
@@ -240,9 +253,7 @@ def run_all_tests() -> int:
         test("S5: no session results", "session" not in types)
 
         # Search with src=sessions only
-        status2, _, body2 = _get(
-            host, port, "/api/search?q=browse&src=sessions&token=tok"
-        )
+        status2, _, body2 = _get(host, port, "/api/search?q=browse&src=sessions&token=tok")
         data2 = json.loads(body2)
         types2 = [r.get("type") for r in data2.get("results", [])]
         test("S5: src=sessions → no knowledge results", "knowledge" not in types2)
@@ -280,8 +291,27 @@ def run_all_tests() -> int:
     finally:
         server.shutdown()
 
+    # ── S7: /api/search performance budget ────────────────────────────────────
+    # took_ms is the documented timing signal. In-memory SQLite with few rows
+    # should be far below this threshold; the gate catches regressions only.
+    _SEARCH_BUDGET_MS = 200
+    print("\n-- S7: search API performance budget")
+    db = _make_test_db()
+    server, host, port = _start_server(db, token="tok")
+    try:
+        status, _, body = _get(host, port, "/api/search?q=browse&token=tok")
+        data = json.loads(body)
+        took = data.get("took_ms", _SEARCH_BUDGET_MS + 1)
+        test("S7: response is 200", status == 200)
+        test(
+            f"S7: took_ms ({took}) is within {_SEARCH_BUDGET_MS}ms budget",
+            isinstance(took, (int, float)) and took < _SEARCH_BUDGET_MS,
+        )
+    finally:
+        server.shutdown()
+
     # ── Summary ───────────────────────────────────────────────────────────────
-    print(f"\n{'='*40}")
+    print(f"\n{'=' * 40}")
     total = _PASS + _FAIL
     print(f"Results: {_PASS}/{total} passed, {_FAIL} failed")
     return 0 if _FAIL == 0 else 1

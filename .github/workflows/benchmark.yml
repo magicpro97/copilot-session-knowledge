@@ -1,0 +1,128 @@
+name: Benchmark
+
+# Manual-only trigger for commit-keyed benchmark snapshots.
+# Captures retro + health signals keyed to HEAD commit and uploads as artifact.
+# Does NOT write to any branch; all state is artifact-only.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Signal collection mode: repo (git-only, safe in CI) or local"
+        type: choice
+        options:
+          - repo
+          - local
+        default: repo
+
+concurrency:
+  group: benchmark
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate benchmark.py syntax
+        run: python3 -c "import ast; ast.parse(open('benchmark.py').read()); print('syntax OK')"
+
+      - name: Run migration (create benchmark_snapshots table)
+        run: |
+          python3 migrate.py bench-ci.db
+          python3 - <<'PY'
+          import sqlite3
+          conn = sqlite3.connect("bench-ci.db")
+          tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+          assert "benchmark_snapshots" in tables, "benchmark_snapshots table missing after migration"
+          print("migration OK — benchmark_snapshots table present")
+          PY
+
+      - name: Record benchmark snapshot
+        env:
+          MODE_INPUT: ${{ inputs.mode }}
+        run: |
+          python3 benchmark.py record \
+            --db bench-ci.db \
+            --mode "$MODE_INPUT" \
+            --commit "$(git rev-parse --short=12 HEAD)"
+
+      - name: List snapshots (text)
+        run: python3 benchmark.py list --db bench-ci.db --limit 5
+
+      - name: Export snapshot as JSON
+        run: python3 benchmark.py list --db bench-ci.db --limit 1 --json > bench-snapshot.json
+
+      - name: Print snapshot summary
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          snaps = json.loads(Path("bench-snapshot.json").read_text())
+          if not snaps:
+              print("No snapshots found.")
+          else:
+              s = snaps[0]
+              print("## Benchmark Snapshot")
+              print(f"- Commit: {s.get('commit_sha', '?')} — {s.get('commit_msg', '')[:60]}")
+              print(f"- Mode:   {s.get('mode', '?')}")
+              print(f"- Retro score: {s.get('retro_score', 'n/a')}")
+              h = s.get('health_score')
+              print(f"- Health score: {h if h is not None else 'n/a'}")
+              ss = s.get('subscores', {})
+              if ss:
+                  print("- Subscores:")
+                  for k, v in ss.items():
+                      print(f"    {k}: {v}")
+          PY
+
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-snapshot-${{ github.sha }}
+          path: |
+            bench-ci.db
+            bench-snapshot.json
+          retention-days: 90
+
+      - name: Write job summary
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          snaps = json.loads(Path("bench-snapshot.json").read_text())
+          summary_file = os.environ.get("GITHUB_STEP_SUMMARY", "")
+          lines = ["## Benchmark Snapshot\n"]
+          if not snaps:
+              lines.append("No snapshots recorded.\n")
+          else:
+              s = snaps[0]
+              lines.append(f"| Field | Value |")
+              lines.append(f"|---|---|")
+              lines.append(f"| Commit | `{s.get('commit_sha','?')}` {s.get('commit_msg','')[:50]} |")
+              lines.append(f"| Mode | {s.get('mode','?')} |")
+              lines.append(f"| Retro score | {s.get('retro_score','n/a')} |")
+              h = s.get('health_score')
+              lines.append(f"| Health score | {h if h is not None else 'n/a'} |")
+              ss = s.get('subscores', {})
+              for k, v in ss.items():
+                  lines.append(f"| subscore/{k} | {v} |")
+          content = "\n".join(lines)
+          print(content)
+          if summary_file:
+              with open(summary_file, "a") as f:
+                  f.write(content + "\n")
+          PY

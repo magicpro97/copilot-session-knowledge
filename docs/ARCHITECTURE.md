@@ -54,6 +54,7 @@ watch-sessions.py  ──→  Incremental re-indexing (adaptive polling)
 | `host_manifest.py` | Single source of truth for supported hosts + their filesystem paths |
 | `index-status.py` | Row counts, FTS integrity, event-offset coverage |
 | `knowledge-health.py` | Knowledge base health + recall telemetry |
+| `benchmark.py` | Commit-keyed benchmark ledger for retro + health snapshots |
 | `checkpoint-save.py` | Save named checkpoint |
 | `checkpoint-restore.py` | List/restore checkpoints |
 | `checkpoint-diff.py` | Diff two checkpoints |

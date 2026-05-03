@@ -120,8 +120,8 @@ Hooks **fail-open**: if a hook crashes or is unavailable, the guarded operation 
 ## Testing
 
 ```bash
-python3 test_security.py    # 9 security tests (SQL injection, pickle, locks, paths)
-python3 test_fixes.py       # 65 tests (noise filter, sub-agent, launchd, DB health)
+python3 test_security.py    # 11 security tests (SQL injection, pickle, locks, paths)
+python3 test_fixes.py       # 137 tests (noise filter, sub-agent, launchd, DB health)
 ```
 
 Python validation runs through `run_all_tests.py`, but individual files use a mix of the custom `test()` helper and `unittest`/`test_*` style. For `browse-ui/` or CI changes, also run the relevant `pnpm` gates (`typecheck`, `lint`, `format:check`, `test`, `build`, and `test:e2e` when intentionally validating that surface). Keep GitHub Actions CI green.

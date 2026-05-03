@@ -18,6 +18,7 @@ Cross-platform: Windows, macOS, Linux. Pure Python stdlib.
 """
 
 import os
+import re
 import sys
 import time
 import signal
@@ -42,6 +43,12 @@ LOCK_FILE = SESSION_STATE / ".watcher.lock"
 LOG_FILE = SESSION_STATE / "watcher.log"
 
 DEFAULT_INTERVAL = 60  # seconds
+
+# Matches canonical UUID format (8-4-4-4-12 hex digits)
+_UUID_RE = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+    re.IGNORECASE,
+)
 
 if os.name == "nt":
     try:
@@ -174,6 +181,42 @@ def _content_hash(path: Path) -> str:
         return ""
 
 
+def _extract_session_ids_from_paths(
+    paths: list, host_roots: list
+) -> list:
+    """Extract session IDs (UUIDs) from changed file paths.
+
+    Supports two layouts:
+      Copilot: <host_root>/<session-uuid>/...        → yields <session-uuid>
+      Claude:  <host_root>/<project-hash>/<uuid>.jsonl → yields <uuid>
+
+    Returns a sorted, de-duplicated list of UUID strings.
+    Unknown / non-UUID path components are silently ignored.
+    """
+    session_ids: set = set()
+    for fp in paths:
+        p = Path(fp)
+        for host_root in host_roots:
+            try:
+                rel = p.relative_to(host_root)
+            except ValueError:
+                continue
+            parts = rel.parts
+            if not parts:
+                continue
+            first = parts[0]
+            if _UUID_RE.match(first):
+                # Copilot layout: first segment is the session UUID
+                session_ids.add(first)
+            elif len(parts) >= 2 and p.suffix == ".jsonl":
+                # Claude layout: <project>/<session-uuid>.jsonl
+                stem = p.stem
+                if _UUID_RE.match(stem):
+                    session_ids.add(stem)
+            break
+    return sorted(session_ids)
+
+
 def load_state() -> dict:
     """Load previous watch state."""
     import json
@@ -230,11 +273,13 @@ def run_indexer(incremental: bool = True):
         return False
 
 
-def run_extractor(changed_files: list[str] | None = None):
+def run_extractor(changed_files: list | None = None, session_ids: list | None = None):
     """Run the extract-knowledge.py script if it exists.
 
-    If changed_files is provided, prints the changed paths before running
-    full extraction (incremental optimization placeholder).
+    If changed_files is provided (--changed-only mode), prints the changed paths.
+    If session_ids is provided, passes --sessions to scope extraction to those sessions
+    only (incremental mode — avoids full ke_fts rebuild on every watcher cycle).
+    Falls back to full extraction when session_ids is empty or not provided.
     """
     import subprocess
     extractor = TOOLS_DIR / "extract-knowledge.py"
@@ -248,9 +293,13 @@ def run_extractor(changed_files: list[str] | None = None):
         if len(changed_files) > 20:
             print(f"[watch]   ... and {len(changed_files) - 20} more")
 
+    args = [sys.executable, str(extractor)]
+    if session_ids:
+        args += ["--sessions", ",".join(session_ids)]
+
     try:
         result = subprocess.run(
-            [sys.executable, str(extractor)],
+            args,
             capture_output=True, text=True, timeout=120,
             encoding="utf-8", errors="replace"
         )
@@ -323,7 +372,16 @@ def check_and_index(prev_sigs: dict, watch_dirs: list[Path],
         skip_note = f", {skipped} skipped (content unchanged)" if skipped > 0 else ""
         print(f"[watch] {now} — {total} file(s) changed{skip_note}, re-indexing...")
         run_indexer(incremental=True)
-        run_extractor(changed_files=all_changed if changed_only else None)
+        # Derive session IDs from changed paths so extraction is scoped to only the
+        # sessions that actually changed.  Falls back to full extraction when the path
+        # layout is unrecognised (empty list → no --sessions flag).
+        changed_session_ids = _extract_session_ids_from_paths(
+            all_changed, [root for _, root in KNOWN_HOSTS]
+        )
+        run_extractor(
+            changed_files=all_changed if changed_only else None,
+            session_ids=changed_session_ids or None,
+        )
 
     return enriched_sigs
 

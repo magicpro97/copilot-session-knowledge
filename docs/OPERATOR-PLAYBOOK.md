@@ -418,6 +418,26 @@ python3 ~/.copilot/tools/retro.py --subreport knowledge
 **Use repo-mode retro for trend tracking.** Local-mode scores are useful for drilling into
 specific sections but may reflect distortions (see below) that inflate or deflate the result.
 
+## Benchmark ledger
+
+Record commit-keyed snapshots so hardening work is tied to measurable deltas.
+
+```bash
+# Record the current snapshot into benchmark_snapshots
+python3 ~/.copilot/tools/benchmark.py record
+
+# Inspect recent snapshots
+python3 ~/.copilot/tools/benchmark.py list --limit 5
+
+# Compare two commits or snapshot IDs
+python3 ~/.copilot/tools/benchmark.py compare --commits <older> <newer>
+```
+
+`benchmark.py` stores snapshots in `benchmark_snapshots` inside the default knowledge DB unless
+you override it with `--db PATH`. `record` captures retro + knowledge-health when available and
+degrades cleanly when a signal source is absent. For CI-safe artifact capture, trigger the
+manual-only `.github/workflows/benchmark.yml` workflow in `repo` mode.
+
 ### Score confidence
 
 The `score_confidence` field (`low` / `medium` / `high`) indicates how much to trust the

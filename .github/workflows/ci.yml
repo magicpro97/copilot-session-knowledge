@@ -34,7 +34,8 @@ jobs:
           briefing.py learn.py query-session.py extract-knowledge.py
           build-session-index.py tentacle.py checkpoint-diff.py
           checkpoint-restore.py checkpoint-save.py
-          browse/ hooks/
+          test_browse_search_v2.py
+          browse/ hooks/ scripts/
 
       - name: Ruff format check
         run: >
@@ -45,7 +46,8 @@ jobs:
           briefing.py learn.py query-session.py extract-knowledge.py
           build-session-index.py tentacle.py checkpoint-diff.py
           checkpoint-restore.py checkpoint-save.py
-          browse/ hooks/
+          test_browse_search_v2.py
+          browse/ hooks/ scripts/
 
       - name: Run tests
         run: python3 run_all_tests.py

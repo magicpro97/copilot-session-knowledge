@@ -5633,5 +5633,466 @@ class TestHandoffContract(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Concurrent marker stress tests — verify file_locked prevents data loss
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentMarkerStress(unittest.TestCase):
+    """Stress: N threads write simultaneously.
+
+    file_locked must serialise writes so no entry is silently lost due to a
+    read-modify-write race.  These are not slow: they use in-process threads
+    and a scratch marker path (never the real ~/.copilot path).
+    """
+
+    MARKER_NAME = "dispatched-subagent-active"
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "stress_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.repo = self.base / "repo"
+        self.marker_path = self.base / self.MARKER_NAME
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+        # Patch find_git_root once at class level to avoid per-thread mock races
+        self._find_git_root_patcher = patch.object(T, "find_git_root", return_value=self.repo)
+        self._find_git_root_patcher.start()
+
+    def tearDown(self):
+        self._find_git_root_patcher.stop()
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        import shutil
+
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR)
+
+    def test_concurrent_writes_all_entries_survive(self):
+        """5 threads each write 3 distinct tentacle_ids concurrently.
+
+        After all threads complete, all 15 entries must be present in the
+        marker file.  A read-modify-write race without the file lock would
+        cause some writes to overwrite earlier ones, leaving fewer entries.
+        """
+        import threading
+
+        N_THREADS = 5
+        ENTRIES_PER_THREAD = 3
+        all_ids: list[str] = [str(uuid.uuid4()) for _ in range(N_THREADS * ENTRIES_PER_THREAD)]
+        errors: list[Exception] = []
+
+        def _writer(chunk_ids):
+            try:
+                for tid in chunk_ids:
+                    ok = T._write_dispatched_subagent_marker(
+                        "stress-tent", [], "prompt", tentacle_id=tid
+                    )
+                    if not ok:
+                        errors.append(RuntimeError(f"write failed for {tid}"))
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(
+                target=_writer,
+                args=(all_ids[i * ENTRIES_PER_THREAD : (i + 1) * ENTRIES_PER_THREAD],),
+                daemon=True,
+            )
+            for i in range(N_THREADS)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        self.assertFalse(errors, f"Thread errors: {errors}")
+        self.assertTrue(self.marker_path.is_file(), "Marker file must exist after writes")
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
+        found_ids = {e["tentacle_id"] for e in data["active_tentacles"] if isinstance(e, dict)}
+        missing = set(all_ids) - found_ids
+        self.assertEqual(
+            missing,
+            set(),
+            f"{len(missing)} entries lost to write race: {list(missing)[:5]}",
+        )
+
+    def test_concurrent_write_then_clear_leaves_empty_marker(self):
+        """5 threads each write and then clear their own entry concurrently.
+
+        After all threads finish, the marker file must be deleted (all entries
+        removed).  Interleaved write+clear pairs must not strand ghost entries.
+        """
+        import threading
+
+        N_THREADS = 5
+        all_ids = [str(uuid.uuid4()) for _ in range(N_THREADS)]
+        errors: list[Exception] = []
+
+        def _worker(tid):
+            try:
+                T._write_dispatched_subagent_marker("w-tent", [], "prompt", tentacle_id=tid)
+                T._clear_dispatched_subagent_marker("w-tent", tentacle_id=tid)
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_worker, args=(tid,), daemon=True) for tid in all_ids]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        self.assertFalse(errors, f"Thread errors: {errors}")
+        # Marker file must be gone (last clear deletes it) or contain no active entries.
+        if self.marker_path.is_file():
+            data = json.loads(self.marker_path.read_text(encoding="utf-8"))
+            remaining_ids = {
+                e.get("tentacle_id")
+                for e in data.get("active_tentacles", [])
+                if isinstance(e, dict)
+            }
+            ghost_ids = remaining_ids & set(all_ids)
+            self.assertEqual(
+                ghost_ids,
+                set(),
+                f"Ghost entries after clear: {ghost_ids}",
+            )
+
+    def test_concurrent_mixed_repos_all_entries_survive(self):
+        """4 threads write to two different repos simultaneously.
+
+        Entries for repo-A and repo-B must all survive independently
+        (no cross-repo clobbering).
+        """
+        import threading
+
+        ids_a = [str(uuid.uuid4()) for _ in range(3)]
+        ids_b = [str(uuid.uuid4()) for _ in range(3)]
+        errors: list[Exception] = []
+
+        def _writer_a(tid):
+            try:
+                T._write_dispatched_subagent_marker("tent-a", [], "prompt", tentacle_id=tid)
+            except Exception as exc:
+                errors.append(exc)
+
+        def _writer_b(tid):
+            try:
+                T._write_dispatched_subagent_marker("tent-b", [], "prompt", tentacle_id=tid)
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = (
+            [threading.Thread(target=_writer_a, args=(tid,), daemon=True) for tid in ids_a]
+            + [threading.Thread(target=_writer_b, args=(tid,), daemon=True) for tid in ids_b]
+        )
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        self.assertFalse(errors, f"Thread errors: {errors}")
+        data = json.loads(self.marker_path.read_text(encoding="utf-8"))
+        found_ids = {e["tentacle_id"] for e in data["active_tentacles"] if isinstance(e, dict)}
+        all_expected = set(ids_a + ids_b)
+        missing = all_expected - found_ids
+        self.assertEqual(missing, set(), f"Cross-repo entries lost: {list(missing)[:5]}")
+
+
+# ---------------------------------------------------------------------------
+# TTL boundary conditions for _any_entry_relevant
+# ---------------------------------------------------------------------------
+
+
+class TestAnyEntryRelevantTTLBoundary(unittest.TestCase):
+    """Verify exact TTL boundary semantics for _any_entry_relevant in tentacle.py marker readers.
+
+    Per-entry expiry condition: ``not (0 <= age < MARKER_TTL)``.
+    This means:
+      - age < 0           → excluded (future timestamp)
+      - 0 <= age < TTL    → included (fresh)
+      - age == TTL        → excluded (expired, boundary is exclusive)
+      - age > TTL         → excluded (expired)
+    """
+
+    MARKER_TTL = 14400  # 4 hours — mirror the value in both hook files
+
+    def _now(self):
+        return time.time()
+
+    def test_entry_age_zero_is_fresh(self):
+        """age == 0 → entry is relevant."""
+        import importlib.util as _ilu
+
+        spec = _ilu.spec_from_file_location("csm_ttl0", TOOLS_DIR / "hooks" / "check_subagent_marker.py")
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        now = self._now()
+        entry = {"name": "t", "ts": str(int(now)), "git_root": None}
+        self.assertTrue(mod._any_entry_relevant([entry], None, now))
+
+    def test_entry_just_before_ttl_is_fresh(self):
+        """age == MARKER_TTL - 1 → entry is still relevant."""
+        import importlib.util as _ilu
+
+        spec = _ilu.spec_from_file_location("csm_ttl1", TOOLS_DIR / "hooks" / "check_subagent_marker.py")
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        now = self._now()
+        ts = str(int(now) - (self.MARKER_TTL - 1))
+        entry = {"name": "t", "ts": ts, "git_root": None}
+        self.assertTrue(mod._any_entry_relevant([entry], None, now))
+
+    def test_entry_at_exact_ttl_is_expired(self):
+        """age == MARKER_TTL exactly → entry is expired (condition is exclusive)."""
+        import importlib.util as _ilu
+
+        spec = _ilu.spec_from_file_location("csm_ttl2", TOOLS_DIR / "hooks" / "check_subagent_marker.py")
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        now = self._now()
+        ts = str(int(now) - self.MARKER_TTL)
+        entry = {"name": "t", "ts": ts, "git_root": None}
+        # No git_root → conservative, but entry is expired → skip
+        self.assertFalse(mod._any_entry_relevant([entry], None, now))
+
+    def test_entry_far_past_ttl_is_expired(self):
+        """age >> MARKER_TTL → definitely expired."""
+        import importlib.util as _ilu
+
+        spec = _ilu.spec_from_file_location("csm_ttl3", TOOLS_DIR / "hooks" / "check_subagent_marker.py")
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        now = self._now()
+        ts = str(int(now) - self.MARKER_TTL - 3600)
+        entry = {"name": "t", "ts": ts, "git_root": None}
+        self.assertFalse(mod._any_entry_relevant([entry], None, now))
+
+    def test_entry_future_ts_is_skipped(self):
+        """age < 0 (ts in the future) → entry is skipped (not (0 <= age < TTL))."""
+        import importlib.util as _ilu
+
+        spec = _ilu.spec_from_file_location("csm_ttl4", TOOLS_DIR / "hooks" / "check_subagent_marker.py")
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        now = self._now()
+        future_ts = str(int(now) + 3600)
+        entry = {"name": "t", "ts": future_ts, "git_root": None}
+        self.assertFalse(mod._any_entry_relevant([entry], None, now))
+
+    def _load_subagent_guard(self, name="sg_ttl"):
+        import sys as _sys
+
+        hooks_dir = str(TOOLS_DIR / "hooks")
+        if hooks_dir not in _sys.path:
+            _sys.path.insert(0, hooks_dir)
+        # Remove cached module so each call gets a fresh load
+        for k in list(_sys.modules.keys()):
+            if "subagent_guard" in k:
+                del _sys.modules[k]
+        import rules.subagent_guard as _mod
+
+        return _mod
+
+    def test_subagent_guard_ttl_boundaries_match_check_subagent_marker(self):
+        """subagent_guard._any_entry_relevant must have identical TTL boundary semantics."""
+        _sg = self._load_subagent_guard("sg_ttl_boundary")
+        now = self._now()
+
+        # age == 0 → fresh
+        fresh_entry = {"name": "t", "ts": str(int(now)), "git_root": None}
+        self.assertTrue(_sg._any_entry_relevant([fresh_entry], None, now))
+
+        # age == MARKER_TTL - 1 → still fresh
+        just_before_entry = {"name": "t", "ts": str(int(now) - (self.MARKER_TTL - 1)), "git_root": None}
+        self.assertTrue(_sg._any_entry_relevant([just_before_entry], None, now))
+
+        # age == MARKER_TTL → expired
+        at_boundary_entry = {"name": "t", "ts": str(int(now) - self.MARKER_TTL), "git_root": None}
+        self.assertFalse(_sg._any_entry_relevant([at_boundary_entry], None, now))
+
+        # age < 0 → skipped
+        future_entry = {"name": "t", "ts": str(int(now) + 3600), "git_root": None}
+        self.assertFalse(_sg._any_entry_relevant([future_entry], None, now))
+
+    def test_mixed_expired_and_fresh_returns_true(self):
+        """If at least one entry is within TTL, _any_entry_relevant must return True."""
+        _sg = self._load_subagent_guard("sg_ttl_mixed")
+        now = self._now()
+        expired_entry = {"name": "t1", "ts": str(int(now) - self.MARKER_TTL), "git_root": None}
+        fresh_entry = {"name": "t2", "ts": str(int(now)), "git_root": None}
+        self.assertTrue(_sg._any_entry_relevant([expired_entry, fresh_entry], None, now))
+
+    def test_all_expired_entries_returns_false(self):
+        """All entries expired → _any_entry_relevant returns False."""
+        _sg = self._load_subagent_guard("sg_ttl_all_expired")
+        now = self._now()
+        entries = [
+            {"name": f"t{i}", "ts": str(int(now) - self.MARKER_TTL - i * 100), "git_root": None}
+            for i in range(3)
+        ]
+        self.assertFalse(_sg._any_entry_relevant(entries, None, now))
+
+
+# ---------------------------------------------------------------------------
+# session_lifecycle.py — _extract_stop_hints token safety and edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestExtractStopHintsSafety(unittest.TestCase):
+    """_extract_stop_hints must enforce the _SAFE_TOKEN allowlist.
+
+    Only tokens matching ``[A-Za-z0-9._:-]{1,128}`` may pass through as
+    candidate names/ids.  Tokens with spaces, special chars, or length
+    violations must be silently rejected so injected payloads cannot
+    spoof a tentacle name and trigger spurious marker cleanup.
+    """
+
+    def _hints(self, payload):
+        from hooks.rules import session_lifecycle as sl
+
+        return sl._extract_stop_hints(payload)
+
+    def test_valid_tentacle_name_accepted(self):
+        names, ids = self._hints({"tentacleName": "my-tentacle.v2"})
+        self.assertIn("my-tentacle.v2", names)
+
+    def test_valid_tentacle_id_accepted(self):
+        names, ids = self._hints({"tentacleId": "abc-uuid-1234-5678-90ab"})
+        self.assertIn("abc-uuid-1234-5678-90ab", ids)
+
+    def test_name_with_space_rejected(self):
+        names, ids = self._hints({"tentacleName": "bad name"})
+        self.assertNotIn("bad name", names)
+
+    def test_name_with_newline_rejected(self):
+        names, ids = self._hints({"tentacleName": "bad\nname"})
+        self.assertEqual(names, set())
+
+    def test_name_with_semicolon_rejected(self):
+        names, ids = self._hints({"tentacleName": "bad;name"})
+        self.assertEqual(names, set())
+
+    def test_name_with_shell_metachar_rejected(self):
+        names, ids = self._hints({"tentacleName": "name$(whoami)"})
+        self.assertEqual(names, set())
+
+    def test_name_too_long_rejected(self):
+        long_name = "a" * 129
+        names, ids = self._hints({"tentacleName": long_name})
+        self.assertNotIn(long_name, names)
+
+    def test_name_at_max_length_accepted(self):
+        max_name = "a" * 128
+        names, ids = self._hints({"tentacleName": max_name})
+        self.assertIn(max_name, names)
+
+    def test_empty_name_rejected(self):
+        names, ids = self._hints({"tentacleName": ""})
+        self.assertEqual(names, set())
+
+    def test_nested_payload_extracted(self):
+        payload = {"subagent": {"tentacleName": "nested-tent"}}
+        names, _ = self._hints(payload)
+        self.assertIn("nested-tent", names)
+
+    def test_non_string_value_rejected(self):
+        names, ids = self._hints({"tentacleName": 123})
+        self.assertEqual(names, set())
+
+    def test_non_dict_payload_returns_empty(self):
+        names, ids = self._hints("not-a-dict")
+        self.assertEqual(names, set())
+        self.assertEqual(ids, set())
+
+    def test_both_name_and_id_extracted(self):
+        names, ids = self._hints({"tentacleName": "my-tent", "tentacleId": "tid-abc"})
+        self.assertIn("my-tent", names)
+        self.assertIn("tid-abc", ids)
+
+
+class TestIterActiveEntriesEdgeCases(unittest.TestCase):
+    """_iter_active_entries must normalize all formats and skip malformed entries."""
+
+    def _iter(self, data):
+        from hooks.rules import session_lifecycle as sl
+
+        return sl._iter_active_entries(data)
+
+    def test_string_entry_normalized(self):
+        result = self._iter({"active_tentacles": ["old-tent"]})
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["name"], "old-tent")
+        self.assertIsNone(result[0]["tentacle_id"])
+
+    def test_dict_entry_passed_through(self):
+        entry = {"name": "new-tent", "tentacle_id": "tid-1", "git_root": "/repo"}
+        result = self._iter({"active_tentacles": [entry]})
+        self.assertEqual(result[0], entry)
+
+    def test_non_list_active_tentacles_returns_empty(self):
+        result = self._iter({"active_tentacles": "not-a-list"})
+        self.assertEqual(result, [])
+
+    def test_missing_active_tentacles_returns_empty(self):
+        result = self._iter({})
+        self.assertEqual(result, [])
+
+    def test_integer_entry_skipped(self):
+        result = self._iter({"active_tentacles": [42]})
+        self.assertEqual(result, [])
+
+    def test_mixed_str_and_dict_entries_both_present(self):
+        entries = ["legacy", {"name": "modern", "tentacle_id": "tid-1"}]
+        result = self._iter({"active_tentacles": entries})
+        names = [e["name"] for e in result]
+        self.assertIn("legacy", names)
+        self.assertIn("modern", names)
+
+
+class TestSubagentStopRuleNoneGuard(unittest.TestCase):
+    """SubagentStopRule must return None immediately when _tentacle_mod is unavailable."""
+
+    def test_returns_none_when_tentacle_mod_is_none(self):
+        from hooks.rules import session_lifecycle as sl
+
+        rule = sl.SubagentStopRule()
+        with patch.object(sl, "_tentacle_mod", None):
+            result = rule.evaluate("subagentStop", {"subagentName": "my-tent"})
+        self.assertIsNone(result)
+
+    def test_returns_none_when_no_hints_in_payload(self):
+        """Even if _tentacle_mod is set, an empty/unrecognized payload gives None."""
+        from hooks.rules import session_lifecycle as sl
+
+        fake_mod = MagicMock()
+        fake_mod._read_dispatched_subagent_marker.return_value = {
+            "active_tentacles": [{"name": "t1", "tentacle_id": "tid-1"}]
+        }
+        fake_mod._clear_dispatched_subagent_marker.return_value = True
+        with patch.object(sl, "_tentacle_mod", fake_mod):
+            rule = sl.SubagentStopRule()
+            result = rule.evaluate("subagentStop", {"no_known_keys": "irrelevant"})
+        self.assertIsNone(result)
+
+    def test_returns_none_when_marker_is_not_dict(self):
+        """If _read_dispatched_subagent_marker returns None, rule must not crash."""
+        from hooks.rules import session_lifecycle as sl
+
+        fake_mod = MagicMock()
+        fake_mod._read_dispatched_subagent_marker.return_value = None
+        with patch.object(sl, "_tentacle_mod", fake_mod):
+            rule = sl.SubagentStopRule()
+            result = rule.evaluate("subagentStop", {"tentacleName": "my-tent"})
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -103,9 +103,13 @@ _py_in_surface() {
             return 0 ;;
         checkpoint-diff.py|checkpoint-restore.py|checkpoint-save.py)
             return 0 ;;
+        test_browse_search_v2.py)
+            return 0 ;;
         browse/*)
             return 0 ;;
         hooks/*)
+            return 0 ;;
+        scripts/*)
             return 0 ;;
     esac
     return 1

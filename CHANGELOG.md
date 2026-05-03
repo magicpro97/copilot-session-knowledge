@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `benchmark.py`, migration v14 (`benchmark_snapshots`), and manual `.github/workflows/benchmark.yml` now provide commit-keyed snapshot recording plus artifact-friendly benchmark capture for measurable hardening work.
+- `watch-sessions.py` now extracts affected session IDs from both Copilot and Claude layouts and passes them into `extract-knowledge.py` so incremental `ke_fts` sync can stay scoped to changed sessions.
+- Runtime/tentacle safety coverage now includes TTL-boundary checks, concurrent marker stress, stop-hint token sanitization, and `session_lifecycle` edge cases in `test_tentacle_runtime.py` and `test_hooks.py`.
 - `browse-ui/` — graph redesign + runtime hardening now reflected as shipped behavior:
   - `/v2/graph` is documented and tested as three truthful tabs: **Evidence** (`/api/graph/evidence`), **Similarity** (`/api/graph/similarity` neighbors-first with optional `/api/embeddings/points` orientation map), and **Communities** (`/api/graph/communities` deterministic summaries with singleton-noise suppression + drill-in to Evidence/Similarity).
   - `browse-ui/e2e/smoke.spec.ts` includes direct real-UUID session-detail smoke coverage and `/v2/graph` live-surface guards (no placeholder shell regressions).
@@ -28,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `/v2/graph` clusters tab with 2-D scatter canvas, category filtering, legend/point selection, and projection-unavailable handling.
 - `browse-ui/` — Phase 8 integrated acceptance:
   - `/v2/graph` now mounts `ClustersTab` from `graph/page.tsx` so the shipped clusters view is reachable.
+- Repo quality gates now lint `scripts/` and `test_browse_search_v2.py`, while browse/search tests enforce concrete latency/performance budgets instead of documentation-only expectations.
   - `/v2/insights` now mounts `LiveTab` from `insights/layout.tsx` and enables the live tab.
   - Docs alignment for shipped status: updated Phase 8 notes and corrected phase mapping in `browse-ui/README.md` (Search remains Phase 7).
 - `browse-ui/` — Phase 7 acceptance slice:
@@ -80,6 +84,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Table of Contents in README
 - Collision-renamed tentacle bundles now include `slug` in `manifest.json` and a `Slug:` header in `session-metadata.md`, so sub-agents can always resolve the correct invocation name after a directory collision rename.
 - `_normalize_posix_home()` in `check_subagent_marker.py` now handles Cygwin-style `/cygdrive/<drive>/...` paths in addition to Git Bash `/c/...` and WSL `/mnt/c/...` forms.
+- **Rule 8 — Tentacle Execution Obligations** added to both instruction surfaces (`AGENTS.md` and `.github/copilot-instructions.md`): sub-agents must read the bundle first, stay in declared scope, mark todos done, skip git operations, and write a structured handoff with an explicit `--status` before stopping.
+- **Hook enforcement summary** added to `AGENTS.md` and `.github/copilot-instructions.md`: concise table mapping each enforced rule to its hook and what it blocks.
+- `test_quality_gates.py`: 85 tests verifying CI syntax gate behavior — `check_syntax.py` correctly rejects broken syntax and accepts valid Python; `run_all_tests.py` self-check; CONTRIBUTING.md syntax-gate documentation coverage.
+- `test_auto_update_coverage.py`: 33 tests verifying auto-update coverage tracking — `COVERAGE_MANIFEST` key set, `classify_changes()` detection for browse/, providers/, hooks/rules/, scripts/, .github/workflows/, `--list-coverage` output, `write_manifest()` field contracts, and `install.py deploy_hooks` subdirectory discovery.
 - `/compare?a=&b=` — side-by-side session comparison (243b85b)
 - `/session/{id}.md` — markdown export of a session for copy/paste use (243b85b)
 - Dashboard widgets: red-flag sessions, weekly mistakes trend, top error-prone modules (243b85b)
@@ -91,6 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Docs rollout alignment:
   - `README.md` and `browse-ui/README.md` now describe `/v2/graph` using Evidence/Similarity/Communities semantics instead of legacy relationships/clusters wording.
   - Auto-update + hooks documentation now matches current rollout behavior (update-only directory semantics, global Copilot skill refresh behavior, and git-hook reinstall requirements after git-hook script updates).
+- `auto-update-tools.py`: `COVERAGE_MANIFEST` `Hooks/` entry now distinguishes Python hook scripts (`install.py --deploy-hooks`) from git-level hooks (`install.py --install-git-hooks` per repo); `--list-coverage` output updated to match.
 - `browse/static/css/app.css` — rewrote to consume design tokens, no hardcoded hex, no `var(--pico-*)` references, 24 sections (header/footer, nav, page-header, tables, stat grid, banner, card, mindmap, live feed, embeddings, …).
 - Migrated `browse/routes/{home,sessions,dashboard,mindmap,live,embeddings}.py` to use component primitives; inline `<style>` blocks removed (only `dashboard.py`'s `.db-chart-wrap` whitelisted).
 - `mindmap.js` now syncs `.markmap-dark` class on `#mindmap-wrap` with `[data-theme]` to restore contrast in dark mode.

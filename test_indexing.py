@@ -1040,6 +1040,125 @@ test(
 
 
 # ──────────────────────────────────────────────
+# I16: ke_fts incremental sync only updates affected sessions
+# ──────────────────────────────────────────────
+
+
+def _test_ke_fts_incremental_sync():
+    """extract_from_sections with session_ids must only update ke_fts for those sessions."""
+    db = _ke_db_with_sections()
+
+    # Pre-seed ke_fts rows for two unrelated sessions
+    db.execute("""
+        INSERT INTO knowledge_entries
+        (session_id, category, title, content, occurrence_count, confidence, first_seen, last_seen,
+         topic_key, content_hash, revision_count, affected_files, task_id)
+        VALUES ('sess-untouched', 'pattern', 'Untouched pattern', 'original content', 1, 0.8,
+                '2024-01-01', '2024-01-01', 'pattern/untouched', 'ht0', 1, '[]', '')
+    """)
+    untouched_id = db.execute(
+        "SELECT last_insert_rowid()"
+    ).fetchone()[0]
+    db.execute(
+        "INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts) "
+        "VALUES (?, 'Untouched pattern', 'original content', '', 'pattern', '', '', '[]')",
+        (untouched_id,),
+    )
+    db.commit()
+
+    # Add a section for 'sess-target' and extract only that session
+    doc_id = db.execute("""
+        INSERT INTO documents (session_id, seq, doc_type, title, file_path)
+        VALUES ('sess-target', 1, 'checkpoint', 'Doc', '/fake/target')
+    """).lastrowid
+    db.execute(
+        "INSERT INTO sections (document_id, section_name, content) "
+        "VALUES (?, 'technical_details', ?)",
+        (doc_id, "Always use parameterized SQL queries for reliable data access."),
+    )
+    db.commit()
+
+    _run_extract_with_stubbed_classification(
+        db,
+        session_ids=["sess-target"],
+        category="pattern",
+        title="Parameterized SQL rule",
+        confidence=0.85,
+    )
+    db.commit()
+
+    # ke_fts row for 'sess-untouched' must still be present (incremental path
+    # only touched 'sess-target' rows)
+    untouched_fts = db.execute(
+        "SELECT COUNT(*) FROM ke_fts WHERE rowid = ?",
+        (untouched_id,),
+    ).fetchone()[0]
+    assert untouched_fts == 1, (
+        f"Incremental ke_fts sync must NOT delete rows from sessions outside scope; "
+        f"untouched rowid {untouched_id} is missing"
+    )
+
+    # ke_fts row for 'sess-target' must exist (the new entry was indexed)
+    target_ke_id = db.execute(
+        "SELECT id FROM knowledge_entries WHERE session_id = 'sess-target'"
+    ).fetchone()
+    assert target_ke_id is not None, "sess-target knowledge_entries row must exist after extraction"
+    target_fts = db.execute(
+        "SELECT COUNT(*) FROM ke_fts WHERE rowid = ?",
+        (target_ke_id[0],),
+    ).fetchone()[0]
+    assert target_fts == 1, (
+        f"ke_fts row for sess-target entry (rowid={target_ke_id[0]}) must be present"
+    )
+
+
+test("I16: ke_fts incremental sync only updates affected session FTS rows", _test_ke_fts_incremental_sync)
+
+
+# ──────────────────────────────────────────────
+# I17: _extract_session_ids_from_paths recognises Copilot and Claude layouts
+# ──────────────────────────────────────────────
+
+
+def _test_extract_session_ids_from_paths():
+    """_extract_session_ids_from_paths must correctly extract UUIDs from changed paths."""
+    from watch_sessions_module import _extract_session_ids_from_paths
+
+    copilot_root = Path("/home/user/.copilot/session-state")
+    claude_root = Path("/home/user/.claude/projects")
+
+    uuid_a = "11111111-2222-3333-4444-555555555555"
+    uuid_b = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    uuid_c = "00000000-0000-4000-8000-000000000001"
+
+    paths = [
+        # Copilot layout: root/<uuid>/checkpoints/cp_001.md
+        str(copilot_root / uuid_a / "checkpoints" / "cp_001.md"),
+        # Copilot layout: another UUID
+        str(copilot_root / uuid_b / "research" / "note.md"),
+        # Claude layout: root/<project>/<uuid>.jsonl
+        str(claude_root / "proj-abc123" / f"{uuid_c}.jsonl"),
+        # Non-UUID directory — should be ignored
+        str(copilot_root / "not-a-uuid" / "file.md"),
+        # Path under completely different root — should be ignored
+        str(Path("/var/log") / "some.log"),
+    ]
+
+    result = _extract_session_ids_from_paths(paths, [copilot_root, claude_root])
+
+    assert uuid_a in result, f"Copilot UUID {uuid_a} missing from result: {result}"
+    assert uuid_b in result, f"Copilot UUID {uuid_b} missing from result: {result}"
+    assert uuid_c in result, f"Claude UUID {uuid_c} missing from result: {result}"
+    assert "not-a-uuid" not in result, f"Non-UUID dir must not appear in result: {result}"
+    assert len(result) == 3, f"Expected 3 unique UUIDs, got {len(result)}: {result}"
+    # Result must be sorted
+    assert result == sorted(result), f"Result must be sorted: {result}"
+
+
+test("I17: _extract_session_ids_from_paths recognises Copilot and Claude path layouts", _test_extract_session_ids_from_paths)
+
+
+# ──────────────────────────────────────────────
 # Summary
 # ──────────────────────────────────────────────
 

@@ -173,6 +173,36 @@ describe("deriveWhyFromDetail", () => {
   });
 });
 
+// Performance budget: pure derivation helpers must not regress to O(n²)
+// or introduce unexpected I/O. 1 000 findings processed in a single call
+// to sortFindingsBySeverity should complete well within 500 ms even on the
+// slowest CI runner.  This threshold is intentionally very conservative.
+describe("performance budget", () => {
+  const BUDGET_MS = 500;
+  const N = 1_000;
+
+  function makeFinding(i: number): InsightFinding {
+    const sev = (["critical", "warning", "info"] as const)[i % 3];
+    return { id: `f${i}`, title: `Finding ${i}`, detail: "", severity: sev };
+  }
+
+  it(`sortFindingsBySeverity(${N} findings) completes within ${BUDGET_MS}ms`, () => {
+    const findings = Array.from({ length: N }, (_, i) => makeFinding(i));
+    const t0 = Date.now();
+    sortFindingsBySeverity(findings);
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeLessThan(BUDGET_MS);
+  });
+
+  it(`summarizeFindingsCount(${N} findings) completes within ${BUDGET_MS}ms`, () => {
+    const findings = Array.from({ length: N }, (_, i) => makeFinding(i));
+    const t0 = Date.now();
+    summarizeFindingsCount(findings);
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeLessThan(BUDGET_MS);
+  });
+});
+
 describe("deriveActionsFromStrings", () => {
   it("returns empty array for empty input", () => {
     expect(deriveActionsFromStrings([])).toEqual([]);

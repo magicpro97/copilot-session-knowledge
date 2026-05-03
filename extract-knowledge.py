@@ -1156,14 +1156,34 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
     except sqlite3.OperationalError:
         pass
 
-    # Rebuild FTS
-    db.execute("DELETE FROM ke_fts")
-    db.execute("""
-        INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts)
-        SELECT id, title, content, tags, category,
-               COALESCE(wing,''), COALESCE(room,''), COALESCE(facts,'[]')
-        FROM knowledge_entries
-    """)
+    # Sync ke_fts — incremental when session_ids is provided, global otherwise.
+    # Incremental path: delete then re-insert only rows belonging to the affected
+    # sessions (rowid in ke_fts maps 1-to-1 to id in knowledge_entries).
+    # Global path: full DELETE + INSERT — preserved for non-scoped runs.
+    if session_ids:
+        _ph = ",".join("?" for _ in session_ids)
+        db.execute(
+            f"DELETE FROM ke_fts WHERE rowid IN (SELECT id FROM knowledge_entries WHERE session_id IN ({_ph}))",
+            session_ids,
+        )
+        db.execute(
+            f"""
+            INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts)
+            SELECT id, title, content, tags, category,
+                   COALESCE(wing,''), COALESCE(room,''), COALESCE(facts,'[]')
+            FROM knowledge_entries
+            WHERE session_id IN ({_ph})
+            """,
+            session_ids,
+        )
+    else:
+        db.execute("DELETE FROM ke_fts")
+        db.execute("""
+            INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts)
+            SELECT id, title, content, tags, category,
+                   COALESCE(wing,''), COALESCE(room,''), COALESCE(facts,'[]')
+            FROM knowledge_entries
+        """)
 
     # Extract relations between knowledge entries
     relations_count = extract_relations(db)
