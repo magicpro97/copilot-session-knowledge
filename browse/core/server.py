@@ -24,6 +24,15 @@ class _BrowseHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         pass  # suppress default Apache-style request logging
 
+    def end_headers(self) -> None:
+        """Emit any pending extra headers before finalising the HTTP header section."""
+        pending = getattr(self, "_pending_headers", [])
+        if pending:
+            for k, v in pending:
+                self.send_header(k, v)
+            self._pending_headers = []
+        super().end_headers()
+
     def _send(
         self,
         body: bytes,
@@ -34,6 +43,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         csp_header: str | None = None,
         send_body: bool = True,
         secure_cookie: bool = False,
+        cors_headers: dict | None = None,
     ) -> None:
         from browse.core.csp import build_csp_header
 
@@ -50,6 +60,10 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", csp)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
+
+        if cors_headers:
+            for k, v in cors_headers.items():
+                self.send_header(k, v)
 
         if set_cookie:
             from browse.core.auth import make_cookie_header
@@ -68,7 +82,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 raise
 
     def _handle_get_like(self, send_body: bool = True) -> None:
-        from browse.core.auth import check_token, is_https_request
+        from browse.core.auth import check_cors_origin, check_token, is_https_request
         from browse.core.csp import generate_nonce
         from browse.core.fts import _esc
         from browse.core.registry import match_route
@@ -135,18 +149,43 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # Auth check
+        # Compute CORS response headers for operator routes with allowlisted origins
+        cors_resp_headers: dict = {}
+        if path.startswith("/api/operator/"):
+            cors_ok, cors_origin = check_cors_origin(self.headers)
+            if cors_ok:
+                cors_resp_headers = {
+                    "Access-Control-Allow-Origin": cors_origin,
+                    "Vary": "Origin",
+                }
+
+        # Auth check (Bearer header, query-string token, or cookie)
         cookie_header = self.headers.get("Cookie", "")
-        valid, token_val, should_set_cookie = check_token(self.token, params, cookie_header)
+        auth_header = self.headers.get("Authorization", "")
+        valid, token_val, should_set_cookie = check_token(self.token, params, cookie_header, auth_header)
 
         if not valid:
-            self._send(b"401 Unauthorized", "text/plain", 401, nonce, send_body=send_body)
+            self._send(
+                b"401 Unauthorized",
+                "text/plain",
+                401,
+                nonce,
+                cors_headers=cors_resp_headers or None,
+                send_body=send_body,
+            )
             return
 
         # Route dispatch
         handler_fn, kwargs = match_route(path, "GET")
         if handler_fn is None:
-            self._send(b"404 Not Found", "text/plain", 404, nonce, send_body=send_body)
+            self._send(
+                b"404 Not Found",
+                "text/plain",
+                404,
+                nonce,
+                cors_headers=cors_resp_headers or None,
+                send_body=send_body,
+            )
             return
 
         try:
@@ -164,6 +203,8 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
                 self.send_header("X-Accel-Buffering", "no")
+                for k, v in cors_resp_headers.items():
+                    self.send_header(k, v)
                 self.end_headers()
                 return
             import threading as _th
@@ -171,6 +212,8 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             from browse.core.streaming import sse_response
 
             _stop = _th.Event()
+            if cors_resp_headers:
+                self._pending_headers = list(cors_resp_headers.items())
             try:
                 _gen = body(_stop) if callable(body) else iter(body)
                 sse_response(self, _gen, heartbeat=15, stop_event=_stop)
@@ -178,6 +221,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 pass
             finally:
                 _stop.set()
+                self._pending_headers = []
             return
 
         self._send(
@@ -188,6 +232,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             set_cookie=token_val if should_set_cookie else None,
             send_body=send_body,
             secure_cookie=secure_cookie,
+            cors_headers=cors_resp_headers or None,
         )
 
     def do_GET(self) -> None:
@@ -196,8 +241,38 @@ class _BrowseHandler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:
         self._handle_get_like(send_body=False)
 
+    def do_OPTIONS(self) -> None:
+        """Handle CORS preflight requests for /api/operator/* routes only."""
+        from browse.core.auth import check_cors_origin
+
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+
+        # Preflight is only supported for operator routes
+        if not path.startswith("/api/operator/"):
+            self.send_response(405)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        cors_ok, cors_origin = check_cors_origin(self.headers)
+        if not cors_ok:
+            self.send_response(403)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", cors_origin)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.send_header("Vary", "Origin")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _handle_mutating(self, method: str) -> None:
-        from browse.core.auth import check_origin, check_token
+        from browse.core.auth import check_cors_origin, check_origin, check_token, is_https_request
         from browse.core.csp import generate_nonce
         from browse.core.fts import _esc
         from browse.core.registry import match_route
@@ -207,19 +282,43 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
         nonce = generate_nonce()
 
-        # Auth check (cookie or query-string token)
+        # CORS allowlist check for operator routes (cross-origin POST/DELETE from static UI)
+        is_operator_path = path.startswith("/api/operator/")
+        cors_resp_headers: dict = {}
+        if is_operator_path:
+            cors_ok, cors_origin = check_cors_origin(self.headers)
+            if cors_ok:
+                cors_resp_headers = {
+                    "Access-Control-Allow-Origin": cors_origin,
+                    "Vary": "Origin",
+                }
+        else:
+            cors_ok, cors_origin = False, ""
+
+        # Auth check (Bearer header, cookie, or query-string token)
         cookie_header = self.headers.get("Cookie", "")
-        valid, token_val, should_set_cookie = check_token(self.token, params, cookie_header)
+        auth_header = self.headers.get("Authorization", "")
+        valid, token_val, should_set_cookie = check_token(self.token, params, cookie_header, auth_header)
         if not valid:
-            self._send(b"401 Unauthorized", "text/plain", 401, nonce)
+            self._send(
+                b"401 Unauthorized",
+                "text/plain",
+                401,
+                nonce,
+                cors_headers=cors_resp_headers or None,
+            )
             return
 
-        # CSRF protection: reject if Origin present and doesn't match Host
-        host = self.headers.get("Host", "")
-        origin_ok, is_https = check_origin(self.headers, host)
-        if not origin_ok:
-            self._send(b"403 Forbidden", "text/plain", 403, nonce)
-            return
+        if is_operator_path and cors_ok:
+            # Allowlisted cross-origin request: bypass same-origin CSRF check
+            is_https = is_https_request(self.headers)
+        else:
+            # Standard same-origin CSRF protection: reject if Origin present and doesn't match Host
+            host = self.headers.get("Host", "")
+            origin_ok, is_https = check_origin(self.headers, host)
+            if not origin_ok:
+                self._send(b"403 Forbidden", "text/plain", 403, nonce)
+                return
 
         # Body size guard (10 KB)
         _MAX_BODY = 10 * 1024
@@ -256,6 +355,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             nonce,
             set_cookie=token_val if should_set_cookie else None,
             secure_cookie=is_https,
+            cors_headers=cors_resp_headers or None,
         )
 
     def do_POST(self) -> None:

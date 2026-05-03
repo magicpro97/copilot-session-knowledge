@@ -22,8 +22,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useOperatorModelCatalog } from "@/lib/api/hooks";
+import { LOCAL_HOST } from "@/lib/host-profiles";
+import type { HostProfile, CreateOperatorSessionRequest } from "@/lib/api/types";
 import { WorkspacePicker } from "./workspace-picker";
-import type { CreateOperatorSessionRequest } from "@/lib/api/types";
+import { HostPicker } from "./host-picker";
 
 export const COPILOT_MODES = [
   { value: "interactive", label: "Interactive" },
@@ -31,8 +33,17 @@ export const COPILOT_MODES = [
   { value: "autopilot", label: "Autopilot" },
 ];
 
+/**
+ * Extends the base create-session request with the selected `HostProfile` so the
+ * shell can pass the right host to all downstream API hooks.
+ * The `host` field is stripped before the actual POST to the operator API.
+ */
+export type CreateSessionPayload = CreateOperatorSessionRequest & {
+  host: HostProfile;
+};
+
 type SessionCreateDialogProps = {
-  onSubmit: (payload: CreateOperatorSessionRequest) => void;
+  onSubmit: (payload: CreateSessionPayload) => void;
   loading?: boolean;
 };
 
@@ -46,7 +57,8 @@ export function SessionCreateDialog({ onSubmit, loading }: SessionCreateDialogPr
   const [workspace, setWorkspace] = useState("");
   const [model, setModel] = useState("");
   const [mode, setMode] = useState(COPILOT_MODES[0].value);
-  const modelCatalogQuery = useOperatorModelCatalog(open);
+  const [host, setHost] = useState<HostProfile>(LOCAL_HOST);
+  const modelCatalogQuery = useOperatorModelCatalog(host, open);
   const modelSuggestions = modelCatalogQuery.data?.models ?? [];
   const defaultModel = modelCatalogQuery.data?.default_model ?? "";
 
@@ -58,12 +70,14 @@ export function SessionCreateDialog({ onSubmit, loading }: SessionCreateDialogPr
       workspace: workspace.trim(),
       model: model.trim() || undefined,
       mode,
+      host,
     });
     setOpen(false);
     setName("");
     setWorkspace("");
     setModel("");
     setMode(COPILOT_MODES[0].value);
+    setHost(LOCAL_HOST);
   }
 
   return (
@@ -81,10 +95,17 @@ export function SessionCreateDialog({ onSubmit, loading }: SessionCreateDialogPr
           <DialogTitle>Start a new chat session</DialogTitle>
           <DialogDescription>
             Choose a workspace under <code className="bg-muted rounded px-1 text-xs">~/</code> and
-            configure Copilot CLI settings.
+            configure agent settings.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">Agent Host</label>
+            <HostPicker value={host} onChange={setHost} disabled={loading} />
+            <p className="text-muted-foreground text-xs">
+              Local (same origin) or a saved public tunnel URL.
+            </p>
+          </div>
           <div className="space-y-1.5">
             <label htmlFor={workspaceId} className="text-sm font-medium">
               Workspace <span className="text-destructive">*</span>
@@ -94,6 +115,7 @@ export function SessionCreateDialog({ onSubmit, loading }: SessionCreateDialogPr
               value={workspace}
               onChange={setWorkspace}
               disabled={loading}
+              host={host}
             />
             <p className="text-muted-foreground text-xs">
               Must be a path under <code>~/</code> on the host.
@@ -133,10 +155,7 @@ export function SessionCreateDialog({ onSubmit, loading }: SessionCreateDialogPr
                   <option key={m.id} value={m.id} label={m.display_name} />
                 ))}
               </datalist>
-              <p className="text-muted-foreground text-xs">
-                Suggestions come from the local Copilot environment. Leave blank to use the CLI
-                default.
-              </p>
+              <p className="text-muted-foreground text-xs">Leave blank to use the CLI default.</p>
             </div>
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Mode</label>

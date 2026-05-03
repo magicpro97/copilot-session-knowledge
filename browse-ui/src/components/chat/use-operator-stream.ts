@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { CopilotStreamFrame, CopilotStatusFrame } from "@/lib/api/types";
-import { createOperatorStreamPath } from "@/lib/api/hooks";
+import type { CopilotStreamFrame, CopilotStatusFrame, HostProfile } from "@/lib/api/types";
+import { createOperatorStreamPath, createOperatorStreamUrl } from "@/lib/api/hooks";
 
 export type StreamStatus = "idle" | "connecting" | "streaming" | "done" | "error";
 
@@ -17,10 +17,15 @@ export type UseOperatorStreamResult = {
  * Opens an EventSource when both sessionId and runId are non-null, parses
  * typed CopilotStreamFrame JSON from each message, and closes on terminal
  * `{ type: "status" }` frame.
+ *
+ * When `host` is provided the stream URL is resolved via
+ * `createOperatorStreamUrl(host)` so that remote agents stream from their
+ * own base URL rather than the same-origin `/api/operator/...` path.
  */
 export function useOperatorStream(
   sessionId: string | null,
-  runId: string | null
+  runId: string | null,
+  host?: HostProfile | null
 ): UseOperatorStreamResult {
   const [frames, setFrames] = useState<CopilotStreamFrame[]>([]);
   const [status, setStatus] = useState<StreamStatus>("idle");
@@ -39,7 +44,9 @@ export function useOperatorStream(
     setStatus("connecting");
     setExitCode(null);
 
-    const url = createOperatorStreamPath(sessionId, runId);
+    const url = host
+      ? createOperatorStreamUrl(sessionId, runId, host)
+      : createOperatorStreamPath(sessionId, runId);
     const es = new EventSource(url);
     esRef.current = es;
 
@@ -77,7 +84,7 @@ export function useOperatorStream(
       es.close();
       esRef.current = null;
     };
-  }, [sessionId, runId]);
+  }, [sessionId, runId, host]);
 
   return { frames, status, exitCode };
 }

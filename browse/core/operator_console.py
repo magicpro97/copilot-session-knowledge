@@ -510,10 +510,10 @@ def _build_copilot_argv(session: dict, prompt_text: str) -> list[str]:
     argv = ["copilot", "-p", prompt_text]
 
     name = str(session.get("name", "")).strip()
-    if name:
+    if session.get("resume_ready") is True and name:
+        argv.append(f"--resume={name}")
+    elif name:
         argv += ["--name", name]
-        if session.get("resume_ready") is True:
-            argv += ["--resume"]
 
     model = normalize_model_id(str(session.get("model", "")).strip())
     if model:

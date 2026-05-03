@@ -357,20 +357,20 @@ http://localhost:<port>/v2/chat/?token=<token>
 
 The browse server binds to `127.0.0.1` by design. Remote or mobile access requires a tunnel.
 
-### DNS coexistence: `copilot.linhngo.dev` + Firebase on `linhngo.dev`
+### DNS coexistence: tunnel subdomain + Firebase on apex domain
 
-**Verified fact:** Cloudflare Tunnel can front a subdomain (e.g. `copilot.linhngo.dev`) while the apex domain (`linhngo.dev`) remains served by Firebase Hosting. The two services use separate DNS records and do not conflict.
+**Verified fact:** Cloudflare Tunnel can front a subdomain (e.g. `browse.example.com`) while the apex domain (`example.com`) remains served by Firebase Hosting. The two services use separate DNS records and do not conflict.
 
 Two approaches:
 
 | Approach | How | Trade-offs |
 |----------|-----|------------|
-| **Cloudflare DNS for the whole zone** (recommended) | Move `linhngo.dev` nameservers to Cloudflare. Keep A/AAAA records for `linhngo.dev` pointing to Firebase Hosting IPs. Add a Cloudflare Tunnel CNAME for `copilot` subdomain via `cloudflared tunnel route dns`. | Full Cloudflare Zero Trust + WAF + Access features available. Standard Cloudflare Tunnel workflow. |
-| **External DNS only** | Keep DNS at current provider. After creating the tunnel, add a CNAME record: `copilot → <tunnel-id>.cfargotunnel.com`. | No Cloudflare WAF/caching on the subdomain. Cloudflare Access policies still apply (enforced at the tunnel edge). Firebase on the apex domain is unaffected. |
+| **Cloudflare DNS for the whole zone** (recommended) | Move your domain nameservers to Cloudflare. Keep A/AAAA records for the apex pointing to Firebase Hosting IPs. Add a Cloudflare Tunnel CNAME for the browse subdomain via `cloudflared tunnel route dns`. | Full Cloudflare Zero Trust + WAF + Access features available. Standard Cloudflare Tunnel workflow. |
+| **External DNS only** | Keep DNS at current provider. After creating the tunnel, add a CNAME record: `browse-subdomain → <tunnel-id>.cfargotunnel.com`. | No Cloudflare WAF/caching on the subdomain. Cloudflare Access policies still apply (enforced at the tunnel edge). Firebase on the apex domain is unaffected. |
 
 **[guidance]** For a personal operator setup that primarily needs access control, the external-DNS CNAME approach is the simpler path. Move to full Cloudflare DNS only if WAF or caching on the subdomain is needed.
 
-Firebase Hosting custom-domain verification uses A records or CNAME records at your DNS registrar. Neither approach disturbs these; the `linhngo.dev` Firebase records remain unchanged.
+Firebase Hosting custom-domain verification uses A records or CNAME records at your DNS registrar. Neither approach disturbs these; the Firebase apex records remain unchanged.
 
 ### Starting the tunnel
 
@@ -386,12 +386,12 @@ cloudflared tunnel create copilot-browse
 #   tunnel: <tunnel-id>
 #   credentials-file: ~/.cloudflared/<tunnel-id>.json
 #   ingress:
-#     - hostname: copilot.linhngo.dev
+#     - hostname: browse.example.com
 #       service: http://127.0.0.1:<browse-port>
 #     - service: http_status:404
 
 # Route DNS (Cloudflare-managed zone only; skip for external DNS)
-cloudflared tunnel route dns copilot-browse copilot.linhngo.dev
+cloudflared tunnel route dns copilot-browse browse.example.com
 
 # Run the tunnel
 cloudflared tunnel run copilot-browse
@@ -409,13 +409,13 @@ The browse server must already be running on the configured port before or along
 
 #### Cloudflare Access (recommended)
 
-**[guidance]** Add a Cloudflare Access policy on `copilot.linhngo.dev` to require identity verification (email OTP, GitHub SSO, or Google OAuth) before the tunnel endpoint is reachable. This means an attacker who discovers the subdomain cannot even attempt to brute-force the browse token — Access gates the connection first.
+**[guidance]** Add a Cloudflare Access policy on the operator tunnel hostname to require identity verification (email OTP, GitHub SSO, or Google OAuth) before the tunnel endpoint is reachable. This means an attacker who discovers the subdomain cannot even attempt to brute-force the browse token — Access gates the connection first.
 
-Configure Access in **Cloudflare Zero Trust → Access → Applications → Add an application → Self-hosted**, with the hostname `copilot.linhngo.dev`.
+Configure Access in **Cloudflare Zero Trust → Access → Applications → Add an application → Self-hosted**, with your tunnel hostname.
 
 #### Known blocker: Origin check for POST requests (code-level issue)
 
-**Verified from source code (`browse/core/auth.py` · `check_origin`):** The CSRF origin check compares the `Origin` header to `http://{Host}`. Behind Cloudflare Tunnel, the browser sends `Origin: https://copilot.linhngo.dev` but the check builds `http://copilot.linhngo.dev` — these do not match. All POST mutations (prompt submission, session create/delete) return **403 Forbidden**.
+**Verified from source code (`browse/core/auth.py` · `check_origin`):** The CSRF origin check compares the `Origin` header to `http://{Host}`. Behind Cloudflare Tunnel, the browser sends `Origin: https://browse.example.com` but the check builds `http://browse.example.com` — these do not match. All POST mutations (prompt submission, session create/delete) return **403 Forbidden**.
 
 This is a code-level fix required in `browse/core/auth.py`: the check must accept `https://` origins when `X-Forwarded-Proto: https` is present, or accept both schemes for the configured hostname. **This fix is not in the scope of this playbook entry.** Until it is applied, the operator console (`/v2/chat`) is read-browseable behind the tunnel but prompt submission will fail. Open a fix tentacle or issue targeting `browse/core/auth.py`.
 
@@ -423,25 +423,135 @@ This is a code-level fix required in `browse/core/auth.py`: the check must accep
 
 **Verified from source code:** The `browse_token` cookie is issued without the `Secure` attribute. Behind HTTPS (Cloudflare Tunnel), browsers accept and return the cookie correctly — the `Secure` flag would only be required for `SameSite=None` cookies, not for `SameSite=Strict`. All remote browse traffic goes through HTTPS, so this does not block functionality. It is a hardening gap: a future change to add `Secure` when serving behind HTTPS is recommended.
 
-#### Same-origin assumption in the UI
+#### Same-origin assumption in the UI (Cloudflare Tunnel deployment)
 
-The Next.js static export makes all API calls to relative paths (`/api/*`) on the same origin. This assumption holds behind Cloudflare Tunnel: both the static UI and the Python API are served from the same origin (`https://copilot.linhngo.dev`). No cross-origin configuration is needed.
+The Next.js static export makes all API calls to relative paths (`/api/*`) on the same origin. This assumption holds behind Cloudflare Tunnel: both the static UI and the Python API are served from the same origin. No cross-origin configuration is needed for this deployment mode.
+
+**Firebase Hosting deployment changes this assumption.** When the static UI is served from a Firebase custom domain while the API lives at the operator's tunnel URL, all API calls become cross-origin. The operator host implements an explicit CORS allowlist, Bearer auth, and a capabilities endpoint. See [Firebase-hosted control plane](#firebase-hosted-control-plane) below.
 
 ### Mobile access
 
-**Verified fact:** The browse server binds to `127.0.0.1`; direct LAN access from a mobile device is not possible. Via Cloudflare Tunnel, mobile browsers reach the app over HTTPS at the configured subdomain.
+**Verified fact (same-origin / Cloudflare Tunnel deployment):** The browse server binds to `127.0.0.1`; direct LAN access from a mobile device is not possible. Via Cloudflare Tunnel, mobile browsers reach the app over HTTPS at the configured subdomain.
 
 | Feature | Mobile status |
 |---------|--------------|
 | All `/v2/*` page routes | ✅ Work in iOS Safari and Android Chrome — Next.js static export, no SSR |
 | Token auth (first-load `?token=…`) | ✅ Works — cookie is stored in browser session storage per architecture notes |
 | SSE streaming (`/v2/chat` live transcript) | ✅ Works — iOS Safari 13+ and Android Chrome support `EventSource` |
-| POST mutations (prompt submit) | ❌ Blocked until Origin check is fixed (see above) |
+| POST mutations (prompt submit) | ⚠️ Requires `check_origin` fix in `browse/core/auth.py` to accept `https://` origins (see [Known blocker](#known-blocker-origin-check-for-post-requests-code-level-issue) above) |
 | Keyboard shortcuts (`g c`, `g s`, etc.) | ⚠️ Not accessible without a physical keyboard |
 
-**[guidance]** To verify mobile access: open `https://copilot.linhngo.dev/?token=<token>` on iOS Safari or Android Chrome. The sessions list and search pages should load. The operator console page loads, but prompt submission fails until the Origin fix is applied.
+**[guidance]** To verify mobile access: open `https://browse.example.com/?token=<token>` on iOS Safari or Android Chrome (substitute your operator tunnel hostname). The sessions list and search pages should load. The operator console page loads, but prompt submission requires the Origin fix to be applied first.
 
 ---
+
+## Firebase-hosted control plane
+
+> **Facts vs guidance separator:** Verified facts are derived from config inspection and code review. Architecture notes marked **[guidance]** describe intended or recommended work.
+
+**Verified fact:** `firebase.json` and `.firebaserc` are committed to the repo. `firebase.json` defines a hosting target named `agents` serving `browse-ui/dist/`. `.firebaserc` contains a placeholder project ID (`your-project-id`) — operators configure the real project ID and custom domain in a **private hosting repo** (see [external hosting-repo pattern](#external-hosting-repo-pattern) below).
+
+### Topology
+
+```
+                ┌──────────────────────────────────┐
+  browser ─────▶│  Firebase Hosting (static)        │
+                │  <your-firebase-domain>            │
+                │  browse-ui/dist (HTML/JS/CSS)      │
+                └────────────────┬─────────────────┘
+                                 │  cross-origin /api/operator/* calls
+                                 │  (operator URL configured per host profile)
+                                 ▼
+                ┌──────────────────────────────────┐
+                │  Cloudflare Tunnel                │
+                │  <your-tunnel-host>               │
+                │  ──▶ browse.py on operator host   │
+                │      REST + SSE (/api/operator/*) │
+                └──────────────────────────────────┘
+```
+
+In this topology, the Firebase-hosted static UI is the **control plane** — a durable, always-available URL the operator opens from any device. The **operator host** (the machine running `browse.py`) is reached via its public tunnel URL, configured as a host profile in the UI.
+
+### External hosting-repo pattern
+
+Actual production deployments should live in a **private hosting repo** rather than in this open-source repo. Recommended steps:
+
+1. Create a private repo (e.g. `my-org/copilot-ui-hosting`).
+2. Create a `.firebaserc` with your real Firebase project ID and target-to-site mapping.
+3. Produce a Firebase-compatible build of `browse-ui/` (see [build constraint](#build-constraint) below) and copy `dist/` into the hosting repo.
+4. Run `firebase deploy --only hosting:agents` from the private repo.
+
+This keeps personal project IDs and custom domains out of the public repo.
+
+### What is implemented
+
+| Component | Status |
+|-----------|--------|
+| `firebase.json` hosting config (template, repo) | ✅ Committed |
+| `.firebaserc` generic template (repo) | ✅ Committed — fill in your project ID in your private hosting repo |
+| `pnpm deploy` script in `browse-ui/package.json` | ✅ Committed |
+| Firebase custom domain verification | 🔲 Manual console step in your private hosting environment |
+| DNS records for the Firebase domain | 🔲 Manual step at DNS registrar or Cloudflare |
+| Firebase-targeted build (no `basePath: "/v2"`) | 🔲 Requires `next.config.ts` change before `pnpm build` |
+| Cross-origin API: CORS allowlist + Bearer auth + capabilities endpoint | ✅ Implemented on the operator host |
+
+### Build constraint
+
+**Verified from source:** `browse-ui/next.config.ts` sets `basePath: "/v2"`. The Python browse server strips the `/v2/` prefix and maps requests to `browse-ui/dist/`. This works correctly for the same-origin Cloudflare Tunnel deployment.
+
+For Firebase Hosting, asset URLs in the generated HTML files reference `/v2/_next/…`. Since Firebase serves `browse-ui/dist/` from the root, these references 404. A Firebase-targeted build must be produced without `basePath`:
+
+1. Temporarily remove `basePath: "/v2"` from `browse-ui/next.config.ts`
+2. `cd browse-ui && pnpm build`
+3. `firebase deploy --only hosting:agents` (or `pnpm deploy`) — run from your private hosting repo
+4. Restore `basePath: "/v2"` for subsequent Python-server builds
+
+**[guidance]** A permanent fix is to make `basePath` conditional on an environment variable in `next.config.ts` (e.g. `NEXT_PUBLIC_FIREBASE_BUILD=1`). This is outside the current scope.
+
+### CORS and auth on the operator host
+
+**Verified fact:** The operator host implements explicit cross-origin support in `browse/core/auth.py` and `browse/api/operator.py`:
+
+- `Access-Control-Allow-Origin` allowlist: only the configured Firebase domain origin is permitted
+- `Access-Control-Allow-Credentials: true` for cookie-based flows
+- Preflight (`OPTIONS`) responses on all `/api/operator/*` routes
+- Bearer token auth (`Authorization: Bearer <token>`) as the cross-origin authentication mechanism
+- `GET /api/operator/capabilities` endpoint so the static UI can discover what the connected operator host supports
+
+The operator console is fully functional across origins when a host profile is configured in the UI pointing to the operator's tunnel URL and Bearer token.
+
+### Host profiles
+
+The static UI uses a **host profile** — a named, user-configurable entry storing the operator tunnel URL, Bearer token, and optional label — to target API calls. The UI prompts for this on first load when no profile is set, and persists the profile in `localStorage`.
+
+**[guidance]** If the host-profile settings UI is not yet visible in the current build, the profile can be pre-seeded via `localStorage` in the browser console:
+
+```js
+localStorage.setItem("hostProfile", JSON.stringify({
+  url: "https://<your-tunnel-host>",
+  token: "<bearer-token>",
+  label: "My operator"
+}));
+```
+
+### Future CLI families (Claude Code, etc.)
+
+The Firebase-hosted control plane is intentionally CLI-agnostic. The `browse/core/operator_console.py` backend currently launches only Copilot CLI. Supporting Claude Code or other CLI families requires:
+
+- A pluggable provider interface in `operator_console.py`
+- A CLI-selector in the UI operator console
+- Per-CLI session schema normalisation
+
+This is architecture intent, documented here for future contributors. No CLI family other than Copilot CLI is implemented.
+
+### Manual steps still required in external consoles
+
+| Step | Where |
+|------|-------|
+| Create Firebase project and verify custom domain | Firebase console → Hosting → Custom domains |
+| Add DNS records provided by Firebase | DNS registrar or Cloudflare DNS dashboard |
+| (Optional) Create separate `agents` site if project has multiple sites | Firebase console → Hosting → Add another site |
+| Cloudflare Access policy on the operator tunnel hostname | Cloudflare Zero Trust → Access → Applications |
 
 
 

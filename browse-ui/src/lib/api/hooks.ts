@@ -3,7 +3,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { CACHE_TIMES, DEFAULT_PAGE_SIZE, STALE_TIMES } from "@/lib/constants";
-import { apiFetch } from "@/lib/api/client";
+import { apiFetch, hostFetch } from "@/lib/api/client";
+import { LOCAL_HOST, LOCAL_HOST_ID } from "@/lib/host-profiles";
 import {
   compareResponseSchema,
   communitiesResponseSchema,
@@ -18,6 +19,7 @@ import {
   retroResponseSchema,
   graphResponseSchema,
   healthResponseSchema,
+  hostCapabilitiesSchema,
   knowledgeInsightsResponseSchema,
   searchResponseSchema,
   sessionDetailResponseSchema,
@@ -51,6 +53,8 @@ import type {
   EvalResponse,
   FeedbackRequest,
   FeedbackResponse,
+  HostCapabilities,
+  HostProfile,
   KnowledgeInsightsResponse,
   ResearchPackResponse,
   ResearchPackReloadResponse,
@@ -134,16 +138,22 @@ export const queryKeys = {
   knowledgeInsights: () => ["knowledge-insights"] as const,
   compare: (a: string, b: string) => ["compare", a, b] as const,
   workflowHealth: () => ["workflow-health"] as const,
-  // Operator/Chat
-  operatorSessions: () => ["operator-sessions"] as const,
-  operatorSession: (id: string) => ["operator-session", id] as const,
-  operatorStatus: (sessionId: string, runId: string) =>
-    ["operator-status", sessionId, runId] as const,
-  operatorRuns: (sessionId: string) => ["operator-runs", sessionId] as const,
-  operatorSuggest: (q: string, hidden = false) => ["operator-suggest", q, hidden] as const,
-  operatorPreview: (path: string) => ["operator-preview", path] as const,
-  operatorDiff: (pathA: string, pathB: string) => ["operator-diff", pathA, pathB] as const,
-  operatorModels: () => ["operator-models"] as const,
+  // Operator/Chat — all keys are scoped by hostId to prevent cross-host cache collisions
+  operatorSessions: (hostId = LOCAL_HOST_ID) => ["operator-sessions", hostId] as const,
+  operatorSession: (id: string, hostId = LOCAL_HOST_ID) =>
+    ["operator-session", hostId, id] as const,
+  operatorStatus: (sessionId: string, runId: string, hostId = LOCAL_HOST_ID) =>
+    ["operator-status", hostId, sessionId, runId] as const,
+  operatorRuns: (sessionId: string, hostId = LOCAL_HOST_ID) =>
+    ["operator-runs", hostId, sessionId] as const,
+  operatorSuggest: (q: string, hidden = false, hostId = LOCAL_HOST_ID) =>
+    ["operator-suggest", hostId, q, hidden] as const,
+  operatorPreview: (path: string, hostId = LOCAL_HOST_ID) =>
+    ["operator-preview", hostId, path] as const,
+  operatorDiff: (pathA: string, pathB: string, hostId = LOCAL_HOST_ID) =>
+    ["operator-diff", hostId, pathA, pathB] as const,
+  operatorModels: (hostId = LOCAL_HOST_ID) => ["operator-models", hostId] as const,
+  operatorCapabilities: (hostId = LOCAL_HOST_ID) => ["operator-capabilities", hostId] as const,
 };
 
 function withLeadingSlash(path: string): string {
@@ -596,94 +606,106 @@ export function useWorkflowHealth() {
 }
 
 // ── Operator/Chat hooks (/api/operator/*) ─────────────────────────────
+// All operator hooks accept an optional `host` parameter as the LAST argument
+// (defaulting to LOCAL_HOST) so existing callers that pass `enabled: boolean`
+// positionally are backward-compatible. Query keys are scoped by host.id.
 
-export function useOperatorSessions() {
+export function useOperatorSessions(host: HostProfile = LOCAL_HOST) {
   return useQuery({
-    queryKey: queryKeys.operatorSessions(),
+    queryKey: queryKeys.operatorSessions(host.id),
     staleTime: STALE_TIMES.sessions,
     gcTime: CACHE_TIMES.sessions,
     queryFn: async (): Promise<OperatorSessionListResponse> => {
-      const data = await apiFetch<OperatorSessionListResponse>(
-        withLeadingSlash("/api/operator/sessions")
+      const data = await hostFetch<OperatorSessionListResponse>(
+        withLeadingSlash("/api/operator/sessions"),
+        host
       );
       return operatorSessionListResponseSchema.parse(data);
     },
   });
 }
 
-export function useOperatorSession(id: string, enabled = true) {
+export function useOperatorSession(id: string, enabled = true, host: HostProfile = LOCAL_HOST) {
   return useQuery({
-    queryKey: queryKeys.operatorSession(id),
+    queryKey: queryKeys.operatorSession(id, host.id),
     staleTime: STALE_TIMES.sessionDetail,
     gcTime: CACHE_TIMES.sessionDetail,
     enabled: enabled && Boolean(id),
     queryFn: async (): Promise<OperatorSession> => {
-      const data = await apiFetch<OperatorSession>(
-        withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(id)}`)
+      const data = await hostFetch<OperatorSession>(
+        withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(id)}`),
+        host
       );
       return operatorSessionSchema.parse(data);
     },
   });
 }
 
-export function useOperatorRuns(sessionId: string, enabled = true) {
+export function useOperatorRuns(sessionId: string, enabled = true, host: HostProfile = LOCAL_HOST) {
   return useQuery({
-    queryKey: queryKeys.operatorRuns(sessionId),
+    queryKey: queryKeys.operatorRuns(sessionId, host.id),
     staleTime: STALE_TIMES.sessionDetail,
     gcTime: CACHE_TIMES.sessionDetail,
     enabled: enabled && Boolean(sessionId),
     queryFn: async (): Promise<OperatorRunsResponse> => {
-      const data = await apiFetch<OperatorRunsResponse>(
-        withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/runs`)
+      const data = await hostFetch<OperatorRunsResponse>(
+        withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/runs`),
+        host
       );
       return operatorRunsResponseSchema.parse(data);
     },
   });
 }
 
-export function useCreateOperatorSession() {
+export function useCreateOperatorSession(host: HostProfile = LOCAL_HOST) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async (payload: CreateOperatorSessionRequest): Promise<OperatorSession> => {
-      const data = await apiFetch<OperatorSession>(withLeadingSlash("/api/operator/sessions"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(createOperatorSessionRequestSchema.parse(payload)),
-      });
+      const data = await hostFetch<OperatorSession>(
+        withLeadingSlash("/api/operator/sessions"),
+        host,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(createOperatorSessionRequestSchema.parse(payload)),
+        }
+      );
       return operatorSessionSchema.parse(data);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.operatorSessions() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.operatorSessions(host.id) });
     },
   });
 }
 
-export function useDeleteOperatorSession() {
+export function useDeleteOperatorSession(host: HostProfile = LOCAL_HOST) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async (sessionId: string): Promise<void> => {
-      await apiFetch<unknown>(
+      await hostFetch<unknown>(
         withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/delete`),
+        host,
         { method: "POST" }
       );
     },
     onSuccess: (_data, sessionId) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.operatorSessions() });
-      queryClient.removeQueries({ queryKey: queryKeys.operatorSession(sessionId) });
-      queryClient.removeQueries({ queryKey: queryKeys.operatorRuns(sessionId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.operatorSessions(host.id) });
+      queryClient.removeQueries({ queryKey: queryKeys.operatorSession(sessionId, host.id) });
+      queryClient.removeQueries({ queryKey: queryKeys.operatorRuns(sessionId, host.id) });
     },
   });
 }
 
-export function useSubmitPrompt(sessionId: string) {
+export function useSubmitPrompt(sessionId: string, host: HostProfile = LOCAL_HOST) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async (payload: PromptRequest): Promise<PromptSubmitResponse> => {
-      const data = await apiFetch<PromptSubmitResponse>(
+      const data = await hostFetch<PromptSubmitResponse>(
         withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/prompt`),
+        host,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -693,21 +715,27 @@ export function useSubmitPrompt(sessionId: string) {
       return promptSubmitResponseSchema.parse(data);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.operatorSession(sessionId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.operatorSession(sessionId, host.id) });
     },
   });
 }
 
-export function useOperatorStatus(sessionId: string, runId: string, enabled = true) {
+export function useOperatorStatus(
+  sessionId: string,
+  runId: string,
+  enabled = true,
+  host: HostProfile = LOCAL_HOST
+) {
   return useQuery({
-    queryKey: queryKeys.operatorStatus(sessionId, runId),
+    queryKey: queryKeys.operatorStatus(sessionId, runId, host.id),
     staleTime: STALE_TIMES.health,
     gcTime: CACHE_TIMES.health,
     enabled: enabled && Boolean(sessionId) && Boolean(runId),
     queryFn: async (): Promise<OperatorRunStatus> => {
       const qs = createQueryString({ run: runId });
-      const data = await apiFetch<OperatorRunStatus>(
-        withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/status${qs}`)
+      const data = await hostFetch<OperatorRunStatus>(
+        withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/status${qs}`),
+        host
       );
       return operatorRunStatusSchema.parse(data);
     },
@@ -719,63 +747,125 @@ export function createOperatorStreamPath(sessionId: string, runId: string): stri
   return withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/stream${qs}`);
 }
 
-export function usePathSuggest(q: string, hidden = false, enabled = true) {
+/**
+ * Returns the full stream URL for a given host profile.
+ *
+ * Because `EventSource` does not support custom request headers, the auth token
+ * is appended as a query parameter for both local and remote hosts. The UI
+ * must use this function (not `createOperatorStreamPath`) when connecting to
+ * non-local hosts.
+ */
+export function createOperatorStreamUrl(
+  sessionId: string,
+  runId: string,
+  host: HostProfile
+): string {
+  const path = `/api/operator/sessions/${encodeURIComponent(sessionId)}/stream`;
+  const base = host.base_url || (typeof window !== "undefined" ? window.location.origin : "");
+  const url = new URL(path, base);
+  url.searchParams.set("run", runId);
+  if (host.token) {
+    url.searchParams.set("token", host.token);
+  }
+  return url.toString();
+}
+
+export function usePathSuggest(
+  q: string,
+  hidden = false,
+  host: HostProfile = LOCAL_HOST,
+  enabled = true
+) {
   return useQuery({
-    queryKey: queryKeys.operatorSuggest(q, hidden),
+    queryKey: queryKeys.operatorSuggest(q, hidden, host.id),
     staleTime: STALE_TIMES.search,
     gcTime: CACHE_TIMES.search,
     enabled,
     queryFn: async (): Promise<PathSuggestResponse> => {
       const qs = createQueryString({ q, ...(hidden ? { hidden: "true" } : {}) });
-      const data = await apiFetch<PathSuggestResponse>(
-        withLeadingSlash(`/api/operator/suggest${qs}`)
+      const data = await hostFetch<PathSuggestResponse>(
+        withLeadingSlash(`/api/operator/suggest${qs}`),
+        host
       );
       return pathSuggestResponseSchema.parse(data);
     },
   });
 }
 
-export function useFilePreview(path: string, enabled = true) {
+export function useFilePreview(path: string, enabled = true, host: HostProfile = LOCAL_HOST) {
   return useQuery({
-    queryKey: queryKeys.operatorPreview(path),
+    queryKey: queryKeys.operatorPreview(path, host.id),
     staleTime: STALE_TIMES.sessionDetail,
     gcTime: CACHE_TIMES.sessionDetail,
     enabled: enabled && Boolean(path),
     queryFn: async (): Promise<FilePreviewResponse> => {
       const qs = createQueryString({ path });
-      const data = await apiFetch<FilePreviewResponse>(
-        withLeadingSlash(`/api/operator/preview${qs}`)
+      const data = await hostFetch<FilePreviewResponse>(
+        withLeadingSlash(`/api/operator/preview${qs}`),
+        host
       );
       return filePreviewResponseSchema.parse(data);
     },
   });
 }
 
-export function useFileDiff(pathA: string, pathB: string, enabled = true) {
+export function useFileDiff(
+  pathA: string,
+  pathB: string,
+  enabled = true,
+  host: HostProfile = LOCAL_HOST
+) {
   return useQuery({
-    queryKey: queryKeys.operatorDiff(pathA, pathB),
+    queryKey: queryKeys.operatorDiff(pathA, pathB, host.id),
     staleTime: STALE_TIMES.sessionDetail,
     gcTime: CACHE_TIMES.sessionDetail,
     enabled: enabled && Boolean(pathA) && Boolean(pathB),
     queryFn: async (): Promise<FileDiffResponse> => {
       const qs = createQueryString({ a: pathA, b: pathB });
-      const data = await apiFetch<FileDiffResponse>(withLeadingSlash(`/api/operator/diff${qs}`));
+      const data = await hostFetch<FileDiffResponse>(
+        withLeadingSlash(`/api/operator/diff${qs}`),
+        host
+      );
       return fileDiffResponseSchema.parse(data);
     },
   });
 }
 
-export function useOperatorModelCatalog(enabled = true) {
+export function useOperatorModelCatalog(host: HostProfile = LOCAL_HOST, enabled = true) {
   return useQuery({
-    queryKey: queryKeys.operatorModels(),
+    queryKey: queryKeys.operatorModels(host.id),
     staleTime: STALE_TIMES.health,
     gcTime: CACHE_TIMES.health,
     enabled,
     queryFn: async (): Promise<OperatorModelCatalogResponse> => {
-      const data = await apiFetch<OperatorModelCatalogResponse>(
-        withLeadingSlash("/api/operator/models")
+      const data = await hostFetch<OperatorModelCatalogResponse>(
+        withLeadingSlash("/api/operator/models"),
+        host
       );
       return operatorModelCatalogResponseSchema.parse(data);
+    },
+  });
+}
+
+/**
+ * Fetches the runtime capabilities of an operator host.
+ *
+ * Calls `GET /api/operator/capabilities` on the given host to discover
+ * the CLI kind, supported modes, and supported features. Use this to
+ * adapt UI capabilities to the selected remote host.
+ */
+export function useHostCapabilities(host: HostProfile = LOCAL_HOST, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.operatorCapabilities(host.id),
+    staleTime: STALE_TIMES.health,
+    gcTime: CACHE_TIMES.health,
+    enabled,
+    queryFn: async (): Promise<HostCapabilities> => {
+      const data = await hostFetch<HostCapabilities>(
+        withLeadingSlash("/api/operator/capabilities"),
+        host
+      );
+      return hostCapabilitiesSchema.parse(data);
     },
   });
 }

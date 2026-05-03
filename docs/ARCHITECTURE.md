@@ -109,11 +109,15 @@ GET  /api/operator/diff                      → unified diff for two files unde
 - `auto-update-tools.py` can restart `watch-sessions.py`, but it does not restart the browse server or interfere with active operator runs.
 - UI-only `browse-ui/dist/` updates are served from disk after rebuild/deploy; Python changes to `browse/api/operator.py` or `browse/core/operator_console.py` still require a manual browse server restart.
 
-### Remote access (Cloudflare Tunnel)
+### Remote access
 
-The server binds to `127.0.0.1` by design. Remote/mobile access requires a tunnel such as Cloudflare Tunnel. Key code-level constraint: `browse/core/auth.py · check_origin()` builds the expected CSRF origin as `http://{Host}`. Behind an HTTPS tunnel the browser sends `Origin: https://…`, which does not match — all POST mutations return **403**. Fix `check_origin` to accept the `https://` scheme (check `X-Forwarded-Proto`) before enabling remote access for the operator console. The read-only diagnostic pages (sessions, search, insights) are unaffected since they use only GET requests.
+Two deployment modes are supported:
 
-> Full remote-access setup, DNS coexistence with Firebase, Cloudflare Access guidance, and mobile posture: **[docs/OPERATOR-PLAYBOOK.md — Remote Access via Cloudflare Tunnel](OPERATOR-PLAYBOOK.md#remote-access-via-cloudflare-tunnel)**
+**Mode 1 — Same-origin (Cloudflare Tunnel, default):** The Python browse server serves both the static UI and the API behind a single Cloudflare Tunnel URL (e.g. `browse.example.com`). All API calls are same-origin; no CORS configuration needed. Key code-level constraint: `browse/core/auth.py · check_origin()` builds the expected CSRF origin as `http://{Host}`. Behind HTTPS the browser sends `Origin: https://…` — these do not match, causing POST mutations to return **403**. Fix `check_origin` to accept `https://` (check `X-Forwarded-Proto`) before enabling full remote operator console access.
+
+**Mode 2 — Firebase Hosting control plane:** The static browse-ui is deployed to Firebase Hosting (operator's chosen custom domain). The operator's `browse.py` server is reached via a Cloudflare Tunnel. All API calls from the Firebase-hosted UI to the tunnel are cross-origin; the operator host exposes an explicit CORS allowlist, Bearer auth, and a `GET /api/operator/capabilities` endpoint. Host profiles let the UI target different operator machines. See [docs/OPERATOR-PLAYBOOK.md — Firebase-hosted control plane](OPERATOR-PLAYBOOK.md#firebase-hosted-control-plane) for the full topology and manual console steps.
+
+> Full remote-access setup, Cloudflare Access guidance, and Firebase topology: **[docs/OPERATOR-PLAYBOOK.md](OPERATOR-PLAYBOOK.md)**
 
 ## Enforcement Hooks
 

@@ -70,6 +70,35 @@ def _str_param(params: dict, key: str, default: str = "", max_len: int = 256) ->
     return str(val).strip()[:max_len]
 
 
+# ── Host capabilities ─────────────────────────────────────────────────────────
+
+
+@route("/api/operator/capabilities", methods=["GET"])
+def handle_capabilities(db, params, token, nonce) -> tuple:
+    """GET /api/operator/capabilities — host identity and feature contract.
+
+    Returns a stable descriptor so remote UIs can verify the remote endpoint
+    and learn which CLI family it serves.
+
+    Response shape matches the ``hostCapabilitiesSchema`` in the frontend
+    (browse-ui/src/lib/api/schemas.ts):
+      {
+        "cli_kind":          "copilot",
+        "version":           "1",
+        "supported_modes":   ["ask", "edit"],
+        "supported_features": ["sessions", "models", "suggest", "preview", "diff"]
+      }
+    """
+    return json_ok(
+        {
+            "cli_kind": "copilot",
+            "version": "1",
+            "supported_modes": ["ask", "edit"],
+            "supported_features": ["sessions", "models", "suggest", "preview", "diff"],
+        }
+    )
+
+
 # ── Session CRUD ──────────────────────────────────────────────────────────────
 
 

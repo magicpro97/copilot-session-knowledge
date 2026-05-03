@@ -991,3 +991,32 @@ export const operatorModelCatalogResponseSchema = z.object({
   /** Server-declared default model id; null when no default is configured. */
   default_model: z.string().nullable(),
 });
+
+// ── Host Profiles (client-side multi-host support) ─────────────────────
+
+/** Permissive CLI family schema — any non-empty string is accepted. */
+export const cliKindSchema = z.string().min(1);
+
+/**
+ * Host profile stored client-side in localStorage.
+ * The "local" id is reserved for the same-origin sentinel and is immutable.
+ */
+export const hostProfileSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  base_url: z.string(),
+  token: z.string(),
+  cli_kind: cliKindSchema,
+  is_default: z.boolean(),
+});
+
+/**
+ * Runtime capabilities contract returned by `GET /api/operator/capabilities`.
+ * The UI uses this to adapt features to what the connected CLI server supports.
+ */
+export const hostCapabilitiesSchema = z.object({
+  cli_kind: cliKindSchema,
+  version: z.string().nullable().optional(),
+  supported_modes: z.array(z.string()),
+  supported_features: z.array(z.string()),
+});

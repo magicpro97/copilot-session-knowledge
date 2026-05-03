@@ -365,8 +365,12 @@ def test_oc20_build_copilot_argv_uses_resume_ready():
     }
     argv_no_resume = _build_copilot_argv(dict(base_session, resume_ready=False), "hello")
     argv_resume = _build_copilot_argv(dict(base_session, resume_ready=True), "hello")
+    argv_nameless_resume = _build_copilot_argv(dict(base_session, name="", resume_ready=True), "hello")
     test("OC20: no --resume without resume_ready", "--resume" not in argv_no_resume)
-    test("OC20: --resume present when resume_ready", "--resume" in argv_resume)
+    test("OC20: new session keeps --name", "--name" in argv_no_resume)
+    test("OC20: resumed session omits --name", "--name" not in argv_resume)
+    test("OC20: resumed session uses named --resume", "--resume=resume-test" in argv_resume)
+    test("OC20: nameless session omits bare --resume", "--resume" not in argv_nameless_resume)
 
 
 def test_oc21_parse_output_event_preserves_type():
@@ -1216,6 +1220,202 @@ def _run_api_tests(port: int):
             dot_api20.rmdir()
         except OSError:
             pass
+
+    # ── CORS + Bearer auth + capabilities tests ───────────────────────────────
+
+    import os as _os
+
+    _os.environ["BROWSE_CORS_ORIGINS"] = "https://agents.linhngo.dev"
+    try:
+        # CAP1: GET /api/operator/capabilities returns host descriptor (frontend schema)
+        resp_cap = _get(port, "/api/operator/capabilities")
+        test("CAP1: capabilities → 200", resp_cap.status == 200)
+        data_cap = _read_json(resp_cap)
+        # Verify the response matches the frontend hostCapabilitiesSchema:
+        #   { cli_kind, version, supported_modes, supported_features }
+        test("CAP1: cli_kind is copilot", data_cap.get("cli_kind") == "copilot")
+        test("CAP1: version field present", "version" in data_cap)
+        test("CAP1: supported_modes is list", isinstance(data_cap.get("supported_modes"), list))
+        test("CAP1: supported_features is list", isinstance(data_cap.get("supported_features"), list))
+        test("CAP1: sessions in supported_features", "sessions" in data_cap.get("supported_features", []))
+        test("CAP1: models in supported_features", "models" in data_cap.get("supported_features", []))
+        # Old keys must NOT be present (schema contract)
+        test("CAP1: no stale cli_family key", "cli_family" not in data_cap)
+        test("CAP1: no stale operator key", "operator" not in data_cap)
+        test("CAP1: no stale features key", "features" not in data_cap)
+
+        # CORS1: OPTIONS preflight for operator route with allowlisted origin → 204
+        conn_opts = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_opts.request(
+            "OPTIONS",
+            "/api/operator/sessions",
+            headers={
+                "Origin": "https://agents.linhngo.dev",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Authorization, Content-Type",
+            },
+        )
+        resp_opts = conn_opts.getresponse()
+        _ = resp_opts.read()
+        test("CORS1: OPTIONS preflight → 204", resp_opts.status == 204)
+        acao = resp_opts.getheader("Access-Control-Allow-Origin", "")
+        test("CORS1: ACAO header is exact origin", acao == "https://agents.linhngo.dev")
+        acam = resp_opts.getheader("Access-Control-Allow-Methods", "")
+        test("CORS1: ACAM includes POST", "POST" in acam)
+        test("CORS1: ACAM includes GET", "GET" in acam)
+        acah = resp_opts.getheader("Access-Control-Allow-Headers", "")
+        test("CORS1: ACAH includes Authorization", "Authorization" in acah)
+
+        # CORS2: OPTIONS preflight from non-allowlisted origin → 403
+        conn_opts_bad = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_opts_bad.request(
+            "OPTIONS",
+            "/api/operator/sessions",
+            headers={
+                "Origin": "https://evil.example.com",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        resp_opts_bad = conn_opts_bad.getresponse()
+        _ = resp_opts_bad.read()
+        test("CORS2: OPTIONS from non-allowlisted origin → 403", resp_opts_bad.status == 403)
+
+        # CORS3: OPTIONS preflight for non-operator route → 405
+        conn_opts_nonopr = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_opts_nonopr.request(
+            "OPTIONS",
+            "/healthz",
+            headers={"Origin": "https://agents.linhngo.dev"},
+        )
+        resp_opts_nonopr = conn_opts_nonopr.getresponse()
+        _ = resp_opts_nonopr.read()
+        test("CORS3: OPTIONS for non-operator route → 405", resp_opts_nonopr.status == 405)
+
+        # CORS4: GET /api/operator/sessions with Authorization: Bearer auth
+        conn_bearer = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_bearer.request(
+            "GET",
+            "/api/operator/sessions",
+            headers={
+                "Authorization": f"Bearer {_TOKEN}",
+                "Origin": "https://agents.linhngo.dev",
+            },
+        )
+        resp_bearer = conn_bearer.getresponse()
+        test("CORS4: GET with Bearer auth → 200", resp_bearer.status == 200)
+        acao_bearer = resp_bearer.getheader("Access-Control-Allow-Origin", "")
+        test("CORS4: ACAO header present in response", acao_bearer == "https://agents.linhngo.dev")
+        data_bearer = _read_json(resp_bearer)
+        test("CORS4: sessions field returned", "sessions" in data_bearer)
+
+        # CORS5: GET with wrong Bearer token → 401
+        conn_bearer_bad = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_bearer_bad.request(
+            "GET",
+            "/api/operator/sessions",
+            headers={
+                "Authorization": "Bearer wrong-token",
+                "Origin": "https://agents.linhngo.dev",
+            },
+        )
+        resp_bearer_bad = conn_bearer_bad.getresponse()
+        _ = resp_bearer_bad.read()
+        test("CORS5: GET with wrong Bearer → 401", resp_bearer_bad.status == 401)
+
+        # CORS5b: wrong Bearer + valid cookie must NOT fall through to cookie auth
+        # (regression for the silent Bearer→cookie fallthrough bug)
+        conn_bearer_cookie = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_bearer_cookie.request(
+            "GET",
+            "/api/operator/sessions",
+            headers={
+                "Authorization": "Bearer wrong-token",
+                "Cookie": f"browse_token={_TOKEN}",
+                "Origin": "https://agents.linhngo.dev",
+            },
+        )
+        resp_bearer_cookie = conn_bearer_cookie.getresponse()
+        _ = resp_bearer_cookie.read()
+        test("CORS5b: wrong Bearer + valid cookie → 401 (no fallthrough)", resp_bearer_cookie.status == 401)
+
+
+        raw_cors_post = json.dumps({"name": "cors-test-session"}).encode("utf-8")
+        conn_cors_post = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_cors_post.request(
+            "POST",
+            "/api/operator/sessions",
+            body=raw_cors_post,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(raw_cors_post)),
+                "Authorization": f"Bearer {_TOKEN}",
+                "Origin": "https://agents.linhngo.dev",
+            },
+        )
+        resp_cors_post = conn_cors_post.getresponse()
+        test("CORS6: cross-origin POST with Bearer + allowlisted origin → 200", resp_cors_post.status == 200)
+        acao_post = resp_cors_post.getheader("Access-Control-Allow-Origin", "")
+        test("CORS6: ACAO present on POST response", acao_post == "https://agents.linhngo.dev")
+        data_cors_post = _read_json(resp_cors_post)
+        cors_session_id = data_cors_post.get("id", "")
+        test("CORS6: session id returned", bool(cors_session_id))
+        if cors_session_id:
+            # Cleanup
+            _post(port, f"/api/operator/sessions/{cors_session_id}/delete")
+
+        # CORS6b: cross-origin POST with wrong Bearer still returns ACAO on 401
+        raw_bad_post = json.dumps({"name": "cors-bad-auth"}).encode("utf-8")
+        conn_cors_post_bad = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_cors_post_bad.request(
+            "POST",
+            "/api/operator/sessions",
+            body=raw_bad_post,
+            headers={
+                "Origin": "https://agents.linhngo.dev",
+                "Authorization": "Bearer wrongtoken",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(raw_bad_post)),
+            },
+        )
+        resp_cors_post_bad = conn_cors_post_bad.getresponse()
+        _ = resp_cors_post_bad.read()
+        test("CORS6b: cross-origin POST with wrong Bearer → 401", resp_cors_post_bad.status == 401)
+        acao_post_bad = resp_cors_post_bad.getheader("Access-Control-Allow-Origin", "")
+        test("CORS6b: ACAO present on 401 POST response", acao_post_bad == "https://agents.linhngo.dev")
+
+        # CORS7: POST to operator route from non-allowlisted origin → 403 (CSRF)
+        raw_csrf2 = json.dumps({"name": "non-allowlisted"}).encode("utf-8")
+        conn_csrf2 = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_csrf2.request(
+            "POST",
+            f"/api/operator/sessions?token={_TOKEN}",
+            body=raw_csrf2,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(raw_csrf2)),
+                "Origin": "https://notin.allowlist.example.com",
+                "Host": "127.0.0.1",
+            },
+        )
+        resp_csrf2 = conn_csrf2.getresponse()
+        _ = resp_csrf2.read()
+        test("CORS7: POST from non-allowlisted origin → 403", resp_csrf2.status == 403)
+
+        # CORS8: GET /api/operator/capabilities with CORS returns ACAO header
+        conn_cap_cors = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_cap_cors.request(
+            "GET",
+            f"/api/operator/capabilities?token={_TOKEN}",
+            headers={"Origin": "https://agents.linhngo.dev"},
+        )
+        resp_cap_cors = conn_cap_cors.getresponse()
+        test("CORS8: capabilities with CORS → 200", resp_cap_cors.status == 200)
+        acao_cap = resp_cap_cors.getheader("Access-Control-Allow-Origin", "")
+        test("CORS8: ACAO header on capabilities", acao_cap == "https://agents.linhngo.dev")
+        _ = resp_cap_cors.read()
+
+    finally:
+        _os.environ.pop("BROWSE_CORS_ORIGINS", None)
 
 
 if __name__ == "__main__":

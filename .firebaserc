@@ -1,0 +1,13 @@
+{
+  "_comment": "Replace 'your-project-id' with your Firebase project ID. Production deployments should live in a private hosting repo; this file is a template for contributors adapting the project.",
+  "projects": {
+    "default": "your-project-id"
+  },
+  "targets": {
+    "your-project-id": {
+      "hosting": {
+        "agents": ["your-project-id"]
+      }
+    }
+  }
+}

@@ -1012,3 +1012,45 @@ export interface ChatSettings {
   workspace: string;
   add_dirs: string[];
 }
+
+// ── Host Profiles (client-side multi-host support) ─────────────────────
+
+/**
+ * CLI family identifier. Lowercase kebab-case to preserve future extensibility.
+ * The `(string & {})` union allows runtime-reported families beyond the known set
+ * while preserving IDE autocomplete for known values.
+ */
+export type CliKind = "copilot" | "claude" | (string & {});
+
+/**
+ * A client-side saved profile for connecting to an operator host (local or remote).
+ * `id === LOCAL_HOST_ID` ("local") is the built-in same-origin default.
+ */
+export interface HostProfile {
+  /** Stable opaque identifier. The value "local" is reserved for the same-origin default. */
+  id: string;
+  /** User-visible display label, e.g. "My Laptop Tunnel". */
+  label: string;
+  /**
+   * Absolute base URL of the CLI server, e.g. "https://xxx.ngrok.io".
+   * Empty string means same-origin (local default).
+   */
+  base_url: string;
+  /** Auth token for this host. Never appended to URLs when a remote base_url is set. */
+  token: string;
+  /** Which CLI family runs on this host. */
+  cli_kind: CliKind;
+  /** When true, this profile is selected by default when no active selection exists. */
+  is_default: boolean;
+}
+
+/**
+ * Runtime capabilities contract returned by `GET /api/operator/capabilities`.
+ * Describes what the connected CLI server supports so the UI can adapt.
+ */
+export interface HostCapabilities {
+  cli_kind: CliKind;
+  version?: string | null;
+  supported_modes: string[];
+  supported_features: string[];
+}

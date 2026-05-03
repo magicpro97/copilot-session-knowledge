@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
-import { Bot, Menu, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Bot, Globe, Menu, PanelLeftClose, PanelLeftOpen, ServerCog } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/data/empty-state";
@@ -16,6 +16,7 @@ import {
   useDeleteOperatorSession,
   useSubmitPrompt,
 } from "@/lib/api/hooks";
+import { getAllHostProfiles, LOCAL_HOST, LOCAL_HOST_ID } from "@/lib/host-profiles";
 import { cn } from "@/lib/utils";
 import { SessionList } from "./session-list";
 import { SessionCreateDialog } from "./session-create-dialog";
@@ -23,8 +24,11 @@ import { MetadataBar } from "./metadata-bar";
 import { Transcript } from "./transcript";
 import { Composer } from "./composer";
 import type { OperatorRunInfo, OperatorSession } from "@/lib/api/types";
+import type { CreateSessionPayload } from "./session-create-dialog";
 
 const SESSION_PARAM = "s";
+/** Stores the host profile id for the active session's agent host. */
+const HOST_PARAM = "h";
 
 type ActiveRun = { id: string; prompt: string };
 
@@ -39,23 +43,35 @@ export function ChatShell() {
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const activeSessionId = searchParams.get(SESSION_PARAM) ?? null;
+  const activeHostId = searchParams.get(HOST_PARAM) ?? LOCAL_HOST_ID;
 
-  // Load all sessions
-  const sessionsQuery = useOperatorSessions();
+  // Resolve the active HostProfile from the URL param.
+  const activeHost = useMemo(() => {
+    if (activeHostId === LOCAL_HOST_ID) return LOCAL_HOST;
+    const saved = getAllHostProfiles();
+    return saved.find((p) => p.id === activeHostId) ?? LOCAL_HOST;
+  }, [activeHostId]);
+
+  // Load all sessions from the active host
+  const sessionsQuery = useOperatorSessions(activeHost);
   const sessions = useMemo(() => sessionsQuery.data?.sessions ?? [], [sessionsQuery.data]);
 
   // Load active session detail
-  const sessionQuery = useOperatorSession(activeSessionId ?? "", Boolean(activeSessionId));
+  const sessionQuery = useOperatorSession(
+    activeSessionId ?? "",
+    Boolean(activeSessionId),
+    activeHost
+  );
   const session = sessionQuery.data ?? null;
 
   // Load full persisted run history for the active session.
-  const runsQuery = useOperatorRuns(activeSessionId ?? "", Boolean(activeSessionId));
+  const runsQuery = useOperatorRuns(activeSessionId ?? "", Boolean(activeSessionId), activeHost);
 
-  const createMutation = useCreateOperatorSession();
-  const deleteMutation = useDeleteOperatorSession();
-  const promptMutation = useSubmitPrompt(activeSessionId ?? "");
+  const createMutation = useCreateOperatorSession(activeHost);
+  const deleteMutation = useDeleteOperatorSession(activeHost);
+  const promptMutation = useSubmitPrompt(activeSessionId ?? "", activeHost);
 
-  // Select a session → update URL
+  // Select a session → update URL (preserve host param)
   const handleSelectSession = useCallback(
     (id: string) => {
       const params = new URLSearchParams(searchParams.toString());
@@ -63,21 +79,32 @@ export function ChatShell() {
       router.push(`${pathname}?${params.toString()}`);
       setActiveRun(null);
       setSubmitError(null);
-      setMobileSidebarOpen(false); // close mobile sheet when a session is selected
+      setMobileSidebarOpen(false);
     },
     [router, pathname, searchParams]
   );
 
-  // Create a new session
+  // Create a new session — strip the non-API `host` field before sending to the backend
   const handleCreateSession = useCallback(
-    (payload: Parameters<typeof createMutation.mutate>[0]) => {
-      createMutation.mutate(payload, {
+    (payload: CreateSessionPayload) => {
+      const { host, ...apiPayload } = payload;
+      createMutation.mutate(apiPayload, {
         onSuccess: (newSession: OperatorSession) => {
-          handleSelectSession(newSession.id);
+          const params = new URLSearchParams(searchParams.toString());
+          params.set(SESSION_PARAM, newSession.id);
+          if (host.id !== LOCAL_HOST_ID) {
+            params.set(HOST_PARAM, host.id);
+          } else {
+            params.delete(HOST_PARAM);
+          }
+          router.push(`${pathname}?${params.toString()}`);
+          setActiveRun(null);
+          setSubmitError(null);
+          setMobileSidebarOpen(false);
         },
       });
     },
-    [createMutation, handleSelectSession]
+    [createMutation, router, pathname, searchParams]
   );
 
   // Delete a session
@@ -237,7 +264,23 @@ export function ChatShell() {
           {session ? (
             <p className="truncate text-sm font-medium">{session.name}</p>
           ) : (
-            <p className="text-muted-foreground text-sm">Copilot CLI Chat</p>
+            <p className="text-muted-foreground flex items-center gap-1.5 text-sm">
+              CLI Chat
+              {activeHost.id !== LOCAL_HOST_ID ? (
+                <span
+                  className="bg-muted inline-flex max-w-[180px] items-center gap-1 truncate rounded px-1.5 py-0.5 font-mono text-xs"
+                  title={activeHost.base_url}
+                >
+                  <Globe className="size-3 shrink-0" />
+                  {activeHost.base_url.replace(/^https?:\/\//, "")}
+                </span>
+              ) : (
+                <span className="text-muted-foreground/60 flex items-center gap-0.5 font-mono text-xs">
+                  <ServerCog className="size-3 shrink-0" />
+                  local
+                </span>
+              )}
+            </p>
           )}
         </div>
 
@@ -304,6 +347,7 @@ export function ChatShell() {
               runs={runs}
               activeRun={activeRun}
               sessionId={activeSessionId}
+              host={activeHost}
               loading={runsQuery.isLoading}
               onRunDone={handleRunDone}
             />

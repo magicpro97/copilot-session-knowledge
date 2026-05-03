@@ -4,6 +4,7 @@ import {
   auditBlockSchema,
   auditCheckSchema,
   chatSettingsSchema,
+  cliKindSchema,
   communitiesResponseSchema,
   copilotEventFrameSchema,
   copilotRawFrameSchema,
@@ -15,6 +16,8 @@ import {
   evalResponseSchema,
   fileDiffResponseSchema,
   filePreviewResponseSchema,
+  hostCapabilitiesSchema,
+  hostProfileSchema,
   knowledgeInsightsResponseSchema,
   operatorRunsResponseSchema,
   operatorRunStatusSchema,
@@ -1548,5 +1551,162 @@ describe("operatorModelCatalogResponseSchema", () => {
         models: [],
       })
     ).toThrow();
+  });
+
+  // ── Host Profiles ─────────────────────────────────────────────────────
+
+  it("parses a valid host profile", () => {
+    const parsed = hostProfileSchema.parse({
+      id: "tunnel-1",
+      label: "My Laptop Tunnel",
+      base_url: "https://xyz.ngrok.io",
+      token: "secret-token",
+      cli_kind: "copilot",
+      is_default: false,
+    });
+    expect(parsed.id).toBe("tunnel-1");
+    expect(parsed.label).toBe("My Laptop Tunnel");
+    expect(parsed.base_url).toBe("https://xyz.ngrok.io");
+    expect(parsed.token).toBe("secret-token");
+    expect(parsed.cli_kind).toBe("copilot");
+    expect(parsed.is_default).toBe(false);
+  });
+
+  it("accepts unknown cli_kind values for future CLI families", () => {
+    const parsed = hostProfileSchema.parse({
+      id: "amp-host",
+      label: "Amp Host",
+      base_url: "https://amp.example.com",
+      token: "tok",
+      cli_kind: "amp",
+      is_default: false,
+    });
+    expect(parsed.cli_kind).toBe("amp");
+  });
+
+  it("accepts empty base_url for same-origin local profile", () => {
+    const parsed = hostProfileSchema.parse({
+      id: "local",
+      label: "Local (same-origin)",
+      base_url: "",
+      token: "",
+      cli_kind: "copilot",
+      is_default: true,
+    });
+    expect(parsed.base_url).toBe("");
+    expect(parsed.is_default).toBe(true);
+  });
+
+  it("rejects host profile with empty id", () => {
+    expect(() =>
+      hostProfileSchema.parse({
+        id: "",
+        label: "Test",
+        base_url: "",
+        token: "",
+        cli_kind: "copilot",
+        is_default: false,
+      })
+    ).toThrow();
+  });
+
+  it("rejects host profile with empty label", () => {
+    expect(() =>
+      hostProfileSchema.parse({
+        id: "some-id",
+        label: "",
+        base_url: "",
+        token: "",
+        cli_kind: "copilot",
+        is_default: false,
+      })
+    ).toThrow();
+  });
+
+  it("rejects host profile with empty cli_kind", () => {
+    expect(() =>
+      hostProfileSchema.parse({
+        id: "some-id",
+        label: "Test",
+        base_url: "",
+        token: "",
+        cli_kind: "",
+        is_default: false,
+      })
+    ).toThrow();
+  });
+
+  it("rejects host profile missing required fields", () => {
+    expect(() => hostProfileSchema.parse({ id: "x", label: "Test" })).toThrow();
+  });
+
+  // ── Host Capabilities ─────────────────────────────────────────────────
+
+  it("parses a valid host capabilities response", () => {
+    const parsed = hostCapabilitiesSchema.parse({
+      cli_kind: "copilot",
+      version: "1.2.3",
+      supported_modes: ["ask", "edit"],
+      supported_features: ["streaming", "model-catalog"],
+    });
+    expect(parsed.cli_kind).toBe("copilot");
+    expect(parsed.version).toBe("1.2.3");
+    expect(parsed.supported_modes).toEqual(["ask", "edit"]);
+    expect(parsed.supported_features).toContain("streaming");
+  });
+
+  it("accepts capabilities without optional version", () => {
+    const parsed = hostCapabilitiesSchema.parse({
+      cli_kind: "claude",
+      supported_modes: ["chat"],
+      supported_features: [],
+    });
+    expect(parsed.cli_kind).toBe("claude");
+    expect(parsed.version).toBeUndefined();
+  });
+
+  it("accepts null version in capabilities", () => {
+    const parsed = hostCapabilitiesSchema.parse({
+      cli_kind: "copilot",
+      version: null,
+      supported_modes: [],
+      supported_features: [],
+    });
+    expect(parsed.version).toBeNull();
+  });
+
+  it("accepts unknown future cli_kind in capabilities", () => {
+    const parsed = hostCapabilitiesSchema.parse({
+      cli_kind: "gemini-cli",
+      supported_modes: ["chat"],
+      supported_features: ["streaming"],
+    });
+    expect(parsed.cli_kind).toBe("gemini-cli");
+  });
+
+  it("rejects capabilities with empty cli_kind", () => {
+    expect(() =>
+      hostCapabilitiesSchema.parse({
+        cli_kind: "",
+        supported_modes: [],
+        supported_features: [],
+      })
+    ).toThrow();
+  });
+
+  it("rejects capabilities missing supported_modes", () => {
+    expect(() =>
+      hostCapabilitiesSchema.parse({
+        cli_kind: "copilot",
+        supported_features: [],
+      })
+    ).toThrow();
+  });
+
+  it("cliKindSchema accepts any non-empty string", () => {
+    expect(cliKindSchema.parse("copilot")).toBe("copilot");
+    expect(cliKindSchema.parse("claude")).toBe("claude");
+    expect(cliKindSchema.parse("some-future-cli")).toBe("some-future-cli");
+    expect(() => cliKindSchema.parse("")).toThrow();
   });
 });

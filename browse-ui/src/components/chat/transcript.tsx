@@ -10,6 +10,7 @@ import { FileReviewPanel } from "./file-review-panel";
 import { deriveChunks, extractFilePaths } from "./stream-derive";
 import { useOperatorStream } from "./use-operator-stream";
 import type { OperatorRunInfo } from "@/lib/api/types";
+import type { HostProfile } from "@/lib/api/types";
 
 type HistoricalRunProps = {
   run: OperatorRunInfo;
@@ -43,11 +44,12 @@ type ActiveRunProps = {
   sessionId: string;
   runId: string;
   prompt: string;
+  host?: HostProfile | null;
   onDone?: () => void;
 };
 
-function ActiveRun({ sessionId, runId, prompt, onDone }: ActiveRunProps) {
-  const { frames, status, exitCode } = useOperatorStream(sessionId, runId);
+function ActiveRun({ sessionId, runId, prompt, host, onDone }: ActiveRunProps) {
+  const { frames, status, exitCode } = useOperatorStream(sessionId, runId, host);
   const onDoneRef = useRef(onDone);
 
   useEffect(() => {
@@ -79,6 +81,8 @@ type TranscriptProps = {
   /** The active run, if any. */
   activeRun?: { id: string; prompt: string } | null;
   sessionId: string;
+  /** Host profile for the active session — used to route the live SSE stream. */
+  host?: HostProfile | null;
   loading?: boolean;
   onRunDone?: () => void;
 };
@@ -87,7 +91,14 @@ type TranscriptProps = {
  * Renders all historical runs and optionally a live-streaming active run.
  * Auto-scrolls to the bottom when new content arrives.
  */
-export function Transcript({ runs, activeRun, sessionId, loading, onRunDone }: TranscriptProps) {
+export function Transcript({
+  runs,
+  activeRun,
+  sessionId,
+  host,
+  loading,
+  onRunDone,
+}: TranscriptProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -128,6 +139,7 @@ export function Transcript({ runs, activeRun, sessionId, loading, onRunDone }: T
           sessionId={sessionId}
           runId={activeRun.id}
           prompt={activeRun.prompt}
+          host={host}
           onDone={onRunDone}
         />
       ) : null}

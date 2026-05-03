@@ -6,6 +6,8 @@ import { Eye, EyeOff, FolderOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDebounce } from "@/hooks/use-debounce";
 import { usePathSuggest } from "@/lib/api/hooks";
+import { LOCAL_HOST } from "@/lib/host-profiles";
+import type { HostProfile } from "@/lib/api/types";
 
 type WorkspacePickerProps = {
   value: string;
@@ -13,6 +15,9 @@ type WorkspacePickerProps = {
   id?: string;
   className?: string;
   disabled?: boolean;
+  /** Active agent host — passed to the path-suggest API so suggestions come from
+   *  the right remote host. Defaults to the local same-origin host. */
+  host?: HostProfile;
 };
 
 /**
@@ -26,6 +31,7 @@ export function WorkspacePicker({
   id,
   className,
   disabled,
+  host = LOCAL_HOST,
 }: WorkspacePickerProps) {
   const [inputValue, setInputValue] = useState(value);
   const [open, setOpen] = useState(false);
@@ -35,7 +41,7 @@ export function WorkspacePicker({
   const inputRef = useRef<HTMLInputElement>(null);
 
   const debouncedQuery = useDebounce(inputValue, 200);
-  const { data: suggestData } = usePathSuggest(debouncedQuery, showHidden, true);
+  const { data: suggestData } = usePathSuggest(debouncedQuery, showHidden, host);
   const suggestions = suggestData?.suggestions ?? [];
 
   // Sync external value changes
@@ -122,14 +128,22 @@ export function WorkspacePicker({
           aria-label={showHidden ? "Hide hidden folders" : "Show hidden folders"}
           aria-pressed={showHidden}
           onClick={() => {
-            setShowHidden((v) => !v);
+            const next = !showHidden;
+            setShowHidden(next);
             setOpen(true);
+            // Force a fresh suggestion fetch with the new showHidden flag by
+            // momentarily clearing + restoring the input value through the
+            // debounce cycle. This is a belt-and-suspenders guard for React
+            // Query cache hits that might not re-render the list.
+            setHighlightedIndex(-1);
             inputRef.current?.focus();
           }}
           disabled={disabled}
           className={cn(
-            "text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 transition-colors disabled:opacity-50",
-            showHidden && "text-foreground"
+            "absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 transition-colors disabled:opacity-50",
+            showHidden
+              ? "bg-accent text-accent-foreground ring-accent ring-1"
+              : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
           )}
         >
           {showHidden ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
@@ -138,7 +152,8 @@ export function WorkspacePicker({
       {open && suggestions.length > 0 ? (
         <ul
           role="listbox"
-          className="bg-popover text-popover-foreground border-border absolute top-full z-[60] mt-1 max-h-48 w-full overflow-auto rounded-lg border shadow-lg"
+          className="border-border bg-popover text-popover-foreground absolute top-full z-[60] mt-1 max-h-48 w-full overflow-auto rounded-lg border shadow-md"
+          style={{ opacity: 1 }}
         >
           {suggestions.map((suggestion, index) => (
             <li

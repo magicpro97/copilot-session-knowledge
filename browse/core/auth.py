@@ -11,15 +11,63 @@ if os.name == "nt":
             _s.reconfigure(encoding="utf-8", errors="replace")
 
 
-def check_token(token: str, params: dict, cookie_header: str) -> tuple:
+def get_cors_allowlist() -> list:
+    """Return the env-configured list of allowed cross-origins for operator endpoints.
+
+    Set BROWSE_CORS_ORIGINS to a comma-separated list of origins, e.g.:
+      BROWSE_CORS_ORIGINS=https://agents.linhngo.dev,https://other.example.com
+
+    Wildcard ('*') is never accepted; only exact origins are matched.
+    """
+    raw = os.environ.get("BROWSE_CORS_ORIGINS", "").strip()
+    if not raw:
+        return []
+    return [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
+
+
+def check_cors_origin(request_headers: object) -> tuple:
+    """Check if the request Origin is in the explicit CORS allowlist.
+
+    Returns (is_allowed: bool, origin: str).
+    *origin* is the normalized Origin value when allowed, empty string otherwise.
+    Only exact allowlist entries match; wildcards are never accepted.
+    """
+    origin = request_headers.get("Origin", "").strip().rstrip("/")
+    if not origin:
+        return False, ""
+    allowlist = get_cors_allowlist()
+    for allowed in allowlist:
+        if origin == allowed:
+            return True, origin
+    return False, ""
+
+
+def check_token(token: str, params: dict, cookie_header: str, auth_header: str = "") -> tuple:
     """
     Returns (valid: bool, token_val: str, should_set_cookie: bool).
-    Accepts query-string token OR cookie.
+    Accepts Authorization: Bearer header, query-string token, or cookie.
+
+    Priority: Bearer header > query-string token > cookie.
+    Bearer header auth is preferred for cross-origin/static-host usage and does not
+    issue a Set-Cookie header (should_set_cookie is always False for this path).
     """
     if not token:
         return True, "", False
 
-    # Query token takes precedence and triggers cookie issuance
+    # Authorization: Bearer header (preferred for cross-origin/header-based auth).
+    # When a Bearer header is present it is authoritative: a wrong token is an
+    # immediate rejection — we NEVER fall through to query/cookie auth.
+    if auth_header and auth_header.startswith("Bearer "):
+        provided = auth_header[len("Bearer ") :]
+        if provided:
+            try:
+                if hmac.compare_digest(provided.encode("utf-8"), token.encode("utf-8")):
+                    return True, provided, False
+            except Exception:
+                pass
+        return False, "", False
+
+    # Query token takes precedence over cookie and triggers cookie issuance
     provided = params.get("token", [""])[0]
     if provided:
         try:

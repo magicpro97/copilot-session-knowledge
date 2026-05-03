@@ -344,3 +344,52 @@ test("/chat workspace picker has hidden-folder toggle", async ({ page }) => {
   await toggle.click();
   await expect(page.getByRole("button", { name: "Hide hidden folders" })).toBeVisible();
 });
+
+test("/chat session-create dialog has Agent Host picker defaulting to local", async ({ page }) => {
+  await mockOperatorApi(page);
+
+  await page.goto("/v2/chat/");
+  await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
+
+  await page.getByRole("button", { name: "New chat session" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+
+  // Agent Host section heading is visible
+  await expect(page.getByText("Agent Host", { exact: true })).toBeVisible();
+
+  // Add host button is present
+  await expect(page.getByRole("button", { name: "Add agent host" })).toBeVisible();
+});
+
+test("/chat host picker shows add-host form when add button is clicked", async ({ page }) => {
+  await mockOperatorApi(page);
+
+  await page.goto("/v2/chat/");
+  await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
+
+  await page.getByRole("button", { name: "New chat session" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+
+  // Click Add agent host
+  await page.getByRole("button", { name: "Add agent host" }).click();
+
+  // The inline add-host form appears
+  await expect(page.getByTestId("host-add-form")).toBeVisible();
+  await expect(page.getByLabel("Tunnel URL")).toBeVisible();
+
+  // Save host is disabled until URL is entered
+  await expect(page.getByRole("button", { name: "Save host" })).toBeDisabled();
+
+  // Entering a URL enables the Save host button
+  await page.getByLabel("Tunnel URL").fill("https://demo.ngrok.io");
+  await expect(page.getByRole("button", { name: "Save host" })).toBeEnabled();
+});
+
+test("/chat top bar shows 'CLI Chat' when no session is active", async ({ page }) => {
+  await mockOperatorApi(page);
+
+  await page.goto("/v2/chat/");
+  await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
+
+  await expect(page.getByText("CLI Chat", { exact: false })).toBeVisible();
+});

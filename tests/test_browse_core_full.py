@@ -236,6 +236,401 @@ def test_auth_origin_checks_various_hosts():
         test(f"origin_{origin[:20]}: expected {expected}", allowed == expected)
 
 
+# ── CORS allowlist + Bearer auth integration ──────────────────────────────────
+
+def test_bearer_auth_then_cors_allowlist():
+    """Bearer token auth and CORS allowlist are independent; both work together."""
+    import os as _os
+
+    from browse.core.auth import check_cors_origin, check_token
+
+    TOKEN = "integration-token"
+    _os.environ["BROWSE_CORS_ORIGINS"] = "https://agents.linhngo.dev"
+    try:
+        # Simulate a cross-origin request from the Firebase-hosted UI
+        class RemoteHeaders:
+            def get(self, key, default=""):
+                return {
+                    "Authorization": f"Bearer {TOKEN}",
+                    "Origin": "https://agents.linhngo.dev",
+                }.get(key, default)
+
+        headers = RemoteHeaders()
+        auth_h = headers.get("Authorization", "")
+        valid, val, set_cookie = check_token(TOKEN, {}, "", auth_h)
+        test("cors_bearer_integration: auth valid", valid is True)
+        test("cors_bearer_integration: no cookie set", set_cookie is False)
+
+        cors_ok, origin = check_cors_origin(headers)
+        test("cors_bearer_integration: cors allowed", cors_ok is True)
+        test("cors_bearer_integration: origin matches", origin == "https://agents.linhngo.dev")
+    finally:
+        _os.environ.pop("BROWSE_CORS_ORIGINS", None)
+
+
+def test_cors_non_operator_origin_still_rejected():
+    """Even if CORS allowlist has an entry, non-operator origins get same-origin CSRF check."""
+    import os as _os
+
+    from browse.core.auth import check_cors_origin, check_origin
+
+    _os.environ["BROWSE_CORS_ORIGINS"] = "https://agents.linhngo.dev"
+    try:
+        class ForeignH:
+            def get(self, key, default=""):
+                return "https://agents.linhngo.dev" if key == "Origin" else default
+
+        # CORS check finds the origin in allowlist
+        cors_ok, _ = check_cors_origin(ForeignH())
+        test("cors_non_operator: cors_ok for allowlisted origin", cors_ok is True)
+
+        # But same-origin CSRF check rejects it (different host)
+        origin_ok, _ = check_origin(ForeignH(), "localhost:8080")
+        test("cors_non_operator: csrf check rejects non-matching host", origin_ok is False)
+    finally:
+        _os.environ.pop("BROWSE_CORS_ORIGINS", None)
+
+
+def test_bearer_wrong_token_rejected():
+    """Wrong Bearer token is rejected even when CORS origin is allowlisted."""
+    import os as _os
+
+    from browse.core.auth import check_token
+
+    _os.environ["BROWSE_CORS_ORIGINS"] = "https://agents.linhngo.dev"
+    try:
+        valid, _, _ = check_token("real-token", {}, "", "Bearer wrong-token")
+        test("bearer_wrong: rejected", valid is False)
+    finally:
+        _os.environ.pop("BROWSE_CORS_ORIGINS", None)
+
+
+def test_bearer_wrong_does_not_fallthrough_to_valid_cookie():
+    """Regression: wrong Bearer must never fall through to a valid cookie.
+
+    Verifies the fix where Bearer header presence is authoritative — an
+    invalid Bearer token must not succeed via cookie or query-string auth.
+    """
+    from browse.core.auth import check_token
+
+    # Wrong Bearer + valid cookie → must be rejected
+    valid, val, _ = check_token("real-token", {}, "browse_token=real-token", "Bearer wrong-token")
+    test("bearer_fallthrough_cookie: rejected", valid is False)
+    test("bearer_fallthrough_cookie: val empty", val == "")
+
+    # Wrong Bearer + valid query-string token → must be rejected
+    valid2, val2, _ = check_token("real-token", {"token": ["real-token"]}, "", "Bearer wrong-token")
+    test("bearer_fallthrough_query: rejected", valid2 is False)
+    test("bearer_fallthrough_query: val empty", val2 == "")
+
+
+# ── cloudflared tunnel startup ─────────────────────────────────────────────
+
+
+def test_cloudflared_not_found_prints_error():
+    """When cloudflared is missing, _start_cloudflared prints to stderr and returns."""
+    import io
+    import sys
+    import time
+    import unittest.mock as mock
+
+    from browse import _start_cloudflared
+
+    stderr_capture = io.StringIO()
+    with mock.patch("subprocess.Popen", side_effect=FileNotFoundError("cloudflared not found")):
+        with mock.patch("sys.stderr", stderr_capture):
+            _start_cloudflared("http://127.0.0.1:9999", "")
+            time.sleep(0.2)  # let daemon thread finish
+
+    output = stderr_capture.getvalue()
+    test("cloudflared_missing: error on stderr", "not found" in output or "cloudflared" in output)
+
+
+def test_cloudflared_yields_public_url_with_token():
+    """When cloudflared outputs a trycloudflare URL, URL and token are printed separately."""
+    import io
+    import time
+    import unittest.mock as mock
+
+    from browse import _start_cloudflared
+
+    fake_lines = [
+        "some startup info\n",
+        "2024-01-01 INFO https://abc-def-ghi.trycloudflare.com\n",
+        "more lines\n",
+    ]
+
+    class _FakeStdout:
+        def __iter__(self):
+            return iter(fake_lines)
+        def read(self):
+            return ""
+
+    class _FakeProc:
+        def __init__(self):
+            self.stdout = _FakeStdout()
+            self._running = True
+            self.terminated = False
+            self.wait_called = False
+
+        def poll(self):
+            return None if self._running else 0
+
+        def terminate(self):
+            self.terminated = True
+            self._running = False
+
+        def wait(self, timeout=None):
+            self.wait_called = True
+            self._running = False
+            return 0
+
+        def kill(self):
+            self._running = False
+
+    stdout_capture = io.StringIO()
+    mock_proc = _FakeProc()
+    probe_response = mock.MagicMock()
+    probe_response.__enter__.return_value.status = 200
+    probe_response.__exit__.return_value = False
+
+    with mock.patch("subprocess.Popen", return_value=mock_proc):
+        with mock.patch("urllib.request.urlopen", return_value=probe_response):
+            with mock.patch("sys.stdout", stdout_capture):
+                cleanup = _start_cloudflared("http://127.0.0.1:9999", "mytoken")
+                time.sleep(0.3)
+                cleanup()
+                time.sleep(0.05)
+
+    output = stdout_capture.getvalue()
+    test("cloudflared_url_token: Public URL printed", "Public URL:" in output)
+    test("cloudflared_url_token: trycloudflare.com in output", "trycloudflare.com" in output)
+    test("cloudflared_url_token: token printed separately", "Public Token: mytoken" in output)
+    test("cloudflared_url_token: cleanup terminates proc", mock_proc.terminated is True)
+    test("cloudflared_url_token: cleanup waits for proc", mock_proc.wait_called is True)
+
+
+def test_cloudflared_yields_public_url_no_token():
+    """When no token is configured, the public URL is printed without a token param."""
+    import io
+    import time
+    import unittest.mock as mock
+
+    from browse import _start_cloudflared
+
+    class _FakeStdout:
+        def __iter__(self):
+            return iter(["https://xyz-123.trycloudflare.com\n"])
+        def read(self):
+            return ""
+
+    class _FakeProc:
+        def __init__(self):
+            self.stdout = _FakeStdout()
+            self._running = True
+
+        def poll(self):
+            return None if self._running else 0
+
+        def terminate(self):
+            self._running = False
+
+        def wait(self, timeout=None):
+            self._running = False
+            return 0
+
+        def kill(self):
+            self._running = False
+
+    stdout_capture = io.StringIO()
+    mock_proc = _FakeProc()
+    probe_response = mock.MagicMock()
+    probe_response.__enter__.return_value.status = 200
+    probe_response.__exit__.return_value = False
+
+    with mock.patch("subprocess.Popen", return_value=mock_proc):
+        with mock.patch("urllib.request.urlopen", return_value=probe_response):
+            with mock.patch("sys.stdout", stdout_capture):
+                cleanup = _start_cloudflared("http://127.0.0.1:9999", "")
+                time.sleep(0.3)
+                cleanup()
+                time.sleep(0.05)
+
+    output = stdout_capture.getvalue()
+    test("cloudflared_url_notoken: Public URL printed", "Public URL:" in output)
+    test("cloudflared_url_notoken: no token= in url", "token=" not in output)
+    test("cloudflared_url_notoken: no Public Token line", "Public Token:" not in output)
+
+
+def test_cloudflared_no_url_prints_stderr_error():
+    """When cloudflared exits without printing a URL, an error is printed to stderr."""
+    import io
+    import time
+    import unittest.mock as mock
+
+    from browse import _start_cloudflared
+
+    class _FakeStdout:
+        def __iter__(self):
+            return iter(["startup error: something failed\n"])
+        def read(self):
+            return ""
+
+    class _FakeProc:
+        def __init__(self):
+            self.stdout = _FakeStdout()
+            self._running = False
+
+        def poll(self):
+            return 1
+
+        def terminate(self):
+            self._running = False
+
+        def wait(self, timeout=None):
+            return 1
+
+        def kill(self):
+            self._running = False
+
+    stderr_capture = io.StringIO()
+    mock_proc = _FakeProc()
+
+    with mock.patch("subprocess.Popen", return_value=mock_proc):
+        with mock.patch("sys.stderr", stderr_capture):
+            cleanup = _start_cloudflared("http://127.0.0.1:9999", "")
+            time.sleep(0.3)
+            cleanup()
+
+    output = stderr_capture.getvalue()
+    test("cloudflared_no_url: error on stderr", "cloudflared" in output)
+    test("cloudflared_no_url: preserves cloudflared output", "startup error: something failed" in output)
+
+
+def test_cloudflared_unreachable_quick_tunnel_prints_error():
+    """When quick tunnel never becomes reachable, stderr explains that local-only mode remains."""
+    import io
+    import time
+    import urllib.error
+    import unittest.mock as mock
+
+    from browse import _start_cloudflared
+
+    class _FakeStdout:
+        def __iter__(self):
+            return iter(["https://dead-link.trycloudflare.com\n"])
+
+        def read(self):
+            return ""
+
+    class _FakeProc:
+        def __init__(self):
+            self.stdout = _FakeStdout()
+            self._running = True
+
+        def poll(self):
+            return None if self._running else 0
+
+        def terminate(self):
+            self._running = False
+
+        def wait(self, timeout=None):
+            self._running = False
+            return 0
+
+        def kill(self):
+            self._running = False
+
+    stdout_capture = io.StringIO()
+    stderr_capture = io.StringIO()
+    mock_proc = _FakeProc()
+    probe_error = urllib.error.HTTPError(
+        "https://dead-link.trycloudflare.com/api/operator/capabilities",
+        404,
+        "Not Found",
+        hdrs=None,
+        fp=None,
+    )
+
+    with mock.patch("subprocess.Popen", return_value=mock_proc):
+        with mock.patch("urllib.request.urlopen", side_effect=probe_error):
+            with mock.patch("time.monotonic", side_effect=[0, 0, 16]):
+                with mock.patch("threading.Event.wait", return_value=False):
+                    with mock.patch("sys.stdout", stdout_capture):
+                        with mock.patch("sys.stderr", stderr_capture):
+                            cleanup = _start_cloudflared("http://127.0.0.1:9999", "mytoken")
+                            time.sleep(0.2)
+                            cleanup()
+
+    stderr_output = stderr_capture.getvalue()
+    stdout_output = stdout_capture.getvalue()
+    test("cloudflared_unreachable: error on stderr", "stayed unreachable" in stderr_output)
+    test("cloudflared_unreachable: probe error included", "HTTP 404" in stderr_output)
+    test("cloudflared_unreachable: no public url announced", "Public URL:" not in stdout_output)
+
+
+def test_cloudflared_gateway_error_is_not_treated_as_success():
+    """Gateway failures like 502 should keep the backend in local-only mode."""
+    import io
+    import time
+    import urllib.error
+    import unittest.mock as mock
+
+    from browse import _start_cloudflared
+
+    class _FakeStdout:
+        def __iter__(self):
+            return iter(["https://gateway-error.trycloudflare.com\n"])
+
+        def read(self):
+            return ""
+
+    class _FakeProc:
+        def __init__(self):
+            self.stdout = _FakeStdout()
+            self._running = True
+
+        def poll(self):
+            return None if self._running else 0
+
+        def terminate(self):
+            self._running = False
+
+        def wait(self, timeout=None):
+            self._running = False
+            return 0
+
+        def kill(self):
+            self._running = False
+
+    stdout_capture = io.StringIO()
+    stderr_capture = io.StringIO()
+    mock_proc = _FakeProc()
+    probe_error = urllib.error.HTTPError(
+        "https://gateway-error.trycloudflare.com/api/operator/capabilities",
+        502,
+        "Bad Gateway",
+        hdrs=None,
+        fp=None,
+    )
+
+    with mock.patch("subprocess.Popen", return_value=mock_proc):
+        with mock.patch("urllib.request.urlopen", side_effect=probe_error):
+            with mock.patch("time.monotonic", side_effect=[0, 0, 16]):
+                with mock.patch("threading.Event.wait", return_value=False):
+                    with mock.patch("sys.stdout", stdout_capture):
+                        with mock.patch("sys.stderr", stderr_capture):
+                            cleanup = _start_cloudflared("http://127.0.0.1:9999", "mytoken")
+                            time.sleep(0.2)
+                            cleanup()
+
+    stderr_output = stderr_capture.getvalue()
+    stdout_output = stdout_capture.getvalue()
+    test("cloudflared_gateway: error on stderr", "stayed unreachable" in stderr_output)
+    test("cloudflared_gateway: probe error included", "HTTP 502" in stderr_output)
+    test("cloudflared_gateway: no public url announced", "Public URL:" not in stdout_output)
+
+
 if __name__ == "__main__":
     test_auth_and_csp_per_request()
     test_fts_and_esc_combined()
@@ -250,6 +645,18 @@ if __name__ == "__main__":
     test_parse_int_param_contract()
     test_auth_cookie_after_query_token_workflow()
     test_auth_origin_checks_various_hosts()
+    test_bearer_auth_then_cors_allowlist()
+    test_cors_non_operator_origin_still_rejected()
+    test_bearer_wrong_token_rejected()
+    # Bearer fallthrough regression
+    test_bearer_wrong_does_not_fallthrough_to_valid_cookie()
+    # cloudflared tunnel startup
+    test_cloudflared_not_found_prints_error()
+    test_cloudflared_yields_public_url_with_token()
+    test_cloudflared_yields_public_url_no_token()
+    test_cloudflared_no_url_prints_stderr_error()
+    test_cloudflared_unreachable_quick_tunnel_prints_error()
+    test_cloudflared_gateway_error_is_not_treated_as_success()
 
     print(f"\n{'='*50}")
     print(f"Results: {_PASS} passed, {_FAIL} failed")

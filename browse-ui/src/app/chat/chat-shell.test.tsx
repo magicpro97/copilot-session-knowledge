@@ -3,6 +3,23 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 beforeAll(() => {
   window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  // Provide a no-op localStorage stub so HostPicker doesn't throw in jsdom.
+  const storage: Record<string, string> = {};
+  Object.defineProperty(window, "localStorage", {
+    value: {
+      getItem: (k: string) => storage[k] ?? null,
+      setItem: (k: string, v: string) => {
+        storage[k] = v;
+      },
+      removeItem: (k: string) => {
+        delete storage[k];
+      },
+      clear: () => {
+        Object.keys(storage).forEach((k) => delete storage[k]);
+      },
+    },
+    writable: true,
+  });
 });
 
 vi.mock("next/navigation", () => ({
@@ -47,6 +64,10 @@ vi.mock("@/lib/api/hooks", () => ({
   useFilePreview: vi.fn(() => ({ data: null, isLoading: false, isError: false })),
   useFileDiff: vi.fn(() => ({ data: null, isLoading: false, isError: false })),
   createOperatorStreamPath: vi.fn(() => "/api/operator/sessions/x/stream?run=y"),
+  createOperatorStreamUrl: vi.fn(
+    (sessionId: string, runId: string, host: { base_url: string }) =>
+      `${host.base_url}/api/operator/sessions/${sessionId}/stream?run=${runId}`
+  ),
 }));
 
 import { ChatShell } from "@/components/chat/chat-shell";
@@ -232,5 +253,103 @@ describe("WorkspacePicker — hidden-folder toggle", () => {
     fireEvent.click(toggleBtn);
 
     expect(screen.getByRole("button", { name: "Hide hidden folders" })).toBeInTheDocument();
+  });
+});
+
+describe("SessionCreateDialog — host picker", () => {
+  it("renders the Agent Host label and a host selector inside the dialog", () => {
+    render(<ChatShell />);
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+
+    expect(screen.getByText("Agent Host")).toBeInTheDocument();
+    // The add-host button should be present
+    expect(screen.getByRole("button", { name: "Add agent host" })).toBeInTheDocument();
+  });
+
+  it("shows the Add host form when the add-host button is clicked", () => {
+    render(<ChatShell />);
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add agent host" }));
+
+    expect(screen.getByTestId("host-add-form")).toBeInTheDocument();
+    expect(screen.getByLabelText("Tunnel URL")).toBeInTheDocument();
+  });
+
+  it("Save host button is disabled when the URL field is empty", () => {
+    render(<ChatShell />);
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add agent host" }));
+
+    const saveBtn = screen.getByRole("button", { name: "Save host" });
+    expect(saveBtn).toBeDisabled();
+  });
+
+  it("Save host button is enabled after a URL is entered", () => {
+    render(<ChatShell />);
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add agent host" }));
+
+    fireEvent.change(screen.getByLabelText("Tunnel URL"), {
+      target: { value: "https://abc123.ngrok.io" },
+    });
+
+    const saveBtn = screen.getByRole("button", { name: "Save host" });
+    expect(saveBtn).not.toBeDisabled();
+  });
+});
+
+describe("ChatShell — host URL in top-bar", () => {
+  it("shows 'CLI Chat' placeholder when no session is selected", async () => {
+    // Reset useOperatorSession to return no session (may be overridden by earlier tests)
+    const hooks = await import("@/lib/api/hooks");
+    vi.mocked(hooks.useOperatorSession).mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorSession>);
+
+    const navigation = await import("next/navigation");
+    vi.mocked(navigation.useSearchParams).mockReturnValue(
+      new URLSearchParams() as ReturnType<typeof navigation.useSearchParams>
+    );
+
+    render(<ChatShell />);
+    expect(screen.getByText("CLI Chat")).toBeInTheDocument();
+  });
+});
+
+describe("ChatShell — remote host passed to Transcript", () => {
+  it("shows remote host badge in top-bar when h= param is set and no session is active", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const navigation = await import("next/navigation");
+
+    // Save a remote host profile so getAllHostProfiles() finds it
+    const { saveHostProfile } = await import("@/lib/host-profiles");
+    saveHostProfile({
+      id: "remote-h2",
+      label: "Dev Tunnel",
+      base_url: "https://dev2.ngrok.io",
+      token: "tok",
+      cli_kind: "copilot",
+      is_default: false,
+    });
+
+    // No session selected — just the remote host param
+    vi.mocked(navigation.useSearchParams).mockReturnValue(
+      new URLSearchParams("h=remote-h2") as ReturnType<typeof navigation.useSearchParams>
+    );
+
+    vi.mocked(hooks.useOperatorSession).mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorSession>);
+
+    render(<ChatShell />);
+
+    // The top-bar should display the remote host base_url as a badge title
+    expect(screen.getByTitle("https://dev2.ngrok.io")).toBeInTheDocument();
   });
 });
