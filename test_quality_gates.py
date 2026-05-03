@@ -283,7 +283,10 @@ def test_ruff_surface_in_pre_commit():
             f"'{fname}' not found in pre-commit _py_in_surface()",
         )
     test("pre-commit covers browse/*.py", "browse/" in content or "browse/*" in content)
-    test("pre-commit covers hooks/*.py", "hooks/*.py" in content or "hooks/*/*.py" in content)
+    test(
+        "pre-commit covers hooks/ Python surface",
+        "hooks/*)" in content or "hooks/*.py" in content or "hooks/*/*.py" in content,
+    )
 
 
 def test_ci_workflow_ruff_surface():

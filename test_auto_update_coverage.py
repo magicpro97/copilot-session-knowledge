@@ -69,7 +69,7 @@ REQUIRED_PATTERNS = [
     "skills/",
     "launchd/",
     "templates/",
-    "hooks/*.py",
+    "hooks/",
 ]
 
 all_patterns = [pat for entries in _aut.COVERAGE_MANIFEST.values() for pat, _ in entries]
