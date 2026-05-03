@@ -120,6 +120,32 @@ When running inside a tentacle (dispatched by the orchestrator via `tentacle.py`
 
 ---
 
+## Orchestrator Goal-Loop
+
+When acting as an orchestrator with an active goal, the lifecycle is iterative, not linear. After all tentacle handoffs are collected and verification gates pass, the orchestrator evaluates the goal before closing:
+
+1. **State success criteria upfront** — before dispatching any tentacle, write the goal's success criteria explicitly in `CONTEXT.md` or a shared artifact. Weak criteria ("make it work") prevent clean goal evaluation; strong criteria ("all 137 tests pass, benchmark score ≥ 90") enable independent verification.
+2. **Evaluate after each Verify phase** — once Build → Lint → Test → Review gates pass, evaluate whether the overarching goal is met. Record evidence:
+   ```bash
+   python3 ~/.copilot/tools/tentacle.py verify <name> "<check-command>" --label "goal-eval"
+   ```
+3. **Loop if unmet** — if the goal is not satisfied, return to Phase 1 (Plan). Create new tentacles scoped to the remaining gap. Do not re-open completed tentacles; create new ones.
+4. **Close only when verified** — proceed to commit and close only when goal success criteria are verifiably met and evidence is recorded.
+5. **Sub-agents do not loop** — sub-agents report via handoff and stop. The orchestrator reads handoff statuses, evaluates the goal, and decides whether to loop or close. Never dispatch sub-agents with an implicit expectation that they will self-continue.
+
+**Typical pattern:**
+```
+Plan → Execute tentacles → Verify gates → Goal Eval
+                                              ↓ not met
+                               Plan new tentacles for remaining gaps
+                                              ↓ met
+                               Commit + Close
+```
+
+This is the **loop-until-verified** semantic applied at the orchestrator level. At the task level, Karpathy Guideline 4 applies the same principle: define success criteria, loop until verified.
+
+---
+
 ## Hook Enforcement
 
 These rules are partially enforced at the tool level. All hooks **fail-open**: if a hook itself crashes or is unavailable, the guarded operation proceeds rather than blocking the agent. Hook failures are logged but do not interrupt work.

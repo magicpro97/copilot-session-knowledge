@@ -28,6 +28,16 @@ tentacle.py handoff <name> "<prose summary>" --status DONE --changed-file path/t
 # Backward-compatible free-form handoff (no structured status)
 tentacle.py handoff <name> "<message>" --learn
 
+# Run a verification command and persist results (for goal-eval and gate evidence)
+tentacle.py verify <name> "<shell-command>" --label "<human-readable label>"
+
+# Orchestrator-level goal state helpers
+tentacle.py goal init --title "<goal title>" [--desc "<goal description>"] [--force]
+tentacle.py goal status [--format text|json]
+tentacle.py goal link <name>
+tentacle.py goal eval [--decision continue|pause|complete|abandon] [--notes "<notes>"]
+tentacle.py goal resume
+
 # Generate bundle-first dispatch prompt for an agent
 tentacle.py swarm <name> --agent-type <type> --model <model> --briefing
 
@@ -57,9 +67,10 @@ tentacle.py delete <name>
 | `handoff --status STATUS` | Agent finishes | Writes `STATUS: <value>` receipt into handoff.md; extracted by `complete` into `meta.json` as `terminal_status`. Triage statuses (`BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, `REGRESSED`) print a visible orchestrator review signal. `DONE` does not. |
 | `handoff --changed-file FILE` | Agent finishes | Appends `Changed: <path>` receipt (repeatable); all receipts are deduplicated and extracted by `complete` into `meta.json` as `changed_files[]` |
 | `handoff --learn` | Agent finishes | Saves handoff to long-term knowledge base |
+| `verify --label goal-eval` | Orchestrator evaluates goal | Runs a check command and persists pass/fail + duration as verification evidence; use after all Verify gates pass to record goal-evaluation results |
 | `complete` | Closing tentacle | Marks done + auto-extracts learnings from handoff.md; parses latest `STATUS:` and all `Changed:` receipts into `meta.json` |
 
-Lifecycle: `briefing → create → todo add → swarm/dispatch (bundle-first) → handoff --status DONE --changed-file … --learn → complete → delete`
+Lifecycle: `goal init → create/link → todo add → swarm/dispatch (bundle-first) → handoff --status DONE --changed-file … --learn → verify … --label goal-eval → goal eval --decision ... → [loop if goal unmet] → complete → delete`
 
 ### Handoff status allowlist
 

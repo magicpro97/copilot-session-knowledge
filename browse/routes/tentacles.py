@@ -142,21 +142,33 @@ def _read_tentacles() -> list[dict]:
             if not terminal_status and has_handoff:
                 terminal_status = _parse_handoff_status(handoff_path)
 
-            tentacles.append(
-                {
-                    "name": str(meta.get("name", "")),
-                    "tentacle_id": str(meta.get("tentacle_id", "") or ""),
-                    "status": str(meta.get("status", "idle") or "idle"),
-                    "created_at": str(meta.get("created_at", "") or ""),
-                    "description": str(meta.get("description", "") or ""),
-                    "scope": meta.get("scope", []) if isinstance(meta.get("scope"), list) else [],
-                    "skills": [str(s) for s in skills if isinstance(s, str)],
-                    "worktree": worktree,
-                    "verification": verification,
-                    "has_handoff": has_handoff,
-                    "terminal_status": terminal_status,
-                }
-            )
+            tentacle_entry: dict = {
+                "name": str(meta.get("name", "")),
+                "tentacle_id": str(meta.get("tentacle_id", "") or ""),
+                "status": str(meta.get("status", "idle") or "idle"),
+                "created_at": str(meta.get("created_at", "") or ""),
+                "description": str(meta.get("description", "") or ""),
+                "scope": meta.get("scope", []) if isinstance(meta.get("scope"), list) else [],
+                "skills": [str(s) for s in skills if isinstance(s, str)],
+                "worktree": worktree,
+                "verification": verification,
+                "has_handoff": has_handoff,
+                "terminal_status": terminal_status,
+            }
+            # Goal-aware optional fields (written by goal-core when tentacle is linked to a goal)
+            if meta.get("goal_id"):
+                tentacle_entry["goal_id"] = str(meta["goal_id"])
+            if meta.get("goal_name"):
+                tentacle_entry["goal_name"] = str(meta["goal_name"])
+            goal_iteration = meta.get("goal_iteration")
+            if goal_iteration is None:
+                goal_iteration = meta.get("iteration")
+            if goal_iteration is not None:
+                try:
+                    tentacle_entry["goal_iteration"] = int(goal_iteration)
+                except (TypeError, ValueError):
+                    pass
+            tentacles.append(tentacle_entry)
     except Exception:
         pass
     return tentacles
@@ -178,6 +190,7 @@ def handle_tentacles_status(db, params, token, nonce) -> tuple:
 
     worktrees_prepared = sum(1 for t in tentacles if t.get("worktree", {}).get("prepared"))
     verification_covered = sum(1 for t in tentacles if t.get("verification", {}).get("coverage_exists"))
+    goal_aware_count = sum(1 for t in tentacles if t.get("goal_id"))
 
     triage_count = sum(
         1 for t in tentacles if (status := str(t.get("terminal_status", "")).strip()) and status != "DONE"
@@ -267,6 +280,7 @@ def handle_tentacles_status(db, params, token, nonce) -> tuple:
         "total_count": total_count,
         "worktrees_prepared": worktrees_prepared,
         "verification_covered": verification_covered,
+        "goal_aware_count": goal_aware_count,
         "marker": {
             "active": marker_active,
             "path": str(_DISPATCHED_MARKER),

@@ -99,7 +99,9 @@ When running inside a tentacle (dispatched by the orchestrator via `tentacle.py`
 5. **Write a structured handoff before stopping**: `python3 ~/.copilot/tools/tentacle.py handoff <tentacle-name> "<summary>" --status <STATUS> [--changed-file <path>] --learn`
 6. Use one of `DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED` for `<STATUS>`. Add one `--changed-file` per modified file; omit it when no files changed. Handoff must list changed rules, source-of-truth file for each rule, and any remaining ambiguity.
 
-See [docs/AGENT-RULES.md](../docs/AGENT-RULES.md) for the complete Rule 8 text.
+**Goal-loop (orchestrators only)** — after all tentacle handoffs pass verification gates, evaluate whether the overarching goal is met. If unmet, loop back to Phase 1 (new tentacles for remaining gaps). Only commit and close when success criteria are verifiably satisfied. Sub-agents report via handoff and stop; the orchestrator owns continuation. Record goal-eval evidence with `python3 ~/.copilot/tools/tentacle.py verify <name> "<check-command>" --label "goal-eval"`.
+
+See [docs/AGENT-RULES.md](../docs/AGENT-RULES.md) for the complete Rule 8 text and goal-loop pattern.
 
 > **Drift-lock:** `docs/AGENT-RULES.md` is the canonical source for all agent rules. This file (`copilot-instructions.md`) is the Copilot CLI runtime enforcement surface — keep it in sync with `docs/AGENT-RULES.md`. Changes to agent rules should be reflected in both places.
 

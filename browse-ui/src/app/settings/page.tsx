@@ -534,6 +534,29 @@ export default function SettingsPage() {
                 </div>
               </div>
 
+              {tentacleStatus.data.goal_aware_count !== undefined &&
+              tentacleStatus.data.goal_aware_count > 0 ? (
+                <div className="bg-card text-muted-foreground space-y-1 rounded-lg border p-3 text-xs">
+                  <p className="text-foreground font-medium">Goal-loop diagnostics</p>
+                  <p>
+                    Goal-linked tentacles:{" "}
+                    <span className="text-foreground font-medium">
+                      {tentacleStatus.data.goal_aware_count}
+                    </span>
+                  </p>
+                  {tentacleStatus.data.tentacles
+                    .filter((t) => t.goal_id)
+                    .map((t) => (
+                      <p key={t.tentacle_id || t.name}>
+                        <span className="text-foreground font-medium">{t.name}</span>
+                        {" → "}
+                        {t.goal_name ?? t.goal_id}
+                        {t.goal_iteration !== undefined ? ` (iter ${t.goal_iteration})` : ""}
+                      </p>
+                    ))}
+                </div>
+              ) : null}
+
               <div className="bg-card text-muted-foreground space-y-1 rounded-lg border p-3 text-xs">
                 <p className="text-foreground font-medium">Dispatch marker</p>
                 <p>
@@ -616,6 +639,17 @@ export default function SettingsPage() {
                               Skills:{" "}
                               <span className="text-foreground font-medium">
                                 {t.skills.join(", ")}
+                              </span>
+                            </span>
+                          ) : null}
+                          {t.goal_id ? (
+                            <span>
+                              Goal:{" "}
+                              <span className="text-foreground font-medium">
+                                {t.goal_name ?? t.goal_id}
+                                {t.goal_iteration !== undefined
+                                  ? ` (iter ${t.goal_iteration})`
+                                  : ""}
                               </span>
                             </span>
                           ) : null}

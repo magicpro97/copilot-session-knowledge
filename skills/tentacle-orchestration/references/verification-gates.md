@@ -113,3 +113,45 @@ before running the standard verification gates.
 
 **Triage precedes verification gates.** Do not run Build/Lint/Test/Review on a tentacle with a
 triage status until the underlying issue is resolved.
+
+---
+
+## Goal Evaluation Gate (Orchestrators Only)
+
+After all per-tentacle verification gates pass, the orchestrator evaluates whether the
+**overarching goal** has been met. This gate precedes the Commit + Close phase and determines
+whether to iterate or ship.
+
+**Prerequisites:** Success criteria must be stated before dispatching tentacles (not invented
+during evaluation). Weak criteria ("looks good") cannot be evaluated; strong criteria
+("all 137 tests pass, score ≥ 90") can.
+
+**How to record goal-eval evidence:**
+
+```bash
+python3 ~/.copilot/tools/tentacle.py verify <name> "<success-criteria-check>" --label "goal-eval"
+```
+
+Examples:
+```bash
+# Verify tests all pass
+tentacle.py verify my-feature "python3 run_all_tests.py" --label "goal-eval: tests"
+
+# Verify benchmark threshold
+tentacle.py verify my-feature "python3 benchmark.py --check --min-score 90" --label "goal-eval: score"
+```
+
+**Decision table:**
+
+| Evaluation result | Action |
+|------------------|--------|
+| Goal **met** — all criteria satisfied | Proceed to Commit + Close |
+| Goal **partially met** — gaps remain | Return to Plan, create new tentacles for remaining gaps |
+| Goal **blocked** — external dependency | Record gap in handoff, surface to user |
+
+**Anti-patterns:**
+
+- ❌ Skipping goal evaluation and assuming verification gates == goal met
+- ❌ Re-opening completed tentacles to fix goal gaps — create new ones
+- ❌ Dispatching sub-agents to evaluate the goal — the orchestrator evaluates; sub-agents stop after handoff
+- ❌ Closing without recorded evidence — always run `verify --label goal-eval` before `complete`

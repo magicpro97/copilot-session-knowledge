@@ -60,6 +60,7 @@ describe("api hooks helpers", () => {
     expect(queryKeys.health()).toEqual(["health"]);
     expect(queryKeys.syncStatus()).toEqual(["sync-status"]);
     expect(queryKeys.scoutStatus()).toEqual(["scout-status"]);
+    expect(queryKeys.tentacleStatus()).toEqual(["tentacle-status"]);
     expect(queryKeys.graph({ wing: ["alpha"], limit: 10 })).toEqual([
       "graph",
       { wing: ["alpha"], limit: 10 },

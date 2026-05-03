@@ -146,7 +146,10 @@ Common patterns: "review and fix" -> bug, "write test" -> test, "optimize X" -> 
 - `pre_task`: briefing (if session-knowledge exists)
 - `post_code`: review (if code-reviewer agent exists)
 - `post_feature`: PR creation (if pr-workflow skill exists)
+- `post_verify`: goal evaluation — when the task has an explicit overarching goal (e.g., "benchmarks must pass ≥ 90"), add a `goal_eval` step that evaluates the goal after all verification gates pass and before dispatching the next wave or closing. Use `tentacle.py verify <name> "<check>" --label "goal-eval"` for evidence capture. If the goal is unmet, the conductor should route back to the planning step rather than proceeding to commit.
 - `post_task`: learn (if session-knowledge exists)
+
+> **Goal-eval routing rule:** Include `goal_eval` in `mandatory_steps.post_verify` whenever `task_type` is `feature`, `bug`, or `refactor` AND the task description contains goal-indicator phrases ("until all pass", "reach score", "all tests green", "≥", "target", "threshold"). For bounded tasks ("rename this function", "add this column"), skip it.
 
 ### Step 4: Install the conductor engine
 

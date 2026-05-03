@@ -1605,6 +1605,304 @@ test(
 _rg2_db.close()
 
 
+# ─── Goal State Tests ────────────────────────────────────────────────────
+
+print("\n🎯 Goal State Tests")
+
+import tempfile as _tempfile
+import uuid as _uuid
+
+# Create an isolated .octogent/tentacles directory for goal tests
+_goal_tmp = Path(_tempfile.mkdtemp(prefix="goal-test-"))
+_goal_octogent = _goal_tmp / ".octogent"
+_goal_tentacles = _goal_octogent / "tentacles"
+_goal_tentacles.mkdir(parents=True)
+
+# Run tentacle.py goal commands in subprocess
+_tp = REPO / "tentacle.py"
+
+# Gs1: goal init creates a valid goal.json
+_gs1_res = subprocess.run(
+    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
+     "goal", "init", "--title", "Test Goal", "--desc", "A test goal"],
+    capture_output=True, text=True,
+    env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
+)
+_gs1_goal_path = _goal_octogent / "goal.json"
+test("Gs1: goal init exits 0", _gs1_res.returncode == 0, _gs1_res.stderr[:200])
+test("Gs1: goal.json created", _gs1_goal_path.exists(), "goal.json not found")
+
+if _gs1_goal_path.exists():
+    _gs1_state = json.loads(_gs1_goal_path.read_text())
+    test("Gs1: goal.json has goal_id", bool(_gs1_state.get("goal_id")), "no goal_id")
+    test("Gs1: goal.json title correct", _gs1_state.get("title") == "Test Goal", f"got {_gs1_state.get('title')}")
+    test("Gs1: goal.json status=active", _gs1_state.get("status") == "active", f"got {_gs1_state.get('status')}")
+    test("Gs1: goal.json iteration=1", _gs1_state.get("iteration") == 1, f"got {_gs1_state.get('iteration')}")
+    test("Gs1: goal.json has empty tentacles list", _gs1_state.get("tentacles") == [], f"got {_gs1_state.get('tentacles')}")
+    test("Gs1: goal.json has empty eval_history", _gs1_state.get("eval_history") == [], f"got {_gs1_state.get('eval_history')}")
+else:
+    for _lbl in ["Gs1: goal.json has goal_id", "Gs1: goal.json title correct",
+                 "Gs1: goal.json status=active", "Gs1: goal.json iteration=1",
+                 "Gs1: goal.json has empty tentacles list", "Gs1: goal.json has empty eval_history"]:
+        test(_lbl, False, "goal.json missing")
+
+# Gs2: goal status text output
+_gs2_res = subprocess.run(
+    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "status"],
+    capture_output=True, text=True,
+    env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
+)
+test("Gs2: goal status exits 0", _gs2_res.returncode == 0, _gs2_res.stderr[:200])
+test("Gs2: goal status shows title", "Test Goal" in _gs2_res.stdout, _gs2_res.stdout[:200])
+test("Gs2: goal status shows active", "active" in _gs2_res.stdout, _gs2_res.stdout[:200])
+
+# Gs3: goal status --format json
+_gs3_res = subprocess.run(
+    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "status", "--format", "json"],
+    capture_output=True, text=True,
+    env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
+)
+test("Gs3: goal status --format json exits 0", _gs3_res.returncode == 0, _gs3_res.stderr[:200])
+try:
+    _gs3_data = json.loads(_gs3_res.stdout)
+    test("Gs3: json output has goal_id", "goal_id" in _gs3_data, str(_gs3_data)[:100])
+    test("Gs3: json output has iteration", "iteration" in _gs3_data, str(_gs3_data)[:100])
+except Exception as _e:
+    test("Gs3: json output parses", False, str(_e))
+    test("Gs3: json output has goal_id", False, "parse failed")
+    test("Gs3: json output has iteration", False, "parse failed")
+
+# Gs4: Create a tentacle then goal link it
+_gs4_tname = f"test-t-{_uuid.uuid4().hex[:6]}"
+_gs4_create = subprocess.run(
+    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
+     "create", _gs4_tname, "--desc", "linked tentacle"],
+    capture_output=True, text=True,
+    env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
+)
+test("Gs4: create tentacle exits 0", _gs4_create.returncode == 0, _gs4_create.stderr[:200])
+
+_gs4_link = subprocess.run(
+    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "link", _gs4_tname],
+    capture_output=True, text=True,
+    env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
+)
+test("Gs4: goal link exits 0", _gs4_link.returncode == 0, _gs4_link.stderr[:200])
+
+if _gs1_goal_path.exists():
+    _gs4_state = json.loads(_gs1_goal_path.read_text())
+    test("Gs4: tentacle appears in goal.tentacles", _gs4_tname in _gs4_state.get("tentacles", []),
+         f"tentacles={_gs4_state.get('tentacles')}")
+else:
+    test("Gs4: tentacle appears in goal.tentacles", False, "goal.json missing")
+
+_gs4_meta_path = _goal_tentacles / _gs4_tname / "meta.json"
+if _gs4_meta_path.exists():
+    _gs4_meta = json.loads(_gs4_meta_path.read_text())
+    test("Gs4: meta.json has goal_id after link", bool(_gs4_meta.get("goal_id")), str(_gs4_meta.get("goal_id")))
+    test("Gs4: meta.json has goal_name after link", _gs4_meta.get("goal_name") == "Test Goal",
+         f"got {_gs4_meta.get('goal_name')}")
+    test("Gs4: meta.json has iteration after link", _gs4_meta.get("iteration") == 1, f"got {_gs4_meta.get('iteration')}")
+    test("Gs4: meta.json has goal_iteration after link", _gs4_meta.get("goal_iteration") == 1,
+         f"got {_gs4_meta.get('goal_iteration')}")
+else:
+    test("Gs4: meta.json has goal_id after link", False, "meta.json missing")
+    test("Gs4: meta.json has goal_name after link", False, "meta.json missing")
+    test("Gs4: meta.json has iteration after link", False, "meta.json missing")
+    test("Gs4: meta.json has goal_iteration after link", False, "meta.json missing")
+
+# Gs5: goal eval --decision continue advances iteration
+_gs5_res = subprocess.run(
+    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
+     "goal", "eval", "--decision", "continue", "--notes", "test note"],
+    capture_output=True, text=True,
+    env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
+)
+test("Gs5: goal eval exits 0", _gs5_res.returncode == 0, _gs5_res.stderr[:200])
+
+if _gs1_goal_path.exists():
+    _gs5_state = json.loads(_gs1_goal_path.read_text())
+    test("Gs5: iteration advanced to 2", _gs5_state.get("iteration") == 2, f"got {_gs5_state.get('iteration')}")
+    test("Gs5: eval_history has one entry", len(_gs5_state.get("eval_history", [])) == 1,
+         f"got {len(_gs5_state.get('eval_history',[]))}")
+    _gs5_entry = _gs5_state["eval_history"][0] if _gs5_state.get("eval_history") else {}
+    test("Gs5: eval entry decision=continue", _gs5_entry.get("decision") == "continue",
+         f"got {_gs5_entry.get('decision')}")
+    test("Gs5: eval entry has notes", "test note" in (_gs5_entry.get("notes") or ""),
+         f"got {_gs5_entry.get('notes')}")
+else:
+    for _l in ["Gs5: iteration advanced to 2", "Gs5: eval_history has one entry",
+               "Gs5: eval entry decision=continue", "Gs5: eval entry has notes"]:
+        test(_l, False, "goal.json missing")
+
+# Gs6: goal eval --decision pause sets status=paused
+_gs6_res = subprocess.run(
+    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
+     "goal", "eval", "--decision", "pause"],
+    capture_output=True, text=True,
+    env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
+)
+test("Gs6: goal eval pause exits 0", _gs6_res.returncode == 0, _gs6_res.stderr[:200])
+if _gs1_goal_path.exists():
+    _gs6_state = json.loads(_gs1_goal_path.read_text())
+    test("Gs6: status=paused after eval pause", _gs6_state.get("status") == "paused",
+         f"got {_gs6_state.get('status')}")
+else:
+    test("Gs6: status=paused after eval pause", False, "goal.json missing")
+
+# Gs7: goal resume sets status back to active
+_gs7_res = subprocess.run(
+    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "resume"],
+    capture_output=True, text=True,
+    env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
+)
+test("Gs7: goal resume exits 0", _gs7_res.returncode == 0, _gs7_res.stderr[:200])
+if _gs1_goal_path.exists():
+    _gs7_state = json.loads(_gs1_goal_path.read_text())
+    test("Gs7: status=active after resume", _gs7_state.get("status") == "active",
+         f"got {_gs7_state.get('status')}")
+else:
+    test("Gs7: status=active after resume", False, "goal.json missing")
+
+# Gs8: create --goal-id stores goal_id in meta.json
+_gs8_tname = f"test-gid-{_uuid.uuid4().hex[:6]}"
+_gs8_gid = f"test-goal-{_uuid.uuid4().hex[:8]}"
+_gs8_create = subprocess.run(
+    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
+     "create", _gs8_tname, "--desc", "goal-id test", "--goal-id", _gs8_gid, "--iteration", "3"],
+    capture_output=True, text=True,
+    env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
+)
+test("Gs8: create --goal-id exits 0", _gs8_create.returncode == 0, _gs8_create.stderr[:200])
+_gs8_meta_path = _goal_tentacles / _gs8_tname / "meta.json"
+if _gs8_meta_path.exists():
+    _gs8_meta = json.loads(_gs8_meta_path.read_text())
+    test("Gs8: meta.json goal_id matches", _gs8_meta.get("goal_id") == _gs8_gid,
+         f"got {_gs8_meta.get('goal_id')}")
+    test("Gs8: meta.json iteration=3", _gs8_meta.get("iteration") == 3,
+         f"got {_gs8_meta.get('iteration')}")
+    test("Gs8: meta.json goal_iteration=3", _gs8_meta.get("goal_iteration") == 3,
+         f"got {_gs8_meta.get('goal_iteration')}")
+else:
+    test("Gs8: meta.json goal_id matches", False, "meta.json missing")
+    test("Gs8: meta.json iteration=3", False, "meta.json missing")
+    test("Gs8: meta.json goal_iteration=3", False, "meta.json missing")
+
+# Gs9: _ensure_metrics_schema adds goal_id and iteration columns
+import sqlite3 as _sqlite3
+_gs9_db_path = _goal_tmp / "test-skill-metrics.db"
+_gs9_conn = _sqlite3.connect(str(_gs9_db_path))
+# Simulate old schema without goal columns by creating the base table
+_gs9_conn.execute("""
+    CREATE TABLE IF NOT EXISTS tentacle_outcomes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tentacle_name TEXT NOT NULL,
+        outcome_status TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+    )
+""")
+_gs9_conn.commit()
+
+# Now import and call _ensure_metrics_schema
+import importlib as _importlib
+import sys as _sys
+_old_modules = set(_sys.modules.keys())
+_tp_module = _importlib.util.spec_from_file_location("tentacle_mod", str(_tp))
+_tp_loader = _importlib.util.module_from_spec(_tp_module)
+# Don't execute the module (it has top-level side-effects we don't want)
+# Instead, just call _ensure_metrics_schema directly through subprocess
+_gs9_conn.close()
+
+_gs9_check = subprocess.run(
+    [sys.executable, "-c", f"""
+import sys, sqlite3, importlib.util
+sys.path.insert(0, '{str(REPO)}')
+spec = importlib.util.spec_from_file_location('tentacle', '{str(_tp)}')
+mod = importlib.util.module_from_spec(spec)
+# Patch sys.argv to avoid main() running
+import unittest.mock
+with unittest.mock.patch('sys.argv', ['tentacle.py', 'list']):
+    try:
+        spec.loader.exec_module(mod)
+    except SystemExit:
+        pass
+
+conn = sqlite3.connect('{str(_gs9_db_path)}')
+mod._ensure_metrics_schema(conn)
+cols = {{row[1] for row in conn.execute('PRAGMA table_info(tentacle_outcomes)').fetchall()}}
+conn.close()
+print('goal_id' in cols, 'iteration' in cols)
+"""],
+    capture_output=True, text=True,
+)
+if _gs9_check.returncode == 0:
+    _gs9_out = _gs9_check.stdout.strip()
+    test("Gs9: _ensure_metrics_schema adds goal_id column", "True" in _gs9_out.split()[0] if _gs9_out.split() else False,
+         f"output: {_gs9_out}")
+    test("Gs9: _ensure_metrics_schema adds iteration column",
+         len(_gs9_out.split()) >= 2 and _gs9_out.split()[1] == "True",
+         f"output: {_gs9_out}")
+else:
+    test("Gs9: _ensure_metrics_schema adds goal_id column", False, _gs9_check.stderr[:200])
+    test("Gs9: _ensure_metrics_schema adds iteration column", False, _gs9_check.stderr[:200])
+
+# Gs10: goal eval --decision complete marks goal as completed
+_gs10_res = subprocess.run(
+    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
+     "goal", "eval", "--decision", "complete", "--notes", "all done"],
+    capture_output=True, text=True,
+    env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
+)
+test("Gs10: goal eval complete exits 0", _gs10_res.returncode == 0, _gs10_res.stderr[:200])
+if _gs1_goal_path.exists():
+    _gs10_state = json.loads(_gs1_goal_path.read_text())
+    test("Gs10: status=completed after eval complete", _gs10_state.get("status") == "completed",
+         f"got {_gs10_state.get('status')}")
+    test("Gs10: completed_at is set", bool(_gs10_state.get("completed_at")),
+         "completed_at missing")
+else:
+    test("Gs10: status=completed after eval complete", False, "goal.json missing")
+    test("Gs10: completed_at is set", False, "goal.json missing")
+
+# Gs11: goal init --force reinitializes existing goal.json
+_gs10b_res = subprocess.run(
+    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
+     "goal", "eval", "--decision", "continue"],
+    capture_output=True, text=True,
+    env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
+)
+test("Gs10b: goal eval continue after complete exits nonzero", _gs10b_res.returncode != 0,
+     f"stdout={_gs10b_res.stdout[:120]} stderr={_gs10b_res.stderr[:120]}")
+if _gs1_goal_path.exists():
+    _gs10b_state = json.loads(_gs1_goal_path.read_text())
+    test("Gs10b: completed goal stays completed after rejected continue",
+         _gs10b_state.get("status") == "completed", f"got {_gs10b_state.get('status')}")
+else:
+    test("Gs10b: completed goal stays completed after rejected continue", False, "goal.json missing")
+
+# Gs11: goal init --force reinitializes existing goal.json
+_gs11_res = subprocess.run(
+    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
+     "goal", "init", "--title", "Reinit Goal", "--force"],
+    capture_output=True, text=True,
+    env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
+)
+test("Gs11: goal init --force exits 0", _gs11_res.returncode == 0, _gs11_res.stderr[:200])
+if _gs1_goal_path.exists():
+    _gs11_state = json.loads(_gs1_goal_path.read_text())
+    test("Gs11: title updated after --force reinit", _gs11_state.get("title") == "Reinit Goal",
+         f"got {_gs11_state.get('title')}")
+    test("Gs11: iteration resets to 1 on reinit", _gs11_state.get("iteration") == 1,
+         f"got {_gs11_state.get('iteration')}")
+else:
+    test("Gs11: title updated after --force reinit", False, "goal.json missing")
+    test("Gs11: iteration resets to 1 on reinit", False, "goal.json missing")
+
+# Cleanup temp dir
+import shutil as _shutil
+_shutil.rmtree(str(_goal_tmp), ignore_errors=True)
+
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
 print(f"\n{'='*50}")

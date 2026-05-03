@@ -82,6 +82,13 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+**Within orchestrated workflows (multi-tentacle goals):** Apply this principle at the goal level, not just the task level. Before dispatching any tentacle:
+1. Write the goal's success criteria explicitly (e.g., in `CONTEXT.md` or the first tentacle's description).
+2. After all verification gates pass, evaluate the goal against those criteria.
+3. If unmet, loop: plan new tentacles scoped to remaining gaps. If met, proceed to commit and close.
+
+The loop-until-verified semantic applies at every level — individual task, tentacle, and orchestrated goal — and produces the same result: no "done" claim without evidence.
+
 ## Examples
 
 <example>

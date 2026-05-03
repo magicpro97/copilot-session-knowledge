@@ -511,6 +511,10 @@ export interface TentacleEntry {
   verification: TentacleVerificationInfo;
   has_handoff?: boolean;
   terminal_status?: string;
+  /** Goal-aware optional fields — populated by goal-core when a tentacle is linked to a goal */
+  goal_id?: string;
+  goal_name?: string;
+  goal_iteration?: number;
 }
 
 export interface TentacleMarkerInfo {
@@ -529,6 +533,8 @@ export interface TentacleStatusResponse {
   total_count: number;
   worktrees_prepared: number;
   verification_covered: number;
+  /** Count of tentacles linked to a goal — optional for backward compatibility */
+  goal_aware_count?: number;
   marker: TentacleMarkerInfo;
   tentacles: TentacleEntry[];
   audit: AuditBlock;

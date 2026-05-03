@@ -109,24 +109,36 @@ def _load_tentacle_meta_files() -> list[dict]:
         worktree_prepared = bool(worktree.get("prepared"))
         if not worktree and str(data.get("worktree_state", "") or "").lower() == "prepared":
             worktree_prepared = True
-        results.append(
-            {
-                "name": str(data.get("name", meta_path.parent.name)),
-                "tentacle_id": str(data.get("tentacle_id", "") or ""),
-                "status": str(data.get("status", "") or ""),
-                "description": str(data.get("description", "") or ""),
-                "created_at": str(data.get("created_at", "") or ""),
-                "scope": list(data.get("scope") or []),
-                "worktree_path": worktree_path,
-                "worktree_state": "prepared" if worktree_prepared else str(data.get("worktree_state", "") or ""),
-                "worktree_prepared": worktree_prepared,
-                "skills": list(data.get("skills") or []),
-                "verification_total": 0,
-                "verification_passed": 0,
-                "verification_failed": 0,
-                "meta_path": str(meta_path),
-            }
-        )
+        entry: dict = {
+            "name": str(data.get("name", meta_path.parent.name)),
+            "tentacle_id": str(data.get("tentacle_id", "") or ""),
+            "status": str(data.get("status", "") or ""),
+            "description": str(data.get("description", "") or ""),
+            "created_at": str(data.get("created_at", "") or ""),
+            "scope": list(data.get("scope") or []),
+            "worktree_path": worktree_path,
+            "worktree_state": "prepared" if worktree_prepared else str(data.get("worktree_state", "") or ""),
+            "worktree_prepared": worktree_prepared,
+            "skills": list(data.get("skills") or []),
+            "verification_total": 0,
+            "verification_passed": 0,
+            "verification_failed": 0,
+            "meta_path": str(meta_path),
+        }
+        # Goal-aware optional fields (populated by goal-core when a tentacle is linked to a goal)
+        if data.get("goal_id"):
+            entry["goal_id"] = str(data["goal_id"])
+        if data.get("goal_name"):
+            entry["goal_name"] = str(data["goal_name"])
+        goal_iteration = data.get("goal_iteration")
+        if goal_iteration is None:
+            goal_iteration = data.get("iteration")
+        if goal_iteration is not None:
+            try:
+                entry["goal_iteration"] = int(goal_iteration)
+            except (TypeError, ValueError):
+                pass
+        results.append(entry)
         verifications = data.get("verifications")
         if isinstance(verifications, list):
             verif_rows = [v for v in verifications if isinstance(v, dict)]
@@ -199,6 +211,7 @@ def collect_status() -> dict:
     with_worktree = sum(1 for t in tentacles if t["worktree_prepared"] and t["worktree_path"])
     with_skills = sum(1 for t in tentacles if t["skills"])
     with_outcome = sum(1 for t in tentacles if t["recorded_outcome"])
+    goal_aware = sum(1 for t in tentacles if t.get("goal_id"))
 
     return {
         "octogent_dir": str(OCTOGENT_DIR),
@@ -213,6 +226,7 @@ def collect_status() -> dict:
             "with_worktree": with_worktree,
             "with_skills": with_skills,
             "with_outcome": with_outcome,
+            "goal_aware": goal_aware,
         },
         "tentacles": tentacles,
         "operator_actions": [

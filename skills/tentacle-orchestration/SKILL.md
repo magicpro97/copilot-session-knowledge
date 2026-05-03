@@ -237,6 +237,45 @@ Summary:
 
 The first 4 gates are mandatory. Skipping any of them means you don't know if the agent output is correct.
 
+### Phase 3.5: Goal Evaluation Loop
+
+After all verification gates pass, evaluate whether the overarching goal is met before proceeding to commit and close. This is the **loop-until-verified** phase — the orchestrator decides whether to iterate or close.
+
+**Step: Record goal-eval evidence**
+
+```bash
+# Run the goal's success-criteria check and persist the result
+python3 ~/.copilot/tools/tentacle.py verify <name> "<success-criteria-command>" --label "goal-eval"
+```
+
+**Decision logic:**
+
+| Result | Action |
+|--------|--------|
+| Goal met — all success criteria satisfied | Proceed to Phase 4 (Commit + Close) |
+| Goal partially met — remaining gaps identified | Return to Phase 1 (Plan), create new tentacles for gaps |
+| Goal blocked — external dependency or scope issue | Write gap to handoff, surface to user, decide whether to continue |
+
+**Rules:**
+1. Success criteria must be defined **before** dispatching tentacles (in Phase 1), not invented during evaluation.
+2. Evaluation is the **orchestrator's responsibility** — sub-agents do not loop. They report via handoff and stop.
+3. When looping, create **new tentacles** for remaining gaps; do not re-open completed tentacles.
+4. Record evidence for every evaluation using `tentacle.py verify` so the decision is auditable.
+
+**Example loop iteration:**
+
+```
+Goal: "All 137 tests pass and benchmark score ≥ 90"
+
+Wave 1 results: 130/137 tests pass, score = 85
+→ Eval: NOT MET. Gaps: 7 failing tests, score delta = 5 pts
+→ Create tentacle "fix-failing-tests" (scope: tests/), tentacle "benchmark-perf" (scope: embed.py)
+→ Dispatch Wave 2
+
+Wave 2 results: 137/137 pass, score = 92
+→ Eval: MET. Proceed to Phase 4.
+```
+
 ### Phase 4: Commit + Close (Steps 13–17)
 
 #### Step 13: Commit after each completed phase (orchestrator only)
@@ -311,6 +350,10 @@ tentacle.py swarm <name> --output json --briefing                          # JSO
 tentacle.py dispatch <name> --agent-type <type> --briefing                 # single-agent dispatch
 tentacle.py swarm <name> --no-bundle                                       # rare opt-out for tiny prompts
 tentacle.py handoff <name> "<summary>" --status DONE --changed-file <path> --learn
+tentacle.py goal init --title "<goal title>" [--desc "<goal description>"]
+tentacle.py goal link <name>                                               # stamp goal metadata into meta.json
+tentacle.py goal eval --decision continue|pause|complete|abandon           # record orchestrator decision
+tentacle.py goal status [--format text|json]
 tentacle.py resume <name>                  # resume interrupted tentacle (refreshes briefing)
 tentacle.py resume <name> --no-briefing    # resume without re-fetching briefing
 tentacle.py status

@@ -569,6 +569,84 @@ describe("api schemas", () => {
     expect(result.tentacles[0].has_handoff).toBeUndefined();
   });
 
+  it("accepts tentacle entries with goal-aware optional fields", () => {
+    const result = tentacleStatusResponseSchema.parse({
+      status: "active",
+      configured: true,
+      active_count: 1,
+      total_count: 1,
+      worktrees_prepared: 1,
+      verification_covered: 1,
+      goal_aware_count: 1,
+      marker: {
+        active: true,
+        path: "/home/.copilot/markers/dispatched",
+        age_hours: 0.5,
+        stale: false,
+      },
+      tentacles: [
+        {
+          name: "goal-linked-tentacle",
+          tentacle_id: "glt-001",
+          status: "active",
+          created_at: "2026-05-01T00:00:00Z",
+          description: "Tentacle linked to a goal",
+          scope: ["src/**"],
+          skills: [],
+          worktree: { prepared: true, path: "/worktrees/glt-001", stale: false },
+          verification: { coverage_exists: true, total: 5, passed: 5, failed: 0 },
+          goal_id: "goal-abc-123",
+          goal_name: "Improve search performance",
+          goal_iteration: 2,
+        },
+      ],
+      audit: { summary: { ok: true, total_checks: 4, warning_checks: 0 }, checks: [] },
+      operator_actions: [],
+      runtime: { generated_at: "2026-05-01T00:00:00Z" },
+    });
+    expect(result.goal_aware_count).toBe(1);
+    expect(result.tentacles[0].goal_id).toBe("goal-abc-123");
+    expect(result.tentacles[0].goal_name).toBe("Improve search performance");
+    expect(result.tentacles[0].goal_iteration).toBe(2);
+  });
+
+  it("accepts tentacle entries without goal fields (backward compat — goal-core not yet shipped)", () => {
+    const result = tentacleStatusResponseSchema.parse({
+      status: "idle",
+      configured: true,
+      active_count: 0,
+      total_count: 1,
+      worktrees_prepared: 0,
+      verification_covered: 0,
+      marker: {
+        active: false,
+        path: "/home/.copilot/markers/dispatched",
+        age_hours: null,
+        stale: false,
+      },
+      tentacles: [
+        {
+          name: "plain-tentacle",
+          tentacle_id: "pt-001",
+          status: "idle",
+          created_at: "2025-01-01T00:00:00Z",
+          description: "",
+          scope: [],
+          skills: [],
+          worktree: { prepared: false, path: "", stale: false },
+          verification: { coverage_exists: false, total: 0, passed: 0, failed: 0 },
+        },
+      ],
+      audit: { summary: { ok: true, total_checks: 4, warning_checks: 0 }, checks: [] },
+      operator_actions: [],
+      runtime: { generated_at: "2025-01-01T00:00:00Z" },
+    });
+    expect(result.goal_aware_count).toBeUndefined();
+    expect(result.tentacles[0].goal_id).toBeUndefined();
+    expect(result.tentacles[0].goal_name).toBeUndefined();
+    expect(result.tentacles[0].goal_iteration).toBeUndefined();
+  });
+
   it("uses shared operatorActionSchema for skill metrics operator_actions", () => {
     const parsed = skillMetricsResponseSchema.parse({
       status: "unconfigured",

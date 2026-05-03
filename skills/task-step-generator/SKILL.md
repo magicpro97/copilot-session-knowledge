@@ -65,9 +65,17 @@ Assign each piece of work to a phase. Use only the phases the task actually need
 | BUILD | Implement the code change | Compiling code with no regressions |
 | TEST | Run and write tests | All tests green |
 | REVIEW | Check correctness, security, contracts | Code review findings addressed |
+| LOOP-EVAL | Evaluate whether the overarching goal is met; decide to iterate or close | Goal met (proceed to COMMIT) or remaining gaps identified (loop to BUILD/TEST) |
 | COMMIT | Package and ship | Clean git commit |
 
 Each phase produces one concrete artifact. A step only advances when that artifact exists.
+
+Include a **LOOP-EVAL** step when:
+- The task has an explicit overarching goal (e.g., "all benchmarks pass", "all tests green")
+- The task may require multiple iterations to reach the goal (e.g., a fix that reveals follow-on failures)
+- The agent will be operating semi-autonomously and must decide whether to continue or stop
+
+Omit LOOP-EVAL for strictly bounded tasks with a single deliverable (e.g., "add this one column", "rename this function").
 
 ### Phase 3: Write concrete steps
 
@@ -101,6 +109,7 @@ After all steps, add a phase-gate table for quick progress tracking:
 | CLARIFY | Confirmed spec | ☐ |
 | BUILD | `npx tsc --noEmit` passes | ☐ |
 | TEST | `yarn test` passes | ☐ |
+| LOOP-EVAL | Goal criteria met (or single-pass task: skip) | ☐ |
 | COMMIT | Clean `git diff --stat` | ☐ |
 ```
 

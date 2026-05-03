@@ -17,7 +17,9 @@
 7. **Docs output quality** — distinguish Facts / Interpretation / Actions / Verification evidence; never present inference as fact; every action must include the executable command.
 8. **Tentacle execution obligations** — when dispatched inside a tentacle: (a) read bundle files first, (b) stay in declared scope, (c) mark todos done with `tentacle.py todo <name> done <index>`, (d) do NOT run `git commit`/`git push`, (e) write a structured handoff with explicit `--status` (`DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED`) via `tentacle.py handoff <name> "<summary>" --status <STATUS> [--changed-file <path>] --learn` before stopping.
 
-See [docs/AGENT-RULES.md](docs/AGENT-RULES.md) for the complete rule text and hook-enforcement table.
+**Goal-loop (orchestrators only)** — after all tentacle handoffs pass verification gates, evaluate whether the overarching goal is met. If unmet, loop back to Phase 1 (new tentacles for remaining gaps). Only commit and close when success criteria are verifiably satisfied. Sub-agents report via handoff and stop; orchestrators own continuation. Record goal-eval evidence with `tentacle.py verify <name> "<check-command>" --label "goal-eval"`.
+
+See [docs/AGENT-RULES.md](docs/AGENT-RULES.md) for the complete rule text, goal-loop pattern, and hook-enforcement table.
 
 ## Architecture Key Facts
 

@@ -498,6 +498,10 @@ export const tentacleEntrySchema = z.object({
   verification: tentacleVerificationInfoSchema,
   has_handoff: z.boolean().optional(),
   terminal_status: z.string().optional(),
+  // Goal-aware optional fields — populated by goal-core when a tentacle is linked to a goal
+  goal_id: z.string().optional(),
+  goal_name: z.string().optional(),
+  goal_iteration: z.number().int().nonnegative().optional(),
 });
 
 export const tentacleMarkerInfoSchema = z.object({
@@ -516,6 +520,7 @@ export const tentacleStatusResponseSchema = z.object({
   total_count: z.number(),
   worktrees_prepared: z.number(),
   verification_covered: z.number(),
+  goal_aware_count: z.number().int().nonnegative().optional(),
   marker: tentacleMarkerInfoSchema,
   tentacles: z.array(tentacleEntrySchema),
   audit: auditBlockSchema,

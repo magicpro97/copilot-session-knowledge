@@ -7,7 +7,7 @@ Each tentacle is a scoped work context with CONTEXT.md + todo.md + handoff.md.
 Integrates with session-knowledge (briefing.py/learn.py) for long-term memory.
 
 Usage:
-    python3 ~/.copilot/tools/tentacle.py create <name> [--scope <paths>] [--desc <desc>] [--briefing]
+    python3 ~/.copilot/tools/tentacle.py create <name> [--scope <paths>] [--desc <desc>] [--briefing] [--goal-id <id>] [--iteration <n>]
     python3 ~/.copilot/tools/tentacle.py list
     python3 ~/.copilot/tools/tentacle.py status
     python3 ~/.copilot/tools/tentacle.py show <name>
@@ -21,6 +21,11 @@ Usage:
     python3 ~/.copilot/tools/tentacle.py next-step <name> [--briefing] [--no-checkpoint] [--all] [--format text|json]
     python3 ~/.copilot/tools/tentacle.py complete <name> [--no-learn]
     python3 ~/.copilot/tools/tentacle.py delete <name>
+    python3 ~/.copilot/tools/tentacle.py goal init --title <title> [--desc <desc>] [--force]
+    python3 ~/.copilot/tools/tentacle.py goal status [--format text|json]
+    python3 ~/.copilot/tools/tentacle.py goal link <tentacle-name>
+    python3 ~/.copilot/tools/tentacle.py goal eval [--decision continue|pause|complete|abandon] [--notes <notes>]
+    python3 ~/.copilot/tools/tentacle.py goal resume
 
 Environment:
     TENTACLE_SESSION_DIR — Override session directory (default: auto-detect)
@@ -82,6 +87,16 @@ _WORKTREE_STATE_ROOT = Path.home() / ".copilot" / "session-state" / "worktrees"
 HANDOFF_STATUS_ALLOWLIST: frozenset[str] = frozenset({"DONE", "BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"})
 # Statuses that require visible orchestrator triage (all non-DONE statuses)
 HANDOFF_TRIAGE_STATUSES: frozenset[str] = frozenset({"BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"})
+
+# ---------------------------------------------------------------------------
+# Goal state model constants
+# ---------------------------------------------------------------------------
+GOAL_STATE_FILENAME = "goal.json"
+GOAL_STATUS_ACTIVE = "active"
+GOAL_STATUS_PAUSED = "paused"
+GOAL_STATUS_COMPLETED = "completed"
+GOAL_STATUS_ABANDONED = "abandoned"
+GOAL_EVAL_DECISIONS: frozenset[str] = frozenset({"continue", "pause", "complete", "abandon"})
 
 
 from contextlib import contextmanager
@@ -1484,6 +1499,10 @@ CREATE TABLE IF NOT EXISTS tentacle_verifications (
     columns = {row[1] for row in conn.execute("PRAGMA table_info(tentacle_outcomes)").fetchall()}
     if "terminal_status" not in columns:
         conn.execute("ALTER TABLE tentacle_outcomes ADD COLUMN terminal_status TEXT")
+    if "goal_id" not in columns:
+        conn.execute("ALTER TABLE tentacle_outcomes ADD COLUMN goal_id TEXT")
+    if "iteration" not in columns:
+        conn.execute("ALTER TABLE tentacle_outcomes ADD COLUMN iteration INTEGER")
 
 
 def _persist_outcome_metrics(
@@ -1536,6 +1555,10 @@ def _persist_outcome_metrics(
         tentacle_id = meta.get("tentacle_id")
         description = meta.get("description", "")
         terminal_status = meta.get("terminal_status")
+        goal_id = meta.get("goal_id") or None
+        iteration = meta.get("goal_iteration")
+        if iteration is None:
+            iteration = meta.get("iteration") or None
         skills: list[str] = meta.get("skills") or []
         recorded_at = datetime.now(timezone.utc).isoformat()
 
@@ -1552,8 +1575,9 @@ def _persist_outcome_metrics(
                     worktree_used, worktree_path,
                     verification_total, verification_passed, verification_failed,
                     todo_total, todo_done, learned,
-                    duration_seconds, summary
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    duration_seconds, summary,
+                    goal_id, iteration
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     tentacle_name,
@@ -1573,6 +1597,8 @@ def _persist_outcome_metrics(
                     learned,
                     duration_seconds,
                     summary or None,
+                    goal_id,
+                    iteration,
                 ),
             )
             outcome_id = cur.lastrowid
@@ -1641,6 +1667,249 @@ def _validate_tentacle_name(name: str, tentacles: Path) -> Path:
         print(f"ERROR: Tentacle name '{name}' resolves outside tentacles directory.", file=sys.stderr)
         sys.exit(1)
     return tentacle_dir
+
+
+# ---------------------------------------------------------------------------
+# Goal state helpers
+# ---------------------------------------------------------------------------
+
+
+def _goal_path(tentacles_dir: Path) -> Path:
+    """Return the path to goal.json (sibling of tentacles dir, inside .octogent)."""
+    return tentacles_dir.parent / GOAL_STATE_FILENAME
+
+
+def _goal_load(tentacles_dir: Path) -> dict:
+    """Load goal.json; return empty dict if missing or malformed."""
+    gp = _goal_path(tentacles_dir)
+    if gp.exists():
+        try:
+            return json.loads(gp.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _goal_write(tentacles_dir: Path, state: dict) -> None:
+    """Write goal.json (orchestrator-only state; no concurrent writers expected)."""
+    gp = _goal_path(tentacles_dir)
+    gp.parent.mkdir(parents=True, exist_ok=True)
+    gp.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+def _goal_update(tentacles_dir: Path, **fields) -> dict:
+    """Load goal.json, apply fields, stamp updated_at, persist, and return new state."""
+    state = _goal_load(tentacles_dir)
+    state.update(fields)
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _goal_write(tentacles_dir, state)
+    return state
+
+
+# ---------------------------------------------------------------------------
+# Goal CLI sub-command implementations
+# ---------------------------------------------------------------------------
+
+
+def _cmd_goal_init(args, tentacles: Path) -> None:
+    """Initialize a new goal.json in the .octogent directory."""
+    goal_path = _goal_path(tentacles)
+    if goal_path.exists() and not getattr(args, "force", False):
+        print(f"⚠️  goal.json already exists at {goal_path}")
+        print("   Use --force to reinitialize.")
+        sys.exit(1)
+
+    goal_id = str(uuid.uuid4())
+    title = getattr(args, "title", None) or "Unnamed Goal"
+    desc = getattr(args, "desc", None) or ""
+
+    state = {
+        "goal_id": goal_id,
+        "title": title,
+        "description": desc,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "status": GOAL_STATUS_ACTIVE,
+        "iteration": 1,
+        "tentacles": [],
+        "eval_history": [],
+    }
+    _goal_write(tentacles, state)
+    print(f"✅ Goal initialized: '{title}'")
+    print(f"   Goal ID:  {goal_id}")
+    print(f"   State:    {goal_path}")
+    print("   Tip: link tentacles with `tentacle.py goal link <tentacle-name>`")
+
+
+def _cmd_goal_status(args, tentacles: Path) -> None:
+    """Show current goal state and linked tentacles."""
+    state = _goal_load(tentacles)
+    if not state:
+        print("ℹ️  No active goal found. Run `tentacle.py goal init` to create one.")
+        return
+
+    fmt = getattr(args, "format", "text")
+    if fmt == "json":
+        print(json.dumps(state, indent=2))
+        return
+
+    print(f"🎯 Goal: {state.get('title', '(untitled)')}")
+    print(f"   ID:        {state.get('goal_id', '?')}")
+    print(f"   Status:    {state.get('status', 'unknown')}")
+    print(f"   Iteration: {state.get('iteration', 1)}")
+    if state.get("description"):
+        print(f"   Desc:      {state['description']}")
+
+    tentacle_names = state.get("tentacles", [])
+    if tentacle_names:
+        print(f"\n   Linked tentacles ({len(tentacle_names)}):")
+        for name in tentacle_names:
+            t_dir = tentacles / name
+            if t_dir.exists():
+                t_meta_path = t_dir / "meta.json"
+                t_meta = json.loads(t_meta_path.read_text(encoding="utf-8")) if t_meta_path.exists() else {}
+                t_status = t_meta.get("status", "unknown")
+                print(f"     - {name} [{t_status}]")
+            else:
+                print(f"     - {name} [missing]")
+    else:
+        print("\n   No tentacles linked yet. Use `tentacle.py goal link <name>`.")
+
+    history = state.get("eval_history", [])
+    if history:
+        last = history[-1]
+        ts = (last.get("evaluated_at") or "")[:19]
+        print(f"\n   Last eval: iteration={last.get('iteration', '?')} decision={last.get('decision', '?')} @ {ts}")
+
+
+def _cmd_goal_link(args, tentacles: Path) -> None:
+    """Link a tentacle to the current goal and write goal_id/iteration into meta.json."""
+    state = _goal_load(tentacles)
+    if not state:
+        print("ERROR: No goal initialized. Run `tentacle.py goal init` first.", file=sys.stderr)
+        sys.exit(1)
+
+    tentacle_name = args.tentacle_name
+    t_dir = _validate_tentacle_name(tentacle_name, tentacles)
+    if not t_dir.exists():
+        print(f"ERROR: Tentacle '{tentacle_name}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    linked: list = state.setdefault("tentacles", [])
+    already_linked = tentacle_name in linked
+    if not already_linked:
+        linked.append(tentacle_name)
+    goal_id = state.get("goal_id", "")
+    goal_name = state.get("title", "")
+    iteration = state.get("iteration", 1)
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _goal_write(tentacles, state)
+
+    # Stamp goal metadata into tentacle meta.json.
+    meta_path = t_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    meta["goal_id"] = goal_id
+    if goal_name:
+        meta["goal_name"] = goal_name
+    meta["iteration"] = iteration
+    meta["goal_iteration"] = iteration
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+    verb = "Refreshed goal linkage for" if already_linked else "Linked"
+    print(f"🔗 {verb} '{tentacle_name}' to goal '{state.get('title', '?')}'")
+    print(f"   Goal ID: {goal_id} | Iteration: {iteration}")
+
+
+def _cmd_goal_eval(args, tentacles: Path) -> None:
+    """Record an evaluation checkpoint and optionally advance iteration or change status."""
+    state = _goal_load(tentacles)
+    if not state:
+        print("ERROR: No goal initialized. Run `tentacle.py goal init` first.", file=sys.stderr)
+        sys.exit(1)
+
+    decision = getattr(args, "decision", "continue") or "continue"
+    if decision not in GOAL_EVAL_DECISIONS:
+        print(f"ERROR: Unknown decision '{decision}'. Use: {', '.join(sorted(GOAL_EVAL_DECISIONS))}", file=sys.stderr)
+        sys.exit(1)
+
+    notes = getattr(args, "notes", "") or ""
+    current_iter = state.get("iteration", 1)
+    current_status = state.get("status", GOAL_STATUS_ACTIVE)
+    if current_status in {GOAL_STATUS_COMPLETED, GOAL_STATUS_ABANDONED}:
+        print(
+            f"ERROR: Goal is already {current_status}. Run `tentacle.py goal resume` before evaluating again.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    eval_entry = {
+        "iteration": current_iter,
+        "decision": decision,
+        "notes": notes,
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    history: list = state.setdefault("eval_history", [])
+    history.append(eval_entry)
+
+    if decision == "continue":
+        state["status"] = GOAL_STATUS_ACTIVE
+        state["iteration"] = current_iter + 1
+        print(f"▶  Eval: continuing — advancing to iteration {current_iter + 1}")
+    elif decision == "pause":
+        state["status"] = GOAL_STATUS_PAUSED
+        print(f"⏸  Eval: pausing goal at iteration {current_iter}")
+    elif decision == "complete":
+        state["status"] = GOAL_STATUS_COMPLETED
+        state["completed_at"] = datetime.now(timezone.utc).isoformat()
+        print(f"✅ Eval: goal marked complete at iteration {current_iter}")
+    elif decision == "abandon":
+        state["status"] = GOAL_STATUS_ABANDONED
+        print(f"🗑  Eval: goal abandoned at iteration {current_iter}")
+
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _goal_write(tentacles, state)
+
+    if notes:
+        print(f"   Notes: {notes[:80]}")
+    print(f"   Goal: {state.get('title', '?')} | Status: {state['status']}")
+
+
+def _cmd_goal_resume(args, tentacles: Path) -> None:
+    """Set goal status back to active (e.g. after pause or to restart iteration loop)."""
+    state = _goal_load(tentacles)
+    if not state:
+        print("ERROR: No goal initialized. Run `tentacle.py goal init` first.", file=sys.stderr)
+        sys.exit(1)
+
+    prev_status = state.get("status", "unknown")
+    state["status"] = GOAL_STATUS_ACTIVE
+    state["resumed_at"] = datetime.now(timezone.utc).isoformat()
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _goal_write(tentacles, state)
+
+    print(f"🔄 Goal '{state.get('title', '?')}' resumed (was: {prev_status})")
+    print(f"   Iteration: {state.get('iteration', 1)}")
+    print(f"   Linked tentacles: {len(state.get('tentacles', []))}")
+
+
+def cmd_goal(args):
+    """Dispatch goal sub-commands: init / status / link / eval / resume."""
+    tentacles = get_tentacles_dir(args.session_dir)
+    sub = args.goal_action
+
+    if sub == "init":
+        _cmd_goal_init(args, tentacles)
+    elif sub == "status":
+        _cmd_goal_status(args, tentacles)
+    elif sub == "link":
+        _cmd_goal_link(args, tentacles)
+    elif sub == "eval":
+        _cmd_goal_eval(args, tentacles)
+    elif sub == "resume":
+        _cmd_goal_resume(args, tentacles)
+    else:
+        print(f"ERROR: Unknown goal action '{sub}'", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_create(args):
@@ -1725,6 +1994,20 @@ def cmd_create(args):
         "tentacle_id": tentacle_id,
         "skills": skills,
     }
+    # Goal-aware fields: link to a goal if --goal-id provided
+    goal_id_arg = getattr(args, "goal_id", None)
+    iteration_arg = getattr(args, "iteration", None)
+    iteration_value = iteration_arg
+    if goal_id_arg and iteration_value is None:
+        iteration_value = 1
+    if goal_id_arg:
+        meta["goal_id"] = goal_id_arg
+        goal_state = _goal_load(tentacles)
+        if goal_state.get("goal_id") == goal_id_arg and goal_state.get("title"):
+            meta["goal_name"] = goal_state["title"]
+    if iteration_value is not None:
+        meta["iteration"] = iteration_value
+        meta["goal_iteration"] = iteration_value
     # When dir_name differs from name (collision case), record it explicitly.
     if actual_dir_name != args.name:
         meta["dir_name"] = actual_dir_name
@@ -1735,6 +2018,8 @@ def cmd_create(args):
     print("   📋 todo.md    — add checkbox items for delegation")
     if skills:
         print(f"   🔧 Skills: {', '.join(skills)}")
+    if goal_id_arg:
+        print(f"   🎯 Goal: {goal_id_arg} (iteration {iteration_value})")
 
 
 def cmd_list(args):
@@ -2789,6 +3074,13 @@ def main():
     p_create.add_argument(
         "--skill", action="append", metavar="SKILL", help="Declare a skill used by this tentacle (repeatable)"
     )
+    p_create.add_argument("--goal-id", dest="goal_id", metavar="GOAL_ID", default=None, help="Link to a goal by ID")
+    p_create.add_argument(
+        "--iteration",
+        type=int,
+        default=None,
+        help="Goal iteration number to associate with this tentacle",
+    )
 
     # list
     sub.add_parser("list", help="List all tentacles")
@@ -2978,6 +3270,37 @@ def main():
     p_verify.add_argument("--label", help="Human-readable label for this verification")
     p_verify.add_argument("--timeout", type=int, default=120, help="Command timeout in seconds (default: 120)")
 
+    # goal subcommand
+    p_goal = sub.add_parser("goal", help="Orchestrator-level goal loop: init/status/link/eval/resume")
+    p_goal_sub = p_goal.add_subparsers(dest="goal_action", required=True)
+
+    # goal init
+    p_goal_init = p_goal_sub.add_parser("init", help="Initialize a new goal.json in .octogent/")
+    p_goal_init.add_argument("--title", default="Unnamed Goal", help="Short title for this goal")
+    p_goal_init.add_argument("--desc", default="", help="Optional description")
+    p_goal_init.add_argument("--force", action="store_true", help="Overwrite existing goal.json")
+
+    # goal status
+    p_goal_status = p_goal_sub.add_parser("status", help="Show current goal state and linked tentacles")
+    p_goal_status.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
+
+    # goal link
+    p_goal_link = p_goal_sub.add_parser("link", help="Link a tentacle to the current goal")
+    p_goal_link.add_argument("tentacle_name", help="Name of the tentacle to link")
+
+    # goal eval
+    p_goal_eval = p_goal_sub.add_parser("eval", help="Record evaluation checkpoint; advance iteration or change status")
+    p_goal_eval.add_argument(
+        "--decision",
+        choices=sorted(GOAL_EVAL_DECISIONS),
+        default="continue",
+        help="Evaluation decision (default: continue)",
+    )
+    p_goal_eval.add_argument("--notes", default="", help="Optional notes for this evaluation")
+
+    # goal resume
+    p_goal_sub.add_parser("resume", help="Resume a paused/abandoned goal (set status=active)")
+
     args = parser.parse_args()
 
     if args.command == "create":
@@ -3013,6 +3336,8 @@ def main():
         cmd_verify(args)
     elif args.command == "marker-cleanup":
         cmd_marker_cleanup(args)
+    elif args.command == "goal":
+        cmd_goal(args)
 
 
 if __name__ == "__main__":
