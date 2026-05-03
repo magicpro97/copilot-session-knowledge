@@ -27,9 +27,18 @@ Additive fields (present when retro.py emits them; absent on older payloads):
     "distortion_flags":    [str, ...],   -- e.g. ["hook_deny_dry_noise", "skills_unverified"]
     "accuracy_notes":      [str, ...],   -- prose explanations of parse errors / caveats
     "improvement_actions": [str, ...]    -- concrete next steps for the operator
-    "scout": {                           -- Trend Scout coverage (read-only, informational)
-      "available":              bool,    -- True if config exists AND was successfully parsed
-      "configured":             bool,    -- True if config file exists (regardless of parse success)
+    "toward_100":          [            -- ordered list of section gaps (highest gap first)
+      {
+        "section":  str,               -- section name, e.g. "skills" | "behavior" | "hooks"
+        "score":    float,             -- current section score (0–100)
+        "gap":      float,             -- points needed to reach 100
+        "barriers": [str, ...]         -- human-readable barrier descriptions
+      },
+      ...
+    ] | null,
+    "scout": {                         -- Trend Scout coverage (read-only, informational)
+      "available":              bool,  -- True if config exists AND was successfully parsed
+      "configured":             bool,  -- True if config file exists (regardless of parse success)
       "script_exists":          bool,
       "config_path":            str,
       "target_repo":            str | null,

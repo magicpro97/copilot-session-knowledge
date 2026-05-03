@@ -210,3 +210,80 @@ describe("KnowledgeInsightsSection", () => {
     expect(container.firstChild).toBeNull();
   });
 });
+
+describe("Toward100Panel via KnowledgeInsightsSection", () => {
+  it("renders toward_100 top gaps when present", () => {
+    mockedUseKnowledgeInsights.mockReturnValue({
+      data: {
+        ..._baseInsightsData,
+        toward_100: {
+          total_gap: 33.5,
+          dimensions: [],
+          top_gaps: [
+            {
+              dimension: "confidence_quality",
+              current: 0.2,
+              max: 15.0,
+              gap: 14.8,
+              gap_pct: 98.7,
+              pct_of_total_gap: 44.2,
+            },
+            {
+              dimension: "stale_ratio",
+              current: 0.7,
+              max: 10.0,
+              gap: 8.5,
+              gap_pct: 85.0,
+              pct_of_total_gap: 25.4,
+            },
+          ],
+        },
+      },
+      isLoading: false,
+      isError: false,
+      isSuccess: true,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+
+    render(<KnowledgeInsightsSection />);
+
+    expect(screen.getByText(/🎯 Toward 100/)).toBeInTheDocument();
+    expect(screen.getByText("confidence_quality")).toBeInTheDocument();
+    expect(screen.getByText("stale_ratio")).toBeInTheDocument();
+    expect(screen.getByText("44.2%")).toBeInTheDocument();
+  });
+
+  it("does not render Toward100Panel when toward_100 is absent", () => {
+    mockedUseKnowledgeInsights.mockReturnValue({
+      data: _baseInsightsData,
+      isLoading: false,
+      isError: false,
+      isSuccess: true,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+
+    render(<KnowledgeInsightsSection />);
+
+    expect(screen.queryByText(/🎯 Toward 100/)).not.toBeInTheDocument();
+  });
+
+  it("does not render Toward100Panel when toward_100 top_gaps is empty", () => {
+    mockedUseKnowledgeInsights.mockReturnValue({
+      data: {
+        ..._baseInsightsData,
+        toward_100: { total_gap: 0, dimensions: [], top_gaps: [] },
+      },
+      isLoading: false,
+      isError: false,
+      isSuccess: true,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+
+    render(<KnowledgeInsightsSection />);
+
+    expect(screen.queryByText(/🎯 Toward 100/)).not.toBeInTheDocument();
+  });
+});

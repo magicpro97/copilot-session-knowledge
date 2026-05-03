@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useRetro } from "@/lib/api/hooks";
 import { deriveActionsFromStrings } from "@/lib/insight-derive";
 import { formatNumber } from "@/lib/formatters";
-import type { RetroBehavior, RetroScout } from "@/lib/api/types";
+import type { RetroBehavior, RetroScout, RetroToward100Item } from "@/lib/api/types";
 
 const SECTION_LABELS: Record<string, string> = {
   knowledge: "Knowledge",
@@ -66,6 +66,41 @@ function BehaviorMetricsGrid({ behavior }: { behavior: RetroBehavior | undefined
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function Toward100Panel({ items }: { items: RetroToward100Item[] | null | undefined }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="rounded-lg border px-3 py-2">
+      <p className="mb-2 text-xs font-medium">🎯 Toward 100 — section gaps</p>
+      <ul className="space-y-2">
+        {items.map((item) => (
+          <li key={item.section}>
+            <div className="flex items-center gap-2">
+              <span className="text-foreground text-xs font-medium capitalize">
+                {SECTION_LABELS[item.section] ?? item.section}
+              </span>
+              <Badge variant={scoreBadgeVariant(item.score)} className="text-[10px]">
+                {formatNumber(item.score)}
+              </Badge>
+              <span className="text-muted-foreground text-[10px]">
+                gap: {formatNumber(item.gap)}
+              </span>
+            </div>
+            {item.barriers.length > 0 ? (
+              <ul className="text-muted-foreground mt-0.5 list-disc pl-4">
+                {item.barriers.map((b, i) => (
+                  <li key={i} className="text-[11px]">
+                    {b}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -205,6 +240,8 @@ export function RetroBody({ retro }: { retro: ReturnType<typeof useRetro> }) {
           title="Recommended actions"
         />
       ) : null}
+
+      <Toward100Panel items={retro.data.toward_100} />
 
       {retro.data.scout ? <ScoutCoveragePanel scout={retro.data.scout} /> : null}
 

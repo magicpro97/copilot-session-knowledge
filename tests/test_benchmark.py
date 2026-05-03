@@ -298,6 +298,69 @@ def test_cmd_list_text_output(tmp_path):
     out = buf.getvalue()
     test("cmd_list text: rc=0", rc == 0)
     test("cmd_list text: commit sha appears", "ccc111" in out, f"output={out[:200]}")
+    test("cmd_list text: Gap column header present", "Gap" in out, f"output={out[:200]}")
+
+
+# ── 4b. cmd_list gap-to-target ────────────────────────────────────────────────
+
+
+def test_cmd_list_json_has_retro_gap(tmp_path):
+    b = _load_bench()
+    db = tmp_path / "k.db"
+    conn = sqlite3.connect(str(db))
+    b._ensure_table(conn)
+    conn.execute(
+        "INSERT INTO benchmark_snapshots (commit_sha, mode, retro_score, subscores_json, extra_json) VALUES (?,?,?,?,?)",
+        ("abc", "repo", 75.0, "{}", "{}"),
+    )
+    conn.commit()
+    conn.close()
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        b.cmd_list(db, limit=10, as_json=True)
+    data = json.loads(buf.getvalue())
+    test("cmd_list --json: retro_gap key present", "retro_gap" in data[0], f"keys={list(data[0])}")
+    test("cmd_list --json: retro_gap value correct (25.0)", data[0]["retro_gap"] == 25.0,
+         f"got={data[0].get('retro_gap')}")
+
+
+def test_cmd_list_json_has_health_gap(tmp_path):
+    b = _load_bench()
+    db = tmp_path / "k.db"
+    conn = sqlite3.connect(str(db))
+    b._ensure_table(conn)
+    conn.execute(
+        "INSERT INTO benchmark_snapshots (commit_sha, mode, retro_score, health_score, subscores_json, extra_json) VALUES (?,?,?,?,?,?)",
+        ("abc", "repo", 60.0, 80.0, "{}", "{}"),
+    )
+    conn.commit()
+    conn.close()
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        b.cmd_list(db, limit=10, as_json=True)
+    data = json.loads(buf.getvalue())
+    test("cmd_list --json: health_gap key present", "health_gap" in data[0], f"keys={list(data[0])}")
+    test("cmd_list --json: health_gap value correct (20.0)", data[0]["health_gap"] == 20.0,
+         f"got={data[0].get('health_gap')}")
+
+
+def test_cmd_list_json_health_gap_none_when_health_null(tmp_path):
+    b = _load_bench()
+    db = tmp_path / "k.db"
+    conn = sqlite3.connect(str(db))
+    b._ensure_table(conn)
+    conn.execute(
+        "INSERT INTO benchmark_snapshots (commit_sha, mode, retro_score, subscores_json, extra_json) VALUES (?,?,?,?,?)",
+        ("abc", "repo", 60.0, "{}", "{}"),
+    )
+    conn.commit()
+    conn.close()
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        b.cmd_list(db, limit=10, as_json=True)
+    data = json.loads(buf.getvalue())
+    test("cmd_list --json: health_gap is None when health unavailable",
+         data[0]["health_gap"] is None, f"got={data[0].get('health_gap')}")
 
 
 # ── 5. cmd_compare ───────────────────────────────────────────────────────────
@@ -366,6 +429,99 @@ def test_cmd_compare_insufficient_rows(tmp_path):
     test("cmd_compare insufficient rows: rc=1", rc == 1, f"rc={rc}")
 
 
+# ── 5b. cmd_compare gap-to-target ────────────────────────────────────────────
+
+
+def test_cmd_compare_shows_gap_to_100(tmp_path):
+    b = _load_bench()
+    db = tmp_path / "k.db"
+    conn = sqlite3.connect(str(db))
+    b._ensure_table(conn)
+    conn.execute(
+        "INSERT INTO benchmark_snapshots (commit_sha, mode, retro_score, subscores_json, extra_json) VALUES (?,?,?,?,?)",
+        ("aaa", "repo", 55.0, "{}", "{}"),
+    )
+    conn.execute(
+        "INSERT INTO benchmark_snapshots (commit_sha, mode, retro_score, subscores_json, extra_json) VALUES (?,?,?,?,?)",
+        ("bbb", "repo", 70.0, "{}", "{}"),
+    )
+    conn.commit()
+    conn.close()
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = b.cmd_compare(db, commits=[], limit=10)
+    out = buf.getvalue()
+    test("cmd_compare: shows 'gap to 100' section", "gap to 100" in out, f"out={out[:400]}")
+    test("cmd_compare: shows gap 45.0 for score 55.0", "45.0" in out, f"out={out[:400]}")
+    test("cmd_compare: shows gap 30.0 for score 70.0", "30.0" in out, f"out={out[:400]}")
+
+
+def test_cmd_compare_shows_closer_verdict(tmp_path):
+    b = _load_bench()
+    db = tmp_path / "k.db"
+    conn = sqlite3.connect(str(db))
+    b._ensure_table(conn)
+    conn.execute(
+        "INSERT INTO benchmark_snapshots (commit_sha, mode, retro_score, subscores_json, extra_json) VALUES (?,?,?,?,?)",
+        ("aaa", "repo", 55.0, "{}", "{}"),
+    )
+    conn.execute(
+        "INSERT INTO benchmark_snapshots (commit_sha, mode, retro_score, subscores_json, extra_json) VALUES (?,?,?,?,?)",
+        ("bbb", "repo", 70.0, "{}", "{}"),
+    )
+    conn.commit()
+    conn.close()
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        b.cmd_compare(db, commits=[], limit=10)
+    out = buf.getvalue()
+    test("cmd_compare: shows 'closer' when score improved", "closer" in out, f"out={out[:400]}")
+
+
+def test_cmd_compare_shows_farther_verdict(tmp_path):
+    b = _load_bench()
+    db = tmp_path / "k.db"
+    conn = sqlite3.connect(str(db))
+    b._ensure_table(conn)
+    conn.execute(
+        "INSERT INTO benchmark_snapshots (commit_sha, mode, retro_score, subscores_json, extra_json) VALUES (?,?,?,?,?)",
+        ("aaa", "repo", 80.0, "{}", "{}"),
+    )
+    conn.execute(
+        "INSERT INTO benchmark_snapshots (commit_sha, mode, retro_score, subscores_json, extra_json) VALUES (?,?,?,?,?)",
+        ("bbb", "repo", 60.0, "{}", "{}"),
+    )
+    conn.commit()
+    conn.close()
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        b.cmd_compare(db, commits=[], limit=10)
+    out = buf.getvalue()
+    test("cmd_compare: shows 'farther' when score regressed", "farther" in out, f"out={out[:400]}")
+
+
+def test_cmd_compare_shows_proof_summary(tmp_path):
+    b = _load_bench()
+    db = tmp_path / "k.db"
+    conn = sqlite3.connect(str(db))
+    b._ensure_table(conn)
+    conn.execute(
+        "INSERT INTO benchmark_snapshots (commit_sha, mode, retro_score, subscores_json, extra_json) VALUES (?,?,?,?,?)",
+        ("aaa", "repo", 55.0, "{}", "{}"),
+    )
+    conn.execute(
+        "INSERT INTO benchmark_snapshots (commit_sha, mode, retro_score, subscores_json, extra_json) VALUES (?,?,?,?,?)",
+        ("bbb", "repo", 70.0, "{}", "{}"),
+    )
+    conn.commit()
+    conn.close()
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        b.cmd_compare(db, commits=[], limit=10)
+    out = buf.getvalue()
+    test("cmd_compare: shows 'proof summary' section", "proof summary" in out, f"out={out[:500]}")
+
+
 # ── 6. _parse_args ───────────────────────────────────────────────────────────
 
 
@@ -427,6 +583,57 @@ def test_delta_str_none():
     b = _load_bench()
     s = b._delta_str(None, 50.0)
     test("_delta_str: None → 'n/a'", s == "n/a", f"got={s}")
+
+
+# ── 7b. _gap_to_target / _gap_progress_str ────────────────────────────────────
+
+
+def test_gap_to_target_basic():
+    b = _load_bench()
+    test("_gap_to_target: 75.0 → 25.0", b._gap_to_target(75.0) == 25.0,
+         f"got={b._gap_to_target(75.0)}")
+
+
+def test_gap_to_target_none():
+    b = _load_bench()
+    test("_gap_to_target: None → None", b._gap_to_target(None) is None,
+         f"got={b._gap_to_target(None)}")
+
+
+def test_gap_to_target_at_100():
+    b = _load_bench()
+    test("_gap_to_target: 100.0 → 0.0", b._gap_to_target(100.0) == 0.0,
+         f"got={b._gap_to_target(100.0)}")
+
+
+def test_gap_to_target_over_100():
+    b = _load_bench()
+    test("_gap_to_target: 105.0 → 0.0 (clamped)", b._gap_to_target(105.0) == 0.0,
+         f"got={b._gap_to_target(105.0)}")
+
+
+def test_gap_progress_str_closer():
+    b = _load_bench()
+    s = b._gap_progress_str(45.0, 30.0)
+    test("_gap_progress_str: gap 45→30 shows 'closer'", "closer" in s and "▲" in s, f"got={s}")
+
+
+def test_gap_progress_str_farther():
+    b = _load_bench()
+    s = b._gap_progress_str(30.0, 45.0)
+    test("_gap_progress_str: gap 30→45 shows 'farther'", "farther" in s and "▼" in s, f"got={s}")
+
+
+def test_gap_progress_str_unchanged():
+    b = _load_bench()
+    s = b._gap_progress_str(30.0, 30.0)
+    test("_gap_progress_str: same gap shows 'unchanged'", "unchanged" in s and "─" in s, f"got={s}")
+
+
+def test_gap_progress_str_none():
+    b = _load_bench()
+    s = b._gap_progress_str(None, 30.0)
+    test("_gap_progress_str: None → 'n/a'", s == "n/a", f"got={s}")
 
 
 # ── 8. Git helpers ───────────────────────────────────────────────────────────
@@ -546,10 +753,21 @@ def run_all():
     test_collect_health_uses_requested_db_path(_tmp())
     test_collect_health_catches_system_exit(_tmp())
 
+    print("\n── 4b. cmd_list gap-to-target ────────────────────────────────────────────")
+    test_cmd_list_json_has_retro_gap(_tmp())
+    test_cmd_list_json_has_health_gap(_tmp())
+    test_cmd_list_json_health_gap_none_when_health_null(_tmp())
+
     print("\n── 5. cmd_compare ────────────────────────────────────────────────────────")
     test_cmd_compare_two_snapshots(_tmp())
     test_cmd_compare_by_commit(_tmp())
     test_cmd_compare_insufficient_rows(_tmp())
+
+    print("\n── 5b. cmd_compare gap-to-target ────────────────────────────────────────")
+    test_cmd_compare_shows_gap_to_100(_tmp())
+    test_cmd_compare_shows_closer_verdict(_tmp())
+    test_cmd_compare_shows_farther_verdict(_tmp())
+    test_cmd_compare_shows_proof_summary(_tmp())
 
     print("\n── 6. _parse_args ────────────────────────────────────────────────────────")
     test_parse_args_defaults()
@@ -562,6 +780,16 @@ def run_all():
     test_delta_str_negative()
     test_delta_str_zero()
     test_delta_str_none()
+
+    print("\n── 7b. _gap_to_target / _gap_progress_str ────────────────────────────────")
+    test_gap_to_target_basic()
+    test_gap_to_target_none()
+    test_gap_to_target_at_100()
+    test_gap_to_target_over_100()
+    test_gap_progress_str_closer()
+    test_gap_progress_str_farther()
+    test_gap_progress_str_unchanged()
+    test_gap_progress_str_none()
 
     print("\n── 8. Git helpers ────────────────────────────────────────────────────────")
     test_git_head_sha_returns_str()

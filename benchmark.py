@@ -281,6 +281,8 @@ def cmd_list(db_path: Path, limit: int, as_json: bool) -> int:
         for r in rows:
             d = dict(r)
             d["subscores"] = json.loads(d.pop("subscores_json", "{}"))
+            d["retro_gap"] = _gap_to_target(d.get("retro_score"))
+            d["health_gap"] = _gap_to_target(d.get("health_score"))
             out.append(d)
         print(json.dumps(out, indent=2))
         return 0
@@ -289,15 +291,17 @@ def cmd_list(db_path: Path, limit: int, as_json: bool) -> int:
         print("benchmark: no snapshots yet.")
         return 0
 
-    print(f"{'ID':>4}  {'Commit':12}  {'Recorded':19}  {'Mode':6}  {'Retro':>5}  {'Health':>6}  Msg")
-    print("-" * 90)
+    print(f"{'ID':>4}  {'Commit':12}  {'Recorded':19}  {'Mode':6}  {'Retro':>5}  {'Health':>6}  {'Gap':>5}  Msg")
+    print("-" * 96)
     for r in rows:
         health_str = f"{r['health_score']:.1f}" if r["health_score"] is not None else "  n/a"
+        gap_val = _gap_to_target(r["retro_score"])
+        gap_str = f"{gap_val:.1f}" if gap_val is not None else "  n/a"
         msg = (r["commit_msg"] or "")[:40]
         print(
             f"{r['id']:>4}  {(r['commit_sha'] or '?')[:12]:12}  "
             f"{r['recorded_at'][:19]:19}  {r['mode']:6}  "
-            f"{r['retro_score']:>5.1f}  {health_str:>6}  {msg}"
+            f"{r['retro_score']:>5.1f}  {health_str:>6}  {gap_str:>5}  {msg}"
         )
     return 0
 
@@ -311,6 +315,25 @@ def _delta_str(a: "float | None", b: "float | None") -> str:
     d = b - a
     arrow = "▲" if d > 0 else ("▼" if d < 0 else "─")
     return f"{arrow}{abs(d):.1f}"
+
+
+def _gap_to_target(score: "float | None", target: float = 100.0) -> "float | None":
+    """Return distance from score to target (None if score is None)."""
+    if score is None:
+        return None
+    return round(max(0.0, target - score), 1)
+
+
+def _gap_progress_str(gap_a: "float | None", gap_b: "float | None") -> str:
+    """Describe gap change: ▲ closer = improvement, ▼ farther = regression."""
+    if gap_a is None or gap_b is None:
+        return "n/a"
+    closed = round(gap_a - gap_b, 1)
+    if closed > 0:
+        return f"▲{closed:.1f} closer"
+    elif closed < 0:
+        return f"▼{abs(closed):.1f} farther"
+    return "─ unchanged"
 
 
 def cmd_compare(db_path: Path, commits: "list[str]", limit: int) -> int:
@@ -371,6 +394,23 @@ def cmd_compare(db_path: Path, commits: "list[str]", limit: int) -> int:
     h_b = f"{snap_b['health_score']:.1f}" if snap_b["health_score"] is not None else "n/a"
     print(f"  health_score: {h_a:>5}  →  {h_b:>5}  ({delta_health})")
 
+    # gap to 100
+    gap_a_retro = _gap_to_target(snap_a["retro_score"])
+    gap_b_retro = _gap_to_target(snap_b["retro_score"])
+    gap_a_health = _gap_to_target(snap_a["health_score"])
+    gap_b_health = _gap_to_target(snap_b["health_score"])
+
+    def _fmt_g(g: "float | None") -> str:
+        return f"{g:.1f}" if g is not None else "n/a"
+
+    gp_retro = _gap_progress_str(gap_a_retro, gap_b_retro)
+    gp_health = _gap_progress_str(gap_a_health, gap_b_health)
+
+    print()
+    print("  gap to 100:")
+    print(f"    retro_score : {_fmt_g(gap_a_retro):>5}  →  {_fmt_g(gap_b_retro):>5}  ({gp_retro})")
+    print(f"    health_score: {_fmt_g(gap_a_health):>5}  →  {_fmt_g(gap_b_health):>5}  ({gp_health})")
+
     # subscores
     ss_a = json.loads(snap_a["subscores_json"] or "{}")
     ss_b = json.loads(snap_b["subscores_json"] or "{}")
@@ -386,6 +426,10 @@ def cmd_compare(db_path: Path, commits: "list[str]", limit: int) -> int:
             vb_s = f"{vb:.1f}" if vb is not None else "n/a"
             print(f"    {k:12} {va_s:>5}  →  {vb_s:>5}  ({d})")
 
+    print()
+    print("  proof summary:")
+    print(f"    retro  : {snap_a['retro_score']:.1f} → {snap_b['retro_score']:.1f}  gap {_fmt_g(gap_a_retro)} → {_fmt_g(gap_b_retro)}  {gp_retro}")
+    print(f"    health : {h_a} → {h_b}  gap {_fmt_g(gap_a_health)} → {_fmt_g(gap_b_health)}  {gp_health}")
     print()
     return 0
 

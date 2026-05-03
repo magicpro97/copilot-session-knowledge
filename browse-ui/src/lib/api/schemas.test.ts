@@ -9,6 +9,7 @@ import {
   evalResponseSchema,
   knowledgeInsightsResponseSchema,
   researchPackReloadResponseSchema,
+  retroResponseSchema,
   trendScoutStatusResponseSchema,
   trendScoutDiscoveryLaneSchema,
   syncStatusResponseSchema,
@@ -835,5 +836,112 @@ describe("knowledgeInsightsResponseSchema", () => {
     const parsed = knowledgeInsightsResponseSchema.parse(withNull);
     expect(parsed.entries.mistakes[0].last_seen).toBeNull();
     expect(parsed.entries.mistakes[0].summary).toBeNull();
+  });
+
+  it("parses toward_100 dict when present", () => {
+    const parsed = knowledgeInsightsResponseSchema.parse({
+      ..._validInsights,
+      toward_100: {
+        total_gap: 33.5,
+        dimensions: [
+          {
+            dimension: "confidence_quality",
+            current: 0.2,
+            max: 15.0,
+            gap: 14.8,
+            gap_pct: 98.7,
+            pct_of_total_gap: 44.3,
+          },
+        ],
+        top_gaps: [
+          {
+            dimension: "confidence_quality",
+            current: 0.2,
+            max: 15.0,
+            gap: 14.8,
+            gap_pct: 98.7,
+            pct_of_total_gap: 44.2,
+          },
+          {
+            dimension: "stale_ratio",
+            current: 0.7,
+            max: 10.0,
+            gap: 8.5,
+            gap_pct: 85.0,
+            pct_of_total_gap: 25.4,
+          },
+        ],
+      },
+    });
+    expect(parsed.toward_100).toBeDefined();
+    expect(parsed.toward_100?.total_gap).toBe(33.5);
+    expect(parsed.toward_100?.top_gaps).toHaveLength(2);
+    expect(parsed.toward_100?.top_gaps[0].dimension).toBe("confidence_quality");
+    expect(parsed.toward_100?.top_gaps[0].pct_of_total_gap).toBe(44.2);
+    expect(parsed.toward_100?.dimensions).toHaveLength(1);
+    expect(parsed.toward_100?.dimensions[0].gap_pct).toBe(98.7);
+  });
+
+  it("accepts toward_100 as absent (backward compat — older payloads)", () => {
+    const parsed = knowledgeInsightsResponseSchema.parse(_validInsights);
+    expect(parsed.toward_100).toBeUndefined();
+  });
+
+  it("accepts toward_100 as null (graceful degradation)", () => {
+    const parsed = knowledgeInsightsResponseSchema.parse({ ..._validInsights, toward_100: null });
+    expect(parsed.toward_100).toBeNull();
+  });
+});
+
+// ── Retro toward_100 schema tests ──────────────────────────────────────────
+
+const _baseRetro = {
+  retro_score: 70,
+  grade: "Good",
+  grade_emoji: "✅",
+  mode: "repo" as const,
+  generated_at: "2026-01-01T00:00:00Z",
+  available_sections: ["git"],
+  weights: { git: 1.0 },
+  subscores: { git: 70 },
+  knowledge: null,
+  skills: null,
+  hooks: null,
+  git: { available: true },
+};
+
+describe("retroResponseSchema toward_100", () => {
+  it("parses toward_100 as a list of section gap items", () => {
+    const parsed = retroResponseSchema.parse({
+      ..._baseRetro,
+      toward_100: [
+        { section: "skills", score: 30.0, gap: 70.0, barriers: ["no_verification_evidence"] },
+        { section: "behavior", score: 55.0, gap: 45.0, barriers: [] },
+      ],
+    });
+    expect(parsed.toward_100).toHaveLength(2);
+    expect(parsed.toward_100?.[0].section).toBe("skills");
+    expect(parsed.toward_100?.[0].gap).toBe(70.0);
+    expect(parsed.toward_100?.[0].barriers).toContain("no_verification_evidence");
+    expect(parsed.toward_100?.[1].barriers).toHaveLength(0);
+  });
+
+  it("accepts toward_100 as absent (backward compat)", () => {
+    const parsed = retroResponseSchema.parse(_baseRetro);
+    expect(parsed.toward_100).toBeUndefined();
+  });
+
+  it("accepts toward_100 as null", () => {
+    const parsed = retroResponseSchema.parse({ ..._baseRetro, toward_100: null });
+    expect(parsed.toward_100).toBeNull();
+  });
+
+  it("rejects toward_100 items missing required fields", () => {
+    expect(() =>
+      retroResponseSchema.parse({
+        ..._baseRetro,
+        toward_100: [{ section: "skills", score: 30 }], // missing gap and barriers
+      })
+    ).toThrow();
   });
 });

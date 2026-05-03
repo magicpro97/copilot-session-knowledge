@@ -664,6 +664,18 @@ export const retroResponseSchema = z.object({
   distortion_flags: z.array(z.string()).optional(),
   accuracy_notes: z.array(z.string()).optional(),
   improvement_actions: z.array(z.string()).optional(),
+  // Additive toward-100 diagnostics — ordered list of section gaps
+  toward_100: z
+    .array(
+      z.object({
+        section: z.string(),
+        score: z.number(),
+        gap: z.number(),
+        barriers: z.array(z.string()),
+      })
+    )
+    .nullable()
+    .optional(),
   // Additive Trend Scout coverage signal — absent on older payloads
   scout: retroScoutSchema.optional(),
   // Additive session behavior metrics — absent when DB unavailable
@@ -757,6 +769,24 @@ export const knowledgeInsightsEntriesSchema = z.object({
   tools: z.array(knowledgeInsightsEntrySchema).default([]),
 });
 
+export const knowledgeInsightsDimensionSchema = z.object({
+  dimension: z.string(),
+  current: z.number(),
+  max: z.number(),
+  gap: z.number(),
+  gap_pct: z.number(),
+  pct_of_total_gap: z.number(),
+});
+
+/** Same shape as knowledgeInsightsDimensionSchema — top_gaps entries are the highest-impact subset. */
+export const knowledgeInsightsTopGapSchema = knowledgeInsightsDimensionSchema;
+
+export const knowledgeInsightsToward100Schema = z.object({
+  total_gap: z.number(),
+  dimensions: z.array(knowledgeInsightsDimensionSchema),
+  top_gaps: z.array(knowledgeInsightsTopGapSchema),
+});
+
 export const knowledgeInsightsResponseSchema = z.object({
   generated_at: z.string(),
   summary: z.string(),
@@ -766,4 +796,6 @@ export const knowledgeInsightsResponseSchema = z.object({
   recurring_noise_titles: z.array(knowledgeInsightsNoiseTitleSchema).default([]),
   hot_files: z.array(knowledgeInsightsHotFileSchema).default([]),
   entries: knowledgeInsightsEntriesSchema,
+  // Additive toward-100 diagnostics — absent on older payloads
+  toward_100: knowledgeInsightsToward100Schema.nullable().optional(),
 });

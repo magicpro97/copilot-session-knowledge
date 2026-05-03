@@ -9,7 +9,7 @@ Usage:
     python3 retro.py                         # Full text report (local mode)
     python3 retro.py --json                  # Full JSON payload
     python3 retro.py --score                 # Single composite score line
-    python3 retro.py --subreport <section>   # One section: knowledge|skills|hooks|git
+    python3 retro.py --subreport <section>   # One section: knowledge|skills|hooks|git|behavior
     python3 retro.py --mode repo             # Repo-only mode (git signals only, no local DBs)
     python3 retro.py --days N                # Lookback window in days (default 30)
     python3 retro.py --stale N               # Staleness threshold in days for knowledge (default 30)
@@ -52,7 +52,7 @@ RETRO_STATE = SCRIPT_DIR / ".retro-state.json"
 SCOUT_CONFIG = SCRIPT_DIR / "trend-scout-config.json"
 SCOUT_SCRIPT = SCRIPT_DIR / "trend-scout.py"
 
-_VALID_SECTIONS = ("knowledge", "skills", "hooks", "git")
+_VALID_SECTIONS = ("knowledge", "skills", "hooks", "git", "behavior")
 _VALID_MODES = ("local", "repo")
 
 # Maximum lines to read from audit.jsonl (safety limit)
@@ -588,6 +588,119 @@ def _score_behavior(b: dict) -> float:
     return round((cr * 0.5 + er * 0.5) * 100.0, 1)
 
 
+def _compute_toward_100(
+    subscores: dict,
+    knowledge: dict,
+    skills: dict,
+    hooks: dict,
+    git: dict,
+    behavior: "dict | None",
+) -> list:
+    """Compute deterministic toward-100 diagnostics for sections with score < 100.
+
+    Returns a list of dicts sorted by gap descending:
+      - section:  section name
+      - score:    current subscore (float)
+      - gap:      100 - score
+      - barriers: list of metric-derived strings explaining what pulls the score down
+
+    Only sections present in *subscores* (i.e., actively contributing to the composite)
+    are analysed.  All barrier values are derived directly from input metrics.
+    """
+    items = []
+
+    def _add(section: str, score: float, barriers: list) -> None:
+        gap = round(100.0 - score, 1)
+        if gap > 0 and section in subscores:
+            items.append({
+                "section": section,
+                "score": round(score, 1),
+                "gap": gap,
+                "barriers": barriers if barriers else [f"score={score:.1f}"],
+            })
+
+    # knowledge
+    if "knowledge" in subscores:
+        sc = subscores["knowledge"]
+        barriers = []
+        stale = int(knowledge.get("stale_count", 0))
+        if stale > 0:
+            barriers.append(f"stale_entries={stale} ({knowledge.get('stale_pct', 0)}%)")
+        try:
+            mp_f = float(knowledge.get("mp_ratio", 1.0))
+            if mp_f < 1.0:
+                barriers.append(f"mp_ratio={mp_f:.2f}x (patterns < mistakes)")
+        except (TypeError, ValueError):
+            pass
+        embed = float(knowledge.get("embed_pct", 100.0))
+        if embed < 80:
+            barriers.append(f"embed_pct={embed:.1f}% (below 80%)")
+        _add("knowledge", sc, barriers)
+
+    # skills
+    if "skills" in subscores:
+        sc = subscores["skills"]
+        barriers = []
+        total_o = int(skills.get("total_outcomes", 0))
+        total_v = int(skills.get("total_verifications", 0))
+        outcomes_passing = int(skills.get("outcomes_with_passing_verification", 0))
+        if total_o > 0 and total_v == 0 and outcomes_passing == 0:
+            barriers.append(f"no_verification_evidence (outcomes={total_o}, verifications=0)")
+        elif total_v > 0:
+            failed_v = int(skills.get("verifications_failed", 0))
+            if failed_v > 0:
+                barriers.append(f"failed_verifications={failed_v}/{total_v}")
+        elif total_o > 0 and outcomes_passing > 0:
+            barriers.append(f"outcome_level_only ({outcomes_passing}/{total_o} passing)")
+        _add("skills", sc, barriers)
+
+    # hooks
+    if "hooks" in subscores:
+        sc = subscores["hooks"]
+        barriers = []
+        deny_rate = float(hooks.get("deny_rate", 0.0))
+        parse_rate = float(hooks.get("parse_error_rate", 0.0))
+        if deny_rate > 0:
+            barriers.append(f"deny_rate={deny_rate}%")
+        if parse_rate > 0:
+            barriers.append(f"parse_error_rate={parse_rate}%")
+        _add("hooks", sc, barriers)
+
+    # git
+    if "git" in subscores:
+        sc = subscores["git"]
+        barriers = []
+        commits = int(git.get("commit_count", 0))
+        days = int(git.get("lookback_days", 30))
+        py_files = int(git.get("py_files_changed", 0))
+        test_files = int(git.get("test_files_changed", 0))
+        distinct = int(git.get("distinct_files_changed", 0))
+        if commits < days:
+            barriers.append(f"commit_cadence={commits}/{days}d (below 1/day target)")
+        if py_files > 0 and (test_files / py_files) < 0.5:
+            barriers.append(f"test_file_ratio={test_files}/{py_files} ({test_files/py_files:.0%} below 50%)")
+        if distinct < 20:
+            barriers.append(f"file_breadth={distinct} distinct (below 20 target)")
+        _add("git", sc, barriers)
+
+    # behavior (only when data is available in the active subscores)
+    if "behavior" in subscores and behavior and int(behavior.get("session_count", 0)) > 0:
+        sc = subscores["behavior"]
+        barriers = []
+        cr = float(behavior.get("completion_rate", 0.0))
+        er = float(behavior.get("efficiency_ratio", 0.0))
+        if cr < 1.0:
+            sc_count = int(behavior.get("session_count", 0))
+            cp_count = int(behavior.get("sessions_with_checkpoints", 0))
+            barriers.append(f"completion_rate={cr:.0%} ({cp_count}/{sc_count} sessions checkpointed)")
+        if er < 1.0:
+            barriers.append(f"efficiency_ratio={er:.0%} (knowledge entries per event)")
+        _add("behavior", sc, barriers)
+
+    items.sort(key=lambda x: -x["gap"])
+    return items
+
+
 def compute_retro(
     knowledge: dict,
     skills: dict,
@@ -717,6 +830,21 @@ def compute_retro(
     flag_str = (f" — distortions: {', '.join(distortion_flags)}" if distortion_flags else "")
     summary = f"Retro score {composite}/100 ({grade}), mode={mode}{flag_str}"
 
+    subscores_payload = {
+        "knowledge": k_score,
+        "skills": s_score,
+        "hooks": h_score,
+        "git": g_score,
+        **({"behavior": b_score} if behavior is not None and mode != "repo" else {}),
+    }
+    toward_100 = _compute_toward_100(
+        {k: v for k, v in subscores_payload.items() if k in available_sections},
+        knowledge,
+        skills,
+        hooks,
+        git,
+        behavior,
+    )
     return {
         "retro_score": round(composite, 1),
         "grade": grade,
@@ -725,18 +853,13 @@ def compute_retro(
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "available_sections": available_sections,
         "weights": weights,
-        "subscores": {
-            "knowledge": k_score,
-            "skills": s_score,
-            "hooks": h_score,
-            "git": g_score,
-            **({"behavior": b_score} if behavior is not None and mode != "repo" else {}),
-        },
+        "subscores": subscores_payload,
         "summary": summary,
         "score_confidence": score_confidence,
         "distortion_flags": distortion_flags,
         "accuracy_notes": accuracy_notes,
         "improvement_actions": improvement_actions,
+        "toward_100": toward_100,
         "knowledge": knowledge,
         "skills": skills,
         "hooks": hooks,
@@ -936,6 +1059,29 @@ def format_scout_section(s: dict) -> list:
     return lines
 
 
+def format_behavior_section(b) -> list:
+    """Format session behavior signals for text report / subreport."""
+    lines = ["Session Behavior"]
+    if not b:
+        lines.append("  (not available — no knowledge.db or tables missing)")
+        return lines
+    session_count = b.get("session_count", 0)
+    if session_count == 0:
+        lines.append("  (no sessions recorded)")
+        return lines
+    cr = b.get("completion_rate", 0.0)
+    ky = b.get("knowledge_yield", 0.0)
+    er = b.get("efficiency_ratio", 0.0)
+    osr = b.get("one_shot_rate", 0.0)
+    cp_count = b.get("sessions_with_checkpoints", 0)
+    lines.append(f"  Sessions:       {session_count} total  ({cp_count} with checkpoints)")
+    lines.append(f"  Completion:     {cr:.0%}  ({cp_count}/{session_count} sessions have ≥1 checkpoint)")
+    lines.append(f"  Knowledge yield:{ky:.2f} entries/session")
+    lines.append(f"  Efficiency:     {er:.0%}  (knowledge entries / event count)")
+    lines.append(f"  One-shot rate:  {osr:.0%}  (exactly 1 checkpoint / sessions with any)")
+    return lines
+
+
 def format_text_report(payload: dict) -> str:
     lines = [
         "╔══════════════════════════════════════════════════════╗",
@@ -977,10 +1123,25 @@ def format_text_report(payload: dict) -> str:
     lines.append("")
     lines.extend(format_git_section(payload.get("git", {})))
 
+    lines.append("")
+    lines.extend(format_behavior_section(payload.get("behavior")))
+
     scout = payload.get("scout")
     if scout is not None:
         lines.append("")
         lines.extend(format_scout_section(scout))
+
+    toward_100 = payload.get("toward_100", [])
+    if toward_100:
+        lines.append("")
+        lines.append("Toward 100")
+        for item in toward_100:
+            sc = item["score"]
+            gap = item["gap"]
+            section = item["section"]
+            lines.append(f"  {section:<12} +{gap:5.1f} gap  [{_bar(sc, 12)}]")
+            for barrier in item.get("barriers", []):
+                lines.append(f"    ⊘ {barrier}")
 
     return "\n".join(lines)
 
@@ -995,8 +1156,10 @@ def format_subreport(payload: dict, section: str) -> str:
         "skills": format_skills_section,
         "hooks": format_hooks_section,
         "git": format_git_section,
+        "behavior": format_behavior_section,
     }
-    return "\n".join(fmt[section](payload.get(section, {})))
+    data = payload.get(section) if section == "behavior" else payload.get(section, {})
+    return "\n".join(fmt[section](data))
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

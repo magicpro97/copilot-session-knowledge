@@ -178,6 +178,40 @@ def compute_health(stale_days: int = 30) -> dict:
     }
     total_score = sum(scores.values())
 
+    # Compute toward-100 gap analysis — additive, derived from fixed-weight subscores.
+    # Does NOT change total_score. Sorted largest gap first.
+    _max_weights = {
+        "categorization": 20.0,
+        "learning_curve": 20.0,
+        "freshness": 15.0,
+        "relation_density": 15.0,
+        "embedding_coverage": 15.0,
+        "confidence_quality": 15.0,
+    }
+    _total_gap = round(100.0 - total_score, 1)
+    _gap_dims: list[dict] = []
+    for _dim, _max_w in _max_weights.items():
+        _cur = scores[_dim]
+        _gap = round(_max_w - _cur, 1)
+        _gap_pct = round((_gap / _max_w) * 100.0, 1) if _max_w > 0 else 0.0
+        _pct_of_gap = round((_gap / _total_gap) * 100.0, 1) if _total_gap > 0 else 0.0
+        _gap_dims.append(
+            {
+                "dimension": _dim,
+                "current": round(_cur, 1),
+                "max": _max_w,
+                "gap": _gap,
+                "gap_pct": _gap_pct,
+                "pct_of_total_gap": _pct_of_gap,
+            }
+        )
+    _gap_dims.sort(key=lambda d: -d["gap"])
+    toward_100 = {
+        "total_gap": _total_gap,
+        "dimensions": _gap_dims,
+        "top_gaps": _gap_dims[:3],
+    }
+
     return {
         "score": round(total_score, 1),
         "total": total,
@@ -201,6 +235,7 @@ def compute_health(stale_days: int = 30) -> dict:
         "rooms": rooms,
         "sessions": sessions,
         "subscores": {k: round(v, 1) for k, v in scores.items()},
+        "toward_100": toward_100,
     }
 
 
@@ -592,7 +627,63 @@ def compute_insights(stale_days: int = 30) -> dict:
         except sqlite3.OperationalError:
             pass
 
-    # ---- Recommended actions ----
+        # ---- Toward-100 gap alerts (evidence-based, score-focused) ----
+        # These surface the *score impact* of the largest measured gaps.
+        # They complement, not replace, the quality alerts above.
+        subscores = health.get("subscores", {})
+        mistakes_count = health.get("mistakes", 0)
+        patterns_count = health.get("patterns", 0)
+
+        cq_score = subscores.get("confidence_quality", 0.0)
+        if cq_score < 7.5 and total >= 10:
+            cq_gap = round(15.0 - cq_score, 1)
+            alerts.append(
+                {
+                    "id": "confidence-quality-gap",
+                    "title": f"Confidence quality scores {cq_score:.1f}/15 — {cq_gap:.1f} points recoverable",
+                    "severity": "warning",
+                    "detail": (
+                        f"Only {high_conf_pct:.0f}% of entries have high confidence (≥0.8). "
+                        f"Use learn.py to add or reinforce high-quality entries and recover up to {cq_gap:.1f} health points."
+                    ),
+                }
+            )
+
+        lc_score = subscores.get("learning_curve", 0.0)
+        if lc_score < 10.0 and mistakes_count >= 3:
+            lc_gap = round(20.0 - lc_score, 1)
+            mp_display = (
+                mp_ratio if isinstance(mp_ratio, str) else f"{mp_ratio:.2f}"
+            )
+            alerts.append(
+                {
+                    "id": "learning-curve-gap",
+                    "title": f"Learning curve scores {lc_score:.1f}/20 — {lc_gap:.1f} points recoverable",
+                    "severity": "info",
+                    "detail": (
+                        f"{patterns_count} patterns vs {mistakes_count} mistakes "
+                        f"(ratio {mp_display}x). Extracting more patterns from mistakes can recover "
+                        f"up to {lc_gap:.1f} health points."
+                    ),
+                }
+            )
+
+        rd_score = subscores.get("relation_density", 0.0)
+        if rd_score < 7.5 and total >= 10:
+            rd_gap = round(15.0 - rd_score, 1)
+            relations_total = health.get("relations", 0) + health.get("entity_relations", 0)
+            alerts.append(
+                {
+                    "id": "relation-density-gap",
+                    "title": f"Relation density scores {rd_score:.1f}/15 — {rd_gap:.1f} points recoverable",
+                    "severity": "info",
+                    "detail": (
+                        f"{relations_total} relations across {total} entries "
+                        f"({relation_density:.2f} rel/entry). Linking related entries with learn.py "
+                        f"can recover up to {rd_gap:.1f} health points."
+                    ),
+                }
+            )
     actions = []
     _action_seq = [0]
 
@@ -809,6 +900,7 @@ def compute_insights(stale_days: int = 30) -> dict:
         "hot_files": hot_files,
         "entries": entries,
         "sync_advisory": sync_advisory,
+        "toward_100": health.get("toward_100", {}),
     }
 
 
@@ -856,6 +948,20 @@ def format_insights_report(insights: dict) -> str:
             sev_icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(alert["severity"], "•")
             lines.append(f"  {sev_icon} [{alert['severity'].upper()}] {alert['title']}")
             lines.append(f"       {alert['detail']}")
+        lines.append("")
+
+    toward_100 = insights.get("toward_100", {})
+    top_gaps = toward_100.get("top_gaps", [])
+    total_gap = toward_100.get("total_gap", 0)
+    if top_gaps and total_gap > 0:
+        lines.append(f"🎯 Toward 100 (total gap: {total_gap:.1f} points)")
+        for g in top_gaps:
+            dim_label = g["dimension"].replace("_", " ").title()
+            pct_label = f"{g['pct_of_total_gap']:.0f}% of gap"
+            lines.append(
+                f"  {dim_label:25s}  {g['current']:5.1f}/{g['max']:.0f}  "
+                f"▲{g['gap']:4.1f}  ({pct_label})"
+            )
         lines.append("")
 
     actions = insights.get("recommended_actions", [])
@@ -994,6 +1100,18 @@ def format_report(health: dict) -> str:
         }
         mx = max_val.get(name, 20)
         lines.append(f"  {name:25s} {val:5.1f}/{mx}")
+
+    toward_100 = health.get("toward_100", {})
+    top_gaps = toward_100.get("top_gaps", [])
+    t100_total_gap = toward_100.get("total_gap", 0)
+    if top_gaps and t100_total_gap > 0:
+        lines.extend(["", f"🎯 Toward 100 (total gap: {t100_total_gap:.1f} points)"])
+        for g in top_gaps:
+            dim_label = g["dimension"].replace("_", " ").title()
+            lines.append(
+                f"  {dim_label:25s}  {g['current']:5.1f}/{g['max']:.0f}  "
+                f"▲{g['gap']:4.1f}  ({g['pct_of_total_gap']:.0f}% of gap)"
+            )
 
     # Recommendations
     recs = []

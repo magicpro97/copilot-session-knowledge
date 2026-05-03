@@ -547,6 +547,7 @@ REQUIRED_TOP = {
     "recurring_noise_titles",
     "hot_files",
     "entries",
+    "toward_100",
 }
 REQUIRED_OVERVIEW = {
     "health_score",
@@ -762,8 +763,251 @@ kh.get_db = orig_get_db
 db_nr.close()
 
 # ===========================================================================
-# Summary
+# compute_health — toward_100 structure
 # ===========================================================================
+
+section("compute_health — toward_100 structure")
+
+uri_t100 = _new_uri()
+db_t100 = _make_db(uri_t100)
+_insert_entries(
+    db_t100,
+    [
+        {"category": "mistake", "title": f"m{i}", "confidence": 0.3, "session_id": "s1"}
+        for i in range(10)
+    ],
+)
+kh.get_db = _get_db_factory(uri_t100)
+h_t100 = kh.compute_health()
+kh.get_db = orig_get_db
+db_t100.close()
+
+test("toward_100 key present in compute_health", "toward_100" in h_t100)
+t100 = h_t100.get("toward_100", {})
+test("toward_100 has total_gap", "total_gap" in t100)
+test("toward_100 has dimensions", "dimensions" in t100)
+test("toward_100 has top_gaps", "top_gaps" in t100)
+test("toward_100 total_gap is float", isinstance(t100.get("total_gap"), (int, float)))
+test("toward_100 total_gap equals 100 - score",
+     abs(t100["total_gap"] - round(100.0 - h_t100["score"], 1)) < 0.01)
+test("toward_100 dimensions has 6 entries", len(t100.get("dimensions", [])) == 6)
+test("toward_100 top_gaps has 3 entries", len(t100.get("top_gaps", [])) == 3)
+
+# Verify each dimension entry shape
+dim0 = t100["dimensions"][0] if t100.get("dimensions") else {}
+test("dimension has 'dimension' key", "dimension" in dim0)
+test("dimension has 'current' key", "current" in dim0)
+test("dimension has 'max' key", "max" in dim0)
+test("dimension has 'gap' key", "gap" in dim0)
+test("dimension has 'gap_pct' key", "gap_pct" in dim0)
+test("dimension has 'pct_of_total_gap' key", "pct_of_total_gap" in dim0)
+test("dimension current + gap == max",
+     abs(dim0.get("current", 0) + dim0.get("gap", 0) - dim0.get("max", 0)) < 0.2)
+
+# Verify dimensions are sorted by gap descending
+dims = t100.get("dimensions", [])
+gaps = [d["gap"] for d in dims]
+test("dimensions sorted by gap descending", gaps == sorted(gaps, reverse=True))
+
+# Verify all dimension names present
+dim_names = {d["dimension"] for d in dims}
+expected_dims = {"categorization", "learning_curve", "freshness", "relation_density",
+                 "embedding_coverage", "confidence_quality"}
+test("all 6 dimension names present", dim_names == expected_dims)
+
+# Verify score is NOT modified by toward_100 computation
+test("score unchanged after toward_100 computed", "score" in h_t100 and 0 <= h_t100["score"] <= 100)
+
+# Verify total_gap + score = 100 (within rounding)
+test("toward_100 total_gap + score ≈ 100",
+     abs(t100["total_gap"] + h_t100["score"] - 100.0) < 0.2)
+
+# ===========================================================================
+# compute_insights — toward_100 payload and gap alerts
+# ===========================================================================
+
+section("compute_insights — toward_100 and gap alerts")
+
+# DB with low confidence quality, low learning curve, low relation density
+uri_gap = _new_uri()
+db_gap = _make_db(uri_gap)
+_insert_entries(
+    db_gap,
+    [
+        # 12 low-confidence mistakes, 1 pattern → low lc_score, very low cq_score
+        *[{"category": "mistake", "title": f"gap_m{i}", "confidence": 0.3, "session_id": "s1"}
+          for i in range(12)],
+        {"category": "pattern", "title": "one pattern", "confidence": 0.7, "session_id": "s1"},
+    ],
+)
+# No relations, no embeddings → sparse graph
+kh.get_db = _get_db_factory(uri_gap)
+ins_gap = kh.compute_insights()
+kh.get_db = orig_get_db
+db_gap.close()
+
+test("toward_100 key present in compute_insights", "toward_100" in ins_gap)
+t100_ins = ins_gap.get("toward_100", {})
+test("compute_insights toward_100 has total_gap", "total_gap" in t100_ins)
+test("compute_insights toward_100 has top_gaps", "top_gaps" in t100_ins)
+test("compute_insights toward_100 top_gaps is list", isinstance(t100_ins.get("top_gaps"), list))
+test("compute_insights toward_100 top_gaps has 3 entries", len(t100_ins.get("top_gaps", [])) == 3)
+
+# Verify confidence-quality-gap alert fires (very low high-conf with >= 10 total)
+gap_alert_ids = {a["id"] for a in ins_gap.get("quality_alerts", [])}
+test("confidence-quality-gap alert fires for low high-confidence entries",
+     "confidence-quality-gap" in gap_alert_ids)
+
+# Verify learning-curve-gap alert fires (12 mistakes, only 1 pattern → lc_score low)
+test("learning-curve-gap alert fires when patterns lag mistakes",
+     "learning-curve-gap" in gap_alert_ids)
+
+# Verify relation-density-gap alert fires (no relations, 13+ entries)
+test("relation-density-gap alert fires for sparse graph with >= 10 entries",
+     "relation-density-gap" in gap_alert_ids)
+
+# Verify gap alert shape
+for aid in ("confidence-quality-gap", "learning-curve-gap", "relation-density-gap"):
+    matching = [a for a in ins_gap["quality_alerts"] if a["id"] == aid]
+    if matching:
+        a = matching[0]
+        test(f"{aid} has id field", "id" in a)
+        test(f"{aid} has title field", "title" in a)
+        test(f"{aid} has severity field", a.get("severity") in ("info", "warning", "critical"))
+        test(f"{aid} has detail field", "detail" in a and len(a["detail"]) > 10)
+        test(f"{aid} detail mentions points", "point" in a["detail"].lower())
+
+# Verify gap alerts do NOT fire for a healthy DB (all metrics at max)
+uri_healthy = _new_uri()
+db_healthy = _make_db(uri_healthy)
+today = __import__("datetime").date.today().isoformat()
+_insert_entries(
+    db_healthy,
+    [
+        # 10 high-confidence entries and 10 patterns > mistakes → healthy subscores
+        *[{"category": "mistake", "title": f"hm{i}", "confidence": 0.9,
+           "session_id": "s1", "first_seen": today, "last_seen": today}
+          for i in range(3)],
+        *[{"category": "pattern", "title": f"hp{i}", "confidence": 0.9,
+           "session_id": "s1", "first_seen": today, "last_seen": today}
+          for i in range(10)],
+    ],
+)
+# Add enough relations to push relation_density high
+for i in range(20):
+    db_healthy.execute("INSERT INTO knowledge_relations (source_id, target_id, relation_type) VALUES (?, ?, ?)",
+                       (1, i + 2, "related"))
+db_healthy.commit()
+kh.get_db = _get_db_factory(uri_healthy)
+ins_healthy = kh.compute_insights()
+kh.get_db = orig_get_db
+db_healthy.close()
+
+healthy_alert_ids = {a["id"] for a in ins_healthy.get("quality_alerts", [])}
+test("confidence-quality-gap absent when high-conf entries dominant",
+     "confidence-quality-gap" not in healthy_alert_ids)
+test("learning-curve-gap absent when patterns dominate mistakes",
+     "learning-curve-gap" not in healthy_alert_ids)
+test("relation-density-gap absent when graph is dense",
+     "relation-density-gap" not in healthy_alert_ids)
+
+# ===========================================================================
+# format_insights_report — Toward 100 section
+# ===========================================================================
+
+section("format_insights_report — Toward 100 section")
+
+sample_t100_insights = {
+    "generated_at": "2025-01-01T00:00:00+00:00",
+    "summary": "Test summary",
+    "overview": {
+        "health_score": 55,
+        "total_entries": 100,
+        "sessions": 5,
+        "high_confidence_pct": 10.0,
+        "low_confidence_pct": 60.0,
+        "stale_pct": 30.0,
+        "relation_density": 0.1,
+        "embedding_pct": 5.0,
+    },
+    "quality_alerts": [],
+    "recommended_actions": [],
+    "recurring_noise_titles": [],
+    "hot_files": [],
+    "entries": {},
+    "sync_advisory": {"status": "ok", "reasons": [], "checklist": "docs/SYNC-MATRIX.md"},
+    "toward_100": {
+        "total_gap": 45.0,
+        "top_gaps": [
+            {"dimension": "confidence_quality", "current": 2.0, "max": 15.0,
+             "gap": 13.0, "gap_pct": 86.7, "pct_of_total_gap": 28.9},
+            {"dimension": "learning_curve", "current": 6.0, "max": 20.0,
+             "gap": 14.0, "gap_pct": 70.0, "pct_of_total_gap": 31.1},
+            {"dimension": "relation_density", "current": 5.0, "max": 15.0,
+             "gap": 10.0, "gap_pct": 66.7, "pct_of_total_gap": 22.2},
+        ],
+        "dimensions": [],
+    },
+}
+
+t100_report = kh.format_insights_report(sample_t100_insights)
+test("format_insights_report contains Toward 100 section", "Toward 100" in t100_report)
+test("format_insights_report shows total gap", "45.0" in t100_report)
+test("format_insights_report shows Confidence Quality dimension", "Confidence Quality" in t100_report)
+test("format_insights_report shows Learning Curve dimension", "Learning Curve" in t100_report)
+test("format_insights_report shows Relation Density dimension", "Relation Density" in t100_report)
+
+# Toward 100 section absent when total_gap == 0 (perfect score)
+no_gap_insights = dict(sample_t100_insights)
+no_gap_insights["toward_100"] = {"total_gap": 0, "top_gaps": [], "dimensions": []}
+no_gap_report = kh.format_insights_report(no_gap_insights)
+test("Toward 100 section absent when gap is zero", "Toward 100" not in no_gap_report)
+
+# Toward 100 section absent when toward_100 key is missing (backward compat)
+no_t100_insights = {k: v for k, v in sample_t100_insights.items() if k != "toward_100"}
+no_t100_report = kh.format_insights_report(no_t100_insights)
+test("format_insights_report tolerates missing toward_100 key", isinstance(no_t100_report, str))
+
+# ===========================================================================
+# format_report — Toward 100 section
+# ===========================================================================
+
+section("format_report — Toward 100 section")
+
+uri_fr = _new_uri()
+db_fr = _make_db(uri_fr)
+_insert_entries(
+    db_fr,
+    [
+        {"category": "mistake", "title": f"frm{i}", "confidence": 0.3} for i in range(5)
+    ],
+)
+kh.get_db = _get_db_factory(uri_fr)
+h_fr = kh.compute_health()
+kh.get_db = orig_get_db
+db_fr.close()
+
+fr_report = kh.format_report(h_fr)
+test("format_report contains Toward 100 section", "Toward 100" in fr_report)
+test("format_report contains total gap value", str(h_fr["toward_100"]["total_gap"]) in fr_report)
+
+# ===========================================================================
+# JSON serialisability of new toward_100 payload
+# ===========================================================================
+
+section("toward_100 JSON serialisability")
+
+try:
+    json.dumps(ins_gap)
+    test("compute_insights with gap alerts is JSON serializable", True)
+except TypeError as e:
+    test("compute_insights with gap alerts is JSON serializable", False, str(e))
+
+try:
+    json.dumps(h_t100)
+    test("compute_health toward_100 is JSON serializable", True)
+except TypeError as e:
+    test("compute_health toward_100 is JSON serializable", False, str(e))
 
 print(f"\n{'=' * 50}")
 print(f"Results: {_PASS} passed, {_FAIL} failed")

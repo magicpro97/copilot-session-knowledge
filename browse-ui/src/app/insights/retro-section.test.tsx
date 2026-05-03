@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { RetroBody } from "@/app/insights/retro-section";
 import { useRetro } from "@/lib/api/hooks";
-import type { RetroResponse, RetroScout } from "@/lib/api/types";
+import type { RetroResponse, RetroScout, RetroToward100Item } from "@/lib/api/types";
 
 vi.mock("@/lib/api/hooks", () => ({
   useRetro: vi.fn(),
@@ -58,6 +58,16 @@ function makeScout(overrides: Partial<RetroScout> = {}): RetroScout {
     elapsed_hours: null,
     remaining_hours: null,
     would_skip_without_force: false,
+    ...overrides,
+  };
+}
+
+function makeToward100Item(overrides: Partial<RetroToward100Item> = {}): RetroToward100Item {
+  return {
+    section: "skills",
+    score: 30.0,
+    gap: 70.0,
+    barriers: ["no_verification_evidence (outcomes=1034, verifications=0)"],
     ...overrides,
   };
 }
@@ -145,5 +155,41 @@ describe("BehaviorMetricsGrid via RetroBody", () => {
     expect(screen.getByText(/Last run:/)).toHaveTextContent(
       "Last run: unknown (state file exists, but no last-run timestamp)"
     );
+  });
+});
+
+describe("Toward100Panel via RetroBody", () => {
+  it("renders toward_100 section gaps when present", () => {
+    const data = makeRetroData({
+      toward_100: [
+        makeToward100Item({ section: "skills", score: 30, gap: 70 }),
+        makeToward100Item({ section: "behavior", score: 55, gap: 45, barriers: [] }),
+      ],
+    });
+
+    render(<RetroBody retro={makeQuery({ isSuccess: true, data })} />);
+
+    expect(screen.getByText("🎯 Toward 100 — section gaps")).toBeInTheDocument();
+    expect(screen.getByText("Skills")).toBeInTheDocument();
+    expect(screen.getByText("Behavior")).toBeInTheDocument();
+    expect(
+      screen.getByText("no_verification_evidence (outcomes=1034, verifications=0)")
+    ).toBeInTheDocument();
+  });
+
+  it("does not render Toward100Panel when toward_100 is undefined", () => {
+    const data = makeRetroData({ toward_100: undefined });
+
+    render(<RetroBody retro={makeQuery({ isSuccess: true, data })} />);
+
+    expect(screen.queryByText("🎯 Toward 100 — section gaps")).not.toBeInTheDocument();
+  });
+
+  it("does not render Toward100Panel when toward_100 is an empty array", () => {
+    const data = makeRetroData({ toward_100: [] });
+
+    render(<RetroBody retro={makeQuery({ isSuccess: true, data })} />);
+
+    expect(screen.queryByText("🎯 Toward 100 — section gaps")).not.toBeInTheDocument();
   });
 });

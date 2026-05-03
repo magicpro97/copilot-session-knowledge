@@ -700,7 +700,7 @@ def test_score_mode():
 
 
 def test_subreport_mode():
-    for section in ("knowledge", "skills", "hooks", "git"):
+    for section in ("knowledge", "skills", "hooks", "git", "behavior"):
         result = subprocess.run(
             [sys.executable, str(RETRO_PY), "--subreport", section, "--mode", "repo", "--no-cache"],
             capture_output=True,
@@ -834,7 +834,7 @@ def test_format_subreport_all_valid():
         "hooks": {"available": False},
         "git": {"available": False},
     }
-    for section in ("knowledge", "skills", "hooks", "git"):
+    for section in ("knowledge", "skills", "hooks", "git", "behavior"):
         out = retro.format_subreport(payload, section)
         test(f"format_subreport({section}): non-empty string", bool(out.strip()))
 
@@ -1840,9 +1840,412 @@ def test_compute_retro_behavior_repo_mode_no_subscore():
     )
 
 
-def main():
-    print("test_retro.py — retro.py targeted tests")
-    print()
+
+
+# ── Section 18: behavior as first-class text/subreport surface ───────────────
+
+
+def test_format_behavior_section_with_data():
+    """format_behavior_section renders all expected fields when data is present."""
+    retro = load_retro()
+    b = {
+        "completion_rate": 0.75,
+        "knowledge_yield": 2.5,
+        "efficiency_ratio": 0.4,
+        "one_shot_rate": 0.5,
+        "session_count": 8,
+        "sessions_with_checkpoints": 6,
+    }
+    out = "\n".join(retro.format_behavior_section(b))
+    test("format_behavior_section: header present", "Session Behavior" in out)
+    test("format_behavior_section: session count shown", "8" in out)
+    test("format_behavior_section: completion rate shown", "75%" in out)
+    test("format_behavior_section: efficiency shown", "40%" in out)
+    test("format_behavior_section: one_shot_rate shown", "50%" in out)
+
+
+def test_format_behavior_section_no_data():
+    """format_behavior_section returns not-available when data is None or empty."""
+    retro = load_retro()
+    out_none = "\n".join(retro.format_behavior_section(None))
+    test("format_behavior_section(None): shows not-available", "not available" in out_none)
+    out_empty = "\n".join(retro.format_behavior_section({}))
+    test("format_behavior_section({}): shows not-available", "not available" in out_empty)
+
+
+def test_format_behavior_section_zero_sessions():
+    """format_behavior_section handles 0 sessions without crashing."""
+    retro = load_retro()
+    b = {
+        "completion_rate": 0.0, "knowledge_yield": 0.0,
+        "efficiency_ratio": 0.0, "one_shot_rate": 0.0,
+        "session_count": 0, "sessions_with_checkpoints": 0,
+    }
+    out = "\n".join(retro.format_behavior_section(b))
+    test("format_behavior_section(0 sessions): non-empty output", bool(out.strip()))
+
+
+def test_behavior_in_valid_sections():
+    """behavior must be in _VALID_SECTIONS."""
+    retro = load_retro()
+    test(
+        "behavior in _VALID_SECTIONS",
+        "behavior" in retro._VALID_SECTIONS,
+        f"got {retro._VALID_SECTIONS}",
+    )
+
+
+def test_format_subreport_behavior_with_payload():
+    """format_subreport('behavior') renders correctly when behavior data is present."""
+    retro = load_retro()
+    reset_artifacts()
+    db_path = ARTIFACT_DIR / "behavior_subreport.db"
+    sessions = [("s1", 1, "2026-01-01", 10), ("s2", 0, "2026-01-02", 5)]
+    documents = [("d1", "s1"), ("d2", "s1")]
+    _make_behavior_db(db_path, sessions=sessions, documents=documents)
+    b = retro.collect_session_behavior_signals(db_path)
+    payload = {"behavior": b}
+    out = retro.format_subreport(payload, "behavior")
+    test("format_subreport(behavior): non-empty output", bool(out.strip()))
+    test("format_subreport(behavior): Session Behavior heading", "Session Behavior" in out)
+    test("format_subreport(behavior): not an error message", "Unknown section" not in out)
+
+
+def test_format_subreport_behavior_unavailable():
+    """format_subreport('behavior') shows header and not-available when no data."""
+    retro = load_retro()
+    out = retro.format_subreport({}, "behavior")
+    test("format_subreport(behavior, empty): not an error", "Unknown section" not in out)
+    test("format_subreport(behavior, empty): Session Behavior heading", "Session Behavior" in out)
+
+
+def test_format_text_report_includes_behavior_section():
+    """format_text_report must include Session Behavior section."""
+    retro = load_retro()
+    b = {
+        "completion_rate": 0.5, "knowledge_yield": 1.0,
+        "efficiency_ratio": 0.3, "one_shot_rate": 0.5,
+        "session_count": 4, "sessions_with_checkpoints": 2,
+    }
+    payload = {
+        "retro_score": 55.0,
+        "grade": "Fair",
+        "grade_emoji": "🟡",
+        "mode": "local",
+        "generated_at": "2026-01-01T00:00:00Z",
+        "available_sections": ["git", "behavior"],
+        "weights": {"git": 0.9, "behavior": 0.1},
+        "subscores": {
+            "knowledge": 0.0, "skills": 0.0, "hooks": 0.0, "git": 55.0, "behavior": 40.0,
+        },
+        "score_confidence": "medium",
+        "distortion_flags": [],
+        "accuracy_notes": [],
+        "improvement_actions": [],
+        "toward_100": [],
+        "knowledge": {"available": False},
+        "skills": {"available": False},
+        "hooks": {"available": False},
+        "git": {"available": False},
+        "behavior": b,
+    }
+    report = retro.format_text_report(payload)
+    test("format_text_report: Session Behavior section present", "Session Behavior" in report)
+    test("format_text_report: behavior in subscores table", "behavior" in report)
+
+
+def test_subreport_behavior_subprocess():
+    """--subreport behavior: exits 0, produces non-empty output with header."""
+    result = subprocess.run(
+        [sys.executable, str(RETRO_PY), "--subreport", "behavior", "--mode", "repo", "--no-cache"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    test(
+        "retro.py --subreport behavior: exits 0",
+        result.returncode == 0,
+        f"stderr: {result.stderr[:200]}",
+    )
+    output = result.stdout.strip()
+    test("retro.py --subreport behavior: non-empty output", bool(output))
+    test("retro.py --subreport behavior: Session Behavior heading", "Session Behavior" in output)
+
+
+# ── Section 19: toward_100 diagnostics ───────────────────────────────────────
+
+
+def test_toward_100_in_payload():
+    """compute_retro payload must contain toward_100 as a list."""
+    retro = load_retro()
+    payload = retro.compute_retro(
+        {"available": False},
+        {"available": False},
+        {"available": False},
+        {
+            "available": True,
+            "lookback_days": 30,
+            "commit_count": 10,
+            "test_files_changed": 1,
+            "py_files_changed": 5,
+            "distinct_files_changed": 8,
+            "recent_commits": [], "top_changed_files": [], "authors": [],
+        },
+        mode="repo",
+    )
+    test(
+        "toward_100: key present in payload",
+        "toward_100" in payload,
+        f"keys: {list(payload.keys())[:12]}",
+    )
+    test("toward_100: is a list", isinstance(payload.get("toward_100"), list))
+
+
+def test_toward_100_sections_below_100():
+    """Sections below 100 appear in toward_100; sections at 100 do not."""
+    retro = load_retro()
+    # skills fully verified → 100.0; git with low cadence → below 100
+    skills = {
+        "available": True,
+        "total_outcomes": 5, "total_verifications": 5,
+        "verifications_passed": 5, "verifications_failed": 0,
+        "outcomes_with_passing_verification": 5,
+        "skill_usage": [], "recent_outcomes": [],
+    }
+    git = {
+        "available": True, "lookback_days": 30, "commit_count": 5,
+        "test_files_changed": 0, "py_files_changed": 5, "distinct_files_changed": 3,
+        "recent_commits": [], "top_changed_files": [], "authors": [],
+    }
+    payload = retro.compute_retro(
+        {"available": False}, skills, {"available": False}, git, mode="local",
+    )
+    t100 = payload.get("toward_100", [])
+    sections_in_t100 = [item["section"] for item in t100]
+    test("toward_100: git appears (below 100)", "git" in sections_in_t100, f"sections: {sections_in_t100}")
+    s_score = payload["subscores"].get("skills", 0.0)
+    if s_score >= 100.0:
+        test(
+            "toward_100: skills at 100 not in list",
+            "skills" not in sections_in_t100,
+            f"sections: {sections_in_t100}",
+        )
+
+
+def test_toward_100_barriers_are_strings():
+    """All barrier entries must be non-empty strings."""
+    retro = load_retro()
+    skills = {
+        "available": True,
+        "total_outcomes": 20, "total_verifications": 0,
+        "verifications_passed": 0, "verifications_failed": 0,
+        "outcomes_with_passing_verification": 0,
+        "skill_usage": [], "recent_outcomes": [],
+    }
+    payload = retro.compute_retro(
+        {"available": False}, skills, {"available": False}, {"available": False}, mode="local",
+    )
+    for item in payload.get("toward_100", []):
+        for barrier in item.get("barriers", []):
+            test(
+                f"toward_100[{item['section']}]: barrier is non-empty string",
+                isinstance(barrier, str) and bool(barrier),
+                f"got {barrier!r}",
+            )
+
+
+def test_toward_100_sorted_by_gap_descending():
+    """toward_100 must be sorted by gap descending (biggest gap first)."""
+    retro = load_retro()
+    # skills unverified → 30.0 (gap=70); git at moderate score
+    skills = {
+        "available": True,
+        "total_outcomes": 10, "total_verifications": 0,
+        "verifications_passed": 0, "verifications_failed": 0,
+        "outcomes_with_passing_verification": 0,
+        "skill_usage": [], "recent_outcomes": [],
+    }
+    git = {
+        "available": True, "lookback_days": 30, "commit_count": 25,
+        "test_files_changed": 5, "py_files_changed": 10, "distinct_files_changed": 25,
+        "recent_commits": [], "top_changed_files": [], "authors": [],
+    }
+    payload = retro.compute_retro(
+        {"available": False}, skills, {"available": False}, git, mode="local",
+    )
+    t100 = payload.get("toward_100", [])
+    if len(t100) >= 2:
+        gaps = [item["gap"] for item in t100]
+        test(
+            "toward_100: sorted by gap descending",
+            gaps == sorted(gaps, reverse=True),
+            f"gaps: {gaps}",
+        )
+
+
+def test_toward_100_deterministic():
+    """Same inputs must produce identical toward_100 output."""
+    retro = load_retro()
+    kwargs = dict(
+        knowledge={"available": False},
+        skills={
+            "available": True,
+            "total_outcomes": 10, "total_verifications": 0,
+            "verifications_passed": 0, "verifications_failed": 0,
+            "outcomes_with_passing_verification": 0,
+            "skill_usage": [], "recent_outcomes": [],
+        },
+        hooks={"available": False},
+        git={
+            "available": True, "lookback_days": 30, "commit_count": 10,
+            "test_files_changed": 1, "py_files_changed": 5, "distinct_files_changed": 8,
+            "recent_commits": [], "top_changed_files": [], "authors": [],
+        },
+        mode="local",
+    )
+    p1 = retro.compute_retro(**kwargs)
+    p2 = retro.compute_retro(**kwargs)
+    test(
+        "toward_100: deterministic (same inputs → same output)",
+        p1.get("toward_100") == p2.get("toward_100"),
+        f"run1={p1.get('toward_100')}, run2={p2.get('toward_100')}",
+    )
+
+
+def test_toward_100_skills_unverified_barrier():
+    """skills_unverified state must produce no_verification_evidence barrier."""
+    retro = load_retro()
+    skills = {
+        "available": True,
+        "total_outcomes": 15, "total_verifications": 0,
+        "verifications_passed": 0, "verifications_failed": 0,
+        "outcomes_with_passing_verification": 0,
+        "skill_usage": [], "recent_outcomes": [],
+    }
+    payload = retro.compute_retro(
+        {"available": False}, skills, {"available": False}, {"available": False}, mode="local",
+    )
+    t100 = payload.get("toward_100", [])
+    skills_item = next((x for x in t100 if x["section"] == "skills"), None)
+    test(
+        "toward_100: skills item present",
+        skills_item is not None,
+        f"sections: {[x['section'] for x in t100]}",
+    )
+    if skills_item:
+        barriers_str = " ".join(skills_item.get("barriers", []))
+        test(
+            "toward_100: skills barrier mentions no_verification_evidence",
+            "no_verification_evidence" in barriers_str or "verifications=0" in barriers_str,
+            f"barriers: {skills_item.get('barriers')}",
+        )
+
+
+def test_toward_100_behavior_gap_when_available():
+    """toward_100 includes behavior section when behavior DB is available (local mode)."""
+    retro = load_retro()
+    reset_artifacts()
+    db_path = ARTIFACT_DIR / "toward100_behavior.db"
+    # No checkpoints → completion_rate=0 → guaranteed behavior gap
+    sessions = [
+        ("s1", 0, "2026-01-01", 10),
+        ("s2", 0, "2026-01-02", 5),
+        ("s3", 0, "2026-01-03", 8),
+    ]
+    _make_behavior_db(db_path, sessions=sessions, documents=[])
+    payload = retro.compute_retro(
+        {"available": False},
+        {"available": False},
+        {"available": False},
+        {"available": False},
+        mode="local",
+        db_path=db_path,
+    )
+    t100 = payload.get("toward_100", [])
+    sections = [item["section"] for item in t100]
+    test(
+        "toward_100: behavior section present when DB available",
+        "behavior" in sections,
+        f"sections: {sections}",
+    )
+
+
+def test_toward_100_omits_behavior_when_no_sessions_recorded():
+    """toward_100 should not fabricate a behavior gap when the DB has zero sessions."""
+    retro = load_retro()
+    reset_artifacts()
+    db_path = ARTIFACT_DIR / "toward100_behavior_empty.db"
+    _make_behavior_db(db_path, sessions=[], documents=[])
+    payload = retro.compute_retro(
+        {"available": False},
+        {"available": False},
+        {"available": False},
+        {"available": False},
+        mode="local",
+        db_path=db_path,
+    )
+    t100 = payload.get("toward_100", [])
+    sections = [item["section"] for item in t100]
+    test(
+        "toward_100: no behavior section when zero sessions recorded",
+        "behavior" not in sections,
+        f"sections: {sections}",
+    )
+
+
+def test_text_report_includes_toward_100_section():
+    """format_text_report renders Toward 100 section when gaps exist."""
+    retro = load_retro()
+    payload = {
+        "retro_score": 55.0,
+        "grade": "Fair",
+        "grade_emoji": "🟡",
+        "mode": "local",
+        "generated_at": "2026-01-01T00:00:00Z",
+        "available_sections": ["git"],
+        "weights": {"git": 1.0},
+        "subscores": {"knowledge": 0.0, "skills": 0.0, "hooks": 0.0, "git": 55.0},
+        "score_confidence": "medium",
+        "distortion_flags": [],
+        "accuracy_notes": [],
+        "improvement_actions": [],
+        "toward_100": [
+            {"section": "git", "score": 55.0, "gap": 45.0, "barriers": ["commit_cadence=10/30d"]},
+        ],
+        "knowledge": {"available": False},
+        "skills": {"available": False},
+        "hooks": {"available": False},
+        "git": {"available": False},
+    }
+    report = retro.format_text_report(payload)
+    test("format_text_report: Toward 100 section present", "Toward 100" in report)
+    test("format_text_report: toward_100 barrier shown", "commit_cadence" in report)
+
+
+def test_toward_100_empty_when_all_100():
+    """toward_100 must be empty list when all available sections score 100."""
+    retro = load_retro()
+    # hooks score 100 (deny_rate=0, parse_rate=0)
+    hooks = {
+        "available": True,
+        "total_entries": 50,
+        "decisions": {"allow": 50},
+        "deny_rate": 0.0,
+        "deny_dry_count": 0,
+        "deny_dry_rate": 0.0,
+        "parse_error_rate": 0.0,
+        "top_rules": [], "top_denied_tools": [],
+    }
+    # Call _compute_toward_100 directly with hooks scoring 100
+    h_score = retro._score_hooks(hooks)
+    t100 = retro._compute_toward_100(
+        {"hooks": h_score},
+        {"available": False}, {"available": False}, hooks, {"available": False}, None,
+    )
+    if h_score >= 100.0:
+        test("toward_100: empty when hooks=100", t100 == [], f"got {t100}")
+
+
 def main():
     print("test_retro.py — retro.py targeted tests")
     print()
@@ -1941,6 +2344,28 @@ def main():
     test_score_behavior_function()
     test_compute_retro_behavior_in_payload()
     test_compute_retro_behavior_repo_mode_no_subscore()
+
+    print("18. Behavior as first-class text/subreport surface")
+    test_format_behavior_section_with_data()
+    test_format_behavior_section_no_data()
+    test_format_behavior_section_zero_sessions()
+    test_behavior_in_valid_sections()
+    test_format_subreport_behavior_with_payload()
+    test_format_subreport_behavior_unavailable()
+    test_format_text_report_includes_behavior_section()
+    test_subreport_behavior_subprocess()
+
+    print("19. toward_100 diagnostics")
+    test_toward_100_in_payload()
+    test_toward_100_sections_below_100()
+    test_toward_100_barriers_are_strings()
+    test_toward_100_sorted_by_gap_descending()
+    test_toward_100_deterministic()
+    test_toward_100_skills_unverified_barrier()
+    test_toward_100_behavior_gap_when_available()
+    test_toward_100_omits_behavior_when_no_sessions_recorded()
+    test_text_report_includes_toward_100_section()
+    test_toward_100_empty_when_all_100()
 
     # Cleanup
     reset_artifacts()

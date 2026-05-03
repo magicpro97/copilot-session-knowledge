@@ -680,6 +680,14 @@ export interface RetroWeights {
   git?: number | null;
 }
 
+/** A single section gap item from the `toward_100` list in the retro payload. */
+export interface RetroToward100Item {
+  section: string;
+  score: number;
+  gap: number;
+  barriers: string[];
+}
+
 export interface RetroResponse {
   retro_score: number;
   grade: string;
@@ -699,6 +707,8 @@ export interface RetroResponse {
   distortion_flags?: string[];
   accuracy_notes?: string[];
   improvement_actions?: string[];
+  /** Ordered list of section gaps (highest gap first) — absent on older payloads. */
+  toward_100?: RetroToward100Item[] | null;
   /** Trend Scout coverage signal — absent on older payloads; degrade gracefully. */
   scout?: RetroScout;
   /** Session behavior metrics — absent when DB unavailable; degrade gracefully. */
@@ -793,6 +803,25 @@ export interface WorkflowHealthResponse {
 
 // ── Knowledge Insights (/api/knowledge/insights) ─────────────────────
 
+export interface KnowledgeInsightsDimension {
+  dimension: string;
+  current: number;
+  max: number;
+  gap: number;
+  gap_pct: number;
+  pct_of_total_gap: number;
+}
+
+/** Same shape as KnowledgeInsightsDimension — top_gaps entries are the highest-impact subset. */
+export type KnowledgeInsightsTopGap = KnowledgeInsightsDimension;
+
+/** `toward_100` dict — additive field; absent on older payloads. */
+export interface KnowledgeInsightsToward100 {
+  total_gap: number;
+  dimensions: KnowledgeInsightsDimension[];
+  top_gaps: KnowledgeInsightsTopGap[];
+}
+
 export interface KnowledgeInsightsResponse {
   generated_at: string;
   summary: string;
@@ -802,4 +831,6 @@ export interface KnowledgeInsightsResponse {
   recurring_noise_titles: KnowledgeInsightsNoiseTitle[];
   hot_files: KnowledgeInsightsHotFile[];
   entries: KnowledgeInsightsEntries;
+  /** Additive toward-100 diagnostics — absent on older payloads; degrade gracefully. */
+  toward_100?: KnowledgeInsightsToward100 | null;
 }

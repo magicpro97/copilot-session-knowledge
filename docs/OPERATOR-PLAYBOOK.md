@@ -400,7 +400,7 @@ python3 ~/.copilot/tools/retro.py --json
 # Single score line
 python3 ~/.copilot/tools/retro.py --score
 
-# One section only: knowledge | skills | hooks | git
+# One section only: knowledge | skills | hooks | git | behavior (local mode)
 python3 ~/.copilot/tools/retro.py --subreport knowledge
 ```
 
@@ -438,6 +438,10 @@ you override it with `--db PATH`. `record` captures retro + knowledge-health whe
 degrades cleanly when a signal source is absent. For CI-safe artifact capture, trigger the
 manual-only `.github/workflows/benchmark.yml` workflow in `repo` mode.
 
+`compare` output includes `retro_gap` and `health_gap` (100 − score) for each snapshot plus
+the improvement delta.  A negative delta (gap shrinking) is the measurable proof that a
+hardening wave moved the score in the right direction.
+
 ### Score confidence
 
 The `score_confidence` field (`low` / `medium` / `high`) indicates how much to trust the
@@ -464,6 +468,50 @@ When `distortion_flags` is non-empty, the score has known accuracy issues:
 When `improvement_actions` is present, it contains concrete next steps surfaced by the
 retro engine (e.g. "Run `tentacle.py verify` on unverified tentacles", "Add hook coverage
 for new scripts"). These are read-only suggestions — the operator decides whether to act.
+
+### Toward-100 gap diagnostics
+
+The additive `toward_100` field in the retro JSON payload lists each section where the
+score is below 100, sorted by gap (largest first).  Each entry has:
+
+| Field | Meaning |
+|-------|---------|
+| `section` | Retro section name (e.g. `skills`, `behavior`, `knowledge`, `git`) |
+| `score` | Current subscore |
+| `gap` | `100 − score` — points remaining |
+| `barriers` | Metric-derived strings explaining what pulls the score down |
+
+`toward_100` is **diagnostic only**.  Every barrier value is derived directly from
+measured metrics (stale entry counts, verification row counts, commit frequency, etc.).
+It does **not** change the score formula, weights, or any existing subscore.
+
+**Behavior section** — `--subreport behavior` (local mode only) surfaces engagement
+signals such as command-execution breadth.  Available in the full local report or as a
+standalone subreport:
+
+```bash
+python3 ~/.copilot/tools/retro.py --subreport behavior
+```
+
+**Skills subscore — verification evidence discipline:**
+
+When skill outcomes exist but no `tentacle_verifications` rows are recorded, the skills
+subscore uses **30.0 (sub-neutral)** to reflect the unverified state.  The
+`skills_unverified` distortion flag is set and `toward_100` lists
+`no_verification_evidence` as the barrier.
+
+To raise the skills subscore above sub-neutral: complete tentacles with an explicit
+verification step so that `tentacle_verifications` rows are populated:
+
+```bash
+python3 ~/.copilot/tools/tentacle.py verify <name> "python3 test_fixes.py" --label "tests"
+```
+
+**Recorded baseline (commit `2850fe12153f`):** repo retro `83.3`, local retro `61.5`,
+health `66.5`.  Largest measured local gaps: retro skills `30.0`, behavior `37.5`; health
+`confidence_quality` `0.2`, `learning_curve` `6.1`, `relation_density` `10.3`.
+These are measured facts from a recorded snapshot, not targets.  Use
+`benchmark.py compare` to track movement against this baseline.
 
 ### Browse UI
 

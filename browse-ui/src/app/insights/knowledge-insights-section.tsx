@@ -11,6 +11,7 @@ import type {
   KnowledgeInsightsAlert,
   KnowledgeInsightsEntry,
   KnowledgeInsightsResponse,
+  KnowledgeInsightsToward100,
 } from "@/lib/api/types";
 import { deriveWhyFromDetail } from "@/lib/insight-derive";
 import { formatNumber } from "@/lib/formatters";
@@ -166,6 +167,41 @@ function EntriesByCategory({ entries }: { entries: KnowledgeInsightsResponse["en
   );
 }
 
+function Toward100Panel({
+  toward100,
+}: {
+  toward100: KnowledgeInsightsToward100 | null | undefined;
+}) {
+  if (!toward100) return null;
+  const { total_gap, top_gaps } = toward100;
+  if (!top_gaps || top_gaps.length === 0) return null;
+  return (
+    <div className="rounded-lg border px-3 py-2">
+      <p className="mb-1 text-xs font-medium">
+        🎯 Toward 100{" "}
+        <span className="text-muted-foreground font-normal">
+          (total gap: {total_gap.toFixed(1)})
+        </span>
+      </p>
+      <ul className="space-y-1">
+        {top_gaps.map((g) => (
+          <li key={g.dimension} className="flex items-center gap-2 text-xs">
+            <span className="text-foreground min-w-0 flex-1 truncate font-mono text-[11px]">
+              {g.dimension}
+            </span>
+            <Badge variant="secondary" className="shrink-0 text-[10px]">
+              {g.pct_of_total_gap.toFixed(1)}%
+            </Badge>
+            <span className="text-muted-foreground shrink-0 text-[10px]">
+              cur {g.current.toFixed(2)} · gap {g.gap.toFixed(2)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /**
  * Reusable inner content for the Knowledge Insights panel.
  * Used by both KnowledgeInsightsSection (collapsible) and KnowledgeTab (full view).
@@ -208,6 +244,7 @@ export function KnowledgeInsightsBody({
       <OverviewGrid overview={insights.data.overview} />
       <AlertsList alerts={insights.data.quality_alerts} />
       <ActionsList actions={insights.data.recommended_actions} />
+      <Toward100Panel toward100={insights.data.toward_100} />
       <HotFiles files={insights.data.hot_files} />
       <NoiseTitles titles={insights.data.recurring_noise_titles} />
       <EntriesByCategory entries={insights.data.entries} />
@@ -271,6 +308,7 @@ export function KnowledgeInsightsSection() {
               <OverviewGrid overview={insights.data.overview} />
               <AlertsList alerts={insights.data.quality_alerts} />
               <ActionsList actions={insights.data.recommended_actions} />
+              <Toward100Panel toward100={insights.data.toward_100} />
               <HotFiles files={insights.data.hot_files} />
               <NoiseTitles titles={insights.data.recurring_noise_titles} />
               <EntriesByCategory entries={insights.data.entries} />

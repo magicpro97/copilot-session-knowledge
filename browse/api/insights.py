@@ -25,7 +25,30 @@ Response shape mirrors knowledge-health.py --insights --json:
       "patterns":   [...],
       "decisions":  [...],
       "tools":      [...]
-    }
+    },
+    "toward_100": {           -- additive; absent on older payloads; degrade gracefully
+      "total_gap":   float,   -- sum of all dimension gaps (0 = perfect score)
+      "dimensions":  [        -- per-dimension breakdown; same shape as top_gaps entries
+        {
+          "dimension":       str,    -- dimension key, e.g. "confidence_quality"
+          "current":         float,  -- current sub-score
+          "max":             float,  -- maximum possible sub-score
+          "gap":             float,  -- raw gap (max - current)
+          "gap_pct":         float,  -- gap as % of max (0–100)
+          "pct_of_total_gap": float  -- share of total_gap as a percentage
+        }
+      ],
+      "top_gaps":    [        -- highest-impact gaps, descending by pct_of_total_gap; same shape as dimensions entries
+        {
+          "dimension":       str,
+          "current":         float,
+          "max":             float,
+          "gap":             float,
+          "gap_pct":         float,
+          "pct_of_total_gap": float
+        }
+      ]
+    } | null
   }
 
 Returns HTTP 503 with error envelope if knowledge-health.py is unavailable or fails.
