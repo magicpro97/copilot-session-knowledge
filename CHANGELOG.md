@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Layout A test consolidation** — `tests/` now consolidates non-canonical browse/UI tests (`test_visual_snapshot.py`, `test_session_export.py`, `test_ui_components.py`, `test_ui_foundation.py`) and supporting `fixtures/` + `snapshots/` subdirectories. All tests in `tests/` follow the repo-root invocation convention (`python3 tests/test_<name>.py`); see [`tests/README.md`](tests/README.md). Canonical root canary tests (`test_security.py`, `test_fixes.py`, `run_all_tests.py`) remain at the repo root unchanged.
 - `benchmark.py`, migration v14 (`benchmark_snapshots`), and manual `.github/workflows/benchmark.yml` now provide commit-keyed snapshot recording plus artifact-friendly benchmark capture for measurable hardening work.
 - `watch-sessions.py` now extracts affected session IDs from both Copilot and Claude layouts and passes them into `extract-knowledge.py` so incremental `ke_fts` sync can stay scoped to changed sessions.
 - Runtime/tentacle safety coverage now includes TTL-boundary checks, concurrent marker stress, stop-hint token sanitization, and `session_lifecycle` edge cases in `test_tentacle_runtime.py` and `test_hooks.py`.
@@ -31,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `/v2/graph` clusters tab with 2-D scatter canvas, category filtering, legend/point selection, and projection-unavailable handling.
 - `browse-ui/` — Phase 8 integrated acceptance:
   - `/v2/graph` now mounts `ClustersTab` from `graph/page.tsx` so the shipped clusters view is reachable.
-- Repo quality gates now lint `scripts/` and `test_browse_search_v2.py`, while browse/search tests enforce concrete latency/performance budgets instead of documentation-only expectations.
+- Repo quality gates now lint `scripts/` and `tests/test_browse_search_v2.py`, while browse/search tests enforce concrete latency/performance budgets instead of documentation-only expectations.
   - `/v2/insights` now mounts `LiveTab` from `insights/layout.tsx` and enables the live tab.
   - Docs alignment for shipped status: updated Phase 8 notes and corrected phase mapping in `browse-ui/README.md` (Search remains Phase 7).
 - `browse-ui/` — Phase 7 acceptance slice:

@@ -66,6 +66,28 @@ python3 test_security.py    # SQL injection, pickle, locks, paths
 python3 test_fixes.py       # Noise filter, sub-agent, launchd, DB health
 ```
 
+### Test layout: repo root vs `tests/`
+
+The repo uses a two-tier layout:
+
+- **Canonical root canary tests** (`test_security.py`, `test_fixes.py`, `run_all_tests.py`) live at the repo root and are the primary quality-gate surface. Always run these before submitting a PR.
+- **Consolidated tests** live under `tests/` (browse routes, sync, hooks, profile, trend scout, UI, visual snapshots, and more). Run them from the repo root:
+
+  ```bash
+  python3 tests/test_browse.py
+  python3 tests/test_visual_snapshot.py
+  ```
+
+  Each file in `tests/` inserts the repo root into `sys.path` at startup, so it **must** be invoked from the repo root — not from inside `tests/` itself.
+
+`run_all_tests.py` discovers and runs all `test_*.py` files in both locations in one pass:
+
+```bash
+python3 run_all_tests.py
+```
+
+See [`tests/README.md`](tests/README.md) for the full path-convention details.
+
 ### Hook subprocess test isolation
 
 Any test that invokes `hook_runner.py` in a subprocess **must** override `HOME` with a temp

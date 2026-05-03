@@ -1403,7 +1403,7 @@ for (const route of routes) {
 |----------------------|------------------------------|---------------|
 | `test_browse.py` | Keep for API-only tests | Ongoing |
 | `test_browse_dashboard.py` | `e2e/dashboard.spec.ts` | Phase 2 |
-| `test_browse_search_v2.py` | `e2e/search.spec.ts` | Phase 1 |
+| `tests/test_browse_search_v2.py` | `e2e/search.spec.ts` | Phase 1 |
 | `test_browse_timeline.py` | `e2e/session-timeline.spec.ts` | Phase 2 |
 | `test_browse_graph.py` | `e2e/graph.spec.ts` | Phase 3 |
 | `test_browse_embeddings.py` | `e2e/embeddings.spec.ts` | Phase 3 |

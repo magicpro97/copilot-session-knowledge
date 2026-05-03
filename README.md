@@ -489,23 +489,9 @@ python3 ~/.copilot/tools/trend-scout.py --token TOKEN   # Explicit GitHub token 
 python3 ~/.copilot/tools/trend-scout.py --force         # Bypass grace window; force a new run
 ```
 
-`--limit` caps **new issue creates** only; marker-matched **open-issue** updates are still processed. `--explain` writes a JSON artifact documenting which lanes fired, how candidates were scored, which cross-lane term-set overlaps were used, and whether curated gold-set repos (for example `1jehuang/jcode`) were missing, found, or shortlisted — useful for debugging discovery gaps without running the full pipeline. In GitHub Actions manual runs, `explain=true` uploads that JSON as a workflow artifact.
+Requires a `GITHUB_TOKEN` env var (or `--token TOKEN`). `--limit` caps new creates only; marker-matched open issues are updated in place. Supports multi-lane discovery (`lanes[]` in config), gold-set watchlists (`trend-scout-goldset.json`), optional GitHub Models analysis (`analysis.enabled=true`), veto gates, and a configurable grace window. Edit `trend-scout-config.json` to tune all settings.
 
-Requires a `GITHUB_TOKEN` env var (or `--token TOKEN` flag) to avoid rate limits. The tool auto-creates the `trend-scout` label and deduplicates against both open and closed issues using hidden deterministic markers — each marker is a 16-character truncated SHA-256 hash of the lowercased `owner/name`. If a marker already exists on an **open** issue, Trend Scout updates that issue in place when content changed. Marker-matched **closed** issues are treated as suppressors and skipped (no update write).
-
-**Multi-lane discovery:** configure `lanes[]` in `trend-scout-config.json` to define additional search channels beyond the primary `search.*` config. Each lane entry can set `name`, `keywords`, `topics`, `language` (or `null` for language-agnostic), `min_stars`, `max_per_query`, and `lookback_days`. `keywords` can be plain phrases or full GitHub Search expressions with qualifiers such as exact phrases and `topic:` filters when a composite query is more precise than a single topic. The primary `search.*` section still acts as the default lane; extra `lanes[]` entries run in parallel and tag discovered candidates with their originating lane (`_discovery_lane`). Lane configuration is reflected in `/api/scout/status` as `discovery_lanes[]`, surfaced in the browse Settings diagnostics card.
-
-**Gold-set replay:** curate strategic repos in `trend-scout-goldset.json`. The explain artifact automatically evaluates that watchlist and records whether each repo was missing, found in raw discovery, or shortlisted, along with the lane and score that surfaced it. This gives Trend Scout a durable regression surface for adjacent repos instead of relying on memory of past misses. Repos marked `"required": true` are also **prioritized** into the shortlist — whenever they appear in raw discovery and meet their `min_score`, they preempt non-required repos within the `max_candidates` cap so that high-scoring non-required repos cannot crowd them out. If required repos ever outnumber the cap, Trend Scout keeps the top-scoring required repos and logs a warning to raise `shortlist.max_candidates`. The terminal output includes a `📌 Retaining N required gold-set repo(s)` line when retention fires.
-
-**Optional GitHub Models analysis:** set `analysis.enabled=true` in `trend-scout-config.json` to replace the repetitive heuristic learning bullets with repo-specific LLM analysis. The models path calls `https://models.github.ai/inference/chat/completions`, expects a publisher-qualified model ID such as `openai/gpt-4o-mini`, and reads its credential from `analysis.token_env` (default `GITHUB_MODELS_TOKEN`). If the token is missing, the model ID is invalid, or the response cannot be parsed, Trend Scout falls back to the heuristic engine automatically.
-
-**Veto gate:** set `veto.require_domain_signals=1` in `trend-scout-config.json` to skip candidates whose heuristic learning engine produces only the generic fallback bullet (no domain-specific signals matched). Set `veto.min_distinct_learnings` to require a minimum number of **distinct novel insight families** after already-implemented bullets are filtered out. Script default for both knobs is `0` (disabled); this repository's bundled `trend-scout-config.json` currently sets `require_domain_signals=1` and `min_distinct_learnings=2`, so candidates with only one genuinely new idea are vetoed.
-
-**Grace window:** set `run_control.grace_window_hours` in config to prevent runs that are too close together. The last-run timestamp is persisted locally in `.trend-scout-state.json` (adjacent to the script). Use `--force` to bypass the grace window. Script default is `0` (disabled); this repository's bundled config currently sets `20` for daily automation. In GitHub Actions, the `.trend-scout-state.json` file is cached between runs via `actions/cache` so the grace window persists across GitHub-hosted runner instances.
-
-**Tune discovery:** edit `trend-scout-config.json` to adjust seed keywords, topic filters, scoring weights, `min_stars`, `enrichment.readme_max_chars`, the optional `analysis.*` settings (`model`, `temperature`, `max_learnings`, `token_env`), `veto.require_domain_signals`, `veto.min_distinct_learnings`, `run_control.grace_window_hours`, and `lanes[]` for multi-lane discovery channels.
-
-**GitHub Actions workflow** — `.github/workflows/trend-scout.yml` runs daily at 07:00 UTC with permissions `contents: read`, `issues: write`, and `models: read`. It also maps `secrets.GITHUB_TOKEN` into `GITHUB_MODELS_TOKEN`, so enabling `analysis.enabled` in config works in Actions without a separate secret. Manual runs via `workflow_dispatch` support `dry_run`, `search_only`, `repo`, `limit`, `force`, and `explain` inputs; when `explain=true`, the workflow uploads `.trend-scout-discovery-explain.json` as an artifact for later inspection. **Hook noise control:** Trend Scout is intentionally **not** wired to Copilot `preToolUse`/`postToolUse` hooks; keep it cron/workflow driven (`trend-scout.yml`) to avoid per-tool reminder spam. 📖 **Details:** [docs/USAGE.md#trend-scout](docs/USAGE.md#trend-scout)
+**GitHub Actions workflow:** `.github/workflows/trend-scout.yml` runs daily at 07:00 UTC (`contents: read`, `issues: write`, `models: read`). Manual `workflow_dispatch` supports `dry_run`, `search_only`, `repo`, `limit`, `force`, `explain` inputs; `explain=true` uploads the discovery JSON as an artifact. **Hook noise control:** Trend Scout is **not** wired to `preToolUse`/`postToolUse` — keep cron/workflow driven. 📖 **Details:** [docs/USAGE.md#trend-scout](docs/USAGE.md#trend-scout)
 ## Retrospective
 `retro.py` computes a composite operator score (0–100) across knowledge, skills, hooks, and git signals; run `python3 ~/.copilot/tools/retro.py`, `python3 ~/.copilot/tools/retro.py --mode repo`, `python3 ~/.copilot/tools/retro.py --json`, or `python3 ~/.copilot/tools/retro.py --score`.
 Local mode (`--mode local`) includes knowledge, skills, hooks, and git, but may report `score_confidence=low` with distortion flags like `hook_deny_dry_noise` or `skills_unverified`; repo mode (`--mode repo`) is git-only, cleaner, and CI-safe for trend tracking. The JSON payload now includes an additive top-level `scout` object with read-only Trend Scout coverage health (target repo, grace-window status, last-run time). The `scout` field is informational only and does **not** affect `retro_score`, `weights`, or existing subscores, and surfaces that do not recognise `scout` degrade gracefully. Browse surfaces: `/v2/insights` (Retrospective card with scout coverage panel), `http://localhost:<port>/retro?token=<token>`, and `/api/retro/summary?mode=repo`. Trigger `retro.yml` via `workflow_dispatch` for a read-only markdown artifact/job summary with score, confidence, distortions, accuracy notes, and recommended actions. For commit-keyed comparison, run `python3 ~/.copilot/tools/benchmark.py record`, `python3 ~/.copilot/tools/benchmark.py list --limit 5`, or `python3 ~/.copilot/tools/benchmark.py compare --commits <older> <newer>`; snapshots live in `benchmark_snapshots` (default DB: `~/.copilot/session-state/knowledge.db`, override with `--db PATH`) and the manual-only `.github/workflows/benchmark.yml` workflow uploads the DB + JSON artifact without writing back to the branch. 📖 **Operator details:** [docs/OPERATOR-PLAYBOOK.md#retrospective](docs/OPERATOR-PLAYBOOK.md#retrospective)
@@ -525,11 +511,25 @@ Local mode (`--mode local`) includes knowledge, skills, hooks, and git, but may 
 
 ## Testing
 
+Canonical quality-gate entry points (repo root):
+
 ```bash
 python3 test_security.py      # security regression tests
 python3 test_fixes.py         # functional and integration regression tests
-python3 test_trend_scout.py   # trend scout unit tests
+python3 run_all_tests.py      # discovers and runs all test_*.py (root + tests/)
 ```
+
+Additional tests live under `tests/` (browse, sync, hooks, profile, trend scout, UI, and more); run them from the repo root:
+
+```bash
+python3 tests/test_browse.py
+python3 tests/test_trend_scout.py
+python3 tests/test_visual_snapshot.py
+# ... or run them all at once:
+python3 run_all_tests.py
+```
+
+See [`tests/README.md`](tests/README.md) for the path-convention details.
 
 ## FAQ
 
