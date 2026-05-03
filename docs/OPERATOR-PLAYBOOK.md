@@ -478,7 +478,7 @@ Actual production deployments should live in a **private hosting repo** rather t
 
 1. Create a private repo (e.g. `my-org/copilot-ui-hosting`).
 2. Create a `.firebaserc` with your real Firebase project ID and target-to-site mapping.
-3. Produce a Firebase-compatible build of `browse-ui/` (see [build constraint](#build-constraint) below) and copy `dist/` into the hosting repo.
+3. Produce a Firebase-compatible build of `browse-ui/` (see [build modes](#build-modes) below) and copy `dist-release/` into the hosting repo.
 4. Run `firebase deploy --only hosting:agents` from the private repo.
 
 This keeps personal project IDs and custom domains out of the public repo.
@@ -489,24 +489,50 @@ This keeps personal project IDs and custom domains out of the public repo.
 |-----------|--------|
 | `firebase.json` hosting config (template, repo) | ✅ Committed |
 | `.firebaserc` generic template (repo) | ✅ Committed — fill in your project ID in your private hosting repo |
-| `pnpm deploy` script in `browse-ui/package.json` | ✅ Committed |
+| Firebase CLI deploy flow | ✅ Documented |
 | Firebase custom domain verification | 🔲 Manual console step in your private hosting environment |
 | DNS records for the Firebase domain | 🔲 Manual step at DNS registrar or Cloudflare |
-| Firebase-targeted build (no `basePath: "/v2"`) | 🔲 Requires `next.config.ts` change before `pnpm build` |
+| Firebase-targeted build (`pnpm build:release`) | ✅ Implemented |
 | Cross-origin API: CORS allowlist + Bearer auth + capabilities endpoint | ✅ Implemented on the operator host |
 
-### Build constraint
+### Build modes
 
-**Verified from source:** `browse-ui/next.config.ts` sets `basePath: "/v2"`. The Python browse server strips the `/v2/` prefix and maps requests to `browse-ui/dist/`. This works correctly for the same-origin Cloudflare Tunnel deployment.
+**Verified from source:** `browse-ui/next.config.ts` now reads `basePath` from `NEXT_BASE_PATH` and defaults to `"/v2"`. The Python browse server strips the `/v2/` prefix and maps requests to `browse-ui/dist/`. This remains the correct same-origin deployment mode.
 
-For Firebase Hosting, asset URLs in the generated HTML files reference `/v2/_next/…`. Since Firebase serves `browse-ui/dist/` from the root, these references 404. A Firebase-targeted build must be produced without `basePath`:
+For Firebase Hosting, the release artifact must emit `/_next/…` asset URLs because Firebase serves static files from the domain root. Use the dedicated release build:
 
-1. Temporarily remove `basePath: "/v2"` from `browse-ui/next.config.ts`
-2. `cd browse-ui && pnpm build`
-3. `firebase deploy --only hosting:agents` (or `pnpm deploy`) — run from your private hosting repo
-4. Restore `basePath: "/v2"` for subsequent Python-server builds
+1. `cd browse-ui && pnpm release:check`
+2. Copy `browse-ui/dist-release/` into your private hosting repo
+3. Confirm `pnpm release:check` passed
+4. `firebase deploy --only hosting:agents` — run from your private hosting repo
 
-**[guidance]** A permanent fix is to make `basePath` conditional on an environment variable in `next.config.ts` (e.g. `NEXT_PUBLIC_FIREBASE_BUILD=1`). This is outside the current scope.
+### Firebase release-gate check
+
+**Run this before every Firebase deploy** to build the root-hosted artifact and catch basePath leakage before it reaches production:
+
+```bash
+# From browse-ui/:
+pnpm release:check
+```
+
+**What it checks (facts):**
+
+- Builds the release artifact into `browse-ui/dist-release/` without touching the committed `browse-ui/dist/`.
+- Reads `browse-ui/dist-release/chat/index.html` directly from the filesystem (no server required).
+- Asserts zero `/v2/_next/` occurrences — these are the broken asset shape that 404 on Firebase.
+- Asserts at least one `/_next/` occurrence — confirms the export is non-trivial.
+
+**Failure interpretation:**
+
+| Symptom | Likely cause |
+|---------|-------------|
+| `dist-release/chat/index.html` not found | Release artifact was not built — run `pnpm release:check` first |
+| `Found N /v2/_next/ reference(s)` | The release build did not run, or `NEXT_BASE_PATH` leaked back to `/v2` |
+| `No /_next/ references found` | The page did not build correctly; inspect `dist-release/` for build errors |
+
+The proof test is skipped in normal CI. `pnpm release:check` enables it explicitly and runs it in isolation, so the rest of the Playwright suite does not get forced onto the root-hosted artifact.
+
+**Verified repro (2026-05-03):** `https://agents-linhngo-dev.web.app/chat/` returned HTML with `/v2/_next/static/…` URLs. Requests to `/v2/_next/…` returned 404; requests to `/_next/…` returned 200. Root cause: the build included `basePath: "/v2"` in `next.config.ts`.
 
 ### CORS and auth on the operator host
 

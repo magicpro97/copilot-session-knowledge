@@ -69,6 +69,7 @@ pnpm test:e2e --project visual
 ## Build output
 
 `pnpm build` runs `next build` (static export) then `scripts/post-build.mjs` which writes `dist/version.json`.
+`pnpm build:release` writes the Firebase-safe root-hosted artifact to `dist-release/version.json`.
 
 The `dist/` directory is **committed to git** and served directly by `browse/routes/serve_v2.py`.
 
@@ -80,7 +81,7 @@ Do **not** edit files in `dist/` directly — they are build artifacts. Run `pnp
 - **Firebase Hosting deployment** (static UI on a Firebase custom domain, API at the operator's tunnel URL): All API calls become cross-origin. The operator host exposes a CORS allowlist, Bearer auth, and a capabilities endpoint. See [Firebase Hosting topology](#firebase-hosting-topology) below.
 - Auth token is injected via URL param `?token=…` on first load, then stored in `sessionStorage`
 - `output: "export"` in next.config.ts means no SSR — all pages are static HTML + client JS
-- `basePath: "/v2"` in `next.config.ts` is required for the Python-server deployment; a Firebase-targeted build must remove this basePath so that asset paths (`/_next/…`) resolve correctly at the Firebase origin. See [Firebase Hosting topology](#firebase-hosting-topology) for the required build step.
+- `basePath` in `next.config.ts` defaults to `/v2` for the Python-server deployment; use `pnpm build:release` for a Firebase-targeted export so asset paths resolve from the site root (`/_next/…`). See [Firebase Hosting topology](#firebase-hosting-topology) for the release build step.
 - Dynamic routes require `generateStaticParams()` in a server component wrapper
 
 ## Mobile support
@@ -122,7 +123,8 @@ The UI is a static Next.js export and renders in any modern mobile browser (iOS 
                      ┌─────────────────────────────────┐
                      │  Firebase Hosting (static)       │
   browser ──HTTPS──▶ │  <your-firebase-domain>          │
-                     │  browse-ui/dist  (HTML/JS/CSS)   │
+                     │  browse-ui/dist-release          │
+                     │  (HTML/JS/CSS)                  │
                      └──────────────┬──────────────────┘
                                     │  cross-origin API calls
                                     │  (operator URL set at runtime via host profile)
@@ -141,7 +143,7 @@ The UI is a static Next.js export and renders in any modern mobile browser (iOS 
 |-------|--------|
 | `firebase.json` + `.firebaserc` hosting config (template) | ✅ In repo |
 | Firebase Hosting custom domain | 🔲 Manual console step in your private hosting repo (see below) |
-| Static pages (sessions, search, insights, graph, settings) | ✅ Serve correctly once the basePath build step is done |
+| Static pages (sessions, search, insights, graph, settings) | ✅ Serve correctly once the `build:release` step is used |
 | Cross-origin API: CORS allowlist + Bearer auth + capabilities endpoint | ✅ Implemented on the operator host |
 
 ### External hosting-repo pattern
@@ -150,23 +152,43 @@ Actual production deployments should **not** be made from this open-source repo.
 
 1. Create a private hosting repo (e.g. `my-org/copilot-ui-hosting`).
 2. Copy or symlink `firebase.json` and create a `.firebaserc` with your real Firebase project ID and custom domain.
-3. Run `pnpm build` in `browse-ui/` (with `basePath` removed — see below), copy `dist/` to the hosting repo, and deploy from there.
+3. Run `pnpm release:check` in `browse-ui/`, copy `dist-release/` to the hosting repo, and deploy from there.
 4. Keep this open-source repo's `.firebaserc` as a generic template only.
 
 This separation ensures no personal project IDs or custom domains are committed to the public repo.
 
-### Known build constraint: `basePath: "/v2"`
+### Build modes: local `/v2` vs root-hosted release
 
-The current `next.config.ts` sets `basePath: "/v2"`, which causes all asset URLs in the generated HTML to reference `/v2/_next/…`. The Python browse server strips the `/v2/` prefix before serving — this works correctly for the same-origin deployment.
+`next.config.ts` defaults `basePath` to `/v2`, which keeps the checked-in `dist/` artifact compatible with the Python browse server at `/v2/*`.
 
-**Firebase Hosting serves files from the root of `browse-ui/dist/`**, so `/v2/_next/…` references will 404 unless the basePath is removed before building. Before deploying to Firebase:
+Firebase Hosting serves files from the site root, so the root-hosted release artifact must emit `/_next/…` asset URLs instead of `/v2/_next/…`. Use the dedicated release artifact:
 
-1. Temporarily remove or comment out `basePath: "/v2"` in `browse-ui/next.config.ts`
-2. Run `pnpm build` to produce a Firebase-compatible `dist/`
-3. Run `pnpm deploy` (or `firebase deploy --only hosting:agents`)
-4. Restore `basePath: "/v2"` for the Python-server build
+1. Run `pnpm release:check` to build and verify `dist-release/`
+2. Copy that `dist-release/` into your private hosting repo
+3. Confirm `pnpm release:check` passed
+4. Run `firebase deploy --only hosting:agents` from your private hosting repo
 
-A future improvement is to make `basePath` conditional on an environment variable in `next.config.ts` to automate this (outside the current scope).
+`pnpm build` remains the default local build and should be used whenever you want the checked-in `/v2` artifact for the Python browse server.
+
+### Release-gate check
+
+Before every Firebase deploy, run the following to build and verify the root-hosted export:
+
+```bash
+# From browse-ui/:
+pnpm release:check
+```
+
+This command:
+
+- Builds the Firebase artifact into `dist-release/` without touching the committed `dist/`
+- Runs the proof test in isolation (it auto-selects the `[FIREBASE_PROOF]` case only)
+- Reads `dist-release/chat/index.html` directly from the filesystem and asserts:
+
+- No `/v2/_next/` references exist (these 404 on Firebase)
+- At least one `/_next/` reference exists (sanity: the export is non-trivial)
+
+The proof test is skipped in normal CI runs; `pnpm release:check` enables it explicitly for the release gate without rebuilding the regular `/v2` artifact.
 
 ### Deploying
 
@@ -176,12 +198,18 @@ Requires [`firebase-tools`](https://firebase.google.com/docs/cli) installed glob
 # Authenticate (one-time)
 firebase login
 
-# Deploy static dist to agents hosting target
+# Full root-hosted release sequence:
 cd /path/to/copilot-session-knowledge
-pnpm --dir browse-ui build   # must be a basePath-free build (see above)
+
+# 1. Produce and verify the root-hosted release artifact:
+pnpm --dir browse-ui release:check
+
+# 2. Sync the release artifact into your private hosting repo:
+rsync -a --delete browse-ui/dist-release/ /path/to/private-hosting-repo/agents-public/
+
+# 3. Deploy from the private hosting repo:
+cd /path/to/private-hosting-repo
 firebase deploy --only hosting:agents
-# or:
-cd browse-ui && pnpm deploy
 ```
 
 For production deployments, run these commands from your **private hosting repo** (see [external hosting-repo pattern](#external-hosting-repo-pattern) above).

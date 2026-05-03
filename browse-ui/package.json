@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build && node scripts/post-build.mjs",
+    "build:release": "node scripts/build-release.mjs",
+    "release:check": "node scripts/release-check.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "format": "prettier --write src",

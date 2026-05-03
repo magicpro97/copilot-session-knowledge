@@ -1,6 +1,7 @@
 {
   "version": "0.1.0",
-  "buildHash": "f2b3627",
-  "builtAt": "2026-05-03T16:22:04.909Z",
-  "nodeVersion": "v24.3.0"
+  "buildHash": "5957e72",
+  "builtAt": "2026-05-03T17:25:04.225Z",
+  "nodeVersion": "v24.3.0",
+  "basePath": "/v2"
 }

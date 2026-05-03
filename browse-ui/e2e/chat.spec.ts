@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 
@@ -393,3 +395,65 @@ test("/chat top bar shows 'CLI Chat' when no session is active", async ({ page }
 
   await expect(page.getByText("CLI Chat", { exact: false })).toBeVisible();
 });
+
+// ─── Release proof: root-hosted Firebase export ────────────────────────────
+//
+// This test verifies that the static export produced for Firebase Hosting does
+// NOT contain basePath-prefixed asset URLs (/v2/_next/…).
+//
+// Background: next.config.ts sets basePath: "/v2" for the Python-server
+// deployment. A Firebase (root-hosted) export must be built WITHOUT that
+// basePath — otherwise all /_next/ asset references become /v2/_next/…, which
+// 404 on Firebase because the site serves dist/ from the domain root.
+//
+// This test reads dist-release/chat/index.html directly from the filesystem (no
+// server needed) and asserts the correct asset-path shape for a root-hosted
+// export.
+//
+// Run this before every Firebase deploy:
+//   pnpm release:check
+//
+// How to produce a Firebase-compatible export:
+//   1. pnpm --dir browse-ui release:check
+//      (builds dist-release/ and runs the Firebase proof test in isolation)
+//   3. firebase deploy --only hosting:agents  (from your private hosting repo)
+// ───────────────────────────────────────────────────────────────────────────
+test(
+  "chat root-hosted export has no /v2/_next/ asset references [FIREBASE_PROOF]",
+  async () => {
+    test.skip(
+      !process.env.FIREBASE_PROOF,
+      "Skipped — set FIREBASE_PROOF=1 to enable this Firebase release-gate check"
+    );
+
+    // The Firebase release build emits a root-hosted export at dist-release/chat/index.html.
+    const distDir = resolve(__dirname, "../dist-release");
+    const chatHtml = resolve(distDir, "chat", "index.html");
+
+    expect(
+      existsSync(chatHtml),
+      `dist-release/chat/index.html not found at ${chatHtml}.\n` +
+        "Run pnpm release:check before this proof check so dist-release/ contains " +
+        "the root-hosted Firebase export."
+    ).toBe(true);
+
+    const html = readFileSync(chatHtml, "utf-8");
+
+    // Regression gate: zero /v2/_next/ references allowed in a root-hosted export.
+    const badMatches = Array.from(html.matchAll(/\/v2\/_next\//g));
+    expect(
+      badMatches.length,
+      `Found ${badMatches.length} /v2/_next/ reference(s) in dist-release/chat/index.html.\n` +
+        "Firebase serves assets from the domain root, so these paths will 404. " +
+        "Re-run pnpm release:check before deploying to Firebase."
+    ).toBe(0);
+
+    // Sanity: the page must still reference /_next/ assets (non-trivial export).
+    const goodMatches = Array.from(html.matchAll(/\/_next\//g));
+    expect(
+      goodMatches.length,
+      "No /_next/ asset references found in dist-release/chat/index.html — " +
+        "the export may be empty or the page did not build correctly."
+    ).toBeGreaterThan(0);
+  }
+);
