@@ -33,6 +33,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         set_cookie: str | None = None,
         csp_header: str | None = None,
         send_body: bool = True,
+        secure_cookie: bool = False,
     ) -> None:
         from browse.core.csp import build_csp_header
 
@@ -53,7 +54,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         if set_cookie:
             from browse.core.auth import make_cookie_header
 
-            self.send_header("Set-Cookie", make_cookie_header(set_cookie))
+            self.send_header("Set-Cookie", make_cookie_header(set_cookie, secure=secure_cookie))
 
         self.end_headers()
         if send_body:
@@ -67,7 +68,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 raise
 
     def _handle_get_like(self, send_body: bool = True) -> None:
-        from browse.core.auth import check_token
+        from browse.core.auth import check_token, is_https_request
         from browse.core.csp import generate_nonce
         from browse.core.fts import _esc
         from browse.core.registry import match_route
@@ -77,6 +78,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         path = parsed.path
         params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
         nonce = generate_nonce()
+        secure_cookie = is_https_request(self.headers)
 
         # /healthz — no auth required; dispatch via registry
         if path == "/healthz":
@@ -109,7 +111,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 return
             # Pages require auth
             cookie_header = self.headers.get("Cookie", "")
-            valid, _token_val, should_set_cookie = check_token(self.token, params, cookie_header)
+            valid, token_val, should_set_cookie = check_token(self.token, params, cookie_header)
             if not valid:
                 self._send(
                     b"401 Unauthorized",
@@ -126,9 +128,10 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 ct,
                 status,
                 nonce,
-                set_cookie=should_set_cookie or None,
+                set_cookie=token_val if should_set_cookie else None,
                 csp_header=v2_csp,
                 send_body=send_body,
+                secure_cookie=secure_cookie,
             )
             return
 
@@ -184,6 +187,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             nonce,
             set_cookie=token_val if should_set_cookie else None,
             send_body=send_body,
+            secure_cookie=secure_cookie,
         )
 
     def do_GET(self) -> None:
@@ -212,7 +216,8 @@ class _BrowseHandler(BaseHTTPRequestHandler):
 
         # CSRF protection: reject if Origin present and doesn't match Host
         host = self.headers.get("Host", "")
-        if not check_origin(self.headers, host):
+        origin_ok, is_https = check_origin(self.headers, host)
+        if not origin_ok:
             self._send(b"403 Forbidden", "text/plain", 403, nonce)
             return
 
@@ -250,6 +255,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             status,
             nonce,
             set_cookie=token_val if should_set_cookie else None,
+            secure_cookie=is_https,
         )
 
     def do_POST(self) -> None:

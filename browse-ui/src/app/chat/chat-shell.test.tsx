@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 beforeAll(() => {
@@ -33,6 +33,17 @@ vi.mock("@/lib/api/hooks", () => ({
   useDeleteOperatorSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSubmitPrompt: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   usePathSuggest: vi.fn(() => ({ data: { suggestions: [], count: 0 } })),
+  useOperatorModelCatalog: vi.fn(() => ({
+    data: {
+      models: [
+        { id: "gpt-5.4", display_name: "GPT 5.4", provider: "OpenAI", default: true },
+        { id: "claude-sonnet-4.6", display_name: "Claude Sonnet 4.6", provider: "Anthropic" },
+      ],
+      default_model: "gpt-5.4",
+    },
+    isLoading: false,
+    isError: false,
+  })),
   useFilePreview: vi.fn(() => ({ data: null, isLoading: false, isError: false })),
   useFileDiff: vi.fn(() => ({ data: null, isLoading: false, isError: false })),
   createOperatorStreamPath: vi.fn(() => "/api/operator/sessions/x/stream?run=y"),
@@ -60,6 +71,11 @@ describe("ChatShell", () => {
   it("shows 'New Chat' button", () => {
     render(<ChatShell />);
     expect(screen.getByRole("button", { name: "New chat session" })).toBeInTheDocument();
+  });
+
+  it("shows mobile 'Open session list' button", () => {
+    render(<ChatShell />);
+    expect(screen.getByRole("button", { name: "Open session list" })).toBeInTheDocument();
   });
 });
 
@@ -149,5 +165,72 @@ describe("COPILOT_MODES — valid CLI mode values", () => {
     expect(values).toContain("interactive");
     expect(values).toContain("plan");
     expect(values).toContain("autopilot");
+  });
+});
+
+describe("SessionCreateDialog — dynamic model input", () => {
+  it("renders a text input for model selection (not a locked dropdown)", async () => {
+    render(<ChatShell />);
+
+    // Open the dialog
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+
+    // The model field should be a text input, not a select
+    const modelInput = screen.getByLabelText("Model");
+    expect(modelInput.tagName).toBe("INPUT");
+    expect((modelInput as HTMLInputElement).type).toBe("text");
+  });
+
+  it("model input has a datalist sourced from the operator model catalog", async () => {
+    render(<ChatShell />);
+
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+
+    const modelInput = screen.getByLabelText("Model") as HTMLInputElement;
+    const listId = modelInput.getAttribute("list");
+    expect(listId).toBeTruthy();
+
+    const datalist = document.getElementById(listId!);
+    expect(datalist).not.toBeNull();
+    expect(datalist!.tagName).toBe("DATALIST");
+
+    const options = datalist!.querySelectorAll("option");
+    const values = Array.from(options).map((o) => o.getAttribute("value"));
+    expect(values).toContain("gpt-5.4");
+    expect(values).toContain("claude-sonnet-4.6");
+  });
+
+  it("model input accepts arbitrary freetext model identifiers", async () => {
+    render(<ChatShell />);
+
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+
+    const modelInput = screen.getByLabelText("Model") as HTMLInputElement;
+    fireEvent.change(modelInput, { target: { value: "my-custom-model-v1" } });
+    expect(modelInput.value).toBe("my-custom-model-v1");
+  });
+});
+
+describe("WorkspacePicker — hidden-folder toggle", () => {
+  it("renders a toggle button for showing hidden folders", () => {
+    render(<ChatShell />);
+
+    // Open the dialog to expose WorkspacePicker
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+
+    const toggleBtn = screen.getByRole("button", { name: "Show hidden folders" });
+    expect(toggleBtn).toBeInTheDocument();
+    expect(toggleBtn).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("toggle button switches to 'Hide hidden folders' when activated", () => {
+    render(<ChatShell />);
+
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+
+    const toggleBtn = screen.getByRole("button", { name: "Show hidden folders" });
+    fireEvent.click(toggleBtn);
+
+    expect(screen.getByRole("button", { name: "Hide hidden folders" })).toBeInTheDocument();
   });
 });

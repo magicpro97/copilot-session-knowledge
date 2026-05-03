@@ -232,8 +232,8 @@ def test_auth_origin_checks_various_hosts():
         class FakeH:
             def get(self, key, default=""):
                 return origin if key == "Origin" else default
-        result = check_origin(FakeH(), host)
-        test(f"origin_{origin[:20]}: expected {expected}", result == expected)
+        allowed, _ = check_origin(FakeH(), host)
+        test(f"origin_{origin[:20]}: expected {expected}", allowed == expected)
 
 
 if __name__ == "__main__":

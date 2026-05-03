@@ -111,7 +111,8 @@ describe("api hooks helpers", () => {
     expect(queryKeys.operatorSession("abc-123")).toEqual(["operator-session", "abc-123"]);
     expect(queryKeys.operatorStatus("s1", "r1")).toEqual(["operator-status", "s1", "r1"]);
     expect(queryKeys.operatorRuns("s1")).toEqual(["operator-runs", "s1"]);
-    expect(queryKeys.operatorSuggest("~/proj")).toEqual(["operator-suggest", "~/proj"]);
+    expect(queryKeys.operatorSuggest("~/proj")).toEqual(["operator-suggest", "~/proj", false]);
+    expect(queryKeys.operatorSuggest("~/proj", true)).toEqual(["operator-suggest", "~/proj", true]);
     expect(queryKeys.operatorPreview("/path/to/file.ts")).toEqual([
       "operator-preview",
       "/path/to/file.ts",
@@ -121,6 +122,7 @@ describe("api hooks helpers", () => {
       "file_a.ts",
       "file_b.ts",
     ]);
+    expect(queryKeys.operatorModels()).toEqual(["operator-models"]);
   });
 
   it("operator session key is distinct from browse session key", () => {
@@ -134,6 +136,12 @@ describe("api hooks helpers", () => {
   it("operator diff key distinguishes different path pairs", () => {
     expect(queryKeys.operatorDiff("a.ts", "b.ts")).not.toEqual(
       queryKeys.operatorDiff("b.ts", "a.ts")
+    );
+  });
+
+  it("operatorSuggest key distinguishes hidden vs visible results", () => {
+    expect(queryKeys.operatorSuggest("~/proj", false)).not.toEqual(
+      queryKeys.operatorSuggest("~/proj", true)
     );
   });
 

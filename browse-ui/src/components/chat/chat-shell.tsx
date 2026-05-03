@@ -2,11 +2,12 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
-import { Bot, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Bot, Menu, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/data/empty-state";
 import { Banner } from "@/components/data/banner";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import {
   useOperatorSessions,
   useOperatorSession,
@@ -33,6 +34,7 @@ export function ChatShell() {
   const pathname = usePathname();
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -61,6 +63,7 @@ export function ChatShell() {
       router.push(`${pathname}?${params.toString()}`);
       setActiveRun(null);
       setSubmitError(null);
+      setMobileSidebarOpen(false); // close mobile sheet when a session is selected
     },
     [router, pathname, searchParams]
   );
@@ -140,11 +143,11 @@ export function ChatShell() {
 
   return (
     <div className="flex h-full overflow-hidden" data-testid="chat-shell">
-      {/* Session list sidebar */}
+      {/* Session list sidebar — desktop split-pane (hidden on mobile) */}
       <aside
         className={cn(
-          "bg-card flex shrink-0 flex-col border-r transition-[width] duration-200 motion-reduce:transition-none",
-          sidebarOpen ? "w-72" : "w-0 overflow-hidden"
+          "bg-card hidden shrink-0 flex-col border-r transition-[width] duration-200 motion-reduce:transition-none md:flex",
+          sidebarOpen ? "md:w-72" : "md:w-0 md:overflow-hidden"
         )}
       >
         <div className="flex items-center justify-between border-b px-3 py-2">
@@ -175,16 +178,56 @@ export function ChatShell() {
         </div>
       </aside>
 
+      {/* Mobile session sidebar — Sheet overlay (visible only on small screens) */}
+      <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
+        <SheetContent side="left" className="flex flex-col gap-0 p-0" showCloseButton={false}>
+          <SheetHeader className="sr-only">
+            <SheetTitle>Chat Sessions</SheetTitle>
+          </SheetHeader>
+          <div className="flex items-center justify-between border-b px-3 py-2">
+            <p className="text-sm font-semibold">Chat Sessions</p>
+          </div>
+          <div className="border-b p-2">
+            <SessionCreateDialog
+              onSubmit={handleCreateSession}
+              loading={createMutation.isPending}
+            />
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            <SessionList
+              sessions={sessions}
+              activeId={activeSessionId}
+              onSelect={handleSelectSession}
+              onDelete={handleDeleteSession}
+              loading={sessionsQuery.isLoading}
+              isDeleting={deleteMutation.isPending}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
+
       {/* Main chat area */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Top bar */}
         <div className="bg-card flex h-10 items-center gap-2 border-b px-3">
+          {/* Mobile: hamburger to open the session Sheet */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-7 shrink-0 md:hidden"
+            onClick={() => setMobileSidebarOpen(true)}
+            aria-label="Open session list"
+          >
+            <Menu className="size-4" />
+          </Button>
+          {/* Desktop: expand-sidebar button when sidebar is collapsed */}
           {!sidebarOpen ? (
             <Button
               type="button"
               variant="ghost"
               size="icon"
-              className="size-7 shrink-0"
+              className="hidden size-7 shrink-0 md:flex"
               onClick={() => setSidebarOpen(true)}
               aria-label="Expand session list"
             >

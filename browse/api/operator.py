@@ -32,6 +32,7 @@ from browse.core.operator_console import (
     confine_path,
     create_session,
     delete_session,
+    get_available_models,
     get_run_status,
     get_session,
     list_runs,
@@ -224,6 +225,32 @@ def handle_list_runs(db, params, token, nonce, session_id: str = "") -> tuple:
     return json_ok({"runs": runs, "count": len(runs)})
 
 
+# ── Model catalog ─────────────────────────────────────────────────────────────
+
+
+@route("/api/operator/models", methods=["GET"])
+def handle_models(db, params, token, nonce) -> tuple:
+    """GET /api/operator/models — dynamic model catalog.
+
+    Tries a live Copilot CLI probe and otherwise falls back to dynamic local
+    sources such as BYOK environment variables and previously used operator
+    session models.
+
+    Returns:
+      {
+        "models": [
+          {"id": "claude-sonnet-4.5", "display_name": "Claude Sonnet 4.5", ...},
+          ...
+        ],
+        "default_model": "gpt-5.4" | null,
+        "discovered": true|false,
+        "cached_at":  "<ISO-8601>"
+      }
+    """
+    result = get_available_models()
+    return json_ok(result)
+
+
 # ── Path suggestions ──────────────────────────────────────────────────────────
 
 
@@ -232,8 +259,9 @@ def handle_suggest(db, params, token, nonce) -> tuple:
     """GET /api/operator/suggest — workspace/path autocomplete under ~/.
 
     Query params:
-      q=<prefix>   (optional) — path prefix to complete
-      limit=<n>    (optional, default 20, max 50)
+      q=<prefix>    (optional) — path prefix to complete
+      limit=<n>     (optional, default 20, max 50)
+      hidden=1      (optional) — include hidden (dot-prefixed) entries
     """
     query = _str_param(params, "q", max_len=512)
     try:
@@ -242,7 +270,10 @@ def handle_suggest(db, params, token, nonce) -> tuple:
         limit = 20
     limit = max(1, min(50, limit))
 
-    paths = suggest_paths(query, limit=limit)
+    hidden_param = params.get("hidden", ["0"])[0] or "0"
+    include_hidden = hidden_param.strip() in ("1", "true", "yes")
+
+    paths = suggest_paths(query, limit=limit, include_hidden=include_hidden)
     return json_ok({"suggestions": paths, "count": len(paths)})
 
 

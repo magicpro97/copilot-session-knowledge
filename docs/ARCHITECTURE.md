@@ -109,6 +109,12 @@ GET  /api/operator/diff                      → unified diff for two files unde
 - `auto-update-tools.py` can restart `watch-sessions.py`, but it does not restart the browse server or interfere with active operator runs.
 - UI-only `browse-ui/dist/` updates are served from disk after rebuild/deploy; Python changes to `browse/api/operator.py` or `browse/core/operator_console.py` still require a manual browse server restart.
 
+### Remote access (Cloudflare Tunnel)
+
+The server binds to `127.0.0.1` by design. Remote/mobile access requires a tunnel such as Cloudflare Tunnel. Key code-level constraint: `browse/core/auth.py · check_origin()` builds the expected CSRF origin as `http://{Host}`. Behind an HTTPS tunnel the browser sends `Origin: https://…`, which does not match — all POST mutations return **403**. Fix `check_origin` to accept the `https://` scheme (check `X-Forwarded-Proto`) before enabling remote access for the operator console. The read-only diagnostic pages (sessions, search, insights) are unaffected since they use only GET requests.
+
+> Full remote-access setup, DNS coexistence with Firebase, Cloudflare Access guidance, and mobile posture: **[docs/OPERATOR-PLAYBOOK.md — Remote Access via Cloudflare Tunnel](OPERATOR-PLAYBOOK.md#remote-access-via-cloudflare-tunnel)**
+
 ## Enforcement Hooks
 
 Hooks live in `hooks/` and are deployed to `~/.copilot/hooks/` (Copilot CLI only).

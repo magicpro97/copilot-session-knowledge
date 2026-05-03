@@ -81,6 +81,18 @@ Do **not** edit files in `dist/` directly — they are build artifacts. Run `pnp
 - `output: "export"` in next.config.ts means no SSR — all pages are static HTML + client JS
 - Dynamic routes require `generateStaticParams()` in a server component wrapper
 
+## Mobile support
+
+The UI is a static Next.js export and renders in any modern mobile browser (iOS Safari, Android Chrome). Access requires a tunnel (e.g. Cloudflare Tunnel) since the browse server binds to `127.0.0.1`.
+
+| Surface | Mobile status |
+|---------|--------------|
+| Sessions, search, insights, graph, settings | ✅ Fully functional via browser |
+| Operator console page load (`/v2/chat`) | ✅ Page loads |
+| SSE live transcript streaming | ✅ `EventSource` is supported on iOS Safari 13+ and Android Chrome |
+| Prompt submission (POST) | ❌ Blocked by the `check_origin` HTTP/HTTPS mismatch until that fix is applied — see [docs/OPERATOR-PLAYBOOK.md](../docs/OPERATOR-PLAYBOOK.md#remote-access-via-cloudflare-tunnel) |
+| Keyboard shortcuts | ⚠️ Not usable without a physical keyboard |
+
 ## Phases
 
 - **Phase 6**: Shipped scaffold — stub routes, providers, API client, and build pipeline

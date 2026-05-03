@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { FolderOpen } from "lucide-react";
+import { Eye, EyeOff, FolderOpen } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useDebounce } from "@/hooks/use-debounce";
@@ -18,6 +18,7 @@ type WorkspacePickerProps = {
 /**
  * Text input with debounced path suggestions from `/api/operator/suggest`.
  * Suggestions are shown in a dropdown below the input.
+ * A toggle button in the input allows showing or hiding dotfile/hidden folders.
  */
 export function WorkspacePicker({
   value,
@@ -29,11 +30,12 @@ export function WorkspacePicker({
   const [inputValue, setInputValue] = useState(value);
   const [open, setOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
+  const [showHidden, setShowHidden] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const debouncedQuery = useDebounce(inputValue, 200);
-  const { data: suggestData } = usePathSuggest(debouncedQuery, true);
+  const { data: suggestData } = usePathSuggest(debouncedQuery, showHidden, true);
   const suggestions = suggestData?.suggestions ?? [];
 
   // Sync external value changes
@@ -109,14 +111,34 @@ export function WorkspacePicker({
           autoComplete="off"
           spellCheck={false}
           className={cn(
-            "border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-lg border bg-transparent py-2 pr-3 pl-9 text-sm transition-colors outline-none focus-visible:ring-2 disabled:opacity-50"
+            "border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-lg border bg-transparent py-2 pr-9 pl-9 text-sm transition-colors outline-none focus-visible:ring-2 disabled:opacity-50"
           )}
         />
+        {/* Toggle hidden-folder visibility */}
+        <button
+          type="button"
+          tabIndex={-1}
+          title={showHidden ? "Hide hidden folders" : "Show hidden folders"}
+          aria-label={showHidden ? "Hide hidden folders" : "Show hidden folders"}
+          aria-pressed={showHidden}
+          onClick={() => {
+            setShowHidden((v) => !v);
+            setOpen(true);
+            inputRef.current?.focus();
+          }}
+          disabled={disabled}
+          className={cn(
+            "text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 transition-colors disabled:opacity-50",
+            showHidden && "text-foreground"
+          )}
+        >
+          {showHidden ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+        </button>
       </div>
       {open && suggestions.length > 0 ? (
         <ul
           role="listbox"
-          className="bg-popover border-border absolute top-full z-50 mt-1 max-h-48 w-full overflow-auto rounded-lg border shadow-md"
+          className="bg-popover text-popover-foreground border-border absolute top-full z-[60] mt-1 max-h-48 w-full overflow-auto rounded-lg border shadow-lg"
         >
           {suggestions.map((suggestion, index) => (
             <li
@@ -131,7 +153,7 @@ export function WorkspacePicker({
                 "flex cursor-pointer items-center gap-2 px-3 py-2 font-mono text-xs",
                 index === highlightedIndex
                   ? "bg-accent text-accent-foreground"
-                  : "text-foreground hover:bg-accent/50"
+                  : "hover:bg-accent/50"
               )}
             >
               <FolderOpen className="size-3 shrink-0 opacity-50" />

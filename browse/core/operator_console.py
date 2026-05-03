@@ -80,6 +80,11 @@ _ENV_ALLOWLIST = frozenset(
     }
 )
 
+# ── Model catalog constants ───────────────────────────────────────────────────
+
+_MODEL_CACHE_TTL = 300  # seconds: model list probe cache lifetime
+_VERSIONED_MODEL_ALIAS_RE = re.compile(r"^((?:claude-(?:sonnet|opus|haiku)|gpt)-\d)-(\d{1,2})((?:-.+)?)$")
+
 # ── In-memory run registry ────────────────────────────────────────────────────
 
 # Maps run_id → {id, session_id, prompt, status, started_at, finished_at,
@@ -87,6 +92,18 @@ _ENV_ALLOWLIST = frozenset(
 _ACTIVE_RUNS: dict[str, dict] = {}
 _RUNS_LOCK = threading.Lock()
 _TERMINAL_RUN_STATUSES = frozenset({"done", "failed", "timeout", "cancelled"})
+
+# ── In-process model catalog cache ───────────────────────────────────────────
+
+_MODEL_CACHE: dict = {
+    "model_ids": [],
+    "models": [],
+    "default_model": None,
+    "discovered": False,
+    "cached_at": "",
+    "expires_at": 0.0,
+}
+_MODEL_CACHE_LOCK = threading.Lock()
 
 # ── Validation regexes ────────────────────────────────────────────────────────
 
@@ -325,7 +342,7 @@ def create_session(
     session = {
         "id": session_id,
         "name": (name or "").strip()[:128],
-        "model": (model or "").strip()[:64],
+        "model": normalize_model_id((model or "").strip())[:64],
         "mode": (mode or "").strip()[:64],
         "workspace": ws_path,
         "add_dirs": validated_dirs,
@@ -394,6 +411,100 @@ def _build_env() -> dict:
     return {k: v for k, v in os.environ.items() if k in _ENV_ALLOWLIST}
 
 
+def normalize_model_id(model: str) -> str:
+    """Normalize legacy hyphenated version suffixes to the CLI's dotted form."""
+    normalized = (model or "").strip()
+    if not normalized:
+        return ""
+    match = _VERSIONED_MODEL_ALIAS_RE.match(normalized)
+    if not match:
+        return normalized
+    return f"{match.group(1)}.{match.group(2)}{match.group(3)}"
+
+
+def _model_display_name(model_id: str) -> str:
+    """Return a friendly label for a model identifier."""
+    parts = []
+    for part in (model_id or "").split("-"):
+        lower = part.lower()
+        if lower == "gpt":
+            parts.append("GPT")
+        elif lower == "claude":
+            parts.append("Claude")
+        elif re.fullmatch(r"o\d+", lower):
+            parts.append(lower.upper())
+        elif lower in {"sonnet", "opus", "haiku", "mini"}:
+            parts.append(lower.capitalize())
+        else:
+            parts.append(part)
+    return " ".join(parts) or model_id
+
+
+def _model_provider(model_id: str) -> str | None:
+    """Best-effort provider label for UI display."""
+    lower = (model_id or "").lower()
+    if lower.startswith("claude-"):
+        return "Anthropic"
+    if lower.startswith("gpt-") or re.fullmatch(r"o\d+.*", lower):
+        return "OpenAI"
+    return None
+
+
+def _collect_local_model_candidates() -> list[str]:
+    """Collect model IDs from local config/session state without a hardcoded shortlist."""
+    candidates: list[str] = []
+    for env_name in ("COPILOT_MODEL", "COPILOT_PROVIDER_MODEL_ID", "COPILOT_PROVIDER_WIRE_MODEL"):
+        value = normalize_model_id(os.environ.get(env_name, ""))
+        if value:
+            candidates.append(value)
+    for session in list_sessions():
+        value = normalize_model_id(str(session.get("model", "")).strip())
+        if value:
+            candidates.append(value)
+    return candidates
+
+
+def _build_model_entries(model_ids: list[str], default_model: str | None) -> list[dict]:
+    """Convert model IDs into stable API entries for the UI."""
+    entries = []
+    seen = set()
+    normalized_default = normalize_model_id(default_model or "")
+    for raw_model in model_ids:
+        model_id = normalize_model_id(raw_model)
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        entry = {
+            "id": model_id,
+            "display_name": _model_display_name(model_id),
+        }
+        provider = _model_provider(model_id)
+        if provider:
+            entry["provider"] = provider
+        if normalized_default and model_id == normalized_default:
+            entry["default"] = True
+        entries.append(entry)
+    return entries
+
+
+def _model_is_known_unavailable(model: str) -> bool:
+    """Return True only if we have a fresh, discovered model catalog and the model is absent.
+
+    Conservative: returns False (allow model through) when the catalog is absent,
+    expired, or was never discovered via the CLI probe.
+    """
+    model_id = normalize_model_id(model)
+    if not model_id:
+        return False
+    with _MODEL_CACHE_LOCK:
+        if not _MODEL_CACHE.get("discovered"):
+            return False
+        if time.monotonic() > _MODEL_CACHE.get("expires_at", 0.0):
+            return False
+        cached_models = _MODEL_CACHE.get("model_ids", [])
+    return bool(cached_models) and model_id not in cached_models
+
+
 def _build_copilot_argv(session: dict, prompt_text: str) -> list[str]:
     """Build the explicit argv used to invoke Copilot CLI."""
     argv = ["copilot", "-p", prompt_text]
@@ -404,9 +515,15 @@ def _build_copilot_argv(session: dict, prompt_text: str) -> list[str]:
         if session.get("resume_ready") is True:
             argv += ["--resume"]
 
-    model = str(session.get("model", "")).strip()
+    model = normalize_model_id(str(session.get("model", "")).strip())
     if model:
-        argv += ["--model", model]
+        if _model_is_known_unavailable(model):
+            # Model is absent from the probed catalog; omit --model so Copilot
+            # uses its runtime default instead of hard-failing with
+            # "Error: Model '...' from --model flag is not available."
+            pass
+        else:
+            argv += ["--model", model]
 
     mode = str(session.get("mode", "")).strip()
     if mode:
@@ -578,6 +695,10 @@ def start_run(session_id: str, prompt_text: str) -> str | None:
     run_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
+    normalized_model = normalize_model_id(str(session.get("model", "")).strip())
+    if normalized_model != str(session.get("model", "")).strip():
+        session["model"] = normalized_model[:64]
+
     argv = _build_copilot_argv(session, prompt_text)
 
     workspace = session.get("workspace", "").strip()
@@ -681,8 +802,17 @@ def make_stream_generator(session_id: str, run_id: str):
 # ── Path suggestions ──────────────────────────────────────────────────────────
 
 
-def suggest_paths(query: str, limit: int = 20) -> list:
-    """Return path completions under ~/. All results are confined to ~/."""
+def suggest_paths(query: str, limit: int = 20, include_hidden: bool = False) -> list:
+    """Return path completions under ~/. All results are confined to ~/.
+
+    Args:
+        query: Path prefix to complete. Empty string returns top-level entries.
+        limit: Maximum number of suggestions to return (capped at _MAX_SUGGESTIONS).
+        include_hidden: When False (default), entries whose name starts with '.'
+            are omitted unless the query prefix itself starts with '.', preserving
+            the ability to navigate explicitly into dotdirectories.  Set True to
+            always include hidden entries (e.g. for an "opt-in hidden" toggle).
+    """
     limit = min(max(1, limit), _MAX_SUGGESTIONS)
     home = _home_dir().resolve()
 
@@ -692,10 +822,11 @@ def suggest_paths(query: str, limit: int = 20) -> list:
         results = []
         try:
             for p in sorted(home.iterdir()):
-                if not p.name.startswith("."):
-                    results.append(str(p) + ("/" if p.is_dir() else ""))
-                    if len(results) >= limit:
-                        break
+                if not include_hidden and p.name.startswith("."):
+                    continue
+                results.append(str(p) + ("/" if p.is_dir() else ""))
+                if len(results) >= limit:
+                    break
         except OSError:
             pass
         return results
@@ -716,10 +847,16 @@ def suggest_paths(query: str, limit: int = 20) -> list:
     except ValueError:
         return []
 
+    # Allow hidden entries when the user explicitly starts their prefix with '.'
+    # (e.g. typing "~/.cop" should still complete ".copilot/").
+    hidden_ok = include_hidden or prefix.startswith(".")
+
     results = []
     try:
         for p in sorted(base.iterdir()):
             if prefix and not p.name.startswith(prefix):
+                continue
+            if not hidden_ok and p.name.startswith("."):
                 continue
             try:
                 p.resolve().relative_to(home)
@@ -808,3 +945,111 @@ def preview_diff(path_a: str, path_b: str) -> dict | None:
         "unified_diff": unified,
         "stats": {"added": added, "removed": removed},
     }
+
+
+# ── Model catalog / discovery ─────────────────────────────────────────────────
+
+
+def _parse_model_list_output(raw: str) -> list[str]:
+    """Parse JSON output from `copilot model list --output-format json`.
+
+    Accepts a JSON array of strings, array of objects with id/name/model keys,
+    or an object with a top-level "models" or "items" list.
+    """
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+
+    def _extract(item) -> str:
+        if isinstance(item, str):
+            return normalize_model_id(item.strip())
+        if isinstance(item, dict):
+            return normalize_model_id(str(item.get("id") or item.get("name") or item.get("model") or "").strip())
+        return ""
+
+    if isinstance(data, list):
+        return [m for m in (_extract(item) for item in data) if m]
+    if isinstance(data, dict):
+        inner = data.get("models") or data.get("items") or []
+        if isinstance(inner, list):
+            return [m for m in (_extract(item) for item in inner) if m]
+    return []
+
+
+def probe_available_models() -> dict:
+    """Build a structured model catalog for API/UI consumers.
+
+    Tries a live CLI probe first. When the installed CLI does not expose a
+    usable model-list command, falls back to dynamic local sources instead of a
+    hardcoded shortlist:
+      - BYOK/provider environment variables
+      - previously used operator session models
+    """
+    now = time.monotonic()
+
+    # Return cached result if it is still valid.
+    with _MODEL_CACHE_LOCK:
+        if _MODEL_CACHE.get("expires_at", 0.0) > now:
+            return {k: v for k, v in _MODEL_CACHE.items() if k not in {"expires_at", "model_ids"}}
+
+    model_ids: list[str] = []
+    discovered = False
+    default_model = (
+        normalize_model_id(os.environ.get("COPILOT_MODEL", "") or os.environ.get("COPILOT_PROVIDER_MODEL_ID", ""))
+        or None
+    )
+
+    env = _build_env()
+    try:
+        result = subprocess.run(
+            ["copilot", "model", "list", "--output-format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+            shell=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            parsed = _parse_model_list_output(result.stdout.strip())
+            if parsed:
+                model_ids = parsed
+                discovered = True
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
+    if not model_ids:
+        model_ids = _collect_local_model_candidates()
+    if default_model and default_model not in model_ids:
+        model_ids.insert(0, default_model)
+
+    cached_at = datetime.now(timezone.utc).isoformat()
+    models = _build_model_entries(model_ids, default_model)
+    normalized_ids = [entry["id"] for entry in models]
+
+    with _MODEL_CACHE_LOCK:
+        _MODEL_CACHE.update(
+            {
+                "model_ids": normalized_ids,
+                "models": models,
+                "default_model": default_model,
+                "discovered": discovered,
+                "cached_at": cached_at,
+                "expires_at": now + _MODEL_CACHE_TTL,
+            }
+        )
+
+    return {
+        "models": models,
+        "default_model": default_model,
+        "discovered": discovered,
+        "cached_at": cached_at,
+    }
+
+
+def get_available_models() -> dict:
+    """Return the available models dict, triggering a probe/cache refresh as needed.
+
+    Safe for direct API consumption; never exposes internal cache-only keys.
+    """
+    return probe_available_models()

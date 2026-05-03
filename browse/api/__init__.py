@@ -27,6 +27,7 @@ Endpoints exposed:
   GET  /api/operator/sessions/{id}/status  → session + run status
   GET  /api/operator/sessions/{id}/runs    → list persisted runs for session
   POST /api/operator/sessions/{id}/delete  → delete session
+  GET  /api/operator/models                → dynamic model catalog (probe + cache)
   GET  /api/operator/suggest               → path/workspace suggestions under ~/
   GET  /api/operator/preview               → file content preview under ~/
   GET  /api/operator/diff                  → unified diff of two files under ~/

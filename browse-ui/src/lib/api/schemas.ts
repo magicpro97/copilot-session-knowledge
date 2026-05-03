@@ -898,7 +898,8 @@ export const operatorSessionListResponseSchema = z.object({
 /** Request body for `POST /api/operator/sessions`. */
 export const createOperatorSessionRequestSchema = z.object({
   name: z.string(),
-  model: z.string(),
+  /** Optional: when absent the backend applies its configured default model. */
+  model: z.string().optional(),
   mode: z.string(),
   workspace: z.string(),
   add_dirs: z.array(z.string()).optional(),
@@ -971,4 +972,22 @@ export const chatSettingsSchema = z.object({
   mode: z.string().min(1),
   workspace: z.string(),
   add_dirs: z.array(z.string()),
+});
+
+// ── Operator model catalog (/api/operator/models) ─────────────────────────
+
+/** A single model entry returned by the operator model catalog endpoint. */
+export const operatorModelEntrySchema = z.object({
+  id: z.string(),
+  display_name: z.string(),
+  provider: z.string().optional(),
+  /** True when this is the server-declared default model. */
+  default: z.boolean().optional(),
+});
+
+/** Response from `GET /api/operator/models`. */
+export const operatorModelCatalogResponseSchema = z.object({
+  models: z.array(operatorModelEntrySchema),
+  /** Server-declared default model id; null when no default is configured. */
+  default_model: z.string().nullable(),
 });

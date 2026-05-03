@@ -919,7 +919,8 @@ export interface OperatorSessionListResponse {
 /** Request body for `POST /api/operator/sessions`. */
 export interface CreateOperatorSessionRequest {
   name: string;
-  model: string;
+  /** Optional: when absent the backend applies its configured default model. */
+  model?: string;
   mode: string;
   workspace: string;
   add_dirs?: string[];
@@ -965,6 +966,24 @@ export interface OperatorRunsResponse {
 export interface PathSuggestResponse {
   suggestions: string[];
   count: number;
+}
+
+// ── Operator model catalog (/api/operator/models) ─────────────────────────
+
+/** A single model entry returned by the operator model catalog endpoint. */
+export interface OperatorModelEntry {
+  id: string;
+  display_name: string;
+  provider?: string;
+  /** True when this is the server-declared default model. */
+  default?: boolean;
+}
+
+/** Response from `GET /api/operator/models`. */
+export interface OperatorModelCatalogResponse {
+  models: OperatorModelEntry[];
+  /** Server-declared default model id; null when no default is configured. */
+  default_model: string | null;
 }
 
 /** Response from `GET /api/operator/preview?path=<path>`. */

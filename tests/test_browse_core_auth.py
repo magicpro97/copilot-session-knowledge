@@ -120,8 +120,8 @@ def test_check_origin_no_origin():
         def get(self, key, default=""):
             return default
 
-    result = check_origin(FakeHeaders(), "localhost:8080")
-    test("check_origin: no origin allowed", result is True)
+    allowed, _ = check_origin(FakeHeaders(), "localhost:8080")
+    test("check_origin: no origin allowed", allowed is True)
 
 
 def test_check_origin_matching():
@@ -131,8 +131,8 @@ def test_check_origin_matching():
         def get(self, key, default=""):
             return "http://localhost:8080" if key == "Origin" else default
 
-    result = check_origin(FakeHeaders(), "localhost:8080")
-    test("check_origin: match allowed", result is True)
+    allowed, _ = check_origin(FakeHeaders(), "localhost:8080")
+    test("check_origin: match allowed", allowed is True)
 
 
 def test_check_origin_mismatch():
@@ -142,8 +142,8 @@ def test_check_origin_mismatch():
         def get(self, key, default=""):
             return "http://evil.example.com" if key == "Origin" else default
 
-    result = check_origin(FakeHeaders(), "localhost:8080")
-    test("check_origin: mismatch denied", result is False)
+    allowed, _ = check_origin(FakeHeaders(), "localhost:8080")
+    test("check_origin: mismatch denied", allowed is False)
 
 
 def test_check_origin_trailing_slash():
@@ -153,8 +153,8 @@ def test_check_origin_trailing_slash():
         def get(self, key, default=""):
             return "http://localhost:8080/" if key == "Origin" else default
 
-    result = check_origin(FakeHeaders(), "localhost:8080")
-    test("check_origin: trailing slash match", result is True)
+    allowed, _ = check_origin(FakeHeaders(), "localhost:8080")
+    test("check_origin: trailing slash match", allowed is True)
 
 
 if __name__ == "__main__":

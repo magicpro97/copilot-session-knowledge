@@ -351,6 +351,98 @@ http://localhost:<port>/v2/chat/?token=<token>
 
 ---
 
+## Remote Access via Cloudflare Tunnel
+
+> **Facts vs guidance separator:** Verified facts in this section are derived from source-code inspection and web research. Operational guidance is labelled **[guidance]**.
+
+The browse server binds to `127.0.0.1` by design. Remote or mobile access requires a tunnel.
+
+### DNS coexistence: `copilot.linhngo.dev` + Firebase on `linhngo.dev`
+
+**Verified fact:** Cloudflare Tunnel can front a subdomain (e.g. `copilot.linhngo.dev`) while the apex domain (`linhngo.dev`) remains served by Firebase Hosting. The two services use separate DNS records and do not conflict.
+
+Two approaches:
+
+| Approach | How | Trade-offs |
+|----------|-----|------------|
+| **Cloudflare DNS for the whole zone** (recommended) | Move `linhngo.dev` nameservers to Cloudflare. Keep A/AAAA records for `linhngo.dev` pointing to Firebase Hosting IPs. Add a Cloudflare Tunnel CNAME for `copilot` subdomain via `cloudflared tunnel route dns`. | Full Cloudflare Zero Trust + WAF + Access features available. Standard Cloudflare Tunnel workflow. |
+| **External DNS only** | Keep DNS at current provider. After creating the tunnel, add a CNAME record: `copilot → <tunnel-id>.cfargotunnel.com`. | No Cloudflare WAF/caching on the subdomain. Cloudflare Access policies still apply (enforced at the tunnel edge). Firebase on the apex domain is unaffected. |
+
+**[guidance]** For a personal operator setup that primarily needs access control, the external-DNS CNAME approach is the simpler path. Move to full Cloudflare DNS only if WAF or caching on the subdomain is needed.
+
+Firebase Hosting custom-domain verification uses A records or CNAME records at your DNS registrar. Neither approach disturbs these; the `linhngo.dev` Firebase records remain unchanged.
+
+### Starting the tunnel
+
+```bash
+# Install cloudflared (macOS)
+brew install cloudflared
+
+# Authenticate and create a named tunnel
+cloudflared tunnel login
+cloudflared tunnel create copilot-browse
+
+# Configure ingress in ~/.cloudflared/config.yml:
+#   tunnel: <tunnel-id>
+#   credentials-file: ~/.cloudflared/<tunnel-id>.json
+#   ingress:
+#     - hostname: copilot.linhngo.dev
+#       service: http://127.0.0.1:<browse-port>
+#     - service: http_status:404
+
+# Route DNS (Cloudflare-managed zone only; skip for external DNS)
+cloudflared tunnel route dns copilot-browse copilot.linhngo.dev
+
+# Run the tunnel
+cloudflared tunnel run copilot-browse
+```
+
+The browse server must already be running on the configured port before or alongside `cloudflared`.
+
+### Security posture for remote exposure
+
+#### Browse token
+
+- The per-launch browse token is passed as `?token=<token>` in the URL on first load, then stored as a `browse_token` cookie (`HttpOnly; SameSite=Strict; Path=/; Max-Age=86400`).
+- **[guidance]** Never share the first-load URL (containing the token in the query string) in publicly visible locations — browser history and server logs will record it. Use Cloudflare Access (see below) as a second auth layer so the token URL is only reachable by authenticated users.
+- The token is per-launch: restarting `browse.py` with a different `--token` value invalidates previous sessions.
+
+#### Cloudflare Access (recommended)
+
+**[guidance]** Add a Cloudflare Access policy on `copilot.linhngo.dev` to require identity verification (email OTP, GitHub SSO, or Google OAuth) before the tunnel endpoint is reachable. This means an attacker who discovers the subdomain cannot even attempt to brute-force the browse token — Access gates the connection first.
+
+Configure Access in **Cloudflare Zero Trust → Access → Applications → Add an application → Self-hosted**, with the hostname `copilot.linhngo.dev`.
+
+#### Known blocker: Origin check for POST requests (code-level issue)
+
+**Verified from source code (`browse/core/auth.py` · `check_origin`):** The CSRF origin check compares the `Origin` header to `http://{Host}`. Behind Cloudflare Tunnel, the browser sends `Origin: https://copilot.linhngo.dev` but the check builds `http://copilot.linhngo.dev` — these do not match. All POST mutations (prompt submission, session create/delete) return **403 Forbidden**.
+
+This is a code-level fix required in `browse/core/auth.py`: the check must accept `https://` origins when `X-Forwarded-Proto: https` is present, or accept both schemes for the configured hostname. **This fix is not in the scope of this playbook entry.** Until it is applied, the operator console (`/v2/chat`) is read-browseable behind the tunnel but prompt submission will fail. Open a fix tentacle or issue targeting `browse/core/auth.py`.
+
+#### Cookie `Secure` flag
+
+**Verified from source code:** The `browse_token` cookie is issued without the `Secure` attribute. Behind HTTPS (Cloudflare Tunnel), browsers accept and return the cookie correctly — the `Secure` flag would only be required for `SameSite=None` cookies, not for `SameSite=Strict`. All remote browse traffic goes through HTTPS, so this does not block functionality. It is a hardening gap: a future change to add `Secure` when serving behind HTTPS is recommended.
+
+#### Same-origin assumption in the UI
+
+The Next.js static export makes all API calls to relative paths (`/api/*`) on the same origin. This assumption holds behind Cloudflare Tunnel: both the static UI and the Python API are served from the same origin (`https://copilot.linhngo.dev`). No cross-origin configuration is needed.
+
+### Mobile access
+
+**Verified fact:** The browse server binds to `127.0.0.1`; direct LAN access from a mobile device is not possible. Via Cloudflare Tunnel, mobile browsers reach the app over HTTPS at the configured subdomain.
+
+| Feature | Mobile status |
+|---------|--------------|
+| All `/v2/*` page routes | ✅ Work in iOS Safari and Android Chrome — Next.js static export, no SSR |
+| Token auth (first-load `?token=…`) | ✅ Works — cookie is stored in browser session storage per architecture notes |
+| SSE streaming (`/v2/chat` live transcript) | ✅ Works — iOS Safari 13+ and Android Chrome support `EventSource` |
+| POST mutations (prompt submit) | ❌ Blocked until Origin check is fixed (see above) |
+| Keyboard shortcuts (`g c`, `g s`, etc.) | ⚠️ Not accessible without a physical keyboard |
+
+**[guidance]** To verify mobile access: open `https://copilot.linhngo.dev/?token=<token>` on iOS Safari or Android Chrome. The sessions list and search pages should load. The operator console page loads, but prompt submission fails until the Origin fix is applied.
+
+---
+
 
 
 ## Trend Scout Research Pack

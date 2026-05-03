@@ -21,15 +21,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useOperatorModelCatalog } from "@/lib/api/hooks";
 import { WorkspacePicker } from "./workspace-picker";
 import type { CreateOperatorSessionRequest } from "@/lib/api/types";
-
-const COPILOT_MODELS = [
-  { value: "claude-sonnet-4.5", label: "Claude Sonnet 4.5" },
-  { value: "claude-opus-4.5", label: "Claude Opus 4.5" },
-  { value: "gpt-4o", label: "GPT-4o" },
-  { value: "o3", label: "o3" },
-];
 
 export const COPILOT_MODES = [
   { value: "interactive", label: "Interactive" },
@@ -45,11 +39,16 @@ type SessionCreateDialogProps = {
 export function SessionCreateDialog({ onSubmit, loading }: SessionCreateDialogProps) {
   const nameId = useId();
   const workspaceId = useId();
+  const modelId = useId();
+  const modelListId = useId();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [workspace, setWorkspace] = useState("");
-  const [model, setModel] = useState(COPILOT_MODELS[0].value);
+  const [model, setModel] = useState("");
   const [mode, setMode] = useState(COPILOT_MODES[0].value);
+  const modelCatalogQuery = useOperatorModelCatalog(open);
+  const modelSuggestions = modelCatalogQuery.data?.models ?? [];
+  const defaultModel = modelCatalogQuery.data?.default_model ?? "";
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -57,13 +56,13 @@ export function SessionCreateDialog({ onSubmit, loading }: SessionCreateDialogPr
     onSubmit({
       name: name.trim() || `Chat ${new Date().toLocaleString()}`,
       workspace: workspace.trim(),
-      model,
+      model: model.trim() || undefined,
       mode,
     });
     setOpen(false);
     setName("");
     setWorkspace("");
-    setModel(COPILOT_MODELS[0].value);
+    setModel("");
     setMode(COPILOT_MODES[0].value);
   }
 
@@ -116,25 +115,28 @@ export function SessionCreateDialog({ onSubmit, loading }: SessionCreateDialogPr
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <label className="text-sm font-medium">Model</label>
-              <Select
+              <label htmlFor={modelId} className="text-sm font-medium">
+                Model
+              </label>
+              <input
+                id={modelId}
+                type="text"
+                list={modelListId}
                 value={model}
-                onValueChange={(value) => {
-                  if (value) setModel(value);
-                }}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder={defaultModel || "Leave blank to use the CLI default"}
                 disabled={loading}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {COPILOT_MODELS.map((m) => (
-                    <SelectItem key={m.value} value={m.value}>
-                      {m.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-lg border bg-transparent px-3 py-2 text-sm transition-colors outline-none focus-visible:ring-2 disabled:opacity-50"
+              />
+              <datalist id={modelListId}>
+                {modelSuggestions.map((m) => (
+                  <option key={m.id} value={m.id} label={m.display_name} />
+                ))}
+              </datalist>
+              <p className="text-muted-foreground text-xs">
+                Suggestions come from the local Copilot environment. Leave blank to use the CLI
+                default.
+              </p>
             </div>
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Mode</label>

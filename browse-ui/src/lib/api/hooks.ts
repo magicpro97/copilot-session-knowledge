@@ -39,6 +39,7 @@ import {
   filePreviewResponseSchema,
   fileDiffResponseSchema,
   createOperatorSessionRequestSchema,
+  operatorModelCatalogResponseSchema,
 } from "@/lib/api/schemas";
 import type {
   CompareResponse,
@@ -76,6 +77,7 @@ import type {
   PathSuggestResponse,
   FilePreviewResponse,
   FileDiffResponse,
+  OperatorModelCatalogResponse,
 } from "@/lib/api/types";
 
 export type SessionsQueryParams = {
@@ -138,9 +140,10 @@ export const queryKeys = {
   operatorStatus: (sessionId: string, runId: string) =>
     ["operator-status", sessionId, runId] as const,
   operatorRuns: (sessionId: string) => ["operator-runs", sessionId] as const,
-  operatorSuggest: (q: string) => ["operator-suggest", q] as const,
+  operatorSuggest: (q: string, hidden = false) => ["operator-suggest", q, hidden] as const,
   operatorPreview: (path: string) => ["operator-preview", path] as const,
   operatorDiff: (pathA: string, pathB: string) => ["operator-diff", pathA, pathB] as const,
+  operatorModels: () => ["operator-models"] as const,
 };
 
 function withLeadingSlash(path: string): string {
@@ -716,14 +719,14 @@ export function createOperatorStreamPath(sessionId: string, runId: string): stri
   return withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/stream${qs}`);
 }
 
-export function usePathSuggest(q: string, enabled = true) {
+export function usePathSuggest(q: string, hidden = false, enabled = true) {
   return useQuery({
-    queryKey: queryKeys.operatorSuggest(q),
+    queryKey: queryKeys.operatorSuggest(q, hidden),
     staleTime: STALE_TIMES.search,
     gcTime: CACHE_TIMES.search,
     enabled,
     queryFn: async (): Promise<PathSuggestResponse> => {
-      const qs = createQueryString({ q });
+      const qs = createQueryString({ q, ...(hidden ? { hidden: "true" } : {}) });
       const data = await apiFetch<PathSuggestResponse>(
         withLeadingSlash(`/api/operator/suggest${qs}`)
       );
@@ -758,6 +761,21 @@ export function useFileDiff(pathA: string, pathB: string, enabled = true) {
       const qs = createQueryString({ a: pathA, b: pathB });
       const data = await apiFetch<FileDiffResponse>(withLeadingSlash(`/api/operator/diff${qs}`));
       return fileDiffResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useOperatorModelCatalog(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.operatorModels(),
+    staleTime: STALE_TIMES.health,
+    gcTime: CACHE_TIMES.health,
+    enabled,
+    queryFn: async (): Promise<OperatorModelCatalogResponse> => {
+      const data = await apiFetch<OperatorModelCatalogResponse>(
+        withLeadingSlash("/api/operator/models")
+      );
+      return operatorModelCatalogResponseSchema.parse(data);
     },
   });
 }

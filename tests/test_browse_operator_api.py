@@ -45,6 +45,12 @@ Tests:
   SEC4:  Path traversal via symlink is blocked (confine resolves real path)
   SEC5:  start_run with empty prompt returns None (no process spawned)
   SEC6:  start_run with unknown session returns None
+  SEC7:  check_origin() unit tests: http, https-proxy, mismatch
+  SEC8:  make_cookie_header() adds Secure flag when secure=True
+  SEC9:  POST with mismatched Origin is CSRF-rejected (403)
+  SEC10: POST with matching HTTP origin is accepted (200)
+  SEC11: GET /api/operator/sessions via forwarded HTTPS sets Secure cookie
+  SEC12: GET /v2/chat via forwarded HTTPS sets Secure cookie
 """
 
 import http.client
@@ -90,6 +96,8 @@ os.environ["COPILOT_OPERATOR_STATE"] = str(_TEST_STATE_DIR)
 
 from browse.core.operator_console import (  # noqa: E402
     _ACTIVE_RUNS,
+    _MODEL_CACHE,
+    _MODEL_CACHE_LOCK,
     _RUNS_LOCK,
     _build_copilot_argv,
     _parse_output_event,
@@ -97,13 +105,16 @@ from browse.core.operator_console import (  # noqa: E402
     confine_path,
     create_session,
     delete_session,
+    get_available_models,
     get_run_status,
     get_session,
     list_runs,
     list_sessions,
+    normalize_model_id,
     make_stream_generator,
     preview_diff,
     preview_file,
+    probe_available_models,
     redact_secrets,
     start_run,
     suggest_paths,
@@ -454,6 +465,89 @@ def test_sec3_traversal_blocked():
         test(f"SEC3: traversal blocked for '{case[:30]}'", result is None)
 
 
+def test_sec7_check_origin_unit():
+    """SEC7: check_origin() unit tests covering HTTP, HTTPS-proxy, and mismatch cases."""
+    from browse.core.auth import check_origin
+
+    class _Headers(dict):
+        def get(self, key, default=""):
+            return super().get(key, default)
+
+    # No Origin header → allowed (regardless of proxy signal)
+    allowed, is_https = check_origin(_Headers({}), "example.com:8080")
+    test("SEC7: no Origin → allowed", allowed is True)
+    test("SEC7: no Origin, no proxy → is_https False", is_https is False)
+
+    # HTTP origin matches host → allowed
+    allowed, _ = check_origin(_Headers({"Origin": "http://example.com:8080"}), "example.com:8080")
+    test("SEC7: http origin matches → allowed", allowed is True)
+
+    # HTTP origin with trailing slash matches host → allowed
+    allowed, _ = check_origin(_Headers({"Origin": "http://example.com:8080/"}), "example.com:8080")
+    test("SEC7: http origin trailing slash → allowed", allowed is True)
+
+    # HTTP origin but wrong host → rejected
+    allowed, _ = check_origin(_Headers({"Origin": "http://evil.com"}), "example.com:8080")
+    test("SEC7: http origin wrong host → rejected", allowed is False)
+
+    # HTTPS origin without proxy headers → rejected
+    allowed, is_https = check_origin(_Headers({"Origin": "https://example.com"}), "example.com")
+    test("SEC7: https origin no proxy → rejected", allowed is False)
+    test("SEC7: https origin no proxy → is_https False", is_https is False)
+
+    # HTTPS origin with X-Forwarded-Proto: https and matching host → allowed
+    allowed, is_https = check_origin(
+        _Headers({"Origin": "https://example.com", "X-Forwarded-Proto": "https"}),
+        "example.com",
+    )
+    test("SEC7: https origin with X-Forwarded-Proto → allowed", allowed is True)
+    test("SEC7: X-Forwarded-Proto sets is_https", is_https is True)
+
+    # HTTPS origin with X-Forwarded-Ssl: on and matching host → allowed
+    allowed, is_https = check_origin(
+        _Headers({"Origin": "https://copilot.linhngo.dev", "X-Forwarded-Ssl": "on"}),
+        "copilot.linhngo.dev",
+    )
+    test("SEC7: https origin with X-Forwarded-Ssl: on → allowed", allowed is True)
+    test("SEC7: X-Forwarded-Ssl sets is_https", is_https is True)
+
+    # HTTPS origin with proxy but MISMATCHED host → rejected
+    allowed, _ = check_origin(
+        _Headers({"Origin": "https://evil.com", "X-Forwarded-Proto": "https"}),
+        "example.com",
+    )
+    test("SEC7: https origin proxy but wrong host → rejected", allowed is False)
+
+    # HTTPS origin with proxy but HTTP scheme origin → allowed (normal http match ignored by is_https)
+    allowed, _ = check_origin(
+        _Headers({"Origin": "http://example.com", "X-Forwarded-Proto": "https"}),
+        "example.com",
+    )
+    test("SEC7: http origin with proxy headers → still allowed via http match", allowed is True)
+
+    # Case-insensitive proxy header value
+    allowed, is_https = check_origin(
+        _Headers({"Origin": "https://example.com", "X-Forwarded-Proto": "HTTPS"}),
+        "example.com",
+    )
+    test("SEC7: X-Forwarded-Proto HTTPS case-insensitive → allowed", allowed is True)
+
+
+def test_sec8_make_cookie_header_secure_flag():
+    """SEC8: make_cookie_header adds Secure flag when secure=True."""
+    from browse.core.auth import make_cookie_header
+
+    plain = make_cookie_header("tok123")
+    test("SEC8: plain cookie no Secure flag", "Secure" not in plain)
+    test("SEC8: plain cookie has HttpOnly", "HttpOnly" in plain)
+    test("SEC8: plain cookie has SameSite=Strict", "SameSite=Strict" in plain)
+
+    secure = make_cookie_header("tok123", secure=True)
+    test("SEC8: secure cookie has Secure flag", "Secure" in secure)
+    test("SEC8: secure cookie has HttpOnly", "HttpOnly" in secure)
+    test("SEC8: secure cookie has SameSite=Strict", "SameSite=Strict" in secure)
+
+
 def test_oc24_parse_output_event_typeless_json_is_raw_text_frame():
     """OC24: typeless JSON objects must become raw text frames (not structured frames).
 
@@ -616,6 +710,175 @@ def test_oc29_persist_run_evicts_terminal_in_memory_entry():
     )
 
 
+def test_oc30_suggest_paths_hides_dotfolders_by_default():
+    """OC30: suggest_paths with include_hidden=False (default) hides dot-entries on empty query."""
+    results = suggest_paths("", limit=50, include_hidden=False)
+    home = Path.home()
+    has_any_hidden = any(Path(r).name.startswith(".") for r in results)
+    test("OC30: no hidden entries with include_hidden=False (empty query)", not has_any_hidden)
+    for r in results:
+        test(f"OC30: path '{r[:40]}' still confined to ~/", r.startswith(str(home)))
+
+
+def test_oc31_suggest_paths_include_hidden():
+    """OC31: suggest_paths with include_hidden=True shows dot-entries."""
+    home = Path.home()
+    # Create a temporary dotdir to guarantee at least one hidden entry exists.
+    dot_test = home / ".copilot" / ".oc31_hidden_test_dir"
+    dot_test.mkdir(parents=True, exist_ok=True)
+    try:
+        results_hidden = suggest_paths(str(home / ".copilot") + "/", limit=50, include_hidden=True)
+        results_default = suggest_paths(str(home / ".copilot") + "/", limit=50, include_hidden=False)
+
+        hidden_in_opt_in = any(Path(r).name.startswith(".") for r in results_hidden)
+        hidden_in_default = any(Path(r).name.startswith(".") for r in results_default)
+
+        test("OC31: include_hidden=True shows dot-entries", hidden_in_opt_in)
+        test("OC31: include_hidden=False hides dot-entries", not hidden_in_default)
+    finally:
+        try:
+            dot_test.rmdir()
+        except OSError:
+            pass
+
+
+def test_oc32_suggest_paths_dot_prefix_still_works():
+    """OC32: typing a dot-prefix still matches hidden entries even with include_hidden=False."""
+    home = Path.home()
+    # Query that explicitly starts with '.': should still surface hidden entries.
+    results = suggest_paths(str(home / ".cop"), limit=10, include_hidden=False)
+    test("OC32: dot-prefix query returns list", isinstance(results, list))
+    # If .copilot/ exists it should appear.
+    copilot_dir = home / ".copilot"
+    if copilot_dir.is_dir():
+        found = any(".copilot" in r for r in results)
+        test("OC32: .copilot appears for .cop prefix without include_hidden", found)
+
+
+def test_oc33_get_available_models_returns_dict():
+    """OC33: get_available_models always returns a dict with expected keys."""
+    result = get_available_models()
+    test("OC33: result is dict", isinstance(result, dict))
+    test("OC33: models key present", "models" in result)
+    test("OC33: models is list", isinstance(result.get("models"), list))
+    test("OC33: default_model key present", "default_model" in result)
+    test("OC33: discovered key present", "discovered" in result)
+    test("OC33: cached_at key present", "cached_at" in result)
+    test("OC33: expires_at not exposed", "expires_at" not in result)
+    test("OC33: model_ids not exposed", "model_ids" not in result)
+    models = result.get("models", [])
+    if models:
+        first = models[0]
+        test("OC33: model entry is dict", isinstance(first, dict))
+        test("OC33: model entry has id", isinstance(first.get("id"), str) and bool(first.get("id")))
+        test(
+            "OC33: model entry has display_name",
+            isinstance(first.get("display_name"), str) and bool(first.get("display_name")),
+        )
+
+
+def test_oc34_model_is_known_unavailable_guarded():
+    """OC34: _build_copilot_argv omits --model when model is known unavailable via catalog."""
+    import time as _time
+
+    from browse.core.operator_console import _model_is_known_unavailable
+
+    # Without a discovered catalog, model should always be passed through.
+    with _MODEL_CACHE_LOCK:
+        _MODEL_CACHE.update(
+            {
+                "model_ids": ["gpt-4o"],
+                "models": [{"id": "gpt-4o", "display_name": "GPT 4o"}],
+                "default_model": None,
+                "discovered": False,  # not discovered → conservative, never block
+                "cached_at": "",
+                "expires_at": _time.monotonic() + 60,
+            }
+        )
+    test("OC34: undiscovered catalog never blocks model", not _model_is_known_unavailable("nonexistent-model"))
+
+    # With a discovered catalog that does NOT include the model → it is unavailable.
+    with _MODEL_CACHE_LOCK:
+        _MODEL_CACHE.update(
+            {
+                "model_ids": ["gpt-4o", "claude-sonnet-4.5"],
+                "models": [
+                    {"id": "gpt-4o", "display_name": "GPT 4o"},
+                    {"id": "claude-sonnet-4.5", "display_name": "Claude Sonnet 4.5"},
+                ],
+                "default_model": None,
+                "discovered": True,
+                "cached_at": "",
+                "expires_at": _time.monotonic() + 60,
+            }
+        )
+    test(
+        "OC34: discovered catalog blocks unknown model",
+        _model_is_known_unavailable("claude-sonnet-4-5-OLD"),
+    )
+    test(
+        "OC34: discovered catalog allows normalized known model",
+        not _model_is_known_unavailable("claude-sonnet-4-5"),
+    )
+
+    # Legacy hyphenated model IDs are normalized before reaching the CLI.
+    session_legacy = {
+        "name": "legacy-test",
+        "model": "claude-sonnet-4-5",
+        "mode": "",
+        "add_dirs": [],
+        "resume_ready": False,
+    }
+    argv_legacy = _build_copilot_argv(session_legacy, "test")
+    if "--model" in argv_legacy:
+        legacy_value = argv_legacy[argv_legacy.index("--model") + 1]
+        test("OC34: legacy alias normalized to dotted CLI id", legacy_value == "claude-sonnet-4.5")
+    else:
+        test("OC34: legacy alias keeps --model after normalization", False)
+
+    # Session with known-unavailable model → --model omitted from argv.
+    session_unavail = {
+        "name": "unavail-test",
+        "model": "claude-sonnet-9-9",
+        "mode": "",
+        "add_dirs": [],
+        "resume_ready": False,
+    }
+    argv_unavail = _build_copilot_argv(session_unavail, "test")
+    test("OC34: --model omitted for known-unavailable model", "--model" not in argv_unavail)
+
+    # Session with known-available model → --model included.
+    session_avail = {
+        "name": "avail-test",
+        "model": "gpt-4o",
+        "mode": "",
+        "add_dirs": [],
+        "resume_ready": False,
+    }
+    argv_avail = _build_copilot_argv(session_avail, "test")
+    test("OC34: --model included for known-available model", "--model" in argv_avail)
+
+    # Reset cache to avoid bleeding into other tests.
+    with _MODEL_CACHE_LOCK:
+        _MODEL_CACHE.update(
+            {
+                "model_ids": [],
+                "models": [],
+                "default_model": None,
+                "discovered": False,
+                "cached_at": "",
+                "expires_at": 0.0,
+            }
+        )
+
+
+def test_oc35_normalize_model_id_preserves_legacy_suffixes():
+    """OC35: normalize_model_id only rewrites dotted-version aliases, not legacy suffix IDs."""
+    test("OC35: gpt-4-1-mini normalizes to dotted form", normalize_model_id("gpt-4-1-mini") == "gpt-4.1-mini")
+    test("OC35: gpt-4-32k stays unchanged", normalize_model_id("gpt-4-32k") == "gpt-4-32k")
+    test("OC35: gpt-4-0613 stays unchanged", normalize_model_id("gpt-4-0613") == "gpt-4-0613")
+
+
 def run_api_tests():
     server, port = _make_test_server()
     try:
@@ -655,6 +918,38 @@ def _run_api_tests(port: int):
     data3 = _read_json(resp3)
     test("API3: sessions field is list", isinstance(data3.get("sessions"), list))
     test("API3: count field present", "count" in data3)
+
+    conn_sec11 = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn_sec11.request(
+        "GET",
+        f"/api/operator/sessions?token={_TOKEN}",
+        headers={
+            "Host": "copilot.linhngo.dev",
+            "X-Forwarded-Proto": "https",
+        },
+    )
+    resp_sec11 = conn_sec11.getresponse()
+    cookie_sec11 = resp_sec11.getheader("Set-Cookie", "")
+    test("SEC11: forwarded HTTPS GET /api/operator/sessions → 200", resp_sec11.status == 200)
+    test("SEC11: forwarded HTTPS GET /api/operator/sessions sets token cookie", "browse_token=test-token-operator" in cookie_sec11)
+    test("SEC11: forwarded HTTPS GET /api/operator/sessions sets Secure cookie", "Secure" in cookie_sec11)
+    _ = resp_sec11.read()
+
+    conn_sec12 = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn_sec12.request(
+        "GET",
+        f"/v2/chat?token={_TOKEN}",
+        headers={
+            "Host": "copilot.linhngo.dev",
+            "X-Forwarded-Proto": "https",
+        },
+    )
+    resp_sec12 = conn_sec12.getresponse()
+    cookie_sec12 = resp_sec12.getheader("Set-Cookie", "")
+    test("SEC12: forwarded HTTPS GET /v2/chat → 200", resp_sec12.status == 200)
+    test("SEC12: forwarded HTTPS GET /v2/chat sets token cookie", "browse_token=test-token-operator" in cookie_sec12)
+    test("SEC12: forwarded HTTPS GET /v2/chat sets Secure cookie", "Secure" in cookie_sec12)
+    _ = resp_sec12.read()
 
     if session_id:
         resp4 = _get(port, f"/api/operator/sessions/{session_id}")
@@ -697,6 +992,42 @@ def _run_api_tests(port: int):
         resp_sec2 = conn2.getresponse()
         test("SEC2: POST /prompt without token → 401", resp_sec2.status == 401)
         _ = resp_sec2.read()
+
+    # SEC9: POST with mismatched Origin header → 403 (CSRF rejection)
+    conn_csrf = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    raw_csrf = json.dumps({"name": "csrf-test"}).encode("utf-8")
+    conn_csrf.request(
+        "POST",
+        f"/api/operator/sessions?token={_TOKEN}",
+        body=raw_csrf,
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(len(raw_csrf)),
+            "Origin": "http://evil.attacker.com",
+            "Host": "127.0.0.1",
+        },
+    )
+    resp_csrf = conn_csrf.getresponse()
+    test("SEC9: POST with mismatched Origin → 403", resp_csrf.status == 403)
+    _ = resp_csrf.read()
+
+    # SEC10: POST with matching HTTP origin → 200 (not CSRF)
+    conn_ok_origin = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    raw_ok = json.dumps({"name": "ok-origin"}).encode("utf-8")
+    conn_ok_origin.request(
+        "POST",
+        f"/api/operator/sessions?token={_TOKEN}",
+        body=raw_ok,
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(len(raw_ok)),
+            "Origin": f"http://127.0.0.1:{port}",
+            "Host": f"127.0.0.1:{port}",
+        },
+    )
+    resp_ok_origin = conn_ok_origin.getresponse()
+    test("SEC10: POST with matching HTTP origin → 200", resp_ok_origin.status == 200)
+    _ = resp_ok_origin.read()
 
     if session_id:
         resp8 = _get(port, f"/api/operator/sessions/{session_id}/status")
@@ -845,6 +1176,47 @@ def _run_api_tests(port: int):
     finally:
         _preview_tmp.unlink(missing_ok=True)
 
+    # API19: GET /api/operator/models returns model catalog
+    resp_models = _get(port, "/api/operator/models")
+    test("API19: models endpoint → 200", resp_models.status == 200)
+    data_models = _read_json(resp_models)
+    test("API19: models field is list", isinstance(data_models.get("models"), list))
+    test("API19: default_model field present", "default_model" in data_models)
+    test("API19: discovered field present", "discovered" in data_models)
+    test("API19: cached_at field present", "cached_at" in data_models)
+    if data_models.get("models"):
+        first_model = data_models["models"][0]
+        test("API19: model entry is dict", isinstance(first_model, dict))
+        test("API19: model entry has id", isinstance(first_model.get("id"), str))
+        test("API19: model entry has display_name", isinstance(first_model.get("display_name"), str))
+
+    # API20: GET /api/operator/suggest?hidden=1 returns results including dot-entries
+    home_suggest = Path.home()
+    dot_api20 = home_suggest / ".copilot" / ".api20_hidden_test_dir"
+    dot_api20.mkdir(parents=True, exist_ok=True)
+    try:
+        copilot_path = str(home_suggest / ".copilot") + "/"
+        import urllib.parse as _up2
+
+        enc_q = _up2.quote(copilot_path, safe="")
+        resp20_hidden = _get(port, f"/api/operator/suggest?q={enc_q}&hidden=1&limit=50")
+        test("API20: suggest hidden=1 → 200", resp20_hidden.status == 200)
+        data20_hidden = _read_json(resp20_hidden)
+        suggestions_hidden = data20_hidden.get("suggestions", [])
+        has_hidden = any(Path(s).name.startswith(".") for s in suggestions_hidden)
+        test("API20: hidden=1 returns dot-entries", has_hidden)
+
+        resp20_default = _get(port, f"/api/operator/suggest?q={enc_q}&limit=50")
+        data20_default = _read_json(resp20_default)
+        suggestions_default = data20_default.get("suggestions", [])
+        has_hidden_default = any(Path(s).name.startswith(".") for s in suggestions_default)
+        test("API20: default suggest hides dot-entries", not has_hidden_default)
+    finally:
+        try:
+            dot_api20.rmdir()
+        except OSError:
+            pass
+
 
 if __name__ == "__main__":
     print("── operator_console unit tests ──────────────────────────────────────")
@@ -880,6 +1252,14 @@ if __name__ == "__main__":
     test_oc27_list_runs_chronological_order()
     test_oc28_list_runs_includes_terminal_in_memory_run()
     test_oc29_persist_run_evicts_terminal_in_memory_entry()
+    test_oc30_suggest_paths_hides_dotfolders_by_default()
+    test_oc31_suggest_paths_include_hidden()
+    test_oc32_suggest_paths_dot_prefix_still_works()
+    test_oc33_get_available_models_returns_dict()
+    test_oc34_model_is_known_unavailable_guarded()
+    test_oc35_normalize_model_id_preserves_legacy_suffixes()
+    test_sec7_check_origin_unit()
+    test_sec8_make_cookie_header_secure_flag()
 
     print()
     print("── API route tests (live HTTP server) ───────────────────────────────")

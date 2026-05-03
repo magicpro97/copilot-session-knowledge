@@ -37,6 +37,8 @@ import {
   trendScoutOperatorActionSchema,
   timelineEventSchema,
   timelineEventsResponseSchema,
+  operatorModelEntrySchema,
+  operatorModelCatalogResponseSchema,
 } from "@/lib/api/schemas";
 
 describe("api schemas", () => {
@@ -1139,6 +1141,15 @@ describe("createOperatorSessionRequestSchema", () => {
     expect(parsed.name).toBe("");
     expect(parsed.workspace).toBe("");
   });
+
+  it("accepts omitted model for default model flow", () => {
+    const parsed = createOperatorSessionRequestSchema.parse({
+      name: "Session without explicit model",
+      mode: "default",
+      workspace: "/Users/user/projects",
+    });
+    expect(parsed.model).toBeUndefined();
+  });
 });
 
 describe("promptRequestSchema", () => {
@@ -1460,6 +1471,81 @@ describe("chatSettingsSchema", () => {
         mode: "default",
         workspace: "/Users/user/projects",
         add_dirs: [],
+      })
+    ).toThrow();
+  });
+});
+
+// ── Operator model catalog schema tests ───────────────────────────────────
+
+describe("operatorModelEntrySchema", () => {
+  it("parses a minimal model entry", () => {
+    const parsed = operatorModelEntrySchema.parse({
+      id: "claude-sonnet-4.6",
+      display_name: "Claude Sonnet 4.6",
+    });
+    expect(parsed.id).toBe("claude-sonnet-4.6");
+    expect(parsed.display_name).toBe("Claude Sonnet 4.6");
+    expect(parsed.provider).toBeUndefined();
+    expect(parsed.default).toBeUndefined();
+  });
+
+  it("parses a full model entry with provider and default flag", () => {
+    const parsed = operatorModelEntrySchema.parse({
+      id: "gpt-5.4",
+      display_name: "GPT-5.4",
+      provider: "openai",
+      default: true,
+    });
+    expect(parsed.provider).toBe("openai");
+    expect(parsed.default).toBe(true);
+  });
+
+  it("accepts default: false", () => {
+    const parsed = operatorModelEntrySchema.parse({
+      id: "claude-haiku-4.5",
+      display_name: "Claude Haiku 4.5",
+      provider: "anthropic",
+      default: false,
+    });
+    expect(parsed.default).toBe(false);
+  });
+});
+
+describe("operatorModelCatalogResponseSchema", () => {
+  it("parses a catalog with multiple models", () => {
+    const parsed = operatorModelCatalogResponseSchema.parse({
+      models: [
+        { id: "claude-sonnet-4.6", display_name: "Claude Sonnet 4.6", default: true },
+        { id: "gpt-5.4", display_name: "GPT-5.4", provider: "openai" },
+      ],
+      default_model: "claude-sonnet-4.6",
+    });
+    expect(parsed.models).toHaveLength(2);
+    expect(parsed.default_model).toBe("claude-sonnet-4.6");
+  });
+
+  it("parses an empty catalog", () => {
+    const parsed = operatorModelCatalogResponseSchema.parse({
+      models: [],
+      default_model: null,
+    });
+    expect(parsed.models).toEqual([]);
+    expect(parsed.default_model).toBeNull();
+  });
+
+  it("accepts null default_model when no default is configured", () => {
+    const parsed = operatorModelCatalogResponseSchema.parse({
+      models: [{ id: "claude-sonnet-4.6", display_name: "Claude Sonnet 4.6" }],
+      default_model: null,
+    });
+    expect(parsed.default_model).toBeNull();
+  });
+
+  it("rejects catalog missing required default_model field", () => {
+    expect(() =>
+      operatorModelCatalogResponseSchema.parse({
+        models: [],
       })
     ).toThrow();
   });
