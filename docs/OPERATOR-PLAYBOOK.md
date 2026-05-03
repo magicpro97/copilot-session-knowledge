@@ -91,7 +91,7 @@ python3 ~/.copilot/tools/migrate.py     # Apply all pending migrations
 
 Migrations are versioned in `migrate.py`'s `MIGRATIONS` list. Running `migrate.py` is idempotent — it only applies migrations not already applied.
 
-Current schema: **v8** (`sessions_fts` contentless FTS5 + BM25).
+Current schema: **v15** (v8 introduced `sessions_fts` contentless FTS5 + BM25; v15 `confidence_backfill_wave3` raised pattern confidence floors and applied recurrence rewards to existing entries).
 
 ---
 
@@ -272,6 +272,9 @@ python3 ~/.copilot/tools/tentacle.py next-step <name> --format json
 python3 ~/.copilot/tools/tentacle.py verify <name> "python3 test_fixes.py" --label "tests"
 python3 ~/.copilot/tools/tentacle.py handoff <name> "Summary" --learn
 python3 ~/.copilot/tools/tentacle.py complete <name>
+# Or: combine verify + complete in one step (fail-open)
+python3 ~/.copilot/tools/tentacle.py complete <name> --auto-verify "python3 test_fixes.py"
+python3 ~/.copilot/tools/tentacle.py complete <name> --auto-verify "python3 test_fixes.py" --auto-verify-timeout 180
 ```
 
 > Full tentacle workflow: **[docs/USAGE.md](USAGE.md#tentacle-orchestration)**
@@ -505,6 +508,8 @@ verification step so that `tentacle_verifications` rows are populated:
 
 ```bash
 python3 ~/.copilot/tools/tentacle.py verify <name> "python3 test_fixes.py" --label "tests"
+# Or in one step with complete --auto-verify (Wave 3; fail-open):
+python3 ~/.copilot/tools/tentacle.py complete <name> --auto-verify "python3 test_fixes.py"
 ```
 
 **Recorded baseline (commit `2850fe12153f`):** repo retro `83.3`, local retro `61.5`,
@@ -512,6 +517,20 @@ health `66.5`.  Largest measured local gaps: retro skills `30.0`, behavior `37.5
 `confidence_quality` `0.2`, `learning_curve` `6.1`, `relation_density` `10.3`.
 These are measured facts from a recorded snapshot, not targets.  Use
 `benchmark.py compare` to track movement against this baseline.
+
+**Wave 3 post-landing state (pre-commit):** repo retro `83.3` (git-scored; moves only after
+commit), local retro `82.3` (knowledge `71.9`, skills `100.0`, behavior `37.2`), health `71.9`.
+Wave 3 code changes improved `confidence_quality` and `learning_curve` via the v15 backfill
+migration and recurrence reward.  **Remaining gaps still requiring operator action:**
+
+| Gap | Current (live, pre-commit) | How to close |
+|-----|--------------------------|-------------|
+| `behavior.completion_rate` / `efficiency_ratio` | Low (in `37.2` composite) | Complete more tentacles with verified outcomes; increase session-to-commit cadence |
+| `knowledge.embed_pct` | Below target | Run `python3 ~/.copilot/tools/embed.py` to populate embeddings |
+| `health.relation_density` | Below target | Extract-knowledge run on larger session corpus grows relations |
+| `health.embedding_coverage` | Below target | Same as embed_pct — run `embed.py` after re-indexing |
+
+These are operational gaps, not code defects.  Wave 3 did not introduce fixes for them; they remain open for subsequent operator work.
 
 ### Browse UI
 

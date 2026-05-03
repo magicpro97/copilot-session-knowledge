@@ -1276,6 +1276,119 @@ test("sync-knowledge runtime reflects configured gateway", status["configured"] 
 test("sync-knowledge runtime pending count is zero after push", status["pending_txns"] == 0, str(status))
 db.close()
 
+# ---------------------------------------------------------------------------
+# Wave 3 — knowledge_entries confidence MAX merge semantics
+# ---------------------------------------------------------------------------
+print("\nwave3 — knowledge_entries confidence MAX merge semantics")
+print("-" * 53)
+
+
+def _wave3_make_db(path: Path) -> sqlite3.Connection:
+    """Create a minimal knowledge DB at path with sessions + knowledge_entries."""
+    conn = sqlite3.connect(str(path))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            path TEXT, summary TEXT, total_checkpoints INTEGER DEFAULT 0,
+            total_research INTEGER DEFAULT 0, total_files INTEGER DEFAULT 0,
+            has_plan INTEGER DEFAULT 0, source TEXT DEFAULT 'copilot',
+            indexed_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            document_id INTEGER,
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            tags TEXT DEFAULT '',
+            confidence REAL NOT NULL DEFAULT 0.5,
+            occurrence_count INTEGER DEFAULT 1,
+            first_seen TEXT DEFAULT (date('now')),
+            last_seen TEXT DEFAULT (date('now')),
+            source TEXT DEFAULT 'copilot',
+            UNIQUE(category, title, session_id)
+        )
+    """)
+    conn.commit()
+    return conn
+
+
+_w3_dir = ARTIFACT_DIR / "wave3_merge"
+_w3_dir.mkdir(parents=True, exist_ok=True)
+_target_path = _w3_dir / "target.db"
+_source_path = _w3_dir / "source.db"
+
+_target_db = _wave3_make_db(_target_path)
+_source_db = _wave3_make_db(_source_path)
+
+# Seed target with a low-confidence pattern entry
+_target_db.execute("INSERT INTO sessions (id) VALUES ('s1')")
+_target_db.execute(
+    "INSERT INTO knowledge_entries (session_id, category, title, confidence) VALUES ('s1', 'pattern', 'use context manager', 0.5)"
+)
+_target_db.commit()
+
+# Seed source with same entry but higher confidence (post-backfill)
+_source_db.execute("INSERT INTO sessions (id) VALUES ('s1')")
+_source_db.execute(
+    "INSERT INTO knowledge_entries (session_id, category, title, confidence) VALUES ('s1', 'pattern', 'use context manager', 0.8)"
+)
+_source_db.commit()
+_source_db.close()
+
+# Run sync
+_target_db.close()
+_target_db = sqlite3.connect(str(_target_path))
+_sync_result = sync_knowledge.sync_from_source(_target_db, _source_path)
+
+_merged_conf = _target_db.execute(
+    "SELECT confidence FROM knowledge_entries WHERE title='use context manager' AND session_id='s1'"
+).fetchone()
+_target_db.close()
+
+test(
+    "knowledge_entries confidence MAX merge: sync summary counts update-only merges",
+    isinstance(_sync_result, dict) and _sync_result.get("knowledge_entries") == 1,
+    str(_sync_result),
+)
+test(
+    "knowledge_entries confidence MAX merge: target updated to source's higher confidence",
+    _merged_conf is not None and _merged_conf[0] >= 0.8,
+    f"confidence={_merged_conf[0] if _merged_conf else 'missing'}",
+)
+
+# Also verify that sync does NOT downgrade if source has lower confidence
+_target2_path = _w3_dir / "target2.db"
+_source2_path = _w3_dir / "source2.db"
+_target2_db = _wave3_make_db(_target2_path)
+_source2_db = _wave3_make_db(_source2_path)
+_target2_db.execute("INSERT INTO sessions (id) VALUES ('s1')")
+_target2_db.execute(
+    "INSERT INTO knowledge_entries (session_id, category, title, confidence) VALUES ('s1', 'pattern', 'validate early', 0.85)"
+)
+_target2_db.commit()
+_source2_db.execute("INSERT INTO sessions (id) VALUES ('s1')")
+_source2_db.execute(
+    "INSERT INTO knowledge_entries (session_id, category, title, confidence) VALUES ('s1', 'pattern', 'validate early', 0.6)"
+)
+_source2_db.commit()
+_source2_db.close()
+_target2_db.close()
+_target2_db = sqlite3.connect(str(_target2_path))
+sync_knowledge.sync_from_source(_target2_db, _source2_path)
+_keep_conf = _target2_db.execute(
+    "SELECT confidence FROM knowledge_entries WHERE title='validate early' AND session_id='s1'"
+).fetchone()
+_target2_db.close()
+test(
+    "knowledge_entries confidence MAX merge: target keeps higher confidence when source is lower",
+    _keep_conf is not None and _keep_conf[0] >= 0.85,
+    f"confidence={_keep_conf[0] if _keep_conf else 'missing'}",
+)
+
 print(f"\nResult: {PASS} passed, {FAIL} failed")
 if FAIL:
     sys.exit(1)

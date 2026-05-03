@@ -216,6 +216,7 @@ python3 ~/.copilot/tools/tentacle.py status           # Dashboard: all tentacles
 python3 ~/.copilot/tools/tentacle.py verify api-export "python3 test_fixes.py" --label "tests"
 python3 ~/.copilot/tools/tentacle.py handoff api-export "Done. Learned X" --learn
 python3 ~/.copilot/tools/tentacle.py complete api-export  # Marks done, unblocks git commit
+python3 ~/.copilot/tools/tentacle.py complete api-export --auto-verify "python3 test_fixes.py"
 python3 ~/.copilot/tools/tentacle.py worktree api-export cleanup
 ```
 
@@ -224,9 +225,8 @@ python3 ~/.copilot/tools/tentacle.py worktree api-export cleanup
 > `briefing.md` and machine-readable `recall-pack.json`. `--output json --briefing` is
 > supported when the default bundle is enabled and returns `bundle_path`. `resume` refreshes
 > a single `AUTO-RECALL` block in `CONTEXT.md`.
-> `tentacle.py complete` is the verification/closure step: it marks the tentacle done, clears
-> the dispatched-subagent marker (unblocking `git commit`/`git push`), and auto-learns from
-> `handoff.md`. See [docs/USAGE.md](docs/USAGE.md) for the full recall/runtime details.
+> `tentacle.py complete` is the verification/closure step: it marks the tentacle done, clears the dispatched-subagent marker (unblocking `git commit`/`git push`), and auto-learns from
+> `handoff.md`. `--auto-verify <cmd>` (optional, fail-open) runs a verification command and persists evidence before closing. See [docs/USAGE.md](docs/USAGE.md) for the full recall/runtime details.
 
 **Commit restriction:** Sub-agents must not run `git commit` or `git push`. With
 `install.py --install-git-hooks`, both are **blocked at the git level** while the

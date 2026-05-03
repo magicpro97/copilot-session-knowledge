@@ -426,34 +426,102 @@ def sync_from_source(target_db: sqlite3.Connection, source_path: Path,
 
             if dry_run:
                 results["knowledge_entries"] = target_db.execute(f"""
-                    SELECT COUNT(*) FROM {source_alias}.knowledge_entries ke
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM knowledge_entries t
-                        WHERE t.category = ke.category
-                          AND t.title = ke.title
-                          AND t.session_id = ke.session_id
-                    )
+                    SELECT
+                        (
+                            SELECT COUNT(*)
+                            FROM {source_alias}.knowledge_entries ke
+                            WHERE NOT EXISTS (
+                                SELECT 1 FROM knowledge_entries t
+                                WHERE t.category = ke.category
+                                  AND t.title = ke.title
+                                  AND t.session_id = ke.session_id
+                            )
+                        )
+                        +
+                        (
+                            SELECT COUNT(*)
+                            FROM {source_alias}.knowledge_entries src
+                            JOIN knowledge_entries t
+                              ON t.category = src.category
+                             AND t.title = src.title
+                             AND t.session_id = src.session_id
+                            WHERE src.confidence > t.confidence
+                        )
                 """).fetchone()[0]
             else:
+                update_changes = 0
+                insert_changes = 0
                 if has_ke_source:
+                    # Step 1: Update confidence for existing matching entries (MAX semantics)
                     target_db.execute(f"""
-                        INSERT OR IGNORE INTO knowledge_entries
+                        UPDATE knowledge_entries
+                        SET confidence = MAX(confidence, (
+                            SELECT src.confidence
+                            FROM {source_alias}.knowledge_entries src
+                            WHERE src.category = knowledge_entries.category
+                              AND src.title = knowledge_entries.title
+                              AND src.session_id = knowledge_entries.session_id
+                        ))
+                        WHERE EXISTS (
+                            SELECT 1 FROM {source_alias}.knowledge_entries src
+                            WHERE src.category = knowledge_entries.category
+                              AND src.title = knowledge_entries.title
+                              AND src.session_id = knowledge_entries.session_id
+                              AND src.confidence > knowledge_entries.confidence
+                        )
+                    """)
+                    update_changes = target_db.execute("SELECT changes()").fetchone()[0]
+                    # Step 2: Insert new entries that don't exist in target
+                    target_db.execute(f"""
+                        INSERT INTO knowledge_entries
                         (session_id, document_id, category, title, content, tags, confidence,
                          occurrence_count, first_seen, last_seen, source)
                         SELECT session_id, document_id, category, title, content, tags, confidence,
                                occurrence_count, first_seen, last_seen, COALESCE(source, 'copilot')
-                        FROM {source_alias}.knowledge_entries
+                        FROM {source_alias}.knowledge_entries ke
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM knowledge_entries t
+                            WHERE t.category = ke.category
+                              AND t.title = ke.title
+                              AND t.session_id = ke.session_id
+                        )
                     """)
+                    insert_changes = target_db.execute("SELECT changes()").fetchone()[0]
                 else:
                     target_db.execute(f"""
-                        INSERT OR IGNORE INTO knowledge_entries
+                        UPDATE knowledge_entries
+                        SET confidence = MAX(confidence, (
+                            SELECT src.confidence
+                            FROM {source_alias}.knowledge_entries src
+                            WHERE src.category = knowledge_entries.category
+                              AND src.title = knowledge_entries.title
+                              AND src.session_id = knowledge_entries.session_id
+                        ))
+                        WHERE EXISTS (
+                            SELECT 1 FROM {source_alias}.knowledge_entries src
+                            WHERE src.category = knowledge_entries.category
+                              AND src.title = knowledge_entries.title
+                              AND src.session_id = knowledge_entries.session_id
+                              AND src.confidence > knowledge_entries.confidence
+                        )
+                    """)
+                    update_changes = target_db.execute("SELECT changes()").fetchone()[0]
+                    target_db.execute(f"""
+                        INSERT INTO knowledge_entries
                         (session_id, document_id, category, title, content, tags, confidence,
                          occurrence_count, first_seen, last_seen, source)
                         SELECT session_id, document_id, category, title, content, tags, confidence,
                                occurrence_count, first_seen, last_seen, 'copilot'
-                        FROM {source_alias}.knowledge_entries
+                        FROM {source_alias}.knowledge_entries ke
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM knowledge_entries t
+                            WHERE t.category = ke.category
+                              AND t.title = ke.title
+                              AND t.session_id = ke.session_id
+                        )
                     """)
-                results["knowledge_entries"] = target_db.execute("SELECT changes()").fetchone()[0]
+                    insert_changes = target_db.execute("SELECT changes()").fetchone()[0]
+                results["knowledge_entries"] = update_changes + insert_changes
 
         # 5. Sync embeddings (if table exists in both)
         if "embeddings" in src_tables:

@@ -1319,18 +1319,22 @@ def cmd_worktree(args) -> None:
 # ---------------------------------------------------------------------------
 
 
-def cmd_verify(args) -> None:
-    """Run a shell command and persist verification metadata in meta.json."""
-    tentacles = get_tentacles_dir(args.session_dir)
-    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
+def _run_and_record_verification(
+    tentacle_dir: Path,
+    meta: dict,
+    meta_path: Path,
+    cmd: str,
+    label: str,
+    timeout: int = 120,
+) -> tuple[int, dict]:
+    """Run a shell command and append the result to meta["verifications"].
 
-    if not tentacle_dir.exists():
-        print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
-        sys.exit(1)
+    Determines the working directory from the tentacle's worktree or git root.
+    Writes a log file under tentacle_dir/verification/.
+    Updates meta in-place and writes meta_path.
 
-    meta_path = tentacle_dir / "meta.json"
-    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-
+    Returns (exit_code, verif_record). Does NOT call sys.exit — callers decide.
+    """
     # Determine working directory: worktree > git root > cwd
     wt_info = meta.get("worktree") or {}
     wt_path_str = wt_info.get("path") if wt_info.get("prepared") else None
@@ -1340,11 +1344,6 @@ def cmd_verify(args) -> None:
         git_root = find_git_root()
         cwd = str(git_root) if git_root else str(Path.cwd())
 
-    cmd = getattr(args, "verify_command", None) or getattr(args, "command", "")
-    label = args.label if getattr(args, "label", None) else cmd[:40].strip()
-    timeout = getattr(args, "timeout", 120) or 120
-
-    # Write log to verification/ subdir
     verif_dir = tentacle_dir / "verification"
     verif_dir.mkdir(exist_ok=True)
     ts_slug = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -1395,10 +1394,38 @@ def cmd_verify(args) -> None:
     meta["verifications"] = verifications
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
+    return exit_code, verif_record
+
+
+def cmd_verify(args) -> None:
+    """Run a shell command and persist verification metadata in meta.json."""
+    tentacles = get_tentacles_dir(args.session_dir)
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
+
+    if not tentacle_dir.exists():
+        print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    meta_path = tentacle_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+
+    cmd = getattr(args, "verify_command", None) or getattr(args, "command", "")
+    label = args.label if getattr(args, "label", None) else cmd[:40].strip()
+    timeout = getattr(args, "timeout", 120) or 120
+
+    exit_code, verif_record = _run_and_record_verification(
+        tentacle_dir=tentacle_dir,
+        meta=meta,
+        meta_path=meta_path,
+        cmd=cmd,
+        label=label,
+        timeout=timeout,
+    )
+
     icon = "✅" if exit_code == 0 else "❌"
-    print(f"{icon} verify [{label}]: exit={exit_code} ({duration:.1f}s)")
-    print(f"   cwd: {cwd}")
-    print(f"   log: {log_path}")
+    print(f"{icon} verify [{label}]: exit={exit_code} ({verif_record['duration_seconds']:.1f}s)")
+    print(f"   cwd: {verif_record['cwd']}")
+    print(f"   log: {verif_record['log_path']}")
 
     if exit_code != 0:
         sys.exit(exit_code if exit_code > 0 else 1)
@@ -1985,6 +2012,26 @@ def cmd_complete(args):
     handoff_path = tentacle_dir / "handoff.md"
     meta_path = tentacle_dir / "meta.json"
 
+    # 0. Auto-verify step (fail-open — failure warns but does not block completion)
+    auto_verify_cmd = getattr(args, "auto_verify", None)
+    if auto_verify_cmd:
+        meta_pre = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+        label = auto_verify_cmd[:40].strip()
+        timeout = getattr(args, "auto_verify_timeout", None) or 120
+        print(f"🔍 Running auto-verify: {auto_verify_cmd}")
+        av_exit, av_rec = _run_and_record_verification(
+            tentacle_dir=tentacle_dir,
+            meta=meta_pre,
+            meta_path=meta_path,
+            cmd=auto_verify_cmd,
+            label=label,
+            timeout=timeout,
+        )
+        icon = "✅" if av_exit == 0 else "❌"
+        print(f"{icon} auto-verify exit={av_exit} ({av_rec['duration_seconds']:.1f}s)")
+        if av_exit != 0:
+            print(f"⚠️  auto-verify failed (exit={av_exit}) — completing anyway (fail-open)")
+
     # 1. Mark all todos done
     if todo_path.exists():
         with file_locked(todo_path):
@@ -2002,6 +2049,10 @@ def cmd_complete(args):
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
     meta["status"] = "completed"
     meta["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+    # 2a. Warn if no verification evidence (fail-open: warn only, never block)
+    if not (meta.get("verifications") or []):
+        print("⚠️  No verification evidence recorded — run 'verify' or use --auto-verify before completing")
 
     # 2a. Extract structured handoff fields (terminal_status, changed_files)
     terminal_status = None
@@ -2859,6 +2910,25 @@ def main():
     p_complete = sub.add_parser("complete", help="Complete tentacle: mark done + learn from handoff")
     p_complete.add_argument("name", help="Tentacle name")
     p_complete.add_argument("--no-learn", action="store_true", help="Skip auto-learning from handoff")
+    p_complete.add_argument(
+        "--auto-verify",
+        metavar="COMMAND",
+        dest="auto_verify",
+        default=None,
+        help=(
+            "Run COMMAND as a verification step before completing. "
+            "Failure warns but does not block completion (fail-open). "
+            "Example: --auto-verify 'python3 tests/test_fixes.py'"
+        ),
+    )
+    p_complete.add_argument(
+        "--auto-verify-timeout",
+        type=int,
+        default=120,
+        dest="auto_verify_timeout",
+        metavar="SECONDS",
+        help="Timeout in seconds for --auto-verify command (default: 120)",
+    )
 
     # bundle (standalone command)
     p_bundle = sub.add_parser("bundle", help="Materialize a per-run context bundle for a tentacle subagent")

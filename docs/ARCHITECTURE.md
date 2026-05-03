@@ -24,8 +24,8 @@ watch-sessions.py  ──→  Incremental re-indexing (adaptive polling)
 ```
 
 **Phases:**
-1. `build-session-index.py` — Phase 1 (session metadata) + Phase 2 (event content) via `providers/` → SQLite FTS5 (schema v8)
-2. `extract-knowledge.py` — classifies into 7 types, deduplicates by content hash, auto-detects relations
+1. `build-session-index.py` — Phase 1 (session metadata) + Phase 2 (event content) via `providers/` → SQLite FTS5 (schema v8; current migration level v15)
+2. `extract-knowledge.py` — classifies into 7 types, deduplicates by content hash, auto-detects relations; category-aware confidence floors (pattern=0.5, others=0.4) and recurrence reward (+0.03 per upsert, capped)
 3. `query-session.py` / `briefing.py` — BM25 keyword search + optional semantic vector search (RRF blend)
 4. `watch-sessions.py` — adaptive polling (5 s / 30 s / 300 s tiers), auto re-indexes on file changes
 5. `learn.py` — manual knowledge entry; CLI interface for agents to record learnings during a session
@@ -35,7 +35,7 @@ watch-sessions.py  ──→  Incremental re-indexing (adaptive polling)
 | Script | Role |
 |--------|------|
 | `build-session-index.py` | Indexes session files → FTS5 DB |
-| `extract-knowledge.py` | Classifies + deduplicates knowledge entries |
+| `extract-knowledge.py` | Classifies + deduplicates knowledge entries; category-aware confidence floors; recurrence reward |
 | `query-session.py` | FTS5 + semantic search; JSON/markdown export |
 | `briefing.py` | Task-scoped recall; context packs for agent injection |
 | `watch-sessions.py` | File watcher; triggers incremental re-indexing |
@@ -43,7 +43,7 @@ watch-sessions.py  ──→  Incremental re-indexing (adaptive polling)
 | `tentacle.py` | Multi-agent orchestration (create → todo → bundle → swarm → complete) |
 | `embed.py` | Optional semantic search via embedding APIs (OpenAI, Fireworks, etc.) with TF-IDF fallback |
 | `claude-adapter.py` | Parses Claude Code JSONL sessions into the common DB format |
-| `sync-knowledge.py` | Merges `knowledge.db` files across environments (Windows ↔ WSL) |
+| `sync-knowledge.py` | Merges `knowledge.db` files across environments (Windows ↔ WSL); MAX confidence semantics |
 | `sync-config.py` | Single `connection_string` config; `--setup`, `--setup-env`, `--status --json` |
 | `sync-daemon.py` | Local-first push/pull runtime; backlog-aware adaptive limits |
 | `sync-status.py` | Local sync diagnostics; `--health-check`, `--audit`, `--json` |
@@ -80,7 +80,7 @@ Hooks live in `hooks/` and are deployed to `~/.copilot/hooks/` (Copilot CLI only
 
 `~/.copilot/session-state/knowledge.db` — SQLite with FTS5, WAL journal mode, and optional vector embeddings.
 
-**Schema versions:** v1–v6 (legacy) → v7 (two-phase indexing + `event_offsets`) → v8 (current: `sessions_fts` contentless FTS5 + BM25). Run `python3 ~/.copilot/tools/migrate.py` to upgrade.
+**Schema versions:** v1–v6 (legacy) → v7 (two-phase indexing + `event_offsets`) → v8 (`sessions_fts` contentless FTS5 + BM25) → v9–v14 (eval, provenance, recall, sync, benchmark) → v15 (`confidence_backfill_wave3`: raises pattern confidence floor to 0.5 and applies recurrence reward to existing entries). Run `python3 ~/.copilot/tools/migrate.py` to upgrade.
 
 ## `providers/` Package
 
@@ -92,6 +92,8 @@ Hooks live in `hooks/` and are deployed to `~/.copilot/hooks/` (Copilot CLI only
 
 `.octogent/` stores local tentacle state and is gitignored in this repo.  
 Runtime-bundle workflow: `create` → `todo add` → `bundle` (optional) → `swarm` → `complete`.
+
+`complete` accepts an optional `--auto-verify <cmd>` flag (fail-open): runs the command, persists the result as verification evidence before closing. Use `--auto-verify-timeout <seconds>` (default: 120 s) if the command is long-running.
 
 Sub-agents **must** write a structured handoff before stopping:
 ```

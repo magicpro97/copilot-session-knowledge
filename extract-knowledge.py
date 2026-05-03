@@ -370,6 +370,9 @@ PATTERN_INDICATORS = [
     r"(?:use\s+\w+\s+instead\s+of|prefer|recommend)",
     r"(?:standard|template|reusable|common\s+(?:pattern|style|approach))",
     r"(?:luôn|nên|quy\s+tắc|mẫu|chuẩn)",
+    r"(?:good\s+practice|consistent(?:ly)?|enforce|ensure\s+(?:that|you))\b",
+    r"\b(?:tip|guideline|approach|technique|strategy)\b",
+    r"\b(?:make\s+sure|remember\s+to|keep\s+in\s+mind|note\s+that)\b",
 ]
 
 DECISION_INDICATORS = [
@@ -578,13 +581,30 @@ def ensure_tables(db: sqlite3.Connection):
 
 
 def classify_paragraph(text: str) -> list[tuple[str, float]]:
-    """Classify a paragraph into knowledge categories with confidence."""
+    """Classify a paragraph into knowledge categories with confidence.
+
+    Category-aware thresholds and confidence floors:
+      - pattern: threshold=1 (easier to extract), floor=0.5
+      - decision: threshold=2, floor=0.5
+      - mistake/tool/feature/refactor/discovery: threshold=2, floor=0.4
+    """
     # Skip noise: interview Q&A, pure tables, pure code
     if _is_noise(text):
         return []
 
     text_lower = text.lower()
     results = []
+
+    # (threshold, confidence_floor) per category
+    _CATEGORY_CONFIG = {
+        "pattern": (1, 0.5),
+        "decision": (2, 0.5),
+        "mistake": (2, 0.4),
+        "tool": (2, 0.4),
+        "feature": (2, 0.4),
+        "refactor": (2, 0.4),
+        "discovery": (2, 0.4),
+    }
 
     for category, indicators in [
         ("mistake", MISTAKE_INDICATORS),
@@ -595,12 +615,13 @@ def classify_paragraph(text: str) -> list[tuple[str, float]]:
         ("refactor", REFACTOR_INDICATORS),
         ("discovery", DISCOVERY_INDICATORS),
     ]:
+        threshold, conf_floor = _CATEGORY_CONFIG.get(category, (2, 0.4))
         score = 0
         for pattern in indicators:
             matches = len(re.findall(pattern, text_lower, re.IGNORECASE))
             score += matches
-        if score >= 2:  # At least 2 indicator matches
-            confidence = min(1.0, score / 5.0)
+        if score >= threshold:
+            confidence = max(conf_floor, min(1.0, score / 5.0))
             results.append((category, confidence))
 
     return results
@@ -741,6 +762,24 @@ def extract_tags(text: str) -> str:
         (r"\b(?:pagination)\b", "pagination"),
         (r"\b(?:modal|dialog)\b", "ui"),
         (r"\b(?:SQL|native\s+SQL)\b", "sql"),
+        # Extended coverage
+        (r"\b(?:Python|python3?)\b", "python"),
+        (r"\b(?:TypeScript)\b", "typescript"),
+        (r"\b(?:React(?:JS)?|ReactDOM|react-native)\b", "react"),
+        (r"\b(?:Node(?:\.js)?|nodejs)\b", "nodejs"),
+        (r"\b(?:Kotlin)\b", "kotlin"),
+        (r"\b(?:Swift)\b", "swift"),
+        (r"\b(?:AWS|Lambda|ECS|CloudFront|S3|DynamoDB|SQS|SNS)\b", "aws"),
+        (r"\b(?:pytest|unittest|vitest|jest|mocha)\b", "testing"),
+        (r"\b(?:async|await|asyncio|coroutine)\b", "async"),
+        (r"\b(?:SQLite|sqlite3)\b", "sqlite"),
+        (r"\b(?:migration|schema|database)\b", "database"),
+        (r"\b(?:authentication|authorization|auth|JWT|OAuth|token)\b", "auth"),
+        (r"\b(?:REST|GraphQL|API|endpoint|HTTP)\b", "api"),
+        (r"\b(?:CI|CD|GitHub\s+Actions|pipeline|workflow)\b", "ci-cd"),
+        (r"\b(?:Compose|Jetpack\s+Compose|Composable)\b", "compose"),
+        (r"\b(?:iOS|UIKit|SwiftUI|Xcode)\b", "ios"),
+        (r"\b(?:Android|Gradle|AndroidX)\b", "android"),
     ]
 
     tags = set()
@@ -1007,11 +1046,11 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
 
                 if existing:
                     stable_id = _knowledge_stable_id(session_id, category, title, topic_key)
-                    # Upsert: update existing entry with newer content
+                    # Upsert: update existing entry with newer content + recurrence reward
                     db.execute(
                         """
                         UPDATE knowledge_entries
-                        SET content = ?, confidence = MAX(confidence, ?),
+                        SET content = ?, confidence = MIN(1.0, MAX(confidence, ?) + 0.03),
                             revision_count = revision_count + 1,
                             occurrence_count = occurrence_count + 1,
                             last_seen = ?, content_hash = ?, tags = ?,
@@ -1133,7 +1172,10 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
             db.execute(
                 """
                 UPDATE knowledge_entries
-                SET confidence = MAX(0.3, confidence * 0.95)
+                SET confidence = MAX(0.3,
+                    CASE WHEN confidence >= 0.8 THEN confidence * 0.98
+                         ELSE confidence * 0.95
+                    END)
                 WHERE last_seen < ? AND confidence > 0.3
             """,
                 (today,),
@@ -1342,18 +1384,20 @@ def extract_relations(db: sqlite3.Connection) -> int:
             break
 
     # 4. RESOLVED_BY — mistake + pattern/tool in same session
+    # Iterate session groups in newest-first order and stop only when the
+    # global relation budget is exhausted.
     for sid, group in by_session.items():
         mistakes = [e for e in group if e[2] == "mistake"]
         resolvers = [e for e in group if e[2] in ("pattern", "tool")]
-        done = False
+        budget_done = False
         for m in mistakes:
+            if budget_done:
+                break
             for r in resolvers:
                 if _add(m[0], r[0], "RESOLVED_BY", 0.8):
-                    done = True
+                    budget_done = True
                     break
-            if done:
-                break
-        if done:
+        if budget_done:
             break
 
     # Batch insert all relations

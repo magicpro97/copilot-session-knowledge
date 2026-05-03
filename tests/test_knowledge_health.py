@@ -1009,6 +1009,52 @@ try:
 except TypeError as e:
     test("compute_health toward_100 is JSON serializable", False, str(e))
 
+# ===========================================================================
+# Wave 3 — confidence quality: high-confidence patterns improve metric
+# ===========================================================================
+
+section("wave3 — high-confidence patterns improve high_confidence_pct")
+
+_uri_wave3 = _new_uri()
+_db_wave3 = _make_db(_uri_wave3)
+kh.get_db = _get_db_factory(_uri_wave3)
+
+# Seed with 6 entries: 4 patterns at confidence >= 0.8, 2 mistakes at 0.4
+_insert_entries(
+    _db_wave3,
+    [
+        {"category": "pattern", "confidence": 0.8, "title": "use context manager", "session_id": "s1"},
+        {"category": "pattern", "confidence": 0.85, "title": "prefer dataclass", "session_id": "s1"},
+        {"category": "pattern", "confidence": 0.9, "title": "cache results", "session_id": "s2"},
+        {"category": "pattern", "confidence": 0.82, "title": "validate early", "session_id": "s2"},
+        {"category": "mistake", "confidence": 0.4, "title": "forgot to close file", "session_id": "s1"},
+        {"category": "mistake", "confidence": 0.45, "title": "import error", "session_id": "s2"},
+    ],
+)
+_ins_wave3 = kh.compute_insights()
+_high_conf_pct = _ins_wave3.get("overview", {}).get("high_confidence_pct", 0)
+test("high_confidence_pct >= 50.0 with 4/6 high-conf entries", _high_conf_pct >= 50.0, f"got {_high_conf_pct}")
+test("high_confidence_pct <= 100.0", _high_conf_pct <= 100.0, f"got {_high_conf_pct}")
+
+# Verify low-confidence only DB gives lower pct
+_uri_low = _new_uri()
+_db_low = _make_db(_uri_low)
+kh.get_db = _get_db_factory(_uri_low)
+_insert_entries(
+    _db_low,
+    [
+        {"category": "pattern", "confidence": 0.4, "title": "p1", "session_id": "s1"},
+        {"category": "pattern", "confidence": 0.4, "title": "p2", "session_id": "s1"},
+        {"category": "mistake", "confidence": 0.4, "title": "m1", "session_id": "s1"},
+    ],
+)
+_ins_low = kh.compute_insights()
+_low_conf_pct = _ins_low.get("overview", {}).get("high_confidence_pct", 0)
+test("low-confidence DB has lower pct than high-confidence DB", _low_conf_pct < _high_conf_pct,
+     f"low={_low_conf_pct} high={_high_conf_pct}")
+
+kh.get_db = orig_get_db
+
 print(f"\n{'=' * 50}")
 print(f"Results: {_PASS} passed, {_FAIL} failed")
 if _ERRORS:

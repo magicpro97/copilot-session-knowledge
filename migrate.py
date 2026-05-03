@@ -658,6 +658,16 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_bsnap_recorded ON benchmark_snapshots(recorded_at)",
             ],
         ),
+        (
+            15,
+            "confidence_backfill_wave3",
+            [
+                # Raise confidence floor for extracted patterns to 0.5
+                "UPDATE knowledge_entries SET confidence = MAX(confidence, 0.5) WHERE category = 'pattern' AND confidence < 0.5",
+                # Recurrence reward: bump entries seen 2+ times (capped to avoid runaway)
+                "UPDATE knowledge_entries SET confidence = MIN(1.0, confidence + 0.03 * MIN(COALESCE(occurrence_count, 1) - 1, 5)) WHERE COALESCE(occurrence_count, 1) >= 2 AND confidence <= 0.92",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:

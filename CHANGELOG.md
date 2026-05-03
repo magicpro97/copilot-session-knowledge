@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Wave 3 — knowledge pipeline hardening and verification lifecycle:**
+  - `tentacle.py complete` now supports `--auto-verify <cmd>` (optional): runs the command, persists the result as a `tentacle_verifications` row, and logs pass/fail before closing the tentacle. Fail-open — completion proceeds even when the verification command exits non-zero. `--auto-verify-timeout <seconds>` controls the timeout (default: 120 s).
+  - `extract-knowledge.py` — category-aware confidence floors: `pattern` entries use floor `0.5`; other categories use floor `0.4`. Recurring entries (same topic key seen again) receive a `+0.03` recurrence reward on each upsert, capped so confidence never exceeds `1.0`. `learn.py` raises the default initial confidence for `pattern` entries from `0.6` to `0.7`.
+  - `sync-knowledge.py` — merge now uses MAX confidence semantics: when a matching entry exists in both source and target, the higher confidence value is kept rather than overwriting.
+  - `migrate.py` — v15 `confidence_backfill_wave3`: raises pattern confidence floor to `0.5` and applies a recurrence reward (`+0.03 × min(occurrence_count − 1, 5)`) to entries with `occurrence_count ≥ 2` in existing databases (capped to avoid runaway). Current schema version: **v15**.
+  - **Remaining operational gaps after Wave 3 (not fixed by code; require operator action):** local retro `behavior` sub-dimensions (`completion_rate`, `efficiency_ratio`); knowledge `embed_pct`; health `confidence_quality`, `relation_density`, `embedding_coverage`. Run `embed.py` to grow embedding coverage; add more verified tentacles to improve confidence quality and relation density.
 - **Toward-100 retro and health diagnostics wave** — additive diagnostic surfaces for understanding and tracking score gaps:
   - `retro.py` gains a `toward_100` top-level array in the JSON payload: a ranked list of sections scoring below 100, each with `section`, `score`, `gap` (100 − score), and metric-derived `barriers`. `--subreport behavior` is now a valid subreport target (local mode only). Diagnostics are derived from measured metrics and do **not** change the score formula or any existing subscore.
   - `knowledge-health.py` gains a `toward_100` object in the insights output: `top_gaps` list with per-metric gap entries and `total_gap` aggregate, surfacing `confidence_quality`, `learning_curve`, and `relation_density` as the largest measured health gaps (baseline: health `66.5`, measured on `2850fe12153f`).

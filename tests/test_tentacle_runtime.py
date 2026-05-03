@@ -6094,5 +6094,222 @@ class TestSubagentStopRuleNoneGuard(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestCmdCompleteVerification(unittest.TestCase):
+    """Tests for verify-before-complete ergonomics added in Wave 3.
+
+    Covers:
+    - Warning emitted when completing without any verification evidence
+    - No warning when verification evidence already exists
+    - --auto-verify runs the command and records evidence (fail-open on failure)
+    - Persisted outcome metrics correctly reflect auto-verify evidence
+    """
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "complete_verify"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.tentacle_dir = make_tentacle("verify-test", self.base)
+        # Write a minimal handoff so _parse_handoff_status does not fail
+        (self.tentacle_dir / "handoff.md").write_text(
+            "# Handoff Notes\n\n## [2026-01-01 00:00 UTC]\n\nDone.\nSTATUS: DONE\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self):
+        import shutil
+        if SCRATCH_DIR.exists():
+            shutil.rmtree(SCRATCH_DIR, ignore_errors=True)
+
+    def _run_complete(self, extra_kwargs=None):
+        """Run cmd_complete with standard fakes, return captured stdout."""
+        kwargs = dict(name="verify-test", no_learn=True, auto_verify=None, auto_verify_timeout=120)
+        if extra_kwargs:
+            kwargs.update(extra_kwargs)
+        args = fake_args(**kwargs)
+
+        import io
+        from contextlib import redirect_stdout
+        out = io.StringIO()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_clear_dispatched_subagent_marker"):
+                with patch.object(T, "_persist_outcome_metrics", return_value=True):
+                    with redirect_stdout(out):
+                        T.cmd_complete(args)
+        return out.getvalue()
+
+    def test_complete_warns_when_no_verifications(self):
+        """Complete without any verifications → warning printed."""
+        output = self._run_complete()
+        self.assertIn("No verification evidence", output)
+
+    def test_complete_no_warning_when_verifications_exist(self):
+        """Complete with existing verification evidence → no warning about missing evidence."""
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["verifications"] = [
+            {
+                "label": "tests",
+                "command": "echo pass",
+                "cwd": "/repo",
+                "exit_code": 0,
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "finished_at": "2026-01-01T00:00:01+00:00",
+                "duration_seconds": 1.0,
+                "log_path": str(self.tentacle_dir / "verification" / "fake.log"),
+            }
+        ]
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        output = self._run_complete()
+        self.assertNotIn("No verification evidence", output)
+
+    def test_complete_auto_verify_passing_command_records_evidence(self):
+        """--auto-verify with a passing command records verification in meta.json."""
+        import io
+        from contextlib import redirect_stdout
+        args = fake_args(
+            name="verify-test",
+            no_learn=True,
+            auto_verify="echo hello_verify",
+            auto_verify_timeout=30,
+        )
+        out = io.StringIO()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_clear_dispatched_subagent_marker"):
+                with patch.object(T, "_persist_outcome_metrics", return_value=True):
+                    with redirect_stdout(out):
+                        T.cmd_complete(args)
+
+        output = out.getvalue()
+        # Should not show the "no evidence" warning since we ran auto-verify
+        self.assertNotIn("No verification evidence", output)
+
+        # Verification must be recorded in meta.json
+        meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
+        verifications = meta.get("verifications", [])
+        self.assertGreaterEqual(len(verifications), 1)
+        # The auto-verify record should have exit_code=0
+        auto_verifs = [v for v in verifications if "echo hello_verify" in v.get("command", "")]
+        self.assertEqual(len(auto_verifs), 1)
+        self.assertEqual(auto_verifs[0]["exit_code"], 0)
+
+    def test_complete_auto_verify_failing_command_is_fail_open(self):
+        """--auto-verify with a failing command warns but still completes (fail-open)."""
+        import io
+        from contextlib import redirect_stdout
+
+        # A command that always fails (cross-platform: exit 1 via python)
+        fail_cmd = f"{sys.executable} -c 'import sys; sys.exit(1)'"
+        args = fake_args(
+            name="verify-test",
+            no_learn=True,
+            auto_verify=fail_cmd,
+            auto_verify_timeout=30,
+        )
+        out = io.StringIO()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_clear_dispatched_subagent_marker"):
+                with patch.object(T, "_persist_outcome_metrics", return_value=True):
+                    with redirect_stdout(out):
+                        T.cmd_complete(args)  # Must NOT raise / sys.exit
+
+        output = out.getvalue()
+        # Fail-open: should warn about failed auto-verify
+        self.assertIn("auto-verify failed", output)
+
+        # Status must still be completed
+        meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta["status"], "completed")
+
+        # The failed verification is still recorded
+        verifications = meta.get("verifications", [])
+        self.assertGreaterEqual(len(verifications), 1)
+        failed = [v for v in verifications if v.get("exit_code", 0) != 0]
+        self.assertGreaterEqual(len(failed), 1)
+
+    def test_complete_auto_verify_evidence_persisted_to_metrics_db(self):
+        """When auto-verify produces evidence, _persist_outcome_metrics receives non-zero counts."""
+        captured_calls = []
+
+        def fake_persist(tentacle_name, tentacle_dir, outcome_status, learned=0, summary=""):
+            meta_path = tentacle_dir / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+            verifs = meta.get("verifications") or []
+            captured_calls.append({
+                "tentacle_name": tentacle_name,
+                "outcome_status": outcome_status,
+                "verif_count": len(verifs),
+                "verif_passed": sum(1 for v in verifs if v.get("exit_code") == 0),
+            })
+            return True
+
+        import io
+        from contextlib import redirect_stdout
+        args = fake_args(
+            name="verify-test",
+            no_learn=True,
+            auto_verify="echo ok",
+            auto_verify_timeout=30,
+        )
+        out = io.StringIO()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_clear_dispatched_subagent_marker"):
+                with patch.object(T, "_persist_outcome_metrics", side_effect=fake_persist):
+                    with redirect_stdout(out):
+                        T.cmd_complete(args)
+
+        self.assertGreaterEqual(len(captured_calls), 1)
+        call = captured_calls[0]
+        self.assertEqual(call["tentacle_name"], "verify-test")
+        self.assertEqual(call["outcome_status"], "completed")
+        # auto-verify ran 'echo ok' → at least 1 verification, at least 1 passed
+        self.assertGreaterEqual(call["verif_count"], 1)
+        self.assertGreaterEqual(call["verif_passed"], 1)
+
+    def test_run_and_record_verification_helper_writes_meta(self):
+        """_run_and_record_verification writes the record into meta and meta_path."""
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["verifications"] = []
+
+        exit_code, record = T._run_and_record_verification(
+            tentacle_dir=self.tentacle_dir,
+            meta=meta,
+            meta_path=meta_path,
+            cmd="echo test_helper",
+            label="unit-test",
+            timeout=30,
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(record["exit_code"], 0)
+        self.assertEqual(record["label"], "unit-test")
+        self.assertIn("echo test_helper", record["command"])
+
+        # meta was updated in-place
+        self.assertEqual(len(meta["verifications"]), 1)
+        # meta_path was written
+        persisted = json.loads(meta_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(persisted.get("verifications", [])), 1)
+
+    def test_run_and_record_verification_helper_returns_nonzero_on_failure(self):
+        """_run_and_record_verification returns nonzero exit code on a failing command."""
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["verifications"] = []
+
+        fail_cmd = f"{sys.executable} -c 'import sys; sys.exit(2)'"
+        exit_code, record = T._run_and_record_verification(
+            tentacle_dir=self.tentacle_dir,
+            meta=meta,
+            meta_path=meta_path,
+            cmd=fail_cmd,
+            label="fail-test",
+            timeout=30,
+        )
+        self.assertNotEqual(exit_code, 0)
+        self.assertNotEqual(record["exit_code"], 0)
+        # Still appended to meta
+        self.assertEqual(len(meta["verifications"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

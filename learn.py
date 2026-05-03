@@ -404,7 +404,7 @@ def add_entry(
     if confidence is None:
         confidence = {
             "mistake": 0.7,
-            "pattern": 0.6,
+            "pattern": 0.7,
             "decision": 0.8,
             "tool": 0.5,
             "feature": 0.7,

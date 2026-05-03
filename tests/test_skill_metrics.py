@@ -314,6 +314,127 @@ code_missing_sm = auto_update._run_skill_metrics_surface([])
 test("auto-update: skill-metrics proxy fails when script missing", code_missing_sm == 1)
 
 # ---------------------------------------------------------------------------
+print("\n📊 skill-metrics.py — Wave 3: outcomes_with_passing_verification")
+
+# Reload skill_metrics to use a fresh artifact DB
+wv3_db_path = ARTIFACT_DIR / "wave3-skill-metrics.db"
+
+db_wv3 = sqlite3.connect(str(wv3_db_path))
+db_wv3.executescript(
+    """
+    CREATE TABLE IF NOT EXISTS tentacle_outcomes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tentacle_name TEXT NOT NULL,
+        tentacle_id TEXT,
+        git_root TEXT,
+        description TEXT,
+        outcome_status TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        worktree_used INTEGER NOT NULL DEFAULT 0,
+        worktree_path TEXT,
+        verification_total INTEGER NOT NULL DEFAULT 0,
+        verification_passed INTEGER NOT NULL DEFAULT 0,
+        verification_failed INTEGER NOT NULL DEFAULT 0,
+        todo_total INTEGER NOT NULL DEFAULT 0,
+        todo_done INTEGER NOT NULL DEFAULT 0,
+        learned INTEGER NOT NULL DEFAULT 0,
+        duration_seconds REAL,
+        summary TEXT
+    );
+    CREATE TABLE IF NOT EXISTS tentacle_outcome_skills (
+        outcome_id INTEGER NOT NULL,
+        skill_name TEXT NOT NULL,
+        PRIMARY KEY (outcome_id, skill_name)
+    );
+    CREATE TABLE IF NOT EXISTS tentacle_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        outcome_id INTEGER,
+        tentacle_name TEXT NOT NULL,
+        tentacle_id TEXT,
+        label TEXT NOT NULL,
+        command TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        exit_code INTEGER NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT NOT NULL,
+        duration_seconds REAL NOT NULL,
+        log_path TEXT
+    );
+    """
+)
+# Insert two outcomes: one with passing verifications, one without
+db_wv3.execute(
+    "INSERT INTO tentacle_outcomes "
+    "(tentacle_name, outcome_status, recorded_at, verification_passed, verification_failed) "
+    "VALUES (?, ?, ?, ?, ?)",
+    ("verified-tent", "completed", "2026-05-01T00:00:00+00:00", 2, 0),
+)
+db_wv3.execute(
+    "INSERT INTO tentacle_outcomes "
+    "(tentacle_name, outcome_status, recorded_at, verification_passed, verification_failed) "
+    "VALUES (?, ?, ?, ?, ?)",
+    ("unverified-tent", "completed", "2026-05-01T00:00:01+00:00", 0, 0),
+)
+# Insert verifications for outcome id=1
+db_wv3.execute(
+    "INSERT INTO tentacle_verifications "
+    "(outcome_id, tentacle_name, tentacle_id, label, command, cwd, "
+    "exit_code, started_at, finished_at, duration_seconds) "
+    "VALUES (1, 'verified-tent', 'uid-v1', 'tests', 'python3 test.py', '/repo', "
+    "0, '2026-05-01T00:00:00+00:00', '2026-05-01T00:00:05+00:00', 5.0)",
+)
+db_wv3.execute(
+    "INSERT INTO tentacle_verifications "
+    "(outcome_id, tentacle_name, tentacle_id, label, command, cwd, "
+    "exit_code, started_at, finished_at, duration_seconds) "
+    "VALUES (1, 'verified-tent', 'uid-v1', 'lint', 'python3 lint.py', '/repo', "
+    "0, '2026-05-01T00:00:05+00:00', '2026-05-01T00:00:06+00:00', 1.0)",
+)
+db_wv3.commit()
+db_wv3.close()
+
+skill_metrics_wv3 = load_module("skill_metrics_wv3", "skill-metrics.py")
+skill_metrics_wv3.METRICS_DB_PATH = wv3_db_path
+status_wv3 = skill_metrics_wv3.collect_status()
+
+test(
+    "wave3: outcomes_with_passing_verification == 1 (only verified-tent)",
+    status_wv3["outcomes_with_passing_verification"] == 1,
+    f"got {status_wv3['outcomes_with_passing_verification']}",
+)
+test(
+    "wave3: total_outcomes == 2",
+    status_wv3["total_outcomes"] == 2,
+    f"got {status_wv3['total_outcomes']}",
+)
+test(
+    "wave3: total_verifications == 2",
+    status_wv3["total_verifications"] == 2,
+    f"got {status_wv3['total_verifications']}",
+)
+test(
+    "wave3: verifications_passed == 2",
+    status_wv3["verifications_passed"] == 2,
+    f"got {status_wv3['verifications_passed']}",
+)
+test(
+    "wave3: verifications_failed == 0",
+    status_wv3["verifications_failed"] == 0,
+    f"got {status_wv3['verifications_failed']}",
+)
+test(
+    "wave3: recent_outcomes contains verified-tent",
+    any(r["tentacle_name"] == "verified-tent" for r in status_wv3["recent_outcomes"]),
+)
+test(
+    "wave3: recent_outcomes contains unverified-tent",
+    any(r["tentacle_name"] == "unverified-tent" for r in status_wv3["recent_outcomes"]),
+)
+# Audit should pass (no critical failures)
+audit_wv3 = skill_metrics_wv3._runtime_audit(status_wv3)
+test("wave3: audit ok", audit_wv3["ok"] is True, str(audit_wv3))
+
+# ---------------------------------------------------------------------------
 print("\n" + "=" * 72)
 print(f"PASS: {PASS}")
 print(f"FAIL: {FAIL}")
