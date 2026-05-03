@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   combineQueryStrings,
+  createOperatorStreamPath,
   createArrayQueryString,
   createQueryString,
   normalizeSessionsResponse,
@@ -101,5 +102,48 @@ describe("api hooks helpers", () => {
     expect(qs).not.toContain("sort");
     expect(qs).toContain("page=1");
     expect(qs).toContain("q=test");
+  });
+
+  // ── Operator/Chat query keys ─────────────────────────────────────────
+
+  it("builds stable operator session query keys", () => {
+    expect(queryKeys.operatorSessions()).toEqual(["operator-sessions"]);
+    expect(queryKeys.operatorSession("abc-123")).toEqual(["operator-session", "abc-123"]);
+    expect(queryKeys.operatorStatus("s1", "r1")).toEqual(["operator-status", "s1", "r1"]);
+    expect(queryKeys.operatorRuns("s1")).toEqual(["operator-runs", "s1"]);
+    expect(queryKeys.operatorSuggest("~/proj")).toEqual(["operator-suggest", "~/proj"]);
+    expect(queryKeys.operatorPreview("/path/to/file.ts")).toEqual([
+      "operator-preview",
+      "/path/to/file.ts",
+    ]);
+    expect(queryKeys.operatorDiff("file_a.ts", "file_b.ts")).toEqual([
+      "operator-diff",
+      "file_a.ts",
+      "file_b.ts",
+    ]);
+  });
+
+  it("operator session key is distinct from browse session key", () => {
+    expect(queryKeys.operatorSession("abc")).not.toEqual(queryKeys.sessionDetail("abc"));
+  });
+
+  it("operator status key distinguishes different run ids", () => {
+    expect(queryKeys.operatorStatus("s1", "r1")).not.toEqual(queryKeys.operatorStatus("s1", "r2"));
+  });
+
+  it("operator diff key distinguishes different path pairs", () => {
+    expect(queryKeys.operatorDiff("a.ts", "b.ts")).not.toEqual(
+      queryKeys.operatorDiff("b.ts", "a.ts")
+    );
+  });
+
+  it("builds operator stream path with encoded session id and run query", () => {
+    expect(createOperatorStreamPath("sess 1", "run-1")).toBe(
+      "/api/operator/sessions/sess%201/stream?run=run-1"
+    );
+  });
+
+  it("createQueryString keeps empty operator suggest query empty for top-level results", () => {
+    expect(createQueryString({ q: "" })).toBe("");
   });
 });

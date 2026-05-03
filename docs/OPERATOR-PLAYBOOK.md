@@ -306,6 +306,51 @@ http://localhost:<port>/v2/settings/?token=<token>
 
 ---
 
+## Browse UI — Operator Console (`/v2/chat`)
+
+The `/v2/chat` route is the browser-managed Copilot CLI execution console. It is distinct from the read-only settings and diagnostics surfaces and is the only browse page that actively launches Copilot CLI.
+
+### Workflow
+
+1. Open the browse UI and navigate to **Chat** (sidebar, command palette, or the `g c` navigation chord).
+2. Click **New Chat** and choose a workspace under `~/`, plus the Copilot model and mode.
+3. Submit a prompt with the composer.
+4. Watch the streamed transcript update live.
+5. Review touched files from the **Files touched** panel:
+   - **Preview** loads the current file content in-browser.
+   - **Diff** appears only when the run produced a truthful unified diff payload (for example from `apply_patch`).
+
+### Session persistence
+
+Each operator session persists its run history under:
+
+```text
+~/.copilot/session-state/operator-console/<session-id>/
+```
+
+Historical runs are replayed from disk on refresh, so the transcript and file-review context survive browser reloads and browse-server restarts.
+
+### Guardrails
+
+- All workspaces and file-review paths are normalized against `~/`; paths outside `Path.home()` are rejected.
+- Prompt text is capped at 4096 characters.
+- `/api/operator/*` uses the same per-launch browse token as the rest of the UI.
+- Runs launched from `/v2/chat` still inherit the installed Copilot CLI's hooks, custom instructions, and permission system. Browser use does not bypass briefing/tentacle/learn or other active policy gates.
+
+### Compatibility
+
+- `watch-sessions.py` continues to process normal Copilot session artifacts; the operator console reads its own persisted history from `operator-console/`.
+- `auto-update-tools.py` does not manage active operator runs or restart the browse server.
+- After Python changes to `browse/api/operator.py` or `browse/core/operator_console.py`, restart the browse server manually.
+
+Direct link:
+
+```text
+http://localhost:<port>/v2/chat/?token=<token>
+```
+
+---
+
 
 
 ## Trend Scout Research Pack

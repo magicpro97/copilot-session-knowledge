@@ -58,11 +58,56 @@ watch-sessions.py  ──→  Incremental re-indexing (adaptive polling)
 | `checkpoint-save.py` | Save named checkpoint |
 | `checkpoint-restore.py` | List/restore checkpoints |
 | `checkpoint-diff.py` | Diff two checkpoints |
-| `browse.py` | Read-only local web UI (127.0.0.1, token auth) |
+| `browse.py` | Local web UI (127.0.0.1, token auth) with read-only diagnostics plus the authenticated `/v2/chat` operator console |
 | `project-context.py` | Deterministic project-context.md generator |
 | `codebase-map.py` | Repo structure snapshot (auto-refreshed at session start) |
 | `trend-scout.py` | GitHub repo discovery via multi-lane search |
 | `copilot-cli-healer.py` | Repairs stale Copilot CLI package state |
+
+## Browse UI Operator Console (`/v2/chat`)
+
+The browse UI exposes a browser-managed Copilot CLI execution console at `/v2/chat`. It is the only browse surface that actively launches Copilot CLI; the rest of the UI remains read-only diagnostics and search.
+
+### Components
+
+| Component | Role |
+|-----------|------|
+| `browse/core/operator_console.py` | Secure execution/persistence adapter. Starts Copilot CLI runs, normalizes event streams, and persists operator state under `~/.copilot/session-state/operator-console/`. |
+| `browse/api/operator.py` | Authenticated REST + SSE surface for session CRUD, prompt submission, run status/history, path suggestions, previews, and diffs. |
+| `browse-ui/src/app/chat/` | Next.js route wrapper for the `/chat` operator console. |
+| `browse-ui/src/components/chat/` | `ChatShell`, `Transcript`, `Composer`, `SessionCreateDialog`, `MetadataBar`, and file review components. |
+| `browse-ui/src/lib/api/{types,schemas,hooks}.ts` | Stable frontend contract layer for `/api/operator/*`. |
+
+### API surface (`/api/operator/*`)
+
+```text
+POST /api/operator/sessions                  → create session
+GET  /api/operator/sessions                  → list sessions
+GET  /api/operator/sessions/{id}             → session detail
+POST /api/operator/sessions/{id}/prompt      → submit prompt → {run_id}
+GET  /api/operator/sessions/{id}/stream      → SSE run output
+GET  /api/operator/sessions/{id}/status      → session + active run status (?run=<run_id>)
+GET  /api/operator/sessions/{id}/runs        → persisted run history
+POST /api/operator/sessions/{id}/delete      → delete session
+GET  /api/operator/suggest                   → path/workspace suggestions under ~/
+GET  /api/operator/preview                   → file preview under ~/
+GET  /api/operator/diff                      → unified diff for two files under ~/
+```
+
+### Guardrails
+
+- **Workspace confinement:** every workspace or file path is normalized with `confine_path()` and rejected unless it resolves under `Path.home()`.
+- **Token auth:** all `/api/operator/*` routes require the same per-launch browse token as the rest of the UI.
+- **Prompt cap:** prompts longer than 4096 characters are rejected.
+- **Path cap:** oversized path inputs are rejected before filesystem access.
+- **Separate persistence:** operator run history is stored under `~/.copilot/session-state/operator-console/` and replayed from disk on reload.
+- **Same Copilot policy surface:** operator-console runs still inherit the installed Copilot CLI's hooks, custom instructions, and permission system. Browser mediation does not bypass briefing, tentacle, or other active policy gates.
+
+### Compatibility with watch-sessions and auto-update
+
+- `watch-sessions.py` still tracks normal Copilot session artifacts under `~/.copilot/session-state/`; the operator console reads its own persisted run history directly from `operator-console/`.
+- `auto-update-tools.py` can restart `watch-sessions.py`, but it does not restart the browse server or interfere with active operator runs.
+- UI-only `browse-ui/dist/` updates are served from disk after rebuild/deploy; Python changes to `browse/api/operator.py` or `browse/core/operator_console.py` still require a manual browse server restart.
 
 ## Enforcement Hooks
 
@@ -193,6 +238,8 @@ Agent-authored docs and operator/research outputs (tentacle handoffs, retro summ
 GitHub Actions runs two jobs on every push / PR:
 - **`quality-gates`** — syntax check, scoped Ruff lint, and the Python test suites. The Ruff lint surface is: `embed.py`, `scout-config.py`, `scout-status.py`, `sync-config.py`, `sync-daemon.py`, `sync-status.py`, `migrate.py`, `generate-summary.py`, `briefing.py`, `learn.py`, `query-session.py`, `extract-knowledge.py`, `build-session-index.py`, `tentacle.py`, `checkpoint-diff.py`, `checkpoint-restore.py`, `checkpoint-save.py`, `browse/`, `hooks/`. Ruff lint is **scoped** to this surface; other root scripts outside it are not linted by CI.
 - **`browse-ui`** — `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test`, `pnpm build`.
+
+Playwright E2E runs are manual-dispatch only. The stable `behavioral` project covers `smoke.spec.ts`, `shortcuts.spec.ts`, and `chat.spec.ts`; `visual.spec.ts` remains outside always-on CI because screenshot output differs across platforms.
 
 ### Automation Surfaces
 

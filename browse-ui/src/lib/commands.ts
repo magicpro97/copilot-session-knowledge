@@ -137,6 +137,15 @@ export function buildPaletteCommands({
 }: BuildPaletteCommandsOptions): PaletteCommand[] {
   const commands: PaletteCommand[] = [
     {
+      id: "nav:chat",
+      title: "Go to Chat",
+      subtitle: "Run Copilot CLI in a workspace",
+      group: "navigate",
+      keywords: ["chat", "copilot", "cli", "operator", ...COMMAND_KEYWORDS.navigate],
+      shortcut: "G C",
+      run: () => navigate("/chat"),
+    },
+    {
       id: "nav:sessions",
       title: "Go to Sessions",
       subtitle: "Browse indexed sessions",

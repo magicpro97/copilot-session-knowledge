@@ -19,6 +19,18 @@ Endpoints exposed:
   GET /api/skills/metrics      → SkillMetricsResponse
   GET /api/workflow/health     → WorkflowHealthResponse (proxied from workflow-health.py)
 
+  POST /api/operator/sessions              → create operator session
+  GET  /api/operator/sessions              → list operator sessions
+  GET  /api/operator/sessions/{id}         → get session detail
+  POST /api/operator/sessions/{id}/prompt  → submit prompt for execution
+  GET  /api/operator/sessions/{id}/stream  → SSE run output stream
+  GET  /api/operator/sessions/{id}/status  → session + run status
+  GET  /api/operator/sessions/{id}/runs    → list persisted runs for session
+  POST /api/operator/sessions/{id}/delete  → delete session
+  GET  /api/operator/suggest               → path/workspace suggestions under ~/
+  GET  /api/operator/preview               → file content preview under ~/
+  GET  /api/operator/diff                  → unified diff of two files under ~/
+
 Existing routes (?format=json on HTML routes, /api/dashboard/stats,
 /api/embeddings/points, /api/diff, /api/feedback) are UNCHANGED.
 """
@@ -36,6 +48,7 @@ from browse.api import (
     dashboard,  # noqa: F401
     embeddings,  # noqa: F401
     insights,  # noqa: F401
+    operator,  # noqa: F401
     retro,  # noqa: F401
     session_detail,  # noqa: F401
     sessions,  # noqa: F401

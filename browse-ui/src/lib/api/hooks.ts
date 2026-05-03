@@ -29,6 +29,16 @@ import {
   similarityResponseSchema,
   sessionsResponseSchema,
   workflowHealthResponseSchema,
+  operatorSessionListResponseSchema,
+  operatorSessionSchema,
+  promptRequestSchema,
+  promptSubmitResponseSchema,
+  operatorRunStatusSchema,
+  operatorRunsResponseSchema,
+  pathSuggestResponseSchema,
+  filePreviewResponseSchema,
+  fileDiffResponseSchema,
+  createOperatorSessionRequestSchema,
 } from "@/lib/api/schemas";
 import type {
   CompareResponse,
@@ -56,6 +66,16 @@ import type {
   SessionListResponse,
   SessionsResponse,
   WorkflowHealthResponse,
+  OperatorSession,
+  OperatorSessionListResponse,
+  CreateOperatorSessionRequest,
+  PromptRequest,
+  PromptSubmitResponse,
+  OperatorRunStatus,
+  OperatorRunsResponse,
+  PathSuggestResponse,
+  FilePreviewResponse,
+  FileDiffResponse,
 } from "@/lib/api/types";
 
 export type SessionsQueryParams = {
@@ -112,6 +132,15 @@ export const queryKeys = {
   knowledgeInsights: () => ["knowledge-insights"] as const,
   compare: (a: string, b: string) => ["compare", a, b] as const,
   workflowHealth: () => ["workflow-health"] as const,
+  // Operator/Chat
+  operatorSessions: () => ["operator-sessions"] as const,
+  operatorSession: (id: string) => ["operator-session", id] as const,
+  operatorStatus: (sessionId: string, runId: string) =>
+    ["operator-status", sessionId, runId] as const,
+  operatorRuns: (sessionId: string) => ["operator-runs", sessionId] as const,
+  operatorSuggest: (q: string) => ["operator-suggest", q] as const,
+  operatorPreview: (path: string) => ["operator-preview", path] as const,
+  operatorDiff: (pathA: string, pathB: string) => ["operator-diff", pathA, pathB] as const,
 };
 
 function withLeadingSlash(path: string): string {
@@ -559,6 +588,176 @@ export function useWorkflowHealth() {
     queryFn: async (): Promise<WorkflowHealthResponse> => {
       const data = await apiFetch<WorkflowHealthResponse>(withLeadingSlash("/api/workflow/health"));
       return workflowHealthResponseSchema.parse(data);
+    },
+  });
+}
+
+// ── Operator/Chat hooks (/api/operator/*) ─────────────────────────────
+
+export function useOperatorSessions() {
+  return useQuery({
+    queryKey: queryKeys.operatorSessions(),
+    staleTime: STALE_TIMES.sessions,
+    gcTime: CACHE_TIMES.sessions,
+    queryFn: async (): Promise<OperatorSessionListResponse> => {
+      const data = await apiFetch<OperatorSessionListResponse>(
+        withLeadingSlash("/api/operator/sessions")
+      );
+      return operatorSessionListResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useOperatorSession(id: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.operatorSession(id),
+    staleTime: STALE_TIMES.sessionDetail,
+    gcTime: CACHE_TIMES.sessionDetail,
+    enabled: enabled && Boolean(id),
+    queryFn: async (): Promise<OperatorSession> => {
+      const data = await apiFetch<OperatorSession>(
+        withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(id)}`)
+      );
+      return operatorSessionSchema.parse(data);
+    },
+  });
+}
+
+export function useOperatorRuns(sessionId: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.operatorRuns(sessionId),
+    staleTime: STALE_TIMES.sessionDetail,
+    gcTime: CACHE_TIMES.sessionDetail,
+    enabled: enabled && Boolean(sessionId),
+    queryFn: async (): Promise<OperatorRunsResponse> => {
+      const data = await apiFetch<OperatorRunsResponse>(
+        withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/runs`)
+      );
+      return operatorRunsResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useCreateOperatorSession() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (payload: CreateOperatorSessionRequest): Promise<OperatorSession> => {
+      const data = await apiFetch<OperatorSession>(withLeadingSlash("/api/operator/sessions"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(createOperatorSessionRequestSchema.parse(payload)),
+      });
+      return operatorSessionSchema.parse(data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.operatorSessions() });
+    },
+  });
+}
+
+export function useDeleteOperatorSession() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (sessionId: string): Promise<void> => {
+      await apiFetch<unknown>(
+        withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/delete`),
+        { method: "POST" }
+      );
+    },
+    onSuccess: (_data, sessionId) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.operatorSessions() });
+      queryClient.removeQueries({ queryKey: queryKeys.operatorSession(sessionId) });
+      queryClient.removeQueries({ queryKey: queryKeys.operatorRuns(sessionId) });
+    },
+  });
+}
+
+export function useSubmitPrompt(sessionId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (payload: PromptRequest): Promise<PromptSubmitResponse> => {
+      const data = await apiFetch<PromptSubmitResponse>(
+        withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/prompt`),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(promptRequestSchema.parse(payload)),
+        }
+      );
+      return promptSubmitResponseSchema.parse(data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.operatorSession(sessionId) });
+    },
+  });
+}
+
+export function useOperatorStatus(sessionId: string, runId: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.operatorStatus(sessionId, runId),
+    staleTime: STALE_TIMES.health,
+    gcTime: CACHE_TIMES.health,
+    enabled: enabled && Boolean(sessionId) && Boolean(runId),
+    queryFn: async (): Promise<OperatorRunStatus> => {
+      const qs = createQueryString({ run: runId });
+      const data = await apiFetch<OperatorRunStatus>(
+        withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/status${qs}`)
+      );
+      return operatorRunStatusSchema.parse(data);
+    },
+  });
+}
+
+export function createOperatorStreamPath(sessionId: string, runId: string): string {
+  const qs = createQueryString({ run: runId });
+  return withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}/stream${qs}`);
+}
+
+export function usePathSuggest(q: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.operatorSuggest(q),
+    staleTime: STALE_TIMES.search,
+    gcTime: CACHE_TIMES.search,
+    enabled,
+    queryFn: async (): Promise<PathSuggestResponse> => {
+      const qs = createQueryString({ q });
+      const data = await apiFetch<PathSuggestResponse>(
+        withLeadingSlash(`/api/operator/suggest${qs}`)
+      );
+      return pathSuggestResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useFilePreview(path: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.operatorPreview(path),
+    staleTime: STALE_TIMES.sessionDetail,
+    gcTime: CACHE_TIMES.sessionDetail,
+    enabled: enabled && Boolean(path),
+    queryFn: async (): Promise<FilePreviewResponse> => {
+      const qs = createQueryString({ path });
+      const data = await apiFetch<FilePreviewResponse>(
+        withLeadingSlash(`/api/operator/preview${qs}`)
+      );
+      return filePreviewResponseSchema.parse(data);
+    },
+  });
+}
+
+export function useFileDiff(pathA: string, pathB: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.operatorDiff(pathA, pathB),
+    staleTime: STALE_TIMES.sessionDetail,
+    gcTime: CACHE_TIMES.sessionDetail,
+    enabled: enabled && Boolean(pathA) && Boolean(pathB),
+    queryFn: async (): Promise<FileDiffResponse> => {
+      const qs = createQueryString({ a: pathA, b: pathB });
+      const data = await apiFetch<FileDiffResponse>(withLeadingSlash(`/api/operator/diff${qs}`));
+      return fileDiffResponseSchema.parse(data);
     },
   });
 }

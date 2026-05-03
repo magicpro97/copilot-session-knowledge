@@ -162,3 +162,17 @@ This file is **local runtime state** — it is listed in `.gitignore` and is nev
 Each machine maintains its own copy reflecting its last update.
 
 Use `--doctor` to verify the manifest and check overall health.
+
+## Compatibility with the Browse Operator Console
+
+The auto-update pipeline and the browse UI operator console (`/v2/chat`) are independent:
+
+- Auto-update may restart `watch-sessions.py`, but it does **not** restart the browse server or interrupt an in-progress Copilot CLI run.
+- Operator run history is persisted under `~/.copilot/session-state/operator-console/` and is reloaded by `browse/core/operator_console.py` on the next request.
+- UI-only `browse-ui/dist/` updates are served from disk after rebuild/deploy. Python updates to `browse/api/operator.py` or `browse/core/operator_console.py` still require a manual browse server restart.
+
+After pulling a release that changes the Python operator backend, restart the browse server:
+
+```bash
+python3 ~/.copilot/tools/browse.py --port <port>
+```

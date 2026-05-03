@@ -804,3 +804,171 @@ export const knowledgeInsightsResponseSchema = z.object({
   // Additive toward-100 diagnostics — absent on older payloads
   toward_100: knowledgeInsightsToward100Schema.nullable().optional(),
 });
+
+// ── Operator/Chat (/api/operator/*) ──────────────────────────────────
+
+/**
+ * Copilot event type literals observed from real probe.
+ * Unknown types from newer Copilot versions are accepted as raw strings.
+ */
+export const copilotEventTypeSchema = z.union([
+  z.enum([
+    "assistant.message_delta",
+    "assistant.message",
+    "assistant.turn_end",
+    "result",
+    "session.mcp_server_status_changed",
+    "session.mcp_servers_loaded",
+    "session.skills_loaded",
+    "user.message",
+    "assistant.turn_start",
+    "assistant.message_start",
+    "assistant.reasoning",
+  ]),
+  z.string(),
+]);
+
+const copilotStructuredEventTypeSchema = z
+  .string()
+  .refine((value) => value.trim().length > 0 && value !== "raw" && value !== "status", {
+    message: "Structured Copilot event frames must not use reserved raw/status types.",
+  });
+
+/** Structured Copilot JSONL payload preserved from the backend. */
+export const copilotEventPayloadSchema = z
+  .object({
+    type: copilotEventTypeSchema,
+  })
+  .passthrough();
+
+/** Typed SSE frame for a structured Copilot event. */
+export const copilotEventFrameSchema = z
+  .object({
+    type: copilotStructuredEventTypeSchema,
+    idx: z.number().int().nonnegative(),
+    event: copilotEventPayloadSchema,
+    data: z.unknown().optional(),
+  })
+  .refine((frame) => frame.event.type === frame.type, {
+    message: "Frame type must match event.type",
+    path: ["event", "type"],
+  });
+
+/** Raw SSE frame for unstructured/fallback text output. */
+export const copilotRawFrameSchema = z.object({
+  type: z.literal("raw"),
+  idx: z.number().int().nonnegative(),
+  text: z.string(),
+});
+
+/** Terminal SSE frame signalling run completion. */
+export const copilotStatusFrameSchema = z.object({
+  type: z.literal("status"),
+  status: z.string(),
+  exit_code: z.number().nullable(),
+});
+
+/** Union of all SSE frame shapes. */
+export const copilotStreamFrameSchema = z.union([
+  copilotEventFrameSchema,
+  copilotRawFrameSchema,
+  copilotStatusFrameSchema,
+]);
+
+/** Operator session as returned by create/list/get endpoints. */
+export const operatorSessionSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  model: z.string(),
+  mode: z.string(),
+  workspace: z.string(),
+  add_dirs: z.array(z.string()),
+  created_at: z.string(),
+  updated_at: z.string(),
+  run_count: z.number().int().nonnegative(),
+  last_run_id: z.string().nullable(),
+  resume_ready: z.boolean(),
+});
+
+export const operatorSessionListResponseSchema = z.object({
+  sessions: z.array(operatorSessionSchema),
+  count: z.number().int().nonnegative(),
+});
+
+/** Request body for `POST /api/operator/sessions`. */
+export const createOperatorSessionRequestSchema = z.object({
+  name: z.string(),
+  model: z.string(),
+  mode: z.string(),
+  workspace: z.string(),
+  add_dirs: z.array(z.string()).optional(),
+});
+
+/** Request body for `POST /api/operator/sessions/{id}/prompt`. */
+export const promptRequestSchema = z.object({
+  prompt: z.string().min(1),
+});
+
+/** Response from `POST /api/operator/sessions/{id}/prompt`. */
+export const promptSubmitResponseSchema = z.object({
+  run_id: z.string(),
+  session_id: z.string(),
+  status: z.string(),
+});
+
+/** Minimal run info returned inside operatorRunStatusSchema. */
+export const operatorRunInfoSchema = z.object({
+  id: z.string(),
+  session_id: z.string(),
+  prompt: z.string(),
+  status: z.string(),
+  exit_code: z.number().nullable(),
+  started_at: z.string(),
+  finished_at: z.string().nullable(),
+  events: z.array(copilotStreamFrameSchema),
+});
+
+/** Response from `GET /api/operator/sessions/{id}/status?run=<run_id>`. */
+export const operatorRunStatusSchema = z.object({
+  session: operatorSessionSchema,
+  run: operatorRunInfoSchema.nullable(),
+});
+
+/** Response from `GET /api/operator/sessions/{id}/runs`. */
+export const operatorRunsResponseSchema = z.object({
+  runs: z.array(operatorRunInfoSchema),
+  count: z.number().int().nonnegative(),
+});
+
+/** Response from `GET /api/operator/suggest?q=<prefix>`. */
+export const pathSuggestResponseSchema = z.object({
+  suggestions: z.array(z.string()),
+  count: z.number().int().nonnegative(),
+});
+
+/** Response from `GET /api/operator/preview?path=<path>`. */
+export const filePreviewResponseSchema = z.object({
+  path: z.string(),
+  content: z.string(),
+  mime: z.string(),
+  size: z.number().int().nonnegative(),
+});
+
+/** Response from `GET /api/operator/diff?a=<a>&b=<b>`. */
+export const fileDiffResponseSchema = z.object({
+  path_a: z.string(),
+  path_b: z.string(),
+  unified_diff: z.string(),
+  stats: z.object({
+    added: z.number().int().nonnegative(),
+    removed: z.number().int().nonnegative(),
+  }),
+});
+
+/** Client-side chat settings used to configure new operator sessions. */
+export const chatSettingsSchema = z.object({
+  model: z.string().min(1),
+  mode: z.string().min(1),
+  workspace: z.string(),
+  add_dirs: z.array(z.string()),
+});

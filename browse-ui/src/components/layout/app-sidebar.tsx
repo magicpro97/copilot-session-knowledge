@@ -10,6 +10,7 @@ import {
   Settings,
   PanelLeftClose,
   PanelLeftOpen,
+  MessageSquare,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useResolvedPathname } from "@/hooks/use-resolved-pathname";
@@ -17,6 +18,7 @@ import { matchesAppPath } from "@/lib/pathname";
 import { cn } from "@/lib/utils";
 
 const navItems = [
+  { href: "/chat", label: "Chat", icon: MessageSquare },
   { href: "/sessions", label: "Sessions", icon: ScrollText },
   { href: "/search", label: "Search", icon: Search },
   { href: "/insights", label: "Insights", icon: BarChart3 },

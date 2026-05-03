@@ -15,6 +15,14 @@ type RouteContext = {
 };
 
 function getRouteContext(pathname: string): RouteContext {
+  if (pathname === "/chat") {
+    return {
+      title: "Chat",
+      subtitle: "Run Copilot CLI prompts against a workspace and inspect results.",
+      breadcrumbs: [{ label: "Chat" }],
+    };
+  }
+
   if (pathname.startsWith("/sessions/")) {
     return {
       title: "Session detail",

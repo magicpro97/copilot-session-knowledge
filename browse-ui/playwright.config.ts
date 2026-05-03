@@ -15,7 +15,7 @@ export default defineConfig({
   projects: [
     {
       name: "behavioral",
-      testMatch: ["**/smoke.spec.ts", "**/shortcuts.spec.ts"],
+      testMatch: ["**/smoke.spec.ts", "**/shortcuts.spec.ts", "**/chat.spec.ts"],
       use: devices["Desktop Chrome"],
     },
     {

@@ -840,3 +840,156 @@ export interface KnowledgeInsightsResponse {
   /** Additive toward-100 diagnostics — absent on older payloads; degrade gracefully. */
   toward_100?: KnowledgeInsightsToward100 | null;
 }
+
+// ── Operator/Chat (/api/operator/*) ──────────────────────────────────
+
+/**
+ * Copilot event type literals emitted by `copilot --output-format json`.
+ * Observed from real probe; keep raw fidelity — UI may derive grouped messages later.
+ */
+export type CopilotEventType =
+  | "assistant.message_delta"
+  | "assistant.message"
+  | "assistant.turn_end"
+  | "result"
+  | "session.mcp_server_status_changed"
+  | "session.mcp_servers_loaded"
+  | "session.skills_loaded"
+  | "user.message"
+  | "assistant.turn_start"
+  | "assistant.message_start"
+  | "assistant.reasoning"
+  | "tool.execution_start"
+  | "tool.execution_complete";
+
+/** Allow unknown event types from newer Copilot versions while preserving autocomplete. */
+export type CopilotEventTypeValue = CopilotEventType | (string & {});
+
+/** Structured Copilot JSONL event payload preserved from the backend. */
+export interface CopilotEventPayload extends Record<string, unknown> {
+  type: CopilotEventTypeValue;
+  data?: unknown;
+}
+
+/** Typed SSE frame for a structured Copilot event. */
+export interface CopilotEventFrame {
+  type: CopilotEventTypeValue;
+  idx: number;
+  event: CopilotEventPayload;
+  data?: unknown;
+}
+
+/** Raw SSE frame for unstructured/fallback text output. */
+export interface CopilotRawFrame {
+  type: "raw";
+  idx: number;
+  text: string;
+}
+
+/** Terminal SSE frame signalling run completion. */
+export interface CopilotStatusFrame {
+  type: "status";
+  status: string;
+  exit_code: number | null;
+}
+
+/** Discriminated union of all SSE frame shapes from `/api/operator/sessions/{id}/stream`. */
+export type CopilotStreamFrame = CopilotEventFrame | CopilotRawFrame | CopilotStatusFrame;
+
+/** Operator session as returned by create/list/get endpoints. */
+export interface OperatorSession {
+  id: string;
+  name: string;
+  model: string;
+  mode: string;
+  workspace: string;
+  add_dirs: string[];
+  created_at: string;
+  updated_at: string;
+  run_count: number;
+  last_run_id: string | null;
+  resume_ready: boolean;
+}
+
+export interface OperatorSessionListResponse {
+  sessions: OperatorSession[];
+  count: number;
+}
+
+/** Request body for `POST /api/operator/sessions`. */
+export interface CreateOperatorSessionRequest {
+  name: string;
+  model: string;
+  mode: string;
+  workspace: string;
+  add_dirs?: string[];
+}
+
+/** Request body for `POST /api/operator/sessions/{id}/prompt`. */
+export interface PromptRequest {
+  prompt: string;
+}
+
+/** Response from `POST /api/operator/sessions/{id}/prompt`. */
+export interface PromptSubmitResponse {
+  run_id: string;
+  session_id: string;
+  status: string;
+}
+
+/** Minimal run info returned inside `OperatorRunStatus`. */
+export interface OperatorRunInfo {
+  id: string;
+  session_id: string;
+  prompt: string;
+  status: string;
+  exit_code: number | null;
+  started_at: string;
+  finished_at: string | null;
+  events: CopilotStreamFrame[];
+}
+
+/** Response from `GET /api/operator/sessions/{id}/status?run=<run_id>`. */
+export interface OperatorRunStatus {
+  session: OperatorSession;
+  run: OperatorRunInfo | null;
+}
+
+/** Response from `GET /api/operator/sessions/{id}/runs`. */
+export interface OperatorRunsResponse {
+  runs: OperatorRunInfo[];
+  count: number;
+}
+
+/** Response from `GET /api/operator/suggest?q=<prefix>`. */
+export interface PathSuggestResponse {
+  suggestions: string[];
+  count: number;
+}
+
+/** Response from `GET /api/operator/preview?path=<path>`. */
+export interface FilePreviewResponse {
+  path: string;
+  content: string;
+  mime: string;
+  size: number;
+}
+
+/** Response from `GET /api/operator/diff?a=<a>&b=<b>`. */
+export interface FileDiffResponse {
+  path_a: string;
+  path_b: string;
+  unified_diff: string;
+  stats: {
+    added: number;
+    removed: number;
+  };
+}
+
+/** Client-side chat settings used to configure new operator sessions. */
+export interface ChatSettings {
+  model: string;
+  mode: string;
+  workspace: string;
+  add_dirs: string[];
+}

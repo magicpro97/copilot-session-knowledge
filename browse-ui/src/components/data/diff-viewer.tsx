@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 
-import type { DiffResult } from "@/lib/api/types";
+import type { DiffResult, FileDiffResponse } from "@/lib/api/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { formatNumber } from "@/lib/formatters";
@@ -86,6 +86,105 @@ export function DiffViewer({ result }: DiffViewerProps) {
           </Button>
           <Button
             variant={mode === "split" ? "default" : "outline"}
+            onClick={() => setMode("split")}
+          >
+            Side-by-side
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {mode === "unified" ? (
+          <div className="bg-muted/40 max-h-[520px] overflow-auto rounded-lg p-3 font-mono text-xs whitespace-pre-wrap">
+            {unifiedLines.length > 0
+              ? unifiedLines.map((line, index) => {
+                  const kind = getDiffLineKind(line);
+                  return (
+                    <div
+                      key={`unified-${index}`}
+                      data-diff-kind={kind}
+                      className={cn("rounded-sm px-2 py-0.5", diffLineClass(kind))}
+                    >
+                      {line || " "}
+                    </div>
+                  );
+                })
+              : "(no textual diff output)"}
+          </div>
+        ) : (
+          <div className="grid gap-2 md:grid-cols-2">
+            <div className="bg-muted/40 max-h-[520px] overflow-auto rounded-lg p-3 font-mono text-xs whitespace-pre-wrap">
+              {splitDiff.map((line, index) => (
+                <div
+                  key={`left-${index}`}
+                  data-diff-kind={line.leftKind}
+                  data-diff-side="left"
+                  className={cn("rounded-sm px-2 py-0.5", diffLineClass(line.leftKind))}
+                >
+                  {line.left || " "}
+                </div>
+              ))}
+            </div>
+            <div className="bg-muted/40 max-h-[520px] overflow-auto rounded-lg p-3 font-mono text-xs whitespace-pre-wrap">
+              {splitDiff.map((line, index) => (
+                <div
+                  key={`right-${index}`}
+                  data-diff-kind={line.rightKind}
+                  data-diff-side="right"
+                  className={cn("rounded-sm px-2 py-0.5", diffLineClass(line.rightKind))}
+                >
+                  {line.right || " "}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── FileDiffViewer ──────────────────────────────────────────────────────────
+
+type FileDiffViewerProps = {
+  result: FileDiffResponse;
+};
+
+/**
+ * Renders a diff from the `/api/operator/diff` endpoint.
+ * Accepts a `FileDiffResponse` (path_a, path_b, unified_diff, stats) instead
+ * of a checkpoint DiffResult.
+ */
+export function FileDiffViewer({ result }: FileDiffViewerProps) {
+  const [mode, setMode] = useState<"unified" | "split">("unified");
+  const unifiedLines = useMemo(() => result.unified_diff.split("\n"), [result.unified_diff]);
+  const splitDiff = useMemo(() => buildSplitDiff(result.unified_diff), [result.unified_diff]);
+
+  return (
+    <Card>
+      <CardHeader className="space-y-2">
+        <CardTitle className="text-sm">
+          <span className="font-mono">{result.path_a}</span>
+          {result.path_a !== result.path_b ? (
+            <>
+              {" → "}
+              <span className="font-mono">{result.path_b}</span>
+            </>
+          ) : null}
+        </CardTitle>
+        <p className="text-muted-foreground text-xs">
+          +{formatNumber(result.stats.added)} added · -{formatNumber(result.stats.removed)} removed
+        </p>
+        <div className="flex items-center gap-2">
+          <Button
+            variant={mode === "unified" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setMode("unified")}
+          >
+            Unified
+          </Button>
+          <Button
+            variant={mode === "split" ? "default" : "outline"}
+            size="sm"
             onClick={() => setMode("split")}
           >
             Side-by-side

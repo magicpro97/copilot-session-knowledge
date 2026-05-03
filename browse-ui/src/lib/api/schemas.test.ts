@@ -3,13 +3,28 @@ import { describe, expect, it } from "vitest";
 import {
   auditBlockSchema,
   auditCheckSchema,
+  chatSettingsSchema,
   communitiesResponseSchema,
+  copilotEventFrameSchema,
+  copilotRawFrameSchema,
+  copilotStatusFrameSchema,
+  copilotStreamFrameSchema,
   evidenceGraphResponseSchema,
   compareResponseSchema,
+  createOperatorSessionRequestSchema,
   evalResponseSchema,
+  fileDiffResponseSchema,
+  filePreviewResponseSchema,
   knowledgeInsightsResponseSchema,
+  operatorRunsResponseSchema,
+  operatorRunStatusSchema,
+  operatorSessionListResponseSchema,
+  operatorSessionSchema,
   researchPackReloadResponseSchema,
   retroResponseSchema,
+  pathSuggestResponseSchema,
+  promptRequestSchema,
+  promptSubmitResponseSchema,
   trendScoutStatusResponseSchema,
   trendScoutDiscoveryLaneSchema,
   syncStatusResponseSchema,
@@ -1019,6 +1034,432 @@ describe("retroResponseSchema toward_100", () => {
       retroResponseSchema.parse({
         ..._baseRetro,
         toward_100: [{ section: "skills", score: 30 }], // missing gap and barriers
+      })
+    ).toThrow();
+  });
+});
+
+// ── Operator/Chat schema tests ─────────────────────────────────────────────
+
+const _validOperatorSession = {
+  id: "sess-001",
+  name: "My session",
+  model: "claude-sonnet-4.6",
+  mode: "default",
+  workspace: "/Users/user/projects/myapp",
+  add_dirs: [],
+  created_at: "2026-05-01T10:00:00Z",
+  updated_at: "2026-05-01T10:05:00Z",
+  run_count: 2,
+  last_run_id: "run-abc",
+  resume_ready: true,
+};
+
+describe("operator session schemas", () => {
+  it("parses a valid operator session", () => {
+    const parsed = operatorSessionSchema.parse(_validOperatorSession);
+    expect(parsed.id).toBe("sess-001");
+    expect(parsed.model).toBe("claude-sonnet-4.6");
+    expect(parsed.resume_ready).toBe(true);
+    expect(parsed.run_count).toBe(2);
+    expect(parsed.last_run_id).toBe("run-abc");
+  });
+
+  it("accepts operator session with null last_run_id", () => {
+    const parsed = operatorSessionSchema.parse({ ..._validOperatorSession, last_run_id: null });
+    expect(parsed.last_run_id).toBeNull();
+  });
+
+  it("accepts add_dirs as empty array", () => {
+    const parsed = operatorSessionSchema.parse({ ..._validOperatorSession, add_dirs: [] });
+    expect(parsed.add_dirs).toEqual([]);
+  });
+
+  it("accepts add_dirs with paths", () => {
+    const parsed = operatorSessionSchema.parse({
+      ..._validOperatorSession,
+      add_dirs: ["/extra/dir", "/another/dir"],
+    });
+    expect(parsed.add_dirs).toHaveLength(2);
+  });
+
+  it("parses a list of operator sessions", () => {
+    const parsed = operatorSessionListResponseSchema.parse({
+      sessions: [_validOperatorSession],
+      count: 1,
+    });
+    expect(parsed.sessions).toHaveLength(1);
+    expect(parsed.sessions[0].id).toBe("sess-001");
+    expect(parsed.count).toBe(1);
+  });
+
+  it("parses an empty session list", () => {
+    const parsed = operatorSessionListResponseSchema.parse({ sessions: [], count: 0 });
+    expect(parsed.sessions).toEqual([]);
+    expect(parsed.count).toBe(0);
+  });
+
+  it("rejects operator session missing required fields", () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { id: _id, ...noId } = _validOperatorSession;
+    expect(() => operatorSessionSchema.parse(noId)).toThrow();
+  });
+});
+
+describe("createOperatorSessionRequestSchema", () => {
+  it("parses a valid create request", () => {
+    const parsed = createOperatorSessionRequestSchema.parse({
+      name: "New session",
+      model: "claude-sonnet-4.6",
+      mode: "default",
+      workspace: "/Users/user/projects",
+    });
+    expect(parsed.name).toBe("New session");
+    expect(parsed.add_dirs).toBeUndefined();
+  });
+
+  it("accepts create request with add_dirs", () => {
+    const parsed = createOperatorSessionRequestSchema.parse({
+      name: "Session with dirs",
+      model: "claude-sonnet-4.6",
+      mode: "default",
+      workspace: "/Users/user/projects",
+      add_dirs: ["/extra"],
+    });
+    expect(parsed.add_dirs).toEqual(["/extra"]);
+  });
+
+  it("accepts empty strings for backend parity", () => {
+    const parsed = createOperatorSessionRequestSchema.parse({
+      name: "",
+      model: "",
+      mode: "",
+      workspace: "",
+    });
+    expect(parsed.name).toBe("");
+    expect(parsed.workspace).toBe("");
+  });
+});
+
+describe("promptRequestSchema", () => {
+  it("parses a valid prompt request", () => {
+    const parsed = promptRequestSchema.parse({ prompt: "What files changed?" });
+    expect(parsed.prompt).toBe("What files changed?");
+  });
+
+  it("rejects prompt request with empty prompt", () => {
+    expect(() => promptRequestSchema.parse({ prompt: "" })).toThrow();
+  });
+});
+
+describe("promptSubmitResponseSchema", () => {
+  it("parses a valid prompt submit response", () => {
+    const parsed = promptSubmitResponseSchema.parse({
+      run_id: "run-001",
+      session_id: "sess-001",
+      status: "running",
+    });
+    expect(parsed.run_id).toBe("run-001");
+    expect(parsed.session_id).toBe("sess-001");
+    expect(parsed.status).toBe("running");
+  });
+});
+
+describe("operatorRunStatusSchema", () => {
+  it("parses a valid run status response", () => {
+    const parsed = operatorRunStatusSchema.parse({
+      session: _validOperatorSession,
+      run: {
+        id: "run-001",
+        session_id: "sess-001",
+        prompt: "hello world",
+        status: "running",
+        exit_code: null,
+        started_at: "2026-05-01T10:01:00Z",
+        finished_at: null,
+        events: [],
+      },
+    });
+    expect(parsed.session.id).toBe("sess-001");
+    expect(parsed.run?.id).toBe("run-001");
+    expect(parsed.run?.status).toBe("running");
+  });
+
+  it("accepts run with exit_code and timestamps", () => {
+    const parsed = operatorRunStatusSchema.parse({
+      session: _validOperatorSession,
+      run: {
+        id: "run-002",
+        session_id: "sess-001",
+        prompt: "done",
+        status: "done",
+        exit_code: 0,
+        started_at: "2026-05-01T10:01:00Z",
+        finished_at: "2026-05-01T10:02:00Z",
+        events: [
+          {
+            type: "assistant.message",
+            idx: 0,
+            event: {
+              type: "assistant.message",
+              data: { content: "OK" },
+            },
+            data: { content: "OK" },
+          },
+        ],
+      },
+    });
+    expect(parsed.run?.exit_code).toBe(0);
+    expect(parsed.run?.finished_at).toBe("2026-05-01T10:02:00Z");
+    expect(parsed.run?.events).toHaveLength(1);
+  });
+
+  it("accepts null run when no run id was requested", () => {
+    const parsed = operatorRunStatusSchema.parse({
+      session: _validOperatorSession,
+      run: null,
+    });
+    expect(parsed.run).toBeNull();
+  });
+});
+
+describe("operatorRunsResponseSchema", () => {
+  const _historyRun = {
+    id: "run-010",
+    session_id: "sess-001",
+    prompt: "ship it",
+    status: "failed",
+    exit_code: 1,
+    started_at: "2026-05-01T10:01:00Z",
+    finished_at: "2026-05-01T10:02:00Z",
+    events: [],
+  };
+
+  it("parses a valid persisted run history envelope", () => {
+    const parsed = operatorRunsResponseSchema.parse({ runs: [_historyRun], count: 1 });
+    expect(parsed.runs).toHaveLength(1);
+    expect(parsed.runs[0].id).toBe("run-010");
+    expect(parsed.runs[0].status).toBe("failed");
+    expect(parsed.count).toBe(1);
+  });
+
+  it("accepts an empty persisted run history envelope", () => {
+    const parsed = operatorRunsResponseSchema.parse({ runs: [], count: 0 });
+    expect(parsed.runs).toEqual([]);
+    expect(parsed.count).toBe(0);
+  });
+
+  it("rejects malformed run entries in history envelopes", () => {
+    expect(() =>
+      operatorRunsResponseSchema.parse({
+        runs: [{ id: "broken-run", status: "done" }],
+        count: 1,
+      })
+    ).toThrow();
+  });
+
+  it("rejects negative history counts", () => {
+    expect(() => operatorRunsResponseSchema.parse({ runs: [], count: -1 })).toThrow();
+  });
+});
+
+describe("pathSuggestResponseSchema", () => {
+  it("parses a valid suggest response", () => {
+    const parsed = pathSuggestResponseSchema.parse({
+      suggestions: ["/Users/user/projects/app", "/Users/user/projects/lib"],
+      count: 2,
+    });
+    expect(parsed.suggestions).toHaveLength(2);
+    expect(parsed.count).toBe(2);
+  });
+
+  it("parses an empty suggest response", () => {
+    const parsed = pathSuggestResponseSchema.parse({ suggestions: [], count: 0 });
+    expect(parsed.suggestions).toEqual([]);
+    expect(parsed.count).toBe(0);
+  });
+});
+
+describe("filePreviewResponseSchema", () => {
+  it("parses a valid preview response", () => {
+    const parsed = filePreviewResponseSchema.parse({
+      path: "/Users/user/projects/app/main.ts",
+      content: "export default function main() {}",
+      mime: "text/plain",
+      size: 33,
+    });
+    expect(parsed.path).toBe("/Users/user/projects/app/main.ts");
+    expect(parsed.mime).toBe("text/plain");
+    expect(parsed.size).toBe(33);
+  });
+});
+
+describe("fileDiffResponseSchema", () => {
+  it("parses a valid diff response", () => {
+    const parsed = fileDiffResponseSchema.parse({
+      path_a: "/Users/user/projects/app/main.ts",
+      path_b: "/Users/user/projects/app/main.ts",
+      unified_diff: "@@ -1,1 +1,2 @@\n-old\n+new\n+added",
+      stats: { added: 2, removed: 1 },
+    });
+    expect(parsed.path_a).toBe("/Users/user/projects/app/main.ts");
+    expect(parsed.stats.added).toBe(2);
+    expect(parsed.stats.removed).toBe(1);
+  });
+
+  it("accepts empty unified_diff (no changes)", () => {
+    const parsed = fileDiffResponseSchema.parse({
+      path_a: "a.ts",
+      path_b: "b.ts",
+      unified_diff: "",
+      stats: { added: 0, removed: 0 },
+    });
+    expect(parsed.unified_diff).toBe("");
+    expect(parsed.stats.added).toBe(0);
+  });
+});
+
+describe("SSE frame schemas", () => {
+  it("parses a typed copilot event frame", () => {
+    const parsed = copilotEventFrameSchema.parse({
+      type: "assistant.message_delta",
+      idx: 0,
+      event: {
+        type: "assistant.message_delta",
+        data: { deltaContent: "Hello" },
+      },
+      data: { deltaContent: "Hello" },
+    });
+    expect(parsed.type).toBe("assistant.message_delta");
+    expect(parsed.event.type).toBe("assistant.message_delta");
+    expect(parsed.data).toEqual({ deltaContent: "Hello" });
+  });
+
+  it("parses typed event frame without data (optional)", () => {
+    const parsed = copilotEventFrameSchema.parse({
+      type: "assistant.turn_start",
+      idx: 1,
+      event: {
+        type: "assistant.turn_start",
+      },
+    });
+    expect(parsed.data).toBeUndefined();
+  });
+
+  it("accepts unknown event types from future Copilot versions", () => {
+    const parsed = copilotEventFrameSchema.parse({
+      type: "assistant.new_future_event",
+      idx: 2,
+      event: {
+        type: "assistant.new_future_event",
+      },
+      data: null,
+    });
+    expect(parsed.type).toBe("assistant.new_future_event");
+  });
+
+  it("parses a raw frame", () => {
+    const parsed = copilotRawFrameSchema.parse({
+      type: "raw",
+      idx: 3,
+      text: "some unstructured output",
+    });
+    expect(parsed.type).toBe("raw");
+    expect(parsed.text).toBe("some unstructured output");
+  });
+
+  it("parses a terminal status frame with exit_code 0", () => {
+    const parsed = copilotStatusFrameSchema.parse({
+      type: "status",
+      status: "done",
+      exit_code: 0,
+    });
+    expect(parsed.type).toBe("status");
+    expect(parsed.status).toBe("done");
+    expect(parsed.exit_code).toBe(0);
+  });
+
+  it("parses a terminal status frame with null exit_code", () => {
+    const parsed = copilotStatusFrameSchema.parse({
+      type: "status",
+      status: "running",
+      exit_code: null,
+    });
+    expect(parsed.exit_code).toBeNull();
+  });
+
+  it("stream frame schema parses a structured event frame", () => {
+    const parsed = copilotStreamFrameSchema.parse({
+      type: "result",
+      idx: 4,
+      event: {
+        type: "result",
+        exitCode: 0,
+      },
+    });
+    expect(parsed.type).toBe("result");
+  });
+
+  it("stream frame schema parses a raw frame", () => {
+    const parsed = copilotStreamFrameSchema.parse({
+      type: "raw",
+      idx: 5,
+      text: "fallback",
+    });
+    expect(parsed.type).toBe("raw");
+  });
+
+  it("stream frame schema parses a status frame", () => {
+    const parsed = copilotStreamFrameSchema.parse({
+      type: "status",
+      status: "done",
+      exit_code: 0,
+    });
+    expect(parsed.type).toBe("status");
+  });
+
+  it("rejects mismatched frame type and event.type", () => {
+    expect(() =>
+      copilotStreamFrameSchema.parse({
+        type: "assistant.message",
+        idx: 0,
+        event: {
+          type: "assistant.message_delta",
+        },
+      })
+    ).toThrow();
+  });
+});
+
+describe("chatSettingsSchema", () => {
+  it("parses valid chat settings", () => {
+    const parsed = chatSettingsSchema.parse({
+      model: "claude-sonnet-4.6",
+      mode: "default",
+      workspace: "/Users/user/projects",
+      add_dirs: ["/Users/user/projects/extra"],
+    });
+    expect(parsed.model).toBe("claude-sonnet-4.6");
+    expect(parsed.add_dirs).toHaveLength(1);
+  });
+
+  it("accepts empty add_dirs", () => {
+    const parsed = chatSettingsSchema.parse({
+      model: "gpt-5.4",
+      mode: "default",
+      workspace: "/Users/user/projects",
+      add_dirs: [],
+    });
+    expect(parsed.add_dirs).toEqual([]);
+  });
+
+  it("rejects empty model", () => {
+    expect(() =>
+      chatSettingsSchema.parse({
+        model: "",
+        mode: "default",
+        workspace: "/Users/user/projects",
+        add_dirs: [],
       })
     ).toThrow();
   });

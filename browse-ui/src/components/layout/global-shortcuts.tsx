@@ -31,6 +31,16 @@ export function GlobalShortcuts() {
         },
       },
       {
+        key: "c",
+        handler: () => {
+          if (!isGChordActive) return false;
+          setIsGChordActive(false);
+          router.push("/chat");
+          return true;
+        },
+        preventDefault: true,
+      },
+      {
         key: "s",
         handler: () => {
           if (!isGChordActive) return false;

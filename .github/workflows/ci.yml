@@ -97,8 +97,8 @@ jobs:
   #
   # Reason: visual.spec.ts contains screenshot-comparison tests whose pixel
   # output differs between macOS (local) and Linux (CI runners), so they would
-  # produce false negatives on every push.  The smoke and shortcuts specs are
-  # behaviorally stable, but bundling them with flaky visual tests makes the
+  # produce false negatives on every push. The smoke, shortcuts, and chat specs
+  # are behaviorally stable, but bundling them with visual tests makes the
   # whole suite unreliable for always-on use.
   #
   # To run E2E: trigger this workflow manually via the GitHub Actions UI or

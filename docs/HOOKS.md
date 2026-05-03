@@ -69,6 +69,15 @@ Both the local hook and CI run `ruff format --check` and `ruff check` on staged/
 The `browse/*` and `hooks/*` patterns in the local `_py_in_surface()` function match **all subdirectory depths** — consistent with CI's directory-level `ruff check browse/ hooks/` invocation. This ensures depth-4 files like `browse/static/vendor/_download.py` are covered locally as well as in CI.
 
 **Full test suite** (`python3 run_all_tests.py`) is **not** enforced by the local `pre-commit` hook — it is too slow for every-commit use. CI runs it on every push/PR. Operators are expected to run it manually before submitting PRs. The local hook only enforces the fast checks listed in the table above.
+
+### Browse operator console surfaces
+
+The `/v2/chat` operator console does **not** introduce a new hook class. Existing guardrails already cover it:
+
+- Python-side operator files (`browse/core/operator_console.py`, `browse/api/operator.py`) stay inside the normal `browse/` syntax + Ruff surface.
+- Frontend operator files under `browse-ui/src/app/chat/` and `browse-ui/src/components/chat/` stay under `block-edit-dist`, `block-unsafe-html`, `nextjs-typecheck-reminder`, and the staged Prettier check in `pre-commit`.
+- `browse-ui/e2e/chat.spec.ts` is not hook-enforced directly; quality for that surface comes from `pnpm test:e2e` locally and the manual-dispatch CI `e2e` job.
+
 ### Platform events not currently handled
 
 The Copilot platform provides 8 hook event types (per [GitHub docs](https://docs.github.com/en/copilot/concepts/agents/cloud-agent/about-hooks)). This repo's `hooks.json` and `hook_runner.py` handle 7 of them. The only currently unhandled platform event is:

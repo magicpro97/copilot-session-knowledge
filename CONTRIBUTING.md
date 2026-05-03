@@ -185,3 +185,60 @@ Changes under `browse-ui/src/` follow TypeScript/React conventions. Key rules:
 3. **No `dangerouslySetInnerHTML` without sanitization.** Use `DOMPurify.sanitize()` or render
    via the `<Highlight>` component. The `block-unsafe-html` hook enforces this.
 4. **Typecheck after TS edits.** Run `cd browse-ui && pnpm typecheck` after editing `.ts`/`.tsx`.
+
+### Operator console (`/v2/chat`)
+
+The browser-managed Copilot CLI console spans three layers. Treat contract changes as cross-layer work:
+
+- **`browse/core/operator_console.py`** — execution, event parsing, persistence, and path confinement.
+- **`browse/api/operator.py`** — authenticated REST + SSE endpoints under `/api/operator/*`.
+- **`browse-ui/src/app/chat/` and `browse-ui/src/components/chat/`** — shell, transcript, composer, session dialog, and file review UI.
+
+When you change the operator API contract, update `browse-ui/src/lib/api/types.ts` and `browse-ui/src/lib/api/schemas.ts` in the same PR.
+
+### Playwright E2E
+
+Behavioral browser tests live in `browse-ui/e2e/` and are the main smoke surface for the shipped UI:
+
+- `smoke.spec.ts` — core route and diff-viewer coverage
+- `shortcuts.spec.ts` — navigation chords and keyboard behavior
+- `chat.spec.ts` — `/v2/chat` shell, persisted history, preview, and inline diff review
+
+Run Playwright locally:
+
+```bash
+cd browse-ui
+pnpm test:e2e --project behavioral
+```
+
+`playwright.config.ts` builds the export, creates the fixture DB, and boots the Python browse server automatically. No separate local server startup is required for the E2E suite.
+
+## Shipping checklist — operator console changes
+
+Use this checklist before merging any PR that touches the operator backend, `/api/operator/*`, `browse-ui/src/app/chat/`, `browse-ui/src/components/chat/`, or `browse-ui/e2e/chat.spec.ts`.
+
+### Python backend
+
+- [ ] `python3 -c "import ast; ast.parse(open('browse/api/operator.py').read())"`
+- [ ] `python3 -c "import ast; ast.parse(open('browse/core/operator_console.py').read())"`
+- [ ] `python3 tests/test_browse_operator_api.py`
+- [ ] `python3 test_security.py`
+- [ ] `python3 test_fixes.py`
+
+### TypeScript / UI
+
+- [ ] `cd browse-ui && pnpm typecheck`
+- [ ] `cd browse-ui && pnpm lint`
+- [ ] `cd browse-ui && pnpm format:check`
+- [ ] `cd browse-ui && pnpm test`
+- [ ] `cd browse-ui && pnpm build`
+
+### Browser smoke
+
+- [ ] `cd browse-ui && pnpm test:e2e --project behavioral`
+
+### Compatibility notes
+
+- `watch-sessions.py` does not need special coordination for operator-only changes; normal Copilot session artifacts are still discovered on the next polling cycle.
+- `auto-update-tools.py` does not restart the browse server. Restart it manually after Python-side operator changes.
+- `browse-ui/dist/` remains a committed build artifact: rebuild it after UI changes and stage the regenerated output.

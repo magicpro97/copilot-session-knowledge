@@ -192,7 +192,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:
         self._handle_get_like(send_body=False)
 
-    def do_POST(self) -> None:
+    def _handle_mutating(self, method: str) -> None:
         from browse.core.auth import check_origin, check_token
         from browse.core.csp import generate_nonce
         from browse.core.fts import _esc
@@ -232,7 +232,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         params["_user_agent"] = [self.headers.get("User-Agent", "")]
 
         # Route dispatch
-        handler_fn, kwargs = match_route(path, "POST")
+        handler_fn, kwargs = match_route(path, method)
         if handler_fn is None:
             self._send(b"404 Not Found", "text/plain", 404, nonce)
             return
@@ -251,6 +251,12 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             nonce,
             set_cookie=token_val if should_set_cookie else None,
         )
+
+    def do_POST(self) -> None:
+        self._handle_mutating("POST")
+
+    def do_DELETE(self) -> None:
+        self._handle_mutating("DELETE")
 
 
 def _make_handler_class(db: sqlite3.Connection, token: str) -> type:
