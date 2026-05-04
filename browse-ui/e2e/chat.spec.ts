@@ -459,6 +459,72 @@ test("/chat composer supports drag-and-drop to queue files", async ({ page }) =>
   await expect(page.getByText("dropped.txt")).toBeVisible();
 });
 
+// ─── Header host switcher ───────────────────────────────────────────────────
+
+test("/chat header shows global host switcher button", async ({ page }) => {
+  await mockOperatorApi(page);
+
+  await page.goto("/v2/chat/");
+  await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
+
+  // The header host switcher trigger button is always visible
+  await expect(page.getByTestId("header-host-trigger")).toBeVisible();
+});
+
+test("/chat header host switcher shows Local as default option", async ({ page }) => {
+  await mockOperatorApi(page);
+
+  await page.goto("/v2/chat/");
+  await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
+
+  // Open the host dropdown
+  await page.getByTestId("header-host-trigger").click();
+
+  // Local (same-origin) option is present
+  await expect(page.getByTestId("host-option-local")).toBeVisible();
+});
+
+test("/chat header host switcher shows active host indicator", async ({ page }) => {
+  await mockOperatorApi(page);
+
+  await page.goto("/v2/chat/");
+  await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
+
+  // Open the host dropdown
+  await page.getByTestId("header-host-trigger").click();
+
+  // The local host option shows a check mark (active indicator)
+  const localOption = page.getByTestId("host-option-local");
+  await expect(localOption).toBeVisible();
+  // Check that it contains the active check marker
+  await expect(localOption).toContainText("✓");
+});
+
+test("/chat header host switcher navigates to Settings host management", async ({ page }) => {
+  await mockOperatorApi(page);
+
+  await page.goto("/v2/chat/");
+  await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
+
+  await page.getByTestId("header-host-trigger").click();
+  await page.getByText("Manage hosts…").click();
+
+  await expect(page).toHaveURL(/\/v2\/settings\/?#hosts$/);
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await expect(page.getByText("Hosts & connections")).toBeVisible();
+});
+
+test("/chat header host switcher is visible on mobile viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockOperatorApi(page);
+
+  await page.goto("/v2/chat/");
+  await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
+
+  // Switcher button is still visible (icon-only on narrow widths)
+  await expect(page.getByTestId("header-host-trigger")).toBeVisible();
+});
+
 // ─── Release proof: root-hosted Firebase export ────────────────────────────
 //
 // This test verifies that the static export produced for Firebase Hosting does

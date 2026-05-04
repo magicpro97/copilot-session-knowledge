@@ -78,6 +78,14 @@ The `/v2/chat` operator console does **not** introduce a new hook class. Existin
 - Frontend operator files under `browse-ui/src/app/chat/` and `browse-ui/src/components/chat/` stay under `block-edit-dist`, `block-unsafe-html`, `nextjs-typecheck-reminder`, and the staged Prettier check in `pre-commit`.
 - `browse-ui/e2e/chat.spec.ts` is not hook-enforced directly; quality for that surface comes from `pnpm test:e2e` locally and the manual-dispatch CI `e2e` job.
 
+### Browse host management surfaces
+
+The browse-wide host state layer (`host-provider.tsx`, `host-profiles.ts`, `host-management.tsx`, and the header dropdown) does **not** introduce new hook classes. The existing guardrails apply without change:
+
+- All files under `browse-ui/src/` are covered by `block-edit-dist` (dist artifact guard), `block-unsafe-html`, `nextjs-typecheck-reminder`, and the staged Prettier + pnpm-lockfile-guard checks in `pre-commit`.
+- `host-profiles.ts` is pure localStorage — no server writes, no Python-side hook implications.
+- `BROWSE_HOST_CHANGE_EVENT` is a browser `window.dispatchEvent(new Event(…))` — not a server-side or CLI hook event; it has no interaction with the Copilot hook platform.
+
 ### Platform events not currently handled
 
 The Copilot platform provides 8 hook event types (per [GitHub docs](https://docs.github.com/en/copilot/concepts/agents/cloud-agent/about-hooks)). This repo's `hooks.json` and `hook_runner.py` handle 7 of them. The only currently unhandled platform event is:

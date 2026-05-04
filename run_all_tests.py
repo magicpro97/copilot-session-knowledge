@@ -71,6 +71,8 @@ def run_test(test_file: Path) -> tuple[bool, float, str]:
             timeout=TIMEOUT_PER_TEST,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         duration = time.monotonic() - start
         passed = result.returncode == 0

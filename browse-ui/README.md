@@ -44,7 +44,7 @@ pnpm build
 | `/v2/search` | Full-text + semantic search |
 | `/v2/insights` | Knowledge insights |
 | `/v2/graph` | Graph workspace: Evidence + Similarity + Communities |
-| `/v2/settings` | Preferences |
+| `/v2/settings` | Preferences + **Hosts & connections** (host management) |
 
 ## E2E tests
 
@@ -84,6 +84,55 @@ Do **not** edit files in `dist/` directly — they are build artifacts. Run `pnp
 - `basePath` in `next.config.ts` defaults to `/v2` for the Python-server deployment; use `pnpm build:release` for a Firebase-targeted export so asset paths resolve from the site root (`/_next/…`). See [Firebase Hosting topology](#firebase-hosting-topology) for the release build step.
 - Dynamic routes require `generateStaticParams()` in a server component wrapper
 
+## Host selection & management
+
+Browse-wide host state is shared by all pages via `HostProvider` (mounted at the root layout) and `host-profiles.ts` (localStorage persistence layer). This replaces any previous per-page or per-component host state.
+
+### Source of truth
+
+| Source | Role |
+|--------|------|
+| `src/providers/host-provider.tsx` | Root context provider; exposes `host` and `diagnosticsEnabled` to all pages |
+| `src/lib/host-profiles.ts` | Read/write localStorage helpers; the `LOCAL_HOST` sentinel; same-tab change notification via `BROWSE_HOST_CHANGE_EVENT` |
+
+### Active host resolution order
+
+1. Explicit selection stored in `localStorage` (`browse_selected_host_id`), if the referenced profile still exists.
+2. First saved remote profile with `is_default === true`.
+3. `LOCAL_HOST` sentinel (same-origin, no bearer token required).
+
+### Same-tab refresh
+
+Both profile mutations (save, delete) and host selection changes dispatch `BROWSE_HOST_CHANGE_EVENT` on `window`. `HostProvider` listens for this event and re-evaluates immediately — no page reload or navigation needed. Cross-tab changes propagate via the standard `storage` event.
+
+### Header global host dropdown
+
+The header renders a compact AWS-region-style dropdown showing the active host label. Clicking it lists all saved profiles plus `Local (same-origin)`. Selecting a profile calls `setSelectedHostId()` and triggers `BROWSE_HOST_CHANGE_EVENT`. A **Manage hosts…** link navigates to `/v2/settings#hosts` (safe under both the local `/v2` basePath and the Firebase root-hosted build).
+
+### Settings — Hosts & connections (`HostManagement`)
+
+The Settings page at `/v2/settings` contains a dedicated **Hosts & connections** card that renders `HostManagement`. From this surface the operator can:
+
+- **List** all saved profiles plus the built-in `Local (same-origin)` entry (not deletable).
+- **Add** a remote host — requires a public tunnel URL (e.g. ngrok, Cloudflare Tunnel); label, auth token, and CLI kind are optional.
+- **Switch** the active selection to any listed host.
+- **Set default** — marks a profile `is_default: true` so it is selected on fresh load (before any explicit selection).
+- **Remove** a remote profile; if the removed profile was active, the selection falls back through the resolution order above.
+- **Restore local** — clears all `is_default` flags and removes any explicit selection, returning to the `LOCAL_HOST` sentinel.
+
+### Session creation pre-population
+
+`SessionCreateDialog` (`/v2/chat`) reads the global active host from `useHostState()` and pre-populates the host picker when the dialog opens. The user can still override the host per session; the override is local to that dialog invocation.
+
+### Verified (targeted checks)
+
+- `pnpm vitest run src/app/settings/page.test.tsx` — Settings page + HostManagement rendering
+- `pnpm vitest run src/app/chat/chat-shell.test.tsx` — ChatShell SessionCreateDialog pre-population
+- `pnpm exec playwright test e2e/chat.spec.ts --grep "header host switcher"` — header dropdown E2E
+- `pnpm typecheck` — TypeScript across the full browse-ui surface
+
+> Full gates (lint, build, full E2E suite, deploy, hosted smoke) are orchestrator-owned and have not been run by this docs lane.
+
 ## Mobile support
 
 The UI is a static Next.js export and renders in any modern mobile browser (iOS Safari, Android Chrome). Access requires a tunnel (e.g. Cloudflare Tunnel) since the browse server binds to `127.0.0.1`.
@@ -112,6 +161,7 @@ The UI is a static Next.js export and renders in any modern mobile browser (iOS 
 - **Phase 8**: Shipped insights + graph pages (dashboard/live and Evidence/Similarity/Communities)
 - **Phase 9**: Shipped settings, global keyboard shortcuts, and session detail compare/export polish
 - **Phase 10**: Shipped operator console (`/v2/chat`) — browser-managed Copilot CLI execution with streamed output, persisted run history, and file review
+- **Phase 11**: Shipped browse-wide host selection (`HostProvider` + `host-profiles.ts`), global header host dropdown, Settings host management surface (`HostManagement`), and same-tab host-change refresh
 
 ## Firebase Hosting topology
 

@@ -1814,25 +1814,23 @@ _tp_loader = _importlib.util.module_from_spec(_tp_module)
 _gs9_conn.close()
 
 _gs9_check = subprocess.run(
-    [sys.executable, "-c", f"""
-import sys, sqlite3, importlib.util
-sys.path.insert(0, '{str(REPO)}')
-spec = importlib.util.spec_from_file_location('tentacle', '{str(_tp)}')
-mod = importlib.util.module_from_spec(spec)
-# Patch sys.argv to avoid main() running
-import unittest.mock
-with unittest.mock.patch('sys.argv', ['tentacle.py', 'list']):
-    try:
-        spec.loader.exec_module(mod)
-    except SystemExit:
-        pass
-
-conn = sqlite3.connect('{str(_gs9_db_path)}')
-mod._ensure_metrics_schema(conn)
-cols = {{row[1] for row in conn.execute('PRAGMA table_info(tentacle_outcomes)').fetchall()}}
-conn.close()
-print('goal_id' in cols, 'iteration' in cols)
-"""],
+    [sys.executable, "-c", (
+        "import sys, sqlite3, importlib.util\n"
+        f"sys.path.insert(0, {repr(str(REPO))})\n"
+        f"spec = importlib.util.spec_from_file_location('tentacle', {repr(str(_tp))})\n"
+        "mod = importlib.util.module_from_spec(spec)\n"
+        "import unittest.mock\n"
+        "with unittest.mock.patch('sys.argv', ['tentacle.py', 'list']):\n"
+        "    try:\n"
+        "        spec.loader.exec_module(mod)\n"
+        "    except SystemExit:\n"
+        "        pass\n"
+        f"conn = sqlite3.connect({repr(str(_gs9_db_path))})\n"
+        "mod._ensure_metrics_schema(conn)\n"
+        "cols = {row[1] for row in conn.execute('PRAGMA table_info(tentacle_outcomes)').fetchall()}\n"
+        "conn.close()\n"
+        "print('goal_id' in cols, 'iteration' in cols)\n"
+    )],
     capture_output=True, text=True,
 )
 if _gs9_check.returncode == 0:

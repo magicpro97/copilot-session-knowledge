@@ -242,3 +242,27 @@ Use this checklist before merging any PR that touches the operator backend, `/ap
 - `watch-sessions.py` does not need special coordination for operator-only changes; normal Copilot session artifacts are still discovered on the next polling cycle.
 - `auto-update-tools.py` does not restart the browse server. Restart it manually after Python-side operator changes.
 - `browse-ui/dist/` remains a committed build artifact: rebuild it after UI changes and stage the regenerated output.
+
+## Shipping checklist — host management / host-profile changes
+
+Use this checklist before merging any PR that touches `browse-ui/src/providers/host-provider.tsx`, `browse-ui/src/lib/host-profiles.ts`, `browse-ui/src/components/hosts/`, or `browse-ui/src/components/layout/header.tsx`.
+
+### TypeScript / UI
+
+- [ ] `cd browse-ui && pnpm typecheck`
+- [ ] `cd browse-ui && pnpm lint`
+- [ ] `cd browse-ui && pnpm format:check`
+- [ ] `cd browse-ui && pnpm test` — covers `src/app/settings/page.test.tsx` and `src/app/chat/chat-shell.test.tsx`
+- [ ] `cd browse-ui && pnpm build`
+
+### Browser smoke
+
+- [ ] `cd browse-ui && pnpm exec playwright test e2e/chat.spec.ts --grep "header host switcher"`
+- [ ] Manual: open Settings → Hosts & connections, add/remove a host, verify header dropdown updates immediately (same-tab refresh via `BROWSE_HOST_CHANGE_EVENT`)
+- [ ] Manual: open New Chat dialog, verify host pre-populates from the global active host
+
+### Compatibility notes
+
+- `host-profiles.ts` reads/writes `localStorage` only; no server-side state is involved.
+- Adding a new field to `HostProfile` requires a matching update to `hostProfileSchema` in `browse-ui/src/lib/api/schemas.ts` and the `HostProfile` type in `browse-ui/src/lib/api/types.ts`.
+- `LOCAL_HOST` (id `"local"`) is an immutable sentinel — never write it to localStorage or allow it to be deleted via the management UI.

@@ -8,8 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useHealth } from "@/lib/api/hooks";
 import { formatNumber } from "@/lib/formatters";
-import { LOCAL_HOST, getEffectiveHost } from "@/lib/host-profiles";
-import type { HostProfile } from "@/lib/api/types";
+import { useHostState } from "@/providers/host-provider";
 import { KnowledgeTab } from "./knowledge-tab";
 import { LiveTab } from "./live-tab";
 import { RetroTab } from "./retro-tab";
@@ -43,28 +42,8 @@ function hashToInsightsTab(hash: string): InsightsTabKey | null {
 }
 
 export default function InsightsLayout({ children }: InsightsLayoutProps) {
-  // Track the effective host and whether diagnostics requests are safe to fire.
-  // Initialise with safe SSR defaults; useEffect updates on the client.
-  const [host, setHost] = useState<HostProfile>(LOCAL_HOST);
-  const [diagnosticsEnabled, setDiagnosticsEnabled] = useState(false);
-
-  useEffect(() => {
-    const update = () => {
-      const h = getEffectiveHost();
-      setHost(h);
-      setDiagnosticsEnabled(
-        // Remote operator host selected — always safe to query
-        h.base_url !== "" ||
-          // Local browse served under /v2/ — same-origin backend is available
-          window.location.pathname.startsWith("/v2") ||
-          // Explicit API base configured at build time
-          Boolean(process.env.NEXT_PUBLIC_API_BASE)
-      );
-    };
-    update();
-    window.addEventListener("storage", update);
-    return () => window.removeEventListener("storage", update);
-  }, []);
+  // Consume the browse-wide shared host state (replaces the local useEffect + storage listener).
+  const { host, diagnosticsEnabled } = useHostState();
 
   const health = useHealth(host, diagnosticsEnabled);
   const [activeTab, setActiveTab] = useState<InsightsTabKey>("overview");

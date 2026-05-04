@@ -36,13 +36,14 @@
 }
 
 /* HSL design tokens — canonical values from 03-visual-design.md §1 */
+/* Contrast tuning: off-white background/surfaces reduce glare vs pure #fff per APCA guidance */
 @layer base {
   :root {
-    --background: 210 20% 99%;
+    --background: 210 20% 97%;
     --foreground: 215 14% 14%;
-    --card: 0 0% 100%;
+    --card: 210 16% 99%;
     --card-foreground: 215 14% 14%;
-    --popover: 0 0% 100%;
+    --popover: 210 16% 99%;
     --popover-foreground: 215 14% 14%;
     --primary: 235 56% 60%; /* #5E6AD2 indigo */
     --primary-foreground: 0 0% 100%;
@@ -66,17 +67,19 @@
   }
 
   /* Dark theme (.dark class on <html>, set by next-themes attribute="class") */
+  /* Contrast tuning: foreground 88% vs 93% reduces halation/glare on dark bg per APCA guidance;
+     card/popover surfaces lifted 1-2% for visible elevation without glass effect */
   .dark {
     --background: 215 22% 7%;
-    --foreground: 210 25% 93%;
-    --card: 215 20% 11%;
-    --card-foreground: 210 25% 93%;
-    --popover: 215 20% 11%;
-    --popover-foreground: 210 25% 93%;
+    --foreground: 210 20% 88%;
+    --card: 215 20% 12%;
+    --card-foreground: 210 20% 88%;
+    --popover: 215 20% 13%;
+    --popover-foreground: 210 20% 88%;
     --primary: 235 56% 69%; /* #7B86E2 lighter indigo */
     --primary-foreground: 0 0% 100%;
     --secondary: 215 14% 15%;
-    --secondary-foreground: 210 25% 93%;
+    --secondary-foreground: 210 20% 88%;
     --muted: 215 14% 15%;
     --muted-foreground: 212 7% 47%;
     --accent: 235 56% 69%;

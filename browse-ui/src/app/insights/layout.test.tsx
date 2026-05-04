@@ -5,7 +5,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import InsightsLayout from "@/app/insights/layout";
 import { useInsightsTab } from "@/app/insights/insights-tab-context";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
-import { LOCAL_HOST_ID } from "@/lib/host-profiles";
+import {
+  BROWSE_HOST_CHANGE_EVENT,
+  LOCAL_HOST,
+  LOCAL_HOST_ID,
+  deleteHostProfile,
+  saveHostProfile,
+  setSelectedHostId,
+} from "@/lib/host-profiles";
+import type { HostState } from "@/providers/host-provider";
 
 // ── Next.js ──────────────────────────────────────────────────────────────────
 vi.mock("next/navigation", () => ({
@@ -19,6 +27,12 @@ vi.mock("@/lib/api/hooks", () => ({
     isLoading: false,
     isError: false,
   })),
+}));
+
+// ── Host provider — controlled via hostStateMock ──────────────────────────────
+const hostStateMock: HostState = { host: LOCAL_HOST, diagnosticsEnabled: false };
+vi.mock("@/providers/host-provider", () => ({
+  useHostState: vi.fn(() => hostStateMock),
 }));
 
 // ── Tab components (lightweight stubs) ───────────────────────────────────────
@@ -60,7 +74,9 @@ describe("InsightsLayout — tab navigation", () => {
   beforeEach(() => {
     mockedUseKeyboardShortcuts.mockReset();
     mockedUseKeyboardShortcuts.mockImplementation(() => {});
-    // Simulate local browse so diagnostics requests are enabled
+    // Enable diagnostics for tab navigation tests (simulates local /v2 serve).
+    hostStateMock.host = LOCAL_HOST;
+    hostStateMock.diagnosticsEnabled = true;
     window.history.pushState({}, "", "/v2/insights");
   });
 
@@ -203,6 +219,8 @@ describe("InsightsLayout — hash-based deep-linking", () => {
   beforeEach(() => {
     mockedUseKeyboardShortcuts.mockReset();
     mockedUseKeyboardShortcuts.mockImplementation(() => {});
+    hostStateMock.host = LOCAL_HOST;
+    hostStateMock.diagnosticsEnabled = true;
     window.history.pushState({}, "", "/v2/insights");
     window.location.hash = "";
     vi.spyOn(window.history, "replaceState").mockImplementation(() => undefined);
@@ -254,7 +272,9 @@ describe("InsightsLayout — health badge", () => {
   beforeEach(() => {
     mockedUseKeyboardShortcuts.mockReset();
     mockedUseKeyboardShortcuts.mockImplementation(() => {});
-    // Simulate local browse so health data renders
+    // Enable diagnostics so health data renders
+    hostStateMock.host = LOCAL_HOST;
+    hostStateMock.diagnosticsEnabled = true;
     window.history.pushState({}, "", "/v2/insights");
   });
 
@@ -269,6 +289,8 @@ describe("InsightsLayout — hosted-safe diagnostics", () => {
     mockedUseKeyboardShortcuts.mockReset();
     mockedUseKeyboardShortcuts.mockImplementation(() => {});
     // Simulate Firebase-hosted root (no /v2/ path, no remote host in storage)
+    hostStateMock.host = LOCAL_HOST;
+    hostStateMock.diagnosticsEnabled = false;
     window.history.pushState({}, "", "/insights");
     localStorage.clear();
   });
@@ -305,8 +327,8 @@ describe("InsightsLayout — context provides host and diagnosticsEnabled", () =
   }
 
   it("exposes diagnosticsEnabled=false and LOCAL_HOST when on hosted static root (no remote host)", () => {
-    window.history.pushState({}, "", "/insights");
-    localStorage.clear();
+    hostStateMock.host = LOCAL_HOST;
+    hostStateMock.diagnosticsEnabled = false;
 
     let captured: ReturnType<typeof useInsightsTab> | undefined;
     render(
@@ -320,8 +342,8 @@ describe("InsightsLayout — context provides host and diagnosticsEnabled", () =
   });
 
   it("exposes diagnosticsEnabled=true when on local /v2/ path", () => {
-    window.history.pushState({}, "", "/v2/insights");
-    localStorage.clear();
+    hostStateMock.host = LOCAL_HOST;
+    hostStateMock.diagnosticsEnabled = true;
 
     let captured: ReturnType<typeof useInsightsTab> | undefined;
     render(
@@ -332,5 +354,180 @@ describe("InsightsLayout — context provides host and diagnosticsEnabled", () =
 
     expect(captured?.diagnosticsEnabled).toBe(true);
     expect(captured?.host.id).toBe(LOCAL_HOST_ID);
+  });
+});
+
+// ── New tests: HostProvider persistence / default resolution / same-tab ──────
+
+describe("host-profiles helpers — default-host semantics", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("getEffectiveHost returns LOCAL_HOST when storage is empty", async () => {
+    const { getEffectiveHost } = await import("@/lib/host-profiles");
+    expect(getEffectiveHost().id).toBe(LOCAL_HOST_ID);
+  });
+
+  it("getDefaultHost returns LOCAL_HOST when no remote profile is marked is_default", async () => {
+    const { getDefaultHost } = await import("@/lib/host-profiles");
+    saveHostProfile({
+      id: "r1",
+      label: "Remote",
+      base_url: "https://r1.example.com",
+      token: "",
+      cli_kind: "copilot",
+      is_default: false,
+    });
+    expect(getDefaultHost().id).toBe(LOCAL_HOST_ID);
+  });
+
+  it("getDefaultHost returns the is_default remote profile when one exists", async () => {
+    const { getDefaultHost } = await import("@/lib/host-profiles");
+    saveHostProfile({
+      id: "r2",
+      label: "Default Remote",
+      base_url: "https://r2.example.com",
+      token: "",
+      cli_kind: "copilot",
+      is_default: true,
+    });
+    expect(getDefaultHost().id).toBe("r2");
+  });
+
+  it("getEffectiveHost falls back to is_default profile when selected id is missing from storage", async () => {
+    const { getEffectiveHost } = await import("@/lib/host-profiles");
+    // Save a default-marked profile but do NOT call setSelectedHostId
+    saveHostProfile({
+      id: "r3",
+      label: "Auto-default",
+      base_url: "https://r3.example.com",
+      token: "",
+      cli_kind: "copilot",
+      is_default: true,
+    });
+    expect(getEffectiveHost().id).toBe("r3");
+  });
+
+  it("getEffectiveHost keeps an explicit LOCAL_HOST selection even when a remote default exists", async () => {
+    const { getEffectiveHost } = await import("@/lib/host-profiles");
+    saveHostProfile({
+      id: "r3-local",
+      label: "Default Remote",
+      base_url: "https://r3-local.example.com",
+      token: "",
+      cli_kind: "copilot",
+      is_default: true,
+    });
+    setSelectedHostId(LOCAL_HOST_ID);
+    expect(getEffectiveHost().id).toBe(LOCAL_HOST_ID);
+  });
+
+  it("setSelectedHostId dispatches BROWSE_HOST_CHANGE_EVENT in the same tab", async () => {
+    saveHostProfile({
+      id: "r4",
+      label: "Remote 4",
+      base_url: "https://r4.example.com",
+      token: "",
+      cli_kind: "copilot",
+      is_default: false,
+    });
+    const handler = vi.fn();
+    window.addEventListener(BROWSE_HOST_CHANGE_EVENT, handler);
+    setSelectedHostId("r4");
+    expect(handler).toHaveBeenCalledTimes(1);
+    window.removeEventListener(BROWSE_HOST_CHANGE_EVENT, handler);
+  });
+
+  it("clearSelectedHostId dispatches BROWSE_HOST_CHANGE_EVENT in the same tab", async () => {
+    const { clearSelectedHostId } = await import("@/lib/host-profiles");
+    setSelectedHostId("r4");
+    const handler = vi.fn();
+    window.addEventListener(BROWSE_HOST_CHANGE_EVENT, handler);
+    clearSelectedHostId();
+    expect(handler).toHaveBeenCalledTimes(1);
+    window.removeEventListener(BROWSE_HOST_CHANGE_EVENT, handler);
+  });
+
+  it("saveHostProfile dispatches BROWSE_HOST_CHANGE_EVENT in the same tab", () => {
+    const handler = vi.fn();
+    window.addEventListener(BROWSE_HOST_CHANGE_EVENT, handler);
+    saveHostProfile({
+      id: "r5",
+      label: "Remote 5",
+      base_url: "https://r5.example.com",
+      token: "",
+      cli_kind: "copilot",
+      is_default: false,
+    });
+    expect(handler).toHaveBeenCalledTimes(1);
+    window.removeEventListener(BROWSE_HOST_CHANGE_EVENT, handler);
+  });
+
+  it("deleteHostProfile dispatches BROWSE_HOST_CHANGE_EVENT and clears deleted default fallback", async () => {
+    const { getEffectiveHost } = await import("@/lib/host-profiles");
+    saveHostProfile({
+      id: "r6",
+      label: "Default Remote",
+      base_url: "https://r6.example.com",
+      token: "",
+      cli_kind: "copilot",
+      is_default: true,
+    });
+    expect(getEffectiveHost().id).toBe("r6");
+
+    const handler = vi.fn();
+    window.addEventListener(BROWSE_HOST_CHANGE_EVENT, handler);
+    deleteHostProfile("r6");
+
+    expect(getEffectiveHost().id).toBe(LOCAL_HOST_ID);
+    expect(handler).toHaveBeenCalledTimes(1);
+    window.removeEventListener(BROWSE_HOST_CHANGE_EVENT, handler);
+  });
+
+  it("replaceHostProfiles dispatches a single BROWSE_HOST_CHANGE_EVENT for batched updates", async () => {
+    const { getDefaultHost, replaceHostProfiles } = await import("@/lib/host-profiles");
+    saveHostProfile({
+      id: "r7",
+      label: "Remote 7",
+      base_url: "https://r7.example.com",
+      token: "",
+      cli_kind: "copilot",
+      is_default: false,
+    });
+    saveHostProfile({
+      id: "r8",
+      label: "Remote 8",
+      base_url: "https://r8.example.com",
+      token: "",
+      cli_kind: "copilot",
+      is_default: false,
+    });
+
+    const handler = vi.fn();
+    window.addEventListener(BROWSE_HOST_CHANGE_EVENT, handler);
+
+    replaceHostProfiles([
+      {
+        id: "r7",
+        label: "Remote 7",
+        base_url: "https://r7.example.com",
+        token: "",
+        cli_kind: "copilot",
+        is_default: false,
+      },
+      {
+        id: "r8",
+        label: "Remote 8",
+        base_url: "https://r8.example.com",
+        token: "",
+        cli_kind: "copilot",
+        is_default: true,
+      },
+    ]);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(getDefaultHost().id).toBe("r8");
+    window.removeEventListener(BROWSE_HOST_CHANGE_EVENT, handler);
   });
 });

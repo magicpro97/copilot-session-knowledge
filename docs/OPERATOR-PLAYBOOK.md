@@ -284,7 +284,7 @@ python3 ~/.copilot/tools/tentacle.py complete <name> --auto-verify "python3 test
 ## Browse UI — Operator Diagnostics Settings Page
 
 The `/v2/settings/` page in the Browse UI is the primary **browser-based operator surface**.
-All diagnostic panels are read-only — no write operations are exposed.
+All diagnostic panels are read-only — no write operations are exposed — except the **Hosts & connections** card which manages host profiles.
 
 | Card | API endpoint | Shows |
 |------|-------------|-------|
@@ -294,6 +294,7 @@ All diagnostic panels are read-only — no write operations are exposed.
 | Tentacle runtime diagnostics | `/api/tentacles/status` | Active tentacles, dispatch marker, registry, audit checks |
 | Skill outcome metrics | `/api/skills/metrics` | Pass rate, outcomes, skill usage summary |
 | System health | `/healthz` | DB schema version, session count, knowledge entries, last indexed |
+| **Hosts & connections** | *(localStorage only)* | List, add, remove, default, restore-local for operator host profiles |
 
 Each card with live data also renders an **Operator checks (read-only)** panel that lists
 safe CLI commands the operator can **copy** to their terminal. The browser never executes
@@ -351,7 +352,36 @@ http://localhost:<port>/v2/chat/?token=<token>
 
 ---
 
-## Remote Access via Cloudflare Tunnel
+## Browse UI — Global Host Selection
+
+Browse-wide host state is managed by `HostProvider` (root layout context) and persisted by `host-profiles.ts` (localStorage). All pages read the active host from `useHostState()` — there is no per-page host state.
+
+### Quick reference
+
+| Action | Where |
+|--------|-------|
+| Switch active host | Header → global host dropdown (AWS-region-style compact selector) |
+| Add / remove / set-default / restore-local | Settings → **Hosts & connections** (`/v2/settings#hosts`) |
+| Verify active host in code | `useHostState().host` — resolves via `getEffectiveHost()` |
+
+### Same-tab refresh
+
+All profile mutations and selection changes dispatch `browse:host-change` on `window`. `HostProvider` listens and re-evaluates immediately. No page reload is needed after switching hosts or saving/deleting a profile.
+
+### Session create dialog pre-population
+
+When `SessionCreateDialog` opens (`/v2/chat → New Chat`), it reads the global active host via `useHostState()` and pre-fills the host picker. The user may still override the host for that session; the override is local to that dialog open.
+
+### Diagnostics enabled gate
+
+`diagnosticsEnabled` (from `useHostState()`) is `true` when any of the following holds:
+- A remote host with a non-empty `base_url` is active, **or**
+- The current pathname starts with `/v2` (same-origin Python browse server), **or**
+- `NEXT_PUBLIC_API_BASE` is set at build time.
+
+When `diagnosticsEnabled` is `false` (e.g. the static UI is opened on its Firebase domain without a remote host configured), all diagnostic API calls are suppressed and each card shows a prompt to configure a host in Settings → Hosts & connections.
+
+---
 
 > **Facts vs guidance separator:** Verified facts in this section are derived from source-code inspection and web research. Operational guidance is labelled **[guidance]**.
 
@@ -548,17 +578,23 @@ The operator console is fully functional across origins when a host profile is c
 
 ### Host profiles
 
-The static UI uses a **host profile** — a named, user-configurable entry storing the operator tunnel URL, Bearer token, and optional label — to target API calls. The UI prompts for this on first load when no profile is set, and persists the profile in `localStorage`.
+The static UI uses **host profiles** — named, user-configurable entries storing the operator tunnel URL, Bearer token, optional label, and CLI kind — to target API calls. Profiles are stored in `localStorage` by `browse-ui/src/lib/host-profiles.ts` and exposed browse-wide via `HostProvider`.
 
-**[guidance]** If the host-profile settings UI is not yet visible in the current build, the profile can be pre-seeded via `localStorage` in the browser console:
+**To configure a host profile from the UI:**
 
-```js
-localStorage.setItem("hostProfile", JSON.stringify({
-  url: "https://<your-tunnel-host>",
-  token: "<bearer-token>",
-  label: "My operator"
-}));
-```
+1. Open the browse UI and navigate to **Settings → Hosts & connections** (`/v2/settings#hosts`).
+2. Click **Add host** and enter the public tunnel URL (e.g. `https://abc123.ngrok.io`), an optional label, and the Bearer auth token.
+3. Optionally mark the profile as **default** (⭐) so it is selected automatically on fresh load.
+4. The header's global host dropdown immediately reflects the new profile. Any page that calls `useHostState()` — including the operator console's session create dialog — updates without a reload.
+
+**Restore local (same-origin) behavior:** From Settings → Hosts & connections, click **Restore local**. This clears all `is_default` flags and the explicit selection, falling back to the `LOCAL_HOST` sentinel.
+
+**Active host resolution order** (see `getEffectiveHost()` in `host-profiles.ts`):
+1. Explicit selection stored in `localStorage` (`browse_selected_host_id`), if the profile still exists.
+2. First saved remote profile with `is_default === true`.
+3. `LOCAL_HOST` — same-origin, no bearer token required.
+
+> The old `localStorage.setItem("hostProfile", …)` console snippet is no longer the intended path — the Settings host management UI ships in this codebase and handles all CRUD operations.
 
 ### Future CLI families (Claude Code, etc.)
 
@@ -870,3 +906,42 @@ GitHub Actions: trigger **Retrospective** (`retro.yml`) via `workflow_dispatch` 
 `retro.py --mode repo --json`, produce a markdown summary artifact with confidence,
 distortion explanations, accuracy notes, and improvement actions, then write to the
 job summary. Read-only — no issues, commits, or DB writes.
+
+---
+
+## Orchestrator-only next steps — host-management wave
+
+> **Interpretation / Action / Verification evidence layer** (see Rule 7 in AGENT-RULES.md).
+>
+> The docs lane (`browse-docs-verification` tentacle) documents what is shipped.
+> The steps below are **not yet done** and must be completed by the orchestrator before the wave can be considered released.
+
+**Verification evidence already produced (targeted):**
+
+| Check | Status |
+|-------|--------|
+| `pnpm vitest run src/app/settings/page.test.tsx` | ✅ Passed (targeted — reported by browse-host-ui tentacle) |
+| `pnpm vitest run src/app/chat/chat-shell.test.tsx` | ✅ Passed (targeted) |
+| `pnpm vitest run src/app/insights/layout.test.tsx` | ✅ Passed (targeted) |
+| `pnpm typecheck` | ✅ Passed |
+| `pnpm exec playwright test e2e/chat.spec.ts --grep "header host switcher"` | ✅ Passed (targeted Playwright) |
+| `python3 tests/test_hooks.py` | ✅ Passed (Python tooling regression) |
+| `python3 tests/test_auto_update_coverage.py` | ✅ Passed |
+| `python3 tests/test_sync_status.py` | ✅ Passed |
+| `python3 test_fixes.py` | ✅ Passed |
+
+**Orchestrator actions required before release:**
+
+- [ ] `cd browse-ui && pnpm lint` — full lint pass on the browse-ui surface
+- [ ] `cd browse-ui && pnpm format:check` — Prettier format check
+- [ ] `cd browse-ui && pnpm test` — full vitest suite (all spec files)
+- [ ] `cd browse-ui && pnpm build` — production build; rebuild `dist/` and stage the artifact
+- [ ] `pnpm release:check` (from `browse-ui/`) — Firebase-targeted release artifact verification
+- [ ] `python3 run_all_tests.py` — full Python test suite
+- [ ] `git commit` with complete `dist/` update and a descriptive message
+- [ ] `git push`
+- [ ] Firebase deploy from private hosting repo (for Firebase-hosted deployments)
+- [ ] Hosted smoke: open `https://<your-firebase-domain>/chat/` and verify header host dropdown, Settings → Hosts & connections card, and session create dialog host pre-population
+
+Until these steps are completed, the verification status should be read as "targeted checks passed; full gates pending".
+

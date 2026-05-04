@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   combineQueryStrings,
@@ -9,8 +12,16 @@ import {
   createQueryString,
   normalizeSessionsResponse,
   queryKeys,
+  useCreateOperatorSession,
 } from "@/lib/api/hooks";
 import { LOCAL_HOST, LOCAL_HOST_ID } from "@/lib/host-profiles";
+
+vi.mock("@/lib/api/client", () => ({
+  apiFetch: vi.fn(),
+  hostFetch: vi.fn(),
+}));
+
+import { hostFetch } from "@/lib/api/client";
 
 const REMOTE_HOST = {
   id: "tunnel-1",
@@ -237,6 +248,50 @@ describe("api hooks helpers", () => {
 
   it("createQueryString keeps empty operator suggest query empty for top-level results", () => {
     expect(createQueryString({ q: "" })).toBe("");
+  });
+
+  it("useCreateOperatorSession posts to a per-call host override", async () => {
+    vi.mocked(hostFetch).mockResolvedValue({
+      id: "session-override",
+      name: "Overridden host session",
+      model: "gpt-5.4",
+      mode: "interactive",
+      workspace: "~/project",
+      add_dirs: [],
+      created_at: "2024-01-01T00:00:00Z",
+      updated_at: "2024-01-01T00:00:00Z",
+      run_count: 0,
+      last_run_id: null,
+      resume_ready: false,
+    });
+
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useCreateOperatorSession(LOCAL_HOST), { wrapper });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        payload: {
+          name: "Override",
+          workspace: "~/project",
+          model: "gpt-5.4",
+          mode: "interactive",
+        },
+        host: REMOTE_HOST,
+      });
+    });
+
+    expect(vi.mocked(hostFetch).mock.calls.at(-1)?.[1]).toMatchObject({
+      id: REMOTE_HOST.id,
+      base_url: REMOTE_HOST.base_url,
+    });
   });
 
   // ── Insights data query keys (host-scoped) ───────────────────────────

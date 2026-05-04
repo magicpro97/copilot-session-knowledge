@@ -14,11 +14,11 @@ import {
 import { cn } from "@/lib/utils";
 import type { HostProfile } from "@/lib/api/types";
 import {
+  BROWSE_HOST_CHANGE_EVENT,
   getAllHostProfiles,
   saveHostProfile,
   deleteHostProfile,
   setSelectedHostId,
-  clearSelectedHostId,
   LOCAL_HOST,
   LOCAL_HOST_ID,
 } from "@/lib/host-profiles";
@@ -53,7 +53,14 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
   const [newCliKind, setNewCliKind] = useState("copilot");
 
   useEffect(() => {
-    setAllHosts(getAllHostProfiles());
+    const refresh = () => setAllHosts(getAllHostProfiles());
+    refresh();
+    window.addEventListener("storage", refresh);
+    window.addEventListener(BROWSE_HOST_CHANGE_EVENT, refresh);
+    return () => {
+      window.removeEventListener("storage", refresh);
+      window.removeEventListener(BROWSE_HOST_CHANGE_EVENT, refresh);
+    };
   }, []);
 
   function handleAdd() {
@@ -86,7 +93,7 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
     setAllHosts(updated);
     if (value.id === id) {
       onChange(LOCAL_HOST);
-      clearSelectedHostId();
+      setSelectedHostId(LOCAL_HOST_ID);
     }
   }
 
@@ -101,7 +108,7 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
             if (id && id !== LOCAL_HOST_ID) {
               setSelectedHostId(id);
             } else {
-              clearSelectedHostId();
+              setSelectedHostId(LOCAL_HOST_ID);
             }
           }}
           disabled={disabled}

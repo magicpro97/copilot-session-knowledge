@@ -4237,6 +4237,94 @@ except Exception as _e23ex:
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  Section 24: secret-detector.sh — false-positive regression (issue #20)
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n── Section 24: secret-detector false-positive regression (issue #20) ──")
+
+try:
+    _SD_HOOK = REPO / "hooks" / "references" / "secret-detector.sh"
+    _SD_HOOK_SKILL = REPO / "skills" / "hook-creator" / "references" / "secret-detector.sh"
+
+    def _run_sd_hook(hook_path: Path, content: str, tool: str = "create") -> dict:
+        """Run secret-detector.sh with the given file_text content. Returns parsed JSON output or {}."""
+        payload = json.dumps({"toolName": tool, "toolArgs": {"file_text": content}})
+        r = subprocess.run(
+            ["bash", str(hook_path)],
+            input=payload,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+        if r.stdout.strip():
+            try:
+                return json.loads(r.stdout.strip())
+            except json.JSONDecodeError:
+                return {}
+        return {}
+
+    def _is_denied(result: dict) -> bool:
+        return result.get("permissionDecision") == "deny"
+
+    # 24a. False-positive identifiers must NOT be denied (issue #20 AC)
+    _fp1 = _run_sd_hook(_SD_HOOK, "checkAndSendAmbulanceApproachNotification")
+    test("24a: camelCase identifier 'checkAndSendAmbulanceApproachNotification' → allow", not _is_denied(_fp1))
+
+    _fp2 = _run_sd_hook(_SD_HOOK, "metricApproximateNumberOfMessagesVisible")
+    test("24b: camelCase identifier 'metricApproximateNumberOfMessagesVisible' → allow", not _is_denied(_fp2))
+
+    # 24c. Real contextual AWS secret (with assignment) must be denied.
+    # Use low-entropy synthetic fixtures so GitHub push protection doesn't flag
+    # the test data as a real credential while the detector regex still matches.
+    _aws1 = _run_sd_hook(_SD_HOOK, "AWS_SECRET_ACCESS_KEY=zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+    test("24c: AWS_SECRET_ACCESS_KEY=<40-char> → deny", _is_denied(_aws1))
+
+    _aws2 = _run_sd_hook(_SD_HOOK, "secretAccessKey: zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+    test("24d: secretAccessKey: <40-char> → deny", _is_denied(_aws2))
+
+    _aws3 = _run_sd_hook(_SD_HOOK, "aws_secret_access_key = zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+    test("24e: aws_secret_access_key = <40-char> → deny", _is_denied(_aws3))
+
+    # 24f. Non-edit/create tools are always allowed (fail-open)
+    _read = _run_sd_hook(_SD_HOOK, "AWS_SECRET_ACCESS_KEY=zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", tool="read")
+    test("24f: read tool with secret content → allow (not edit/create)", not _is_denied(_read))
+
+    # 24g. Longer camelCase identifiers in Markdown prose are allowed
+    _md = _run_sd_hook(_SD_HOOK, "The function `checkAndSendAmbulanceApproachNotification` handles SQS polling.\nSee also `metricApproximateNumberOfMessagesVisible` for queue depth.")
+    test("24g: Markdown prose with camelCase identifiers → allow", not _is_denied(_md))
+
+    # 24h. AWS access key prefix pattern still works (separate from secret key).
+    # Use a synthetic prefix that matches the repo regex without looking like a
+    # production AWS key ID to push-protection scanners.
+    _akid = _run_sd_hook(_SD_HOOK, "AKZZ1111111111111111")
+    test("24h: AWS access key ID format (AKIA...) → deny", _is_denied(_akid))
+
+    # 24i. Both template copies must be identical (sync check)
+    test("24i: hooks/references and skills/hook-creator/references copies are identical",
+         _SD_HOOK.read_text(encoding="utf-8") == _SD_HOOK_SKILL.read_text(encoding="utf-8"))
+
+    # 24j. Template contains the contextual AWS Secret Key check pattern
+    test("24j: template AWS Secret Key pattern present in hook file",
+         "(AWS_SECRET_ACCESS_KEY|aws_secret_access_key|secretAccessKey" in _SD_HOOK.read_text(encoding="utf-8"))
+
+    # 24k. Raw length-only pattern must NOT appear in either template (regression guard)
+    _hook_text = _SD_HOOK.read_text(encoding="utf-8")
+    _skill_text = _SD_HOOK_SKILL.read_text(encoding="utf-8")
+    import re as _re24
+    _raw40 = _re24.compile(r'\[0-9a-zA-Z/\+\]\{40\}')
+    test("24k: raw length-only [0-9a-zA-Z/+]{40} not in hooks/references template (issue #20 guard)",
+         not _raw40.search(_hook_text))
+    test("24k2: raw length-only [0-9a-zA-Z/+]{40} not in skills template (issue #20 guard)",
+         not _raw40.search(_skill_text))
+
+    test("Section 24 secret-detector false-positive regression ran without exception", True)
+except Exception as _e24:
+    test("Section 24 secret-detector false-positive regression ran without exception", False, str(_e24))
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  Results
 # ═══════════════════════════════════════════════════════════════════
 

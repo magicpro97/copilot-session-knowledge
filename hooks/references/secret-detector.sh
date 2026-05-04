@@ -45,6 +45,11 @@ check_secret() {
 # === CUSTOMIZE PATTERNS FOR YOUR STACK ===
 # Cloud providers
 check_secret "AWS Access Key" 'AK[[:upper:]]{2}[0-9A-Z]{16}'
+# AWS Secret Access Key — requires assignment context to avoid false positives on
+# camelCase/PascalCase identifiers (e.g. checkAndSendAmbulanceApproachNotification).
+# IMPORTANT: do NOT use a raw character-class+length-only pattern here — it matches
+# ordinary long identifiers and produces workflow-blocking false positives (issue #20).
+check_secret "AWS Secret Key" '(AWS_SECRET_ACCESS_KEY|aws_secret_access_key|secretAccessKey|SecretAccessKey|secret_access_key)[[:space:]]*[=:][[:space:]]*[A-Za-z0-9/+]{40}'
 check_secret "Google API Key" 'AIza[0-9A-Za-z_-]{35}'
 
 # Version control / CI tokens

@@ -692,10 +692,17 @@ export function useCreateOperatorSession(host: HostProfile = LOCAL_HOST) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (payload: CreateOperatorSessionRequest): Promise<OperatorSession> => {
+    mutationFn: async ({
+      payload,
+      host: overrideHost,
+    }: {
+      payload: CreateOperatorSessionRequest;
+      host?: HostProfile;
+    }): Promise<OperatorSession> => {
+      const targetHost = overrideHost ?? host;
       const data = await hostFetch<OperatorSession>(
         withLeadingSlash("/api/operator/sessions"),
-        host,
+        targetHost,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -704,8 +711,9 @@ export function useCreateOperatorSession(host: HostProfile = LOCAL_HOST) {
       );
       return operatorSessionSchema.parse(data);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.operatorSessions(host.id) });
+    onSuccess: (_data, variables) => {
+      const targetHost = variables.host ?? host;
+      queryClient.invalidateQueries({ queryKey: queryKeys.operatorSessions(targetHost.id) });
     },
   });
 }

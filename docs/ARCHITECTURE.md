@@ -78,6 +78,22 @@ The browse UI exposes a browser-managed Copilot CLI execution console at `/v2/ch
 | `browse-ui/src/components/chat/` | `ChatShell`, `Transcript`, `Composer`, `SessionCreateDialog`, `MetadataBar`, and file review components. |
 | `browse-ui/src/lib/api/{types,schemas,hooks}.ts` | Stable frontend contract layer for `/api/operator/*`. |
 
+### Browse-wide host state
+
+All pages share a single host context. The two source-of-truth files are:
+
+| File | Role |
+|------|------|
+| `browse-ui/src/providers/host-provider.tsx` | `HostProvider` React context — mounted at the root layout; exposes `{ host, diagnosticsEnabled }` to every page via `useHostState()`. Listens to cross-tab `storage` events and same-tab `BROWSE_HOST_CHANGE_EVENT` to stay current without a reload. |
+| `browse-ui/src/lib/host-profiles.ts` | localStorage persistence helpers (`saveHostProfile`, `deleteHostProfile`, `setSelectedHostId`, `getEffectiveHost`, etc.) and the immutable `LOCAL_HOST` sentinel. All mutating helpers dispatch `BROWSE_HOST_CHANGE_EVENT` after writing so `HostProvider` re-evaluates immediately. |
+
+**Active host resolution order** (documented in `getEffectiveHost()`):
+1. Explicit selection (`browse_selected_host_id` in localStorage), if the referenced profile still exists.
+2. First remote profile with `is_default === true`.
+3. `LOCAL_HOST` sentinel — same-origin, no bearer token required.
+
+The header renders a compact AWS-region-style global host dropdown that calls `setSelectedHostId()` on selection and links to `/v2/settings#hosts` for management. The Settings page exposes the full `HostManagement` surface (list, add, remove, set-default, restore-local). `SessionCreateDialog` in `/v2/chat` reads `useHostState()` to pre-populate the host picker when the dialog opens.
+
 ### API surface (`/api/operator/*`)
 
 ```text

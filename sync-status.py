@@ -28,7 +28,11 @@ if os.name == "nt":
     except Exception:
         pass
 
-SESSION_STATE = Path.home() / ".copilot" / "session-state"
+# Allow explicit test isolation via COPILOT_HOME; fall back to Path.home().
+# This mirrors the pattern in host_manifest.py so subprocess tests that set
+# COPILOT_HOME get consistent roots without relying on HOME/USERPROFILE.
+_HOME = Path(os.environ["COPILOT_HOME"]) if "COPILOT_HOME" in os.environ else Path.home()
+SESSION_STATE = _HOME / ".copilot" / "session-state"
 TOOLS_DIR = Path(__file__).resolve().parent
 DB_PATH = SESSION_STATE / "knowledge.db"
 CONFIG_PATH = TOOLS_DIR / "sync-config.json"

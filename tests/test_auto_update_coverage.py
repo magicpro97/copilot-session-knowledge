@@ -214,6 +214,83 @@ test("install.py deploy_hooks uses relative path for display",
      "deploy_hooks should show hooks/rules/file.py not just file.py")
 
 
+# ─── 6. #21 regression: check_update_available() is read-only ───────────────
+
+print("\n🔒 #21 regression: check_update_available() is read-only")
+
+aut_src = (REPO / "auto-update-tools.py").read_text(encoding="utf-8")
+test("#21: check_update_available() defined",
+     "def check_update_available()" in aut_src,
+     "check_update_available() not found in auto-update-tools.py")
+test("#21: check_update_available uses fetch not pull",
+     "def check_update_available" in aut_src and "git stash" not in aut_src.split("def check_update_available")[1].split("def ")[0],
+     "check_update_available should not call git stash")
+
+# Verify --check code path uses check_update_available, not pull_latest
+main_src = aut_src[aut_src.index("def main():"):]
+check_block_start = main_src.find("check_only:")
+if check_block_start > 0:
+    # Extract code near the check_only handling
+    check_block = main_src[check_block_start:check_block_start + 400]
+    test("#21: --check path calls check_update_available",
+         "check_update_available" in check_block,
+         "check block should call check_update_available")
+    test("#21: --check path does not call pull_latest",
+         "pull_latest" not in check_block,
+         "check block must not call pull_latest (would move HEAD)")
+else:
+    test("#21: --check path calls check_update_available", False, "check_only block not found in main()")
+    test("#21: --check path does not call pull_latest", False, "check_only block not found")
+
+
+# ─── 7. #22 regression: _rebuild_browse_ui falls back to corepack pnpm ──────
+
+print("\n🔧 #22 regression: _pnpm_cmd() corepack fallback")
+
+test("#22: _pnpm_cmd() defined",
+     "def _pnpm_cmd()" in aut_src,
+     "_pnpm_cmd() not found in auto-update-tools.py")
+test("#22: _pnpm_cmd falls back to corepack",
+     "corepack" in aut_src and "def _pnpm_cmd" in aut_src,
+     "_pnpm_cmd should mention corepack")
+
+# Verify _rebuild_browse_ui uses _pnpm_cmd() instead of hardcoded ["pnpm"]
+# The function source is in the second element after splitting on "def " at its start.
+_rebuild_start = aut_src.index("def _rebuild_browse_ui()")
+_after = aut_src[_rebuild_start + len("def "):]   # skip past first "def "
+rebuild_src = _after.split("def ")[0]              # up to the next function def
+test("#22: _rebuild_browse_ui uses _pnpm_cmd()",
+     "_pnpm_cmd()" in rebuild_src,
+     "_rebuild_browse_ui should call _pnpm_cmd() not hard-code [\"pnpm\"]")
+test("#22: _rebuild_browse_ui no longer hardcodes [\"pnpm\"]",
+     '["pnpm",' not in rebuild_src and "['pnpm'," not in rebuild_src,
+     "_rebuild_browse_ui still hardcodes [\"pnpm\"] — should use _pnpm_cmd()")
+
+# Unit-test _pnpm_cmd logic by mocking shutil.which
+import unittest.mock as _mock2
+
+with _mock2.patch("shutil.which") as _mw:
+    _mw.side_effect = lambda name: name if name == "pnpm" else None
+    result_direct = _aut._pnpm_cmd()
+test("#22: _pnpm_cmd returns ['pnpm'] when pnpm on PATH",
+     result_direct == ["pnpm"],
+     f"got {result_direct!r}")
+
+with _mock2.patch("shutil.which") as _mw:
+    _mw.side_effect = lambda name: name if name == "corepack" else None
+    result_corepack = _aut._pnpm_cmd()
+test("#22: _pnpm_cmd returns ['corepack','pnpm'] when only corepack available",
+     result_corepack == ["corepack", "pnpm"],
+     f"got {result_corepack!r}")
+
+with _mock2.patch("shutil.which") as _mw:
+    _mw.return_value = None
+    result_neither = _aut._pnpm_cmd()
+test("#22: _pnpm_cmd returns ['pnpm'] when neither found (FileNotFoundError expected)",
+     result_neither == ["pnpm"],
+     f"got {result_neither!r}")
+
+
 # ─── Summary ────────────────────────────────────────────────────────────────
 
 print(f"\n{'─' * 50}")

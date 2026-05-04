@@ -3,12 +3,20 @@
  *
  * Profiles are stored in localStorage. The LOCAL_HOST sentinel ("local") is
  * the built-in same-origin default; it cannot be saved or deleted via these helpers.
+ *
+ * Same-tab change notifications: call sites that mutate selection dispatch
+ * BROWSE_HOST_CHANGE_EVENT on window so in-tab listeners (e.g. HostProvider)
+ * update immediately without waiting for the next storage event (which only
+ * fires cross-tab).
  */
 
 import { hostProfileSchema } from "@/lib/api/schemas";
 import type { HostProfile } from "@/lib/api/types";
 
 export const LOCAL_HOST_ID = "local";
+
+/** Custom event dispatched in the same tab whenever the active host changes. */
+export const BROWSE_HOST_CHANGE_EVENT = "browse:host-change";
 
 /**
  * Built-in same-origin host profile. Used when no remote profile is selected.
@@ -25,6 +33,20 @@ export const LOCAL_HOST: HostProfile = {
 
 const PROFILES_STORAGE_KEY = "browse_host_profiles";
 const SELECTED_ID_STORAGE_KEY = "browse_selected_host_id";
+
+function notifyHostChange(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(BROWSE_HOST_CHANGE_EVENT));
+}
+
+function writeProfiles(profiles: HostProfile[], notify = true): void {
+  if (typeof window === "undefined") return;
+  const validatedProfiles = profiles
+    .filter((profile) => profile.id !== LOCAL_HOST_ID)
+    .map((profile) => hostProfileSchema.parse(profile));
+  localStorage.setItem(PROFILES_STORAGE_KEY, JSON.stringify(validatedProfiles));
+  if (notify) notifyHostChange();
+}
 
 function loadRawProfiles(): unknown[] {
   if (typeof window === "undefined") return [];
@@ -56,28 +78,36 @@ export function getAllHostProfiles(): HostProfile[] {
 /**
  * Saves or updates a host profile.
  * The LOCAL_HOST sentinel (id === "local") is silently ignored.
+ * Dispatches a same-tab change event so HostProvider refreshes immediately.
  */
 export function saveHostProfile(profile: HostProfile): void {
   if (typeof window === "undefined") return;
   if (profile.id === LOCAL_HOST_ID) return;
   const validated = hostProfileSchema.parse(profile);
   const existing = getHostProfiles().filter((p) => p.id !== validated.id);
-  localStorage.setItem(PROFILES_STORAGE_KEY, JSON.stringify([...existing, validated]));
+  writeProfiles([...existing, validated]);
 }
 
 /**
  * Deletes a host profile by id.
  * The LOCAL_HOST sentinel is silently ignored.
  * If the deleted profile was selected, the selection is cleared.
+ * Dispatches a same-tab change event so HostProvider refreshes immediately.
  */
 export function deleteHostProfile(id: string): void {
   if (typeof window === "undefined") return;
   if (id === LOCAL_HOST_ID) return;
   const remaining = getHostProfiles().filter((p) => p.id !== id);
-  localStorage.setItem(PROFILES_STORAGE_KEY, JSON.stringify(remaining));
+  writeProfiles(remaining, false);
   if (getSelectedHostId() === id) {
-    clearSelectedHostId();
+    localStorage.removeItem(SELECTED_ID_STORAGE_KEY);
   }
+  notifyHostChange();
+}
+
+/** Replaces all saved remote profiles in one storage write and same-tab event. */
+export function replaceHostProfiles(profiles: HostProfile[]): void {
+  writeProfiles(profiles);
 }
 
 /** Returns the currently selected host id, or null when none is explicitly set. */
@@ -86,29 +116,44 @@ export function getSelectedHostId(): string | null {
   return localStorage.getItem(SELECTED_ID_STORAGE_KEY);
 }
 
-/** Persists the selected host id. */
+/** Persists the selected host id and notifies in-tab listeners. */
 export function setSelectedHostId(id: string): void {
   if (typeof window === "undefined") return;
   localStorage.setItem(SELECTED_ID_STORAGE_KEY, id);
+  notifyHostChange();
 }
 
-/** Clears the selected host id so getEffectiveHost() falls back to LOCAL_HOST. */
+/** Clears the selected host id so getEffectiveHost() falls back to the default host. */
 export function clearSelectedHostId(): void {
   if (typeof window === "undefined") return;
   localStorage.removeItem(SELECTED_ID_STORAGE_KEY);
+  notifyHostChange();
+}
+
+/**
+ * Returns the default host profile.
+ *
+ * - The first saved remote profile marked `is_default === true`, if any.
+ * - Otherwise LOCAL_HOST.
+ */
+export function getDefaultHost(): HostProfile {
+  return getHostProfiles().find((p) => p.is_default) ?? LOCAL_HOST;
 }
 
 /**
  * Returns the active HostProfile.
  *
- * - If a non-local host id is stored and found in saved profiles, returns it.
- * - Otherwise returns LOCAL_HOST.
+ * Resolution order:
+ * 1. Explicit selection stored in localStorage (if profile still exists).
+ * 2. First remote profile with `is_default === true`.
+ * 3. LOCAL_HOST sentinel.
  */
 export function getEffectiveHost(): HostProfile {
   const selectedId = getSelectedHostId();
-  if (!selectedId || selectedId === LOCAL_HOST_ID) return LOCAL_HOST;
+  if (!selectedId) return getDefaultHost();
+  if (selectedId === LOCAL_HOST_ID) return LOCAL_HOST;
   const profile = getHostProfiles().find((p) => p.id === selectedId);
-  return profile ?? LOCAL_HOST;
+  return profile ?? getDefaultHost();
 }
 
 /**

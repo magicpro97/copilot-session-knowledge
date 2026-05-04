@@ -29,7 +29,11 @@ if os.name == "nt":
 # Host root directories
 # ---------------------------------------------------------------------------
 
-_HOME = Path.home()
+# Allow explicit test isolation via COPILOT_HOME; fall back to the real home
+# directory.  Using an env var (rather than relying on HOME/USERPROFILE alone)
+# ensures subprocess tests are isolated even on Windows where Path.home() may
+# resolve through USERPROFILE, HOMEDRIVE/HOMEPATH, or the registry.
+_HOME = Path(os.environ["COPILOT_HOME"]) if "COPILOT_HOME" in os.environ else Path.home()
 
 COPILOT_DIR = _HOME / ".copilot"
 CLAUDE_DIR  = _HOME / ".claude"

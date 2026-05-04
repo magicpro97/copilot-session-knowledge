@@ -18,13 +18,12 @@ import {
 } from "@/lib/api/hooks";
 import {
   getAllHostProfiles,
-  getEffectiveHost,
   setSelectedHostId,
-  clearSelectedHostId,
   LOCAL_HOST,
   LOCAL_HOST_ID,
   isOperatorHostEnabled,
 } from "@/lib/host-profiles";
+import { useHostState } from "@/providers/host-provider";
 import { cn } from "@/lib/utils";
 import { SessionList } from "./session-list";
 import { SessionCreateDialog } from "./session-create-dialog";
@@ -49,6 +48,7 @@ export function ChatShell() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const pathname = usePathname();
+  const { host: globalHost } = useHostState();
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -59,15 +59,15 @@ export function ChatShell() {
   const hParam = searchParams.get(HOST_PARAM);
 
   // Resolve the active HostProfile.
-  // Priority: h= URL param (preserved for direct links) → persisted selection → LOCAL_HOST.
+  // Priority: h= URL param (preserved for direct links) → shared browse-wide host selection.
   const activeHost = useMemo(() => {
     if (hParam) {
       if (hParam === LOCAL_HOST_ID) return LOCAL_HOST;
       const saved = getAllHostProfiles();
       return saved.find((p) => p.id === hParam) ?? LOCAL_HOST;
     }
-    return getEffectiveHost();
-  }, [hParam]);
+    return globalHost;
+  }, [globalHost, hParam]);
   const operatorEnabled = useMemo(
     () => isOperatorHostEnabled(activeHost, pathname),
     [activeHost, pathname]
@@ -113,23 +113,26 @@ export function ChatShell() {
   const handleCreateSession = useCallback(
     (payload: CreateSessionPayload) => {
       const { host, ...apiPayload } = payload;
-      createMutation.mutate(apiPayload, {
-        onSuccess: (newSession: OperatorSession) => {
-          const params = new URLSearchParams(searchParams.toString());
-          params.set(SESSION_PARAM, newSession.id);
-          if (host.id !== LOCAL_HOST_ID) {
-            params.set(HOST_PARAM, host.id);
-            setSelectedHostId(host.id);
-          } else {
-            params.delete(HOST_PARAM);
-            clearSelectedHostId();
-          }
-          router.push(`${pathname}?${params.toString()}`);
-          setActiveRun(null);
-          setSubmitError(null);
-          setMobileSidebarOpen(false);
-        },
-      });
+      createMutation.mutate(
+        { payload: apiPayload, host },
+        {
+          onSuccess: (newSession: OperatorSession) => {
+            const params = new URLSearchParams(searchParams.toString());
+            params.set(SESSION_PARAM, newSession.id);
+            if (host.id !== LOCAL_HOST_ID) {
+              params.set(HOST_PARAM, host.id);
+              setSelectedHostId(host.id);
+            } else {
+              params.delete(HOST_PARAM);
+              setSelectedHostId(LOCAL_HOST_ID);
+            }
+            router.push(`${pathname}?${params.toString()}`);
+            setActiveRun(null);
+            setSubmitError(null);
+            setMobileSidebarOpen(false);
+          },
+        }
+      );
     },
     [createMutation, router, pathname, searchParams]
   );
@@ -229,7 +232,11 @@ export function ChatShell() {
           </Button>
         </div>
         <div className="border-b p-2">
-          <SessionCreateDialog onSubmit={handleCreateSession} loading={createMutation.isPending} />
+          <SessionCreateDialog
+            onSubmit={handleCreateSession}
+            initialHost={activeHost}
+            loading={createMutation.isPending}
+          />
         </div>
         <div className="flex-1 overflow-y-auto">
           <SessionList
@@ -255,6 +262,7 @@ export function ChatShell() {
           <div className="border-b p-2">
             <SessionCreateDialog
               onSubmit={handleCreateSession}
+              initialHost={activeHost}
               loading={createMutation.isPending}
             />
           </div>

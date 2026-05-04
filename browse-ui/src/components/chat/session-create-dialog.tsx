@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { Plus } from "lucide-react";
 
@@ -23,7 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useOperatorModelCatalog } from "@/lib/api/hooks";
-import { LOCAL_HOST, isOperatorHostEnabled } from "@/lib/host-profiles";
+import { isOperatorHostEnabled } from "@/lib/host-profiles";
 import type { HostProfile, CreateOperatorSessionRequest } from "@/lib/api/types";
 import { WorkspacePicker } from "./workspace-picker";
 import { HostPicker } from "./host-picker";
@@ -45,10 +45,11 @@ export type CreateSessionPayload = CreateOperatorSessionRequest & {
 
 type SessionCreateDialogProps = {
   onSubmit: (payload: CreateSessionPayload) => void;
+  initialHost: HostProfile;
   loading?: boolean;
 };
 
-export function SessionCreateDialog({ onSubmit, loading }: SessionCreateDialogProps) {
+export function SessionCreateDialog({ onSubmit, initialHost, loading }: SessionCreateDialogProps) {
   const pathname = usePathname();
   const nameId = useId();
   const workspaceId = useId();
@@ -59,7 +60,20 @@ export function SessionCreateDialog({ onSubmit, loading }: SessionCreateDialogPr
   const [workspace, setWorkspace] = useState("");
   const [model, setModel] = useState("");
   const [mode, setMode] = useState(COPILOT_MODES[0].value);
-  const [host, setHost] = useState<HostProfile>(LOCAL_HOST);
+
+  // Seed from the route-resolved active host so the form and create mutation
+  // always target the same operator host. The user can still override per-session.
+  const [host, setHost] = useState<HostProfile>(initialHost);
+  const latestInitialHostRef = useRef(initialHost);
+
+  useEffect(() => {
+    latestInitialHostRef.current = initialHost;
+  }, [initialHost]);
+
+  useEffect(() => {
+    if (open) setHost(latestInitialHostRef.current);
+  }, [open]);
+
   const hostReady = isOperatorHostEnabled(host, pathname);
   const modelCatalogQuery = useOperatorModelCatalog(host, open && hostReady);
   const modelSuggestions = modelCatalogQuery.data?.models ?? [];
@@ -80,7 +94,7 @@ export function SessionCreateDialog({ onSubmit, loading }: SessionCreateDialogPr
     setWorkspace("");
     setModel("");
     setMode(COPILOT_MODES[0].value);
-    setHost(LOCAL_HOST);
+    setHost(latestInitialHostRef.current);
   }
 
   return (

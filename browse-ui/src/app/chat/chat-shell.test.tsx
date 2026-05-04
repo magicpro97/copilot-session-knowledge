@@ -77,6 +77,15 @@ vi.mock("@/lib/api/hooks", () => ({
   ),
 }));
 
+// Mock the shared host-provider so tests that render SessionCreateDialog get a known host state.
+import type { HostState } from "@/providers/host-provider";
+import { LOCAL_HOST } from "@/lib/host-profiles";
+
+let hostStateMock: HostState = { host: LOCAL_HOST, diagnosticsEnabled: true };
+vi.mock("@/providers/host-provider", () => ({
+  useHostState: vi.fn(() => hostStateMock),
+}));
+
 import { ChatShell } from "@/components/chat/chat-shell";
 import { COPILOT_MODES } from "@/components/chat/session-create-dialog";
 
@@ -378,28 +387,24 @@ describe("ChatShell — remote host passed to Transcript", () => {
   });
 });
 
-describe("ChatShell — persisted selected-host reuse", () => {
-  it("shows remote host badge from persisted selection when no h= URL param", async () => {
+describe("ChatShell — shared selected-host reuse", () => {
+  it("shows remote host badge from the shared selected host when no h= URL param", async () => {
     const hooks = await import("@/lib/api/hooks");
     const navigation = await import("next/navigation");
-    const { saveHostProfile, setSelectedHostId, clearSelectedHostId } =
-      await import("@/lib/host-profiles");
+    const { saveHostProfile } = await import("@/lib/host-profiles");
 
-    // Reset any prior persisted selection from earlier tests
-    clearSelectedHostId();
-
-    // Save a remote host profile and mark it as the persisted selection
-    saveHostProfile({
+    const sharedHost = {
       id: "persisted-remote-h1",
       label: "Persisted Tunnel",
       base_url: "https://persisted.ngrok.io",
       token: "tok-p",
-      cli_kind: "copilot",
+      cli_kind: "copilot" as const,
       is_default: false,
-    });
-    setSelectedHostId("persisted-remote-h1");
+    };
+    saveHostProfile(sharedHost);
+    hostStateMock = { host: sharedHost, diagnosticsEnabled: true };
 
-    // No h= param in URL — ChatShell must fall back to persisted selection
+    // No h= param in URL — ChatShell must fall back to the shared selected host.
     vi.mocked(navigation.useSearchParams).mockReturnValue(
       new URLSearchParams() as ReturnType<typeof navigation.useSearchParams>
     );
@@ -413,14 +418,14 @@ describe("ChatShell — persisted selected-host reuse", () => {
 
     render(<ChatShell />);
 
-    // Top-bar must show the persisted remote host as a badge even without a URL param
-    expect(screen.getByTitle("https://persisted.ngrok.io")).toBeInTheDocument();
+    // Top-bar must show the selected remote host as a badge even without a URL param.
+    expect(screen.getByTitle(sharedHost.base_url)).toBeInTheDocument();
   });
 
-  it("h= URL param takes precedence over persisted selection", async () => {
+  it("h= URL param takes precedence over the shared selected host", async () => {
     const hooks = await import("@/lib/api/hooks");
     const navigation = await import("next/navigation");
-    const { saveHostProfile, setSelectedHostId } = await import("@/lib/host-profiles");
+    const { saveHostProfile } = await import("@/lib/host-profiles");
 
     saveHostProfile({
       id: "remote-h2",
@@ -440,7 +445,17 @@ describe("ChatShell — persisted selected-host reuse", () => {
       cli_kind: "copilot",
       is_default: false,
     });
-    setSelectedHostId("persisted-other");
+    hostStateMock = {
+      host: {
+        id: "persisted-other",
+        label: "Other Tunnel",
+        base_url: "https://other.ngrok.io",
+        token: "",
+        cli_kind: "copilot",
+        is_default: false,
+      },
+      diagnosticsEnabled: true,
+    };
 
     // But URL has a specific h= param pointing to remote-h2 (saved earlier)
     vi.mocked(navigation.useSearchParams).mockReturnValue(
@@ -459,6 +474,47 @@ describe("ChatShell — persisted selected-host reuse", () => {
     // h= param (remote-h2 = dev2.ngrok.io) wins over persisted (other.ngrok.io)
     expect(screen.getByTitle("https://dev2.ngrok.io")).toBeInTheDocument();
     expect(screen.queryByTitle("https://other.ngrok.io")).not.toBeInTheDocument();
+  });
+});
+
+describe("ChatShell — shared host selection", () => {
+  it("uses the shared browse-wide host state when no h= URL param and updates on rerender", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const navigation = await import("next/navigation");
+    const remoteHost = {
+      id: "header-selected-remote",
+      label: "Header Tunnel",
+      base_url: "https://header.ngrok.io",
+      token: "tok-header",
+      cli_kind: "copilot" as const,
+      is_default: false,
+    };
+
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
+    vi.mocked(navigation.useSearchParams).mockReturnValue(
+      new URLSearchParams() as ReturnType<typeof navigation.useSearchParams>
+    );
+    vi.mocked(hooks.useOperatorSession).mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorSession>);
+
+    const { rerender } = render(<ChatShell />);
+
+    expect(vi.mocked(hooks.useOperatorSessions).mock.calls.at(-1)?.[0]).toMatchObject({
+      id: LOCAL_HOST.id,
+    });
+
+    hostStateMock = { host: remoteHost, diagnosticsEnabled: true };
+    rerender(<ChatShell />);
+
+    expect(vi.mocked(hooks.useOperatorSessions).mock.calls.at(-1)?.[0]).toMatchObject({
+      id: remoteHost.id,
+      base_url: remoteHost.base_url,
+    });
+    expect(screen.getByTitle(remoteHost.base_url)).toBeInTheDocument();
   });
 });
 
@@ -630,5 +686,84 @@ describe("ChatShell — run history with file attachments", () => {
     // File chips should appear
     expect(screen.getByText("report.pdf")).toBeInTheDocument();
     expect(screen.getByText("data.csv")).toBeInTheDocument();
+  });
+});
+
+describe("SessionCreateDialog — pre-populated from active host", () => {
+  it("pre-populates host from the active host when dialog opens with LOCAL_HOST active", async () => {
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
+
+    render(<ChatShell />);
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+
+    // The host selector is present and pre-populated (LOCAL_HOST is the active host)
+    expect(screen.getByLabelText("Agent host")).toBeInTheDocument();
+  });
+
+  it("pre-populates host from the active host when a remote host is active", async () => {
+    const { saveHostProfile } = await import("@/lib/host-profiles");
+    const remoteHost = {
+      id: "pre-pop-host",
+      label: "Pre-pop Tunnel",
+      base_url: "https://prepop.ngrok.io",
+      token: "",
+      cli_kind: "copilot" as const,
+      is_default: false,
+    };
+    saveHostProfile(remoteHost);
+    hostStateMock = { host: remoteHost, diagnosticsEnabled: true };
+
+    render(<ChatShell />);
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+
+    // HostPicker should be rendered with the remote host selected
+    const hostSelect = screen.getByLabelText("Agent host");
+    expect(hostSelect).toBeInTheDocument();
+  });
+
+  it("uses the URL-resolved active host when h= overrides the shared selected host", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const navigation = await import("next/navigation");
+    const { saveHostProfile } = await import("@/lib/host-profiles");
+
+    const routeHost = {
+      id: "route-host",
+      label: "Route Tunnel",
+      base_url: "https://route.ngrok.io",
+      token: "tok-route",
+      cli_kind: "copilot" as const,
+      is_default: false,
+    };
+
+    saveHostProfile(routeHost);
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
+    vi.mocked(navigation.useSearchParams).mockReturnValue(
+      new URLSearchParams("h=route-host") as ReturnType<typeof navigation.useSearchParams>
+    );
+
+    render(<ChatShell />);
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+
+    expect(vi.mocked(hooks.useCreateOperatorSession).mock.calls.at(-1)?.[0]).toMatchObject({
+      id: routeHost.id,
+      base_url: routeHost.base_url,
+    });
+    expect(vi.mocked(hooks.useOperatorModelCatalog).mock.calls.at(-1)?.[0]).toMatchObject({
+      id: routeHost.id,
+      base_url: routeHost.base_url,
+    });
+  });
+});
+
+describe("ChatShell — hosted-root idle behavior", () => {
+  it("shows idle guidance when on hosted root with no remote host", async () => {
+    const navigation = await import("next/navigation");
+    vi.mocked(navigation.usePathname).mockReturnValue(
+      "/chat" as ReturnType<typeof navigation.usePathname>
+    );
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: false };
+
+    render(<ChatShell />);
+    expect(screen.getByTestId("chat-shell")).toBeInTheDocument();
   });
 });

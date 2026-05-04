@@ -176,3 +176,11 @@ After pulling a release that changes the Python operator backend, restart the br
 ```bash
 python3 ~/.copilot/tools/browse.py --port <port>
 ```
+
+## Compatibility with browse-wide host state
+
+The host selection layer (`host-provider.tsx`, `host-profiles.ts`) is purely client-side (localStorage). Auto-update has no direct interaction with it:
+
+- Auto-update rebuilds or deploys `browse-ui/dist/` when browse-ui source files change — this includes any new version of the host-management components.
+- Host profiles stored in `localStorage` by the browser are unaffected by auto-update, browse server restarts, or `browse-ui/dist/` rebuilds.
+- After a rebuild, the new `dist/` takes effect immediately on the next page load — host profiles already saved in `localStorage` are preserved.

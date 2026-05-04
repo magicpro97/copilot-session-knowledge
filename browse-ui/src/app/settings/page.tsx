@@ -1,11 +1,11 @@
 "use client";
 
 import { Activity, AlertTriangle, CheckCircle2, Moon, Monitor, Sun } from "lucide-react";
-import { useEffect, useState } from "react";
 import { useTheme } from "next-themes";
 
 import { Banner } from "@/components/data/banner";
 import { DensityToggle } from "@/components/layout/density-toggle";
+import { HostManagement } from "@/components/hosts/host-management";
 import { OperatorActionsPanel } from "@/components/data/operator-actions-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,11 +19,10 @@ import {
   useSyncStatus,
   useTentacleStatus,
 } from "@/lib/api/hooks";
-import type { HostProfile } from "@/lib/api/types";
 import { SHORTCUT_GROUPS } from "@/lib/constants";
 import { formatNumber } from "@/lib/formatters";
-import { LOCAL_HOST, getEffectiveHost } from "@/lib/host-profiles";
 import { cn } from "@/lib/utils";
+import { useHostState } from "@/providers/host-provider";
 
 const THEME_OPTIONS = [
   { value: "light", label: "Light", icon: Sun },
@@ -40,24 +39,8 @@ export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
   const [density] = useDensity();
 
-  // Track the effective host and whether diagnostics requests are safe to fire.
-  const [host, setHost] = useState<HostProfile>(LOCAL_HOST);
-  const [diagnosticsEnabled, setDiagnosticsEnabled] = useState(false);
-
-  useEffect(() => {
-    const update = () => {
-      const h = getEffectiveHost();
-      setHost(h);
-      setDiagnosticsEnabled(
-        h.base_url !== "" ||
-          window.location.pathname.startsWith("/v2") ||
-          Boolean(process.env.NEXT_PUBLIC_API_BASE)
-      );
-    };
-    update();
-    window.addEventListener("storage", update);
-    return () => window.removeEventListener("storage", update);
-  }, []);
+  // Use the shared browse-wide host state from HostProvider instead of local duplication.
+  const { host, diagnosticsEnabled } = useHostState();
 
   const health = useHealth(host, diagnosticsEnabled);
   const syncStatus = useSyncStatus(host, diagnosticsEnabled);
@@ -1001,6 +984,19 @@ export default function SettingsPage() {
               ) : null}
             </>
           )}
+        </CardContent>
+      </Card>
+
+      <Card id="hosts">
+        <CardHeader>
+          <CardTitle>Hosts &amp; connections</CardTitle>
+          <CardDescription>
+            Manage remote agent hosts. Select a host to use it browse-wide; saved hosts persist
+            across sessions. The local (same-origin) host is always available as a fallback.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <HostManagement data-testid="host-management" />
         </CardContent>
       </Card>
 

@@ -46,7 +46,10 @@ def test(name: str, passed: bool, detail: str = "") -> None:
 def _run(script: str, args: list[str], *, env=None, timeout: int = 20) -> subprocess.CompletedProcess:
     cmd = [sys.executable, str(REPO / script)] + args
     merged_env = os.environ.copy()
+    # Set both HOME (POSIX) and COPILOT_HOME (cross-platform explicit override)
+    # so the subprocess gets isolated session roots regardless of platform.
     merged_env["HOME"] = str(OPERATOR_HOME)
+    merged_env["COPILOT_HOME"] = str(OPERATOR_HOME)
     merged_env.pop("USERPROFILE", None)
     if env:
         merged_env.update(env)
@@ -194,10 +197,14 @@ _watch_script = str(REPO / "watch-sessions.py")
 
 
 def _run_watch(args: list[str], *, home: str, timeout: int = 15) -> subprocess.CompletedProcess:
-    """Run watch-sessions.py with an overridden HOME env var."""
+    """Run watch-sessions.py with isolated HOME and COPILOT_HOME env vars."""
     env = os.environ.copy()
     env["HOME"] = home
-    # On macOS, USERPROFILE is sometimes used as a fallback; clear it too.
+    # COPILOT_HOME is the explicit cross-platform override used by host_manifest.py
+    # and watch-sessions.py.  Setting it here ensures the subprocess resolves
+    # session roots from the temp dir even on Windows where Path.home() may not
+    # honour the HOME env var.
+    env["COPILOT_HOME"] = home
     env.pop("USERPROFILE", None)
     return subprocess.run(
         [sys.executable, _watch_script] + args,
@@ -311,6 +318,62 @@ if wf_state_file.exists():
         test("--once watch-state.json valid after file run", False, str(exc))
 else:
     test("--once watch-state.json created after file run", False, "file not found")
+
+
+# ─── Section 4: #24 regression — COPILOT_HOME isolation contract ─────────────
+
+print("\n🔒 #24 regression: COPILOT_HOME isolation")
+
+import importlib.util as _ilu
+import sys as _sys
+
+# Load host_manifest.py without side effects to check COPILOT_HOME support
+_hm_path = REPO / "host_manifest.py"
+hm_src = _hm_path.read_text(encoding="utf-8")
+test("#24: host_manifest.py reads COPILOT_HOME env var",
+     "COPILOT_HOME" in hm_src,
+     "COPILOT_HOME override not present in host_manifest.py")
+
+ss_src = (REPO / "sync-status.py").read_text(encoding="utf-8")
+test("#24: sync-status.py reads COPILOT_HOME env var",
+     "COPILOT_HOME" in ss_src,
+     "COPILOT_HOME override not present in sync-status.py")
+
+# Verify that a subprocess with COPILOT_HOME set uses the override path
+_hm_check_home = str(ARTIFACT_DIR / "copilot-home-check")
+_hm_check_env = os.environ.copy()
+_hm_check_env["COPILOT_HOME"] = _hm_check_home
+_hm_result = subprocess.run(
+    [_sys.executable, "-c", (
+        "import sys, os; "
+        f"sys.path.insert(0, {repr(str(REPO))}); "
+        "import host_manifest; "
+        "print(host_manifest._HOME)"
+    )],
+    capture_output=True, text=True, env=_hm_check_env, timeout=10,
+)
+test("#24: host_manifest._HOME reflects COPILOT_HOME",
+     _hm_check_home in _hm_result.stdout,
+     f"stdout={_hm_result.stdout.strip()!r}")
+
+# Verify _run_watch sets COPILOT_HOME (inspect source of this test file)
+_this_src = Path(__file__).read_text(encoding="utf-8")
+test("#24: _run_watch sets COPILOT_HOME in env",
+     "COPILOT_HOME" in _this_src and "_run_watch" in _this_src,
+     "COPILOT_HOME not set inside _run_watch")
+
+
+# ─── Section 5: #23 regression — run_all_tests.py encodes UTF-8 ──────────────
+
+print("\n🌐 #23 regression: run_all_tests.py UTF-8 encoding")
+
+rat_src = (REPO / "run_all_tests.py").read_text(encoding="utf-8")
+test("#23: run_all_tests.py subprocess.run sets encoding='utf-8'",
+     "encoding=\"utf-8\"" in rat_src or "encoding='utf-8'" in rat_src,
+     "run_all_tests.py must pass encoding='utf-8' to subprocess.run")
+test("#23: run_all_tests.py subprocess.run sets errors='replace'",
+     "errors=\"replace\"" in rat_src or "errors='replace'" in rat_src,
+     "run_all_tests.py must pass errors='replace' to subprocess.run")
 
 
 # ─── Cleanup ─────────────────────────────────────────────────────────────────

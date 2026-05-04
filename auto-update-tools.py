@@ -492,6 +492,22 @@ def pull_latest() -> tuple[bool, str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Read-only update check (used by --check mode; never moves HEAD)
+# ---------------------------------------------------------------------------
+def check_update_available() -> tuple[bool, str, str]:
+    """Fetch remote refs and compare with local HEAD.
+
+    Returns (update_available, local_sha, remote_sha).
+    Does NOT stash, pull, or modify the working tree.  Only git fetch is
+    performed, which writes to .git/FETCH_HEAD but never moves HEAD.
+    """
+    local_sha = _git_output("rev-parse", "HEAD")
+    _git("fetch", "--quiet", "origin")
+    remote_sha = _git_output("rev-parse", "origin/main")
+    return (local_sha != remote_sha), local_sha, remote_sha
+
+
+# ---------------------------------------------------------------------------
 # Smart diff: classify what changed between two commits
 # ---------------------------------------------------------------------------
 def classify_changes(old_sha: str, new_sha: str) -> dict:
@@ -680,6 +696,18 @@ def trigger_embedding_rebuild():
     ok("Embedding rebuild triggered (background)")
 
 
+def _pnpm_cmd() -> list[str]:
+    """Return the pnpm command list, falling back to 'corepack pnpm' if pnpm
+    is not directly on PATH but corepack is available.
+    """
+    import shutil
+    if shutil.which("pnpm"):
+        return ["pnpm"]
+    if shutil.which("corepack"):
+        return ["corepack", "pnpm"]
+    return ["pnpm"]  # will raise FileNotFoundError if neither is present
+
+
 def _rebuild_browse_ui():
     """Rebuild browse-ui dist/ when source files change during update pull."""
     browse_ui_dir = TOOLS_DIR / "browse-ui"
@@ -689,9 +717,10 @@ def _rebuild_browse_ui():
     if not pkg_json.exists():
         return
     log("browse-ui source changed — rebuilding Next.js UI...")
+    pnpm = _pnpm_cmd()
     try:
         r = subprocess.run(
-            ["pnpm", "install", "--frozen-lockfile"],
+            pnpm + ["install", "--frozen-lockfile"],
             cwd=str(browse_ui_dir),
             capture_output=True, text=True, timeout=120,
         )
@@ -699,7 +728,7 @@ def _rebuild_browse_ui():
             warn(f"pnpm install failed: {r.stderr[:300]}")
             return
         r = subprocess.run(
-            ["pnpm", "build"],
+            pnpm + ["build"],
             cwd=str(browse_ui_dir),
             capture_output=True, text=True, timeout=180,
         )
@@ -708,7 +737,7 @@ def _rebuild_browse_ui():
         else:
             warn(f"pnpm build failed: {r.stderr[:300]}")
     except FileNotFoundError:
-        warn("pnpm not found — skipping browse-ui rebuild. Install pnpm to fix.")
+        warn("pnpm not found — skipping browse-ui rebuild. Install pnpm or corepack to fix.")
     except Exception as exc:
         warn(f"browse-ui rebuild failed: {exc}")
 
@@ -1623,8 +1652,21 @@ def main():
                 ok("Fallback pipeline complete")
         return
 
+    # --check is read-only: fetch remote refs and compare without pulling.
+    if check_only:
+        if not ensure_clone():
+            sys.exit(1)
+        available, local_sha, remote_sha = check_update_available()
+        short_local = local_sha[:8] if local_sha else "unknown"
+        short_remote = remote_sha[:8] if remote_sha else "unknown"
+        if available:
+            log(f"Update available: {short_local} → {short_remote}")
+        else:
+            ok(f"Up to date ({short_local})")
+        return
+
     # Cooldown
-    if not force and not check_only:
+    if not force:
         if not check_cooldown():
             return
 
@@ -1639,9 +1681,6 @@ def main():
         # Pull
         updated, old_sha, new_sha = pull_latest()
         if updated:
-            if check_only:
-                log("Update available")
-                return
             post_pull_pipeline(old_sha, new_sha)
         else:
             # Even if no update, ensure post-merge hook exists

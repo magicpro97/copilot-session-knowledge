@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/providers/theme-provider";
 import { QueryProvider } from "@/providers/query-provider";
+import { HostProvider } from "@/providers/host-provider";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { Header } from "@/components/layout/header";
 import { CommandPalette } from "@/components/layout/command-palette";
@@ -37,15 +38,17 @@ export default function RootLayout({
       <body>
         <ThemeProvider>
           <QueryProvider>
-            <div className="flex h-screen overflow-hidden">
-              <AppSidebar />
-              <div className="flex flex-1 flex-col overflow-hidden">
-                <Header />
-                <main className="flex-1 overflow-y-auto p-4 md:p-6">{children}</main>
+            <HostProvider>
+              <div className="flex h-screen overflow-hidden">
+                <AppSidebar />
+                <div className="flex flex-1 flex-col overflow-hidden">
+                  <Header />
+                  <main className="flex-1 overflow-y-auto p-4 md:p-6">{children}</main>
+                </div>
               </div>
-            </div>
-            <CommandPalette />
-            <GlobalShortcuts />
+              <CommandPalette />
+              <GlobalShortcuts />
+            </HostProvider>
           </QueryProvider>
         </ThemeProvider>
       </body>
