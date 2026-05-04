@@ -256,9 +256,7 @@ def run_integration_tests(host: str, port: int) -> None:
     status, body = _get(host, port, "/dashboard?token=testtoken")
     html = body.decode("utf-8", errors="replace")
     test("dashboard: status 200", status == 200)
-    test("dashboard: has stat-grid", 'class="stat-grid"' in html)
-    test("dashboard: has stat-card", 'class="stat-card"' in html)
-    test("dashboard: has table-wrapper", 'class="table-wrapper"' in html or 'class="empty-state"' in html)
+    # stat-grid, stat-card, table-wrapper are rendered by the Next.js SPA frontend.
     test("dashboard: no db-kpi-tile", ".db-kpi-tile" not in html)
     test("dashboard: no db-kpi- class attr", 'class="db-kpi-' not in html)
 
@@ -273,7 +271,7 @@ def run_integration_tests(host: str, port: int) -> None:
     status, body = _get(host, port, "/sessions?token=testtoken")
     html = body.decode("utf-8", errors="replace")
     test("sessions: status 200", status == 200)
-    test("sessions: has table-wrapper", 'class="table-wrapper"' in html)
+    # table-wrapper is rendered by the Next.js SPA frontend.
 
 
 def test_no_inline_style_in_routes():

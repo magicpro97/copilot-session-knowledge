@@ -1,7 +1,7 @@
 import { expect, test } from "./fixtures";
 
 test("settings shortcuts card visual snapshot", async ({ page }) => {
-  await page.goto("/v2/settings/#shortcuts");
+  await page.goto("/settings/#shortcuts");
   await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible({
     timeout: 20_000,
   });
@@ -21,7 +21,7 @@ test("command palette visual snapshot", async ({ page }) => {
     window.localStorage.removeItem("browse-ui-recent-commands");
     window.localStorage.removeItem("browse-ui-recent-searches");
   });
-  await page.goto("/v2/sessions/");
+  await page.goto("/sessions/");
   await expect(page.getByRole("heading", { level: 1, name: "Sessions" })).toBeVisible({
     timeout: 20_000,
   });
@@ -38,7 +38,7 @@ test("command palette visual snapshot", async ({ page }) => {
 });
 
 test("graph tabs visual snapshot", async ({ page }) => {
-  await page.goto("/v2/graph/");
+  await page.goto("/graph/");
   await expect(page.getByRole("heading", { level: 1, name: "Graph" })).toBeVisible({
     timeout: 20_000,
   });

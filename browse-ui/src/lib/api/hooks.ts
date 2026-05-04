@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { CACHE_TIMES, DEFAULT_PAGE_SIZE, STALE_TIMES } from "@/lib/constants";
-import { apiFetch, hostFetch, buildHostUrl } from "@/lib/api/client";
+import { hostFetch, buildHostUrl } from "@/lib/api/client";
 import { LOCAL_HOST, LOCAL_HOST_ID } from "@/lib/host-profiles";
 import {
   compareResponseSchema,
@@ -117,9 +117,12 @@ export type SimilarityQueryParams = Record<
 >;
 
 export const queryKeys = {
-  sessions: (params: SessionsQueryParams = {}) => ["sessions", params] as const,
-  sessionDetail: (sessionId: string) => ["session-detail", sessionId] as const,
-  search: (params: SearchQueryParams) => ["search", params] as const,
+  sessions: (params: SessionsQueryParams = {}, hostId = LOCAL_HOST_ID) =>
+    ["sessions", hostId, params] as const,
+  sessionDetail: (sessionId: string, hostId = LOCAL_HOST_ID) =>
+    ["session-detail", hostId, sessionId] as const,
+  search: (params: SearchQueryParams, hostId = LOCAL_HOST_ID) =>
+    ["search", hostId, params] as const,
   health: (hostId = LOCAL_HOST_ID) => ["health", hostId] as const,
   syncStatus: (hostId = LOCAL_HOST_ID) => ["sync-status", hostId] as const,
   scoutStatus: (hostId = LOCAL_HOST_ID) => ["scout-status", hostId] as const,
@@ -127,17 +130,21 @@ export const queryKeys = {
   tentacleStatus: (hostId = LOCAL_HOST_ID) => ["tentacle-status", hostId] as const,
   skillMetrics: (hostId = LOCAL_HOST_ID) => ["skill-metrics", hostId] as const,
   dashboard: (hostId = LOCAL_HOST_ID) => ["dashboard", hostId] as const,
-  graphLegacy: (params: GraphQueryParams = {}) => ["graph-legacy", params] as const,
-  graph: (params: GraphQueryParams = {}) => ["graph", params] as const,
-  graphEvidence: (params: EvidenceGraphQueryParams = {}) => ["graph-evidence", params] as const,
-  graphSimilarity: (params: SimilarityQueryParams = {}) => ["graph-similarity", params] as const,
-  graphCommunities: () => ["graph-communities"] as const,
-  embeddings: () => ["embeddings"] as const,
+  graphLegacy: (params: GraphQueryParams = {}, hostId = LOCAL_HOST_ID) =>
+    ["graph-legacy", hostId, params] as const,
+  graph: (params: GraphQueryParams = {}, hostId = LOCAL_HOST_ID) =>
+    ["graph", hostId, params] as const,
+  graphEvidence: (params: EvidenceGraphQueryParams = {}, hostId = LOCAL_HOST_ID) =>
+    ["graph-evidence", hostId, params] as const,
+  graphSimilarity: (params: SimilarityQueryParams = {}, hostId = LOCAL_HOST_ID) =>
+    ["graph-similarity", hostId, params] as const,
+  graphCommunities: (hostId = LOCAL_HOST_ID) => ["graph-communities", hostId] as const,
+  embeddings: (hostId = LOCAL_HOST_ID) => ["embeddings", hostId] as const,
   eval: (hostId = LOCAL_HOST_ID) => ["eval", hostId] as const,
   retro: (mode: "repo" | "local" = "repo", hostId = LOCAL_HOST_ID) =>
     ["retro", mode, hostId] as const,
   knowledgeInsights: (hostId = LOCAL_HOST_ID) => ["knowledge-insights", hostId] as const,
-  compare: (a: string, b: string) => ["compare", a, b] as const,
+  compare: (a: string, b: string, hostId = LOCAL_HOST_ID) => ["compare", hostId, a, b] as const,
   workflowHealth: (hostId = LOCAL_HOST_ID) => ["workflow-health", hostId] as const,
   // Operator/Chat — all keys are scoped by hostId to prevent cross-host cache collisions
   operatorSessions: (hostId = LOCAL_HOST_ID) => ["operator-sessions", hostId] as const,
@@ -265,7 +272,11 @@ export function normalizeSessionsResponse(input: SessionsResponse): SessionListR
   return sessionListResponseSchema.parse(parsed);
 }
 
-export function useSessions(params: SessionsQueryParams = {}) {
+export function useSessions(
+  params: SessionsQueryParams = {},
+  host: HostProfile = LOCAL_HOST,
+  enabled = true
+) {
   // sort is applied client-side; do not forward to the backend
   const queryString = createQueryString({
     page: params.page,
@@ -276,34 +287,45 @@ export function useSessions(params: SessionsQueryParams = {}) {
   });
 
   return useQuery({
-    queryKey: queryKeys.sessions(params),
+    queryKey: queryKeys.sessions(params, host.id),
     staleTime: STALE_TIMES.sessions,
     gcTime: CACHE_TIMES.sessions,
+    enabled,
     queryFn: async (): Promise<SessionListResponse> => {
-      const data = await apiFetch<SessionsResponse>(
-        withLeadingSlash(`/api/sessions${queryString}`)
+      const data = await hostFetch<SessionsResponse>(
+        withLeadingSlash(`/api/sessions${queryString}`),
+        host
       );
       return normalizeSessionsResponse(data);
     },
   });
 }
 
-export function useSessionDetail(sessionId: string, enabled = true) {
+export function useSessionDetail(
+  sessionId: string,
+  enabled = true,
+  host: HostProfile = LOCAL_HOST
+) {
   return useQuery({
-    queryKey: queryKeys.sessionDetail(sessionId),
+    queryKey: queryKeys.sessionDetail(sessionId, host.id),
     staleTime: STALE_TIMES.sessionDetail,
     gcTime: CACHE_TIMES.sessionDetail,
     enabled: enabled && Boolean(sessionId),
     queryFn: async (): Promise<SessionDetailResponse> => {
-      const data = await apiFetch<SessionDetailResponse>(
-        withLeadingSlash(`/api/sessions/${encodeURIComponent(sessionId)}`)
+      const data = await hostFetch<SessionDetailResponse>(
+        withLeadingSlash(`/api/sessions/${encodeURIComponent(sessionId)}`),
+        host
       );
       return sessionDetailResponseSchema.parse(data);
     },
   });
 }
 
-export function useSearch(params: SearchQueryParams, enabled = true) {
+export function useSearch(
+  params: SearchQueryParams,
+  enabled = true,
+  host: HostProfile = LOCAL_HOST
+) {
   const queryString = createArrayQueryString({
     q: params.query,
     src: params.sources,
@@ -312,12 +334,15 @@ export function useSearch(params: SearchQueryParams, enabled = true) {
   });
 
   return useQuery({
-    queryKey: queryKeys.search(params),
+    queryKey: queryKeys.search(params, host.id),
     staleTime: STALE_TIMES.search,
     gcTime: CACHE_TIMES.search,
     enabled: enabled && params.query.trim().length > 0,
     queryFn: async (): Promise<SearchResponse> => {
-      const data = await apiFetch<SearchResponse>(withLeadingSlash(`/api/search${queryString}`));
+      const data = await hostFetch<SearchResponse>(
+        withLeadingSlash(`/api/search${queryString}`),
+        host
+      );
       return searchResponseSchema.parse(data);
     },
   });
@@ -417,7 +442,11 @@ export function useDashboard(host: HostProfile = LOCAL_HOST, enabled = true) {
   });
 }
 
-export function useGraph(params: GraphQueryParams = {}) {
+export function useGraph(
+  params: GraphQueryParams = {},
+  enabled = true,
+  host: HostProfile = LOCAL_HOST
+) {
   const normalizedParams = normalizeGraphParams(params);
   const graphFiltersQueryString = createArrayQueryString({
     wing: normalizedParams.wing,
@@ -428,17 +457,25 @@ export function useGraph(params: GraphQueryParams = {}) {
   const graphQueryString = combineQueryStrings(graphFiltersQueryString, graphLimitQueryString);
 
   return useQuery({
-    queryKey: queryKeys.graphLegacy(normalizedParams),
+    queryKey: queryKeys.graphLegacy(normalizedParams, host.id),
     staleTime: STALE_TIMES.graph,
     gcTime: CACHE_TIMES.graph,
+    enabled,
     queryFn: async (): Promise<GraphResponse> => {
-      const data = await apiFetch<GraphResponse>(withLeadingSlash(`/api/graph${graphQueryString}`));
+      const data = await hostFetch<GraphResponse>(
+        withLeadingSlash(`/api/graph${graphQueryString}`),
+        host
+      );
       return graphResponseSchema.parse(data);
     },
   });
 }
 
-export function useEvidenceGraph(params: EvidenceGraphQueryParams = {}) {
+export function useEvidenceGraph(
+  params: EvidenceGraphQueryParams = {},
+  enabled = true,
+  host: HostProfile = LOCAL_HOST
+) {
   const normalizedParams = normalizeGraphParams(params);
   const normalizedRelationTypes = normalizeEvidenceRelationTypes(params.relation_type);
   const graphFiltersQueryString = createArrayQueryString({
@@ -451,57 +488,74 @@ export function useEvidenceGraph(params: EvidenceGraphQueryParams = {}) {
   const graphQueryString = combineQueryStrings(graphFiltersQueryString, graphLimitQueryString);
 
   return useQuery({
-    queryKey: queryKeys.graphEvidence({
-      ...normalizedParams,
-      relation_type: normalizedRelationTypes,
-    }),
+    queryKey: queryKeys.graphEvidence(
+      {
+        ...normalizedParams,
+        relation_type: normalizedRelationTypes,
+      },
+      host.id
+    ),
     staleTime: STALE_TIMES.graph,
     gcTime: CACHE_TIMES.graph,
+    enabled,
     queryFn: async (): Promise<EvidenceGraphResponse> => {
-      const data = await apiFetch<EvidenceGraphResponse>(
-        withLeadingSlash(`/api/graph/evidence${graphQueryString}`)
+      const data = await hostFetch<EvidenceGraphResponse>(
+        withLeadingSlash(`/api/graph/evidence${graphQueryString}`),
+        host
       );
       return evidenceGraphResponseSchema.parse(data);
     },
   });
 }
 
-export function useEmbeddings() {
+export function useEmbeddings(enabled = true, host: HostProfile = LOCAL_HOST) {
   return useQuery({
-    queryKey: queryKeys.embeddings(),
+    queryKey: queryKeys.embeddings(host.id),
     staleTime: STALE_TIMES.embeddings,
     gcTime: CACHE_TIMES.embeddings,
+    enabled,
     queryFn: async (): Promise<EmbeddingProjection> => {
-      const data = await apiFetch<EmbeddingProjection>(withLeadingSlash("/api/embeddings/points"));
+      const data = await hostFetch<EmbeddingProjection>(
+        withLeadingSlash("/api/embeddings/points"),
+        host
+      );
       return embeddingProjectionSchema.parse(data);
     },
   });
 }
 
-export function useSimilarity(params: SimilarityQueryParams = {}, enabled = true) {
+export function useSimilarity(
+  params: SimilarityQueryParams = {},
+  enabled = true,
+  host: HostProfile = LOCAL_HOST
+) {
   const queryString = createSoftQueryString(params);
   return useQuery({
-    queryKey: queryKeys.graphSimilarity(params),
+    queryKey: queryKeys.graphSimilarity(params, host.id),
     staleTime: STALE_TIMES.graph,
     gcTime: CACHE_TIMES.graph,
     enabled,
     queryFn: async (): Promise<SimilarityResponse> => {
-      const data = await apiFetch<SimilarityResponse>(
-        withLeadingSlash(`/api/graph/similarity${queryString}`)
+      const data = await hostFetch<SimilarityResponse>(
+        withLeadingSlash(`/api/graph/similarity${queryString}`),
+        host
       );
       return similarityResponseSchema.parse(data);
     },
   });
 }
 
-export function useCommunities(enabled = true) {
+export function useCommunities(enabled = true, host: HostProfile = LOCAL_HOST) {
   return useQuery({
-    queryKey: queryKeys.graphCommunities(),
+    queryKey: queryKeys.graphCommunities(host.id),
     staleTime: STALE_TIMES.graph,
     gcTime: CACHE_TIMES.graph,
     enabled,
     queryFn: async (): Promise<CommunitiesResponse> => {
-      const data = await apiFetch<CommunitiesResponse>(withLeadingSlash("/api/graph/communities"));
+      const data = await hostFetch<CommunitiesResponse>(
+        withLeadingSlash("/api/graph/communities"),
+        host
+      );
       return communitiesResponseSchema.parse(data);
     },
   });
@@ -552,28 +606,36 @@ export function useSkillMetrics(host: HostProfile = LOCAL_HOST, enabled = true) 
   });
 }
 
-export function useCompare(sessionA: string, sessionB: string, enabled = true) {
+export function useCompare(
+  sessionA: string,
+  sessionB: string,
+  enabled = true,
+  host: HostProfile = LOCAL_HOST
+) {
   const queryString = createQueryString({
     a: sessionA,
     b: sessionB,
   });
 
   return useQuery({
-    queryKey: queryKeys.compare(sessionA, sessionB),
+    queryKey: queryKeys.compare(sessionA, sessionB, host.id),
     staleTime: STALE_TIMES.compare,
     gcTime: CACHE_TIMES.compare,
     enabled: enabled && Boolean(sessionA) && Boolean(sessionB),
     queryFn: async (): Promise<CompareResponse> => {
-      const data = await apiFetch<CompareResponse>(withLeadingSlash(`/api/compare${queryString}`));
+      const data = await hostFetch<CompareResponse>(
+        withLeadingSlash(`/api/compare${queryString}`),
+        host
+      );
       return compareResponseSchema.parse(data);
     },
   });
 }
 
-export function useSubmitFeedback() {
+export function useSubmitFeedback(host: HostProfile = LOCAL_HOST) {
   return useMutation({
     mutationFn: async (payload: FeedbackRequest): Promise<FeedbackResponse> => {
-      const data = await apiFetch<FeedbackResponse>(withLeadingSlash("/api/feedback"), {
+      const data = await hostFetch<FeedbackResponse>(withLeadingSlash("/api/feedback"), host, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(feedbackRequestSchema.parse(payload)),

@@ -71,6 +71,14 @@ vi.mock("./host-picker", () => ({
   ),
 }));
 
+vi.mock("@/providers/host-provider", () => ({
+  useHostState: vi.fn(() => ({
+    host: INITIAL_HOST,
+    diagnosticsEnabled: true,
+    localDiagnosticsEnabled: true,
+  })),
+}));
+
 describe("SessionCreateDialog", () => {
   it("preserves an in-progress host override while the dialog stays open", () => {
     const onSubmit = vi.fn();

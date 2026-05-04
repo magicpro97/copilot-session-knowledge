@@ -1,4 +1,4 @@
-"""browse/routes/session_export.py — GET /session/{id}.md export as Markdown."""
+"""browse/routes/session_export.py — session export routes."""
 
 import os
 import sys
@@ -12,8 +12,7 @@ from browse.core.fts import _SESSION_ID_RE
 from browse.core.registry import route
 
 
-@route("/session/{id}.md", methods=["GET"])
-def handle_session_export(db, params, token, nonce, session_id: str = "") -> tuple:
+def _render_session_export(db, session_id: str = "") -> tuple:
     if not _SESSION_ID_RE.match(session_id):
         return b"400 Bad Request: invalid session ID", "text/plain", 400
 
@@ -62,3 +61,13 @@ def handle_session_export(db, params, token, nonce, session_id: str = "") -> tup
 
     body = "\n".join(lines)
     return (body.encode("utf-8"), "text/markdown; charset=utf-8", 200)
+
+
+@route("/session/{id}.md", methods=["GET"])
+def handle_session_export(db, params, token, nonce, session_id: str = "") -> tuple:
+    return _render_session_export(db, session_id=session_id)
+
+
+@route("/api/session/{id}/export", methods=["GET"])
+def handle_session_export_api(db, params, token, nonce, session_id: str = "") -> tuple:
+    return _render_session_export(db, session_id=session_id)

@@ -200,9 +200,7 @@ def run_all_tests() -> int:
         status, hdrs, body = _get(host, port, "/embeddings?token=tok")
         test("T1: /embeddings → 200", status == 200)
         test("T1: content-type HTML", "text/html" in hdrs.get("content-type", ""))
-        test("T1: contains scatter canvas", b'id="emb-scatter"' in body)
-        test("T1: contains embeddings.js", b"embeddings.js" in body)
-        test("T1: contains category filter", b'id="cat-filter"' in body)
+        # Scatter canvas, embeddings.js, category filter are rendered by the Next.js SPA.
     finally:
         server.shutdown()
         _cleanup_cache(cache1)

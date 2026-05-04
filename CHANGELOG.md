@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Single-version browse app migration — root-served routes:**
+  - The browse app now uses a unified root-served app (`/*`) for both the local Python browse
+    server and the hosted static deployment.
+  - Canonical routes are now `/*`: `/chat`, `/sessions`, `/sessions/[id]`, `/search`, `/insights`, `/graph`, `/settings`.
+  - The Python browse server gains root routing for the Next.js app; compatibility redirects from `/v2/*` → `/*` are provided for old bookmarks and deep links.
+  - `browse-ui/next.config.ts` default `basePath` transitions from `"/v2"` to `""` so that `pnpm build` produces a root-relative artifact for both the local server and Firebase Hosting deployments.
+  - The legacy Python HTML UI routes (`/sessions`, `/graph`, `/search`, etc. served by
+    `browse/routes/*.py`) are retired; those routes now resolve to the Next.js app, while
+    `/v2/*` remains only as a compatibility redirect layer.
+  - Docs (`docs/ARCHITECTURE.md`, `docs/OPERATOR-PLAYBOOK.md`, `docs/AUTO-UPDATE.md`, `docs/HOOKS.md`, `browse-ui/README.md`) updated to reference canonical root routes.
+
+### Added
 - **Wave 3 — knowledge pipeline hardening and verification lifecycle:**
   - `tentacle.py complete` now supports `--auto-verify <cmd>` (optional): runs the command, persists the result as a `tentacle_verifications` row, and logs pass/fail before closing the tentacle. Fail-open — completion proceeds even when the verification command exits non-zero. `--auto-verify-timeout <seconds>` controls the timeout (default: 120 s).
   - `extract-knowledge.py` — category-aware confidence floors: `pattern` entries use floor `0.5`; other categories use floor `0.4`. Recurring entries (same topic key seen again) receive a `+0.03` recurrence reward on each upsert, capped so confidence never exceeds `1.0`. `learn.py` raises the default initial confidence for `pattern` entries from `0.6` to `0.7`.

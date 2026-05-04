@@ -136,102 +136,15 @@ def run_all_tests() -> int:
         status, hdrs, body = _get(host, port, "/?token=tok")
         html = body.decode("utf-8")
         test("P1: home → 200", status == 200)
-        test("P1: __paletteCommands init present", "window.__paletteCommands = [];" in html)
-        test("P1: __paletteCommands concat present",
-             "window.__paletteCommands = window.__paletteCommands.concat(" in html)
+        # __paletteCommands injection is now in the Next.js SPA frontend;
+        # Python no longer injects palette scripts into the home page HTML.
     finally:
         server.shutdown()
 
-    # ── P2: Global commands are valid JSON with required fields ───────────────
-    print("\n-- P2: global commands structure")
-    db = _make_test_db()
-    server, host, port = _start_server(db)
-    try:
-        _, _, body = _get(host, port, "/?token=tok")
-        html = body.decode("utf-8")
-        cmds = _extract_global_cmds(html)
-        test("P2: concat script parses as JSON array", isinstance(cmds, list))
-        if isinstance(cmds, list):
-            test("P2: at least 6 global commands", len(cmds) >= 6)
-            required = {"id", "title", "hotkey", "handler"}
-            missing = [c.get("id", "?") for c in cmds if not required.issubset(c.keys())]
-            test("P2: all commands have id/title/hotkey/handler", missing == [])
-    finally:
-        server.shutdown()
-
-    # ── P3: All expected command IDs are present ──────────────────────────────
-    print("\n-- P3: expected command IDs")
-    db = _make_test_db()
-    server, host, port = _start_server(db)
-    try:
-        _, _, body = _get(host, port, "/?token=tok")
-        html = body.decode("utf-8")
-        cmds = _extract_global_cmds(html) or []
-        ids = {c["id"] for c in cmds if "id" in c}
-        for expected_id in ("nav-home", "nav-search", "nav-sessions",
-                            "nav-graph", "nav-dashboard", "help-shortcuts"):
-            test(f"P3: command '{expected_id}' present", expected_id in ids)
-    finally:
-        server.shutdown()
-
-    # ── P4: Navigation commands have correct href values ─────────────────────
-    print("\n-- P4: command href values")
-    db = _make_test_db()
-    server, host, port = _start_server(db)
-    try:
-        _, _, body = _get(host, port, "/?token=tok")
-        html = body.decode("utf-8")
-        cmds = _extract_global_cmds(html) or []
-        by_id = {c["id"]: c for c in cmds if "id" in c}
-        test("P4: nav-home href='/'", by_id.get("nav-home", {}).get("href") == "/")
-        test("P4: nav-search href='/search'",
-             by_id.get("nav-search", {}).get("href") == "/search")
-        test("P4: nav-sessions href='/sessions'",
-             by_id.get("nav-sessions", {}).get("href") == "/sessions")
-        test("P4: nav-graph href='/graph'",
-             by_id.get("nav-graph", {}).get("href") == "/graph")
-        test("P4: nav-dashboard href='/dashboard'",
-             by_id.get("nav-dashboard", {}).get("href") == "/dashboard")
-        test("P4: help-shortcuts handler='help-modal'",
-             by_id.get("help-shortcuts", {}).get("handler") == "help-modal")
-    finally:
-        server.shutdown()
-
-    # ── P5: palette.js script tag is present ─────────────────────────────────
-    print("\n-- P5: palette.js loaded")
-    db = _make_test_db()
-    server, host, port = _start_server(db)
-    try:
-        _, _, body = _get(host, port, "/?token=tok")
-        html = body.decode("utf-8")
-        test("P5: palette.js script src present",
-             'src="/static/js/palette.js"' in html)
-    finally:
-        server.shutdown()
-
-    # ── P6: CSP nonce on concat script and palette.js script ─────────────────
-    print("\n-- P6: CSP nonces on new scripts")
-    db = _make_test_db()
-    server, host, port = _start_server(db)
-    try:
-        _, hdrs, body = _get(host, port, "/?token=tok")
-        html = body.decode("utf-8")
-        csp = hdrs.get("content-security-policy", "")
-        m = re.search(r"nonce-([A-Za-z0-9_=+/\-]+)", csp)
-        test("P6: CSP header has nonce", bool(m))
-        if m:
-            nonce_val = m.group(1)
-            # Concat script has the nonce
-            concat_pattern = (
-                f'nonce="{nonce_val}">window.__paletteCommands = '
-                "window.__paletteCommands.concat("
-            )
-            test("P6: concat script has matching nonce", concat_pattern in html)
-            # palette.js script has the nonce
-            palettejs_pattern = f'nonce="{nonce_val}" src="/static/js/palette.js"'
-            test("P6: palette.js script has matching nonce", palettejs_pattern in html)
-    finally:
-        server.shutdown()
+    # ── P2-P6: Palette injection is now in the Next.js SPA ───────────────────
+    # The Python server no longer injects __paletteCommands, palette.js, or
+    # nonce-based CSP into SPA-served pages. See P7-P9 for static file and
+    # unit-level palette structure tests that remain valid.
 
     # ── P7: palette.js static file is served ─────────────────────────────────
     print("\n-- P7: palette.js file served")

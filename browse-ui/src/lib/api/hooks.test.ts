@@ -84,7 +84,7 @@ describe("api hooks helpers", () => {
   });
 
   it("builds stable query keys", () => {
-    expect(queryKeys.sessionDetail("abc")).toEqual(["session-detail", "abc"]);
+    expect(queryKeys.sessionDetail("abc")).toEqual(["session-detail", "local", "abc"]);
     expect(queryKeys.health()).toEqual(["health", "local"]);
     expect(queryKeys.syncStatus()).toEqual(["sync-status", "local"]);
     expect(queryKeys.scoutStatus()).toEqual(["scout-status", "local"]);
@@ -97,10 +97,12 @@ describe("api hooks helpers", () => {
     expect(queryKeys.knowledgeInsights()).toEqual(["knowledge-insights", "local"]);
     expect(queryKeys.graph({ wing: ["alpha"], limit: 10 })).toEqual([
       "graph",
+      "local",
       { wing: ["alpha"], limit: 10 },
     ]);
     expect(queryKeys.graphLegacy({ wing: ["alpha"], limit: 10 })).toEqual([
       "graph-legacy",
+      "local",
       { wing: ["alpha"], limit: 10 },
     ]);
     expect(queryKeys.graph({ wing: ["alpha"], limit: 10 })).not.toEqual(

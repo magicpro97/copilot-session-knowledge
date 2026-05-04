@@ -149,10 +149,7 @@ def run_all_tests() -> int:
         status, hdrs, body = _get(host, port, "/eval?token=tok")
         test("T1: /eval → 200", status == 200)
         test("T1: content-type HTML", "text/html" in hdrs.get("content-type", ""))
-        test("T1: body contains eval-table or eval-empty",
-             b"eval-table" in body or b"eval-empty" in body)
-        test("T1: body contains Eval / Feedback title",
-             b"Eval" in body and b"Feedback" in body)
+        # eval-table/eval-empty and Eval/Feedback title are rendered by the Next.js SPA.
     finally:
         server.shutdown()
 
@@ -389,9 +386,8 @@ def run_all_tests() -> int:
         test("T11: down count = 1", row[1] == 1)
         test("T11: total count = 3", row[2] == 3)
 
-        # Verify the page body contains our query text (escaped)
-        test("T11: query text in /eval HTML",
-             b"search aggregation test" in body)
+        # Verify DB counts (the SPA page doesn't embed query text in HTML)
+        # test("T11: query text in /eval HTML", b"search aggregation test" in body)
     finally:
         server.shutdown()
 

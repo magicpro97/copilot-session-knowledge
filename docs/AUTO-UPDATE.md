@@ -165,7 +165,7 @@ Use `--doctor` to verify the manifest and check overall health.
 
 ## Compatibility with the Browse Operator Console
 
-The auto-update pipeline and the browse UI operator console (`/v2/chat`) are independent:
+The auto-update pipeline and the browse UI operator console (`/chat`) are independent:
 
 - Auto-update may restart `watch-sessions.py`, but it does **not** restart the browse server or interrupt an in-progress Copilot CLI run.
 - Operator run history is persisted under `~/.copilot/session-state/operator-console/` and is reloaded by `browse/core/operator_console.py` on the next request.

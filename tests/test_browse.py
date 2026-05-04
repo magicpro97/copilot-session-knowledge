@@ -182,11 +182,11 @@ def run_all_tests() -> int:
     server, host, port = _start_server(db, token="tok")
     try:
         malicious = urllib.parse.quote("OR 1=1")
-        status, _, body = _get(host, port, f"/sessions?token=tok&q={malicious}")
+        status, _, body = _get(host, port, f"/api/search?token=tok&q={malicious}")
         test("T4: OR 1=1 injection → no crash (200)", status == 200)
         # Also test AND injection
         malicious2 = urllib.parse.quote("AND DROP TABLE")
-        status2, _, _ = _get(host, port, f"/sessions?token=tok&q={malicious2}")
+        status2, _, _ = _get(host, port, f"/api/search?token=tok&q={malicious2}")
         test("T4b: AND DROP TABLE → no crash", status2 == 200)
     finally:
         server.shutdown()
@@ -206,40 +206,53 @@ def run_all_tests() -> int:
         body_str = body.decode("utf-8")
         test("T5: home → 200", status == 200)
         test("T5: raw <script> NOT in response", "<script>alert" not in body_str)
-        test("T5: escaped &lt;script&gt; present", "&lt;script&gt;" in body_str)
+        # Verify Python template HTML-escaping via direct handler call
+        # (root now serves Next.js which doesn't render session summaries)
+        from browse.routes.home import handle_home as _handle_home5
+        home_body5, _, _ = _handle_home5(db, {}, "tok", "nonce5")
+        home_str5 = home_body5.decode("utf-8")
+        test("T5: Python template escapes <script> summary", "&lt;script&gt;" in home_str5)
     finally:
         server.shutdown()
 
-    # ── T6: ?format=json returns valid JSON ───────────────────────────────────
+    # ── T6: /api/search returns valid JSON ────────────────────────────────────
     print("\n-- T6: JSON format")
     db = _make_test_db()
     server, host, port = _start_server(db, token="tok")
     try:
-        status, hdrs, body = _get(host, port, "/sessions?token=tok&format=json")
-        test("T6: /sessions?format=json → 200", status == 200)
+        status, hdrs, body = _get(host, port, "/api/search?token=tok&src=sessions")
+        test("T6: /api/search → 200", status == 200)
         ct = hdrs.get("content-type", "")
         test("T6: content-type application/json", "application/json" in ct)
         try:
             data = json.loads(body)
-            test("T6: body is valid JSON list", isinstance(data, list))
+            test("T6: body is valid JSON object", isinstance(data, dict))
+            test("T6: has results key", "results" in data)
         except json.JSONDecodeError:
-            test("T6: body is valid JSON list", False)
+            test("T6: body is valid JSON object", False)
+            test("T6: has results key", False)
     finally:
         server.shutdown()
 
-    # ── T7: /session/<bad id> → 400 ───────────────────────────────────────────
-    print("\n-- T7: invalid session_id")
+    # ── T7: /session/* redirects to /sessions/* ──────────────────────────────
+    print("\n-- T7: /session/* redirect to /sessions/*")
     db = _make_test_db()
     server, host, port = _start_server(db, token="tok")
     try:
-        bad_cases = [
-            ("/" + "a" * 200, "too long (200 chars)"),
-            ("/abc%3Cdef", "has percent-encoded char"),
-            ("/%2Fetc%2Fpasswd", "path traversal attempt"),
-        ]
-        for bad_id, label in bad_cases:
-            status, _, _ = _get(host, port, f"/session{bad_id}?token=tok")
-            test(f"T7: {label} → 400", status == 400)
+        # Singular /session/{id} → 302 redirect to plural /sessions/{id}
+        status7a, hdrs7a, _ = _get(host, port, "/session/abc123?token=tok")
+        test("T7: /session/{id} → 302", status7a == 302)
+        test("T7: /session/{id} location is /sessions/{id}", "/sessions/abc123" in hdrs7a.get("location", ""))
+
+        # Sub-path also redirects
+        status7b, hdrs7b, _ = _get(host, port, "/session/abc123/timeline?token=tok")
+        test("T7: /session/{id}/timeline → 302", status7b == 302)
+        test("T7: /session/{id}/timeline location has /sessions/", "/sessions/" in hdrs7b.get("location", ""))
+
+        # API routes still validate too-long session IDs (>128 chars)
+        bad_id = "a" * 200
+        status7c, _, _ = _get(host, port, f"/api/session/{bad_id}/events?token=tok")
+        test("T7: /api/session with too-long ID → 400", status7c == 400)
     finally:
         server.shutdown()
 
@@ -271,13 +284,11 @@ def run_all_tests() -> int:
     server, host, port = _start_server(db, token="tok")
     try:
         q = urllib.parse.quote("test query")
-        status, _, body = _get(host, port, f"/sessions?token=tok&q={q}")
-        body_str = body.decode("utf-8")
+        status, hdrs, body = _get(host, port, f"/api/search?token=tok&src=sessions&q={q}")
         test("T10: no sessions_fts → no 500", status == 200)
-        test(
-            "T10: shows 'not ready' banner",
-            "Session index not ready" in body_str or "build-session-index" in body_str,
-        )
+        test("T10: /api/search gracefully handles missing FTS", "application/json" in hdrs.get("content-type", ""))
+        data = json.loads(body)
+        test("T10: /api/search returns results key even without FTS", "results" in data)
     finally:
         server.shutdown()
 
@@ -350,30 +361,20 @@ def run_all_tests() -> int:
     _, _, code5 = serve_static(None, "vendor/cytoscape.min.js")
     test("T12: static serves valid file (200 or 404 if missing)", code5 in (200, 404))
 
-    # ── T13: CSP nonce in response header matches script tag nonces ───────────
-    print("\n-- T13: CSP nonce matches inline scripts")
+    # ── T13: canonical root CSP uses unsafe-inline (Next.js, no nonce) ──────
+    print("\n-- T13: canonical root CSP (unsafe-inline, no nonce)")
     import re as _re
     db13 = _make_test_db()
     server13, host13, port13 = _start_server(db13, token="tok")
     try:
         status13, hdrs13, body13 = _get(host13, port13, "/?token=tok")
         csp13 = hdrs13.get("content-security-policy", "")
-        # Extract nonce from CSP header
-        m = _re.search(r"nonce-([A-Za-z0-9_=-]+)", csp13)
-        test("T13: CSP header contains a nonce", bool(m))
-        if m:
-            nonce_val = m.group(1)
-            test(
-                "T13: script tags carry matching nonce attribute",
-                f'nonce="{nonce_val}"'.encode("utf-8") in body13,
-            )
-            test("T13: ninja-keys scaffold present", b"ninja-keys" in body13)
-            test(
-                "T13: window.__paletteCommands present",
-                b"__paletteCommands" in body13,
-            )
-        # Also verify no unsafe-eval in CSP
+        # Root now serves Next.js which uses unsafe-inline (not nonce-based)
+        test("T13: CSP has no nonce (canonical Next.js root)", "nonce-" not in csp13)
+        test("T13: canonical root CSP uses unsafe-inline for scripts", "'unsafe-inline'" in csp13)
         test("T13: CSP has no unsafe-eval", "unsafe-eval" not in csp13)
+        test("T13: root page is HTML", b"<!DOCTYPE html>" in body13 or b"<html" in body13.lower())
+        test("T13: root page is non-empty", len(body13) > 100)
     finally:
         server13.shutdown()
 

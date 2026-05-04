@@ -184,16 +184,12 @@ def run_all_tests() -> int:
     server, host, port = _start_server(db, token="tok")
     try:
         status, hdrs, body = _get(
-            host, port, "/session/test-mindmap-abc/mindmap?token=tok"
+            host, port, "/sessions/test-mindmap-abc/mindmap?token=tok"
         )
         test("MM1: status 200", status == 200)
         ct = hdrs.get("content-type", "")
         test("MM1: content-type HTML", "text/html" in ct)
-        body_str = body.decode("utf-8")
-        test("MM1: contains mindmap-svg", 'id="mindmap-svg"' in body_str)
-        test("MM1: references mindmap.js", "mindmap.js" in body_str)
-        test("MM1: references d3.min.js", "d3.min.js" in body_str)
-        test("MM1: references markmap-view.min.js", "markmap-view.min.js" in body_str)
+        # mindmap-svg, mindmap.js, d3, markmap are rendered by the Next.js SPA.
     finally:
         server.shutdown()
         if tmp_path:
@@ -234,13 +230,13 @@ def run_all_tests() -> int:
             except OSError:
                 pass
 
-    # ── MM4: 404 for unknown session (HTML) ────────────────────────────────────
-    print("\n-- MM4: 404 for unknown session (HTML)")
+    # ── MM4: SPA serves 200 for unknown session (HTML page doesn't validate) ──
+    print("\n-- MM4: SPA serves 200 for unknown session (HTML)")
     db, _ = _make_test_db()
     server, host, port = _start_server(db, token="tok")
     try:
-        status, _, _ = _get(host, port, "/session/no-such-session/mindmap?token=tok")
-        test("MM4: status 404", status == 404)
+        status, _, _ = _get(host, port, "/sessions/no-such-session/mindmap?token=tok")
+        test("MM4: SPA returns 200 for unknown session", status == 200)
     finally:
         server.shutdown()
 
@@ -254,13 +250,14 @@ def run_all_tests() -> int:
     finally:
         server.shutdown()
 
-    # ── MM6: 400 for invalid session_id (HTML) ─────────────────────────────────
-    print("\n-- MM6: 400 invalid session_id (HTML)")
+    # ── MM6: SPA serves 200 for invalid session_id in HTML route ──────────────
+    # Session ID validation is only at the API layer; the SPA page doesn't validate.
+    print("\n-- MM6: SPA serves 200 for invalid session_id (HTML)")
     db, _ = _make_test_db()
     server, host, port = _start_server(db, token="tok")
     try:
-        status, _, _ = _get(host, port, "/session/<bad!>/mindmap?token=tok")
-        test("MM6: status 400", status == 400)
+        status, _, _ = _get(host, port, "/sessions/<bad!>/mindmap?token=tok")
+        test("MM6: SPA returns 200 for invalid session_id in HTML route", status == 200)
     finally:
         server.shutdown()
 
@@ -299,7 +296,7 @@ def run_all_tests() -> int:
     db, _ = _make_test_db()
     server, host, port = _start_server(db, token="secret")
     try:
-        status, _, _ = _get(host, port, "/session/test-mindmap-abc/mindmap")
+        status, _, _ = _get(host, port, "/sessions/test-mindmap-abc/mindmap")
         test("MM10: no token → 401", status == 401)
     finally:
         server.shutdown()

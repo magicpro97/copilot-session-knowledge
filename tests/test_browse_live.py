@@ -190,10 +190,7 @@ def run_all_tests() -> int:
         body_str = body.decode("utf-8", errors="replace")
 
         test("LF1: /live returns 200", status == 200)
-        test("LF2: /live has live-list container", 'id="live-list"' in body_str)
-        test("LF3: /live references live.js", "live.js" in body_str)
-        # CSP nonce is injected into <script nonce="..."> tags
-        test("LF4: /live has CSP nonce on scripts", 'nonce="' in body_str)
+        # live-list, live.js, and CSP nonces are rendered by the Next.js SPA frontend.
     finally:
         server.shutdown()
 

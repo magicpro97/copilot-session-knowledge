@@ -1,6 +1,6 @@
 # browse-ui
 
-Next.js 16 frontend for the Hindsight local web UI, served at `/v2/` by the Python browse server.
+Next.js 16 frontend for the Hindsight local web UI. Serves as both the local browse server's authenticated app and the Firebase-hosted static control plane.
 
 ## Stack
 
@@ -38,13 +38,17 @@ pnpm build
 
 | Path | Description |
 |------|-------------|
-| `/v2/chat` | Operator console — run Copilot CLI prompts, review touched files, and inspect inline diffs |
-| `/v2/sessions` | Session list |
-| `/v2/sessions/[id]` | Session detail (real UUID paths) + timeline/mindmap/checkpoints |
-| `/v2/search` | Full-text + semantic search |
-| `/v2/insights` | Knowledge insights |
-| `/v2/graph` | Graph workspace: Evidence + Similarity + Communities |
-| `/v2/settings` | Preferences + **Hosts & connections** (host management) |
+| `/chat` | Operator console — run Copilot CLI prompts, review touched files, and inspect inline diffs |
+| `/sessions` | Session list |
+| `/sessions/[id]` | Session detail (real UUID paths) + timeline/mindmap/checkpoints |
+| `/search` | Full-text + semantic search |
+| `/insights` | Knowledge insights |
+| `/graph` | Graph workspace: Evidence + Similarity + Communities |
+| `/settings` | Preferences + **Hosts & connections** (host management) |
+
+> **Deployment prefix:** Canonical routes are root-relative on both the local Python browse server
+> and the Firebase-hosted deployment. Compatibility redirects from `/v2/*` → `/*` remain for old
+> bookmarks and deep links.
 
 ## E2E tests
 
@@ -54,7 +58,7 @@ Playwright specs live in `e2e/`:
 |------|----------|
 | `smoke.spec.ts` | Core route rendering, session detail, diff viewer, insights panels |
 | `shortcuts.spec.ts` | Global keyboard shortcuts and navigation chords |
-| `chat.spec.ts` | `/v2/chat` operator console shell, history, file preview, and inline diff review |
+| `chat.spec.ts` | `/chat` operator console shell, history, file preview, and inline diff review |
 | `visual.spec.ts` | Screenshot comparisons for stable visual surfaces |
 
 Typical local runs:
@@ -68,10 +72,13 @@ pnpm test:e2e --project visual
 
 ## Build output
 
-`pnpm build` runs `next build` (static export) then `scripts/post-build.mjs` which writes `dist/version.json`.
-`pnpm build:release` writes the Firebase-safe root-hosted artifact to `dist-release/version.json`.
+`pnpm build` runs `next build` (static export) then `scripts/post-build.mjs` which writes
+`dist/version.json`.
+`pnpm build:release` writes the isolated Firebase artifact to `dist-release/version.json`.
 
-The `dist/` directory is **committed to git** and served directly by `browse/routes/serve_v2.py`.
+The `dist/` directory is served directly by `browse/routes/serve_v2.py` for the local root app.
+`dist-release/` exists so release verification can build a separate Firebase artifact without
+touching `dist/`.
 
 Do **not** edit files in `dist/` directly — they are build artifacts. Run `pnpm build` instead.
 
@@ -83,7 +90,11 @@ Do **not** edit files in `dist/` directly — they are build artifacts. Run `pnp
 - Cross-origin streaming avoids `?token=` leakage: `/api/operator/*` and `/api/live` use fetch-based SSE with `Authorization: Bearer ...` for remote hosts, while same-origin/local surfaces keep `EventSource`.
 - Auth token is injected via URL param `?token=…` on first load, then stored in `sessionStorage`
 - `output: "export"` in next.config.ts means no SSR — all pages are static HTML + client JS
-- `basePath` in `next.config.ts` defaults to `/v2` for the Python-server deployment; use `pnpm build:release` for a Firebase-targeted export so asset paths resolve from the site root (`/_next/…`). See [Firebase Hosting topology](#firebase-hosting-topology) for the release build step.
+- `basePath` in `next.config.ts` defaults to `""`, so `pnpm build` produces a root-relative
+  artifact for both the local browse server and Firebase Hosting. `pnpm build:release` still
+  emits `dist-release/` so release verification can stay isolated from the local `dist/`
+  artifact. See [Firebase Hosting topology](#firebase-hosting-topology) for the release build
+  step.
 - Dynamic routes require `generateStaticParams()` in a server component wrapper
 
 ## Host selection & management
@@ -109,11 +120,14 @@ Both profile mutations (save, delete) and host selection changes dispatch `BROWS
 
 ### Header global host dropdown
 
-The header renders a compact AWS-region-style dropdown showing the active host label. Clicking it lists all saved profiles plus `Local (same-origin)`. Selecting a profile calls `setSelectedHostId()` and triggers `BROWSE_HOST_CHANGE_EVENT`. A **Manage hosts…** link navigates to `/v2/settings#hosts` (safe under both the local `/v2` basePath and the Firebase root-hosted build).
+The header renders a compact AWS-region-style dropdown showing the active host label. Clicking it
+lists all saved profiles plus `Local (same-origin)`. Selecting a profile calls
+`setSelectedHostId()` and triggers `BROWSE_HOST_CHANGE_EVENT`. A **Manage hosts…** link navigates
+to `/settings#hosts`.
 
 ### Settings — Hosts & connections (`HostManagement`)
 
-The Settings page at `/v2/settings` contains a dedicated **Hosts & connections** card that renders `HostManagement`. From this surface the operator can:
+The Settings page at `/settings` contains a dedicated **Hosts & connections** card that renders `HostManagement`. From this surface the operator can:
 
 - **List** all saved profiles plus the built-in `Local (same-origin)` entry (not deletable).
 - **Add** a remote host — requires a public tunnel URL (e.g. ngrok, Cloudflare Tunnel); label, auth token, and CLI kind are optional.
@@ -130,7 +144,7 @@ When the browser is not on `localhost` / `127.0.0.1`, the **Hosts & connections*
 
 ### Session creation pre-population
 
-`SessionCreateDialog` (`/v2/chat`) reads the global active host from `useHostState()` and pre-populates the host picker when the dialog opens. The user can still override the host per session; the override is local to that dialog invocation.
+`SessionCreateDialog` (`/chat`) reads the global active host from `useHostState()` and pre-populates the host picker when the dialog opens. The user can still override the host per session; the override is local to that dialog invocation.
 
 ### Verified (targeted checks)
 
@@ -151,7 +165,7 @@ The UI is a static Next.js export and renders in any modern mobile browser (iOS 
 | Surface | Mobile status |
 |---------|--------------|
 | Sessions, search, insights, graph, settings | ✅ Fully functional via browser |
-| Operator console page load (`/v2/chat`) | ✅ Page loads |
+| Operator console page load (`/chat`) | ✅ Page loads |
 | SSE live transcript streaming | ✅ `EventSource` is supported on iOS Safari 13+ and Android Chrome |
 | Prompt submission (POST) | ⚠️ Requires `check_origin` fix in `browse/core/auth.py` to accept `https://` origins — see [docs/OPERATOR-PLAYBOOK.md](../docs/OPERATOR-PLAYBOOK.md#remote-access-via-cloudflare-tunnel) |
 | Keyboard shortcuts | ⚠️ Not usable without a physical keyboard |
@@ -170,8 +184,11 @@ The UI is a static Next.js export and renders in any modern mobile browser (iOS 
 - **Phase 7**: Shipped sessions list + session detail + search pages with real data
 - **Phase 8**: Shipped insights + graph pages (dashboard/live and Evidence/Similarity/Communities)
 - **Phase 9**: Shipped settings, global keyboard shortcuts, and session detail compare/export polish
-- **Phase 10**: Shipped operator console (`/v2/chat`) — browser-managed Copilot CLI execution with streamed output, persisted run history, and file review
+- **Phase 10**: Shipped operator console (`/chat`) — browser-managed Copilot CLI execution with streamed output, persisted run history, and file review
 - **Phase 11**: Shipped browse-wide host selection (`HostProvider` + `host-profiles.ts`), global header host dropdown, Settings host management surface (`HostManagement`), and same-tab host-change refresh
+- **Phase 12**: Unified root-served browse app — the Python browse server and Firebase-hosted
+  build now share the same root-relative routes (`/*`); `/v2/*` compatibility redirects remain for
+  old deep links.
 
 ## Firebase Hosting topology
 
@@ -219,18 +236,21 @@ An external hosting repo can automate this flow end-to-end: check out `copilot-s
 
 This separation ensures no personal project IDs or custom domains are committed to the public repo.
 
-### Build modes: local `/v2` vs root-hosted release
+### Build modes: local root app vs isolated release artifact
 
-`next.config.ts` defaults `basePath` to `/v2`, which keeps the checked-in `dist/` artifact compatible with the Python browse server at `/v2/*`.
+`next.config.ts` defaults `basePath` to `""`, so `pnpm build` produces the root-relative `dist/`
+artifact served by the Python browse server at `/*`.
 
-Firebase Hosting serves files from the site root, so the root-hosted release artifact must emit `/_next/…` asset URLs instead of `/v2/_next/…`. Use the dedicated release artifact:
+Firebase Hosting also serves files from the site root, so the release artifact uses the same
+root-relative `/_next/…` asset paths. Use the dedicated release artifact when you want a clean
+build-and-verify step without touching `dist/`:
 
 1. Run `pnpm release:check` to build and verify `dist-release/`
 2. Copy that `dist-release/` into your private hosting repo
 3. Confirm `pnpm release:check` passed
 4. Run `firebase deploy --only hosting:agents` from your private hosting repo
 
-`pnpm build` remains the default local build and should be used whenever you want the checked-in `/v2` artifact for the Python browse server.
+`pnpm build` remains the default local build for the Python browse server.
 
 ### Release-gate check
 
@@ -243,14 +263,15 @@ pnpm release:check
 
 This command:
 
-- Builds the Firebase artifact into `dist-release/` without touching the committed `dist/`
+- Builds the Firebase artifact into `dist-release/` without touching `dist/`
 - Runs the proof test in isolation (it auto-selects the `[FIREBASE_PROOF]` case only)
 - Reads `dist-release/chat/index.html` directly from the filesystem and asserts:
 
 - No `/v2/_next/` references exist (these 404 on Firebase)
 - At least one `/_next/` reference exists (sanity: the export is non-trivial)
 
-The proof test is skipped in normal CI runs; `pnpm release:check` enables it explicitly for the release gate without rebuilding the regular `/v2` artifact.
+The proof test is skipped in normal CI runs; `pnpm release:check` enables it explicitly for the
+release gate without rebuilding the local `dist/` artifact.
 
 ### Deploying
 

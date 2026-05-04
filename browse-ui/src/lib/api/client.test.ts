@@ -82,6 +82,23 @@ describe("buildHostUrl", () => {
     const url = buildHostUrl("https://xyz.ngrok.io", "api/sessions");
     expect(url.toString()).toBe("https://xyz.ngrok.io/api/sessions");
   });
+
+  it("keeps query strings in the URL search instead of encoding them into the pathname", async () => {
+    const { buildHostUrl } = await import("./client");
+    const url = buildHostUrl("https://xyz.ngrok.io", "/api/sessions?page=1&page_size=20");
+    expect(url.toString()).toBe("https://xyz.ngrok.io/api/sessions?page=1&page_size=20");
+  });
+
+  it("preserves base path prefixes when the appended path includes query and hash", async () => {
+    const { buildHostUrl } = await import("./client");
+    const url = buildHostUrl(
+      "https://proxy.example.com/copilot",
+      "/api/retro/summary?mode=repo#details"
+    );
+    expect(url.toString()).toBe(
+      "https://proxy.example.com/copilot/api/retro/summary?mode=repo#details"
+    );
+  });
 });
 
 describe("apiFetch", () => {

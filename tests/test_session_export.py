@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tests/test_session_export.py — Tests for GET /session/{id}.md route."""
+"""tests/test_session_export.py — Tests for session export routes."""
 import os
 import sqlite3
 import sys
@@ -74,13 +74,17 @@ def run_all_tests() -> int:
     from browse.core.registry import ROUTES
     registered_paths = [r[0] for r in ROUTES]
     test("T1: /session/{id}.md route registered", "/session/{id}.md" in registered_paths)
+    test("T1: /api/session/{id}/export route registered", "/api/session/{id}/export" in registered_paths)
 
     # T2: match_route returns handler + session_id kwarg
     print("\n-- T2: match_route extracts session_id")
     from browse.core.registry import match_route
     handler, kw = match_route("/session/abc123.md", "GET")
-    test("T2: handler is not None", handler is not None)
-    test("T2: session_id kwarg == 'abc123'", kw.get("session_id") == "abc123")
+    api_handler, api_kw = match_route("/api/session/abc123/export", "GET")
+    test("T2: legacy handler is not None", handler is not None)
+    test("T2: legacy session_id kwarg == 'abc123'", kw.get("session_id") == "abc123")
+    test("T2: API handler is not None", api_handler is not None)
+    test("T2: API session_id kwarg == 'abc123'", api_kw.get("session_id") == "abc123")
 
     # T3: handler returns valid markdown for existing session
     print("\n-- T3: handler returns markdown body")
@@ -96,21 +100,33 @@ def run_all_tests() -> int:
     test("T3: body contains doc heading", b"## checkpoint: First Checkpoint" in body_bytes)
     test("T3: body contains section heading", b"### Overview" in body_bytes)
     test("T3: body contains section content", b"This is the overview content." in body_bytes)
+    api_body_bytes, api_content_type, api_status = api_handler(
+        db, {}, "tok", "nonce", session_id="abc123"
+    )
+    test("T3: API status 200", api_status == 200)
+    test("T3: API content-type starts with text/markdown", api_content_type.startswith("text/markdown"))
+    test("T3: API body matches legacy export", api_body_bytes == body_bytes)
 
     # T4: 404 for unknown session
     print("\n-- T4: 404 for missing session")
     _, _, status404 = handler(db, {}, "tok", "nonce", session_id="nosuchsession")
     test("T4: status 404", status404 == 404)
+    _, _, api_status404 = api_handler(db, {}, "tok", "nonce", session_id="nosuchsession")
+    test("T4: API status 404", api_status404 == 404)
 
     # T5: 400 for invalid session id
     print("\n-- T5: 400 for invalid session id")
     _, _, status400 = handler(db, {}, "tok", "nonce", session_id="bad id!!")
     test("T5: status 400", status400 == 400)
+    _, _, api_status400 = api_handler(db, {}, "tok", "nonce", session_id="bad id!!")
+    test("T5: API status 400", api_status400 == 400)
 
     # T6: empty session_id also returns 400
     print("\n-- T6: empty session_id returns 400")
     _, _, status400b = handler(db, {}, "tok", "nonce", session_id="")
     test("T6: status 400 on empty id", status400b == 400)
+    _, _, api_status400b = api_handler(db, {}, "tok", "nonce", session_id="")
+    test("T6: API status 400 on empty id", api_status400b == 400)
 
     print(f"\n{'='*50}")
     print(f"Results: {_PASS} passed, {_FAIL} failed")

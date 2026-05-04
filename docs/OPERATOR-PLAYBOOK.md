@@ -283,7 +283,7 @@ python3 ~/.copilot/tools/tentacle.py complete <name> --auto-verify "python3 test
 
 ## Browse UI — Operator Diagnostics Settings Page
 
-The `/v2/settings/` page in the Browse UI is the primary **browser-based operator surface**.
+The `/settings/` page in the Browse UI is the primary **browser-based operator surface**.
 All diagnostic panels are read-only — no write operations are exposed — except the **Hosts & connections** card which manages host profiles.
 
 | Card | API endpoint | Shows |
@@ -302,14 +302,14 @@ commands — the panel is display-only with copy-to-clipboard buttons.
 
 Navigate to the Settings page:
 ```
-http://localhost:<port>/v2/settings/?token=<token>
+http://localhost:<port>/settings/?token=<token>
 ```
 
 ---
 
-## Browse UI — Operator Console (`/v2/chat`)
+## Browse UI — Operator Console (`/chat`)
 
-The `/v2/chat` route is the browser-managed Copilot CLI execution console. It is distinct from the read-only settings and diagnostics surfaces and is the only browse page that actively launches Copilot CLI.
+The `/chat` route is the browser-managed Copilot CLI execution console. It is distinct from the read-only settings and diagnostics surfaces and is the only browse page that actively launches Copilot CLI.
 
 ### Workflow
 
@@ -336,7 +336,7 @@ Historical runs are replayed from disk on refresh, so the transcript and file-re
 - All workspaces and file-review paths are normalized against `~/`; paths outside `Path.home()` are rejected.
 - Prompt text is capped at 4096 characters.
 - `/api/operator/*` uses the same per-launch browse token as the rest of the UI.
-- Runs launched from `/v2/chat` still inherit the installed Copilot CLI's hooks, custom instructions, and permission system. Browser use does not bypass briefing/tentacle/learn or other active policy gates.
+- Runs launched from `/chat` still inherit the installed Copilot CLI's hooks, custom instructions, and permission system. Browser use does not bypass briefing/tentacle/learn or other active policy gates.
 
 ### Compatibility
 
@@ -347,7 +347,7 @@ Historical runs are replayed from disk on refresh, so the transcript and file-re
 Direct link:
 
 ```text
-http://localhost:<port>/v2/chat/?token=<token>
+http://localhost:<port>/chat/?token=<token>
 ```
 
 ---
@@ -361,7 +361,7 @@ Browse-wide host state is managed by `HostProvider` (root layout context) and pe
 | Action | Where |
 |--------|-------|
 | Switch active host | Header → global host dropdown (AWS-region-style compact selector) |
-| Add / remove / set-default / restore-local | Settings → **Hosts & connections** (`/v2/settings#hosts`) |
+| Add / remove / set-default / restore-local | Settings → **Hosts & connections** (`/settings#hosts`) |
 | Verify active host in code | `useHostState().host` — resolves via `getEffectiveHost()` |
 
 ### Same-tab refresh
@@ -370,14 +370,17 @@ All profile mutations and selection changes dispatch `browse:host-change` on `wi
 
 ### Session create dialog pre-population
 
-When `SessionCreateDialog` opens (`/v2/chat → New Chat`), it reads the global active host via `useHostState()` and pre-fills the host picker. The user may still override the host for that session; the override is local to that dialog open.
+When `SessionCreateDialog` opens (`/chat → New Chat`), it reads the global active host via `useHostState()` and pre-fills the host picker. The user may still override the host for that session; the override is local to that dialog open.
 
 ### Diagnostics enabled gate
 
 `diagnosticsEnabled` (from `useHostState()`) is `true` when any of the following holds:
 - A remote host with a non-empty `base_url` is active, **or**
-- The current pathname starts with `/v2` (same-origin Python browse server), **or**
-- `NEXT_PUBLIC_API_BASE` is set at build time.
+- `NEXT_PUBLIC_API_BASE` is set at build time, **or**
+- `LOCAL_HOST` is selected and a same-origin `/healthz` probe succeeds.
+
+When the same-origin probe fails (for example on a Firebase-hosted static origin with no local
+backend), `diagnosticsEnabled` stays `false`.
 
 When `diagnosticsEnabled` is `false` (e.g. the static UI is opened on its Firebase domain without a remote host configured), all diagnostic API calls are suppressed and each card shows a prompt to configure a host in Settings → Hosts & connections.
 
@@ -447,7 +450,7 @@ Configure Access in **Cloudflare Zero Trust → Access → Applications → Add 
 
 **Verified from source code (`browse/core/auth.py` · `check_origin`):** The CSRF origin check compares the `Origin` header to `http://{Host}`. Behind Cloudflare Tunnel, the browser sends `Origin: https://browse.example.com` but the check builds `http://browse.example.com` — these do not match. All POST mutations (prompt submission, session create/delete) return **403 Forbidden**.
 
-This is a code-level fix required in `browse/core/auth.py`: the check must accept `https://` origins when `X-Forwarded-Proto: https` is present, or accept both schemes for the configured hostname. **This fix is not in the scope of this playbook entry.** Until it is applied, the operator console (`/v2/chat`) is read-browseable behind the tunnel but prompt submission will fail. Open a fix tentacle or issue targeting `browse/core/auth.py`.
+This is a code-level fix required in `browse/core/auth.py`: the check must accept `https://` origins when `X-Forwarded-Proto: https` is present, or accept both schemes for the configured hostname. **This fix is not in the scope of this playbook entry.** Until it is applied, the operator console (`/chat`) is read-browseable behind the tunnel but prompt submission will fail. Open a fix tentacle or issue targeting `browse/core/auth.py`.
 
 #### Cookie `Secure` flag
 
@@ -473,9 +476,9 @@ The Next.js static export makes all API calls to relative paths (`/api/*`) on th
 
 | Feature | Mobile status |
 |---------|--------------|
-| All `/v2/*` page routes | ✅ Work in iOS Safari and Android Chrome — Next.js static export, no SSR |
+| All app page routes (`/chat`, `/sessions`, `/search`, `/insights`, `/graph`, `/settings`) | ✅ Work in iOS Safari and Android Chrome — Next.js static export, no SSR |
 | Token auth (first-load `?token=…`) | ✅ Works — cookie is stored in browser session storage per architecture notes |
-| SSE streaming (`/v2/chat` live transcript) | ✅ Works — iOS Safari 13+ and Android Chrome support `EventSource` |
+| SSE streaming (`/chat` live transcript) | ✅ Works — iOS Safari 13+ and Android Chrome support `EventSource` |
 | POST mutations (prompt submit) | ⚠️ Requires `check_origin` fix in `browse/core/auth.py` to accept `https://` origins (see [Known blocker](#known-blocker-origin-check-for-post-requests-code-level-issue) above) |
 | Keyboard shortcuts (`g c`, `g s`, etc.) | ⚠️ Not accessible without a physical keyboard |
 
@@ -535,7 +538,10 @@ This keeps personal project IDs and custom domains out of the public repo.
 
 ### Build modes
 
-**Verified from source:** `browse-ui/next.config.ts` now reads `basePath` from `NEXT_BASE_PATH` and defaults to `"/v2"`. The Python browse server strips the `/v2/` prefix and maps requests to `browse-ui/dist/`. This remains the correct same-origin deployment mode.
+**Verified from source:** `browse-ui/next.config.ts` reads `basePath` from `NEXT_BASE_PATH` and
+defaults to `""`, so the default `pnpm build` artifact is root-relative for both the local Python
+browse server and Firebase Hosting. The Python browse server now serves the app at root and keeps
+`/v2/*` compatibility redirects for old bookmarks.
 
 For Firebase Hosting, the release artifact must emit `/_next/…` asset URLs because Firebase serves static files from the domain root. Use the dedicated release build:
 
@@ -590,7 +596,7 @@ The static UI uses **host profiles** — named, user-configurable entries storin
 
 **To configure a host profile from the UI:**
 
-1. Open the browse UI and navigate to **Settings → Hosts & connections** (`/v2/settings#hosts`).
+1. Open the browse UI and navigate to **Settings → Hosts & connections** (`/settings#hosts`).
 2. Click **Add host** and enter the public tunnel URL (e.g. `https://abc123.ngrok.io`), an optional label, and the Bearer auth token.
 3. Optionally mark the profile as **default** (⭐) so it is selected automatically on fresh load.
 4. The header's global host dropdown immediately reflects the new profile. Any page that calls `useHostState()` — including the operator console's session create dialog — updates without a reload.

@@ -72,7 +72,7 @@ The `browse/*` and `hooks/*` patterns in the local `_py_in_surface()` function m
 
 ### Browse operator console surfaces
 
-The `/v2/chat` operator console does **not** introduce a new hook class. Existing guardrails already cover it:
+The `/chat` operator console does **not** introduce a new hook class. Existing guardrails already cover it:
 
 - Python-side operator files (`browse/core/operator_console.py`, `browse/api/operator.py`) stay inside the normal `browse/` syntax + Ruff surface.
 - Frontend operator files under `browse-ui/src/app/chat/` and `browse-ui/src/components/chat/` stay under `block-edit-dist`, `block-unsafe-html`, `nextjs-typecheck-reminder`, and the staged Prettier check in `pre-commit`.

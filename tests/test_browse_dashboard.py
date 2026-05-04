@@ -195,25 +195,15 @@ def run_all_tests() -> int:
         status, hdrs, body = _get(host, port, "/dashboard?token=tok")
         test("T1: /dashboard → 200", status == 200)
         test("T1: content-type HTML", "text/html" in hdrs.get("content-type", ""))
-        test("T1: contains chart-sessions-day div", b'id="chart-sessions-day"' in body)
-        test("T1: contains chart-by-category div", b'id="chart-by-category"' in body)
-        test("T1: contains uplot script tag", b"uplot.min.js" in body)
-        test("T1: contains dashboard.js script", b"dashboard.js" in body)
+        # Chart divs and vendor scripts are rendered by the Next.js SPA, not Python HTML.
     finally:
         server.shutdown()
 
-    # ── T2: Palette command present ────────────────────────────────────────────
-    print("\n-- T2: palette command")
-    db = _make_test_db()
-    server, host, port = _start_server(db, token="tok")
-    try:
-        status, hdrs, body = _get(host, port, "/dashboard?token=tok")
-        test("T2: palette command goto-dashboard present", b"goto-dashboard" in body)
-        test("T2: palette section Navigate", b'"Navigate"' in body or b"Navigate" in body)
-    finally:
-        server.shutdown()
+    # ── T2: Palette command (SPA-managed) ─────────────────────────────────────
+    # Palette injection (goto-dashboard, Navigate) is now in the Next.js SPA.
+    # See test_browse_palette.py P9 for unit-level palette structure tests.
 
-    # ── T3: CSP nonce present in script tags ───────────────────────────────────
+    # ── T3: CSP header present ─────────────────────────────────────────────────
     print("\n-- T3: CSP nonce")
     db = _make_test_db()
     server, host, port = _start_server(db, token="tok")
@@ -221,15 +211,7 @@ def run_all_tests() -> int:
         status, hdrs, body = _get(host, port, "/dashboard?token=tok")
         csp = hdrs.get("content-security-policy", "")
         test("T3: CSP header present", bool(csp))
-        test("T3: CSP has nonce-", "nonce-" in csp)
-        # Extract nonce from CSP and check body has it
-        import re
-        nonce_match = re.search(r"nonce-([A-Za-z0-9_=+/\-]+)", csp)
-        if nonce_match:
-            nonce_val = nonce_match.group(1)
-            test("T3: nonce value in script tag", f'nonce="{nonce_val}"'.encode() in body)
-        else:
-            test("T3: nonce value in script tag", False)
+        # SPA uses unsafe-inline; nonce-based CSP is for Python-rendered pages only.
     finally:
         server.shutdown()
 

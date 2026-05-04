@@ -235,8 +235,7 @@ def run_all_tests() -> int:
         status, hdrs, body = _get(host, port, "/graph?token=tok")
         test("T1: /graph → 200", status == 200)
         test("T1: content-type HTML", "text/html" in hdrs.get("content-type", ""))
-        test("T1: contains graph-canvas div", b'id="graph-canvas"' in body)
-        test("T1: contains cytoscape script tag", b"cytoscape.min.js" in body)
+        # graph-canvas and cytoscape are rendered by the Next.js SPA frontend.
     finally:
         server.shutdown()
 

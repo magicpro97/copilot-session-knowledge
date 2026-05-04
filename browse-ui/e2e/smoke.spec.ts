@@ -68,13 +68,13 @@ const KNOWLEDGE_INSIGHTS_FIXTURE = {
   entries: { mistakes: [], patterns: [], decisions: [], tools: [] },
 };
 
-test("shipped /v2 routes render expected headings", async ({ page }) => {
+test("root routes render expected headings", async ({ page }) => {
   const headingByRoute = [
-    ["/v2/sessions/", "Sessions"],
-    ["/v2/search/", "Search"],
-    ["/v2/insights/", "Insights"],
-    ["/v2/graph/", "Graph"],
-    ["/v2/settings/", "Settings"],
+    ["/sessions/", "Sessions"],
+    ["/search/", "Search"],
+    ["/insights/", "Insights"],
+    ["/graph/", "Graph"],
+    ["/settings/", "Settings"],
   ] as const;
 
   for (const [route, heading] of headingByRoute) {
@@ -98,7 +98,7 @@ test("sidebar navigation updates the top route subtitle", async ({ page }) => {
     ["Sessions", "Review indexed sessions and drill into details quickly."],
   ] as const;
 
-  await page.goto("/v2/sessions/");
+  await page.goto("/sessions/");
   await expect(
     page.getByText("Review indexed sessions and drill into details quickly.", { exact: true })
   ).toBeVisible({
@@ -115,8 +115,8 @@ test("sidebar navigation updates the top route subtitle", async ({ page }) => {
 
 test("session detail route renders tabbed UI", async ({ page }) => {
   await aliasPlaceholderSession(page);
-  await page.goto("/v2/sessions/_placeholder/");
-  await expect(page).toHaveURL(/\/v2\/sessions\/_placeholder\/?(#overview)?$/);
+  await page.goto("/sessions/_placeholder/");
+  await expect(page).toHaveURL(/\/sessions\/_placeholder\/?(#overview)?$/);
 
   await expect(
     page.getByRole("main").getByLabel("Breadcrumb").getByRole("link", { name: "Sessions" })
@@ -137,8 +137,8 @@ test("direct real UUID session detail route renders tabbed UI", async ({ page })
     }
   });
 
-  await page.goto(`/v2/sessions/${SEEDED_SESSION_ID}/`);
-  await expect(page).toHaveURL(new RegExp(`/v2/sessions/${SEEDED_SESSION_ID}/?(#overview)?$`));
+  await page.goto(`/sessions/${SEEDED_SESSION_ID}/`);
+  await expect(page).toHaveURL(new RegExp(`/sessions/${SEEDED_SESSION_ID}/?(#overview)?$`));
   await expect(page.getByText("Failed to load session detail", { exact: true })).toHaveCount(0);
 
   await expect(page.getByRole("tab", { name: "Overview" })).toBeVisible();
@@ -167,7 +167,7 @@ test("direct real UUID session detail route renders tabbed UI", async ({ page })
 
 test("sessions list click-through opens real UUID session detail", async ({ page }) => {
   await assertSeededSessionAvailable(page);
-  await page.goto("/v2/sessions/");
+  await page.goto("/sessions/");
   await expect(page.getByRole("heading", { level: 1, name: "Sessions" })).toBeVisible({
     timeout: 20_000,
   });
@@ -176,8 +176,8 @@ test("sessions list click-through opens real UUID session detail", async ({ page
   const firstDataRow = page.locator("tbody tr").first();
   await expect(firstDataRow).toBeVisible();
   await firstDataRow.click();
-  await expect(page).toHaveURL(/\/v2\/sessions\/[^/]+\/?(#overview)?$/);
-  await expect(page).not.toHaveURL(/\/v2\/sessions\/_placeholder\/?(#overview)?$/);
+  await expect(page).toHaveURL(/\/sessions\/[^/]+\/?(#overview)?$/);
+  await expect(page).not.toHaveURL(/\/sessions\/_placeholder\/?(#overview)?$/);
   await expect(page.getByRole("tab", { name: "Overview" })).toBeVisible();
 });
 
@@ -204,7 +204,7 @@ test("checkpoint diff viewer loads diff results and supports both modes", async 
     });
   });
 
-  await page.goto(`/v2/sessions/${SEEDED_SESSION_ID}/#checkpoints`);
+  await page.goto(`/sessions/${SEEDED_SESSION_ID}/#checkpoints`);
   await expect(page.getByRole("tab", { name: "Checkpoints" })).toHaveAttribute(
     "aria-selected",
     "true"
@@ -228,14 +228,14 @@ test("checkpoint diff viewer loads diff results and supports both modes", async 
 test("graph defaults to Insight tab and evidence/similarity tabs render live surfaces", async ({
   page,
 }) => {
-  await page.goto("/v2/graph/");
+  await page.goto("/graph/");
   await expect(page.getByRole("heading", { level: 1, name: "Graph" })).toBeVisible({
     timeout: 20_000,
   });
 
   // New default: Insight tab is active
   await expect(page.getByRole("tab", { name: "Insight" })).toHaveAttribute("aria-selected", "true");
-  await expect(page).toHaveURL(/\/v2\/graph\/?#insight$/);
+  await expect(page).toHaveURL(/\/graph\/?#insight$/);
 
   // All four tabs must be present in the tab bar
   await expect(page.getByRole("tab", { name: "Insight" })).toBeVisible();
@@ -279,7 +279,7 @@ test("graph defaults to Insight tab and evidence/similarity tabs render live sur
 });
 
 test("graph communities tab renders and is not a placeholder shell", async ({ page }) => {
-  await page.goto("/v2/graph/");
+  await page.goto("/graph/");
   await expect(page.getByRole("heading", { level: 1, name: "Graph" })).toBeVisible({
     timeout: 20_000,
   });
@@ -293,30 +293,30 @@ test("graph communities tab renders and is not a placeholder shell", async ({ pa
 
 test("graph deep-link aliases redirect to canonical tab hashes", async ({ page }) => {
   // Canonical #similarity deep link should stay selected directly
-  await page.goto("/v2/graph/#similarity");
+  await page.goto("/graph/#similarity");
   await expect(page.getByRole("heading", { level: 1, name: "Graph" })).toBeVisible({
     timeout: 20_000,
   });
-  await expect(page).toHaveURL(/\/v2\/graph\/?#similarity$/);
+  await expect(page).toHaveURL(/\/graph\/?#similarity$/);
   await expect(page.getByRole("tab", { name: "Similarity" })).toHaveAttribute(
     "aria-selected",
     "true"
   );
 
   // #relationships is a legacy alias for #evidence
-  await page.goto("/v2/graph/#relationships");
+  await page.goto("/graph/#relationships");
   await expect(page.getByRole("heading", { level: 1, name: "Graph" })).toBeVisible({
     timeout: 20_000,
   });
-  await expect(page).toHaveURL(/\/v2\/graph\/?#evidence$/);
+  await expect(page).toHaveURL(/\/graph\/?#evidence$/);
   await expect(page.getByRole("tab", { name: "Evidence" })).toHaveAttribute(
     "aria-selected",
     "true"
   );
 
   // #clusters is a legacy alias for #similarity
-  await page.goto("/v2/graph/#clusters");
-  await expect(page).toHaveURL(/\/v2\/graph\/?#similarity$/);
+  await page.goto("/graph/#clusters");
+  await expect(page).toHaveURL(/\/graph\/?#similarity$/);
   await expect(page.getByRole("tab", { name: "Similarity" })).toHaveAttribute(
     "aria-selected",
     "true"
@@ -334,7 +334,7 @@ test("insights search quality tab shows empty state when no data is available", 
     });
   });
 
-  await page.goto("/v2/insights/");
+  await page.goto("/insights/");
   await expect(page.getByRole("tab", { name: "Search Quality" })).toBeVisible({
     timeout: 20_000,
   });
@@ -358,7 +358,7 @@ test("insights workflow tab renders workflow health findings from API", async ({
     });
   });
 
-  await page.goto("/v2/insights/#workflow");
+  await page.goto("/insights/#workflow");
   await expect(page.getByRole("tab", { name: "Workflow" })).toHaveAttribute(
     "aria-selected",
     "true"
@@ -385,7 +385,7 @@ test("insights workflow tab can reload from unavailable to findings", async ({ p
     });
   });
 
-  await page.goto("/v2/insights/#workflow");
+  await page.goto("/insights/#workflow");
   await expect(page.getByText("Workflow health unavailable", { exact: true })).toBeVisible({
     timeout: 20_000,
   });
@@ -403,7 +403,7 @@ test("insights retro tab renders session behavior metrics when provided", async 
     });
   });
 
-  await page.goto("/v2/insights/#retro");
+  await page.goto("/insights/#retro");
   await expect(page.getByRole("tab", { name: "Retro" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("heading", { level: 2, name: "Retrospective" })).toBeVisible({
     timeout: 20_000,
@@ -458,7 +458,7 @@ test("insights search quality tab renders Wave 2 diagnostics", async ({ page }) 
     });
   });
 
-  await page.goto("/v2/insights/#search-quality");
+  await page.goto("/insights/#search-quality");
   await expect(page.getByRole("tab", { name: "Search Quality" })).toHaveAttribute(
     "aria-selected",
     "true"
@@ -478,7 +478,7 @@ test("insights search quality tab renders Wave 2 diagnostics", async ({ page }) 
 test("insights tabs render first-class surfaces and retro loads repo-mode summary", async ({
   page,
 }) => {
-  await page.goto("/v2/insights/");
+  await page.goto("/insights/");
 
   // Overview is the new default tab (no Dashboard tab)
   await expect(page.getByRole("tab", { name: "Overview" })).toBeVisible({ timeout: 20_000 });
@@ -517,7 +517,7 @@ test("insights tabs render first-class surfaces and retro loads repo-mode summar
 });
 
 test("settings page operator diagnostics cards render", async ({ page }) => {
-  await page.goto("/v2/settings/");
+  await page.goto("/settings/");
   await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible({
     timeout: 20_000,
   });
@@ -531,7 +531,7 @@ test("settings page operator diagnostics cards render", async ({ page }) => {
 });
 
 test("settings page operator-actions panels are display-only", async ({ page }) => {
-  await page.goto("/v2/settings/");
+  await page.goto("/settings/");
   await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible({
     timeout: 20_000,
   });
@@ -557,7 +557,7 @@ test("settings page operator-actions panels are display-only", async ({ page }) 
 });
 
 test("search feedback submits and resets when the query changes", async ({ page }) => {
-  await page.goto("/v2/search/?q=deterministic");
+  await page.goto("/search/?q=deterministic");
   const searchInput = page.getByRole("searchbox", { name: "Search sessions and knowledge" });
   const helpfulButton = page.getByRole("button", { name: "Helpful result" }).first();
 

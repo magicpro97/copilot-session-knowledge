@@ -11,7 +11,7 @@
  * `browse:host-change` events dispatched by the host-profiles helpers.
  */
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 
 import type { HostProfile } from "@/lib/api/types";
@@ -32,6 +32,8 @@ export type HostState = {
    * False on a hosted static origin with no remote agent host configured.
    */
   diagnosticsEnabled: boolean;
+  /** Whether same-origin LOCAL_HOST operator routes are reachable on this origin. */
+  localDiagnosticsEnabled?: boolean;
 };
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -39,25 +41,79 @@ export type HostState = {
 const HostContext = createContext<HostState>({
   host: LOCAL_HOST,
   diagnosticsEnabled: false,
+  localDiagnosticsEnabled: false,
 });
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 export function HostProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const sameOriginDiagnosticsRef = useRef<boolean | null>(null);
   // SSR-safe defaults — same as what every consumer was initialising locally.
   const [state, setState] = useState<HostState>({
     host: LOCAL_HOST,
     diagnosticsEnabled: false,
+    localDiagnosticsEnabled: false,
   });
 
   useEffect(() => {
+    let active = true;
+
     const update = () => {
+      const localDiagnosticsEnabled = sameOriginDiagnosticsRef.current ?? false;
+      const applyState = (host: HostProfile, diagnosticsEnabled: boolean) => {
+        setState({ host, diagnosticsEnabled, localDiagnosticsEnabled });
+      };
       const h = getEffectiveHost();
-      setState({
-        host: h,
-        diagnosticsEnabled: isOperatorHostEnabled(h, pathname ?? window.location.pathname),
-      });
+      const diagnosticsEnabled = isOperatorHostEnabled(h, pathname ?? window.location.pathname);
+      if (diagnosticsEnabled) {
+        applyState(h, true);
+        return;
+      }
+
+      if (h.id !== LOCAL_HOST.id) {
+        applyState(h, false);
+        return;
+      }
+
+      if (sameOriginDiagnosticsRef.current !== null) {
+        applyState(h, sameOriginDiagnosticsRef.current);
+        return;
+      }
+
+      applyState(h, false);
+
+      void fetch("/healthz", {
+        cache: "no-store",
+        credentials: "same-origin",
+      })
+        .then(
+          (response) => response.ok,
+          () => false
+        )
+        .then((enabled) => {
+          sameOriginDiagnosticsRef.current = enabled;
+          if (!active) {
+            return;
+          }
+          const currentHost = getEffectiveHost();
+          if (currentHost.id !== LOCAL_HOST.id) {
+            setState({
+              host: currentHost,
+              diagnosticsEnabled: isOperatorHostEnabled(
+                currentHost,
+                pathname ?? window.location.pathname
+              ),
+              localDiagnosticsEnabled: enabled,
+            });
+            return;
+          }
+          setState({
+            host: currentHost,
+            diagnosticsEnabled: enabled,
+            localDiagnosticsEnabled: enabled,
+          });
+        });
     };
 
     update(); // Hydrate from localStorage on first client render.
@@ -65,6 +121,7 @@ export function HostProvider({ children }: { children: React.ReactNode }) {
     window.addEventListener(BROWSE_HOST_CHANGE_EVENT, update); // Same-tab changes.
 
     return () => {
+      active = false;
       window.removeEventListener("storage", update);
       window.removeEventListener(BROWSE_HOST_CHANGE_EVENT, update);
     };

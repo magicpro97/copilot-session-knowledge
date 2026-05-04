@@ -48,7 +48,7 @@ export function ChatShell() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const pathname = usePathname();
-  const { host: globalHost } = useHostState();
+  const { host: globalHost, diagnosticsEnabled, localDiagnosticsEnabled } = useHostState();
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -69,8 +69,10 @@ export function ChatShell() {
     return globalHost;
   }, [globalHost, hParam]);
   const operatorEnabled = useMemo(
-    () => isOperatorHostEnabled(activeHost, pathname),
-    [activeHost, pathname]
+    () =>
+      isOperatorHostEnabled(activeHost, pathname) ||
+      (activeHost.id === LOCAL_HOST_ID && (localDiagnosticsEnabled ?? diagnosticsEnabled)),
+    [activeHost, diagnosticsEnabled, localDiagnosticsEnabled, pathname]
   );
 
   // Load all sessions from the active host

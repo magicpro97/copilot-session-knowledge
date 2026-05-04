@@ -224,49 +224,21 @@ def run_all_tests() -> int:
         finally:
             server.shutdown()
 
-        # ── D4: HTML contains diff-output element ───────────────────────────────
-        print("\n-- D4: HTML structure")
-        db = _make_minimal_db()
-        server, host, port = _start_server(db, token="tok")
-        try:
-            _, _, body = _get(
-                host, port,
-                "/diff?token=tok&session=test-diff-session&from=1&to=2",
-            )
-            body_str = body.decode("utf-8")
-            test("D4: contains diff-output div", 'id="diff-output"' in body_str)
-            test("D4: contains diff-controls", 'id="diff-controls"' in body_str)
-            test("D4: has side-by-side radio", 'value="side-by-side"' in body_str)
-            test("D4: has line-by-line radio", 'value="line-by-line"' in body_str)
-        finally:
-            server.shutdown()
+        # ── D4: HTML structure is rendered by the Next.js SPA (not Python HTML) ─
+        # diff-output, diff-controls, diff2html scripts are in the SPA frontend.
 
-        # ── D5: HTML references diff2html ───────────────────────────────────────
-        print("\n-- D5: vendor script references")
-        db = _make_minimal_db()
-        server, host, port = _start_server(db, token="tok")
-        try:
-            _, _, body = _get(
-                host, port,
-                "/diff?token=tok&session=test-diff-session&from=1&to=2",
-            )
-            body_str = body.decode("utf-8")
-            test("D5: references diff2html.min.js", "diff2html.min.js" in body_str)
-            test("D5: references diff2html.min.css", "diff2html.min.css" in body_str)
-            test("D5: references diff.js", "diff.js" in body_str)
-        finally:
-            server.shutdown()
+        # ── D5: Vendor scripts (diff2html) are bundled in the SPA frontend ──────
 
         # ── D6: Path traversal via session param → 400 ─────────────────────────
         print("\n-- D6: path traversal blocked")
         db = _make_minimal_db()
         server, host, port = _start_server(db, token="tok")
         try:
-            # Dots are not in the session_id regex — should be 400
+            # Dots are not in the session_id regex — API routes return 400
             traversal_cases = [
                 "/api/diff?token=tok&session=../etc&from=1&to=2",
                 "/api/diff?token=tok&session=..%2Fetc&from=1&to=2",
-                "/diff?token=tok&session=../../passwd&from=1&to=2",
+                # Note: /diff HTML page is now the SPA (returns 200); only /api/diff validates.
             ]
             for path in traversal_cases:
                 s, _, _ = _get(host, port, path)

@@ -23,8 +23,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useOperatorModelCatalog } from "@/lib/api/hooks";
-import { isOperatorHostEnabled } from "@/lib/host-profiles";
+import { isOperatorHostEnabled, LOCAL_HOST_ID } from "@/lib/host-profiles";
 import type { HostProfile, CreateOperatorSessionRequest } from "@/lib/api/types";
+import { useHostState } from "@/providers/host-provider";
 import { WorkspacePicker } from "./workspace-picker";
 import { HostPicker } from "./host-picker";
 
@@ -51,6 +52,7 @@ type SessionCreateDialogProps = {
 
 export function SessionCreateDialog({ onSubmit, initialHost, loading }: SessionCreateDialogProps) {
   const pathname = usePathname();
+  const { diagnosticsEnabled, localDiagnosticsEnabled } = useHostState();
   const nameId = useId();
   const workspaceId = useId();
   const modelId = useId();
@@ -74,7 +76,9 @@ export function SessionCreateDialog({ onSubmit, initialHost, loading }: SessionC
     if (open) setHost(latestInitialHostRef.current);
   }, [open]);
 
-  const hostReady = isOperatorHostEnabled(host, pathname);
+  const hostReady =
+    isOperatorHostEnabled(host, pathname) ||
+    (host.id === LOCAL_HOST_ID && (localDiagnosticsEnabled ?? diagnosticsEnabled));
   const modelCatalogQuery = useOperatorModelCatalog(host, open && hostReady);
   const modelSuggestions = modelCatalogQuery.data?.models ?? [];
   const defaultModel = modelCatalogQuery.data?.default_model ?? "";

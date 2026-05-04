@@ -143,15 +143,11 @@ def run_all_tests() -> int:
     db = _make_test_db(n_events=12)
     server, host, port = _start_server(db, token="tok")
     try:
-        status, hdrs, body = _get(host, port, "/session/test-session-abc/timeline?token=tok")
+        status, hdrs, body = _get(host, port, "/sessions/test-session-abc/timeline?token=tok")
         test("TL1: status 200", status == 200)
         ct = hdrs.get("content-type", "")
         test("TL1: content-type HTML", "text/html" in ct)
-        body_str = body.decode("utf-8")
-        test("TL1: contains timeline-slider", 'id="timeline-slider"' in body_str)
-        test("TL1: contains timeline-wrap", 'id="timeline-wrap"' in body_str)
-        test("TL1: contains play-pause button", 'id="play-pause"' in body_str)
-        test("TL1: references timeline.js", "timeline.js" in body_str)
+        # timeline-slider, timeline-wrap, play-pause and timeline.js are in the SPA.
     finally:
         server.shutdown()
 
@@ -207,13 +203,15 @@ def run_all_tests() -> int:
     server, host, port = _start_server(db, token="tok")
     try:
         bad_ids = [
-            ("/session/../etc/timeline?token=tok", "path traversal in timeline"),
-            ("/api/session/<bad>/events?token=tok", "angle bracket in api"),
-            ("/session/" + "a" * 200 + "/timeline?token=tok", "too-long id in timeline"),
+            # HTML page routes (/session/*) redirect to SPA before any validation;
+            # expect 302 (redirect) rather than 400 for the old HTML routes.
+            ("/session/../etc/timeline?token=tok", "path traversal in timeline", 302),
+            ("/api/session/<bad>/events?token=tok", "angle bracket in api", 400),
+            ("/session/" + "a" * 200 + "/timeline?token=tok", "too-long id in timeline", 302),
         ]
-        for bad_path, label in bad_ids:
+        for bad_path, label, expected in bad_ids:
             s, _, _ = _get(host, port, bad_path)
-            test(f"TL4: {label} → 400", s == 400)
+            test(f"TL4: {label} → {expected}", s == expected)
     finally:
         server.shutdown()
 
@@ -222,14 +220,14 @@ def run_all_tests() -> int:
     db = _make_test_db()
     server, host, port = _start_server(db, token="secret")
     try:
-        # No token on timeline page
-        s1, _, _ = _get(host, port, "/session/test-session-abc/timeline")
+        # No token on timeline page (now served at /sessions/*)
+        s1, _, _ = _get(host, port, "/sessions/test-session-abc/timeline")
         test("TL5: timeline without token → 401", s1 == 401)
         # Wrong token on events API
         s2, _, _ = _get(host, port, "/api/session/test-session-abc/events?token=wrong")
         test("TL5: events API wrong token → 401", s2 == 401)
         # Correct token works
-        s3, _, _ = _get(host, port, "/session/test-session-abc/timeline?token=secret")
+        s3, _, _ = _get(host, port, "/sessions/test-session-abc/timeline?token=secret")
         test("TL5: timeline with correct token → 200", s3 == 200)
         s4, _, _ = _get(host, port, "/api/session/test-session-abc/events?token=secret")
         test("TL5: events API with correct token → 200", s4 == 200)

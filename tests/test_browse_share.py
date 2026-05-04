@@ -210,17 +210,13 @@ def test_suite():
         html = resp.read().decode("utf-8", errors="replace")
         conn.close()
 
-        # Check that home page contains share.js script tag with nonce
-        has_share_tag = 'src="/static/js/share.js"' in html and 'nonce=' in html
-        test("home page includes share.js with nonce", has_share_tag)
-
         # Check that home page does NOT load html-to-image (feature removed)
         test("home page does not include html-to-image", "html-to-image" not in html)
+        # share.js is now bundled in the Next.js SPA; Python no longer injects it.
 
         server.shutdown()
     except Exception as e:
         print(f"  Server error: {e}")
-        test("home page includes share.js with nonce", False)
         test("home page does not include html-to-image", False)
 
     print("\n" + "=" * 60)

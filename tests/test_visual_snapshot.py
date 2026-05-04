@@ -35,8 +35,8 @@ UPDATE_MODE = os.environ.get("UPDATE_SNAPSHOTS", "").strip() not in ("", "0")
 ROUTES = [
     ("/", "root"),
     ("/sessions", "sessions"),
-    ("/dashboard", "dashboard"),
-    ("/style-guide", "style-guide"),
+    ("/graph", "graph"),
+    ("/search", "search"),
 ]
 
 

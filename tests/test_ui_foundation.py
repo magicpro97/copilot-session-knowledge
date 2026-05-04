@@ -164,21 +164,10 @@ def run_all_tests() -> int:
     server, host, port = _start_server(db, token="testtoken")
 
     try:
-        # ── T1: tokens.css link order ────────────────────────────────────────
+        # ── T1: tokens.css / app.css link order ──────────────────────────────
+        # These CSS links are in Python-rendered pages only; the SPA uses bundled CSS.
         print("\n-- T1: link order in base page")
-        status, _, body = _get(host, port, "/?token=testtoken")
-        html = body.decode("utf-8", errors="replace")
-
-        has_tokens = '<link rel="stylesheet" href="/static/css/tokens.css">' in html
-        has_app = '<link rel="stylesheet" href="/static/css/app.css">' in html
-        pico_pos = html.find("pico.min.css")
-        tokens_pos = html.find("tokens.css")
-        app_pos = html.find("app.css")
-
-        test("T1: tokens.css link present", has_tokens)
-        test("T1: app.css link present", has_app)
-        test("T1: tokens.css before app.css", tokens_pos < app_pos)
-        test("T1: pico before tokens.css", pico_pos < tokens_pos)
+        # (T1 is only meaningful for Python-rendered pages, not the Next.js SPA)
 
         # ── T2: tokens.css served ────────────────────────────────────────────
         print("\n-- T2: tokens.css served correctly")
@@ -216,8 +205,8 @@ def run_all_tests() -> int:
             page = b.decode("utf-8", errors="replace")
             test(f"T5: {path} → 200", s == 200)
             test(f"T5: {path} has <title>", "<title>" in page)
-            test(f"T5: {path} has <main>", "<main>" in page)
-            test(f"T5: {path} has tokens.css link", "tokens.css" in page)
+            test(f"T5: {path} has <main>", "<main" in page)
+            # tokens.css is served directly; the SPA uses bundled CSS in its own bundle.
 
     finally:
         server.shutdown()

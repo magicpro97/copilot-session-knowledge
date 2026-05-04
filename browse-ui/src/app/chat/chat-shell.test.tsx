@@ -81,7 +81,11 @@ vi.mock("@/lib/api/hooks", () => ({
 import type { HostState } from "@/providers/host-provider";
 import { LOCAL_HOST } from "@/lib/host-profiles";
 
-let hostStateMock: HostState = { host: LOCAL_HOST, diagnosticsEnabled: true };
+let hostStateMock: HostState = {
+  host: LOCAL_HOST,
+  diagnosticsEnabled: true,
+  localDiagnosticsEnabled: true,
+};
 vi.mock("@/providers/host-provider", () => ({
   useHostState: vi.fn(() => hostStateMock),
 }));
@@ -120,6 +124,11 @@ describe("ChatShell", () => {
     const navigation = await import("next/navigation");
 
     window.localStorage.clear();
+    hostStateMock = {
+      host: LOCAL_HOST,
+      diagnosticsEnabled: false,
+      localDiagnosticsEnabled: false,
+    };
     vi.mocked(navigation.usePathname).mockReturnValue(
       "/chat" as ReturnType<typeof navigation.usePathname>
     );

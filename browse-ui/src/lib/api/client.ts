@@ -11,12 +11,19 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
  * base's path component when `path` starts with `/`.  For example:
  *   buildHostUrl("https://proxy.example.com/copilot", "/api/sessions")
  *   → "https://proxy.example.com/copilot/api/sessions"   (prefix preserved)
+ *
+ * Query strings and hashes passed as part of `path` remain in `search` / `hash`
+ * rather than being percent-encoded into the pathname.
  */
 export function buildHostUrl(base: string, path: string): URL {
   const baseUrl = new URL(base);
   const basePath = baseUrl.pathname.replace(/\/$/, "");
-  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  const [pathAndQuery, hashPart = ""] = path.split("#", 2);
+  const [pathnamePart, queryPart = ""] = pathAndQuery.split("?", 2);
+  const cleanPath = pathnamePart.startsWith("/") ? pathnamePart : `/${pathnamePart}`;
   baseUrl.pathname = basePath + cleanPath;
+  baseUrl.search = queryPart ? `?${queryPart}` : "";
+  baseUrl.hash = hashPart ? `#${hashPart}` : "";
   return baseUrl;
 }
 
@@ -35,7 +42,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   if (res.status === 401) {
     clearToken();
     if (typeof window !== "undefined") {
-      window.location.href = "/v2/sessions";
+      window.location.href = "/sessions";
     }
     throw new Error("Unauthorized");
   }
@@ -45,6 +52,44 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   }
 
   return res.json() as Promise<T>;
+}
+
+export async function hostRequest(
+  path: string,
+  host: HostProfile,
+  init?: RequestInit
+): Promise<Response> {
+  const isRemote = host.base_url.length > 0;
+  const base = isRemote
+    ? host.base_url
+    : API_BASE || (typeof window !== "undefined" ? window.location.origin : "");
+
+  const token = isRemote ? host.token : host.token || getToken();
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const url = buildHostUrl(base, normalizedPath);
+
+  const headers = new Headers(init?.headers);
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  const res = await fetch(url.toString(), { ...init, headers });
+
+  if (res.status === 401) {
+    if (!isRemote) {
+      clearToken();
+      if (typeof window !== "undefined") {
+        window.location.href = "/sessions";
+      }
+    }
+    throw new Error("Unauthorized");
+  }
+
+  if (!res.ok) {
+    throw new Error(`API ${res.status}: ${await res.text()}`);
+  }
+
+  return res;
 }
 
 /**
@@ -61,39 +106,6 @@ export async function hostFetch<T>(
   host: HostProfile,
   init?: RequestInit
 ): Promise<T> {
-  const isRemote = host.base_url.length > 0;
-  const base = isRemote
-    ? host.base_url
-    : API_BASE || (typeof window !== "undefined" ? window.location.origin : "");
-
-  const token = isRemote ? host.token : host.token || getToken();
-
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  // buildHostUrl preserves any path prefix in base_url (issue #31).
-  const url = buildHostUrl(base, normalizedPath);
-
-  const headers = new Headers(init?.headers);
-  // Use Authorization header for both local and remote hosts; token never
-  // appears in the URL (fixes #34 same-origin case, consistent with remote).
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
-
-  const res = await fetch(url.toString(), { ...init, headers });
-
-  if (res.status === 401) {
-    if (!isRemote) {
-      clearToken();
-      if (typeof window !== "undefined") {
-        window.location.href = "/v2/sessions";
-      }
-    }
-    throw new Error("Unauthorized");
-  }
-
-  if (!res.ok) {
-    throw new Error(`API ${res.status}: ${await res.text()}`);
-  }
-
+  const res = await hostRequest(path, host, init);
   return res.json() as Promise<T>;
 }

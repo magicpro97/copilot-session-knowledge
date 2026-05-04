@@ -1,7 +1,8 @@
-"""browse/routes/serve_v2.py — Serve pre-built Next.js UI at /v2/*.
+"""browse/routes/serve_v2.py — Serve pre-built Next.js UI from browse-ui/dist/.
 
 Serves static files from browse-ui/dist/ with SPA fallback to index.html.
-Called from browse/core/server.py for /v2/* paths.
+Called from browse/core/server.py for the canonical root app (all authenticated
+page paths), and directly for /_next/* static assets (no auth required).
 """
 
 import os
@@ -67,7 +68,8 @@ def _rewrite_session_placeholder(body: bytes, content_type: str, session_id: str
 def serve_v2(rel_path: str) -> tuple:
     """Serve files from browse-ui/dist/ with SPA fallback.
 
-    rel_path: path after '/v2/' (e.g. 'sessions' or '_next/static/chunks/abc.js')
+    rel_path: path relative to dist/ root (e.g. '' for root, 'sessions/' for
+    sessions page, '_next/static/chunks/abc.js' for a static asset).
     Returns (body_bytes, content_type, status_code).
     """
     if not _V2_DIST.exists():

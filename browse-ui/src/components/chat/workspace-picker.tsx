@@ -8,8 +8,9 @@ import { cn } from "@/lib/utils";
 import { POPUP_SURFACE_BASE } from "@/components/ui/popup-surface";
 import { useDebounce } from "@/hooks/use-debounce";
 import { usePathSuggest } from "@/lib/api/hooks";
-import { LOCAL_HOST, isOperatorHostEnabled } from "@/lib/host-profiles";
+import { LOCAL_HOST, LOCAL_HOST_ID, isOperatorHostEnabled } from "@/lib/host-profiles";
 import type { HostProfile } from "@/lib/api/types";
+import { useHostState } from "@/providers/host-provider";
 
 type WorkspacePickerProps = {
   value: string;
@@ -36,6 +37,7 @@ export function WorkspacePicker({
   host = LOCAL_HOST,
 }: WorkspacePickerProps) {
   const pathname = usePathname();
+  const { diagnosticsEnabled, localDiagnosticsEnabled } = useHostState();
   const [inputValue, setInputValue] = useState(value);
   const [open, setOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
@@ -44,7 +46,9 @@ export function WorkspacePicker({
   const inputRef = useRef<HTMLInputElement>(null);
 
   const debouncedQuery = useDebounce(inputValue, 200);
-  const suggestEnabled = isOperatorHostEnabled(host, pathname);
+  const suggestEnabled =
+    isOperatorHostEnabled(host, pathname) ||
+    (host.id === LOCAL_HOST_ID && (localDiagnosticsEnabled ?? diagnosticsEnabled));
   const { data: suggestData } = usePathSuggest(debouncedQuery, showHidden, host, suggestEnabled);
   const suggestions = suggestEnabled ? (suggestData?.suggestions ?? []) : [];
 

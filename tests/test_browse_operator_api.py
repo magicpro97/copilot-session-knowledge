@@ -1192,7 +1192,7 @@ def _run_api_tests(port: int):
     conn_sec12 = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     conn_sec12.request(
         "GET",
-        f"/v2/chat?token={_TOKEN}",
+        f"/chat?token={_TOKEN}",
         headers={
             "Host": "copilot.linhngo.dev",
             "X-Forwarded-Proto": "https",
@@ -1228,7 +1228,7 @@ def _run_api_tests(port: int):
         conn_sec34b = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         conn_sec34b.request(
             "GET",
-            f"/v2/chat?token={_TOKEN}",
+            f"/chat?token={_TOKEN}",
             headers={
                 "Host": "copilot.linhngo.dev",
                 "X-Forwarded-Proto": "https",

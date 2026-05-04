@@ -40,7 +40,8 @@ function detectBasePath() {
     }
   }
 
-  return "/v2";
+  // Default is now root-relative ("") — matches the canonical single-version build.
+  return "";
 }
 
 writeFileSync(

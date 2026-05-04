@@ -214,7 +214,7 @@ async function mockOperatorApi(
 test("/chat renders the operator console shell and session dialog", async ({ page }) => {
   await mockOperatorApi(page);
 
-  await page.goto("/v2/chat/");
+  await page.goto("/chat/");
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
   await expect(page.getByText("No session selected", { exact: true })).toBeVisible();
   await expect(
@@ -232,7 +232,7 @@ test("/chat renders the operator console shell and session dialog", async ({ pag
 test("/chat sidebar can be collapsed and reopened", async ({ page }) => {
   await mockOperatorApi(page);
 
-  await page.goto("/v2/chat/");
+  await page.goto("/chat/");
   await expect(page.getByText("Chat Sessions", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Collapse session list" }).click();
@@ -257,7 +257,7 @@ test("/chat previews a created file from persisted run history", async ({ page }
     },
   });
 
-  await page.goto(`/v2/chat/?s=${SESSION_ID}`);
+  await page.goto(`/chat/?s=${SESSION_ID}`);
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
   await expect(page.getByText(CREATED_RUN.prompt, { exact: true })).toBeVisible();
   await expect(page.getByText(CREATED_FILE, { exact: true })).toBeVisible();
@@ -273,7 +273,7 @@ test("/chat shows inline diff for a changed file from persisted run history", as
     runs: [DIFF_RUN],
   });
 
-  await page.goto(`/v2/chat/?s=${SESSION_ID}`);
+  await page.goto(`/chat/?s=${SESSION_ID}`);
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
   await expect(page.getByText(DIFF_RUN.prompt, { exact: true })).toBeVisible();
   await expect(page.getByText(CHANGED_FILE, { exact: true })).toBeVisible();
@@ -289,7 +289,7 @@ test("/chat on mobile shows hamburger button and opens session sheet", async ({ 
   await page.setViewportSize({ width: 390, height: 844 });
   await mockOperatorApi(page, { sessions: [SEEDED_SESSION] });
 
-  await page.goto("/v2/chat/");
+  await page.goto("/chat/");
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
 
   // The hamburger button must be present
@@ -307,7 +307,7 @@ test("/chat on mobile session-create dialog has free-text model input", async ({
   await page.setViewportSize({ width: 390, height: 844 });
   await mockOperatorApi(page);
 
-  await page.goto("/v2/chat/");
+  await page.goto("/chat/");
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
 
   // Open the mobile Sheet first
@@ -331,7 +331,7 @@ test("/chat on mobile session-create dialog has free-text model input", async ({
 test("/chat workspace picker has hidden-folder toggle", async ({ page }) => {
   await mockOperatorApi(page);
 
-  await page.goto("/v2/chat/");
+  await page.goto("/chat/");
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
 
   await page.getByRole("button", { name: "New chat session" }).click();
@@ -350,7 +350,7 @@ test("/chat workspace picker has hidden-folder toggle", async ({ page }) => {
 test("/chat session-create dialog has Agent Host picker defaulting to local", async ({ page }) => {
   await mockOperatorApi(page);
 
-  await page.goto("/v2/chat/");
+  await page.goto("/chat/");
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
 
   await page.getByRole("button", { name: "New chat session" }).click();
@@ -366,7 +366,7 @@ test("/chat session-create dialog has Agent Host picker defaulting to local", as
 test("/chat host picker shows add-host form when add button is clicked", async ({ page }) => {
   await mockOperatorApi(page);
 
-  await page.goto("/v2/chat/");
+  await page.goto("/chat/");
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
 
   await page.getByRole("button", { name: "New chat session" }).click();
@@ -390,7 +390,7 @@ test("/chat host picker shows add-host form when add button is clicked", async (
 test("/chat top bar shows 'CLI Chat' when no session is active", async ({ page }) => {
   await mockOperatorApi(page);
 
-  await page.goto("/v2/chat/");
+  await page.goto("/chat/");
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
 
   await expect(page.getByText("CLI Chat", { exact: false })).toBeVisible();
@@ -405,7 +405,7 @@ test("/chat composer shows file attach button and queued chip on file select", a
     runs: [],
   });
 
-  await page.goto(`/v2/chat/?s=${SESSION_ID}`);
+  await page.goto(`/chat/?s=${SESSION_ID}`);
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
 
   // Attach files button must be visible in the composer
@@ -441,7 +441,7 @@ test("/chat composer supports drag-and-drop to queue files", async ({ page }) =>
     runs: [],
   });
 
-  await page.goto(`/v2/chat/?s=${SESSION_ID}`);
+  await page.goto(`/chat/?s=${SESSION_ID}`);
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
 
   // Simulate drag-and-drop onto the composer form
@@ -464,7 +464,7 @@ test("/chat composer supports drag-and-drop to queue files", async ({ page }) =>
 test("/chat header shows global host switcher button", async ({ page }) => {
   await mockOperatorApi(page);
 
-  await page.goto("/v2/chat/");
+  await page.goto("/chat/");
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
 
   // The header host switcher trigger button is always visible
@@ -474,7 +474,7 @@ test("/chat header shows global host switcher button", async ({ page }) => {
 test("/chat header host switcher shows Local as default option", async ({ page }) => {
   await mockOperatorApi(page);
 
-  await page.goto("/v2/chat/");
+  await page.goto("/chat/");
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
 
   // Open the host dropdown
@@ -487,7 +487,7 @@ test("/chat header host switcher shows Local as default option", async ({ page }
 test("/chat header host switcher shows active host indicator", async ({ page }) => {
   await mockOperatorApi(page);
 
-  await page.goto("/v2/chat/");
+  await page.goto("/chat/");
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
 
   // Open the host dropdown
@@ -503,13 +503,13 @@ test("/chat header host switcher shows active host indicator", async ({ page }) 
 test("/chat header host switcher navigates to Settings host management", async ({ page }) => {
   await mockOperatorApi(page);
 
-  await page.goto("/v2/chat/");
+  await page.goto("/chat/");
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
 
   await page.getByTestId("header-host-trigger").click();
   await page.getByText("Manage hosts…").click();
 
-  await expect(page).toHaveURL(/\/v2\/settings\/?#hosts$/);
+  await expect(page).toHaveURL(/\/settings\/?#hosts$/);
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
   await expect(page.getByText("Hosts & connections")).toBeVisible();
 });
@@ -518,7 +518,7 @@ test("/chat header host switcher is visible on mobile viewport", async ({ page }
   await page.setViewportSize({ width: 390, height: 844 });
   await mockOperatorApi(page);
 
-  await page.goto("/v2/chat/");
+  await page.goto("/chat/");
   await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
 
   // Switcher button is still visible (icon-only on narrow widths)
@@ -528,12 +528,12 @@ test("/chat header host switcher is visible on mobile viewport", async ({ page }
 // ─── Release proof: root-hosted Firebase export ────────────────────────────
 //
 // This test verifies that the static export produced for Firebase Hosting does
-// NOT contain basePath-prefixed asset URLs (/v2/_next/…).
+// NOT contain legacy basePath-prefixed asset URLs (/v2/_next/…).
 //
-// Background: next.config.ts sets basePath: "/v2" for the Python-server
-// deployment. A Firebase (root-hosted) export must be built WITHOUT that
-// basePath — otherwise all /_next/ asset references become /v2/_next/…, which
-// 404 on Firebase because the site serves dist/ from the domain root.
+// Background: the canonical build is now root-relative (basePath: "").
+// This gate is a regression guard — if someone re-introduces NEXT_BASE_PATH="/v2"
+// for a release build, asset references would become /v2/_next/…, which 404 on
+// Firebase because the site serves dist/ from the domain root.
 //
 // This test reads dist-release/chat/index.html directly from the filesystem (no
 // server needed) and asserts the correct asset-path shape for a root-hosted

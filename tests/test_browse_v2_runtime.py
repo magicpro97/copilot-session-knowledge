@@ -181,13 +181,13 @@ def _run_all_tests() -> int:
     _body2, _ct2, status2 = serve_v2("../../README.md")
     test("V2: traversal path blocked with 403", status2 == 403)
 
-    # V3: /v2 page CSP allows inline scripts used by static export
-    print("\n-- V3: /v2 CSP compatibility")
+    # V3: canonical /sessions/ CSP allows inline scripts used by static export
+    print("\n-- V3: canonical /sessions/ CSP compatibility")
     db = _make_test_db()
     server, host, port = _start_server(db, token="tok")
     try:
-        status3, headers3, body3 = _get(host, port, "/v2/sessions/?token=tok")
-        test("V3: /v2/sessions/ returns 200", status3 == 200)
+        status3, headers3, body3 = _get(host, port, "/sessions/?token=tok")
+        test("V3: /sessions/ returns 200", status3 == 200)
         csp3 = headers3.get("content-security-policy", "")
         script_src3 = _directive(csp3, "script-src")
         test("V3: CSP has script-src directive", bool(script_src3))
@@ -200,8 +200,8 @@ def _run_all_tests() -> int:
         server.shutdown()
         db.close()
 
-    # V4: Legacy page CSP remains nonce-based
-    print("\n-- V4: legacy routes keep nonce CSP")
+    # V4: canonical root CSP uses unsafe-inline (Next.js, no nonce)
+    print("\n-- V4: canonical root CSP uses unsafe-inline (no nonce)")
     db4 = _make_test_db()
     server4, host4, port4 = _start_server(db4, token="tok")
     try:
@@ -210,27 +210,29 @@ def _run_all_tests() -> int:
         csp4 = headers4.get("content-security-policy", "")
         script_src4 = _directive(csp4, "script-src")
         test("V4: script-src present", bool(script_src4))
-        test("V4: legacy script-src has nonce", "nonce-" in script_src4)
+        test("V4: canonical root uses unsafe-inline (not nonce)", "'unsafe-inline'" in script_src4)
+        test("V4: canonical root has no nonce", "nonce-" not in script_src4)
+        test("V4: canonical root has no unsafe-eval", "unsafe-eval" not in csp4)
     finally:
         server4.shutdown()
         db4.close()
 
-    # V5: /v2 HEAD mirrors GET status/headers and never returns 501
-    print("\n-- V5: /v2 HEAD support for prefetch")
+    # V5: HEAD mirrors GET status/headers and never returns 501
+    print("\n-- V5: HEAD support for prefetch")
     db5 = _make_test_db()
     server5, host5, port5 = _start_server(db5, token="tok")
     try:
-        status5_get, headers5_get, body5_get = _get(host5, port5, "/v2/search/?token=tok&src=knowledge")
-        status5_head, headers5_head, body5_head = _head(host5, port5, "/v2/search/?token=tok&src=knowledge")
-        test("V5: GET baseline /v2/search/ is 200", status5_get == 200)
-        test("V5: HEAD /v2/search/ is 200 (not 501)", status5_head == 200)
+        status5_get, headers5_get, body5_get = _get(host5, port5, "/search/?token=tok&src=knowledge")
+        status5_head, headers5_head, body5_head = _head(host5, port5, "/search/?token=tok&src=knowledge")
+        test("V5: GET baseline /search/ is 200", status5_get == 200)
+        test("V5: HEAD /search/ is 200 (not 501)", status5_head == 200)
         test("V5: HEAD body is empty", body5_head == b"")
         test(
             "V5: HEAD content-length mirrors GET",
             headers5_head.get("content-length") == headers5_get.get("content-length") == str(len(body5_get)),
         )
         test(
-            "V5: HEAD CSP matches GET on /v2",
+            "V5: HEAD CSP matches GET on canonical root",
             headers5_head.get("content-security-policy") == headers5_get.get("content-security-policy"),
         )
         test(
@@ -238,19 +240,19 @@ def _run_all_tests() -> int:
             "set-cookie" in headers5_head,
         )
 
-        status5_settings, _headers5_settings, body5_settings = _head(host5, port5, "/v2/settings/?token=tok")
-        status5_graph, _headers5_graph, body5_graph = _head(host5, port5, "/v2/graph/?token=tok")
-        test("V5: HEAD /v2/settings/ no longer 501", status5_settings == 200)
-        test("V5: HEAD /v2/graph/ no longer 501", status5_graph == 200)
-        test("V5: HEAD /v2/settings/ body is empty", body5_settings == b"")
-        test("V5: HEAD /v2/graph/ body is empty", body5_graph == b"")
+        status5_settings, _headers5_settings, body5_settings = _head(host5, port5, "/settings/?token=tok")
+        status5_graph, _headers5_graph, body5_graph = _head(host5, port5, "/graph/?token=tok")
+        test("V5: HEAD /settings/ no longer 501", status5_settings == 200)
+        test("V5: HEAD /graph/ no longer 501", status5_graph == 200)
+        test("V5: HEAD /settings/ body is empty", body5_settings == b"")
+        test("V5: HEAD /graph/ body is empty", body5_graph == b"")
 
-        status5_unauth, headers5_unauth, body5_unauth = _head(host5, port5, "/v2/search/")
-        test("V5: unauth HEAD /v2/search/ is 401", status5_unauth == 401)
+        status5_unauth, headers5_unauth, body5_unauth = _head(host5, port5, "/search/")
+        test("V5: unauth HEAD /search/ is 401", status5_unauth == 401)
         test("V5: unauth HEAD still not 501", status5_unauth != 501)
         test("V5: unauth HEAD body is empty", body5_unauth == b"")
-        script_src5_unauth = _directive(headers5_unauth.get("content-security-policy", ""), "script-src")
-        test("V5: unauth HEAD keeps /v2 CSP inline compatibility", "'unsafe-inline'" in script_src5_unauth)
+        csp5_unauth = headers5_unauth.get("content-security-policy", "")
+        test("V5: unauth HEAD has CSP header", bool(csp5_unauth))
     finally:
         server5.shutdown()
         db5.close()
@@ -303,14 +305,14 @@ def _run_all_tests() -> int:
     test("V6: unrelated OSError still raises", raised_unrelated)
 
     # V7: Real session UUID route rewrites placeholder shell with the requested session ID
-    print("\n-- V7: /v2/sessions/{uuid}/ rewrites placeholder shell")
+    print("\n-- V7: /sessions/{uuid}/ rewrites placeholder shell")
     db7 = _make_test_db()
     server7, host7, port7 = _start_server(db7, token="tok")
     try:
-        status7, headers7, body7 = _get(host7, port7, "/v2/sessions/v2-test-session/?token=tok")
-        test("V7: /v2/sessions/{uuid}/ returns 200", status7 == 200)
+        status7, headers7, body7 = _get(host7, port7, "/sessions/v2-test-session/?token=tok")
+        test("V7: /sessions/{uuid}/ returns 200", status7 == 200)
         test(
-            "V7: /v2/sessions/{uuid}/ is HTML",
+            "V7: /sessions/{uuid}/ is HTML",
             headers7.get("content-type", "").startswith("text/html"),
         )
         placeholder_html = _v2_dist_path("sessions", "_placeholder", "index.html").read_bytes()
@@ -323,12 +325,14 @@ def _run_all_tests() -> int:
         server7.shutdown()
         db7.close()
 
-    # V8: Real session UUID RSC payload rewrites placeholder content to the requested session ID
-    print("\n-- V8: /v2/sessions/{uuid}/__next.* payload rewrites placeholder file")
+    # V8: Real session UUID RSC payload serves the placeholder payload without
+    # falling back to the root shell. The generated payload file no longer
+    # contains a placeholder session ID token to rewrite.
+    print("\n-- V8: /sessions/{uuid}/__next.* payload serves the placeholder payload")
     db8 = _make_test_db()
     server8, host8, port8 = _start_server(db8, token="tok")
     try:
-        payload_path = "/v2/sessions/v2-test-session/__next.sessions.$d$id.__PAGE__.txt?token=tok"
+        payload_path = "/sessions/v2-test-session/__next.sessions.$d$id.__PAGE__.txt?token=tok"
         status8, headers8, body8 = _get(host8, port8, payload_path)
         test("V8: session detail payload returns 200", status8 == 200)
         test(
@@ -339,13 +343,59 @@ def _run_all_tests() -> int:
             "sessions", "_placeholder", "__next.sessions.$d$id.__PAGE__.txt"
         ).read_bytes()
         root_html8 = _v2_dist_path("index.html").read_bytes()
-        test("V8: payload includes requested session ID", b"v2-test-session" in body8)
         test("V8: payload no longer leaks _placeholder", b"_placeholder" not in body8)
-        test("V8: payload is rewritten from placeholder payload", body8 != placeholder_payload)
+        test("V8: payload matches placeholder payload bytes", body8 == placeholder_payload)
+        test("V8: payload uses root-relative _next assets", b"/_next/" in body8 and b"/v2/_next/" not in body8)
         test("V8: payload is not root HTML", body8 != root_html8)
     finally:
         server8.shutdown()
         db8.close()
+
+    # V_compat: /v2/* compatibility redirects retire the /v2 mount point
+    print("\n-- V_compat: /v2/* → /* compatibility redirects")
+    db_vc = _make_test_db()
+    server_vc, host_vc, port_vc = _start_server(db_vc, token="tok")
+    try:
+        # /v2/sessions/ → 302 to /sessions/
+        status_vc1, hdrs_vc1, _ = _get(host_vc, port_vc, "/v2/sessions/?token=tok")
+        test("V_compat: /v2/sessions/ → 302", status_vc1 == 302)
+        test("V_compat: redirect location is /sessions/", hdrs_vc1.get("location", "").startswith("/sessions/"))
+
+        # /v2 (bare) → 302 to /
+        status_vc2, hdrs_vc2, _ = _get(host_vc, port_vc, "/v2")
+        test("V_compat: /v2 → 302", status_vc2 == 302)
+        test("V_compat: /v2 redirects to /", hdrs_vc2.get("location", "") in ("/", "/?"))
+
+        # query string is preserved in redirect
+        status_vc3, hdrs_vc3, _ = _get(host_vc, port_vc, "/v2/search/?token=tok&q=test")
+        test("V_compat: /v2/search/ with qs → 302", status_vc3 == 302)
+        loc_vc3 = hdrs_vc3.get("location", "")
+        test("V_compat: redirect preserves query string", "token=tok" in loc_vc3 and loc_vc3.startswith("/search/"))
+    finally:
+        server_vc.shutdown()
+        db_vc.close()
+
+    # V_legacy: /session/* (singular) compatibility redirects to /sessions/* (plural)
+    print("\n-- V_legacy: /session/* → /sessions/* compatibility redirects")
+    db_vl = _make_test_db()
+    server_vl, host_vl, port_vl = _start_server(db_vl, token="tok")
+    try:
+        # /session/{id} → 302 to /sessions/{id}
+        status_vl1, hdrs_vl1, _ = _get(host_vl, port_vl, "/session/abc123?token=tok")
+        test("V_legacy: /session/{id} → 302", status_vl1 == 302)
+        test("V_legacy: redirect location is /sessions/abc123", "/sessions/abc123" in hdrs_vl1.get("location", ""))
+
+        # /session/{id}/timeline → 302 to /sessions/{id}/timeline
+        status_vl2, hdrs_vl2, _ = _get(host_vl, port_vl, "/session/abc123/timeline?token=tok")
+        test("V_legacy: /session/{id}/timeline → 302", status_vl2 == 302)
+        test("V_legacy: redirect preserves sub-path", "/sessions/abc123/timeline" in hdrs_vl2.get("location", ""))
+
+        # .md exports are NOT redirected — served via registry
+        status_vl3, _, _ = _get(host_vl, port_vl, "/session/abc-123-def-456.md?token=tok")
+        test("V_legacy: /session/{id}.md is NOT redirected (served via registry)", status_vl3 != 302)
+    finally:
+        server_vl.shutdown()
+        db_vl.close()
 
     # V9: /api/sync/status remains available for read-only diagnostics
     print("\n-- V9: /api/sync/status read-only diagnostics")
@@ -581,11 +631,10 @@ def _run_new_endpoint_tests() -> int:
         )
 
         status13c, headers13c, body13c = _get(host13, port13, "/retro?token=tok")
-        html13c = body13c.decode("utf-8", errors="replace")
         test("V13: /retro returns 200", status13c == 200)
         test("V13: /retro content-type html", "text/html" in headers13c.get("content-type", ""))
-        test("V13: /retro page fetches repo retro summary", "/api/retro/summary?mode=repo" in html13c)
-        test("V13: /retro page shows retrospective shell", "Loading retrospective summary" in html13c)
+        # /retro now served by Next.js SPA; Python handler is bypassed for HTTP
+        test("V13: /retro SPA response is non-empty", len(body13c) > 100)
     finally:
         _retro_api.subprocess.run = original_run13
         server13.shutdown()

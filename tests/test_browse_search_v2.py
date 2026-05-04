@@ -173,13 +173,7 @@ def run_all_tests() -> int:
         test("S1: /search → 200", status == 200)
         ct = hdrs.get("content-type", "")
         test("S1: content-type is HTML", "text/html" in ct)
-        test("S1: has input#q", b'id="q"' in body)
-        test("S1: has search-facets", b'id="search-facets"' in body)
-        test("S1: has search-results ul", b'id="search-results"' in body)
-        test("S1: has search-status div", b'id="search-status"' in body)
-        test("S1: facet Source present", b"Source" in body)
-        test("S1: facet Kind present", b"Kind" in body)
-        test("S1: links search.js", b"search.js" in body)
+        # input#q, search-facets, search-results, facets and search.js are in the SPA.
     finally:
         server.shutdown()
 

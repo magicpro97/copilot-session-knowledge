@@ -111,42 +111,37 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             self._send(body, ct, status, nonce, send_body=send_body)
             return
 
-        # /v2/ — pre-built Next.js UI; _next/* assets are public, pages require auth
-        if path.startswith("/v2/") or path == "/v2":
+        # /_next/* and public files — Next.js static assets, no auth required
+        rel_path_asset = path.lstrip("/")
+        if rel_path_asset.startswith("_next/") or path in ("/favicon.ico", "/robots.txt"):
             from browse.core.csp import build_v2_csp_header
             from browse.routes.serve_v2 import serve_v2
 
-            rel_path = path[len("/v2/") :] if path.startswith("/v2/") else ""
-            v2_csp = build_v2_csp_header()
-            # Static assets (_next/) and public files are served without auth
-            if rel_path.startswith("_next/") or rel_path in ("favicon.ico", "robots.txt"):
-                body, ct, status = serve_v2(rel_path)
-                self._send(body, ct, status, nonce, csp_header=v2_csp, send_body=send_body)
-                return
-            # Pages require auth
-            cookie_header = self.headers.get("Cookie", "")
-            valid, token_val, should_set_cookie = check_token(self.token, params, cookie_header)
-            if not valid:
-                self._send(
-                    b"401 Unauthorized",
-                    "text/plain",
-                    401,
-                    nonce,
-                    csp_header=v2_csp,
-                    send_body=send_body,
-                )
-                return
-            body, ct, status = serve_v2(rel_path)
-            self._send(
-                body,
-                ct,
-                status,
-                nonce,
-                set_cookie=token_val if should_set_cookie else None,
-                csp_header=v2_csp,
-                send_body=send_body,
-                secure_cookie=secure_cookie,
-            )
+            body, ct, status = serve_v2(rel_path_asset)
+            self._send(body, ct, status, nonce, csp_header=build_v2_csp_header(), send_body=send_body)
+            return
+
+        # /v2/* — compatibility redirect: strip the /v2 prefix and redirect to canonical path
+        if path.startswith("/v2/") or path == "/v2":
+            new_path = path[3:] or "/"  # strip "/v2", keep trailing slash
+            qs = parsed.query
+            location = new_path + ("?" + qs if qs else "")
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        # /session/* — compatibility redirect: singular → plural (/sessions/*)
+        # .md exports use the registry, so only redirect non-.md paths
+        if path.startswith("/session/") and not path.endswith(".md"):
+            new_path = "/sessions/" + path[len("/session/") :]
+            qs = parsed.query
+            location = new_path + ("?" + qs if qs else "")
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
             return
 
         # Compute CORS response headers for all /api/ routes with allowlisted origins
@@ -177,64 +172,83 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # Route dispatch
-        handler_fn, kwargs = match_route(path, "GET")
-        if handler_fn is None:
+        # Route dispatch: /api/* and .md data exports via registry;
+        # everything else is served by the Next.js root app.
+        if path.startswith("/api/") or path.endswith(".md"):
+            handler_fn, kwargs = match_route(path, "GET")
+            if handler_fn is None:
+                self._send(
+                    b"404 Not Found",
+                    "text/plain",
+                    404,
+                    nonce,
+                    cors_headers=cors_resp_headers or None,
+                    send_body=send_body,
+                )
+                return
+
+            try:
+                body, ct, status = handler_fn(self.db, params, token_val, nonce, **kwargs)
+            except Exception as exc:
+                body = f"500 Internal Server Error: {_esc(str(exc))}".encode()
+                ct = "text/plain"
+                status = 500
+
+            # SSE streaming: body is a callable factory(stop_event) → generator.
+            # Detected by Content-Type; avoids Content-Length header issues.
+            if ct == "text/event-stream":
+                if not send_body:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("X-Accel-Buffering", "no")
+                    for k, v in cors_resp_headers.items():
+                        self.send_header(k, v)
+                    self.end_headers()
+                    return
+                import threading as _th
+
+                from browse.core.streaming import sse_response
+
+                _stop = _th.Event()
+                if cors_resp_headers:
+                    self._pending_headers = list(cors_resp_headers.items())
+                try:
+                    _gen = body(_stop) if callable(body) else iter(body)
+                    sse_response(self, _gen, heartbeat=15, stop_event=_stop)
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    pass
+                finally:
+                    _stop.set()
+                    self._pending_headers = []
+                return
+
             self._send(
-                b"404 Not Found",
-                "text/plain",
-                404,
+                body,
+                ct,
+                status,
                 nonce,
-                cors_headers=cors_resp_headers or None,
+                set_cookie=token_val if should_set_cookie else None,
                 send_body=send_body,
+                secure_cookie=secure_cookie,
+                cors_headers=cors_resp_headers or None,
             )
             return
 
-        try:
-            body, ct, status = handler_fn(self.db, params, token_val, nonce, **kwargs)
-        except Exception as exc:
-            body = f"500 Internal Server Error: {_esc(str(exc))}".encode()
-            ct = "text/plain"
-            status = 500
+        # Canonical root: serve the pre-built Next.js app for all other paths
+        from browse.core.csp import build_v2_csp_header
+        from browse.routes.serve_v2 import serve_v2
 
-        # SSE streaming: body is a callable factory(stop_event) → generator.
-        # Detected by Content-Type; avoids Content-Length header issues.
-        if ct == "text/event-stream":
-            if not send_body:
-                self.send_response(status)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("X-Accel-Buffering", "no")
-                for k, v in cors_resp_headers.items():
-                    self.send_header(k, v)
-                self.end_headers()
-                return
-            import threading as _th
-
-            from browse.core.streaming import sse_response
-
-            _stop = _th.Event()
-            if cors_resp_headers:
-                self._pending_headers = list(cors_resp_headers.items())
-            try:
-                _gen = body(_stop) if callable(body) else iter(body)
-                sse_response(self, _gen, heartbeat=15, stop_event=_stop)
-            except (ConnectionResetError, BrokenPipeError, OSError):
-                pass
-            finally:
-                _stop.set()
-                self._pending_headers = []
-            return
-
+        body, ct, status = serve_v2(path.lstrip("/"))
         self._send(
             body,
             ct,
             status,
             nonce,
             set_cookie=token_val if should_set_cookie else None,
+            csp_header=build_v2_csp_header(),
             send_body=send_body,
             secure_cookie=secure_cookie,
-            cors_headers=cors_resp_headers or None,
         )
 
     def do_GET(self) -> None:

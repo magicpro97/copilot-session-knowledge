@@ -58,15 +58,20 @@ watch-sessions.py  ──→  Incremental re-indexing (adaptive polling)
 | `checkpoint-save.py` | Save named checkpoint |
 | `checkpoint-restore.py` | List/restore checkpoints |
 | `checkpoint-diff.py` | Diff two checkpoints |
-| `browse.py` | Local web UI (127.0.0.1, token auth) with read-only diagnostics plus the authenticated `/v2/chat` operator console |
+| `browse.py` | Local web UI (127.0.0.1, token auth) with read-only diagnostics plus the authenticated `/chat` operator console |
 | `project-context.py` | Deterministic project-context.md generator |
 | `codebase-map.py` | Repo structure snapshot (auto-refreshed at session start) |
 | `trend-scout.py` | GitHub repo discovery via multi-lane search |
 | `copilot-cli-healer.py` | Repairs stale Copilot CLI package state |
 
-## Browse UI Operator Console (`/v2/chat`)
+## Browse UI Operator Console (`/chat`)
 
-The browse UI exposes a browser-managed Copilot CLI execution console at `/v2/chat`. It is the only browse surface that actively launches Copilot CLI; the rest of the UI remains read-only diagnostics and search.
+The browse UI exposes a browser-managed Copilot CLI execution console at `/chat`. It is the only browse surface that actively launches Copilot CLI; the rest of the UI remains read-only diagnostics and search.
+
+> **Route prefix note:** The Python browse server (`browse/core/server.py`) and the
+> Firebase-hosted deployment now both serve the Next.js app at root (`/*`, e.g. `/chat`,
+> `/settings`). Compatibility redirects from `/v2/*` → `/*` remain for old bookmarks and deep
+> links.
 
 ### Components
 
@@ -92,7 +97,7 @@ All pages share a single host context. The two source-of-truth files are:
 2. First remote profile with `is_default === true`.
 3. `LOCAL_HOST` sentinel — same-origin, no bearer token required.
 
-The header renders a compact AWS-region-style global host dropdown that calls `setSelectedHostId()` on selection and links to `/v2/settings#hosts` for management. The Settings page exposes the full `HostManagement` surface (list, add, remove, set-default, restore-local). `SessionCreateDialog` in `/v2/chat` reads `useHostState()` to pre-populate the host picker when the dialog opens.
+The header renders a compact AWS-region-style global host dropdown that calls `setSelectedHostId()` on selection and links to `/settings#hosts` for management. The Settings page exposes the full `HostManagement` surface (list, add, remove, set-default, restore-local). `SessionCreateDialog` at `/chat` reads `useHostState()` to pre-populate the host picker when the dialog opens.
 
 ### API surface (`/api/operator/*`)
 

@@ -35,6 +35,21 @@ vi.mock("@/lib/api/hooks", () => ({
   })),
 }));
 
+vi.mock("@/providers/host-provider", () => ({
+  useHostState: vi.fn(() => ({
+    host: {
+      id: "local",
+      label: "Local",
+      base_url: "",
+      token: "",
+      cli_kind: "copilot",
+      is_default: true,
+    },
+    diagnosticsEnabled: true,
+    localDiagnosticsEnabled: true,
+  })),
+}));
+
 describe("WorkspacePicker — suggestion list surface", () => {
   it("renders a suggestion listbox when input is focused", () => {
     render(<WorkspacePicker value="" onChange={() => {}} />);
