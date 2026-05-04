@@ -176,18 +176,19 @@ jobs:
         if: steps.changes.outputs.should_dispatch != 'true'
         run: echo "::notice title=Agents hosting hook skipped::No browse-ui changes landed on main."
 
-      - name: Skip release hook when dispatch token is missing
-        if: steps.changes.outputs.should_dispatch == 'true' && secrets.LINHS_BLOG_REPO_DISPATCH_TOKEN == ''
-        run: echo "::notice title=Agents hosting hook skipped::Set LINHS_BLOG_REPO_DISPATCH_TOKEN to enable push-triggered releases into the external hosting repo."
-
       - name: Dispatch Linhs_Blog agents release
-        if: steps.changes.outputs.should_dispatch == 'true' && secrets.LINHS_BLOG_REPO_DISPATCH_TOKEN != ''
+        if: steps.changes.outputs.should_dispatch == 'true'
         env:
           GH_TOKEN: ${{ secrets.LINHS_BLOG_REPO_DISPATCH_TOKEN }}
           TOOLS_SHA: ${{ github.sha }}
           TOOLS_REF: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::notice title=Agents hosting hook skipped::Set LINHS_BLOG_REPO_DISPATCH_TOKEN to enable push-triggered releases into the external hosting repo."
+            exit 0
+          fi
 
           gh api repos/magicpro97/Linhs_Blog/dispatches \
             -f event_type='tools-agents-deploy' \
