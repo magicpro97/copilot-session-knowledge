@@ -13,9 +13,10 @@ import type { OperatorRunInfo, HostProfile, RunFileMetadata } from "@/lib/api/ty
 
 type HistoricalRunProps = {
   run: OperatorRunInfo;
+  host?: HostProfile | null;
 };
 
-function HistoricalRun({ run }: HistoricalRunProps) {
+function HistoricalRun({ run, host }: HistoricalRunProps) {
   const chunks = deriveChunks(run.events);
   const files = extractFilePaths(chunks);
   const ts = run.started_at
@@ -34,7 +35,7 @@ function HistoricalRun({ run }: HistoricalRunProps) {
             : undefined
         }
       />
-      {files.length > 0 ? <FileReviewPanel files={files} /> : null}
+      {files.length > 0 ? <FileReviewPanel files={files} host={host} /> : null}
     </div>
   );
 }
@@ -70,7 +71,7 @@ function ActiveRun({ sessionId, runId, prompt, files, host, onDone }: ActiveRunP
     <div className="space-y-3">
       <UserBubble prompt={prompt} files={files} />
       <AssistantBubble chunks={chunks} streaming={streaming} exitCode={exitCode} />
-      {streamFiles.length > 0 ? <FileReviewPanel files={streamFiles} /> : null}
+      {streamFiles.length > 0 ? <FileReviewPanel files={streamFiles} host={host} /> : null}
     </div>
   );
 }
@@ -131,7 +132,7 @@ export function Transcript({
   return (
     <div className="flex-1 space-y-6 overflow-y-auto p-4">
       {runs.map((run) => (
-        <HistoricalRun key={run.id} run={run} />
+        <HistoricalRun key={run.id} run={run} host={host} />
       ))}
       {activeRun ? (
         <ActiveRun

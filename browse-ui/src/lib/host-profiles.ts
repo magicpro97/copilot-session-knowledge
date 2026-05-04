@@ -110,3 +110,20 @@ export function getEffectiveHost(): HostProfile {
   const profile = getHostProfiles().find((p) => p.id === selectedId);
   return profile ?? LOCAL_HOST;
 }
+
+/**
+ * Returns whether operator API calls are safe to issue for the current route/host.
+ *
+ * - Remote host selected → always safe
+ * - Local browse app under /v2 → same-origin backend is present
+ * - Explicit API base configured at build time → safe
+ */
+export function isOperatorHostEnabled(host: HostProfile, pathname: string): boolean {
+  const browserPathname = typeof window === "undefined" ? "" : window.location.pathname;
+  return (
+    host.base_url !== "" ||
+    pathname.startsWith("/v2") ||
+    browserPathname.startsWith("/v2") ||
+    Boolean(process.env.NEXT_PUBLIC_API_BASE)
+  );
+}

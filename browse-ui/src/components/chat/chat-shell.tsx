@@ -23,6 +23,7 @@ import {
   clearSelectedHostId,
   LOCAL_HOST,
   LOCAL_HOST_ID,
+  isOperatorHostEnabled,
 } from "@/lib/host-profiles";
 import { cn } from "@/lib/utils";
 import { SessionList } from "./session-list";
@@ -67,21 +68,29 @@ export function ChatShell() {
     }
     return getEffectiveHost();
   }, [hParam]);
+  const operatorEnabled = useMemo(
+    () => isOperatorHostEnabled(activeHost, pathname),
+    [activeHost, pathname]
+  );
 
   // Load all sessions from the active host
-  const sessionsQuery = useOperatorSessions(activeHost);
+  const sessionsQuery = useOperatorSessions(activeHost, operatorEnabled);
   const sessions = useMemo(() => sessionsQuery.data?.sessions ?? [], [sessionsQuery.data]);
 
   // Load active session detail
   const sessionQuery = useOperatorSession(
     activeSessionId ?? "",
-    Boolean(activeSessionId),
+    Boolean(activeSessionId) && operatorEnabled,
     activeHost
   );
   const session = sessionQuery.data ?? null;
 
   // Load full persisted run history for the active session.
-  const runsQuery = useOperatorRuns(activeSessionId ?? "", Boolean(activeSessionId), activeHost);
+  const runsQuery = useOperatorRuns(
+    activeSessionId ?? "",
+    Boolean(activeSessionId) && operatorEnabled,
+    activeHost
+  );
 
   const createMutation = useCreateOperatorSession(activeHost);
   const deleteMutation = useDeleteOperatorSession(activeHost);
@@ -347,7 +356,11 @@ export function ChatShell() {
           <div className="flex flex-1 items-center justify-center p-8">
             <EmptyState
               title="No session selected"
-              description="Select an existing session from the list or create a new one to start chatting."
+              description={
+                operatorEnabled
+                  ? "Select an existing session from the list or create a new one to start chatting."
+                  : "Add a public agent host in New Chat to connect this hosted console to a remote CLI."
+              }
               icon={<Bot className="size-5" />}
               actionLabel="New Chat"
               onAction={() => {

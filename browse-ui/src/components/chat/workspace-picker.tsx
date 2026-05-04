@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import { Eye, EyeOff, FolderOpen } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useDebounce } from "@/hooks/use-debounce";
 import { usePathSuggest } from "@/lib/api/hooks";
-import { LOCAL_HOST } from "@/lib/host-profiles";
+import { LOCAL_HOST, isOperatorHostEnabled } from "@/lib/host-profiles";
 import type { HostProfile } from "@/lib/api/types";
 
 type WorkspacePickerProps = {
@@ -33,6 +34,7 @@ export function WorkspacePicker({
   disabled,
   host = LOCAL_HOST,
 }: WorkspacePickerProps) {
+  const pathname = usePathname();
   const [inputValue, setInputValue] = useState(value);
   const [open, setOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
@@ -41,8 +43,9 @@ export function WorkspacePicker({
   const inputRef = useRef<HTMLInputElement>(null);
 
   const debouncedQuery = useDebounce(inputValue, 200);
-  const { data: suggestData } = usePathSuggest(debouncedQuery, showHidden, host);
-  const suggestions = suggestData?.suggestions ?? [];
+  const suggestEnabled = isOperatorHostEnabled(host, pathname);
+  const { data: suggestData } = usePathSuggest(debouncedQuery, showHidden, host, suggestEnabled);
+  const suggestions = suggestEnabled ? (suggestData?.suggestions ?? []) : [];
 
   // Sync external value changes
   useEffect(() => {

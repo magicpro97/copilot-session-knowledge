@@ -6,16 +6,19 @@ import { FileText, Eye, GitCompare, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useFilePreview } from "@/lib/api/hooks";
+import { LOCAL_HOST } from "@/lib/host-profiles";
 import { cn } from "@/lib/utils";
 import type { FileEntry } from "@/components/chat/stream-derive";
+import type { HostProfile } from "@/lib/api/types";
 
 type FileReviewPanelProps = {
   files: FileEntry[];
   className?: string;
+  host?: HostProfile | null;
 };
 
-function FilePreview({ path }: { path: string }) {
-  const { data, isLoading, isError } = useFilePreview(path);
+function FilePreview({ path, host }: { path: string; host?: HostProfile | null }) {
+  const { data, isLoading, isError } = useFilePreview(path, true, host ?? LOCAL_HOST);
 
   if (isLoading) {
     return (
@@ -100,7 +103,7 @@ type FileSlot = FileEntry & { reviewMode: ReviewMode };
  * The diff button is only shown when `file.unifiedDiff` is present — this
  * ensures we never diff a file against itself (which produced empty diffs).
  */
-export function FileReviewPanel({ files, className }: FileReviewPanelProps) {
+export function FileReviewPanel({ files, className, host }: FileReviewPanelProps) {
   const [selected, setSelected] = useState<FileSlot | null>(null);
 
   if (files.length === 0) return null;
@@ -190,7 +193,7 @@ export function FileReviewPanel({ files, className }: FileReviewPanelProps) {
               {isActive ? (
                 <div className="border-t">
                   {selected.reviewMode === "preview" ? (
-                    <FilePreview path={file.path} />
+                    <FilePreview path={file.path} host={host} />
                   ) : selected.reviewMode === "diff" && selected.unifiedDiff ? (
                     <InlineDiff unifiedDiff={selected.unifiedDiff} />
                   ) : null}

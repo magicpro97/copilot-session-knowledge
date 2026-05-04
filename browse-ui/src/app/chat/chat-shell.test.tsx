@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 beforeAll(() => {
   window.HTMLElement.prototype.scrollIntoView = vi.fn();
@@ -22,10 +22,17 @@ beforeAll(() => {
   });
 });
 
+afterEach(async () => {
+  const navigation = await import("next/navigation");
+  vi.mocked(navigation.usePathname).mockReturnValue(
+    "/v2/chat" as ReturnType<typeof navigation.usePathname>
+  );
+});
+
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: vi.fn() })),
   useSearchParams: vi.fn(() => new URLSearchParams()),
-  usePathname: vi.fn(() => "/chat"),
+  usePathname: vi.fn(() => "/v2/chat"),
 }));
 
 vi.mock("@/lib/api/hooks", () => ({
@@ -97,6 +104,23 @@ describe("ChatShell", () => {
   it("shows mobile 'Open session list' button", () => {
     render(<ChatShell />);
     expect(screen.getByRole("button", { name: "Open session list" })).toBeInTheDocument();
+  });
+
+  it("keeps hosted root chat idle until a remote host is selected", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const navigation = await import("next/navigation");
+
+    window.localStorage.clear();
+    vi.mocked(navigation.usePathname).mockReturnValue(
+      "/chat" as ReturnType<typeof navigation.usePathname>
+    );
+
+    render(<ChatShell />);
+
+    expect(vi.mocked(hooks.useOperatorSessions).mock.calls.at(-1)?.[1]).toBe(false);
+    expect(
+      screen.getByText(/Add a public agent host in New Chat to connect this hosted console/i)
+    ).toBeInTheDocument();
   });
 });
 

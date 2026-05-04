@@ -1,6 +1,7 @@
 "use client";
 
 import { useId, useState } from "react";
+import { usePathname } from "next/navigation";
 import { Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -22,7 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useOperatorModelCatalog } from "@/lib/api/hooks";
-import { LOCAL_HOST } from "@/lib/host-profiles";
+import { LOCAL_HOST, isOperatorHostEnabled } from "@/lib/host-profiles";
 import type { HostProfile, CreateOperatorSessionRequest } from "@/lib/api/types";
 import { WorkspacePicker } from "./workspace-picker";
 import { HostPicker } from "./host-picker";
@@ -48,6 +49,7 @@ type SessionCreateDialogProps = {
 };
 
 export function SessionCreateDialog({ onSubmit, loading }: SessionCreateDialogProps) {
+  const pathname = usePathname();
   const nameId = useId();
   const workspaceId = useId();
   const modelId = useId();
@@ -58,7 +60,8 @@ export function SessionCreateDialog({ onSubmit, loading }: SessionCreateDialogPr
   const [model, setModel] = useState("");
   const [mode, setMode] = useState(COPILOT_MODES[0].value);
   const [host, setHost] = useState<HostProfile>(LOCAL_HOST);
-  const modelCatalogQuery = useOperatorModelCatalog(host, open);
+  const hostReady = isOperatorHostEnabled(host, pathname);
+  const modelCatalogQuery = useOperatorModelCatalog(host, open && hostReady);
   const modelSuggestions = modelCatalogQuery.data?.models ?? [];
   const defaultModel = modelCatalogQuery.data?.default_model ?? "";
 
@@ -105,6 +108,12 @@ export function SessionCreateDialog({ onSubmit, loading }: SessionCreateDialogPr
             <p className="text-muted-foreground text-xs">
               Local (same origin) or a saved public tunnel URL.
             </p>
+            {!hostReady ? (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                This hosted web app needs a saved public agent host before it can browse workspaces
+                or start chats.
+              </p>
+            ) : null}
           </div>
           <div className="space-y-1.5">
             <label htmlFor={workspaceId} className="text-sm font-medium">
@@ -187,7 +196,7 @@ export function SessionCreateDialog({ onSubmit, loading }: SessionCreateDialogPr
                 </Button>
               }
             />
-            <Button type="submit" disabled={loading || !workspace.trim()}>
+            <Button type="submit" disabled={loading || !workspace.trim() || !hostReady}>
               {loading ? "Creating…" : "Start Chat"}
             </Button>
           </DialogFooter>

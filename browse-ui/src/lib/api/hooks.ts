@@ -640,11 +640,12 @@ export function useWorkflowHealth(host: HostProfile = LOCAL_HOST, enabled = true
 // (defaulting to LOCAL_HOST) so existing callers that pass `enabled: boolean`
 // positionally are backward-compatible. Query keys are scoped by host.id.
 
-export function useOperatorSessions(host: HostProfile = LOCAL_HOST) {
+export function useOperatorSessions(host: HostProfile = LOCAL_HOST, enabled = true) {
   return useQuery({
     queryKey: queryKeys.operatorSessions(host.id),
     staleTime: STALE_TIMES.sessions,
     gcTime: CACHE_TIMES.sessions,
+    enabled,
     queryFn: async (): Promise<OperatorSessionListResponse> => {
       const data = await hostFetch<OperatorSessionListResponse>(
         withLeadingSlash("/api/operator/sessions"),
