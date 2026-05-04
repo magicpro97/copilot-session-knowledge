@@ -215,6 +215,8 @@ Actual production deployments should **not** be made from this open-source repo.
 3. Run `pnpm release:check` in `browse-ui/`, copy `dist-release/` to the hosting repo, and deploy from there.
 4. Keep this open-source repo's `.firebaserc` as a generic template only.
 
+An external hosting repo can automate this flow end-to-end: check out `copilot-session-knowledge`, run the same release gate (`pnpm release:check`), sync `dist-release/` into its hosting target directory, and deploy from there. A push-triggered `repository_dispatch` hook from this repo is optional; a scheduled poller that compares the hosted `version.json.buildHash` against the latest browse-ui release commit is a viable fallback when cross-repo dispatch secrets are not available.
+
 This separation ensures no personal project IDs or custom domains are committed to the public repo.
 
 ### Build modes: local `/v2` vs root-hosted release
