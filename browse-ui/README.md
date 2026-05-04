@@ -79,6 +79,8 @@ Do **not** edit files in `dist/` directly — they are build artifacts. Run `pnp
 
 - **Same-origin deployment** (default): API calls go to `/api/*` on the same origin (Python browse server behind Cloudflare Tunnel). No CORS configuration needed. This is the currently implemented and tested path.
 - **Firebase Hosting deployment** (static UI on a Firebase custom domain, API at the operator's tunnel URL): All API calls become cross-origin. The operator host exposes a CORS allowlist, Bearer auth, and a capabilities endpoint. See [Firebase Hosting topology](#firebase-hosting-topology) below.
+- HTTPS proxy note: if browse is behind Cloudflare Tunnel, ngrok, or another HTTPS reverse proxy, set `BROWSE_TRUSTED_PROXY=1` (or `true` / `yes`) on the operator host so forwarded HTTPS is trusted and auth cookies keep the `Secure` flag.
+- Cross-origin streaming avoids `?token=` leakage: `/api/operator/*` and `/api/live` use fetch-based SSE with `Authorization: Bearer ...` for remote hosts, while same-origin/local surfaces keep `EventSource`.
 - Auth token is injected via URL param `?token=…` on first load, then stored in `sessionStorage`
 - `output: "export"` in next.config.ts means no SSR — all pages are static HTML + client JS
 - `basePath` in `next.config.ts` defaults to `/v2` for the Python-server deployment; use `pnpm build:release` for a Firebase-targeted export so asset paths resolve from the site root (`/_next/…`). See [Firebase Hosting topology](#firebase-hosting-topology) for the release build step.
@@ -115,10 +117,16 @@ The Settings page at `/v2/settings` contains a dedicated **Hosts & connections**
 
 - **List** all saved profiles plus the built-in `Local (same-origin)` entry (not deletable).
 - **Add** a remote host — requires a public tunnel URL (e.g. ngrok, Cloudflare Tunnel); label, auth token, and CLI kind are optional.
+  - **Browser-context validation**: clicking **Save host** probes the remote host's `/healthz` endpoint from the actual browser context (CORS, network, and auth are all exercised). The host is only saved and selected if the probe succeeds. Actionable error messages are shown for auth failures (401), CORS/allowlist issues (403), unreachable tunnels, and HTTP errors.
+  - **Save anyway**: after a validation failure, an escape hatch lets the operator save the profile without a probe (useful when the host is intentionally restricted).
 - **Switch** the active selection to any listed host.
 - **Set default** — marks a profile `is_default: true` so it is selected on fresh load (before any explicit selection).
 - **Remove** a remote profile; if the removed profile was active, the selection falls back through the resolution order above.
 - **Restore local** — clears all `is_default` flags and removes any explicit selection, returning to the `LOCAL_HOST` sentinel.
+
+#### Control-plane origin (Firebase-hosted deployment)
+
+When the browser is not on `localhost` / `127.0.0.1`, the **Hosts & connections** card shows a **Control-plane origin** strip with the current `window.location.origin` and a copy button. This is the URL operators share to access the hosted control plane from another device — it is read dynamically from the runtime and is never hardcoded in the source.
 
 ### Session creation pre-population
 
@@ -126,6 +134,7 @@ The Settings page at `/v2/settings` contains a dedicated **Hosts & connections**
 
 ### Verified (targeted checks)
 
+- `pnpm vitest run src/components/hosts/host-management.test.tsx` — HostManagement validation, hosted-origin strip, save flow
 - `pnpm vitest run src/app/settings/page.test.tsx` — Settings page + HostManagement rendering
 - `pnpm vitest run src/app/chat/chat-shell.test.tsx` — ChatShell SessionCreateDialog pre-population
 - `pnpm exec playwright test e2e/chat.spec.ts --grep "header host switcher"` — header dropdown E2E
@@ -153,6 +162,7 @@ The UI is a static Next.js export and renders in any modern mobile browser (iOS 
 |---------|--------|
 | All read-only pages | ✅ Fully static; works as soon as the UI is deployed |
 | Operator console | ✅ Cross-origin API support is implemented — CORS allowlist, Bearer auth, and capabilities endpoint are in place on the operator host |
+| Live knowledge feed | ✅ Remote `/api/live` streams use fetch-based SSE + Bearer auth, so tokens stay out of browser-visible URLs |
 
 ## Phases
 

@@ -586,38 +586,20 @@ export const dashboardStatsSchema = z.object({
 
 ### 2.4 SSE for `/live`
 
-**Decision: Keep SSE.** The `/api/live` endpoint streams real-time knowledge entries via SSE. The Next.js client will consume it with a custom `useSSE` hook.
+**Decision: Keep SSE.** The `/api/live` endpoint streams real-time knowledge entries via SSE. The Next.js client consumes it with a custom `useSSE` hook that uses:
+
+- `EventSource` for same-origin/local streams
+- `fetch` + `ReadableStream` + `Authorization: Bearer ...` for remote hosts, so tokens never appear in browser-visible URLs
 
 ```typescript
 // src/hooks/use-sse.ts
-import { useEffect, useRef, useState, useCallback } from "react";
-import type { LiveEvent } from "@/lib/api/types";
-
-export function useSSE(url: string, options?: { enabled?: boolean }) {
-  const [events, setEvents] = useState<LiveEvent[]>([]);
-  const [status, setStatus] = useState<"connecting" | "open" | "closed">("connecting");
-  const esRef = useRef<EventSource | null>(null);
-  const pausedRef = useRef(false);
-
-  const toggle = useCallback(() => {
-    pausedRef.current = !pausedRef.current;
-  }, []);
-
-  useEffect(() => {
-    if (options?.enabled === false) return;
-    const es = new EventSource(url);
-    esRef.current = es;
-    es.onopen = () => setStatus("open");
-    es.onmessage = (e) => {
-      if (pausedRef.current) return;
-      const data: LiveEvent = JSON.parse(e.data);
-      setEvents((prev) => [data, ...prev].slice(0, 200));
-    };
-    es.onerror = () => setStatus("closed");
-    return () => { es.close(); setStatus("closed"); };
-  }, [url, options?.enabled]);
-
-  return { events, status, toggle };
+export function useSSE(
+  url: string,
+  options?: { enabled?: boolean; transport?: "eventsource" | "fetch"; authToken?: string }
+) {
+  // local/same-origin -> EventSource
+  // remote host -> fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+  // both paths feed the same parsed LiveEvent[] state
 }
 ```
 
@@ -1282,7 +1264,7 @@ export default defineConfig({
 | `lib/api/schemas.ts` | Zod schema validation: valid/invalid payloads |
 | `components/data/data-table.tsx` | Rendering, sorting, empty state |
 | `components/data/stat-card.tsx` | Number formatting, variants |
-| `hooks/use-sse.ts` | EventSource mock, pause/resume |
+| `hooks/use-sse.ts` | EventSource + fetch transport, pause/resume |
 | `hooks/use-density.ts` | State toggle, localStorage sync |
 
 ### 8.2 Integration Tests: Vitest (Mock Fetch)

@@ -16,10 +16,14 @@ import {
 } from "@/lib/api/hooks";
 import { LOCAL_HOST, LOCAL_HOST_ID } from "@/lib/host-profiles";
 
-vi.mock("@/lib/api/client", () => ({
-  apiFetch: vi.fn(),
-  hostFetch: vi.fn(),
-}));
+vi.mock("@/lib/api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/client")>();
+  return {
+    ...actual,
+    apiFetch: vi.fn(),
+    hostFetch: vi.fn(),
+  };
+});
 
 import { hostFetch } from "@/lib/api/client";
 
@@ -226,12 +230,14 @@ describe("api hooks helpers", () => {
     );
   });
 
-  it("createOperatorStreamUrl uses remote base_url and appends token as query param", () => {
+  it("createOperatorStreamUrl uses remote base_url without token in URL (issue #32)", () => {
     const url = createOperatorStreamUrl("sess-1", "run-1", REMOTE_HOST);
     expect(url).toContain("https://xyz.ngrok.io");
     expect(url).toContain("sess-1");
     expect(url).toContain("run=run-1");
-    expect(url).toContain("token=secret");
+    // Token must NOT be in the URL — callers must send it via Authorization header.
+    expect(url).not.toContain("token=");
+    expect(url).not.toContain("secret");
   });
 
   it("createOperatorStreamUrl uses same-origin for local host", () => {
@@ -243,6 +249,21 @@ describe("api hooks helpers", () => {
 
   it("createOperatorStreamUrl does not add token param when host token is empty", () => {
     const url = createOperatorStreamUrl("sess-1", "run-1", LOCAL_HOST);
+    expect(url).not.toContain("token=");
+  });
+
+  it("createOperatorStreamUrl preserves base_url path prefix (issue #31)", () => {
+    const hostWithPrefix = { ...REMOTE_HOST, base_url: "https://proxy.example.com/copilot" };
+    const url = createOperatorStreamUrl("sess-1", "run-1", hostWithPrefix);
+    expect(url).toBe(
+      "https://proxy.example.com/copilot/api/operator/sessions/sess-1/stream?run=run-1"
+    );
+  });
+
+  it("createOperatorStreamUrl remote host has no token in URL even when token is set (issue #32)", () => {
+    const hostWithToken = { ...REMOTE_HOST, token: "should-not-appear" };
+    const url = createOperatorStreamUrl("sess-1", "run-1", hostWithToken);
+    expect(url).not.toContain("should-not-appear");
     expect(url).not.toContain("token=");
   });
 
@@ -332,9 +353,11 @@ describe("api hooks helpers", () => {
 });
 
 describe("createLiveStreamUrl", () => {
-  it("uses remote base_url and appends token as query param", () => {
+  it("uses remote base_url without putting the token in the URL", () => {
     const url = createLiveStreamUrl(REMOTE_HOST);
-    expect(url).toBe("https://xyz.ngrok.io/api/live?token=secret");
+    expect(url).toBe("https://xyz.ngrok.io/api/live");
+    expect(url).not.toContain("token=");
+    expect(url).not.toContain("secret");
   });
 
   it("uses same-origin for local host (no base_url)", () => {
@@ -349,5 +372,11 @@ describe("createLiveStreamUrl", () => {
     const url = createLiveStreamUrl(hostNoToken);
     expect(url).not.toContain("token");
     expect(url).toContain("/api/live");
+  });
+
+  it("preserves base_url path prefix (issue #31)", () => {
+    const hostWithPrefix = { ...REMOTE_HOST, base_url: "https://proxy.example.com/copilot" };
+    const url = createLiveStreamUrl(hostWithPrefix);
+    expect(url).toBe("https://proxy.example.com/copilot/api/live");
   });
 });

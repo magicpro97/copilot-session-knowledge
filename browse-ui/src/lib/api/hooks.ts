@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { CACHE_TIMES, DEFAULT_PAGE_SIZE, STALE_TIMES } from "@/lib/constants";
-import { apiFetch, hostFetch } from "@/lib/api/client";
+import { apiFetch, hostFetch, buildHostUrl } from "@/lib/api/client";
 import { LOCAL_HOST, LOCAL_HOST_ID } from "@/lib/host-profiles";
 import {
   compareResponseSchema,
@@ -789,10 +789,14 @@ export function createOperatorStreamPath(sessionId: string, runId: string): stri
 /**
  * Returns the full stream URL for a given host profile.
  *
- * Because `EventSource` does not support custom request headers, the auth token
- * is appended as a query parameter for both local and remote hosts. The UI
- * must use this function (not `createOperatorStreamPath`) when connecting to
- * non-local hosts.
+ * The auth token is intentionally NOT appended to the URL; callers must use
+ * `fetch` with an `Authorization: Bearer` header for remote hosts (fixes #32:
+ * token must not appear in browser-visible URLs).  EventSource cannot be used
+ * for remote hosts because it does not support custom request headers.
+ *
+ * For same-origin / local hosts the URL has no token; cookies handle auth.
+ *
+ * Path prefixes in `host.base_url` are preserved — fixes #31.
  */
 export function createOperatorStreamUrl(
   sessionId: string,
@@ -800,29 +804,39 @@ export function createOperatorStreamUrl(
   host: HostProfile
 ): string {
   const path = `/api/operator/sessions/${encodeURIComponent(sessionId)}/stream`;
-  const base = host.base_url || (typeof window !== "undefined" ? window.location.origin : "");
-  const url = new URL(path, base);
+  const isRemote = host.base_url.length > 0;
+  const base = isRemote
+    ? host.base_url
+    : typeof window !== "undefined"
+      ? window.location.origin
+      : "";
+  // buildHostUrl preserves any path prefix in base_url (issue #31).
+  const url = buildHostUrl(base, path);
   url.searchParams.set("run", runId);
-  if (host.token) {
-    url.searchParams.set("token", host.token);
-  }
+  // Token is omitted from URL on purpose: remote callers must send it via
+  // Authorization header (use fetch, not EventSource).
   return url.toString();
 }
 
 /**
  * Returns the full SSE URL for the `/api/live` stream, targeting the given host.
  *
- * Because `EventSource` does not support custom request headers, the auth token
- * is appended as a query parameter when connecting to a remote host.
+ * The auth token is intentionally NOT appended to the URL; remote callers must
+ * use fetch-based streaming with an `Authorization: Bearer ...` header so
+ * credentials do not leak into browser-visible URLs (fixes #32).
+ *
+ * Path prefixes in `host.base_url` are preserved — fixes #31.
  */
 export function createLiveStreamUrl(host: HostProfile): string {
   const path = "/api/live";
-  const base = host.base_url || (typeof window !== "undefined" ? window.location.origin : "");
-  const url = new URL(path, base);
-  if (host.token) {
-    url.searchParams.set("token", host.token);
-  }
-  return url.toString();
+  const isRemote = host.base_url.length > 0;
+  const base = isRemote
+    ? host.base_url
+    : typeof window !== "undefined"
+      ? window.location.origin
+      : "";
+  // buildHostUrl preserves any path prefix in base_url (issue #31).
+  return buildHostUrl(base, path).toString();
 }
 
 export function usePathSuggest(

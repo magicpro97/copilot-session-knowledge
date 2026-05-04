@@ -49,8 +49,10 @@ Tests:
   SEC8:  make_cookie_header() adds Secure flag when secure=True
   SEC9:  POST with mismatched Origin is CSRF-rejected (403)
   SEC10: POST with matching HTTP origin is accepted (200)
-  SEC11: GET /api/operator/sessions via forwarded HTTPS sets Secure cookie
-  SEC12: GET /v2/chat via forwarded HTTPS sets Secure cookie
+  SEC11: GET /api/operator/sessions via forwarded HTTPS without trusted-proxy → 200, no Secure cookie
+  SEC12: GET /v2/chat via forwarded HTTPS without trusted-proxy → 200, no Secure cookie
+  SEC33: is_https_request() returns False by default (issue #33)
+  SEC34: GET with BROWSE_TRUSTED_PROXY=1 and forwarded HTTPS → sets Secure cookie
 """
 
 import http.client
@@ -471,6 +473,8 @@ def test_sec3_traversal_blocked():
 
 def test_sec7_check_origin_unit():
     """SEC7: check_origin() unit tests covering HTTP, HTTPS-proxy, and mismatch cases."""
+    import os as _os
+
     from browse.core.auth import check_origin
 
     class _Headers(dict):
@@ -499,42 +503,62 @@ def test_sec7_check_origin_unit():
     test("SEC7: https origin no proxy → rejected", allowed is False)
     test("SEC7: https origin no proxy → is_https False", is_https is False)
 
-    # HTTPS origin with X-Forwarded-Proto: https and matching host → allowed
-    allowed, is_https = check_origin(
+    # SEC33: Forwarded headers MUST NOT be trusted without BROWSE_TRUSTED_PROXY (issue #33)
+    # Even with X-Forwarded-Proto present, is_https must remain False by default.
+    allowed_untrusted, is_https_untrusted = check_origin(
         _Headers({"Origin": "https://example.com", "X-Forwarded-Proto": "https"}),
         "example.com",
     )
-    test("SEC7: https origin with X-Forwarded-Proto → allowed", allowed is True)
-    test("SEC7: X-Forwarded-Proto sets is_https", is_https is True)
+    test("SEC33: https origin with X-Forwarded-Proto but no trusted-proxy → rejected", allowed_untrusted is False)
+    test("SEC33: is_https_request() is False without BROWSE_TRUSTED_PROXY", is_https_untrusted is False)
 
-    # HTTPS origin with X-Forwarded-Ssl: on and matching host → allowed
-    allowed, is_https = check_origin(
-        _Headers({"Origin": "https://copilot.linhngo.dev", "X-Forwarded-Ssl": "on"}),
-        "copilot.linhngo.dev",
-    )
-    test("SEC7: https origin with X-Forwarded-Ssl: on → allowed", allowed is True)
-    test("SEC7: X-Forwarded-Ssl sets is_https", is_https is True)
-
-    # HTTPS origin with proxy but MISMATCHED host → rejected
-    allowed, _ = check_origin(
-        _Headers({"Origin": "https://evil.com", "X-Forwarded-Proto": "https"}),
+    allowed_untrusted2, is_https_untrusted2 = check_origin(
+        _Headers({"Origin": "https://example.com", "X-Forwarded-Ssl": "on"}),
         "example.com",
     )
-    test("SEC7: https origin proxy but wrong host → rejected", allowed is False)
+    test("SEC33: X-Forwarded-Ssl without trusted-proxy → rejected", allowed_untrusted2 is False)
+    test("SEC33: is_https False when X-Forwarded-Ssl without trusted-proxy", is_https_untrusted2 is False)
 
-    # HTTPS origin with proxy but HTTP scheme origin → allowed (normal http match ignored by is_https)
-    allowed, _ = check_origin(
-        _Headers({"Origin": "http://example.com", "X-Forwarded-Proto": "https"}),
-        "example.com",
-    )
-    test("SEC7: http origin with proxy headers → still allowed via http match", allowed is True)
+    # HTTPS origin with X-Forwarded-Proto: https AND trusted-proxy mode enabled → allowed
+    _os.environ["BROWSE_TRUSTED_PROXY"] = "1"
+    try:
+        allowed, is_https = check_origin(
+            _Headers({"Origin": "https://example.com", "X-Forwarded-Proto": "https"}),
+            "example.com",
+        )
+        test("SEC7: https origin with X-Forwarded-Proto + trusted-proxy → allowed", allowed is True)
+        test("SEC7: X-Forwarded-Proto sets is_https when trusted", is_https is True)
 
-    # Case-insensitive proxy header value
-    allowed, is_https = check_origin(
-        _Headers({"Origin": "https://example.com", "X-Forwarded-Proto": "HTTPS"}),
-        "example.com",
-    )
-    test("SEC7: X-Forwarded-Proto HTTPS case-insensitive → allowed", allowed is True)
+        # HTTPS origin with X-Forwarded-Ssl: on and matching host → allowed
+        allowed, is_https = check_origin(
+            _Headers({"Origin": "https://copilot.linhngo.dev", "X-Forwarded-Ssl": "on"}),
+            "copilot.linhngo.dev",
+        )
+        test("SEC7: https origin with X-Forwarded-Ssl: on + trusted-proxy → allowed", allowed is True)
+        test("SEC7: X-Forwarded-Ssl sets is_https when trusted", is_https is True)
+
+        # HTTPS origin with proxy but MISMATCHED host → rejected
+        allowed, _ = check_origin(
+            _Headers({"Origin": "https://evil.com", "X-Forwarded-Proto": "https"}),
+            "example.com",
+        )
+        test("SEC7: https origin proxy but wrong host → rejected", allowed is False)
+
+        # HTTP origin with proxy but HTTP scheme → still allowed via http match
+        allowed, _ = check_origin(
+            _Headers({"Origin": "http://example.com", "X-Forwarded-Proto": "https"}),
+            "example.com",
+        )
+        test("SEC7: http origin with proxy headers → still allowed via http match", allowed is True)
+
+        # Case-insensitive proxy header value
+        allowed, is_https = check_origin(
+            _Headers({"Origin": "https://example.com", "X-Forwarded-Proto": "HTTPS"}),
+            "example.com",
+        )
+        test("SEC7: X-Forwarded-Proto HTTPS case-insensitive + trusted-proxy → allowed", allowed is True)
+    finally:
+        _os.environ.pop("BROWSE_TRUSTED_PROXY", None)
 
 
 def test_sec8_make_cookie_header_secure_flag():
@@ -550,6 +574,65 @@ def test_sec8_make_cookie_header_secure_flag():
     test("SEC8: secure cookie has Secure flag", "Secure" in secure)
     test("SEC8: secure cookie has HttpOnly", "HttpOnly" in secure)
     test("SEC8: secure cookie has SameSite=Strict", "SameSite=Strict" in secure)
+
+
+def test_sec33_is_https_untrusted_by_default():
+    """SEC33: is_https_request() must return False unless BROWSE_TRUSTED_PROXY is set.
+
+    Issue #33: a client must not be able to force HTTPS cookie behaviour
+    simply by injecting X-Forwarded-Proto / X-Forwarded-Ssl headers.
+    The safe default is untrusted; trust must be explicitly enabled.
+    """
+    import os as _os
+
+    from browse.core.auth import is_https_request
+
+    class _H(dict):
+        def get(self, key, default=""):
+            return super().get(key, default)
+
+    # Ensure env var is absent
+    _os.environ.pop("BROWSE_TRUSTED_PROXY", None)
+
+    # Without trusted-proxy mode, forwarded headers are completely ignored
+    test("SEC33: X-Forwarded-Proto ignored without trusted-proxy",
+         is_https_request(_H({"X-Forwarded-Proto": "https"})) is False)
+    test("SEC33: X-Forwarded-Ssl ignored without trusted-proxy",
+         is_https_request(_H({"X-Forwarded-Ssl": "on"})) is False)
+    test("SEC33: both headers ignored without trusted-proxy",
+         is_https_request(_H({"X-Forwarded-Proto": "https", "X-Forwarded-Ssl": "on"})) is False)
+    test("SEC33: no headers, no trusted-proxy → False",
+         is_https_request(_H({})) is False)
+
+    # With trusted-proxy mode enabled, forwarded headers ARE trusted
+    _os.environ["BROWSE_TRUSTED_PROXY"] = "1"
+    try:
+        test("SEC33: X-Forwarded-Proto trusted when BROWSE_TRUSTED_PROXY=1",
+             is_https_request(_H({"X-Forwarded-Proto": "https"})) is True)
+        test("SEC33: X-Forwarded-Ssl trusted when BROWSE_TRUSTED_PROXY=1",
+             is_https_request(_H({"X-Forwarded-Ssl": "on"})) is True)
+        test("SEC33: no headers → False even with BROWSE_TRUSTED_PROXY=1",
+             is_https_request(_H({})) is False)
+    finally:
+        _os.environ.pop("BROWSE_TRUSTED_PROXY", None)
+
+    # Supported values: 1, true, yes (case-insensitive)
+    for _val in ("true", "yes", "TRUE", "YES", "True"):
+        _os.environ["BROWSE_TRUSTED_PROXY"] = _val
+        try:
+            result = is_https_request(_H({"X-Forwarded-Proto": "https"}))
+        finally:
+            _os.environ.pop("BROWSE_TRUSTED_PROXY", None)
+        test(f"SEC33: BROWSE_TRUSTED_PROXY={_val!r} is accepted", result is True)
+
+    # Rejected values: 0, false, no, empty string
+    for _val in ("0", "false", "no", "", "off"):
+        _os.environ["BROWSE_TRUSTED_PROXY"] = _val
+        try:
+            result = is_https_request(_H({"X-Forwarded-Proto": "https"}))
+        finally:
+            _os.environ.pop("BROWSE_TRUSTED_PROXY", None)
+        test(f"SEC33: BROWSE_TRUSTED_PROXY={_val!r} is rejected (untrusted)", result is False)
 
 
 def test_oc24_parse_output_event_typeless_json_is_raw_text_frame():
@@ -1102,7 +1185,8 @@ def _run_api_tests(port: int):
     cookie_sec11 = resp_sec11.getheader("Set-Cookie", "")
     test("SEC11: forwarded HTTPS GET /api/operator/sessions → 200", resp_sec11.status == 200)
     test("SEC11: forwarded HTTPS GET /api/operator/sessions sets token cookie", "browse_token=test-token-operator" in cookie_sec11)
-    test("SEC11: forwarded HTTPS GET /api/operator/sessions sets Secure cookie", "Secure" in cookie_sec11)
+    # Issue #33: without BROWSE_TRUSTED_PROXY, forwarded headers are NOT trusted → no Secure flag
+    test("SEC11: forwarded HTTPS without trusted-proxy → Secure flag NOT set", "Secure" not in cookie_sec11)
     _ = resp_sec11.read()
 
     conn_sec12 = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
@@ -1118,8 +1202,45 @@ def _run_api_tests(port: int):
     cookie_sec12 = resp_sec12.getheader("Set-Cookie", "")
     test("SEC12: forwarded HTTPS GET /v2/chat → 200", resp_sec12.status == 200)
     test("SEC12: forwarded HTTPS GET /v2/chat sets token cookie", "browse_token=test-token-operator" in cookie_sec12)
-    test("SEC12: forwarded HTTPS GET /v2/chat sets Secure cookie", "Secure" in cookie_sec12)
+    # Issue #33: without BROWSE_TRUSTED_PROXY, forwarded headers are NOT trusted → no Secure flag
+    test("SEC12: forwarded HTTPS without trusted-proxy → Secure flag NOT set", "Secure" not in cookie_sec12)
     _ = resp_sec12.read()
+
+    # SEC34: with BROWSE_TRUSTED_PROXY=1 explicit opt-in, forwarded HTTPS DOES set Secure cookie
+    import os as _sec34_os
+    _sec34_os.environ["BROWSE_TRUSTED_PROXY"] = "1"
+    try:
+        conn_sec34a = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_sec34a.request(
+            "GET",
+            f"/api/operator/sessions?token={_TOKEN}",
+            headers={
+                "Host": "copilot.linhngo.dev",
+                "X-Forwarded-Proto": "https",
+            },
+        )
+        resp_sec34a = conn_sec34a.getresponse()
+        cookie_sec34a = resp_sec34a.getheader("Set-Cookie", "")
+        test("SEC34: trusted-proxy GET /api/operator/sessions → 200", resp_sec34a.status == 200)
+        test("SEC34: trusted-proxy sets Secure cookie on /api/operator/sessions", "Secure" in cookie_sec34a)
+        _ = resp_sec34a.read()
+
+        conn_sec34b = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_sec34b.request(
+            "GET",
+            f"/v2/chat?token={_TOKEN}",
+            headers={
+                "Host": "copilot.linhngo.dev",
+                "X-Forwarded-Proto": "https",
+            },
+        )
+        resp_sec34b = conn_sec34b.getresponse()
+        cookie_sec34b = resp_sec34b.getheader("Set-Cookie", "")
+        test("SEC34: trusted-proxy GET /v2/chat → 200", resp_sec34b.status == 200)
+        test("SEC34: trusted-proxy sets Secure cookie on /v2/chat", "Secure" in cookie_sec34b)
+        _ = resp_sec34b.read()
+    finally:
+        _sec34_os.environ.pop("BROWSE_TRUSTED_PROXY", None)
 
     if session_id:
         resp4 = _get(port, f"/api/operator/sessions/{session_id}")
@@ -1580,6 +1701,110 @@ def _run_api_tests(port: int):
         test("CORS8: ACAO header on capabilities", acao_cap == "https://agents.linhngo.dev")
         _ = resp_cap_cors.read()
 
+        # ── Issue #27: diagnostics/non-operator /api/ routes must have deterministic
+        #   CORS behaviour for allowlisted origins (GET + OPTIONS coverage) ──────────
+
+        # CORS9: OPTIONS preflight for a non-operator /api/ route with allowlisted origin → 204
+        # (uses /api/sessions which is registered as a GET endpoint)
+        conn_diag_opts = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_diag_opts.request(
+            "OPTIONS",
+            "/api/sessions",
+            headers={
+                "Origin": "https://agents.linhngo.dev",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "Authorization",
+            },
+        )
+        resp_diag_opts = conn_diag_opts.getresponse()
+        _ = resp_diag_opts.read()
+        test("CORS9: OPTIONS for non-operator /api/ route allowlisted → 204", resp_diag_opts.status == 204)
+        acao_diag = resp_diag_opts.getheader("Access-Control-Allow-Origin", "")
+        test("CORS9: ACAO header on non-operator OPTIONS", acao_diag == "https://agents.linhngo.dev")
+        acam_diag = resp_diag_opts.getheader("Access-Control-Allow-Methods", "")
+        test("CORS9: ACAM for non-operator OPTIONS is GET, OPTIONS", acam_diag == "GET, OPTIONS")
+
+        # CORS10: OPTIONS for non-operator /api/ route with non-allowlisted origin → 403
+        conn_diag_opts_bad = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_diag_opts_bad.request(
+            "OPTIONS",
+            "/api/sessions",
+            headers={
+                "Origin": "https://evil.example.com",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        resp_diag_opts_bad = conn_diag_opts_bad.getresponse()
+        _ = resp_diag_opts_bad.read()
+        test("CORS10: OPTIONS for non-operator /api/ non-allowlisted → 403", resp_diag_opts_bad.status == 403)
+
+        # CORS11: GET non-operator /api/ route with allowlisted origin → ACAO header present
+        # (proves GET cross-origin response is deterministic for allowlisted origins)
+        conn_diag_get = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_diag_get.request(
+            "GET",
+            f"/api/sessions?token={_TOKEN}",
+            headers={"Origin": "https://agents.linhngo.dev"},
+        )
+        resp_diag_get = conn_diag_get.getresponse()
+        acao_diag_get = resp_diag_get.getheader("Access-Control-Allow-Origin", "")
+        test("CORS11: GET non-operator /api/ allowlisted origin → ACAO present",
+             acao_diag_get == "https://agents.linhngo.dev")
+        _ = resp_diag_get.read()
+
+        # CORS12: GET non-operator /api/ route with non-allowlisted origin → no ACAO header
+        conn_diag_get_bad = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_diag_get_bad.request(
+            "GET",
+            f"/api/sessions?token={_TOKEN}",
+            headers={"Origin": "https://evil.example.com"},
+        )
+        resp_diag_get_bad = conn_diag_get_bad.getresponse()
+        acao_diag_get_bad = resp_diag_get_bad.getheader("Access-Control-Allow-Origin", "")
+        test("CORS12: GET non-operator /api/ non-allowlisted origin → no ACAO header",
+             acao_diag_get_bad == "")
+        _ = resp_diag_get_bad.read()
+
+        # CORS13: allowlisted POST to non-operator /api/ route still returns ACAO on CSRF 403
+        raw_diag_post = json.dumps({"ignored": True}).encode("utf-8")
+        conn_diag_post = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_diag_post.request(
+            "POST",
+            "/api/sessions",
+            body=raw_diag_post,
+            headers={
+                "Origin": "https://agents.linhngo.dev",
+                "Authorization": f"Bearer {_TOKEN}",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(raw_diag_post)),
+            },
+        )
+        resp_diag_post = conn_diag_post.getresponse()
+        acao_diag_post = resp_diag_post.getheader("Access-Control-Allow-Origin", "")
+        _ = resp_diag_post.read()
+        test("CORS13: POST non-operator /api/ allowlisted origin → 403", resp_diag_post.status == 403)
+        test("CORS13: ACAO present on non-operator POST 403", acao_diag_post == "https://agents.linhngo.dev")
+
+        # CORS14: allowlisted POST to unknown operator route returns ACAO on 404
+        raw_missing_post = json.dumps({"ignored": True}).encode("utf-8")
+        conn_missing_post = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn_missing_post.request(
+            "POST",
+            "/api/operator/does-not-exist",
+            body=raw_missing_post,
+            headers={
+                "Origin": "https://agents.linhngo.dev",
+                "Authorization": f"Bearer {_TOKEN}",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(raw_missing_post)),
+            },
+        )
+        resp_missing_post = conn_missing_post.getresponse()
+        acao_missing_post = resp_missing_post.getheader("Access-Control-Allow-Origin", "")
+        _ = resp_missing_post.read()
+        test("CORS14: POST unknown operator route allowlisted origin → 404", resp_missing_post.status == 404)
+        test("CORS14: ACAO present on operator POST 404", acao_missing_post == "https://agents.linhngo.dev")
+
     finally:
         _os.environ.pop("BROWSE_CORS_ORIGINS", None)
 
@@ -1726,6 +1951,7 @@ if __name__ == "__main__":
     test_oc35_normalize_model_id_preserves_legacy_suffixes()
     test_sec7_check_origin_unit()
     test_sec8_make_cookie_header_secure_flag()
+    test_sec33_is_https_untrusted_by_default()
     test_oc36_start_run_with_attachments_stages_files()
     test_oc37_start_run_attachment_argv_contains_path_mention()
     test_oc38_start_run_original_prompt_not_augmented()

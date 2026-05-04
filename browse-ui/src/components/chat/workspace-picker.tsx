@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { Eye, EyeOff, FolderOpen } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { POPUP_SURFACE_BASE } from "@/components/ui/popup-surface";
 import { useDebounce } from "@/hooks/use-debounce";
 import { usePathSuggest } from "@/lib/api/hooks";
 import { LOCAL_HOST, isOperatorHostEnabled } from "@/lib/host-profiles";
@@ -155,8 +156,10 @@ export function WorkspacePicker({
       {open && suggestions.length > 0 ? (
         <ul
           role="listbox"
-          className="border-border bg-popover text-popover-foreground absolute top-full z-[60] mt-1 max-h-48 w-full overflow-auto rounded-lg border shadow-md"
-          style={{ opacity: 1 }}
+          className={cn(
+            POPUP_SURFACE_BASE,
+            "absolute top-full z-[60] mt-1 max-h-48 w-full overflow-auto rounded-lg"
+          )}
         >
           {suggestions.map((suggestion, index) => (
             <li

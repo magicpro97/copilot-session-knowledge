@@ -4,6 +4,7 @@ import * as React from "react";
 import { Command as CommandPrimitive } from "cmdk";
 
 import { cn } from "@/lib/utils";
+import { POPUP_SURFACE_BG } from "@/components/ui/popup-surface";
 import {
   Dialog,
   DialogContent,
@@ -19,7 +20,8 @@ function Command({ className, ...props }: React.ComponentProps<typeof CommandPri
     <CommandPrimitive
       data-slot="command"
       className={cn(
-        "bg-popover text-popover-foreground flex size-full flex-col overflow-hidden rounded-xl! p-1",
+        POPUP_SURFACE_BG,
+        "flex size-full flex-col overflow-hidden rounded-xl! p-1",
         className
       )}
       {...props}

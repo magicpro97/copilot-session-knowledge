@@ -451,7 +451,15 @@ This is a code-level fix required in `browse/core/auth.py`: the check must accep
 
 #### Cookie `Secure` flag
 
-**Verified from source code:** The `browse_token` cookie is issued without the `Secure` attribute. Behind HTTPS (Cloudflare Tunnel), browsers accept and return the cookie correctly — the `Secure` flag would only be required for `SameSite=None` cookies, not for `SameSite=Strict`. All remote browse traffic goes through HTTPS, so this does not block functionality. It is a hardening gap: a future change to add `Secure` when serving behind HTTPS is recommended.
+**Verified from source code and tests:** forwarded HTTPS headers are trusted only when `BROWSE_TRUSTED_PROXY=1` (or `true` / `yes`) is set on the operator host. Without that opt-in, the server ignores `X-Forwarded-Proto` / `X-Forwarded-Ssl`, so auth cookies are still issued but **without** the `Secure` flag.
+
+**[action]** If you run browse behind Cloudflare Tunnel, ngrok, a load balancer, or any HTTPS reverse proxy, export:
+
+```bash
+export BROWSE_TRUSTED_PROXY=1
+```
+
+before starting `browse.py` (or add it to your service manager / LaunchAgent / systemd unit). This preserves the `Secure` flag on cookies for proxied HTTPS deployments while keeping untrusted forwarded headers disabled by default.
 
 #### Same-origin assumption in the UI (Cloudflare Tunnel deployment)
 
@@ -562,7 +570,7 @@ pnpm release:check
 
 The proof test is skipped in normal CI. `pnpm release:check` enables it explicitly and runs it in isolation, so the rest of the Playwright suite does not get forced onto the root-hosted artifact.
 
-**Verified repro (2026-05-03):** `https://agents-linhngo-dev.web.app/chat/` returned HTML with `/v2/_next/static/…` URLs. Requests to `/v2/_next/…` returned 404; requests to `/_next/…` returned 200. Root cause: the build included `basePath: "/v2"` in `next.config.ts`.
+**Verified repro (2026-05-03):** A root-hosted Firebase deployment of `browse-ui` returned HTML with `/v2/_next/static/…` URLs. Requests to `/v2/_next/…` returned 404; requests to `/_next/…` returned 200. Root cause: the build included `basePath: "/v2"` in `next.config.ts`.
 
 ### CORS and auth on the operator host
 
@@ -944,4 +952,3 @@ job summary. Read-only — no issues, commits, or DB writes.
 - [ ] Hosted smoke: open `https://<your-firebase-domain>/chat/` and verify header host dropdown, Settings → Hosts & connections card, and session create dialog host pre-population
 
 Until these steps are completed, the verification status should be read as "targeted checks passed; full gates pending".
-

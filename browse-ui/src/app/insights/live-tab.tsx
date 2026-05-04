@@ -30,7 +30,11 @@ function connectionTone(status: "connecting" | "open" | "closed"): string {
 function LiveTabContent({ active = true }: LiveTabProps) {
   const { host, diagnosticsEnabled } = useInsightsTab();
   const url = createLiveStreamUrl(host);
-  const { events, status, paused, toggle } = useSSE(url, { enabled: active && diagnosticsEnabled });
+  const { events, status, paused, toggle } = useSSE(url, {
+    enabled: active && diagnosticsEnabled,
+    transport: host.base_url ? "fetch" : "eventsource",
+    authToken: host.token || undefined,
+  });
 
   return (
     <section className="space-y-4">

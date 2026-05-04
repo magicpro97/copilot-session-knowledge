@@ -1,4 +1,4 @@
-// src/lib/api/client.test.ts — smoke test for apiFetch and hostFetch
+// src/lib/api/client.test.ts — smoke test for apiFetch, hostFetch, and buildHostUrl
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock sessionStorage
@@ -49,6 +49,41 @@ const REMOTE_HOST_FIXTURE = {
   is_default: false,
 };
 
+const REMOTE_HOST_WITH_PREFIX_FIXTURE = {
+  id: "prefixed-1",
+  label: "Prefixed Tunnel",
+  base_url: "https://proxy.example.com/copilot",
+  token: "prefix-secret",
+  cli_kind: "copilot",
+  is_default: false,
+};
+
+describe("buildHostUrl", () => {
+  it("appends path to base without path prefix", async () => {
+    const { buildHostUrl } = await import("./client");
+    const url = buildHostUrl("https://xyz.ngrok.io", "/api/sessions");
+    expect(url.toString()).toBe("https://xyz.ngrok.io/api/sessions");
+  });
+
+  it("preserves base path prefix when building URL (issue #31)", async () => {
+    const { buildHostUrl } = await import("./client");
+    const url = buildHostUrl("https://proxy.example.com/copilot", "/api/sessions");
+    expect(url.toString()).toBe("https://proxy.example.com/copilot/api/sessions");
+  });
+
+  it("handles trailing slash on base path prefix", async () => {
+    const { buildHostUrl } = await import("./client");
+    const url = buildHostUrl("https://proxy.example.com/copilot/", "/api/sessions");
+    expect(url.toString()).toBe("https://proxy.example.com/copilot/api/sessions");
+  });
+
+  it("handles path without leading slash", async () => {
+    const { buildHostUrl } = await import("./client");
+    const url = buildHostUrl("https://xyz.ngrok.io", "api/sessions");
+    expect(url.toString()).toBe("https://xyz.ngrok.io/api/sessions");
+  });
+});
+
 describe("apiFetch", () => {
   beforeEach(() => {
     sessionStorageMock.clear();
@@ -75,7 +110,7 @@ describe("apiFetch", () => {
     expect(calledUrl).toContain("/api/test");
   });
 
-  it("injects token from sessionStorage", async () => {
+  it("sends token via Authorization header, not as a URL query param (issue #34)", async () => {
     sessionStorageMock.setItem("browse_token", "test-token-123");
 
     const mockFetch = vi.fn().mockResolvedValueOnce({
@@ -89,7 +124,10 @@ describe("apiFetch", () => {
     await apiFetch("/api/sessions");
 
     const calledUrl = mockFetch.mock.calls[0][0] as string;
-    expect(calledUrl).toContain("token=test-token-123");
+    expect(calledUrl).not.toContain("token=");
+
+    const calledHeaders = mockFetch.mock.calls[0][1]?.headers as Headers;
+    expect(calledHeaders?.get("Authorization")).toBe("Bearer test-token-123");
   });
 
   it("throws on non-ok response", async () => {
@@ -115,7 +153,7 @@ describe("hostFetch", () => {
     vi.restoreAllMocks();
   });
 
-  it("uses same-origin base for local host and injects token in URL", async () => {
+  it("uses same-origin base for local host and sends token via Authorization header (issue #34)", async () => {
     sessionStorageMock.setItem("browse_token", "local-token");
 
     const mockFetch = vi.fn().mockResolvedValueOnce({
@@ -130,10 +168,10 @@ describe("hostFetch", () => {
 
     const calledUrl = mockFetch.mock.calls[0][0] as string;
     expect(calledUrl).toContain("http://localhost");
-    expect(calledUrl).toContain("token=local-token");
+    expect(calledUrl).not.toContain("token=");
 
     const calledHeaders = mockFetch.mock.calls[0][1]?.headers as Headers;
-    expect(calledHeaders?.has("Authorization")).toBe(false);
+    expect(calledHeaders?.get("Authorization")).toBe("Bearer local-token");
   });
 
   it("uses remote base_url for remote host and sends Authorization header", async () => {
@@ -153,6 +191,21 @@ describe("hostFetch", () => {
 
     const calledHeaders = mockFetch.mock.calls[0][1]?.headers as Headers;
     expect(calledHeaders?.get("Authorization")).toBe("Bearer remote-secret");
+  });
+
+  it("preserves base_url path prefix when routing to remote host (issue #31)", async () => {
+    const mockFetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    globalThis.fetch = mockFetch;
+
+    const { hostFetch } = await import("./client");
+    await hostFetch("/api/operator/sessions", REMOTE_HOST_WITH_PREFIX_FIXTURE as never);
+
+    const calledUrl = mockFetch.mock.calls[0][0] as string;
+    expect(calledUrl).toBe("https://proxy.example.com/copilot/api/operator/sessions");
   });
 
   it("does not leak remote token in URL", async () => {
@@ -217,7 +270,10 @@ describe("hostFetch", () => {
     await hostFetch("/api/operator/sessions", localWithToken as never);
 
     const calledUrl = mockFetch.mock.calls[0][0] as string;
-    expect(calledUrl).toContain("token=profile-token");
-    expect(calledUrl).not.toContain("session-storage-token");
+    expect(calledUrl).not.toContain("token=");
+
+    const calledHeaders = mockFetch.mock.calls[0][1]?.headers as Headers;
+    expect(calledHeaders?.get("Authorization")).toBe("Bearer profile-token");
+    expect(calledHeaders?.get("Authorization")).not.toContain("session-storage-token");
   });
 });

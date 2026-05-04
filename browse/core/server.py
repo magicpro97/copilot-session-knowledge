@@ -149,9 +149,11 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # Compute CORS response headers for operator routes with allowlisted origins
+        # Compute CORS response headers for all /api/ routes with allowlisted origins
+        # (issue #27: diagnostics and other /api/ routes must behave deterministically
+        # for allowlisted origins, not just /api/operator/).
         cors_resp_headers: dict = {}
-        if path.startswith("/api/operator/"):
+        if path.startswith("/api/"):
             cors_ok, cors_origin = check_cors_origin(self.headers)
             if cors_ok:
                 cors_resp_headers = {
@@ -242,14 +244,20 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         self._handle_get_like(send_body=False)
 
     def do_OPTIONS(self) -> None:
-        """Handle CORS preflight requests for /api/operator/* routes only."""
+        """Handle CORS preflight requests for /api/* routes.
+
+        Allowlisted origins (BROWSE_CORS_ORIGINS) receive a 204 with CORS
+        headers.  Non-allowlisted origins receive 403.  Paths outside /api/
+        receive 405 (issue #27: deterministic cross-origin coverage for all
+        hosted API routes including diagnostics endpoints).
+        """
         from browse.core.auth import check_cors_origin
 
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        # Preflight is only supported for operator routes
-        if not path.startswith("/api/operator/"):
+        # Preflight is only supported for /api/ routes
+        if not path.startswith("/api/"):
             self.send_response(405)
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -262,9 +270,11 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        allow_methods = "GET, POST, DELETE, OPTIONS" if path.startswith("/api/operator/") else "GET, OPTIONS"
+
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", cors_origin)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", allow_methods)
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Access-Control-Max-Age", "86400")
         self.send_header("Vary", "Origin")
@@ -282,18 +292,17 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
         nonce = generate_nonce()
 
-        # CORS allowlist check for operator routes (cross-origin POST/DELETE from static UI)
+        # CORS allowlist check for all /api/ routes (issue #27: deterministic
+        # cross-origin behaviour for allowlisted origins beyond /api/operator/).
+        # CSRF bypass is restricted to operator routes only.
         is_operator_path = path.startswith("/api/operator/")
         cors_resp_headers: dict = {}
-        if is_operator_path:
-            cors_ok, cors_origin = check_cors_origin(self.headers)
-            if cors_ok:
-                cors_resp_headers = {
-                    "Access-Control-Allow-Origin": cors_origin,
-                    "Vary": "Origin",
-                }
-        else:
-            cors_ok, cors_origin = False, ""
+        cors_ok, cors_origin = check_cors_origin(self.headers) if path.startswith("/api/") else (False, "")
+        if cors_ok:
+            cors_resp_headers = {
+                "Access-Control-Allow-Origin": cors_origin,
+                "Vary": "Origin",
+            }
 
         # Auth check (Bearer header, cookie, or query-string token)
         cookie_header = self.headers.get("Cookie", "")
@@ -317,7 +326,13 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             host = self.headers.get("Host", "")
             origin_ok, is_https = check_origin(self.headers, host)
             if not origin_ok:
-                self._send(b"403 Forbidden", "text/plain", 403, nonce)
+                self._send(
+                    b"403 Forbidden",
+                    "text/plain",
+                    403,
+                    nonce,
+                    cors_headers=cors_resp_headers or None,
+                )
                 return
 
         # Body size guard (10 KB)
@@ -327,7 +342,13 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         except (ValueError, TypeError):
             content_length = 0
         if content_length > _MAX_BODY:
-            self._send(b"413 Request Entity Too Large", "text/plain", 413, nonce)
+            self._send(
+                b"413 Request Entity Too Large",
+                "text/plain",
+                413,
+                nonce,
+                cors_headers=cors_resp_headers or None,
+            )
             return
         body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
 
@@ -338,7 +359,13 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         # Route dispatch
         handler_fn, kwargs = match_route(path, method)
         if handler_fn is None:
-            self._send(b"404 Not Found", "text/plain", 404, nonce)
+            self._send(
+                b"404 Not Found",
+                "text/plain",
+                404,
+                nonce,
+                cors_headers=cors_resp_headers or None,
+            )
             return
 
         try:

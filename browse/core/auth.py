@@ -107,7 +107,19 @@ def make_cookie_header(token: str, secure: bool = False) -> str:
 
 
 def is_https_request(request_headers: object) -> bool:
-    """Return True when a trusted reverse proxy reports HTTPS transport."""
+    """Return True when a trusted reverse proxy reports HTTPS transport.
+
+    Forwarded headers (``X-Forwarded-Proto``, ``X-Forwarded-Ssl``) are only
+    trusted when ``BROWSE_TRUSTED_PROXY`` is explicitly set to ``1``,
+    ``true``, or ``yes``.  The safe **default is untrusted** — a client
+    cannot force HTTPS cookie behaviour just by sending forwarded headers
+    (fixes issue #33).
+
+    To enable trusted-proxy mode:
+      BROWSE_TRUSTED_PROXY=1  (or true / yes)
+    """
+    if os.environ.get("BROWSE_TRUSTED_PROXY", "").strip().lower() not in ("1", "true", "yes"):
+        return False
     forwarded_proto = request_headers.get("X-Forwarded-Proto", "").strip().lower()
     forwarded_ssl = request_headers.get("X-Forwarded-Ssl", "").strip().lower()
     return forwarded_proto == "https" or forwarded_ssl == "on"

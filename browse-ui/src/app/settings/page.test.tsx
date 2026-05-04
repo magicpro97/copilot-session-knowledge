@@ -332,6 +332,7 @@ describe("SettingsPage — Hosts & connections card", () => {
   });
 
   it("adds a new remote host and shows it in the list", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 200 })));
     render(<SettingsPage />);
     fireEvent.click(screen.getByRole("button", { name: "Add remote host" }));
     await waitFor(() => expect(screen.getByTestId("host-add-form")).toBeInTheDocument());
@@ -345,9 +346,11 @@ describe("SettingsPage — Hosts & connections card", () => {
     await waitFor(() => {
       expect(screen.getByText("My Laptop")).toBeInTheDocument();
     });
+    vi.unstubAllGlobals();
   });
 
   it("shows Restore local button when a remote host is active", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 200 })));
     render(<SettingsPage />);
     // Add and activate a remote host
     fireEvent.click(screen.getByRole("button", { name: "Add remote host" }));
@@ -359,5 +362,6 @@ describe("SettingsPage — Hosts & connections card", () => {
     await waitFor(() => {
       expect(screen.getByTestId("restore-local-btn")).toBeInTheDocument();
     });
+    vi.unstubAllGlobals();
   });
 });

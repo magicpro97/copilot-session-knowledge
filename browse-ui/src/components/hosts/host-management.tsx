@@ -1,7 +1,19 @@
 "use client";
 
 import { useEffect, useState, type ComponentProps } from "react";
-import { CheckCircle2, Globe, Plus, RotateCcw, ServerCog, Star, Trash2 } from "lucide-react";
+import {
+  AlertCircle,
+  Check,
+  CheckCircle2,
+  Copy,
+  Globe,
+  Loader2,
+  Plus,
+  RotateCcw,
+  ServerCog,
+  Star,
+  Trash2,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -11,6 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { buildHostUrl } from "@/lib/api/client";
 import type { HostProfile } from "@/lib/api/types";
 import {
   BROWSE_HOST_CHANGE_EVENT,
@@ -41,6 +54,52 @@ const CLI_KIND_OPTIONS = [
  * component — reads/writes localStorage directly via host-profiles helpers
  * and dispatches BROWSE_HOST_CHANGE_EVENT so the HostProvider reacts.
  */
+/** Returns the current control-plane origin when not running on localhost. */
+function getHostedOrigin(): string | null {
+  if (typeof window === "undefined") return null;
+  const origin = window.location.origin;
+  if (origin.includes("localhost") || origin.includes("127.0.0.1")) return null;
+  return origin;
+}
+
+/**
+ * Probes a remote host's operator capabilities endpoint from the browser context.
+ * Using an authenticated /api/* route exercises the real CORS + auth path for
+ * hosted control planes instead of the unauthenticated /healthz shortcut.
+ * Returns null on success, or an actionable error string on failure.
+ */
+async function probeRemoteHost(baseUrl: string, token: string): Promise<string | null> {
+  const origin = typeof window !== "undefined" ? window.location.origin : "this origin";
+  try {
+    const probeUrl = buildHostUrl(baseUrl, "/api/operator/capabilities");
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(probeUrl.toString(), {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.status === 401) {
+      return "Authentication failed (401) — the token was rejected. Check the auth token.";
+    }
+    if (res.status === 403) {
+      return `Forbidden (403) — check the token and that ${origin} is in the operator host CORS allowlist.`;
+    }
+    if (!res.ok) {
+      return `Host returned HTTP ${res.status}. Verify the tunnel URL and token.`;
+    }
+    return null;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return "Connection timed out (8 s). Check that the tunnel URL is reachable from your browser.";
+    }
+    return (
+      `Could not reach the host. Possible causes: tunnel not running, wrong URL, or ${origin} is not in the operator host CORS allowlist. ` +
+      "Check the operator host and try again."
+    );
+  }
+}
+
 export function HostManagement({ className, ...props }: ComponentProps<"div">) {
   const [allHosts, setAllHosts] = useState<HostProfile[]>([LOCAL_HOST]);
   const [selectedId, setSelectedIdLocal] = useState<string | null>(null);
@@ -49,6 +108,11 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
   const [newLabel, setNewLabel] = useState("");
   const [newToken, setNewToken] = useState("");
   const [newCliKind, setNewCliKind] = useState("copilot");
+  const [validating, setValidating] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [originCopied, setOriginCopied] = useState(false);
+
+  const hostedOrigin = getHostedOrigin();
 
   function refresh() {
     setAllHosts(getAllHostProfiles());
@@ -65,7 +129,42 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
     };
   }, []);
 
-  function handleAdd() {
+  async function handleAdd() {
+    const url = newUrl.trim();
+    if (!url) return;
+
+    setValidating(true);
+    setValidationError(null);
+
+    const error = await probeRemoteHost(url, newToken.trim());
+    if (error) {
+      setValidationError(error);
+      setValidating(false);
+      return;
+    }
+
+    const profile: HostProfile = {
+      id: `host-${Date.now()}`,
+      label: newLabel.trim() || url,
+      base_url: url,
+      token: newToken.trim(),
+      cli_kind: newCliKind,
+      is_default: false,
+    };
+    saveHostProfile(profile);
+    setSelectedHostId(profile.id);
+    setAddingNew(false);
+    setNewUrl("");
+    setNewLabel("");
+    setNewToken("");
+    setNewCliKind("copilot");
+    setValidating(false);
+    setValidationError(null);
+    refresh();
+  }
+
+  /** Saves the host profile without a browser-context probe (operator escape hatch). */
+  function handleAddSkipValidation() {
     const url = newUrl.trim();
     if (!url) return;
     const profile: HostProfile = {
@@ -83,7 +182,16 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
     setNewLabel("");
     setNewToken("");
     setNewCliKind("copilot");
+    setValidationError(null);
     refresh();
+  }
+
+  function handleCopyOrigin() {
+    if (!hostedOrigin) return;
+    void navigator.clipboard.writeText(hostedOrigin).then(() => {
+      setOriginCopied(true);
+      setTimeout(() => setOriginCopied(false), 1500);
+    });
   }
 
   function handleRemove(id: string) {
@@ -110,6 +218,33 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
 
   return (
     <div className={cn("space-y-4", className)} {...props}>
+      {/* Hosted control-plane origin — shown when not on localhost (issue #30) */}
+      {hostedOrigin ? (
+        <div
+          className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-xs"
+          data-testid="hosted-origin-strip"
+        >
+          <div className="min-w-0">
+            <p className="text-muted-foreground">Control-plane origin</p>
+            <p className="text-foreground truncate font-mono font-medium">{hostedOrigin}</p>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-7 shrink-0"
+            onClick={handleCopyOrigin}
+            aria-label="Copy control-plane origin"
+            data-testid="copy-origin-btn"
+          >
+            {originCopied ? (
+              <Check className="size-3.5 text-emerald-500" />
+            ) : (
+              <Copy className="size-3.5" />
+            )}
+          </Button>
+        </div>
+      ) : null}
       {/* Host list */}
       <div className="space-y-2">
         {/* LOCAL_HOST row */}
@@ -313,21 +448,53 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
                 setNewLabel("");
                 setNewToken("");
                 setNewCliKind("copilot");
+                setValidationError(null);
               }}
             >
               Cancel
             </Button>
+            {validationError ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={handleAddSkipValidation}
+                disabled={!newUrl.trim()}
+                data-testid="skip-validation-btn"
+                title="Save without browser-context validation"
+              >
+                Save anyway
+              </Button>
+            ) : null}
             <Button
               type="button"
               size="sm"
               className="h-7 text-xs"
-              onClick={handleAdd}
-              disabled={!newUrl.trim()}
+              onClick={() => void handleAdd()}
+              disabled={!newUrl.trim() || validating}
               data-testid="save-host-btn"
             >
-              Save host
+              {validating ? (
+                <>
+                  <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                  Validating…
+                </>
+              ) : (
+                "Save host"
+              )}
             </Button>
           </div>
+          {validationError ? (
+            <div
+              className="border-destructive/30 bg-destructive/5 text-destructive flex items-start gap-2 rounded-lg border px-3 py-2 text-xs"
+              data-testid="validation-error"
+              role="alert"
+            >
+              <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+              <p>{validationError}</p>
+            </div>
+          ) : null}
         </div>
       )}
     </div>

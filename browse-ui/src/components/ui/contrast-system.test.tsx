@@ -9,6 +9,7 @@ import "@testing-library/jest-dom";
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
+import { POPUP_SURFACE_BASE, POPUP_SURFACE_BG } from "@/components/ui/popup-surface";
 import { Select, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogOverlay } from "@/components/ui/dialog";
 import { Sheet, SheetOverlay } from "@/components/ui/sheet";
@@ -70,5 +71,37 @@ describe("Contrast system — overlay opacity", () => {
     const cls = overlay!.className;
     expect(cls).toContain("bg-black/30");
     expect(cls).not.toContain("bg-black/10");
+  });
+});
+
+describe("Popup surface constants — opaque surface enforcement", () => {
+  it("POPUP_SURFACE_BG includes bg-popover (opaque background token)", () => {
+    expect(POPUP_SURFACE_BG).toContain("bg-popover");
+    expect(POPUP_SURFACE_BG).not.toContain("bg-transparent");
+  });
+
+  it("POPUP_SURFACE_BG does not contain opacity-fraction classes", () => {
+    // Fraction classes like bg-popover/50 would make the surface semi-transparent
+    expect(POPUP_SURFACE_BG).not.toMatch(/bg-\w+\/\d+/);
+  });
+
+  it("POPUP_SURFACE_BASE includes ring-border, shadow-md, ring-1 (full panel tokens)", () => {
+    expect(POPUP_SURFACE_BASE).toContain("ring-border");
+    expect(POPUP_SURFACE_BASE).toContain("shadow-md");
+    expect(POPUP_SURFACE_BASE).toContain("ring-1");
+  });
+
+  it("POPUP_SURFACE_BASE is a superset of POPUP_SURFACE_BG", () => {
+    for (const token of POPUP_SURFACE_BG.split(" ")) {
+      expect(POPUP_SURFACE_BASE).toContain(token);
+    }
+  });
+
+  it("popup surface constants do not include glass/translucent style tokens", () => {
+    const forbidden = ["bg-transparent", "backdrop-blur", "opacity-0", "opacity-50"];
+    for (const f of forbidden) {
+      expect(POPUP_SURFACE_BASE).not.toContain(f);
+      expect(POPUP_SURFACE_BG).not.toContain(f);
+    }
   });
 });
