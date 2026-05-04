@@ -20,6 +20,7 @@ import difflib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -39,6 +40,11 @@ _EXEC_TIMEOUT = 300  # seconds: hard execution time limit per run
 _MAX_OUTPUT_LINES = 10_000  # events buffered per run
 _MAX_FILE_SIZE = 256 * 1024  # 256 KB: file preview size cap
 _MAX_SUGGESTIONS = 50  # path suggestions cap
+
+# ── Attachment / staged-file constants ────────────────────────────────────────
+
+_MAX_STAGED_FILES = 10  # maximum files per prompt submission
+_MAX_STAGED_FILE_BYTES = 5 * 1024 * 1024  # 5 MB per file (decoded)
 
 # ── Secret redaction patterns ─────────────────────────────────────────────────
 
@@ -139,6 +145,28 @@ def _runs_dir(session_id: str) -> Path:
     d = _state_dir() / "runs" / session_id
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _uploads_dir(session_id: str) -> Path:
+    """Return the staged-file root for a session, creating it if needed."""
+    d = _state_dir() / "uploads" / session_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _unique_upload_path(parent: Path, safe_name: str) -> Path:
+    """Return a non-colliding path inside ``parent`` for the given filename."""
+    candidate = parent / safe_name
+    if not candidate.exists():
+        return candidate
+    stem = Path(safe_name).stem or "file"
+    suffix = Path(safe_name).suffix
+    counter = 2
+    while True:
+        candidate = parent / f"{stem}-{counter}{suffix}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
 
 
 def confine_path(raw: str) -> Path | None:
@@ -398,9 +426,18 @@ def delete_session(session_id: str) -> bool:
     p = _sessions_dir() / f"{session_id}.json"
     try:
         p.unlink(missing_ok=True)
-        return True
     except OSError:
         return False
+
+    # Remove any staged upload files for this session.
+    uploads = _state_dir() / "uploads" / session_id
+    try:
+        if uploads.is_dir():
+            shutil.rmtree(uploads, ignore_errors=True)
+    except Exception:
+        pass
+
+    return True
 
 
 # ── Subprocess execution ──────────────────────────────────────────────────────
@@ -505,7 +542,7 @@ def _model_is_known_unavailable(model: str) -> bool:
     return bool(cached_models) and model_id not in cached_models
 
 
-def _build_copilot_argv(session: dict, prompt_text: str) -> list[str]:
+def _build_copilot_argv(session: dict, prompt_text: str, extra_add_dirs: list | None = None) -> list[str]:
     """Build the explicit argv used to invoke Copilot CLI."""
     argv = ["copilot", "-p", prompt_text]
 
@@ -532,6 +569,10 @@ def _build_copilot_argv(session: dict, prompt_text: str) -> list[str]:
     for add_dir in session.get("add_dirs", []):
         if add_dir:
             argv += ["--add-dir", add_dir]
+
+    for add_dir in extra_add_dirs or []:
+        if add_dir:
+            argv += ["--add-dir", str(add_dir)]
 
     argv += ["--output-format", "json"]
     return argv
@@ -679,10 +720,21 @@ def _persist_run(run_id: str) -> None:
         pass
 
 
-def start_run(session_id: str, prompt_text: str) -> str | None:
+def start_run(session_id: str, prompt_text: str, attachments: list | None = None) -> str | None:
     """Start a Copilot CLI run for the given session.
 
-    Returns run_id on success, None if session not found or prompt empty.
+    Args:
+        session_id:  The session to run against.
+        prompt_text: The user-visible prompt (stored as-is on the run record).
+        attachments: Optional list of pre-validated attachment dicts:
+                     [{"name": str, "data": bytes, "mime": str}, ...]
+                     Files are staged under the operator uploads directory and
+                     injected into the Copilot argv as @/absolute/path mentions.
+                     The caller is responsible for validating count, size, and
+                     that ``data`` contains decoded bytes (not base64).
+
+    Returns run_id on success, None if session not found, prompt empty, or
+    attachment staging fails.
     """
     session = get_session(session_id)
     if not session:
@@ -699,7 +751,63 @@ def start_run(session_id: str, prompt_text: str) -> str | None:
     if normalized_model != str(session.get("model", "")).strip():
         session["model"] = normalized_model[:64]
 
-    argv = _build_copilot_argv(session, prompt_text)
+    # ── Stage uploaded files and build @/path mentions ────────────────────────
+    staged_meta: list[dict] = []
+    augmented_prompt = prompt_text
+    extra_add_dirs: list[str] = []
+
+    if attachments:
+        if len(attachments) > _MAX_STAGED_FILES:
+            return None
+        run_upload_dir = _uploads_dir(session_id) / run_id
+        try:
+            run_upload_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return None
+
+        at_mentions: list[str] = []
+        for att in attachments:
+            raw_name = str(att.get("name", "")).strip()
+            # Keep only the filename component to prevent path traversal.
+            safe_name = Path(raw_name).name
+            if not safe_name:
+                shutil.rmtree(run_upload_dir, ignore_errors=True)
+                return None
+
+            decoded_bytes = att.get("data", b"")
+            if not isinstance(decoded_bytes, (bytes, bytearray)):
+                shutil.rmtree(run_upload_dir, ignore_errors=True)
+                return None
+            if len(decoded_bytes) > _MAX_STAGED_FILE_BYTES:
+                shutil.rmtree(run_upload_dir, ignore_errors=True)
+                return None
+
+            dest = _unique_upload_path(run_upload_dir, safe_name)
+            try:
+                dest.write_bytes(decoded_bytes)
+            except OSError:
+                shutil.rmtree(run_upload_dir, ignore_errors=True)
+                return None
+
+            mime = str(att.get("mime", "application/octet-stream")).strip()[:128]
+            staged_meta.append(
+                {
+                    "name": safe_name,
+                    "path": str(dest),
+                    "mime": mime,
+                    "size": len(decoded_bytes),
+                }
+            )
+            at_mentions.append(f"@{dest}")
+
+        if not at_mentions:
+            shutil.rmtree(run_upload_dir, ignore_errors=True)
+            return None
+
+        augmented_prompt = prompt_text + "\n" + "\n".join(at_mentions)
+        extra_add_dirs = [str(run_upload_dir)]
+
+    argv = _build_copilot_argv(session, augmented_prompt, extra_add_dirs=extra_add_dirs or None)
 
     workspace = session.get("workspace", "").strip()
     cwd = None
@@ -708,7 +816,7 @@ def start_run(session_id: str, prompt_text: str) -> str | None:
         if p is not None and p.is_dir():
             cwd = str(p)
 
-    run = {
+    run: dict = {
         "id": run_id,
         "session_id": session_id,
         "prompt": prompt_text[:2048],
@@ -719,6 +827,16 @@ def start_run(session_id: str, prompt_text: str) -> str | None:
         "events": [],
         "proc": None,
     }
+    if staged_meta:
+        run["attachments"] = staged_meta
+        run["files"] = [
+            {
+                "name": item["name"],
+                "type": item["mime"],
+                "size": item["size"],
+            }
+            for item in staged_meta
+        ]
 
     with _RUNS_LOCK:
         _ACTIVE_RUNS[run_id] = run

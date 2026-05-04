@@ -21,6 +21,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useDashboard } from "@/lib/api/hooks";
 import type { ModuleCount, RedFlag } from "@/lib/api/types";
 import { formatNumber, formatSessionIdBadgeText } from "@/lib/formatters";
+import { HostedIdleGuidance } from "./overview-tab";
+import { useInsightsTab } from "./insights-tab-context";
 
 type KpiTileProps = {
   label: string;
@@ -45,8 +47,17 @@ function KpiTile({ label, value, href }: KpiTileProps) {
 }
 
 export function DashboardTab() {
+  const { diagnosticsEnabled } = useInsightsTab();
+  if (!diagnosticsEnabled) {
+    return <HostedIdleGuidance />;
+  }
+  return <DashboardTabContent />;
+}
+
+function DashboardTabContent() {
+  const { host, diagnosticsEnabled } = useInsightsTab();
   const router = useRouter();
-  const dashboard = useDashboard();
+  const dashboard = useDashboard(host, diagnosticsEnabled);
 
   const redFlagColumns = useMemo<ColumnDef<RedFlag>[]>(
     () => [

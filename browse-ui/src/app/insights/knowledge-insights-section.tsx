@@ -15,6 +15,7 @@ import type {
 } from "@/lib/api/types";
 import { deriveWhyFromDetail } from "@/lib/insight-derive";
 import { formatNumber } from "@/lib/formatters";
+import { useInsightsTab } from "./insights-tab-context";
 
 const ENTRY_CATEGORY_LABELS: Record<string, string> = {
   mistakes: "Mistakes",
@@ -252,8 +253,9 @@ export function KnowledgeInsightsBody({
   );
 }
 
-export function KnowledgeInsightsSection() {
-  const insights = useKnowledgeInsights();
+function KnowledgeInsightsSectionContent() {
+  const { host, diagnosticsEnabled } = useInsightsTab();
+  const insights = useKnowledgeInsights(host, diagnosticsEnabled);
 
   if (insights.isSuccess && !insights.data) {
     return null;
@@ -322,4 +324,10 @@ export function KnowledgeInsightsSection() {
       </div>
     </details>
   );
+}
+
+export function KnowledgeInsightsSection() {
+  const { diagnosticsEnabled } = useInsightsTab();
+  if (!diagnosticsEnabled) return null;
+  return <KnowledgeInsightsSectionContent />;
 }

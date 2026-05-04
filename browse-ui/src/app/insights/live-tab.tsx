@@ -7,6 +7,9 @@ import { EmptyState } from "@/components/data/empty-state";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useSSE } from "@/hooks/use-sse";
+import { createLiveStreamUrl } from "@/lib/api/hooks";
+import { useInsightsTab } from "./insights-tab-context";
+import { HostedIdleGuidance } from "./overview-tab";
 
 type LiveTabProps = {
   active?: boolean;
@@ -24,8 +27,10 @@ function connectionTone(status: "connecting" | "open" | "closed"): string {
   return "text-[hsl(12_76%_46%)]";
 }
 
-export function LiveTab({ active = true }: LiveTabProps) {
-  const { events, status, paused, toggle } = useSSE("/api/live", { enabled: active });
+function LiveTabContent({ active = true }: LiveTabProps) {
+  const { host, diagnosticsEnabled } = useInsightsTab();
+  const url = createLiveStreamUrl(host);
+  const { events, status, paused, toggle } = useSSE(url, { enabled: active && diagnosticsEnabled });
 
   return (
     <section className="space-y-4">
@@ -56,4 +61,12 @@ export function LiveTab({ active = true }: LiveTabProps) {
       )}
     </section>
   );
+}
+
+export function LiveTab({ active = true }: LiveTabProps) {
+  const { diagnosticsEnabled } = useInsightsTab();
+  if (!diagnosticsEnabled) {
+    return <HostedIdleGuidance />;
+  }
+  return <LiveTabContent active={active} />;
 }

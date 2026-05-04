@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Terminal, Wrench } from "lucide-react";
+import { ChevronDown, ChevronUp, Terminal, Wrench, Paperclip } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { AssistantChunk } from "./stream-derive";
+import type { RunFileMetadata } from "@/lib/api/types";
 
 // ── Text chunk ──────────────────────────────────────────────────────────────
 
@@ -74,14 +75,44 @@ function ToolChunk({ chunk }: { chunk: AssistantChunk & { kind: "tool" } }) {
   );
 }
 
+// ── Sent file chip (compact, read-only) ─────────────────────────────────────
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function SentFileChip({ name, size }: { name: string; size: number }) {
+  return (
+    <span className="bg-primary/15 text-primary-foreground inline-flex max-w-[180px] items-center gap-1 rounded-full px-2 py-0.5 text-xs">
+      <Paperclip className="size-3 shrink-0 opacity-70" aria-hidden="true" />
+      <span className="min-w-0 truncate">{name}</span>
+      <span className="text-primary-foreground/60 shrink-0">{formatBytes(size)}</span>
+    </span>
+  );
+}
+
 // ── User bubble ─────────────────────────────────────────────────────────────
 
-type UserBubbleProps = { prompt: string; timestamp?: string };
+type UserBubbleProps = {
+  prompt: string;
+  timestamp?: string;
+  /** Files attached to this message (sent, read-only chips). */
+  files?: RunFileMetadata[];
+};
 
-export function UserBubble({ prompt, timestamp }: UserBubbleProps) {
+export function UserBubble({ prompt, timestamp, files }: UserBubbleProps) {
   return (
     <div className="flex justify-end">
       <div className="max-w-[80%] space-y-1">
+        {files && files.length > 0 ? (
+          <div className="flex flex-wrap justify-end gap-1 pb-0.5" aria-label="Attached files">
+            {files.map((f, index) => (
+              <SentFileChip key={`${f.name}-${f.size}-${index}`} name={f.name} size={f.size} />
+            ))}
+          </div>
+        ) : null}
         <div className="bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm">
           <p className="whitespace-pre-wrap">{prompt}</p>
         </div>

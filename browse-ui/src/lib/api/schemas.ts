@@ -905,9 +905,25 @@ export const createOperatorSessionRequestSchema = z.object({
   add_dirs: z.array(z.string()).optional(),
 });
 
+/** Schema for a single file queued before prompt submission. */
+export const queuedFileSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+  size: z.number().int().nonnegative(),
+  data: z.string(),
+});
+
+/** Schema for file metadata returned in run info. */
+export const runFileMetadataSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+  size: z.number().int().nonnegative(),
+});
+
 /** Request body for `POST /api/operator/sessions/{id}/prompt`. */
 export const promptRequestSchema = z.object({
   prompt: z.string().min(1),
+  files: z.array(queuedFileSchema).optional(),
 });
 
 /** Response from `POST /api/operator/sessions/{id}/prompt`. */
@@ -927,6 +943,7 @@ export const operatorRunInfoSchema = z.object({
   started_at: z.string(),
   finished_at: z.string().nullable(),
   events: z.array(copilotStreamFrameSchema),
+  files: z.array(runFileMetadataSchema).optional(),
 });
 
 /** Response from `GET /api/operator/sessions/{id}/status?run=<run_id>`. */

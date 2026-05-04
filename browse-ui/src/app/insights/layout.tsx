@@ -8,6 +8,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useHealth } from "@/lib/api/hooks";
 import { formatNumber } from "@/lib/formatters";
+import { LOCAL_HOST, getEffectiveHost } from "@/lib/host-profiles";
+import type { HostProfile } from "@/lib/api/types";
 import { KnowledgeTab } from "./knowledge-tab";
 import { LiveTab } from "./live-tab";
 import { RetroTab } from "./retro-tab";
@@ -41,7 +43,30 @@ function hashToInsightsTab(hash: string): InsightsTabKey | null {
 }
 
 export default function InsightsLayout({ children }: InsightsLayoutProps) {
-  const health = useHealth();
+  // Track the effective host and whether diagnostics requests are safe to fire.
+  // Initialise with safe SSR defaults; useEffect updates on the client.
+  const [host, setHost] = useState<HostProfile>(LOCAL_HOST);
+  const [diagnosticsEnabled, setDiagnosticsEnabled] = useState(false);
+
+  useEffect(() => {
+    const update = () => {
+      const h = getEffectiveHost();
+      setHost(h);
+      setDiagnosticsEnabled(
+        // Remote operator host selected — always safe to query
+        h.base_url !== "" ||
+          // Local browse served under /v2/ — same-origin backend is available
+          window.location.pathname.startsWith("/v2") ||
+          // Explicit API base configured at build time
+          Boolean(process.env.NEXT_PUBLIC_API_BASE)
+      );
+    };
+    update();
+    window.addEventListener("storage", update);
+    return () => window.removeEventListener("storage", update);
+  }, []);
+
+  const health = useHealth(host, diagnosticsEnabled);
   const [activeTab, setActiveTab] = useState<InsightsTabKey>("overview");
 
   useLayoutEffect(() => {
@@ -104,7 +129,9 @@ export default function InsightsLayout({ children }: InsightsLayoutProps) {
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline" className="gap-1.5">
             <Activity className={`size-3.5 ${getHealthTone(health.data?.status)}`} />
-            {health.isLoading ? (
+            {!diagnosticsEnabled ? (
+              <span>Health: select an agent host</span>
+            ) : health.isLoading ? (
               <span>Health: loading…</span>
             ) : health.isError ? (
               <span>Health: unavailable</span>
@@ -132,26 +159,26 @@ export default function InsightsLayout({ children }: InsightsLayoutProps) {
           <TabsTrigger value="live">Live feed</TabsTrigger>
           <TabsTrigger value="workflow">Workflow</TabsTrigger>
         </TabsList>
-        <InsightsTabContext.Provider value={{ setActiveTab }}>
+        <InsightsTabContext.Provider value={{ setActiveTab, host, diagnosticsEnabled }}>
           <TabsContent value="overview" className="min-w-0">
             {children}
           </TabsContent>
+          <TabsContent value="knowledge" className="min-w-0">
+            <KnowledgeTab />
+          </TabsContent>
+          <TabsContent value="retro" className="min-w-0">
+            <RetroTab />
+          </TabsContent>
+          <TabsContent value="search-quality" className="min-w-0">
+            <SearchQualityTab />
+          </TabsContent>
+          <TabsContent value="live" className="min-w-0">
+            <LiveTab active={activeTab === "live"} />
+          </TabsContent>
+          <TabsContent value="workflow" className="min-w-0">
+            <WorkflowTab />
+          </TabsContent>
         </InsightsTabContext.Provider>
-        <TabsContent value="knowledge" className="min-w-0">
-          <KnowledgeTab />
-        </TabsContent>
-        <TabsContent value="retro" className="min-w-0">
-          <RetroTab />
-        </TabsContent>
-        <TabsContent value="search-quality" className="min-w-0">
-          <SearchQualityTab />
-        </TabsContent>
-        <TabsContent value="live" className="min-w-0">
-          <LiveTab active={activeTab === "live"} />
-        </TabsContent>
-        <TabsContent value="workflow" className="min-w-0">
-          <WorkflowTab />
-        </TabsContent>
       </Tabs>
     </div>
   );

@@ -3,7 +3,9 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import InsightsLayout from "@/app/insights/layout";
+import { useInsightsTab } from "@/app/insights/insights-tab-context";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { LOCAL_HOST_ID } from "@/lib/host-profiles";
 
 // ── Next.js ──────────────────────────────────────────────────────────────────
 vi.mock("next/navigation", () => ({
@@ -58,6 +60,8 @@ describe("InsightsLayout — tab navigation", () => {
   beforeEach(() => {
     mockedUseKeyboardShortcuts.mockReset();
     mockedUseKeyboardShortcuts.mockImplementation(() => {});
+    // Simulate local browse so diagnostics requests are enabled
+    window.history.pushState({}, "", "/v2/insights");
   });
 
   it("renders all six tab triggers", () => {
@@ -199,6 +203,7 @@ describe("InsightsLayout — hash-based deep-linking", () => {
   beforeEach(() => {
     mockedUseKeyboardShortcuts.mockReset();
     mockedUseKeyboardShortcuts.mockImplementation(() => {});
+    window.history.pushState({}, "", "/v2/insights");
     window.location.hash = "";
     vi.spyOn(window.history, "replaceState").mockImplementation(() => undefined);
   });
@@ -249,10 +254,83 @@ describe("InsightsLayout — health badge", () => {
   beforeEach(() => {
     mockedUseKeyboardShortcuts.mockReset();
     mockedUseKeyboardShortcuts.mockImplementation(() => {});
+    // Simulate local browse so health data renders
+    window.history.pushState({}, "", "/v2/insights");
   });
 
   it("shows health status and session count", () => {
     render(<InsightsLayout>children</InsightsLayout>);
     expect(screen.getByText(/ok.*schema v5.*42 sessions/)).toBeInTheDocument();
+  });
+});
+
+describe("InsightsLayout — hosted-safe diagnostics", () => {
+  beforeEach(() => {
+    mockedUseKeyboardShortcuts.mockReset();
+    mockedUseKeyboardShortcuts.mockImplementation(() => {});
+    // Simulate Firebase-hosted root (no /v2/ path, no remote host in storage)
+    window.history.pushState({}, "", "/insights");
+    localStorage.clear();
+  });
+
+  it("shows 'select an agent host' guidance in health badge when no host is configured", () => {
+    render(<InsightsLayout>children</InsightsLayout>);
+    expect(screen.getByText("Health: select an agent host")).toBeInTheDocument();
+  });
+
+  it("does not show loading or error states when diagnostics are disabled", () => {
+    render(<InsightsLayout>children</InsightsLayout>);
+    expect(screen.queryByText("Health: loading…")).not.toBeInTheDocument();
+    expect(screen.queryByText("Health: unavailable")).not.toBeInTheDocument();
+  });
+
+  it("still renders all tab triggers even when diagnostics are disabled", () => {
+    render(<InsightsLayout>children</InsightsLayout>);
+    expect(screen.getByRole("tab", { name: "Overview" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Knowledge" })).toBeInTheDocument();
+  });
+});
+
+describe("InsightsLayout — context provides host and diagnosticsEnabled", () => {
+  beforeEach(() => {
+    mockedUseKeyboardShortcuts.mockReset();
+    mockedUseKeyboardShortcuts.mockImplementation(() => {});
+  });
+
+  // Render a spy as the overview children; overview is always inside the context provider.
+  function ContextSpy({ capture }: { capture: (v: ReturnType<typeof useInsightsTab>) => void }) {
+    const ctx = useInsightsTab();
+    capture(ctx);
+    return null;
+  }
+
+  it("exposes diagnosticsEnabled=false and LOCAL_HOST when on hosted static root (no remote host)", () => {
+    window.history.pushState({}, "", "/insights");
+    localStorage.clear();
+
+    let captured: ReturnType<typeof useInsightsTab> | undefined;
+    render(
+      <InsightsLayout>
+        <ContextSpy capture={(v) => (captured = v)} />
+      </InsightsLayout>
+    );
+
+    expect(captured?.diagnosticsEnabled).toBe(false);
+    expect(captured?.host.id).toBe(LOCAL_HOST_ID);
+  });
+
+  it("exposes diagnosticsEnabled=true when on local /v2/ path", () => {
+    window.history.pushState({}, "", "/v2/insights");
+    localStorage.clear();
+
+    let captured: ReturnType<typeof useInsightsTab> | undefined;
+    render(
+      <InsightsLayout>
+        <ContextSpy capture={(v) => (captured = v)} />
+      </InsightsLayout>
+    );
+
+    expect(captured?.diagnosticsEnabled).toBe(true);
+    expect(captured?.host.id).toBe(LOCAL_HOST_ID);
   });
 });

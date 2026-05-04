@@ -10,6 +10,7 @@ export function useSSE(url: string, options?: { enabled?: boolean }) {
   const [paused, setPaused] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const pausedRef = useRef(false);
+  const previousUrlRef = useRef<string | null>(null);
 
   const toggle = useCallback(() => {
     setPaused((prev) => {
@@ -20,6 +21,10 @@ export function useSSE(url: string, options?: { enabled?: boolean }) {
   }, []);
 
   useEffect(() => {
+    if (previousUrlRef.current !== url) {
+      setEvents([]);
+      previousUrlRef.current = url;
+    }
     if (options?.enabled === false) {
       setStatus("closed");
       return;

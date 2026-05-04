@@ -883,6 +883,172 @@ def test_oc35_normalize_model_id_preserves_legacy_suffixes():
     test("OC35: gpt-4-0613 stays unchanged", normalize_model_id("gpt-4-0613") == "gpt-4-0613")
 
 
+# ── Attachment / staged-file tests ────────────────────────────────────────────
+
+
+def test_oc36_start_run_with_attachments_stages_files():
+    """OC36: start_run with attachments writes files to disk and stores metadata on run."""
+    import base64
+
+    session = create_session("attach-stage-test")
+    content = b"hello from attachment"
+    attachments = [
+        {
+            "name": "test.txt",
+            "data": base64.b64decode(base64.b64encode(content)),  # decoded bytes
+            "mime": "text/plain",
+        }
+    ]
+    # Pass decoded bytes directly (API layer decodes before calling start_run)
+    attachments_decoded = [{"name": "test.txt", "data": content, "mime": "text/plain"}]
+    run_id = start_run(session["id"], "describe this file", attachments=attachments_decoded)
+    test("OC36: run_id returned", run_id is not None)
+    if run_id is None:
+        return
+
+    import time as _time
+    _time.sleep(0.05)  # let the thread write to _ACTIVE_RUNS
+
+    status = get_run_status(run_id)
+    test("OC36: run status not None", status is not None)
+    if status is None:
+        return
+
+    # The stored prompt must be the original (clean) prompt.
+    test("OC36: stored prompt is original text", status.get("prompt") == "describe this file")
+    test("OC36: attachments metadata on run", "attachments" in status)
+    test("OC36: public files metadata on run", "files" in status)
+
+    meta = status.get("attachments", [])
+    test("OC36: one attachment in metadata", len(meta) == 1)
+    if meta:
+        att = meta[0]
+        test("OC36: attachment name", att.get("name") == "test.txt")
+        test("OC36: attachment size", att.get("size") == len(content))
+        test("OC36: attachment path present", bool(att.get("path")))
+        # Verify the file was actually written to disk.
+        staged_path = att.get("path", "")
+        if staged_path:
+            test("OC36: staged file exists on disk", Path(staged_path).is_file())
+            test("OC36: staged file content correct", Path(staged_path).read_bytes() == content)
+            # Path must be under the operator state dir (not arbitrary).
+            state_root = _TEST_STATE_DIR
+            test("OC36: staged file is under operator state dir", staged_path.startswith(str(state_root)))
+    public_files = status.get("files", [])
+    test("OC36: one public file metadata entry", len(public_files) == 1)
+    if public_files:
+        test("OC36: public file name", public_files[0].get("name") == "test.txt")
+        test("OC36: public file type", public_files[0].get("type") == "text/plain")
+        test("OC36: public file size", public_files[0].get("size") == len(content))
+
+
+def test_oc37_start_run_attachment_argv_contains_path_mention():
+    """OC37: start_run with attachments builds @/path mention in augmented prompt."""
+    from browse.core.operator_console import _build_copilot_argv
+
+    # Build argv with extra_add_dirs to verify the @/path + --add-dir logic.
+    staged_dir = _TEST_STATE_DIR / "uploads" / "fake-session" / "fake-run"
+    staged_dir.mkdir(parents=True, exist_ok=True)
+    fake_file = staged_dir / "hello.txt"
+    fake_file.write_bytes(b"test")
+    try:
+        session = {
+            "name": "argv-test",
+            "model": "",
+            "mode": "",
+            "add_dirs": [],
+            "resume_ready": False,
+        }
+        augmented = f"my prompt\n@{fake_file}"
+        argv = _build_copilot_argv(session, augmented, extra_add_dirs=[str(staged_dir)])
+        test("OC37: @/path mention in argv[2]", f"@{fake_file}" in argv[2])
+        test("OC37: --add-dir in argv", "--add-dir" in argv)
+        add_dir_idx = argv.index("--add-dir")
+        test("OC37: --add-dir value is staged dir", argv[add_dir_idx + 1] == str(staged_dir))
+    finally:
+        fake_file.unlink(missing_ok=True)
+
+
+def test_oc38_start_run_original_prompt_not_augmented():
+    """OC38: the 'prompt' field on a run record is always the original user text."""
+    content = b"important context"
+    attachments_decoded = [{"name": "ctx.txt", "data": content, "mime": "text/plain"}]
+    session = create_session("prompt-clean-test")
+    run_id = start_run(session["id"], "what is in the file?", attachments=attachments_decoded)
+    test("OC38: run started", run_id is not None)
+    if run_id is None:
+        return
+    import time as _time
+    _time.sleep(0.05)
+    status = get_run_status(run_id)
+    if status:
+        stored_prompt = status.get("prompt", "")
+        test("OC38: stored prompt has no @/ mention", "@/" not in stored_prompt)
+        test("OC38: stored prompt is original text", stored_prompt == "what is in the file?")
+
+
+def test_oc39_delete_session_removes_staged_files():
+    """OC39: delete_session cleans up any staged upload files for the session."""
+    session = create_session("cleanup-test")
+    sid = session["id"]
+
+    # Manually create a staged uploads directory to simulate prior runs.
+    upload_dir = _TEST_STATE_DIR / "uploads" / sid / "fake-run-id"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    (upload_dir / "file.txt").write_bytes(b"data")
+
+    uploads_root = _TEST_STATE_DIR / "uploads" / sid
+    test("OC39: uploads dir exists before delete", uploads_root.is_dir())
+
+    ok = delete_session(sid)
+    test("OC39: delete_session returns True", ok)
+    test("OC39: uploads dir removed after delete", not uploads_root.exists())
+
+
+def test_oc40_start_run_duplicate_attachment_names_get_unique_paths():
+    """OC40: duplicate basenames stage to unique files instead of overwriting each other."""
+    session = create_session("duplicate-name-test")
+    attachments = [
+        {"name": "same.txt", "data": b"first", "mime": "text/plain"},
+        {"name": "same.txt", "data": b"second", "mime": "text/plain"},
+    ]
+    run_id = start_run(session["id"], "compare these files", attachments=attachments)
+    test("OC40: run started", run_id is not None)
+    if run_id is None:
+        return
+
+    import time as _time
+
+    _time.sleep(0.05)
+    status = get_run_status(run_id)
+    test("OC40: run status not None", status is not None)
+    if status is None:
+        return
+
+    meta = status.get("attachments", [])
+    test("OC40: two attachments persisted", len(meta) == 2)
+    if len(meta) == 2:
+        paths = [str(item.get("path", "")) for item in meta]
+        test("OC40: staged paths are unique", len(set(paths)) == 2)
+        contents = sorted(Path(path).read_bytes() for path in paths if path)
+        test("OC40: both file contents preserved", contents == [b"first", b"second"])
+
+
+def test_oc41_start_run_rejects_too_many_attachments():
+    """OC41: start_run enforces a hard attachment count limit for direct callers too."""
+    from browse.core.operator_console import _MAX_STAGED_FILES
+
+    session = create_session("too-many-attachments-test")
+    attachments = [
+        {"name": f"file-{i}.txt", "data": b"x", "mime": "text/plain"}
+        for i in range(_MAX_STAGED_FILES + 1)
+    ]
+    run_id = start_run(session["id"], "too many files", attachments=attachments)
+    test("OC41: too many attachments return None", run_id is None)
+    uploads_root = _TEST_STATE_DIR / "uploads" / session["id"]
+    test("OC41: uploads directory not created", not uploads_root.exists())
+
+
 def run_api_tests():
     server, port = _make_test_server()
     try:
@@ -1417,6 +1583,106 @@ def _run_api_tests(port: int):
     finally:
         _os.environ.pop("BROWSE_CORS_ORIGINS", None)
 
+    # ── Attachment API tests ──────────────────────────────────────────────────
+    import base64 as _base64
+
+    att_session_resp = _post(port, "/api/operator/sessions", {"name": "att-api-test"})
+    att_session_id = _read_json(att_session_resp).get("id", "")
+
+    if att_session_id:
+        # API21: POST /prompt with valid files returns run_id
+        small_content = _base64.b64encode(b"hello attachment").decode()
+        resp_att = _post(
+            port,
+            f"/api/operator/sessions/{att_session_id}/prompt",
+            {
+                "prompt": "what is in the file?",
+                "files": [{"name": "hello.txt", "data": small_content, "type": "text/plain"}],
+            },
+        )
+        test("API21: prompt with files → 200", resp_att.status == 200)
+        data_att = _read_json(resp_att)
+        test("API21: run_id returned", "run_id" in data_att)
+        test("API21: status is running", data_att.get("status") == "running")
+        att_run_id = data_att.get("run_id", "")
+
+        if att_run_id:
+            import time as _time_api_status
+
+            _time_api_status.sleep(0.1)
+            resp_att_status = _get(port, f"/api/operator/sessions/{att_session_id}/status?run={att_run_id}")
+            test("API21b: status with files → 200", resp_att_status.status == 200)
+            data_att_status = _read_json(resp_att_status)
+            run_att_status = data_att_status.get("run") or {}
+            test("API21b: public files metadata present", isinstance(run_att_status.get("files"), list))
+            test("API21b: attachments hidden from status response", "attachments" not in run_att_status)
+
+            resp_att_runs = _get(port, f"/api/operator/sessions/{att_session_id}/runs")
+            test("API21c: runs with files → 200", resp_att_runs.status == 200)
+            data_att_runs = _read_json(resp_att_runs)
+            run_items = data_att_runs.get("runs") or []
+            if run_items:
+                test("API21c: attachments hidden from runs response", "attachments" not in run_items[0])
+                test("API21c: public files metadata present on runs response", isinstance(run_items[0].get("files"), list))
+
+        # API22: POST /prompt with too many files → 400
+        too_many = [{"name": f"f{i}.txt", "data": small_content, "type": "text/plain"} for i in range(11)]
+        resp_too_many = _post(
+            port,
+            f"/api/operator/sessions/{att_session_id}/prompt",
+            {"prompt": "too many files", "files": too_many},
+        )
+        test("API22: too many files → 400", resp_too_many.status == 400)
+        data22 = _read_json(resp_too_many)
+        test("API22: error code TOO_MANY_ATTACHMENTS", data22.get("code") == "TOO_MANY_ATTACHMENTS")
+        _ = resp_too_many.read() if hasattr(resp_too_many, "_closed") else None
+
+        # API23: POST /prompt with invalid base64 → 400
+        resp_bad_b64 = _post(
+            port,
+            f"/api/operator/sessions/{att_session_id}/prompt",
+            {
+                "prompt": "bad base64",
+                "files": [{"name": "bad.txt", "data": "!!!not-base64!!!"}],
+            },
+        )
+        test("API23: invalid base64 file → 400", resp_bad_b64.status == 400)
+        data23 = _read_json(resp_bad_b64)
+        test("API23: error code BAD_BASE64", data23.get("code") == "BAD_BASE64")
+
+        # API24: POST /prompt with non-list files → 400
+        resp_bad_shape = _post(
+            port,
+            f"/api/operator/sessions/{att_session_id}/prompt",
+            {"prompt": "bad shape", "files": "not-a-list"},
+        )
+        test("API24: files not a list → 400", resp_bad_shape.status == 400)
+        data24 = _read_json(resp_bad_shape)
+        test("API24: error code BAD_ATTACHMENTS", data24.get("code") == "BAD_ATTACHMENTS")
+
+        # API25: Deleting a session removes its staged upload files
+        att_run_resp = _post(
+            port,
+            f"/api/operator/sessions/{att_session_id}/prompt",
+            {
+                "prompt": "stage before delete",
+                "files": [{"name": "staged.txt", "data": small_content, "type": "text/plain"}],
+            },
+        )
+        run_id_for_del = _read_json(att_run_resp).get("run_id", "")
+        if run_id_for_del:
+            import time as _time_api
+            _time_api.sleep(0.1)
+            run_st = get_run_status(run_id_for_del)
+            staged_path = ""
+            if run_st and run_st.get("attachments"):
+                staged_path = run_st["attachments"][0].get("path", "")
+
+        del_resp = _post(port, f"/api/operator/sessions/{att_session_id}/delete")
+        test("API25: delete with staged files → 200", del_resp.status == 200)
+        if staged_path:
+            test("API25: staged file removed after session delete", not Path(staged_path).exists())
+
 
 if __name__ == "__main__":
     print("── operator_console unit tests ──────────────────────────────────────")
@@ -1460,6 +1726,10 @@ if __name__ == "__main__":
     test_oc35_normalize_model_id_preserves_legacy_suffixes()
     test_sec7_check_origin_unit()
     test_sec8_make_cookie_header_secure_flag()
+    test_oc36_start_run_with_attachments_stages_files()
+    test_oc37_start_run_attachment_argv_contains_path_mention()
+    test_oc38_start_run_original_prompt_not_augmented()
+    test_oc39_delete_session_removes_staged_files()
 
     print()
     print("── API route tests (live HTTP server) ───────────────────────────────")

@@ -3,6 +3,8 @@
 import { Badge } from "@/components/ui/badge";
 import { useRetro } from "@/lib/api/hooks";
 import { formatNumber } from "@/lib/formatters";
+import { HostedIdleGuidance } from "./overview-tab";
+import { useInsightsTab } from "./insights-tab-context";
 import { RetroBody } from "./retro-section";
 
 function scoreBadgeVariant(score: number): "outline" | "secondary" | "destructive" {
@@ -19,8 +21,9 @@ function confidenceBadgeVariant(
   return "destructive";
 }
 
-export function RetroTab() {
-  const retro = useRetro("repo");
+function RetroTabContent() {
+  const { host, diagnosticsEnabled } = useInsightsTab();
+  const retro = useRetro("repo", host, diagnosticsEnabled);
 
   return (
     <div className="space-y-4">
@@ -41,4 +44,12 @@ export function RetroTab() {
       <RetroBody retro={retro} />
     </div>
   );
+}
+
+export function RetroTab() {
+  const { diagnosticsEnabled } = useInsightsTab();
+  if (!diagnosticsEnabled) {
+    return <HostedIdleGuidance />;
+  }
+  return <RetroTabContent />;
 }

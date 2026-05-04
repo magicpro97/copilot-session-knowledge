@@ -4,6 +4,7 @@ import {
   combineQueryStrings,
   createOperatorStreamPath,
   createOperatorStreamUrl,
+  createLiveStreamUrl,
   createArrayQueryString,
   createQueryString,
   normalizeSessionsResponse,
@@ -69,10 +70,16 @@ describe("api hooks helpers", () => {
 
   it("builds stable query keys", () => {
     expect(queryKeys.sessionDetail("abc")).toEqual(["session-detail", "abc"]);
-    expect(queryKeys.health()).toEqual(["health"]);
-    expect(queryKeys.syncStatus()).toEqual(["sync-status"]);
-    expect(queryKeys.scoutStatus()).toEqual(["scout-status"]);
-    expect(queryKeys.tentacleStatus()).toEqual(["tentacle-status"]);
+    expect(queryKeys.health()).toEqual(["health", "local"]);
+    expect(queryKeys.syncStatus()).toEqual(["sync-status", "local"]);
+    expect(queryKeys.scoutStatus()).toEqual(["scout-status", "local"]);
+    expect(queryKeys.tentacleStatus()).toEqual(["tentacle-status", "local"]);
+    expect(queryKeys.scoutResearchPack()).toEqual(["scout-research-pack", "local"]);
+    expect(queryKeys.dashboard()).toEqual(["dashboard", "local"]);
+    expect(queryKeys.eval()).toEqual(["eval", "local"]);
+    expect(queryKeys.retro()).toEqual(["retro", "repo", "local"]);
+    expect(queryKeys.retro("local")).toEqual(["retro", "local", "local"]);
+    expect(queryKeys.knowledgeInsights()).toEqual(["knowledge-insights", "local"]);
     expect(queryKeys.graph({ wing: ["alpha"], limit: 10 })).toEqual([
       "graph",
       { wing: ["alpha"], limit: 10 },
@@ -230,5 +237,62 @@ describe("api hooks helpers", () => {
 
   it("createQueryString keeps empty operator suggest query empty for top-level results", () => {
     expect(createQueryString({ q: "" })).toBe("");
+  });
+
+  // ── Insights data query keys (host-scoped) ───────────────────────────
+
+  it("insights query keys default to LOCAL_HOST_ID when no host is given", () => {
+    expect(queryKeys.scoutResearchPack()).toEqual(["scout-research-pack", LOCAL_HOST_ID]);
+    expect(queryKeys.dashboard()).toEqual(["dashboard", LOCAL_HOST_ID]);
+    expect(queryKeys.eval()).toEqual(["eval", LOCAL_HOST_ID]);
+    expect(queryKeys.retro()).toEqual(["retro", "repo", LOCAL_HOST_ID]);
+    expect(queryKeys.retro("local")).toEqual(["retro", "local", LOCAL_HOST_ID]);
+    expect(queryKeys.knowledgeInsights()).toEqual(["knowledge-insights", LOCAL_HOST_ID]);
+  });
+
+  it("insights query keys are scoped by hostId to prevent cache collisions", () => {
+    expect(queryKeys.scoutResearchPack(LOCAL_HOST_ID)).not.toEqual(
+      queryKeys.scoutResearchPack(REMOTE_HOST.id)
+    );
+    expect(queryKeys.dashboard(LOCAL_HOST_ID)).not.toEqual(queryKeys.dashboard(REMOTE_HOST.id));
+    expect(queryKeys.eval(LOCAL_HOST_ID)).not.toEqual(queryKeys.eval(REMOTE_HOST.id));
+    expect(queryKeys.retro("repo", LOCAL_HOST_ID)).not.toEqual(
+      queryKeys.retro("repo", REMOTE_HOST.id)
+    );
+    expect(queryKeys.knowledgeInsights(LOCAL_HOST_ID)).not.toEqual(
+      queryKeys.knowledgeInsights(REMOTE_HOST.id)
+    );
+  });
+
+  it("workflowHealth query key defaults to LOCAL_HOST_ID", () => {
+    expect(queryKeys.workflowHealth()).toEqual(["workflow-health", LOCAL_HOST_ID]);
+  });
+
+  it("workflowHealth query key is scoped by hostId to prevent cache collisions", () => {
+    expect(queryKeys.workflowHealth(LOCAL_HOST_ID)).not.toEqual(
+      queryKeys.workflowHealth(REMOTE_HOST.id)
+    );
+    expect(queryKeys.workflowHealth(REMOTE_HOST.id)).toEqual(["workflow-health", REMOTE_HOST.id]);
+  });
+});
+
+describe("createLiveStreamUrl", () => {
+  it("uses remote base_url and appends token as query param", () => {
+    const url = createLiveStreamUrl(REMOTE_HOST);
+    expect(url).toBe("https://xyz.ngrok.io/api/live?token=secret");
+  });
+
+  it("uses same-origin for local host (no base_url)", () => {
+    // In test environment window.location.origin returns http://localhost:3000 (jsdom default)
+    const url = createLiveStreamUrl(LOCAL_HOST);
+    expect(url).toContain("/api/live");
+    expect(url).not.toContain("token=");
+  });
+
+  it("does not add token param when host has no token", () => {
+    const hostNoToken = { ...REMOTE_HOST, token: "" };
+    const url = createLiveStreamUrl(hostNoToken);
+    expect(url).not.toContain("token");
+    expect(url).toContain("/api/live");
   });
 });

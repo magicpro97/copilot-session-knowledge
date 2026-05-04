@@ -926,9 +926,33 @@ export interface CreateOperatorSessionRequest {
   add_dirs?: string[];
 }
 
+/** A file queued for attachment before prompt submission. */
+export interface QueuedFile {
+  /** User-visible filename. */
+  name: string;
+  /** MIME type. */
+  type: string;
+  /** Size in bytes. */
+  size: number;
+  /** Base64-encoded file content (data URL body, no prefix). Never shown in UI. */
+  data: string;
+}
+
+/** Metadata for a file attached to a run (returned by backend, no raw content). */
+export interface RunFileMetadata {
+  /** User-visible filename. */
+  name: string;
+  /** MIME type. */
+  type: string;
+  /** Size in bytes. */
+  size: number;
+}
+
 /** Request body for `POST /api/operator/sessions/{id}/prompt`. */
 export interface PromptRequest {
   prompt: string;
+  /** Files to stage server-side alongside this prompt. */
+  files?: QueuedFile[];
 }
 
 /** Response from `POST /api/operator/sessions/{id}/prompt`. */
@@ -948,6 +972,8 @@ export interface OperatorRunInfo {
   started_at: string;
   finished_at: string | null;
   events: CopilotStreamFrame[];
+  /** Files attached to this run (user-visible metadata only, no raw content). */
+  files?: RunFileMetadata[];
 }
 
 /** Response from `GET /api/operator/sessions/{id}/status?run=<run_id>`. */

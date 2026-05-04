@@ -17,6 +17,8 @@ import {
   getAllHostProfiles,
   saveHostProfile,
   deleteHostProfile,
+  setSelectedHostId,
+  clearSelectedHostId,
   LOCAL_HOST,
   LOCAL_HOST_ID,
 } from "@/lib/host-profiles";
@@ -70,6 +72,7 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
     const updated = getAllHostProfiles();
     setAllHosts(updated);
     onChange(profile);
+    setSelectedHostId(profile.id);
     setAddingNew(false);
     setNewUrl("");
     setNewLabel("");
@@ -83,6 +86,7 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
     setAllHosts(updated);
     if (value.id === id) {
       onChange(LOCAL_HOST);
+      clearSelectedHostId();
     }
   }
 
@@ -94,6 +98,11 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
           onValueChange={(id) => {
             const host = allHosts.find((h) => h.id === id) ?? LOCAL_HOST;
             onChange(host);
+            if (id && id !== LOCAL_HOST_ID) {
+              setSelectedHostId(id);
+            } else {
+              clearSelectedHostId();
+            }
           }}
           disabled={disabled}
         >

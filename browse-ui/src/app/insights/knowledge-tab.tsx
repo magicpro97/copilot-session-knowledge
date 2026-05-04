@@ -3,10 +3,13 @@
 import { Badge } from "@/components/ui/badge";
 import { useKnowledgeInsights } from "@/lib/api/hooks";
 import { formatNumber } from "@/lib/formatters";
+import { HostedIdleGuidance } from "./overview-tab";
+import { useInsightsTab } from "./insights-tab-context";
 import { KnowledgeInsightsBody } from "./knowledge-insights-section";
 
-export function KnowledgeTab() {
-  const insights = useKnowledgeInsights();
+function KnowledgeTabContent() {
+  const { host, diagnosticsEnabled } = useInsightsTab();
+  const insights = useKnowledgeInsights(host, diagnosticsEnabled);
 
   const alertCount = insights.data?.quality_alerts.length ?? 0;
   const criticalCount =
@@ -31,4 +34,12 @@ export function KnowledgeTab() {
       <KnowledgeInsightsBody insights={insights} />
     </div>
   );
+}
+
+export function KnowledgeTab() {
+  const { diagnosticsEnabled } = useInsightsTab();
+  if (!diagnosticsEnabled) {
+    return <HostedIdleGuidance />;
+  }
+  return <KnowledgeTabContent />;
 }

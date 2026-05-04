@@ -81,6 +81,9 @@ const baseTentacleData: TentacleStatusResponse = {
 };
 
 beforeEach(() => {
+  // Simulate local browse so diagnostics are enabled for existing tests
+  window.history.pushState({}, "", "/v2/settings");
+  localStorage.clear();
   mockedUseHealth.mockReturnValue(makeIdleQuery() as ReturnType<typeof useHealth>);
   mockedUseSyncStatus.mockReturnValue(makeIdleQuery() as ReturnType<typeof useSyncStatus>);
   mockedUseScoutStatus.mockReturnValue(makeIdleQuery() as ReturnType<typeof useScoutStatus>);
@@ -204,5 +207,50 @@ describe("SettingsPage — tentacle diagnostics card", () => {
 
     render(<SettingsPage />);
     expect(screen.getByText("goal-abc-123")).toBeInTheDocument();
+  });
+});
+
+describe("SettingsPage — hosted-safe diagnostics (no agent host)", () => {
+  beforeEach(() => {
+    // Simulate Firebase-hosted root: no /v2/ path, no remote host in localStorage
+    window.history.pushState({}, "", "/settings");
+    localStorage.clear();
+    mockedUseTentacleStatus.mockReturnValue(makeTentacleQuery({}));
+    mockedUseHealth.mockReturnValue(makeIdleQuery() as ReturnType<typeof useHealth>);
+    mockedUseSyncStatus.mockReturnValue(makeIdleQuery() as ReturnType<typeof useSyncStatus>);
+    mockedUseScoutStatus.mockReturnValue(makeIdleQuery() as ReturnType<typeof useScoutStatus>);
+    mockedUseSkillMetrics.mockReturnValue(makeIdleQuery() as ReturnType<typeof useSkillMetrics>);
+  });
+
+  it("shows idle guidance in the sync diagnostics card", () => {
+    render(<SettingsPage />);
+    expect(screen.getByTestId("sync-diagnostics-idle")).toBeInTheDocument();
+  });
+
+  it("shows idle guidance in the Trend Scout diagnostics card", () => {
+    render(<SettingsPage />);
+    expect(screen.getByTestId("scout-diagnostics-idle")).toBeInTheDocument();
+  });
+
+  it("shows idle guidance in the tentacle diagnostics card", () => {
+    render(<SettingsPage />);
+    expect(screen.getByTestId("tentacle-diagnostics-idle")).toBeInTheDocument();
+  });
+
+  it("shows idle guidance in the skill metrics card", () => {
+    render(<SettingsPage />);
+    expect(screen.getByTestId("skill-diagnostics-idle")).toBeInTheDocument();
+  });
+
+  it("shows idle guidance in the system health card", () => {
+    render(<SettingsPage />);
+    expect(screen.getByTestId("health-diagnostics-idle")).toBeInTheDocument();
+  });
+
+  it("does not render diagnostics loading skeletons when no host is configured", () => {
+    render(<SettingsPage />);
+    // Skeleton elements are only rendered inside the enabled branch, so they should not appear
+    // when diagnostics are disabled (no Skeleton components rendered)
+    expect(screen.queryAllByRole("status").length).toBe(0);
   });
 });

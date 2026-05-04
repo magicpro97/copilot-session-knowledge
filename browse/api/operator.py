@@ -18,6 +18,7 @@ SSE stream: follows live.py factory(stop_event) → generator pattern.
 Path confinement: all paths are validated to be under ~/; 403 returned otherwise.
 """
 
+import base64
 import json
 import os
 import sys
@@ -48,6 +49,8 @@ from browse.core.registry import route
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _MAX_PROMPT_LEN = 4096  # characters
+_MAX_ATTACHMENTS = 10  # max files per prompt submission
+_MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024  # 5 MB per decoded file
 
 
 def _parse_json_body(params: dict) -> tuple:
@@ -68,6 +71,65 @@ def _str_param(params: dict, key: str, default: str = "", max_len: int = 256) ->
     """Extract a string query parameter, capped to max_len."""
     val = params.get(key, [default])[0] or default
     return str(val).strip()[:max_len]
+
+
+def _public_run_info(run: dict | None) -> dict | None:
+    """Strip server-only attachment staging metadata from public API responses."""
+    if not isinstance(run, dict):
+        return None
+    return {key: value for key, value in run.items() if key != "attachments"}
+
+
+def _parse_attachments(body: dict) -> tuple:
+    """Parse and validate optional staged files from the request body.
+
+    Canonical request field is ``files``. ``attachments`` is accepted as a
+    backward-compatible alias while the contract settles.
+
+    Each item must be a dict with:
+      - ``name``  (str)  — filename (directory components are stripped)
+      - ``data``  (str)  — base64-encoded file content
+      - ``type``/``mime``  (str, optional) — MIME type hint
+
+    Returns ``(attachments: list[dict], error: tuple|None)`` where each item in the
+    returned list has ``name`` (str), ``data`` (bytes), and ``mime`` (str).
+    """
+    raw = body.get("files")
+    if raw is None:
+        raw = body.get("attachments")
+    if raw is None:
+        return [], None
+    if not isinstance(raw, list):
+        return [], json_error("'files' must be a list", "BAD_ATTACHMENTS", 400)
+    if len(raw) > _MAX_ATTACHMENTS:
+        return [], json_error(
+            f"too many attachments: maximum is {_MAX_ATTACHMENTS}",
+            "TOO_MANY_ATTACHMENTS",
+            400,
+        )
+    result = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            return [], json_error(f"attachment[{i}] must be an object", "BAD_ATTACHMENT", 400)
+        name = str(item.get("name", "")).strip()
+        if not name:
+            return [], json_error(f"attachment[{i}] missing 'name'", "BAD_ATTACHMENT", 400)
+        data_b64 = item.get("data")
+        if not isinstance(data_b64, str):
+            return [], json_error(f"attachment[{i}] 'data' must be a base64 string", "BAD_ATTACHMENT", 400)
+        try:
+            decoded = base64.b64decode(data_b64, validate=True)
+        except Exception:
+            return [], json_error(f"attachment[{i}] 'data' is not valid base64", "BAD_BASE64", 400)
+        if len(decoded) > _MAX_ATTACHMENT_BYTES:
+            return [], json_error(
+                f"attachment[{i}] exceeds maximum size of {_MAX_ATTACHMENT_BYTES} bytes",
+                "ATTACHMENT_TOO_LARGE",
+                400,
+            )
+        mime = str(item.get("type") or item.get("mime") or "application/octet-stream").strip()[:128]
+        result.append({"name": name, "data": decoded, "mime": mime})
+    return result, None
 
 
 # ── Host capabilities ─────────────────────────────────────────────────────────
@@ -173,7 +235,15 @@ def handle_delete_session_post(db, params, token, nonce, session_id: str = "") -
 def handle_run_prompt(db, params, token, nonce, session_id: str = "") -> tuple:
     """POST /api/operator/sessions/{id}/prompt — submit a prompt for execution.
 
-    Body: {"prompt": "<text>"}
+    Body:
+      {
+        "prompt": "<text>",
+        "files": [                              (optional, canonical)
+          {"name": "<filename>", "data": "<base64>", "type": "<optional>"},
+          ...
+        ]
+      }
+
     Returns: {"run_id": "...", "session_id": "...", "status": "running"}
     """
     session = get_session(session_id)
@@ -194,7 +264,11 @@ def handle_run_prompt(db, params, token, nonce, session_id: str = "") -> tuple:
             400,
         )
 
-    run_id = start_run(session_id, prompt_text)
+    attachments, att_err = _parse_attachments(body)
+    if att_err:
+        return att_err
+
+    run_id = start_run(session_id, prompt_text, attachments=attachments or None)
     if run_id is None:
         return json_error("failed to start run", "RUN_START_FAILED", 500)
 
@@ -235,7 +309,7 @@ def handle_status(db, params, token, nonce, session_id: str = "") -> tuple:
     run_id = _str_param(params, "run", max_len=64)
     run_status = None
     if run_id:
-        run_status = get_run_status(run_id)
+        run_status = _public_run_info(get_run_status(run_id))
 
     return json_ok({"session": session, "run": run_status})
 
@@ -250,7 +324,7 @@ def handle_list_runs(db, params, token, nonce, session_id: str = "") -> tuple:
     if session is None:
         return json_error(f"session '{session_id}' not found", "SESSION_NOT_FOUND", 404)
 
-    runs = list_runs(session_id)
+    runs = [_public_run_info(run) for run in list_runs(session_id)]
     return json_ok({"runs": runs, "count": len(runs)})
 
 

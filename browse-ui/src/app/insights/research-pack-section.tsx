@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useReloadScoutResearchPack, useScoutResearchPack } from "@/lib/api/hooks";
 import type { ResearchPackRepo } from "@/lib/api/types";
+import { useInsightsTab } from "./insights-tab-context";
 
 function RepoCard({ repo }: { repo: ResearchPackRepo }) {
   const hasNoveltySig = repo.novelty_signals.length > 0;
@@ -60,9 +61,10 @@ function RepoCard({ repo }: { repo: ResearchPackRepo }) {
   );
 }
 
-export function ResearchPackSection() {
-  const pack = useScoutResearchPack();
-  const reloadPack = useReloadScoutResearchPack();
+function ResearchPackSectionContent() {
+  const { host, diagnosticsEnabled } = useInsightsTab();
+  const pack = useScoutResearchPack(host, diagnosticsEnabled);
+  const reloadPack = useReloadScoutResearchPack(host);
   const reloadFailureDescription =
     reloadPack.error instanceof Error
       ? reloadPack.error.message
@@ -207,4 +209,10 @@ export function ResearchPackSection() {
       </div>
     </details>
   );
+}
+
+export function ResearchPackSection() {
+  const { diagnosticsEnabled } = useInsightsTab();
+  if (!diagnosticsEnabled) return null;
+  return <ResearchPackSectionContent />;
 }

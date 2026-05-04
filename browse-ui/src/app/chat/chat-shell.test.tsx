@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 beforeAll(() => {
@@ -351,5 +351,260 @@ describe("ChatShell — remote host passed to Transcript", () => {
 
     // The top-bar should display the remote host base_url as a badge title
     expect(screen.getByTitle("https://dev2.ngrok.io")).toBeInTheDocument();
+  });
+});
+
+describe("ChatShell — persisted selected-host reuse", () => {
+  it("shows remote host badge from persisted selection when no h= URL param", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const navigation = await import("next/navigation");
+    const { saveHostProfile, setSelectedHostId, clearSelectedHostId } =
+      await import("@/lib/host-profiles");
+
+    // Reset any prior persisted selection from earlier tests
+    clearSelectedHostId();
+
+    // Save a remote host profile and mark it as the persisted selection
+    saveHostProfile({
+      id: "persisted-remote-h1",
+      label: "Persisted Tunnel",
+      base_url: "https://persisted.ngrok.io",
+      token: "tok-p",
+      cli_kind: "copilot",
+      is_default: false,
+    });
+    setSelectedHostId("persisted-remote-h1");
+
+    // No h= param in URL — ChatShell must fall back to persisted selection
+    vi.mocked(navigation.useSearchParams).mockReturnValue(
+      new URLSearchParams() as ReturnType<typeof navigation.useSearchParams>
+    );
+
+    vi.mocked(hooks.useOperatorSession).mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorSession>);
+
+    render(<ChatShell />);
+
+    // Top-bar must show the persisted remote host as a badge even without a URL param
+    expect(screen.getByTitle("https://persisted.ngrok.io")).toBeInTheDocument();
+  });
+
+  it("h= URL param takes precedence over persisted selection", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const navigation = await import("next/navigation");
+    const { saveHostProfile, setSelectedHostId } = await import("@/lib/host-profiles");
+
+    saveHostProfile({
+      id: "remote-h2",
+      label: "Tunnel 2",
+      base_url: "https://dev2.ngrok.io",
+      token: "tok-2",
+      cli_kind: "copilot",
+      is_default: false,
+    });
+
+    // Persist a different host
+    saveHostProfile({
+      id: "persisted-other",
+      label: "Other Tunnel",
+      base_url: "https://other.ngrok.io",
+      token: "",
+      cli_kind: "copilot",
+      is_default: false,
+    });
+    setSelectedHostId("persisted-other");
+
+    // But URL has a specific h= param pointing to remote-h2 (saved earlier)
+    vi.mocked(navigation.useSearchParams).mockReturnValue(
+      new URLSearchParams("h=remote-h2") as ReturnType<typeof navigation.useSearchParams>
+    );
+
+    vi.mocked(hooks.useOperatorSession).mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorSession>);
+
+    render(<ChatShell />);
+
+    // h= param (remote-h2 = dev2.ngrok.io) wins over persisted (other.ngrok.io)
+    expect(screen.getByTitle("https://dev2.ngrok.io")).toBeInTheDocument();
+    expect(screen.queryByTitle("https://other.ngrok.io")).not.toBeInTheDocument();
+  });
+});
+
+// ─── Composer — file attachment UX ──────────────────────────────────────────
+
+/**
+ * Helper: set up a session so the Composer is rendered inside ChatShell.
+ */
+async function setupActiveSession() {
+  const hooks = await import("@/lib/api/hooks");
+  const navigation = await import("next/navigation");
+
+  vi.mocked(hooks.useOperatorSession).mockReturnValue({
+    data: {
+      id: "session-1",
+      name: "Test Session",
+      model: "gpt-5.4",
+      mode: "interactive",
+      workspace: "/projects/test",
+      add_dirs: [],
+      created_at: "2024-01-01T00:00:00Z",
+      updated_at: "2024-01-01T00:00:00Z",
+      run_count: 0,
+      last_run_id: null,
+      resume_ready: true,
+    },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof hooks.useOperatorSession>);
+
+  vi.mocked(hooks.useOperatorRuns).mockReturnValue({
+    data: { runs: [], count: 0 },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof hooks.useOperatorRuns>);
+
+  vi.mocked(navigation.useSearchParams).mockReturnValue(
+    new URLSearchParams("s=session-1") as ReturnType<typeof navigation.useSearchParams>
+  );
+}
+
+describe("Composer — file attachment button", () => {
+  it("renders the Attach files button when a session is active", async () => {
+    await setupActiveSession();
+    render(<ChatShell />);
+    expect(screen.getByRole("button", { name: "Attach files" })).toBeInTheDocument();
+  });
+
+  it("shows a queued file chip after a file is selected", async () => {
+    // FileReader is async — mock it to resolve synchronously
+    const originalFileReader = global.FileReader;
+    class MockFileReader {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      result = "data:text/plain;base64,aGVsbG8=";
+      readAsDataURL() {
+        setTimeout(() => this.onload?.(), 0);
+      }
+    }
+    global.FileReader = MockFileReader as unknown as typeof FileReader;
+
+    await setupActiveSession();
+    render(<ChatShell />);
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(fileInput).not.toBeNull();
+
+    const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+    Object.defineProperty(fileInput, "files", { value: [file], configurable: true });
+    fireEvent.change(fileInput);
+
+    await waitFor(() => {
+      expect(screen.getByText("notes.txt")).toBeInTheDocument();
+    });
+
+    global.FileReader = originalFileReader;
+  });
+
+  it("removes a queued file chip when the remove button is clicked", async () => {
+    const originalFileReader = global.FileReader;
+    class MockFileReader {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      result = "data:text/plain;base64,aGVsbG8=";
+      readAsDataURL() {
+        setTimeout(() => this.onload?.(), 0);
+      }
+    }
+    global.FileReader = MockFileReader as unknown as typeof FileReader;
+
+    await setupActiveSession();
+    render(<ChatShell />);
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(["hello"], "remove-me.txt", { type: "text/plain" });
+    Object.defineProperty(fileInput, "files", { value: [file], configurable: true });
+    fireEvent.change(fileInput);
+
+    await waitFor(() => {
+      expect(screen.getByText("remove-me.txt")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove remove-me.txt" }));
+    expect(screen.queryByText("remove-me.txt")).not.toBeInTheDocument();
+
+    global.FileReader = originalFileReader;
+  });
+});
+
+describe("ChatShell — run history with file attachments", () => {
+  it("renders file chips in a historical run's user bubble when files are present", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const navigation = await import("next/navigation");
+
+    vi.mocked(hooks.useOperatorRuns).mockReturnValue({
+      data: {
+        runs: [
+          {
+            id: "run-with-files",
+            session_id: "session-files",
+            prompt: "Analyze these files",
+            status: "done",
+            exit_code: 0,
+            started_at: "2024-01-01T00:00:00Z",
+            finished_at: "2024-01-01T00:01:00Z",
+            events: [],
+            files: [
+              { name: "report.pdf", type: "application/pdf", size: 204800 },
+              { name: "data.csv", type: "text/csv", size: 1024 },
+            ],
+          },
+        ],
+        count: 1,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorRuns>);
+
+    vi.mocked(hooks.useOperatorSession).mockReturnValue({
+      data: {
+        id: "session-files",
+        name: "Files Session",
+        model: "gpt-5.4",
+        mode: "interactive",
+        workspace: "/projects",
+        add_dirs: [],
+        created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:01:00Z",
+        run_count: 1,
+        last_run_id: "run-with-files",
+        resume_ready: true,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorSession>);
+
+    vi.mocked(navigation.useSearchParams).mockReturnValue(
+      new URLSearchParams("s=session-files") as ReturnType<typeof navigation.useSearchParams>
+    );
+
+    render(<ChatShell />);
+
+    // Prompt text should appear
+    expect(screen.getByText("Analyze these files")).toBeInTheDocument();
+    // File chips should appear
+    expect(screen.getByText("report.pdf")).toBeInTheDocument();
+    expect(screen.getByText("data.csv")).toBeInTheDocument();
   });
 });

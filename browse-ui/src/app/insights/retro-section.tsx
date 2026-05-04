@@ -8,6 +8,7 @@ import { useRetro } from "@/lib/api/hooks";
 import { deriveActionsFromStrings } from "@/lib/insight-derive";
 import { formatNumber } from "@/lib/formatters";
 import type { RetroBehavior, RetroScout, RetroToward100Item } from "@/lib/api/types";
+import { useInsightsTab } from "./insights-tab-context";
 
 const SECTION_LABELS: Record<string, string> = {
   knowledge: "Knowledge",
@@ -252,8 +253,9 @@ export function RetroBody({ retro }: { retro: ReturnType<typeof useRetro> }) {
   );
 }
 
-export function RetroSection() {
-  const retro = useRetro("repo");
+function RetroSectionContent() {
+  const { host, diagnosticsEnabled } = useInsightsTab();
+  const retro = useRetro("repo", host, diagnosticsEnabled);
 
   if (retro.isSuccess && !retro.data) {
     return null;
@@ -282,4 +284,10 @@ export function RetroSection() {
       </div>
     </details>
   );
+}
+
+export function RetroSection() {
+  const { diagnosticsEnabled } = useInsightsTab();
+  if (!diagnosticsEnabled) return null;
+  return <RetroSectionContent />;
 }

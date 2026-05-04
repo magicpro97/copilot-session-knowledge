@@ -11,6 +11,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useWorkflowHealth } from "@/lib/api/hooks";
 import type { WorkflowFinding } from "@/lib/api/types";
 import type { InsightFinding } from "@/lib/insight-models";
+import { useInsightsTab } from "./insights-tab-context";
+import { HostedIdleGuidance } from "./overview-tab";
 
 function gradeBadgeVariant(grade: string): "outline" | "secondary" | "destructive" {
   if (grade === "A" || grade === "B") return "outline";
@@ -28,8 +30,9 @@ function toInsightFinding(f: WorkflowFinding): InsightFinding {
   };
 }
 
-export function WorkflowTab() {
-  const workflow = useWorkflowHealth();
+function WorkflowTabContent() {
+  const { host, diagnosticsEnabled } = useInsightsTab();
+  const workflow = useWorkflowHealth(host, diagnosticsEnabled);
   const isReloading = workflow.isFetching && !workflow.isLoading;
 
   function handleReload() {
@@ -93,4 +96,12 @@ export function WorkflowTab() {
       ) : null}
     </div>
   );
+}
+
+export function WorkflowTab() {
+  const { diagnosticsEnabled } = useInsightsTab();
+  if (!diagnosticsEnabled) {
+    return <HostedIdleGuidance />;
+  }
+  return <WorkflowTabContent />;
 }

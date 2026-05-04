@@ -2,13 +2,26 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { KnowledgeInsightsSection } from "@/app/insights/knowledge-insights-section";
+import { InsightsTabContext } from "@/app/insights/insights-tab-context";
 import { useKnowledgeInsights } from "@/lib/api/hooks";
+import { LOCAL_HOST } from "@/lib/host-profiles";
 
 vi.mock("@/lib/api/hooks", () => ({
   useKnowledgeInsights: vi.fn(),
 }));
 
 const mockedUseKnowledgeInsights = vi.mocked(useKnowledgeInsights);
+
+/** Render inside a context that enables diagnostics (simulates local/remote-host mode). */
+function renderEnabled(ui: React.ReactElement) {
+  return render(
+    <InsightsTabContext.Provider
+      value={{ setActiveTab: vi.fn(), diagnosticsEnabled: true, host: LOCAL_HOST }}
+    >
+      {ui}
+    </InsightsTabContext.Provider>
+  );
+}
 
 const _baseInsightsData = {
   generated_at: "2026-01-01T00:00:00Z",
@@ -72,7 +85,7 @@ describe("KnowledgeInsightsSection", () => {
       refetch: vi.fn(),
     } as any);
 
-    render(<KnowledgeInsightsSection />);
+    renderEnabled(<KnowledgeInsightsSection />);
     // Section should be present
     expect(screen.getByText("Knowledge Insights")).toBeInTheDocument();
   });
@@ -87,7 +100,7 @@ describe("KnowledgeInsightsSection", () => {
       refetch: vi.fn(),
     } as any);
 
-    render(<KnowledgeInsightsSection />);
+    renderEnabled(<KnowledgeInsightsSection />);
     expect(screen.getByText("Knowledge Insights")).toBeInTheDocument();
     expect(screen.getByText("Everything looks healthy.")).toBeInTheDocument();
     expect(screen.getByText("Health score")).toBeInTheDocument();
@@ -105,7 +118,7 @@ describe("KnowledgeInsightsSection", () => {
       refetch: vi.fn(),
     } as any);
 
-    render(<KnowledgeInsightsSection />);
+    renderEnabled(<KnowledgeInsightsSection />);
     expect(screen.getByText("Quality alerts")).toBeInTheDocument();
     expect(screen.getByText(/Low confidence entries/)).toBeInTheDocument();
   });
@@ -120,7 +133,7 @@ describe("KnowledgeInsightsSection", () => {
       refetch: vi.fn(),
     } as any);
 
-    render(<KnowledgeInsightsSection />);
+    renderEnabled(<KnowledgeInsightsSection />);
     expect(screen.getByText("Recommended actions")).toBeInTheDocument();
     expect(screen.getByText("Re-extract knowledge")).toBeInTheDocument();
   });
@@ -135,7 +148,7 @@ describe("KnowledgeInsightsSection", () => {
       refetch: vi.fn(),
     } as any);
 
-    render(<KnowledgeInsightsSection />);
+    renderEnabled(<KnowledgeInsightsSection />);
     expect(screen.getByText("Hot files")).toBeInTheDocument();
     expect(screen.getByText("browse/api/__init__.py")).toBeInTheDocument();
     expect(screen.getByText("Recurring noise titles")).toBeInTheDocument();
@@ -152,7 +165,7 @@ describe("KnowledgeInsightsSection", () => {
       refetch: vi.fn(),
     } as any);
 
-    render(<KnowledgeInsightsSection />);
+    renderEnabled(<KnowledgeInsightsSection />);
     expect(screen.getByText("Representative entries by category")).toBeInTheDocument();
     expect(screen.getByText("Fix import ordering")).toBeInTheDocument();
   });
@@ -167,7 +180,7 @@ describe("KnowledgeInsightsSection", () => {
       refetch: vi.fn(),
     } as any);
 
-    render(<KnowledgeInsightsSection />);
+    renderEnabled(<KnowledgeInsightsSection />);
     expect(screen.getByText("Knowledge insights unavailable")).toBeInTheDocument();
     expect(screen.getByText("Network error")).toBeInTheDocument();
   });
@@ -192,7 +205,7 @@ describe("KnowledgeInsightsSection", () => {
       refetch: vi.fn(),
     } as any);
 
-    render(<KnowledgeInsightsSection />);
+    renderEnabled(<KnowledgeInsightsSection />);
     expect(screen.getByText("1 critical")).toBeInTheDocument();
   });
 
@@ -206,7 +219,7 @@ describe("KnowledgeInsightsSection", () => {
       refetch: vi.fn(),
     } as any);
 
-    const { container } = render(<KnowledgeInsightsSection />);
+    const { container } = renderEnabled(<KnowledgeInsightsSection />);
     expect(container.firstChild).toBeNull();
   });
 });
@@ -246,7 +259,7 @@ describe("Toward100Panel via KnowledgeInsightsSection", () => {
       refetch: vi.fn(),
     } as any);
 
-    render(<KnowledgeInsightsSection />);
+    renderEnabled(<KnowledgeInsightsSection />);
 
     expect(screen.getByText(/🎯 Toward 100/)).toBeInTheDocument();
     expect(screen.getByText("confidence_quality")).toBeInTheDocument();
@@ -264,7 +277,7 @@ describe("Toward100Panel via KnowledgeInsightsSection", () => {
       refetch: vi.fn(),
     } as any);
 
-    render(<KnowledgeInsightsSection />);
+    renderEnabled(<KnowledgeInsightsSection />);
 
     expect(screen.queryByText(/🎯 Toward 100/)).not.toBeInTheDocument();
   });
@@ -282,8 +295,32 @@ describe("Toward100Panel via KnowledgeInsightsSection", () => {
       refetch: vi.fn(),
     } as any);
 
-    render(<KnowledgeInsightsSection />);
+    renderEnabled(<KnowledgeInsightsSection />);
 
     expect(screen.queryByText(/🎯 Toward 100/)).not.toBeInTheDocument();
+  });
+});
+
+describe("KnowledgeInsightsSection hosted idle state", () => {
+  it("renders null when diagnosticsEnabled is false (hosted static mode)", () => {
+    mockedUseKnowledgeInsights.mockReturnValue({
+      data: _baseInsightsData,
+      isLoading: false,
+      isError: false,
+      isSuccess: true,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+
+    const { container } = render(
+      <InsightsTabContext.Provider
+        value={{ setActiveTab: vi.fn(), diagnosticsEnabled: false, host: LOCAL_HOST }}
+      >
+        <KnowledgeInsightsSection />
+      </InsightsTabContext.Provider>
+    );
+
+    // Section should not render at all — no API call fired in hosted static mode
+    expect(container.firstChild).toBeNull();
   });
 });

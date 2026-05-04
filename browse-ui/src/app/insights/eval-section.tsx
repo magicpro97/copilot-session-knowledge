@@ -17,6 +17,7 @@ import {
 import { useEval, useKnowledgeInsights } from "@/lib/api/hooks";
 import type { EvalAggRow, EvalComment } from "@/lib/api/types";
 import { formatNumber } from "@/lib/formatters";
+import { useInsightsTab } from "./insights-tab-context";
 
 function formatVerdict(verdict: -1 | 0 | 1): string {
   if (verdict === 1) return "👍";
@@ -63,7 +64,8 @@ function ApprovalHistogram({ rows }: { rows: EvalAggRow[] }) {
 
 /** Progress bar showing what fraction of knowledge entries have embeddings. */
 function EmbeddingCoverageStat() {
-  const insightsQuery = useKnowledgeInsights();
+  const { host, diagnosticsEnabled } = useInsightsTab();
+  const insightsQuery = useKnowledgeInsights(host, diagnosticsEnabled);
   const pct = insightsQuery.data?.overview?.embedding_pct;
   if (pct === undefined || pct === null) return null;
 
@@ -237,8 +239,9 @@ export function EvalBody({ evalQuery }: { evalQuery: ReturnType<typeof useEval> 
   );
 }
 
-export function EvalSection() {
-  const evalQuery = useEval();
+function EvalSectionContent() {
+  const { host, diagnosticsEnabled } = useInsightsTab();
+  const evalQuery = useEval(host, diagnosticsEnabled);
 
   const rows = useMemo(() => evalQuery.data?.aggregation ?? [], [evalQuery.data?.aggregation]);
 
@@ -262,4 +265,10 @@ export function EvalSection() {
       </div>
     </details>
   );
+}
+
+export function EvalSection() {
+  const { diagnosticsEnabled } = useInsightsTab();
+  if (!diagnosticsEnabled) return null;
+  return <EvalSectionContent />;
 }

@@ -16,21 +16,33 @@ import {
   useDeleteOperatorSession,
   useSubmitPrompt,
 } from "@/lib/api/hooks";
-import { getAllHostProfiles, LOCAL_HOST, LOCAL_HOST_ID } from "@/lib/host-profiles";
+import {
+  getAllHostProfiles,
+  getEffectiveHost,
+  setSelectedHostId,
+  clearSelectedHostId,
+  LOCAL_HOST,
+  LOCAL_HOST_ID,
+} from "@/lib/host-profiles";
 import { cn } from "@/lib/utils";
 import { SessionList } from "./session-list";
 import { SessionCreateDialog } from "./session-create-dialog";
 import { MetadataBar } from "./metadata-bar";
 import { Transcript } from "./transcript";
 import { Composer } from "./composer";
-import type { OperatorRunInfo, OperatorSession } from "@/lib/api/types";
+import type {
+  OperatorRunInfo,
+  OperatorSession,
+  QueuedFile,
+  RunFileMetadata,
+} from "@/lib/api/types";
 import type { CreateSessionPayload } from "./session-create-dialog";
 
 const SESSION_PARAM = "s";
 /** Stores the host profile id for the active session's agent host. */
 const HOST_PARAM = "h";
 
-type ActiveRun = { id: string; prompt: string };
+type ActiveRun = { id: string; prompt: string; files?: RunFileMetadata[] };
 
 export function ChatShell() {
   const router = useRouter();
@@ -43,14 +55,18 @@ export function ChatShell() {
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const activeSessionId = searchParams.get(SESSION_PARAM) ?? null;
-  const activeHostId = searchParams.get(HOST_PARAM) ?? LOCAL_HOST_ID;
+  const hParam = searchParams.get(HOST_PARAM);
 
-  // Resolve the active HostProfile from the URL param.
+  // Resolve the active HostProfile.
+  // Priority: h= URL param (preserved for direct links) → persisted selection → LOCAL_HOST.
   const activeHost = useMemo(() => {
-    if (activeHostId === LOCAL_HOST_ID) return LOCAL_HOST;
-    const saved = getAllHostProfiles();
-    return saved.find((p) => p.id === activeHostId) ?? LOCAL_HOST;
-  }, [activeHostId]);
+    if (hParam) {
+      if (hParam === LOCAL_HOST_ID) return LOCAL_HOST;
+      const saved = getAllHostProfiles();
+      return saved.find((p) => p.id === hParam) ?? LOCAL_HOST;
+    }
+    return getEffectiveHost();
+  }, [hParam]);
 
   // Load all sessions from the active host
   const sessionsQuery = useOperatorSessions(activeHost);
@@ -94,8 +110,10 @@ export function ChatShell() {
           params.set(SESSION_PARAM, newSession.id);
           if (host.id !== LOCAL_HOST_ID) {
             params.set(HOST_PARAM, host.id);
+            setSelectedHostId(host.id);
           } else {
             params.delete(HOST_PARAM);
+            clearSelectedHostId();
           }
           router.push(`${pathname}?${params.toString()}`);
           setActiveRun(null);
@@ -124,17 +142,28 @@ export function ChatShell() {
     [deleteMutation, activeSessionId, router, pathname, searchParams]
   );
 
-  // Submit a prompt
+  // Submit a prompt with optional file attachments
   const handleSubmitPrompt = useCallback(
-    (prompt: string) => {
+    (prompt: string, files: QueuedFile[] = []) => {
       if (!activeSessionId) return;
       setSubmitError(null);
 
+      // Build user-visible file metadata (strip base64 content after reading)
+      const runFiles: RunFileMetadata[] = files.map(({ name, type, size }) => ({
+        name,
+        type,
+        size,
+      }));
+
       promptMutation.mutate(
-        { prompt },
+        { prompt, files: files.length > 0 ? files : undefined },
         {
           onSuccess: (result) => {
-            setActiveRun({ id: result.run_id, prompt });
+            setActiveRun({
+              id: result.run_id,
+              prompt,
+              files: runFiles.length > 0 ? runFiles : undefined,
+            });
           },
           onError: (error: unknown) => {
             const message = error instanceof Error ? error.message : "Failed to submit prompt";

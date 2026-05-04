@@ -3,10 +3,13 @@
 import { Badge } from "@/components/ui/badge";
 import { useEval } from "@/lib/api/hooks";
 import { formatNumber } from "@/lib/formatters";
+import { HostedIdleGuidance } from "./overview-tab";
+import { useInsightsTab } from "./insights-tab-context";
 import { EvalBody } from "./eval-section";
 
-export function SearchQualityTab() {
-  const evalQuery = useEval();
+function SearchQualityTabContent() {
+  const { host, diagnosticsEnabled } = useInsightsTab();
+  const evalQuery = useEval(host, diagnosticsEnabled);
 
   const rowCount = evalQuery.data?.aggregation?.length ?? 0;
 
@@ -22,4 +25,12 @@ export function SearchQualityTab() {
       <EvalBody evalQuery={evalQuery} />
     </div>
   );
+}
+
+export function SearchQualityTab() {
+  const { diagnosticsEnabled } = useInsightsTab();
+  if (!diagnosticsEnabled) {
+    return <HostedIdleGuidance />;
+  }
+  return <SearchQualityTabContent />;
 }

@@ -3,6 +3,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { WorkflowTab } from "@/app/insights/workflow-tab";
+import { InsightsTabContext } from "@/app/insights/insights-tab-context";
+import { LOCAL_HOST } from "@/lib/host-profiles";
 
 vi.mock("@/lib/api/hooks", () => ({
   useWorkflowHealth: vi.fn(),
@@ -21,6 +23,15 @@ import { useWorkflowHealth } from "@/lib/api/hooks";
 const mockedUseWorkflowHealth = vi.mocked(useWorkflowHealth);
 type WorkflowQuery = ReturnType<typeof useWorkflowHealth>;
 
+const REMOTE_HOST = {
+  id: "remote-h1",
+  label: "Remote",
+  base_url: "https://remote.example.com",
+  token: "tok",
+  cli_kind: "copilot" as const,
+  is_default: false,
+};
+
 function makeWorkflowQuery(overrides: Partial<WorkflowQuery>): WorkflowQuery {
   return {
     data: undefined,
@@ -34,7 +45,22 @@ function makeWorkflowQuery(overrides: Partial<WorkflowQuery>): WorkflowQuery {
   } as unknown as WorkflowQuery;
 }
 
+/** Render WorkflowTab with given context values. */
+function renderWithContext(diagnosticsEnabled: boolean, host = LOCAL_HOST) {
+  return render(
+    <InsightsTabContext.Provider value={{ setActiveTab: vi.fn(), diagnosticsEnabled, host }}>
+      <WorkflowTab />
+    </InsightsTabContext.Provider>
+  );
+}
+
 describe("WorkflowTab", () => {
+  it("shows hosted idle guidance when diagnosticsEnabled is false", () => {
+    renderWithContext(false);
+    expect(screen.getByText(/no agent host selected/i)).toBeInTheDocument();
+    expect(mockedUseWorkflowHealth).not.toHaveBeenCalled();
+  });
+
   it("shows loading skeletons while fetching", () => {
     mockedUseWorkflowHealth.mockReturnValue(
       makeWorkflowQuery({
@@ -42,7 +68,7 @@ describe("WorkflowTab", () => {
       })
     );
 
-    render(<WorkflowTab />);
+    renderWithContext(true);
     expect(screen.getByTestId("workflow-loading")).toBeInTheDocument();
   });
 
@@ -53,7 +79,7 @@ describe("WorkflowTab", () => {
       })
     );
 
-    render(<WorkflowTab />);
+    renderWithContext(true);
     expect(screen.getByText(/workflow health unavailable/i)).toBeInTheDocument();
   });
 
@@ -66,7 +92,7 @@ describe("WorkflowTab", () => {
       })
     );
 
-    render(<WorkflowTab />);
+    renderWithContext(true);
     fireEvent.click(screen.getByRole("button", { name: /reload/i }));
     expect(refetch).toHaveBeenCalledTimes(1);
   });
@@ -79,7 +105,7 @@ describe("WorkflowTab", () => {
       })
     );
 
-    render(<WorkflowTab />);
+    renderWithContext(true);
     expect(screen.getByText(/no workflow findings/i)).toBeInTheDocument();
   });
 
@@ -112,7 +138,7 @@ describe("WorkflowTab", () => {
       })
     );
 
-    render(<WorkflowTab />);
+    renderWithContext(true);
     expect(screen.getByText(/Missing test coverage/)).toBeInTheDocument();
     expect(screen.getByText(/Outdated dependency/)).toBeInTheDocument();
   });
@@ -138,7 +164,19 @@ describe("WorkflowTab", () => {
       })
     );
 
-    render(<WorkflowTab />);
+    renderWithContext(true);
     expect(screen.getByText("Grade: D")).toBeInTheDocument();
+  });
+
+  it("passes remote host to useWorkflowHealth when diagnosticsEnabled with remote host", () => {
+    mockedUseWorkflowHealth.mockReturnValue(
+      makeWorkflowQuery({
+        isSuccess: true,
+        data: { findings: [], health_grade: "A", generated_at: "2026-05-01T00:00:00Z" },
+      })
+    );
+
+    renderWithContext(true, REMOTE_HOST);
+    expect(mockedUseWorkflowHealth).toHaveBeenCalledWith(REMOTE_HOST, true);
   });
 });

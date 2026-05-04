@@ -2,8 +2,10 @@ import "@testing-library/jest-dom";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { EvalBody } from "@/app/insights/eval-section";
+import { EvalBody, EvalSection } from "@/app/insights/eval-section";
+import { InsightsTabContext } from "@/app/insights/insights-tab-context";
 import { useEval, useKnowledgeInsights } from "@/lib/api/hooks";
+import { LOCAL_HOST } from "@/lib/host-profiles";
 
 vi.mock("@/lib/api/hooks", () => ({
   useEval: vi.fn(),
@@ -12,6 +14,14 @@ vi.mock("@/lib/api/hooks", () => ({
 
 type EvalQuery = ReturnType<typeof useEval>;
 type InsightsQuery = ReturnType<typeof useKnowledgeInsights>;
+const REMOTE_HOST = {
+  id: "remote-h1",
+  label: "Remote Host",
+  base_url: "https://remote.example.com",
+  token: "tok-remote",
+  cli_kind: "copilot" as const,
+  is_default: false,
+};
 
 function makeQuery(overrides: Partial<EvalQuery>): EvalQuery {
   return {
@@ -191,6 +201,31 @@ describe("ApprovalHistogram", () => {
   });
 });
 
+describe("EvalSection", () => {
+  it("passes the selected host into eval queries when diagnostics are enabled", () => {
+    setupInsightsMock();
+    vi.mocked(useEval).mockReturnValue(
+      makeQuery({
+        isSuccess: true,
+        data: {
+          aggregation: [{ query: "remote query", up: 1, down: 0, neutral: 0, total: 1 }],
+          recent_comments: [],
+        },
+      })
+    );
+
+    render(
+      <InsightsTabContext.Provider
+        value={{ setActiveTab: vi.fn(), diagnosticsEnabled: true, host: REMOTE_HOST }}
+      >
+        <EvalSection />
+      </InsightsTabContext.Provider>
+    );
+
+    expect(vi.mocked(useEval)).toHaveBeenCalledWith(REMOTE_HOST, true);
+  });
+});
+
 describe("EmbeddingCoverageStat", () => {
   it("shows embedding coverage percentage", () => {
     setupInsightsMock(72);
@@ -288,5 +323,47 @@ describe("empty/undefined data handling", () => {
     expect(screen.queryByText(/Approval rate distribution/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Embedding coverage/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Feedback activity/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("EvalSection hosted idle state", () => {
+  it("renders null when diagnosticsEnabled is false", () => {
+    vi.mocked(useEval).mockReturnValue(
+      makeQuery({ isSuccess: true, data: { aggregation: [], recent_comments: [] } })
+    );
+    vi.mocked(useKnowledgeInsights).mockReturnValue(makeInsightsQuery());
+
+    const { container } = render(
+      <InsightsTabContext.Provider
+        value={{ setActiveTab: vi.fn(), diagnosticsEnabled: false, host: LOCAL_HOST }}
+      >
+        <EvalSection />
+      </InsightsTabContext.Provider>
+    );
+
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders section content when diagnosticsEnabled is true", () => {
+    setupInsightsMock();
+    vi.mocked(useEval).mockReturnValue(
+      makeQuery({
+        isSuccess: true,
+        data: {
+          aggregation: [{ query: "find bugs", up: 3, down: 1, neutral: 0, total: 4 }],
+          recent_comments: [],
+        },
+      })
+    );
+
+    render(
+      <InsightsTabContext.Provider
+        value={{ setActiveTab: vi.fn(), diagnosticsEnabled: true, host: LOCAL_HOST }}
+      >
+        <EvalSection />
+      </InsightsTabContext.Provider>
+    );
+
+    expect(screen.getByText(/Search quality/i)).toBeInTheDocument();
   });
 });

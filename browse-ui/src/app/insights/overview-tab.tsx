@@ -15,6 +15,7 @@ import { formatHealthScore } from "@/lib/insight-derive";
 import type { InsightFinding } from "@/lib/insight-models";
 import { formatNumber } from "@/lib/formatters";
 import { ResearchPackSection } from "./research-pack-section";
+import { useInsightsTab } from "./insights-tab-context";
 
 export type InsightsTabKey =
   | "overview"
@@ -28,6 +29,18 @@ type OverviewTabProps = {
   /** Called when the user clicks a "Go to tab" CTA inside the overview. */
   onNavigate: (tab: InsightsTabKey) => void;
 };
+
+/** Shown when no agent host is selected and insights API calls would 404. */
+export function HostedIdleGuidance() {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-xl border border-dashed px-6 py-12 text-center">
+      <p className="text-muted-foreground text-sm font-medium">No agent host selected</p>
+      <p className="text-muted-foreground mt-1 text-xs">
+        Select a remote agent host in the header to load live insights data.
+      </p>
+    </div>
+  );
+}
 
 function KpiTile({ label, value, href }: { label: string; value: number; href: string }) {
   return (
@@ -45,11 +58,12 @@ function KpiTile({ label, value, href }: { label: string; value: number; href: s
   );
 }
 
-export function OverviewTab({ onNavigate }: OverviewTabProps) {
-  const dashboard = useDashboard();
-  const insights = useKnowledgeInsights();
-  const retro = useRetro("repo");
-  const evalQuery = useEval();
+function OverviewTabContent({ onNavigate }: OverviewTabProps) {
+  const { host, diagnosticsEnabled } = useInsightsTab();
+  const dashboard = useDashboard(host, diagnosticsEnabled);
+  const insights = useKnowledgeInsights(host, diagnosticsEnabled);
+  const retro = useRetro("repo", host, diagnosticsEnabled);
+  const evalQuery = useEval(host, diagnosticsEnabled);
 
   const criticalFindings: InsightFinding[] =
     insights.data?.quality_alerts
@@ -256,4 +270,12 @@ export function OverviewTab({ onNavigate }: OverviewTabProps) {
       <ResearchPackSection />
     </div>
   );
+}
+
+export function OverviewTab({ onNavigate }: OverviewTabProps) {
+  const { diagnosticsEnabled } = useInsightsTab();
+  if (!diagnosticsEnabled) {
+    return <HostedIdleGuidance />;
+  }
+  return <OverviewTabContent onNavigate={onNavigate} />;
 }

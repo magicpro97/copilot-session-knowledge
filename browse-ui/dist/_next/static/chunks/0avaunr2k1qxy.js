@@ -1,0 +1,1 @@
+(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["object"==typeof document?document.currentScript:void 0,51720,t=>{"use strict";var e=t.i(79890),i=t.i(69896),s=t.i(79597);t.s(["default",0,function(){let{setActiveTab:t}=(0,s.useInsightsTab)();return(0,e.jsx)(i.OverviewTab,{onNavigate:t})}])}]);

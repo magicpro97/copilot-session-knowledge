@@ -120,24 +120,25 @@ export const queryKeys = {
   sessions: (params: SessionsQueryParams = {}) => ["sessions", params] as const,
   sessionDetail: (sessionId: string) => ["session-detail", sessionId] as const,
   search: (params: SearchQueryParams) => ["search", params] as const,
-  health: () => ["health"] as const,
-  syncStatus: () => ["sync-status"] as const,
-  scoutStatus: () => ["scout-status"] as const,
-  scoutResearchPack: () => ["scout-research-pack"] as const,
-  tentacleStatus: () => ["tentacle-status"] as const,
-  skillMetrics: () => ["skill-metrics"] as const,
-  dashboard: () => ["dashboard"] as const,
+  health: (hostId = LOCAL_HOST_ID) => ["health", hostId] as const,
+  syncStatus: (hostId = LOCAL_HOST_ID) => ["sync-status", hostId] as const,
+  scoutStatus: (hostId = LOCAL_HOST_ID) => ["scout-status", hostId] as const,
+  scoutResearchPack: (hostId = LOCAL_HOST_ID) => ["scout-research-pack", hostId] as const,
+  tentacleStatus: (hostId = LOCAL_HOST_ID) => ["tentacle-status", hostId] as const,
+  skillMetrics: (hostId = LOCAL_HOST_ID) => ["skill-metrics", hostId] as const,
+  dashboard: (hostId = LOCAL_HOST_ID) => ["dashboard", hostId] as const,
   graphLegacy: (params: GraphQueryParams = {}) => ["graph-legacy", params] as const,
   graph: (params: GraphQueryParams = {}) => ["graph", params] as const,
   graphEvidence: (params: EvidenceGraphQueryParams = {}) => ["graph-evidence", params] as const,
   graphSimilarity: (params: SimilarityQueryParams = {}) => ["graph-similarity", params] as const,
   graphCommunities: () => ["graph-communities"] as const,
   embeddings: () => ["embeddings"] as const,
-  eval: () => ["eval"] as const,
-  retro: (mode: "repo" | "local" = "repo") => ["retro", mode] as const,
-  knowledgeInsights: () => ["knowledge-insights"] as const,
+  eval: (hostId = LOCAL_HOST_ID) => ["eval", hostId] as const,
+  retro: (mode: "repo" | "local" = "repo", hostId = LOCAL_HOST_ID) =>
+    ["retro", mode, hostId] as const,
+  knowledgeInsights: (hostId = LOCAL_HOST_ID) => ["knowledge-insights", hostId] as const,
   compare: (a: string, b: string) => ["compare", a, b] as const,
-  workflowHealth: () => ["workflow-health"] as const,
+  workflowHealth: (hostId = LOCAL_HOST_ID) => ["workflow-health", hostId] as const,
   // Operator/Chat — all keys are scoped by hostId to prevent cross-host cache collisions
   operatorSessions: (hostId = LOCAL_HOST_ID) => ["operator-sessions", hostId] as const,
   operatorSession: (id: string, hostId = LOCAL_HOST_ID) =>
@@ -322,63 +323,72 @@ export function useSearch(params: SearchQueryParams, enabled = true) {
   });
 }
 
-export function useHealth() {
+export function useHealth(host: HostProfile = LOCAL_HOST, enabled = true) {
   return useQuery({
-    queryKey: queryKeys.health(),
+    queryKey: queryKeys.health(host.id),
     staleTime: STALE_TIMES.health,
     gcTime: CACHE_TIMES.health,
+    enabled,
     queryFn: async (): Promise<HealthResponse> => {
-      const data = await apiFetch<HealthResponse>(withLeadingSlash("/healthz"));
+      const data = await hostFetch<HealthResponse>(withLeadingSlash("/healthz"), host);
       return healthResponseSchema.parse(data);
     },
   });
 }
 
-export function useSyncStatus() {
+export function useSyncStatus(host: HostProfile = LOCAL_HOST, enabled = true) {
   return useQuery({
-    queryKey: queryKeys.syncStatus(),
+    queryKey: queryKeys.syncStatus(host.id),
     staleTime: STALE_TIMES.health,
     gcTime: CACHE_TIMES.health,
+    enabled,
     queryFn: async (): Promise<SyncStatusResponse> => {
-      const data = await apiFetch<SyncStatusResponse>(withLeadingSlash("/api/sync/status"));
+      const data = await hostFetch<SyncStatusResponse>(withLeadingSlash("/api/sync/status"), host);
       return syncStatusResponseSchema.parse(data);
     },
   });
 }
 
-export function useScoutStatus() {
+export function useScoutStatus(host: HostProfile = LOCAL_HOST, enabled = true) {
   return useQuery({
-    queryKey: queryKeys.scoutStatus(),
+    queryKey: queryKeys.scoutStatus(host.id),
     staleTime: STALE_TIMES.health,
     gcTime: CACHE_TIMES.health,
+    enabled,
     queryFn: async (): Promise<TrendScoutStatusResponse> => {
-      const data = await apiFetch<TrendScoutStatusResponse>(withLeadingSlash("/api/scout/status"));
+      const data = await hostFetch<TrendScoutStatusResponse>(
+        withLeadingSlash("/api/scout/status"),
+        host
+      );
       return trendScoutStatusResponseSchema.parse(data);
     },
   });
 }
 
-export function useScoutResearchPack() {
+export function useScoutResearchPack(host: HostProfile = LOCAL_HOST, enabled = true) {
   return useQuery({
-    queryKey: queryKeys.scoutResearchPack(),
+    queryKey: queryKeys.scoutResearchPack(host.id),
     staleTime: STALE_TIMES.health,
     gcTime: CACHE_TIMES.health,
+    enabled,
     queryFn: async (): Promise<ResearchPackResponse> => {
-      const data = await apiFetch<ResearchPackResponse>(
-        withLeadingSlash("/api/scout/research-pack")
+      const data = await hostFetch<ResearchPackResponse>(
+        withLeadingSlash("/api/scout/research-pack"),
+        host
       );
       return researchPackResponseSchema.parse(data);
     },
   });
 }
 
-export function useReloadScoutResearchPack() {
+export function useReloadScoutResearchPack(host: HostProfile = LOCAL_HOST) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async (): Promise<ResearchPackReloadResponse> => {
-      const data = await apiFetch<ResearchPackReloadResponse>(
+      const data = await hostFetch<ResearchPackReloadResponse>(
         withLeadingSlash("/api/scout/research-pack/reload"),
+        host,
         { method: "POST" }
       );
       return researchPackReloadResponseSchema.parse(data);
@@ -386,21 +396,22 @@ export function useReloadScoutResearchPack() {
     onSuccess: async (data) => {
       if (!data.ok) return;
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.scoutResearchPack() }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.scoutStatus() }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.retro("repo") }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.scoutResearchPack(host.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.scoutStatus(host.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.retro("repo", host.id) }),
       ]);
     },
   });
 }
 
-export function useDashboard() {
+export function useDashboard(host: HostProfile = LOCAL_HOST, enabled = true) {
   return useQuery({
-    queryKey: queryKeys.dashboard(),
+    queryKey: queryKeys.dashboard(host.id),
     staleTime: STALE_TIMES.dashboard,
     gcTime: CACHE_TIMES.dashboard,
+    enabled,
     queryFn: async (): Promise<DashboardStats> => {
-      const data = await apiFetch<DashboardStats>(withLeadingSlash("/api/dashboard/stats"));
+      const data = await hostFetch<DashboardStats>(withLeadingSlash("/api/dashboard/stats"), host);
       return dashboardStatsSchema.parse(data);
     },
   });
@@ -496,39 +507,46 @@ export function useCommunities(enabled = true) {
   });
 }
 
-export function useEval() {
+export function useEval(host: HostProfile = LOCAL_HOST, enabled = true) {
   return useQuery({
-    queryKey: queryKeys.eval(),
+    queryKey: queryKeys.eval(host.id),
     staleTime: STALE_TIMES.eval,
     gcTime: CACHE_TIMES.eval,
+    enabled,
     queryFn: async (): Promise<EvalResponse> => {
-      const data = await apiFetch<EvalResponse>(withLeadingSlash("/api/eval/stats"));
+      const data = await hostFetch<EvalResponse>(withLeadingSlash("/api/eval/stats"), host);
       return evalResponseSchema.parse(data);
     },
   });
 }
 
-export function useTentacleStatus() {
+export function useTentacleStatus(host: HostProfile = LOCAL_HOST, enabled = true) {
   return useQuery({
-    queryKey: queryKeys.tentacleStatus(),
+    queryKey: queryKeys.tentacleStatus(host.id),
     staleTime: STALE_TIMES.health,
     gcTime: CACHE_TIMES.health,
+    enabled,
     queryFn: async (): Promise<TentacleStatusResponse> => {
-      const data = await apiFetch<TentacleStatusResponse>(
-        withLeadingSlash("/api/tentacles/status")
+      const data = await hostFetch<TentacleStatusResponse>(
+        withLeadingSlash("/api/tentacles/status"),
+        host
       );
       return tentacleStatusResponseSchema.parse(data);
     },
   });
 }
 
-export function useSkillMetrics() {
+export function useSkillMetrics(host: HostProfile = LOCAL_HOST, enabled = true) {
   return useQuery({
-    queryKey: queryKeys.skillMetrics(),
+    queryKey: queryKeys.skillMetrics(host.id),
     staleTime: STALE_TIMES.health,
     gcTime: CACHE_TIMES.health,
+    enabled,
     queryFn: async (): Promise<SkillMetricsResponse> => {
-      const data = await apiFetch<SkillMetricsResponse>(withLeadingSlash("/api/skills/metrics"));
+      const data = await hostFetch<SkillMetricsResponse>(
+        withLeadingSlash("/api/skills/metrics"),
+        host
+      );
       return skillMetricsResponseSchema.parse(data);
     },
   });
@@ -565,41 +583,53 @@ export function useSubmitFeedback() {
   });
 }
 
-export function useRetro(mode: "repo" | "local" = "repo") {
+export function useRetro(
+  mode: "repo" | "local" = "repo",
+  host: HostProfile = LOCAL_HOST,
+  enabled = true
+) {
   return useQuery({
-    queryKey: queryKeys.retro(mode),
+    queryKey: queryKeys.retro(mode, host.id),
     staleTime: STALE_TIMES.retro,
     gcTime: CACHE_TIMES.retro,
+    enabled,
     queryFn: async (): Promise<RetroResponse> => {
-      const data = await apiFetch<RetroResponse>(
-        withLeadingSlash(`/api/retro/summary?mode=${mode}`)
+      const data = await hostFetch<RetroResponse>(
+        withLeadingSlash(`/api/retro/summary?mode=${mode}`),
+        host
       );
       return retroResponseSchema.parse(data);
     },
   });
 }
 
-export function useKnowledgeInsights() {
+export function useKnowledgeInsights(host: HostProfile = LOCAL_HOST, enabled = true) {
   return useQuery({
-    queryKey: queryKeys.knowledgeInsights(),
+    queryKey: queryKeys.knowledgeInsights(host.id),
     staleTime: STALE_TIMES.insights,
     gcTime: CACHE_TIMES.insights,
+    enabled,
     queryFn: async (): Promise<KnowledgeInsightsResponse> => {
-      const data = await apiFetch<KnowledgeInsightsResponse>(
-        withLeadingSlash("/api/knowledge/insights")
+      const data = await hostFetch<KnowledgeInsightsResponse>(
+        withLeadingSlash("/api/knowledge/insights"),
+        host
       );
       return knowledgeInsightsResponseSchema.parse(data);
     },
   });
 }
 
-export function useWorkflowHealth() {
+export function useWorkflowHealth(host: HostProfile = LOCAL_HOST, enabled = true) {
   return useQuery({
-    queryKey: queryKeys.workflowHealth(),
+    queryKey: queryKeys.workflowHealth(host.id),
     staleTime: STALE_TIMES.health,
     gcTime: CACHE_TIMES.health,
+    enabled,
     queryFn: async (): Promise<WorkflowHealthResponse> => {
-      const data = await apiFetch<WorkflowHealthResponse>(withLeadingSlash("/api/workflow/health"));
+      const data = await hostFetch<WorkflowHealthResponse>(
+        withLeadingSlash("/api/workflow/health"),
+        host
+      );
       return workflowHealthResponseSchema.parse(data);
     },
   });
@@ -764,6 +794,22 @@ export function createOperatorStreamUrl(
   const base = host.base_url || (typeof window !== "undefined" ? window.location.origin : "");
   const url = new URL(path, base);
   url.searchParams.set("run", runId);
+  if (host.token) {
+    url.searchParams.set("token", host.token);
+  }
+  return url.toString();
+}
+
+/**
+ * Returns the full SSE URL for the `/api/live` stream, targeting the given host.
+ *
+ * Because `EventSource` does not support custom request headers, the auth token
+ * is appended as a query parameter when connecting to a remote host.
+ */
+export function createLiveStreamUrl(host: HostProfile): string {
+  const path = "/api/live";
+  const base = host.base_url || (typeof window !== "undefined" ? window.location.origin : "");
+  const url = new URL(path, base);
   if (host.token) {
     url.searchParams.set("token", host.token);
   }

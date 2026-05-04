@@ -9,8 +9,7 @@ import { UserBubble, AssistantBubble } from "./chat-bubbles";
 import { FileReviewPanel } from "./file-review-panel";
 import { deriveChunks, extractFilePaths } from "./stream-derive";
 import { useOperatorStream } from "./use-operator-stream";
-import type { OperatorRunInfo } from "@/lib/api/types";
-import type { HostProfile } from "@/lib/api/types";
+import type { OperatorRunInfo, HostProfile, RunFileMetadata } from "@/lib/api/types";
 
 type HistoricalRunProps = {
   run: OperatorRunInfo;
@@ -25,7 +24,7 @@ function HistoricalRun({ run }: HistoricalRunProps) {
 
   return (
     <div className="space-y-3">
-      <UserBubble prompt={run.prompt} timestamp={ts} />
+      <UserBubble prompt={run.prompt} timestamp={ts} files={run.files} />
       <AssistantBubble
         chunks={chunks}
         exitCode={run.exit_code}
@@ -44,11 +43,12 @@ type ActiveRunProps = {
   sessionId: string;
   runId: string;
   prompt: string;
+  files?: RunFileMetadata[];
   host?: HostProfile | null;
   onDone?: () => void;
 };
 
-function ActiveRun({ sessionId, runId, prompt, host, onDone }: ActiveRunProps) {
+function ActiveRun({ sessionId, runId, prompt, files, host, onDone }: ActiveRunProps) {
   const { frames, status, exitCode } = useOperatorStream(sessionId, runId, host);
   const onDoneRef = useRef(onDone);
 
@@ -63,14 +63,14 @@ function ActiveRun({ sessionId, runId, prompt, host, onDone }: ActiveRunProps) {
   }, [status]);
 
   const chunks = deriveChunks(frames);
-  const files = extractFilePaths(chunks);
+  const streamFiles = extractFilePaths(chunks);
   const streaming = status === "connecting" || status === "streaming";
 
   return (
     <div className="space-y-3">
-      <UserBubble prompt={prompt} />
+      <UserBubble prompt={prompt} files={files} />
       <AssistantBubble chunks={chunks} streaming={streaming} exitCode={exitCode} />
-      {files.length > 0 ? <FileReviewPanel files={files} /> : null}
+      {streamFiles.length > 0 ? <FileReviewPanel files={streamFiles} /> : null}
     </div>
   );
 }
@@ -79,7 +79,7 @@ type TranscriptProps = {
   /** All historical runs for this session (newest last). */
   runs: OperatorRunInfo[];
   /** The active run, if any. */
-  activeRun?: { id: string; prompt: string } | null;
+  activeRun?: { id: string; prompt: string; files?: RunFileMetadata[] } | null;
   sessionId: string;
   /** Host profile for the active session — used to route the live SSE stream. */
   host?: HostProfile | null;
@@ -139,6 +139,7 @@ export function Transcript({
           sessionId={sessionId}
           runId={activeRun.id}
           prompt={activeRun.prompt}
+          files={activeRun.files}
           host={host}
           onDone={onRunDone}
         />
