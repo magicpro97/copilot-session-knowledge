@@ -9,9 +9,9 @@ import { SourceBadge, TimeRelative } from "@/components/data/session-badges";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { apiFetch } from "@/lib/api/client";
+import { hostFetch } from "@/lib/api/client";
 import { sessionListResponseSchema } from "@/lib/api/schemas";
-import type { SessionRow } from "@/lib/api/types";
+import type { HostProfile, SessionRow } from "@/lib/api/types";
 import { formatSessionIdBadgeText } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 
@@ -64,6 +64,7 @@ function makePlaceholderSession(id: string): SessionRow {
 
 type SessionPickerProps = {
   currentSessionId: string;
+  host: HostProfile;
   open: boolean;
   value: string;
   onValueChange: (sessionId: string) => void;
@@ -71,6 +72,7 @@ type SessionPickerProps = {
 
 export function SessionPicker({
   currentSessionId,
+  host,
   open,
   value,
   onValueChange,
@@ -90,19 +92,19 @@ export function SessionPicker({
   }, [open]);
 
   const recentQuery = useQuery({
-    queryKey: ["session-picker", "recent", currentSessionId],
+    queryKey: ["session-picker", "recent", host.id, currentSessionId],
     enabled: open,
     queryFn: async () => {
-      const data = await apiFetch(toSessionsUrl());
+      const data = await hostFetch(toSessionsUrl(), host);
       return sessionListResponseSchema.parse(data);
     },
   });
 
   const searchQuery = useQuery({
-    queryKey: ["session-picker", "search", currentSessionId, debouncedQuery],
+    queryKey: ["session-picker", "search", host.id, currentSessionId, debouncedQuery],
     enabled: open && debouncedQuery.length > 0,
     queryFn: async () => {
-      const data = await apiFetch(toSessionsUrl(debouncedQuery));
+      const data = await hostFetch(toSessionsUrl(debouncedQuery), host);
       return sessionListResponseSchema.parse(data);
     },
   });

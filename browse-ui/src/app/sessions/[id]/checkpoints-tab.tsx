@@ -8,14 +8,16 @@ import { DiffViewer } from "@/components/data/diff-viewer";
 import { EmptyState } from "@/components/data/empty-state";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { apiFetch } from "@/lib/api/client";
+import { hostFetch } from "@/lib/api/client";
 import { diffResultSchema } from "@/lib/api/schemas";
+import type { HostProfile } from "@/lib/api/types";
 
 type CheckpointsTabProps = {
   sessionId: string;
+  host: HostProfile;
 };
 
-export function CheckpointsTab({ sessionId }: CheckpointsTabProps) {
+export function CheckpointsTab({ sessionId, host }: CheckpointsTabProps) {
   const [fromSelector, setFromSelector] = useState("first");
   const [toSelector, setToSelector] = useState("latest");
 
@@ -26,7 +28,7 @@ export function CheckpointsTab({ sessionId }: CheckpointsTabProps) {
         from: payload.from,
         to: payload.to,
       });
-      const data = await apiFetch(`/api/diff?${query.toString()}`);
+      const data = await hostFetch(`/api/diff?${query.toString()}`, host);
       return diffResultSchema.parse(data);
     },
   });

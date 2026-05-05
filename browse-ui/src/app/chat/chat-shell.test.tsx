@@ -136,9 +136,7 @@ describe("ChatShell", () => {
     render(<ChatShell />);
 
     expect(vi.mocked(hooks.useOperatorSessions).mock.calls.at(-1)?.[1]).toBe(false);
-    expect(
-      screen.getByText(/Add a public agent host in New Chat to connect this hosted console/i)
-    ).toBeInTheDocument();
+    expect(screen.getByText(/No compatible host is configured/i)).toBeInTheDocument();
   });
 });
 

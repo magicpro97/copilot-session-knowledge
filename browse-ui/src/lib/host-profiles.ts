@@ -13,6 +13,84 @@
 import { hostProfileSchema } from "@/lib/api/schemas";
 import type { HostProfile } from "@/lib/api/types";
 
+// ── Compatibility ─────────────────────────────────────────────────────────────
+
+/**
+ * Structured result of a host compatibility check.
+ * Prefer this over bare booleans so UI surfaces can display the actionable reason.
+ */
+export type HostCompatibility =
+  | { compatible: true; code: "ok"; reason: null }
+  | { compatible: false; code: "mixed-content-loopback"; reason: string };
+
+/** Local hostnames/addresses that browsers block from HTTPS origins when served over HTTP. */
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]"]);
+
+/** Returns true when `hostname` is a loopback address (covers 127.x.x.x range too). */
+function isLoopbackHostname(hostname: string): boolean {
+  if (LOOPBACK_HOSTNAMES.has(hostname)) return true;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname);
+}
+
+/**
+ * Determines whether the browser can safely reach `host` from `controlPlaneOrigin`.
+ *
+ * Detects the mixed-content scenario where a secure HTTPS control plane tries
+ * to reach an insecure HTTP local URL (`http://localhost`, `http://127.0.0.1`,
+ * `http://0.0.0.0`, `http://[::1]`). Browsers unconditionally block such requests.
+ *
+ * Compatible paths that are preserved:
+ * - LOCAL_HOST (empty base_url) — always safe, same-origin request.
+ * - Remote HTTPS tunnel hosts — secure on any control plane.
+ * - HTTP loopback hosts from an HTTP control plane — local dev setup.
+ * - Explicit API-base environments handled upstream (NEXT_PUBLIC_API_BASE).
+ *
+ * @param controlPlaneOrigin  The origin of the page hosting the browse UI
+ *                            (e.g. `window.location.origin`).
+ * @param host                The HostProfile to evaluate.
+ */
+export function checkHostCompatibility(
+  controlPlaneOrigin: string,
+  host: HostProfile
+): HostCompatibility {
+  // LOCAL_HOST sentinel (empty base_url) — same-origin, always compatible.
+  if (!host.base_url) return { compatible: true, code: "ok", reason: null };
+
+  let controlScheme: string;
+  try {
+    controlScheme = new URL(controlPlaneOrigin).protocol; // "https:" | "http:"
+  } catch {
+    // Unparseable origin — fail open; let the request attempt and surface its own error.
+    return { compatible: true, code: "ok", reason: null };
+  }
+
+  let hostUrl: URL;
+  try {
+    hostUrl = new URL(host.base_url);
+  } catch {
+    // Malformed base_url — not a compatibility concern; validation handles this elsewhere.
+    return { compatible: true, code: "ok", reason: null };
+  }
+
+  // HTTPS control plane → insecure HTTP loopback: browsers block this outright.
+  if (
+    controlScheme === "https:" &&
+    hostUrl.protocol === "http:" &&
+    isLoopbackHostname(hostUrl.hostname)
+  ) {
+    return {
+      compatible: false,
+      code: "mixed-content-loopback",
+      reason:
+        `Cannot reach ${host.base_url} from a secure (HTTPS) origin — ` +
+        "browsers block insecure loopback requests from HTTPS pages. " +
+        "Expose your local server via an HTTPS tunnel (e.g. ngrok) and update the host URL.",
+    };
+  }
+
+  return { compatible: true, code: "ok", reason: null };
+}
+
 export const LOCAL_HOST_ID = "local";
 
 /** Custom event dispatched in the same tab whenever the active host changes. */
@@ -159,12 +237,23 @@ export function getEffectiveHost(): HostProfile {
 /**
  * Returns whether operator API calls are safe to issue for the current host.
  *
- * - Remote host with an explicit base_url → always safe
- * - Explicit API base configured at build time (NEXT_PUBLIC_API_BASE) → safe
- * - LOCAL_HOST (same-origin) without an explicit API base → not safe by default;
- *   the caller should configure a remote host or set NEXT_PUBLIC_API_BASE.
+ * - Explicit API base configured at build time (NEXT_PUBLIC_API_BASE) → always safe.
+ * - LOCAL_HOST (empty base_url) without NEXT_PUBLIC_API_BASE → not safe by default;
+ *   configure a remote host or set NEXT_PUBLIC_API_BASE.
+ * - Remote host with an explicit base_url → safe, unless the browser would block the
+ *   request due to a mixed-content loopback incompatibility detected by
+ *   `checkHostCompatibility`. On SSR (no `window`) the check is skipped (fail-open).
  */
 export function isOperatorHostEnabled(host: HostProfile, _pathname: string): boolean {
   void _pathname;
-  return host.base_url !== "" || Boolean(process.env.NEXT_PUBLIC_API_BASE);
+  // Build-time explicit API base always takes precedence.
+  if (Boolean(process.env.NEXT_PUBLIC_API_BASE)) return true;
+  // LOCAL_HOST (same-origin) has no remote base_url — not enabled without API base.
+  if (!host.base_url) return false;
+  // Remote host: verify the browser can actually reach it from this origin.
+  if (typeof window !== "undefined") {
+    const compat = checkHostCompatibility(window.location.origin, host);
+    if (!compat.compatible) return false;
+  }
+  return true;
 }

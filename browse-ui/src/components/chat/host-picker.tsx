@@ -21,6 +21,7 @@ import {
   setSelectedHostId,
   LOCAL_HOST,
   LOCAL_HOST_ID,
+  checkHostCompatibility,
 } from "@/lib/host-profiles";
 
 type HostPickerProps = {
@@ -51,6 +52,7 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
   const [newLabel, setNewLabel] = useState("");
   const [newToken, setNewToken] = useState("");
   const [newCliKind, setNewCliKind] = useState("copilot");
+  const [compatibilityError, setCompatibilityError] = useState<string | null>(null);
 
   useEffect(() => {
     const refresh = () => setAllHosts(getAllHostProfiles());
@@ -75,6 +77,16 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
       cli_kind: newCliKind,
       is_default: false,
     };
+    // Reject insecure loopback URLs when running on a secure (HTTPS) control plane.
+    const compat = checkHostCompatibility(window.location.origin, profile);
+    if (!compat.compatible) {
+      setCompatibilityError(
+        compat.reason +
+          " Open the local browse app directly, or expose your server via an HTTPS tunnel."
+      );
+      return;
+    }
+    setCompatibilityError(null);
     saveHostProfile(profile);
     const updated = getAllHostProfiles();
     setAllHosts(updated);
@@ -158,7 +170,10 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
           <input
             type="url"
             value={newUrl}
-            onChange={(e) => setNewUrl(e.target.value)}
+            onChange={(e) => {
+              setNewUrl(e.target.value);
+              if (compatibilityError) setCompatibilityError(null);
+            }}
             placeholder="https://abc123.ngrok.io"
             aria-label="Tunnel URL"
             className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-lg border bg-transparent px-3 py-1.5 font-mono text-xs outline-none focus-visible:ring-2"
@@ -207,6 +222,7 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
                 setNewUrl("");
                 setNewLabel("");
                 setNewToken("");
+                setCompatibilityError(null);
               }}
             >
               Cancel
@@ -221,6 +237,15 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
               Save host
             </Button>
           </div>
+          {compatibilityError ? (
+            <div
+              className="border-destructive/30 bg-destructive/5 text-destructive flex items-start gap-2 rounded-lg border px-3 py-2 text-xs"
+              data-testid="host-picker-compat-error"
+              role="alert"
+            >
+              <p>{compatibilityError}</p>
+            </div>
+          ) : null}
         </div>
       )}
 

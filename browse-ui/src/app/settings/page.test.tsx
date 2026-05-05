@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   useHealth,
@@ -363,5 +363,53 @@ describe("SettingsPage — Hosts & connections card", () => {
       expect(screen.getByTestId("restore-local-btn")).toBeInTheDocument();
     });
     vi.unstubAllGlobals();
+  });
+});
+
+describe("SettingsPage — mixed-content loopback guard", () => {
+  beforeEach(() => {
+    // Simulate a hosted HTTPS deployment
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, origin: "https://agents.example.com" },
+      configurable: true,
+    });
+    localStorage.clear();
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: false };
+    mockedUseTentacleStatus.mockReturnValue(makeTentacleQuery({}));
+    mockedUseHealth.mockReturnValue(makeIdleQuery() as ReturnType<typeof useHealth>);
+    mockedUseSyncStatus.mockReturnValue(makeIdleQuery() as ReturnType<typeof useSyncStatus>);
+    mockedUseScoutStatus.mockReturnValue(makeIdleQuery() as ReturnType<typeof useScoutStatus>);
+    mockedUseSkillMetrics.mockReturnValue(makeIdleQuery() as ReturnType<typeof useSkillMetrics>);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, origin: "http://localhost:3000" },
+      configurable: true,
+    });
+  });
+
+  it("shows a hard incompatibility error when adding a localhost URL from a hosted HTTPS page", async () => {
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Add remote host" }));
+    await waitFor(() => expect(screen.getByTestId("host-add-form")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("Tunnel URL"), {
+      target: { value: "http://localhost:3000" },
+    });
+    fireEvent.click(screen.getByTestId("save-host-btn"));
+    await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
+    expect(screen.getByTestId("validation-error").textContent).toMatch(/HTTPS|loopback|tunnel/i);
+  });
+
+  it("does NOT show 'Save anyway' for a deterministically incompatible localhost URL", async () => {
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Add remote host" }));
+    await waitFor(() => expect(screen.getByTestId("host-add-form")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("Tunnel URL"), {
+      target: { value: "http://127.0.0.1:8080" },
+    });
+    fireEvent.click(screen.getByTestId("save-host-btn"));
+    await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
+    expect(screen.queryByTestId("skip-validation-btn")).not.toBeInTheDocument();
   });
 });

@@ -29,6 +29,7 @@ import {
   BROWSE_HOST_CHANGE_EVENT,
   LOCAL_HOST,
   LOCAL_HOST_ID,
+  checkHostCompatibility,
   clearSelectedHostId,
   deleteHostProfile,
   getAllHostProfiles,
@@ -110,6 +111,8 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
   const [newCliKind, setNewCliKind] = useState("copilot");
   const [validating, setValidating] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+  /** True when the validation error is a deterministic compatibility failure (no "Save anyway"). */
+  const [isCompatibilityError, setIsCompatibilityError] = useState(false);
   const [originCopied, setOriginCopied] = useState(false);
 
   const hostedOrigin = getHostedOrigin();
@@ -133,8 +136,30 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
     const url = newUrl.trim();
     if (!url) return;
 
+    // Pre-probe compatibility check — deterministic, no network required.
+    // A hosted HTTPS control plane can never reach an insecure loopback URL.
+    if (typeof window !== "undefined") {
+      const compat = checkHostCompatibility(window.location.origin, {
+        id: "temp",
+        label: url,
+        base_url: url,
+        token: newToken.trim(),
+        cli_kind: newCliKind,
+        is_default: false,
+      });
+      if (!compat.compatible) {
+        setValidationError(
+          compat.reason +
+            " Open the local browse app directly, or expose your server via an HTTPS tunnel."
+        );
+        setIsCompatibilityError(true);
+        return;
+      }
+    }
+
     setValidating(true);
     setValidationError(null);
+    setIsCompatibilityError(false);
 
     const error = await probeRemoteHost(url, newToken.trim());
     if (error) {
@@ -396,7 +421,13 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
           <input
             type="url"
             value={newUrl}
-            onChange={(e) => setNewUrl(e.target.value)}
+            onChange={(e) => {
+              setNewUrl(e.target.value);
+              if (validationError) {
+                setValidationError(null);
+                setIsCompatibilityError(false);
+              }
+            }}
             placeholder="https://abc123.ngrok.io"
             aria-label="Tunnel URL"
             className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-lg border bg-transparent px-3 py-1.5 font-mono text-xs outline-none focus-visible:ring-2"
@@ -449,11 +480,12 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
                 setNewToken("");
                 setNewCliKind("copilot");
                 setValidationError(null);
+                setIsCompatibilityError(false);
               }}
             >
               Cancel
             </Button>
-            {validationError ? (
+            {validationError && !isCompatibilityError ? (
               <Button
                 type="button"
                 variant="ghost"

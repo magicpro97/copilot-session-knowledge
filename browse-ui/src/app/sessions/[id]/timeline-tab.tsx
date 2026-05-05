@@ -3,21 +3,23 @@ import { useQuery } from "@tanstack/react-query";
 import { Banner } from "@/components/data/banner";
 import { EmptyState } from "@/components/data/empty-state";
 import { TimelinePlayer } from "@/components/data/timeline-player";
-import { apiFetch } from "@/lib/api/client";
+import { hostFetch } from "@/lib/api/client";
 import { timelineEventsResponseSchema } from "@/lib/api/schemas";
+import type { HostProfile } from "@/lib/api/types";
 
 type TimelineTabProps = {
   sessionId: string;
   active: boolean;
+  host: HostProfile;
 };
 
-export function TimelineTab({ sessionId, active }: TimelineTabProps) {
+export function TimelineTab({ sessionId, active, host }: TimelineTabProps) {
   const query = useQuery({
-    queryKey: ["session-timeline-events", sessionId],
+    queryKey: ["session-timeline-events", host.id, sessionId],
     enabled: Boolean(sessionId),
     queryFn: async () => {
       const encoded = encodeURIComponent(sessionId);
-      const data = await apiFetch(`/api/session/${encoded}/events?from=0&limit=200`);
+      const data = await hostFetch(`/api/session/${encoded}/events?from=0&limit=200`, host);
       return timelineEventsResponseSchema.parse(data);
     },
   });

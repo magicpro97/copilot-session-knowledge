@@ -3,12 +3,14 @@ import { useQuery } from "@tanstack/react-query";
 import { Banner } from "@/components/data/banner";
 import { EmptyState } from "@/components/data/empty-state";
 import { MindmapViewer } from "@/components/data/mindmap-viewer";
-import { apiFetch } from "@/lib/api/client";
+import { hostFetch } from "@/lib/api/client";
 import { mindmapResponseSchema } from "@/lib/api/schemas";
+import type { HostProfile } from "@/lib/api/types";
 
 type MindmapTabProps = {
   sessionId: string;
   active: boolean;
+  host: HostProfile;
 };
 
 function headingCount(markdown: string): number {
@@ -16,13 +18,13 @@ function headingCount(markdown: string): number {
   return matches ? matches.length : 0;
 }
 
-export function MindmapTab({ sessionId, active }: MindmapTabProps) {
+export function MindmapTab({ sessionId, active, host }: MindmapTabProps) {
   const query = useQuery({
-    queryKey: ["session-mindmap", sessionId],
+    queryKey: ["session-mindmap", host.id, sessionId],
     enabled: Boolean(sessionId) && active,
     queryFn: async () => {
       const encoded = encodeURIComponent(sessionId);
-      const data = await apiFetch(`/api/session/${encoded}/mindmap`);
+      const data = await hostFetch(`/api/session/${encoded}/mindmap`, host);
       return mindmapResponseSchema.parse(data);
     },
   });

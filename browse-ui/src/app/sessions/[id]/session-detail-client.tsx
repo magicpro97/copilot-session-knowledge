@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams, usePathname } from "next/navigation";
-import { Download, GitCompare, Loader2 } from "lucide-react";
+import { Download, GitCompare, Loader2, ServerCog } from "lucide-react";
 
 import { Breadcrumbs } from "@/components/layout/breadcrumbs";
 import { CompareSheet } from "@/components/data/compare-sheet";
 import { SourceBadge, TimeRelative } from "@/components/data/session-badges";
 import { Banner } from "@/components/data/banner";
+import { EmptyState } from "@/components/data/empty-state";
 import { OverviewTab } from "./overview-tab";
 import { TimelineTab } from "./timeline-tab";
 import { MindmapTab } from "./mindmap-tab";
@@ -15,9 +16,11 @@ import { CheckpointsTab } from "./checkpoints-tab";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
+import { hostRequest } from "@/lib/api/client";
 import { useSessionDetail } from "@/lib/api/hooks";
 import { formatNumber, formatSessionIdBadgeText } from "@/lib/formatters";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { useHostState } from "@/providers/host-provider";
 
 type SessionTab = "overview" | "timeline" | "mindmap" | "checkpoints";
 const PLACEHOLDER_SESSION_ID = "_placeholder";
@@ -61,6 +64,7 @@ function sessionIdFromHref(href: string | null): string {
 export function SessionDetailClient() {
   const params = useParams<{ id: string }>();
   const pathname = usePathname();
+  const { host, diagnosticsEnabled } = useHostState();
   const [sessionId, setSessionId] = useState("");
 
   const [activeTab, setActiveTab] = useState<SessionTab>("overview");
@@ -68,9 +72,8 @@ export function SessionDetailClient() {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
-  const detailQuery = useSessionDetail(sessionId, Boolean(sessionId));
+  const detailQuery = useSessionDetail(sessionId, diagnosticsEnabled && Boolean(sessionId), host);
   const shortId = formatSessionIdBadgeText(sessionId);
-  const exportHref = `/session/${encodeURIComponent(sessionId)}.md`;
   const exportFileName = `${sessionId || "session"}.md`;
 
   useEffect(() => {
@@ -92,14 +95,13 @@ export function SessionDetailClient() {
     setExportError(null);
     setExporting(true);
     try {
-      const response = await fetch(exportHref, {
-        method: "GET",
-        credentials: "same-origin",
-      });
-      if (!response.ok) {
-        throw new Error(`Export failed (${response.status})`);
-      }
-
+      const response = await hostRequest(
+        `/api/session/${encodeURIComponent(sessionId)}/export`,
+        host,
+        {
+          method: "GET",
+        }
+      );
       const blob = await response.blob();
       const objectUrl = window.URL.createObjectURL(blob);
       const anchor = window.document.createElement("a");
@@ -114,7 +116,7 @@ export function SessionDetailClient() {
     } finally {
       setExporting(false);
     }
-  }, [exportFileName, exportHref, exporting, sessionId]);
+  }, [exportFileName, exporting, host, sessionId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -170,6 +172,21 @@ export function SessionDetailClient() {
       handler: () => setCompareOpen(true),
     },
   ]);
+
+  if (!diagnosticsEnabled) {
+    return (
+      <div className="space-y-4">
+        <Breadcrumbs
+          items={[{ label: "Sessions", href: "/sessions" }, { label: shortId || "Session" }]}
+        />
+        <EmptyState
+          icon={<ServerCog className="size-5" />}
+          title="No agent host selected"
+          description="Run the browse server locally or select a remote agent host in the header to load session detail."
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -245,17 +262,22 @@ export function SessionDetailClient() {
           />
         </TabsContent>
         <TabsContent value="timeline">
-          <TimelineTab sessionId={sessionId} active={activeTab === "timeline"} />
+          <TimelineTab sessionId={sessionId} active={activeTab === "timeline"} host={host} />
         </TabsContent>
         <TabsContent value="mindmap">
-          <MindmapTab sessionId={sessionId} active={activeTab === "mindmap"} />
+          <MindmapTab sessionId={sessionId} active={activeTab === "mindmap"} host={host} />
         </TabsContent>
         <TabsContent value="checkpoints">
-          <CheckpointsTab sessionId={sessionId} />
+          <CheckpointsTab sessionId={sessionId} host={host} />
         </TabsContent>
       </Tabs>
 
-      <CompareSheet open={compareOpen} onOpenChange={setCompareOpen} sessionId={sessionId} />
+      <CompareSheet
+        open={compareOpen}
+        onOpenChange={setCompareOpen}
+        sessionId={sessionId}
+        host={host}
+      />
     </div>
   );
 }

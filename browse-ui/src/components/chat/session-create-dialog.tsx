@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { Plus } from "lucide-react";
 
@@ -23,7 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useOperatorModelCatalog } from "@/lib/api/hooks";
-import { isOperatorHostEnabled, LOCAL_HOST_ID } from "@/lib/host-profiles";
+import { isOperatorHostEnabled, LOCAL_HOST_ID, checkHostCompatibility } from "@/lib/host-profiles";
 import type { HostProfile, CreateOperatorSessionRequest } from "@/lib/api/types";
 import { useHostState } from "@/providers/host-provider";
 import { WorkspacePicker } from "./workspace-picker";
@@ -79,6 +79,11 @@ export function SessionCreateDialog({ onSubmit, initialHost, loading }: SessionC
   const hostReady =
     isOperatorHostEnabled(host, pathname) ||
     (host.id === LOCAL_HOST_ID && (localDiagnosticsEnabled ?? diagnosticsEnabled));
+  const hostCompat = useMemo(
+    () =>
+      typeof window !== "undefined" ? checkHostCompatibility(window.location.origin, host) : null,
+    [host]
+  );
   const modelCatalogQuery = useOperatorModelCatalog(host, open && hostReady);
   const modelSuggestions = modelCatalogQuery.data?.models ?? [];
   const defaultModel = modelCatalogQuery.data?.default_model ?? "";
@@ -127,10 +132,21 @@ export function SessionCreateDialog({ onSubmit, initialHost, loading }: SessionC
               Local (same origin) or a saved public tunnel URL.
             </p>
             {!hostReady ? (
-              <p className="text-xs text-amber-600 dark:text-amber-400">
-                This hosted web app needs a saved public agent host before it can browse workspaces
-                or start chats.
-              </p>
+              hostCompat && !hostCompat.compatible ? (
+                <p
+                  className="text-xs text-amber-600 dark:text-amber-400"
+                  data-testid="host-compat-warning"
+                >
+                  <strong>Cannot reach this host from a secure page.</strong> Open the local browse
+                  app directly, or expose your server via a public HTTPS tunnel (e.g. ngrok) and
+                  save it as a host.
+                </p>
+              ) : (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  This hosted web app needs a saved public HTTPS agent host before it can browse
+                  workspaces or start chats.
+                </p>
+              )
             ) : null}
           </div>
           <div className="space-y-1.5">

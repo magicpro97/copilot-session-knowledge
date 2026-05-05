@@ -118,4 +118,66 @@ describe("HostProvider", () => {
       expect(screen.getByTestId("diagnostics-enabled")).toHaveTextContent("true");
     });
   });
+
+  it("disables diagnostics for an HTTP loopback host when the control plane is HTTPS", async () => {
+    // Simulate being served from a hosted HTTPS origin (e.g. GitHub Pages, Vercel).
+    vi.stubGlobal("location", {
+      ...window.location,
+      origin: "https://browse.example.com",
+      protocol: "https:",
+      hostname: "browse.example.com",
+      host: "browse.example.com",
+      href: "https://browse.example.com/chat",
+    });
+
+    act(() => {
+      saveHostProfile({
+        id: "loopback-host",
+        label: "Local Copilot (loopback)",
+        base_url: "http://localhost:8792",
+        token: "tok",
+        cli_kind: "copilot",
+        is_default: false,
+      });
+      setSelectedHostId("loopback-host");
+    });
+
+    render(
+      <HostProvider>
+        <HostStateProbe />
+      </HostProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("host-id")).toHaveTextContent("loopback-host");
+      // Mixed-content loopback: browser would block the request, so diagnostics must be disabled.
+      expect(screen.getByTestId("diagnostics-enabled")).toHaveTextContent("false");
+    });
+  });
+
+  it("keeps diagnostics enabled for an HTTP loopback host when the control plane is also HTTP", async () => {
+    // jsdom default origin is http://localhost — local dev scenario; loopback is reachable.
+    act(() => {
+      saveHostProfile({
+        id: "local-agent",
+        label: "Local Agent",
+        base_url: "http://localhost:8792",
+        token: "tok",
+        cli_kind: "copilot",
+        is_default: false,
+      });
+      setSelectedHostId("local-agent");
+    });
+
+    render(
+      <HostProvider>
+        <HostStateProbe />
+      </HostProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("host-id")).toHaveTextContent("local-agent");
+      expect(screen.getByTestId("diagnostics-enabled")).toHaveTextContent("true");
+    });
+  });
 });

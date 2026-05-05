@@ -1,7 +1,7 @@
 "use client";
 
 import type { ColumnDef } from "@tanstack/react-table";
-import { ArrowLeft, ArrowRight, Search, ScrollText, Slash } from "lucide-react";
+import { ArrowLeft, ArrowRight, ScrollText, Search, ServerCog, Slash } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -30,6 +30,7 @@ import { useSessions } from "@/lib/api/hooks";
 import type { SessionRow } from "@/lib/api/types";
 import { formatNumber } from "@/lib/formatters";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { useHostState } from "@/providers/host-provider";
 
 type TimeRange = "all" | "today" | "7d" | "30d";
 type SummaryFilter = "all" | "yes" | "no";
@@ -56,6 +57,7 @@ function inTimeRange(timestamp: number | null, timeRange: TimeRange, nowMs: numb
 
 export default function SessionsPage() {
   const router = useRouter();
+  const { host, diagnosticsEnabled } = useHostState();
   const searchInputId = "sessions-sidebar-search";
 
   const [page, setPage] = useState(1);
@@ -68,11 +70,15 @@ export default function SessionsPage() {
   const [sortMode, setSortMode] = useState<SortMode>("recent");
   const [focusedIndex, setFocusedIndex] = useState(0);
 
-  const sessionsQuery = useSessions({
-    page,
-    pageSize,
-    query,
-  });
+  const sessionsQuery = useSessions(
+    {
+      page,
+      pageSize,
+      query,
+    },
+    host,
+    diagnosticsEnabled
+  );
 
   const items = useMemo(() => sessionsQuery.data?.items ?? [], [sessionsQuery.data]);
   const nowMsForTimeFilter = useMemo(() => {
@@ -228,7 +234,7 @@ export default function SessionsPage() {
     [filteredAndSortedItems.length, focusedRow, openSession, searchInputId]
   );
 
-  useKeyboardShortcuts(keyboardShortcuts, { enabled: true });
+  useKeyboardShortcuts(keyboardShortcuts, { enabled: diagnosticsEnabled });
 
   const clearAllFilters = () => {
     setQueryInput("");
@@ -306,6 +312,25 @@ export default function SessionsPage() {
     const pages = new Set<number>([1, totalPages, page - 1, page, page + 1]);
     return [...pages].filter((value) => value >= 1 && value <= totalPages).sort((a, b) => a - b);
   }, [page, totalPages]);
+
+  if (!diagnosticsEnabled) {
+    return (
+      <div className="space-y-4">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight">Sessions</h1>
+          <p className="text-muted-foreground text-sm">
+            Scan recent sessions, refine by filters, and open details quickly.
+          </p>
+        </div>
+
+        <EmptyState
+          icon={<ServerCog className="size-5" />}
+          title="No agent host selected"
+          description="Run the browse server locally or select a remote agent host in the header to load sessions."
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">

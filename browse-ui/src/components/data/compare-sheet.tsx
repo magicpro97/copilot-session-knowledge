@@ -15,13 +15,14 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useCompare } from "@/lib/api/hooks";
-import type { TimelineEntry } from "@/lib/api/types";
+import type { HostProfile, TimelineEntry } from "@/lib/api/types";
 import { formatNumber, formatSessionIdBadgeText } from "@/lib/formatters";
 
 type CompareSheetProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   sessionId: string;
+  host: HostProfile;
 };
 
 function buildTimelineSummary(timeline: TimelineEntry[]) {
@@ -48,9 +49,14 @@ function buildTimelineSummary(timeline: TimelineEntry[]) {
   };
 }
 
-export function CompareSheet({ open, onOpenChange, sessionId }: CompareSheetProps) {
+export function CompareSheet({ open, onOpenChange, sessionId, host }: CompareSheetProps) {
   const [compareSessionId, setCompareSessionId] = useState("");
-  const compareQuery = useCompare(sessionId, compareSessionId, open && Boolean(compareSessionId));
+  const compareQuery = useCompare(
+    sessionId,
+    compareSessionId,
+    open && Boolean(compareSessionId),
+    host
+  );
 
   const summaryA = useMemo(
     () => buildTimelineSummary(compareQuery.data?.a.timeline ?? []),
@@ -76,6 +82,7 @@ export function CompareSheet({ open, onOpenChange, sessionId }: CompareSheetProp
         <div className="space-y-4 p-4">
           <SessionPicker
             currentSessionId={sessionId}
+            host={host}
             open={open}
             value={compareSessionId}
             onValueChange={setCompareSessionId}

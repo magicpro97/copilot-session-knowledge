@@ -3,6 +3,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Mock } from "vitest";
+import { LOCAL_HOST } from "@/lib/host-profiles";
+import type { HostState } from "@/providers/host-provider";
 import { SessionDetailClient } from "./session-detail-client";
 
 // ── next/navigation ─────────────────────────────────────────────────────────
@@ -29,6 +31,11 @@ vi.mock("@/lib/api/hooks", () => ({
 }));
 
 import { useSessionDetail } from "@/lib/api/hooks";
+
+let hostStateMock: HostState = { host: LOCAL_HOST, diagnosticsEnabled: true };
+vi.mock("@/providers/host-provider", () => ({
+  useHostState: vi.fn(() => hostStateMock),
+}));
 
 const defaultSessionDetail = {
   data: {
@@ -74,6 +81,7 @@ vi.mock("lucide-react", () => ({
   Download: () => <span data-testid="icon-download" />,
   GitCompare: () => <span data-testid="icon-compare" />,
   Loader2: () => <span data-testid="icon-loader" />,
+  ServerCog: () => <span data-testid="icon-server-cog" />,
 }));
 
 // ── breadcrumbs / banner ─────────────────────────────────────────────────────
@@ -94,6 +102,7 @@ const replaceState = vi.spyOn(window.history, "replaceState").mockImplementation
 describe("SessionDetailClient – layout/nav", () => {
   beforeEach(() => {
     replaceState.mockClear();
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
     (useSessionDetail as Mock).mockImplementation(() => defaultSessionDetail);
     // Reset hash
     Object.defineProperty(window, "location", {
@@ -196,5 +205,38 @@ describe("SessionDetailClient – layout/nav", () => {
   it("shows session summary in header title", () => {
     render(<SessionDetailClient />);
     expect(screen.getByText("A short session summary")).toBeInTheDocument();
+  });
+
+  it("keeps hosted root detail idle until a live host is available", () => {
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: false };
+
+    render(<SessionDetailClient />);
+
+    expect(screen.getByText("No agent host selected")).toBeInTheDocument();
+    expect((useSessionDetail as Mock).mock.calls.at(-1)).toEqual([
+      "test-session-123",
+      false,
+      LOCAL_HOST,
+    ]);
+  });
+
+  it("passes the selected remote host to session detail queries", () => {
+    const remoteHost = {
+      id: "remote-host",
+      label: "Remote host",
+      base_url: "https://agent.example.test",
+      token: "secret",
+      cli_kind: "copilot" as const,
+      is_default: false,
+    };
+    hostStateMock = { host: remoteHost, diagnosticsEnabled: true };
+
+    render(<SessionDetailClient />);
+
+    expect((useSessionDetail as Mock).mock.calls.at(-1)).toEqual([
+      "test-session-123",
+      true,
+      remoteHost,
+    ]);
   });
 });

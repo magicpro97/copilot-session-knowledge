@@ -369,7 +369,7 @@ export function ChatShell() {
               description={
                 operatorEnabled
                   ? "Select an existing session from the list or create a new one to start chatting."
-                  : "Add a public agent host in New Chat to connect this hosted console to a remote CLI."
+                  : "No compatible host is configured. Open the local browse app directly, or add a public HTTPS tunnel host (e.g. ngrok) in New Chat."
               }
               icon={<Bot className="size-5" />}
               actionLabel="New Chat"
