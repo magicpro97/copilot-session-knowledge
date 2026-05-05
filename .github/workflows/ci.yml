@@ -19,6 +19,18 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: browse-ui/pnpm-lock.yaml
+
       - name: Install dev tools
         run: pip install "ruff>=0.5"
 
@@ -48,6 +60,12 @@ jobs:
           checkpoint-restore.py checkpoint-save.py
           tests/test_browse_search_v2.py
           browse/ hooks/ scripts/
+
+      - name: Build browse-ui static artifact
+        run: |
+          cd browse-ui
+          pnpm install --frozen-lockfile
+          pnpm build
 
       - name: Run tests
         run: python3 run_all_tests.py
