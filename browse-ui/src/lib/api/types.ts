@@ -1071,12 +1071,34 @@ export interface HostProfile {
 }
 
 /**
+ * `/.well-known/browse-host` discovery response from a local backend started
+ * with `--hosted-bootstrap`. Schema version "browse-host/1".
+ *
+ * When `auth === "token" && manual_token_required === true` the frontend must
+ * not invent a token; show a manual-token state and let the user supply it.
+ */
+export interface BrowseHostBootstrapResponse {
+  schema: "browse-host/1";
+  status: "ok";
+  auth: "open" | "token";
+  manual_token_required: boolean;
+  capabilities: string[];
+  cors_origins_configured: boolean;
+}
+
+/**
  * Runtime capabilities contract returned by `GET /api/operator/capabilities`.
  * Describes what the connected CLI server supports so the UI can adapt.
+ *
+ * `protocol` is an optional versioning marker introduced in the v2 contract.
+ * When absent the payload is from a legacy backend (see useHostFeature for
+ * the backward-compatibility rule).
  */
 export interface HostCapabilities {
   cli_kind: CliKind;
   version?: string | null;
   supported_modes: string[];
   supported_features: string[];
+  /** Present on modern backends (e.g. "v2"). Absent on legacy backends. */
+  protocol?: string | null;
 }

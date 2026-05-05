@@ -1015,6 +1015,20 @@ export const operatorModelCatalogResponseSchema = z.object({
 export const cliKindSchema = z.string().min(1);
 
 /**
+ * `/.well-known/browse-host` discovery response (schema version "browse-host/1").
+ * Returned by a local backend started with `--hosted-bootstrap`.
+ * See issue #49 for the full contract.
+ */
+export const browseHostBootstrapSchema = z.object({
+  schema: z.literal("browse-host/1"),
+  status: z.literal("ok"),
+  auth: z.enum(["open", "token"]),
+  manual_token_required: z.boolean(),
+  capabilities: z.array(z.string()),
+  cors_origins_configured: z.boolean(),
+});
+
+/**
  * Host profile stored client-side in localStorage.
  * The "local" id is reserved for the same-origin sentinel and is immutable.
  */
@@ -1041,10 +1055,15 @@ export const hostProfileSchema = z.object({
 /**
  * Runtime capabilities contract returned by `GET /api/operator/capabilities`.
  * The UI uses this to adapt features to what the connected CLI server supports.
+ *
+ * `protocol` is an optional versioning marker introduced in the v2 contract.
+ * When absent the payload is treated as a legacy response (see useHostFeature).
  */
 export const hostCapabilitiesSchema = z.object({
   cli_kind: cliKindSchema,
   version: z.string().nullable().optional(),
   supported_modes: z.array(z.string()),
   supported_features: z.array(z.string()),
+  /** Present on modern backends (e.g. "v2"). Absent on legacy backends. */
+  protocol: z.string().nullable().optional(),
 });

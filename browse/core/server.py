@@ -94,6 +94,20 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         nonce = generate_nonce()
         secure_cookie = is_https_request(self.headers)
 
+        # /.well-known/browse-host — discovery endpoint; no auth required
+        if path == "/.well-known/browse-host":
+            cors_ok, cors_origin = check_cors_origin(self.headers)
+            discovery_cors: dict = {}
+            if cors_ok:
+                discovery_cors = {"Access-Control-Allow-Origin": cors_origin, "Vary": "Origin"}
+            handler_fn, kwargs = match_route(path, "GET")
+            if handler_fn:
+                body, ct, status = handler_fn(self.db, params, self.token, nonce, **kwargs)
+            else:
+                body, ct, status = b"404 Not Found", "text/plain", 404
+            self._send(body, ct, status, nonce, send_body=send_body, cors_headers=discovery_cors or None)
+            return
+
         # /healthz — no auth required; dispatch via registry
         if path == "/healthz":
             cors_ok, cors_origin = check_cors_origin(self.headers)
@@ -262,17 +276,45 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         self._handle_get_like(send_body=False)
 
     def do_OPTIONS(self) -> None:
-        """Handle CORS preflight requests for /api/* routes.
+        """Handle CORS preflight requests for /api/*, /healthz, and /.well-known/browse-host.
 
         Allowlisted origins (BROWSE_CORS_ORIGINS) receive a 204 with CORS
-        headers.  Non-allowlisted origins receive 403.  Paths outside /api/
-        receive 405 (issue #27: deterministic cross-origin coverage for all
+        headers.  Non-allowlisted origins receive 403.  Paths outside supported
+        routes receive 405 (issue #27: deterministic cross-origin coverage for all
         hosted API routes including diagnostics endpoints).
+
+        Access-Control-Allow-Private-Network: true is added only when the
+        request includes Access-Control-Request-Private-Network: true AND the
+        origin is in the CORS allowlist.
         """
         from browse.core.auth import check_cors_origin
 
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+
+        def _pna_ok(request_headers) -> bool:
+            """True if the request asks for private-network access and is allowlisted."""
+            return request_headers.get("Access-Control-Request-Private-Network", "").strip().lower() == "true"
+
+        # /.well-known/browse-host discovery preflight
+        if path == "/.well-known/browse-host":
+            cors_ok, cors_origin = check_cors_origin(self.headers)
+            if not cors_ok:
+                self.send_response(403)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", cors_origin)
+            self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+            self.send_header("Access-Control-Max-Age", "86400")
+            self.send_header("Vary", "Origin")
+            if _pna_ok(self.headers):
+                self.send_header("Access-Control-Allow-Private-Network", "true")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
 
         # /healthz preflight: allowlisted origins get 204 with CORS headers;
         # non-allowlisted origins (or no Origin) get 403.
@@ -289,6 +331,8 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
             self.send_header("Access-Control-Max-Age", "86400")
             self.send_header("Vary", "Origin")
+            if _pna_ok(self.headers):
+                self.send_header("Access-Control-Allow-Private-Network", "true")
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
@@ -315,6 +359,8 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Access-Control-Max-Age", "86400")
         self.send_header("Vary", "Origin")
+        if _pna_ok(self.headers):
+            self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Content-Length", "0")
         self.end_headers()
 

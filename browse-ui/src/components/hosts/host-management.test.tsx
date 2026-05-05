@@ -13,7 +13,11 @@ Object.defineProperty(navigator, "clipboard", {
   configurable: true,
 });
 
-// Dynamic import avoids "use client" directive issues in the test environment
+// Mock local-bootstrap to avoid real fetch in detection tests
+vi.mock("@/lib/hosts/local-bootstrap", () => ({
+  probeLocalBootstrap: vi.fn(async () => ({ status: "unavailable" })),
+  resetLocalBootstrapCache: vi.fn(),
+}));
 const { HostManagement } = await import("@/components/hosts/host-management");
 
 // --- helpers ---
@@ -321,7 +325,7 @@ describe("HostManagement — hosted control-plane origin (issue #30)", () => {
   });
 });
 
-describe("HostManagement — mixed-content loopback guard", () => {
+describe("HostManagement — loopback PNA note (formerly mixed-content guard)", () => {
   beforeEach(() => {
     localStorage.clear();
     // Simulate a hosted HTTPS deployment
@@ -329,6 +333,13 @@ describe("HostManagement — mixed-content loopback guard", () => {
       value: { ...window.location, origin: "https://agents.example.com" },
       configurable: true,
     });
+    // Simulate probe returning a network error (loopback unreachable)
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("Failed to fetch");
+      })
+    );
   });
 
   afterEach(() => {
@@ -337,9 +348,10 @@ describe("HostManagement — mixed-content loopback guard", () => {
       value: { ...window.location, origin: "http://localhost:3000" },
       configurable: true,
     });
+    vi.unstubAllGlobals();
   });
 
-  it("shows a hard error when entering an http://localhost URL from a hosted HTTPS origin", async () => {
+  it("shows a PNA informational note (not a hard error) for http://localhost from HTTPS origin", async () => {
     renderHostManagement();
     await openAddForm();
     fireEvent.change(screen.getByLabelText("Tunnel URL"), {
@@ -347,11 +359,13 @@ describe("HostManagement — mixed-content loopback guard", () => {
     });
     fireEvent.click(screen.getByTestId("save-host-btn"));
 
+    // pna-note appears before probe completes (synchronous check sets it)
+    await waitFor(() => expect(screen.getByTestId("pna-note")).toBeInTheDocument());
+    // Probe will fail with network error and show validation-error
     await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
-    expect(screen.getByTestId("validation-error").textContent).toMatch(/HTTPS|loopback|tunnel/i);
   });
 
-  it("does NOT show 'Save anyway' for a mixed-content loopback error", async () => {
+  it("shows 'Save anyway' after a probe failure for a loopback URL", async () => {
     renderHostManagement();
     await openAddForm();
     fireEvent.change(screen.getByLabelText("Tunnel URL"), {
@@ -360,10 +374,11 @@ describe("HostManagement — mixed-content loopback guard", () => {
     fireEvent.click(screen.getByTestId("save-host-btn"));
 
     await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
-    expect(screen.queryByTestId("skip-validation-btn")).not.toBeInTheDocument();
+    // Unlike a hard block, probe failures allow "Save anyway"
+    expect(screen.getByTestId("skip-validation-btn")).toBeInTheDocument();
   });
 
-  it("clears the hard error when the URL field is updated", async () => {
+  it("clears the PNA note when the URL field is updated", async () => {
     renderHostManagement();
     await openAddForm();
     fireEvent.change(screen.getByLabelText("Tunnel URL"), {
@@ -371,17 +386,16 @@ describe("HostManagement — mixed-content loopback guard", () => {
     });
     fireEvent.click(screen.getByTestId("save-host-btn"));
 
-    await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("pna-note")).toBeInTheDocument());
 
-    // User corrects the URL to a valid HTTPS tunnel
+    // User corrects the URL to a valid HTTPS tunnel — pna-note should clear
     fireEvent.change(screen.getByLabelText("Tunnel URL"), {
       target: { value: "https://mytunnel.ngrok.io" },
     });
-    await waitFor(() => expect(screen.queryByTestId("validation-error")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByTestId("pna-note")).not.toBeInTheDocument());
   });
 
-  it("does NOT fire a network probe for a mixed-content incompatible URL", async () => {
-    vi.stubGlobal("fetch", vi.fn());
+  it("DOES fire a network probe for a loopback URL (pna-required is compatible: true)", async () => {
     renderHostManagement();
     await openAddForm();
     fireEvent.change(screen.getByLabelText("Tunnel URL"), {
@@ -390,8 +404,22 @@ describe("HostManagement — mixed-content loopback guard", () => {
     fireEvent.click(screen.getByTestId("save-host-btn"));
 
     await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
-    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
-    vi.unstubAllGlobals();
+    expect(vi.mocked(fetch)).toHaveBeenCalled();
+  });
+
+  it("does NOT fire a network probe for non-loopback HTTP from a hosted HTTPS origin", async () => {
+    const fetchSpy = vi.mocked(fetch);
+    renderHostManagement();
+    await openAddForm();
+    fireEvent.change(screen.getByLabelText("Tunnel URL"), {
+      target: { value: "http://remote.example.com" },
+    });
+    fireEvent.click(screen.getByTestId("save-host-btn"));
+
+    await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
+    expect(screen.getByTestId("validation-error").textContent).toMatch(/HTTPS|HTTP|loopback/i);
+    expect(screen.queryByTestId("skip-validation-btn")).not.toBeInTheDocument();
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -465,5 +493,116 @@ describe("HostManagement — URL scheme validation (issue #45)", () => {
 
     await waitFor(() => expect(screen.queryByTestId("host-add-form")).not.toBeInTheDocument());
     expect(vi.mocked(fetch)).toHaveBeenCalled();
+  });
+});
+
+// ── Detect local backend affordance (issue #49) ──────────────────────────────
+
+describe("HostManagement — detect local backend affordance", () => {
+  beforeEach(async () => {
+    localStorage.clear();
+    // Hosted origin so the detect button appears
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, origin: "https://agents.example.com" },
+      configurable: true,
+    });
+    const { probeLocalBootstrap, resetLocalBootstrapCache } =
+      await import("@/lib/hosts/local-bootstrap");
+    vi.mocked(probeLocalBootstrap).mockResolvedValue({ status: "unavailable" });
+    vi.mocked(resetLocalBootstrapCache).mockReset();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, origin: "http://localhost:3000" },
+      configurable: true,
+    });
+  });
+
+  it("renders the Detect local backend button on a hosted origin", () => {
+    renderHostManagement();
+    expect(screen.getByTestId("detect-local-btn")).toBeInTheDocument();
+  });
+
+  it("does NOT render the Detect local backend button on localhost", () => {
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, origin: "http://localhost:3000" },
+      configurable: true,
+    });
+    renderHostManagement();
+    expect(screen.queryByTestId("detect-local-btn")).not.toBeInTheDocument();
+  });
+
+  it("shows unavailable message when probe returns unavailable", async () => {
+    renderHostManagement();
+    fireEvent.click(screen.getByTestId("detect-local-btn"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("detect-result-unavailable")).toBeInTheDocument()
+    );
+    expect(screen.getByTestId("detect-result-unavailable").textContent).toMatch(
+      /127.0.0.1:8765|localhost:8765/
+    );
+  });
+
+  it("shows detected message and add-button when probe detects a backend", async () => {
+    const { probeLocalBootstrap } = await import("@/lib/hosts/local-bootstrap");
+    vi.mocked(probeLocalBootstrap).mockResolvedValueOnce({
+      status: "detected",
+      url: "http://127.0.0.1:8765",
+      response: {
+        schema: "browse-host/1",
+        status: "ok",
+        auth: "open",
+        manual_token_required: false,
+        capabilities: ["chat"],
+        cors_origins_configured: true,
+      },
+    });
+
+    renderHostManagement();
+    fireEvent.click(screen.getByTestId("detect-local-btn"));
+
+    await waitFor(() => expect(screen.getByTestId("detect-result-detected")).toBeInTheDocument());
+    expect(screen.getByTestId("detect-result-detected").textContent).toMatch(/127.0.0.1:8765/);
+    expect(screen.getByTestId("add-detected-btn")).toBeInTheDocument();
+  });
+
+  it("shows auth-required message and pre-fills form when probe requires token", async () => {
+    const { probeLocalBootstrap } = await import("@/lib/hosts/local-bootstrap");
+    vi.mocked(probeLocalBootstrap).mockResolvedValueOnce({
+      status: "auth-required",
+      url: "http://127.0.0.1:8765",
+      response: {
+        schema: "browse-host/1",
+        status: "ok",
+        auth: "token",
+        manual_token_required: true,
+        capabilities: ["chat"],
+        cors_origins_configured: true,
+      },
+    });
+
+    renderHostManagement();
+    fireEvent.click(screen.getByTestId("detect-local-btn"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("detect-result-auth-required")).toBeInTheDocument()
+    );
+    // Form should open and URL pre-filled
+    await waitFor(() => expect(screen.getByTestId("host-add-form")).toBeInTheDocument());
+    expect(screen.getByLabelText("Tunnel URL")).toHaveValue("http://127.0.0.1:8765");
+  });
+
+  it("calls resetLocalBootstrapCache before probing", async () => {
+    const { resetLocalBootstrapCache } = await import("@/lib/hosts/local-bootstrap");
+
+    renderHostManagement();
+    fireEvent.click(screen.getByTestId("detect-local-btn"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("detect-result-unavailable")).toBeInTheDocument()
+    );
+    expect(resetLocalBootstrapCache).toHaveBeenCalled();
   });
 });

@@ -12,13 +12,35 @@ export type HostFeatureResult = {
 };
 
 /**
+ * Core features that legacy/older remote backends are assumed to support even
+ * when `supported_features` does not enumerate them (or is absent).  These
+ * correspond to routes that existed before the v2 protocol marker was
+ * introduced.  Non-core / newer features (e.g. "suggest", "preview", "diff")
+ * are NOT included here and remain fail-closed against legacy backends.
+ */
+const LEGACY_CORE_FEATURES = new Set([
+  "chat",
+  "sessions",
+  "search",
+  "graph",
+  "insights",
+  "diagnostics",
+]);
+
+/**
  * Returns whether the given host supports the named feature.
  *
  * - LOCAL_HOST (same-origin): always supported — no remote capabilities check.
  * - Remote host: queries /api/operator/capabilities and checks supported_features.
  * - If capabilities haven't loaded yet: { supported: false, loading: true }.
- * - If the capabilities call errors: fails closed so pages show a clean unsupported state
- *   instead of issuing route fetches against unknown/stripped hosts.
+ * - Backward-compatibility rule for remote hosts:
+ *   - Modern backends include `protocol: "v2"` in the response; the UI trusts
+ *     `supported_features` exactly (fail-closed for missing features).
+ *   - Legacy backends (no `protocol` field) may not enumerate all working
+ *     routes; the UI falls back to allowing LEGACY_CORE_FEATURES regardless of
+ *     what `supported_features` contains.
+ *   - Transient errors (network, parse failure) also use the legacy fallback
+ *     for LEGACY_CORE_FEATURES so core pages stay accessible during disruptions.
  *
  * @param host     The active HostProfile from useHostState().
  * @param feature  Feature name to check (e.g. "search", "knowledge").
@@ -49,11 +71,28 @@ export function useHostFeature(
   }
 
   if (capabilitiesQuery.isError || !capabilitiesQuery.data) {
-    return { supported: false, loading: false };
+    // Transient failure: allow core legacy features so disruptions don't hide
+    // working pages.  Non-core features remain unsupported.
+    return {
+      supported: LEGACY_CORE_FEATURES.has(feature),
+      loading: false,
+    };
   }
 
+  const { data } = capabilitiesQuery;
+
+  if (data.protocol) {
+    // Modern backend with explicit protocol marker: trust supported_features exactly.
+    return {
+      supported: data.supported_features.includes(feature),
+      loading: false,
+    };
+  }
+
+  // Legacy backend (no protocol marker): assume all core legacy features are
+  // available even if not explicitly listed in supported_features.
   return {
-    supported: capabilitiesQuery.data.supported_features.includes(feature),
+    supported: data.supported_features.includes(feature) || LEGACY_CORE_FEATURES.has(feature),
     loading: false,
   };
 }

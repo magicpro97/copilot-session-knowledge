@@ -19,6 +19,7 @@ from browse.routes import (
     agents,  # noqa: F401
     dashboard,  # noqa: F401
     diff,  # noqa: F401
+    discovery,  # noqa: F401
     embeddings,  # noqa: F401
     graph,  # noqa: F401
     health,  # noqa: F401

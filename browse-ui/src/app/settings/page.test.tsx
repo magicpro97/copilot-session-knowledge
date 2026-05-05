@@ -40,6 +40,11 @@ vi.mock("@/lib/hosts", () => ({
   useHostFeature: vi.fn(() => ({ supported: diagnosticsSupported, loading: false })),
 }));
 
+vi.mock("@/lib/hosts/local-bootstrap", () => ({
+  probeLocalBootstrap: vi.fn(async () => ({ status: "unavailable" })),
+  resetLocalBootstrapCache: vi.fn(),
+}));
+
 type TentacleQuery = ReturnType<typeof useTentacleStatus>;
 type GenericQuery = {
   data: undefined;
@@ -416,7 +421,13 @@ describe("SettingsPage — mixed-content loopback guard", () => {
     });
   });
 
-  it("shows a hard incompatibility error when adding a localhost URL from a hosted HTTPS page", async () => {
+  it("shows a PNA informational note when adding a localhost URL from a hosted HTTPS page", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("Failed to fetch");
+      })
+    );
     render(<SettingsPage />);
     fireEvent.click(screen.getByRole("button", { name: "Add remote host" }));
     await waitFor(() => expect(screen.getByTestId("host-add-form")).toBeInTheDocument());
@@ -424,11 +435,19 @@ describe("SettingsPage — mixed-content loopback guard", () => {
       target: { value: "http://localhost:3000" },
     });
     fireEvent.click(screen.getByTestId("save-host-btn"));
+    // pna-note shown first (synchronous), then validation-error from probe failure
+    await waitFor(() => expect(screen.getByTestId("pna-note")).toBeInTheDocument());
     await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
-    expect(screen.getByTestId("validation-error").textContent).toMatch(/HTTPS|loopback|tunnel/i);
+    vi.unstubAllGlobals();
   });
 
-  it("does NOT show 'Save anyway' for a deterministically incompatible localhost URL", async () => {
+  it("shows 'Save anyway' for a loopback URL after probe failure (pna-required is compatible: true)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("Failed to fetch");
+      })
+    );
     render(<SettingsPage />);
     fireEvent.click(screen.getByRole("button", { name: "Add remote host" }));
     await waitFor(() => expect(screen.getByTestId("host-add-form")).toBeInTheDocument());
@@ -437,7 +456,9 @@ describe("SettingsPage — mixed-content loopback guard", () => {
     });
     fireEvent.click(screen.getByTestId("save-host-btn"));
     await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
-    expect(screen.queryByTestId("skip-validation-btn")).not.toBeInTheDocument();
+    // pna-required is compatible: true, so probe fires and fails → "Save anyway" is shown
+    expect(screen.getByTestId("skip-validation-btn")).toBeInTheDocument();
+    vi.unstubAllGlobals();
   });
 
   it("shows 'Open the local browse app directly' for the local host row on hosted pages", () => {

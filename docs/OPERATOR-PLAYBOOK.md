@@ -578,6 +578,77 @@ The proof test is skipped in normal CI. `pnpm release:check` enables it explicit
 
 **Verified repro (2026-05-03):** A root-hosted Firebase deployment of `browse-ui` returned HTML with `/v2/_next/static/…` URLs. Requests to `/v2/_next/…` returned 404; requests to `/_next/…` returned 200. Root cause: the build included `basePath: "/v2"` in `next.config.ts`.
 
+### Loopback Bootstrap for Hosted UI (Issue #49)
+
+The hosted static UI (`https://agents.linhngo.dev`, `https://agents-linhngo-dev.web.app`) can
+auto-detect a locally running `browse.py` instance through loopback fetches. Chromium/Edge use
+the browser's [Private Network Access (PNA)](https://wicg.github.io/private-network-access/) /
+Local Network Access flow; Safari/Firefox behavior depends on standard CORS and browser policy.
+
+#### Enabling loopback bootstrap
+
+Start `browse.py` on the local machine with the `--hosted-bootstrap` flag:
+
+```bash
+# Open auth — probe will auto-activate the backend:
+python3 browse.py --hosted-bootstrap
+
+# Token auth — probe succeeds but the frontend shows manual-token state:
+python3 browse.py --hosted-bootstrap --token <your-secret-token>
+```
+
+`--hosted-bootstrap` does:
+1. Binds to `127.0.0.1` (loopback only — not exposed on the LAN).
+2. Appends canonical hosted origins to `BROWSE_CORS_ORIGINS`:
+   `https://agents.linhngo.dev` and `https://agents-linhngo-dev.web.app`.
+3. Emits `Access-Control-Allow-Private-Network: true` on PNA preflights from allowlisted origins.
+4. Prints startup guidance including the discovery URL and auth instructions.
+
+#### Discovery endpoint
+
+`GET http://127.0.0.1:8765/.well-known/browse-host` returns:
+
+```json
+{
+  "schema": "browse-host/1",
+  "status": "ok",
+  "auth": "open" | "token",
+  "manual_token_required": false | true,
+  "capabilities": ["discovery", "healthz", "api"],
+  "cors_origins_configured": true
+}
+```
+
+Verify locally:
+```bash
+curl -s http://127.0.0.1:8765/.well-known/browse-host | python3 -m json.tool
+```
+
+#### Manual-token fallback
+
+When `manual_token_required: true` the hosted UI shows a manual-token prompt instead of
+auto-activating. The user supplies the token; the frontend never invents a blank credential.
+
+#### Browser support caveat
+
+**Interpretation (not a guaranteed fact):**
+
+| Browser family | Loopback from hosted HTTPS | Action |
+|---|---|---|
+| Chromium / Edge | Requires PNA/LNA preflight headers and may show a local-network permission prompt. | Use `--hosted-bootstrap`; accept the browser prompt if shown. |
+| Safari / Firefox | Does not use Chromium's PNA/LNA header flow; outcome depends on CORS/browser policy. | Try `--hosted-bootstrap`; use HTTPS tunnel if blocked. |
+| Strict enterprise browsers | May block local-network access regardless of headers. | Use HTTPS tunnel (Cloudflare Tunnel / ngrok). |
+
+**Non-loopback HTTP hosts** (`http://192.168.x.x`, `http://custom.host`) are **not reachable**
+from HTTPS hosted pages in any browser.
+
+For predictable cross-browser support, expose the backend over HTTPS via a tunnel and add it as
+a host profile manually in Settings → Hosts & connections.
+
+_Full spec: [docs/HOSTED-SHELL-ARCHITECTURE.md §4](HOSTED-SHELL-ARCHITECTURE.md#4-hosted-loopback-bootstrap--pnahttp-shipped-issue-49)_
+
+---
+
 ### CORS and auth on the operator host
 
 **Verified fact:** The operator host implements explicit cross-origin support in `browse/core/auth.py` and `browse/api/operator.py`:
@@ -923,14 +994,125 @@ job summary. Read-only — no issues, commits, or DB writes.
 
 ---
 
-## Orchestrator-only next steps — host-management wave
+## Orchestrator-only next steps — hosted loopback compatibility goal
 
 > **Interpretation / Action / Verification evidence layer** (see Rule 7 in AGENT-RULES.md).
 >
-> The docs lane (`browse-docs-verification` tentacle) documents what is shipped.
-> The steps below are **not yet done** and must be completed by the orchestrator before the wave can be considered released.
+> The steps below are the **final goal-eval checklist** for the hosted loopback compatibility goal
+> (`345fa7cb-fb2c-4125-9d26-a4492234beea`). Each item must be completed and evidence recorded
+> before the goal can be closed.
 
-**Verification evidence already produced (targeted):**
+### Verification evidence already produced (targeted)
+
+| Check | Status |
+|-------|--------|
+| `pnpm vitest run src/app/settings/page.test.tsx` | ✅ Passed (targeted — reported by browse-host-ui tentacle) |
+| `pnpm vitest run src/app/chat/chat-shell.test.tsx` | ✅ Passed (targeted) |
+| `pnpm vitest run src/app/insights/layout.test.tsx` | ✅ Passed (targeted) |
+| `pnpm typecheck` | ✅ Passed |
+| `pnpm exec playwright test e2e/chat.spec.ts --grep "header host switcher"` | ✅ Passed (targeted Playwright) |
+| `python3 tests/test_hooks.py` | ✅ Passed (Python tooling regression) |
+| `python3 tests/test_auto_update_coverage.py` | ✅ Passed |
+| `python3 tests/test_sync_status.py` | ✅ Passed |
+| `python3 test_fixes.py` | ✅ Passed |
+| `pnpm vitest run src/lib/hosts/local-bootstrap.test.ts` | ✅ Passed (loopback probe, issue #49) |
+| `pnpm vitest run src/providers/host-provider.test.tsx` | ✅ Passed (loopback probe + negative cache, issue #49) |
+| `pnpm vitest run src/components/hosts/host-management.test.tsx` | ✅ Passed (PNA note, issue #49) |
+| `pnpm vitest run src/app/insights/knowledge-tab.test.tsx` | ✅ Passed (capabilityState, issue #47) |
+
+### Goal-eval checklist — orchestrator actions required
+
+**Phase 1 — Python + UI unit tests:**
+```bash
+python3 run_all_tests.py                                          # Full Python test suite
+cd browse-ui && pnpm test                                        # Full vitest suite
+```
+
+**Phase 2 — TypeScript and lint gates:**
+```bash
+cd browse-ui && pnpm typecheck
+cd browse-ui && pnpm lint
+cd browse-ui && pnpm format:check
+```
+
+**Phase 3 — Build and release artifact:**
+```bash
+cd browse-ui && pnpm build                                        # Local dist/
+cd browse-ui && pnpm release:check                               # Firebase release artifact
+```
+
+**Phase 4 — Playwright / browser smoke:**
+```bash
+# Behavioral E2E suite (mocked backends — no live backend needed):
+cd browse-ui && pnpm test:e2e --project behavioral
+
+# Hosted smoke — Chromium/Edge (requires browse.py + live hosted URL):
+# 1. python3 browse.py --hosted-bootstrap --token <token>
+# 2. Open https://agents.linhngo.dev in Chromium/Edge
+# 3. Assert: "Local backend (auto-detected)" appears in Settings → Hosts & connections
+# 4. Assert: DevTools → Network shows /.well-known/browse-host → 200, PNA headers present
+# 5. Assert: diagnostics data loads on Insights page
+# 6. Assert: header host dropdown shows auto-detected host label
+
+# Hosted smoke — Safari/Firefox:
+# 1. Open https://agents.linhngo.dev in Safari or Firefox
+# 2. Observe whether direct loopback auto-detection succeeds or is blocked
+# 3. If blocked, add a host manually via Settings → Hosts & connections with an HTTPS tunnel URL
+# 4. Assert: manual host activates and diagnostics load
+```
+
+**Phase 5 — Discovery endpoint live verification:**
+```bash
+# Requires browse.py running:
+curl -s http://127.0.0.1:8765/.well-known/browse-host | python3 -m json.tool
+# Assert: schema == "browse-host/1", status == "ok"
+```
+
+**Phase 6 — Deploy and hosted network sweep:**
+```bash
+# From private hosting repo:
+firebase deploy --only hosting:agents
+
+# Post-deploy verification from browser DevTools:
+# - https://agents.linhngo.dev loads (HTTP 200)
+# - https://agents-linhngo-dev.web.app loads (HTTP 200)
+# - No /v2/_next/ 404s in Network tab
+# - /.well-known/browse-host probe visible in DevTools when browse.py is running locally
+```
+
+**Phase 7 — Issue comments and closures:**
+```bash
+# Issue #46 (capability gates — legacy fallback):
+gh issue comment 46 --repo magicpro97/copilot-session-knowledge \
+  --body "Fixed: useHostFeature now applies LEGACY_CORE_FEATURES fallback for backends without protocol:v2 marker. Modern backends with protocol:\"v2\" have supported_features trusted exactly. Documented in docs/HOSTED-SHELL-ARCHITECTURE.md §4.6."
+gh issue close 46 --repo magicpro97/copilot-session-knowledge
+
+# Issue #47 (Insights child tabs):
+gh issue comment 47 --repo magicpro97/copilot-session-knowledge \
+  --body "Fixed: capabilityState is now threaded from insights layout.tsx to all child tabs. Vitest coverage added for all four states (no-host, checking, unsupported, ready) in knowledge-tab, live-tab, retro-tab, search-quality-tab. Documented in docs/HOSTED-SHELL-ARCHITECTURE.md §4.7."
+gh issue close 47 --repo magicpro97/copilot-session-knowledge
+
+# Issue #49 (loopback bootstrap):
+gh issue comment 49 --repo magicpro97/copilot-session-knowledge \
+  --body "Implemented: /.well-known/browse-host discovery endpoint, --hosted-bootstrap flag, PNA preflight headers, frontend probe (127.0.0.1 first, then localhost), 5-min negative cache, manual-token state. Documented in docs/HOSTED-SHELL-ARCHITECTURE.md §4 and docs/OPERATOR-PLAYBOOK.md."
+gh issue close 49 --repo magicpro97/copilot-session-knowledge
+
+# Issue #50 (Trend Scout / LocalKinAI/kincode) — leave open, add label:
+gh issue comment 50 --repo magicpro97/copilot-session-knowledge \
+  --body "Triaged: this is a Trend Scout research issue for LocalKinAI/kincode, not a runtime regression. Separating from the hosted loopback compatibility goal (#46, #47, #49). Leaving open for future follow-up research (MCP surface, frontmatter indexing, Claude Code session patterns). Relevant ideas: spawn a research tentacle on kincode to evaluate MCP tool-server surface for briefing.py integration."
+```
+
+Until all phases are verified with evidence, the goal status should be read as
+"targeted checks passed; full orchestrator gates pending".
+
+---
+
+## Orchestrator-only next steps — host-management wave (previous wave, archived)
+
+> Previous wave (#35–#45) was deployed at build `2184c36`. The steps below are the original
+> orchestrator checklist, kept for reference. Do **not** re-open this scope.
+
+**Verification evidence (targeted, from previous wave):**
 
 | Check | Status |
 |-------|--------|
@@ -944,17 +1126,14 @@ job summary. Read-only — no issues, commits, or DB writes.
 | `python3 tests/test_sync_status.py` | ✅ Passed |
 | `python3 test_fixes.py` | ✅ Passed |
 
-**Orchestrator actions required before release:**
+**Previous orchestrator actions (completed at `2184c36`):**
 
-- [ ] `cd browse-ui && pnpm lint` — full lint pass on the browse-ui surface
-- [ ] `cd browse-ui && pnpm format:check` — Prettier format check
-- [ ] `cd browse-ui && pnpm test` — full vitest suite (all spec files)
-- [ ] `cd browse-ui && pnpm build` — production build; rebuild `dist/` and stage the artifact
-- [ ] `pnpm release:check` (from `browse-ui/`) — Firebase-targeted release artifact verification
-- [ ] `python3 run_all_tests.py` — full Python test suite
-- [ ] `git commit` with complete `dist/` update and a descriptive message
-- [ ] `git push`
-- [ ] Firebase deploy from private hosting repo (for Firebase-hosted deployments)
-- [ ] Hosted smoke: open `https://<your-firebase-domain>/chat/` and verify header host dropdown, Settings → Hosts & connections card, and session create dialog host pre-population
-
-Until these steps are completed, the verification status should be read as "targeted checks passed; full gates pending".
+- [x] `cd browse-ui && pnpm lint`
+- [x] `cd browse-ui && pnpm format:check`
+- [x] `cd browse-ui && pnpm test`
+- [x] `cd browse-ui && pnpm build`
+- [x] `pnpm release:check` (from `browse-ui/`)
+- [x] `python3 run_all_tests.py`
+- [x] `git commit` + `git push`
+- [x] Firebase deploy (from private hosting repo)
+- [x] Hosted smoke (host dropdown, host management, session create dialog)

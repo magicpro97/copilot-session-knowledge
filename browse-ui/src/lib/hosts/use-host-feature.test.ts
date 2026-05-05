@@ -17,6 +17,12 @@ vi.mock("@/lib/api/hooks", async (importOriginal) => {
 
 const mockCapabilities = vi.mocked(hooks.useHostCapabilities);
 
+function asCapabilitiesQuery(
+  value: Partial<ReturnType<typeof hooks.useHostCapabilities>>
+): ReturnType<typeof hooks.useHostCapabilities> {
+  return value as unknown as ReturnType<typeof hooks.useHostCapabilities>;
+}
+
 const REMOTE_HOST: HostProfile = {
   id: "remote-1",
   label: "Remote Agent",
@@ -32,11 +38,13 @@ describe("useHostFeature", () => {
   });
 
   it("returns supported=true for LOCAL_HOST without calling capabilities", () => {
-    mockCapabilities.mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof hooks.useHostCapabilities>);
+    mockCapabilities.mockReturnValue(
+      asCapabilitiesQuery({
+        data: undefined,
+        isLoading: false,
+        isError: false,
+      })
+    );
 
     const { result } = renderHook(() => useHostFeature(LOCAL_HOST, "search", true));
 
@@ -46,66 +54,189 @@ describe("useHostFeature", () => {
   });
 
   it("returns supported=false, loading=false when enabled=false", () => {
-    mockCapabilities.mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof hooks.useHostCapabilities>);
+    mockCapabilities.mockReturnValue(
+      asCapabilitiesQuery({
+        data: undefined,
+        isLoading: false,
+        isError: false,
+      })
+    );
 
     const { result } = renderHook(() => useHostFeature(REMOTE_HOST, "search", false));
     expect(result.current).toEqual({ supported: false, loading: false });
   });
 
   it("returns loading=true while capabilities are fetching for remote host", () => {
-    mockCapabilities.mockReturnValue({
-      data: undefined,
-      isLoading: true,
-      isError: false,
-    } as ReturnType<typeof hooks.useHostCapabilities>);
+    mockCapabilities.mockReturnValue(
+      asCapabilitiesQuery({
+        data: undefined,
+        isLoading: true,
+        isError: false,
+      })
+    );
 
     const { result } = renderHook(() => useHostFeature(REMOTE_HOST, "search", true));
     expect(result.current).toEqual({ supported: false, loading: true });
   });
 
-  it("returns supported=true if feature is in supported_features", () => {
-    mockCapabilities.mockReturnValue({
-      data: {
-        cli_kind: "full",
-        supported_modes: ["chat"],
-        supported_features: ["search", "knowledge"],
-      },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof hooks.useHostCapabilities>);
+  it("returns supported=true if feature is in supported_features (modern payload)", () => {
+    mockCapabilities.mockReturnValue(
+      asCapabilitiesQuery({
+        data: {
+          cli_kind: "full",
+          supported_modes: ["chat"],
+          supported_features: ["search", "knowledge"],
+          protocol: "v2",
+        },
+        isLoading: false,
+        isError: false,
+      })
+    );
 
     const { result } = renderHook(() => useHostFeature(REMOTE_HOST, "search", true));
     expect(result.current).toEqual({ supported: true, loading: false });
   });
 
-  it("returns supported=false if feature is NOT in supported_features", () => {
-    mockCapabilities.mockReturnValue({
-      data: {
-        cli_kind: "lite",
-        supported_modes: ["chat"],
-        supported_features: ["chat"],
-      },
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof hooks.useHostCapabilities>);
+  it("returns supported=false if feature is NOT in supported_features (modern payload)", () => {
+    mockCapabilities.mockReturnValue(
+      asCapabilitiesQuery({
+        data: {
+          cli_kind: "lite",
+          supported_modes: ["chat"],
+          supported_features: ["chat"],
+          protocol: "v2",
+        },
+        isLoading: false,
+        isError: false,
+      })
+    );
 
     const { result } = renderHook(() => useHostFeature(REMOTE_HOST, "search", true));
     expect(result.current).toEqual({ supported: false, loading: false });
   });
 
-  it("fails closed when capabilities call errors", () => {
-    mockCapabilities.mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: true,
-    } as ReturnType<typeof hooks.useHostCapabilities>);
+  // ── Backward-compatibility: legacy payloads (no protocol marker) ──────────
+
+  it("legacy payload: core feature not in supported_features is still supported", () => {
+    // Older backend returns empty supported_features without a protocol marker.
+    mockCapabilities.mockReturnValue(
+      asCapabilitiesQuery({
+        data: {
+          cli_kind: "copilot",
+          supported_modes: ["ask"],
+          supported_features: [],
+          // no protocol field
+        },
+        isLoading: false,
+        isError: false,
+      })
+    );
+
+    for (const coreFeature of ["chat", "sessions", "search", "graph", "insights", "diagnostics"]) {
+      const { result } = renderHook(() => useHostFeature(REMOTE_HOST, coreFeature, true));
+      expect(
+        result.current,
+        `Expected core feature "${coreFeature}" to be supported on legacy payload`
+      ).toEqual({ supported: true, loading: false });
+    }
+  });
+
+  it("legacy payload: non-core feature not in supported_features is unsupported", () => {
+    mockCapabilities.mockReturnValue(
+      asCapabilitiesQuery({
+        data: {
+          cli_kind: "copilot",
+          supported_modes: ["ask"],
+          supported_features: [],
+          // no protocol field
+        },
+        isLoading: false,
+        isError: false,
+      })
+    );
+
+    for (const newFeature of ["suggest", "preview", "diff", "knowledge"]) {
+      const { result } = renderHook(() => useHostFeature(REMOTE_HOST, newFeature, true));
+      expect(
+        result.current,
+        `Expected non-core feature "${newFeature}" to be unsupported on legacy payload`
+      ).toEqual({ supported: false, loading: false });
+    }
+  });
+
+  it("legacy payload: non-core feature explicitly in supported_features IS supported", () => {
+    mockCapabilities.mockReturnValue(
+      asCapabilitiesQuery({
+        data: {
+          cli_kind: "copilot",
+          supported_modes: ["ask"],
+          supported_features: ["suggest"],
+          // no protocol field
+        },
+        isLoading: false,
+        isError: false,
+      })
+    );
+
+    const { result } = renderHook(() => useHostFeature(REMOTE_HOST, "suggest", true));
+    expect(result.current).toEqual({ supported: true, loading: false });
+  });
+
+  it("modern payload (protocol set): core feature NOT in supported_features is unsupported", () => {
+    // Modern backend explicitly omits a core feature — should be fail-closed.
+    mockCapabilities.mockReturnValue(
+      asCapabilitiesQuery({
+        data: {
+          cli_kind: "lite",
+          supported_modes: ["chat"],
+          supported_features: ["chat"],
+          protocol: "v2",
+        },
+        isLoading: false,
+        isError: false,
+      })
+    );
 
     const { result } = renderHook(() => useHostFeature(REMOTE_HOST, "search", true));
     expect(result.current).toEqual({ supported: false, loading: false });
+  });
+
+  // ── Transient capability failures ─────────────────────────────────────────
+
+  it("transient error: core feature is supported via legacy fallback", () => {
+    mockCapabilities.mockReturnValue(
+      asCapabilitiesQuery({
+        data: undefined,
+        isLoading: false,
+        isError: true,
+      })
+    );
+
+    for (const coreFeature of ["chat", "sessions", "search", "graph", "insights", "diagnostics"]) {
+      const { result } = renderHook(() => useHostFeature(REMOTE_HOST, coreFeature, true));
+      expect(
+        result.current,
+        `Expected core feature "${coreFeature}" to be supported after transient error`
+      ).toEqual({ supported: true, loading: false });
+    }
+  });
+
+  it("transient error: non-core feature remains unsupported", () => {
+    mockCapabilities.mockReturnValue(
+      asCapabilitiesQuery({
+        data: undefined,
+        isLoading: false,
+        isError: true,
+      })
+    );
+
+    for (const newFeature of ["suggest", "preview", "diff", "knowledge"]) {
+      const { result } = renderHook(() => useHostFeature(REMOTE_HOST, newFeature, true));
+      expect(
+        result.current,
+        `Expected non-core feature "${newFeature}" to be unsupported after transient error`
+      ).toEqual({ supported: false, loading: false });
+    }
   });
 
   it("treats host with no base_url as local (full support)", () => {
@@ -117,11 +248,13 @@ describe("useHostFeature", () => {
       cli_kind: "copilot",
       is_default: false,
     };
-    mockCapabilities.mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    } as ReturnType<typeof hooks.useHostCapabilities>);
+    mockCapabilities.mockReturnValue(
+      asCapabilitiesQuery({
+        data: undefined,
+        isLoading: false,
+        isError: false,
+      })
+    );
 
     const { result } = renderHook(() => useHostFeature(noUrlHost, "knowledge", true));
     expect(result.current).toEqual({ supported: true, loading: false });

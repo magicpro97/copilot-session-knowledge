@@ -189,8 +189,26 @@ Design specifications for the hosted browse-UI operating as a remote shell:
 
 | Topic | Document |
 |---|---|
-| Localhost bootstrap, relay/gateway, version negotiation | [docs/HOSTED-SHELL-ARCHITECTURE.md](../docs/HOSTED-SHELL-ARCHITECTURE.md) |
+| Localhost bootstrap (mkcert/HTTPS, future design), relay/gateway, version negotiation | [docs/HOSTED-SHELL-ARCHITECTURE.md](../docs/HOSTED-SHELL-ARCHITECTURE.md) |
+| **PNA/HTTP loopback bootstrap (`--hosted-bootstrap`), discovery endpoint, browser compat** | [docs/HOSTED-SHELL-ARCHITECTURE.md §4](../docs/HOSTED-SHELL-ARCHITECTURE.md#4-hosted-loopback-bootstrap--pnahttp-shipped-issue-49) |
 | Browser token storage, stream reconnect, first-run UX | [docs/HOSTED-SHELL-RESEARCH.md](../docs/HOSTED-SHELL-RESEARCH.md) |
+| Operator runbook: tunnels, Firebase deploy, CORS, hosted smoke | [docs/OPERATOR-PLAYBOOK.md](../docs/OPERATOR-PLAYBOOK.md) |
+
+### Loopback backend auto-detection (issue #49)
+
+When accessed from a hosted HTTPS origin (`https://agents.linhngo.dev` or the Firebase URL)
+with no explicit remote host configured, the UI probes:
+1. `http://127.0.0.1:8765/.well-known/browse-host`
+2. `http://localhost:8765/.well-known/browse-host`
+
+A detected backend is activated ephemerally. Probe results are cached (5-minute negative cache)
+to avoid storms. Explicit remote-host selections are never overridden.
+
+**To enable:** start the backend with `python3 browse.py --hosted-bootstrap [--token <token>]`.
+
+**Browser caveat:** Chromium/Edge can require PNA/LNA preflight headers and a local-network
+permission prompt. Safari/Firefox behavior depends on CORS/browser policy. If direct loopback is
+blocked, use an HTTPS tunnel (Cloudflare Tunnel / ngrok); do not assume universal browser support.
 
 ## Phases
 

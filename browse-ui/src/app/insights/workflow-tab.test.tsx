@@ -55,9 +55,26 @@ function renderWithContext(diagnosticsEnabled: boolean, host = LOCAL_HOST) {
 }
 
 describe("WorkflowTab", () => {
-  it("shows hosted idle guidance when diagnosticsEnabled is false", () => {
+  it("shows 'No agent host selected' guidance when no host is configured", () => {
     renderWithContext(false);
     expect(screen.getByText(/no agent host selected/i)).toBeInTheDocument();
+    expect(mockedUseWorkflowHealth).not.toHaveBeenCalled();
+  });
+
+  it("shows 'Not supported by this host' when selected host lacks insights support", () => {
+    render(
+      <InsightsTabContext.Provider
+        value={{
+          setActiveTab: vi.fn(),
+          diagnosticsEnabled: false,
+          capabilityState: "unsupported",
+          host: LOCAL_HOST,
+        }}
+      >
+        <WorkflowTab />
+      </InsightsTabContext.Provider>
+    );
+    expect(screen.getByText(/not supported by this host/i)).toBeInTheDocument();
     expect(mockedUseWorkflowHealth).not.toHaveBeenCalled();
   });
 

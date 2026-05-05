@@ -14,23 +14,38 @@
 ### 1.1 Context
 
 **Facts:**
-- The hosted UI (`https://agents.linhngo.dev`) is served over HTTPS. Browsers
-  (Chrome 94+, Firefox 96+, Safari 15.2+) block mixed-content requests to `http://127.x.x.x`
-  from a secure origin unconditionally — this is not a CORS issue; the request is cancelled
-  before it leaves the browser.
-- `browse-ui/src/lib/host-profiles.ts · checkHostCompatibility()` already detects this case and
-  returns `{ compatible: false, code: "mixed-content-loopback" }`.
-  _Evidence: `grep -n "mixed-content-loopback" browse-ui/src/lib/host-profiles.ts`_
-- `browse-ui/src/providers/host-provider.tsx` skips the `/healthz` probe when
-  `isLocalOrigin(window.location.origin)` is false (i.e. on the hosted origin).
-  _Evidence: `grep -n "isLocalOrigin" browse-ui/src/providers/host-provider.tsx`_
-- `browse.py` currently has no HTTPS loopback mode.
+- The hosted UI (`https://agents.linhngo.dev`) is served over HTTPS. Standard browser
+  mixed-content rules block `http://` non-loopback calls from HTTPS pages unconditionally.
+- Loopback addresses (`127.0.0.1`, `localhost`) are **private-network addresses** subject to
+  the [Private Network Access (PNA)](https://wicg.github.io/private-network-access/) spec.
+  PNA/LNA behaviour for HTTPS → HTTP loopback requests is **browser-dependent**:
+  - Chromium and Edge: local-network / loopback access can require a browser permission prompt
+    and a preflight response with `Access-Control-Allow-Private-Network: true`.
+  - Safari and Firefox: current implementations do not use the Chromium PNA/LNA header flow;
+    requests still depend on standard CORS, browser policy, and deployment settings.
+- `browse.py` **currently implements HTTP loopback only** (binds to `127.0.0.1:8765`).
+  A future HTTPS loopback companion via mkcert is a design aspiration documented in §1.2;
+  it is **not yet shipped**.
+- The **shipped** loopback bootstrap uses PNA over HTTP and is documented in **§4**.
+- `browse-ui/src/lib/host-profiles.ts · checkHostCompatibility()` emits an informational
+  `pna-required` note (not a hard error) for HTTP loopback entries added from HTTPS origins.
+  _Evidence: `grep -n "PNA\|pna" browse-ui/src/lib/host-profiles.ts`_
+- `browse-ui/src/providers/host-provider.tsx` probes `http://127.0.0.1:8765/.well-known/browse-host`
+  then `http://localhost:8765/.well-known/browse-host` on hosted (non-local) origins with no
+  explicit remote host configured (issue #49).
+  _Evidence: `grep -n "well-known/browse-host" browse-ui/src/providers/host-provider.tsx`_
 
-**Interpretation:** Silent background probing of `http://localhost` from HTTPS is permanently
-blocked by browsers; a trusted-cert path is the only reliable solution for direct
-hosted→local connectivity.
+**Interpretation:** HTTP loopback from a hosted HTTPS UI is browser- and policy-dependent.
+Chromium/Edge require the `--hosted-bootstrap` CORS/PNA response path and may prompt the user
+for local-network access. Safari/Firefox may follow a different CORS-only path, but an HTTPS
+tunnel (Cloudflare Tunnel, ngrok) remains the reliable fallback when auto-detection is blocked.
+Non-loopback HTTP hosts are not reachable from HTTPS hosted pages.
 
-### 1.2 Recommended Bootstrap Design
+### 1.2 Future HTTPS Loopback Design (Aspirational — Not Yet Shipped)
+
+> **Note:** The shipped loopback bootstrap uses PNA over HTTP (`--hosted-bootstrap`), documented
+> in **§4**. The design below describes a future HTTPS loopback path via mkcert that eliminates
+> the browser-dependency on PNA support.
 
 ```
 Hosted UI (HTTPS)
@@ -101,8 +116,8 @@ browse.py  ←  mkcert-issued cert  ←  installer provisions trust anchor
 4. **Add explicit "Detect local backend" button** to the Settings hosts sheet.
    Calls `https://127.0.0.1:8766/healthz` with a 3 s timeout.
    File: `browse-ui/src/components/settings/HostManagement.tsx`.
-5. **Wire `checkHostCompatibility()` result** into the Add Host form to show the
-   `mixed-content-loopback` warning when the user enters an `http://localhost` URL.
+5. **Wire `checkHostCompatibility()` result** into the Add Host form to show `pna-required`
+   guidance for HTTP loopback and a hard `mixed-content-http` error for non-loopback HTTP.
 
 ---
 
@@ -293,20 +308,212 @@ export interface HostCapabilities {
 
 ---
 
+---
+
+## 4. Hosted Loopback Bootstrap — PNA/HTTP (Shipped, Issue #49)
+
+> **Facts** = verified from source code. **Interpretation** = qualified inference.
+> **Actions** = executable commands. **Verification evidence** = file ref or test output.
+
+### 4.1 Discovery Endpoint Contract
+
+**Verified fact:** `browse.py` exposes `GET /.well-known/browse-host` when running.
+This endpoint is unauthenticated and returns a minimal JSON payload. No session counts,
+DB paths, or user data are disclosed.
+
+**Response schema (`browse-host/1`):**
+
+```json
+{
+  "schema": "browse-host/1",
+  "status": "ok",
+  "auth": "open",
+  "manual_token_required": false,
+  "capabilities": ["discovery", "healthz", "api"],
+  "cors_origins_configured": true
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `schema` | Version identifier. Current value: `"browse-host/1"`. |
+| `status` | Always `"ok"` when the server is reachable. |
+| `auth` | `"token"` when a Bearer token is required for `/api/*`; `"open"` otherwise. |
+| `manual_token_required` | `true` when `auth === "token"` — the frontend must prompt the user for a token; do **not** invent a blank token. |
+| `capabilities` | String list of declared capabilities (no private data). |
+| `cors_origins_configured` | `true` when `BROWSE_CORS_ORIGINS` is non-empty. Does **not** disclose the actual origin URLs. |
+
+_Evidence: `cat browse/routes/discovery.py`_
+
+### 4.2 `--hosted-bootstrap` Flag
+
+**Verified fact:** `python3 browse.py --hosted-bootstrap` does the following at startup:
+
+1. Keeps binding to `127.0.0.1` (loopback only — not `0.0.0.0`).
+2. Configures `BROWSE_CORS_ORIGINS` to include the canonical hosted origins:
+   - `https://agents.linhngo.dev`
+   - `https://agents-linhngo-dev.web.app`
+   …appending to any operator-supplied `BROWSE_CORS_ORIGINS` entries without clobbering them.
+3. Prints actionable startup guidance: discovery URL, auth mode, and token value (when set).
+
+_Evidence: `grep -n "hosted-bootstrap\|agents\.linhngo" browse/__init__.py`_
+
+**Usage:**
+
+```bash
+# Minimal — open auth (no token):
+python3 browse.py --hosted-bootstrap
+
+# With a Bearer token (recommended for production):
+python3 browse.py --hosted-bootstrap --token <your-secret-token>
+
+# Additional custom origins appended to the canonical list:
+BROWSE_CORS_ORIGINS=https://custom.example.com python3 browse.py --hosted-bootstrap
+```
+
+### 4.3 PNA Preflight Behavior
+
+**Verified fact:** The `browse.py` HTTP server emits
+`Access-Control-Allow-Private-Network: true` **only** when:
+- The request includes `Access-Control-Request-Private-Network: true` in the preflight
+  `OPTIONS` request, **AND**
+- The `Origin` header exactly matches an allow-listed origin in `BROWSE_CORS_ORIGINS`.
+
+The header is **never** emitted unconditionally or for origins not in the allowlist.
+_Evidence: `grep -n "Access-Control-Allow-Private-Network" browse/core/server.py`_
+
+### 4.4 Frontend Probe Logic (Issue #49)
+
+**Verified fact:** On hosted (non-local) origins with no explicit remote host configured,
+`HostProvider` (`browse-ui/src/providers/host-provider.tsx`) runs a single probe per component
+lifecycle in this order:
+
+1. `http://127.0.0.1:8765/.well-known/browse-host` (3 s timeout)
+2. `http://localhost:8765/.well-known/browse-host` (3 s timeout, fallback only)
+
+Probe logic (implemented in `browse-ui/src/lib/hosts/local-bootstrap.ts`):
+- Response parses as `browse-host/1` and `auth === "open"` → activate the backend
+  ephemerally as `"Local backend (auto-detected)"`.
+- `auth === "token" && manual_token_required === true` → surface manual-token state;
+  **do not invent a blank token**.
+- Any failure → apply a **5-minute negative cache**; do not re-probe until it expires.
+- Explicit remote-host selection (from localStorage) is **never overridden** by the probe.
+
+_Evidence: `cat browse-ui/src/lib/hosts/local-bootstrap.ts`_
+
+### 4.5 Browser Compatibility
+
+**Compatibility guidance (browser behavior varies by implementation and policy):**
+
+| Browser family | HTTPS→HTTP loopback behavior | `--hosted-bootstrap` role |
+|---|---|---|
+| Chromium / Edge | PNA/LNA can require a permission prompt plus `Access-Control-Allow-Private-Network: true` on preflight. | Required for direct loopback. |
+| Safari / Firefox | Does not use Chromium's PNA/LNA header flow; outcome depends on standard CORS and browser policy. | Harmless, but not the deciding mechanism. |
+| Strict CSP / enterprise browsers | May block local-network access regardless of app headers. | May still need an HTTPS tunnel. |
+
+**Non-loopback HTTP** (e.g. `http://192.168.x.x`) is **not reachable** from HTTPS hosted pages
+in any browser and is not supported.
+
+**Interpretation:** PNA/LNA loopback is a pragmatic path for Chromium/Edge operators. For
+consistent cross-browser coverage or locked-down environments, use an HTTPS tunnel:
+- **Cloudflare Tunnel** (`cloudflared`) — zero port-forwarding; free tier available
+- **ngrok** — simple local setup
+
+Either option exposes the backend over HTTPS and eliminates the loopback/PNA requirement.
+
+_Evidence: `grep -n "PNA\|Chromium\|Safari" browse-ui/src/lib/host-profiles.ts`_
+
+### 4.6 Capability Protocol and Legacy Fallback (Issue #46)
+
+**Verified fact:** `GET /api/operator/capabilities` returns:
+
+```json
+{
+  "cli_kind": "copilot",
+  "version": "<semver or null>",
+  "supported_modes": [...],
+  "supported_features": [...],
+  "protocol": "v2"
+}
+```
+
+The `protocol` field is **optional**. Modern backends include `"v2"`; legacy backends omit it.
+
+**Compatibility rules (in `browse-ui/src/lib/hosts/use-host-feature.ts`):**
+
+| Backend | UI behaviour |
+|---|---|
+| `protocol: "v2"` present | Trust `supported_features` exactly (fail-closed for missing features). |
+| `protocol` absent (legacy) | Assume `LEGACY_CORE_FEATURES` available regardless of `supported_features`: `chat`, `sessions`, `search`, `graph`, `insights`, `diagnostics`. Non-core features remain fail-closed. |
+| Transient network / parse error | Same as legacy: core features accessible, non-core features fail-closed. |
+
+_Evidence: `cat browse-ui/src/lib/hosts/use-host-feature.ts`_
+
+### 4.7 Insights Child Tab Fix (Issue #47)
+
+**Verified fact:** `browse-ui/src/app/insights/layout.tsx` computes `capabilityState` from
+`diagnosticsEnabled` and `insightsSupported` (via `useHostFeature("insights", ...)`), then
+passes it to all Insights child tab context consumers. Child tabs render the appropriate
+`"no-host"` / `"unsupported"` / `"ready"` / `"checking"` state from `capabilityState`.
+Test coverage was added for all four states in tab-specific vitest specs.
+
+_Evidence: `grep -n "capabilityState" browse-ui/src/app/insights/layout.tsx`_
+_Evidence: `grep -n "renderWithCapabilityState" browse-ui/src/app/insights/knowledge-tab.test.tsx`_
+
+### 4.8 Verification Checklist
+
+```bash
+# Discovery endpoint (requires browse.py running with --hosted-bootstrap):
+curl -s http://127.0.0.1:8765/.well-known/browse-host | python3 -m json.tool
+
+# PNA header — confirm via Chromium/Edge DevTools → Network → OPTIONS preflight:
+# Assert: Access-Control-Allow-Private-Network: true is present
+
+# Frontend probe unit tests:
+cd browse-ui && pnpm vitest run src/lib/hosts/local-bootstrap.test.ts
+cd browse-ui && pnpm vitest run src/providers/host-provider.test.tsx
+
+# Capability protocol tests:
+cd browse-ui && pnpm vitest run src/lib/hosts
+
+# Insights child tabs (issue #47):
+cd browse-ui && pnpm vitest run src/app/insights/
+
+# Browser smoke — Chromium/Edge:
+# 1. python3 browse.py --hosted-bootstrap --token <token>
+# 2. Open https://agents.linhngo.dev in Chromium or Edge
+# 3. Navigate to Settings → Hosts & connections
+# 4. Observe "Local backend (auto-detected)" — no manual add needed
+# 5. DevTools → Network → verify /.well-known/browse-host returned 200 with PNA headers
+
+# Browser smoke — Safari/Firefox:
+# 1. Same browse.py startup
+# 2. Open https://agents.linhngo.dev in Safari or Firefox
+# 3. Observe whether direct loopback auto-detection succeeds or is blocked
+# 4. If blocked, use an HTTPS tunnel and add host manually
+```
+
+---
+
 ## Related Issues
 
 | Issue | Status after this doc |
 |---|---|
-| #36 localhost bootstrap | Spec complete; actions listed in §1.3 |
+| #36 localhost bootstrap | Future HTTPS/mkcert design spec; actions listed in §1.3 |
 | #37 same-origin relay | Spec complete; actions listed in §2.3 |
-| #41 version negotiation | Spec complete + draft schema; actions listed in §3.3 |
+| #41 version negotiation | Spec + draft schema; actions listed in §3.3 |
+| #46 capability gates (legacy fallback) | ✅ Shipped — `protocol: "v2"` marker + LEGACY_CORE_FEATURES fallback; documented in §4.6 |
+| #47 Insights child tab capability state | ✅ Shipped — `capabilityState` threaded; child tab test coverage added; documented in §4.7 |
+| #49 hosted loopback bootstrap / PNA | ✅ Shipped — `/.well-known/browse-host` + `--hosted-bootstrap` + PNA headers; documented in §4 |
 
 **Cross-cutting issues closed by relay architecture (from #37 scope):**
-- #27–#34 browser CORS/HTTPS failures: the short-term fix (HTTPS loopback cert) resolves
-  loopback mixed-content. Relay eliminates remaining cross-origin issues medium-term.
+- #27–#34 browser CORS/HTTPS failures: the HTTPS loopback cert (future) resolves loopback
+  access for browsers that do not complete the shipped PNA/LNA path. The shipped PNA path
+  handles Chromium/Edge; relay eliminates remaining cross-origin issues medium-term.
 
 ## Changelog
 
 | Date | Change |
 |---|---|
 | 2026-05-05 | Initial spec for #36, #37, #41 (hosted-research-specs tentacle) |
+| 2026-05-05 | Added §4: PNA/HTTP loopback bootstrap (#46, #47, #49) (hosted-closeout-qa tentacle) |

@@ -147,18 +147,25 @@ def handle_capabilities(db, params, token, nonce) -> tuple:
       {
         "cli_kind":          "copilot",
         "version":           "1",
+        "protocol":          "v2",
         "supported_modes":   ["ask", "edit"],
         "supported_features": [
           "chat", "sessions", "search", "graph", "insights", "diagnostics",
           "models", "suggest", "preview", "diff"
         ]
       }
+
+    The ``protocol`` field is the v2 marker.  When this field is absent in a
+    response (older deployed backends) the UI applies a backward-compatibility
+    fallback that keeps core legacy routes (chat, sessions, search, graph,
+    insights, diagnostics) accessible without requiring explicit enumeration.
     """
     return json_ok(
         {
             "cli_kind": "copilot",
             "version": "1",
             "supported_modes": ["ask", "edit"],
+            "protocol": "v2",
             "supported_features": [
                 "chat",
                 "sessions",

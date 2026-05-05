@@ -16,6 +16,7 @@ import {
   evalResponseSchema,
   fileDiffResponseSchema,
   filePreviewResponseSchema,
+  browseHostBootstrapSchema,
   hostCapabilitiesSchema,
   hostProfileSchema,
   knowledgeInsightsResponseSchema,
@@ -1730,6 +1731,34 @@ describe("operatorModelCatalogResponseSchema", () => {
     ).toThrow();
   });
 
+  // ── Browse host bootstrap ──────────────────────────────────────────────
+
+  it("parses a valid browse-host bootstrap response", () => {
+    const parsed = browseHostBootstrapSchema.parse({
+      schema: "browse-host/1",
+      status: "ok",
+      auth: "token",
+      manual_token_required: true,
+      capabilities: ["discovery", "healthz", "api"],
+      cors_origins_configured: true,
+    });
+    expect(parsed.schema).toBe("browse-host/1");
+    expect(parsed.auth).toBe("token");
+  });
+
+  it("rejects unknown browse-host bootstrap schema versions", () => {
+    expect(() =>
+      browseHostBootstrapSchema.parse({
+        schema: "browse-host/2",
+        status: "ok",
+        auth: "open",
+        manual_token_required: false,
+        capabilities: [],
+        cors_origins_configured: true,
+      })
+    ).toThrow();
+  });
+
   // ── Host Capabilities ─────────────────────────────────────────────────
 
   it("parses a valid host capabilities response", () => {
@@ -1791,6 +1820,38 @@ describe("operatorModelCatalogResponseSchema", () => {
         supported_features: [],
       })
     ).toThrow();
+  });
+
+  it("accepts capabilities with protocol field (modern backend)", () => {
+    const parsed = hostCapabilitiesSchema.parse({
+      cli_kind: "copilot",
+      version: "2.0.0",
+      supported_modes: ["ask", "edit"],
+      supported_features: ["chat", "sessions", "search"],
+      protocol: "v2",
+    });
+    expect(parsed.protocol).toBe("v2");
+    expect(parsed.supported_features).toContain("chat");
+  });
+
+  it("accepts capabilities without protocol field (legacy backend)", () => {
+    const parsed = hostCapabilitiesSchema.parse({
+      cli_kind: "copilot",
+      supported_modes: ["ask"],
+      supported_features: [],
+      // no protocol field
+    });
+    expect(parsed.protocol).toBeUndefined();
+  });
+
+  it("accepts null protocol in capabilities", () => {
+    const parsed = hostCapabilitiesSchema.parse({
+      cli_kind: "copilot",
+      supported_modes: [],
+      supported_features: [],
+      protocol: null,
+    });
+    expect(parsed.protocol).toBeNull();
   });
 
   it("cliKindSchema accepts any non-empty string", () => {

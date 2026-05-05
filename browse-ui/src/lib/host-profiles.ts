@@ -21,7 +21,17 @@ import type { HostProfile } from "@/lib/api/types";
  */
 export type HostCompatibility =
   | { compatible: true; code: "ok"; reason: null }
-  | { compatible: false; code: "mixed-content-loopback"; reason: string };
+  /**
+   * HTTPS control plane → HTTP loopback address.
+   * Whether this works depends on browser Private Network Access (PNA) support:
+   * - Chromium/Edge: supported when the backend is started with `--hosted-bootstrap`.
+   * - Safari/Firefox: behaviour depends on their local-network/CORS policy; use
+   *   an HTTPS tunnel if direct loopback is blocked.
+   * `compatible: true` so the request is attempted; failures surface as API errors.
+   */
+  | { compatible: true; code: "pna-required"; reason: string }
+  /** HTTPS control plane → non-loopback HTTP host. This is unsafe mixed content. */
+  | { compatible: false; code: "mixed-content-http"; reason: string };
 
 /** Local hostnames/addresses that browsers block from HTTPS origins when served over HTTP. */
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]"]);
@@ -52,9 +62,10 @@ export function isLocalOrigin(origin: string): boolean {
 /**
  * Determines whether the browser can safely reach `host` from `controlPlaneOrigin`.
  *
- * Detects the mixed-content scenario where a secure HTTPS control plane tries
- * to reach an insecure HTTP local URL (`http://localhost`, `http://127.0.0.1`,
- * `http://0.0.0.0`, `http://[::1]`). Browsers unconditionally block such requests.
+ * Detects insecure HTTP targets from a secure HTTPS control plane. HTTP
+ * loopback can be attempted through browser Private Network Access (PNA) when
+ * the local backend opts in with CORS/PNA headers. Non-loopback HTTP remains a
+ * hard mixed-content failure and should be exposed through HTTPS instead.
  *
  * Compatible paths that are preserved:
  * - LOCAL_HOST (empty base_url) — always safe, same-origin request.
@@ -89,19 +100,32 @@ export function checkHostCompatibility(
     return { compatible: true, code: "ok", reason: null };
   }
 
-  // HTTPS control plane → insecure HTTP loopback: browsers block this outright.
-  if (
-    controlScheme === "https:" &&
-    hostUrl.protocol === "http:" &&
-    isLoopbackHostname(hostUrl.hostname)
-  ) {
+  // HTTPS control plane → insecure HTTP loopback.
+  // Chromium and Edge support Private Network Access (PNA), which allows HTTPS
+  // pages to reach HTTP loopback addresses when the backend sets the required
+  // CORS/PNA response headers (e.g. via --hosted-bootstrap).
+  // Other engines may follow a different local-network/CORS policy; use an
+  // HTTPS tunnel if direct loopback is blocked.
+  // Return compatible:true so the request is attempted; browsers that block PNA
+  // will surface a network error that the UI can handle gracefully.
+  if (controlScheme === "https:" && hostUrl.protocol === "http:") {
+    if (!isLoopbackHostname(hostUrl.hostname)) {
+      return {
+        compatible: false,
+        code: "mixed-content-http",
+        reason:
+          `A secure (HTTPS) control plane cannot connect to insecure HTTP host ${host.base_url}. ` +
+          "Expose the backend through HTTPS, or use loopback with --hosted-bootstrap.",
+      };
+    }
     return {
-      compatible: false,
-      code: "mixed-content-loopback",
+      compatible: true,
+      code: "pna-required",
       reason:
-        `Cannot reach ${host.base_url} from a secure (HTTPS) origin — ` +
-        "browsers block insecure loopback requests from HTTPS pages. " +
-        "Expose your local server via an HTTPS tunnel (e.g. ngrok) and update the host URL.",
+        `Connecting from a secure (HTTPS) origin to ${host.base_url} requires ` +
+        "browser Private Network Access (PNA) support. " +
+        "This works in Chromium/Edge when the local backend is started with --hosted-bootstrap. " +
+        "Other browsers may block direct loopback — use an HTTPS tunnel (e.g. ngrok) as a fallback.",
     };
   }
 
@@ -257,9 +281,9 @@ export function getEffectiveHost(): HostProfile {
  * - Explicit API base configured at build time (NEXT_PUBLIC_API_BASE) → always safe.
  * - LOCAL_HOST (empty base_url) without NEXT_PUBLIC_API_BASE → not safe by default;
  *   configure a remote host or set NEXT_PUBLIC_API_BASE.
- * - Remote host with an explicit base_url → safe, unless the browser would block the
- *   request due to a mixed-content loopback incompatibility detected by
- *   `checkHostCompatibility`. On SSR (no `window`) the check is skipped (fail-open).
+ * - Remote host with an explicit base_url → safe, unless `checkHostCompatibility`
+ *   identifies a hard browser incompatibility. PNA-required loopback remains enabled so
+ *   the browser can attempt the standards-based preflight.
  */
 export function isOperatorHostEnabled(host: HostProfile, _pathname: string): boolean {
   void _pathname;

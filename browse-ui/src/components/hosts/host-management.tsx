@@ -7,9 +7,11 @@ import {
   CheckCircle2,
   Copy,
   Globe,
+  Info,
   Loader2,
   Plus,
   RotateCcw,
+  Search,
   ServerCog,
   Star,
   Trash2,
@@ -40,6 +42,7 @@ import {
   saveHostProfile,
   setSelectedHostId,
 } from "@/lib/host-profiles";
+import { probeLocalBootstrap, resetLocalBootstrapCache } from "@/lib/hosts/local-bootstrap";
 import { cn } from "@/lib/utils";
 
 const CLI_KIND_OPTIONS = [
@@ -114,7 +117,14 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
   const [validationError, setValidationError] = useState<string | null>(null);
   /** True when the validation error is a deterministic compatibility failure (no "Save anyway"). */
   const [isCompatibilityError, setIsCompatibilityError] = useState(false);
+  /** Informational note when PNA is required — not a blocking error. */
+  const [pnaNote, setPnaNote] = useState<string | null>(null);
   const [originCopied, setOriginCopied] = useState(false);
+
+  // ── Detect local backend state ──────────────────────────────────────────────
+  type DetectStatus = "idle" | "probing" | "detected" | "auth-required" | "unavailable";
+  const [detectStatus, setDetectStatus] = useState<DetectStatus>("idle");
+  const [detectedUrl, setDetectedUrl] = useState<string | null>(null);
 
   const hostedOrigin = getHostedOrigin();
 
@@ -156,8 +166,7 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
       return;
     }
 
-    // Pre-probe compatibility check — deterministic, no network required.
-    // A hosted HTTPS control plane can never reach an insecure loopback URL.
+    // Browser compatibility check — probe-required for HTTPS → HTTP loopback.
     if (typeof window !== "undefined") {
       const compat = checkHostCompatibility(window.location.origin, {
         id: "temp",
@@ -167,13 +176,17 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
         cli_kind: newCliKind,
         is_default: false,
       });
-      if (!compat.compatible) {
-        setValidationError(
-          compat.reason +
-            " Open the local browse app directly, or expose your server via an HTTPS tunnel."
-        );
+      if (compat.code === "pna-required") {
+        // Browser-dependent: not a hard block. Show an informational note and
+        // proceed to probe. Chromium/Edge may succeed; Safari/Firefox may not.
+        setPnaNote(compat.reason);
+      } else if (!compat.compatible) {
+        setValidationError(compat.reason);
         setIsCompatibilityError(true);
+        setPnaNote(null);
         return;
+      } else {
+        setPnaNote(null);
       }
     }
 
@@ -203,6 +216,7 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
     setNewLabel("");
     setNewToken("");
     setNewCliKind("copilot");
+    setPnaNote(null);
     setValidating(false);
     setValidationError(null);
     refresh();
@@ -227,6 +241,7 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
     setNewLabel("");
     setNewToken("");
     setNewCliKind("copilot");
+    setPnaNote(null);
     setValidationError(null);
     refresh();
   }
@@ -237,6 +252,42 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
       setOriginCopied(true);
       setTimeout(() => setOriginCopied(false), 1500);
     });
+  }
+
+  async function handleDetectLocal() {
+    setDetectStatus("probing");
+    setDetectedUrl(null);
+    resetLocalBootstrapCache();
+    const result = await probeLocalBootstrap();
+    if (result.status === "detected") {
+      setDetectStatus("detected");
+      setDetectedUrl(result.url);
+    } else if (result.status === "auth-required") {
+      setDetectStatus("auth-required");
+      setDetectedUrl(result.url);
+      // Pre-fill the add-host form with the detected URL.
+      setAddingNew(true);
+      setNewUrl(result.url);
+    } else {
+      setDetectStatus("unavailable");
+    }
+  }
+
+  function handleAddDetected() {
+    if (!detectedUrl) return;
+    const profile: HostProfile = {
+      id: `host-${Date.now()}`,
+      label: "Local backend (auto-detected)",
+      base_url: detectedUrl,
+      token: "",
+      cli_kind: "copilot",
+      is_default: false,
+    };
+    saveHostProfile(profile);
+    setSelectedHostId(profile.id);
+    setDetectStatus("idle");
+    setDetectedUrl(null);
+    refresh();
   }
 
   function handleRemove(id: string) {
@@ -419,6 +470,29 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
           <Plus className="mr-1.5 size-3.5" />
           Add host
         </Button>
+        {hostedOrigin ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void handleDetectLocal()}
+            disabled={detectStatus === "probing"}
+            data-testid="detect-local-btn"
+            aria-label="Detect local backend"
+          >
+            {detectStatus === "probing" ? (
+              <>
+                <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                Detecting…
+              </>
+            ) : (
+              <>
+                <Search className="mr-1.5 size-3.5" />
+                Detect local backend
+              </>
+            )}
+          </Button>
+        ) : null}
         {activeId !== LOCAL_HOST_ID && (
           <Button
             type="button"
@@ -433,6 +507,53 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
         )}
       </div>
 
+      {/* Detect local backend result */}
+      {detectStatus === "detected" && detectedUrl ? (
+        <div
+          className="flex items-start justify-between gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs"
+          data-testid="detect-result-detected"
+        >
+          <div className="flex items-start gap-2">
+            <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-emerald-500" />
+            <p>
+              Local backend detected at <span className="font-mono font-medium">{detectedUrl}</span>
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            className="h-6 shrink-0 px-2 text-xs"
+            onClick={handleAddDetected}
+            data-testid="add-detected-btn"
+          >
+            Add &amp; use
+          </Button>
+        </div>
+      ) : null}
+      {detectStatus === "auth-required" && detectedUrl ? (
+        <div
+          className="flex items-start gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-3 py-2 text-xs"
+          data-testid="detect-result-auth-required"
+        >
+          <Info className="mt-0.5 size-3.5 shrink-0 text-yellow-500" />
+          <p>
+            Backend at <span className="font-mono font-medium">{detectedUrl}</span> requires a token
+            — enter it in the form below.
+          </p>
+        </div>
+      ) : null}
+      {detectStatus === "unavailable" ? (
+        <div
+          className="flex items-start gap-2 rounded-lg border border-dashed px-3 py-2 text-xs"
+          data-testid="detect-result-unavailable"
+        >
+          <AlertCircle className="text-muted-foreground mt-0.5 size-3.5 shrink-0" />
+          <p className="text-muted-foreground">
+            No local backend found at 127.0.0.1:8765 or localhost:8765.
+          </p>
+        </div>
+      ) : null}
+
       {/* Add host form */}
       {addingNew && (
         <div className="space-y-3 rounded-lg border p-4" data-testid="host-add-form">
@@ -445,6 +566,7 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
             value={newUrl}
             onChange={(e) => {
               setNewUrl(e.target.value);
+              setPnaNote(null);
               if (validationError) {
                 setValidationError(null);
                 setIsCompatibilityError(false);
@@ -501,6 +623,7 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
                 setNewLabel("");
                 setNewToken("");
                 setNewCliKind("copilot");
+                setPnaNote(null);
                 setValidationError(null);
                 setIsCompatibilityError(false);
               }}
@@ -539,6 +662,15 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
               )}
             </Button>
           </div>
+          {pnaNote ? (
+            <div
+              className="flex items-start gap-2 rounded-lg border border-blue-500/30 bg-blue-500/5 px-3 py-2 text-xs"
+              data-testid="pna-note"
+            >
+              <Info className="mt-0.5 size-3.5 shrink-0 text-blue-500" />
+              <p className="text-blue-700 dark:text-blue-300">{pnaNote}</p>
+            </div>
+          ) : null}
           {validationError ? (
             <div
               className="border-destructive/30 bg-destructive/5 text-destructive flex items-start gap-2 rounded-lg border px-3 py-2 text-xs"

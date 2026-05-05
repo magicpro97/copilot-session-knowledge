@@ -1519,9 +1519,10 @@ def _run_api_tests(port: int):
         test("CAP1: capabilities → 200", resp_cap.status == 200)
         data_cap = _read_json(resp_cap)
         # Verify the response matches the frontend hostCapabilitiesSchema:
-        #   { cli_kind, version, supported_modes, supported_features }
+        #   { cli_kind, version, protocol, supported_modes, supported_features }
         test("CAP1: cli_kind is copilot", data_cap.get("cli_kind") == "copilot")
         test("CAP1: version field present", "version" in data_cap)
+        test("CAP1: protocol is v2", data_cap.get("protocol") == "v2")
         test("CAP1: supported_modes is list", isinstance(data_cap.get("supported_modes"), list))
         test("CAP1: supported_features is list", isinstance(data_cap.get("supported_features"), list))
         test("CAP1: sessions in supported_features", "sessions" in data_cap.get("supported_features", []))

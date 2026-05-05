@@ -9,6 +9,15 @@
  *
  * Reacts to route changes, cross-tab `storage` events, and same-tab
  * `browse:host-change` events dispatched by the host-profiles helpers.
+ *
+ * On hosted (non-local) origins with no explicitly selected remote host the
+ * provider probes `http://127.0.0.1:8765/.well-known/browse-host` then
+ * `http://localhost:8765/.well-known/browse-host` (issue #49). A detected
+ * local backend is activated ephemerally without overriding any explicit
+ * remote-host selection. A detected profile is held in memory so route changes
+ * do not reset the app back to the same-origin placeholder. The probe runs at
+ * most once per component lifecycle (backed by a 5-minute negative cache in
+ * local-bootstrap.ts).
  */
 
 import { createContext, useContext, useEffect, useRef, useState } from "react";
@@ -22,6 +31,7 @@ import {
   isLocalOrigin,
   isOperatorHostEnabled,
 } from "@/lib/host-profiles";
+import { probeLocalBootstrap } from "@/lib/hosts/local-bootstrap";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -50,12 +60,26 @@ const HostContext = createContext<HostState>({
 export function HostProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const sameOriginDiagnosticsRef = useRef<boolean | null>(null);
+  const mountedRef = useRef(false);
+  const loopbackProfileRef = useRef<HostProfile | null>(null);
+  /**
+   * Tracks whether a loopback bootstrap probe has been initiated for this
+   * component lifecycle. Prevents repeated probes on storage/route events.
+   */
+  const loopbackProbeStartedRef = useRef<boolean>(false);
   // SSR-safe defaults — same as what every consumer was initialising locally.
   const [state, setState] = useState<HostState>({
     host: LOCAL_HOST,
     diagnosticsEnabled: false,
     localDiagnosticsEnabled: false,
   });
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -77,6 +101,12 @@ export function HostProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
+      const selectedId = window.localStorage?.getItem("browse_selected_host_id");
+      if (!selectedId && loopbackProfileRef.current) {
+        applyState(loopbackProfileRef.current, true);
+        return;
+      }
+
       if (sameOriginDiagnosticsRef.current !== null) {
         applyState(h, sameOriginDiagnosticsRef.current);
         return;
@@ -84,12 +114,44 @@ export function HostProvider({ children }: { children: React.ReactNode }) {
 
       applyState(h, false);
 
-      // Only probe same-origin /healthz on real local/loopback origins.
       // Hosted static origins (e.g. Firebase, Vercel, GitHub Pages) have no
-      // backend process — issuing the probe there produces a doomed 404 and
-      // briefly misleads the provider about local availability.
+      // same-origin backend — skip the /healthz probe to avoid doomed 404s.
+      // Instead, probe loopback candidates for a local backend (issue #49).
       if (!isLocalOrigin(window.location.origin)) {
         sameOriginDiagnosticsRef.current = false;
+        // Probe loopback only once per component lifecycle, and only when no
+        // explicit remote host is selected.
+        if (!loopbackProbeStartedRef.current) {
+          const selectedIdAtStart = window.localStorage?.getItem("browse_selected_host_id");
+          if (!selectedIdAtStart) {
+            loopbackProbeStartedRef.current = true;
+            void probeLocalBootstrap().then((result) => {
+              if (!mountedRef.current) return;
+              // Guard: abort if the user has explicitly selected a host since
+              // the probe started — never override an explicit selection.
+              const selectedIdNow = window.localStorage?.getItem("browse_selected_host_id");
+              if (selectedIdNow) return;
+
+              if (result.status === "detected") {
+                const detectedProfile: HostProfile = {
+                  id: "local-bootstrap",
+                  label: "Local backend (auto-detected)",
+                  base_url: result.url,
+                  token: "",
+                  cli_kind: "copilot",
+                  is_default: false,
+                };
+                loopbackProfileRef.current = detectedProfile;
+                setState({
+                  host: detectedProfile,
+                  diagnosticsEnabled: true,
+                  localDiagnosticsEnabled: false,
+                });
+              }
+              // auth-required or unavailable: leave idle state, no diagnostics.
+            });
+          }
+        }
         return;
       }
 
