@@ -23,7 +23,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useOperatorModelCatalog } from "@/lib/api/hooks";
-import { isOperatorHostEnabled, LOCAL_HOST_ID, checkHostCompatibility } from "@/lib/host-profiles";
+import {
+  isOperatorHostEnabled,
+  LOCAL_HOST_ID,
+  checkHostCompatibility,
+  isLocalOrigin,
+} from "@/lib/host-profiles";
 import type { HostProfile, CreateOperatorSessionRequest } from "@/lib/api/types";
 import { useHostState } from "@/providers/host-provider";
 import { WorkspacePicker } from "./workspace-picker";
@@ -84,6 +89,10 @@ export function SessionCreateDialog({ onSubmit, initialHost, loading }: SessionC
       typeof window !== "undefined" ? checkHostCompatibility(window.location.origin, host) : null,
     [host]
   );
+  const isHosted = useMemo(
+    () => typeof window !== "undefined" && !isLocalOrigin(window.location.origin),
+    []
+  );
   const modelCatalogQuery = useOperatorModelCatalog(host, open && hostReady);
   const modelSuggestions = modelCatalogQuery.data?.models ?? [];
   const defaultModel = modelCatalogQuery.data?.default_model ?? "";
@@ -129,7 +138,9 @@ export function SessionCreateDialog({ onSubmit, initialHost, loading }: SessionC
             <label className="text-sm font-medium">Agent Host</label>
             <HostPicker value={host} onChange={setHost} disabled={loading} />
             <p className="text-muted-foreground text-xs">
-              Local (same origin) or a saved public tunnel URL.
+              {isHosted
+                ? "Open the local browse app directly, or add a public HTTPS tunnel URL below."
+                : "Local (same origin) or a saved public tunnel URL."}
             </p>
             {!hostReady ? (
               hostCompat && !hostCompat.compatible ? (

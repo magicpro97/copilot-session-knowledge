@@ -35,6 +35,7 @@ import {
   getAllHostProfiles,
   getHostProfiles,
   getSelectedHostId,
+  isLocalOrigin,
   replaceHostProfiles,
   saveHostProfile,
   setSelectedHostId,
@@ -59,7 +60,7 @@ const CLI_KIND_OPTIONS = [
 function getHostedOrigin(): string | null {
   if (typeof window === "undefined") return null;
   const origin = window.location.origin;
-  if (origin.includes("localhost") || origin.includes("127.0.0.1")) return null;
+  if (isLocalOrigin(origin)) return null;
   return origin;
 }
 
@@ -284,7 +285,9 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
             <ServerCog className="text-muted-foreground size-4 shrink-0" />
             <div className="min-w-0">
               <p className="font-medium">{LOCAL_HOST.label}</p>
-              <p className="text-muted-foreground text-xs">Same-origin default</p>
+              <p className="text-muted-foreground text-xs">
+                {hostedOrigin ? "Open the local browse app directly" : "Same-origin default"}
+              </p>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">

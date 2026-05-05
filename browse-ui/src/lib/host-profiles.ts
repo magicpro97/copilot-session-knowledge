@@ -33,6 +33,23 @@ function isLoopbackHostname(hostname: string): boolean {
 }
 
 /**
+ * Returns true when `origin` is a real local/loopback origin (e.g. `http://localhost:3000`,
+ * `http://127.0.0.1:8080`). These origins serve a live backend so the same-origin
+ * `/healthz` probe makes sense.
+ *
+ * Returns false for hosted static origins (e.g. `https://agents.example.web.app`) where
+ * there is no backend process — those origins must NOT issue a doomed `/healthz` probe.
+ */
+export function isLocalOrigin(origin: string): boolean {
+  try {
+    const { hostname } = new URL(origin);
+    return isLoopbackHostname(hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Determines whether the browser can safely reach `host` from `controlPlaneOrigin`.
  *
  * Detects the mixed-content scenario where a secure HTTPS control plane tries

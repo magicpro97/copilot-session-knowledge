@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 beforeAll(() => {
   window.HTMLElement.prototype.scrollIntoView = vi.fn();
@@ -137,6 +137,8 @@ describe("ChatShell", () => {
 
     expect(vi.mocked(hooks.useOperatorSessions).mock.calls.at(-1)?.[1]).toBe(false);
     expect(screen.getByText(/No compatible host is configured/i)).toBeInTheDocument();
+    // The "local" chip in the top-bar must not be shown when operator is unavailable on hosted pages.
+    expect(screen.queryByTestId("local-host-chip")).not.toBeInTheDocument();
   });
 });
 
@@ -335,6 +337,45 @@ describe("SessionCreateDialog — host picker", () => {
 
     const saveBtn = screen.getByRole("button", { name: "Save host" });
     expect(saveBtn).not.toBeDisabled();
+  });
+});
+
+describe("HostPicker — local-only note on hosted page", () => {
+  beforeEach(() => {
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, origin: "https://agents.example.com" },
+      configurable: true,
+    });
+  });
+  afterEach(() => {
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, origin: "http://localhost:3000" },
+      configurable: true,
+    });
+  });
+
+  it("shows local-only callout in HostPicker when local is selected on a hosted page", () => {
+    hostStateMock = {
+      host: LOCAL_HOST,
+      diagnosticsEnabled: false,
+      localDiagnosticsEnabled: false,
+    };
+    render(<ChatShell />);
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+    expect(screen.getByTestId("local-hosted-note")).toBeInTheDocument();
+  });
+
+  it("shows hosted-aware Agent Host hint text on hosted pages", () => {
+    hostStateMock = {
+      host: LOCAL_HOST,
+      diagnosticsEnabled: false,
+      localDiagnosticsEnabled: false,
+    };
+    render(<ChatShell />);
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+    expect(
+      screen.getByText(/Open the local browse app directly.*HTTPS tunnel/i)
+    ).toBeInTheDocument();
   });
 });
 

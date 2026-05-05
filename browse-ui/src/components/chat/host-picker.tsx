@@ -22,6 +22,7 @@ import {
   LOCAL_HOST,
   LOCAL_HOST_ID,
   checkHostCompatibility,
+  isLocalOrigin,
 } from "@/lib/host-profiles";
 
 type HostPickerProps = {
@@ -53,6 +54,9 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
   const [newToken, setNewToken] = useState("");
   const [newCliKind, setNewCliKind] = useState("copilot");
   const [compatibilityError, setCompatibilityError] = useState<string | null>(null);
+
+  // Detect if we're on a hosted (non-local) origin — used to clarify the Local option.
+  const isHosted = typeof window !== "undefined" && !isLocalOrigin(window.location.origin);
 
   useEffect(() => {
     const refresh = () => setAllHosts(getAllHostProfiles());
@@ -138,6 +142,9 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
                     <Globe className="text-muted-foreground size-3.5 shrink-0" />
                   )}
                   <span>{host.label}</span>
+                  {host.id === LOCAL_HOST_ID && isHosted ? (
+                    <span className="text-muted-foreground text-xs">— local app only</span>
+                  ) : null}
                   {host.base_url ? (
                     <span className="text-muted-foreground max-w-[160px] truncate font-mono text-xs">
                       {host.base_url.replace(/^https?:\/\//, "")}
@@ -161,6 +168,13 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
           <Plus className="size-4" />
         </Button>
       </div>
+
+      {value.id === LOCAL_HOST_ID && isHosted ? (
+        <p className="text-xs text-amber-600 dark:text-amber-400" data-testid="local-hosted-note">
+          Local only works in the local browse app. Add a public HTTPS tunnel URL to use this hosted
+          control plane.
+        </p>
+      ) : null}
 
       {addingNew && (
         <div className="space-y-2 rounded-lg border p-3" data-testid="host-add-form">

@@ -303,6 +303,22 @@ describe("HostManagement — hosted control-plane origin (issue #30)", () => {
       configurable: true,
     });
   });
+
+  it("treats 127.0.0.2 as a local origin instead of a hosted control plane", () => {
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, origin: "http://127.0.0.2:3000" },
+      configurable: true,
+    });
+
+    renderHostManagement();
+    expect(screen.queryByTestId("hosted-origin-strip")).not.toBeInTheDocument();
+    expect(screen.getByText("Same-origin default")).toBeInTheDocument();
+
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, origin: "http://localhost:3000" },
+      configurable: true,
+    });
+  });
 });
 
 describe("HostManagement — mixed-content loopback guard", () => {

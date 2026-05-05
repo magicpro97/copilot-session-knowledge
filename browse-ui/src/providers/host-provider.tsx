@@ -19,6 +19,7 @@ import {
   BROWSE_HOST_CHANGE_EVENT,
   LOCAL_HOST,
   getEffectiveHost,
+  isLocalOrigin,
   isOperatorHostEnabled,
 } from "@/lib/host-profiles";
 
@@ -82,6 +83,15 @@ export function HostProvider({ children }: { children: React.ReactNode }) {
       }
 
       applyState(h, false);
+
+      // Only probe same-origin /healthz on real local/loopback origins.
+      // Hosted static origins (e.g. Firebase, Vercel, GitHub Pages) have no
+      // backend process — issuing the probe there produces a doomed 404 and
+      // briefly misleads the provider about local availability.
+      if (!isLocalOrigin(window.location.origin)) {
+        sameOriginDiagnosticsRef.current = false;
+        return;
+      }
 
       void fetch("/healthz", {
         cache: "no-store",

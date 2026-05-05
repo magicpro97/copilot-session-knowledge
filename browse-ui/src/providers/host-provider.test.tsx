@@ -119,6 +119,60 @@ describe("HostProvider", () => {
     });
   });
 
+  it("does not fetch /healthz for LOCAL_HOST when served from a hosted (non-local) origin", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    // Simulate a hosted static origin — no backend, no /healthz.
+    vi.stubGlobal("location", {
+      ...window.location,
+      origin: "https://agents-linhngo-dev.web.app",
+      protocol: "https:",
+      hostname: "agents-linhngo-dev.web.app",
+      host: "agents-linhngo-dev.web.app",
+      href: "https://agents-linhngo-dev.web.app/chat/",
+    });
+
+    render(
+      <HostProvider>
+        <HostStateProbe />
+      </HostProvider>
+    );
+
+    // Flush all microtasks/effects.
+    await act(async () => {});
+
+    // No /healthz probe must have been issued.
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // Diagnostics must remain disabled without any probe.
+    expect(screen.getByTestId("host-id")).toHaveTextContent(LOCAL_HOST.id);
+    expect(screen.getByTestId("diagnostics-enabled")).toHaveTextContent("false");
+  });
+
+  it("does fetch /healthz for LOCAL_HOST when served from a real local origin", async () => {
+    // jsdom default origin is http://localhost — real local dev scenario.
+    const fetchSpy = vi.fn(async () => ({ ok: true }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    render(
+      <HostProvider>
+        <HostStateProbe />
+      </HostProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("diagnostics-enabled")).toHaveTextContent("true");
+    });
+
+    // The /healthz probe must have been issued exactly once.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/healthz",
+      expect.objectContaining({ cache: "no-store" })
+    );
+  });
+
   it("disables diagnostics for an HTTP loopback host when the control plane is HTTPS", async () => {
     // Simulate being served from a hosted HTTPS origin (e.g. GitHub Pages, Vercel).
     vi.stubGlobal("location", {

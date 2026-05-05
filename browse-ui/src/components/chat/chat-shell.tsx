@@ -322,12 +322,15 @@ export function ChatShell() {
                   <Globe className="size-3 shrink-0" />
                   {activeHost.base_url.replace(/^https?:\/\//, "")}
                 </span>
-              ) : (
-                <span className="text-muted-foreground/60 flex items-center gap-0.5 font-mono text-xs">
+              ) : operatorEnabled ? (
+                <span
+                  className="text-muted-foreground/60 flex items-center gap-0.5 font-mono text-xs"
+                  data-testid="local-host-chip"
+                >
                   <ServerCog className="size-3 shrink-0" />
                   local
                 </span>
-              )}
+              ) : null}
             </p>
           )}
         </div>

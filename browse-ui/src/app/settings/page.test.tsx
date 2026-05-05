@@ -292,6 +292,11 @@ describe("SettingsPage — Hosts & connections card", () => {
     expect(screen.getByText("Local (same-origin)")).toBeInTheDocument();
   });
 
+  it("shows 'Same-origin default' subtitle for the local host row on local pages", () => {
+    render(<SettingsPage />);
+    expect(screen.getByText("Same-origin default")).toBeInTheDocument();
+  });
+
   it("shows empty state when no remote hosts are saved", () => {
     render(<SettingsPage />);
     expect(screen.getByTestId("no-remote-hosts")).toBeInTheDocument();
@@ -411,5 +416,10 @@ describe("SettingsPage — mixed-content loopback guard", () => {
     fireEvent.click(screen.getByTestId("save-host-btn"));
     await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
     expect(screen.queryByTestId("skip-validation-btn")).not.toBeInTheDocument();
+  });
+
+  it("shows 'Open the local browse app directly' for the local host row on hosted pages", () => {
+    render(<SettingsPage />);
+    expect(screen.getByText("Open the local browse app directly")).toBeInTheDocument();
   });
 });
