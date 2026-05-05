@@ -1584,17 +1584,30 @@ describe("operatorModelCatalogResponseSchema", () => {
     expect(parsed.cli_kind).toBe("amp");
   });
 
-  it("accepts empty base_url for same-origin local profile", () => {
-    const parsed = hostProfileSchema.parse({
-      id: "local",
-      label: "Local (same-origin)",
-      base_url: "",
-      token: "",
-      cli_kind: "copilot",
-      is_default: true,
-    });
-    expect(parsed.base_url).toBe("");
-    expect(parsed.is_default).toBe(true);
+  it("rejects empty base_url because LOCAL_HOST is not stored through the schema", () => {
+    expect(() =>
+      hostProfileSchema.parse({
+        id: "local",
+        label: "Local (same-origin)",
+        base_url: "",
+        token: "",
+        cli_kind: "copilot",
+        is_default: true,
+      })
+    ).toThrow();
+  });
+
+  it("rejects empty base_url on remote host input", () => {
+    expect(() =>
+      hostProfileSchema.parse({
+        id: "remote-empty",
+        label: "Remote Empty",
+        base_url: "",
+        token: "",
+        cli_kind: "copilot",
+        is_default: false,
+      })
+    ).toThrow();
   });
 
   it("rejects host profile with empty id", () => {
@@ -1638,6 +1651,83 @@ describe("operatorModelCatalogResponseSchema", () => {
 
   it("rejects host profile missing required fields", () => {
     expect(() => hostProfileSchema.parse({ id: "x", label: "Test" })).toThrow();
+  });
+
+  // ── hostProfileSchema base_url URL validation (issue #45) ─────────────
+
+  it("accepts https base_url", () => {
+    const parsed = hostProfileSchema.parse({
+      id: "h1",
+      label: "HTTPS Host",
+      base_url: "https://abc123.ngrok.io",
+      token: "",
+      cli_kind: "copilot",
+      is_default: false,
+    });
+    expect(parsed.base_url).toBe("https://abc123.ngrok.io");
+  });
+
+  it("accepts https base_url with path prefix", () => {
+    const parsed = hostProfileSchema.parse({
+      id: "h2",
+      label: "HTTPS Prefixed",
+      base_url: "https://host.example.com/prefix/",
+      token: "",
+      cli_kind: "copilot",
+      is_default: false,
+    });
+    expect(parsed.base_url).toBe("https://host.example.com/prefix/");
+  });
+
+  it("accepts http base_url (local tunnel or HTTP server)", () => {
+    const parsed = hostProfileSchema.parse({
+      id: "h3",
+      label: "HTTP Host",
+      base_url: "http://tunnel.example.com",
+      token: "",
+      cli_kind: "copilot",
+      is_default: false,
+    });
+    expect(parsed.base_url).toBe("http://tunnel.example.com");
+  });
+
+  it("rejects base_url with no scheme (bare hostname)", () => {
+    expect(() =>
+      hostProfileSchema.parse({
+        id: "h4",
+        label: "Bad",
+        base_url: "localhost",
+        token: "",
+        cli_kind: "copilot",
+        is_default: false,
+      })
+    ).toThrow();
+  });
+
+  it("rejects base_url with javascript: scheme", () => {
+    expect(() =>
+      hostProfileSchema.parse({
+        id: "h5",
+        label: "XSS",
+        base_url: "javascript:alert(1)",
+        token: "",
+        cli_kind: "copilot",
+        is_default: false,
+      })
+    ).toThrow();
+  });
+
+  it("rejects base_url that is not a valid URL", () => {
+    expect(() =>
+      hostProfileSchema.parse({
+        id: "h6",
+        label: "Garbage",
+        base_url: "not a url at all",
+        token: "",
+        cli_kind: "copilot",
+        is_default: false,
+      })
+    ).toThrow();
   });
 
   // ── Host Capabilities ─────────────────────────────────────────────────

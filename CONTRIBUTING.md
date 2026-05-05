@@ -241,7 +241,7 @@ Use this checklist before merging any PR that touches the operator backend, `/ap
 
 - `watch-sessions.py` does not need special coordination for operator-only changes; normal Copilot session artifacts are still discovered on the next polling cycle.
 - `auto-update-tools.py` does not restart the browse server. Restart it manually after Python-side operator changes.
-- `browse-ui/dist/` remains a committed build artifact: rebuild it after UI changes and stage the regenerated output.
+- `browse-ui/dist/` is a generated, ignored build artifact. Rebuild it locally with `cd browse-ui && pnpm build` or run the local app with `cd browse-ui && node scripts/run-local.mjs -- --port <port> --token <token>`.
 
 ## Shipping checklist — host management / host-profile changes
 

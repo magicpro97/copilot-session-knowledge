@@ -33,9 +33,10 @@ KNOWLEDGE.md
 .octogent/
 .*-test-artifacts/
 
-# browse-ui Node.js artifacts (dist/ is committed)
+# browse-ui Node.js artifacts
 browse-ui/node_modules/
 browse-ui/.next/
+browse-ui/dist/
 browse-ui/dist-release/
 browse-ui/tsconfig.tsbuildinfo
 browse-ui/.env.local

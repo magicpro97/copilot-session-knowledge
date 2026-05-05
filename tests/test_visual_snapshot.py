@@ -31,6 +31,7 @@ _FAIL = 0
 
 SNAPSHOTS_DIR = Path(__file__).parent / "snapshots"
 UPDATE_MODE = os.environ.get("UPDATE_SNAPSHOTS", "").strip() not in ("", "0")
+V2_DIST = Path(__file__).parent.parent / "browse-ui" / "dist"
 
 ROUTES = [
     ("/", "root"),
@@ -177,6 +178,11 @@ def _normalize_html(html: str) -> str:
     html = re.sub(r'token=[a-zA-Z0-9_\-]+', 'token=X', html)
     # Strip dynamic timestamps (ISO-like strings in content)
     html = re.sub(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}', 'TIMESTAMP', html)
+    # Strip static-export build fingerprints. dist/ is generated on demand and
+    # Next/Turbopack can change asset IDs between builds without route drift.
+    html = re.sub(r'/_next/static/[^/"\']+/(_[^/"\']+Manifest\.js)', r'/_next/static/BUILD/\1', html)
+    html = re.sub(r'/_next/static/(chunks|media)/[^"\'<>\s)]+', r'/_next/static/\1/ASSET', html)
+    html = re.sub(r'\\"b\\":\\"[^\\"]+\\"', r'\\"b\\":\\"BUILD\\"', html)
     return html
 
 
@@ -194,6 +200,13 @@ def run_all_tests() -> int:
         print("  (UPDATE_SNAPSHOTS=1 — regenerating baselines)")
 
     SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not V2_DIST.exists():
+        print("  SKIP  browse-ui/dist/ not found — run `cd browse-ui && pnpm build` for snapshot checks")
+        test("snapshot/dist-missing: skipped cleanly", True)
+        print(f"\n{'='*40}")
+        print(f"PASSED: {_PASS}  FAILED: {_FAIL}")
+        return _FAIL
 
     db = _make_test_db()
     server, host, port = _start_server(db, token="testtoken")

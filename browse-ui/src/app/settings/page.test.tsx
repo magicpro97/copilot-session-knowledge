@@ -35,6 +35,11 @@ vi.mock("@/providers/host-provider", () => ({
   useHostState: vi.fn(() => hostStateMock),
 }));
 
+let diagnosticsSupported = true;
+vi.mock("@/lib/hosts", () => ({
+  useHostFeature: vi.fn(() => ({ supported: diagnosticsSupported, loading: false })),
+}));
+
 type TentacleQuery = ReturnType<typeof useTentacleStatus>;
 type GenericQuery = {
   data: undefined;
@@ -93,6 +98,7 @@ beforeEach(() => {
   window.history.pushState({}, "", "/v2/settings");
   localStorage.clear();
   hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
+  diagnosticsSupported = true;
   mockedUseHealth.mockReturnValue(makeIdleQuery() as ReturnType<typeof useHealth>);
   mockedUseSyncStatus.mockReturnValue(makeIdleQuery() as ReturnType<typeof useSyncStatus>);
   mockedUseScoutStatus.mockReturnValue(makeIdleQuery() as ReturnType<typeof useScoutStatus>);
@@ -103,6 +109,22 @@ beforeEach(() => {
 const SettingsPage = (await import("@/app/settings/page")).default;
 
 describe("SettingsPage — tentacle diagnostics card", () => {
+  it("keeps diagnostics hooks disabled when the host lacks diagnostics support", () => {
+    diagnosticsSupported = false;
+    mockedUseTentacleStatus.mockReturnValue(makeTentacleQuery({}));
+
+    render(<SettingsPage />);
+
+    expect(
+      screen.getAllByText("The selected host does not advertise diagnostics support.").length
+    ).toBeGreaterThan(0);
+    expect(mockedUseHealth.mock.calls.at(-1)?.[1]).toBe(false);
+    expect(mockedUseSyncStatus.mock.calls.at(-1)?.[1]).toBe(false);
+    expect(mockedUseScoutStatus.mock.calls.at(-1)?.[1]).toBe(false);
+    expect(mockedUseTentacleStatus.mock.calls.at(-1)?.[1]).toBe(false);
+    expect(mockedUseSkillMetrics.mock.calls.at(-1)?.[1]).toBe(false);
+  });
+
   it("shows loading skeletons while tentacle status is loading", () => {
     mockedUseTentacleStatus.mockReturnValue(makeTentacleQuery({ isLoading: true }));
 

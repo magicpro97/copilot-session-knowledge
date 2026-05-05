@@ -18,6 +18,8 @@ import { useSearchHistory } from "@/hooks/use-search-history";
 import { useSearch, useSubmitFeedback } from "@/lib/api/hooks";
 import type { SearchResult } from "@/lib/api/types";
 import { cn } from "@/lib/utils";
+import { useHostFeature } from "@/lib/hosts";
+import { useHostState } from "@/providers/host-provider";
 
 const ALL_SOURCES = ["sessions", "knowledge"] as const;
 const ALL_COLS = ["user", "assistant", "tools", "title"] as const;
@@ -110,6 +112,13 @@ export default function SearchPage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const resultRefs = useRef<Array<HTMLDivElement | null>>([]);
 
+  const { host, diagnosticsEnabled } = useHostState();
+  const { supported: searchSupported, loading: searchCapLoading } = useHostFeature(
+    host,
+    "search",
+    diagnosticsEnabled
+  );
+
   const [query, setQuery] = useState(() => searchParams.get("q") ?? "");
   const [committedQuery, setCommittedQuery] = useState(() => searchParams.get("q")?.trim() ?? "");
   const [sources, setSources] = useState(() => parseCsv(searchParams.get("src"), ALL_SOURCES));
@@ -156,7 +165,8 @@ export default function SearchPage() {
       cols: columns,
       kinds,
     },
-    committedQuery.length > 0
+    diagnosticsEnabled && searchSupported && committedQuery.length > 0,
+    host
   );
 
   const results = useMemo(() => search.data?.results ?? [], [search.data?.results]);
@@ -403,58 +413,77 @@ export default function SearchPage() {
       </div>
 
       <div className="space-y-3">
-        {!isIdle && search.data ? (
-          <p className="text-muted-foreground text-sm">
-            {search.data.total} results · {search.data.took_ms}ms
-          </p>
-        ) : null}
-
-        {isIdle ? (
+        {!diagnosticsEnabled ? (
           <EmptyState
-            title="Start searching"
-            description="Search across all sessions and knowledge entries."
+            title="No agent host selected"
+            description="Connect an agent host to enable search."
           />
-        ) : showLoading ? (
-          <div className="grid gap-3">
-            {Array.from({ length: 4 }).map((_, index) => (
-              <div key={`search-skeleton-${index}`} className="rounded-xl border p-4">
-                <Skeleton className="h-4 w-2/3" />
-                <Skeleton className="mt-2 h-3 w-1/3" />
-                <Skeleton className="mt-4 h-3 w-full" />
-                <Skeleton className="mt-2 h-3 w-11/12" />
-              </div>
-            ))}
-          </div>
-        ) : showEmpty ? (
+        ) : searchCapLoading ? (
           <EmptyState
-            icon={<SearchX className="size-5" />}
-            title={`No results for "${committedQuery}"`}
-            description="Try broader terms or check if sessions are indexed."
+            title="Checking host capabilities"
+            description="Waiting for the selected agent host to report search support."
+          />
+        ) : !searchSupported && !searchCapLoading ? (
+          <EmptyState
+            title="Not supported by this host"
+            description="The connected agent does not support search."
           />
         ) : (
-          <div className="grid gap-3">
-            {results.map((result, index) => (
-              <div
-                key={`${committedQuery}-${result.type}-${String(result.id)}-${index}`}
-                ref={(node) => {
-                  resultRefs.current[index] = node;
-                }}
-              >
-                <SearchResultCard
-                  result={result}
-                  query={committedQuery}
-                  className={cn(
-                    activeIndex === index &&
-                      "ring-primary/40 ring-offset-background ring-2 ring-offset-1"
-                  )}
-                  onSelect={() => openResult(index)}
-                />
-                <div className="mt-1 flex justify-end">
-                  <FeedbackRow result={result} query={committedQuery} />
-                </div>
+          <>
+            {!isIdle && search.data ? (
+              <p className="text-muted-foreground text-sm">
+                {search.data.total} results · {search.data.took_ms}ms
+              </p>
+            ) : null}
+
+            {isIdle ? (
+              <EmptyState
+                title="Start searching"
+                description="Search across all sessions and knowledge entries."
+              />
+            ) : showLoading ? (
+              <div className="grid gap-3">
+                {Array.from({ length: 4 }).map((_, index) => (
+                  <div key={`search-skeleton-${index}`} className="rounded-xl border p-4">
+                    <Skeleton className="h-4 w-2/3" />
+                    <Skeleton className="mt-2 h-3 w-1/3" />
+                    <Skeleton className="mt-4 h-3 w-full" />
+                    <Skeleton className="mt-2 h-3 w-11/12" />
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            ) : showEmpty ? (
+              <EmptyState
+                icon={<SearchX className="size-5" />}
+                title={`No results for "${committedQuery}"`}
+                description="Try broader terms or check if sessions are indexed."
+              />
+            ) : (
+              <div className="grid gap-3">
+                {results.map((result, index) => (
+                  <div
+                    key={`${committedQuery}-${result.type}-${String(result.id)}-${index}`}
+                    ref={(node) => {
+                      resultRefs.current[index] = node;
+                    }}
+                  >
+                    <SearchResultCard
+                      result={result}
+                      query={committedQuery}
+                      className={cn(
+                        activeIndex === index &&
+                          "ring-primary/40 ring-offset-background ring-2 ring-offset-1"
+                      )}
+                      onSelect={() => openResult(index)}
+                    />
+                    <div className="mt-1 flex justify-end">
+                      <FeedbackRow result={result} query={committedQuery} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
 

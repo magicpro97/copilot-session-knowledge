@@ -21,6 +21,7 @@ import {
 } from "@/lib/api/hooks";
 import { SHORTCUT_GROUPS } from "@/lib/constants";
 import { formatNumber } from "@/lib/formatters";
+import { useHostFeature } from "@/lib/hosts";
 import { cn } from "@/lib/utils";
 import { useHostState } from "@/providers/host-provider";
 
@@ -41,12 +42,18 @@ export default function SettingsPage() {
 
   // Use the shared browse-wide host state from HostProvider instead of local duplication.
   const { host, diagnosticsEnabled } = useHostState();
+  const { supported: diagnosticsSupported, loading: diagnosticsCapabilityLoading } = useHostFeature(
+    host,
+    "diagnostics",
+    diagnosticsEnabled
+  );
+  const diagnosticRequestsEnabled = diagnosticsEnabled && diagnosticsSupported;
 
-  const health = useHealth(host, diagnosticsEnabled);
-  const syncStatus = useSyncStatus(host, diagnosticsEnabled);
-  const scoutStatus = useScoutStatus(host, diagnosticsEnabled);
-  const tentacleStatus = useTentacleStatus(host, diagnosticsEnabled);
-  const skillMetrics = useSkillMetrics(host, diagnosticsEnabled);
+  const health = useHealth(host, diagnosticRequestsEnabled);
+  const syncStatus = useSyncStatus(host, diagnosticRequestsEnabled);
+  const scoutStatus = useScoutStatus(host, diagnosticRequestsEnabled);
+  const tentacleStatus = useTentacleStatus(host, diagnosticRequestsEnabled);
+  const skillMetrics = useSkillMetrics(host, diagnosticRequestsEnabled);
 
   const activeTheme = theme ?? "system";
   const healthStatus = health.data?.status;
@@ -110,11 +117,13 @@ export default function SettingsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {!diagnosticsEnabled ? (
+          {!diagnosticRequestsEnabled ? (
             <p className="text-muted-foreground text-sm" data-testid="sync-diagnostics-idle">
-              Select an agent host in{" "}
-              <span className="text-foreground font-medium">Hosts &amp; connections</span> to view
-              live sync diagnostics.
+              {diagnosticsCapabilityLoading
+                ? "Checking whether this host supports diagnostics."
+                : diagnosticsEnabled
+                  ? "The selected host does not advertise diagnostics support."
+                  : "Select an agent host in Hosts & connections to view live sync diagnostics."}
             </p>
           ) : (
             <>
@@ -280,11 +289,13 @@ export default function SettingsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {!diagnosticsEnabled ? (
+          {!diagnosticRequestsEnabled ? (
             <p className="text-muted-foreground text-sm" data-testid="scout-diagnostics-idle">
-              Select an agent host in{" "}
-              <span className="text-foreground font-medium">Hosts &amp; connections</span> to view
-              live Trend Scout diagnostics.
+              {diagnosticsCapabilityLoading
+                ? "Checking whether this host supports diagnostics."
+                : diagnosticsEnabled
+                  ? "The selected host does not advertise diagnostics support."
+                  : "Select an agent host in Hosts & connections to view live Trend Scout diagnostics."}
             </p>
           ) : (
             <>
@@ -501,11 +512,13 @@ export default function SettingsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {!diagnosticsEnabled ? (
+          {!diagnosticRequestsEnabled ? (
             <p className="text-muted-foreground text-sm" data-testid="tentacle-diagnostics-idle">
-              Select an agent host in{" "}
-              <span className="text-foreground font-medium">Hosts &amp; connections</span> to view
-              live tentacle diagnostics.
+              {diagnosticsCapabilityLoading
+                ? "Checking whether this host supports diagnostics."
+                : diagnosticsEnabled
+                  ? "The selected host does not advertise diagnostics support."
+                  : "Select an agent host in Hosts & connections to view live tentacle diagnostics."}
             </p>
           ) : (
             <>
@@ -718,11 +731,13 @@ export default function SettingsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {!diagnosticsEnabled ? (
+          {!diagnosticRequestsEnabled ? (
             <p className="text-muted-foreground text-sm" data-testid="skill-diagnostics-idle">
-              Select an agent host in{" "}
-              <span className="text-foreground font-medium">Hosts &amp; connections</span> to view
-              live skill metrics.
+              {diagnosticsCapabilityLoading
+                ? "Checking whether this host supports diagnostics."
+                : diagnosticsEnabled
+                  ? "The selected host does not advertise diagnostics support."
+                  : "Select an agent host in Hosts & connections to view live skill metrics."}
             </p>
           ) : (
             <>
@@ -897,11 +912,13 @@ export default function SettingsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {!diagnosticsEnabled ? (
+          {!diagnosticRequestsEnabled ? (
             <p className="text-muted-foreground text-sm" data-testid="health-diagnostics-idle">
-              Select an agent host in{" "}
-              <span className="text-foreground font-medium">Hosts &amp; connections</span> to view
-              live health data.
+              {diagnosticsCapabilityLoading
+                ? "Checking whether this host supports diagnostics."
+                : diagnosticsEnabled
+                  ? "The selected host does not advertise diagnostics support."
+                  : "Select an agent host in Hosts & connections to view live health data."}
             </p>
           ) : (
             <>

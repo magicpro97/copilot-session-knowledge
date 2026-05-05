@@ -1526,6 +1526,13 @@ def _run_api_tests(port: int):
         test("CAP1: supported_features is list", isinstance(data_cap.get("supported_features"), list))
         test("CAP1: sessions in supported_features", "sessions" in data_cap.get("supported_features", []))
         test("CAP1: models in supported_features", "models" in data_cap.get("supported_features", []))
+        test("CAP1: search in supported_features", "search" in data_cap.get("supported_features", []))
+        test("CAP1: graph in supported_features", "graph" in data_cap.get("supported_features", []))
+        test("CAP1: insights in supported_features", "insights" in data_cap.get("supported_features", []))
+        test(
+            "CAP1: diagnostics in supported_features",
+            "diagnostics" in data_cap.get("supported_features", []),
+        )
         # Old keys must NOT be present (schema contract)
         test("CAP1: no stale cli_family key", "cli_family" not in data_cap)
         test("CAP1: no stale operator key", "operator" not in data_cap)
@@ -1567,11 +1574,11 @@ def _run_api_tests(port: int):
         _ = resp_opts_bad.read()
         test("CORS2: OPTIONS from non-allowlisted origin → 403", resp_opts_bad.status == 403)
 
-        # CORS3: OPTIONS preflight for non-operator route → 405
+        # CORS3: OPTIONS preflight for non-api, non-healthz route → 405
         conn_opts_nonopr = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         conn_opts_nonopr.request(
             "OPTIONS",
-            "/healthz",
+            "/about",
             headers={"Origin": "https://agents.linhngo.dev"},
         )
         resp_opts_nonopr = conn_opts_nonopr.getresponse()

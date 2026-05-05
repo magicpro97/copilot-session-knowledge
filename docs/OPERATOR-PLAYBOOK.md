@@ -490,7 +490,7 @@ The Next.js static export makes all API calls to relative paths (`/api/*`) on th
 
 > **Facts vs guidance separator:** Verified facts are derived from config inspection and code review. Architecture notes marked **[guidance]** describe intended or recommended work.
 
-**Verified fact:** `firebase.json` and `.firebaserc` are committed to the repo. `firebase.json` defines a hosting target named `agents` serving `browse-ui/dist/`. `.firebaserc` contains a placeholder project ID (`your-project-id`) — operators configure the real project ID and custom domain in a **private hosting repo** (see [external hosting-repo pattern](#external-hosting-repo-pattern) below).
+**Verified fact:** `firebase.json` and `.firebaserc` are committed to the repo. `firebase.json` defines a hosting target named `agents` serving the generated `browse-ui/dist/` directory. `.firebaserc` contains a placeholder project ID (`your-project-id`) — operators configure the real project ID and custom domain in a **private hosting repo** (see [external hosting-repo pattern](#external-hosting-repo-pattern) below).
 
 ### Topology
 
@@ -498,7 +498,7 @@ The Next.js static export makes all API calls to relative paths (`/api/*`) on th
                 ┌──────────────────────────────────┐
   browser ─────▶│  Firebase Hosting (static)        │
                 │  <your-firebase-domain>            │
-                │  browse-ui/dist (HTML/JS/CSS)      │
+                │  generated browse-ui dist artifact  │
                 └────────────────┬─────────────────┘
                                  │  cross-origin /api/operator/* calls
                                  │  (operator URL configured per host profile)
@@ -561,7 +561,7 @@ pnpm release:check
 
 **What it checks (facts):**
 
-- Builds the release artifact into `browse-ui/dist-release/` without touching the committed `browse-ui/dist/`.
+- Builds the release artifact into `browse-ui/dist-release/` without touching the local generated `browse-ui/dist/`.
 - Reads `browse-ui/dist-release/chat/index.html` directly from the filesystem (no server required).
 - Asserts zero `/v2/_next/` occurrences — these are the broken asset shape that 404 on Firebase.
 - Asserts at least one `/_next/` occurrence — confirms the export is non-trivial.

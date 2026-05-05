@@ -303,10 +303,7 @@ The `/v2/*` routes are the primary browse experience and serve the modern Next.j
 | `/v2/graph` | Graph workspace: Insight (default) + Evidence + Similarity + Communities |
 | `/v2/settings` | Preferences |
 
-To rebuild the primary UI after editing `browse-ui/src/`:
-```bash
-cd browse-ui && pnpm build
-```
+To rebuild the primary UI after editing `browse-ui/src/`, run `cd browse-ui && pnpm build`; to build and launch local browse in one step, run `cd browse-ui && node scripts/run-local.mjs -- --port 8080 --token YOUR_TOKEN --no-tunnel`.
 
 #### Legacy UI (v1, deprecated but still supported)
 

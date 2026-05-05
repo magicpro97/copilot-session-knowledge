@@ -128,7 +128,7 @@ GET  /api/operator/diff                      → unified diff for two files unde
 
 - `watch-sessions.py` still tracks normal Copilot session artifacts under `~/.copilot/session-state/`; the operator console reads its own persisted run history directly from `operator-console/`.
 - `auto-update-tools.py` can restart `watch-sessions.py`, but it does not restart the browse server or interfere with active operator runs.
-- UI-only `browse-ui/dist/` updates are served from disk after rebuild/deploy; Python changes to `browse/api/operator.py` or `browse/core/operator_console.py` still require a manual browse server restart.
+- UI-only `browse-ui/src/` updates require regenerating the local `browse-ui/dist/` artifact before the running browse server can serve them; Python changes to `browse/api/operator.py` or `browse/core/operator_console.py` still require a manual browse server restart.
 
 ### Remote access
 
@@ -139,6 +139,10 @@ Two deployment modes are supported:
 **Mode 2 — Firebase Hosting control plane:** The static browse-ui is deployed to Firebase Hosting (operator's chosen custom domain). The operator's `browse.py` server is reached via a Cloudflare Tunnel. All API calls from the Firebase-hosted UI to the tunnel are cross-origin; the operator host exposes an explicit CORS allowlist, Bearer auth, and a `GET /api/operator/capabilities` endpoint. Host profiles let the UI target different operator machines. See [docs/OPERATOR-PLAYBOOK.md — Firebase-hosted control plane](OPERATOR-PLAYBOOK.md#firebase-hosted-control-plane) for the full topology and manual console steps.
 
 > Full remote-access setup, Cloudflare Access guidance, and Firebase topology: **[docs/OPERATOR-PLAYBOOK.md](OPERATOR-PLAYBOOK.md)**
+>
+> **Hosted shell specs (localhost bootstrap, relay, version negotiation, token storage, stream
+> reconnect, first-run UX):** see **[docs/HOSTED-SHELL-ARCHITECTURE.md](HOSTED-SHELL-ARCHITECTURE.md)**
+> and **[docs/HOSTED-SHELL-RESEARCH.md](HOSTED-SHELL-RESEARCH.md)**.
 
 ## Enforcement Hooks
 

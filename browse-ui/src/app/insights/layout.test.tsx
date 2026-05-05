@@ -27,6 +27,16 @@ vi.mock("@/lib/api/hooks", () => ({
     isLoading: false,
     isError: false,
   })),
+  useHostCapabilities: vi.fn(() => ({
+    data: {
+      cli_kind: "copilot",
+      version: "1",
+      supported_modes: ["interactive"],
+      supported_features: ["insights", "diagnostics"],
+    },
+    isLoading: false,
+    isError: false,
+  })),
 }));
 
 // ── Host provider — controlled via hostStateMock ──────────────────────────────

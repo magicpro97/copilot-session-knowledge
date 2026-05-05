@@ -148,7 +148,10 @@ def handle_capabilities(db, params, token, nonce) -> tuple:
         "cli_kind":          "copilot",
         "version":           "1",
         "supported_modes":   ["ask", "edit"],
-        "supported_features": ["sessions", "models", "suggest", "preview", "diff"]
+        "supported_features": [
+          "chat", "sessions", "search", "graph", "insights", "diagnostics",
+          "models", "suggest", "preview", "diff"
+        ]
       }
     """
     return json_ok(
@@ -156,7 +159,18 @@ def handle_capabilities(db, params, token, nonce) -> tuple:
             "cli_kind": "copilot",
             "version": "1",
             "supported_modes": ["ask", "edit"],
-            "supported_features": ["sessions", "models", "suggest", "preview", "diff"],
+            "supported_features": [
+                "chat",
+                "sessions",
+                "search",
+                "graph",
+                "insights",
+                "diagnostics",
+                "models",
+                "suggest",
+                "preview",
+                "diff",
+            ],
         }
     )
 

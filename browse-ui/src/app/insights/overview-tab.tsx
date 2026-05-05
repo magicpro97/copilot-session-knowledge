@@ -32,12 +32,27 @@ type OverviewTabProps = {
 
 /** Shown when no agent host is selected and insights API calls would 404. */
 export function HostedIdleGuidance() {
+  const { capabilityState } = useInsightsTab();
+  const copy =
+    capabilityState === "checking"
+      ? {
+          title: "Checking host capabilities",
+          description: "Waiting for the selected agent host to report insights support.",
+        }
+      : capabilityState === "unsupported"
+        ? {
+            title: "Not supported by this host",
+            description: "The connected agent does not advertise insights support.",
+          }
+        : {
+            title: "No agent host selected",
+            description: "Select a remote agent host in the header to load live insights data.",
+          };
+
   return (
     <div className="flex flex-col items-center justify-center rounded-xl border border-dashed px-6 py-12 text-center">
-      <p className="text-muted-foreground text-sm font-medium">No agent host selected</p>
-      <p className="text-muted-foreground mt-1 text-xs">
-        Select a remote agent host in the header to load live insights data.
-      </p>
+      <p className="text-muted-foreground text-sm font-medium">{copy.title}</p>
+      <p className="text-muted-foreground mt-1 text-xs">{copy.description}</p>
     </div>
   );
 }

@@ -17,12 +17,16 @@ import {
 } from "@/lib/api/hooks";
 import { sortFindingsBySeverity } from "@/lib/insight-derive";
 import type { InsightAction, InsightFinding } from "@/lib/insight-models";
+import type { HostProfile } from "@/lib/api/types";
+import { LOCAL_HOST } from "@/lib/host-profiles";
 
 type GraphTab = "evidence" | "similarity" | "communities";
 
 type InsightTabProps = {
   active: boolean;
   onNavigate: (tab: GraphTab) => void;
+  host?: HostProfile;
+  enabled?: boolean;
 };
 
 type MetricTileProps = {
@@ -235,11 +239,16 @@ function findingDrillDownHref(finding: InsightFinding): string | undefined {
   return undefined;
 }
 
-export function InsightTab({ active, onNavigate }: InsightTabProps) {
-  const evidenceQ = useEvidenceGraph({});
-  const communitiesQ = useCommunities(active);
-  const kiQ = useKnowledgeInsights();
-  const dashQ = useDashboard();
+export function InsightTab({
+  active,
+  onNavigate,
+  host = LOCAL_HOST,
+  enabled = true,
+}: InsightTabProps) {
+  const evidenceQ = useEvidenceGraph({}, enabled, host);
+  const communitiesQ = useCommunities(active && enabled, host);
+  const kiQ = useKnowledgeInsights(host, enabled);
+  const dashQ = useDashboard(host, enabled);
 
   const nodeCount = evidenceQ.data?.nodes.length ?? 0;
   const edgeCount = evidenceQ.data?.edges.length ?? 0;

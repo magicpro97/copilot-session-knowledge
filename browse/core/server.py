@@ -96,12 +96,16 @@ class _BrowseHandler(BaseHTTPRequestHandler):
 
         # /healthz — no auth required; dispatch via registry
         if path == "/healthz":
+            cors_ok, cors_origin = check_cors_origin(self.headers)
+            healthz_cors: dict = {}
+            if cors_ok:
+                healthz_cors = {"Access-Control-Allow-Origin": cors_origin, "Vary": "Origin"}
             handler_fn, kwargs = match_route(path, "GET")
             if handler_fn:
                 body, ct, status = handler_fn(self.db, params, "", nonce, **kwargs)
             else:
                 body, ct, status = b"404 Not Found", "text/plain", 404
-            self._send(body, ct, status, nonce, send_body=send_body)
+            self._send(body, ct, status, nonce, send_body=send_body, cors_headers=healthz_cors or None)
             return
 
         # /static/ — no auth required; hardened path check
@@ -269,6 +273,25 @@ class _BrowseHandler(BaseHTTPRequestHandler):
 
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+
+        # /healthz preflight: allowlisted origins get 204 with CORS headers;
+        # non-allowlisted origins (or no Origin) get 403.
+        if path == "/healthz":
+            cors_ok, cors_origin = check_cors_origin(self.headers)
+            if not cors_ok:
+                self.send_response(403)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", cors_origin)
+            self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+            self.send_header("Access-Control-Max-Age", "86400")
+            self.send_header("Vary", "Origin")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
 
         # Preflight is only supported for /api/ routes
         if not path.startswith("/api/"):

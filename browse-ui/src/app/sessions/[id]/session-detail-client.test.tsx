@@ -37,6 +37,11 @@ vi.mock("@/providers/host-provider", () => ({
   useHostState: vi.fn(() => hostStateMock),
 }));
 
+let sessionsSupported = true;
+vi.mock("@/lib/hosts", () => ({
+  useHostFeature: vi.fn(() => ({ supported: sessionsSupported, loading: false })),
+}));
+
 const defaultSessionDetail = {
   data: {
     meta: {
@@ -103,6 +108,7 @@ describe("SessionDetailClient – layout/nav", () => {
   beforeEach(() => {
     replaceState.mockClear();
     hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
+    sessionsSupported = true;
     (useSessionDetail as Mock).mockImplementation(() => defaultSessionDetail);
     // Reset hash
     Object.defineProperty(window, "location", {
@@ -236,6 +242,28 @@ describe("SessionDetailClient – layout/nav", () => {
     expect((useSessionDetail as Mock).mock.calls.at(-1)).toEqual([
       "test-session-123",
       true,
+      remoteHost,
+    ]);
+  });
+
+  it("keeps detail idle when the selected host lacks session support", () => {
+    const remoteHost = {
+      id: "remote-host",
+      label: "Remote host",
+      base_url: "https://agent.example.test",
+      token: "secret",
+      cli_kind: "copilot" as const,
+      is_default: false,
+    };
+    hostStateMock = { host: remoteHost, diagnosticsEnabled: true };
+    sessionsSupported = false;
+
+    render(<SessionDetailClient />);
+
+    expect(screen.getByText("Not supported by this host")).toBeInTheDocument();
+    expect((useSessionDetail as Mock).mock.calls.at(-1)).toEqual([
+      "test-session-123",
+      false,
       remoteHost,
     ]);
   });

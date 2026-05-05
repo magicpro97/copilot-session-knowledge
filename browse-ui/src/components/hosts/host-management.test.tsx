@@ -394,3 +394,76 @@ describe("HostManagement — mixed-content loopback guard", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("HostManagement — URL scheme validation (issue #45)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows a hard error for a no-scheme URL (e.g. localhost without https://)", async () => {
+    renderHostManagement();
+    await openAddForm();
+    fireEvent.change(screen.getByLabelText("Tunnel URL"), {
+      target: { value: "localhost" },
+    });
+    fireEvent.click(screen.getByTestId("save-host-btn"));
+
+    await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
+    expect(screen.getByTestId("validation-error").textContent).toMatch(/valid URL|scheme/i);
+  });
+
+  it("shows a hard error for a javascript: URL", async () => {
+    renderHostManagement();
+    await openAddForm();
+    fireEvent.change(screen.getByLabelText("Tunnel URL"), {
+      target: { value: "javascript:alert(1)" },
+    });
+    fireEvent.click(screen.getByTestId("save-host-btn"));
+
+    await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
+    expect(screen.getByTestId("validation-error").textContent).toMatch(/scheme|not allowed/i);
+  });
+
+  it("does NOT show 'Save anyway' for a URL scheme error", async () => {
+    renderHostManagement();
+    await openAddForm();
+    fireEvent.change(screen.getByLabelText("Tunnel URL"), {
+      target: { value: "localhost" },
+    });
+    fireEvent.click(screen.getByTestId("save-host-btn"));
+
+    await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
+    expect(screen.queryByTestId("skip-validation-btn")).not.toBeInTheDocument();
+  });
+
+  it("does NOT fire a network probe for a URL with an invalid scheme", async () => {
+    renderHostManagement();
+    await openAddForm();
+    fireEvent.change(screen.getByLabelText("Tunnel URL"), {
+      target: { value: "javascript:alert(1)" },
+    });
+    fireEvent.click(screen.getByTestId("save-host-btn"));
+
+    await waitFor(() => expect(screen.getByTestId("validation-error")).toBeInTheDocument());
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it("accepts https:// URL and proceeds to probe", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 200 }));
+
+    renderHostManagement();
+    await openAddForm();
+    fireEvent.change(screen.getByLabelText("Tunnel URL"), {
+      target: { value: "https://valid.ngrok.io" },
+    });
+    fireEvent.click(screen.getByTestId("save-host-btn"));
+
+    await waitFor(() => expect(screen.queryByTestId("host-add-form")).not.toBeInTheDocument());
+    expect(vi.mocked(fetch)).toHaveBeenCalled();
+  });
+});

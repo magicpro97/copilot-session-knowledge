@@ -13,6 +13,7 @@ type InsightsTabContextValue = {
    * Defaults to false so components never fire same-origin 404s in static hosting.
    */
   diagnosticsEnabled: boolean;
+  capabilityState?: "ready" | "no-host" | "checking" | "unsupported";
   /** The currently active host profile (LOCAL_HOST when no remote host is selected). */
   host: HostProfile;
 };
@@ -20,6 +21,7 @@ type InsightsTabContextValue = {
 export const InsightsTabContext = createContext<InsightsTabContextValue>({
   setActiveTab: () => {},
   diagnosticsEnabled: false,
+  capabilityState: "no-host",
   host: LOCAL_HOST,
 });
 

@@ -29,6 +29,7 @@ import { PAGE_SIZES, SEARCH_DEBOUNCE_MS, SOURCE_LABELS } from "@/lib/constants";
 import { useSessions } from "@/lib/api/hooks";
 import type { SessionRow } from "@/lib/api/types";
 import { formatNumber } from "@/lib/formatters";
+import { useHostFeature } from "@/lib/hosts";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useHostState } from "@/providers/host-provider";
 
@@ -58,6 +59,12 @@ function inTimeRange(timestamp: number | null, timeRange: TimeRange, nowMs: numb
 export default function SessionsPage() {
   const router = useRouter();
   const { host, diagnosticsEnabled } = useHostState();
+  const { supported: sessionsSupported, loading: sessionsCapabilityLoading } = useHostFeature(
+    host,
+    "sessions",
+    diagnosticsEnabled
+  );
+  const sessionsEnabled = diagnosticsEnabled && sessionsSupported;
   const searchInputId = "sessions-sidebar-search";
 
   const [page, setPage] = useState(1);
@@ -77,7 +84,7 @@ export default function SessionsPage() {
       query,
     },
     host,
-    diagnosticsEnabled
+    sessionsEnabled
   );
 
   const items = useMemo(() => sessionsQuery.data?.items ?? [], [sessionsQuery.data]);
@@ -327,6 +334,44 @@ export default function SessionsPage() {
           icon={<ServerCog className="size-5" />}
           title="No agent host selected"
           description="Run the browse server locally or select a remote agent host in the header to load sessions."
+        />
+      </div>
+    );
+  }
+
+  if (sessionsCapabilityLoading) {
+    return (
+      <div className="space-y-4">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight">Sessions</h1>
+          <p className="text-muted-foreground text-sm">
+            Scan recent sessions, refine by filters, and open details quickly.
+          </p>
+        </div>
+
+        <EmptyState
+          icon={<ServerCog className="size-5" />}
+          title="Checking host capabilities"
+          description="Waiting for the selected agent host to report session support."
+        />
+      </div>
+    );
+  }
+
+  if (!sessionsSupported) {
+    return (
+      <div className="space-y-4">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight">Sessions</h1>
+          <p className="text-muted-foreground text-sm">
+            Scan recent sessions, refine by filters, and open details quickly.
+          </p>
+        </div>
+
+        <EmptyState
+          icon={<ServerCog className="size-5" />}
+          title="Not supported by this host"
+          description="The connected agent does not advertise session browsing support."
         />
       </div>
     );

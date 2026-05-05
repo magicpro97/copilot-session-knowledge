@@ -1021,7 +1021,18 @@ export const cliKindSchema = z.string().min(1);
 export const hostProfileSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
-  base_url: z.string(),
+  /** Remote host URL. LOCAL_HOST is an in-memory sentinel and is not stored through this schema. */
+  base_url: z.string().refine(
+    (url) => {
+      try {
+        const { protocol } = new URL(url);
+        return protocol === "http:" || protocol === "https:";
+      } catch {
+        return false;
+      }
+    },
+    { message: "base_url must be a valid URL with http or https scheme" }
+  ),
   token: z.string(),
   cli_kind: cliKindSchema,
   is_default: z.boolean(),

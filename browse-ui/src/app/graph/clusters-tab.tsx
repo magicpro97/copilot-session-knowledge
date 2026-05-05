@@ -18,10 +18,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useEmbeddings, useSimilarity } from "@/lib/api/hooks";
-import type { EmbeddingPoint } from "@/lib/api/types";
+import type { EmbeddingPoint, HostProfile } from "@/lib/api/types";
+import { LOCAL_HOST } from "@/lib/host-profiles";
 
 type ClustersTabProps = {
   active: boolean;
+  host?: HostProfile;
+  enabled?: boolean;
 };
 
 type CategoryOption = {
@@ -68,9 +71,9 @@ function formatScore(score: number): string {
   return score.toFixed(3);
 }
 
-export function ClustersTab({ active }: ClustersTabProps) {
+export function ClustersTab({ active, host = LOCAL_HOST, enabled = true }: ClustersTabProps) {
   const router = useRouter();
-  const embeddingsQuery = useEmbeddings();
+  const embeddingsQuery = useEmbeddings(enabled, host);
 
   const [selectedCategory, setSelectedCategory] = useState<string>(ALL_CATEGORIES);
   const [selectedPointId, setSelectedPointId] = useState<number | null>(null);
@@ -78,7 +81,7 @@ export function ClustersTab({ active }: ClustersTabProps) {
 
   const points = useMemo(() => embeddingsQuery.data?.points ?? [], [embeddingsQuery.data?.points]);
 
-  const similarityEnabled = selectedPointId !== null;
+  const similarityEnabled = selectedPointId !== null && enabled;
   const similarityQuery = useSimilarity(
     similarityEnabled
       ? {
@@ -86,7 +89,8 @@ export function ClustersTab({ active }: ClustersTabProps) {
           k: DEFAULT_SIMILARITY_K,
         }
       : {},
-    similarityEnabled
+    similarityEnabled,
+    host
   );
 
   const categoryOptions = useMemo<CategoryOption[]>(() => {

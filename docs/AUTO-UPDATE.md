@@ -169,7 +169,7 @@ The auto-update pipeline and the browse UI operator console (`/chat`) are indepe
 
 - Auto-update may restart `watch-sessions.py`, but it does **not** restart the browse server or interrupt an in-progress Copilot CLI run.
 - Operator run history is persisted under `~/.copilot/session-state/operator-console/` and is reloaded by `browse/core/operator_console.py` on the next request.
-- UI-only `browse-ui/dist/` updates are served from disk after rebuild/deploy. Python updates to `browse/api/operator.py` or `browse/core/operator_console.py` still require a manual browse server restart.
+- UI-only `browse-ui/src/` updates require a local rebuild (`cd browse-ui && pnpm build`) before the running browse server can serve the new generated `dist/`. Python updates to `browse/api/operator.py` or `browse/core/operator_console.py` still require a manual browse server restart.
 
 After pulling a release that changes the Python operator backend, restart the browse server:
 
@@ -181,6 +181,6 @@ python3 ~/.copilot/tools/browse.py --port <port>
 
 The host selection layer (`host-provider.tsx`, `host-profiles.ts`) is purely client-side (localStorage). Auto-update has no direct interaction with it:
 
-- Auto-update rebuilds or deploys `browse-ui/dist/` when browse-ui source files change — this includes any new version of the host-management components.
+- Auto-update treats `browse-ui/src/` changes as UI changes; run `cd browse-ui && pnpm build` (or `cd browse-ui && node scripts/run-local.mjs -- --port <port> --token <token>`) to refresh the generated local artifact.
 - Host profiles stored in `localStorage` by the browser are unaffected by auto-update, browse server restarts, or `browse-ui/dist/` rebuilds.
 - After a rebuild, the new `dist/` takes effect immediately on the next page load — host profiles already saved in `localStorage` are preserved.

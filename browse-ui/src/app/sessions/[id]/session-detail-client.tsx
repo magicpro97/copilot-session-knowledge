@@ -19,6 +19,7 @@ import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { hostRequest } from "@/lib/api/client";
 import { useSessionDetail } from "@/lib/api/hooks";
 import { formatNumber, formatSessionIdBadgeText } from "@/lib/formatters";
+import { useHostFeature } from "@/lib/hosts";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useHostState } from "@/providers/host-provider";
 
@@ -65,6 +66,12 @@ export function SessionDetailClient() {
   const params = useParams<{ id: string }>();
   const pathname = usePathname();
   const { host, diagnosticsEnabled } = useHostState();
+  const { supported: sessionsSupported, loading: sessionsCapabilityLoading } = useHostFeature(
+    host,
+    "sessions",
+    diagnosticsEnabled
+  );
+  const sessionsEnabled = diagnosticsEnabled && sessionsSupported;
   const [sessionId, setSessionId] = useState("");
 
   const [activeTab, setActiveTab] = useState<SessionTab>("overview");
@@ -72,7 +79,7 @@ export function SessionDetailClient() {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
-  const detailQuery = useSessionDetail(sessionId, diagnosticsEnabled && Boolean(sessionId), host);
+  const detailQuery = useSessionDetail(sessionId, sessionsEnabled && Boolean(sessionId), host);
   const shortId = formatSessionIdBadgeText(sessionId);
   const exportFileName = `${sessionId || "session"}.md`;
 
@@ -90,7 +97,7 @@ export function SessionDetailClient() {
   }, [params.id, pathname]);
 
   const handleExport = useCallback(async () => {
-    if (!sessionId || typeof window === "undefined" || exporting) return;
+    if (!sessionId || !sessionsEnabled || typeof window === "undefined" || exporting) return;
 
     setExportError(null);
     setExporting(true);
@@ -116,7 +123,7 @@ export function SessionDetailClient() {
     } finally {
       setExporting(false);
     }
-  }, [exportFileName, exporting, host, sessionId]);
+  }, [exportFileName, exporting, host, sessionId, sessionsEnabled]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -183,6 +190,36 @@ export function SessionDetailClient() {
           icon={<ServerCog className="size-5" />}
           title="No agent host selected"
           description="Run the browse server locally or select a remote agent host in the header to load session detail."
+        />
+      </div>
+    );
+  }
+
+  if (sessionsCapabilityLoading) {
+    return (
+      <div className="space-y-4">
+        <Breadcrumbs
+          items={[{ label: "Sessions", href: "/sessions" }, { label: shortId || "Session" }]}
+        />
+        <EmptyState
+          icon={<ServerCog className="size-5" />}
+          title="Checking host capabilities"
+          description="Waiting for the selected agent host to report session support."
+        />
+      </div>
+    );
+  }
+
+  if (!sessionsSupported) {
+    return (
+      <div className="space-y-4">
+        <Breadcrumbs
+          items={[{ label: "Sessions", href: "/sessions" }, { label: shortId || "Session" }]}
+        />
+        <EmptyState
+          icon={<ServerCog className="size-5" />}
+          title="Not supported by this host"
+          description="The connected agent does not advertise session detail support."
         />
       </div>
     );

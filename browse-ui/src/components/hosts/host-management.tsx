@@ -137,6 +137,25 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
     const url = newUrl.trim();
     if (!url) return;
 
+    // Schema-level URL validation — must be a valid absolute URL with http(s) scheme.
+    // This runs before the browser compatibility check and network probe.
+    try {
+      const { protocol } = new URL(url);
+      if (protocol !== "http:" && protocol !== "https:") {
+        setValidationError(
+          `URL scheme "${protocol.replace(":", "")}" is not allowed. Use https:// (or http:// for local tunnels).`
+        );
+        setIsCompatibilityError(true);
+        return;
+      }
+    } catch {
+      setValidationError(
+        "Enter a valid URL including the scheme (e.g. https://your-tunnel.ngrok.io)."
+      );
+      setIsCompatibilityError(true);
+      return;
+    }
+
     // Pre-probe compatibility check — deterministic, no network required.
     // A hosted HTTPS control plane can never reach an insecure loopback URL.
     if (typeof window !== "undefined") {

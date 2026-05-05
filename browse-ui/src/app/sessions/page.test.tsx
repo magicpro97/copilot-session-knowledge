@@ -31,6 +31,11 @@ vi.mock("@/hooks/use-keyboard-shortcuts", () => ({
   useKeyboardShortcuts: vi.fn(),
 }));
 
+let sessionsSupported = true;
+vi.mock("@/lib/hosts", () => ({
+  useHostFeature: vi.fn(() => ({ supported: sessionsSupported, loading: false })),
+}));
+
 let hostStateMock: HostState = { host: LOCAL_HOST, diagnosticsEnabled: true };
 vi.mock("@/providers/host-provider", () => ({
   useHostState: vi.fn(() => hostStateMock),
@@ -43,6 +48,7 @@ const SessionsPage = (await import("@/app/sessions/page")).default;
 describe("SessionsPage", () => {
   beforeEach(() => {
     hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
+    sessionsSupported = true;
     (useSessions as Mock).mockClear();
     (useSessions as Mock).mockReturnValue({
       data: {
@@ -97,5 +103,27 @@ describe("SessionsPage", () => {
       true,
     ]);
     expect(screen.queryByText("No agent host selected")).not.toBeInTheDocument();
+  });
+
+  it("does not fetch sessions when the selected host lacks session support", () => {
+    const remoteHost = {
+      id: "remote-host",
+      label: "Remote host",
+      base_url: "https://agent.example.test",
+      token: "secret",
+      cli_kind: "copilot" as const,
+      is_default: false,
+    };
+    hostStateMock = { host: remoteHost, diagnosticsEnabled: true };
+    sessionsSupported = false;
+
+    render(<SessionsPage />);
+
+    expect(screen.getByText("Not supported by this host")).toBeInTheDocument();
+    expect((useSessions as Mock).mock.calls.at(-1)).toEqual([
+      { page: 1, pageSize: 20, query: "" },
+      remoteHost,
+      false,
+    ]);
   });
 });

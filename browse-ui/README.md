@@ -24,6 +24,9 @@ pnpm install
 # Dev server (proxies API to localhost:8765)
 pnpm dev
 
+# Build and run the Python-backed local web app
+node scripts/run-local.mjs -- --port 8792 --token localtest --no-tunnel
+
 # Type check
 pnpm typecheck
 
@@ -77,8 +80,10 @@ pnpm test:e2e --project visual
 `pnpm build:release` writes the isolated Firebase artifact to `dist-release/version.json`.
 
 The `dist/` directory is served directly by `browse/routes/serve_v2.py` for the local root app.
+`dist/` is generated on demand and ignored by git; use `node scripts/run-local.mjs -- --port
+8792 --token localtest --no-tunnel` to rebuild it and launch `browse.py` in one command.
 `dist-release/` exists so release verification can build a separate Firebase artifact without
-touching `dist/`.
+touching the local `dist/`.
 
 Do **not** edit files in `dist/` directly — they are build artifacts. Run `pnpm build` instead.
 
@@ -177,6 +182,15 @@ The UI is a static Next.js export and renders in any modern mobile browser (iOS 
 | All read-only pages | ✅ Fully static; works as soon as the UI is deployed |
 | Operator console | ✅ Cross-origin API support is implemented — CORS allowlist, Bearer auth, and capabilities endpoint are in place on the operator host |
 | Live knowledge feed | ✅ Remote `/api/live` streams use fetch-based SSE + Bearer auth, so tokens stay out of browser-visible URLs |
+
+## Hosted Shell Specs
+
+Design specifications for the hosted browse-UI operating as a remote shell:
+
+| Topic | Document |
+|---|---|
+| Localhost bootstrap, relay/gateway, version negotiation | [docs/HOSTED-SHELL-ARCHITECTURE.md](../docs/HOSTED-SHELL-ARCHITECTURE.md) |
+| Browser token storage, stream reconnect, first-run UX | [docs/HOSTED-SHELL-RESEARCH.md](../docs/HOSTED-SHELL-RESEARCH.md) |
 
 ## Phases
 

@@ -23,7 +23,9 @@ import type {
   EvidenceRelationType,
   EvidenceRelationTypeValue,
   GraphNode,
+  HostProfile,
 } from "@/lib/api/types";
+import { LOCAL_HOST } from "@/lib/host-profiles";
 
 const GRAPH_NODE_LIMIT = 500;
 
@@ -44,6 +46,8 @@ const RELATION_TYPE_DESCRIPTIONS: Record<string, string> = {
 
 type RelationshipsTabProps = {
   active: boolean;
+  host?: HostProfile;
+  enabled?: boolean;
 };
 
 type OptionWithCount = {
@@ -71,7 +75,11 @@ function edgeNodeId(value: string | { id: string }): string {
   return typeof value === "string" ? value : value.id;
 }
 
-export function RelationshipsTab({ active }: RelationshipsTabProps) {
+export function RelationshipsTab({
+  active,
+  host = LOCAL_HOST,
+  enabled = true,
+}: RelationshipsTabProps) {
   const router = useRouter();
   const graphRef = useRef<GraphCanvasHandle | null>(null);
 
@@ -81,13 +89,17 @@ export function RelationshipsTab({ active }: RelationshipsTabProps) {
   const [selectedRelationTypes, setSelectedRelationTypes] = useState<EvidenceRelationType[]>([]);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
 
-  const graphQuery = useEvidenceGraph({
-    wing: selectedWings,
-    kind: selectedKinds,
-    relation_type: selectedRelationTypes,
-    limit: GRAPH_NODE_LIMIT,
-  });
-  const baseGraphQuery = useEvidenceGraph({ limit: GRAPH_NODE_LIMIT });
+  const graphQuery = useEvidenceGraph(
+    {
+      wing: selectedWings,
+      kind: selectedKinds,
+      relation_type: selectedRelationTypes,
+      limit: GRAPH_NODE_LIMIT,
+    },
+    enabled,
+    host
+  );
+  const baseGraphQuery = useEvidenceGraph({ limit: GRAPH_NODE_LIMIT }, enabled, host);
 
   const graph = graphQuery.data;
   const allNodes = useMemo(() => graph?.nodes ?? [], [graph?.nodes]);

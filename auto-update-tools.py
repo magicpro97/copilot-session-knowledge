@@ -139,7 +139,7 @@ COVERAGE_MANIFEST: "dict[str, list[tuple[str, str]]]" = {
         ("browse/api/",          "browse JSON API module (Pha 5 extract — /api/* endpoints)"),
         ("browse-ui/src/",       "browse-ui Next.js source (TS + components)"),
         ("browse-ui/public/",    "browse-ui static assets"),
-        ("browse-ui/dist/",      "browse-ui prebuilt artifacts (checked-in)"),
+        ("browse-ui/dist/",      "browse-ui generated local artifact (ignored; rebuild with pnpm build)"),
     ],
     "Other": [
         ("docs/",                "documentation"),

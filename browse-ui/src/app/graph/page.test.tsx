@@ -37,6 +37,27 @@ vi.mock("@/app/graph/communities-tab", () => ({
   ),
 }));
 
+let graphSupported = true;
+let diagnosticsEnabled = true;
+
+vi.mock("@/providers/host-provider", () => ({
+  useHostState: () => ({
+    host: {
+      id: "local",
+      label: "Local (same-origin)",
+      base_url: "",
+      token: "",
+      cli_kind: "copilot",
+      is_default: true,
+    },
+    diagnosticsEnabled,
+  }),
+}));
+
+vi.mock("@/lib/hosts", () => ({
+  useHostFeature: () => ({ supported: graphSupported, loading: false }),
+}));
+
 // Import AFTER mocking
 import GraphPage from "@/app/graph/page";
 
@@ -44,6 +65,8 @@ describe("GraphPage", () => {
   beforeEach(() => {
     // Reset hash and history stub before each test
     window.location.hash = "";
+    graphSupported = true;
+    diagnosticsEnabled = true;
     vi.spyOn(window.history, "replaceState").mockImplementation(() => undefined);
   });
 
@@ -148,5 +171,11 @@ describe("GraphPage", () => {
     fireEvent.keyDown(input, { key: "2", target: input });
     // target.tagName = INPUT → should not switch
     expect(screen.getByTestId("insight-tab")).toHaveAttribute("data-active", "true");
+  });
+
+  it("shows an unsupported state when the selected host lacks graph support", () => {
+    graphSupported = false;
+    render(<GraphPage />);
+    expect(screen.getByText("Not supported by this host")).toBeInTheDocument();
   });
 });

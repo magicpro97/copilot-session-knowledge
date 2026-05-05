@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useHealth } from "@/lib/api/hooks";
 import { formatNumber } from "@/lib/formatters";
+import { useHostFeature } from "@/lib/hosts";
 import { useHostState } from "@/providers/host-provider";
 import { KnowledgeTab } from "./knowledge-tab";
 import { LiveTab } from "./live-tab";
@@ -44,8 +45,21 @@ function hashToInsightsTab(hash: string): InsightsTabKey | null {
 export default function InsightsLayout({ children }: InsightsLayoutProps) {
   // Consume the browse-wide shared host state (replaces the local useEffect + storage listener).
   const { host, diagnosticsEnabled } = useHostState();
+  const { supported: insightsSupported, loading: insightsCapabilityLoading } = useHostFeature(
+    host,
+    "insights",
+    diagnosticsEnabled
+  );
+  const insightsEnabled = diagnosticsEnabled && insightsSupported;
+  const capabilityState = !diagnosticsEnabled
+    ? "no-host"
+    : insightsCapabilityLoading
+      ? "checking"
+      : insightsSupported
+        ? "ready"
+        : "unsupported";
 
-  const health = useHealth(host, diagnosticsEnabled);
+  const health = useHealth(host, insightsEnabled);
   const [activeTab, setActiveTab] = useState<InsightsTabKey>("overview");
 
   useLayoutEffect(() => {
@@ -110,6 +124,10 @@ export default function InsightsLayout({ children }: InsightsLayoutProps) {
             <Activity className={`size-3.5 ${getHealthTone(health.data?.status)}`} />
             {!diagnosticsEnabled ? (
               <span>Health: select an agent host</span>
+            ) : insightsCapabilityLoading ? (
+              <span>Capabilities: loading…</span>
+            ) : !insightsSupported ? (
+              <span>Insights: unsupported by host</span>
             ) : health.isLoading ? (
               <span>Health: loading…</span>
             ) : health.isError ? (
@@ -138,7 +156,9 @@ export default function InsightsLayout({ children }: InsightsLayoutProps) {
           <TabsTrigger value="live">Live feed</TabsTrigger>
           <TabsTrigger value="workflow">Workflow</TabsTrigger>
         </TabsList>
-        <InsightsTabContext.Provider value={{ setActiveTab, host, diagnosticsEnabled }}>
+        <InsightsTabContext.Provider
+          value={{ setActiveTab, host, diagnosticsEnabled: insightsEnabled, capabilityState }}
+        >
           <TabsContent value="overview" className="min-w-0">
             {children}
           </TabsContent>

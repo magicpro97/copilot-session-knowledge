@@ -8,11 +8,14 @@ import { relationTypeColor, relationTypeLabel } from "@/components/data/evidence
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useCommunities } from "@/lib/api/hooks";
-import type { CommunitySummary } from "@/lib/api/types";
+import type { CommunitySummary, HostProfile } from "@/lib/api/types";
+import { LOCAL_HOST } from "@/lib/host-profiles";
 
 type CommunitiesTabProps = {
   active: boolean;
   onDrillIn?: (target: "evidence" | "similarity") => void;
+  host?: HostProfile;
+  enabled?: boolean;
 };
 
 function formatTopCounts(items: Array<{ name: string; count: number }>): string {
@@ -25,8 +28,13 @@ function byDeterministicCommunityOrder(a: CommunitySummary, b: CommunitySummary)
   return a.id.localeCompare(b.id);
 }
 
-export function CommunitiesTab({ active, onDrillIn }: CommunitiesTabProps) {
-  const communitiesQuery = useCommunities(active);
+export function CommunitiesTab({
+  active,
+  onDrillIn,
+  host = LOCAL_HOST,
+  enabled = true,
+}: CommunitiesTabProps) {
+  const communitiesQuery = useCommunities(active && enabled, host);
 
   const usefulCommunities = useMemo(
     () =>
