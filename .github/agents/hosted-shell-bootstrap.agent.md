@@ -1,7 +1,7 @@
 ---
-name: 'Hosted Shell Bootstrap Implementer'
+name: hosted-shell-bootstrap
 description: 'Implements hosted agents.linhngo.dev local backend detection, loopback bootstrap, Private Network Access CORS, pairing/manual-token flows, and host profile state without breaking watcher, auto-update, hooks, skills, docs, tests, or coding conventions. Use for issues #35, #36, #44, #49, localhost auto-detect, hosted shell, HostProvider, browse.py bootstrap, remote host, CORS, PNA, pairing, or tunnel-free local backend work.'
-tools: ['read', 'search', 'edit', 'execute', 'agent', 'github/*', 'playwright/*']
+target: github-copilot
 ---
 
 <!-- Inspired by GitHub custom agent docs and github/awesome-copilot community agent patterns; customized for copilot-session-knowledge. -->

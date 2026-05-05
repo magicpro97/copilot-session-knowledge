@@ -1,7 +1,7 @@
 ---
-name: 'Python Browse Backend Specialist'
+name: python-browse-backend
 description: 'Implements and reviews Python browse.py backend routes, CORS, Private Network Access, auth, pairing, health/discovery endpoints, CLI flags, watcher/auto-update compatibility, hooks, skills, docs, tests, and stdlib HTTP server behavior. Use for browse.py, browse/core/server.py, browse/core/auth.py, browse/routes, browse/api, watch-sessions.py, auto-update-tools.py, loopback backend, hosted-bootstrap, CORS, PNA, token auth, or Python test failures.'
-tools: ['read', 'search', 'edit', 'execute', 'agent', 'github/*']
+target: github-copilot
 ---
 
 <!-- Inspired by GitHub custom agent docs and github/awesome-copilot specialist-agent patterns; customized for copilot-session-knowledge. -->

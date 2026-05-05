@@ -1,7 +1,7 @@
 ---
-name: 'Verification Gate Runner'
+name: verification-gate
 description: 'Runs and interprets repository verification gates plus whole-app synchronization checks for Python scripts, browse-ui, watch-sessions, auto-update, docs, coding conventions, hooks, skills, hosted shell, browser smoke, CI parity, and PR readiness. Use before merging, before closing issues, after code changes, after Copilot cloud agent PRs, or when asked to verify tests/build/lint/typecheck/browser behavior.'
-tools: ['read', 'search', 'execute', 'github/*', 'playwright/*']
+target: github-copilot
 ---
 
 <!-- Inspired by GitHub custom agent docs and github/awesome-copilot test-verification patterns; customized for copilot-session-knowledge. -->

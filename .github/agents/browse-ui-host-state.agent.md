@@ -1,7 +1,7 @@
 ---
-name: 'Browse UI Host State Specialist'
+name: browse-ui-host-state
 description: 'Implements and debugs browse-ui host profiles, HostProvider, remote/local backend selection, local bootstrap detection, capability gates, Settings Hosts UX, React/Next.js state, Zod schemas, Vitest tests, docs/hooks/skills synchronization, and hosted UI behavior on agents.linhngo.dev. Use for HostProvider, host-profiles, localStorage hosts, add host, detect local backend, loopback compatibility, docs sync, or browse-ui test failures.'
-tools: ['read', 'search', 'edit', 'execute', 'agent', 'github/*', 'playwright/*']
+target: github-copilot
 ---
 
 <!-- Inspired by GitHub custom agent docs and github/awesome-copilot frontend/testing agent patterns; customized for copilot-session-knowledge. -->
