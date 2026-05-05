@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDensity } from "@/hooks/use-density";
+import { useKeyboardPlatform } from "@/hooks/use-keyboard-platform";
 import {
   useHealth,
   useScoutStatus,
@@ -22,6 +23,7 @@ import {
 import { SHORTCUT_GROUPS } from "@/lib/constants";
 import { formatNumber } from "@/lib/formatters";
 import { useHostFeature } from "@/lib/hosts";
+import { resolveModShortcut } from "@/lib/shortcut-utils";
 import { cn } from "@/lib/utils";
 import { useHostState } from "@/providers/host-provider";
 
@@ -39,6 +41,7 @@ function statusTone(status: string | undefined): "success" | "warning" {
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
   const [density] = useDensity();
+  const platform = useKeyboardPlatform();
 
   // Use the shared browse-wide host state from HostProvider instead of local duplication.
   const { host, diagnosticsEnabled } = useHostState();
@@ -1038,7 +1041,7 @@ export default function SettingsPage() {
                     className="flex flex-col justify-between gap-2 px-3 py-2 text-sm sm:flex-row sm:items-center"
                   >
                     <kbd className="bg-muted w-fit rounded border px-1.5 py-0.5 font-mono text-xs">
-                      {item.keys}
+                      {resolveModShortcut(item.keys, platform)}
                     </kbd>
                     <span className="text-muted-foreground">{item.action}</span>
                   </div>

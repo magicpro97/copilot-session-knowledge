@@ -4,6 +4,7 @@ import errno
 import os
 import sqlite3
 import sys
+import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -23,6 +24,12 @@ class _BrowseHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         pass  # suppress default Apache-style request logging
+
+    @staticmethod
+    def _is_client_disconnect(exc: BaseException) -> bool:
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return True
+        return isinstance(exc, OSError) and exc.errno in (errno.EPIPE, errno.ECONNRESET)
 
     def end_headers(self) -> None:
         """Emit any pending extra headers before finalising the HTTP header section."""
@@ -47,37 +54,41 @@ class _BrowseHandler(BaseHTTPRequestHandler):
     ) -> None:
         from browse.core.csp import build_csp_header
 
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
 
-        if csp_header is not None:
-            csp = csp_header
-        elif nonce:
-            csp = build_csp_header(nonce)
-        else:
-            csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
-        self.send_header("Content-Security-Policy", csp)
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
+            if csp_header is not None:
+                csp = csp_header
+            elif nonce:
+                csp = build_csp_header(nonce)
+            else:
+                csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+            self.send_header("Content-Security-Policy", csp)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
 
-        if cors_headers:
-            for k, v in cors_headers.items():
-                self.send_header(k, v)
+            if cors_headers:
+                for k, v in cors_headers.items():
+                    self.send_header(k, v)
 
-        if set_cookie:
-            from browse.core.auth import make_cookie_header
+            if set_cookie:
+                from browse.core.auth import make_cookie_header
 
-            self.send_header("Set-Cookie", make_cookie_header(set_cookie, secure=secure_cookie))
+                self.send_header("Set-Cookie", make_cookie_header(set_cookie, secure=secure_cookie))
 
-        self.end_headers()
+            self.end_headers()
+        except OSError as exc:
+            if self._is_client_disconnect(exc):
+                return
+            raise
+
         if send_body:
             try:
                 self.wfile.write(body)
-            except (BrokenPipeError, ConnectionResetError):
-                return
             except OSError as exc:
-                if exc.errno in (errno.EPIPE, errno.ECONNRESET):
+                if self._is_client_disconnect(exc):
                     return
                 raise
 
@@ -208,6 +219,12 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             try:
                 body, ct, status = handler_fn(self.db, params, token_val, nonce, **kwargs)
             except Exception as exc:
+                print(
+                    f"500 while handling {path}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                traceback.print_exc(file=sys.stderr)
                 body = f"500 Internal Server Error: {_esc(str(exc))}".encode()
                 ct = "text/plain"
                 status = 500

@@ -14,7 +14,9 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useResolvedPathname } from "@/hooks/use-resolved-pathname";
+import { useKeyboardPlatform } from "@/hooks/use-keyboard-platform";
 import { matchesAppPath } from "@/lib/pathname";
+import { formatModShortcut } from "@/lib/shortcut-utils";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -31,6 +33,8 @@ const SIDEBAR_COLLAPSED_KEY = "browse-sidebar-collapsed";
 export function AppSidebar() {
   const pathname = useResolvedPathname();
   const [collapsed, setCollapsed] = useState(false);
+  const platform = useKeyboardPlatform();
+  const shortcutB = formatModShortcut("B", platform);
 
   useEffect(() => {
     const saved = window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
@@ -88,7 +92,7 @@ export function AppSidebar() {
           className={cn("size-8", collapsed && "hidden")}
           onClick={() => setCollapsed((prev) => !prev)}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          title={collapsed ? "Expand sidebar (⌘/Ctrl+B)" : "Collapse sidebar (⌘/Ctrl+B)"}
+          title={collapsed ? `Expand sidebar (${shortcutB})` : `Collapse sidebar (${shortcutB})`}
         >
           <PanelLeftClose className="size-4" />
         </Button>
@@ -102,7 +106,7 @@ export function AppSidebar() {
             className="size-8"
             onClick={() => setCollapsed(false)}
             aria-label="Expand sidebar"
-            title="Expand sidebar (⌘/Ctrl+B)"
+            title={`Expand sidebar (${shortcutB})`}
           >
             <PanelLeftOpen className="size-4" />
           </Button>
@@ -134,7 +138,7 @@ export function AppSidebar() {
       </nav>
       <div className={cn("text-muted-foreground border-t p-2 text-xs", collapsed && "px-1")}>
         <div className={cn("bg-muted/40 rounded-md px-2 py-1", collapsed && "text-center")}>
-          {collapsed ? "⌘B" : "⌘/Ctrl+B Toggle rail"}
+          {collapsed ? shortcutB : `${shortcutB} Toggle rail`}
         </div>
       </div>
     </aside>

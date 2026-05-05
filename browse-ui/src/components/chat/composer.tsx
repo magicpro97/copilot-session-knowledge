@@ -5,6 +5,8 @@ import { Send, Loader2, Paperclip, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { useKeyboardPlatform } from "@/hooks/use-keyboard-platform";
+import { formatModShortcut } from "@/lib/shortcut-utils";
 import { cn } from "@/lib/utils";
 import type { QueuedFile } from "@/lib/api/types";
 
@@ -45,13 +47,10 @@ function formatBytes(bytes: number): string {
  * Auto-resizes up to a max height. Supports file attachment via button,
  * drag/drop, and clipboard paste. Queued files appear as removable chips.
  */
-export function Composer({
-  onSubmit,
-  loading,
-  disabled,
-  className,
-  placeholder = "Send a prompt… (⌘↩ to submit)",
-}: ComposerProps) {
+export function Composer({ onSubmit, loading, disabled, className, placeholder }: ComposerProps) {
+  const platform = useKeyboardPlatform();
+  const submitHint = formatModShortcut("Enter", platform, "↩");
+  const resolvedPlaceholder = placeholder ?? `Send a prompt… (${submitHint} to submit)`;
   const [value, setValue] = useState("");
   const [queuedFiles, setQueuedFiles] = useState<QueuedFile[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
@@ -209,7 +208,7 @@ export function Composer({
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder={placeholder}
+          placeholder={resolvedPlaceholder}
           disabled={loading || disabled}
           rows={1}
           className="max-h-40 resize-none pr-12"

@@ -1,11 +1,17 @@
+"use client";
+
 import Link from "next/link";
 import { Compass, Search, ScrollText } from "lucide-react";
 
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useKeyboardPlatform } from "@/hooks/use-keyboard-platform";
+import { formatModShortcut } from "@/lib/shortcut-utils";
 import { cn } from "@/lib/utils";
 
 export default function NotFound() {
+  const platform = useKeyboardPlatform();
+  const shortcutK = formatModShortcut("K", platform);
   return (
     <div className="mx-auto flex min-h-[calc(100vh-10rem)] w-full max-w-2xl items-center justify-center">
       <Card className="w-full border-dashed">
@@ -31,9 +37,8 @@ export default function NotFound() {
             </Link>
           </div>
           <p className="text-muted-foreground text-xs">
-            Tip: press <kbd className="rounded border px-1 font-mono text-[10px]">⌘K</kbd> (or{" "}
-            <kbd className="rounded border px-1 font-mono text-[10px]">Ctrl+K</kbd>) for command
-            palette navigation.
+            Tip: press <kbd className="rounded border px-1 font-mono text-[10px]">{shortcutK}</kbd>{" "}
+            for command palette navigation.
           </p>
         </CardContent>
       </Card>

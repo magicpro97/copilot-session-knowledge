@@ -16,6 +16,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useResolvedPathname } from "@/hooks/use-resolved-pathname";
+import { useKeyboardPlatform } from "@/hooks/use-keyboard-platform";
 import { normalizeAppPathname } from "@/lib/pathname";
 import {
   BROWSE_HOST_CHANGE_EVENT,
@@ -24,6 +25,7 @@ import {
   getAllHostProfiles,
   setSelectedHostId,
 } from "@/lib/host-profiles";
+import { formatModShortcut } from "@/lib/shortcut-utils";
 import type { HostProfile } from "@/lib/api/types";
 import { useHostState } from "@/providers/host-provider";
 import { cn } from "@/lib/utils";
@@ -116,6 +118,7 @@ export function Header() {
   // Shared browse-wide host state from HostProvider.
   const { host: activeHost } = useHostState();
   const [allHosts, setAllHosts] = useState<HostProfile[]>([LOCAL_HOST]);
+  const platform = useKeyboardPlatform();
 
   useEffect(() => {
     const refresh = () => setAllHosts(getAllHostProfiles());
@@ -201,10 +204,14 @@ export function Header() {
         </DropdownMenu>
 
         <div className="text-muted-foreground hidden items-center gap-1 text-xs sm:flex">
-          <kbd className="rounded border px-1 font-mono text-[10px]">⌘K</kbd>
+          <kbd className="rounded border px-1 font-mono text-[10px]">
+            {formatModShortcut("K", platform)}
+          </kbd>
           <span>command palette</span>
           <span className="text-border">•</span>
-          <kbd className="rounded border px-1 font-mono text-[10px]">⌘B</kbd>
+          <kbd className="rounded border px-1 font-mono text-[10px]">
+            {formatModShortcut("B", platform)}
+          </kbd>
           <span>sidebar rail</span>
         </div>
         <Button

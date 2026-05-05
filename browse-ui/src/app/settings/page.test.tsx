@@ -11,6 +11,7 @@ import {
 } from "@/lib/api/hooks";
 import type { TentacleStatusResponse } from "@/lib/api/types";
 import { LOCAL_HOST } from "@/lib/host-profiles";
+import { useKeyboardPlatform } from "@/hooks/use-keyboard-platform";
 import type { HostState } from "@/providers/host-provider";
 
 vi.mock("@/lib/api/hooks", () => ({
@@ -45,6 +46,10 @@ vi.mock("@/lib/hosts/local-bootstrap", () => ({
   resetLocalBootstrapCache: vi.fn(),
 }));
 
+vi.mock("@/hooks/use-keyboard-platform", () => ({
+  useKeyboardPlatform: vi.fn().mockReturnValue("unknown"),
+}));
+
 type TentacleQuery = ReturnType<typeof useTentacleStatus>;
 type GenericQuery = {
   data: undefined;
@@ -60,6 +65,7 @@ const mockedUseHealth = vi.mocked(useHealth);
 const mockedUseSyncStatus = vi.mocked(useSyncStatus);
 const mockedUseScoutStatus = vi.mocked(useScoutStatus);
 const mockedUseSkillMetrics = vi.mocked(useSkillMetrics);
+const mockedUseKeyboardPlatform = vi.mocked(useKeyboardPlatform);
 
 function makeIdleQuery(): GenericQuery {
   return {
@@ -104,6 +110,7 @@ beforeEach(() => {
   localStorage.clear();
   hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
   diagnosticsSupported = true;
+  mockedUseKeyboardPlatform.mockReturnValue("unknown");
   mockedUseHealth.mockReturnValue(makeIdleQuery() as ReturnType<typeof useHealth>);
   mockedUseSyncStatus.mockReturnValue(makeIdleQuery() as ReturnType<typeof useSyncStatus>);
   mockedUseScoutStatus.mockReturnValue(makeIdleQuery() as ReturnType<typeof useScoutStatus>);
@@ -464,5 +471,39 @@ describe("SettingsPage — mixed-content loopback guard", () => {
   it("shows 'Open the local browse app directly' for the local host row on hosted pages", () => {
     render(<SettingsPage />);
     expect(screen.getByText("Open the local browse app directly")).toBeInTheDocument();
+  });
+});
+
+describe("SettingsPage — platform-aware shortcut display", () => {
+  beforeEach(() => {
+    mockedUseTentacleStatus.mockReturnValue(makeTentacleQuery({}));
+  });
+
+  it("shows ⌘/Ctrl+K and ⌘/Ctrl+B shortcut labels on unknown platform", () => {
+    mockedUseKeyboardPlatform.mockReturnValue("unknown");
+    render(<SettingsPage />);
+    expect(screen.getByText("⌘/Ctrl+K")).toBeInTheDocument();
+    expect(screen.getByText("⌘/Ctrl+B")).toBeInTheDocument();
+  });
+
+  it("shows ⌘K and ⌘B shortcut labels on mac platform", () => {
+    mockedUseKeyboardPlatform.mockReturnValue("mac");
+    render(<SettingsPage />);
+    expect(screen.getByText("⌘K")).toBeInTheDocument();
+    expect(screen.getByText("⌘B")).toBeInTheDocument();
+  });
+
+  it("shows Ctrl+K and Ctrl+B shortcut labels on win platform", () => {
+    mockedUseKeyboardPlatform.mockReturnValue("win");
+    render(<SettingsPage />);
+    expect(screen.getByText("Ctrl+K")).toBeInTheDocument();
+    expect(screen.getByText("Ctrl+B")).toBeInTheDocument();
+  });
+
+  it("leaves non-modifier shortcuts unchanged across platforms", () => {
+    mockedUseKeyboardPlatform.mockReturnValue("mac");
+    render(<SettingsPage />);
+    expect(screen.getAllByText("Esc").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("G then S").length).toBeGreaterThan(0);
   });
 });

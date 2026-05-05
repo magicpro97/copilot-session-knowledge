@@ -51,6 +51,18 @@ def _parse_int_values(values: list[str]) -> list[int]:
     return parsed
 
 
+def _table_exists(db, table_name: str) -> bool:
+    row = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _table_columns(db, table_name: str) -> set[str]:
+    return {r[0] for r in db.execute("SELECT name FROM pragma_table_info(?)", (table_name,))}
+
+
 def _build_entry_filters(wing: str, room: str, kind: str) -> tuple[list[str], list]:
     conditions: list[str] = []
     binds: list = []
@@ -185,6 +197,17 @@ def _safe_id(name: str) -> str:
 def _build_evidence_graph_data(db, wing: str, room: str, kind: str, relation_type: str, limit: int) -> dict:
     """Query DB and return evidence payload backed by knowledge_relations."""
     limit = min(max(1, limit), _NODE_CAP)
+    if not _table_exists(db, "knowledge_entries"):
+        return {
+            "nodes": [],
+            "edges": [],
+            "truncated": False,
+            "meta": {
+                "edge_source": "knowledge_relations",
+                "relation_types": [],
+            },
+        }
+
     conditions, binds = _build_entry_filters(wing, room, kind)
     where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     sql = f"""
@@ -219,11 +242,27 @@ def _build_evidence_graph_data(db, wing: str, room: str, kind: str, relation_typ
 
     edges: list[dict] = []
     relation_types_seen: set[str] = set()
-    if entry_ids:
+    relation_columns: set[str] = set()
+    source_col = ""
+    target_col = ""
+    if entry_ids and _table_exists(db, "knowledge_relations"):
+        relation_columns = _table_columns(db, "knowledge_relations")
+        if {"source_id", "target_id"}.issubset(relation_columns):
+            source_col = "source_id"
+            target_col = "target_id"
+        elif {"source_entry_id", "target_entry_id"}.issubset(relation_columns):
+            source_col = "source_entry_id"
+            target_col = "target_entry_id"
+        else:
+            source_col = ""
+            target_col = ""
+
+    if entry_ids and _table_exists(db, "knowledge_relations") and source_col and target_col:
         placeholders = ",".join("?" * len(entry_ids))
+        confidence_expr = "COALESCE(kr.confidence, 0.8)" if "confidence" in relation_columns else "0.8"
         rel_conditions = [
-            f"kr.source_id IN ({placeholders})",
-            f"kr.target_id IN ({placeholders})",
+            f"kr.{source_col} IN ({placeholders})",
+            f"kr.{target_col} IN ({placeholders})",
         ]
         rel_binds: list = [*entry_ids, *entry_ids]
 
@@ -233,7 +272,7 @@ def _build_evidence_graph_data(db, wing: str, room: str, kind: str, relation_typ
             rel_binds.extend(relation_types)
 
         rel_sql = f"""
-            SELECT kr.source_id, kr.target_id, kr.relation_type, kr.confidence
+            SELECT kr.{source_col}, kr.{target_col}, kr.relation_type, {confidence_expr} AS confidence
             FROM knowledge_relations kr
             WHERE {" AND ".join(rel_conditions)}
             ORDER BY kr.id ASC

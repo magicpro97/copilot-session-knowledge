@@ -411,6 +411,44 @@ def run_all_tests() -> int:
     finally:
         server.shutdown()
 
+    # ── T11b: evidence endpoint degrades safely when knowledge tables are absent
+    print("\n-- T11b: evidence endpoint missing knowledge_entries")
+    db = sqlite3.connect(":memory:", check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    db.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, name TEXT, applied_at TEXT)")
+    db.commit()
+    server, host, port = _start_server(db, token="tok")
+    try:
+        status, _, body = _get(host, port, "/api/graph/evidence?token=tok")
+        data = json.loads(body)
+        test("T11b: missing knowledge_entries still returns 200", status == 200)
+        test("T11b: missing knowledge_entries returns empty nodes", data.get("nodes") == [])
+        test("T11b: missing knowledge_entries returns empty edges", data.get("edges") == [])
+    finally:
+        server.shutdown()
+
+    # ── T11c: evidence confidence has a numeric fallback for older relation schemas
+    print("\n-- T11c: evidence relation schema compatibility")
+    db = _make_test_db()
+    db.execute("DROP TABLE knowledge_relations")
+    db.execute(
+        "CREATE TABLE knowledge_relations (id INTEGER PRIMARY KEY, source_id INTEGER, target_id INTEGER, relation_type TEXT NOT NULL)"
+    )
+    db.execute(
+        "INSERT INTO knowledge_relations (id, source_id, target_id, relation_type) VALUES (1, 1, 2, 'RESOLVED_BY')"
+    )
+    db.commit()
+    server, host, port = _start_server(db, token="tok")
+    try:
+        status, _, body = _get(host, port, "/api/graph/evidence?token=tok&relation_type=RESOLVED_BY")
+        data = json.loads(body)
+        edges = data.get("edges", [])
+        test("T11c: older relation schema returns 200", status == 200)
+        test("T11c: older relation schema still emits edges", len(edges) == 1)
+        test("T11c: fallback confidence is numeric", isinstance(edges[0].get("confidence"), (int, float)))
+    finally:
+        server.shutdown()
+
     # ── T12: /api/graph/similarity returns deterministic top-k neighbors ───────
     print("\n-- T12: /api/graph/similarity top-k")
     cache12 = _TEST_CACHE_DIR / "t12_similarity.json"

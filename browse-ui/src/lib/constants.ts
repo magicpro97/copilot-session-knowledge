@@ -57,8 +57,8 @@ export const SHORTCUT_GROUPS = [
   {
     title: "Global",
     items: [
-      { keys: "⌘K / Ctrl+K", action: "Open or close the command palette" },
-      { keys: "⌘B / Ctrl+B", action: "Toggle sidebar rail mode" },
+      { keys: "⌘/Ctrl+K", action: "Open or close the command palette" },
+      { keys: "⌘/Ctrl+B", action: "Toggle sidebar rail mode" },
       { keys: "Esc", action: "Close command palette" },
       { keys: "G then S", action: "Go to Sessions" },
       { keys: "G then /", action: "Go to Search" },
