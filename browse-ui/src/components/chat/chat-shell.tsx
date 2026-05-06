@@ -460,9 +460,7 @@ export function ChatShell() {
                 Loading skills…
               </p>
             ) : skillCatalogMessage ? (
-              <p className="text-destructive py-4 text-center text-sm">
-                {skillCatalogMessage}
-              </p>
+              <p className="text-destructive py-4 text-center text-sm">{skillCatalogMessage}</p>
             ) : !skillCatalogQuery.data?.skills.length ? (
               <p className="text-muted-foreground py-4 text-center text-sm">
                 No skills installed. Add skills to your global or project skills directory.

@@ -87,9 +87,8 @@ export function Composer({
   const [dragOver, setDragOver] = useState(false);
   const [suggestions, setSuggestions] = useState<SlashCommand[]>([]);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1);
-  const [suggestionPanelPosition, setSuggestionPanelPosition] = useState<SuggestionPanelPosition | null>(
-    null
-  );
+  const [suggestionPanelPosition, setSuggestionPanelPosition] =
+    useState<SuggestionPanelPosition | null>(null);
   const suggestionListId = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composerFieldRef = useRef<HTMLDivElement>(null);
@@ -98,7 +97,7 @@ export function Composer({
 
   const canSubmit = Boolean(value.trim()) && !loading && !disabled;
   const activeSuggestion =
-    activeSuggestionIndex >= 0 ? suggestions[activeSuggestionIndex] ?? null : null;
+    activeSuggestionIndex >= 0 ? (suggestions[activeSuggestionIndex] ?? null) : null;
 
   useLayoutEffect(() => {
     if (typeof window === "undefined") {
