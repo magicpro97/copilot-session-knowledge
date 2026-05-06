@@ -228,6 +228,16 @@ def _parse_output_event(raw_line: str, idx: int) -> dict:
     event = {"type": str(event_type), "idx": idx, "event": sanitized}
     if "data" in sanitized:
         event["data"] = sanitized["data"]
+    elif event_type in ("assistant.message", "assistant.message_delta"):
+        # Promote top-level content / deltaContent into the data envelope when the
+        # raw event has no explicit "data" key.  Some Copilot CLI versions emit
+        # these fields at the top level rather than nested under "data".
+        delta = sanitized.get("deltaContent")
+        content = sanitized.get("content")
+        if delta is not None:
+            event["data"] = {"deltaContent": delta}
+        elif content is not None:
+            event["data"] = {"content": content}
     return event
 
 
@@ -542,13 +552,19 @@ def _model_is_known_unavailable(model: str) -> bool:
     return bool(cached_models) and model_id not in cached_models
 
 
-def _build_copilot_argv(session: dict, prompt_text: str, extra_add_dirs: list | None = None) -> list[str]:
-    """Build the explicit argv used to invoke Copilot CLI."""
+def _build_copilot_argv(session: dict, prompt_text: str, extra_add_dirs: list | None = None) -> tuple[list[str], bool]:
+    """Build the explicit argv used to invoke Copilot CLI.
+
+    Returns:
+        (argv, resume_used) where resume_used is True when --resume was injected.
+    """
     argv = ["copilot", "-p", prompt_text]
 
     name = str(session.get("name", "")).strip()
+    resume_used = False
     if session.get("resume_ready") is True and name:
         argv.append(f"--resume={name}")
+        resume_used = True
     elif name:
         argv += ["--name", name]
 
@@ -575,7 +591,7 @@ def _build_copilot_argv(session: dict, prompt_text: str, extra_add_dirs: list | 
             argv += ["--add-dir", str(add_dir)]
 
     argv += ["--output-format", "json"]
-    return argv
+    return argv, resume_used
 
 
 def _run_copilot_thread(run_id: str, argv: list, cwd: str | None) -> None:
@@ -807,7 +823,7 @@ def start_run(session_id: str, prompt_text: str, attachments: list | None = None
         augmented_prompt = prompt_text + "\n" + "\n".join(at_mentions)
         extra_add_dirs = [str(run_upload_dir)]
 
-    argv = _build_copilot_argv(session, augmented_prompt, extra_add_dirs=extra_add_dirs or None)
+    argv, resume_used = _build_copilot_argv(session, augmented_prompt, extra_add_dirs=extra_add_dirs or None)
 
     workspace = session.get("workspace", "").strip()
     cwd = None
@@ -824,6 +840,7 @@ def start_run(session_id: str, prompt_text: str, attachments: list | None = None
         "started_at": now,
         "finished_at": None,
         "exit_code": None,
+        "resume_used": resume_used,
         "events": [],
         "proc": None,
     }

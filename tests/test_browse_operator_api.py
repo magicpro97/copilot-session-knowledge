@@ -365,9 +365,9 @@ def test_oc20_build_copilot_argv_uses_resume_ready():
         "add_dirs": [str(Path.home() / ".copilot")],
         "run_count": 99,
     }
-    argv_no_resume = _build_copilot_argv(dict(base_session, resume_ready=False), "hello")
-    argv_resume = _build_copilot_argv(dict(base_session, resume_ready=True), "hello")
-    argv_nameless_resume = _build_copilot_argv(dict(base_session, name="", resume_ready=True), "hello")
+    argv_no_resume, _ = _build_copilot_argv(dict(base_session, resume_ready=False), "hello")
+    argv_resume, _ = _build_copilot_argv(dict(base_session, resume_ready=True), "hello")
+    argv_nameless_resume, _ = _build_copilot_argv(dict(base_session, name="", resume_ready=True), "hello")
     test("OC20: no --resume without resume_ready", "--resume" not in argv_no_resume)
     test("OC20: new session keeps --name", "--name" in argv_no_resume)
     test("OC20: resumed session omits --name", "--name" not in argv_resume)
@@ -916,7 +916,7 @@ def test_oc34_model_is_known_unavailable_guarded():
         "add_dirs": [],
         "resume_ready": False,
     }
-    argv_legacy = _build_copilot_argv(session_legacy, "test")
+    argv_legacy, _ = _build_copilot_argv(session_legacy, "test")
     if "--model" in argv_legacy:
         legacy_value = argv_legacy[argv_legacy.index("--model") + 1]
         test("OC34: legacy alias normalized to dotted CLI id", legacy_value == "claude-sonnet-4.5")
@@ -931,7 +931,7 @@ def test_oc34_model_is_known_unavailable_guarded():
         "add_dirs": [],
         "resume_ready": False,
     }
-    argv_unavail = _build_copilot_argv(session_unavail, "test")
+    argv_unavail, _ = _build_copilot_argv(session_unavail, "test")
     test("OC34: --model omitted for known-unavailable model", "--model" not in argv_unavail)
 
     # Session with known-available model → --model included.
@@ -942,7 +942,7 @@ def test_oc34_model_is_known_unavailable_guarded():
         "add_dirs": [],
         "resume_ready": False,
     }
-    argv_avail = _build_copilot_argv(session_avail, "test")
+    argv_avail, _ = _build_copilot_argv(session_avail, "test")
     test("OC34: --model included for known-available model", "--model" in argv_avail)
 
     # Reset cache to avoid bleeding into other tests.
@@ -1043,7 +1043,7 @@ def test_oc37_start_run_attachment_argv_contains_path_mention():
             "resume_ready": False,
         }
         augmented = f"my prompt\n@{fake_file}"
-        argv = _build_copilot_argv(session, augmented, extra_add_dirs=[str(staged_dir)])
+        argv, _ = _build_copilot_argv(session, augmented, extra_add_dirs=[str(staged_dir)])
         test("OC37: @/path mention in argv[2]", f"@{fake_file}" in argv[2])
         test("OC37: --add-dir in argv", "--add-dir" in argv)
         add_dir_idx = argv.index("--add-dir")
@@ -1130,6 +1130,137 @@ def test_oc41_start_run_rejects_too_many_attachments():
     test("OC41: too many attachments return None", run_id is None)
     uploads_root = _TEST_STATE_DIR / "uploads" / session["id"]
     test("OC41: uploads directory not created", not uploads_root.exists())
+
+
+def test_oc42_build_copilot_argv_resume_used_tuple():
+    """OC42: _build_copilot_argv returns (argv, resume_used) where resume_used is a bool."""
+    session_resume = {
+        "name": "r-test",
+        "model": "",
+        "mode": "",
+        "add_dirs": [],
+        "resume_ready": True,
+    }
+    argv_r, resume_used_r = _build_copilot_argv(session_resume, "hello")
+    test("OC42: return is tuple of (list, bool)", isinstance(argv_r, list) and isinstance(resume_used_r, bool))
+    test("OC42: resume_used=True when resume_ready=True", resume_used_r is True)
+    test("OC42: --resume=r-test in argv", "--resume=r-test" in argv_r)
+
+    session_no_resume = {
+        "name": "nr-test",
+        "model": "",
+        "mode": "",
+        "add_dirs": [],
+        "resume_ready": False,
+    }
+    argv_nr, resume_used_nr = _build_copilot_argv(session_no_resume, "hello")
+    test("OC42: resume_used=False when resume_ready=False", resume_used_nr is False)
+
+    # Nameless + resume_ready=True → no --resume injected so resume_used must be False.
+    session_nameless = {
+        "name": "",
+        "model": "",
+        "mode": "",
+        "add_dirs": [],
+        "resume_ready": True,
+    }
+    argv_nl, resume_used_nl = _build_copilot_argv(session_nameless, "hello")
+    test("OC42: nameless session resume_used=False (no name to resume)", resume_used_nl is False)
+    test("OC42: nameless session has no --resume", "--resume" not in " ".join(argv_nl))
+
+
+def test_oc43_run_record_has_resume_used():
+    """OC43: run records expose resume_used; old records without it remain loadable."""
+    import time as _t
+    import uuid as _uuid
+
+    # Non-resumed session → resume_used=False on run record.
+    session_nr = create_session("resume-flag-false-test")
+    run_id_nr = start_run(session_nr["id"], "test prompt for resume_used=False")
+    test("OC43: non-resume run started", run_id_nr is not None)
+    if run_id_nr:
+        _t.sleep(0.05)
+        status_nr = get_run_status(run_id_nr)
+        test("OC43: non-resume run has resume_used key", status_nr is not None and "resume_used" in (status_nr or {}))
+        if status_nr:
+            test("OC43: non-resume resume_used is False", status_nr.get("resume_used") is False)
+
+    # Resumed session → resume_used=True on run record.
+    session_res = create_session("resume-flag-true-test")
+    # Patch session file on disk to mark it as resumed.
+    session_res_path = _TEST_STATE_DIR / "sessions" / f"{session_res['id']}.json"
+    session_res["resume_ready"] = True
+    session_res_path.write_text(json.dumps(session_res), encoding="utf-8")
+    run_id_res = start_run(session_res["id"], "test prompt for resume_used=True")
+    test("OC43: resumed run started", run_id_res is not None)
+    if run_id_res:
+        _t.sleep(0.05)
+        status_res = get_run_status(run_id_res)
+        test("OC43: resumed run has resume_used key", status_res is not None and "resume_used" in (status_res or {}))
+        if status_res:
+            test("OC43: resumed resume_used is True", status_res.get("resume_used") is True)
+
+    # Backward compat: old persisted run WITHOUT resume_used is loadable as-is.
+    session_old = create_session("old-run-compat-test")
+    old_run_id = str(_uuid.uuid4())
+    old_run_dir = _TEST_STATE_DIR / "runs" / session_old["id"]
+    old_run_dir.mkdir(parents=True, exist_ok=True)
+    old_run_data = {
+        "id": old_run_id,
+        "session_id": session_old["id"],
+        "status": "done",
+        "exit_code": 0,
+        "events": [],
+        # deliberately omit resume_used to simulate a pre-feature persisted run
+    }
+    (old_run_dir / f"{old_run_id}.json").write_text(json.dumps(old_run_data), encoding="utf-8")
+    loaded = get_run_status(old_run_id)
+    test("OC43: old run without resume_used is loadable", loaded is not None)
+    if loaded:
+        # Consumer must handle the missing field gracefully (False-ish default is fine).
+        ru = loaded.get("resume_used")
+        test("OC43: old run missing resume_used is tolerable", ru is None or isinstance(ru, bool))
+
+
+def test_oc44_parse_output_event_promotes_top_level_content():
+    """OC44: assistant.message/message_delta top-level content promoted to data when data absent."""
+    # assistant.message with top-level content (no data key) → data.content promoted.
+    raw_msg = json.dumps({"type": "assistant.message", "content": "Hello world"})
+    event_msg = _parse_output_event(raw_msg, 0)
+    test("OC44: assistant.message type preserved", event_msg.get("type") == "assistant.message")
+    test("OC44: top-level content promoted to data.content",
+         event_msg.get("data", {}).get("content") == "Hello world")
+
+    # assistant.message_delta with top-level deltaContent (no data key) → data.deltaContent promoted.
+    raw_delta = json.dumps({"type": "assistant.message_delta", "deltaContent": "delta text"})
+    event_delta = _parse_output_event(raw_delta, 1)
+    test("OC44: assistant.message_delta type preserved",
+         event_delta.get("type") == "assistant.message_delta")
+    test("OC44: top-level deltaContent promoted to data.deltaContent",
+         event_delta.get("data", {}).get("deltaContent") == "delta text")
+
+    # data already present → data takes precedence; top-level content is ignored.
+    raw_with_data = json.dumps({
+        "type": "assistant.message",
+        "content": "top-level",
+        "data": {"content": "from-data"},
+    })
+    event_with_data = _parse_output_event(raw_with_data, 2)
+    test("OC44: data present takes precedence over top-level content",
+         event_with_data.get("data", {}).get("content") == "from-data")
+
+    # Unrelated event type with top-level content → NOT promoted (no data injected).
+    raw_other = json.dumps({"type": "progress", "content": "something"})
+    event_other = _parse_output_event(raw_other, 3)
+    test("OC44: unrelated type top-level content not promoted", "data" not in event_other)
+
+    # assistant.message with both content and deltaContent → deltaContent wins.
+    raw_both = json.dumps({"type": "assistant.message_delta", "deltaContent": "delta", "content": "content"})
+    event_both = _parse_output_event(raw_both, 4)
+    test("OC44: deltaContent wins over content when both present",
+         event_both.get("data", {}).get("deltaContent") == "delta")
+    test("OC44: content not also promoted when deltaContent present",
+         "content" not in event_both.get("data", {}))
 
 
 def run_api_tests():
@@ -1964,6 +2095,11 @@ if __name__ == "__main__":
     test_oc37_start_run_attachment_argv_contains_path_mention()
     test_oc38_start_run_original_prompt_not_augmented()
     test_oc39_delete_session_removes_staged_files()
+    test_oc40_start_run_duplicate_attachment_names_get_unique_paths()
+    test_oc41_start_run_rejects_too_many_attachments()
+    test_oc42_build_copilot_argv_resume_used_tuple()
+    test_oc43_run_record_has_resume_used()
+    test_oc44_parse_output_event_promotes_top_level_content()
 
     print()
     print("── API route tests (live HTTP server) ───────────────────────────────")

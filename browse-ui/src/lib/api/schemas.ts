@@ -944,6 +944,8 @@ export const operatorRunInfoSchema = z.object({
   finished_at: z.string().nullable(),
   events: z.array(copilotStreamFrameSchema),
   files: z.array(runFileMetadataSchema).optional(),
+  /** Whether this run used `--resume` to carry prior conversation context. Optional for backward compatibility. */
+  resume_used: z.boolean().optional(),
 });
 
 /** Response from `GET /api/operator/sessions/{id}/status?run=<run_id>`. */

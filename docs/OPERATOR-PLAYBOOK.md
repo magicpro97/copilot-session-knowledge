@@ -338,6 +338,14 @@ Historical runs are replayed from disk on refresh, so the transcript and file-re
 - `/api/operator/*` uses the same per-launch browse token as the rest of the UI.
 - Runs launched from `/chat` still inherit the installed Copilot CLI's hooks, custom instructions, and permission system. Browser use does not bypass briefing/tentacle/learn or other active policy gates.
 
+### Chat transcript — visible indicators
+
+| Indicator | Where it appears | What it means |
+|-----------|-----------------|---------------|
+| **Final answer text** | AssistantBubble body | Promoted from `session.task_complete` summary or `task_complete` tool result; previously could appear blank if content arrived via top-level fields instead of nested `data`. |
+| **Elapsed duration** | AssistantBubble footer (e.g. `41s`, `2m 5s`) | Wall-clock time from `started_at` to `finished_at`; shown only after the run finishes. |
+| **Context badge** | MetadataBar (session header) | `context ready` (green) when `resume_ready: true`; `new context` otherwise. Reflects whether the active host offered a resumable context window. |
+
 ### Compatibility
 
 - `watch-sessions.py` continues to process normal Copilot session artifacts; the operator console reads its own persisted history from `operator-console/`.

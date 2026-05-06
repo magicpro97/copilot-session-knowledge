@@ -1,4 +1,5 @@
-import { render } from "@testing-library/react";
+import "@testing-library/jest-dom";
+import { render, screen } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { Transcript } from "@/components/chat/transcript";
@@ -108,5 +109,84 @@ describe("Transcript", () => {
     );
 
     expect(mockUseOperatorStream).toHaveBeenCalledWith("session-l2", "run-l2", LOCAL_HOST);
+  });
+});
+
+// ── Regression: HistoricalRun rendering ─────────────────────────────────────
+
+import type { OperatorRunInfo } from "@/lib/api/types";
+
+const makeRun = (overrides: Partial<OperatorRunInfo> = {}): OperatorRunInfo => ({
+  id: "run-hist-1",
+  session_id: "sess-1",
+  prompt: "What model?",
+  status: "done",
+  exit_code: 0,
+  started_at: "2026-05-05T17:12:57Z",
+  finished_at: "2026-05-05T17:13:38Z",
+  events: [],
+  ...overrides,
+});
+
+describe("Transcript — historical runs", () => {
+  it("renders prompt text for a historical run", () => {
+    render(<Transcript runs={[makeRun()]} sessionId="sess-1" />);
+    expect(screen.getByText("What model?")).toBeInTheDocument();
+  });
+
+  it("renders final answer text from task_complete tool result", () => {
+    // Real Test-session: answer is inside task_complete tool, not assistant.message
+    const run = makeRun({
+      events: [
+        {
+          type: "assistant.message",
+          idx: 0,
+          event: { type: "assistant.message", data: { content: "" } },
+          data: { content: "" },
+        },
+        {
+          type: "tool.execution_start",
+          idx: 1,
+          event: {
+            type: "tool.execution_start",
+            data: { toolName: "task_complete", arguments: { summary: "I am GPT-5.4." } },
+          },
+          data: { toolName: "task_complete", arguments: { summary: "I am GPT-5.4." } },
+        },
+        {
+          type: "tool.execution_complete",
+          idx: 2,
+          event: {
+            type: "tool.execution_complete",
+            data: { result: { content: "I am GPT-5.4." } },
+          },
+          data: { result: { content: "I am GPT-5.4." } },
+        },
+      ],
+    });
+    render(<Transcript runs={[run]} sessionId="sess-1" />);
+    expect(screen.getByText("I am GPT-5.4.")).toBeInTheDocument();
+  });
+
+  it("renders elapsed duration for a completed historical run", () => {
+    // started_at: 17:12:57, finished_at: 17:13:38 → 41 seconds
+    render(<Transcript runs={[makeRun()]} sessionId="sess-1" />);
+    expect(screen.getByText("41s")).toBeInTheDocument();
+  });
+
+  it("renders per-run resumed context state when resume_used is true", () => {
+    render(<Transcript runs={[makeRun({ resume_used: true })]} sessionId="sess-1" />);
+    expect(screen.getByText("resumed context")).toBeInTheDocument();
+  });
+
+  it("renders per-run new context state when resume_used is false", () => {
+    render(<Transcript runs={[makeRun({ resume_used: false })]} sessionId="sess-1" />);
+    expect(screen.getByText("new context")).toBeInTheDocument();
+  });
+
+  it("renders without errors for old runs without resume_used field", () => {
+    // Backward-compatibility: resume_used is optional and must not cause crash
+    const run = makeRun(); // no resume_used field
+    expect(() => render(<Transcript runs={[run]} sessionId="sess-1" />)).not.toThrow();
   });
 });

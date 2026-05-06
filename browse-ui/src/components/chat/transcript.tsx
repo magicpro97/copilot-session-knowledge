@@ -23,12 +23,19 @@ function HistoricalRun({ run, host }: HistoricalRunProps) {
     ? formatDistanceToNow(new Date(run.started_at), { addSuffix: true })
     : undefined;
 
+  const elapsedMs =
+    run.started_at && run.finished_at
+      ? new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()
+      : undefined;
+
   return (
     <div className="space-y-3">
       <UserBubble prompt={run.prompt} timestamp={ts} files={run.files} />
       <AssistantBubble
         chunks={chunks}
         exitCode={run.exit_code}
+        elapsedMs={elapsedMs}
+        resumeUsed={run.resume_used}
         timestamp={
           run.finished_at
             ? formatDistanceToNow(new Date(run.finished_at), { addSuffix: true })

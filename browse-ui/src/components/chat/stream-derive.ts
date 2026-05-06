@@ -73,6 +73,8 @@ export function deriveChunks(frames: StreamFrame[]): AssistantChunk[] {
   const pendingTools = new Map<string, AssistantToolChunk>();
   // FIFO queue so tool.execution_complete resolves in insertion order
   const pendingToolQueue: string[] = [];
+  // Prevent double-promoting task_complete content as visible text
+  let taskCompletePromoted = false;
 
   function flushText() {
     if (currentText) {
@@ -102,14 +104,16 @@ export function deriveChunks(frames: StreamFrame[]): AssistantChunk[] {
       continue;
     }
 
-    // Final complete message — replace any accumulated delta text with authoritative content
+    // Final complete message — only replace delta accumulation when authoritative content exists.
+    // If content is empty (real Test-session shape), preserve accumulated deltas.
     if (eventType === "assistant.message") {
       const content = (data as { content?: string } | undefined)?.content ?? "";
-      // Discard in-progress delta accumulation; use complete content instead
-      currentText = "";
       if (content) {
+        // Authoritative final content exists — discard deltas and use it
+        currentText = "";
         chunks.push({ kind: "text", text: content });
       }
+      // If content is empty, keep accumulated deltas unchanged
       continue;
     }
 
@@ -163,8 +167,37 @@ export function deriveChunks(frames: StreamFrame[]): AssistantChunk[] {
             toolChunk.addedPaths = addedPaths;
           }
 
+          // Promote task_complete tool result as visible assistant text.
+          // task_complete is Copilot autopilot's terminal completion tool; its
+          // result.content carries the final answer that should be shown to the user.
+          if (toolChunk.name === "task_complete" && !taskCompletePromoted) {
+            const promotedContent =
+              typeof result?.content === "string"
+                ? result.content
+                : typeof detailedContent === "string"
+                  ? detailedContent
+                  : "";
+            if (promotedContent) {
+              taskCompletePromoted = true;
+              flushText();
+              chunks.push({ kind: "text", text: promotedContent });
+            }
+          }
+
           pendingTools.delete(toolId);
         }
+      }
+      continue;
+    }
+
+    // session.task_complete carries the final summary when task_complete tool fires.
+    // Promote as visible text only if not already done via tool.execution_complete.
+    if (eventType === "session.task_complete") {
+      const summary = (data as { summary?: string } | undefined)?.summary ?? "";
+      if (summary && !taskCompletePromoted) {
+        taskCompletePromoted = true;
+        flushText();
+        chunks.push({ kind: "text", text: summary });
       }
       continue;
     }

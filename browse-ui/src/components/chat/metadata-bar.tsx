@@ -1,6 +1,6 @@
 "use client";
 
-import { FolderOpen, Cpu, Settings2, Hash } from "lucide-react";
+import { FolderOpen, Cpu, Settings2, Hash, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { OperatorSession } from "@/lib/api/types";
 
@@ -38,6 +38,26 @@ export function MetadataBar({ session, className }: MetadataBarProps) {
         <span>
           {session.run_count} run{session.run_count !== 1 ? "s" : ""}
         </span>
+      </span>
+      <span
+        className={cn(
+          "flex items-center gap-1 rounded px-1.5 py-0.5",
+          session.resume_ready
+            ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+            : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+        )}
+      >
+        {session.resume_ready ? (
+          <>
+            <RefreshCw className="size-3" />
+            <span>context ready</span>
+          </>
+        ) : (
+          <>
+            <RefreshCw className="size-3" />
+            <span>new context</span>
+          </>
+        )}
       </span>
     </div>
   );

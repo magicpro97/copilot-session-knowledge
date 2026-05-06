@@ -124,11 +124,23 @@ export function UserBubble({ prompt, timestamp, files }: UserBubbleProps) {
 
 // ── Assistant bubble ─────────────────────────────────────────────────────────
 
+function formatElapsed(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
+}
+
 type AssistantBubbleProps = {
   chunks: AssistantChunk[];
   streaming?: boolean;
   exitCode?: number | null;
   timestamp?: string;
+  /** Elapsed wall-clock duration in milliseconds (finished_at - started_at). */
+  elapsedMs?: number;
+  /** Whether this completed run reused prior Copilot conversation context. */
+  resumeUsed?: boolean;
 };
 
 export function AssistantBubble({
@@ -136,6 +148,8 @@ export function AssistantBubble({
   streaming = false,
   exitCode,
   timestamp,
+  elapsedMs,
+  resumeUsed,
 }: AssistantBubbleProps) {
   const isEmpty = chunks.length === 0;
 
@@ -175,6 +189,27 @@ export function AssistantBubble({
         </div>
         <div className="flex items-center gap-2">
           {timestamp ? <p className="text-muted-foreground text-xs">{timestamp}</p> : null}
+          {elapsedMs !== undefined && !streaming ? (
+            <span
+              data-testid="elapsed"
+              className="text-muted-foreground inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-xs"
+            >
+              {formatElapsed(elapsedMs)}
+            </span>
+          ) : null}
+          {resumeUsed !== undefined && !streaming ? (
+            <span
+              data-testid="resume-used"
+              className={cn(
+                "inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-xs",
+                resumeUsed
+                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+                  : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+              )}
+            >
+              {resumeUsed ? "resumed context" : "new context"}
+            </span>
+          ) : null}
           {exitCode !== null && exitCode !== undefined && !streaming ? (
             <span
               className={cn(

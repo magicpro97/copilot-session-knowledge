@@ -149,6 +149,70 @@ describe("deriveChunks — real event names", () => {
       input: { command: "ls", path: "/tmp" },
     });
   });
+
+  // ── Regression: empty assistant.message must not erase accumulated deltas ──
+
+  it("empty assistant.message preserves accumulated delta text", () => {
+    // Real Test-session shape: assistant.message arrives with content: ""
+    // but useful text was already accumulated via message_delta events.
+    const frames: CopilotStreamFrame[] = [
+      eventFrame("assistant.message_delta", { deltaContent: "Hello from delta" }),
+      eventFrame("assistant.message", { content: "" }),
+    ];
+    const chunks = deriveChunks(frames);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toEqual({ kind: "text", text: "Hello from delta" });
+  });
+
+  // ── Regression: task_complete tool result must be promoted as visible text ──
+
+  it("promotes task_complete tool.execution_complete content as visible text", () => {
+    // Real Test-session shape: answer is in tool.execution_complete.result.content
+    // for the task_complete tool, not in assistant.message.
+    const frames: CopilotStreamFrame[] = [
+      eventFrame("tool.execution_start", {
+        toolName: "task_complete",
+        arguments: { summary: "The answer is 42." },
+      }),
+      eventFrame("tool.execution_complete", {
+        result: { content: "The answer is 42.", detailedContent: "The answer is 42." },
+      }),
+    ];
+    const chunks = deriveChunks(frames);
+    const textChunks = chunks.filter((c) => c.kind === "text");
+    expect(textChunks).toHaveLength(1);
+    expect(textChunks[0]).toEqual({ kind: "text", text: "The answer is 42." });
+  });
+
+  it("promotes session.task_complete summary as visible text", () => {
+    // Real Test-session shape: session.task_complete event carries the final summary.
+    const frames: CopilotStreamFrame[] = [
+      eventFrame("session.task_complete", {
+        summary: "Session finished successfully.",
+        success: true,
+      }),
+    ];
+    const chunks = deriveChunks(frames);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toEqual({ kind: "text", text: "Session finished successfully." });
+  });
+
+  it("does not double-promote when both task_complete tool and session.task_complete are present", () => {
+    // Real Test-session: both fire with the same text. Only one text chunk should appear.
+    const frames: CopilotStreamFrame[] = [
+      eventFrame("tool.execution_start", {
+        toolName: "task_complete",
+        arguments: { summary: "Answer." },
+      }),
+      eventFrame("tool.execution_complete", {
+        result: { content: "Answer." },
+      }),
+      eventFrame("session.task_complete", { summary: "Answer.", success: true }),
+    ];
+    const chunks = deriveChunks(frames);
+    const textChunks = chunks.filter((c) => c.kind === "text");
+    expect(textChunks).toHaveLength(1);
+  });
 });
 
 // ── extractFilePaths ──────────────────────────────────────────────────────────

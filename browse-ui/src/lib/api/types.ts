@@ -974,6 +974,8 @@ export interface OperatorRunInfo {
   events: CopilotStreamFrame[];
   /** Files attached to this run (user-visible metadata only, no raw content). */
   files?: RunFileMetadata[];
+  /** Whether this run used `--resume` to carry prior conversation context. Optional for backward compatibility. */
+  resume_used?: boolean;
 }
 
 /** Response from `GET /api/operator/sessions/{id}/status?run=<run_id>`. */
