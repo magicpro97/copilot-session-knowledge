@@ -52,21 +52,21 @@ def test(name: str, condition: bool, detail: str = "") -> None:
 def run(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(IMPORTER), *args],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
 
 
 def run_exporter(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(EXPORTER), *args],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
 
 
 def run_installer(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(INSTALLER), *args],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
 
 
@@ -85,7 +85,7 @@ def write_json(path: Path, data: dict) -> None:
 VALID_PROFILE = {
     "name": "test-import-profile",
     "description": "A test profile for import validation",
-    "hooks": ["dangerous-blocker.sh", "secret-detector.sh"],
+    "hooks": ["dangerous-blocker.py", "secret-detector.py"],
     "workflow_phases": ["CLARIFY", "BUILD", "TEST", "COMMIT"],
     "workflow_notes": "Test workflow",
 }
@@ -206,10 +206,10 @@ test("mentions unknown phase", "BOGUS" in r.stdout or "unknown" in r.stdout.lowe
 
 print("\n❌ Validation: Missing Hook Template")
 bad_hook_file = bad_dir / "badhook.json"
-write_json(bad_hook_file, {**VALID_PROFILE, "name": "badhook", "hooks": ["nonexistent-hook.sh"]})
+write_json(bad_hook_file, {**VALID_PROFILE, "name": "badhook", "hooks": ["nonexistent-hook.py"]})
 r = run("--file", str(bad_hook_file), "--presets-dir", str(import_presets2))
 test("exits non-zero for missing hook template", r.returncode != 0)
-test("mentions hook name", "nonexistent-hook.sh" in r.stdout)
+test("mentions hook name", "nonexistent-hook.py" in r.stdout)
 
 # ─── --skip-hook-validation ───────────────────────────────────────────────────
 
@@ -284,7 +284,7 @@ compat_name = "test-compat-import-profile"
 compat_profile = {
     "name": compat_name,
     "description": "Compatibility test for import",
-    "hooks": ["dangerous-blocker.sh", "secret-detector.sh"],
+    "hooks": ["dangerous-blocker.py", "secret-detector.py"],
     "workflow_phases": ["CLARIFY", "BUILD", "COMMIT"],
 }
 compat_src = SCRATCH / f"{compat_name}.json"
@@ -308,7 +308,7 @@ if compat_file.exists():
                        "--project", str(project_dir), "--dry-run")
     test("installer dry-run for imported profile exits 0", r3.returncode == 0, r3.stderr)
     test("installer dry-run shows expected hooks",
-         "dangerous-blocker.sh" in r3.stdout)
+         "dangerous-blocker.py" in r3.stdout)
 
     # Cleanup
     compat_file.unlink()

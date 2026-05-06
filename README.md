@@ -76,7 +76,7 @@ python3 ~/.copilot/tools/migrate.py
 python3 ~/.copilot/tools/install.py --test
 
 # macOS: install LaunchAgents (auto-start watcher + daily auto-update)
-bash ~/.copilot/tools/launchd/install-launchd.sh
+python3 ~/.copilot/tools/launchd/install-launchd.py
 ```
 
 ### Alternative (manual copy)
@@ -334,7 +334,7 @@ Build, share, and deploy custom workflow profiles:
 
 ```bash
 python3 ~/.copilot/tools/profile-builder.py --name myteam \
-  --hooks dangerous-blocker.sh commit-gate.sh --phases CLARIFY BUILD TEST COMMIT
+  --hooks dangerous-blocker.py commit-gate.py --phases CLARIFY BUILD TEST COMMIT
 python3 ~/.copilot/tools/profile-export.py --profile myteam --output myteam.json
 python3 ~/.copilot/tools/profile-import.py --file myteam.json
 python3 ~/.copilot/tools/setup-project.py --profile myteam   # deploy
@@ -449,7 +449,7 @@ python3 ~/.copilot/tools/setup-project.py --profile python      # Python hook bu
 python3 ~/.copilot/tools/install-project-hooks.py --profile mobile  # Mobile hooks standalone
 
 # Custom profile lifecycle
-python3 ~/.copilot/tools/profile-builder.py --name myteam --hooks dangerous-blocker.sh --phases BUILD TEST COMMIT
+python3 ~/.copilot/tools/profile-builder.py --name myteam --hooks dangerous-blocker.py --phases BUILD TEST COMMIT
 python3 ~/.copilot/tools/profile-export.py --profile myteam --output myteam.json
 python3 ~/.copilot/tools/profile-import.py --file myteam.json
 ```

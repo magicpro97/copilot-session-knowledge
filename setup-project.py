@@ -463,7 +463,7 @@ What gets installed:
   .github/instructions/session-knowledge.instructions.md — Enforcement (auto-inject)
   .gitignore                                         — Add .octogent/ entry
   CLAUDE.md / copilot-instructions.md / AGENTS.md    — Patched with references
-  .github/hooks/*.sh                                 — Hook bundle (when --profile used)
+  .github/hooks/*.py                                 — Hook bundle (when --profile used)
   WORKFLOW.md                                        — Starter workflow (when --profile used)
 
 Note: If your project already has session-knowledge installed at the user/global level
@@ -585,7 +585,7 @@ copy to avoid duplicate always-loaded instructions and reduce context bloat.
         if not args.no_tentacle:
             print("     /tentacle-creator            — Generate project-specific tentacle skill")
         if args.profile:
-            print(f"     Edit .github/hooks/*.sh      — Customize installed {args.profile} hooks")
+            print(f"     Edit .github/hooks/*.py      — Customize installed {args.profile} hooks")
         else:
             print("     --profile python|typescript|mobile|fullstack — Install hook bundle")
         print()

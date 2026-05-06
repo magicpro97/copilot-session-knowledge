@@ -37,7 +37,7 @@ _ISOLATED_MARKERS.mkdir(parents=True, exist_ok=True)
 # Pre-create briefing-done marker so enforce-briefing doesn't block all tests.
 # When no HMAC secret is configured, verify_marker falls back to existence-only.
 (_ISOLATED_MARKERS / "briefing-done").write_text("test-briefing-done", encoding="utf-8")
-_ISOLATED_ENV = {**os.environ, "HOME": str(_ISOLATED_HOME)}
+_ISOLATED_ENV = {**os.environ, "HOME": str(_ISOLATED_HOME), "USERPROFILE": str(_ISOLATED_HOME)}
 
 
 def test(name: str, condition: bool, detail: str = "") -> None:
@@ -233,7 +233,7 @@ _nj_markers.mkdir(parents=True, exist_ok=True)
 (_nj_markers / "ts-edit-count").write_text("5", encoding="utf-8")
 # Pre-create briefing marker to bypass enforce-briefing gate (existence-only fallback)
 (_nj_markers / "briefing-done").write_text("test-briefing-done", encoding="utf-8")
-_nj_env = {**os.environ, "HOME": str(_nj_isolated)}
+_nj_env = {**os.environ, "HOME": str(_nj_isolated), "USERPROFILE": str(_nj_isolated)}
 
 try:
     # 5a. 6th browse-ui .ts edit → should fire reminder
@@ -301,7 +301,7 @@ _sa_marker_payload = json.dumps({
     "active_tentacles": ["wave3-tentacle"],
 })
 _sa_marker_file.write_text(_sa_marker_payload, encoding="utf-8")
-_sa_env = {**os.environ, "HOME": str(_sa_isolated)}
+_sa_env = {**os.environ, "HOME": str(_sa_isolated), "USERPROFILE": str(_sa_isolated)}
 
 try:
     # 7a. git commit with marker present (no HMAC secret → fall back to existence check)

@@ -52,14 +52,14 @@ def test(name: str, condition: bool, detail: str = "") -> None:
 def run(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(BUILDER), *args],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
 
 
 def run_installer(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(INSTALLER), *args],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
 
 
@@ -87,8 +87,8 @@ test("hook templates dir exists", HOOK_TEMPLATES_DIR.is_dir())
 print("\n📋 --list-hooks")
 r = run("--list-hooks")
 test("exits 0", r.returncode == 0, r.stderr)
-test("lists dangerous-blocker.sh", "dangerous-blocker.sh" in r.stdout)
-test("lists secret-detector.sh", "secret-detector.sh" in r.stdout)
+test("lists dangerous-blocker.py", "dangerous-blocker.py" in r.stdout)
+test("lists secret-detector.py", "secret-detector.py" in r.stdout)
 
 # ─── --list-phases ───────────────────────────────────────────────────────────
 
@@ -110,7 +110,7 @@ test("error message mentions missing args", "Missing" in r.stdout or "missing" i
 print("\n❌ Invalid Profile Name")
 out_dir = scratch_dir("bad-name")
 r = run("--name", "bad name!", "--description", "desc",
-        "--hooks", "dangerous-blocker.sh",
+        "--hooks", "dangerous-blocker.py",
         "--phases", "CLARIFY", "BUILD",
         "--output-dir", str(out_dir))
 test("name with spaces exits non-zero", r.returncode != 0, r.stdout)
@@ -122,7 +122,7 @@ print("\n❌ Unknown Phase")
 out_dir = scratch_dir("bad-phase")
 r = run("--name", "testprofile",
         "--description", "test",
-        "--hooks", "dangerous-blocker.sh",
+        "--hooks", "dangerous-blocker.py",
         "--phases", "CLARIFY", "BOGUSPHASE",
         "--output-dir", str(out_dir))
 test("unknown phase exits non-zero", r.returncode != 0, r.stdout)
@@ -134,11 +134,11 @@ print("\n❌ Missing Hook Template")
 out_dir = scratch_dir("bad-hook")
 r = run("--name", "testprofile",
         "--description", "test",
-        "--hooks", "nonexistent-hook.sh",
+        "--hooks", "nonexistent-hook.py",
         "--phases", "CLARIFY", "BUILD",
         "--output-dir", str(out_dir))
 test("nonexistent hook exits non-zero", r.returncode != 0, r.stdout)
-test("error mentions hook", "nonexistent-hook.sh" in r.stdout)
+test("error mentions hook", "nonexistent-hook.py" in r.stdout)
 
 # ─── --skip-hook-validation ───────────────────────────────────────────────────
 
@@ -146,7 +146,7 @@ print("\n✅ --skip-hook-validation")
 out_dir = scratch_dir("skip-hook-val")
 r = run("--name", "customhooks",
         "--description", "profile with custom hooks",
-        "--hooks", "nonexistent-hook.sh",
+        "--hooks", "nonexistent-hook.py",
         "--phases", "CLARIFY", "BUILD",
         "--output-dir", str(out_dir),
         "--skip-hook-validation")
@@ -159,7 +159,7 @@ print("\n✅ Successful Profile Creation")
 out_dir = scratch_dir("valid-build")
 r = run("--name", "myteam",
         "--description", "My team workflow",
-        "--hooks", "dangerous-blocker.sh", "secret-detector.sh",
+        "--hooks", "dangerous-blocker.py", "secret-detector.py",
         "--phases", "CLARIFY", "BUILD", "TEST", "COMMIT",
         "--notes", "Custom notes here",
         "--output-dir", str(out_dir))
@@ -173,7 +173,7 @@ if out_file.exists():
     data = json.loads(out_file.read_text(encoding="utf-8"))
     test("name field correct", data.get("name") == "myteam")
     test("description field correct", data.get("description") == "My team workflow")
-    test("hooks list correct", data.get("hooks") == ["dangerous-blocker.sh", "secret-detector.sh"])
+    test("hooks list correct", data.get("hooks") == ["dangerous-blocker.py", "secret-detector.py"])
     test("phases list correct",
          data.get("workflow_phases") == ["CLARIFY", "BUILD", "TEST", "COMMIT"])
     test("notes field set", data.get("workflow_notes") == "Custom notes here")
@@ -186,7 +186,7 @@ print("\n🧪 --dry-run")
 out_dir = scratch_dir("dry-run")
 r = run("--name", "dryrun",
         "--description", "dry run profile",
-        "--hooks", "dangerous-blocker.sh",
+        "--hooks", "dangerous-blocker.py",
         "--phases", "CLARIFY", "BUILD",
         "--output-dir", str(out_dir),
         "--dry-run")
@@ -204,7 +204,7 @@ out_dir = scratch_dir("force-test")
 # First write
 run("--name", "overwriteme",
     "--description", "original",
-    "--hooks", "dangerous-blocker.sh",
+    "--hooks", "dangerous-blocker.py",
     "--phases", "CLARIFY", "BUILD",
     "--output-dir", str(out_dir))
 test("initial write succeeded", (out_dir / "overwriteme.json").exists())
@@ -212,7 +212,7 @@ test("initial write succeeded", (out_dir / "overwriteme.json").exists())
 # Without --force should fail
 r = run("--name", "overwriteme",
         "--description", "updated",
-        "--hooks", "secret-detector.sh",
+        "--hooks", "secret-detector.py",
         "--phases", "CLARIFY", "BUILD", "TEST",
         "--output-dir", str(out_dir))
 test("overwrite without --force exits non-zero", r.returncode != 0)
@@ -220,7 +220,7 @@ test("overwrite without --force exits non-zero", r.returncode != 0)
 # With --force should succeed
 r = run("--name", "overwriteme",
         "--description", "updated",
-        "--hooks", "secret-detector.sh",
+        "--hooks", "secret-detector.py",
         "--phases", "CLARIFY", "BUILD", "TEST",
         "--output-dir", str(out_dir),
         "--force")
@@ -229,7 +229,7 @@ test("success message says Overwritten on second write",
      "✓ Overwritten:" in r.stdout, repr(r.stdout))
 data = json.loads((out_dir / "overwriteme.json").read_text(encoding="utf-8"))
 test("file updated with new description", data.get("description") == "updated")
-test("file updated with new hooks", data.get("hooks") == ["secret-detector.sh"])
+test("file updated with new hooks", data.get("hooks") == ["secret-detector.py"])
 
 # ─── Compatibility with install-project-hooks.py ─────────────────────────────
 
@@ -241,7 +241,7 @@ print("\n🔗 Compatibility with install-project-hooks.py")
 compat_name = "test-compat-profile-lifecycle"
 r = run("--name", compat_name,
         "--description", "Compat test profile",
-        "--hooks", "dangerous-blocker.sh", "secret-detector.sh",
+        "--hooks", "dangerous-blocker.py", "secret-detector.py",
         "--phases", "CLARIFY", "BUILD", "COMMIT")
 test("build into presets/ exits 0", r.returncode == 0, r.stderr + r.stdout)
 compat_file = PRESETS_DIR / f"{compat_name}.json"
@@ -257,7 +257,7 @@ if compat_file.exists():
     # Verify installer can --list-hooks for it
     r3 = run_installer("--profile", compat_name, "--list-hooks")
     test("installer --list-hooks exits 0 for custom profile", r3.returncode == 0, r3.stderr)
-    test("installer lists dangerous-blocker.sh", "dangerous-blocker.sh" in r3.stdout)
+    test("installer lists dangerous-blocker.py", "dangerous-blocker.py" in r3.stdout)
 
     # Cleanup: remove the temporary profile from presets/
     compat_file.unlink()

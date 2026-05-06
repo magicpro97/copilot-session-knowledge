@@ -137,7 +137,7 @@ Automatically installed in `.git/hooks/post-merge`. Triggers the pipeline on man
 
 ## Scheduled Updates
 
-- **macOS**: LaunchAgent runs daily at 9 AM (`install-launchd.sh`)
+- **macOS**: LaunchAgent runs daily at 9 AM (`install-launchd.py`)
 - **Linux**: systemd timer or cron
 - **Windows**: Task Scheduler
 

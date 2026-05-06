@@ -2,13 +2,13 @@
   "name": "mobile",
   "description": "Mobile project (Android/iOS/KMP): architecture guard, TDD pipeline, coding standards, and full QA phase.",
   "hooks": [
-    "dangerous-blocker.sh",
-    "secret-detector.sh",
-    "architecture-guard.sh",
-    "enforce-coding-standards.sh",
-    "enforce-tdd-pipeline.sh",
-    "build-reminder.sh",
-    "commit-gate.sh"
+    "dangerous-blocker.py",
+    "secret-detector.py",
+    "architecture-guard.py",
+    "enforce-coding-standards.py",
+    "enforce-tdd-pipeline.py",
+    "build-reminder.py",
+    "commit-gate.py"
   ],
   "workflow_phases": ["CLARIFY", "DESIGN", "VERIFY", "BUILD", "TEST", "REVIEW", "QA", "COMMIT"],
   "workflow_notes": "Full 8-phase workflow for mobile projects (Android/iOS/KMP) with architecture and QA gates."

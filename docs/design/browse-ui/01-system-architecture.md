@@ -1196,20 +1196,29 @@ console.log(`✅ dist/ ready — hash: ${hash}`);
 
 ### 7.2 Pre-commit Hook: Source/Dist Consistency
 
-```bash
-#!/usr/bin/env bash
-# hooks/check-browse-ui-dist.sh
+```python
+#!/usr/bin/env python3
+# hooks/check-browse-ui-dist.py
 # Block commits where browse-ui/src/** changed but dist/ wasn't rebuilt.
+import subprocess
+import sys
 
-SRC_CHANGED=$(git diff --cached --name-only -- browse-ui/src/ | head -1)
-DIST_CHANGED=$(git diff --cached --name-only -- browse-ui/dist/ | head -1)
 
-if [ -n "$SRC_CHANGED" ] && [ -z "$DIST_CHANGED" ]; then
-  echo "❌ browse-ui/src/ changed but browse-ui/dist/ not updated."
-  echo "   Run: cd browse-ui && pnpm build"
-  echo "   Then stage dist/: git add browse-ui/dist/"
-  exit 1
-fi
+def staged(path: str) -> bool:
+    result = subprocess.run(
+        ["git", "diff", "--cached", "--name-only", "--", path],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return bool(result.stdout.strip())
+
+
+if staged("browse-ui/src/") and not staged("browse-ui/dist/"):
+    print("❌ browse-ui/src/ changed but browse-ui/dist/ not updated.")
+    print("   Run: cd browse-ui && pnpm build")
+    print("   Then stage dist/: git add browse-ui/dist/")
+    sys.exit(1)
 ```
 
 ### 7.3 Auto-rebuild Trigger
@@ -1415,40 +1424,49 @@ pnpm typecheck && pnpm lint && pnpm test && pnpm build
 
 Add to existing hooks framework:
 
-```bash
-#!/usr/bin/env bash
+```python
+#!/usr/bin/env python3
 # .git/hooks/pre-commit (append)
+import subprocess
+import sys
+from pathlib import Path
 
-# Check if browse-ui/src changed
-if git diff --cached --name-only | grep -q "^browse-ui/src/"; then
-  echo "🔍 browse-ui source changed — running checks..."
-  cd browse-ui
-  pnpm typecheck || exit 1
-  pnpm lint || exit 1
-  pnpm test || exit 1
 
-  # Verify dist/ is up to date
-  SRC_CHANGED=$(git diff --cached --name-only -- src/ | head -1)
-  DIST_CHANGED=$(git diff --cached --name-only -- dist/ | head -1)
-  if [ -n "$SRC_CHANGED" ] && [ -z "$DIST_CHANGED" ]; then
-    echo "❌ src/ changed but dist/ not rebuilt. Run: pnpm build"
-    exit 1
-  fi
-  cd ..
-fi
+def run(cmd: list[str], cwd: Path | None = None) -> None:
+    subprocess.run(cmd, cwd=cwd, check=True)
+
+
+def staged(path: str) -> bool:
+    result = subprocess.run(
+        ["git", "diff", "--cached", "--name-only", "--", path],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return bool(result.stdout.strip())
+
+
+if staged("browse-ui/src/"):
+    print("🔍 browse-ui source changed — running checks...")
+    ui = Path("browse-ui")
+    for command in (["pnpm", "typecheck"], ["pnpm", "lint"], ["pnpm", "test"]):
+        run(command, cwd=ui)
+    if not staged("browse-ui/dist/"):
+        print("❌ src/ changed but dist/ not rebuilt. Run: pnpm build")
+        sys.exit(1)
 ```
 
 ### 9.3 Pre-push Hook
 
-```bash
-#!/usr/bin/env bash
+```python
+#!/usr/bin/env python3
 # .git/hooks/pre-push (append)
+import subprocess
+from pathlib import Path
 
-if [ -d "browse-ui" ]; then
-  cd browse-ui
-  pnpm build || exit 1
-  cd ..
-fi
+
+if Path("browse-ui").is_dir():
+    subprocess.run(["pnpm", "build"], cwd="browse-ui", check=True)
 ```
 
 ### 9.4 `auto-update-tools.py` COVERAGE_MANIFEST Update

@@ -54,16 +54,13 @@ def main():
     if not file_path:
         sys.exit(0)
 
-    # Normalize path separators
     file_path = file_path.replace("\\", "/")
 
-    # Check if it's a doc file
     for pattern in DOC_PATTERNS:
         if re.search(pattern, file_path, re.IGNORECASE):
             _write_state("docs_updated=true\n")
             sys.exit(0)
 
-    # Check if it's a code file that needs docs
     needs_docs = ""
     for category, pattern in CODE_PATTERNS.items():
         if re.search(pattern, file_path):
@@ -73,30 +70,26 @@ def main():
     if not needs_docs:
         sys.exit(0)
 
-    # Read state
     code_count = 0
     docs_updated = False
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE) as f:
+        with open(STATE_FILE, encoding="utf-8") as f:
             content = f.read()
         docs_updated = "docs_updated=true" in content
         code_count = content.count("code_edit")
 
-    # Track this edit
-    with open(STATE_FILE, "a") as f:
+    with open(STATE_FILE, "a", encoding="utf-8") as f:
         f.write("code_edit\n")
     code_count += 1
 
-    # Warn after threshold
     if code_count >= WARN_THRESHOLD and not docs_updated:
         print(f"\n  📝 DOCS REMINDER: {code_count} {needs_docs} files changed, no docs updated yet.")
         print("  Check if README.md, AGENTS.md, or SKILL.md need updates.\n")
-        # Reset counter
         _write_state("")
 
 
 def _write_state(content: str):
-    with open(STATE_FILE, "w") as f:
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
         f.write(content)
 
 

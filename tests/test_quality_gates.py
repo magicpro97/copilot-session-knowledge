@@ -285,7 +285,10 @@ def test_ruff_surface_in_pre_commit():
     test("pre-commit covers browse/*.py", "browse/" in content or "browse/*" in content)
     test(
         "pre-commit covers hooks/ Python surface",
-        "hooks/*)" in content or "hooks/*.py" in content or "hooks/*/*.py" in content,
+        "path.startswith((\"browse/\", \"hooks/\", \"scripts/\"))" in content
+        or "hooks/*)" in content
+        or "hooks/*.py" in content
+        or "hooks/*/*.py" in content,
     )
 
 
@@ -424,7 +427,9 @@ def test_pre_commit_syntax_gate_present():
     )
     test(
         "pre-commit syntax gate is fail-open (checks for script existence)",
-        "SYNTAX_CHECKER" in content and '[ -f "$SYNTAX_CHECKER" ]' in content,
+        "SYNTAX_CHECKER" in content
+        and "if not SYNTAX_CHECKER.is_file()" in content
+        and "return 0" in content,
         "hooks/pre-commit syntax gate should skip silently when check_syntax.py is absent",
     )
 

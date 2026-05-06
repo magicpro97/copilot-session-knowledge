@@ -10,7 +10,7 @@ Tests that:
   - --workflow generates a WORKFLOW.md in the scratch project.
   - Re-running install is idempotent (no changes on second run).
   - An invalid profile name exits non-zero.
-  - tentacle-setup.sh uses the correct tools/skills/ path (not the old ~/.copilot/skills/).
+  - Profiles install Python hook templates without requiring shell.
 
 Run: python3 test_project_hooks.py
 """
@@ -33,7 +33,6 @@ REPO = Path(__file__).parent.parent
 INSTALLER = REPO / "install-project-hooks.py"
 PRESETS_DIR = REPO / "presets"
 HOOK_TEMPLATES_DIR = REPO / "skills" / "hook-creator" / "references"
-TENTACLE_SETUP = REPO / "tentacle-setup.sh"
 
 # Use a project-local scratch directory to avoid /tmp restrictions.
 SCRATCH = REPO / ".test-scratch" / "hook-install-tests"
@@ -59,10 +58,10 @@ def run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
 
 
 def run_hook(script: Path, command: str) -> subprocess.CompletedProcess:
-    """Run a shell hook with a mock preToolUse bash payload."""
+    """Run a hook template with a mock preToolUse bash payload."""
     payload = json.dumps({"toolName": "bash", "toolArgs": {"command": command}})
     return subprocess.run(
-        ["bash", str(script)],
+        [sys.executable, str(script)],
         input=payload,
         capture_output=True,
         text=True,
@@ -107,10 +106,10 @@ for profile_name in ("default", "python", "typescript", "mobile", "fullstack"):
 print("\n🪝 --list-hooks")
 result = run("--profile", "python", "--list-hooks")
 test("--list-hooks exits 0", result.returncode == 0, result.stderr)
-test("output mentions dangerous-blocker.sh",
-     "dangerous-blocker.sh" in result.stdout)
-test("output mentions enforce-tdd-pipeline.sh",
-     "enforce-tdd-pipeline.sh" in result.stdout)
+test("output mentions dangerous-blocker.py",
+     "dangerous-blocker.py" in result.stdout)
+test("output mentions enforce-tdd-pipeline.py",
+     "enforce-tdd-pipeline.py" in result.stdout)
 
 # ─── Invalid profile ─────────────────────────────────────────────────────────
 
@@ -144,11 +143,11 @@ test("install exits 0", result.returncode == 0, result.stderr)
 
 hooks_dir = default_project / ".github" / "hooks"
 test(".github/hooks/ created", hooks_dir.is_dir())
-test("dangerous-blocker.sh installed", (hooks_dir / "dangerous-blocker.sh").exists())
-test("secret-detector.sh installed", (hooks_dir / "secret-detector.sh").exists())
+test("dangerous-blocker.py installed", (hooks_dir / "dangerous-blocker.py").exists())
+test("secret-detector.py installed", (hooks_dir / "secret-detector.py").exists())
 
-if (hooks_dir / "dangerous-blocker.sh").exists():
-    blocker_hook = hooks_dir / "dangerous-blocker.sh"
+if (hooks_dir / "dangerous-blocker.py").exists():
+    blocker_hook = hooks_dir / "dangerous-blocker.py"
 
     print("\n🛡  Dangerous Git Hook")
     safe_push = run_hook(
@@ -201,8 +200,8 @@ if (hooks_dir / "dangerous-blocker.sh").exists():
          force_refspec.stdout + force_refspec.stderr)
 
 # default profile does not include tdd hook
-test("enforce-tdd-pipeline.sh NOT installed (not in default)",
-     not (hooks_dir / "enforce-tdd-pipeline.sh").exists())
+test("enforce-tdd-pipeline.py NOT installed (not in default)",
+     not (hooks_dir / "enforce-tdd-pipeline.py").exists())
 
 # ─── Install python profile with --workflow ───────────────────────────────────
 
@@ -212,8 +211,8 @@ result = run("--profile", "python", "--project", str(py_project), "--workflow")
 test("install exits 0", result.returncode == 0, result.stderr)
 
 py_hooks = py_project / ".github" / "hooks"
-for hook in ("dangerous-blocker.sh", "secret-detector.sh", "test-reminder.sh",
-             "build-reminder.sh", "enforce-tdd-pipeline.sh", "commit-gate.sh"):
+for hook in ("dangerous-blocker.py", "secret-detector.py", "test-reminder.py",
+             "build-reminder.py", "enforce-tdd-pipeline.py", "commit-gate.py"):
     test(f"{hook} installed", (py_hooks / hook).exists())
 
 workflow_md = py_project / "WORKFLOW.md"
@@ -223,7 +222,7 @@ if workflow_md.exists():
     test("WORKFLOW.md mentions python profile", "python" in wf_content)
     test("WORKFLOW.md mentions BUILD phase", "BUILD" in wf_content)
     test("WORKFLOW.md mentions blocking wait rule", "BLOCKING" in wf_content)
-    test("WORKFLOW.md lists installed hooks", "dangerous-blocker.sh" in wf_content)
+    test("WORKFLOW.md lists installed hooks", "dangerous-blocker.py" in wf_content)
 
 # ─── Idempotency ─────────────────────────────────────────────────────────────
 
@@ -242,24 +241,8 @@ result = run("--profile", "mobile", "--project", str(mob_project))
 test("install exits 0", result.returncode == 0, result.stderr)
 
 mob_hooks = mob_project / ".github" / "hooks"
-test("architecture-guard.sh installed", (mob_hooks / "architecture-guard.sh").exists())
-test("enforce-tdd-pipeline.sh installed", (mob_hooks / "enforce-tdd-pipeline.sh").exists())
-
-# ─── tentacle-setup.sh path fix ──────────────────────────────────────────────
-
-print("\n🐙 tentacle-setup.sh Path Fix")
-test("tentacle-setup.sh exists", TENTACLE_SETUP.exists())
-if TENTACLE_SETUP.exists():
-    content = TENTACLE_SETUP.read_text(encoding="utf-8")
-    test("uses tools/skills/ path (not ~/.copilot/skills/)",
-         "tools/skills/" in content,
-         "old path $HOME/.copilot/skills/ still present")
-    test("old broken path removed",
-         "$HOME/.copilot/skills/" not in content.replace("tools/skills/", ""),
-         "old path still found outside tools/skills/ context")
-    test("DEPRECATED notice present", "DEPRECATED" in content)
-    test("TOOL_PATH still points to tentacle.py",
-         "TOOL_PATH" in content and "tentacle.py" in content)
+test("architecture-guard.py installed", (mob_hooks / "architecture-guard.py").exists())
+test("enforce-tdd-pipeline.py installed", (mob_hooks / "enforce-tdd-pipeline.py").exists())
 
 # ─── User-modified hook preservation (no --force) ────────────────────────────
 
@@ -271,8 +254,8 @@ result = run("--profile", "default", "--project", str(preserve_project))
 test("initial install exits 0", result.returncode == 0, result.stderr)
 
 hooks_dir_p = preserve_project / ".github" / "hooks"
-blocker_dst = hooks_dir_p / "dangerous-blocker.sh"
-test("dangerous-blocker.sh present after first install", blocker_dst.exists())
+blocker_dst = hooks_dir_p / "dangerous-blocker.py"
+test("dangerous-blocker.py present after first install", blocker_dst.exists())
 
 if blocker_dst.exists():
     # Simulate user editing the hook file.

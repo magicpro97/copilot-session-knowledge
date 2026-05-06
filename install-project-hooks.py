@@ -270,7 +270,7 @@ Examples:
         print(f"✅ Done! {changes} change(s) applied.")
         print()
         print("Next steps:")
-        print("  • Customize .github/hooks/*.sh for your project specifics.")
+        print("  • Customize .github/hooks/*.py for your project specifics.")
         print("  • Register hooks: python3 ~/.copilot/tools/install.py --hooks-dir .github/hooks/")
         if args.workflow:
             print("  • Review and expand WORKFLOW.md for your team's process.")

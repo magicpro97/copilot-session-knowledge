@@ -72,7 +72,7 @@ SHIPPED_PROFILES = {"default", "python", "typescript", "mobile", "fullstack"}
 def available_hook_templates() -> set[str]:
     if not HOOK_TEMPLATES_DIR.is_dir():
         return set()
-    return {p.name for p in HOOK_TEMPLATES_DIR.glob("*.sh")}
+    return {p.name for p in HOOK_TEMPLATES_DIR.glob("*.py")}
 
 
 def validate_profile(data: dict, skip_hook_validation: bool = False) -> list[str]:
@@ -108,8 +108,8 @@ def validate_profile(data: dict, skip_hook_validation: bool = False) -> list[str
     else:
         available = available_hook_templates()
         for hook in hooks:
-            if not isinstance(hook, str) or not hook.endswith(".sh"):
-                errors.append(f"Hook entry must be a .sh filename string, got: {hook!r}")
+            if not isinstance(hook, str) or not hook.endswith(".py"):
+                errors.append(f"Hook entry must be a .py filename string, got: {hook!r}")
             elif not skip_hook_validation and available and hook not in available:
                 errors.append(
                     f"Hook template not found on disk: '{hook}' "

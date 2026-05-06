@@ -1094,8 +1094,8 @@ with tempfile.TemporaryDirectory(prefix="auto-update-hook-") as _tmp:
             "Generated Windows hook contains CRLF bytes",
         )
         test(
-            "Pm2: Windows hook shebang has no CR",
-            _windows_bytes.startswith(b"#!/bin/sh\n"),
+            "Pm2: Windows hook is Python with no CR",
+            _windows_bytes.startswith(b"#!/usr/bin/env python\n"),
             f"Got prefix: {_windows_bytes[:16]!r}",
         )
 
@@ -1114,8 +1114,8 @@ with tempfile.TemporaryDirectory(prefix="auto-update-hook-") as _tmp:
         _linux_bytes = _hook_path.read_bytes()
 
         test(
-            "Pm4: POSIX hook (Linux/macOS) also remains LF-only",
-            _linux_bytes.startswith(b"#!/bin/bash\n") and b"\r\n" not in _linux_bytes,
+            "Pm4: POSIX hook (Linux/macOS) also remains Python LF-only",
+            _linux_bytes.startswith(b"#!/usr/bin/env python3\n") and b"\r\n" not in _linux_bytes,
             f"Got prefix: {_linux_bytes[:18]!r}",
         )
     finally:

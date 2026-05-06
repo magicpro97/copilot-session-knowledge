@@ -345,15 +345,15 @@ def generate_context(
         lines.append("Active hooks enforced by this profile:")
         lines.append("")
         hook_docs = {
-            "dangerous-blocker.sh": "Blocks destructive shell commands (rm -rf, etc.)",
-            "secret-detector.sh": "Blocks commits containing API keys or credentials",
-            "test-reminder.sh": "Reminds to run tests before committing",
-            "build-reminder.sh": "Reminds to verify the build before committing",
-            "enforce-tdd-pipeline.sh": "Enforces red→green→refactor TDD cycle",
-            "commit-gate.sh": "Blocks commits unless all quality gates pass",
-            "enforce-coding-standards.sh": "Enforces language-specific coding conventions",
-            "architecture-guard.sh": "Prevents cross-layer dependency violations",
-            "session-banner.sh": "Displays project context at session start",
+            "dangerous-blocker.py": "Blocks destructive command-line operations",
+            "secret-detector.py": "Blocks commits containing API keys or credentials",
+            "test-reminder.py": "Reminds to run tests before committing",
+            "build-reminder.py": "Reminds to verify the build before committing",
+            "enforce-tdd-pipeline.py": "Enforces red→green→refactor TDD cycle",
+            "commit-gate.py": "Blocks commits unless all quality gates pass",
+            "enforce-coding-standards.py": "Enforces language-specific coding conventions",
+            "architecture-guard.py": "Prevents cross-layer dependency violations",
+            "session-banner.py": "Displays project context at session start",
         }
         for hook in hooks:
             doc = hook_docs.get(hook, "")

@@ -16,6 +16,7 @@ Run:
 """
 
 import importlib.util
+import gc
 import json
 import os
 import sqlite3
@@ -60,12 +61,21 @@ def load_retro():
 
 def reset_artifacts() -> None:
     if ARTIFACT_DIR.exists():
-        for p in sorted(ARTIFACT_DIR.rglob("*"), reverse=True):
-            if p.is_file():
-                p.unlink(missing_ok=True)
-            elif p.is_dir():
-                p.rmdir()
-        ARTIFACT_DIR.rmdir()
+        gc.collect()
+        for attempt in range(3):
+            try:
+                for p in sorted(ARTIFACT_DIR.rglob("*"), reverse=True):
+                    if p.is_file():
+                        p.unlink(missing_ok=True)
+                    elif p.is_dir():
+                        p.rmdir()
+                ARTIFACT_DIR.rmdir()
+                break
+            except PermissionError:
+                if attempt == 2:
+                    raise
+                gc.collect()
+                time.sleep(0.1)
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -640,6 +650,8 @@ def test_json_output_shape():
         [sys.executable, str(RETRO_PY), "--json", "--mode", "repo", "--no-cache"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
     )
     test("retro.py --json --mode repo exits 0", result.returncode == 0, f"stderr: {result.stderr[:200]}")
@@ -687,6 +699,8 @@ def test_score_mode():
         [sys.executable, str(RETRO_PY), "--score", "--mode", "repo", "--no-cache"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
     )
     test("retro.py --score exits 0", result.returncode == 0, f"stderr: {result.stderr[:200]}")
@@ -705,6 +719,8 @@ def test_subreport_mode():
             [sys.executable, str(RETRO_PY), "--subreport", section, "--mode", "repo", "--no-cache"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
         test(f"retro.py --subreport {section} exits 0", result.returncode == 0, f"stderr: {result.stderr[:200]}")
@@ -717,6 +733,8 @@ def test_subreport_invalid():
         [sys.executable, str(RETRO_PY), "--subreport", "invalid_section", "--no-cache"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
     )
     output = result.stdout.strip()
@@ -736,6 +754,8 @@ def test_repo_mode_no_db_access():
         [sys.executable, str(RETRO_PY), "--json", "--mode", "repo", "--no-cache"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
     )
     try:
@@ -1077,6 +1097,8 @@ def test_json_output_has_scout_field():
         [sys.executable, str(RETRO_PY), "--json", "--mode", "repo", "--no-cache"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
     )
     test("retro.py --json (scout): exits 0", result.returncode == 0)
@@ -1537,6 +1559,8 @@ def test_json_output_interpretation_fields():
         [sys.executable, str(RETRO_PY), "--json", "--mode", "repo", "--no-cache"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
     )
     test("retro.py --json --mode repo: exits 0 (interpretation fields)", result.returncode == 0)
@@ -1960,6 +1984,8 @@ def test_subreport_behavior_subprocess():
         [sys.executable, str(RETRO_PY), "--subreport", "behavior", "--mode", "repo", "--no-cache"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
     )
     test(

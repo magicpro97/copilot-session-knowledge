@@ -172,7 +172,7 @@ def _tilde(p: Path) -> str:
     try:
         return "~/" + p.relative_to(HOME).as_posix()
     except ValueError:
-        return str(p)
+        return p.as_posix()
 
 
 def _count_scripts(d: Path) -> int:
@@ -180,6 +180,13 @@ def _count_scripts(d: Path) -> int:
     if not d.is_dir():
         return 0
     return sum(1 for f in d.iterdir() if f.suffix == ".py")
+
+
+def _git_hook_install_text(src_text: str) -> str:
+    """Adjust Python git-hook shebangs for the host's launcher naming."""
+    if os.name == "nt" and src_text.startswith("#!/usr/bin/env python3\n"):
+        return "#!/usr/bin/env python\n" + src_text.split("\n", 1)[1]
+    return src_text
 
 
 def _db_counts() -> dict:
@@ -1200,7 +1207,7 @@ def install_git_hooks(target_dir: "Path | None" = None) -> None:
             print(f"  {FAIL} Source hook not found: {_tilde(src)}")
             continue
 
-        src_text = src.read_text(encoding="utf-8")
+        src_text = _git_hook_install_text(src.read_text(encoding="utf-8"))
 
         if dst.is_file():
             dst_text = dst.read_text(encoding="utf-8")

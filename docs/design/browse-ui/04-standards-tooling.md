@@ -834,7 +834,6 @@ under `browse-ui/src/`.
 ```diff
  # One-time publish scripts
  publish.ps1
- publish.sh
 
 +# browse-ui (Next.js)
 +browse-ui/node_modules/

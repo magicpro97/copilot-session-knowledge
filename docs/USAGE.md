@@ -270,7 +270,7 @@ python3 ~/.copilot/tools/profile-builder.py --list-phases                       
 python3 ~/.copilot/tools/profile-builder.py \
   --name myteam \
   --description "My team workflow" \
-  --hooks dangerous-blocker.sh secret-detector.sh commit-gate.sh \
+  --hooks dangerous-blocker.py secret-detector.py commit-gate.py \
   --phases CLARIFY BUILD TEST COMMIT                                               # Create a profile
 python3 ~/.copilot/tools/profile-builder.py --name myteam ... --dry-run           # Preview JSON without writing
 python3 ~/.copilot/tools/profile-builder.py --name myteam ... --force             # Overwrite existing profile
@@ -807,8 +807,8 @@ python3 ~/.copilot/tools/install.py --inject-global             # Inject into gl
 ### macOS — LaunchAgents (recommended)
 
 ```bash
-bash ~/.copilot/tools/launchd/install-launchd.sh           # Install both agents
-bash ~/.copilot/tools/launchd/install-launchd.sh --remove   # Uninstall
+python3 ~/.copilot/tools/launchd/install-launchd.py           # Install both agents
+python3 ~/.copilot/tools/launchd/install-launchd.py --remove   # Uninstall
 
 # Installs two LaunchAgents:
 #   com.copilot.watch-sessions  — foreground watcher managed by launchd (auto-indexes + auto-embeds)

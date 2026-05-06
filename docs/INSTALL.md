@@ -39,7 +39,7 @@ python3 ~/.copilot/tools/install.py --test
 
 ```bash
 # Install watcher + daily auto-update LaunchAgents
-bash ~/.copilot/tools/launchd/install-launchd.sh
+python3 ~/.copilot/tools/launchd/install-launchd.py
 ```
 
 This installs two LaunchAgents:

@@ -60,7 +60,7 @@ RUNNER = REPO / "hooks" / "hook_runner.py"
 # Isolation setup: hook_runner.py writes audit entries to Path.home()/.copilot/markers/audit.jsonl.
 # All subprocess tests in this section use an isolated HOME so they never touch the operator audit log.
 _isolated_home = Path(tempfile.mkdtemp(prefix="test-hooks-home-"))
-_isolated_env = {**os.environ, "HOME": str(_isolated_home)}
+_isolated_env = {**os.environ, "HOME": str(_isolated_home), "USERPROFILE": str(_isolated_home)}
 _isolated_audit_path = _isolated_home / ".copilot" / "markers" / "audit.jsonl"
 
 # 1a. Empty stdin → allow (fail-open)
@@ -1136,26 +1136,31 @@ if _csm_path.is_file():
     )
     shutil.rmtree(str(_badsig_home), ignore_errors=True)
 
-# 12m. pre-push exists and uses $HOME/.copilot/tools (not dirname)
+# 12m. pre-push exists and uses the canonical ~/.copilot/tools guard path (not dirname)
 _prepush_path = REPO / "hooks" / "pre-push"
 test("hooks/pre-push exists", _prepush_path.is_file())
 if _prepush_path.is_file():
     _prepush_src = _prepush_path.read_text(encoding="utf-8")
     test("pre-push has shebang", _prepush_src.startswith("#!/"))
     test("pre-push calls check_subagent_marker.py", "check_subagent_marker.py" in _prepush_src)
-    test("pre-push exits 0 normally", "exit 0" in _prepush_src)
+    test("pre-push exits 0 normally", "return 0" in _prepush_src)
     test(
-        "pre-push uses $HOME/.copilot/tools for guard path",
-        "$HOME/.copilot/tools/hooks/check_subagent_marker.py" in _prepush_src,
+        "pre-push uses Path.home()/.copilot/tools for guard path",
+        "Path.home()" in _prepush_src
+        and '".copilot"' in _prepush_src
+        and '"tools"' in _prepush_src
+        and '"check_subagent_marker.py"' in _prepush_src,
     )
     test("pre-push does NOT use dirname-based path for guard", "$(dirname" not in _prepush_src)
 
-# 12n. pre-commit uses $HOME/.copilot/tools (not dirname) for the guard
+# 12n. pre-commit uses canonical ~/.copilot/tools (not dirname) for the guard
 _precommit_src = (REPO / "hooks" / "pre-commit").read_text(encoding="utf-8")
 test("pre-commit calls check_subagent_marker.py", "check_subagent_marker.py" in _precommit_src)
 test(
-    "pre-commit uses $HOME/.copilot/tools for guard path",
-    "$HOME/.copilot/tools/hooks/check_subagent_marker.py" in _precommit_src,
+    "pre-commit uses Path.home()/.copilot/tools for guard path",
+    "TOOLS_DIR = Path.home()" in _precommit_src
+    and '".copilot"' in _precommit_src
+    and '"tools"' in _precommit_src,
 )
 _guard_block = _precommit_src.split("check_subagent_marker.py")[0].split("SUBAGENT_CHECK")[-1]
 test("pre-commit guard block does NOT use dirname resolution", "$(dirname" not in _guard_block)
@@ -1323,13 +1328,22 @@ else:
         _e2e_hook_dst = _e2e_repo / ".git" / "hooks" / "pre-commit"
         (_e2e_repo / ".git" / "hooks").mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(REPO / "hooks" / "pre-commit"), str(_e2e_hook_dst))
+        if os.name == "nt":
+            _e2e_hook_dst.write_text(
+                _e2e_hook_dst.read_text(encoding="utf-8").replace(
+                    "#!/usr/bin/env python3\n", "#!/usr/bin/env python\n", 1
+                ),
+                encoding="utf-8",
+            )
         _e2e_hook_dst.chmod(_e2e_hook_dst.stat().st_mode | 0o111)
 
         # (a) content check: canonical path, no dirname
         _installed = _e2e_hook_dst.read_text(encoding="utf-8")
         test(
-            "E2E: installed hook uses $HOME/.copilot/tools (not dirname)",
-            "$HOME/.copilot/tools/hooks/check_subagent_marker.py" in _installed
+            "E2E: installed hook uses Path.home()/.copilot/tools (not dirname)",
+            "TOOLS_DIR = Path.home()" in _installed
+            and '".copilot"' in _installed
+            and '"tools"' in _installed
             and "$(dirname" not in _installed.split("check_subagent_marker.py")[0].split("SUBAGENT_CHECK")[-1],
         )
 
@@ -1354,9 +1368,10 @@ else:
 
         (_e2e_repo / "README.md").write_text("test\n", encoding="utf-8")
         subprocess.run(["git", "add", "README.md"], cwd=str(_e2e_repo), capture_output=True, timeout=5)
-        # Inject PYTHON_BIN so Git's MSYS2 sh can find the interpreter
-        # reliably regardless of PATH translation quirks.
-        _e2e_env = {**os.environ, "PYTHON_BIN": sys.executable}
+        # Ensure Git's hook launcher can find the Python interpreter referenced
+        # by the env shebang on Windows and POSIX.
+        _python_dir = str(Path(sys.executable).parent)
+        _e2e_env = {**os.environ, "PATH": _python_dir + os.pathsep + os.environ.get("PATH", "")}
         r_e2e = subprocess.run(
             ["git", "commit", "-m", "test"],
             cwd=str(_e2e_repo),
@@ -1829,12 +1844,12 @@ try:
     _pc_src_13 = (REPO / "hooks" / "pre-commit").read_text(encoding="utf-8")
     _pp_src_13 = (REPO / "hooks" / "pre-push").read_text(encoding="utf-8")
     test(
-        "13n: pre-commit uses canonical $HOME/.copilot/tools path",
-        "$HOME/.copilot/tools/hooks/check_subagent_marker.py" in _pc_src_13,
+        "13n: pre-commit uses canonical Path.home()/.copilot/tools path",
+        "TOOLS_DIR = Path.home()" in _pc_src_13 and '".copilot"' in _pc_src_13 and '"tools"' in _pc_src_13,
     )
     test(
-        "13n2: pre-push uses canonical $HOME/.copilot/tools path",
-        "$HOME/.copilot/tools/hooks/check_subagent_marker.py" in _pp_src_13,
+        "13n2: pre-push uses canonical Path.home()/.copilot/tools path",
+        "Path.home()" in _pp_src_13 and '".copilot"' in _pp_src_13 and '"tools"' in _pp_src_13,
     )
     test(
         "13n3: pre-commit does not use dirname for guard path",
@@ -2641,17 +2656,18 @@ test(
     and "Path.home()" not in _csm_src17.split("def _copilot_home")[0].split("MARKER_PATH")[1:2].__repr__(),
 )
 
-# 17b. pre-commit and pre-push use PYTHON_BIN detection, not hard-coded python3
+# 17b. pre-commit and pre-push are Python hooks and invoke the guard with the
+# current interpreter, not a shell-level hard-coded python3 command.
 _pc_src17 = (REPO / "hooks" / "pre-commit").read_text(encoding="utf-8")
 _pp_src17 = (REPO / "hooks" / "pre-push").read_text(encoding="utf-8")
-test("17b: pre-commit has PYTHON_BIN detection", "PYTHON_BIN" in _pc_src17 and "command -v" in _pc_src17)
+test("17b: pre-commit has Python 3 env shebang", _pc_src17.startswith("#!/usr/bin/env python3\n"))
 test(
-    "17b2: pre-commit uses $PYTHON_BIN not hard-coded python3 for guard", '"$PYTHON_BIN" "$SUBAGENT_CHECK"' in _pc_src17
+    "17b2: pre-commit uses sys.executable for guard", "sys.executable" in _pc_src17 and "SUBAGENT_CHECK" in _pc_src17
 )
-test("17b3: pre-push has PYTHON_BIN detection", "PYTHON_BIN" in _pp_src17 and "command -v" in _pp_src17)
-test("17b4: pre-push uses $PYTHON_BIN not hard-coded python3 for guard", '"$PYTHON_BIN" "$SUBAGENT_CHECK"' in _pp_src17)
-test("17b5: pre-commit verifies interpreter with -c probe", '-c ""' in _pc_src17)
-test("17b6: pre-push verifies interpreter with -c probe", '-c ""' in _pp_src17)
+test("17b3: pre-push has Python 3 env shebang", _pp_src17.startswith("#!/usr/bin/env python3\n"))
+test("17b4: pre-push uses sys.executable for guard", "sys.executable" in _pp_src17 and "SUBAGENT_CHECK" in _pp_src17)
+test("17b5: pre-commit has no shell interpreter probe", "command -v" not in _pc_src17 and "PYTHON_BIN" not in _pc_src17)
+test("17b6: pre-push has no shell interpreter probe", "command -v" not in _pp_src17 and "PYTHON_BIN" not in _pp_src17)
 
 # 17c. Subprocess: HOME override is respected by check_subagent_marker.py
 # This is the core Windows regression test — _copilot_home() must honour HOME.
@@ -4237,20 +4253,20 @@ except Exception as _e23ex:
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Section 24: secret-detector.sh — false-positive regression (issue #20)
+#  Section 24: secret-detector.py — false-positive regression (issue #20)
 # ═══════════════════════════════════════════════════════════════════
 
 print("\n── Section 24: secret-detector false-positive regression (issue #20) ──")
 
 try:
-    _SD_HOOK = REPO / "hooks" / "references" / "secret-detector.sh"
-    _SD_HOOK_SKILL = REPO / "skills" / "hook-creator" / "references" / "secret-detector.sh"
+    _SD_HOOK = REPO / "hooks" / "references" / "secret-detector.py"
+    _SD_HOOK_SKILL = REPO / "skills" / "hook-creator" / "references" / "secret-detector.py"
 
     def _run_sd_hook(hook_path: Path, content: str, tool: str = "create") -> dict:
-        """Run secret-detector.sh with the given file_text content. Returns parsed JSON output or {}."""
+        """Run secret-detector.py with the given file_text content. Returns parsed JSON output or {}."""
         payload = json.dumps({"toolName": tool, "toolArgs": {"file_text": content}})
         r = subprocess.run(
-            ["bash", str(hook_path)],
+            [sys.executable, str(hook_path)],
             input=payload,
             capture_output=True,
             text=True,

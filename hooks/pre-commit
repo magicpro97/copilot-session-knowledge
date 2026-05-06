@@ -1,189 +1,211 @@
-#!/bin/sh
-# pre-commit hook — Validate .agent.md and SKILL.md files before commit
-# Catches: deprecated fields, unknown tool names, schema mismatches
-# Also: blocks commit when dispatched-subagent-active marker is set.
-#
-# Install: python3 ~/.copilot/tools/install.py --install-git-hooks
-# (Do NOT hand-copy: use install.py so the canonical tools path is embedded.)
+#!/usr/bin/env python3
+"""Git pre-commit hook for session-knowledge tools.
 
-# ── Dispatched-subagent guard ──────────────────────────────────────────────
-# Use the canonical installed path unconditionally.  Relative dirname-based
-# resolution breaks when this file lives in a normal repo's .git/hooks/
-# because dirname resolves to .git/hooks/, not ~/.copilot/tools.
+Fail-open checks are skipped when optional tooling is absent. Hard blockers:
+fresh dispatched-subagent marker, staged Python syntax errors, and hook/skill
+lint errors.
+"""
 
-# Portable Python interpreter detection.
-# On Windows the Microsoft Store alias for python3 passes `command -v` but
-# is not a real interpreter.  Verify with a no-op `-c ""` invocation.
-# Also try `py` (Windows Python Launcher) as a last resort.
-# Allow env override (e.g. for testing) then auto-detect.
-if [ -z "$PYTHON_BIN" ] || ! "$PYTHON_BIN" -c "" 2>/dev/null; then
-    PYTHON_BIN=""
-    for _py in python3 python py; do
-        if command -v "$_py" >/dev/null 2>&1 && "$_py" -c "" 2>/dev/null; then
-            PYTHON_BIN="$_py"
-            break
-        fi
-    done
-fi
-if [ -z "$PYTHON_BIN" ]; then
-    # No working interpreter → fail-open (don't block commits).
-    exit 0
-fi
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
 
-SUBAGENT_CHECK="$HOME/.copilot/tools/hooks/check_subagent_marker.py"
-if [ -f "$SUBAGENT_CHECK" ]; then
-    "$PYTHON_BIN" "$SUBAGENT_CHECK"
-    if [ $? -ne 0 ]; then
-        exit 1
-    fi
-fi
-# ──────────────────────────────────────────────────────────────────────────
+if os.name == "nt":
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
 
-# ── UI inline-style regression guard ──────────────────────────────────────
-CHANGED_ROUTES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^browse/routes/.*\.py$' || true)
-if [ -n "$CHANGED_ROUTES" ]; then
-    # Whitelist: dashboard.py's .db-chart-wrap block (uplot-coupled)
-    # Anything else with <style> should fail
-    VIOLATORS=""
-    for f in $CHANGED_ROUTES; do
-        staged_content=$(git show ":$f" 2>/dev/null) || staged_content=""
-        style_count=$(printf '%s\n' "$staged_content" | grep -c '<style' || true)
-        if [ "$style_count" -gt 0 ]; then
-            if [ "$f" = "browse/routes/dashboard.py" ] && [ "$style_count" -eq 1 ] && printf '%s\n' "$staged_content" | grep -q '\.db-chart-wrap'; then
-                :  # allowed: single <style> block containing .db-chart-wrap
-            else
-                VIOLATORS="$VIOLATORS $f"
-            fi
-        fi
-    done
-    if [ -n "$VIOLATORS" ]; then
-        echo "✖ Pre-commit: inline <style> blocks detected in routes:$VIOLATORS"
-        echo "  Move CSS to browse/static/css/app.css. This is enforced by test_no_inline_style_in_routes()."
-        exit 1
-    fi
-fi
-# ──────────────────────────────────────────────────────────────────────────
+TOOLS_DIR = Path.home() / ".copilot" / "tools"
+SUBAGENT_CHECK = TOOLS_DIR / "hooks" / "check_subagent_marker.py"
+SYNTAX_CHECKER = TOOLS_DIR / "scripts" / "check_syntax.py"
+LINT_SKILLS = TOOLS_DIR / "hooks" / "lint-skills.py"
 
-# ── Python syntax gate (check_syntax.py on all staged .py files) ──────────
-# Scope: ALL staged Python files — syntax errors are always blockers
-#        regardless of the narrower Ruff surface.
-# Fail-open: skip silently when check_syntax.py is absent (tools not installed).
-SYNTAX_CHECKER="$HOME/.copilot/tools/scripts/check_syntax.py"
-if [ -f "$SYNTAX_CHECKER" ]; then
-    STAGED_PY_ALL=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true)
-    if [ -n "$STAGED_PY_ALL" ]; then
-        echo "🐍 Checking Python syntax (check_syntax.py)..."
-        # Pass each path individually via a read loop so filenames with spaces
-        # are handled correctly (unquoted expansion would split them).
-        _syntax_fail=0
-        while IFS= read -r _pyf; do
-            [ -n "$_pyf" ] || continue
-            if ! "$PYTHON_BIN" "$SYNTAX_CHECKER" "$_pyf" 2>&1; then
-                _syntax_fail=1
-            fi
-        done <<_STAGED_PY_LIST_
-$STAGED_PY_ALL
-_STAGED_PY_LIST_
-        if [ "$_syntax_fail" -ne 0 ]; then
-            echo "✖ Syntax errors detected in staged files. Fix them before committing."
-            exit 1
-        fi
-    fi
-fi
-# ──────────────────────────────────────────────────────────────────────────
 
-# ── Python cleanliness check (ruff format + lint) ──────────────────────────
-# Scope: staged Python files in the CI cleanliness surface.
-# Fail-open: silently skip when ruff is not installed.
-_py_in_surface() {
-    case "$1" in
-        embed.py|scout-config.py|scout-status.py|sync-config.py|sync-daemon.py|sync-status.py|migrate.py|generate-summary.py)
-            return 0 ;;
-        briefing.py|learn.py|query-session.py|extract-knowledge.py|build-session-index.py|tentacle.py)
-            return 0 ;;
-        checkpoint-diff.py|checkpoint-restore.py|checkpoint-save.py)
-            return 0 ;;
-        tests/test_browse_search_v2.py)
-            return 0 ;;
-        browse/*)
-            return 0 ;;
-        hooks/*)
-            return 0 ;;
-        scripts/*)
-            return 0 ;;
-    esac
-    return 1
-}
+def run(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(args, text=True, encoding="utf-8", errors="replace", **kwargs)
 
-if command -v ruff >/dev/null 2>&1; then
-    SURFACE_PY_STAGED=""
-    for _f in $(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true); do
-        if _py_in_surface "$_f"; then
-            SURFACE_PY_STAGED="$SURFACE_PY_STAGED $_f"
-        fi
-    done
-    if [ -n "$SURFACE_PY_STAGED" ]; then
-        echo "🧹 Checking Python cleanliness (ruff)..."
-        if ! ruff format --check $SURFACE_PY_STAGED 2>&1; then
-            echo "✖ ruff format check failed. Run: ruff format$SURFACE_PY_STAGED"
-            exit 1
-        fi
-        if ! ruff check $SURFACE_PY_STAGED 2>&1; then
-            echo "✖ ruff lint check failed. Fix violations above before committing."
-            exit 1
-        fi
-    fi
-fi
-# ──────────────────────────────────────────────────────────────────────────
 
-# ── browse-ui Prettier check ───────────────────────────────────────────────
-# Scope: staged Prettier-supported files under browse-ui/src.
-# Fail-open: skip when Prettier is not installed in browse-ui/node_modules.
-STAGED_UI_SRC=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^browse-ui/src/.*\.(css|js|jsx|json|md|ts|tsx|yaml|yml)$' || true)
-if [ -n "$STAGED_UI_SRC" ]; then
-    PRETTIER_BIN="browse-ui/node_modules/.bin/prettier"
-    if [ -f "$PRETTIER_BIN" ]; then
-        RELATIVE_UI_SRC=$(printf '%s\n' "$STAGED_UI_SRC" | sed 's|^browse-ui/||')
-        echo "🎨 Checking browse-ui/src formatting (Prettier)..."
-        if ! (cd browse-ui && ./node_modules/.bin/prettier --config .prettierrc --check $RELATIVE_UI_SRC) 2>&1; then
-            echo "✖ Prettier check failed. Run: cd browse-ui && pnpm format"
-            exit 1
-        fi
-    fi
-fi
-# ──────────────────────────────────────────────────────────────────────────
+def git_lines(*args: str) -> list[str]:
+    try:
+        result = run(["git", *args], capture_output=True, timeout=10)
+    except Exception:
+        return []
+    if result.returncode != 0:
+        return []
+    return [line for line in result.stdout.splitlines() if line.strip()]
 
-# Skill/agent lint — only meaningful in the tools repo itself; silently skips
-# in other repos where lint-skills.py is absent.
-TOOLS_DIR="$HOME/.copilot/tools"
-HOOK_SCRIPT="$TOOLS_DIR/hooks/lint-skills.py"
 
-# Only run if the lint script exists
-if [ ! -f "$HOOK_SCRIPT" ]; then
-    exit 0
-fi
+def staged_files() -> list[str]:
+    return git_lines("diff", "--cached", "--name-only", "--diff-filter=ACM")
 
-# Collect staged .agent.md and SKILL.md files
-STAGED_SKILLS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '(\.agent\.md$|SKILL\.md$)' || true)
 
-if [ -z "$STAGED_SKILLS" ]; then
-    # No skill/agent files staged — still do a full scan for awareness
-    # Use --quiet to suppress output when all clean, exit 0 regardless
-    "$PYTHON_BIN" "$HOOK_SCRIPT" --all --quiet 2>/dev/null
-    exit 0
-fi
+def staged_content(path: str) -> str:
+    try:
+        result = run(["git", "show", f":{path}"], capture_output=True, timeout=10)
+    except Exception:
+        return ""
+    return result.stdout if result.returncode == 0 else ""
 
-echo "🔍 Validating skill/agent files..."
 
-# Run full scan (covers staged files + catches cross-file issues)
-"$PYTHON_BIN" "$HOOK_SCRIPT" --all --fix
-LINT_EXIT=$?
+def run_subagent_guard() -> int:
+    if not SUBAGENT_CHECK.is_file():
+        return 0
+    try:
+        return run([sys.executable, str(SUBAGENT_CHECK)], timeout=10).returncode
+    except Exception:
+        return 0
 
-if [ $LINT_EXIT -eq 1 ]; then
-    echo ""
-    echo "❌ Commit blocked — fix errors above before committing."
-    echo "   Warnings are informational and don't block commits."
-    exit 1
-fi
 
-exit 0
+def check_inline_styles(staged: list[str]) -> int:
+    changed_routes = [f for f in staged if f.startswith("browse/routes/") and f.endswith(".py")]
+    violators: list[str] = []
+    for path in changed_routes:
+        content = staged_content(path)
+        style_count = content.count("<style")
+        if style_count == 0:
+            continue
+        if path == "browse/routes/dashboard.py" and style_count == 1 and ".db-chart-wrap" in content:
+            continue
+        violators.append(path)
+    if violators:
+        print(f"✖ Pre-commit: inline <style> blocks detected in routes: {' '.join(violators)}")
+        print("  Move CSS to browse/static/css/app.css. This is enforced by test_no_inline_style_in_routes().")
+        return 1
+    return 0
+
+
+def check_python_syntax(staged: list[str]) -> int:
+    if not SYNTAX_CHECKER.is_file():
+        return 0
+    staged_py = [f for f in staged if f.endswith(".py")]
+    if not staged_py:
+        return 0
+    print("🐍 Checking Python syntax (check_syntax.py)...")
+    failed = False
+    for path in staged_py:
+        try:
+            result = run([sys.executable, str(SYNTAX_CHECKER), path], capture_output=True, timeout=20)
+        except Exception as exc:
+            print(exc)
+            failed = True
+            continue
+        if result.returncode != 0:
+            failed = True
+            output = (result.stdout + result.stderr).strip()
+            if output:
+                print(output)
+    if failed:
+        print("✖ Syntax errors detected in staged files. Fix them before committing.")
+        return 1
+    return 0
+
+
+def in_python_cleanliness_surface(path: str) -> bool:
+    exact = {
+        "embed.py",
+        "scout-config.py",
+        "scout-status.py",
+        "sync-config.py",
+        "sync-daemon.py",
+        "sync-status.py",
+        "migrate.py",
+        "generate-summary.py",
+        "briefing.py",
+        "learn.py",
+        "query-session.py",
+        "extract-knowledge.py",
+        "build-session-index.py",
+        "tentacle.py",
+        "checkpoint-diff.py",
+        "checkpoint-restore.py",
+        "checkpoint-save.py",
+        "tests/test_browse_search_v2.py",
+    }
+    return path in exact or path.startswith(("browse/", "hooks/", "scripts/"))
+
+
+def check_ruff(staged: list[str]) -> int:
+    if not shutil.which("ruff"):
+        return 0
+    surface_py = [f for f in staged if f.endswith(".py") and in_python_cleanliness_surface(f)]
+    if not surface_py:
+        return 0
+    print("🧹 Checking Python cleanliness (ruff)...")
+    result = run(["ruff", "format", "--check", *surface_py], timeout=60)
+    if result.returncode != 0:
+        print(f"✖ ruff format check failed. Run: ruff format {' '.join(surface_py)}")
+        return 1
+    result = run(["ruff", "check", *surface_py], timeout=60)
+    if result.returncode != 0:
+        print("✖ ruff lint check failed. Fix violations above before committing.")
+        return 1
+    return 0
+
+
+def check_prettier(staged: list[str]) -> int:
+    supported = (".css", ".js", ".jsx", ".json", ".md", ".ts", ".tsx", ".yaml", ".yml")
+    ui_src = [f for f in staged if f.startswith("browse-ui/src/") and f.endswith(supported)]
+    if not ui_src:
+        return 0
+    prettier = Path("browse-ui") / "node_modules" / ".bin" / "prettier"
+    if not prettier.is_file():
+        return 0
+    relative = [f.removeprefix("browse-ui/") for f in ui_src]
+    print("🎨 Checking browse-ui/src formatting (Prettier)...")
+    result = run(
+        [str(Path("node_modules") / ".bin" / "prettier"), "--config", ".prettierrc", "--check", *relative],
+        cwd="browse-ui",
+        timeout=60,
+    )
+    if result.returncode != 0:
+        print("✖ Prettier check failed. Run: cd browse-ui && pnpm format")
+        return 1
+    return 0
+
+
+def check_skill_lint(staged: list[str]) -> int:
+    if not LINT_SKILLS.is_file():
+        return 0
+    staged_skills = [f for f in staged if f.endswith(".agent.md") or f.endswith("SKILL.md")]
+    if not staged_skills:
+        try:
+            run([sys.executable, str(LINT_SKILLS), "--all", "--quiet"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        return 0
+    print("🔍 Validating skill/agent files...")
+    try:
+        result = run([sys.executable, str(LINT_SKILLS), "--all", "--fix"], timeout=60)
+    except Exception as exc:
+        print(exc)
+        return 1
+    if result.returncode == 1:
+        print("")
+        print("❌ Commit blocked — fix errors above before committing.")
+        print("   Warnings are informational and don't block commits.")
+        return 1
+    return 0
+
+
+def main() -> int:
+    guard_rc = run_subagent_guard()
+    if guard_rc != 0:
+        return 1
+    staged = staged_files()
+    for check in (
+        check_inline_styles,
+        check_python_syntax,
+        check_ruff,
+        check_prettier,
+        check_skill_lint,
+    ):
+        rc = check(staged)
+        if rc != 0:
+            return rc
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

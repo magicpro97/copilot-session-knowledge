@@ -50,14 +50,14 @@ def test(name: str, condition: bool, detail: str = "") -> None:
 def run(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(EXPORTER), *args],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
 
 
 def run_installer(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(INSTALLER), *args],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
 
 

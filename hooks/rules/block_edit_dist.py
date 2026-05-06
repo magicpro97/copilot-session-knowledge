@@ -31,14 +31,14 @@ class BlockEditDistRule(Rule):
         if not file_path:
             return None
 
-        # Normalise: resolve relative to browse-ui/dist or absolute
-        rel = file_path
+        # Normalise separators so Windows paths match the repository prefix.
+        rel = file_path.replace("\\", "/")
         try:
-            rel = str(Path(file_path).resolve().relative_to(Path.home() / ".copilot" / "tools"))
+            rel = Path(file_path).resolve().relative_to(Path.home() / ".copilot" / "tools").as_posix()
         except (ValueError, RuntimeError):
             pass
 
-        if rel.startswith(self.PROTECTED_PREFIX) or "/browse-ui/dist/" in file_path:
+        if rel.startswith(self.PROTECTED_PREFIX) or "/browse-ui/dist/" in rel:
             return deny(
                 "🚫 Direct edits to browse-ui/dist/ are blocked.\n"
                 "These are build artifacts. Run instead:\n"

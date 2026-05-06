@@ -51,11 +51,13 @@ def _isolated_home(name: str) -> str:
 
 
 def _run(cmd: list, home: str, timeout: int = 30) -> subprocess.CompletedProcess:
-    env = {**os.environ, "HOME": home}
+    env = {**os.environ, "HOME": home, "USERPROFILE": home}
     return subprocess.run(
         cmd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         env=env,
         cwd=str(REPO),
@@ -292,31 +294,31 @@ def test_pre_commit_contains_syntax_section():
     )
     test(
         "pre-commit syntax gate references canonical tools path",
-        "$HOME/.copilot/tools/scripts/check_syntax.py" in content,
-        "pre-commit syntax gate should use canonical $HOME/.copilot/tools/scripts/check_syntax.py",
+        "TOOLS_DIR = Path.home()" in content and '".copilot"' in content and '"tools"' in content,
+        "pre-commit syntax gate should use canonical Path.home()/.copilot/tools",
     )
     test(
         "pre-commit syntax gate is fail-open",
-        '[ -f "$SYNTAX_CHECKER" ]' in content,
+        "if not SYNTAX_CHECKER.is_file()" in content and "return 0" in content,
         "pre-commit syntax gate must check for script presence before running",
     )
 
 
-def test_pre_commit_fail_open_python_detection():
-    """Verify pre-commit hook has fail-open Python interpreter detection."""
+def test_pre_commit_python_entrypoint():
+    """Verify pre-commit is a Python hook using the active interpreter for guard calls."""
     if not PRE_COMMIT.exists():
         test("hooks/pre-commit exists for fail-open check", False, str(PRE_COMMIT))
         return
     content = PRE_COMMIT.read_text(encoding="utf-8")
     test(
-        "pre-commit has portable Python interpreter detection",
-        "for _py in python3 python py" in content,
-        "pre-commit missing portable Python interpreter probe loop",
+        "pre-commit has Python 3 env shebang",
+        content.startswith("#!/usr/bin/env python3\n"),
+        "pre-commit should be a Python git hook",
     )
     test(
-        "pre-commit exits 0 (fail-open) when no interpreter found",
-        "    # No working interpreter → fail-open (don't block commits).\n    exit 0" in content,
-        "pre-commit should exit 0 (fail-open) when Python is absent",
+        "pre-commit uses sys.executable for subagent guard",
+        "sys.executable" in content and "SUBAGENT_CHECK" in content,
+        "pre-commit should invoke check_subagent_marker.py with the running interpreter",
     )
 
 
@@ -328,12 +330,12 @@ def test_pre_commit_ruff_surface_covers_all_browse_depths():
     content = PRE_COMMIT.read_text(encoding="utf-8")
     test(
         "pre-commit _py_in_surface uses browse/* (all depths, consistent with CI)",
-        "browse/*)" in content,
+        "path.startswith((\"browse/\", \"hooks/\", \"scripts/\"))" in content or "browse/*)" in content,
         "pre-commit _py_in_surface should use browse/* to match all depths under browse/",
     )
     test(
         "pre-commit _py_in_surface uses hooks/* (all depths, consistent with CI)",
-        "hooks/*)" in content,
+        "path.startswith((\"browse/\", \"hooks/\", \"scripts/\"))" in content or "hooks/*)" in content,
         "pre-commit _py_in_surface should use hooks/* to match all depths under hooks/",
     )
     # Depth-limited patterns that would miss browse/static/vendor/ should not be present
@@ -346,7 +348,7 @@ def test_pre_commit_ruff_surface_covers_all_browse_depths():
 
 test_pre_commit_syntax_gate_wont_fire_on_valid_file()
 test_pre_commit_contains_syntax_section()
-test_pre_commit_fail_open_python_detection()
+test_pre_commit_python_entrypoint()
 test_pre_commit_ruff_surface_covers_all_browse_depths()
 
 
@@ -373,32 +375,32 @@ def test_pre_push_exists_and_has_subagent_guard():
         "pre-push must call check_subagent_marker.py to block pushes in subagent mode",
     )
     test(
-        "pre-push uses canonical $HOME/.copilot/tools path",
-        "$HOME/.copilot/tools/hooks/check_subagent_marker.py" in content,
+        "pre-push uses canonical Path.home()/.copilot/tools path",
+        "Path.home()" in content and '".copilot"' in content and '"tools"' in content,
         "pre-push should reference canonical tools path for cross-repo portability",
     )
 
 
-def test_pre_push_fail_open_python_detection():
-    """Verify pre-push has the same fail-open Python interpreter detection as pre-commit."""
+def test_pre_push_python_entrypoint():
+    """Verify pre-push is a Python hook using the active interpreter."""
     if not PRE_PUSH.exists():
         test("hooks/pre-push exists for fail-open check", False, str(PRE_PUSH))
         return
     content = PRE_PUSH.read_text(encoding="utf-8")
     test(
-        "pre-push has portable Python interpreter detection",
-        "for _py in python3 python py" in content,
-        "pre-push missing portable Python interpreter probe loop",
+        "pre-push has Python 3 env shebang",
+        content.startswith("#!/usr/bin/env python3\n"),
+        "pre-push should be a Python git hook",
     )
     test(
-        "pre-push exits 0 (fail-open) when no interpreter found",
-        "    # No working interpreter → fail-open (don't block pushes).\n    exit 0" in content,
-        "pre-push should exit 0 (fail-open) when Python is absent",
+        "pre-push uses sys.executable for subagent guard",
+        "sys.executable" in content and "SUBAGENT_CHECK" in content,
+        "pre-push should invoke check_subagent_marker.py with the running interpreter",
     )
 
 
 test_pre_push_exists_and_has_subagent_guard()
-test_pre_push_fail_open_python_detection()
+test_pre_push_python_entrypoint()
 
 
 # ── install.py reinstall guidance ─────────────────────────────────────────────
@@ -467,7 +469,7 @@ print("\n── Rollout compatibility smoke tests ──────────
 
 
 def test_auto_update_coverage_manifest_tracks_all_hooks():
-    """COVERAGE_MANIFEST must track hooks/ (not just *.py) to reflect shell hooks."""
+    """COVERAGE_MANIFEST must track hooks/ so extensionless Git hooks stay covered."""
     if not AUTO_UPDATE.exists():
         test("auto-update-tools.py exists for coverage check", False, str(AUTO_UPDATE))
         return
@@ -475,7 +477,7 @@ def test_auto_update_coverage_manifest_tracks_all_hooks():
     test(
         "COVERAGE_MANIFEST tracks hooks/ (not restricted to hooks/*.py)",
         '("hooks/",' in content or '"hooks/"' in content,
-        "COVERAGE_MANIFEST should use 'hooks/' to cover pre-commit/pre-push shell scripts",
+        "COVERAGE_MANIFEST should use 'hooks/' to cover pre-commit/pre-push git hooks",
     )
     test(
         "COVERAGE_MANIFEST mentions install-git-hooks for git hook scripts",

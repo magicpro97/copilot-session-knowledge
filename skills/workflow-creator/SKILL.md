@@ -91,7 +91,7 @@ At every phase transition, verify artifacts exist and meet quality criteria.
 
 - Store as `.github/WORKFLOW.md`
 - Reference from `AGENTS.md` and project instructions
-- Hooks enforce phases (e.g., `commit-gate.sh`)
+- Hooks enforce phases (e.g., `commit-gate.py`)
 - Conductor agent uses workflow as playbook
 
 ### Deploying via project profiles
@@ -110,7 +110,7 @@ python3 ~/.copilot/tools/install-project-hooks.py --list-profiles              #
 
 # Build a custom profile and deploy it
 python3 ~/.copilot/tools/profile-builder.py --name myteam \
-  --hooks dangerous-blocker.sh commit-gate.sh \
+  --hooks dangerous-blocker.py commit-gate.py \
   --phases CLARIFY BUILD TEST COMMIT                             # creates presets/myteam.json
 python3 ~/.copilot/tools/profile-export.py --profile myteam --output myteam.json   # export to share
 python3 ~/.copilot/tools/profile-import.py --file myteam.json                      # import on another machine
@@ -139,7 +139,7 @@ Use `--workflow` with `install-project-hooks.py` to also generate a starter `WOR
 - Skipped DESIGN for bug-fix tasks (`skip_if: bug_fix: true`)
 - TEST requires both Jest (unit) and Playwright (e2e) passing
 - QA captures Playwright screenshots as visual evidence
-- COMMIT blocked by `commit-gate.sh` until QA artifact exists
+- COMMIT blocked by `commit-gate.py` until QA artifact exists
 
 **Gate table (excerpt):**
 | Phase | Evidence | Command |

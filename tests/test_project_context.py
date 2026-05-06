@@ -172,7 +172,7 @@ print("\n📄 generate_context()")
 sample_preset = {
     "name": "python",
     "description": "Python TDD project.",
-    "hooks": ["dangerous-blocker.sh", "test-reminder.sh"],
+    "hooks": ["dangerous-blocker.py", "test-reminder.py"],
     "workflow_phases": ["CLARIFY", "BUILD", "TEST", "REVIEW", "COMMIT"],
     "workflow_notes": "5-phase TDD workflow.",
 }
@@ -183,7 +183,7 @@ test("output is a string", isinstance(content, str))
 test("contains project header", "# Project Context" in content)
 test("contains profile name", "python" in content)
 test("contains workflow phases", "CLARIFY" in content and "COMMIT" in content)
-test("contains hooks section", "dangerous-blocker.sh" in content)
+test("contains hooks section", "dangerous-blocker.py" in content)
 test("contains test files section", "test_main.py" in content)
 test("contains file structure section", "File Structure" in content)
 test("ends with newline", content.endswith("\n"))

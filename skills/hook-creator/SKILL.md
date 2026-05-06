@@ -105,32 +105,31 @@ concern — pick the ones relevant to the project, then customize.
 
 | Template | Type | Purpose |
 |----------|------|---------|
-| `dangerous-blocker.sh` | preToolUse | Blocks sudo, rm -rf /, force push, DB drops |
-| `secret-detector.sh` | preToolUse | Blocks hardcoded API keys, tokens, private keys |
+| `dangerous-blocker.py` | preToolUse | Blocks sudo, rm -rf /, force push, DB drops |
+| `secret-detector.py` | preToolUse | Blocks hardcoded API keys, tokens, private keys |
 
 **Quality enforcement hooks**:
 
 | Template | Type | Purpose |
 |----------|------|---------|
-| `enforce-coding-standards.sh` | preToolUse | Blocks coding standard violations with 2-tier detection (regex + optional linter) |
-| `enforce-tdd-pipeline.sh` | preToolUse | Blocks task_complete without valid evidence from quality pipeline |
-| `architecture-guard.sh` | preToolUse | Enforces layer boundaries (clean arch, hexagonal, KMP) |
-| `commit-gate.sh` | preToolUse | Blocks commit until verification requirements are met |
+| `enforce-coding-standards.py` | preToolUse | Blocks coding standard violations with 2-tier detection (regex + optional linter) |
+| `enforce-tdd-pipeline.py` | preToolUse | Blocks task_complete without valid evidence from quality pipeline |
+| `architecture-guard.py` | preToolUse | Enforces layer boundaries (clean arch, hexagonal, KMP) |
+| `commit-gate.py` | preToolUse | Blocks commit until verification requirements are met |
 
 **Reminder hooks**:
 
 | Template | Type | Purpose |
 |----------|------|---------|
-| `test-reminder.sh` | postToolUse | Reminds to write/run tests after source file edits |
-| `build-reminder.sh` | postToolUse | Reminds to verify build after N source file edits |
-| `docs-reminder.sh` (`hooks/references/`) | postToolUse | Warns after 3+ code edits without doc updates |
-| `session-banner.sh` | postToolUse | Shows session start checklist |
+| `test-reminder.py` | postToolUse | Reminds to write/run tests after source file edits |
+| `build-reminder.py` | postToolUse | Reminds to verify build after N source file edits |
+| `docs-reminder.py` | postToolUse | Warns after 3+ code edits without doc updates |
+| `session-banner.py` | postToolUse | Shows session start checklist |
 
-> **Cross-platform note:** `docs-reminder.sh` is the only bundled template that ships with a
-> Python companion (`docs-reminder.py`, also in `hooks/references/`) for Windows environments
-> without bash/jq. All other templates above are `.sh`-only. To add a Python equivalent for any
-> template, use the Python Hook Template in the section below as your starting point and register
-> both: `"bash": "./scripts/hook.sh"` + `"powershell": "python scripts/hook.py"`
+> **Cross-platform note:** bundled templates are Python-only and use only stdlib. They run on
+> Windows, macOS, and Linux without Bash/JQ. Register them with Python commands for each host
+> shell field, for example: `"bash": "python3 ./scripts/hook.py"` and
+> `"powershell": "python ./scripts/hook.py"`.
 
 ### Step 3: Customize Each Template
 
@@ -144,7 +143,7 @@ marked `CONFIGURATION` section at the top. Key customizations:
 5. **Pipeline phases** — define quality gates and evidence requirements
 6. **Secret patterns** — add project-specific credential patterns
 
-#### Customizing `enforce-coding-standards.sh`
+#### Customizing `enforce-coding-standards.py`
 
 This template uses a two-tier detection strategy:
 
@@ -162,46 +161,45 @@ Uncomment ONE linter block matching the project's stack:
 | Go | golangci-lint | ~500ms | Option D in template |
 
 **Example: Adapting for a Python project:**
-```bash
+```python
 # 1. Change file extensions
-FILE_EXTENSIONS="py"
+FILE_EXTENSIONS = re.compile(r"\.py$")
 
 # 2. Replace JS rules with Python rules
-echo "$NEW_STR" | grep -qP '^\s*from\s+\S+\s+import\s+\*' && \
-  deny "No wildcard imports."
-echo "$NEW_STR" | grep -qP '^\s*except\s*:' && \
-  deny "No bare except. Catch specific exceptions."
+REGEX_RULES = (
+    (re.compile(r"^\s*from\s+\S+\s+import\s+\*", re.MULTILINE), "No wildcard imports."),
+    (re.compile(r"^\s*except\s*:", re.MULTILINE), "No bare except. Catch specific exceptions."),
+)
 
-# 3. Uncomment ruff integration (Option C)
-run_ruff_check  # ~50ms, uses project's ruff.toml
+# 3. Enable the optional ruff integration if the project has ruff installed.
 ```
 
-#### Customizing `enforce-tdd-pipeline.sh`
+#### Customizing `enforce-tdd-pipeline.py`
 
 This template validates evidence files from a quality pipeline before allowing
 task_complete. Customize the `PHASES` array for your workflow:
 
-```bash
+```python
 # Strict 5-phase TDD:
-PHASES=(
-  "phase1-red:test-output.log:validate_red"
-  "phase2-green:test-output.log:validate_green"
-  "phase3-review:review-report.md:validate_review"
-  "phase4-execution:test-output.log:validate_execution"
-  "phase5-qa-audit:audit-report.md:validate_audit"
+PHASES = (
+  ("phase1-red", "test-output.log", "red"),
+  ("phase2-green", "test-output.log", "green"),
+  ("phase3-review", "review-report.md", "review"),
+  ("phase4-execution", "test-output.log", "execution"),
+  ("phase5-qa-audit", "audit-report.md", "audit"),
 )
 
 # Standard 3-phase:
-PHASES=(
-  "tests:test-output.log:validate_green"
-  "review:review-report.md:validate_review"
-  "verify:test-output.log:validate_execution"
+PHASES = (
+  ("tests", "test-output.log", "green"),
+  ("review", "review-report.md", "review"),
+  ("verify", "test-output.log", "execution"),
 )
 
 # Minimal 2-phase:
-PHASES=(
-  "tests:test-output.log:validate_green"
-  "review:review-report.md:validate_review"
+PHASES = (
+  ("tests", "test-output.log", "green"),
+  ("review", "review-report.md", "review"),
 )
 ```
 
@@ -223,7 +221,8 @@ Place scripts in `.github/hooks/scripts/` and register in `hooks.json`:
     "preToolUse": [
       {
         "type": "command",
-        "bash": ".github/hooks/scripts/enforce-coding-standards.sh",
+        "bash": "python3 .github/hooks/scripts/enforce-coding-standards.py",
+        "powershell": "python .github/hooks/scripts/enforce-coding-standards.py",
         "comment": "Block coding standard violations",
         "timeoutSec": 10
       }
@@ -236,63 +235,55 @@ Place scripts in `.github/hooks/scripts/` and register in `hooks.json`:
 
 Test each hook by piping mock JSON input and checking for correct allow/deny behavior:
 
-```bash
+```powershell
 # Test that a violation is denied
-echo '{"toolName":"edit","toolArgs":{"path":"src/app.ts","new_str":"import _ from '\''lodash'\''"}}' \
-  | bash .github/hooks/scripts/enforce-coding-standards.sh
+'{"toolName":"edit","toolArgs":{"path":"src/app.ts","new_str":"import _ from ''lodash''"}}' |
+  python .github/hooks/scripts/enforce-coding-standards.py
 
 # Test that clean code is allowed
-echo '{"toolName":"edit","toolArgs":{"path":"src/app.ts","new_str":"import { map } from '\''es-toolkit'\''"}}' \
-  | bash .github/hooks/scripts/enforce-coding-standards.sh
+'{"toolName":"edit","toolArgs":{"path":"src/app.ts","new_str":"import { map } from ''es-toolkit''"}}' |
+  python .github/hooks/scripts/enforce-coding-standards.py
 ```
 
 ## Hook Script Format
 
 ### preToolUse (can DENY)
 
-```bash
-#!/bin/bash
-set -euo pipefail
-INPUT="$(cat)"
-TOOL_NAME=$(echo "$INPUT" | jq -r '.toolName // empty')
+```python
+#!/usr/bin/env python3
+import json
+import re
+import sys
 
-if [ "$TOOL_NAME" != "bash" ]; then exit 0; fi
-
-TOOL_ARGS_RAW=$(echo "$INPUT" | jq -r '.toolArgs // empty')
-COMMAND=$(echo "$TOOL_ARGS_RAW" | jq -r '.command // empty')
-
-deny() {
-    echo "{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"$1\"}"
-    exit 0
-}
-
-echo "$COMMAND" | grep -qE 'pattern' && deny "Reason"
-exit 0
+data = json.loads(sys.stdin.read() or "{}")
+if data.get("toolName") != "bash":
+    raise SystemExit(0)
+command = (data.get("toolArgs") or {}).get("command", "")
+if re.search(r"pattern", command):
+    print(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": "Reason"}))
 ```
 
 ### postToolUse (warnings only)
 
-```bash
-#!/bin/bash
-set -euo pipefail
-INPUT="$(cat)"
-TOOL_NAME=$(echo "$INPUT" | jq -r '.toolName // empty')
-RESULT_TYPE=$(echo "$INPUT" | jq -r '.toolResult.resultType // empty')
+```python
+#!/usr/bin/env python3
+import json
+import sys
 
-if [[ "$RESULT_TYPE" != "success" ]]; then exit 0; fi
-
-echo "Warning: remember to verify"
-exit 0
+data = json.loads(sys.stdin.read() or "{}")
+result_type = (data.get("toolResult") or {}).get("resultType", "")
+if result_type == "success":
+    print("Warning: remember to verify")
 ```
 
 ## Writing Principles
 
 1. **Minimal false positives.** Precise patterns — `rm -rf /` is dangerous, `rm -rf ./dist` is fine.
 2. **Clear deny reasons.** AI reads and adjusts. "Architecture violation: X must not import Y" teaches the rule.
-3. **Fast execution.** Under 100ms. Use grep, not Python (for bash hooks). No network calls.
+3. **Fast execution.** Under 100ms. Use stdlib Python; no network calls.
 4. **Exit 0 to allow.** Only output deny JSON to block. Other output = informational.
 5. **Composable.** Each hook does ONE thing. Multiple hooks chain together.
-6. **Cross-platform.** When targeting Windows (no bash/jq), write a `.py` companion using only stdlib. See the Python Hook Template section below. Windows users with Git Bash can use `.sh`; native Windows uses `.py` via `powershell` field in review-policy.json.
+6. **Cross-platform.** Use `.py` templates with only stdlib dependencies; no Bash/JQ requirement.
 
 ## Integration with Other Skills
 
@@ -328,7 +319,7 @@ Register in `review-policy.json`:
 ```json
 {
   "type": "command",
-  "bash": "./scripts/my-hook.sh",
+   "bash": "python3 ./scripts/my-hook.py",
   "powershell": "python scripts/my-hook.py",
   "cwd": ".github/hooks",
   "timeoutSec": 5
@@ -342,24 +333,24 @@ Register in `review-policy.json`:
 
 **Step 1 – Analyze:** Python project using ruff. No existing hooks. Architecture: views → services → models.
 
-**Step 2 – Select templates:** `secret-detector.sh` (security) + `enforce-coding-standards.sh` (quality).
+**Step 2 – Select templates:** `secret-detector.py` (security) + `enforce-coding-standards.py` (quality).
 
-**Step 3 – Customize `enforce-coding-standards.sh`:**
-```bash
-FILE_EXTENSIONS="py"
+**Step 3 – Customize `enforce-coding-standards.py`:**
+```python
+FILE_EXTENSIONS = re.compile(r"\.py$")
 # Regex rules
-echo "$NEW_STR" | grep -qP '^\s*from\s+\S+\s+import\s+\*' && deny "No wildcard imports."
-echo "$NEW_STR" | grep -qP '^\s*except\s*:' && deny "No bare except. Catch specific exceptions."
-# Uncomment ruff (Option C)
-run_ruff_check
+REGEX_RULES = (
+    (re.compile(r"^\s*from\s+\S+\s+import\s+\*", re.MULTILINE), "No wildcard imports."),
+    (re.compile(r"^\s*except\s*:", re.MULTILINE), "No bare except. Catch specific exceptions."),
+)
 ```
 
 **Step 4 – Install:** Placed in `.github/hooks/scripts/`, registered in `hooks.json`.
 
 **Step 5 – Verify:**
-```bash
-echo '{"toolName":"edit","toolArgs":{"path":"api/views.py","new_str":"from utils import *"}}' \
-  | bash .github/hooks/scripts/enforce-coding-standards.sh
+```powershell
+'{"toolName":"edit","toolArgs":{"path":"api/views.py","new_str":"from utils import *"}}' |
+  python .github/hooks/scripts/enforce-coding-standards.py
 # → {"permissionDecision":"deny","permissionDecisionReason":"No wildcard imports."}
 ```
 </example>

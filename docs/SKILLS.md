@@ -43,20 +43,18 @@ Pre-built Copilot CLI hook scripts:
 
 | Hook | Type | Description |
 |------|------|-------------|
-| `dangerous-blocker.sh` | preToolUse | Blocks sudo, rm -rf /, force push, DB drops |
-| `secret-detector.sh` | preToolUse | Blocks hardcoded API keys, tokens, private keys |
-| `enforce-coding-standards.sh` | preToolUse | Blocks coding standard violations |
-| `enforce-tdd-pipeline.sh` | preToolUse | Blocks task_complete without valid TDD evidence |
-| `architecture-guard.sh` | preToolUse | Enforces layer boundaries (clean arch, KMP, etc.) |
-| `commit-gate.sh` | preToolUse | Blocks commit until verification requirements met |
-| `test-reminder.sh` | postToolUse | Reminds to write tests when creating source files |
-| `build-reminder.sh` | postToolUse | Reminds to verify build after N source file edits |
-| `session-banner.sh` | postToolUse | Shows session start checklist |
+| `dangerous-blocker.py` | preToolUse | Blocks sudo, rm -rf /, force push, DB drops |
+| `secret-detector.py` | preToolUse | Blocks hardcoded API keys, tokens, private keys |
+| `enforce-coding-standards.py` | preToolUse | Blocks coding standard violations |
+| `enforce-tdd-pipeline.py` | preToolUse | Blocks task_complete without valid TDD evidence |
+| `architecture-guard.py` | preToolUse | Enforces layer boundaries (clean arch, KMP, etc.) |
+| `commit-gate.py` | preToolUse | Blocks commit until verification requirements met |
+| `test-reminder.py` | postToolUse | Reminds to write tests when creating source files |
+| `build-reminder.py` | postToolUse | Reminds to verify build after N source file edits |
+| `session-banner.py` | postToolUse | Shows session start checklist |
 
-> **Additional templates in `hooks/references/`:** `docs-reminder.sh` and its Windows-compatible
-> Python companion `docs-reminder.py` (warns after 3+ code edits without doc updates) live in
-> `hooks/references/`, not in `skills/hook-creator/references/`. `docs-reminder.py` is also the
-> only `.py` companion among the bundled templates — all other templates above are `.sh`-only.
+> **Additional template in `hooks/references/`:** `docs-reminder.py` warns after 3+ code
+> edits without doc updates. All bundled hook templates are Python-only and require no Bash/JQ.
 
 ## Skill & Agent Linter (`hooks/lint-skills.py`)
 
@@ -124,7 +122,7 @@ python3 ~/.copilot/tools/profile-builder.py --list-phases         # List availab
 python3 ~/.copilot/tools/profile-builder.py \
   --name myteam \
   --description "My team workflow" \
-  --hooks dangerous-blocker.sh commit-gate.sh \
+  --hooks dangerous-blocker.py commit-gate.py \
   --phases CLARIFY BUILD TEST COMMIT
 ```
 
@@ -160,9 +158,8 @@ python3 ~/.copilot/tools/install-project-hooks.py --dry-run         # Preview wi
 
 ### Tentacle setup
 
-`setup-project.py` handles tentacle orchestration setup automatically. The legacy `tentacle-setup.sh`
-script is **deprecated** — prefer `setup-project.py` which covers tentacle setup and more in one step.
-`tentacle-setup.sh` remains for backwards compatibility and simple shell-only environments.
+`setup-project.py` handles tentacle orchestration setup automatically. For tentacle-only setup,
+use `tentacle-setup.py`, which copies the tentacle skills and their references without shell scripts.
 
 When a dispatched-subagent marker becomes stale (visible in the Settings page under **Tentacle runtime
 diagnostics** → Dispatch marker), use `marker-cleanup` to inspect and optionally remove stale entries:

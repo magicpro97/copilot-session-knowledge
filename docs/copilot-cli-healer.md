@@ -98,13 +98,13 @@ XML task definition saved to `~/.copilot/session-state/copilot-healer-task.xml`.
 ```bash
 python ~/.copilot/tools/copilot-cli-healer.py --install-schedule
 # or via launchd installer:
-bash ~/.copilot/tools/launchd/install-launchd.sh
+python3 ~/.copilot/tools/launchd/install-launchd.py
 ```
 
 Installs `~/Library/LaunchAgents/com.copilot.cli-healer.plist` (daily 10:00).
 Log: `~/.copilot/session-state/.cli-healer.log`.
 
-Template plist: `launchd/com.copilot.cli-healer.plist` (uses `__HOME__` / `__PYTHON3__` tokens, rendered by `install-launchd.sh`).
+Template plist: `launchd/com.copilot.cli-healer.plist` (uses `__HOME__` / `__PYTHON3__` tokens, rendered by `install-launchd.py`).
 
 ### Linux (systemd)
 

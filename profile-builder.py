@@ -12,7 +12,7 @@ Usage:
     python3 profile-builder.py \\
         --name myteam \\
         --description "My team workflow" \\
-        --hooks dangerous-blocker.sh secret-detector.sh commit-gate.sh \\
+        --hooks dangerous-blocker.py secret-detector.py commit-gate.py \\
         --phases CLARIFY BUILD TEST COMMIT
 
     # List available hooks / phases
@@ -63,7 +63,7 @@ def available_hooks() -> list[str]:
     """Return hook template filenames available in the references directory."""
     if not HOOK_TEMPLATES_DIR.is_dir():
         return []
-    return sorted(p.name for p in HOOK_TEMPLATES_DIR.glob("*.sh"))
+    return sorted(p.name for p in HOOK_TEMPLATES_DIR.glob("*.py"))
 
 
 def validate_profile(data: dict, skip_hook_validation: bool = False) -> list[str]:
@@ -95,8 +95,8 @@ def validate_profile(data: dict, skip_hook_validation: bool = False) -> list[str
     else:
         available = set(available_hooks())
         for hook in hooks:
-            if not isinstance(hook, str) or not hook.endswith(".sh"):
-                errors.append(f"Hook '{hook}' must be a .sh filename string")
+            if not isinstance(hook, str) or not hook.endswith(".py"):
+                errors.append(f"Hook '{hook}' must be a .py filename string")
             elif not skip_hook_validation and available and hook not in available:
                 errors.append(
                     f"Hook template not found: '{hook}' "
@@ -148,7 +148,7 @@ Examples:
   python3 profile-builder.py --list-hooks
   python3 profile-builder.py --name myteam \\
       --description "My team workflow" \\
-      --hooks dangerous-blocker.sh secret-detector.sh \\
+      --hooks dangerous-blocker.py secret-detector.py \\
       --phases CLARIFY BUILD TEST COMMIT
   python3 profile-builder.py --name myteam ... --dry-run
   python3 profile-builder.py --name myteam ... --force
@@ -157,7 +157,7 @@ Examples:
     parser.add_argument("--name", help="Profile name (alphanumeric, hyphens, underscores)")
     parser.add_argument("--description", help="Short description of the profile")
     parser.add_argument("--hooks", nargs="+", metavar="HOOK",
-                        help="Hook filenames (e.g. dangerous-blocker.sh commit-gate.sh)")
+                        help="Hook filenames (e.g. dangerous-blocker.py commit-gate.py)")
     parser.add_argument("--phases", nargs="+", metavar="PHASE",
                         help=f"Workflow phases from: {', '.join(KNOWN_PHASES)}")
     parser.add_argument("--notes", default="",

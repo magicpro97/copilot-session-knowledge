@@ -2,12 +2,12 @@
   "name": "python",
   "description": "Python project: TDD enforcement, test reminders, build reminder, and commit gate.",
   "hooks": [
-    "dangerous-blocker.sh",
-    "secret-detector.sh",
-    "test-reminder.sh",
-    "build-reminder.sh",
-    "enforce-tdd-pipeline.sh",
-    "commit-gate.sh"
+    "dangerous-blocker.py",
+    "secret-detector.py",
+    "test-reminder.py",
+    "build-reminder.py",
+    "enforce-tdd-pipeline.py",
+    "commit-gate.py"
   ],
   "workflow_phases": ["CLARIFY", "BUILD", "TEST", "REVIEW", "COMMIT"],
   "workflow_notes": "5-phase workflow for Python projects with TDD enforcement."

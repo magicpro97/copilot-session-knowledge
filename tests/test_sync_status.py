@@ -12,6 +12,7 @@ Run:
 """
 
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -53,7 +54,15 @@ def _run(script: str, args: list[str], *, env=None, timeout: int = 20) -> subpro
     merged_env.pop("USERPROFILE", None)
     if env:
         merged_env.update(env)
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=merged_env)
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        env=merged_env,
+    )
 
 
 def reset_artifacts() -> None:
@@ -210,6 +219,8 @@ def _run_watch(args: list[str], *, home: str, timeout: int = 15) -> subprocess.C
         [sys.executable, _watch_script] + args,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         env=env,
     )
@@ -258,9 +269,7 @@ test("--once cleans up lock file after exit", not lock_file.exists(), f"stale lo
 home_stale = str(ARTIFACT_DIR / "stale-lock-home")
 stale_ss = Path(home_stale, ".copilot", "session-state")
 stale_ss.mkdir(parents=True, exist_ok=True)
-dead_proc = subprocess.Popen([sys.executable, "-c", "pass"])
-dead_pid = dead_proc.pid
-dead_proc.wait(timeout=10)
+dead_pid = 99999999
 (stale_ss / ".watcher.lock").write_text(str(dead_pid), encoding="utf-8")
 
 r = _run_watch(["--once"], home=home_stale)
@@ -303,7 +312,23 @@ wf_ss = Path(home_with_files, ".copilot", "session-state")
 # Create a fake session dir with a .md file (mirrors the shape that watch-sessions scans)
 fake_session = wf_ss / "aaaaaaaa-0000-0000-0000-000000000001"
 fake_session.mkdir(parents=True, exist_ok=True)
-(fake_session / "notes.md").write_text("# Test session\n", encoding="utf-8")
+notes_file = fake_session / "notes.md"
+notes_file.write_text("# Test session\n", encoding="utf-8")
+notes_stat = notes_file.stat()
+(wf_ss / ".watch-state.json").write_text(
+    json.dumps(
+        {
+            "signatures": {
+                str(notes_file): [
+                    notes_stat.st_mtime,
+                    notes_stat.st_size,
+                    hashlib.sha256(notes_file.read_bytes()).hexdigest()[:16],
+                ]
+            }
+        }
+    ),
+    encoding="utf-8",
+)
 
 r = _run_watch(["--once"], home=home_with_files)
 test("--once with session files exits 0", r.returncode == 0, f"exit={r.returncode}\nstdout={r.stdout[:200]}")

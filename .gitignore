@@ -44,7 +44,6 @@ browse-ui/.env*.local
 browse-ui/.turbo/
 
 publish.ps1
-publish.sh
 
 # Auto-update local state
 .update-state.json

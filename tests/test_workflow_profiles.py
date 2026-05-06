@@ -99,10 +99,10 @@ for stem, data in profiles.items():
 print("\n🛡  Default Profile Checks")
 default = profiles.get("default", {})
 test("default profile exists", bool(default))
-test("default includes dangerous-blocker.sh",
-     "dangerous-blocker.sh" in default.get("hooks", []))
-test("default includes secret-detector.sh",
-     "secret-detector.sh" in default.get("hooks", []))
+test("default includes dangerous-blocker.py",
+     "dangerous-blocker.py" in default.get("hooks", []))
+test("default includes secret-detector.py",
+     "secret-detector.py" in default.get("hooks", []))
 
 # ─── Profile diversity checks ────────────────────────────────────────────────
 
