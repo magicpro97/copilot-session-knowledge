@@ -61,6 +61,23 @@ describe("Composer — slash suggestions", () => {
     expect(screen.getByRole("option", { name: /\/mode/i })).toBeInTheDocument();
   });
 
+  it("renders the suggestion list in a portal so overflow-hidden parents do not clip /skills", () => {
+    const onSubmit = vi.fn();
+    const onCommand = vi.fn();
+    const { container } = render(
+      <div className="overflow-hidden">
+        <Composer onSubmit={onSubmit} onCommand={onCommand} />
+      </div>
+    );
+
+    fireEvent.change(getTextarea(), { target: { value: "/" } });
+
+    const listbox = screen.getByRole("listbox", { name: "Slash command suggestions" });
+    expect(listbox).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /\/skills/i })).toBeInTheDocument();
+    expect(container).not.toContainElement(listbox);
+  });
+
   it("hides suggestions when input no longer matches a prefix", () => {
     renderComposer();
     const ta = getTextarea();
@@ -190,14 +207,14 @@ describe("Composer — command execution", () => {
 // ── Suggestion selection via click ───────────────────────────────────────────
 
 describe("Composer — suggestion selection", () => {
-  it("executes a no-arg command immediately on click", () => {
+  it("fills a no-arg command into the textarea on click", () => {
     const { onCommand } = renderComposer();
     const ta = getTextarea();
     fireEvent.change(ta, { target: { value: "/he" } });
     const helpOption = screen.getByRole("option", { name: /\/help/i });
     fireEvent.mouseDown(helpOption.querySelector("button")!);
-    expect(onCommand).toHaveBeenCalledWith("help", "");
-    expect(ta.value).toBe("");
+    expect(onCommand).not.toHaveBeenCalled();
+    expect(ta.value).toBe("/help");
   });
 
   it("fills textarea for commands that require args (/mode)", () => {
@@ -215,15 +232,27 @@ describe("Composer — suggestion selection", () => {
 // ── Keyboard navigation ──────────────────────────────────────────────────────
 
 describe("Composer — keyboard navigation in suggestions", () => {
-  it("navigates down with ArrowDown and selects with Enter", () => {
+  it("navigates to /skills with ArrowDown and accepts the completion with Enter", () => {
     const { onCommand } = renderComposer();
     const ta = getTextarea();
-    fireEvent.change(ta, { target: { value: "/h" } });
+    fireEvent.change(ta, { target: { value: "/" } });
 
-    // ArrowDown to select first item
+    // ArrowDown to /help, ArrowDown again to /skills, then accept completion.
     fireEvent.keyDown(ta, { key: "ArrowDown" });
-    // The first (and likely only) suggestion is /help; press Enter to select
+    fireEvent.keyDown(ta, { key: "ArrowDown" });
     fireEvent.keyDown(ta, { key: "Enter" });
-    expect(onCommand).toHaveBeenCalledWith("help", "");
+    expect(onCommand).not.toHaveBeenCalled();
+    expect(ta.value).toBe("/skills");
+  });
+
+  it("uses Tab to accept the first matching completion even before arrow navigation", () => {
+    const { onCommand } = renderComposer();
+    const ta = getTextarea();
+    fireEvent.change(ta, { target: { value: "/sk" } });
+
+    fireEvent.keyDown(ta, { key: "Tab" });
+
+    expect(onCommand).not.toHaveBeenCalled();
+    expect(ta.value).toBe("/skills");
   });
 });

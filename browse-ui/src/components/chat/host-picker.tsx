@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Globe, Plus, ServerCog, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { SurfacePanel } from "@/components/ui/surface-panel";
 import {
   Select,
   SelectContent,
@@ -177,7 +178,7 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
       ) : null}
 
       {addingNew && (
-        <div className="space-y-2 rounded-lg border p-3" data-testid="host-add-form">
+        <SurfacePanel className="space-y-2 rounded-lg p-3" data-testid="host-add-form">
           <p className="text-muted-foreground text-xs">
             Add a public tunnel URL (e.g. ngrok, Cloudflare Tunnel, VS Code forwarded port).
           </p>
@@ -260,7 +261,7 @@ export function HostPicker({ value, onChange, disabled, className }: HostPickerP
               <p>{compatibilityError}</p>
             </div>
           ) : null}
-        </div>
+        </SurfacePanel>
       )}
 
       {value.id !== LOCAL_HOST_ID && value.base_url ? (

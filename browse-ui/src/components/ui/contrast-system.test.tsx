@@ -9,10 +9,15 @@ import "@testing-library/jest-dom";
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { POPUP_SURFACE_BASE, POPUP_SURFACE_BG } from "@/components/ui/popup-surface";
+import {
+  PANEL_SURFACE_BASE,
+  POPUP_SURFACE_BASE,
+  POPUP_SURFACE_BG,
+} from "@/components/ui/popup-surface";
 import { Select, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogOverlay } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogOverlay } from "@/components/ui/dialog";
 import { Sheet, SheetOverlay } from "@/components/ui/sheet";
+import { SurfacePanel } from "@/components/ui/surface-panel";
 
 describe("Contrast system — opaque trigger surfaces", () => {
   it("SelectTrigger uses bg-secondary (opaque) not bg-transparent", () => {
@@ -85,10 +90,12 @@ describe("Popup surface constants — opaque surface enforcement", () => {
     expect(POPUP_SURFACE_BG).not.toMatch(/bg-\w+\/\d+/);
   });
 
-  it("POPUP_SURFACE_BASE includes ring-border, shadow-md, ring-1 (full panel tokens)", () => {
+  it("POPUP_SURFACE_BASE includes border, ring-border, shadow-lg, and ring-1", () => {
+    expect(POPUP_SURFACE_BASE).toContain("border");
     expect(POPUP_SURFACE_BASE).toContain("ring-border");
-    expect(POPUP_SURFACE_BASE).toContain("shadow-md");
+    expect(POPUP_SURFACE_BASE).toContain("shadow-lg");
     expect(POPUP_SURFACE_BASE).toContain("ring-1");
+    expect(POPUP_SURFACE_BASE).toContain("overflow-hidden");
   });
 
   it("POPUP_SURFACE_BASE is a superset of POPUP_SURFACE_BG", () => {
@@ -102,6 +109,30 @@ describe("Popup surface constants — opaque surface enforcement", () => {
     for (const f of forbidden) {
       expect(POPUP_SURFACE_BASE).not.toContain(f);
       expect(POPUP_SURFACE_BG).not.toContain(f);
+    }
+  });
+
+  it("DialogContent reuses all popup surface tokens", () => {
+    render(
+      <Dialog open={true}>
+        <DialogContent showCloseButton={false}>Dialog body</DialogContent>
+      </Dialog>
+    );
+
+    const dialog = document.querySelector('[data-slot="dialog-content"]');
+    expect(dialog).not.toBeNull();
+    for (const token of POPUP_SURFACE_BASE.split(" ")) {
+      expect(dialog!.className).toContain(token);
+    }
+  });
+
+  it("SurfacePanel uses the shared embedded panel surface tokens", () => {
+    render(<SurfacePanel>Panel body</SurfacePanel>);
+
+    const panel = document.querySelector('[data-slot="surface-panel"]');
+    expect(panel).not.toBeNull();
+    for (const token of PANEL_SURFACE_BASE.split(" ")) {
+      expect(panel!.className).toContain(token);
     }
   });
 });

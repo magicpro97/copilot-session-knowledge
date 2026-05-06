@@ -61,6 +61,7 @@ vi.mock("@/lib/api/hooks", () => ({
     data: null,
     isLoading: false,
     isError: false,
+    error: null,
   })),
   usePathSuggest: vi.fn(() => ({ data: { suggestions: [], count: 0 } })),
   useOperatorModelCatalog: vi.fn(() => ({
@@ -319,7 +320,9 @@ describe("SessionCreateDialog — host picker", () => {
     fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
     fireEvent.click(screen.getByRole("button", { name: "Add agent host" }));
 
-    expect(screen.getByTestId("host-add-form")).toBeInTheDocument();
+    const hostAddForm = screen.getByTestId("host-add-form");
+    expect(hostAddForm).toBeInTheDocument();
+    expect(hostAddForm.className).toContain("bg-card");
     expect(screen.getByLabelText("Tunnel URL")).toBeInTheDocument();
   });
 
@@ -1021,6 +1024,7 @@ describe("ChatShell — slash command integration", () => {
       },
       isLoading: false,
       isError: false,
+      error: null,
     } as unknown as ReturnType<typeof hooks.useSkillCatalog>);
 
     render(<ChatShell />);
@@ -1031,6 +1035,29 @@ describe("ChatShell — slash command integration", () => {
 
     expect(await screen.findByTestId("skills-list")).toBeInTheDocument();
     expect(screen.getByText("Code Review")).toBeInTheDocument();
+  });
+
+  it("shows backend upgrade guidance when the host lacks the skills catalog endpoint", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    await setupActiveSession();
+
+    vi.mocked(hooks.useSkillCatalog).mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: true,
+      error: new Error("API 404: Not Found"),
+    } as unknown as ReturnType<typeof hooks.useSkillCatalog>);
+
+    render(<ChatShell />);
+
+    const ta = screen.getByRole("textbox", { name: "Prompt" });
+    fireEvent.change(ta, { target: { value: "/skills" } });
+    fireEvent.submit(ta.closest("form")!);
+
+    expect(
+      await screen.findByText(/does not support the installed skills catalog yet/i)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Update the browse backend running on/i)).toBeInTheDocument();
   });
 
   it("opens the session editor when /session is submitted", async () => {

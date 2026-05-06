@@ -46,6 +46,7 @@ import { COPILOT_MODES } from "./session-create-dialog";
 import { SLASH_COMMANDS } from "./slash-commands";
 import { findRecoverableActiveRun, visibleHistoricalRuns, type ActiveRun } from "./run-state";
 import type {
+  HostProfile,
   OperatorRunInfo,
   OperatorSession,
   QueuedFile,
@@ -58,6 +59,25 @@ import type { CreateSessionPayload } from "./session-create-dialog";
 const SESSION_PARAM = "s";
 /** Stores the host profile id for the active session's agent host. */
 const HOST_PARAM = "h";
+
+function getSkillCatalogErrorMessage(host: HostProfile, error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+
+  if (/API 404\b/i.test(message)) {
+    return `This host does not support the installed skills catalog yet. Update the browse backend running on ${host.label}.`;
+  }
+  if (/Unauthorized/i.test(message)) {
+    return `This host rejected the installed skills request. Reconnect ${host.label} with a valid token and try again.`;
+  }
+  return `Failed to load skills from ${host.label}. Check that the browse server is running and reachable.`;
+}
+
+function getSkillCatalogUnavailableMessage(host: HostProfile): string {
+  if (!host.base_url) {
+    return "Connect a compatible agent host before opening installed skills from this hosted control plane.";
+  }
+  return `This host is not reachable from the current page. Reconnect ${host.label} with a compatible HTTPS host.`;
+}
 
 export function ChatShell() {
   const router = useRouter();
@@ -131,6 +151,15 @@ export function ChatShell() {
 
   // Lazy-loaded skill catalog — only fetched when the /skills overlay is open.
   const skillCatalogQuery = useSkillCatalog(activeHost, skillsOpen && operatorEnabled);
+  const skillCatalogMessage = useMemo(() => {
+    if (!operatorEnabled) {
+      return getSkillCatalogUnavailableMessage(activeHost);
+    }
+    if (skillCatalogQuery.isError) {
+      return getSkillCatalogErrorMessage(activeHost, skillCatalogQuery.error);
+    }
+    return null;
+  }, [activeHost, operatorEnabled, skillCatalogQuery.error, skillCatalogQuery.isError]);
 
   // Select a session → update URL (preserve host param)
   const handleSelectSession = useCallback(
@@ -430,9 +459,9 @@ export function ChatShell() {
               <p className="text-muted-foreground animate-pulse py-4 text-center text-sm">
                 Loading skills…
               </p>
-            ) : skillCatalogQuery.isError ? (
+            ) : skillCatalogMessage ? (
               <p className="text-destructive py-4 text-center text-sm">
-                Failed to load skills. Check that the browse server is running.
+                {skillCatalogMessage}
               </p>
             ) : !skillCatalogQuery.data?.skills.length ? (
               <p className="text-muted-foreground py-4 text-center text-sm">

@@ -1,10 +1,12 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Send, Loader2, Paperclip, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { POPUP_SURFACE_BASE } from "@/components/ui/popup-surface";
 import { useKeyboardPlatform } from "@/hooks/use-keyboard-platform";
 import { formatModShortcut } from "@/lib/shortcut-utils";
 import { cn } from "@/lib/utils";
@@ -27,6 +29,12 @@ type ComposerProps = {
   disabled?: boolean;
   className?: string;
   placeholder?: string;
+};
+
+type SuggestionPanelPosition = {
+  left: number;
+  top: number;
+  width: number;
 };
 
 async function readFileAsQueuedFile(file: File): Promise<QueuedFile> {
@@ -79,11 +87,52 @@ export function Composer({
   const [dragOver, setDragOver] = useState(false);
   const [suggestions, setSuggestions] = useState<SlashCommand[]>([]);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1);
+  const [suggestionPanelPosition, setSuggestionPanelPosition] = useState<SuggestionPanelPosition | null>(
+    null
+  );
+  const suggestionListId = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerFieldRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCountRef = useRef(0);
 
   const canSubmit = Boolean(value.trim()) && !loading && !disabled;
+  const activeSuggestion =
+    activeSuggestionIndex >= 0 ? suggestions[activeSuggestionIndex] ?? null : null;
+
+  useLayoutEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (suggestions.length === 0) {
+      setSuggestionPanelPosition(null);
+      return;
+    }
+
+    const updateSuggestionPanelPosition = () => {
+      const rect = composerFieldRef.current?.getBoundingClientRect();
+      if (!rect) {
+        setSuggestionPanelPosition(null);
+        return;
+      }
+      setSuggestionPanelPosition({
+        left: rect.left,
+        top: rect.top - 4,
+        width: rect.width,
+      });
+    };
+
+    updateSuggestionPanelPosition();
+    const rafId = window.requestAnimationFrame(updateSuggestionPanelPosition);
+
+    window.addEventListener("resize", updateSuggestionPanelPosition);
+    window.addEventListener("scroll", updateSuggestionPanelPosition, true);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.removeEventListener("resize", updateSuggestionPanelPosition);
+      window.removeEventListener("scroll", updateSuggestionPanelPosition, true);
+    };
+  }, [suggestions.length, value]);
 
   async function addFiles(fileList: FileList | File[]) {
     const files = Array.from(fileList);
@@ -127,21 +176,13 @@ export function Composer({
     onSubmit(prompt, files);
   }
 
-  /** Select a suggestion from the inline list. */
+  /** Accept a suggestion into the textarea without executing it yet. */
   function handleSelectSuggestion(cmd: SlashCommand) {
     setSuggestions([]);
     setActiveSuggestionIndex(-1);
-
-    if (commandHasArgs(cmd.name)) {
-      // Fill the textarea so the user can type the argument.
-      setValue(`/${cmd.name} `);
-      textareaRef.current?.focus();
-      return;
-    }
-
-    // No-arg commands: execute immediately.
-    clearDraft();
-    onCommand?.(cmd.name, "");
+    setSuggestionPanelPosition(null);
+    setValue(commandHasArgs(cmd.name) ? `/${cmd.name} ` : `/${cmd.name}`);
+    textareaRef.current?.focus();
   }
 
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
@@ -171,11 +212,20 @@ export function Composer({
         setActiveSuggestionIndex((prev) => (prev >= suggestions.length - 1 ? 0 : prev + 1));
         return;
       }
-      if ((e.key === "Enter" || e.key === "Tab") && activeSuggestionIndex >= 0) {
+      if (e.key === "Enter" && activeSuggestionIndex >= 0) {
         e.preventDefault();
         const cmd = suggestions[activeSuggestionIndex];
         if (cmd) handleSelectSuggestion(cmd);
         return;
+      }
+      if (e.key === "Tab" && !e.shiftKey) {
+        const selectedIndex = activeSuggestionIndex >= 0 ? activeSuggestionIndex : 0;
+        const cmd = suggestions[selectedIndex];
+        if (cmd) {
+          e.preventDefault();
+          handleSelectSuggestion(cmd);
+          return;
+        }
       }
     }
 
@@ -297,45 +347,66 @@ export function Composer({
           <Paperclip className="size-4" />
         </Button>
 
-        <div className="relative flex-1">
-          {/* Slash command suggestion panel */}
-          {suggestions.length > 0 ? (
-            <ul
-              role="listbox"
-              aria-label="Slash command suggestions"
-              className="bg-popover border-border absolute bottom-full left-0 z-10 mb-1 w-full overflow-hidden rounded-md border shadow-md"
-            >
-              {suggestions.map((cmd, idx) => (
-                <li key={cmd.name} role="option" aria-selected={idx === activeSuggestionIndex}>
-                  <button
-                    type="button"
-                    onMouseDown={(e) => {
-                      // Prevent textarea blur before we handle selection.
-                      e.preventDefault();
-                      handleSelectSuggestion(cmd);
-                    }}
-                    className={cn(
-                      "flex w-full items-baseline gap-2 px-3 py-2 text-left text-sm transition-colors",
-                      idx === activeSuggestionIndex
-                        ? "bg-accent text-accent-foreground"
-                        : "hover:bg-accent/50"
-                    )}
-                  >
-                    <span className="text-primary shrink-0 font-mono font-medium">/{cmd.name}</span>
-                    <span className="text-muted-foreground min-w-0 truncate text-xs">
-                      {cmd.description}
-                    </span>
-                    {cmd.usage.includes("<") ? (
-                      <span className="text-muted-foreground/60 ml-auto shrink-0 font-mono text-xs">
-                        {cmd.usage}
-                      </span>
-                    ) : null}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-
+        <div ref={composerFieldRef} className="relative flex-1">
+          {/* Slash command suggestion panel. Render in a portal so parent overflow clipping
+              cannot hide deeper entries like /skills. */}
+          {typeof document !== "undefined" && suggestions.length > 0 && suggestionPanelPosition
+            ? createPortal(
+                <ul
+                  id={suggestionListId}
+                  role="listbox"
+                  aria-label="Slash command suggestions"
+                  className={cn(
+                    POPUP_SURFACE_BASE,
+                    "fixed z-50 max-h-72 overflow-y-auto rounded-md p-1"
+                  )}
+                  style={{
+                    left: suggestionPanelPosition.left,
+                    top: suggestionPanelPosition.top,
+                    width: suggestionPanelPosition.width,
+                    transform: "translateY(-100%)",
+                  }}
+                >
+                  {suggestions.map((cmd, idx) => (
+                    <li
+                      key={cmd.name}
+                      id={`${suggestionListId}-${cmd.name}`}
+                      role="option"
+                      aria-selected={idx === activeSuggestionIndex}
+                    >
+                      <button
+                        type="button"
+                        onMouseEnter={() => setActiveSuggestionIndex(idx)}
+                        onMouseDown={(e) => {
+                          // Prevent textarea blur before we handle selection.
+                          e.preventDefault();
+                          handleSelectSuggestion(cmd);
+                        }}
+                        className={cn(
+                          "flex w-full items-baseline gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors",
+                          idx === activeSuggestionIndex
+                            ? "bg-accent text-accent-foreground"
+                            : "hover:bg-accent/50"
+                        )}
+                      >
+                        <span className="text-primary shrink-0 font-mono font-medium">
+                          /{cmd.name}
+                        </span>
+                        <span className="text-muted-foreground min-w-0 truncate text-xs">
+                          {cmd.description}
+                        </span>
+                        {cmd.usage.includes("<") ? (
+                          <span className="text-muted-foreground/60 ml-auto shrink-0 font-mono text-xs">
+                            {cmd.usage}
+                          </span>
+                        ) : null}
+                      </button>
+                    </li>
+                  ))}
+                </ul>,
+                document.body
+              )
+            : null}
           <Textarea
             ref={textareaRef}
             value={value}
@@ -350,6 +421,10 @@ export function Composer({
             aria-label="Prompt"
             aria-autocomplete="list"
             aria-expanded={suggestions.length > 0}
+            aria-controls={suggestions.length > 0 ? suggestionListId : undefined}
+            aria-activedescendant={
+              activeSuggestion ? `${suggestionListId}-${activeSuggestion.name}` : undefined
+            }
           />
         </div>
         <Button

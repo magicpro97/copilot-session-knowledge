@@ -1,31 +1,26 @@
 /**
- * Shared opaque popup/list surface styling.
+ * Shared surface styling for browse-ui overlays and embedded panels.
  *
- * All floating surfaces (select dropdowns, dropdown menus, popovers, command
- * palettes, suggestion lists) MUST use POPUP_SURFACE_BASE (or POPUP_SURFACE_BG)
- * so the surface stays fully opaque and the transparent-popup bug cannot
- * silently re-emerge.
- *
- * Usage in a component:
- *   import { cn } from "@/lib/utils";
- *   import { POPUP_SURFACE_BASE } from "@/components/ui/popup-surface";
- *
- *   // For floating panels with ring + shadow:
- *   className={cn(POPUP_SURFACE_BASE, "my-layout-classes", className)}
- *
- *   // For container-embedded surfaces (e.g. Command inside Dialog):
- *   className={cn(POPUP_SURFACE_BG, "my-layout-classes", className)}
+ * All floating surfaces (select dropdowns, dropdown menus, dialogs, popovers,
+ * suggestion lists) MUST use POPUP_SURFACE_BASE so the surface stays visually
+ * solid and readable over busy page content. Embedded panels that are not
+ * portalled can use PANEL_SURFACE_BASE / SurfacePanel.
  */
 
 /** Opaque background + foreground text shared by every popup surface. */
 export const POPUP_SURFACE_BG = "bg-popover text-popover-foreground" as const;
 
+/** Embedded card/panel surface for non-portalled forms that still need a stable background. */
+export const PANEL_SURFACE_BASE =
+  "bg-card text-card-foreground border border-border/80 shadow-sm" as const;
+
 /**
  * Full floating panel: opaque background, matching foreground, ring border,
- * and drop-shadow.  Always use this for elements that float *above* page
- * content (dropdown menus, select popups, popovers, suggestion lists).
+ * and stronger elevation. Always use this for elements that float *above* page
+ * content (dropdown menus, select popups, dialogs, popovers, suggestion lists).
  *
  * Do NOT add opacity fractions, backdrop-blur, or bg-transparent overrides —
  * popup surfaces must remain fully readable against any page background.
  */
-export const POPUP_SURFACE_BASE = `${POPUP_SURFACE_BG} ring-border shadow-md ring-1` as const;
+export const POPUP_SURFACE_BASE =
+  `${POPUP_SURFACE_BG} border border-border/80 ring-border ring-1 shadow-lg overflow-hidden` as const;
