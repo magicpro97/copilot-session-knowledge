@@ -160,10 +160,7 @@ export function WorkspacePicker({
       {open && suggestions.length > 0 ? (
         <ul
           role="listbox"
-          className={cn(
-            POPUP_SURFACE_BASE,
-            "absolute top-full z-[60] mt-1 max-h-48 w-full overflow-auto rounded-lg"
-          )}
+          className={`${POPUP_SURFACE_BASE} absolute top-full z-[60] mt-1 max-h-48 w-full overflow-auto rounded-lg`}
         >
           {suggestions.map((suggestion, index) => (
             <li
