@@ -88,7 +88,9 @@ export function deriveChunks(frames: StreamFrame[]): AssistantChunk[] {
 
   function flushText() {
     if (currentText) {
-      chunks.push({ kind: "text", text: currentText });
+      if (!isCompletionStatusSummary(currentText)) {
+        chunks.push({ kind: "text", text: currentText });
+      }
       currentText = "";
     }
   }
@@ -121,7 +123,9 @@ export function deriveChunks(frames: StreamFrame[]): AssistantChunk[] {
       if (content) {
         // Authoritative final content exists — discard deltas and use it
         currentText = "";
-        chunks.push({ kind: "text", text: content });
+        if (!isCompletionStatusSummary(content)) {
+          chunks.push({ kind: "text", text: content });
+        }
       }
       // If content is empty, keep accumulated deltas unchanged
       continue;

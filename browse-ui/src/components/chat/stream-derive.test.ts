@@ -222,6 +222,40 @@ describe("deriveChunks — real event names", () => {
     );
   });
 
+  it("does not render procedural assistant text when the real answer is task_complete content", () => {
+    const frames: CopilotStreamFrame[] = [
+      eventFrame("assistant.message_delta", { deltaContent: "Acknowledging the greeting" }),
+      eventFrame("assistant.message_delta", { deltaContent: " and closing the turn." }),
+      eventFrame("assistant.message", {
+        content: "Acknowledging the greeting and closing the turn.",
+        toolRequests: [
+          { name: "report_intent", arguments: { intent: "Answering greeting" } },
+          { name: "task_complete", arguments: { summary: "Hi hi." } },
+        ],
+      }),
+      eventFrame("tool.execution_start", {
+        toolName: "report_intent",
+        arguments: { intent: "Answering greeting" },
+      }),
+      eventFrame("tool.execution_complete", { result: { content: "Intent logged" } }),
+      eventFrame("tool.execution_start", {
+        toolName: "task_complete",
+        arguments: { summary: "Hi hi." },
+      }),
+      eventFrame("tool.execution_complete", {
+        result: { content: "Hi hi.", detailedContent: "✓ Task completed: Hi hi." },
+      }),
+      eventFrame("session.task_complete", { summary: "Hi hi.", success: true }),
+    ];
+
+    const chunks = deriveChunks(frames);
+    const textChunks = chunks.filter((chunk) => chunk.kind === "text");
+    expect(textChunks).toEqual([{ kind: "text", text: "Hi hi." }]);
+    expect(textChunks.some((chunk) => chunk.text.includes("Acknowledging the greeting"))).toBe(
+      false
+    );
+  });
+
   it("still promotes terse but user-facing completion answers", () => {
     const frames: CopilotStreamFrame[] = [
       eventFrame("tool.execution_start", {

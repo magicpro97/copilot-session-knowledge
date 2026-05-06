@@ -346,7 +346,7 @@ The console launches a fresh Copilot CLI process per prompt so hooks, permission
 
 | Indicator | Where it appears | What it means |
 |-----------|-----------------|---------------|
-| **Final answer text** | AssistantBubble body | Promoted from user-facing `session.task_complete` summary or `task_complete` tool result; procedural completion summaries such as "Acknowledging the greeting and closing the turn." remain tool/status detail instead of being shown as the assistant answer. |
+| **Final answer text** | AssistantBubble body | Promoted from user-facing `assistant.message`, `session.task_complete` summary, or `task_complete` tool result; procedural completion summaries such as "Acknowledging the greeting and closing the turn." are suppressed even when the CLI emits them as assistant text. |
 | **Elapsed duration** | AssistantBubble footer (e.g. `41s`, `2m 5s`) | Wall-clock time from `started_at` to `finished_at`; shown only after the run finishes. |
 | **Context badge** | MetadataBar (session header) | `context ready` (green) when `resume_ready: true`; `new context` otherwise. Reflects whether the active host offered a resumable context window. |
 
