@@ -184,7 +184,7 @@ jobs:
             changed_files="$(git diff --name-only "${BEFORE_SHA}" "${AFTER_SHA}")"
           fi
 
-          if printf '%s\n' "$changed_files" | grep -Eq '^browse-ui/(src/|public/|scripts/|package\.json$|pnpm-lock\.yaml$|next\.config\.ts$|tsconfig\.json$|postcss\.config\.mjs$|eslint\.config\.mjs$|components\.json$)'; then
+          if printf '%s\n' "$changed_files" | grep -Eq '^(firebase\.json|browse-ui/(src/|public/|scripts/|package\.json$|pnpm-lock\.yaml$|next\.config\.ts$|tsconfig\.json$|postcss\.config\.mjs$|eslint\.config\.mjs$|components\.json$))'; then
             echo "should_dispatch=true" >> "$GITHUB_OUTPUT"
           else
             echo "should_dispatch=false" >> "$GITHUB_OUTPUT"

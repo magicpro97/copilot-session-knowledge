@@ -95,6 +95,8 @@ def handle_api_retro_summary(db, params, token, nonce) -> tuple:
             [sys.executable, str(_RETRO_SCRIPT), "--json", "--mode", mode, "--no-cache"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_TIMEOUT_S,
             cwd=str(_TOOLS_DIR),
         )

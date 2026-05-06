@@ -6,6 +6,12 @@
       "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
       "cleanUrls": true,
       "trailingSlash": true,
+      "rewrites": [
+        {
+          "regex": "/sessions/[^/]+(/.*)?",
+          "destination": "/sessions/_placeholder/index.html"
+        }
+      ],
       "headers": [
         {
           "source": "/_next/static/**",

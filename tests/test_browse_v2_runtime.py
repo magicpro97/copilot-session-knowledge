@@ -578,9 +578,15 @@ def _run_new_endpoint_tests() -> int:
             self.stdout = stdout
             self.returncode = returncode
 
-    def _fake_run13(args, capture_output, text, timeout, cwd):
+    def _fake_run13(args, capture_output, text, encoding, errors, timeout, cwd):
         del capture_output, text, timeout, cwd
-        calls13.append(list(args))
+        calls13.append(
+            {
+                "args": list(args),
+                "encoding": encoding,
+                "errors": errors,
+            }
+        )
         mode = "repo"
         if "--mode" in args:
             mode = str(args[args.index("--mode") + 1])
@@ -617,9 +623,13 @@ def _run_new_endpoint_tests() -> int:
         test(
             "V13: retro API invokes retro.py with --no-cache and repo mode",
             bool(calls13)
-            and "--no-cache" in calls13[0]
-            and "--mode" in calls13[0]
-            and calls13[0][calls13[0].index("--mode") + 1] == "repo",
+            and "--no-cache" in calls13[0]["args"]
+            and "--mode" in calls13[0]["args"]
+            and calls13[0]["args"][calls13[0]["args"].index("--mode") + 1] == "repo",
+        )
+        test(
+            "V13: retro API decodes subprocess output as UTF-8 on Windows",
+            bool(calls13) and calls13[0]["encoding"] == "utf-8" and calls13[0]["errors"] == "replace",
         )
 
         status13b, _, body13b = _get(host13, port13, "/api/retro/summary?token=tok&mode=local")
@@ -627,7 +637,9 @@ def _run_new_endpoint_tests() -> int:
         test("V13: retro API accepts local mode explicitly", status13b == 200 and payload13b.get("mode") == "local")
         test(
             "V13: retro API forwards explicit local mode to retro.py",
-            len(calls13) >= 2 and "--mode" in calls13[1] and calls13[1][calls13[1].index("--mode") + 1] == "local",
+            len(calls13) >= 2
+            and "--mode" in calls13[1]["args"]
+            and calls13[1]["args"][calls13[1]["args"].index("--mode") + 1] == "local",
         )
 
         status13c, headers13c, body13c = _get(host13, port13, "/retro?token=tok")
