@@ -1,9 +1,10 @@
 import "@testing-library/jest-dom";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { Transcript } from "@/components/chat/transcript";
 import { LOCAL_HOST } from "@/lib/host-profiles";
+import type { UseOperatorStreamResult } from "./use-operator-stream";
 
 const REMOTE_HOST = {
   id: "tunnel-1",
@@ -21,7 +22,11 @@ beforeAll(() => {
 import type { HostProfile } from "@/lib/api/types";
 
 const mockUseOperatorStream = vi.fn(
-  (sessionId: string | null, runId: string | null, host?: HostProfile | null) => {
+  (
+    sessionId: string | null,
+    runId: string | null,
+    host?: HostProfile | null
+  ): UseOperatorStreamResult => {
     void sessionId;
     void runId;
     void host;
@@ -110,6 +115,34 @@ describe("Transcript", () => {
 
     expect(mockUseOperatorStream).toHaveBeenCalledWith("session-l2", "run-l2", LOCAL_HOST);
   });
+
+  it("auto-scrolls while an active run is streaming", async () => {
+    const scrollSpy = vi.fn();
+    window.HTMLElement.prototype.scrollIntoView = scrollSpy;
+    mockUseOperatorStream.mockReturnValueOnce({
+      frames: [
+        {
+          type: "assistant.message_delta",
+          idx: 0,
+          event: { type: "assistant.message_delta", data: { deltaContent: "Hello" } },
+          data: { deltaContent: "Hello" },
+        },
+      ],
+      status: "streaming" as const,
+      exitCode: null,
+    });
+
+    render(
+      <Transcript
+        runs={[]}
+        activeRun={{ id: "run-streaming", prompt: "Hello" }}
+        sessionId="session-streaming"
+      />
+    );
+
+    await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
+    expect(screen.getAllByText("Hello")).toHaveLength(2);
+  });
 });
 
 // ── Regression: HistoricalRun rendering ─────────────────────────────────────
@@ -166,6 +199,42 @@ describe("Transcript — historical runs", () => {
     });
     render(<Transcript runs={[run]} sessionId="sess-1" />);
     expect(screen.getByText("I am GPT-5.4.")).toBeInTheDocument();
+  });
+
+  it("does not render procedural task_complete summary as the assistant answer", () => {
+    const run = makeRun({
+      prompt: "hi",
+      events: [
+        {
+          type: "tool.execution_start",
+          idx: 0,
+          event: {
+            type: "tool.execution_start",
+            data: {
+              toolName: "task_complete",
+              arguments: { summary: "Acknowledging the greeting and closing the turn." },
+            },
+          },
+          data: {
+            toolName: "task_complete",
+            arguments: { summary: "Acknowledging the greeting and closing the turn." },
+          },
+        },
+        {
+          type: "tool.execution_complete",
+          idx: 1,
+          event: {
+            type: "tool.execution_complete",
+            data: { result: { content: "Acknowledging the greeting and closing the turn." } },
+          },
+          data: { result: { content: "Acknowledging the greeting and closing the turn." } },
+        },
+      ],
+    });
+
+    render(<Transcript runs={[run]} sessionId="sess-1" />);
+    expect(screen.queryByText("Acknowledging the greeting and closing the turn.")).toBeNull();
+    expect(screen.getByText("task_complete")).toBeInTheDocument();
   });
 
   it("renders elapsed duration for a completed historical run", () => {

@@ -739,6 +739,7 @@ export function useOperatorRuns(sessionId: string, enabled = true, host: HostPro
     queryKey: queryKeys.operatorRuns(sessionId, host.id),
     staleTime: STALE_TIMES.sessionDetail,
     gcTime: CACHE_TIMES.sessionDetail,
+    refetchOnMount: "always",
     enabled: enabled && Boolean(sessionId),
     queryFn: async (): Promise<OperatorRunsResponse> => {
       const data = await hostFetch<OperatorRunsResponse>(

@@ -184,17 +184,59 @@ describe("deriveChunks — real event names", () => {
     expect(textChunks[0]).toEqual({ kind: "text", text: "The answer is 42." });
   });
 
-  it("promotes session.task_complete summary as visible text", () => {
+  it("promotes user-facing session.task_complete summary as visible text", () => {
     // Real Test-session shape: session.task_complete event carries the final summary.
     const frames: CopilotStreamFrame[] = [
       eventFrame("session.task_complete", {
-        summary: "Session finished successfully.",
+        summary: "Mình được vận hành bởi GPT-5.5.",
         success: true,
       }),
     ];
     const chunks = deriveChunks(frames);
     expect(chunks).toHaveLength(1);
-    expect(chunks[0]).toEqual({ kind: "text", text: "Session finished successfully." });
+    expect(chunks[0]).toEqual({ kind: "text", text: "Mình được vận hành bởi GPT-5.5." });
+  });
+
+  it("does not promote procedural task_complete summaries as assistant answers", () => {
+    const frames: CopilotStreamFrame[] = [
+      eventFrame("tool.execution_start", {
+        toolName: "task_complete",
+        arguments: { summary: "Acknowledging the greeting and closing the turn." },
+      }),
+      eventFrame("tool.execution_complete", {
+        result: {
+          content: "Acknowledging the greeting and closing the turn.",
+          detailedContent: "Acknowledging the greeting and closing the turn.",
+        },
+      }),
+      eventFrame("session.task_complete", {
+        summary: "Acknowledging the greeting and closing the turn.",
+        success: true,
+      }),
+    ];
+
+    const chunks = deriveChunks(frames);
+    expect(chunks.filter((chunk) => chunk.kind === "text")).toHaveLength(0);
+    expect(chunks.some((chunk) => chunk.kind === "tool" && chunk.name === "task_complete")).toBe(
+      true
+    );
+  });
+
+  it("still promotes terse but user-facing completion answers", () => {
+    const frames: CopilotStreamFrame[] = [
+      eventFrame("tool.execution_start", {
+        toolName: "task_complete",
+        arguments: { summary: "Task completed." },
+      }),
+      eventFrame("tool.execution_complete", {
+        result: { content: "Task completed.", detailedContent: "Task completed." },
+      }),
+    ];
+
+    const chunks = deriveChunks(frames);
+    expect(chunks.filter((chunk) => chunk.kind === "text")).toEqual([
+      { kind: "text", text: "Task completed." },
+    ]);
   });
 
   it("does not double-promote when both task_complete tool and session.task_complete are present", () => {

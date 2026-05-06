@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import { formatDistanceToNow } from "date-fns";
 
@@ -53,22 +53,34 @@ type ActiveRunProps = {
   prompt: string;
   files?: RunFileMetadata[];
   host?: HostProfile | null;
-  onDone?: () => void;
+  onDone?: (status: "done" | "error", runId: string) => void;
+  onProgress?: () => void;
 };
 
-function ActiveRun({ sessionId, runId, prompt, files, host, onDone }: ActiveRunProps) {
+function ActiveRun({ sessionId, runId, prompt, files, host, onDone, onProgress }: ActiveRunProps) {
   const { frames, status, exitCode } = useOperatorStream(sessionId, runId, host);
   const onDoneRef = useRef(onDone);
+  const onProgressRef = useRef(onProgress);
 
   useEffect(() => {
     onDoneRef.current = onDone;
   }, [onDone]);
 
   useEffect(() => {
+    onProgressRef.current = onProgress;
+  }, [onProgress]);
+
+  useEffect(() => {
     if (status === "done" || status === "error") {
-      onDoneRef.current?.();
+      onDoneRef.current?.(status, runId);
     }
-  }, [status]);
+  }, [runId, status]);
+
+  useEffect(() => {
+    if (status !== "idle") {
+      onProgressRef.current?.();
+    }
+  }, [frames.length, status]);
 
   const chunks = deriveChunks(frames);
   const streamFiles = extractFilePaths(chunks);
@@ -92,7 +104,7 @@ type TranscriptProps = {
   /** Host profile for the active session — used to route the live SSE stream. */
   host?: HostProfile | null;
   loading?: boolean;
-  onRunDone?: () => void;
+  onRunDone?: (status: "done" | "error", runId: string) => void;
 };
 
 /**
@@ -108,10 +120,15 @@ export function Transcript({
   onRunDone,
 }: TranscriptProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollToBottom = useCallback(() => {
+    requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    });
+  }, []);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [runs.length, activeRun?.id]);
+    scrollToBottom();
+  }, [runs.length, activeRun?.id, loading, scrollToBottom]);
 
   if (loading) {
     return (
@@ -150,6 +167,7 @@ export function Transcript({
           files={activeRun.files}
           host={host}
           onDone={onRunDone}
+          onProgress={scrollToBottom}
         />
       ) : null}
       <div ref={bottomRef} />

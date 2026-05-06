@@ -764,6 +764,39 @@ def test_oc28_list_runs_includes_terminal_in_memory_run():
             _ACTIVE_RUNS.pop(run_id, None)
 
 
+def test_oc45_list_runs_includes_running_in_memory_run_for_reload_reconnect():
+    import uuid
+
+    session = create_session("history-running-reconnect")
+    run_id = str(uuid.uuid4())
+    run = {
+        "id": run_id,
+        "session_id": session["id"],
+        "prompt": "still running",
+        "status": "running",
+        "started_at": "2025-03-01T09:15:00+00:00",
+        "finished_at": None,
+        "exit_code": None,
+        "events": [],
+        "proc": None,
+    }
+
+    with _RUNS_LOCK:
+        _ACTIVE_RUNS[run_id] = run
+
+    try:
+        runs = list_runs(session["id"])
+        test(
+            "OC45: running in-memory run included for reload reconnect",
+            any(item.get("id") == run_id and item.get("status") == "running" for item in runs),
+        )
+        exposed = next((item for item in runs if item.get("id") == run_id), None)
+        test("OC45: proc handle stripped from running history", exposed is not None and "proc" not in exposed)
+    finally:
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS.pop(run_id, None)
+
+
 def test_oc29_persist_run_evicts_terminal_in_memory_entry():
     import uuid
 
@@ -1579,6 +1612,35 @@ def _run_api_tests(port: int):
         if len(runs18) == 2:
             test("API18: first persisted run is oldest", runs18[0].get("started_at") == early_started)
             test("API18: second persisted run is newest", runs18[1].get("started_at") == late_started)
+
+        running_id = str(_uuid_history.uuid4())
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS[running_id] = {
+                "id": running_id,
+                "session_id": history_session_id,
+                "prompt": "running after reload",
+                "status": "running",
+                "started_at": "2025-03-01T09:02:00+00:00",
+                "finished_at": None,
+                "exit_code": None,
+                "events": [],
+                "attachments": [{"path": "/private/staged.txt"}],
+                "proc": None,
+            }
+        try:
+            resp18b = _get(port, f"/api/operator/sessions/{history_session_id}/runs")
+            test("API18b: runs endpoint includes active run → 200", resp18b.status == 200)
+            data18b = _read_json(resp18b)
+            runs18b = data18b.get("runs", [])
+            active18b = next((run for run in runs18b if run.get("id") == running_id), None)
+            test("API18b: active running run is returned", active18b is not None)
+            test(
+                "API18b: active run is public-safe",
+                active18b is not None and "attachments" not in active18b and "proc" not in active18b,
+            )
+        finally:
+            with _RUNS_LOCK:
+                _ACTIVE_RUNS.pop(running_id, None)
 
         _post(port, f"/api/operator/sessions/{history_session_id}/delete")
 

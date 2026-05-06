@@ -58,6 +58,16 @@ function parseTelemetryPathList(raw: unknown): string[] {
   return [];
 }
 
+function isCompletionStatusSummary(text: string): boolean {
+  const normalized = text.trim().replace(/\s+/g, " ").toLowerCase();
+  if (!normalized) return false;
+  return (
+    /^acknowledg(?:e|ing)\b.*\bclosing the turn\.?$/.test(normalized) ||
+    /^closing the turn\.?$/.test(normalized) ||
+    /^session finished successfully\.?$/.test(normalized)
+  );
+}
+
 /** Derive display chunks from a flat list of stream frames.
  *
  *  Real Copilot CLI 1.0.40 event names:
@@ -167,9 +177,10 @@ export function deriveChunks(frames: StreamFrame[]): AssistantChunk[] {
             toolChunk.addedPaths = addedPaths;
           }
 
-          // Promote task_complete tool result as visible assistant text.
-          // task_complete is Copilot autopilot's terminal completion tool; its
-          // result.content carries the final answer that should be shown to the user.
+          // Promote task_complete tool result only when it carries user-facing
+          // answer text. Some Copilot turns emit procedural summaries such as
+          // "Acknowledging the greeting and closing the turn."; those are
+          // completion status, not the assistant's reply.
           if (toolChunk.name === "task_complete" && !taskCompletePromoted) {
             const promotedContent =
               typeof result?.content === "string"
@@ -177,7 +188,7 @@ export function deriveChunks(frames: StreamFrame[]): AssistantChunk[] {
                 : typeof detailedContent === "string"
                   ? detailedContent
                   : "";
-            if (promotedContent) {
+            if (promotedContent && !isCompletionStatusSummary(promotedContent)) {
               taskCompletePromoted = true;
               flushText();
               chunks.push({ kind: "text", text: promotedContent });
@@ -194,7 +205,7 @@ export function deriveChunks(frames: StreamFrame[]): AssistantChunk[] {
     // Promote as visible text only if not already done via tool.execution_complete.
     if (eventType === "session.task_complete") {
       const summary = (data as { summary?: string } | undefined)?.summary ?? "";
-      if (summary && !taskCompletePromoted) {
+      if (summary && !taskCompletePromoted && !isCompletionStatusSummary(summary)) {
         taskCompletePromoted = true;
         flushText();
         chunks.push({ kind: "text", text: summary });

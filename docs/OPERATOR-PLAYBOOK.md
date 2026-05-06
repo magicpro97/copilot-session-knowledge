@@ -331,6 +331,10 @@ Each operator session persists its run history under:
 
 Historical runs are replayed from disk on refresh, so the transcript and file-review context survive browser reloads and browse-server restarts.
 
+If the browser reloads while a run is still executing, the backend keeps the run alive as long as the browse server process is still running. On page load, `/chat` refetches the active session's run list, rediscovers any non-terminal run, and reconnects the live stream instead of waiting for the run to finish first.
+
+The console launches a fresh Copilot CLI process per prompt so hooks, permissions, and current CLI behavior remain intact. This means model/agent response time is dominated by Copilot CLI startup, context resume, hooks, and model latency; the UI should still show the submitted prompt immediately, auto-scroll streamed output, and report elapsed wall-clock time after completion.
+
 ### Guardrails
 
 - All workspaces and file-review paths are normalized against `~/`; paths outside `Path.home()` are rejected.
@@ -342,7 +346,7 @@ Historical runs are replayed from disk on refresh, so the transcript and file-re
 
 | Indicator | Where it appears | What it means |
 |-----------|-----------------|---------------|
-| **Final answer text** | AssistantBubble body | Promoted from `session.task_complete` summary or `task_complete` tool result; previously could appear blank if content arrived via top-level fields instead of nested `data`. |
+| **Final answer text** | AssistantBubble body | Promoted from user-facing `session.task_complete` summary or `task_complete` tool result; procedural completion summaries such as "Acknowledging the greeting and closing the turn." remain tool/status detail instead of being shown as the assistant answer. |
 | **Elapsed duration** | AssistantBubble footer (e.g. `41s`, `2m 5s`) | Wall-clock time from `started_at` to `finished_at`; shown only after the run finishes. |
 | **Context badge** | MetadataBar (session header) | `context ready` (green) when `resume_ready: true`; `new context` otherwise. Reflects whether the active host offered a resumable context window. |
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { Bot, Globe, Menu, PanelLeftClose, PanelLeftOpen, ServerCog } from "lucide-react";
 
@@ -30,6 +30,7 @@ import { SessionCreateDialog } from "./session-create-dialog";
 import { MetadataBar } from "./metadata-bar";
 import { Transcript } from "./transcript";
 import { Composer } from "./composer";
+import { findRecoverableActiveRun, visibleHistoricalRuns, type ActiveRun } from "./run-state";
 import type {
   OperatorRunInfo,
   OperatorSession,
@@ -42,8 +43,6 @@ const SESSION_PARAM = "s";
 /** Stores the host profile id for the active session's agent host. */
 const HOST_PARAM = "h";
 
-type ActiveRun = { id: string; prompt: string; files?: RunFileMetadata[] };
-
 export function ChatShell() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -53,6 +52,7 @@ export function ChatShell() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
+  const [suppressedRecoveryRunId, setSuppressedRecoveryRunId] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const activeSessionId = searchParams.get(SESSION_PARAM) ?? null;
@@ -105,6 +105,7 @@ export function ChatShell() {
       params.set(SESSION_PARAM, id);
       router.push(`${pathname}?${params.toString()}`);
       setActiveRun(null);
+      setSuppressedRecoveryRunId(null);
       setSubmitError(null);
       setMobileSidebarOpen(false);
     },
@@ -130,6 +131,7 @@ export function ChatShell() {
             }
             router.push(`${pathname}?${params.toString()}`);
             setActiveRun(null);
+            setSuppressedRecoveryRunId(null);
             setSubmitError(null);
             setMobileSidebarOpen(false);
           },
@@ -149,6 +151,7 @@ export function ChatShell() {
             params.delete(SESSION_PARAM);
             router.push(`${pathname}?${params.toString()}`);
             setActiveRun(null);
+            setSuppressedRecoveryRunId(null);
           }
         },
       });
@@ -173,6 +176,7 @@ export function ChatShell() {
         { prompt, files: files.length > 0 ? files : undefined },
         {
           onSuccess: (result) => {
+            setSuppressedRecoveryRunId(null);
             setActiveRun({
               id: result.run_id,
               prompt,
@@ -191,23 +195,45 @@ export function ChatShell() {
 
   // Keep the active run rendered until persisted history refresh completes to
   // avoid a brief "disappearing reply" window after the stream closes.
-  const handleRunDone = useCallback(() => {
-    if (activeSessionId) {
-      void Promise.allSettled([sessionQuery.refetch(), runsQuery.refetch()]).finally(() => {
-        setActiveRun(null);
-      });
+  const handleRunDone = useCallback(
+    (status: "done" | "error", runId: string) => {
+      setSuppressedRecoveryRunId(status === "error" ? runId : null);
+      if (activeSessionId) {
+        void Promise.allSettled([sessionQuery.refetch(), runsQuery.refetch()]).finally(() => {
+          setActiveRun(null);
+        });
+        return;
+      }
+      setActiveRun(null);
+    },
+    [activeSessionId, runsQuery, sessionQuery]
+  );
+
+  const allRuns = useMemo(() => runsQuery.data?.runs ?? [], [runsQuery.data]);
+
+  useEffect(() => {
+    if (activeRun || !activeSessionId || runsQuery.isLoading || !runsQuery.isFetchedAfterMount) {
       return;
     }
-    setActiveRun(null);
-  }, [activeSessionId, runsQuery, sessionQuery]);
+    const recovered = findRecoverableActiveRun(allRuns, suppressedRecoveryRunId);
+    if (recovered) {
+      setActiveRun(recovered);
+    }
+  }, [
+    activeRun,
+    activeSessionId,
+    allRuns,
+    runsQuery.isFetchedAfterMount,
+    runsQuery.isLoading,
+    suppressedRecoveryRunId,
+  ]);
 
   // While an active run is still streaming, hide its persisted copy if it has
   // already landed in history so the transcript shows it exactly once.
-  const runs: OperatorRunInfo[] = useMemo(() => {
-    const allRuns = runsQuery.data?.runs ?? [];
-    if (!activeRun) return allRuns;
-    return allRuns.filter((run) => run.id !== activeRun.id);
-  }, [activeRun, runsQuery.data]);
+  const runs: OperatorRunInfo[] = useMemo(
+    () => visibleHistoricalRuns(allRuns, activeRun),
+    [activeRun, allRuns]
+  );
 
   const isRunning = promptMutation.isPending || activeRun !== null;
 

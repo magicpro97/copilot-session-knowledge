@@ -296,8 +296,9 @@ def _load_persisted_run(run_id: str, session_id: str = "") -> dict | None:
 def list_runs(session_id: str) -> list:
     """Return session runs in chronological order.
 
-    Includes terminal in-memory runs for the brief window before they are flushed
-    to disk so chat history does not momentarily lose a completed run.
+    Includes in-memory runs before they are flushed to disk. Non-terminal runs are
+    intentionally included so a reloaded browser can rediscover and reconnect to
+    the currently running stream.
     """
     if not _is_valid_id(session_id or ""):
         return []
@@ -319,8 +320,6 @@ def list_runs(session_id: str) -> list:
     with _RUNS_LOCK:
         for run in _ACTIVE_RUNS.values():
             if run.get("session_id") != session_id:
-                continue
-            if run.get("status") not in _TERMINAL_RUN_STATUSES:
                 continue
             run_id = run.get("id", "")
             if not _is_valid_id(run_id):
