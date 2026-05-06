@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { MUTABLE_OPERATOR_SESSION_MODES } from "./types";
+
 export const sessionRowSchema = z.object({
   id: z.string(),
   path: z.string().nullable(),
@@ -621,6 +623,35 @@ export const skillMetricsResponseSchema = z.object({
   }),
 });
 
+// ── Skill catalog (/api/skills/catalog GET) ─────────────────────────────────
+
+export const skillSourceKindSchema = z.enum(["global", "project"]);
+
+export const skillStatusSchema = z.enum(["installed", "unavailable"]);
+
+/** A single skill entry returned by `GET /api/skills/catalog`. */
+export const skillCatalogEntrySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  source_path: z.string(),
+  source_kind: skillSourceKindSchema,
+  status: skillStatusSchema,
+});
+
+/** Response from `GET /api/skills/catalog`. */
+export const skillCatalogResponseSchema = z.object({
+  skills: z.array(skillCatalogEntrySchema),
+  total: z.number(),
+  sources: z.object({
+    global: z.string(),
+    project: z.string().nullable(),
+  }),
+  runtime: z.object({
+    generated_at: z.string(),
+  }),
+});
+
 export const feedbackRequestSchema = z.object({
   query: z.string(),
   result_id: z.string(),
@@ -904,6 +935,21 @@ export const createOperatorSessionRequestSchema = z.object({
   workspace: z.string(),
   add_dirs: z.array(z.string()).optional(),
 });
+
+/** Request body for `PATCH /api/operator/sessions/{id}`. At least one field must be present. */
+export const updateOperatorSessionRequestSchema = z
+  .object({
+    /** New display name (max 128 chars). */
+    name: z.string().max(128).optional(),
+    /** Model identifier to switch to (max 64 chars). */
+    model: z.string().max(64).optional(),
+    /** Session mode to switch to (e.g. "interactive", "plan", "autopilot"). */
+    mode: z.enum(MUTABLE_OPERATOR_SESSION_MODES).optional(),
+  })
+  .refine(
+    (data) => data.name !== undefined || data.model !== undefined || data.mode !== undefined,
+    { message: "At least one mutable field (name, model, mode) must be provided." }
+  );
 
 /** Schema for a single file queued before prompt submission. */
 export const queuedFileSchema = z.object({

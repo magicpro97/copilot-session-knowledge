@@ -28,6 +28,7 @@ import {
   trendScoutStatusResponseSchema,
   tentacleStatusResponseSchema,
   skillMetricsResponseSchema,
+  skillCatalogResponseSchema,
   similarityResponseSchema,
   sessionsResponseSchema,
   workflowHealthResponseSchema,
@@ -41,6 +42,7 @@ import {
   filePreviewResponseSchema,
   fileDiffResponseSchema,
   createOperatorSessionRequestSchema,
+  updateOperatorSessionRequestSchema,
   operatorModelCatalogResponseSchema,
 } from "@/lib/api/schemas";
 import type {
@@ -67,6 +69,7 @@ import type {
   TrendScoutStatusResponse,
   TentacleStatusResponse,
   SkillMetricsResponse,
+  SkillCatalogResponse,
   SessionDetailResponse,
   SessionListResponse,
   SessionsResponse,
@@ -74,6 +77,7 @@ import type {
   OperatorSession,
   OperatorSessionListResponse,
   CreateOperatorSessionRequest,
+  UpdateOperatorSessionRequest,
   PromptRequest,
   PromptSubmitResponse,
   OperatorRunStatus,
@@ -129,6 +133,7 @@ export const queryKeys = {
   scoutResearchPack: (hostId = LOCAL_HOST_ID) => ["scout-research-pack", hostId] as const,
   tentacleStatus: (hostId = LOCAL_HOST_ID) => ["tentacle-status", hostId] as const,
   skillMetrics: (hostId = LOCAL_HOST_ID) => ["skill-metrics", hostId] as const,
+  skillCatalog: (hostId = LOCAL_HOST_ID) => ["skill-catalog", hostId] as const,
   dashboard: (hostId = LOCAL_HOST_ID) => ["dashboard", hostId] as const,
   graphLegacy: (params: GraphQueryParams = {}, hostId = LOCAL_HOST_ID) =>
     ["graph-legacy", hostId, params] as const,
@@ -606,6 +611,30 @@ export function useSkillMetrics(host: HostProfile = LOCAL_HOST, enabled = true) 
   });
 }
 
+/**
+ * Fetches the installed skill catalog from the connected host.
+ *
+ * Calls `GET /api/skills/catalog` and returns the list of globally- and
+ * project-installed Copilot skills along with their metadata.  The response
+ * degrades gracefully: when no skills are installed the endpoint returns an
+ * empty `skills` array (not an error).
+ */
+export function useSkillCatalog(host: HostProfile = LOCAL_HOST, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.skillCatalog(host.id),
+    staleTime: STALE_TIMES.health,
+    gcTime: CACHE_TIMES.health,
+    enabled,
+    queryFn: async (): Promise<SkillCatalogResponse> => {
+      const data = await hostFetch<SkillCatalogResponse>(
+        withLeadingSlash("/api/skills/catalog"),
+        host
+      );
+      return skillCatalogResponseSchema.parse(data);
+    },
+  });
+}
+
 export function useCompare(
   sessionA: string,
   sessionB: string,
@@ -796,6 +825,39 @@ export function useDeleteOperatorSession(host: HostProfile = LOCAL_HOST) {
       queryClient.invalidateQueries({ queryKey: queryKeys.operatorSessions(host.id) });
       queryClient.removeQueries({ queryKey: queryKeys.operatorSession(sessionId, host.id) });
       queryClient.removeQueries({ queryKey: queryKeys.operatorRuns(sessionId, host.id) });
+    },
+  });
+}
+
+export function useUpdateOperatorSession(sessionId: string, host: HostProfile = LOCAL_HOST) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      payload,
+      host: overrideHost,
+    }: {
+      payload: UpdateOperatorSessionRequest;
+      host?: HostProfile;
+    }): Promise<OperatorSession> => {
+      const targetHost = overrideHost ?? host;
+      const data = await hostFetch<OperatorSession>(
+        withLeadingSlash(`/api/operator/sessions/${encodeURIComponent(sessionId)}`),
+        targetHost,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updateOperatorSessionRequestSchema.parse(payload)),
+        }
+      );
+      return operatorSessionSchema.parse(data);
+    },
+    onSuccess: (_data, variables) => {
+      const targetHost = variables.host ?? host;
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.operatorSession(sessionId, targetHost.id),
+      });
+      queryClient.invalidateQueries({ queryKey: queryKeys.operatorSessions(targetHost.id) });
     },
   });
 }

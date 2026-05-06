@@ -13,6 +13,8 @@ import {
   normalizeSessionsResponse,
   queryKeys,
   useCreateOperatorSession,
+  useUpdateOperatorSession,
+  useSkillCatalog,
 } from "@/lib/api/hooks";
 import { LOCAL_HOST, LOCAL_HOST_ID } from "@/lib/host-profiles";
 
@@ -317,6 +319,82 @@ describe("api hooks helpers", () => {
     });
   });
 
+  it("useUpdateOperatorSession sends PATCH to the correct endpoint", async () => {
+    const updatedSession = {
+      id: "sess-update",
+      name: "Updated Name",
+      model: "gpt-5.4",
+      mode: "interactive",
+      workspace: "~/project",
+      add_dirs: [],
+      created_at: "2024-01-01T00:00:00Z",
+      updated_at: "2024-06-01T00:00:00Z",
+      run_count: 1,
+      last_run_id: null,
+      resume_ready: false,
+    };
+    vi.mocked(hostFetch).mockResolvedValue(updatedSession);
+
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useUpdateOperatorSession("sess-update", LOCAL_HOST), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ payload: { name: "Updated Name" } });
+    });
+
+    const [calledPath, calledHost, calledInit] = vi.mocked(hostFetch).mock.calls.at(-1) ?? [];
+    expect(calledPath).toContain("/api/operator/sessions/sess-update");
+    expect((calledInit as RequestInit | undefined)?.method).toBe("PATCH");
+    expect(calledHost).toMatchObject({ id: LOCAL_HOST.id });
+  });
+
+  it("useUpdateOperatorSession uses a per-call host override", async () => {
+    const updatedSession = {
+      id: "sess-override",
+      name: "Remote Updated",
+      model: "claude-sonnet-4.6",
+      mode: "plan",
+      workspace: "~/other",
+      add_dirs: [],
+      created_at: "2024-01-01T00:00:00Z",
+      updated_at: "2024-07-01T00:00:00Z",
+      run_count: 0,
+      last_run_id: null,
+      resume_ready: false,
+    };
+    vi.mocked(hostFetch).mockResolvedValue(updatedSession);
+
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useUpdateOperatorSession("sess-override", LOCAL_HOST), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ payload: { mode: "plan" }, host: REMOTE_HOST });
+    });
+
+    const [, calledHost] = vi.mocked(hostFetch).mock.calls.at(-1) ?? [];
+    expect(calledHost).toMatchObject({ id: REMOTE_HOST.id, base_url: REMOTE_HOST.base_url });
+  });
+
   // ── Insights data query keys (host-scoped) ───────────────────────────
 
   it("insights query keys default to LOCAL_HOST_ID when no host is given", () => {
@@ -352,6 +430,21 @@ describe("api hooks helpers", () => {
     );
     expect(queryKeys.workflowHealth(REMOTE_HOST.id)).toEqual(["workflow-health", REMOTE_HOST.id]);
   });
+
+  it("skillCatalog query key defaults to LOCAL_HOST_ID", () => {
+    expect(queryKeys.skillCatalog()).toEqual(["skill-catalog", LOCAL_HOST_ID]);
+  });
+
+  it("skillCatalog query key is scoped by hostId to prevent cache collisions", () => {
+    expect(queryKeys.skillCatalog(LOCAL_HOST_ID)).not.toEqual(
+      queryKeys.skillCatalog(REMOTE_HOST.id)
+    );
+    expect(queryKeys.skillCatalog(REMOTE_HOST.id)).toEqual(["skill-catalog", REMOTE_HOST.id]);
+  });
+
+  it("skillCatalog query key is distinct from skillMetrics query key", () => {
+    expect(queryKeys.skillCatalog()).not.toEqual(queryKeys.skillMetrics());
+  });
 });
 
 describe("createLiveStreamUrl", () => {
@@ -380,5 +473,77 @@ describe("createLiveStreamUrl", () => {
     const hostWithPrefix = { ...REMOTE_HOST, base_url: "https://proxy.example.com/copilot" };
     const url = createLiveStreamUrl(hostWithPrefix);
     expect(url).toBe("https://proxy.example.com/copilot/api/live");
+  });
+});
+
+describe("useSkillCatalog", () => {
+  const EMPTY_CATALOG = {
+    skills: [],
+    total: 0,
+    sources: { global: "/home/user/.copilot/skills", project: null },
+    runtime: { generated_at: "2026-01-01T00:00:00Z" },
+  };
+
+  it("fetches the skill catalog and returns the parsed response", async () => {
+    vi.mocked(hostFetch).mockResolvedValue(EMPTY_CATALOG);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useSkillCatalog(LOCAL_HOST), { wrapper });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    expect(result.current.data?.skills).toEqual([]);
+    expect(result.current.data?.total).toBe(0);
+    expect(result.current.data?.sources.global).toBe("/home/user/.copilot/skills");
+    expect(result.current.data?.sources.project).toBeNull();
+  });
+
+  it("uses the skillCatalog query key scoped to the host", async () => {
+    vi.mocked(hostFetch).mockResolvedValue(EMPTY_CATALOG);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    renderHook(() => useSkillCatalog(REMOTE_HOST), { wrapper });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const cache = queryClient.getQueryCache().getAll();
+    const found = cache.some(
+      (q) =>
+        Array.isArray(q.queryKey) &&
+        q.queryKey[0] === "skill-catalog" &&
+        q.queryKey[1] === REMOTE_HOST.id
+    );
+    expect(found).toBe(true);
+  });
+
+  it("does not fetch when enabled=false", () => {
+    vi.mocked(hostFetch).mockClear();
+    vi.mocked(hostFetch).mockResolvedValue(EMPTY_CATALOG);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+
+    const { result } = renderHook(() => useSkillCatalog(LOCAL_HOST, false), { wrapper });
+
+    expect(result.current.isFetching).toBe(false);
+    expect(result.current.data).toBeUndefined();
+    expect(vi.mocked(hostFetch)).not.toHaveBeenCalled();
   });
 });

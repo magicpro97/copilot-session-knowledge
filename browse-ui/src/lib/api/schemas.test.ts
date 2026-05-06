@@ -13,6 +13,7 @@ import {
   evidenceGraphResponseSchema,
   compareResponseSchema,
   createOperatorSessionRequestSchema,
+  updateOperatorSessionRequestSchema,
   evalResponseSchema,
   fileDiffResponseSchema,
   filePreviewResponseSchema,
@@ -34,6 +35,7 @@ import {
   syncStatusResponseSchema,
   tentacleStatusResponseSchema,
   skillMetricsResponseSchema,
+  skillCatalogResponseSchema,
   operatorActionSchema,
   syncOperatorActionSchema,
   searchResponseSchema,
@@ -705,6 +707,113 @@ describe("api schemas", () => {
     expect(parsed.operator_actions[0].safe).toBe(true);
   });
 
+  // ── Skill catalog schema tests ───────────────────────────────────────
+
+  it("parses a valid skill catalog response", () => {
+    const parsed = skillCatalogResponseSchema.parse({
+      skills: [
+        {
+          id: "my-skill",
+          name: "My Skill",
+          description: "Does something useful",
+          source_path: "/home/user/.copilot/skills/my-skill/SKILL.md",
+          source_kind: "global",
+          status: "installed",
+        },
+      ],
+      total: 1,
+      sources: {
+        global: "/home/user/.copilot/skills",
+        project: null,
+      },
+      runtime: { generated_at: "2026-01-01T00:00:00Z" },
+    });
+    expect(parsed.skills).toHaveLength(1);
+    expect(parsed.skills[0].id).toBe("my-skill");
+    expect(parsed.skills[0].source_kind).toBe("global");
+    expect(parsed.skills[0].status).toBe("installed");
+    expect(parsed.total).toBe(1);
+    expect(parsed.sources.global).toBe("/home/user/.copilot/skills");
+    expect(parsed.sources.project).toBeNull();
+  });
+
+  it("parses an empty skill catalog response", () => {
+    const parsed = skillCatalogResponseSchema.parse({
+      skills: [],
+      total: 0,
+      sources: {
+        global: "/home/user/.copilot/skills",
+        project: null,
+      },
+      runtime: { generated_at: "2026-01-01T00:00:00Z" },
+    });
+    expect(parsed.skills).toHaveLength(0);
+    expect(parsed.total).toBe(0);
+  });
+
+  it("parses skill catalog with project skills", () => {
+    const parsed = skillCatalogResponseSchema.parse({
+      skills: [
+        {
+          id: "proj-skill",
+          name: "Proj Skill",
+          description: "A project skill",
+          source_path: "/repo/.github/skills/proj-skill/SKILL.md",
+          source_kind: "project",
+          status: "installed",
+        },
+      ],
+      total: 1,
+      sources: {
+        global: "/home/user/.copilot/skills",
+        project: "/repo/.github/skills",
+      },
+      runtime: { generated_at: "2026-01-01T00:00:00Z" },
+    });
+    expect(parsed.skills[0].source_kind).toBe("project");
+    expect(parsed.sources.project).toBe("/repo/.github/skills");
+  });
+
+  it("rejects skill catalog entry with invalid source_kind", () => {
+    expect(() =>
+      skillCatalogResponseSchema.parse({
+        skills: [
+          {
+            id: "bad",
+            name: "Bad",
+            description: "",
+            source_path: "/path",
+            source_kind: "unknown",
+            status: "installed",
+          },
+        ],
+        total: 1,
+        sources: { global: "/g", project: null },
+        runtime: { generated_at: "2026-01-01T00:00:00Z" },
+      })
+    ).toThrow();
+  });
+
+  it("rejects skill catalog entry with invalid status", () => {
+    expect(() =>
+      skillCatalogResponseSchema.parse({
+        skills: [
+          {
+            id: "bad",
+            name: "Bad",
+            description: "",
+            source_path: "/path",
+            source_kind: "global",
+            status: "broken",
+          },
+        ],
+        total: 1,
+        sources: { global: "/g", project: null },
+        runtime: { generated_at: "2026-01-01T00:00:00Z" },
+      })
+    ).toThrow();
+  });
+
   // ── Shared audit block contract tests ───────────────────────────────
 
   it("parses a valid audit check", () => {
@@ -1153,6 +1262,56 @@ describe("createOperatorSessionRequestSchema", () => {
       workspace: "/Users/user/projects",
     });
     expect(parsed.model).toBeUndefined();
+  });
+});
+
+describe("updateOperatorSessionRequestSchema", () => {
+  it("parses a valid update with all fields", () => {
+    const parsed = updateOperatorSessionRequestSchema.parse({
+      name: "Renamed session",
+      model: "claude-sonnet-4.6",
+      mode: "interactive",
+    });
+    expect(parsed.name).toBe("Renamed session");
+    expect(parsed.model).toBe("claude-sonnet-4.6");
+    expect(parsed.mode).toBe("interactive");
+  });
+
+  it("accepts update with only name", () => {
+    const parsed = updateOperatorSessionRequestSchema.parse({ name: "Just a rename" });
+    expect(parsed.name).toBe("Just a rename");
+    expect(parsed.model).toBeUndefined();
+    expect(parsed.mode).toBeUndefined();
+  });
+
+  it("accepts update with only model", () => {
+    const parsed = updateOperatorSessionRequestSchema.parse({ model: "gpt-5.4" });
+    expect(parsed.model).toBe("gpt-5.4");
+  });
+
+  it("accepts update with only mode", () => {
+    const parsed = updateOperatorSessionRequestSchema.parse({ mode: "autopilot" });
+    expect(parsed.mode).toBe("autopilot");
+  });
+
+  it("rejects update with an unsupported mode", () => {
+    expect(() => updateOperatorSessionRequestSchema.parse({ mode: "default" })).toThrow();
+  });
+
+  it("rejects empty update (no fields provided)", () => {
+    expect(() => updateOperatorSessionRequestSchema.parse({})).toThrow();
+  });
+
+  it("rejects name longer than 128 chars", () => {
+    expect(() => updateOperatorSessionRequestSchema.parse({ name: "a".repeat(129) })).toThrow();
+  });
+
+  it("rejects model longer than 64 chars", () => {
+    expect(() => updateOperatorSessionRequestSchema.parse({ model: "m".repeat(65) })).toThrow();
+  });
+
+  it("rejects mode outside the known session mode list", () => {
+    expect(() => updateOperatorSessionRequestSchema.parse({ mode: "x".repeat(65) })).toThrow();
   });
 });
 

@@ -368,7 +368,7 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        allow_methods = "GET, POST, DELETE, OPTIONS" if path.startswith("/api/operator/") else "GET, OPTIONS"
+        allow_methods = "GET, POST, DELETE, PATCH, OPTIONS" if path.startswith("/api/operator/") else "GET, OPTIONS"
 
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", cors_origin)
@@ -490,6 +490,9 @@ class _BrowseHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         self._handle_mutating("DELETE")
+
+    def do_PATCH(self) -> None:
+        self._handle_mutating("PATCH")
 
 
 def _make_handler_class(db: sqlite3.Connection, token: str) -> type:

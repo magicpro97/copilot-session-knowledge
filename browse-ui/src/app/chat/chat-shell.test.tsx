@@ -56,6 +56,12 @@ vi.mock("@/lib/api/hooks", () => ({
   useCreateOperatorSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useDeleteOperatorSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSubmitPrompt: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useUpdateOperatorSession: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useSkillCatalog: vi.fn(() => ({
+    data: null,
+    isLoading: false,
+    isError: false,
+  })),
   usePathSuggest: vi.fn(() => ({ data: { suggestions: [], count: 0 } })),
   useOperatorModelCatalog: vi.fn(() => ({
     data: {
@@ -813,5 +819,310 @@ describe("ChatShell — hosted-root idle behavior", () => {
 
     render(<ChatShell />);
     expect(screen.getByTestId("chat-shell")).toBeInTheDocument();
+  });
+});
+
+// ─── Session edit — metadata bar wiring ──────────────────────────────────────
+
+describe("ChatShell — session edit wiring", () => {
+  async function setupEditableSession() {
+    const hooks = await import("@/lib/api/hooks");
+    const navigation = await import("next/navigation");
+
+    vi.mocked(hooks.useOperatorSession).mockReturnValue({
+      data: {
+        id: "edit-sess",
+        name: "Editable Session",
+        model: "claude-sonnet-4.6",
+        mode: "interactive",
+        workspace: "/projects/edit",
+        add_dirs: [],
+        created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:00:00Z",
+        run_count: 1,
+        last_run_id: "run-x",
+        resume_ready: true,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorSession>);
+
+    vi.mocked(hooks.useOperatorRuns).mockReturnValue({
+      data: { runs: [], count: 0 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorRuns>);
+
+    // Ensure no active run / pending submission leaks from prior tests
+    vi.mocked(hooks.useSubmitPrompt).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useSubmitPrompt>);
+
+    vi.mocked(hooks.useUpdateOperatorSession).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useUpdateOperatorSession>);
+
+    vi.mocked(navigation.useSearchParams).mockReturnValue(
+      new URLSearchParams("s=edit-sess") as ReturnType<typeof navigation.useSearchParams>
+    );
+  }
+
+  it("renders the edit-session button in the metadata bar when a session is active", async () => {
+    await setupEditableSession();
+    render(<ChatShell />);
+    expect(screen.getByTestId("edit-session-btn")).toBeInTheDocument();
+  });
+
+  it("edit button is disabled while an active run is in progress", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    await setupEditableSession();
+
+    // Simulate an active run by making the promptMutation pending
+    vi.mocked(hooks.useSubmitPrompt).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: true,
+    } as unknown as ReturnType<typeof hooks.useSubmitPrompt>);
+
+    render(<ChatShell />);
+    const editBtn = screen.getByTestId("edit-session-btn");
+    expect(editBtn).toBeDisabled();
+  });
+
+  it("calls useUpdateOperatorSession mutate with the payload on save", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const mutateMock = vi.fn();
+    await setupEditableSession();
+
+    vi.mocked(hooks.useUpdateOperatorSession).mockReturnValue({
+      mutate: mutateMock,
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useUpdateOperatorSession>);
+
+    render(<ChatShell />);
+
+    // Open the popover
+    fireEvent.click(screen.getByTestId("edit-session-btn"));
+
+    // Change the name field (wait for popover to render via portal)
+    const nameInput = await screen.findByPlaceholderText("Session name");
+    fireEvent.change(nameInput, { target: { value: "New Name" } });
+
+    // Submit
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(mutateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ payload: expect.objectContaining({ name: "New Name" }) })
+    );
+  });
+});
+
+// ─── Slash command integration ────────────────────────────────────────────────
+
+describe("ChatShell — slash command integration", () => {
+  async function setupActiveSession() {
+    const hooks = await import("@/lib/api/hooks");
+    const navigation = await import("next/navigation");
+
+    vi.mocked(hooks.useOperatorSession).mockReturnValue({
+      data: {
+        id: "slash-sess",
+        name: "Slash Session",
+        model: "gpt-5.4",
+        mode: "interactive",
+        workspace: "/projects/slash",
+        add_dirs: [],
+        created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:00:00Z",
+        run_count: 2,
+        last_run_id: "run-s",
+        resume_ready: false,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorSession>);
+
+    vi.mocked(hooks.useOperatorRuns).mockReturnValue({
+      data: { runs: [], count: 0 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof hooks.useOperatorRuns>);
+
+    vi.mocked(hooks.useSubmitPrompt).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useSubmitPrompt>);
+
+    vi.mocked(hooks.useUpdateOperatorSession).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useUpdateOperatorSession>);
+
+    vi.mocked(navigation.useSearchParams).mockReturnValue(
+      new URLSearchParams("s=slash-sess") as ReturnType<typeof navigation.useSearchParams>
+    );
+
+    hostStateMock = { host: LOCAL_HOST, diagnosticsEnabled: true };
+  }
+
+  it("renders the Composer with the prompt textarea when a session is active", async () => {
+    await setupActiveSession();
+    render(<ChatShell />);
+    expect(screen.getByRole("textbox", { name: "Prompt" })).toBeInTheDocument();
+  });
+
+  it("opens the help dialog when /help is submitted", async () => {
+    await setupActiveSession();
+    render(<ChatShell />);
+
+    const ta = screen.getByRole("textbox", { name: "Prompt" });
+    fireEvent.change(ta, { target: { value: "/help" } });
+    fireEvent.submit(ta.closest("form")!);
+
+    expect(await screen.findByText(/Slash Commands/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Supported in Browse Chat/i)).toBeInTheDocument();
+  });
+
+  it("opens the skills dialog when /skills is submitted", async () => {
+    await setupActiveSession();
+    render(<ChatShell />);
+
+    const ta = screen.getByRole("textbox", { name: "Prompt" });
+    fireEvent.change(ta, { target: { value: "/skills" } });
+    fireEvent.submit(ta.closest("form")!);
+
+    expect(await screen.findByText(/Installed Skills/i)).toBeInTheDocument();
+  });
+
+  it("shows installed skills from useSkillCatalog in the skills dialog", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    await setupActiveSession();
+
+    vi.mocked(hooks.useSkillCatalog).mockReturnValue({
+      data: {
+        skills: [
+          {
+            id: "skill-1",
+            name: "Code Review",
+            description: "Reviews code changes",
+            source_path: "/global/skills/code-review.md",
+            source_kind: "global" as const,
+            status: "installed" as const,
+          },
+        ],
+        total: 1,
+        sources: { global: "/global/skills", project: null },
+        runtime: { generated_at: "2024-01-01T00:00:00Z" },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof hooks.useSkillCatalog>);
+
+    render(<ChatShell />);
+
+    const ta = screen.getByRole("textbox", { name: "Prompt" });
+    fireEvent.change(ta, { target: { value: "/skills" } });
+    fireEvent.submit(ta.closest("form")!);
+
+    expect(await screen.findByTestId("skills-list")).toBeInTheDocument();
+    expect(screen.getByText("Code Review")).toBeInTheDocument();
+  });
+
+  it("opens the session editor when /session is submitted", async () => {
+    await setupActiveSession();
+    render(<ChatShell />);
+
+    const ta = screen.getByRole("textbox", { name: "Prompt" });
+    fireEvent.change(ta, { target: { value: "/session" } });
+    fireEvent.submit(ta.closest("form")!);
+
+    expect(await screen.findByPlaceholderText("Session name")).toBeInTheDocument();
+  });
+
+  it("calls updateMutation with mode payload for /mode interactive", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const mutateMock = vi.fn();
+    await setupActiveSession();
+
+    vi.mocked(hooks.useUpdateOperatorSession).mockReturnValue({
+      mutate: mutateMock,
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useUpdateOperatorSession>);
+
+    render(<ChatShell />);
+
+    const ta = screen.getByRole("textbox", { name: "Prompt" });
+    fireEvent.change(ta, { target: { value: "/mode interactive" } });
+    fireEvent.submit(ta.closest("form")!);
+
+    expect(mutateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ payload: expect.objectContaining({ mode: "interactive" }) })
+    );
+  });
+
+  it("does not call updateMutation for /mode with invalid value", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const mutateMock = vi.fn();
+    await setupActiveSession();
+
+    vi.mocked(hooks.useUpdateOperatorSession).mockReturnValue({
+      mutate: mutateMock,
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useUpdateOperatorSession>);
+
+    render(<ChatShell />);
+
+    const ta = screen.getByRole("textbox", { name: "Prompt" });
+    fireEvent.change(ta, { target: { value: "/mode invalid-mode" } });
+    fireEvent.submit(ta.closest("form")!);
+
+    expect(mutateMock).not.toHaveBeenCalled();
+    expect(await screen.findByText("Invalid /mode command")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Use \/mode interactive, \/mode plan, or \/mode autopilot/i)
+    ).toBeInTheDocument();
+  });
+
+  it("disables the composer while a session update is pending", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    await setupActiveSession();
+
+    vi.mocked(hooks.useUpdateOperatorSession).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: true,
+    } as unknown as ReturnType<typeof hooks.useUpdateOperatorSession>);
+
+    render(<ChatShell />);
+
+    expect(screen.getByRole("textbox", { name: "Prompt" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send prompt" })).toBeDisabled();
+  });
+
+  it("does not intercept path-like prompts", async () => {
+    const hooks = await import("@/lib/api/hooks");
+    const submitMock = vi.fn();
+    await setupActiveSession();
+
+    vi.mocked(hooks.useSubmitPrompt).mockReturnValue({
+      mutate: submitMock,
+      isPending: false,
+    } as unknown as ReturnType<typeof hooks.useSubmitPrompt>);
+
+    render(<ChatShell />);
+
+    const ta = screen.getByRole("textbox", { name: "Prompt" });
+    fireEvent.change(ta, { target: { value: "/Users/linhn/project" } });
+    fireEvent.submit(ta.closest("form")!);
+
+    // Should go to the server as a regular prompt, not be intercepted
+    expect(submitMock).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: "/Users/linhn/project" }),
+      expect.anything()
+    );
   });
 });

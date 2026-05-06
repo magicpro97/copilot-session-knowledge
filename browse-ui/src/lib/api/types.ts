@@ -637,6 +637,37 @@ export interface SkillMetricsResponse {
   };
 }
 
+// ── Skill catalog (/api/skills/catalog GET) ──────────────────────────────────
+
+/** Source kind of an installed skill. */
+export type SkillSourceKind = "global" | "project";
+
+/** Availability status of an installed skill. */
+export type SkillStatus = "installed" | "unavailable";
+
+/** A single skill entry returned by `GET /api/skills/catalog`. */
+export interface SkillCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  source_path: string;
+  source_kind: SkillSourceKind;
+  status: SkillStatus;
+}
+
+/** Response from `GET /api/skills/catalog`. */
+export interface SkillCatalogResponse {
+  skills: SkillCatalogEntry[];
+  total: number;
+  sources: {
+    global: string;
+    project: string | null;
+  };
+  runtime: {
+    generated_at: string;
+  };
+}
+
 // ── Feedback (/api/feedback  POST) ──────────────────────────────────
 
 export interface FeedbackRequest {
@@ -924,6 +955,21 @@ export interface CreateOperatorSessionRequest {
   mode: string;
   workspace: string;
   add_dirs?: string[];
+}
+
+/** Session modes that PATCH is allowed to write back to the operator backend. */
+export const MUTABLE_OPERATOR_SESSION_MODES = ["interactive", "plan", "autopilot"] as const;
+
+export type MutableOperatorSessionMode = (typeof MUTABLE_OPERATOR_SESSION_MODES)[number];
+
+/** Request body for `PATCH /api/operator/sessions/{id}`. At least one field must be provided. */
+export interface UpdateOperatorSessionRequest {
+  /** New display name (max 128 chars). */
+  name?: string;
+  /** Model identifier to switch to (max 64 chars). */
+  model?: string;
+  /** Session mode to switch to (e.g. "interactive", "plan", "autopilot"). */
+  mode?: MutableOperatorSessionMode;
 }
 
 /** A file queued for attachment before prompt submission. */

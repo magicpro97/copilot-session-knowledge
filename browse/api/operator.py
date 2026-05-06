@@ -1,17 +1,18 @@
 """browse/api/operator.py — Operator API endpoints for browser-managed Copilot sessions.
 
 Endpoints:
-  POST /api/operator/sessions              → create session → {id, name, model, mode, ...}
-  GET  /api/operator/sessions              → list sessions  → {sessions: [...]}
-  GET  /api/operator/sessions/{id}         → get session    → session dict
-  POST /api/operator/sessions/{id}/prompt  → submit prompt  → {run_id, session_id, status}
-  GET  /api/operator/sessions/{id}/stream  → SSE run output (text/event-stream)
-  GET  /api/operator/sessions/{id}/status  → run + session status
-  GET  /api/operator/sessions/{id}/runs    → persisted run history → {runs: [...], count: N}
-  POST /api/operator/sessions/{id}/delete  → delete session → {deleted: true}
-  GET  /api/operator/suggest               → path suggestions under ~/
-  GET  /api/operator/preview               → file content under ~/
-  GET  /api/operator/diff                  → unified diff of two files under ~/
+  POST  /api/operator/sessions              → create session → {id, name, model, mode, ...}
+  GET   /api/operator/sessions              → list sessions  → {sessions: [...]}
+  GET   /api/operator/sessions/{id}         → get session    → session dict
+  PATCH /api/operator/sessions/{id}         → update session mutable fields → session dict
+  POST  /api/operator/sessions/{id}/prompt  → submit prompt  → {run_id, session_id, status}
+  GET   /api/operator/sessions/{id}/stream  → SSE run output (text/event-stream)
+  GET   /api/operator/sessions/{id}/status  → run + session status
+  GET   /api/operator/sessions/{id}/runs    → persisted run history → {runs: [...], count: N}
+  POST  /api/operator/sessions/{id}/delete  → delete session → {deleted: true}
+  GET   /api/operator/suggest               → path suggestions under ~/
+  GET   /api/operator/preview               → file content under ~/
+  GET   /api/operator/diff                  → unified diff of two files under ~/
 
 POST body: JSON-encoded, passed as params["_body"][0].
 SSE stream: follows live.py factory(stop_event) → generator pattern.
@@ -43,6 +44,7 @@ from browse.core.operator_console import (
     preview_file,
     start_run,
     suggest_paths,
+    update_session,
 )
 from browse.core.registry import route
 
@@ -148,12 +150,19 @@ def handle_capabilities(db, params, token, nonce) -> tuple:
         "cli_kind":          "copilot",
         "version":           "1",
         "protocol":          "v2",
-        "supported_modes":   ["ask", "edit"],
+        "supported_modes":   ["interactive", "plan", "autopilot"],
         "supported_features": [
           "chat", "sessions", "search", "graph", "insights", "diagnostics",
           "models", "suggest", "preview", "diff"
         ]
       }
+
+    ``supported_modes`` enumerates the valid values accepted by the ``--mode``
+    flag in the underlying Copilot CLI (``copilot --mode <mode>``):
+      - ``interactive`` — standard interactive conversation mode (default)
+      - ``plan``        — planning-only; the agent describes what it would do
+                          without applying file edits
+      - ``autopilot``   — the agent applies all changes autonomously
 
     The ``protocol`` field is the v2 marker.  When this field is absent in a
     response (older deployed backends) the UI applies a backward-compatibility
@@ -164,7 +173,7 @@ def handle_capabilities(db, params, token, nonce) -> tuple:
         {
             "cli_kind": "copilot",
             "version": "1",
-            "supported_modes": ["ask", "edit"],
+            "supported_modes": ["interactive", "plan", "autopilot"],
             "protocol": "v2",
             "supported_features": [
                 "chat",
@@ -247,6 +256,60 @@ def handle_delete_session_post(db, params, token, nonce, session_id: str = "") -
     if not ok:
         return json_error(f"session '{session_id}' not found", "SESSION_NOT_FOUND", 404)
     return json_ok({"deleted": True, "session_id": session_id})
+
+
+@route("/api/operator/sessions/{id}", methods=["PATCH"])
+def handle_update_session(db, params, token, nonce, session_id: str = "") -> tuple:
+    """PATCH /api/operator/sessions/{id} — update mutable fields of a session.
+
+    Body (all fields optional, at least one required):
+      {"name": "...", "model": "...", "mode": "..."}
+
+    Returns 200 with updated session dict on success.
+    Returns 400 if body is invalid or no mutable field is provided.
+    Returns 400 if ``mode`` is provided but is not one of the supported values.
+    Returns 404 if the session does not exist.
+    Returns 409 if an active run is currently in progress for this session.
+    """
+    body, err = _parse_json_body(params)
+    if err:
+        return err
+
+    has_name = "name" in body
+    has_model = "model" in body
+    has_mode = "mode" in body
+
+    if not (has_name or has_model or has_mode):
+        return json_error(
+            "at least one mutable field (name, model, mode) must be provided",
+            "BAD_PARAM",
+            400,
+        )
+
+    name = str(body["name"]).strip()[:128] if has_name else None
+    model = str(body["model"]).strip()[:64] if has_model else None
+    mode = str(body["mode"]).strip()[:64] if has_mode else None
+
+    updated, err_code = update_session(session_id, name=name, model=model, mode=mode)
+
+    if err_code == "NOT_FOUND":
+        return json_error(f"session '{session_id}' not found", "SESSION_NOT_FOUND", 404)
+    if err_code == "BAD_MODE":
+        return json_error(
+            "mode must be one of: interactive, plan, autopilot",
+            "BAD_MODE",
+            400,
+        )
+    if err_code == "CONFLICT":
+        return json_error(
+            f"session '{session_id}' has an active run; wait for it to finish before updating",
+            "SESSION_ACTIVE_RUN",
+            409,
+        )
+    if updated is None:
+        return json_error(f"session '{session_id}' not found", "SESSION_NOT_FOUND", 404)
+
+    return json_ok(updated)
 
 
 # ── Prompt execution ──────────────────────────────────────────────────────────

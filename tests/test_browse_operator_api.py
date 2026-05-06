@@ -122,6 +122,7 @@ from browse.core.operator_console import (  # noqa: E402
     redact_secrets,
     start_run,
     suggest_paths,
+    update_session,
 )
 
 
@@ -192,6 +193,19 @@ def _delete(port: int, path: str, token: str = _TOKEN) -> http.client.HTTPRespon
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     sep = "&" if "?" in path else "?"
     conn.request("DELETE", f"{path}{sep}token={token}")
+    return conn.getresponse()
+
+
+def _patch(port: int, path: str, body: dict | None = None, token: str = _TOKEN) -> http.client.HTTPResponse:
+    raw = json.dumps(body or {}).encode("utf-8")
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    sep = "&" if "?" in path else "?"
+    conn.request(
+        "PATCH",
+        f"{path}{sep}token={token}",
+        body=raw,
+        headers={"Content-Type": "application/json", "Content-Length": str(len(raw))},
+    )
     return conn.getresponse()
 
 
@@ -1321,6 +1335,146 @@ def test_oc44_parse_output_event_promotes_top_level_content():
          "content" not in event_both.get("data", {}))
 
 
+def test_oc46_capabilities_supported_modes_correct():
+    """OC46: supported_modes in capabilities matches actual Copilot CLI --mode choices."""
+    # The Copilot CLI accepts exactly: interactive, plan, autopilot.
+    # The old value ["ask", "edit"] predates the current CLI surface and must not appear.
+    from browse.api.operator import handle_capabilities
+
+    resp_body, _content_type, _status = handle_capabilities(None, {}, None, None)
+    data = json.loads(resp_body)
+    modes = data.get("supported_modes", [])
+
+    # Correct modes must all be present.
+    test("OC46: interactive in supported_modes", "interactive" in modes)
+    test("OC46: plan in supported_modes", "plan" in modes)
+    test("OC46: autopilot in supported_modes", "autopilot" in modes)
+
+    # Stale modes must be absent.
+    test("OC46: 'ask' not in supported_modes (stale)", "ask" not in modes)
+    test("OC46: 'edit' not in supported_modes (stale)", "edit" not in modes)
+
+    # Exactly three modes (no unexpected additions).
+    test("OC46: exactly 3 supported_modes", len(modes) == 3)
+
+
+def test_oc47_build_copilot_argv_includes_allow_all_tools():
+    """OC47: _build_copilot_argv always includes --allow-all-tools for non-interactive scripted runs."""
+    base_session = {
+        "name": "perm-test",
+        "model": "gpt-5.4",
+        "mode": "interactive",
+        "add_dirs": [],
+        "resume_ready": False,
+    }
+    # Nominal session — --allow-all-tools must be present.
+    argv_nominal, _ = _build_copilot_argv(base_session, "hello")
+    test("OC47: --allow-all-tools in nominal argv", "--allow-all-tools" in argv_nominal)
+
+    # --allow-all-tools must appear before --output-format json.
+    out_fmt_idx = argv_nominal.index("--output-format") if "--output-format" in argv_nominal else -1
+    allow_idx = argv_nominal.index("--allow-all-tools") if "--allow-all-tools" in argv_nominal else -1
+    test("OC47: --allow-all-tools precedes --output-format", 0 <= allow_idx < out_fmt_idx)
+
+    # Session without a mode — flag still present.
+    argv_no_mode, _ = _build_copilot_argv(dict(base_session, mode=""), "test")
+    test("OC47: --allow-all-tools present even without mode", "--allow-all-tools" in argv_no_mode)
+
+    # Resumed session — flag still present.
+    argv_resume, _ = _build_copilot_argv(dict(base_session, resume_ready=True), "test")
+    test("OC47: --allow-all-tools present in resumed session", "--allow-all-tools" in argv_resume)
+
+    # --allow-all-tools appears exactly once (no duplication).
+    count = argv_nominal.count("--allow-all-tools")
+    test("OC47: --allow-all-tools appears exactly once", count == 1)
+
+
+def test_oc48_update_session_name():
+    """OC48: update_session updates name and returns updated session."""
+    s = create_session("original-name", model="gpt-4o", mode="agent")
+    sid = s["id"]
+    updated, err = update_session(sid, name="new-name")
+    test("OC48: no error on name update", err == "")
+    test("OC48: updated dict returned", updated is not None)
+    test("OC48: name updated in returned dict", updated.get("name") == "new-name")
+    test("OC48: name persisted on disk", get_session(sid).get("name") == "new-name")
+    delete_session(sid)
+
+
+def test_oc49_update_session_model():
+    """OC49: update_session updates model and normalizes it."""
+    s = create_session("model-update-session", model="gpt-4o", mode="agent")
+    sid = s["id"]
+    updated, err = update_session(sid, model="claude-sonnet-4-6")
+    test("OC49: no error on model update", err == "")
+    test("OC49: model field updated", updated is not None and updated.get("model") != "gpt-4o")
+    delete_session(sid)
+
+
+def test_oc50_update_session_mode():
+    """OC50: update_session updates mode."""
+    s = create_session("mode-update-session", model="gpt-4o", mode="agent")
+    sid = s["id"]
+    updated, err = update_session(sid, mode="interactive")
+    test("OC50: no error on mode update", err == "")
+    test("OC50: mode updated", updated is not None and updated.get("mode") == "interactive")
+    delete_session(sid)
+
+
+def test_oc51_update_session_not_found():
+    """OC51: update_session returns NOT_FOUND for unknown session."""
+    import uuid as _uuid
+    fake_id = str(_uuid.uuid4())
+    result, err = update_session(fake_id, name="ghost")
+    test("OC51: result is None for unknown session", result is None)
+    test("OC51: error code is NOT_FOUND", err == "NOT_FOUND")
+
+
+def test_oc52_update_session_conflict_active_run():
+    """OC52: update_session returns CONFLICT when session has an active run."""
+    import uuid as _uuid
+    s = create_session("conflict-session")
+    sid = s["id"]
+    fake_run_id = str(_uuid.uuid4())
+    with _RUNS_LOCK:
+        _ACTIVE_RUNS[fake_run_id] = {"id": fake_run_id, "session_id": sid, "status": "running"}
+    try:
+        result, err = update_session(sid, name="new-name")
+        test("OC52: result is None when active run exists", result is None)
+        test("OC52: error code is CONFLICT", err == "CONFLICT")
+    finally:
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS.pop(fake_run_id, None)
+        delete_session(sid)
+
+
+def test_oc53_update_session_rejects_invalid_mode():
+    """OC53: update_session returns BAD_MODE when mode is unsupported."""
+    s = create_session("bad-mode-session", model="gpt-4o", mode="interactive")
+    sid = s["id"]
+    updated, err = update_session(sid, mode="default")
+    test("OC53: result is None for invalid mode", updated is None)
+    test("OC53: error code is BAD_MODE", err == "BAD_MODE")
+    delete_session(sid)
+
+
+def test_oc54_update_session_handles_disappearing_session():
+    """OC54: update_session returns NOT_FOUND if the session vanishes before persist."""
+    import browse.core.operator_console as operator_console_module
+
+    s = create_session("disappearing-session", model="gpt-4o", mode="interactive")
+    sid = s["id"]
+    original_patch_session = operator_console_module._patch_session
+    try:
+        operator_console_module._patch_session = lambda *_args, **_kwargs: False
+        updated, err = update_session(sid, name="after-delete")
+        test("OC54: result is None when persist fails", updated is None)
+        test("OC54: error code is NOT_FOUND", err == "NOT_FOUND")
+    finally:
+        operator_console_module._patch_session = original_patch_session
+        delete_session(sid)
+
+
 def run_api_tests():
     server, port = _make_test_server()
     try:
@@ -1757,6 +1911,14 @@ def _run_api_tests(port: int):
         test("CAP1: no stale operator key", "operator" not in data_cap)
         test("CAP1: no stale features key", "features" not in data_cap)
 
+        # CAP2: supported_modes content matches Copilot CLI --mode choices (interactive, plan, autopilot)
+        modes_cap = data_cap.get("supported_modes", [])
+        test("CAP2: interactive in supported_modes", "interactive" in modes_cap)
+        test("CAP2: plan in supported_modes", "plan" in modes_cap)
+        test("CAP2: autopilot in supported_modes", "autopilot" in modes_cap)
+        test("CAP2: 'ask' not in supported_modes (stale)", "ask" not in modes_cap)
+        test("CAP2: 'edit' not in supported_modes (stale)", "edit" not in modes_cap)
+
         # CORS1: OPTIONS preflight for operator route with allowlisted origin → 204
         conn_opts = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         conn_opts.request(
@@ -2134,6 +2296,77 @@ def _run_api_tests(port: int):
         if staged_path:
             test("API25: staged file removed after session delete", not Path(staged_path).exists())
 
+    # ── Session update endpoint (PATCH) ──────────────────────────────────────
+
+    upd_session_resp = _post(port, "/api/operator/sessions", {"name": "update-api-test"})
+    upd_session_id = _read_json(upd_session_resp).get("id", "")
+
+    if upd_session_id:
+        # API26: PATCH /api/operator/sessions/{id} → 200 with updated name
+        resp_upd = _patch(port, f"/api/operator/sessions/{upd_session_id}", {"name": "updated-name"})
+        test("API26: PATCH update name → 200", resp_upd.status == 200)
+        data_upd = _read_json(resp_upd)
+        test("API26: updated name returned", data_upd.get("name") == "updated-name")
+        test("API26: session id preserved", data_upd.get("id") == upd_session_id)
+
+        # API27: PATCH /api/operator/sessions/{id} → 200 updating model and mode
+        resp_upd_multi = _patch(
+            port,
+            f"/api/operator/sessions/{upd_session_id}",
+            {"model": "gpt-5.4", "mode": "interactive"},
+        )
+        test("API27: PATCH update model+mode → 200", resp_upd_multi.status == 200)
+        data_upd_multi = _read_json(resp_upd_multi)
+        test("API27: mode updated", data_upd_multi.get("mode") == "interactive")
+
+        # API28: PATCH with no mutable fields → 400
+        resp_upd_empty = _patch(port, f"/api/operator/sessions/{upd_session_id}", {})
+        test("API28: PATCH empty body → 400", resp_upd_empty.status == 400)
+        data_upd_empty = _read_json(resp_upd_empty)
+        test("API28: error code BAD_PARAM", data_upd_empty.get("code") == "BAD_PARAM")
+
+        # API29: PATCH unknown session → 404
+        import uuid as _uuid_api
+        fake_id = str(_uuid_api.uuid4())
+        resp_upd_404 = _patch(port, f"/api/operator/sessions/{fake_id}", {"name": "ghost"})
+        test("API29: PATCH unknown session → 404", resp_upd_404.status == 404)
+        data_upd_404 = _read_json(resp_upd_404)
+        test("API29: error code SESSION_NOT_FOUND", data_upd_404.get("code") == "SESSION_NOT_FOUND")
+
+        # API30: PATCH session with active run → 409
+        import uuid as _uuid_api2
+        fake_run_id = str(_uuid_api2.uuid4())
+        with _RUNS_LOCK:
+            _ACTIVE_RUNS[fake_run_id] = {
+                "id": fake_run_id, "session_id": upd_session_id, "status": "running"
+            }
+        try:
+            resp_upd_409 = _patch(
+                port, f"/api/operator/sessions/{upd_session_id}", {"name": "blocked"}
+            )
+            test("API30: PATCH with active run → 409", resp_upd_409.status == 409)
+            data_upd_409 = _read_json(resp_upd_409)
+            test("API30: error code SESSION_ACTIVE_RUN", data_upd_409.get("code") == "SESSION_ACTIVE_RUN")
+        finally:
+            with _RUNS_LOCK:
+                _ACTIVE_RUNS.pop(fake_run_id, None)
+
+        # API31: PATCH without auth token → 401
+        resp_upd_unauth = _patch(port, f"/api/operator/sessions/{upd_session_id}", {"name": "unauth"}, token="wrong")
+        test("API31: PATCH without valid token → 401", resp_upd_unauth.status == 401)
+
+        # API32: PATCH invalid mode → 400 BAD_MODE
+        resp_upd_bad_mode = _patch(
+            port,
+            f"/api/operator/sessions/{upd_session_id}",
+            {"mode": "default"},
+        )
+        test("API32: PATCH invalid mode → 400", resp_upd_bad_mode.status == 400)
+        data_upd_bad_mode = _read_json(resp_upd_bad_mode)
+        test("API32: error code BAD_MODE", data_upd_bad_mode.get("code") == "BAD_MODE")
+
+        _post(port, f"/api/operator/sessions/{upd_session_id}/delete")
+
 
 if __name__ == "__main__":
     print("── operator_console unit tests ──────────────────────────────────────")
@@ -2189,6 +2422,15 @@ if __name__ == "__main__":
     test_oc42_build_copilot_argv_resume_used_tuple()
     test_oc43_run_record_has_resume_used()
     test_oc44_parse_output_event_promotes_top_level_content()
+    test_oc46_capabilities_supported_modes_correct()
+    test_oc47_build_copilot_argv_includes_allow_all_tools()
+    test_oc48_update_session_name()
+    test_oc49_update_session_model()
+    test_oc50_update_session_mode()
+    test_oc51_update_session_not_found()
+    test_oc52_update_session_conflict_active_run()
+    test_oc53_update_session_rejects_invalid_mode()
+    test_oc54_update_session_handles_disappearing_session()
 
     print()
     print("── API route tests (live HTTP server) ───────────────────────────────")

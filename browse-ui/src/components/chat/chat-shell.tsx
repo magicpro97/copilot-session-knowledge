@@ -2,12 +2,22 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
-import { Bot, Globe, Menu, PanelLeftClose, PanelLeftOpen, ServerCog } from "lucide-react";
+import {
+  Bot,
+  Globe,
+  Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
+  ServerCog,
+  BookOpen,
+  Zap,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/data/empty-state";
 import { Banner } from "@/components/data/banner";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   useOperatorSessions,
   useOperatorSession,
@@ -15,6 +25,8 @@ import {
   useCreateOperatorSession,
   useDeleteOperatorSession,
   useSubmitPrompt,
+  useUpdateOperatorSession,
+  useSkillCatalog,
 } from "@/lib/api/hooks";
 import {
   getAllHostProfiles,
@@ -30,12 +42,16 @@ import { SessionCreateDialog } from "./session-create-dialog";
 import { MetadataBar } from "./metadata-bar";
 import { Transcript } from "./transcript";
 import { Composer } from "./composer";
+import { COPILOT_MODES } from "./session-create-dialog";
+import { SLASH_COMMANDS } from "./slash-commands";
 import { findRecoverableActiveRun, visibleHistoricalRuns, type ActiveRun } from "./run-state";
 import type {
   OperatorRunInfo,
   OperatorSession,
   QueuedFile,
   RunFileMetadata,
+  UpdateOperatorSessionRequest,
+  MutableOperatorSessionMode,
 } from "@/lib/api/types";
 import type { CreateSessionPayload } from "./session-create-dialog";
 
@@ -54,9 +70,23 @@ export function ChatShell() {
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(null);
   const [suppressedRecoveryRunId, setSuppressedRecoveryRunId] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [commandBanner, setCommandBanner] = useState<{
+    title: string;
+    description?: string;
+  } | null>(null);
+
+  // Slash command overlay state
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [metadataEditorOpen, setMetadataEditorOpen] = useState(false);
 
   const activeSessionId = searchParams.get(SESSION_PARAM) ?? null;
   const hParam = searchParams.get(HOST_PARAM);
+
+  useEffect(() => {
+    setMetadataEditorOpen(false);
+    setCommandBanner(null);
+  }, [activeSessionId]);
 
   // Resolve the active HostProfile.
   // Priority: h= URL param (preserved for direct links) → shared browse-wide host selection.
@@ -97,6 +127,10 @@ export function ChatShell() {
   const createMutation = useCreateOperatorSession(activeHost);
   const deleteMutation = useDeleteOperatorSession(activeHost);
   const promptMutation = useSubmitPrompt(activeSessionId ?? "", activeHost);
+  const updateMutation = useUpdateOperatorSession(activeSessionId ?? "", activeHost);
+
+  // Lazy-loaded skill catalog — only fetched when the /skills overlay is open.
+  const skillCatalogQuery = useSkillCatalog(activeHost, skillsOpen && operatorEnabled);
 
   // Select a session → update URL (preserve host param)
   const handleSelectSession = useCallback(
@@ -106,6 +140,8 @@ export function ChatShell() {
       router.push(`${pathname}?${params.toString()}`);
       setActiveRun(null);
       setSuppressedRecoveryRunId(null);
+      setMetadataEditorOpen(false);
+      setCommandBanner(null);
       setSubmitError(null);
       setMobileSidebarOpen(false);
     },
@@ -132,6 +168,8 @@ export function ChatShell() {
             router.push(`${pathname}?${params.toString()}`);
             setActiveRun(null);
             setSuppressedRecoveryRunId(null);
+            setMetadataEditorOpen(false);
+            setCommandBanner(null);
             setSubmitError(null);
             setMobileSidebarOpen(false);
           },
@@ -152,6 +190,8 @@ export function ChatShell() {
             router.push(`${pathname}?${params.toString()}`);
             setActiveRun(null);
             setSuppressedRecoveryRunId(null);
+            setMetadataEditorOpen(false);
+            setCommandBanner(null);
           }
         },
       });
@@ -163,6 +203,7 @@ export function ChatShell() {
   const handleSubmitPrompt = useCallback(
     (prompt: string, files: QueuedFile[] = []) => {
       if (!activeSessionId) return;
+      setCommandBanner(null);
       setSubmitError(null);
 
       // Build user-visible file metadata (strip base64 content after reading)
@@ -237,8 +278,207 @@ export function ChatShell() {
 
   const isRunning = promptMutation.isPending || activeRun !== null;
 
+  // Update session name/model/mode via the verified PATCH mutation.
+  const handleUpdateSession = useCallback(
+    (payload: UpdateOperatorSessionRequest) => {
+      if (!activeSessionId) return;
+      setCommandBanner(null);
+      updateMutation.mutate({ payload });
+    },
+    [updateMutation, activeSessionId]
+  );
+
+  // Handle slash command dispatch from the Composer.
+  const handleCommand = useCallback(
+    (name: string, args: string) => {
+      setCommandBanner(null);
+      switch (name) {
+        case "help":
+          setHelpOpen(true);
+          break;
+        case "skills":
+          setSkillsOpen(true);
+          break;
+        case "session":
+          if (!activeSessionId) {
+            break;
+          }
+          if (updateMutation.isPending) {
+            setCommandBanner({
+              title: "Session settings unavailable",
+              description:
+                "Wait for the current settings save to finish before reopening the session editor.",
+            });
+            break;
+          }
+          if (isRunning) {
+            setCommandBanner({
+              title: "Session settings unavailable",
+              description: "Wait for the active run to finish before editing this session.",
+            });
+            break;
+          }
+          if (activeSessionId) {
+            setMetadataEditorOpen(true);
+          }
+          break;
+        case "new": {
+          // Reuse the existing "New chat session" button already rendered in the sidebar.
+          const btn = document.querySelector<HTMLButtonElement>('[aria-label="New chat session"]');
+          btn?.click();
+          break;
+        }
+        case "clear":
+          // The Composer has already cleared its draft and queued attachments.
+          // Persisted server-side run history is not affected.
+          break;
+        case "mode": {
+          const modeArg = args.toLowerCase();
+          const validModes = COPILOT_MODES.map((m) => m.value);
+          if (!activeSessionId) {
+            break;
+          }
+          if (updateMutation.isPending) {
+            setCommandBanner({
+              title: "Mode change pending",
+              description:
+                "Wait for the current session update to finish before changing modes again.",
+            });
+            break;
+          }
+          if (!modeArg || !validModes.includes(modeArg)) {
+            setCommandBanner({
+              title: "Invalid /mode command",
+              description:
+                "Use /mode interactive, /mode plan, or /mode autopilot. Changes apply to the next run.",
+            });
+            break;
+          }
+          updateMutation.mutate({
+            payload: { mode: modeArg as MutableOperatorSessionMode },
+          });
+          break;
+        }
+        default:
+          break;
+      }
+    },
+    [activeSessionId, isRunning, updateMutation]
+  );
+
+  const composerDisabled = !activeSessionId || updateMutation.isPending;
+
   return (
     <div className="flex h-full overflow-hidden" data-testid="chat-shell">
+      {/* ── Help dialog ──────────────────────────────────────────────────────── */}
+      <Dialog open={helpOpen} onOpenChange={setHelpOpen}>
+        <DialogContent className="max-w-lg" aria-label="Slash command help">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <BookOpen className="size-4" />
+              Slash Commands
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 overflow-y-auto" style={{ maxHeight: "60vh" }}>
+            <section>
+              <p className="text-muted-foreground mb-2 text-xs font-semibold tracking-wide uppercase">
+                Supported in Browse Chat
+              </p>
+              <ul className="space-y-1.5">
+                {SLASH_COMMANDS.filter((c) => c.scope === "web").map((cmd) => (
+                  <li key={cmd.name} className="flex items-baseline gap-2">
+                    <span className="text-primary w-36 shrink-0 font-mono text-xs">
+                      {cmd.usage}
+                    </span>
+                    <span className="text-muted-foreground text-xs">{cmd.description}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+            <section>
+              <p className="text-muted-foreground mb-2 text-xs font-semibold tracking-wide uppercase">
+                CLI Reference (not available in web)
+              </p>
+              <ul className="space-y-1.5">
+                {SLASH_COMMANDS.filter((c) => c.scope === "cli-reference").map((cmd) => (
+                  <li key={cmd.name} className="flex items-baseline gap-2 opacity-60">
+                    <span className="w-36 shrink-0 font-mono text-xs">{cmd.usage}</span>
+                    <span className="text-muted-foreground text-xs">{cmd.description}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-muted-foreground mt-3 text-xs">
+                These commands are only available in the Copilot CLI terminal, not in this web
+                interface.
+              </p>
+            </section>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Skills dialog ────────────────────────────────────────────────────── */}
+      <Dialog open={skillsOpen} onOpenChange={setSkillsOpen}>
+        <DialogContent className="max-w-lg" aria-label="Installed skills">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Zap className="size-4" />
+              Installed Skills
+            </DialogTitle>
+          </DialogHeader>
+          <div className="overflow-y-auto" style={{ maxHeight: "60vh" }}>
+            {skillCatalogQuery.isLoading ? (
+              <p className="text-muted-foreground animate-pulse py-4 text-center text-sm">
+                Loading skills…
+              </p>
+            ) : skillCatalogQuery.isError ? (
+              <p className="text-destructive py-4 text-center text-sm">
+                Failed to load skills. Check that the browse server is running.
+              </p>
+            ) : !skillCatalogQuery.data?.skills.length ? (
+              <p className="text-muted-foreground py-4 text-center text-sm">
+                No skills installed. Add skills to your global or project skills directory.
+              </p>
+            ) : (
+              <ul className="space-y-2" data-testid="skills-list">
+                {skillCatalogQuery.data.skills.map((skill) => (
+                  <li
+                    key={skill.id}
+                    className="bg-muted/40 rounded-md px-3 py-2"
+                    data-testid="skill-entry"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium">{skill.name}</span>
+                      <span
+                        className={cn(
+                          "rounded px-1.5 py-0.5 font-mono text-xs",
+                          skill.status === "installed"
+                            ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+                            : "bg-slate-100 text-slate-500 dark:bg-slate-800"
+                        )}
+                      >
+                        {skill.source_kind}
+                      </span>
+                      {skill.status !== "installed" ? (
+                        <span className="text-destructive ml-auto text-xs">unavailable</span>
+                      ) : null}
+                    </div>
+                    {skill.description ? (
+                      <p className="text-muted-foreground mt-0.5 text-xs">{skill.description}</p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {skillCatalogQuery.data ? (
+              <p className="text-muted-foreground mt-3 text-xs">
+                {skillCatalogQuery.data.total} skill
+                {skillCatalogQuery.data.total !== 1 ? "s" : ""} installed
+              </p>
+            ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Session list sidebar — desktop split-pane (hidden on mobile) */}
       <aside
         className={cn(
@@ -362,9 +602,26 @@ export function ChatShell() {
         </div>
 
         {/* Metadata bar */}
-        {session ? <MetadataBar session={session} /> : null}
+        {session ? (
+          <MetadataBar
+            session={session}
+            isRunning={isRunning}
+            isUpdating={updateMutation.isPending}
+            onUpdate={handleUpdateSession}
+            openEditor={metadataEditorOpen}
+            onEditorClose={() => setMetadataEditorOpen(false)}
+          />
+        ) : null}
 
         {/* Error banners */}
+        {commandBanner ? (
+          <Banner
+            tone="warning"
+            title={commandBanner.title}
+            description={commandBanner.description}
+            className="mx-4 mt-3"
+          />
+        ) : null}
         {submitError ? (
           <Banner
             tone="danger"
@@ -434,8 +691,9 @@ export function ChatShell() {
             />
             <Composer
               onSubmit={handleSubmitPrompt}
+              onCommand={handleCommand}
               loading={isRunning}
-              disabled={!activeSessionId}
+              disabled={composerDisabled}
             />
           </>
         )}

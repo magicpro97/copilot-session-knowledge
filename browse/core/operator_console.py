@@ -345,17 +345,71 @@ def list_runs(session_id: str) -> list:
     return runs
 
 
-def _patch_session(session_id: str, mutate) -> None:
+def _patch_session(session_id: str, mutate) -> bool:
     """Load a session, apply a mutation function, and persist the update."""
     if not _is_valid_id(session_id):
-        return
+        return False
     session = get_session(session_id)
     if session is None:
-        return
+        return False
     updated = dict(session)
     mutate(updated)
     updated["updated_at"] = datetime.now(timezone.utc).isoformat()
     _write_json(_sessions_dir() / f"{session_id}.json", updated)
+    return True
+
+
+def _has_active_run(session_id: str) -> bool:
+    """Return True if the session currently has a non-terminal (running) subprocess."""
+    with _RUNS_LOCK:
+        return any(
+            r.get("session_id") == session_id and r.get("status") not in _TERMINAL_RUN_STATUSES
+            for r in _ACTIVE_RUNS.values()
+        )
+
+
+_VALID_SESSION_MODES = frozenset({"interactive", "plan", "autopilot"})
+
+
+def update_session(
+    session_id: str,
+    *,
+    name: str | None = None,
+    model: str | None = None,
+    mode: str | None = None,
+) -> tuple[dict | None, str]:
+    """Update mutable fields on an existing session.
+
+    Returns:
+        (session_dict, "")      on success
+        (None, "NOT_FOUND")     session does not exist
+        (None, "CONFLICT")      an active run is currently using the session
+        (None, "BAD_MODE")      mode is not a supported Copilot CLI session mode
+    """
+    if not _is_valid_id(session_id):
+        return None, "NOT_FOUND"
+
+    session = get_session(session_id)
+    if session is None:
+        return None, "NOT_FOUND"
+
+    if _has_active_run(session_id):
+        return None, "CONFLICT"
+
+    if mode is not None and mode.strip() not in _VALID_SESSION_MODES:
+        return None, "BAD_MODE"
+
+    def _mutate(s: dict) -> None:
+        if name is not None:
+            s["name"] = (name or "").strip()[:128]
+        if model is not None:
+            s["model"] = normalize_model_id((model or "").strip())[:64]
+        if mode is not None:
+            s["mode"] = (mode or "").strip()[:64]
+
+    if not _patch_session(session_id, _mutate):
+        return None, "NOT_FOUND"
+    return get_session(session_id), ""
 
 
 # ── Session CRUD ──────────────────────────────────────────────────────────────
@@ -581,6 +635,17 @@ def _model_is_known_unavailable(model: str) -> bool:
 def _build_copilot_argv(session: dict, prompt_text: str, extra_add_dirs: list | None = None) -> tuple[list[str], bool]:
     """Build the explicit argv used to invoke Copilot CLI.
 
+    The operator console always invokes Copilot non-interactively via
+    ``copilot -p/--prompt``.  In that mode the CLI will hang waiting for
+    tool-call confirmation unless ``--allow-all-tools`` is passed.  This flag
+    is therefore unconditionally included in every scripted invocation
+    (equivalent to the ``COPILOT_ALLOW_ALL`` environment variable, but
+    explicit in argv so the intent is auditable).
+
+    Note: ``--allow-all-tools`` does NOT widen path or URL access beyond what
+    ``--add-dir`` and session workspace already constrain; it only suppresses
+    the interactive confirmation prompt for individual tool calls.
+
     Returns:
         (argv, resume_used) where resume_used is True when --resume was injected.
     """
@@ -616,6 +681,9 @@ def _build_copilot_argv(session: dict, prompt_text: str, extra_add_dirs: list | 
         if add_dir:
             argv += ["--add-dir", str(add_dir)]
 
+    # Non-interactive scripted runs require explicit tool-permission opt-in so
+    # the CLI does not block waiting for user confirmation on each tool call.
+    argv.append("--allow-all-tools")
     argv += ["--output-format", "json"]
     return argv, resume_used
 

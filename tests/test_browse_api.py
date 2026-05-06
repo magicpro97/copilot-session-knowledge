@@ -24,6 +24,7 @@ Tests:
 import http.client
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -1277,6 +1278,85 @@ def run_all_tests() -> int:
         test("T24g: artifact_available=false", data.get("artifact_available") is False)
     finally:
         server.shutdown()
+
+    # ── T25: /api/skills/catalog endpoint shape ───────────────────────────────
+    print("\n-- T25: /api/skills/catalog shape")
+    db = _make_test_db()
+    server, host, port = _start_server(db)
+    try:
+        status, hdrs, data = _get(host, port, "/api/skills/catalog")
+        test("T25: status 200", status == 200)
+        test("T25: content-type json", "application/json" in hdrs.get("content-type", ""))
+        test("T25: has skills list", isinstance(data.get("skills"), list))
+        test("T25: has total int", isinstance(data.get("total"), int))
+        test("T25: total matches len(skills)", data.get("total") == len(data.get("skills", [])))
+        test("T25: has sources object", isinstance(data.get("sources"), dict))
+        test("T25: sources.global is string", isinstance((data.get("sources") or {}).get("global"), str))
+        test("T25: sources.project is string or null", (data.get("sources") or {}).get("project") is None or isinstance((data.get("sources") or {}).get("project"), str))
+        test("T25: has runtime object", isinstance(data.get("runtime"), dict))
+        test("T25: runtime.generated_at is string", isinstance((data.get("runtime") or {}).get("generated_at"), str))
+        # Each skill entry must have required fields
+        for entry in data.get("skills", []):
+            test("T25: skill entry id", isinstance(entry.get("id"), str))
+            test("T25: skill entry name", isinstance(entry.get("name"), str))
+            test("T25: skill entry description", isinstance(entry.get("description"), str))
+            test("T25: skill entry source_path", isinstance(entry.get("source_path"), str))
+            test("T25: skill entry source_kind", entry.get("source_kind") in ("global", "project"))
+            test("T25: skill entry status", entry.get("status") in ("installed", "unavailable"))
+    finally:
+        server.shutdown()
+
+    # ── T26: /api/skills/catalog empty-state degrades gracefully ──────────────
+    print("\n-- T26: /api/skills/catalog empty-state (no skill dirs)")
+    tmp_home = tempfile.mkdtemp(prefix="browse_test_home_")
+    tmp_cwd = tempfile.mkdtemp(prefix="browse_test_cwd_")
+    orig_home = os.environ.get("HOME", "")
+    orig_cwd = os.getcwd()
+    try:
+        os.environ["HOME"] = tmp_home
+        os.chdir(tmp_cwd)
+        db = _make_test_db()
+        server, host, port = _start_server(db)
+        try:
+            status, _, data = _get(host, port, "/api/skills/catalog")
+            test("T26: status 200 (no dirs)", status == 200)
+            test("T26: skills is empty list", data.get("skills") == [])
+            test("T26: total is 0", data.get("total") == 0)
+        finally:
+            server.shutdown()
+    finally:
+        os.chdir(orig_cwd)
+        os.environ["HOME"] = orig_home
+        shutil.rmtree(tmp_home, ignore_errors=True)
+        shutil.rmtree(tmp_cwd, ignore_errors=True)
+
+    # ── T27: /api/skills/catalog with project skills via server working tree ───
+    print("\n-- T27: /api/skills/catalog project skills via server working tree")
+    tmp_dir = tempfile.mkdtemp(prefix="browse_test_proj_")
+    proj_skill_dir = os.path.join(tmp_dir, ".github", "skills", "test-skill")
+    os.makedirs(proj_skill_dir, exist_ok=True)
+    with open(os.path.join(proj_skill_dir, "SKILL.md"), "w") as fh:
+        fh.write("---\nname: Test Skill\ndescription: A test skill\n---\n# Test Skill\n")
+    orig_cwd = os.getcwd()
+    try:
+        os.chdir(tmp_dir)
+        db = _make_test_db()
+        server, host, port = _start_server(db)
+        try:
+            status, _, data = _get(host, port, "/api/skills/catalog")
+            test("T27: status 200", status == 200)
+            project_skills = [s for s in data.get("skills", []) if s.get("source_kind") == "project"]
+            test("T27: project skill found", len(project_skills) >= 1)
+            sk = project_skills[0] if project_skills else {}
+            test("T27: skill id is test-skill", sk.get("id") == "test-skill")
+            test("T27: skill name from frontmatter", sk.get("name") == "Test Skill")
+            test("T27: skill description from frontmatter", sk.get("description") == "A test skill")
+            test("T27: sources.project set", (data.get("sources") or {}).get("project") is not None)
+        finally:
+            server.shutdown()
+    finally:
+        os.chdir(orig_cwd)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     print(f"\nResults: {_PASS} passed, {_FAIL} failed")
     return _FAIL

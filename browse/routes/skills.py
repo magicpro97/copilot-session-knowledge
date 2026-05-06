@@ -1,7 +1,8 @@
-"""browse/routes/skills.py — read-only skill outcome metrics endpoint."""
+"""browse/routes/skills.py — read-only skill outcome metrics + catalog endpoints."""
 
 import json
 import os
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -246,6 +247,138 @@ def handle_skills_metrics(db, params, token, nonce) -> tuple:
             "checks": checks,
         },
         "operator_actions": operator_actions,
+        "runtime": {
+            "generated_at": now_utc.isoformat().replace("+00:00", "Z"),
+        },
+    }
+
+    return json.dumps(payload).encode("utf-8"), "application/json", 200
+
+
+# ── Skill catalog helpers ──────────────────────────────────────────────────────
+
+
+def _parse_skill_md(path: Path) -> dict:
+    """Return minimal metadata from a SKILL.md file.
+
+    Reads only the first 4 KiB to keep it fast.  Extracts name/description
+    from YAML-style frontmatter when present (``name:`` / ``description:``
+    lines inside the first ``---`` block), otherwise falls back to:
+    - name: the first ``# Heading`` line, or the directory name
+    - description: the first non-empty paragraph after any heading
+    """
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")[:4096]
+    except Exception:
+        return {}
+
+    name: str | None = None
+    description: str | None = None
+
+    # Try YAML frontmatter (``---`` … ``---`` block)
+    fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", raw, re.DOTALL)
+    if fm_match:
+        fm_text = fm_match.group(1)
+        for line in fm_text.splitlines():
+            if name is None:
+                m = re.match(r"^name\s*:\s*(.+)", line)
+                if m:
+                    name = m.group(1).strip().strip('"').strip("'")
+            if description is None:
+                m = re.match(r"^description\s*:\s*(.+)", line)
+                if m:
+                    description = m.group(1).strip().strip('"').strip("'")
+
+    # Fallback: first ``# Heading``
+    if name is None:
+        m = re.search(r"^#\s+(.+)", raw, re.MULTILINE)
+        if m:
+            name = m.group(1).strip()
+
+    # Fallback: first non-empty line after a heading as description
+    if description is None:
+        lines = raw.splitlines()
+        past_heading = False
+        for line in lines:
+            stripped = line.strip()
+            if re.match(r"^#", stripped):
+                past_heading = True
+                continue
+            if past_heading and stripped and not stripped.startswith("---") and not stripped.startswith("```"):
+                description = stripped
+                break
+
+    return {"name": name, "description": description}
+
+
+def _scan_skill_dir(base: Path, source_kind: str) -> list[dict]:
+    """Scan a skills base directory and return a list of catalog entries."""
+    entries: list[dict] = []
+    if not base.is_dir():
+        return entries
+    try:
+        children = sorted(base.iterdir())
+    except Exception:
+        return entries
+    for child in children:
+        if not child.is_dir():
+            continue
+        skill_md = child / "SKILL.md"
+        meta = _parse_skill_md(skill_md) if skill_md.is_file() else {}
+        skill_id = child.name
+        entries.append(
+            {
+                "id": skill_id,
+                "name": meta.get("name") or skill_id,
+                "description": meta.get("description") or "",
+                "source_path": str(skill_md if skill_md.is_file() else child),
+                "source_kind": source_kind,
+                "status": "installed",
+            }
+        )
+    return entries
+
+
+def _skill_catalog(repo_root: Path | None = None) -> list[dict]:
+    """Return merged catalog from global and project skill directories."""
+    global_base = Path.home() / ".copilot" / "skills"
+    entries = _scan_skill_dir(global_base, "global")
+
+    if repo_root is not None:
+        project_base = repo_root / ".github" / "skills"
+        entries += _scan_skill_dir(project_base, "project")
+
+    # De-duplicate by (source_kind, id) — preserve order
+    seen: set[tuple[str, str]] = set()
+    deduped: list[dict] = []
+    for e in entries:
+        key = (e["source_kind"], e["id"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(e)
+    return deduped
+
+
+@route("/api/skills/catalog", methods=["GET"])
+def handle_skills_catalog(db, params, token, nonce) -> tuple:
+    del db, params, token, nonce
+    now_utc = datetime.now(timezone.utc)
+
+    # Project skills are resolved from the backend's own working tree rather
+    # than a caller-supplied path so the endpoint cannot be pointed at
+    # arbitrary directories on the host.
+    repo_root = Path.cwd()
+
+    project_base = repo_root / ".github" / "skills"
+    skills = _skill_catalog(repo_root)
+
+    payload = {
+        "skills": skills,
+        "total": len(skills),
+        "sources": {
+            "global": str(Path.home() / ".copilot" / "skills"),
+            "project": str(project_base) if project_base.is_dir() else None,
+        },
         "runtime": {
             "generated_at": now_utc.isoformat().replace("+00:00", "Z"),
         },

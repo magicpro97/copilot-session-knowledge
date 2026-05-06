@@ -9,9 +9,20 @@ import { useKeyboardPlatform } from "@/hooks/use-keyboard-platform";
 import { formatModShortcut } from "@/lib/shortcut-utils";
 import { cn } from "@/lib/utils";
 import type { QueuedFile } from "@/lib/api/types";
+import {
+  getCommandSuggestions,
+  parseWebCommand,
+  commandHasArgs,
+  type SlashCommand,
+} from "./slash-commands";
 
 type ComposerProps = {
   onSubmit: (prompt: string, files: QueuedFile[]) => void;
+  /**
+   * Called when the user submits a web-supported slash command.
+   * The composer clears its own draft before calling this.
+   */
+  onCommand?: (name: string, args: string) => void;
   loading?: boolean;
   disabled?: boolean;
   className?: string;
@@ -46,8 +57,19 @@ function formatBytes(bytes: number): string {
  * Prompt input area. Submits on Cmd/Ctrl+Enter or the send button.
  * Auto-resizes up to a max height. Supports file attachment via button,
  * drag/drop, and clipboard paste. Queued files appear as removable chips.
+ *
+ * When the input is a web-supported slash command, `onCommand` is called
+ * instead of `onSubmit`. Path-like inputs (/Users/…, /home/…, etc.) are
+ * never intercepted and always submit normally.
  */
-export function Composer({ onSubmit, loading, disabled, className, placeholder }: ComposerProps) {
+export function Composer({
+  onSubmit,
+  onCommand,
+  loading,
+  disabled,
+  className,
+  placeholder,
+}: ComposerProps) {
   const platform = useKeyboardPlatform();
   const submitHint = formatModShortcut("Enter", platform, "↩");
   const resolvedPlaceholder = placeholder ?? `Send a prompt… (${submitHint} to submit)`;
@@ -55,6 +77,8 @@ export function Composer({ onSubmit, loading, disabled, className, placeholder }
   const [queuedFiles, setQueuedFiles] = useState<QueuedFile[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [suggestions, setSuggestions] = useState<SlashCommand[]>([]);
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCountRef = useRef(0);
@@ -77,22 +101,93 @@ export function Composer({ onSubmit, loading, disabled, className, placeholder }
     );
   }
 
+  function clearDraft() {
+    setValue("");
+    setQueuedFiles([]);
+    setFileError(null);
+    setSuggestions([]);
+    setActiveSuggestionIndex(-1);
+  }
+
   function handleSubmit(e?: React.FormEvent) {
     e?.preventDefault();
     if (!canSubmit) return;
     const prompt = value.trim();
+
+    // Check if this is a web-supported slash command.
+    const webCmd = onCommand ? parseWebCommand(prompt) : null;
+    if (webCmd && onCommand) {
+      clearDraft();
+      onCommand(webCmd.name, webCmd.args);
+      return;
+    }
+
     const files = queuedFiles;
-    setValue("");
-    setQueuedFiles([]);
-    setFileError(null);
+    clearDraft();
     onSubmit(prompt, files);
   }
 
+  /** Select a suggestion from the inline list. */
+  function handleSelectSuggestion(cmd: SlashCommand) {
+    setSuggestions([]);
+    setActiveSuggestionIndex(-1);
+
+    if (commandHasArgs(cmd.name)) {
+      // Fill the textarea so the user can type the argument.
+      setValue(`/${cmd.name} `);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    // No-arg commands: execute immediately.
+    clearDraft();
+    onCommand?.(cmd.name, "");
+  }
+
+  function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    const newValue = e.target.value;
+    setValue(newValue);
+    const nextSuggestions = getCommandSuggestions(newValue);
+    setSuggestions(nextSuggestions);
+    setActiveSuggestionIndex(-1);
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // Suggestion navigation takes priority when the list is open.
+    if (suggestions.length > 0) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSuggestions([]);
+        setActiveSuggestionIndex(-1);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setActiveSuggestionIndex((prev) => (prev <= 0 ? suggestions.length - 1 : prev - 1));
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setActiveSuggestionIndex((prev) => (prev >= suggestions.length - 1 ? 0 : prev + 1));
+        return;
+      }
+      if ((e.key === "Enter" || e.key === "Tab") && activeSuggestionIndex >= 0) {
+        e.preventDefault();
+        const cmd = suggestions[activeSuggestionIndex];
+        if (cmd) handleSelectSuggestion(cmd);
+        return;
+      }
+    }
+
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       handleSubmit();
     }
+  }
+
+  function handleBlur() {
+    setSuggestions([]);
+    setActiveSuggestionIndex(-1);
   }
 
   function handleDragEnter(e: React.DragEvent) {
@@ -202,18 +297,61 @@ export function Composer({ onSubmit, loading, disabled, className, placeholder }
           <Paperclip className="size-4" />
         </Button>
 
-        <Textarea
-          ref={textareaRef}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder={resolvedPlaceholder}
-          disabled={loading || disabled}
-          rows={1}
-          className="max-h-40 resize-none pr-12"
-          aria-label="Prompt"
-        />
+        <div className="relative flex-1">
+          {/* Slash command suggestion panel */}
+          {suggestions.length > 0 ? (
+            <ul
+              role="listbox"
+              aria-label="Slash command suggestions"
+              className="bg-popover border-border absolute bottom-full left-0 z-10 mb-1 w-full overflow-hidden rounded-md border shadow-md"
+            >
+              {suggestions.map((cmd, idx) => (
+                <li key={cmd.name} role="option" aria-selected={idx === activeSuggestionIndex}>
+                  <button
+                    type="button"
+                    onMouseDown={(e) => {
+                      // Prevent textarea blur before we handle selection.
+                      e.preventDefault();
+                      handleSelectSuggestion(cmd);
+                    }}
+                    className={cn(
+                      "flex w-full items-baseline gap-2 px-3 py-2 text-left text-sm transition-colors",
+                      idx === activeSuggestionIndex
+                        ? "bg-accent text-accent-foreground"
+                        : "hover:bg-accent/50"
+                    )}
+                  >
+                    <span className="text-primary shrink-0 font-mono font-medium">/{cmd.name}</span>
+                    <span className="text-muted-foreground min-w-0 truncate text-xs">
+                      {cmd.description}
+                    </span>
+                    {cmd.usage.includes("<") ? (
+                      <span className="text-muted-foreground/60 ml-auto shrink-0 font-mono text-xs">
+                        {cmd.usage}
+                      </span>
+                    ) : null}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          <Textarea
+            ref={textareaRef}
+            value={value}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            onBlur={handleBlur}
+            onPaste={handlePaste}
+            placeholder={resolvedPlaceholder}
+            disabled={loading || disabled}
+            rows={1}
+            className="max-h-40 resize-none"
+            aria-label="Prompt"
+            aria-autocomplete="list"
+            aria-expanded={suggestions.length > 0}
+          />
+        </div>
         <Button
           type="submit"
           size="icon"
