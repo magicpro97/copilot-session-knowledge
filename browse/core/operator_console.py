@@ -81,6 +81,20 @@ _ENV_ALLOWLIST = frozenset(
         "TMPDIR",
         "TMP",
         "TEMP",
+        "APPDATA",
+        "COMSPEC",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LOCALAPPDATA",
+        "OS",
+        "PATHEXT",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "USERPROFILE",
+        "WINDIR",
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
     }
@@ -457,6 +471,19 @@ def _build_env() -> dict:
     return {k: v for k, v in os.environ.items() if k in _ENV_ALLOWLIST}
 
 
+def _resolve_copilot_command(env: dict | None = None) -> str:
+    """Resolve the Copilot CLI executable for shell-free subprocess calls."""
+    search_env = env if env is not None else _build_env()
+    path = search_env.get("PATH")
+    resolved = shutil.which("copilot", path=path)
+    if os.name == "nt" and (not resolved or Path(resolved).suffix.lower() == ".ps1"):
+        for candidate in ("copilot.exe", "copilot.cmd", "copilot.bat"):
+            candidate_path = shutil.which(candidate, path=path)
+            if candidate_path:
+                return candidate_path
+    return resolved or "copilot"
+
+
 def normalize_model_id(model: str) -> str:
     """Normalize legacy hyphenated version suffixes to the CLI's dotted form."""
     normalized = (model or "").strip()
@@ -557,7 +584,7 @@ def _build_copilot_argv(session: dict, prompt_text: str, extra_add_dirs: list | 
     Returns:
         (argv, resume_used) where resume_used is True when --resume was injected.
     """
-    argv = ["copilot", "-p", prompt_text]
+    argv = [_resolve_copilot_command(), "-p", prompt_text]
 
     name = str(session.get("name", "")).strip()
     resume_used = False
@@ -1137,9 +1164,11 @@ def probe_available_models() -> dict:
     env = _build_env()
     try:
         result = subprocess.run(
-            ["copilot", "model", "list", "--output-format", "json"],
+            [_resolve_copilot_command(env), "model", "list", "--output-format", "json"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             env=env,
             shell=False,

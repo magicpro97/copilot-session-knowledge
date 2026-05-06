@@ -102,8 +102,10 @@ from browse.core.operator_console import (  # noqa: E402
     _MODEL_CACHE_LOCK,
     _RUNS_LOCK,
     _build_copilot_argv,
+    _build_env,
     _parse_output_event,
     _persist_run,
+    _resolve_copilot_command,
     confine_path,
     create_session,
     delete_session,
@@ -373,6 +375,29 @@ def test_oc20_build_copilot_argv_uses_resume_ready():
     test("OC20: resumed session omits --name", "--name" not in argv_resume)
     test("OC20: resumed session uses named --resume", "--resume=resume-test" in argv_resume)
     test("OC20: nameless session omits bare --resume", "--resume" not in argv_nameless_resume)
+
+
+def test_oc20b_copilot_command_resolves_shell_free_windows_shim():
+    """OC20b: Copilot command resolution supports npm shims without shell=True."""
+    with tempfile.TemporaryDirectory() as tmp:
+        shim_name = "copilot.cmd" if os.name == "nt" else "copilot"
+        shim = Path(tmp) / shim_name
+        shim.write_text("@echo off\r\n" if os.name == "nt" else "#!/bin/sh\n", encoding="utf-8")
+        if os.name != "nt":
+            shim.chmod(0o755)
+
+        resolved = _resolve_copilot_command({"PATH": tmp})
+        test("OC20b: resolves copilot executable from PATH", Path(resolved) == shim)
+
+
+def test_oc20c_build_env_keeps_windows_cli_runtime_paths():
+    """OC20c: Windows env allowlist keeps non-secret vars needed by node/npm shims."""
+    env = _build_env()
+    if os.name == "nt":
+        required = {"PATH", "PATHEXT", "COMSPEC", "SYSTEMROOT", "APPDATA", "LOCALAPPDATA", "USERPROFILE"}
+        test("OC20c: Windows CLI runtime env vars are preserved", required.issubset(env.keys()))
+    else:
+        test("OC20c: PATH is preserved on non-Windows", "PATH" in env)
 
 
 def test_oc21_parse_output_event_preserves_type():
@@ -2132,6 +2157,8 @@ if __name__ == "__main__":
     test_oc18_delete_session_invalid_id()
     test_oc19_list_sessions_returns_list()
     test_oc20_build_copilot_argv_uses_resume_ready()
+    test_oc20b_copilot_command_resolves_shell_free_windows_shim()
+    test_oc20c_build_env_keeps_windows_cli_runtime_paths()
     test_oc21_parse_output_event_preserves_type()
     test_oc22_get_run_status_reads_persisted_run()
     test_oc23_make_stream_generator_replays_persisted_events()
