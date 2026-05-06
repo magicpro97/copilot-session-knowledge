@@ -50,7 +50,7 @@ def main() -> int:
 
     push_args = git_push_args(command)
     if push_args:
-        normalized = push_args.replace("\"", " ").replace("'", " ")
+        normalized = push_args.replace('"', " ").replace("'", " ")
         if re.search(r"(^|\s)--force([=\s]|$)", normalized):
             deny("Force push blocked — use --force-with-lease")
         if re.search(r"(^|\s)-[^-\s]*f[^\s]*(\s|$)", normalized):

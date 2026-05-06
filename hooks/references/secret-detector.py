@@ -32,8 +32,7 @@ def deny(secret_name: str) -> None:
             {
                 "permissionDecision": "deny",
                 "permissionDecisionReason": (
-                    f"Potential secret detected ({secret_name}). "
-                    "Use environment variables instead of hardcoding."
+                    f"Potential secret detected ({secret_name}). Use environment variables instead of hardcoding."
                 ),
             }
         )

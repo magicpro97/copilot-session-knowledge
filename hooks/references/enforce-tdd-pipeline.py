@@ -64,11 +64,7 @@ def current_feature() -> tuple[str, str]:
 
 
 def newest_evidence_file(evidence_dir: Path) -> Path | None:
-    files = [
-        p
-        for p in evidence_dir.rglob("*")
-        if p.is_file() and p.suffix.lower() in {".log", ".md", ".json"}
-    ]
+    files = [p for p in evidence_dir.rglob("*") if p.is_file() and p.suffix.lower() in {".log", ".md", ".json"}]
     return max(files, key=lambda p: p.stat().st_mtime) if files else None
 
 
@@ -106,7 +102,9 @@ def validate_green(phase_dir: Path) -> str:
 
 def validate_review(phase_dir: Path) -> str:
     report = phase_dir / "review-report.md"
-    if report.is_file() and not re.search(r"(verdict|status).*CLEAN|\bCLEAN\b", report.read_text(encoding="utf-8", errors="ignore"), re.IGNORECASE):
+    if report.is_file() and not re.search(
+        r"(verdict|status).*CLEAN|\bCLEAN\b", report.read_text(encoding="utf-8", errors="ignore"), re.IGNORECASE
+    ):
         return "REVIEW phase: verdict is not CLEAN"
     return ""
 
@@ -164,7 +162,9 @@ def main() -> int:
     if newest:
         age_hours = (time.time() - newest.stat().st_mtime) / 3600
         if age_hours > MAX_EVIDENCE_AGE_HOURS:
-            deny(f"TDD evidence expired: newest file is {int(age_hours)}h old (max {MAX_EVIDENCE_AGE_HOURS}h). Re-run pipeline for '{feature}'.")
+            deny(
+                f"TDD evidence expired: newest file is {int(age_hours)}h old (max {MAX_EVIDENCE_AGE_HOURS}h). Re-run pipeline for '{feature}'."
+            )
 
     missing: list[str] = []
     invalid: list[str] = []
@@ -179,15 +179,21 @@ def main() -> int:
             invalid.append(f"{dirname}({reason})")
 
     if missing:
-        deny(f"TDD Pipeline incomplete for '{feature}'. Missing: {' '.join(missing)}. Complete ALL phases before task_complete.")
+        deny(
+            f"TDD Pipeline incomplete for '{feature}'. Missing: {' '.join(missing)}. Complete ALL phases before task_complete."
+        )
     if invalid:
         deny(f"TDD Pipeline evidence invalid for '{feature}': {' '.join(invalid)}. Fix and re-run.")
 
     current_sha = git_output("rev-parse", "HEAD")
     if started_sha and current_sha and started_sha != "unknown":
-        result = subprocess.run(["git", "merge-base", "--is-ancestor", started_sha, current_sha], capture_output=True, text=True)
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", started_sha, current_sha], capture_output=True, text=True
+        )
         if result.returncode != 0:
-            deny(f"TDD evidence created for {started_sha} but HEAD is {current_sha} (not a descendant). Evidence may be from a different branch.")
+            deny(
+                f"TDD evidence created for {started_sha} but HEAD is {current_sha} (not a descendant). Evidence may be from a different branch."
+            )
     return 0
 
 

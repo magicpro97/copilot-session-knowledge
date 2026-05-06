@@ -16,8 +16,14 @@ FILE_EXTENSIONS = re.compile(r"\.(ts|tsx|js|jsx)$")
 SKIP_PATTERNS = re.compile(r"__tests__|__mocks__|\.test\.|\.spec\.|\.generated\.|\.g\.")
 REGEX_RULES = (
     (re.compile(r"from\s+['\"]lodash|require\(['\"]lodash"), "Coding standard: Use es-toolkit instead of lodash."),
-    (re.compile(r"from\s+['\"]moment|require\(['\"]moment"), "Coding standard: Use date-fns or native Date instead of moment.js."),
-    (re.compile(r"(?<!=)!!(?=[a-zA-Z_$(])"), "Coding standard: Use isNotNil() instead of !! for null checks (!!0 is false)."),
+    (
+        re.compile(r"from\s+['\"]moment|require\(['\"]moment"),
+        "Coding standard: Use date-fns or native Date instead of moment.js.",
+    ),
+    (
+        re.compile(r"(?<!=)!!(?=[a-zA-Z_$(])"),
+        "Coding standard: Use isNotNil() instead of !! for null checks (!!0 is false).",
+    ),
     (re.compile(r"\?\?\s*null\b"), "Coding standard: Let undefined remain undefined. Do not use ?? null."),
     (
         re.compile(r"(pk|sk|PK|SK|partitionKey|sortKey)\s*[:=].*(\+\s*['\"]#|['\"]#['\"]?\s*\+)"),
@@ -64,7 +70,9 @@ def optional_ruff_check(content: str) -> None:
         tmp.write(content)
         tmp_path = Path(tmp.name)
     try:
-        result = subprocess.run(["ruff", "check", "--select", "E,W,I", str(tmp_path)], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(
+            ["ruff", "check", "--select", "E,W,I", str(tmp_path)], capture_output=True, text=True, timeout=5
+        )
     finally:
         tmp_path.unlink(missing_ok=True)
     if result.returncode != 0:
