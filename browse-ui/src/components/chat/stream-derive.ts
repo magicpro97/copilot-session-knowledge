@@ -16,8 +16,19 @@ export type AssistantToolChunk = {
   addedPaths?: string[];
 };
 export type AssistantRawChunk = { kind: "raw"; text: string };
+/** Skills loaded at session start — from session.skills_loaded runtime events. */
+export type AssistantSkillsChunk = {
+  kind: "skills";
+  count: number;
+  /** Skill names only — descriptions and paths are intentionally omitted from inline rendering. */
+  names: string[];
+};
 
-export type AssistantChunk = AssistantTextChunk | AssistantToolChunk | AssistantRawChunk;
+export type AssistantChunk =
+  | AssistantTextChunk
+  | AssistantToolChunk
+  | AssistantRawChunk
+  | AssistantSkillsChunk;
 
 /** Parse raw tool arguments into a key/value record.
  *  - If already an object, return as-is.
@@ -214,6 +225,24 @@ export function deriveChunks(frames: StreamFrame[]): AssistantChunk[] {
         flushText();
         chunks.push({ kind: "text", text: summary });
       }
+      continue;
+    }
+
+    // session.skills_loaded — emitted once (empty bootstrap) then once with all skills.
+    // Skip the noisy empty bootstrap event; emit a compact skills chunk only when at
+    // least one valid skill name remains after filtering malformed entries.
+    if (eventType === "session.skills_loaded") {
+      const rawSkills = (data as { skills?: unknown } | undefined)?.skills;
+      if (!Array.isArray(rawSkills) || rawSkills.length === 0) continue;
+      const names = rawSkills
+        .map((s) => {
+          const obj = s as Record<string, unknown>;
+          return typeof obj?.name === "string" ? obj.name : null;
+        })
+        .filter((n): n is string => n !== null && n.length > 0);
+      if (names.length === 0) continue;
+      flushText();
+      chunks.push({ kind: "skills", count: names.length, names });
       continue;
     }
   }

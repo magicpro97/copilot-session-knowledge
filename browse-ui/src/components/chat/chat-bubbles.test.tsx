@@ -73,4 +73,29 @@ describe("AssistantBubble", () => {
     render(<AssistantBubble chunks={[{ kind: "text", text: "done" }]} resumeUsed={false} />);
     expect(screen.getByText("new context")).toBeInTheDocument();
   });
+
+  // ── Skills chunk rendering ───────────────────────────────────────────────────
+
+  it("renders skills loaded summary from a skills chunk", () => {
+    render(
+      <AssistantBubble
+        chunks={[
+          {
+            kind: "skills",
+            count: 3,
+            names: ["code-reviewer", "frontend-dev", "session-knowledge"],
+          },
+        ]}
+      />
+    );
+    expect(screen.getByText("3 skills loaded")).toBeInTheDocument();
+  });
+
+  it("does not render skill names until expanded", () => {
+    render(
+      <AssistantBubble chunks={[{ kind: "skills", count: 2, names: ["skill-a", "skill-b"] }]} />
+    );
+    expect(screen.queryByText("skill-a")).toBeNull();
+    expect(screen.queryByText("skill-b")).toBeNull();
+  });
 });

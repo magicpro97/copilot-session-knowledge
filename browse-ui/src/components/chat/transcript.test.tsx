@@ -258,4 +258,123 @@ describe("Transcript — historical runs", () => {
     const run = makeRun(); // no resume_used field
     expect(() => render(<Transcript runs={[run]} sessionId="sess-1" />)).not.toThrow();
   });
+
+  // ── session.skills_loaded in historical runs ─────────────────────────────────
+
+  it("renders skills loaded badge for a historical run with populated skills event", () => {
+    const run = makeRun({
+      events: [
+        {
+          type: "session.skills_loaded",
+          idx: 0,
+          event: {
+            type: "session.skills_loaded",
+            data: {
+              skills: [
+                {
+                  name: "code-reviewer",
+                  description: "...",
+                  source: "global",
+                  userInvocable: true,
+                  enabled: true,
+                  path: "/p",
+                },
+                {
+                  name: "frontend-dev",
+                  description: "...",
+                  source: "global",
+                  userInvocable: true,
+                  enabled: true,
+                  path: "/q",
+                },
+              ],
+            },
+          },
+          data: {
+            skills: [
+              {
+                name: "code-reviewer",
+                description: "...",
+                source: "global",
+                userInvocable: true,
+                enabled: true,
+                path: "/p",
+              },
+              {
+                name: "frontend-dev",
+                description: "...",
+                source: "global",
+                userInvocable: true,
+                enabled: true,
+                path: "/q",
+              },
+            ],
+          },
+        },
+      ],
+    });
+    render(<Transcript runs={[run]} sessionId="sess-1" />);
+    expect(screen.getByText("2 skills loaded")).toBeInTheDocument();
+  });
+
+  it("does not render skills loaded badge when only the bootstrap empty event is present", () => {
+    const run = makeRun({
+      events: [
+        {
+          type: "session.skills_loaded",
+          idx: 0,
+          event: { type: "session.skills_loaded", data: { skills: [] } },
+          data: { skills: [] },
+        },
+      ],
+    });
+    render(<Transcript runs={[run]} sessionId="sess-1" />);
+    expect(screen.queryByText(/skills loaded/)).toBeNull();
+  });
+
+  it("renders skills loaded badge from populated event after bootstrap in historical run", () => {
+    const run = makeRun({
+      events: [
+        {
+          type: "session.skills_loaded",
+          idx: 0,
+          event: { type: "session.skills_loaded", data: { skills: [] } },
+          data: { skills: [] },
+        },
+        {
+          type: "session.skills_loaded",
+          idx: 1,
+          event: {
+            type: "session.skills_loaded",
+            data: {
+              skills: [
+                {
+                  name: "karpathy-guidelines",
+                  description: "...",
+                  source: "global",
+                  userInvocable: false,
+                  enabled: true,
+                  path: "/k",
+                },
+              ],
+            },
+          },
+          data: {
+            skills: [
+              {
+                name: "karpathy-guidelines",
+                description: "...",
+                source: "global",
+                userInvocable: false,
+                enabled: true,
+                path: "/k",
+              },
+            ],
+          },
+        },
+      ],
+    });
+    render(<Transcript runs={[run]} sessionId="sess-1" />);
+    expect(screen.getByText("1 skills loaded")).toBeInTheDocument();
+  });
 });

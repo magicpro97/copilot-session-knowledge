@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Terminal, Wrench, Paperclip } from "lucide-react";
+import { ChevronDown, ChevronUp, Terminal, Wrench, Paperclip, BookOpen } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { AssistantChunk } from "./stream-derive";
@@ -76,6 +76,40 @@ function ToolChunk({ chunk }: { chunk: AssistantChunk & { kind: "tool" } }) {
 }
 
 // ── Sent file chip (compact, read-only) ─────────────────────────────────────
+
+// ── Skills chunk ────────────────────────────────────────────────────────────
+
+function SkillsChunk({ chunk }: { chunk: AssistantChunk & { kind: "skills" } }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-md border text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((p) => !p)}
+        className="text-muted-foreground hover:text-foreground flex w-full items-center gap-2 px-3 py-2 text-left transition-colors"
+      >
+        <BookOpen className="size-3 shrink-0" />
+        <span className="font-mono font-medium">{chunk.count} skills loaded</span>
+        {open ? (
+          <ChevronUp className="ml-auto size-3 shrink-0" />
+        ) : (
+          <ChevronDown className="ml-auto size-3 shrink-0" />
+        )}
+      </button>
+      {open ? (
+        <div className="border-t px-3 pt-2 pb-3">
+          <div className="flex flex-wrap gap-1">
+            {chunk.names.map((name) => (
+              <span key={name} className="bg-muted/40 rounded px-1.5 py-0.5 font-mono">
+                {name}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
@@ -170,6 +204,7 @@ export function AssistantBubble({
               if (chunk.kind === "text") return <TextChunk key={index} text={chunk.text} />;
               if (chunk.kind === "raw") return <RawChunk key={index} text={chunk.text} />;
               if (chunk.kind === "tool") return <ToolChunk key={index} chunk={chunk} />;
+              if (chunk.kind === "skills") return <SkillsChunk key={index} chunk={chunk} />;
               return null;
             })}
           </div>

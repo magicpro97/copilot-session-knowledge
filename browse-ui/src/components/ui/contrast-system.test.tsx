@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/popup-surface";
 import { Select, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogOverlay } from "@/components/ui/dialog";
-import { Sheet, SheetOverlay } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetOverlay } from "@/components/ui/sheet";
 import { SurfacePanel } from "@/components/ui/surface-panel";
 
 describe("Contrast system — opaque trigger surfaces", () => {
@@ -134,5 +134,37 @@ describe("Popup surface constants — opaque surface enforcement", () => {
     for (const token of PANEL_SURFACE_BASE.split(" ")) {
       expect(panel!.className).toContain(token);
     }
+  });
+});
+
+describe("Shared surface — SheetContent background contract", () => {
+  it("SheetContent uses shared POPUP_SURFACE_BG tokens (bg-popover text-popover-foreground)", () => {
+    render(
+      <Sheet open={true}>
+        <SheetContent showCloseButton={false}>Sheet body</SheetContent>
+      </Sheet>
+    );
+
+    const content = document.querySelector('[data-slot="sheet-content"]');
+    expect(content).not.toBeNull();
+    for (const token of POPUP_SURFACE_BG.split(" ")) {
+      expect(content!.className).toContain(token);
+    }
+  });
+
+  it("SheetContent does not use ad-hoc background overrides outside the shared token", () => {
+    render(
+      <Sheet open={true}>
+        <SheetContent showCloseButton={false}>Sheet body</SheetContent>
+      </Sheet>
+    );
+
+    const content = document.querySelector('[data-slot="sheet-content"]');
+    expect(content).not.toBeNull();
+    const cls = content!.className;
+    // The bg and text tokens must come from POPUP_SURFACE_BG — no semi-transparent variants
+    expect(cls).not.toMatch(/bg-popover\/\d+/);
+    expect(cls).not.toContain("bg-transparent");
+    expect(cls).not.toMatch(/bg-background\/\d+/);
   });
 });

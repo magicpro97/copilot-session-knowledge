@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { MetadataBar } from "./metadata-bar";
 import type { OperatorSession } from "@/lib/api/types";
+import { POPUP_SURFACE_BASE } from "@/components/ui/popup-surface";
 
 const baseSession: OperatorSession = {
   id: "sess-001",
@@ -234,5 +235,48 @@ describe("MetadataBar — openEditor prop", () => {
 
     expect(screen.queryByPlaceholderText("Session name")).not.toBeInTheDocument();
     expect(onEditorClose).toHaveBeenCalledOnce();
+  });
+});
+
+// ── Surface regression: edit-session popover uses shared popup surface ────────
+
+describe("MetadataBar — edit popover surface contract", () => {
+  const editSession: OperatorSession = {
+    id: "sess-surf",
+    name: "Surface Test",
+    model: "claude-sonnet-4.6",
+    mode: "interactive",
+    workspace: "/home/user/project",
+    add_dirs: [],
+    created_at: "2026-05-01T10:00:00Z",
+    updated_at: "2026-05-01T10:05:00Z",
+    run_count: 1,
+    last_run_id: null,
+    resume_ready: false,
+  };
+
+  it("edit popover surface carries all shared popup surface tokens", () => {
+    render(<MetadataBar session={editSession} onUpdate={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("edit-session-btn"));
+
+    // PopoverContent renders into a portal — findable via data-slot attribute
+    const popoverContent = document.querySelector('[data-slot="popover-content"]');
+    expect(popoverContent).not.toBeNull();
+    for (const token of POPUP_SURFACE_BASE.split(" ")) {
+      expect(popoverContent!.className).toContain(token);
+    }
+  });
+
+  it("edit popover surface does not use semi-transparent background overrides", () => {
+    render(<MetadataBar session={editSession} onUpdate={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("edit-session-btn"));
+
+    const popoverContent = document.querySelector('[data-slot="popover-content"]');
+    expect(popoverContent).not.toBeNull();
+    const cls = popoverContent!.className;
+    // No opacity fractions on the background (would make surface see-through)
+    expect(cls).not.toMatch(/bg-popover\/\d+/);
+    expect(cls).not.toContain("bg-transparent");
+    expect(cls).not.toContain("backdrop-blur");
   });
 });

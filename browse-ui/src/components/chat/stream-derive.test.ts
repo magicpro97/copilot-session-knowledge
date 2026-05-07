@@ -291,6 +291,148 @@ describe("deriveChunks — real event names", () => {
   });
 });
 
+// ── session.skills_loaded ────────────────────────────────────────────────────
+
+describe("deriveChunks — session.skills_loaded", () => {
+  it("ignores empty bootstrap event (skills: [])", () => {
+    const frames: CopilotStreamFrame[] = [eventFrame("session.skills_loaded", { skills: [] })];
+    const chunks = deriveChunks(frames);
+    expect(chunks).toHaveLength(0);
+  });
+
+  it("emits a skills chunk for a populated skills event", () => {
+    const frames: CopilotStreamFrame[] = [
+      eventFrame("session.skills_loaded", {
+        skills: [
+          {
+            name: "code-reviewer",
+            description: "Reviews code",
+            source: "global",
+            userInvocable: true,
+            enabled: true,
+            path: "/some/path",
+          },
+          {
+            name: "frontend-dev",
+            description: "Frontend work",
+            source: "global",
+            userInvocable: true,
+            enabled: true,
+            path: "/other/path",
+          },
+        ],
+      }),
+    ];
+    const chunks = deriveChunks(frames);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toMatchObject({
+      kind: "skills",
+      count: 2,
+      names: ["code-reviewer", "frontend-dev"],
+    });
+  });
+
+  it("skips empty bootstrap then emits chunk for populated event (real capture sequence)", () => {
+    // Real CLI emits: empty bootstrap first, then populated event with all skills.
+    const frames: CopilotStreamFrame[] = [
+      eventFrame("session.skills_loaded", { skills: [] }),
+      eventFrame("session.skills_loaded", {
+        skills: [
+          {
+            name: "karpathy-guidelines",
+            description: "...",
+            source: "global",
+            userInvocable: false,
+            enabled: true,
+            path: "/p1",
+          },
+          {
+            name: "session-knowledge",
+            description: "...",
+            source: "global",
+            userInvocable: true,
+            enabled: true,
+            path: "/p2",
+          },
+          {
+            name: "tentacle-orchestration",
+            description: "...",
+            source: "user",
+            userInvocable: true,
+            enabled: true,
+            path: "/p3",
+          },
+        ],
+      }),
+    ];
+    const chunks = deriveChunks(frames);
+    expect(chunks).toHaveLength(1);
+    const chunk = chunks[0];
+    expect(chunk.kind).toBe("skills");
+    if (chunk.kind === "skills") {
+      expect(chunk.count).toBe(3);
+      expect(chunk.names).toEqual([
+        "karpathy-guidelines",
+        "session-knowledge",
+        "tentacle-orchestration",
+      ]);
+    }
+  });
+
+  it("omits skills without a name field", () => {
+    const frames: CopilotStreamFrame[] = [
+      eventFrame("session.skills_loaded", {
+        skills: [
+          { name: "good-skill", enabled: true },
+          { description: "no name here", enabled: true },
+          { name: "", enabled: true },
+        ],
+      }),
+    ];
+    const chunks = deriveChunks(frames);
+    expect(chunks).toHaveLength(1);
+    if (chunks[0].kind === "skills") {
+      // Only the one with a valid non-empty name is included
+      expect(chunks[0].count).toBe(1);
+      expect(chunks[0].names).toEqual(["good-skill"]);
+    }
+  });
+
+  it("skips malformed populated events when no valid skill names remain", () => {
+    const frames: CopilotStreamFrame[] = [
+      eventFrame("session.skills_loaded", {
+        skills: [{ enabled: true }, { name: "", enabled: true }],
+      }),
+    ];
+    expect(deriveChunks(frames)).toHaveLength(0);
+  });
+
+  it("does not interfere with assistant text chunks in the same stream", () => {
+    const frames: CopilotStreamFrame[] = [
+      eventFrame("session.skills_loaded", { skills: [] }),
+      eventFrame("session.skills_loaded", {
+        skills: [
+          {
+            name: "skill-a",
+            description: "d",
+            source: "global",
+            userInvocable: true,
+            enabled: true,
+            path: "/a",
+          },
+        ],
+      }),
+      eventFrame("assistant.message_delta", { deltaContent: "Hello" }),
+    ];
+    const chunks = deriveChunks(frames);
+    const skillsChunks = chunks.filter((c) => c.kind === "skills");
+    const textChunks = chunks.filter((c) => c.kind === "text");
+    expect(skillsChunks).toHaveLength(1);
+    expect(textChunks).toHaveLength(1);
+    expect(textChunks[0]).toMatchObject({ kind: "text", text: "Hello" });
+  });
+});
+
 // ── extractFilePaths ──────────────────────────────────────────────────────────
 
 describe("extractFilePaths", () => {

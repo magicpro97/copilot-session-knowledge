@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { HostProfile } from "@/lib/api/types";
 import { SessionCreateDialog } from "@/components/chat/session-create-dialog";
+import { POPUP_SURFACE_BASE } from "@/components/ui/popup-surface";
 
 const INITIAL_HOST: HostProfile = {
   id: "route-host",
@@ -95,5 +96,33 @@ describe("SessionCreateDialog", () => {
     rerender(<SessionCreateDialog onSubmit={onSubmit} initialHost={{ ...INITIAL_HOST }} />);
 
     expect(screen.getByTestId("host-picker-value")).toHaveTextContent(OVERRIDE_HOST.id);
+  });
+});
+
+// ── Surface regression: session-create dialog uses shared popup surface ───────
+
+describe("SessionCreateDialog — dialog surface contract", () => {
+  it("session create dialog content carries all shared popup surface tokens", () => {
+    render(<SessionCreateDialog onSubmit={vi.fn()} initialHost={INITIAL_HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+
+    // DialogContent renders into a portal — findable via data-slot attribute
+    const dialogContent = document.querySelector('[data-slot="dialog-content"]');
+    expect(dialogContent).not.toBeNull();
+    for (const token of POPUP_SURFACE_BASE.split(" ")) {
+      expect(dialogContent!.className).toContain(token);
+    }
+  });
+
+  it("session create dialog surface does not use semi-transparent background overrides", () => {
+    render(<SessionCreateDialog onSubmit={vi.fn()} initialHost={INITIAL_HOST} />);
+    fireEvent.click(screen.getByRole("button", { name: "New chat session" }));
+
+    const dialogContent = document.querySelector('[data-slot="dialog-content"]');
+    expect(dialogContent).not.toBeNull();
+    const cls = dialogContent!.className;
+    expect(cls).not.toMatch(/bg-popover\/\d+/);
+    expect(cls).not.toContain("bg-transparent");
+    expect(cls).not.toContain("backdrop-blur");
   });
 });
