@@ -37,7 +37,6 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 if os.name == "nt":
     try:
@@ -333,7 +332,7 @@ def with_retry(func, *args, max_attempts: int = 5, base_delay: float = 0.5, **kw
     ~800 MB DB can exceed it. This wrapper retries transient lock errors
     with delays of 0.5s, 1s, 2s, 4s, 8s before giving up.
     """
-    last_exc: Optional[sqlite3.OperationalError] = None
+    last_exc: sqlite3.OperationalError | None = None
     for attempt in range(1, max_attempts + 1):
         try:
             return func(*args, **kwargs)
