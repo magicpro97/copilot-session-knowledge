@@ -19,7 +19,8 @@ applyTo: "**/*"
 ## Before Starting ANY Task
 
 ```bash
-python3 ~/.copilot/tools/briefing.py --auto --compact
+sk briefing --auto --compact
+# fallback: python3 ~/.copilot/tools/briefing.py --auto --compact
 ```
 
 Read the output — it contains past mistakes to avoid and patterns to follow for
@@ -31,16 +32,17 @@ Record what you learned (choose appropriate type):
 
 ```bash
 # After fixing a bug:
-python3 ~/.copilot/tools/learn.py --mistake "Title" "Root cause and fix" \
+sk learn --mistake "Title" "Root cause and fix" \
   --tags "<MODULE>,<TECH>" --wing <WING> --room <ROOM>
 
 # After implementing a feature:
-python3 ~/.copilot/tools/learn.py --feature "Title" "What was built" \
+sk learn --feature "Title" "What was built" \
   --tags "<MODULE>,<TECH>" --wing <WING> --room <ROOM>
 
 # After discovering a useful pattern:
-python3 ~/.copilot/tools/learn.py --pattern "Title" "What works well" \
+sk learn --pattern "Title" "What works well" \
   --tags "<MODULE>,<TECH>"
+# fallback: python3 ~/.copilot/tools/learn.py <type> <args>
 ```
 
 ## Rules

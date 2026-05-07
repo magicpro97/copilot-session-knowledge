@@ -1,5 +1,10 @@
 # Copilot Instructions — copilot-session-knowledge
 
+## Short Command: `sk`
+
+> **`sk` is the preferred command** — a managed launcher/shim provisioned by the installer.
+> Check: `sk --help`. Not on PATH yet? Fall back to `python3 ~/.copilot/tools/<script>.py`.
+
 ## Agent Rules (MANDATORY)
 
 > **⚠️ These rules are NON-NEGOTIABLE.** Every agent (main, sub-agent, explore, task, general-purpose) MUST follow them. Violations = shipping broken code.
@@ -23,7 +28,8 @@
 Before starting any task that touches >1 file or involves unfamiliar code:
 
 ```bash
-python3 ~/.copilot/tools/briefing.py "your task description"
+sk briefing "your task description"
+# fallback: python3 ~/.copilot/tools/briefing.py "your task description"
 ```
 
 This surfaces past mistakes, proven patterns, and relevant decisions. Skip only for trivial changes (typo fix, renaming, formatting).
@@ -94,14 +100,14 @@ When running inside a tentacle (dispatched by the orchestrator via `tentacle.py`
 
 1. **Read the bundle first** — read `manifest.json`, `session-metadata.md`, `recall-pack.json`, and `instructions.md` from the bundle path before any edit.
 2. **Stay in scope** — only edit files listed in the tentacle's declared scope; write a scope escalation note to the handoff for any exception.
-3. **Mark todos as you complete them**: `python3 ~/.copilot/tools/tentacle.py todo <tentacle-name> done <index>`
+3. **Mark todos as you complete them**: `sk tentacle todo <tentacle-name> done <index>` (fallback: `python3 ~/.copilot/tools/tentacle.py todo <tentacle-name> done <index>`)
 4. **No git operations** — do NOT run `git commit` or `git push`; the orchestrator owns all git operations.
-5. **Write a structured handoff before stopping**: `python3 ~/.copilot/tools/tentacle.py handoff <tentacle-name> "<summary>" --status <STATUS> [--changed-file <path>] --learn`
+5. **Write a structured handoff before stopping**: `sk tentacle handoff <tentacle-name> "<summary>" --status <STATUS> [--changed-file <path>] --learn` (fallback: `python3 ~/.copilot/tools/tentacle.py handoff ...`)
 6. Use one of `DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED` for `<STATUS>`. Add one `--changed-file` per modified file; omit it when no files changed. Handoff must list changed rules, source-of-truth file for each rule, and any remaining ambiguity.
 
 **Goal-loop (orchestrators only)** — after all tentacle handoffs pass verification gates, evaluate whether the overarching goal is met. If unmet, loop back to Phase 1 (new tentacles for remaining gaps). Only commit and close when success criteria are verifiably satisfied. Sub-agents report via handoff and stop; the orchestrator owns continuation. Record goal-eval evidence with `python3 ~/.copilot/tools/tentacle.py verify <name> "<check-command>" --label "goal-eval"`.
 
-See [docs/AGENT-RULES.md](../docs/AGENT-RULES.md) for the complete Rule 8 text and goal-loop pattern.
+See [docs/AGENT-RULES.md](../docs/AGENT-RULES.md) for the complete Rule 8 text and goal-loop pattern. Goal-eval: `sk tentacle verify <name> "<check-command>" --label "goal-eval"` (fallback: `python3 ~/.copilot/tools/tentacle.py verify ...`).
 
 > **Drift-lock:** `docs/AGENT-RULES.md` is the canonical source for all agent rules. This file (`copilot-instructions.md`) is the Copilot CLI runtime enforcement surface — keep it in sync with `docs/AGENT-RULES.md`. Changes to agent rules should be reflected in both places.
 
@@ -124,6 +130,7 @@ Hooks **fail-open**: if a hook crashes or is unavailable, the guarded operation 
 ```bash
 python3 test_security.py    # 11 security tests (SQL injection, pickle, locks, paths)
 python3 test_fixes.py       # 137 tests (noise filter, sub-agent, launchd, DB health)
+# sk has no shortcut for project-local test scripts — use python3 directly
 ```
 
 Python validation runs through `run_all_tests.py`, but individual files use a mix of the custom `test()` helper and `unittest`/`test_*` style. For `browse-ui/` or CI changes, also run the relevant `pnpm` gates (`typecheck`, `lint`, `format:check`, `test`, `build`, and `test:e2e` when intentionally validating that surface). Keep GitHub Actions CI green.

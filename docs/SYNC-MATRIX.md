@@ -27,10 +27,10 @@ Run through this before calling `task_complete`:
 
 ```
 1. Docs         — did behavior change? update docs/ accordingly
-2. Memory       — record mistakes / patterns: python3 ~/.copilot/tools/learn.py
-3. Handoff      — if inside a tentacle: tentacle.py handoff <name> "<summary>" --status <STATUS> [--changed-file <path>] --learn
+2. Memory       — record mistakes / patterns: sk learn
+3. Handoff      — if inside a tentacle: sk tentacle handoff <name> "<summary>" --status <STATUS> [--changed-file <path>] --learn
 4. Tests        — run tests for any changed Python files
-5. Sync          — if sync config or runtime changed: python3 sync-status.py --health-check
+5. Sync          — if sync config or runtime changed: sk sync status --health-check
 ```
 
 ---
@@ -40,10 +40,10 @@ Run through this before calling `task_complete`:
 Optional hygiene at session end:
 
 ```
-1. Index new sessions  — python3 ~/.copilot/tools/build-session-index.py
-2. Extract knowledge   — python3 ~/.copilot/tools/extract-knowledge.py
+1. Index new sessions  — sk index build
+2. Extract knowledge   — sk index extract
 3. Stale doc audit     — are any docs now outdated?
-4. Open tentacles      — python3 ~/.copilot/tools/tentacle.py status
+4. Open tentacles      — sk tentacle status
 ```
 
 ---
@@ -52,11 +52,11 @@ Optional hygiene at session end:
 
 | Surface | Command |
 |---|---|
-| Knowledge briefing | `python3 ~/.copilot/tools/briefing.py "<task>"` |
-| Record a learning | `python3 ~/.copilot/tools/learn.py` |
-| Sync runtime status | `python3 ~/.copilot/tools/sync-status.py --health-check` |
-| Knowledge insights | `python3 ~/.copilot/tools/knowledge-health.py --insights` |
-| Tentacle status | `python3 ~/.copilot/tools/tentacle.py status` |
+| Knowledge briefing | `sk briefing "<task>"` |
+| Record a learning | `sk learn` |
+| Sync runtime status | `sk sync status --health-check` |
+| Knowledge insights | `sk index health` |
+| Tentacle status | `sk tentacle status` |
 
 ---
 

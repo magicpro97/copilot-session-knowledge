@@ -2,6 +2,90 @@
 
 > Full command reference for all copilot-session-knowledge tools.
 
+## sk — Unified CLI
+
+`sk` is the unified front door over all standalone scripts. After the standard install, `sk` is available on your PATH automatically — no alias or pip install needed. Run `sk <command>` for day-to-day use; direct-script invocation (`python3 ~/.copilot/tools/sk.py <command>` or `python3 ~/.copilot/tools/<script>.py`) remains available as a fallback for bootstrapping, CI pipelines, and advanced use.
+
+### Top-level commands
+
+```bash
+sk briefing "implement user CRUD"        # → briefing.py
+sk query "docker error"                  # → query-session.py
+sk learn --mistake "Title" "Description" # → learn.py
+sk tentacle create api-export --scope "src/api/*.py" --desc "Export API"  # → tentacle.py
+sk install --deploy-skill                # → install.py
+sk setup --profile python                # → setup-project.py
+sk update                                # → auto-update-tools.py
+sk update --force
+sk browse --port 8080 --token TOKEN      # → browse.py
+sk benchmark record                      # → benchmark.py
+sk retro                                 # → retro.py
+sk heal                                  # → copilot-cli-healer.py
+```
+
+### `sk index` — knowledge index lifecycle
+
+```bash
+sk index build       # build-session-index.py  — index session files → FTS5 DB
+sk index extract     # extract-knowledge.py    — classify + deduplicate entries
+sk index migrate     # migrate.py              — apply DB schema migrations
+sk index status      # index-status.py         — row counts, FTS integrity, offset coverage
+sk index health      # knowledge-health.py     — health dashboard + recall telemetry
+sk index embed       # embed.py                — configure/run semantic embeddings
+```
+
+### `sk sync` — cross-machine sync
+
+```bash
+sk sync config --setup https://gateway.example.com  # sync-config.py --setup
+sk sync config --status                              # sync-config.py --status
+sk sync run --once                                   # sync-daemon.py --once
+sk sync run --daemon                                 # sync-daemon.py --daemon
+sk sync status                                       # sync-status.py
+sk sync status --health-check                        # sync-status.py --health-check
+sk sync gateway --host 127.0.0.1 --port 8765         # sync-gateway.py (reference/mock)
+sk sync merge --source /path/to/other.db             # sync-knowledge.py
+```
+
+### `sk checkpoint` — session checkpoints
+
+```bash
+sk checkpoint save --title "Auth done" --overview "JWT added"   # checkpoint-save.py
+sk checkpoint restore --list                                     # checkpoint-restore.py --list
+sk checkpoint restore --show latest                             # checkpoint-restore.py --show latest
+sk checkpoint diff --from 1 --to latest                         # checkpoint-diff.py
+```
+
+### `sk profile` — workflow profiles
+
+```bash
+sk profile build --name myteam --hooks dangerous-blocker.py --phases BUILD TEST COMMIT
+                                                    # profile-builder.py
+sk profile import --file myteam.json                # profile-import.py
+sk profile export --profile myteam --output out.json # profile-export.py
+```
+
+### `sk context` — project context
+
+```bash
+sk context project                  # project-context.py  — write project-context.md
+sk context project --stdout         # project-context.py --stdout
+sk context map                      # codebase-map.py     — refresh codebase structure snapshot
+```
+
+### `sk scout` — trend scout
+
+```bash
+sk scout run                        # trend-scout.py
+sk scout run --dry-run              # trend-scout.py --dry-run
+sk scout config                     # scout-config.py
+sk scout status                     # scout-status.py
+```
+
+> **Direct-script fallback:** every `sk` sub-command delegates to the underlying `python3 ~/.copilot/tools/<script>.py` call with identical flags. If `sk` is unavailable, use the direct-script form shown in each section below.
+
+---
+
 ## Briefing
 
 Run before every major task to surface past mistakes and relevant knowledge:

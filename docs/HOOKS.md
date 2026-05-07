@@ -186,11 +186,16 @@ Hook files are locked with OS immutable flags:
 - **Windows**: `attrib +R` — read-only (weaker)
 
 ```bash
-python3 ~/.copilot/tools/install.py --deploy-hooks       # Deploy Copilot CLI hooks
-python3 ~/.copilot/tools/install.py --lock-hooks          # Lock (AI can't modify)
-python3 ~/.copilot/tools/install.py --unlock-hooks        # Unlock for updates
-python3 ~/.copilot/tools/install.py --install-git-hooks   # Install pre-commit/pre-push into current repo
+sk install --deploy-hooks       # Deploy Copilot CLI hooks
+sk install --lock-hooks         # Lock (AI can't modify)
+sk install --unlock-hooks       # Unlock for updates
+sk install --install-git-hooks  # Install pre-commit/pre-push into current repo
+# fallback: python3 ~/.copilot/tools/install.py [flags]
 ```
+
+`~/.copilot/hooks/hooks.json` is treated as a **managed global file**. `sk update` may redeploy it
+from this repo when hook config changes; differing local content is backed up before overwrite, but
+long-lived customizations should live in source-controlled hook code instead of manual edits there.
 
 > **Note:** `--install-git-hooks` must be run separately per repository to install the git-level
 > subagent guard. It is not performed automatically by `--deploy-hooks`. Re-run after major tool
@@ -347,7 +352,8 @@ The git-level guard requires installation per repository:
 
 ```bash
 # Install into the current repo's .git/hooks/
-python3 ~/.copilot/tools/install.py --install-git-hooks
+sk install --install-git-hooks
+# fallback: python3 ~/.copilot/tools/install.py --install-git-hooks
 
 # On Windows (PowerShell)
 python "$env:USERPROFILE\.copilot\tools\install.py" --install-git-hooks
@@ -360,15 +366,15 @@ config to ensure the hooks fire even when a project-level override is present.
 > already exists in `.git/hooks/` and differs from the source, installation is skipped with a
 > warning. Back up the existing hook and re-run interactively to overwrite it.
 
-After tool updates (`git pull` or `auto-update-tools.py --force`), re-run
-`--install-git-hooks` to refresh the hook scripts in `.git/hooks/`. `auto-update-tools.py`
+After tool updates (`git pull` or `sk update --force`), re-run
+`sk install --install-git-hooks` to refresh the hook scripts in `.git/hooks/`. `sk update`
 does **not** perform this reinstallation automatically — it cannot safely enumerate every repo
 where hooks are installed. When hook files change, it emits these three warnings to stderr:
 
 ```
 [sk-update] ⚠️  Git hook scripts updated — installed per-repo hooks are NOT automatically refreshed.
 [sk-update] ⚠️  ACTION REQUIRED to pick up the cross-repo isolation fix (and future hook changes):
-[sk-update] ⚠️    Re-run in EVERY protected repo: python3 ~/.copilot/tools/install.py --install-git-hooks
+[sk-update] ⚠️    Re-run in EVERY protected repo: sk install --install-git-hooks
 ```
 
 ### Fail-open behavior
@@ -391,7 +397,7 @@ Enforcement surfaces are **selectively fail-open**. The behavior differs by erro
 To clear a stuck marker manually:
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py complete <name>
+sk tentacle complete <name>
 # or delete the marker file directly:
 rm ~/.copilot/markers/dispatched-subagent-active
 ```

@@ -4,6 +4,8 @@
 
 This repo is a **set of standalone Python CLI scripts** — not a package or library. Each script is independently runnable, duplicates its own constants, and has no inter-script imports. This is intentional: the goal is operator-first simplicity, not framework cohesion.
 
+**`sk` thin front door:** `sk.py` is a thin dispatcher that maps memorable sub-commands (`sk briefing`, `sk query`, `sk index build`, …) to the underlying standalone scripts. It adds nothing to the data pipeline or business logic — it is purely a routing layer. After the standard install (`install.py --test`), a managed cross-platform `sk` launcher is provisioned automatically on your PATH — no manual alias or pip install needed. Windows PowerShell users without a PATH update can invoke `python ~/.copilot/tools/sk.py` directly as an equivalent fallback. All standalone scripts remain directly invocable as a fallback or for advanced use. The `sk` front door does not change the architectural contract below.
+
 ## Data Pipeline
 
 ```

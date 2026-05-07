@@ -17,6 +17,7 @@ Run: python3 tests/test_install_wave3.py
 """
 
 import importlib.util
+import builtins
 import json
 import os
 import sys
@@ -250,6 +251,8 @@ test("TOOL_FILES contains build-session-index.py", "build-session-index.py" in _
 test("TOOL_FILES contains briefing.py", "briefing.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains watch-sessions.py", "watch-sessions.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains install.py", "install.py" in _install.TOOL_FILES)
+test("TOOL_FILES contains sk.py", "sk.py" in _install.TOOL_FILES)
+test("SUPPORT_FILES contains pyproject.toml", "pyproject.toml" in _install.SUPPORT_FILES)
 
 # MINIMAL_SKILL_MD sanity
 skill_md = _install.MINIMAL_SKILL_MD
@@ -258,6 +261,225 @@ test("MINIMAL_SKILL_MD contains name field", "name: session-knowledge" in skill_
 test("MINIMAL_SKILL_MD contains description", "description:" in skill_md)
 test("MINIMAL_SKILL_MD contains H1 title", "# Session Knowledge" in skill_md)
 test("MINIMAL_SKILL_MD mentions briefing.py", "briefing.py" in skill_md)
+
+
+# ── 9. Editable install uninstall guard ───────────────────────────────────────
+
+print("\n🧷 Editable install guard")
+
+
+class _FakeDist:
+    def __init__(self, name: str, direct_url_text: str | None):
+        self.metadata = {"Name": name}
+        self._direct_url_text = direct_url_text
+
+    def read_text(self, filename: str) -> str | None:
+        if filename == "direct_url.json":
+            return self._direct_url_text
+        return None
+
+
+original_distributions = _install.metadata.distributions
+editable_source = (SCRATCH / "editable-source").resolve()
+editable_source.mkdir(exist_ok=True)
+other_source = (SCRATCH / "other-source").resolve()
+other_source.mkdir(exist_ok=True)
+
+editable_direct_url = json.dumps({
+    "url": editable_source.as_uri(),
+    "dir_info": {"editable": True},
+})
+other_direct_url = json.dumps({
+    "url": other_source.as_uri(),
+    "dir_info": {"editable": True},
+})
+non_editable_direct_url = json.dumps({
+    "url": editable_source.as_uri(),
+    "dir_info": {"editable": False},
+})
+
+try:
+    _install.metadata.distributions = lambda: [_FakeDist("copilot-session-knowledge", editable_direct_url)]
+    detected = _install._matching_editable_install_source_dir(editable_source)
+    test("matching editable install detected", detected == editable_source)
+
+    _install.metadata.distributions = lambda: [_FakeDist("copilot-session-knowledge", other_direct_url)]
+    ignored_other = _install._matching_editable_install_source_dir(editable_source)
+    test("editable install in different source dir ignored", ignored_other is None)
+
+    _install.metadata.distributions = lambda: [_FakeDist("copilot-session-knowledge", non_editable_direct_url)]
+    ignored_non_editable = _install._matching_editable_install_source_dir(editable_source)
+    test("non-editable install ignored", ignored_non_editable is None)
+finally:
+    _install.metadata.distributions = original_distributions
+
+original_input = builtins.input
+original_match = _install._matching_editable_install_source_dir
+prompted = {"called": False}
+
+try:
+    builtins.input = lambda _prompt="": prompted.__setitem__("called", True) or "n"
+    _install._matching_editable_install_source_dir = lambda target_dir=None: editable_source
+    uninstall_rc = _install.uninstall()
+    test("uninstall blocks before confirmation when editable install detected", not prompted["called"])
+    test("blocked uninstall returns nonzero", uninstall_rc == 1)
+finally:
+    builtins.input = original_input
+    _install._matching_editable_install_source_dir = original_match
+
+
+# ── SK Launcher helpers ───────────────────────────────────────────────────────
+
+print("\n🚀  SK Launcher")
+
+import stat as _stat
+
+_SK_HOME = SCRATCH / "sk-launcher-home"
+_SK_HOME.mkdir(parents=True, exist_ok=True)
+_SK_BIN = _SK_HOME / ".copilot" / "bin"
+_SK_BIN.mkdir(parents=True, exist_ok=True)
+
+# Patch HOME + SK_LAUNCHER_DIR so launcher tests stay inside scratch space.
+_orig_home = _install.HOME
+_orig_sk_dir = _install.SK_LAUNCHER_DIR
+_orig_shell = os.environ.get("SHELL")
+_install.HOME = _SK_HOME
+_install.SK_LAUNCHER_DIR = _SK_BIN
+os.environ["SHELL"] = "/bin/zsh"
+
+try:
+    # install_sk_launcher() creates the script
+    result = _install.install_sk_launcher(quiet=True)
+    test("install_sk_launcher returns True on fresh install", result is True)
+
+    scripts = _install._sk_launcher_script_paths()
+    any_exist = any((_SK_BIN / p.name).exists() for p in scripts)
+    test("launcher script created in SK_LAUNCHER_DIR", any_exist)
+
+    # Content check: must reference sk.py
+    for p in scripts:
+        patched = _SK_BIN / p.name
+        if patched.exists():
+            content = patched.read_text(encoding="utf-8")
+            test("launcher content references sk.py", "sk.py" in content)
+            if os.name != "nt":
+                mode = os.stat(patched).st_mode
+                test("POSIX launcher script is executable", bool(mode & _stat.S_IXUSR))
+            break
+
+    profile_path = _SK_HOME / ".zshrc"
+    test("install_sk_launcher creates preferred shell profile when missing", profile_path.exists())
+    if profile_path.exists():
+        profile_content = profile_path.read_text(encoding="utf-8")
+        test("launcher PATH marker added to shell profile",
+             _install._SK_PATH_MARKER_START in profile_content)
+        test("launcher PATH export references SK_LAUNCHER_DIR",
+             str(_install.SK_LAUNCHER_DIR) in profile_content)
+
+    # Idempotency: second call returns False (already installed)
+    result2 = _install.install_sk_launcher(quiet=True)
+    test("install_sk_launcher returns False when already current", result2 is False)
+
+    # uninstall_sk_launcher() removes script
+    removed = _install.uninstall_sk_launcher(quiet=True)
+    test("uninstall_sk_launcher reports removals", removed > 0)
+    still_exists = any((_SK_BIN / p.name).exists() for p in scripts)
+    test("uninstall_sk_launcher removes launcher script", not still_exists)
+    if profile_path.exists():
+        cleaned_content = profile_path.read_text(encoding="utf-8")
+        test("uninstall_sk_launcher removes PATH marker from profile",
+             _install._SK_PATH_MARKER_START not in cleaned_content)
+
+    # uninstall safe when file missing (idempotent)
+    try:
+        removed_again = _install.uninstall_sk_launcher(quiet=True)
+        test("uninstall_sk_launcher is safe when files missing", True)
+        test("uninstall_sk_launcher returns 0 when already absent", removed_again == 0)
+    except Exception as _e:
+        test("uninstall_sk_launcher is safe when files missing", False, str(_e))
+
+finally:
+    _install.HOME = _orig_home
+    _install.SK_LAUNCHER_DIR = _orig_sk_dir
+    if _orig_shell is None:
+        os.environ.pop("SHELL", None)
+    else:
+        os.environ["SHELL"] = _orig_shell
+
+
+# ── _sk_launcher_content ──────────────────────────────────────────────────────
+
+print("\n📄  _sk_launcher_content")
+
+try:
+    content_auto = _install._sk_launcher_content()
+    test("launcher content references sk.py", "sk.py" in content_auto)
+    if os.name == "nt":
+        test("windows launcher references sk.py", "sk.py" in content_auto)
+    else:
+        test("posix launcher starts with shebang", content_auto.startswith("#!/"))
+        test("posix launcher passes args",
+             '"$@"' in content_auto or "$@" in content_auto)
+except Exception as _e:
+    test("_sk_launcher_content raises no exception", False, str(_e))
+    test("launcher content references sk.py", False, "function failed")
+    test("launcher passes args", False, "function failed")
+
+
+# ── Windows PATH helper normalization ─────────────────────────────────────────
+
+print("\n🪟 Windows launcher PATH helpers")
+
+
+class _FakeWinreg:
+    HKEY_CURRENT_USER = object()
+    KEY_READ = 1
+    KEY_WRITE = 2
+    REG_EXPAND_SZ = 2
+
+    def __init__(self, path_value: str):
+        self.path_value = path_value
+        self.last_written = None
+
+    def OpenKey(self, *_args):
+        return "fake-key"
+
+    def QueryValueEx(self, _key, _name):
+        return self.path_value, self.REG_EXPAND_SZ
+
+    def SetValueEx(self, _key, _name, _reserved, _kind, value):
+        self.last_written = value
+        self.path_value = value
+
+    def CloseKey(self, _key):
+        return None
+
+
+_orig_sk_dir_windows = _install.SK_LAUNCHER_DIR
+_orig_winreg = sys.modules.get("winreg")
+_install.SK_LAUNCHER_DIR = Path(r"C:\Users\tester\.copilot\bin")
+sys.modules["winreg"] = _FakeWinreg(
+    r"C:\Users\tester\.copilot\bin\;C:\Windows\System32",
+)
+
+try:
+    _install._inject_launcher_path_windows(quiet=True)
+    fake_winreg = sys.modules["winreg"]
+    test("windows PATH add avoids duplicate launcher entry with trailing slash",
+         fake_winreg.last_written is None)
+
+    removed_windows = _install._remove_launcher_path_windows(quiet=True)
+    test("windows PATH remove matches launcher entry with trailing slash",
+         removed_windows is True)
+    test("windows PATH remove preserves remaining entries",
+         fake_winreg.path_value == r"C:\Windows\System32",
+         fake_winreg.path_value)
+finally:
+    _install.SK_LAUNCHER_DIR = _orig_sk_dir_windows
+    if _orig_winreg is None:
+        sys.modules.pop("winreg", None)
+    else:
+        sys.modules["winreg"] = _orig_winreg
 
 
 # ── Summary ──────────────────────────────────────────────────────────────────

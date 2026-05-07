@@ -23,7 +23,8 @@
 Before starting any task that touches >1 file or involves unfamiliar code:
 
 ```bash
-python3 ~/.copilot/tools/briefing.py "your task description"
+sk briefing "your task description"
+# fallback: python3 ~/.copilot/tools/briefing.py "your task description"
 ```
 
 This surfaces past mistakes, proven patterns, and relevant decisions. Skip only for trivial changes (typo fix, renaming, formatting).
@@ -105,13 +106,16 @@ When running inside a tentacle (dispatched by the orchestrator via `tentacle.py`
 2. **Stay in scope** — only edit files listed in the tentacle's declared scope. Any edit outside that scope requires a scope escalation note written to the handoff before proceeding.
 3. **Mark todos as you complete them** — after completing each task:
    ```bash
-   python3 ~/.copilot/tools/tentacle.py todo <tentacle-name> done <index>
+   sk tentacle todo <tentacle-name> done <index>
+   # fallback: python3 ~/.copilot/tools/tentacle.py todo <tentacle-name> done <index>
    ```
 4. **No git operations** — do NOT run `git commit` or `git push`; the orchestrator owns all git operations.
 5. **Write a structured handoff before stopping**:
    ```bash
-   python3 ~/.copilot/tools/tentacle.py handoff <tentacle-name> "<summary>" \
+   sk tentacle handoff <tentacle-name> "<summary>" \
      --status <STATUS> [--changed-file <path>] --learn
+   # fallback: python3 ~/.copilot/tools/tentacle.py handoff <tentacle-name> "<summary>" \
+   #   --status <STATUS> [--changed-file <path>] --learn
    ```
    Use one of `DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED` for `<STATUS>`. Add one `--changed-file` per modified file; omit it when no files changed. The handoff must list: which rules changed, which file is source of truth for each rule, and any remaining ambiguity.
 6. **Review-ready handoff** — the handoff must include enough detail for an independent reviewer to verify all claims independently.
@@ -127,7 +131,8 @@ When acting as an orchestrator with an active goal, the lifecycle is iterative, 
 1. **State success criteria upfront** — before dispatching any tentacle, write the goal's success criteria explicitly in `CONTEXT.md` or a shared artifact. Weak criteria ("make it work") prevent clean goal evaluation; strong criteria ("all 137 tests pass, benchmark score ≥ 90") enable independent verification.
 2. **Evaluate after each Verify phase** — once Build → Lint → Test → Review gates pass, evaluate whether the overarching goal is met. Record evidence:
    ```bash
-   python3 ~/.copilot/tools/tentacle.py verify <name> "<check-command>" --label "goal-eval"
+   sk tentacle verify <name> "<check-command>" --label "goal-eval"
+   # fallback: python3 ~/.copilot/tools/tentacle.py verify <name> "<check-command>" --label "goal-eval"
    ```
 3. **Loop if unmet** — if the goal is not satisfied, return to Phase 1 (Plan). Create new tentacles scoped to the remaining gap. Do not re-open completed tentacles; create new ones.
 4. **Close only when verified** — proceed to commit and close only when goal success criteria are verifiably met and evidence is recorded.

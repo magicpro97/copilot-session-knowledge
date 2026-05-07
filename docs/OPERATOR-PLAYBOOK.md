@@ -7,28 +7,32 @@
 ### Knowledge base health
 
 ```bash
-python3 ~/.copilot/tools/index-status.py              # Row counts, FTS integrity, event-offset coverage
-python3 ~/.copilot/tools/knowledge-health.py           # Full health dashboard
-python3 ~/.copilot/tools/knowledge-health.py --recall  # Recall-only telemetry
-python3 ~/.copilot/tools/knowledge-health.py --recall --json  # Machine-readable recall stats
+sk index status                        # Row counts, FTS integrity, event-offset coverage
+sk index health                        # Full health dashboard
+sk index health --recall               # Recall-only telemetry
+sk index health --recall --json        # Machine-readable recall stats
+# fallback: python3 ~/.copilot/tools/index-status.py
+# fallback: python3 ~/.copilot/tools/knowledge-health.py [--recall] [--json]
 ```
 
 ### Sync health
 
 ```bash
-python3 ~/.copilot/tools/sync-status.py               # Local sync state summary
-python3 ~/.copilot/tools/sync-status.py --health-check --json  # Exit 0/2 health check
-python3 ~/.copilot/tools/sync-status.py --audit --json         # Detailed audit
-python3 ~/.copilot/tools/sync-status.py --watch-status --json  # File-watcher status
+sk sync status                                  # Local sync state summary
+sk sync status --health-check --json            # Exit 0/2 health check
+sk sync status --audit --json                   # Detailed audit
+sk sync status --watch-status --json            # File-watcher status
+# fallback: python3 ~/.copilot/tools/sync-status.py [--health-check|--audit|--watch-status] [--json]
 ```
 
 ### Runtime health
 
 ```bash
-python3 ~/.copilot/tools/auto-update-tools.py --doctor        # Auto-update pipeline health
-python3 ~/.copilot/tools/auto-update-tools.py --watch-status  # Watcher daemon status
-python3 ~/.copilot/tools/auto-update-tools.py --health-check  # Exit-code health check
-python3 ~/.copilot/tools/auto-update-tools.py --audit-runtime # Runtime audit
+sk update --doctor                     # Auto-update pipeline health
+sk update --watch-status               # Watcher daemon status
+sk update --health-check               # Exit-code health check
+sk update --audit-runtime              # Runtime audit
+# fallback: python3 ~/.copilot/tools/auto-update-tools.py [--doctor|--watch-status|...]
 ```
 
 ---
@@ -36,14 +40,15 @@ python3 ~/.copilot/tools/auto-update-tools.py --audit-runtime # Runtime audit
 ## Auto-Update
 
 ```bash
-python3 ~/.copilot/tools/auto-update-tools.py          # Auto-update (24h cooldown)
-python3 ~/.copilot/tools/auto-update-tools.py --force  # Force update now
-python3 ~/.copilot/tools/auto-update-tools.py --restart-watch  # Restart watcher daemon
+sk update                  # Auto-update (24h cooldown)
+sk update --force          # Force update now
+sk update --restart-watch  # Restart watcher daemon
+# fallback: python3 ~/.copilot/tools/auto-update-tools.py [--force|--restart-watch]
 ```
 
 The smart pipeline analyzes `git diff` to run only what changed. The post-merge hook auto-triggers on `git pull`.
 
-> **After major updates:** re-run `python3 ~/.copilot/tools/install.py --install-git-hooks` in every protected repo to refresh per-repo git hooks.
+> **After major updates:** re-run `sk install --install-git-hooks` in every protected repo to refresh per-repo git hooks.
 
 📖 Full auto-update reference: [docs/AUTO-UPDATE.md](AUTO-UPDATE.md)
 
@@ -53,16 +58,17 @@ The smart pipeline analyzes `git diff` to run only what changed. The post-merge 
 
 ```bash
 # Deploy / re-deploy hooks
-python3 ~/.copilot/tools/install.py --deploy-hooks
+sk install --deploy-hooks
 
 # Lock hooks against AI modification (OS immutable flags)
-python3 ~/.copilot/tools/install.py --lock-hooks
+sk install --lock-hooks
 
 # Unlock for updates
-python3 ~/.copilot/tools/install.py --unlock-hooks
+sk install --unlock-hooks
 
 # Install per-repo git-level subagent guard
-python3 ~/.copilot/tools/install.py --install-git-hooks
+sk install --install-git-hooks
+# fallback: python3 ~/.copilot/tools/install.py [--deploy-hooks|--lock-hooks|--unlock-hooks|--install-git-hooks]
 ```
 
 ### Dry-run mode
@@ -86,7 +92,8 @@ tail -f ~/.copilot/markers/audit.jsonl
 ## DB Migrations
 
 ```bash
-python3 ~/.copilot/tools/migrate.py     # Apply all pending migrations
+sk index migrate     # Apply all pending migrations
+# fallback: python3 ~/.copilot/tools/migrate.py
 ```
 
 Migrations are versioned in `migrate.py`'s `MIGRATIONS` list. Running `migrate.py` is idempotent — it only applies migrations not already applied.
@@ -105,7 +112,7 @@ python3 ~/.copilot/tools/watch-sessions.py
 launchctl load ~/Library/LaunchAgents/com.copilot.watch-sessions.plist
 
 # Restart via auto-update operator surface
-python3 ~/.copilot/tools/auto-update-tools.py --restart-watch
+sk update --restart-watch
 ```
 
 The watcher uses adaptive polling: 5 s / 30 s / 300 s tiers based on session activity.
@@ -119,9 +126,10 @@ The watcher uses adaptive polling: 5 s / 30 s / 300 s tiers based on session act
 If `copilot update` fails with `ENOENT` or `EPERM` on a rename inside `pkg/universal/`:
 
 ```bash
-python3 ~/.copilot/tools/copilot-cli-healer.py --status   # Diagnose
-python3 ~/.copilot/tools/copilot-cli-healer.py --heal     # Fix
-python3 ~/.copilot/tools/copilot-cli-healer.py --update   # Heal + retry copilot update
+sk heal --status   # Diagnose
+sk heal --heal     # Fix
+sk heal --update   # Heal + retry copilot update
+# fallback: python3 ~/.copilot/tools/copilot-cli-healer.py [--status|--heal|--update]
 ```
 
 Root cause: upstream Node updater calls `fs.rename(src, dst)` without checking that `src` exists, leaving stale `.replaced-*` dirs behind.
@@ -129,9 +137,9 @@ Root cause: upstream Node updater calls `fs.rename(src, dst)` without checking t
 Prevent recurrence by scheduling a daily heal:
 
 ```bash
-python3 ~/.copilot/tools/copilot-cli-healer.py --install-schedule
+sk heal --install-schedule
 # or:
-python3 ~/.copilot/tools/install.py --install-healer
+sk install --install-healer
 ```
 
 📖 Details: [docs/copilot-cli-healer.md](copilot-cli-healer.md)
@@ -142,7 +150,7 @@ If `git commit` is blocked by a stale `dispatched-subagent-active` marker:
 
 ```bash
 # Preferred: complete the tentacle cleanly
-python3 ~/.copilot/tools/tentacle.py complete <name>
+sk tentacle complete <name>
 
 # Emergency: remove marker directly
 rm ~/.copilot/markers/dispatched-subagent-active
@@ -153,16 +161,19 @@ Markers expire automatically after 4 hours (TTL dead-man switch). After clearing
 ### FTS integrity errors
 
 ```bash
-python3 ~/.copilot/tools/index-status.py   # Check FTS integrity
-python3 ~/.copilot/tools/build-session-index.py  # Rebuild index
+sk index status            # Check FTS integrity
+sk index build             # Rebuild index
 ```
 
 ### Sync not working
 
 ```bash
-python3 ~/.copilot/tools/sync-config.py --status --json  # Check config
-python3 ~/.copilot/tools/sync-status.py --health-check   # Health check
-python3 ~/.copilot/tools/sync-daemon.py --once           # Manual one-shot sync
+sk sync config --status --json   # Check config
+sk sync status --health-check    # Health check
+sk sync run --once               # Manual one-shot sync
+# fallback: python3 ~/.copilot/tools/sync-config.py --status --json
+# fallback: python3 ~/.copilot/tools/sync-status.py --health-check
+# fallback: python3 ~/.copilot/tools/sync-daemon.py --once
 ```
 
 Common issues:
@@ -174,14 +185,14 @@ Common issues:
 
 ```bash
 # Trigger a manual re-index
-python3 ~/.copilot/tools/build-session-index.py
-python3 ~/.copilot/tools/extract-knowledge.py
+sk index build
+sk index extract
 ```
 
 If running in watch mode, check watcher status:
 
 ```bash
-python3 ~/.copilot/tools/auto-update-tools.py --watch-status
+sk update --watch-status
 ```
 
 ---
@@ -239,18 +250,17 @@ git diff --stat
 
 ```bash
 # Save a checkpoint
-python3 ~/.copilot/tools/checkpoint-save.py --title "Auth done" --overview "JWT added"
+sk checkpoint save --title "Auth done" --overview "JWT added"
 
 # List checkpoints
-python3 ~/.copilot/tools/checkpoint-restore.py --list
+sk checkpoint restore --list
 
 # Restore / inspect
-python3 ~/.copilot/tools/checkpoint-restore.py --show latest
-python3 ~/.copilot/tools/checkpoint-restore.py --export latest --format json
+sk checkpoint restore --show latest
 
 # Diff checkpoints
-python3 ~/.copilot/tools/checkpoint-diff.py --from 1 --to latest
-python3 ~/.copilot/tools/checkpoint-diff.py --summary
+sk checkpoint diff --from 1 --to latest
+# fallback: python3 ~/.copilot/tools/checkpoint-save.py / checkpoint-restore.py / checkpoint-diff.py
 ```
 
 Hooks **never** auto-save checkpoints. Save them manually at meaningful milestones.
@@ -261,20 +271,19 @@ Hooks **never** auto-save checkpoints. Save them manually at meaningful mileston
 
 ```bash
 # Dashboard: all tentacles and states
-python3 ~/.copilot/tools/tentacle.py status
+sk tentacle status
 
 # Next step for a specific tentacle
-python3 ~/.copilot/tools/tentacle.py next-step <name>
-python3 ~/.copilot/tools/tentacle.py next-step <name> --all     # All pending todos
-python3 ~/.copilot/tools/tentacle.py next-step <name> --format json
+sk tentacle next-step <name>
+sk tentacle next-step <name> --all     # All pending todos
 
 # Verify and close
-python3 ~/.copilot/tools/tentacle.py verify <name> "python3 test_fixes.py" --label "tests"
-python3 ~/.copilot/tools/tentacle.py handoff <name> "Summary" --learn
-python3 ~/.copilot/tools/tentacle.py complete <name>
+sk tentacle verify <name> "python3 test_fixes.py" --label "tests"
+sk tentacle handoff <name> "Summary" --learn
+sk tentacle complete <name>
 # Or: combine verify + complete in one step (fail-open)
-python3 ~/.copilot/tools/tentacle.py complete <name> --auto-verify "python3 test_fixes.py"
-python3 ~/.copilot/tools/tentacle.py complete <name> --auto-verify "python3 test_fixes.py" --auto-verify-timeout 180
+sk tentacle complete <name> --auto-verify "python3 test_fixes.py"
+# fallback: python3 ~/.copilot/tools/tentacle.py [status|next-step|verify|handoff|complete] ...
 ```
 
 > Full tentacle workflow: **[docs/USAGE.md](USAGE.md#tentacle-orchestration)**
@@ -722,16 +731,17 @@ and a tentacle-handoff hint.
 
 ```bash
 # Combine with --search-only --dry-run for a safe local preview (no network writes)
-python3 ~/.copilot/tools/trend-scout.py --search-only --dry-run --research-pack
+sk scout run --search-only --dry-run --research-pack
 
 # Combine with --explain for full explainability coverage
-python3 ~/.copilot/tools/trend-scout.py --search-only --dry-run --research-pack --explain
+sk scout run --search-only --dry-run --research-pack --explain
 
 # Full pipeline run with research pack written after issue creation
-python3 ~/.copilot/tools/trend-scout.py --research-pack
+sk scout run --research-pack
 
 # Custom output path
-python3 ~/.copilot/tools/trend-scout.py --research-pack --research-pack-output my-pack.json
+sk scout run --research-pack --research-pack-output my-pack.json
+# fallback: python3 ~/.copilot/tools/trend-scout.py [flags]
 ```
 
 The artifact is written to `.trend-scout-research-pack.json` adjacent to the script.
@@ -798,19 +808,20 @@ View the composite operator score across knowledge, skills, hooks, and git signa
 
 ```bash
 # CLI — full text report
-python3 ~/.copilot/tools/retro.py
+sk retro
 
 # Repo-only (safe in CI; no local DB needed)
-python3 ~/.copilot/tools/retro.py --mode repo
+sk retro --mode repo
 
 # JSON payload (stable contract consumed by the browse API)
-python3 ~/.copilot/tools/retro.py --json
+sk retro --json
 
 # Single score line
-python3 ~/.copilot/tools/retro.py --score
+sk retro --score
 
 # One section only: knowledge | skills | hooks | git | behavior (local mode)
-python3 ~/.copilot/tools/retro.py --subreport knowledge
+sk retro --subreport knowledge
+# fallback: python3 ~/.copilot/tools/retro.py [flags]
 ```
 
 ### Local vs CI (repo-mode) retro
@@ -833,13 +844,14 @@ Record commit-keyed snapshots so hardening work is tied to measurable deltas.
 
 ```bash
 # Record the current snapshot into benchmark_snapshots
-python3 ~/.copilot/tools/benchmark.py record
+sk benchmark record
 
 # Inspect recent snapshots
-python3 ~/.copilot/tools/benchmark.py list --limit 5
+sk benchmark list --limit 5
 
 # Compare two commits or snapshot IDs
-python3 ~/.copilot/tools/benchmark.py compare --commits <older> <newer>
+sk benchmark compare --commits <older> <newer>
+# fallback: python3 ~/.copilot/tools/benchmark.py [record|list|compare] [flags]
 ```
 
 `benchmark.py` stores snapshots in `benchmark_snapshots` inside the default knowledge DB unless
@@ -899,7 +911,7 @@ signals such as command-execution breadth.  Available in the full local report o
 standalone subreport:
 
 ```bash
-python3 ~/.copilot/tools/retro.py --subreport behavior
+sk retro --subreport behavior
 ```
 
 **Skills subscore — verification evidence discipline:**
@@ -913,9 +925,9 @@ To raise the skills subscore above sub-neutral: complete tentacles with an expli
 verification step so that `tentacle_verifications` rows are populated:
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py verify <name> "python3 test_fixes.py" --label "tests"
+sk tentacle verify <name> "python3 test_fixes.py" --label "tests"
 # Or in one step with complete --auto-verify (Wave 3; fail-open):
-python3 ~/.copilot/tools/tentacle.py complete <name> --auto-verify "python3 test_fixes.py"
+sk tentacle complete <name> --auto-verify "python3 test_fixes.py"
 ```
 
 **Recorded baseline (commit `2850fe12153f`):** repo retro `83.3`, local retro `61.5`,
@@ -932,7 +944,7 @@ migration and recurrence reward.  **Remaining gaps still requiring operator acti
 | Gap | Current (live, pre-commit) | How to close |
 |-----|--------------------------|-------------|
 | `behavior.completion_rate` / `efficiency_ratio` | Low (in `37.2` composite) | Complete more tentacles with verified outcomes; increase session-to-commit cadence |
-| `knowledge.embed_pct` | Below target | Run `python3 ~/.copilot/tools/embed.py` to populate embeddings |
+| `knowledge.embed_pct` | Below target | Run `sk index embed` to populate embeddings |
 | `health.relation_density` | Below target | Extract-knowledge run on larger session corpus grows relations |
 | `health.embedding_coverage` | Below target | Same as embed_pct — run `embed.py` after re-indexing |
 

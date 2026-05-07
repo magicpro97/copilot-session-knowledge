@@ -12,7 +12,7 @@ description: >-
 You have access to a knowledge base built from past Copilot and Claude sessions.
 Use it to avoid repeating mistakes, reuse proven patterns, and recall past decisions.
 
-All tools are Python scripts in `~/.copilot/tools/` (cross-platform: `~` = home directory).
+All tools are available as `sk <command>` (the preferred short form) or `python3 ~/.copilot/tools/<script>.py` (fallback when `sk` is not yet on PATH).
 
 ## When to Use
 
@@ -42,14 +42,15 @@ surfaces nothing useful costs tokens without benefit.
 ### 1. Briefing (recommended first step)
 
 ```bash
-python3 ~/.copilot/tools/briefing.py "your task description"    # Compact ~500 tokens
-python3 ~/.copilot/tools/briefing.py "your task" --full         # Full detail ~3K tokens
-python3 ~/.copilot/tools/briefing.py --auto                     # Auto-detect from git/plan
-python3 ~/.copilot/tools/briefing.py --wakeup                   # Ultra-compact ~170 tokens for session start
-python3 ~/.copilot/tools/briefing.py --titles-only              # Index only ~10 tok/entry — progressive disclosure
-python3 ~/.copilot/tools/briefing.py --titles-only "topic"      # Filtered titles
-python3 ~/.copilot/tools/briefing.py "task" --wing ui --room settings  # Filter by wing/room
-python3 ~/.copilot/tools/briefing.py "task" --min-confidence 0.7       # High-quality entries only
+sk briefing "your task description"    # Compact ~500 tokens
+sk briefing "your task" --full         # Full detail ~3K tokens
+sk briefing --auto                     # Auto-detect from git/plan
+sk briefing --wakeup                   # Ultra-compact ~170 tokens for session start
+sk briefing --titles-only              # Index only ~10 tok/entry — progressive disclosure
+sk briefing --titles-only "topic"      # Filtered titles
+sk briefing "task" --wing ui --room settings  # Filter by wing/room
+sk briefing "task" --min-confidence 0.7       # High-quality entries only
+# fallback: python3 ~/.copilot/tools/briefing.py <args>
 ```
 
 Output includes: relevant mistakes to avoid, patterns to follow, related past work.
@@ -60,7 +61,8 @@ Output includes: relevant mistakes to avoid, patterns to follow, related past wo
 When dispatching tentacle agents, prefer the bundle-first structured recall path:
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
+sk tentacle swarm <name> --briefing
+# fallback: python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
 ```
 
 This materializes `.octogent/tentacles/<name>/bundle/` by default, keeps the dispatch prompt
@@ -75,63 +77,67 @@ For manual compatibility and ad hoc non-tentacle prompts, inject context directl
 
 ```bash
 python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
+# (--for-subagent is also available via: sk briefing "task description" --for-subagent)
 ```
 
 This outputs a compact `[KNOWLEDGE CONTEXT]` block (~200 tokens) designed to be
 embedded directly into prompts. Example manual workflow:
 
-1. Run `briefing.py "fix Docker networking" --for-subagent` → get context block
+1. Run `sk briefing "fix Docker networking" --for-subagent` → get context block
 2. Prepend the context block to the sub-agent's prompt
 3. Sub-agent now knows past mistakes/patterns without querying KB directly
 
 ### 2. Search
 
 ```bash
-python3 ~/.copilot/tools/query-session.py "search terms"              # Compact results
-python3 ~/.copilot/tools/query-session.py "docker error" --verbose    # Full content
-python3 ~/.copilot/tools/query-session.py "deployment error" --semantic            # Compact semantic output
-python3 ~/.copilot/tools/query-session.py "deployment error" --semantic --verbose  # Shows feedback bias only when non-zero
-python3 ~/.copilot/tools/query-session.py "spring" --source copilot   # Filter by agent
-python3 ~/.copilot/tools/query-session.py "gradle" --type research    # Filter by doc type
+sk query "search terms"              # Compact results
+sk query "docker error" --verbose    # Full content
+sk query "deployment error" --semantic            # Compact semantic output
+sk query "deployment error" --semantic --verbose  # Shows feedback bias only when non-zero
+sk query "spring" --source copilot   # Filter by agent
+sk query "gradle" --type research    # Filter by doc type
+# fallback: python3 ~/.copilot/tools/query-session.py <args>
 ```
 
 ### 3. Drill Down (use entry IDs from search/briefing results)
 
 ```bash
-python3 ~/.copilot/tools/query-session.py --detail <id>     # Full content of one entry
-python3 ~/.copilot/tools/query-session.py --context <id>    # Entry + same-session entries
-python3 ~/.copilot/tools/query-session.py --related <id>    # Entry + graph connections
+sk query --detail <id>     # Full content of one entry
+sk query --context <id>    # Entry + same-session entries
+sk query --related <id>    # Entry + graph connections
+# fallback: python3 ~/.copilot/tools/query-session.py <flag> <id>
 ```
 
-`query-session.py --detail <id>` writes stateless `detail_open` telemetry:
+`sk query --detail <id>` writes stateless `detail_open` telemetry:
 - found entry → `hit_count=1`, `selected_entry_ids=[id]`
 - missing entry → `hit_count=0`, `selected_entry_ids=[]`
 
 ### 4. Browse by Category
 
 ```bash
-python3 ~/.copilot/tools/query-session.py --mistakes    # Past errors and how they were fixed
-python3 ~/.copilot/tools/query-session.py --patterns    # Reusable best practices
-python3 ~/.copilot/tools/query-session.py --decisions   # Architecture/design choices
-python3 ~/.copilot/tools/query-session.py --tools       # Tool configs and usage notes
+sk query --mistakes    # Past errors and how they were fixed
+sk query --patterns    # Reusable best practices
+sk query --decisions   # Architecture/design choices
+sk query --tools       # Tool configs and usage notes
 ```
 
 ### 4b. Recall Telemetry Stats
 
 ```bash
-python3 ~/.copilot/tools/knowledge-health.py --recall
-python3 ~/.copilot/tools/knowledge-health.py --recall --json
+sk index health --recall
+sk index health --recall --json
+# fallback: python3 ~/.copilot/tools/knowledge-health.py --recall [--json]
 ```
 
 - `recall_events` is lean telemetry (counts/IDs/output size only), not verbose output logging.
-- Default `query-session.py "query"` telemetry aggregates the full emitted surface
+- Default `sk query "query"` telemetry aggregates the full emitted surface
   (primary search + `sessions_fts` + knowledge-entry blocks).
 - `--recall` outputs recall-only stats (text or JSON). No browse UI / contextual summary / provider rerank scope here.
 
 ### 5. Knowledge Graph
 
 ```bash
-python3 ~/.copilot/tools/query-session.py --graph "topic"   # Visual: entries + connections
+sk query --graph "topic"   # Visual: entries + connections
 ```
 
 Shows how knowledge entries relate to each other:
@@ -140,42 +146,44 @@ Shows how knowledge entries relate to each other:
 - **SAME_SESSION** — entries discovered together in one session
 - **SAME_TOPIC** — same topic tracked across multiple sessions
 
-### 6. Record Knowledge (learn.py)
+### 6. Record Knowledge
 
 ```bash
 # 7 observation types
-python3 ~/.copilot/tools/learn.py --mistake "Title"   "What went wrong and fix"         --tags "tag1,tag2"
-python3 ~/.copilot/tools/learn.py --pattern "Title"   "What works well / best practice" --tags "tag1"
-python3 ~/.copilot/tools/learn.py --decision "Title"  "Architecture decision rationale" --tags "tag1"
-python3 ~/.copilot/tools/learn.py --tool "Title"      "Tool/config that was useful"     --tags "tag1"
-python3 ~/.copilot/tools/learn.py --feature "Title"   "New feature implementation"      --tags "tag1"
-python3 ~/.copilot/tools/learn.py --refactor "Title"  "Code improvement description"    --tags "tag1"
-python3 ~/.copilot/tools/learn.py --discovery "Title" "Codebase finding or insight"     --tags "tag1"
+sk learn --mistake "Title"   "What went wrong and fix"         --tags "tag1,tag2"
+sk learn --pattern "Title"   "What works well / best practice" --tags "tag1"
+sk learn --decision "Title"  "Architecture decision rationale" --tags "tag1"
+sk learn --tool "Title"      "Tool/config that was useful"     --tags "tag1"
+sk learn --feature "Title"   "New feature implementation"      --tags "tag1"
+sk learn --refactor "Title"  "Code improvement description"    --tags "tag1"
+sk learn --discovery "Title" "Codebase finding or insight"     --tags "tag1"
 
 # Structured facts (discrete, verifiable statements)
-python3 ~/.copilot/tools/learn.py --pattern "Title" "Description" \
+sk learn --pattern "Title" "Description" \
   --fact "max retries is 3" --fact "timeout is 30s"
 
 # Palace categorization (wing/room)
-python3 ~/.copilot/tools/learn.py --mistake "Title" "Description" --wing ui --room settings
+sk learn --mistake "Title" "Description" --wing ui --room settings
 
 # Knowledge graph relations
-python3 ~/.copilot/tools/learn.py --relate "ScreenA" "navigates_to" "ScreenB"
-python3 ~/.copilot/tools/learn.py --relate "ComponentX" "uses" "ThemeToken"
+sk learn --relate "ScreenA" "navigates_to" "ScreenB"
+sk learn --relate "ComponentX" "uses" "ThemeToken"
 
 # Bulk import / view
-python3 ~/.copilot/tools/learn.py --from-file notes.md    # Bulk import from markdown
-python3 ~/.copilot/tools/learn.py --list                   # List recent entries
-python3 ~/.copilot/tools/learn.py --stats                  # Knowledge base statistics
+sk learn --from-file notes.md    # Bulk import from markdown
+sk learn --list                   # List recent entries
+sk learn --stats                  # Knowledge base statistics
+# fallback: python3 ~/.copilot/tools/learn.py <args>
 ```
 
 ### 7. Auto-Update Tools
 
 ```bash
-python3 ~/.copilot/tools/auto-update-tools.py              # Auto-update (24h cooldown)
-python3 ~/.copilot/tools/auto-update-tools.py --force       # Force update now
-python3 ~/.copilot/tools/auto-update-tools.py --status      # Show version info
-python3 ~/.copilot/tools/auto-update-tools.py --doctor      # Health check
+sk update              # Auto-update (24h cooldown)
+sk update --force       # Force update now
+sk update --status      # Show version info
+sk update --doctor      # Health check
+# fallback: python3 ~/.copilot/tools/auto-update-tools.py <args>
 ```
 
 ### 8. Optional Sync Runtime (local-first)
@@ -184,41 +192,43 @@ Use these only when sync replication is needed. Local `knowledge.db` remains pri
 
 ```bash
 # Single connection string in ~/.copilot/tools/sync-config.json
-python3 ~/.copilot/tools/sync-config.py --setup https://gateway.example.com
-python3 ~/.copilot/tools/sync-config.py --setup-env SYNC_GATEWAY_URL
-python3 ~/.copilot/tools/sync-config.py --status
-python3 ~/.copilot/tools/sync-config.py --status --json
-python3 ~/.copilot/tools/sync-config.py --get
-python3 ~/.copilot/tools/sync-config.py --clear
+sk sync config --setup https://gateway.example.com
+sk sync config --setup-env SYNC_GATEWAY_URL
+sk sync config --status
+sk sync config --status --json
+sk sync config --get
+sk sync config --clear
 
 # Local-first runtime + diagnostics
-python3 ~/.copilot/tools/sync-daemon.py --once
-python3 ~/.copilot/tools/sync-daemon.py --daemon
-python3 ~/.copilot/tools/sync-daemon.py --interval 30
-python3 ~/.copilot/tools/sync-daemon.py --push-only
-python3 ~/.copilot/tools/sync-daemon.py --pull-only
-python3 ~/.copilot/tools/sync-status.py --json
-python3 ~/.copilot/tools/sync-status.py --watch-status --json
-python3 ~/.copilot/tools/sync-status.py --health-check --json
-python3 ~/.copilot/tools/sync-status.py --audit --json
-python3 ~/.copilot/tools/auto-update-tools.py --restart-watch
-python3 ~/.copilot/tools/auto-update-tools.py --watch-status
-python3 ~/.copilot/tools/auto-update-tools.py --health-check
-python3 ~/.copilot/tools/auto-update-tools.py --audit-runtime
+sk sync run --once
+sk sync run --daemon
+sk sync run --interval 30
+sk sync run --push-only
+sk sync run --pull-only
+sk sync status --json
+sk sync status --watch-status --json
+sk sync status --health-check --json
+sk sync status --audit --json
+sk update --restart-watch
+sk update --watch-status
+sk update --health-check
+sk update --audit-runtime
+# fallback: python3 ~/.copilot/tools/sync-config.py / sync-daemon.py / sync-status.py / auto-update-tools.py
 ```
 
 If no `connection_string` is configured, daemon sync remains local-only/idle.
 Daemon runtime is hardened for backlog catch-up: adaptive per-cycle limits, multi-page pull in one cycle, and post-pull targeted refresh of `knowledge_fts` / `ke_fts`.
-`sync-config.py --setup` expects an HTTP(S) gateway URL (not a raw Postgres/libSQL DSN).
+`sk sync config --setup` expects an HTTP(S) gateway URL (not a raw Postgres/libSQL DSN).
 `sync-gateway.py` is a **reference/mock** contract surface in this repo (not production authority).
 Default provider rollout recommendation: Neon (backing Postgres) + Railway (thin gateway host), while preserving the same HTTP gateway contract.
 
 ### 9. Trend Scout operations (scheduled, not hook-driven)
 
 ```bash
-python3 ~/.copilot/tools/trend-scout.py --search-only
-python3 ~/.copilot/tools/trend-scout.py --dry-run --limit 1 --force
-python3 ~/.copilot/tools/trend-scout.py --limit 1 --force
+sk scout run --search-only
+sk scout run --dry-run --limit 1 --force
+sk scout run --limit 1 --force
+# fallback: python3 ~/.copilot/tools/trend-scout.py <args>
 ```
 
 - Trend Scout creates **or updates** marker-linked issues.
@@ -240,15 +250,15 @@ python3 ~/.copilot/tools/trend-scout.py --limit 1 --force
 ## Workflow Example
 
 ```
-1. briefing.py "fix Docker compose networking"
+1. sk briefing "fix Docker compose networking"
    → shows 2 past mistakes about Docker DNS, 1 pattern about compose networks
 
-2. query-session.py --detail 2045
+2. sk query --detail 2045
    → reads the full mistake: was using wrong network driver
 
 3. Apply the fix using the pattern from the briefing
 
-4. learn.py --pattern "Docker DNS Fix" "Use bridge network with explicit DNS" \
+4. sk learn --pattern "Docker DNS Fix" "Use bridge network with explicit DNS" \
      --fact "compose DNS uses service names" --wing infrastructure --room docker
 ```
 
@@ -257,14 +267,14 @@ User: "I need to add retry logic to the payment service. Where should I start?"
 
 1. Run briefing before touching anything:
    ```
-   python3 ~/.copilot/tools/briefing.py "add retry logic payment service" --auto --compact
+   sk briefing "add retry logic payment service" --auto --compact
    ```
    → Output surfaces a past mistake: "Exponential backoff not applied to idempotent endpoints"
    and a pattern: "Use tenacity library with max_attempts=3, wait=wait_exponential(min=1, max=10)"
 
 2. Drill into the pattern entry shown in results:
    ```
-   python3 ~/.copilot/tools/query-session.py --detail 1842
+   sk query --detail 1842
    ```
    → Full entry: exact tenacity config that worked in the order service
 
@@ -272,7 +282,7 @@ User: "I need to add retry logic to the payment service. Where should I start?"
 
 4. Record what was learned:
    ```
-   python3 ~/.copilot/tools/learn.py --pattern "Payment retry with tenacity" \
+   sk learn --pattern "Payment retry with tenacity" \
      "Use tenacity with max_attempts=3, wait_exponential(min=1, max=10) on POST /charge" \
      --fact "idempotency key required on retry" --wing backend --room payments
    ```
@@ -283,7 +293,7 @@ User: "Getting 'SSL: CERTIFICATE_VERIFY_FAILED' on CI — has this come up befor
 
 1. Search for the error message:
    ```
-   python3 ~/.copilot/tools/query-session.py "SSL CERTIFICATE_VERIFY_FAILED"
+   sk query "SSL CERTIFICATE_VERIFY_FAILED"
    ```
    → Finds a past mistake entry explaining that the corporate proxy strips certs and the fix
    was to set `REQUESTS_CA_BUNDLE` to the internal CA bundle path.
@@ -292,7 +302,7 @@ User: "Getting 'SSL: CERTIFICATE_VERIFY_FAILED' on CI — has this come up befor
 
 3. If it was a new variant, record it:
    ```
-   python3 ~/.copilot/tools/learn.py --mistake "SSL verify failed behind proxy" \
+   sk learn --mistake "SSL verify failed behind proxy" \
      "Corporate proxy strips SSL — set REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-bundle.crt" \
      --tags "ssl,ci,proxy" --wing devops --room ci
    ```
@@ -301,7 +311,8 @@ User: "Getting 'SSL: CERTIFICATE_VERIFY_FAILED' on CI — has this come up befor
 ## Semantic Search (if embeddings configured)
 
 ```bash
-python3 ~/.copilot/tools/query-session.py "deployment error" --semantic
+sk query "deployment error" --semantic
+# fallback: python3 ~/.copilot/tools/query-session.py "deployment error" --semantic
 ```
 
 Works with meaning, not just keywords. Requires API key setup via `embed.py --setup`.

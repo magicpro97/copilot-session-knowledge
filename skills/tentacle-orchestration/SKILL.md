@@ -53,16 +53,17 @@ it — they are the reliable enforcement surface.
    block all repos.
    > **Upgrade migration:** Cross-repo isolation is not retroactive. In-flight old-format marker
    > entries (no `git_root`) continue to block all repos until completed, cleared, or expired (4h
-   > TTL). To get isolation immediately: `tentacle.py complete <name>` then re-dispatch.
+   > TTL). To get isolation immediately: `sk tentacle complete <name>` then re-dispatch.
 3. `hooks/rules/subagent_guard.py` provides a secondary `preToolUse` intercept for the
    orchestrator session (defense-in-depth only — not the primary path).
-4. `tentacle.py complete <name>` reads `tentacle_id` from `meta.json` and removes only the
+4. `sk tentacle complete <name>` reads `tentacle_id` from `meta.json` and removes only the
    matching marker entry; the marker is deleted when `active_tentacles` becomes empty.
 
 **Install the git hooks** (once per repository):
 
 ```bash
-python3 ~/.copilot/tools/install.py --install-git-hooks
+sk install --install-git-hooks
+# fallback: python3 ~/.copilot/tools/install.py --install-git-hooks
 ```
 
 **Enforcement scope and known limitations:**
@@ -164,10 +165,11 @@ Read the task description and identify independent code regions. Each region bec
 #### Step 2: Create tentacles
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py create <module-name> \
+sk tentacle create <module-name> \
   --scope "<file-patterns>" \
   --desc "<short description>" \
   --briefing
+# fallback: python3 ~/.copilot/tools/tentacle.py create <module-name> ...
 ```
 
 The `--briefing` flag injects past mistakes and patterns from session-knowledge into CONTEXT.md — use it every time.
@@ -175,7 +177,8 @@ The `--briefing` flag injects past mistakes and patterns from session-knowledge 
 #### Step 3: Add todos
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py todo <name> add "<specific, atomic task>"
+sk tentacle todo <name> add "<specific, atomic task>"
+# fallback: python3 ~/.copilot/tools/tentacle.py todo <name> add "<task>"
 ```
 
 Each todo should be one deliverable — testable, reviewable, and completable in isolation.
@@ -194,9 +197,10 @@ This is the most important step. Agent quality is directly proportional to CONTE
 #### Step 5: Dispatch agents (swarm)
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py swarm <name> --agent-type <type> --model <model> --briefing
-python3 ~/.copilot/tools/tentacle.py swarm <name> --output parallel --briefing
-python3 ~/.copilot/tools/tentacle.py dispatch <name> --agent-type <type> --model <model> --briefing
+sk tentacle swarm <name> --agent-type <type> --model <model> --briefing
+sk tentacle swarm <name> --output parallel --briefing
+sk tentacle dispatch <name> --agent-type <type> --model <model> --briefing
+# fallback: python3 ~/.copilot/tools/tentacle.py swarm/dispatch <name> ...
 ```
 
 `swarm` and `dispatch` materialize a runtime bundle by default. The dispatch prompt stays
@@ -216,8 +220,8 @@ Use the output as the prompt for `task()`. Launch independent tentacles in paral
 #### Step 6: Monitor progress
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py status
-python3 ~/.copilot/tools/tentacle.py show <name>
+sk tentacle status
+sk tentacle show <name>
 ```
 
 ### Phase 3: Verify (Steps 7–12)
@@ -245,7 +249,8 @@ After all verification gates pass, evaluate whether the overarching goal is met 
 
 ```bash
 # Run the goal's success-criteria check and persist the result
-python3 ~/.copilot/tools/tentacle.py verify <name> "<success-criteria-command>" --label "goal-eval"
+sk tentacle verify <name> "<success-criteria-command>" --label "goal-eval"
+# fallback: python3 ~/.copilot/tools/tentacle.py verify <name> ...
 ```
 
 **Decision logic:**
@@ -315,7 +320,7 @@ won't catch this. A 30-second launch test catches what build+test cannot.
 #### Step 15: Complete and learn
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py complete <name>
+sk tentacle complete <name>
 ```
 
 Only call `complete` after all verification gates pass. This marks all todos done and auto-extracts learnings from handoff.md into long-term knowledge.
@@ -323,8 +328,9 @@ Only call `complete` after all verification gates pass. This marks all todos don
 #### Step 16: Resume a tentacle (when picking up interrupted work)
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py resume <name>             # Refresh briefing, mark active
-python3 ~/.copilot/tools/tentacle.py resume <name> --no-briefing  # Skip briefing injection
+sk tentacle resume <name>             # Refresh briefing, mark active
+sk tentacle resume <name> --no-briefing  # Skip briefing injection
+# fallback: python3 ~/.copilot/tools/tentacle.py resume <name> [--no-briefing]
 ```
 
 `resume` refreshes the live briefing in CONTEXT.md and marks the tentacle active again. Use it when returning to a tentacle after an interruption or session boundary. Pass `--no-briefing` only when the briefing is already fresh and re-fetching would be wasteful.
@@ -332,7 +338,7 @@ python3 ~/.copilot/tools/tentacle.py resume <name> --no-briefing  # Skip briefin
 #### Step 17: Cleanup
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py delete <name>
+sk tentacle delete <name>
 ```
 
 ## CLI reference
@@ -346,19 +352,20 @@ tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing
 tentacle.py todo <name> add "<task>"
 tentacle.py swarm <name> --agent-type <type> --model <model> --briefing    # bundle-first default
 tentacle.py swarm <name> --output parallel --briefing                      # one worker per todo
-tentacle.py swarm <name> --output json --briefing                          # JSON + bundle_path
-tentacle.py dispatch <name> --agent-type <type> --briefing                 # single-agent dispatch
-tentacle.py swarm <name> --no-bundle                                       # rare opt-out for tiny prompts
-tentacle.py handoff <name> "<summary>" --status DONE --changed-file <path> --learn
-tentacle.py goal init --title "<goal title>" [--desc "<goal description>"]
-tentacle.py goal link <name>                                               # stamp goal metadata into meta.json
-tentacle.py goal eval --decision continue|pause|complete|abandon           # record orchestrator decision
-tentacle.py goal status [--format text|json]
-tentacle.py resume <name>                  # resume interrupted tentacle (refreshes briefing)
-tentacle.py resume <name> --no-briefing    # resume without re-fetching briefing
-tentacle.py status
-tentacle.py complete <name>
-tentacle.py delete <name>
+sk tentacle swarm <name> --output json --briefing                          # JSON + bundle_path
+sk tentacle dispatch <name> --agent-type <type> --briefing                 # single-agent dispatch
+sk tentacle swarm <name> --no-bundle                                       # rare opt-out for tiny prompts
+sk tentacle handoff <name> "<summary>" --status DONE --changed-file <path> --learn
+sk tentacle goal init --title "<goal title>" [--desc "<goal description>"]
+sk tentacle goal link <name>                                               # stamp goal metadata into meta.json
+sk tentacle goal eval --decision continue|pause|complete|abandon           # record orchestrator decision
+sk tentacle goal status [--format text|json]
+sk tentacle resume <name>                  # resume interrupted tentacle (refreshes briefing)
+sk tentacle resume <name> --no-briefing    # resume without re-fetching briefing
+sk tentacle status
+sk tentacle complete <name>
+sk tentacle delete <name>
+# fallback: python3 ~/.copilot/tools/tentacle.py <cmd> <args>
 ```
 
 ## Tips
@@ -369,4 +376,4 @@ tentacle.py delete <name>
 4. **Complete before delete** — `complete` saves learnings; `delete` alone loses them
 5. **Commit after each phase** — uncommitted code is lost if the session crashes or compacts
 6. **Run the app** — build+test ≠ works. Launch the app to verify DI resolution and runtime behavior
-7. **⚠️ Commit restriction** — Sub-agents must not run `git commit`/`git push`. When git hooks are installed (`install.py --install-git-hooks`), both are blocked at the filesystem level for the repo where the tentacle was dispatched, while the `dispatched-subagent-active` marker is fresh. Commits in other repos are not affected. Even without hooks, a sub-agent commit mid-run corrupts the orchestrator's merge flow. Enforcement is local-only; cloud-delegated runs are not covered.
+7. **⚠️ Commit restriction** — Sub-agents must not run `git commit`/`git push`. When git hooks are installed (`sk install --install-git-hooks`), both are blocked at the filesystem level for the repo where the tentacle was dispatched, while the `dispatched-subagent-active` marker is fresh. Commits in other repos are not affected. Even without hooks, a sub-agent commit mid-run corrupts the orchestrator's merge flow. Enforcement is local-only; cloud-delegated runs are not covered.

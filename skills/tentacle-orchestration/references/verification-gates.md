@@ -99,7 +99,7 @@ Skip this step for low-risk changes (documentation, formatting, simple refactors
 
 ## Orchestrator Triage (Handoff Status)
 
-After a sub-agent writes its handoff, `tentacle.py handoff` and `tentacle.py complete` emit a
+After a sub-agent writes its handoff, `sk tentacle handoff` and `sk tentacle complete` emit a
 visible triage signal when `--status` is a non-`DONE` value. The orchestrator must act on these
 before running the standard verification gates.
 
@@ -129,16 +129,17 @@ during evaluation). Weak criteria ("looks good") cannot be evaluated; strong cri
 **How to record goal-eval evidence:**
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py verify <name> "<success-criteria-check>" --label "goal-eval"
+sk tentacle verify <name> "<success-criteria-check>" --label "goal-eval"
+# fallback: python3 ~/.copilot/tools/tentacle.py verify <name> ...
 ```
 
 Examples:
 ```bash
 # Verify tests all pass
-tentacle.py verify my-feature "python3 run_all_tests.py" --label "goal-eval: tests"
+sk tentacle verify my-feature "python3 run_all_tests.py" --label "goal-eval: tests"
 
 # Verify benchmark threshold
-tentacle.py verify my-feature "python3 benchmark.py --check --min-score 90" --label "goal-eval: score"
+sk tentacle verify my-feature "python3 benchmark.py --check --min-score 90" --label "goal-eval: score"
 ```
 
 **Decision table:**

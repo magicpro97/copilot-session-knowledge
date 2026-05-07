@@ -9,8 +9,9 @@ Recall telemetry tracks how the knowledge base is accessed — counts, IDs, and 
 ### Commands
 
 ```bash
-python3 ~/.copilot/tools/knowledge-health.py --recall         # Recall-only text dashboard
-python3 ~/.copilot/tools/knowledge-health.py --recall --json  # Recall-only JSON payload
+sk index health --recall         # Recall-only text dashboard
+sk index health --recall --json  # Recall-only JSON payload
+# fallback: python3 ~/.copilot/tools/knowledge-health.py --recall [--json]
 ```
 
 ### Telemetry contract

@@ -6,18 +6,24 @@
 >
 > **Drift-lock:** `docs/AGENT-RULES.md` is the canonical source for all agent rules. This file is a concise summary — when in doubt, defer to `docs/AGENT-RULES.md`.
 
+## Short Command: `sk`
+
+> **`sk` is the preferred command** — a managed launcher/shim provisioned by the installer.
+> Check availability: `sk --help`. If not yet on PATH, fall back to `python3 ~/.copilot/tools/<script>.py`.
+> Full fallback paths always work; use them during bootstrap or in non-interactive environments.
+
 ## Mandatory Rules
 
 1. **Investigate before acting** — read target files with `grep`/`glob`/`view` before any edit; never modify without reading first.
-2. **Briefing before complex tasks** — run `python3 ~/.copilot/tools/briefing.py "<task>"` for tasks touching >1 file.
+2. **Briefing before complex tasks** — run `sk briefing "<task>"` for tasks touching >1 file. (fallback: `python3 ~/.copilot/tools/briefing.py "<task>"`)
 3. **Test after every change** — run `python3 test_security.py` and/or `python3 test_fixes.py` after Python edits; do not mark complete until tests pass.
 4. **Verify before committing** — AST-parse every modified `.py` file; run both test suites; `git diff --stat` before commit.
 5. **Sub-agent model selection** — use `claude-sonnet-4.6` for code generation; `claude-opus-4.6` for security audits; never dispatch sub-agents with the default (haiku) model for code changes.
 6. **No guessing** — verify table names, function signatures, and file paths from source; never assume.
 7. **Docs output quality** — distinguish Facts / Interpretation / Actions / Verification evidence; never present inference as fact; every action must include the executable command.
-8. **Tentacle execution obligations** — when dispatched inside a tentacle: (a) read bundle files first, (b) stay in declared scope, (c) mark todos done with `tentacle.py todo <name> done <index>`, (d) do NOT run `git commit`/`git push`, (e) write a structured handoff with explicit `--status` (`DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED`) via `tentacle.py handoff <name> "<summary>" --status <STATUS> [--changed-file <path>] --learn` before stopping.
+8. **Tentacle execution obligations** — when dispatched inside a tentacle: (a) read bundle files first, (b) stay in declared scope, (c) mark todos done with `sk tentacle todo <name> done <index>`, (d) do NOT run `git commit`/`git push`, (e) write a structured handoff with explicit `--status` (`DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED`) via `sk tentacle handoff <name> "<summary>" --status <STATUS> [--changed-file <path>] --learn` before stopping.
 
-**Goal-loop (orchestrators only)** — after all tentacle handoffs pass verification gates, evaluate whether the overarching goal is met. If unmet, loop back to Phase 1 (new tentacles for remaining gaps). Only commit and close when success criteria are verifiably satisfied. Sub-agents report via handoff and stop; orchestrators own continuation. Record goal-eval evidence with `tentacle.py verify <name> "<check-command>" --label "goal-eval"`.
+**Goal-loop (orchestrators only)** — after all tentacle handoffs pass verification gates, evaluate whether the overarching goal is met. If unmet, loop back to Phase 1 (new tentacles for remaining gaps). Only commit and close when success criteria are verifiably satisfied. Sub-agents report via handoff and stop; orchestrators own continuation. Record goal-eval evidence with `sk tentacle verify <name> "<check-command>" --label "goal-eval"`.
 
 See [docs/AGENT-RULES.md](docs/AGENT-RULES.md) for the complete rule text, goal-loop pattern, and hook-enforcement table.
 
@@ -56,7 +62,7 @@ For `browse-ui/` changes: `cd browse-ui && pnpm typecheck && pnpm lint && pnpm f
 - NEVER run `git commit` or `git push` as a dispatched sub-agent
 - NEVER modify files outside your declared tentacle scope without a scope escalation note in the handoff
 - ALWAYS use `O_CREAT | O_EXCL` for process locks (no TOCTOU races)
-- ALWAYS run `briefing.py` before starting work on unfamiliar code
+- ALWAYS run `sk briefing` before starting work on unfamiliar code (fallback: `python3 ~/.copilot/tools/briefing.py`)
 
 ## Hook Enforcement (Principle)
 

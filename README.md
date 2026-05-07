@@ -41,22 +41,22 @@ Each Copilot CLI / Claude Code session accumulates valuable experience — bugs 
 This tool **indexes all session data** into SQLite FTS5, **auto-extracts knowledge** into 7 categories (mistakes, patterns, decisions, tools, features, refactors, discoveries), and provides **search + briefing** so your AI agent never forgets what it learned.
 
 ## Quick Start
-
 ```bash
 # 1. Clone
 git clone https://github.com/magicpro97/copilot-session-knowledge.git ~/.copilot/tools
 
 # 2. Build knowledge base
-python3 ~/.copilot/tools/build-session-index.py && python3 ~/.copilot/tools/extract-knowledge.py
+python3 ~/.copilot/tools/sk.py index build && python3 ~/.copilot/tools/sk.py index extract
+# (fallback: python3 ~/.copilot/tools/build-session-index.py && python3 ~/.copilot/tools/extract-knowledge.py)
 
 # 3. Get a briefing
-python3 ~/.copilot/tools/briefing.py "your task description"
+python3 ~/.copilot/tools/sk.py briefing "your task description"
+# (fallback: python3 ~/.copilot/tools/briefing.py "your task description")
 ```
-
+After `install.py --test` (full install), the `sk` launcher is on your PATH automatically. On Windows without a PATH update, use `python ~/.copilot/tools/sk.py`.
 That's it. Your AI agent now has memory across sessions.
 
 ## Installation
-
 > 📖 **Full install guide (all methods, verification, upgrade, uninstall):** [docs/INSTALL.md](docs/INSTALL.md)
 
 ### Prerequisites
@@ -74,32 +74,36 @@ python3 ~/.copilot/tools/build-session-index.py
 python3 ~/.copilot/tools/extract-knowledge.py
 python3 ~/.copilot/tools/migrate.py
 python3 ~/.copilot/tools/install.py --test
+# → sk launcher auto-provisioned on PATH
 
 # macOS: install LaunchAgents (auto-start watcher + daily auto-update)
 python3 ~/.copilot/tools/launchd/install-launchd.py
 ```
 
-### Alternative (manual copy)
-
-Use the canonical install guide for manual-copy installs and caveats:
+### Other install paths
 
 - [Method 2 — Manual Copy](docs/INSTALL.md#method-2--manual-copy)
-
-### Windows (PowerShell)
-
-Use the canonical install guide for the full Windows walkthrough:
-
 - [Method 3 — Windows (PowerShell)](docs/INSTALL.md#method-3--windows-powershell)
+- Windows / no-PATH fallback: `python3 ~/.copilot/tools/sk.py`
 
-### Aliases (optional)
-
-```bash
-alias qs='python3 ~/.copilot/tools/query-session.py'
-alias brief='python3 ~/.copilot/tools/briefing.py'
-alias learn='python3 ~/.copilot/tools/learn.py'
-```
+📖 **Full command surface:** [docs/USAGE.md — sk unified CLI](docs/USAGE.md#sk--unified-cli)
 
 ## Usage
+
+> 📖 **Full command reference with `sk` namespaces:** [docs/USAGE.md](docs/USAGE.md)
+
+`sk` is the unified CLI front door. Common commands:
+
+```bash
+sk briefing "task"
+sk query "error message"
+sk learn --mistake "..." "..."
+sk index build && sk index extract
+sk tentacle create <name> --scope "src/**/*.py" --desc "..."
+sk update && sk browse --port 8080 --token TOKEN
+```
+
+Each `sk` command delegates to the underlying script; all scripts remain directly invocable as a fallback. See [docs/USAGE.md#sk--unified-cli](docs/USAGE.md#sk--unified-cli) for all namespaces (`index`, `sync`, `checkpoint`, `profile`, `context`, `scout`).
 
 ### Briefing (before every task)
 
@@ -410,13 +414,12 @@ flowchart TD
 ## Auto-Update
 
 ```bash
-python3 ~/.copilot/tools/auto-update-tools.py           # Auto-update (24h cooldown)
-python3 ~/.copilot/tools/auto-update-tools.py --force    # Force update now
-python3 ~/.copilot/tools/auto-update-tools.py --doctor   # Health check
-python3 ~/.copilot/tools/auto-update-tools.py --restart-watch
-python3 ~/.copilot/tools/auto-update-tools.py --watch-status
-python3 ~/.copilot/tools/auto-update-tools.py --health-check
-python3 ~/.copilot/tools/auto-update-tools.py --audit-runtime
+sk update                  # Auto-update (24h cooldown)
+sk update --force          # Force update now
+sk update --doctor         # Health check
+sk update --restart-watch  # Restart watcher
+sk update --watch-status   # Watcher status
+# fallback: python3 ~/.copilot/tools/auto-update-tools.py [flags]
 ```
 
 Smart pipeline analyzes `git diff` to run only what changed. Post-merge hook auto-triggers on `git pull`.
@@ -543,7 +546,7 @@ A: `~/.copilot/session-state/knowledge.db` — a single SQLite file with FTS5 in
 A: Yes. All scripts include Windows encoding fixes. Use `python` instead of `python3`. See [Installation](#windows-powershell). POSIX-style home paths from Git Bash (`/c/Users/...`), WSL (`/mnt/c/...`), and Cygwin (`/cygdrive/c/...`) are automatically normalised to native Windows paths for marker lookups.
 
 **Q: How do I update?**
-A: `python3 ~/.copilot/tools/auto-update-tools.py --force` or just `git pull` (post-merge hook handles the rest).
+A: `sk update --force` or `git pull` (post-merge hook handles the rest).
 
 **Q: Will hooks crash my AI agent?**
 A: No. The unified hook runner uses fail-open architecture — if any rule crashes, it logs the error and allows the action to proceed.

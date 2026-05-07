@@ -12,14 +12,15 @@ Use the lightest fetch that covers the task complexity:
 
 ```bash
 # Trivial tasks (rename, formatting, single-line fix) — skip or ultra-compact
-python3 ~/.copilot/tools/briefing.py --wakeup          # ~170 tokens, titles only
+sk briefing --wakeup          # ~170 tokens, titles only
 
 # Moderate tasks (bug fix, small feature) — compact is usually enough
-python3 ~/.copilot/tools/briefing.py --auto --compact  # ~500 tokens, top results
+sk briefing --auto --compact  # ~500 tokens, top results
 
 # Complex or unfamiliar tasks — request full detail only after compact reveals a hit
-python3 ~/.copilot/tools/query-session.py --detail <id>  # Expand one entry by ID
-python3 ~/.copilot/tools/briefing.py "task" --full       # Full detail ~3K tokens
+sk query --detail <id>  # Expand one entry by ID
+sk briefing "task" --full       # Full detail ~3K tokens
+# fallback: python3 ~/.copilot/tools/briefing.py <args> / python3 ~/.copilot/tools/query-session.py <args>
 ```
 
 Read the output before acting. It surfaces past mistakes and proven patterns.
@@ -29,7 +30,8 @@ Read the output before acting. It surfaces past mistakes and proven patterns.
 When dispatching tentacle agents, prefer the structured recall path in `tentacle.py`:
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
+sk tentacle swarm <name> --briefing
+# fallback: python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
 ```
 
 This injects bounded `[KNOWLEDGE EVIDENCE]` by trying `briefing.py --task <id> --json`
@@ -42,34 +44,36 @@ keeps category buckets in `entries.<category>[]`. Drilldown may add
 
 ```bash
 # 1. Create tentacle
-python3 ~/.copilot/tools/tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing --skill <skill-name>
+sk tentacle create <name> --scope "<paths>" --desc "<desc>" --briefing --skill <skill-name>
 
 # 2. Add todos
-python3 ~/.copilot/tools/tentacle.py todo <name> add "<task>"
+sk tentacle todo <name> add "<task>"
 
 # 3. (Optional) Prepare isolated worktree + pre-warm bundle before dispatch
-python3 ~/.copilot/tools/tentacle.py worktree <name> prepare
-python3 ~/.copilot/tools/tentacle.py bundle <name> --worktree
+sk tentacle worktree <name> prepare
+sk tentacle bundle <name> --worktree
 
 # 4. Dispatch (bundle is default; --worktree surfaces isolated repo path too)
-python3 ~/.copilot/tools/tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6 --briefing --worktree
-python3 ~/.copilot/tools/tentacle.py dispatch <name> --briefing --worktree
+sk tentacle swarm <name> --agent-type general-purpose --model claude-sonnet-4.6 --briefing --worktree
+sk tentacle dispatch <name> --briefing --worktree
 
 # 5. Operator monitoring (read-only)
-python3 ~/.copilot/tools/tentacle.py status
+sk tentacle status
 
 # 6. Verify, record learnings, close (orchestrator only)
-python3 ~/.copilot/tools/tentacle.py verify <name> "python3 test_fixes.py" --label "tests"
-python3 ~/.copilot/tools/tentacle.py handoff <name> "summary" --learn
-python3 ~/.copilot/tools/tentacle.py complete <name>   # marks done, clears marker, auto-learns
-python3 ~/.copilot/tools/tentacle.py worktree <name> cleanup
+sk tentacle verify <name> "python3 test_fixes.py" --label "tests"
+sk tentacle handoff <name> "summary" --learn
+sk tentacle complete <name>   # marks done, clears marker, auto-learns
+sk tentacle worktree <name> cleanup
+# fallback: python3 ~/.copilot/tools/tentacle.py <subcommand> <args>
 ```
 
 For manual compatibility or ad hoc non-tentacle prompts, inject compact context directly:
 
 ```bash
 # Manual compatibility path — compact and directly injectable
-python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
+sk briefing "task description" --for-subagent
+# fallback: python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
 ```
 
 Include output verbatim in the sub-agent prompt under a `## Past Knowledge` section.
@@ -87,33 +91,34 @@ When sync is configured, keep guidance aligned to shipped behavior:
 
 ```bash
 # one connection_string in ~/.copilot/tools/sync-config.json
-python3 ~/.copilot/tools/sync-config.py --setup <https://gateway>
-python3 ~/.copilot/tools/sync-config.py --setup-env SYNC_GATEWAY_URL
-python3 ~/.copilot/tools/sync-config.py --status
-python3 ~/.copilot/tools/sync-config.py --status --json
-python3 ~/.copilot/tools/sync-config.py --clear
-python3 ~/.copilot/tools/sync-config.py --get
+sk sync config --setup <https://gateway>
+sk sync config --setup-env SYNC_GATEWAY_URL
+sk sync config --status
+sk sync config --status --json
+sk sync config --clear
+sk sync config --get
 
 # local-first runtime + diagnostics
-python3 ~/.copilot/tools/sync-daemon.py --once
-python3 ~/.copilot/tools/sync-daemon.py --daemon
-python3 ~/.copilot/tools/sync-daemon.py --interval 30
-python3 ~/.copilot/tools/sync-daemon.py --push-only
-python3 ~/.copilot/tools/sync-daemon.py --pull-only
-python3 ~/.copilot/tools/sync-status.py --json
-python3 ~/.copilot/tools/sync-status.py --watch-status --json
-python3 ~/.copilot/tools/sync-status.py --health-check --json
-python3 ~/.copilot/tools/sync-status.py --audit --json
-python3 ~/.copilot/tools/auto-update-tools.py --restart-watch
-python3 ~/.copilot/tools/auto-update-tools.py --watch-status
-python3 ~/.copilot/tools/auto-update-tools.py --health-check
-python3 ~/.copilot/tools/auto-update-tools.py --audit-runtime
+sk sync run --once
+sk sync run --daemon
+sk sync run --interval 30
+sk sync run --push-only
+sk sync run --pull-only
+sk sync status --json
+sk sync status --watch-status --json
+sk sync status --health-check --json
+sk sync status --audit --json
+sk update --restart-watch
+sk update --watch-status
+sk update --health-check
+sk update --audit-runtime
+# fallback: python3 ~/.copilot/tools/sync-config.py / sync-daemon.py / sync-status.py / auto-update-tools.py
 ```
 
 - Missing `connection_string` means local-only idle sync (not fatal).
 - Runtime hardening: daemon auto-adjusts per-cycle limits on backlog, consumes multiple pull pages per cycle, and refreshes touched `knowledge_fts` / `ke_fts` rows after pull apply.
 - `sync-gateway.py` is **reference/mock only** in this repo.
-- `sync-config.py --setup` accepts an HTTP(S) gateway URL, not a raw Postgres/libSQL DSN.
+- `sk sync config --setup` accepts an HTTP(S) gateway URL, not a raw Postgres/libSQL DSN.
 - Default provider rollout recommendation: Neon (backing Postgres) + Railway (thin gateway host), while keeping the same HTTP gateway contract.
 - Browse sync status is read-only: `/healthz` → `sync_status_endpoint: "/api/sync/status"`.
 
@@ -122,9 +127,10 @@ python3 ~/.copilot/tools/auto-update-tools.py --audit-runtime
 Use Trend Scout as explicit/scheduled automation, not an interactive hook:
 
 ```bash
-python3 ~/.copilot/tools/trend-scout.py --search-only
-python3 ~/.copilot/tools/trend-scout.py --dry-run --limit 1 --force
-python3 ~/.copilot/tools/trend-scout.py --limit 1 --force
+sk scout run --search-only
+sk scout run --dry-run --limit 1 --force
+sk scout run --limit 1 --force
+# fallback: python3 ~/.copilot/tools/trend-scout.py <args>
 ```
 
 - It creates or updates marker-linked issues in the target repo.
@@ -134,15 +140,16 @@ python3 ~/.copilot/tools/trend-scout.py --limit 1 --force
 ## Recall Telemetry (Phase 5)
 
 ```bash
-python3 ~/.copilot/tools/knowledge-health.py --recall
-python3 ~/.copilot/tools/knowledge-health.py --recall --json
+sk index health --recall
+sk index health --recall --json
+# fallback: python3 ~/.copilot/tools/knowledge-health.py --recall [--json]
 ```
 
 - `recall_events` is lean telemetry only (counts/IDs/output size), not verbose output logging.
-- `query-session.py --detail <id>` is stateless telemetry:
+- `sk query --detail <id>` is stateless telemetry:
   - found entry → `detail_open` with `hit_count=1`, `selected_entry_ids=[id]`
   - missing entry → `detail_open` with `hit_count=0`, `selected_entry_ids=[]`
-- default `query-session.py "query"` telemetry aggregates the full emitted search surface
+- default `sk query "query"` telemetry aggregates the full emitted search surface
   (primary search block + `sessions_fts` block + knowledge-entry block).
 - If `recall_events` is unavailable on an older DB, recall commands still run (best-effort telemetry).
 - Browse UI, contextual summaries, and provider rerank are outside this telemetry scope.
@@ -152,10 +159,11 @@ python3 ~/.copilot/tools/knowledge-health.py --recall --json
 Record what you learned (choose the most specific type):
 
 ```bash
-python3 ~/.copilot/tools/learn.py --mistake "Title"   "Root cause and fix"  --tags "module,tech" --wing <wing> --room <room>
-python3 ~/.copilot/tools/learn.py --pattern "Title"   "What works well"     --tags "module,tech" --wing <wing> --room <room>
-python3 ~/.copilot/tools/learn.py --feature "Title"   "What was built"      --tags "module,tech" --wing <wing> --room <room>
-python3 ~/.copilot/tools/learn.py --discovery "Title" "Codebase insight"    --tags "module,tech" --wing <wing> --room <room>
+sk learn --mistake "Title"   "Root cause and fix"  --tags "module,tech" --wing <wing> --room <room>
+sk learn --pattern "Title"   "What works well"     --tags "module,tech" --wing <wing> --room <room>
+sk learn --feature "Title"   "What was built"      --tags "module,tech" --wing <wing> --room <room>
+sk learn --discovery "Title" "Codebase insight"    --tags "module,tech" --wing <wing> --room <room>
+# fallback: python3 ~/.copilot/tools/learn.py <type> <args>
 ```
 
 ## Rules
