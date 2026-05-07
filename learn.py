@@ -37,6 +37,7 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 if os.name == "nt":
     try:
@@ -305,13 +306,51 @@ def get_db() -> sqlite3.Connection:
     if not DB_PATH.exists():
         print("Error: Knowledge DB not found. Run build-session-index.py first.", file=sys.stderr)
         sys.exit(1)
-    db = sqlite3.connect(str(DB_PATH))
+    # Per-connection timeout (seconds) for SQLite-level busy waiting before
+    # raising OperationalError. Combined with PRAGMA busy_timeout below.
+    # 30s is enough to ride out batch flushes from watch-sessions.py indexer
+    # service on multi-hundred-MB knowledge databases.
+    db = sqlite3.connect(str(DB_PATH), timeout=30.0)
     db.row_factory = sqlite3.Row
-    # WAL mode for concurrent reads; busy_timeout lets writers retry up to 5 s
+    # WAL mode for concurrent reads; busy_timeout lets writers retry up to 30 s
     # before failing with SQLITE_BUSY when the indexer or sync is also writing.
     db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA busy_timeout=5000")
+    db.execute("PRAGMA busy_timeout=30000")
     return db
+
+
+def _is_busy_error(exc: sqlite3.OperationalError) -> bool:
+    """Return True if exc is a SQLITE_BUSY / database-is-locked error."""
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
+def with_retry(func, *args, max_attempts: int = 5, base_delay: float = 0.5, **kwargs):
+    """Run a DB-writing callable with exponential backoff on SQLITE_BUSY.
+
+    The indexer service (watch-sessions.py) holds the writer lock during
+    embedding flushes; even with busy_timeout=30s, very large batches on a
+    ~800 MB DB can exceed it. This wrapper retries transient lock errors
+    with delays of 0.5s, 1s, 2s, 4s, 8s before giving up.
+    """
+    last_exc: Optional[sqlite3.OperationalError] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return func(*args, **kwargs)
+        except sqlite3.OperationalError as exc:
+            if not _is_busy_error(exc):
+                raise
+            last_exc = exc
+            if attempt == max_attempts:
+                break
+            delay = base_delay * (2 ** (attempt - 1))
+            print(
+                f"  ⏳ DB busy (attempt {attempt}/{max_attempts}), retrying in {delay:.1f}s...",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
 
 
 def detect_session_id() -> str:
@@ -830,7 +869,7 @@ def import_from_file(filepath: str):
     for entry in entries:
         content = "\n".join(entry["lines"]).strip()
         if content:
-            add_entry(entry["category"], entry["title"], content)
+            with_retry(add_entry, entry["category"], entry["title"], content)
 
     print(f"Done. Imported {len(entries)} entries.")
 
@@ -1143,7 +1182,8 @@ def main():
         else:
             print(f"Recording {category}...")
 
-    entry_id = add_entry(
+    entry_id = with_retry(
+        add_entry,
         category,
         title,
         content,
