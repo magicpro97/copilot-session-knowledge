@@ -168,14 +168,56 @@ describe("Tailwind theme color tokens — valid opaque colors", () => {
   it("exposes a .palette-classic opt-in that overrides surface tokens to pre-2b54b65 values", () => {
     const globalsCss = readGlobalsCss();
 
-    // Light-mode classic restores the pure-white surfaces.
-    expect(globalsCss).toMatch(/:root\.palette-classic\s*\{[^}]*--background:\s*210 20% 99%;/);
-    expect(globalsCss).toMatch(/:root\.palette-classic\s*\{[^}]*--card:\s*0 0% 100%;/);
-    expect(globalsCss).toMatch(/:root\.palette-classic\s*\{[^}]*--popover:\s*0 0% 100%;/);
+    // Light-mode classic MUST be scoped with :not(.dark) — without it,
+    // :root.palette-classic (0,1,1) outranks .dark (0,1,0) and bleeds light
+    // surfaces into dark mode when classic is active.
+    expect(globalsCss).toMatch(
+      /:root:not\(\.dark\)\.palette-classic\s*\{[^}]*--background:\s*210 20% 99%;/
+    );
+    expect(globalsCss).toMatch(
+      /:root:not\(\.dark\)\.palette-classic\s*\{[^}]*--card:\s*0 0% 100%;/
+    );
+    expect(globalsCss).toMatch(
+      /:root:not\(\.dark\)\.palette-classic\s*\{[^}]*--popover:\s*0 0% 100%;/
+    );
 
     // Dark-mode classic restores the brighter foreground / lower-elevation card.
     expect(globalsCss).toMatch(/\.dark\.palette-classic\s*\{[^}]*--foreground:\s*210 25% 93%;/);
     expect(globalsCss).toMatch(/\.dark\.palette-classic\s*\{[^}]*--popover:\s*215 20% 11%;/);
+    expect(globalsCss).toMatch(/\.dark\.palette-classic\s*\{[^}]*--card:\s*215 20% 11%;/);
+    expect(globalsCss).toMatch(
+      /\.dark\.palette-classic\s*\{[^}]*--secondary-foreground:\s*210 25% 93%;/
+    );
+  });
+
+  it("does not use unscoped :root.palette-classic (would leak light vars into dark mode)", () => {
+    const globalsCss = readGlobalsCss();
+    expect(globalsCss).not.toMatch(/:root\.palette-classic\s*\{/);
+  });
+
+  it("covers exactly the variables that commit 2b54b65 shifted (no missed token, no extra)", () => {
+    const globalsCss = readGlobalsCss();
+
+    const lightBlockMatch = globalsCss.match(/:root:not\(\.dark\)\.palette-classic\s*\{([^}]+)\}/);
+    expect(lightBlockMatch).not.toBeNull();
+    const lightVars = Array.from(lightBlockMatch![1].matchAll(/--([\w-]+):/g))
+      .map((m) => m[1])
+      .sort();
+    expect(lightVars).toEqual(["background", "card", "popover"]);
+
+    const darkBlockMatch = globalsCss.match(/\.dark\.palette-classic\s*\{([^}]+)\}/);
+    expect(darkBlockMatch).not.toBeNull();
+    const darkVars = Array.from(darkBlockMatch![1].matchAll(/--([\w-]+):/g))
+      .map((m) => m[1])
+      .sort();
+    expect(darkVars).toEqual([
+      "card",
+      "card-foreground",
+      "foreground",
+      "popover",
+      "popover-foreground",
+      "secondary-foreground",
+    ]);
   });
 });
 

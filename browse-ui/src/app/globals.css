@@ -99,9 +99,11 @@
 
   /* Classic palette opt-in (pre-APCA tuning, restored from before commit 2b54b65).
      Activated by .palette-classic on <html> via use-palette hook.
-     Both palettes route through hsl(var(...)) in @theme inline (see commit 35a5210),
-     so dropdown/popover surfaces stay opaque under either choice. */
-  :root.palette-classic {
+
+     Specificity discipline — light overrides MUST be scoped with :not(.dark) so
+     they do not bleed into dark mode (where `.dark` sets the canonical dark bg
+     with lower specificity than the previous `:root.palette-classic`). */
+  :root:not(.dark).palette-classic {
     --background: 210 20% 99%;
     --card: 0 0% 100%;
     --popover: 0 0% 100%;
