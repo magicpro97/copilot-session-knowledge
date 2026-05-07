@@ -183,6 +183,14 @@ def _normalize_html(html: str) -> str:
     html = re.sub(r'/_next/static/[^/"\']+/(_[^/"\']+Manifest\.js)', r'/_next/static/BUILD/\1', html)
     html = re.sub(r'/_next/static/(chunks|media)/[^"\'<>\s)]+', r'/_next/static/\1/ASSET', html)
     html = re.sub(r'\\"b\\":\\"[^\\"]+\\"', r'\\"b\\":\\"BUILD\\"', html)
+    # Next/RSC bootstrap scripts contain module IDs and chunk payload ordering that
+    # are build-environment details, not route content.
+    html = re.sub(r"<script\b[^>]*>.*?</script>", "", html, flags=re.DOTALL)
+    html = re.sub(
+        r"\b([A-Za-z0-9_-]+-module__)[A-Za-z0-9_-]+(__[A-Za-z0-9_-]+)\b",
+        r"\1HASH\2",
+        html,
+    )
     return html
 
 
