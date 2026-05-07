@@ -96,6 +96,24 @@
     --chart-4: 280 55% 65%;
     --chart-5: 12 75% 65%;
   }
+
+  /* Classic palette opt-in (pre-APCA tuning, restored from before commit 2b54b65).
+     Activated by .palette-classic on <html> via use-palette hook.
+     Both palettes route through hsl(var(...)) in @theme inline (see commit 35a5210),
+     so dropdown/popover surfaces stay opaque under either choice. */
+  :root.palette-classic {
+    --background: 210 20% 99%;
+    --card: 0 0% 100%;
+    --popover: 0 0% 100%;
+  }
+  .dark.palette-classic {
+    --foreground: 210 25% 93%;
+    --card: 215 20% 11%;
+    --card-foreground: 210 25% 93%;
+    --popover: 215 20% 11%;
+    --popover-foreground: 210 25% 93%;
+    --secondary-foreground: 210 25% 93%;
+  }
 }
 
 /* Density tokens — canonical values from 03-visual-design.md §10.1 */

@@ -164,6 +164,19 @@ describe("Tailwind theme color tokens — valid opaque colors", () => {
     );
     expect(rawTripletMappings.map((match) => match[0])).toEqual([]);
   });
+
+  it("exposes a .palette-classic opt-in that overrides surface tokens to pre-2b54b65 values", () => {
+    const globalsCss = readGlobalsCss();
+
+    // Light-mode classic restores the pure-white surfaces.
+    expect(globalsCss).toMatch(/:root\.palette-classic\s*\{[^}]*--background:\s*210 20% 99%;/);
+    expect(globalsCss).toMatch(/:root\.palette-classic\s*\{[^}]*--card:\s*0 0% 100%;/);
+    expect(globalsCss).toMatch(/:root\.palette-classic\s*\{[^}]*--popover:\s*0 0% 100%;/);
+
+    // Dark-mode classic restores the brighter foreground / lower-elevation card.
+    expect(globalsCss).toMatch(/\.dark\.palette-classic\s*\{[^}]*--foreground:\s*210 25% 93%;/);
+    expect(globalsCss).toMatch(/\.dark\.palette-classic\s*\{[^}]*--popover:\s*215 20% 11%;/);
+  });
 });
 
 describe("Shared surface — SheetContent background contract", () => {

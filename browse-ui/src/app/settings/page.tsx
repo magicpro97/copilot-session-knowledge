@@ -5,6 +5,7 @@ import { useTheme } from "next-themes";
 
 import { Banner } from "@/components/data/banner";
 import { DensityToggle } from "@/components/layout/density-toggle";
+import { PaletteToggle } from "@/components/layout/palette-toggle";
 import { HostManagement } from "@/components/hosts/host-management";
 import { OperatorActionsPanel } from "@/components/data/operator-actions-panel";
 import { Badge } from "@/components/ui/badge";
@@ -95,6 +96,19 @@ export default function SettingsPage() {
                 </Button>
               ))}
             </div>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Palette</p>
+            <PaletteToggle />
+            <p className="text-muted-foreground text-xs">
+              Contrast (default) uses APCA-tuned off-white surfaces. Classic restores the
+              pre-May-2026 pure-white palette. Both keep popovers and dropdowns opaque. Stored as{" "}
+              <code className="bg-muted rounded px-1 py-0.5 font-mono text-[11px]">
+                browse-palette
+              </code>
+              .
+            </p>
           </div>
 
           <div className="space-y-2">
