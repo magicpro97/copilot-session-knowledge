@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Page } from "@playwright/test";
@@ -482,6 +483,43 @@ test("/chat header host switcher shows Local as default option", async ({ page }
 
   // Local (same-origin) option is present
   await expect(page.getByTestId("host-option-local")).toBeVisible();
+});
+
+test("/chat header host switcher popup is visually opaque", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 360, height: 220 });
+  await mockOperatorApi(page);
+
+  await page.goto("/chat/");
+  await expect(page.getByTestId("chat-shell")).toBeVisible({ timeout: 20_000 });
+
+  async function captureOpenMenu(label: string) {
+    await page.getByTestId("header-host-trigger").click();
+    const menu = page.locator('[data-slot="dropdown-menu-content"]').first();
+    await expect(menu).toBeVisible();
+    const screenshot = await menu.screenshot({ animations: "disabled", caret: "hide" });
+    await testInfo.attach(`${label}.png`, { body: screenshot, contentType: "image/png" });
+    const sha256 = createHash("sha256").update(screenshot).digest("hex");
+    const backgroundColor = await menu.evaluate((node) => getComputedStyle(node).backgroundColor);
+    return { backgroundColor, sha256 };
+  }
+
+  const brokenStyle = await page.addStyleTag({
+    content: ".bg-popover{background-color:var(--popover)!important}",
+  });
+  const before = await captureOpenMenu("host-dropdown-before-broken-token");
+  await page.keyboard.press("Escape");
+  await expect(page.locator('[data-slot="dropdown-menu-content"]')).toHaveCount(0);
+  await brokenStyle.evaluate((node) => node.parentNode?.removeChild(node));
+
+  const after = await captureOpenMenu("host-dropdown-after-fixed-token");
+  await testInfo.attach("host-dropdown-hashes.json", {
+    body: JSON.stringify({ before, after }, null, 2),
+    contentType: "application/json",
+  });
+
+  expect(before.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+  expect(after.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+  expect(after.sha256).not.toBe(before.sha256);
 });
 
 test("/chat header host switcher shows active host indicator", async ({ page }) => {

@@ -6,6 +6,9 @@
  * They catch accidental regressions to transparent or over-bright styles.
  */
 import "@testing-library/jest-dom";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
@@ -18,6 +21,13 @@ import { Select, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogOverlay } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetOverlay } from "@/components/ui/sheet";
 import { SurfacePanel } from "@/components/ui/surface-panel";
+
+function readGlobalsCss() {
+  const currentFile = import.meta.url.startsWith("file:")
+    ? fileURLToPath(import.meta.url)
+    : import.meta.url;
+  return readFileSync(resolve(dirname(currentFile), "../../app/globals.css"), "utf-8");
+}
 
 describe("Contrast system — opaque trigger surfaces", () => {
   it("SelectTrigger uses bg-secondary (opaque) not bg-transparent", () => {
@@ -134,6 +144,25 @@ describe("Popup surface constants — opaque surface enforcement", () => {
     for (const token of PANEL_SURFACE_BASE.split(" ")) {
       expect(panel!.className).toContain(token);
     }
+  });
+});
+
+describe("Tailwind theme color tokens — valid opaque colors", () => {
+  it("maps popover colors through hsl(var(...)) so bg-popover renders a real background", () => {
+    const globalsCss = readGlobalsCss();
+
+    expect(globalsCss).toContain("--color-popover: hsl(var(--popover));");
+    expect(globalsCss).toContain("--color-popover-foreground: hsl(var(--popover-foreground));");
+    expect(globalsCss).not.toContain("--color-popover: var(--popover);");
+  });
+
+  it("does not expose raw HSL triplets as Tailwind color values", () => {
+    const globalsCss = readGlobalsCss();
+
+    const rawTripletMappings = Array.from(
+      globalsCss.matchAll(/--color-[\w-]+:\s*var\(--(?!font)[\w-]+\);/g)
+    );
+    expect(rawTripletMappings.map((match) => match[0])).toEqual([]);
   });
 });
 
