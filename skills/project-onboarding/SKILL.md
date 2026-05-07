@@ -80,7 +80,7 @@ and guardrails being in place.
 The AI repeats mistakes, forgets past decisions, and has no institutional memory.
 Briefing gives pre-task context; learn records post-task insights.
 
-**Verify:** `python3 ~/.copilot/tools/briefing.py --wakeup` returns output.
+**Verify:** `sk briefing --wakeup` returns output.  (fallback: `python3 ~/.copilot/tools/briefing.py --wakeup`)
 
 ### 0.2 Agent Creator
 
@@ -214,7 +214,7 @@ python3 .github/skills/conductor/scripts/conductor.py --sync
 
 | Phase | Creator | Output | Verify |
 |-------|---------|--------|--------|
-| 0.1 | `session-knowledge-creator` | briefing.py, learn.py | `briefing.py --wakeup` |
+| 0.1 | `session-knowledge-creator` | briefing.py, learn.py | `sk briefing --wakeup` |
 | 0.2 | `agent-creator` | .github/agents/*.agent.md | `ls .github/agents/` |
 | 0.3 | `hook-creator` | .github/hooks/ | `cat hooks.json` |
 | 1.1 | `workflow-creator` | WORKFLOW.md | File exists with phases |
@@ -246,9 +246,9 @@ integration point that ties the ecosystem together.
 | Added/removed a skill | `conductor.py --sync --fix` then re-run load audit |
 | Added a new agent | Update `agent_routing` in conductor-rules.json |
 | Changed workflow phases | Update `workflows` in conductor-rules.json |
-| New session starts | `briefing.py --auto --compact` |
-| After fixing a bug | `learn.py --mistake "Title" "Details" --tags "tags"` |
-| After completing feature | `learn.py --feature "Title" "Details" --tags "tags"` |
+| New session starts | `sk briefing --auto --compact` |
+| After fixing a bug | `sk learn --mistake "Title" "Details" --tags "tags"` |
+| After completing feature | `sk learn --feature "Title" "Details" --tags "tags"` |
 | Skill installed globally | Remove project-local copy if it exists in `.github/skills/` |
 | Instruction added | Check that `applyTo` is as narrow as possible; re-run load audit |
 
@@ -266,7 +266,7 @@ integration point that ties the ecosystem together.
 | `--sync` shows orphans | New skill added after setup | `--sync --fix` |
 | Agent uses wrong model | Model not specified | Check `.instructions.md` model rules |
 | Hook blocks valid action | Overly strict regex | Edit `.github/hooks/scripts/` |
-| Briefing returns empty | No entries recorded | Start using `learn.py` after tasks |
+| Briefing returns empty | No entries recorded | Start using `sk learn` after tasks |
 | Context feels slow / bloated | Too many `applyTo: **/*` instructions | Narrow `applyTo` on each instruction file |
 | Same skill name in global + project | Old project copy not removed after global rollout | Delete `.github/skills/<name>/` when `~/.copilot/skills/<name>/` exists |
 | Conductor rules reference missing skill | Skill removed but rule not updated | `conductor.py --audit`, then remove stale rule or restore skill |

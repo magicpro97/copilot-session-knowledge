@@ -2,7 +2,7 @@
 
 > **Copy this file to** `.github/skills/session-knowledge/SKILL.md` in the target project.
 > Replace every `<PLACEHOLDER>` with project-specific values before saving.
-> The generated file must pass `python3 ~/.copilot/tools/validate-skill.py`.
+> The generated file must pass `python3 ~/.copilot/tools/validate-skill.py` (no sk shortcut for this tool).
 
 ---
 
@@ -36,20 +36,23 @@ proven solutions specific to this codebase.
 
 ```bash
 # Before task — get context
-python3 ~/.copilot/tools/briefing.py "<task description>" --compact
+sk briefing "<task description>" --compact
+# fallback: python3 ~/.copilot/tools/briefing.py "<task description>" --compact
 
 # Search for a specific error
-python3 ~/.copilot/tools/query-session.py "<error message>" --verbose
+sk query "<error message>" --verbose
+# fallback: python3 ~/.copilot/tools/query-session.py "<error message>" --verbose
 
 # See past decisions about <TECH>
-python3 ~/.copilot/tools/query-session.py "<TECH>" --decisions
+sk query "<TECH>" --decisions
 
 # After fixing a bug — record it
-python3 ~/.copilot/tools/learn.py --mistake "Title" "Root cause and fix" \
+sk learn --mistake "Title" "Root cause and fix" \
   --tags "<KEY_TAG_1>,<KEY_TAG_2>" --wing <WING> --room <ROOM>
+# fallback: python3 ~/.copilot/tools/learn.py --mistake ...
 
 # After implementing a feature
-python3 ~/.copilot/tools/learn.py --feature "Title" "What was built" \
+sk learn --feature "Title" "What was built" \
   --tags "<KEY_TAG_1>"
 ```
 
@@ -75,14 +78,14 @@ Knowledge is organized hierarchically. Use these when recording entries:
 **Task:** Fix <KEY_ACTIVITY_1> bug in <KEY_MODULE_1>
 
 ```bash
-python3 ~/.copilot/tools/briefing.py "fix <KEY_ACTIVITY_1> in <KEY_MODULE_1>"
+sk briefing "fix <KEY_ACTIVITY_1> in <KEY_MODULE_1>"
 # → shows 1 past mistake about <DOMAIN_ISSUE>, 1 pattern for <DOMAIN_SOLUTION>
 
-python3 ~/.copilot/tools/query-session.py "<ERROR_TYPE>" --verbose
+sk query "<ERROR_TYPE>" --verbose
 # → finds the root cause from a previous session
 
 # After fixing:
-python3 ~/.copilot/tools/learn.py --mistake "<KEY_MODULE_1> <ERROR_TYPE>" \
+sk learn --mistake "<KEY_MODULE_1> <ERROR_TYPE>" \
   "Root cause: <CAUSE>. Fix: <FIX_DESCRIPTION>" \
   --tags "<KEY_TAG_1>,<KEY_TAG_2>" --wing <WING_1> --room <ROOM_1_A>
 ```

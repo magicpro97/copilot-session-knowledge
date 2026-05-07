@@ -4,6 +4,8 @@ install.py — Smart installer for session knowledge tools
 
 Usage:
     python install.py                        # Auto-detect and show status
+    python install.py --install-sk           # Install/refresh sk launcher in ~/.copilot/bin/
+    python install.py --uninstall-launcher   # Remove only the managed sk launcher
     python install.py --deploy-skill         # Deploy SKILL.md to current project
     python install.py --deploy-hooks         # Deploy hooks.json to ~/.copilot/hooks/
     python install.py --deploy-instructions  # Deploy global instructions to ~/.github/
@@ -14,6 +16,12 @@ Usage:
     python install.py --test                 # Run self-test
     python install.py --uninstall            # Remove installed files
     python install.py --help                 # Show this help
+
+sk Launcher (managed cross-platform):
+    --install-sk creates ~/.copilot/bin/sk  (POSIX) or ~/.copilot/bin/sk.cmd (Windows)
+    and idempotently adds ~/.copilot/bin to your shell profile PATH.
+    After install: open a new shell (or 'source ~/.zshrc') then type 'sk --help'.
+    auto-update-tools.py calls --install-sk --quiet whenever sk.py or install.py changes.
 
 Tamper Protection:
     --lock-hooks sets OS-level immutable flags on all hook scripts + hooks.json:
@@ -31,7 +39,10 @@ import sqlite3
 import subprocess
 import sys
 import textwrap
+from importlib import metadata
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 # ---------------------------------------------------------------------------
 # Windows console encoding fix (same pattern as other tools)
@@ -145,6 +156,7 @@ TOOL_FILES = [
     "sync-status.py",
     "sync-gateway.py",
     "generate-summary.py",
+    "sk.py",
     "install.py",
 ]
 
@@ -152,7 +164,13 @@ SUPPORT_FILES = [
     "README.md",
     "KNOWLEDGE.md",
     "embedding-config.json",
+    "pyproject.toml",
 ]
+
+# Managed sk launcher directory (cross-platform: ~/.copilot/bin/)
+SK_LAUNCHER_DIR = HOME / ".copilot" / "bin"
+_SK_PATH_MARKER_START = "# >>> session-knowledge sk launcher >>>"
+_SK_PATH_MARKER_END   = "# <<< session-knowledge sk launcher <<<"
 
 # ---------------------------------------------------------------------------
 # Markers
@@ -180,6 +198,53 @@ def _count_scripts(d: Path) -> int:
     if not d.is_dir():
         return 0
     return sum(1 for f in d.iterdir() if f.suffix == ".py")
+
+
+def _file_url_to_path(url: str) -> Path | None:
+    """Convert a file:// URL from direct_url.json to a local path."""
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme != "file":
+        return None
+    path_str = url2pathname(parsed.path)
+    if parsed.netloc and parsed.netloc not in ("", "localhost"):
+        path_str = f"//{parsed.netloc}{path_str}"
+    if not path_str:
+        return None
+    return Path(path_str).expanduser().resolve()
+
+
+def _matching_editable_install_source_dir(target_dir: Path | None = None) -> Path | None:
+    """Return the editable-install source dir when it matches this checkout."""
+    target = (target_dir or TOOLS_DIR).resolve()
+    try:
+        distributions = metadata.distributions()
+    except Exception:
+        return None
+
+    for dist in distributions:
+        dist_name = (dist.metadata.get("Name") or "").strip().lower().replace("_", "-")
+        if dist_name != "copilot-session-knowledge":
+            continue
+        direct_url_text = dist.read_text("direct_url.json")
+        if not direct_url_text:
+            continue
+        try:
+            direct_url = json.loads(direct_url_text)
+        except Exception:
+            continue
+        if not direct_url.get("dir_info", {}).get("editable"):
+            continue
+        source_dir = _file_url_to_path(direct_url.get("url", ""))
+        if source_dir == target:
+            return source_dir
+    return None
+
+
+def _pip_uninstall_command() -> str:
+    """Command that removes the editable `sk` console entrypoint cleanly."""
+    return f"{sys.executable} -m pip uninstall copilot-session-knowledge"
 
 
 def _git_hook_install_text(src_text: str) -> str:
@@ -278,6 +343,237 @@ def _fts_working() -> bool:
         return rows[0] >= 0
     except Exception:
         return False
+
+
+# ===================================================================
+# SK Launcher: managed cross-platform sk command
+# ===================================================================
+
+def _sk_launcher_script_paths() -> "list[Path]":
+    """Return platform-appropriate launcher file paths under SK_LAUNCHER_DIR."""
+    if os.name == "nt":
+        return [SK_LAUNCHER_DIR / "sk.cmd"]
+    return [SK_LAUNCHER_DIR / "sk"]
+
+
+def _sk_launcher_content() -> str:
+    """Return the launcher script body for the current platform."""
+    if os.name == "nt":
+        return (
+            "@echo off\r\n"
+            'python "%USERPROFILE%\\.copilot\\tools\\sk.py" %*\r\n'
+        )
+    # POSIX: sh-compatible, expands $HOME at runtime so it survives home dir changes
+    return (
+        "#!/bin/sh\n"
+        'exec python3 "$HOME/.copilot/tools/sk.py" "$@"\n'
+    )
+
+
+def _shell_profiles() -> "list[Path]":
+    """Return candidate POSIX shell profile files for PATH injection."""
+    return [
+        HOME / ".bash_profile",
+        HOME / ".bashrc",
+        HOME / ".zprofile",
+        HOME / ".zshrc",
+        HOME / ".profile",
+    ]
+
+
+def _preferred_shell_profile() -> Path:
+    """Pick the best profile file to create when none already exist."""
+    shell_name = Path(os.environ.get("SHELL", "")).name.lower()
+    if "zsh" in shell_name:
+        return HOME / ".zshrc"
+    if "bash" in shell_name:
+        return HOME / ".bash_profile"
+    return HOME / ".profile"
+
+
+def _inject_launcher_path(quiet: bool = False) -> None:
+    """Idempotently add ~/.copilot/bin to existing shell profiles (POSIX only)."""
+    bin_str = str(SK_LAUNCHER_DIR)
+    block = (
+        f"\n{_SK_PATH_MARKER_START}\n"
+        f'export PATH="{bin_str}:$PATH"\n'
+        f"{_SK_PATH_MARKER_END}\n"
+    )
+    profiles = [profile for profile in _shell_profiles() if profile.exists()]
+    if not profiles:
+        profiles = [_preferred_shell_profile()]
+    for profile in profiles:
+        if not profile.parent.exists():
+            profile.parent.mkdir(parents=True, exist_ok=True)
+        content = profile.read_text(encoding="utf-8") if profile.exists() else ""
+        if _SK_PATH_MARKER_START in content or bin_str in content:
+            if not quiet:
+                print(f"  {INFO} sk PATH already in {_tilde(profile)}")
+            continue
+        new_content = block.lstrip("\n") if not content else content.rstrip("\n") + "\n" + block
+        _atomic_write_text(profile, new_content)
+        if not quiet:
+            print(f"  {OK} Added sk launcher PATH to {_tilde(profile)}")
+
+
+def _inject_launcher_path_windows(quiet: bool = False) -> None:
+    """Try adding ~/.copilot/bin to user PATH in Windows Registry."""
+    bin_str = str(SK_LAUNCHER_DIR)
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, "Environment", 0,
+            winreg.KEY_READ | winreg.KEY_WRITE,
+        )
+        try:
+            cur_path, _ = winreg.QueryValueEx(key, "PATH")
+        except FileNotFoundError:
+            cur_path = ""
+        entries = [entry for entry in cur_path.split(";") if entry.strip()]
+        launcher_key = _windows_path_entry_key(bin_str)
+        if not any(_windows_path_entry_key(entry) == launcher_key for entry in entries):
+            new_path = f"{bin_str};{cur_path}" if cur_path else bin_str
+            winreg.SetValueEx(key, "PATH", 0, winreg.REG_EXPAND_SZ, new_path)
+            if not quiet:
+                print(f"  {OK} Added sk launcher dir to Windows user PATH")
+        else:
+            if not quiet:
+                print(f"  {INFO} sk launcher dir already in Windows user PATH")
+        winreg.CloseKey(key)
+    except Exception as exc:
+        if not quiet:
+            print(f"  {WARN} Could not update Windows PATH: {exc}")
+            print(f"    Add manually: {bin_str}")
+
+
+def _remove_launcher_path_windows(quiet: bool = False) -> bool:
+    """Try removing ~/.copilot/bin from the Windows user PATH."""
+    bin_str = str(SK_LAUNCHER_DIR)
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, "Environment", 0,
+            winreg.KEY_READ | winreg.KEY_WRITE,
+        )
+        try:
+            cur_path, _ = winreg.QueryValueEx(key, "PATH")
+        except FileNotFoundError:
+            cur_path = ""
+        entries = [entry for entry in cur_path.split(";") if entry]
+        launcher_key = _windows_path_entry_key(bin_str)
+        filtered = [
+            entry for entry in entries
+            if _windows_path_entry_key(entry) != launcher_key
+        ]
+        if filtered != entries:
+            winreg.SetValueEx(
+                key, "PATH", 0, winreg.REG_EXPAND_SZ, ";".join(filtered),
+            )
+            if not quiet:
+                print("  {0} Removed sk launcher dir from Windows user PATH".format(OK))
+            winreg.CloseKey(key)
+            return True
+        if not quiet:
+            print("  {0} sk launcher dir not present in Windows user PATH".format(INFO))
+        winreg.CloseKey(key)
+    except Exception as exc:
+        if not quiet:
+            print(f"  {WARN} Could not remove Windows PATH entry: {exc}")
+    return False
+
+
+def _windows_path_entry_key(entry: str) -> str:
+    """Normalize a Windows PATH entry for stable comparisons."""
+    return entry.strip().rstrip("\\/").lower()
+
+
+def install_sk_launcher(quiet: bool = False) -> bool:
+    """Create/update the managed sk launcher in ~/.copilot/bin/.
+
+    Idempotent — safe to call on every install or update.
+    Returns True if any launcher file was created or updated.
+    """
+    SK_LAUNCHER_DIR.mkdir(parents=True, exist_ok=True)
+    content = _sk_launcher_content()
+    changed = False
+
+    for script in _sk_launcher_script_paths():
+        existing = script.read_text(encoding="utf-8") if script.is_file() else None
+        if existing == content:
+            if not quiet:
+                print(f"  {INFO} sk launcher — already up to date ({_tilde(script)})")
+        else:
+            _atomic_write_text(script, content)
+            if os.name != "nt":
+                script.chmod(script.stat().st_mode | 0o755)
+            if not quiet:
+                verb = "updated" if existing is not None else "created"
+                print(f"  {OK} sk launcher {verb}: {_tilde(script)}")
+            changed = True
+
+    if os.name != "nt":
+        _inject_launcher_path(quiet=quiet)
+    else:
+        _inject_launcher_path_windows(quiet=quiet)
+
+    return changed
+
+
+def uninstall_sk_launcher(quiet: bool = False) -> int:
+    """Remove managed sk launcher files and shell profile PATH injections.
+
+    Returns the number of items removed.
+    """
+    import re
+    removed = 0
+
+    for script in _sk_launcher_script_paths():
+        if script.is_file():
+            try:
+                script.unlink()
+                removed += 1
+                if not quiet:
+                    print(f"  {OK} Removed sk launcher: {_tilde(script)}")
+            except Exception as exc:
+                if not quiet:
+                    print(f"  {FAIL} Could not remove {_tilde(script)}: {exc}")
+
+    # Remove launcher dir if now empty
+    if SK_LAUNCHER_DIR.is_dir():
+        try:
+            remaining = list(SK_LAUNCHER_DIR.iterdir())
+            if not remaining:
+                SK_LAUNCHER_DIR.rmdir()
+                removed += 1
+                if not quiet:
+                    print(f"  {OK} Removed empty {_tilde(SK_LAUNCHER_DIR)}")
+        except Exception:
+            pass
+
+    # Remove PATH injections from POSIX shell profiles
+    if os.name != "nt":
+        for profile in _shell_profiles():
+            if not profile.exists():
+                continue
+            content = profile.read_text(encoding="utf-8")
+            if _SK_PATH_MARKER_START not in content:
+                continue
+            pattern = (
+                re.escape(_SK_PATH_MARKER_START)
+                + r".*?"
+                + re.escape(_SK_PATH_MARKER_END)
+                + r"\n?"
+            )
+            new_content = re.sub(pattern, "", content, flags=re.DOTALL)
+            if new_content != content:
+                _atomic_write_text(profile, new_content)
+                removed += 1
+                if not quiet:
+                    print(f"  {OK} Removed sk PATH injection from {_tilde(profile)}")
+    elif _remove_launcher_path_windows(quiet=quiet):
+        removed += 1
+
+    return removed
 
 
 # ===================================================================
@@ -770,10 +1066,18 @@ def run_self_test():
 # 4. Uninstall
 # ===================================================================
 
-def uninstall():
+def uninstall() -> int:
     """Remove installed tools. Preserves session-state data."""
     print("\nUninstall \u2014 Session Knowledge Tools")
     print("=" * 50)
+
+    editable_source = _matching_editable_install_source_dir()
+    if editable_source is not None:
+        print(f"\n  {WARN} Detected an editable pip install for this checkout.")
+        print("  Remove the `sk` console command first so it does not break:")
+        print(f"    {_pip_uninstall_command()}")
+        print("  Then rerun `python install.py --uninstall` if you also want to remove this checkout.")
+        return 1
 
     removable: list[Path] = []
 
@@ -792,32 +1096,40 @@ def uninstall():
     if LOCK_FILE.is_file():
         removable.append(LOCK_FILE)
 
-    if not removable:
+    # Include managed sk launcher files in the listing
+    launcher_scripts = [s for s in _sk_launcher_script_paths() if s.is_file()]
+
+    if not removable and not launcher_scripts:
         print(f"\n  Nothing to remove.")
-        return
+        return 0
 
     print(f"\n  Files to remove:")
     for p in removable:
         label = "dir " if p.is_dir() else ""
         print(f"    {label}{_tilde(p)}")
+    for s in launcher_scripts:
+        print(f"    {_tilde(s)}  (sk launcher)")
 
     print(f"\n  Preserved (your data):")
     print(f"    {_tilde(SESSION_STATE)}  (session data)")
     if DB_PATH.is_file():
         print(f"    {_tilde(DB_PATH)}  (knowledge database)")
+    print(f"\n  {INFO} If you also exposed `sk` with pip, remove that wrapper separately:")
+    print(f"    {_pip_uninstall_command()}")
 
     print()
     try:
         answer = input("  Proceed with uninstall? [y/N] ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         print("\n  Cancelled.")
-        return
+        return 0
 
     if answer not in ("y", "yes"):
         print("  Cancelled.")
-        return
+        return 0
 
     removed = 0
+    had_error = False
     for p in removable:
         try:
             if p.is_dir():
@@ -828,6 +1140,7 @@ def uninstall():
             removed += 1
         except Exception as e:
             print(f"  {FAIL} Could not remove {_tilde(p)}: {e}")
+            had_error = True
 
     if TOOLS_DIR.is_dir():
         remaining = list(TOOLS_DIR.iterdir())
@@ -838,8 +1151,13 @@ def uninstall():
             except Exception:
                 pass
 
+    # Remove managed sk launcher files and PATH injections
+    launcher_removed = uninstall_sk_launcher(quiet=False)
+    removed += launcher_removed
+
     print(f"\n  Uninstall complete \u2014 removed {removed} item(s).")
     print(f"  Session data preserved at {_tilde(SESSION_STATE)}")
+    return 1 if had_error else 0
 
 
 # ===================================================================
@@ -910,6 +1228,9 @@ def install():
     print(f"\n{'=' * 50}")
     print(f"  Installation complete!")
     print(f"{'=' * 50}")
+    # Install the managed sk launcher
+    print(f"\n  Installing sk launcher...")
+    install_sk_launcher()
     _show_usage_hints()
 
 
@@ -919,11 +1240,20 @@ def _show_usage_hints():
     br = _tilde(TOOLS_DIR / "briefing.py")
     ws = _tilde(TOOLS_DIR / "watch-sessions.py")
     inst = _tilde(TOOLS_DIR / "install.py")
-    print(f"\n  Quick start:")
+    launcher_dir = _tilde(SK_LAUNCHER_DIR)
+    print(f"\n  Quick start (after opening a new shell or 'source ~/.zshrc'):")
+    print(f"    sk briefing \"your task\"         # Context briefing (short command)")
+    print(f"    sk query \"search terms\"          # Search knowledge base")
+    print(f"    sk learn --mistake \"Title\" \"...\" # Record a mistake")
+    print(f"    sk update                         # Pull latest tools update")
+    print(f"\n  Launcher location: {launcher_dir}/sk  (managed by install.py --install-sk)")
+    print(f"\n  Full path fallbacks also work:")
     print(f"    python {qs} \"search terms\"   # Search knowledge base")
     print(f"    python {br} \"your task\"       # Context briefing")
     print(f"    python {ws}                    # Start watcher daemon")
     print(f"\n  Management:")
+    print(f"    python {inst} --install-sk             # Refresh sk launcher")
+    print(f"    python {inst} --uninstall-launcher    # Remove sk launcher only")
     print(f"    python {inst} --deploy-skill          # Add skill to project")
     print(f"    python {inst} --deploy-hooks           # Deploy hooks")
     print(f"    python {inst} --deploy-instructions   # Deploy global instructions")
@@ -1290,6 +1620,20 @@ def main():
         _dispatch_healer("--uninstall-schedule")
         return
 
+    if "--install-sk" in args:
+        quiet = "--quiet" in args
+        if not quiet:
+            print("\nInstalling sk launcher...")
+        install_sk_launcher(quiet=quiet)
+        return
+
+    if "--uninstall-launcher" in args:
+        quiet = "--quiet" in args
+        if not quiet:
+            print("\nRemoving sk launcher...")
+        uninstall_sk_launcher(quiet=quiet)
+        return
+
     if "--deploy-skill" in args:
         deploy_skill()
         return
@@ -1323,8 +1667,7 @@ def main():
         return
 
     if "--uninstall" in args:
-        uninstall()
-        return
+        return uninstall()
 
     # Default: show status, then install if needed or show hints
     installed = show_status()
@@ -1337,4 +1680,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main() or 0)

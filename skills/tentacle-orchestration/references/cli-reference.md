@@ -1,60 +1,60 @@
 # Tentacle CLI Reference
 
-All commands use `python3 ~/.copilot/tools/tentacle.py`.
+All commands use `sk tentacle` (fallback: `python3 ~/.copilot/tools/tentacle.py`).
 
 ## Lifecycle Commands
 
 ```bash
 # Create a tentacle (--briefing injects past knowledge into CONTEXT.md)
-tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing
+sk tentacle create <name> --scope "<paths>" --desc "<desc>" --briefing
 
 # Add todo items
-tentacle.py todo <name> add "<task>"
+sk tentacle todo <name> add "<task>"
 
 # View all tentacles
-tentacle.py status
+sk tentacle status
 
 # View one tentacle in detail
-tentacle.py show <name>
+sk tentacle show <name>
 
 # Mark a todo done
-tentacle.py todo <name> done <index>
+sk tentacle todo <name> done <index>
 
 # Record structured agent output (preferred form)
 # --status: DONE | BLOCKED | TOO_BIG | AMBIGUOUS | REGRESSED
 # --changed-file is repeatable (one per file modified)
-tentacle.py handoff <name> "<prose summary>" --status DONE --changed-file path/to/file.py --learn
+sk tentacle handoff <name> "<prose summary>" --status DONE --changed-file path/to/file.py --learn
 
 # Backward-compatible free-form handoff (no structured status)
-tentacle.py handoff <name> "<message>" --learn
+sk tentacle handoff <name> "<message>" --learn
 
 # Run a verification command and persist results (for goal-eval and gate evidence)
-tentacle.py verify <name> "<shell-command>" --label "<human-readable label>"
+sk tentacle verify <name> "<shell-command>" --label "<human-readable label>"
 
 # Orchestrator-level goal state helpers
-tentacle.py goal init --title "<goal title>" [--desc "<goal description>"] [--force]
-tentacle.py goal status [--format text|json]
-tentacle.py goal link <name>
-tentacle.py goal eval [--decision continue|pause|complete|abandon] [--notes "<notes>"]
-tentacle.py goal resume
+sk tentacle goal init --title "<goal title>" [--desc "<goal description>"] [--force]
+sk tentacle goal status [--format text|json]
+sk tentacle goal link <name>
+sk tentacle goal eval [--decision continue|pause|complete|abandon] [--notes "<notes>"]
+sk tentacle goal resume
 
 # Generate bundle-first dispatch prompt for an agent
-tentacle.py swarm <name> --agent-type <type> --model <model> --briefing
+sk tentacle swarm <name> --agent-type <type> --model <model> --briefing
 
 # Generate parallel dispatch (one agent per todo, bundle-first by default)
-tentacle.py swarm <name> --output parallel --briefing
+sk tentacle swarm <name> --output parallel --briefing
 
 # Structured JSON dispatch; includes bundle_path by default
-tentacle.py swarm <name> --output json --briefing
+sk tentacle swarm <name> --output json --briefing
 
 # Rare opt-out for tiny/manual prompts
-tentacle.py swarm <name> --no-bundle
+sk tentacle swarm <name> --no-bundle
 
 # Complete tentacle (auto-learn from handoff)
-tentacle.py complete <name>
+sk tentacle complete <name>
 
 # Delete a tentacle
-tentacle.py delete <name>
+sk tentacle delete <name>
 ```
 
 ## Session-Knowledge Integration
@@ -88,19 +88,19 @@ Lifecycle: `goal init → create/link → todo add → swarm/dispatch (bundle-fi
 
 ```bash
 # Successful completion with two changed files
-tentacle.py handoff my-feature "Implemented auth refresh. All tests pass." \
+sk tentacle handoff my-feature "Implemented auth refresh. All tests pass." \
   --status DONE \
   --changed-file src/auth/refresh.py \
   --changed-file tests/test_auth.py \
   --learn
 
 # Blocked — needs scope expansion
-tentacle.py handoff my-feature "Cannot complete: db schema change required in src/db/ (out of scope)" \
+sk tentacle handoff my-feature "Cannot complete: db schema change required in src/db/ (out of scope)" \
   --status BLOCKED \
   --learn
 
 # Free-form (no structured status — backward-compatible)
-tentacle.py handoff my-feature "Updated config docs" --learn
+sk tentacle handoff my-feature "Updated config docs" --learn
 ```
 
 ## CONTEXT.md Template

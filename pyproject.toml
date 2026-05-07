@@ -1,3 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "copilot-session-knowledge"
+version = "1.0.0"
+description = "Unified front-door CLI for copilot-session-knowledge tools"
+requires-python = ">=3.10"
+readme = "README.md"
+
+[project.scripts]
+sk = "sk:main"
+
+[tool.setuptools]
+py-modules = ["sk"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py310"

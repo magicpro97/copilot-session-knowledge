@@ -126,6 +126,7 @@ COVERAGE_MANIFEST: "dict[str, list[tuple[str, str]]]" = {
     "Hooks": [
         ("hooks/",               "all Python hook scripts — install.py --deploy-hooks; "
                                  "git hooks (pre-commit/pre-push): install.py --install-git-hooks per repo"),
+        (".github/hooks/",       "legacy fallback hook config source — deployed via install.py --deploy-hooks"),
         ("hooks/rules/",         "hook rule modules (auto-discovered by install.py)"),
     ],
     "Workflows": [
@@ -144,6 +145,9 @@ COVERAGE_MANIFEST: "dict[str, list[tuple[str, str]]]" = {
     "Other": [
         ("docs/",                "documentation"),
         ("presets/",             "preset configurations"),
+    ],
+    "Launcher": [
+        ("~/.copilot/bin/",      "managed sk launcher directory — refreshed on sk.py / install.py changes"),
     ],
 }
 
@@ -524,6 +528,7 @@ def classify_changes(old_sha: str, new_sha: str) -> dict:
         "templates":    [f for f in changed if f.startswith("templates/")],
         "skills":       [f for f in changed if f.startswith("skills/")],
         "hooks":        [f for f in changed if f.startswith("hooks/")],
+        "github_hooks": [f for f in changed if f.startswith(".github/hooks/")],
         "hooks_rules":  [f for f in changed if f.startswith("hooks/rules/")],
         "browse":       [f for f in changed if f.startswith("browse/")],
         "browse_ui":    [f for f in changed if f.startswith("browse-ui/") and not f.startswith("browse-ui/dist/")],
@@ -534,6 +539,20 @@ def classify_changes(old_sha: str, new_sha: str) -> dict:
         "migrate":      "migrate.py" in changed,
         "self_update":  "auto-update-tools.py" in changed,
         "watch_sessions": "watch-sessions.py" in changed,
+        "global_instructions": [
+            f for f in changed
+            if f == "templates/copilot-instructions.md"
+            or f == "templates/session-knowledge.instructions.md"
+            or f.startswith("templates/instructions/")
+        ],
+        "managed_hooks": [
+            f for f in changed
+            if f == "hooks/hooks.json"
+            or f == ".github/hooks/hooks.json"
+            or (f.startswith("hooks/") and f.endswith(".py"))
+        ],
+        # Refresh the managed sk launcher when sk.py or install.py changes
+        "sk_launcher":  any(f in changed for f in ("sk.py", "install.py")),
     }
 
 
@@ -593,29 +612,38 @@ def post_pull_pipeline(old_sha: str, new_sha: str):
         # auto-update deliberately does NOT auto-reinstall git hooks into other repos:
         # it has no registry of which repos have hooks installed, and silently modifying
         # .git/hooks/ in arbitrary repos would be unsafe.  Users must re-run install.py.
-        if changes.get("hooks"):
-            hook_files = [f for f in changes["hooks"]
+        if changes.get("managed_hooks"):
+            refresh_global_hooks()
+            hook_files = [f for f in changes["managed_hooks"]
                           if "pre-commit" in f or "pre-push" in f or "check_subagent" in f]
             if hook_files:
                 warn("Git hook scripts updated — installed per-repo hooks are NOT automatically refreshed.")
                 warn("ACTION REQUIRED to pick up the cross-repo isolation fix (and future hook changes):")
                 warn("  Re-run in EVERY protected repo: python3 ~/.copilot/tools/install.py --install-git-hooks")
 
-        # 4. Template/SKILL.md changed → redeploy
+        # 4. Instruction templates changed → redeploy global instructions
+        if changes.get("global_instructions"):
+            refresh_global_instructions()
+
+        # 5. Template/SKILL.md changed → redeploy
         if changes.get("templates") or changes.get("skills"):
             deploy_skills()
 
-        # 5. Python scripts changed → restart watcher service
+        # 6. Python scripts changed → restart watcher service
         if changes.get("py_scripts"):
             restart_processes()
 
-        # 6. Embedding logic changed → trigger rebuild (async, non-blocking)
+        # 7. Embedding logic changed → trigger rebuild (async, non-blocking)
         if changes.get("embed"):
             trigger_embedding_rebuild()
 
-        # 6b. browse-ui source changed → rebuild Next.js UI (dist/ must stay fresh)
+        # 7b. browse-ui source changed → rebuild Next.js UI (dist/ must stay fresh)
         if changes.get("browse_ui"):
             _rebuild_browse_ui()
+
+        # 7c. sk.py or install.py changed → refresh managed sk launcher
+        if changes.get("sk_launcher"):
+            refresh_sk_launcher()
 
         # 7. Install/update post-merge hook
         ensure_post_merge_hook()
@@ -638,7 +666,7 @@ def post_pull_pipeline(old_sha: str, new_sha: str):
             pass
     else:
         warn("Pipeline failed mid-run — some components may not be updated.")
-        warn("Run 'sk-update --force' to retry.")
+        warn("Run 'sk update --force' to retry.")
         try:
             _FAILED_MARKER = TOOLS_DIR / ".update-failed.json"
             _atomic_write_text(_FAILED_MARKER, json.dumps({
@@ -706,6 +734,60 @@ def _pnpm_cmd() -> list[str]:
     if shutil.which("corepack"):
         return ["corepack", "pnpm"]
     return ["pnpm"]  # will raise FileNotFoundError if neither is present
+
+
+# ---------------------------------------------------------------------------
+# Refresh managed install.py surfaces
+# ---------------------------------------------------------------------------
+def _refresh_via_install(flag: str, label: str, reason: str, timeout: int = 30) -> bool:
+    """Run install.py with a specific refresh flag, without cross-imports."""
+    install_script = TOOLS_DIR / "install.py"
+    if not install_script.exists():
+        warn(f"install.py not found — cannot refresh {label}")
+        return False
+    log(reason)
+    r = subprocess.run(
+        [sys.executable, str(install_script), flag, "--quiet"],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if r.returncode == 0:
+        ok(f"{label} refreshed")
+        return True
+    detail = (r.stderr or r.stdout).strip()
+    warn(f"{label} refresh failed: {detail[:200]}")
+    return False
+
+
+def refresh_sk_launcher():
+    """Refresh the managed sk launcher via install.py --install-sk --quiet."""
+    _refresh_via_install(
+        "--install-sk",
+        "sk launcher",
+        "sk.py or install.py changed — refreshing managed sk launcher...",
+        timeout=30,
+    )
+
+
+def refresh_global_instructions():
+    """Refresh managed global instructions from the current templates."""
+    _refresh_via_install(
+        "--deploy-instructions",
+        "global instructions",
+        "Instruction templates changed — refreshing managed global instructions...",
+        timeout=60,
+    )
+
+
+def refresh_global_hooks():
+    """Refresh managed Copilot CLI hook config from the current sources."""
+    _refresh_via_install(
+        "--deploy-hooks",
+        "global hooks",
+        "Hook config changed — refreshing managed Copilot hooks...",
+        timeout=60,
+    )
 
 
 def _rebuild_browse_ui():
@@ -899,7 +981,8 @@ def write_manifest(sha: str, changes: dict):
     manifest["changed_categories"] = {
         key: bool(changes.get(key))
         for key in ("browse", "browse_ui", "providers", "skills", "hooks", "hooks_rules",
-                    "scripts", "workflows", "launchd", "templates", "py_scripts")
+                    "scripts", "workflows", "launchd", "templates", "py_scripts",
+                    "sk_launcher")
         if key in changes
     }
     try:
@@ -1402,7 +1485,7 @@ def doctor():
         try:
             fdata = json.loads(_FAILED_MARKER.read_text(encoding="utf-8"))
             warn(f"Previous update incomplete (failed at {fdata.get('failed_at', '?')}). "
-                 "Run 'sk-update --force' to retry.")
+                 "Run 'sk update --force' to retry.")
             issues += 1
         except Exception:
             pass

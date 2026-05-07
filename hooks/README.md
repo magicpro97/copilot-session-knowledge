@@ -59,10 +59,15 @@ active enforcement runs through `hook_runner.py`.
 ### Installation
 
 ```bash
-python3 ~/.copilot/tools/install.py --deploy-hooks        # Deploy to ~/.copilot/hooks/
-python3 ~/.copilot/tools/install.py --lock-hooks          # Lock with OS immutable flags
-python3 ~/.copilot/tools/install.py --unlock-hooks        # Unlock for updates
-python3 ~/.copilot/tools/install.py --install-git-hooks   # Install pre-commit/pre-push (per repo)
+sk install --deploy-hooks        # Deploy to ~/.copilot/hooks/
+sk install --lock-hooks          # Lock with OS immutable flags
+sk install --unlock-hooks        # Unlock for updates
+sk install --install-git-hooks   # Install pre-commit/pre-push (per repo)
+# fallback: python3 ~/.copilot/tools/install.py <flag>
 ```
+
+`~/.copilot/hooks/hooks.json` is a **managed file**. `sk update` may refresh it from this repo
+(preserving a backup when the content changes), so keep durable customizations in source-controlled
+hook code or reapply them from the backup after an update.
 
 📖 **Full rule inventory, architecture, and dispatched-subagent guard:** [docs/HOOKS.md](../docs/HOOKS.md)

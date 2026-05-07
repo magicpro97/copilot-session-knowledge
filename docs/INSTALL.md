@@ -31,9 +31,12 @@ python3 ~/.copilot/tools/extract-knowledge.py
 # 3. Apply DB migrations
 python3 ~/.copilot/tools/migrate.py
 
-# 4. Verify install
+# 4. Verify install — also auto-provisions the sk launcher on your PATH
 python3 ~/.copilot/tools/install.py --test
 ```
+
+After step 4, the `sk` launcher is available on your PATH. Verify with `sk --help`.
+On Windows PowerShell without a PATH update, run `python ~/.copilot/tools/sk.py` as the equivalent fallback.
 
 ### macOS — LaunchAgent (auto-start on login)
 
@@ -79,19 +82,64 @@ python "$env:USERPROFILE\.copilot\tools\migrate.py"
 
 ---
 
+## Method 4 — Alternative: editable pip install
+
+The standard install auto-provisions `sk` via the launcher. Use this method only if you need a formal console-script entry point (e.g., system-wide packaging or non-standard PATH environments).
+
+```bash
+git clone https://github.com/magicpro97/copilot-session-knowledge.git ~/.copilot/tools
+python3 -m pip install -e ~/.copilot/tools
+
+# Now the unified front door is available as a pip-registered console command
+sk briefing "test query"
+sk index status
+```
+
+Notes:
+- This is additive. All direct `python3 ~/.copilot/tools/<script>.py` workflows still work.
+- If you move the repo later, reinstall or set `SK_TOOLS_DIR=/new/path/to/copilot-session-knowledge`.
+- Before removing the checkout, run `python3 -m pip uninstall copilot-session-knowledge` so the pip-registered `sk` wrapper is removed cleanly.
+- For most users, the auto-provisioned launcher from Method 1 is sufficient; this method adds pip packaging overhead.
+
+---
+
 ## Post-Install Verification
 
 ```bash
 # Check index status
-python3 ~/.copilot/tools/index-status.py
+sk index status
 
 # Get a test briefing
-python3 ~/.copilot/tools/briefing.py "test query"
+sk briefing "test query"
 
 # Run the test suites
 python3 ~/.copilot/tools/test_security.py
 python3 ~/.copilot/tools/test_fixes.py
 ```
+
+---
+
+## The `sk` Unified CLI
+
+After the standard install (`install.py --test`), the `sk` command is automatically available on your PATH:
+
+```bash
+sk briefing "your task"
+sk index build && sk index extract
+sk query "docker error"
+```
+
+`sk` is a thin dispatcher — it routes sub-commands to the underlying standalone scripts without adding business logic. All scripts remain directly invocable as a fallback.
+
+### When to use `sk` vs direct scripts
+
+| Situation | Recommended |
+|-----------|-------------|
+| Day-to-day usage after standard install | `sk <command>` |
+| Passing extra flags not yet surfaced by `sk` | `python3 ~/.copilot/tools/<script>.py <flags>` |
+| CI / automation pipelines (explicit, reproducible) | Direct script invocation |
+| Windows (PowerShell, no PATH update) | `python ~/.copilot/tools/sk.py <command>` |
+| Debugging a specific script | Direct script invocation |
 
 ---
 
@@ -134,14 +182,23 @@ python3 ~/.copilot/tools/setup-project.py --profile fullstack   # Full-stack web
 
 ---
 
-## Shell Aliases (optional, recommended)
+## Shell Aliases (optional — fallback for non-standard environments)
+
+The `sk` launcher is provisioned automatically by the standard install. Shell aliases below are useful if the launcher is unavailable (e.g., non-standard PATH on some shells, Windows without a PATH update, or minimal CI environments).
 
 ```bash
-# Add to ~/.bashrc or ~/.zshrc
+# Add to ~/.bashrc or ~/.zshrc (optional backup)
+
+# Unified sk front door
+alias sk='python3 ~/.copilot/tools/sk.py'
+
+# Legacy per-script aliases (still work; use sk above if available)
 alias qs='python3 ~/.copilot/tools/query-session.py'
 alias brief='python3 ~/.copilot/tools/briefing.py'
 alias learn='python3 ~/.copilot/tools/learn.py'
 ```
+
+With the `sk` alias you can run: `sk briefing "task"`, `sk query "docker"`, `sk index build`, etc. See [docs/USAGE.md](USAGE.md#sk--unified-cli) for the full command surface.
 
 ---
 
@@ -149,16 +206,16 @@ alias learn='python3 ~/.copilot/tools/learn.py'
 
 ```bash
 # Auto-update (24h cooldown)
-python3 ~/.copilot/tools/auto-update-tools.py
+sk update
 
 # Force update now
-python3 ~/.copilot/tools/auto-update-tools.py --force
+sk update --force
 
 # Or: plain git pull (post-merge hook runs the update pipeline automatically)
 cd ~/.copilot/tools && git pull
 ```
 
-> **After tool updates:** re-run `python3 ~/.copilot/tools/install.py --install-git-hooks` in every protected repo to refresh the per-repo git hooks.
+> **After tool updates:** the `sk` launcher stays current automatically (it points to the checkout). Re-run `sk install --install-git-hooks` in every protected repo to refresh per-repo git hooks.
 
 ---
 
@@ -187,8 +244,15 @@ python3 ~/.copilot/tools/sync-daemon.py --daemon
 ## Uninstall
 
 ```bash
-# Remove tools
-rm -rf ~/.copilot/tools/
+# Remove the sk launcher (auto-provisioned by install.py --test)
+python3 ~/.copilot/tools/install.py --uninstall-launcher 2>/dev/null || true
+
+# If you also used the editable pip install, remove that console command
+python3 -m pip uninstall copilot-session-knowledge 2>/dev/null || true
+
+# Then remove tools
+python3 ~/.copilot/tools/install.py --uninstall
+# or: rm -rf ~/.copilot/tools/
 
 # Remove knowledge DB (data loss — back up first)
 rm ~/.copilot/session-state/knowledge.db

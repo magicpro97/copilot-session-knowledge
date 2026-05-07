@@ -1901,6 +1901,97 @@ import shutil as _shutil
 _shutil.rmtree(str(_goal_tmp), ignore_errors=True)
 
 
+
+
+# ─── SK Launcher pipeline integration ────────────────────────────────────────────────────────
+
+print("\n🚀  SK Launcher pipeline")
+
+import importlib.util as _ilu_sk
+_sk_spec = _ilu_sk.spec_from_file_location("auto_update_sk", REPO / "auto-update-tools.py")
+_sk_aut = _ilu_sk.module_from_spec(_sk_spec)
+_saved_sk_argv = sys.argv[:]
+sys.argv = [str(REPO / "auto-update-tools.py")]
+try:
+    _sk_spec.loader.exec_module(_sk_aut)
+finally:
+    sys.argv = _saved_sk_argv
+
+import unittest.mock as _sk_mock
+
+_sk_refresh_calls = []
+
+
+def _sk_fake_changes(files: list) -> dict:
+    """Helper: simulate classify_changes by faking git diff output."""
+    with _sk_mock.patch.object(_sk_aut, "_git_output", return_value="\n".join(files)):
+        return _sk_aut.classify_changes("aaa", "bbb")
+
+
+# Sk1: classify_changes sets sk_launcher=True for sk.py, and refresh would be called
+with _sk_mock.patch.object(_sk_aut, "refresh_sk_launcher", side_effect=lambda: _sk_refresh_calls.append(1)):
+    _sk_changes = _sk_fake_changes(["sk.py"])
+    test("Sk1: classify_changes sets sk_launcher=True for sk.py",
+         _sk_changes.get("sk_launcher") is True,
+         "got " + repr(_sk_changes.get("sk_launcher")))
+    if _sk_changes.get("sk_launcher"):
+        _sk_aut.refresh_sk_launcher()
+    test("Sk1: refresh_sk_launcher invoked when sk_launcher=True",
+         len(_sk_refresh_calls) == 1,
+         f"call count: {len(_sk_refresh_calls)}")
+
+_sk_refresh_calls.clear()
+
+# Sk2: classify_changes sk_launcher=False for unrelated files
+with _sk_mock.patch.object(_sk_aut, "refresh_sk_launcher", side_effect=lambda: _sk_refresh_calls.append(1)):
+    _sk_changes2 = _sk_fake_changes(["watch-sessions.py"])
+    test("Sk2: classify_changes sk_launcher=False for unrelated change",
+         _sk_changes2.get("sk_launcher") is False,
+         "got " + repr(_sk_changes2.get("sk_launcher")))
+    if _sk_changes2.get("sk_launcher"):
+        _sk_aut.refresh_sk_launcher()
+    test("Sk2: refresh_sk_launcher NOT called when sk_launcher=False",
+         len(_sk_refresh_calls) == 0,
+         f"unexpected call count: {len(_sk_refresh_calls)}")
+
+# Sk3: instruction template changes trigger managed global-instructions refresh
+_sk_instruction_calls = []
+with _sk_mock.patch.object(_sk_aut, "refresh_global_instructions", side_effect=lambda: _sk_instruction_calls.append(1)):
+    _sk_changes3 = _sk_fake_changes(["templates/copilot-instructions.md"])
+    test("Sk3: classify_changes detects global instruction refresh",
+         bool(_sk_changes3.get("global_instructions")),
+         "got " + repr(_sk_changes3.get("global_instructions")))
+    if _sk_changes3.get("global_instructions"):
+        _sk_aut.refresh_global_instructions()
+    test("Sk3: refresh_global_instructions invoked when instruction templates change",
+         len(_sk_instruction_calls) == 1,
+         f"call count: {len(_sk_instruction_calls)}")
+
+# Sk4: hook config changes trigger managed hook refresh
+_sk_hook_calls = []
+with _sk_mock.patch.object(_sk_aut, "refresh_global_hooks", side_effect=lambda: _sk_hook_calls.append(1)):
+    _sk_changes4 = _sk_fake_changes(["hooks/hooks.json"])
+    test("Sk4: classify_changes detects managed hook refresh",
+         bool(_sk_changes4.get("managed_hooks")),
+         "got " + repr(_sk_changes4.get("managed_hooks")))
+    if _sk_changes4.get("managed_hooks"):
+        _sk_aut.refresh_global_hooks()
+    test("Sk4: refresh_global_hooks invoked when hook config changes",
+         len(_sk_hook_calls) == 1,
+         f"call count: {len(_sk_hook_calls)}")
+
+# Sk5: refresh_sk_launcher handles missing install.py gracefully
+_orig_td_sk = _sk_aut.TOOLS_DIR
+_sk_aut.TOOLS_DIR = REPO / ".test-scratch" / "nonexistent-dir"
+try:
+    try:
+        _sk_aut.refresh_sk_launcher()
+        test("Sk5: refresh_sk_launcher is safe when install.py missing", True)
+    except Exception as _e_sk:
+        test("Sk5: refresh_sk_launcher is safe when install.py missing", False, str(_e_sk))
+finally:
+    _sk_aut.TOOLS_DIR = _orig_td_sk
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
 print(f"\n{'='*50}")

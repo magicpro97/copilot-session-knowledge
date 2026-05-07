@@ -85,13 +85,14 @@ python3 ~/.copilot/tools/hooks/lint-skills.py /path/to/project
 ## Project Setup
 
 ```bash
-python3 ~/.copilot/tools/setup-project.py              # Full setup
-python3 ~/.copilot/tools/setup-project.py --skill-only  # Skills only
-python3 ~/.copilot/tools/setup-project.py --dry-run     # Dry run
-python3 ~/.copilot/tools/setup-project.py --profile python      # Python hooks + WORKFLOW.md
-python3 ~/.copilot/tools/setup-project.py --profile typescript  # TypeScript hooks + WORKFLOW.md
-python3 ~/.copilot/tools/setup-project.py --profile mobile      # Android/iOS/KMP hooks + WORKFLOW.md
-python3 ~/.copilot/tools/setup-project.py --profile fullstack   # Full-stack web hooks + WORKFLOW.md
+sk setup              # Full setup (setup-project.py)
+sk setup --skill-only  # Skills only
+sk setup --dry-run     # Dry run
+sk setup --profile python      # Python hooks + WORKFLOW.md
+sk setup --profile typescript  # TypeScript hooks + WORKFLOW.md
+sk setup --profile mobile      # Android/iOS/KMP hooks + WORKFLOW.md
+sk setup --profile fullstack   # Full-stack web hooks + WORKFLOW.md
+# fallback: python3 ~/.copilot/tools/setup-project.py [flags]
 ```
 
 `--profile` installs a **preset hook bundle** and generates a starter `WORKFLOW.md`. Available
@@ -117,13 +118,14 @@ deployment to `.github/skills/<skill-name>/`.
 Use `profile-builder.py` to build a new profile and save it to `presets/`:
 
 ```bash
-python3 ~/.copilot/tools/profile-builder.py --list-hooks          # List available hook templates
-python3 ~/.copilot/tools/profile-builder.py --list-phases         # List available workflow phases
-python3 ~/.copilot/tools/profile-builder.py \
+sk profile build --list-hooks          # List available hook templates (profile-builder.py)
+sk profile build --list-phases         # List available workflow phases
+sk profile build \
   --name myteam \
   --description "My team workflow" \
   --hooks dangerous-blocker.py commit-gate.py \
   --phases CLARIFY BUILD TEST COMMIT
+# fallback: python3 ~/.copilot/tools/profile-builder.py [flags]
 ```
 
 ### Sharing profiles (export / import)
@@ -131,17 +133,19 @@ python3 ~/.copilot/tools/profile-builder.py \
 Export profiles to JSON for sharing across machines or teams:
 
 ```bash
-python3 ~/.copilot/tools/profile-export.py --profile python --output python.json
-python3 ~/.copilot/tools/profile-export.py --all --output-dir ./exported/
-python3 ~/.copilot/tools/profile-export.py --all --output all.bundle.json --format bundle
+sk profile export --profile python --output python.json
+sk profile export --all --output-dir ./exported/
+sk profile export --all --output all.bundle.json --format bundle
+# fallback: python3 ~/.copilot/tools/profile-export.py [flags]
 ```
 
 Import profiles shared by others:
 
 ```bash
-python3 ~/.copilot/tools/profile-import.py --file custom-profile.json
-python3 ~/.copilot/tools/profile-import.py --file bundle.json --name python  # one from bundle
-python3 ~/.copilot/tools/profile-import.py --file custom.json --dry-run      # validate first
+sk profile import --file custom-profile.json
+sk profile import --file bundle.json --name python  # one from bundle
+sk profile import --file custom.json --dry-run      # validate first
+# fallback: python3 ~/.copilot/tools/profile-import.py [flags]
 ```
 
 ### Installing hooks standalone

@@ -162,7 +162,8 @@ fi
 ### Step 6: Verify tentacle.py exists
 
 ```bash
-ls ~/.copilot/tools/tentacle.py && python3 ~/.copilot/tools/tentacle.py --help
+ls ~/.copilot/tools/tentacle.py && sk tentacle --help
+# fallback: python3 ~/.copilot/tools/tentacle.py --help
 ```
 
 If missing, tell the user:
@@ -186,7 +187,7 @@ Present a summary: project profile, files created, agent mappings detected, veri
 
 **Verification commands:** `npx tsc --noEmit` (build) · `npx eslint .` (lint) · `yarn test` (tests)
 
-**Usage:** `python3 ~/.copilot/tools/tentacle.py create api-routes --scope "src/app/api/**/*" --desc "REST endpoint changes" --briefing`
+**Usage:** `sk tentacle create api-routes --scope "src/app/api/**/*" --desc "REST endpoint changes" --briefing`
 </example>
 
 ## Compatibility

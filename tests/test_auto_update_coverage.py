@@ -66,6 +66,7 @@ REQUIRED_PATTERNS = [
     "hooks/rules/",
     "scripts/",
     ".github/workflows/",
+    ".github/hooks/",
     "skills/",
     "launchd/",
     "templates/",
@@ -102,6 +103,7 @@ cases = [
     ("browse/",       ["browse/core.py"],         "browse"),
     ("providers/",    ["providers/base.py"],       "providers"),
     ("hooks/rules/",  ["hooks/rules/lint.py"],     "hooks_rules"),
+    (".github/hooks/", [".github/hooks/hooks.json"], "github_hooks"),
     ("scripts/",      ["scripts/check.sh"],        "scripts"),
     (".github/workflows/", [".github/workflows/ci.yml"], "workflows"),
 ]
@@ -118,6 +120,26 @@ test("classify_changes still detects skills/",
      bool(result.get("skills")), f"skills={result.get('skills')!r}")
 test("classify_changes still detects launchd/",
      bool(result.get("launchd")), f"launchd={result.get('launchd')!r}")
+
+result_instructions = _fake_changes(["templates/copilot-instructions.md"])
+test("classify_changes detects global instruction template refresh",
+     bool(result_instructions.get("global_instructions")),
+     f"global_instructions={result_instructions.get('global_instructions')!r}")
+
+result_session_instructions = _fake_changes(["templates/session-knowledge.instructions.md"])
+test("classify_changes detects session-knowledge instruction refresh",
+     bool(result_session_instructions.get("global_instructions")),
+     f"global_instructions={result_session_instructions.get('global_instructions')!r}")
+
+result_managed_hooks = _fake_changes(["hooks/hooks.json"])
+test("classify_changes detects managed hooks refresh from hooks/",
+     bool(result_managed_hooks.get("managed_hooks")),
+     f"managed_hooks={result_managed_hooks.get('managed_hooks')!r}")
+
+result_legacy_hooks = _fake_changes([".github/hooks/hooks.json"])
+test("classify_changes detects managed hooks refresh from .github/hooks/",
+     bool(result_legacy_hooks.get("managed_hooks")),
+     f"managed_hooks={result_legacy_hooks.get('managed_hooks')!r}")
 
 
 # ─── 3. --list-coverage subcommand ──────────────────────────────────────────
@@ -289,6 +311,35 @@ with _mock2.patch("shutil.which") as _mw:
 test("#22: _pnpm_cmd returns ['pnpm'] when neither found (FileNotFoundError expected)",
      result_neither == ["pnpm"],
      f"got {result_neither!r}")
+
+
+# ─── SK Launcher coverage ───────────────────────────────────────────────────
+
+print("\n🚀  SK Launcher coverage")
+
+# COVERAGE_MANIFEST must have a 'Launcher' category (or a path containing bin/)
+all_covered = [pat for entries in _aut.COVERAGE_MANIFEST.values() for pat, _ in entries]
+test("COVERAGE_MANIFEST covers ~/.copilot/bin/ launcher dir",
+     any("bin" in pat for pat in all_covered),
+     f"covered paths: {all_covered}")
+
+# classify_changes() must return sk_launcher=True for sk.py changes
+result_sk = _fake_changes(["sk.py"])
+test("classify_changes sk_launcher=True when sk.py changed",
+     result_sk.get("sk_launcher") is True,
+     f"got sk_launcher={result_sk.get('sk_launcher')!r}")
+
+# classify_changes() must return sk_launcher=True for install.py changes
+result_inst = _fake_changes(["install.py"])
+test("classify_changes sk_launcher=True when install.py changed",
+     result_inst.get("sk_launcher") is True,
+     f"got sk_launcher={result_inst.get('sk_launcher')!r}")
+
+# classify_changes() must return sk_launcher=False for unrelated changes
+result_unrel = _fake_changes(["watch-sessions.py", "migrate.py", "docs/README.md"])
+test("classify_changes sk_launcher=False for unrelated files",
+     result_unrel.get("sk_launcher") is False,
+     f"got sk_launcher={result_unrel.get('sk_launcher')!r}")
 
 
 # ─── Summary ────────────────────────────────────────────────────────────────
