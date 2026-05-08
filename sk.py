@@ -43,7 +43,7 @@ if os.name == "nt":
 __version__ = "1.1.0"
 
 # Detect frozen mode (Nuitka/PyInstaller compiled binary)
-_FROZEN = getattr(sys, "frozen", False)
+_FROZEN = getattr(sys, "frozen", False) or "__compiled__" in dir()
 
 DEFAULT_TOOLS_DIR = Path(__file__).parent.resolve()
 CHECKOUT_MARKERS = ("briefing.py", "query-session.py", "install.py")

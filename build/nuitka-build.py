@@ -109,32 +109,33 @@ def build_nuitka_command(*, onefile: bool = True, output_dir: str = "dist") -> l
         cmd.append("--onefile")
 
     # Output directory
-    cmd.extend(["--output-dir", output_dir])
+    cmd.append(f"--output-dir={output_dir}")
 
     # Binary name
-    cmd.extend(["--output-filename", "sk.exe" if os.name == "nt" else "sk"])
+    exe_name = "sk.exe" if os.name == "nt" else "sk"
+    cmd.append(f"--output-filename={exe_name}")
 
     # Include all dispatched scripts as data files (runpy needs the .py source)
     for script in DISPATCHED_SCRIPTS:
         script_path = REPO_ROOT / script
         if script_path.exists():
-            cmd.extend(["--include-data-files", f"{script_path}={script}"])
+            cmd.append(f"--include-data-files={script_path}={script}")
 
     # Include packages (browse/, hooks/)
     for pkg in INCLUDE_PACKAGES:
         pkg_path = REPO_ROOT / pkg
         if pkg_path.exists():
-            cmd.extend(["--include-package", pkg])
+            cmd.append(f"--include-package={pkg}")
 
     # Include data directories (static assets)
     for src_rel, dst_rel in DATA_DIRS:
         src_abs = REPO_ROOT / src_rel
         if src_abs.exists():
-            cmd.extend(["--include-data-dir", f"{src_abs}={dst_rel}"])
+            cmd.append(f"--include-data-dir={src_abs}={dst_rel}")
 
     # Exclude heavy optional dependencies
     for mod in NOFOLLOW_IMPORTS:
-        cmd.extend(["--nofollow-import-to", mod])
+        cmd.append(f"--nofollow-import-to={mod}")
 
     # Performance and size optimizations
     cmd.extend([
@@ -144,7 +145,7 @@ def build_nuitka_command(*, onefile: bool = True, output_dir: str = "dist") -> l
     ])
 
     # Python flags for the compiled binary
-    cmd.extend(["--python-flag", "-O"])  # Optimize bytecode
+    cmd.append("--python-flag=-O")  # Optimize bytecode
 
     # Add the entry point last
     cmd.append(str(ENTRY_POINT))
