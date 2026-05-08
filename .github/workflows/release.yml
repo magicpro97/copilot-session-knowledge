@@ -44,6 +44,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
 
       - uses: actions/setup-python@v5
         with:
@@ -69,6 +71,7 @@ jobs:
           dist/${{ matrix.exe_name }} --help | head -5
 
       - name: Run dispatch tests
+        shell: bash
         run: |
           python -m pytest tests/test_sk_dispatch.py -v --tb=short 2>/dev/null || python tests/test_sk_dispatch.py
 

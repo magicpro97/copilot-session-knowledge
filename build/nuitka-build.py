@@ -69,11 +69,14 @@ DISPATCHED_SCRIPTS = [
 INCLUDE_PACKAGES = [
     "browse",
     "hooks",
+    "providers",
 ]
 
 # Data directories that must be bundled (static assets, not Python code)
 DATA_DIRS = [
     ("browse/static", "browse/static"),
+    ("templates", "templates"),
+    ("skills", "skills"),
 ]
 
 # Modules to exclude (optional heavy deps, test frameworks)
@@ -154,15 +157,9 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="Build sk executable with Nuitka")
     parser.add_argument(
-        "--onefile",
-        action="store_true",
-        default=True,
-        help="Build as single file (default: True)",
-    )
-    parser.add_argument(
         "--no-onefile",
         action="store_true",
-        help="Build as directory (multiple files)",
+        help="Build as directory instead of single file (default: onefile)",
     )
     parser.add_argument(
         "--output-dir",
