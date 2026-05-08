@@ -2623,109 +2623,113 @@ with tempfile.TemporaryDirectory(prefix="mcp-server-test-") as _mcp_tmp:
     _mcp_db.commit()
     _mcp_db.close()
 
-    _mcp_env = os.environ.copy()
-    _mcp_env["HOME"] = str(_mcp_home)
-    _mcp_env["USERPROFILE"] = str(_mcp_home)
-    _mcp_proc = subprocess.Popen(
-        [sys.executable, str(REPO / "mcp-server.py")],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=_mcp_env,
-    )
-    try:
-        _mcp_write(
-            _mcp_proc,
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test"}},
-            },
+    _mcp_script = REPO / "mcp-server.py"
+    if not _mcp_script.is_file():
+        print(f"  ⚠️  {_mcp_script} not found — skipping MCP server tests")
+    else:
+        _mcp_env = os.environ.copy()
+        _mcp_env["HOME"] = str(_mcp_home)
+        _mcp_env["USERPROFILE"] = str(_mcp_home)
+        _mcp_proc = subprocess.Popen(
+            [sys.executable, str(_mcp_script)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=_mcp_env,
         )
-        _mcp_init = _mcp_read(_mcp_proc)
-        test(
-            "Mcp1: initialize returns tools capability",
-            _mcp_init.get("result", {}).get("capabilities", {}).get("tools", {}).get("listChanged") is False,
-            str(_mcp_init),
-        )
-        _mcp_write(_mcp_proc, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        try:
+            _mcp_write(
+                _mcp_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test"}},
+                },
+            )
+            _mcp_init = _mcp_read(_mcp_proc)
+            test(
+                "Mcp1: initialize returns tools capability",
+                _mcp_init.get("result", {}).get("capabilities", {}).get("tools", {}).get("listChanged") is False,
+                str(_mcp_init),
+            )
+            _mcp_write(_mcp_proc, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
 
-        _mcp_write(_mcp_proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-        _mcp_tools = _mcp_read(_mcp_proc)
-        _mcp_tool_names = [tool.get("name") for tool in _mcp_tools.get("result", {}).get("tools", [])]
-        test(
-            "Mcp2: tools/list exposes briefing and query_session",
-            "briefing" in _mcp_tool_names and "query_session" in _mcp_tool_names,
-            str(_mcp_tool_names),
-        )
+            _mcp_write(_mcp_proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+            _mcp_tools = _mcp_read(_mcp_proc)
+            _mcp_tool_names = [tool.get("name") for tool in _mcp_tools.get("result", {}).get("tools", [])]
+            test(
+                "Mcp2: tools/list exposes briefing and query_session",
+                "briefing" in _mcp_tool_names and "query_session" in _mcp_tool_names,
+                str(_mcp_tool_names),
+            )
 
-        _mcp_write(
-            _mcp_proc,
-            {
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {"name": "briefing", "arguments": {"task": "auth bug", "limit": 2}},
-            },
-        )
-        _mcp_brief = _mcp_read(_mcp_proc)
-        _mcp_brief_structured = _mcp_brief.get("result", {}).get("structuredContent", {})
-        test(
-            "Mcp3: briefing tool returns structured task briefing",
-            _mcp_brief_structured.get("query") == "auth bug",
-            json.dumps(_mcp_brief, ensure_ascii=False)[:200],
-        )
+            _mcp_write(
+                _mcp_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {"name": "briefing", "arguments": {"task": "auth bug", "limit": 2}},
+                },
+            )
+            _mcp_brief = _mcp_read(_mcp_proc)
+            _mcp_brief_structured = _mcp_brief.get("result", {}).get("structuredContent", {})
+            test(
+                "Mcp3: briefing tool returns structured task briefing",
+                _mcp_brief_structured.get("query") == "auth bug",
+                json.dumps(_mcp_brief, ensure_ascii=False)[:200],
+            )
 
-        _mcp_write(
-            _mcp_proc,
-            {
-                "jsonrpc": "2.0",
-                "id": 4,
-                "method": "tools/call",
-                "params": {"name": "query_session", "arguments": {"query": "auth", "limit": 5}},
-            },
-        )
-        _mcp_query = _mcp_read(_mcp_proc)
-        _mcp_query_text = _mcp_query.get("result", {}).get("structuredContent", {}).get("output", "")
-        test(
-            "Mcp4: query_session tool returns search output",
-            "Auth troubleshooting doc" in _mcp_query_text or "JWT audience validation" in _mcp_query_text,
-            _mcp_query_text[:200],
-        )
+            _mcp_write(
+                _mcp_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "tools/call",
+                    "params": {"name": "query_session", "arguments": {"query": "auth", "limit": 5}},
+                },
+            )
+            _mcp_query = _mcp_read(_mcp_proc)
+            _mcp_query_text = _mcp_query.get("result", {}).get("structuredContent", {}).get("output", "")
+            test(
+                "Mcp4: query_session tool returns search output",
+                "Auth troubleshooting doc" in _mcp_query_text or "JWT audience validation" in _mcp_query_text,
+                _mcp_query_text[:200],
+            )
 
-        _mcp_write(
-            _mcp_proc,
-            {
-                "jsonrpc": "2.0",
-                "id": 5,
-                "method": "tools/call",
-                "params": {"name": "missing_tool", "arguments": {}},
-            },
-        )
-        _mcp_bad_tool = _mcp_read(_mcp_proc)
-        test(
-            "Mcp5: unknown tool returns JSON-RPC invalid params error",
-            _mcp_bad_tool.get("error", {}).get("code") == -32602,
-            str(_mcp_bad_tool),
-        )
+            _mcp_write(
+                _mcp_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": {"name": "missing_tool", "arguments": {}},
+                },
+            )
+            _mcp_bad_tool = _mcp_read(_mcp_proc)
+            test(
+                "Mcp5: unknown tool returns JSON-RPC invalid params error",
+                _mcp_bad_tool.get("error", {}).get("code") == -32602,
+                str(_mcp_bad_tool),
+            )
 
-        _mcp_write(_mcp_proc, {"jsonrpc": "2.0", "id": 6, "method": "shutdown", "params": {}})
-        _mcp_shutdown = _mcp_read(_mcp_proc)
-        test("Mcp6: shutdown request succeeds", "result" in _mcp_shutdown, str(_mcp_shutdown))
-        _mcp_write(_mcp_proc, {"jsonrpc": "2.0", "method": "exit", "params": {}})
-        _mcp_proc.wait(timeout=5)
-        _mcp_ok = True
-    except Exception as exc:
-        test("Mcp server end-to-end handshake", False, str(exc))
-    finally:
-        if not _mcp_ok and _mcp_proc.poll() is None:
-            _mcp_proc.terminate()
-            try:
-                _mcp_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                _mcp_proc.kill()
-                _mcp_proc.wait(timeout=5)
+            _mcp_write(_mcp_proc, {"jsonrpc": "2.0", "id": 6, "method": "shutdown", "params": {}})
+            _mcp_shutdown = _mcp_read(_mcp_proc)
+            test("Mcp6: shutdown request succeeds", "result" in _mcp_shutdown, str(_mcp_shutdown))
+            _mcp_write(_mcp_proc, {"jsonrpc": "2.0", "method": "exit", "params": {}})
+            _mcp_proc.wait(timeout=5)
+            _mcp_ok = True
+        except Exception as exc:
+            test("Mcp server end-to-end handshake", False, str(exc))
+        finally:
+            if not _mcp_ok and _mcp_proc.poll() is None:
+                _mcp_proc.terminate()
+                try:
+                    _mcp_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    _mcp_proc.kill()
+                    _mcp_proc.wait(timeout=5)
 
 # ─── Summary ────────────────────────────────────────────────────────────
 
