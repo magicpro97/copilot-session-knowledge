@@ -41,10 +41,12 @@ def handle_pairing_verify(db, params, token, nonce) -> tuple:
 
     # Ticket verification stub — expand with real cryptographic verification
     # when the pairing protocol is fully implemented.
-    return json_ok({
-        "valid": False,
-        "reason": "Pairing ticket verification not yet implemented",
-    })
+    return json_ok(
+        {
+            "valid": False,
+            "reason": "Pairing ticket verification not yet implemented",
+        }
+    )
 
 
 @route("/api/pairing/slots", methods=["GET"])
@@ -53,7 +55,9 @@ def handle_pairing_slots(db, params, token, nonce) -> tuple:
 
     Returns available static slots for read-only demo connections.
     """
-    return json_ok({
-        "slots": [],
-        "static_mode_active": False,
-    })
+    return json_ok(
+        {
+            "slots": [],
+            "static_mode_active": False,
+        }
+    )

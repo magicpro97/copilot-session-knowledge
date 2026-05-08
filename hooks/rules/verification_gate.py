@@ -82,9 +82,7 @@ def _surfaces_from_path(path: str) -> set:
 
 # ── Command → evidence mapping ────────────────────────────────────────────
 
-_PY_TEST_PATTERNS = re.compile(
-    r"test_security\.py|test_fixes\.py|run_all_tests\.py|pytest"
-)
+_PY_TEST_PATTERNS = re.compile(r"test_security\.py|test_fixes\.py|run_all_tests\.py|pytest")
 _UI_FORMAT_PATTERNS = re.compile(r"pnpm\s+format(?::check)?")
 _UI_LINT_PATTERNS = re.compile(r"pnpm\s+lint")
 _UI_TYPECHECK_PATTERNS = re.compile(r"pnpm\s+typecheck")
@@ -208,10 +206,12 @@ def _write_ledger(dirty: set, evidence: set) -> None:
     """Write the verification ledger atomically."""
     try:
         MARKERS_DIR.mkdir(parents=True, exist_ok=True)
-        data = json.dumps({
-            "dirty": sorted(dirty),
-            "evidence": sorted(evidence),
-        })
+        data = json.dumps(
+            {
+                "dirty": sorted(dirty),
+                "evidence": sorted(evidence),
+            }
+        )
         LEDGER_FILE.write_text(data, encoding="utf-8")
     except Exception:
         pass
@@ -286,8 +286,7 @@ class VerificationGateRule(Rule):
         for surface, lacking in missing:
             if surface == SURFACE_PY:
                 parts.append(
-                    "Python files were modified. Run verification:\n"
-                    "  python3 test_security.py && python3 test_fixes.py"
+                    "Python files were modified. Run verification:\n  python3 test_security.py && python3 test_fixes.py"
                 )
             elif surface == SURFACE_UI:
                 parts.append(
