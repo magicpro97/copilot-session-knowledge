@@ -65,3 +65,4 @@ sync.log
 .coverage
 htmlcov/
 .pytest_cache/
+dist/
