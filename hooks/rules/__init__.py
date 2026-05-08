@@ -30,6 +30,7 @@ def get_rules_for_event(event):
     from .nextjs_typecheck import NextjsTypecheckRule
     from .pnpm_lockfile_guard import PnpmLockfileGuardRule
     from .read_before_edit import ReadBeforeEditRule
+    from .recurrence_detector import RecurrenceDetectorRule
     from .session_lifecycle import SessionEndRule, SubagentStopRule
     from .subagent_guard import SubagentGitGuardRule
     from .syntax_gate import SyntaxGateRule
@@ -63,6 +64,7 @@ def get_rules_for_event(event):
         ErrorKBRule(),
         # sessionEnd
         SessionEndRule(),
+        RecurrenceDetectorRule(),
         # agentStop / subagentStop
         SubagentStopRule(),
     ]

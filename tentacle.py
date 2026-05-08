@@ -2298,7 +2298,9 @@ def cmd_complete(args):
     meta_path = tentacle_dir / "meta.json"
 
     # 0. Auto-verify step (fail-open — failure warns but does not block completion)
+    strict_verify = getattr(args, "strict_verify", False)
     auto_verify_cmd = getattr(args, "auto_verify", None)
+    auto_verify_failed = False
     if auto_verify_cmd:
         meta_pre = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
         label = auto_verify_cmd[:40].strip()
@@ -2315,20 +2317,28 @@ def cmd_complete(args):
         icon = "✅" if av_exit == 0 else "❌"
         print(f"{icon} auto-verify exit={av_exit} ({av_rec['duration_seconds']:.1f}s)")
         if av_exit != 0:
-            print(f"⚠️  auto-verify failed (exit={av_exit}) — completing anyway (fail-open)")
+            auto_verify_failed = True
+            if strict_verify:
+                print(f"❌ auto-verify failed (exit={av_exit}) — aborting (--strict-verify)")
+                sys.exit(1)
+            else:
+                print(f"⚠️  auto-verify failed (exit={av_exit}) — completing anyway (fail-open)")
 
-    # 1. Mark all todos done
+    # 1. Mark all todos done (skip in strict mode — don't force-mark)
     if todo_path.exists():
         with file_locked(todo_path):
             todos = parse_todos(todo_path.read_text(encoding="utf-8"))
             pending = [t for t in todos if not t["done"]]
-            for t in todos:
-                t["done"] = True
-            todo_path.write_text(render_todos(todos), encoding="utf-8")
-            if pending:
-                print(f"✅ Marked {len(pending)} pending todos as done")
+            if strict_verify and pending:
+                print(f"⚠️  {len(pending)} pending todos remain (--strict-verify: not force-marking)")
             else:
-                print(f"✅ All {len(todos)} todos already done")
+                for t in todos:
+                    t["done"] = True
+                todo_path.write_text(render_todos(todos), encoding="utf-8")
+                if pending:
+                    print(f"✅ Marked {len(pending)} pending todos as done")
+                else:
+                    print(f"✅ All {len(todos)} todos already done")
 
     # 2. Update status
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
@@ -3220,6 +3230,16 @@ def main():
         dest="auto_verify_timeout",
         metavar="SECONDS",
         help="Timeout in seconds for --auto-verify command (default: 120)",
+    )
+    p_complete.add_argument(
+        "--strict-verify",
+        action="store_true",
+        dest="strict_verify",
+        help=(
+            "Strict verification mode: exit non-zero if auto-verify fails "
+            "and do NOT force-mark pending todos as done. "
+            "Use for CI or orchestrator goal-eval gates."
+        ),
     )
 
     # bundle (standalone command)
