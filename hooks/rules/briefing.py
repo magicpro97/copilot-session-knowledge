@@ -88,7 +88,7 @@ class AutoBriefingRule(Rule):
 
         try:
             subprocess.run(
-                [sys.executable, str(BRIEFING_SCRIPT), project, "--budget", "500"],
+                [sys.executable, str(BRIEFING_SCRIPT), project, "--budget", "2000"],
                 timeout=10,
                 stderr=subprocess.DEVNULL,
             )

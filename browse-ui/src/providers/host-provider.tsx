@@ -32,6 +32,7 @@ import {
   isOperatorHostEnabled,
 } from "@/lib/host-profiles";
 import { probeLocalBootstrap } from "@/lib/hosts/local-bootstrap";
+import type { LocalBootstrapResult } from "@/lib/hosts/local-bootstrap";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -45,6 +46,13 @@ export type HostState = {
   diagnosticsEnabled: boolean;
   /** Whether same-origin LOCAL_HOST operator routes are reachable on this origin. */
   localDiagnosticsEnabled?: boolean;
+  /**
+   * Latest result from the loopback bootstrap probe (issue #49 / #56).
+   * Null when no probe has run yet or when running on a local origin.
+   * Exposed so consumers (e.g. SessionCreateDialog) can pass it to DiagnosticPanel
+   * without running a duplicate probe.
+   */
+  probeResult?: LocalBootstrapResult | null;
 };
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -53,6 +61,7 @@ const HostContext = createContext<HostState>({
   host: LOCAL_HOST,
   diagnosticsEnabled: false,
   localDiagnosticsEnabled: false,
+  probeResult: null,
 });
 
 // ── Provider ──────────────────────────────────────────────────────────────────
@@ -72,6 +81,7 @@ export function HostProvider({ children }: { children: React.ReactNode }) {
     host: LOCAL_HOST,
     diagnosticsEnabled: false,
     localDiagnosticsEnabled: false,
+    probeResult: null,
   });
 
   useEffect(() => {
@@ -146,9 +156,12 @@ export function HostProvider({ children }: { children: React.ReactNode }) {
                   host: detectedProfile,
                   diagnosticsEnabled: true,
                   localDiagnosticsEnabled: false,
+                  probeResult: result,
                 });
+              } else {
+                // auth-required or unavailable: expose probe result for DiagnosticPanel.
+                setState((prev) => ({ ...prev, probeResult: result }));
               }
-              // auth-required or unavailable: leave idle state, no diagnostics.
             });
           }
         }

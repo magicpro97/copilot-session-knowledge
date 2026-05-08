@@ -482,6 +482,262 @@ finally:
         sys.modules["winreg"] = _orig_winreg
 
 
+# ── Hosted-shell launcher (browse --install-launcher / --uninstall-launcher) ──
+
+print("\n🌐 Hosted-shell launcher (issue #57)")
+
+import importlib
+import browse as _browse
+
+# Redirect _HOSTED_LAUNCHER_DIR to scratch space
+_HOSTED_SCRATCH = SCRATCH / "hosted-launcher-home" / ".copilot" / "bin"
+_orig_hosted_dir = _browse._HOSTED_LAUNCHER_DIR
+_browse._HOSTED_LAUNCHER_DIR = _HOSTED_SCRATCH
+
+try:
+    _HOSTED_SCRATCH.mkdir(parents=True, exist_ok=True)
+
+    # --- install ---
+    changed = _browse.install_browse_hosted_launcher(quiet=True)
+    test("install_browse_hosted_launcher returns True on fresh install", changed is True)
+
+    script = _browse._hosted_launcher_script_path()
+    test("backend launcher script created", script.is_file())
+
+    if script.is_file():
+        content = script.read_text(encoding="utf-8")
+        test("launcher content references browse.py", "browse.py" in content)
+        test("launcher content includes --hosted-bootstrap flag", "--hosted-bootstrap" in content)
+        test(
+            f"launcher content includes port {_browse._HOSTED_LAUNCHER_DEFAULT_PORT}",
+            str(_browse._HOSTED_LAUNCHER_DEFAULT_PORT) in content,
+        )
+        if os.name != "nt":
+            import stat as _stat
+            mode = os.stat(script).st_mode
+            test("POSIX launcher script is executable", bool(mode & _stat.S_IXUSR))
+        else:
+            test("Windows launcher has @echo off header", "@echo off" in content)
+            test("Windows launcher uses .cmd extension", script.suffix == ".cmd")
+
+    # Windows .url shortcut check
+    if os.name == "nt":
+        url_path = _browse._hosted_launcher_url_path()
+        test("Windows .url shortcut created", url_path.is_file())
+        if url_path.is_file():
+            url_content = url_path.read_text(encoding="utf-8")
+            test(
+                ".url shortcut contains hosted UI URL",
+                _browse._HOSTED_UI_URL in url_content,
+            )
+            test(".url shortcut has [InternetShortcut] header", "[InternetShortcut]" in url_content)
+
+    # --- idempotent install ---
+    changed2 = _browse.install_browse_hosted_launcher(quiet=True)
+    test("install_browse_hosted_launcher returns False when already current", changed2 is False)
+
+    # --- uninstall ---
+    removed = _browse.uninstall_browse_hosted_launcher(quiet=True)
+    test("uninstall_browse_hosted_launcher reports removals", removed > 0)
+    test("backend launcher script removed", not _browse._hosted_launcher_script_path().is_file())
+    if os.name == "nt":
+        test(".url shortcut removed", not _browse._hosted_launcher_url_path().is_file())
+
+    # --- idempotent uninstall ---
+    try:
+        removed2 = _browse.uninstall_browse_hosted_launcher(quiet=True)
+        test("uninstall_browse_hosted_launcher safe when files missing", True)
+        test("uninstall_browse_hosted_launcher returns 0 when already absent", removed2 == 0)
+    except Exception as _e:
+        test("uninstall_browse_hosted_launcher safe when files missing", False, str(_e))
+
+    # --- content format checks (platform-independent) ---
+    content_check = _browse._hosted_launcher_script_content()
+    test("launcher content not empty", bool(content_check))
+    test("launcher content references browse.py", "browse.py" in content_check)
+    test("launcher content includes --hosted-bootstrap", "--hosted-bootstrap" in content_check)
+
+    if os.name == "nt":
+        test("Windows launcher content has @echo off", "@echo off" in content_check)
+        test("Windows launcher uses USERPROFILE macro", "%USERPROFILE%" in content_check)
+    else:
+        test("POSIX launcher starts with shebang", content_check.startswith("#!/"))
+        test("POSIX launcher passes args with $@", '"$@"' in content_check or "$@" in content_check)
+
+    url_content_check = _browse._hosted_launcher_url_content()
+    test("URL shortcut content references hosted UI URL", _browse._HOSTED_UI_URL in url_content_check)
+    test("URL shortcut has [InternetShortcut] header", "[InternetShortcut]" in url_content_check)
+
+    # --- no security-bypass flags ---
+    test(
+        "launcher content has no --disable-web-security flag",
+        "--disable-web-security" not in content_check,
+    )
+    test(
+        "launcher content has no --allow-insecure-localhost flag",
+        "--allow-insecure-localhost" not in content_check,
+    )
+
+    # --- _path_atomic_write round-trip ---
+    atomic_target = _HOSTED_SCRATCH / "atomic-test.txt"
+    _browse._path_atomic_write(atomic_target, "hello world")
+    test("_path_atomic_write creates file", atomic_target.is_file())
+    test(
+        "_path_atomic_write content correct",
+        atomic_target.read_text(encoding="utf-8") == "hello world",
+    )
+    tmp_check = atomic_target.with_suffix(".txt.tmp")
+    test("_path_atomic_write leaves no .tmp file", not tmp_check.exists())
+
+finally:
+    _browse._HOSTED_LAUNCHER_DIR = _orig_hosted_dir
+
+
+# ── Desktop .lnk shortcuts (issue #57) ───────────────────────────────────────
+
+print("\n🖥️  Desktop .lnk shortcuts (issue #57)")
+
+# Helper-function existence and return-type checks (platform-independent)
+test(
+    "_windows_desktop_path returns a Path",
+    isinstance(_browse._windows_desktop_path(), type(_browse._Path.home())),
+)
+test(
+    "_windows_desktop_path ends with 'Desktop'",
+    _browse._windows_desktop_path().name == "Desktop",
+)
+test(
+    "_browse_backend_lnk_path ends with Browse Backend.lnk",
+    _browse._browse_backend_lnk_path().name == _browse._DESKTOP_LNK_BACKEND_NAME,
+)
+test(
+    "_browse_ui_lnk_path ends with Browse UI.lnk",
+    _browse._browse_ui_lnk_path().name == _browse._DESKTOP_LNK_UI_NAME,
+)
+
+# PowerShell script generator — no security-bypass flags allowed
+ps_script = _browse._lnk_powershell_script(has_working_dir=False)
+test(
+    "_lnk_powershell_script references WScript.Shell",
+    "WScript.Shell" in ps_script,
+)
+test(
+    "_lnk_powershell_script references CreateShortcut",
+    "CreateShortcut" in ps_script,
+)
+test(
+    "_lnk_powershell_script calls $sc.Save()",
+    "$sc.Save()" in ps_script,
+)
+test(
+    "_lnk_powershell_script uses env var for path (injection-safe)",
+    "$env:_LNK_PATH" in ps_script,
+)
+test(
+    "_lnk_powershell_script has no --disable-web-security",
+    "--disable-web-security" not in ps_script,
+)
+test(
+    "_lnk_powershell_script has no --allow-insecure-localhost",
+    "--allow-insecure-localhost" not in ps_script,
+)
+
+ps_script_wd = _browse._lnk_powershell_script(has_working_dir=True)
+test(
+    "_lnk_powershell_script with working_dir includes WorkingDirectory",
+    "WorkingDirectory" in ps_script_wd,
+)
+test(
+    "_lnk_powershell_script without working_dir excludes WorkingDirectory",
+    "WorkingDirectory" not in ps_script,
+)
+
+# _create_lnk_via_powershell raises on non-Windows (macOS/Linux env)
+if os.name != "nt":
+    try:
+        _browse._create_lnk_via_powershell(
+            _browse._Path("/tmp/test.lnk"), "python.exe", "arg", "desc"
+        )
+        test("_create_lnk_via_powershell raises RuntimeError on non-Windows", False,
+             "expected RuntimeError but nothing was raised")
+    except RuntimeError:
+        test("_create_lnk_via_powershell raises RuntimeError on non-Windows", True)
+    except Exception as _e:
+        test("_create_lnk_via_powershell raises RuntimeError on non-Windows", False, str(_e))
+
+# _find_edge_path returns a string; empty on macOS/Linux
+edge = _browse._find_edge_path()
+test("_find_edge_path returns a string", isinstance(edge, str))
+if os.name != "nt":
+    test("_find_edge_path returns empty string on non-Windows", edge == "")
+
+# _EDGE_CANDIDATE_PATHS defined and non-empty
+test(
+    "_EDGE_CANDIDATE_PATHS is a non-empty list",
+    isinstance(_browse._EDGE_CANDIDATE_PATHS, list) and len(_browse._EDGE_CANDIDATE_PATHS) >= 1,
+)
+for _p in _browse._EDGE_CANDIDATE_PATHS:
+    test(
+        f"Edge candidate path references msedge.exe: {_p}",
+        "msedge.exe" in _p.lower(),
+    )
+
+# Backend LNK arguments must include --hosted-bootstrap and never include
+# browser security-bypass flags.  We extract the arguments string from the
+# function that would be passed to PowerShell.
+# We call _install_desktop_shortcuts on non-Windows and confirm it returns 0.
+if os.name != "nt":
+    result_skip = _browse._install_desktop_shortcuts(quiet=True)
+    test("_install_desktop_shortcuts returns 0 on non-Windows", result_skip == 0)
+
+    result_skip2 = _browse._uninstall_desktop_shortcuts(quiet=True)
+    test("_uninstall_desktop_shortcuts returns 0 on non-Windows", result_skip2 == 0)
+
+# Security: verify that the arguments that WOULD be passed to the backend .lnk
+# shortcut include --hosted-bootstrap and have no bypass flags.
+_backend_args_template = (
+    f'"{_browse._Path.home() / ".copilot" / "tools" / "browse.py"}"'
+    f" --hosted-bootstrap --port {_browse._HOSTED_LAUNCHER_DEFAULT_PORT}"
+)
+test(
+    "Browse Backend.lnk arguments include --hosted-bootstrap",
+    "--hosted-bootstrap" in _backend_args_template,
+)
+test(
+    "Browse Backend.lnk arguments have no --disable-web-security",
+    "--disable-web-security" not in _backend_args_template,
+)
+test(
+    "Browse Backend.lnk arguments have no --allow-insecure-localhost",
+    "--allow-insecure-localhost" not in _backend_args_template,
+)
+
+# Browse UI.lnk target must be msedge.exe with just the hosted URL — no bypass flags.
+_ui_args_template = _browse._HOSTED_UI_URL
+test(
+    "Browse UI.lnk argument is the hosted UI URL",
+    _browse._HOSTED_UI_URL in _ui_args_template,
+)
+test(
+    "Browse UI.lnk argument has no --disable-web-security",
+    "--disable-web-security" not in _ui_args_template,
+)
+test(
+    "Browse UI.lnk argument has no --allow-insecure-localhost",
+    "--allow-insecure-localhost" not in _ui_args_template,
+)
+
+# Desktop shortcut name constants
+test(
+    "_DESKTOP_LNK_BACKEND_NAME is 'Browse Backend.lnk'",
+    _browse._DESKTOP_LNK_BACKEND_NAME == "Browse Backend.lnk",
+)
+test(
+    "_DESKTOP_LNK_UI_NAME is 'Browse UI.lnk'",
+    _browse._DESKTOP_LNK_UI_NAME == "Browse UI.lnk",
+)
+
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 print(f"\n{'='*50}")

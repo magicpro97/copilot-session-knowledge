@@ -478,6 +478,434 @@ test(".md in source (broader set)", is_source_path("README.md"))
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  Section 7: VerificationGateRule
+# ══════════════════════════════════════════════════════════════════════
+
+print("\n🔬 Section 7: VerificationGateRule")
+
+import rules.verification_gate as _vg_mod
+from rules.verification_gate import (
+    VerificationGateRule,
+    SURFACE_PY, SURFACE_UI,
+    EV_PY_TESTS, EV_UI_FORMAT, EV_UI_LINT, EV_UI_TYPECHECK, EV_UI_BUILD,
+    _surfaces_from_path, _evidence_from_command, _looks_successful,
+    _is_closeout, _read_ledger, _write_ledger,
+)
+
+_tmp_vg = Path(tempfile.mkdtemp(prefix="test-vg-markers-"))
+_fake_ledger = _tmp_vg / "verification-ledger"
+
+rule = VerificationGateRule()
+
+# ── 7a. Rule metadata ──────────────────────────────────────────────────
+
+test("VerificationGateRule name", rule.name == "verification-gate")
+test("VerificationGateRule preToolUse event", "preToolUse" in rule.events)
+test("VerificationGateRule postToolUse event", "postToolUse" in rule.events)
+test("VerificationGateRule tools include edit/create/bash/task_complete",
+     all(t in rule.tools for t in ("edit", "create", "bash", "task_complete")))
+
+# ── 7b. _surfaces_from_path ────────────────────────────────────────────
+
+test("Python file → SURFACE_PY", _surfaces_from_path("hooks/rules/foo.py") == {SURFACE_PY})
+test("browse-ui .tsx → SURFACE_UI", _surfaces_from_path("browse-ui/src/app.tsx") == {SURFACE_UI})
+test("browse-ui .ts → SURFACE_UI", _surfaces_from_path("browse-ui/src/utils.ts") == {SURFACE_UI})
+test("browse-ui .js → SURFACE_UI", _surfaces_from_path("browse-ui/src/main.js") == {SURFACE_UI})
+test("browse-ui .css → empty (not tracked)", _surfaces_from_path("browse-ui/src/styles.css") == set())
+test("Regular .ts (not browse-ui) → empty", _surfaces_from_path("src/utils.ts") == set())
+test("Markdown → empty", _surfaces_from_path("README.md") == set())
+
+# ── 7c. _evidence_from_command ────────────────────────────────────────
+
+test("test_security.py → py_tests", EV_PY_TESTS in _evidence_from_command("python3 test_security.py"))
+test("test_fixes.py → py_tests", EV_PY_TESTS in _evidence_from_command("python3 test_fixes.py"))
+test("run_all_tests.py → py_tests", EV_PY_TESTS in _evidence_from_command("python3 run_all_tests.py"))
+test("pytest → py_tests", EV_PY_TESTS in _evidence_from_command("pytest tests/"))
+test("pnpm lint → ui_lint", EV_UI_LINT in _evidence_from_command("cd browse-ui && pnpm lint"))
+test("pnpm typecheck → ui_typecheck", EV_UI_TYPECHECK in _evidence_from_command("pnpm typecheck"))
+test("pnpm build → ui_build", EV_UI_BUILD in _evidence_from_command("cd browse-ui && pnpm build"))
+test("pnpm format → ui_format", EV_UI_FORMAT in _evidence_from_command("pnpm format:check"))
+test("pnpm format:check → ui_format", EV_UI_FORMAT in _evidence_from_command("cd browse-ui && pnpm format:check"))
+test("Chain: pnpm lint && typecheck && build → all three",
+     {EV_UI_LINT, EV_UI_TYPECHECK, EV_UI_BUILD} <= _evidence_from_command(
+         "cd browse-ui && pnpm lint && pnpm typecheck && pnpm build"))
+test("echo command → no evidence", _evidence_from_command("echo hello") == set())
+test("git status → no evidence", _evidence_from_command("git status") == set())
+
+# ── 7d. _looks_successful ─────────────────────────────────────────────
+
+test("Empty toolResult → success (fail-open)", _looks_successful({}))
+test("No toolResult key → success (fail-open)", _looks_successful({"toolName": "bash"}))
+test("toolResult with FAILED → not successful",
+     not _looks_successful({"toolResult": "FAILED 2 tests"}))
+test("toolResult with 'error TS' → not successful",
+     not _looks_successful({"toolResult": "error TS2339: Property 'x' does not exist"}))
+test("toolResult with exit code 1 → not successful",
+     not _looks_successful({"toolResult": {"exitCode": 1, "output": "build failed"}}))
+test("toolResult with exit code 0 → successful",
+     _looks_successful({"toolResult": {"exitCode": 0, "output": "All passed"}}))
+test("toolResult with clean output → successful",
+     _looks_successful({"toolResult": "11 passed in 0.4s"}))
+
+# ── 7e. _is_closeout ──────────────────────────────────────────────────
+
+is_co, desc = _is_closeout("task_complete", {})
+test("task_complete → is closeout", is_co)
+test("task_complete description", desc == "task_complete")
+
+is_co, desc = _is_closeout("bash", {"command": "gh issue close 42"})
+test("gh issue close → is closeout", is_co)
+test("gh issue close description", "gh issue close" in desc)
+
+is_co, desc = _is_closeout("bash", {"command": "gh issue comment 42 --body 'done'"})
+test("gh issue comment → is closeout", is_co)
+test("gh issue comment description", "gh issue comment" in desc)
+
+is_co, desc = _is_closeout("bash", {
+    "command": "python3 ~/.copilot/tools/tentacle.py handoff my-tent 'done' --status DONE"})
+test("tentacle handoff --status DONE → is closeout", is_co)
+
+is_co, desc = _is_closeout("bash", {
+    "command": "sk tentacle handoff my-tent 'done' --status DONE --learn"})
+test("sk tentacle handoff --status DONE → is closeout", is_co)
+
+is_co, desc = _is_closeout("bash", {"command": "python3 tentacle.py complete my-tent"})
+test("tentacle complete → is closeout", is_co)
+
+is_co, _ = _is_closeout("bash", {"command": "git status"})
+test("git status → not closeout", not is_co)
+
+is_co, _ = _is_closeout("bash", {"command": "python3 test_fixes.py"})
+test("test run → not closeout", not is_co)
+
+is_co, _ = _is_closeout("edit", {"path": "foo.py"})
+test("edit tool → not closeout", not is_co)
+
+# ── 7f. Ledger read/write (isolated to temp dir) ──────────────────────
+
+try:
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        # Fresh ledger → empty
+        ledger = _read_ledger()
+    test("Fresh ledger → dirty empty", ledger["dirty"] == set())
+    test("Fresh ledger → evidence empty", ledger["evidence"] == set())
+
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY}, {EV_PY_TESTS})
+        ledger = _read_ledger()
+    test("Written dirty survives round-trip", SURFACE_PY in ledger["dirty"])
+    test("Written evidence survives round-trip", EV_PY_TESTS in ledger["evidence"])
+
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY, SURFACE_UI}, {EV_PY_TESTS, EV_UI_LINT})
+        ledger = _read_ledger()
+    test("Multiple surfaces stored", {SURFACE_PY, SURFACE_UI} == ledger["dirty"])
+    test("Multiple evidence keys stored", {EV_PY_TESTS, EV_UI_LINT} == ledger["evidence"])
+
+finally:
+    pass  # keep temp dir for following tests
+
+# ── 7g. preToolUse edit tracks surfaces and clears evidence ───────────
+
+try:
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        # Pre-populate: py surface dirty, tests done
+        _write_ledger({SURFACE_PY}, {EV_PY_TESTS})
+        # Now edit a Python file → should clear py_tests evidence
+        result = rule.evaluate("preToolUse", {
+            "toolName": "edit",
+            "toolArgs": {"path": "hooks/rules/foo.py"},
+        })
+        ledger = _read_ledger()
+    test("preToolUse edit → returns None (allow)", result is None)
+    test("preToolUse Python edit → py surface dirty", SURFACE_PY in ledger["dirty"])
+    test("preToolUse Python edit → py_tests evidence cleared", EV_PY_TESTS not in ledger["evidence"])
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        # Pre-populate: ui surface dirty, all ui evidence present
+        _write_ledger({SURFACE_UI}, {EV_UI_FORMAT, EV_UI_LINT, EV_UI_TYPECHECK, EV_UI_BUILD})
+        # Edit a browse-ui .tsx → clears all ui evidence
+        result = rule.evaluate("preToolUse", {
+            "toolName": "edit",
+            "toolArgs": {"path": "browse-ui/src/app.tsx"},
+        })
+        ledger = _read_ledger()
+    test("preToolUse browse-ui edit → returns None (allow)", result is None)
+    test("preToolUse UI edit → ui surface dirty", SURFACE_UI in ledger["dirty"])
+    test("preToolUse UI edit → ui_lint cleared", EV_UI_LINT not in ledger["evidence"])
+    test("preToolUse UI edit → ui_build cleared", EV_UI_BUILD not in ledger["evidence"])
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        # CSS file → no surface → no change
+        result = rule.evaluate("preToolUse", {
+            "toolName": "edit",
+            "toolArgs": {"path": "browse-ui/src/styles.css"},
+        })
+        ledger = _read_ledger()
+    test("preToolUse CSS edit → no surfaces tracked", ledger["dirty"] == set())
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        # Python edit with py evidence, but also has ui evidence → ui evidence preserved
+        _write_ledger({SURFACE_PY, SURFACE_UI}, {EV_PY_TESTS, EV_UI_LINT, EV_UI_BUILD})
+        result = rule.evaluate("preToolUse", {
+            "toolName": "edit",
+            "toolArgs": {"path": "hooks/rules/foo.py"},
+        })
+        ledger = _read_ledger()
+    test("Python edit clears py_tests but preserves ui evidence",
+         EV_UI_LINT in ledger["evidence"] and EV_UI_BUILD in ledger["evidence"])
+    test("Python edit clears py_tests only", EV_PY_TESTS not in ledger["evidence"])
+
+finally:
+    pass
+
+# ── 7h. postToolUse records evidence ──────────────────────────────────
+
+try:
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY}, set())
+        result = rule.evaluate("postToolUse", {
+            "toolName": "bash",
+            "toolArgs": {"command": "python3 test_security.py && python3 test_fixes.py"},
+            "toolResult": "11 passed, 0 failed",
+        })
+        ledger = _read_ledger()
+    test("postToolUse test run → returns None", result is None)
+    test("postToolUse test run → py_tests evidence recorded", EV_PY_TESTS in ledger["evidence"])
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_UI}, set())
+        result = rule.evaluate("postToolUse", {
+            "toolName": "bash",
+            "toolArgs": {
+                "command": "cd browse-ui && pnpm format:check && pnpm lint && pnpm typecheck && pnpm build"
+            },
+            "toolResult": "Done",
+        })
+        ledger = _read_ledger()
+    test("postToolUse full UI check → all ui evidence recorded",
+         {EV_UI_FORMAT, EV_UI_LINT, EV_UI_TYPECHECK, EV_UI_BUILD} <= ledger["evidence"])
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY}, set())
+        # Failed test run → no evidence recorded
+        result = rule.evaluate("postToolUse", {
+            "toolName": "bash",
+            "toolArgs": {"command": "python3 test_fixes.py"},
+            "toolResult": "FAILED 3 tests",
+        })
+        ledger = _read_ledger()
+    test("postToolUse failed test → no evidence recorded", EV_PY_TESTS not in ledger["evidence"])
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        # Non-bash tool → no evidence
+        result = rule.evaluate("postToolUse", {
+            "toolName": "edit",
+            "toolArgs": {"path": "foo.py"},
+        })
+        ledger = _read_ledger()
+    test("postToolUse non-bash tool → no evidence", ledger["evidence"] == set())
+
+finally:
+    pass
+
+# ── 7i. postToolUse bash writes mark surfaces dirty ───────────────────
+
+try:
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY}, {EV_PY_TESTS})
+        result = rule.evaluate("postToolUse", {
+            "toolName": "bash",
+            "toolArgs": {"command": "printf 'x=1\\n' > hooks/rules/generated_rule.py"},
+            "toolResult": {"exitCode": 0, "output": ""},
+        })
+        ledger = _read_ledger()
+    test("postToolUse bash .py write → returns None", result is None)
+    test("postToolUse bash .py write keeps py dirty", SURFACE_PY in ledger["dirty"])
+    test("postToolUse bash .py write clears py_tests evidence", EV_PY_TESTS not in ledger["evidence"])
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_UI}, {EV_UI_FORMAT, EV_UI_LINT, EV_UI_TYPECHECK, EV_UI_BUILD})
+        result = rule.evaluate("postToolUse", {
+            "toolName": "bash",
+            "toolArgs": {"command": "printf 'export const x = 1;\\n' > browse-ui/src/lib/generated.ts"},
+            "toolResult": {"exitCode": 1, "output": "write failed late"},
+        })
+        ledger = _read_ledger()
+    test("postToolUse bash UI write with failing command still marks dirty", SURFACE_UI in ledger["dirty"])
+    test("postToolUse bash UI write clears stale ui evidence even on failure",
+         EV_UI_BUILD not in ledger["evidence"] and EV_UI_LINT not in ledger["evidence"])
+
+finally:
+    pass
+
+# ── 7j. preToolUse gates closeout when evidence missing ───────────────
+
+try:
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        # Python dirty, no evidence → task_complete should be denied
+        _write_ledger({SURFACE_PY}, set())
+        result = rule.evaluate("preToolUse", {"toolName": "task_complete", "toolArgs": {}})
+    test("task_complete with py dirty + no evidence → deny",
+         result is not None and result.get("permissionDecision") == "deny")
+    reason = (result or {}).get("permissionDecisionReason", "")
+    test("deny reason mentions VERIFICATION REQUIRED", "VERIFICATION REQUIRED" in reason)
+    test("deny reason mentions test command", "test_security.py" in reason or "test_fixes.py" in reason)
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        # Python dirty + py_tests evidence → task_complete allowed
+        _write_ledger({SURFACE_PY}, {EV_PY_TESTS})
+        result = rule.evaluate("preToolUse", {"toolName": "task_complete", "toolArgs": {}})
+    test("task_complete with py dirty + py_tests evidence → allow", result is None)
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        # UI dirty, no evidence → task_complete denied
+        _write_ledger({SURFACE_UI}, set())
+        result = rule.evaluate("preToolUse", {"toolName": "task_complete", "toolArgs": {}})
+    test("task_complete with ui dirty + no evidence → deny",
+         result is not None and result.get("permissionDecision") == "deny")
+    reason = (result or {}).get("permissionDecisionReason", "")
+    test("deny reason mentions browse-ui", "browse-ui" in reason)
+    test("deny reason mentions pnpm commands", "pnpm" in reason)
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        # UI dirty + only partial ui evidence (missing build) → denied
+        _write_ledger({SURFACE_UI}, {EV_UI_FORMAT, EV_UI_LINT, EV_UI_TYPECHECK})
+        result = rule.evaluate("preToolUse", {"toolName": "task_complete", "toolArgs": {}})
+    test("task_complete with partial ui evidence (no build) → deny", result is not None)
+    test("partial ui evidence deny is permissionDecision=deny",
+         (result or {}).get("permissionDecision") == "deny")
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        # UI dirty + all ui evidence → task_complete allowed
+        _write_ledger({SURFACE_UI}, {EV_UI_FORMAT, EV_UI_LINT, EV_UI_TYPECHECK, EV_UI_BUILD})
+        result = rule.evaluate("preToolUse", {"toolName": "task_complete", "toolArgs": {}})
+    test("task_complete with full ui evidence → allow", result is None)
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        # Empty ledger (no edits) → task_complete always allowed
+        result = rule.evaluate("preToolUse", {"toolName": "task_complete", "toolArgs": {}})
+    test("task_complete with no edits tracked → allow (no requirement)", result is None)
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        # Python dirty + no evidence → gh issue close denied
+        _write_ledger({SURFACE_PY}, set())
+        result = rule.evaluate("preToolUse", {
+            "toolName": "bash",
+            "toolArgs": {"command": "gh issue close 99"},
+        })
+    test("gh issue close with py dirty + no evidence → deny",
+         result is not None and result.get("permissionDecision") == "deny")
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        # Python dirty + py_tests → gh issue close allowed
+        _write_ledger({SURFACE_PY}, {EV_PY_TESTS})
+        result = rule.evaluate("preToolUse", {
+            "toolName": "bash",
+            "toolArgs": {"command": "gh issue close 99"},
+        })
+    test("gh issue close with py dirty + py_tests → allow", result is None)
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY}, set())
+        result = rule.evaluate("preToolUse", {
+            "toolName": "bash",
+            "toolArgs": {"command": "python3 ~/.copilot/tools/tentacle.py handoff t1 'done' --status DONE"},
+        })
+    test("tentacle handoff DONE with dirty + no evidence → deny",
+         result is not None and result.get("permissionDecision") == "deny")
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY}, set())
+        result = rule.evaluate("preToolUse", {
+            "toolName": "bash",
+            "toolArgs": {"command": "git status"},
+        })
+    test("Non-closeout bash (git status) not gated", result is None)
+
+    _fake_ledger.unlink(missing_ok=True)
+    with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), \
+         patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):
+        _write_ledger({SURFACE_PY}, set())
+        result = rule.evaluate("preToolUse", {
+            "toolName": "bash",
+            "toolArgs": {"command": "python3 test_fixes.py"},
+        })
+    test("Test run bash (not closeout) not gated", result is None)
+
+finally:
+    shutil.rmtree(_tmp_vg, ignore_errors=True)
+
+# ── 7k. Fail-open on exception ────────────────────────────────────────
+
+_vg_exc = VerificationGateRule()
+with patch.object(_vg_mod, "LEDGER_FILE", Path("/no/such/dir/ledger")), \
+     patch.object(_vg_mod, "MARKERS_DIR", Path("/no/such/dir")):
+    try:
+        result = _vg_exc.evaluate("preToolUse", {"toolName": "task_complete", "toolArgs": {}})
+        # Should either allow (fail-open) or raise no exception
+        test("Fail-open: bad markers dir → no exception", True)
+        test("Fail-open: bad markers dir → not deny",
+             result is None or (result or {}).get("permissionDecision") != "deny")
+    except Exception as e:
+        test("Fail-open: should not raise", False, str(e))
+
+# ── 7l. Registry: verification-gate appears in preToolUse and postToolUse ──
+
+from rules import get_rules_for_event as _get_rules
+
+pre_vg = [r for r in _get_rules("preToolUse") if r.name == "verification-gate"]
+post_vg = [r for r in _get_rules("postToolUse") if r.name == "verification-gate"]
+test("verification-gate registered in preToolUse", len(pre_vg) >= 1)
+test("verification-gate registered in postToolUse", len(post_vg) >= 1)
+test("verification-gate registered exactly once in each event",
+     len(pre_vg) == 1 and len(post_vg) == 1)
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  Summary
 # ══════════════════════════════════════════════════════════════════════
 

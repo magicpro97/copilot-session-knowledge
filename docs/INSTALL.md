@@ -143,6 +143,37 @@ sk query "docker error"
 
 ---
 
+## Optional: MCP server registration
+
+`mcp-server.py` exposes the local knowledge base as a **read-only stdio MCP server**. It wraps the
+same `briefing.py` and `query-session.py` surfaces, so no extra service or network dependency is
+required.
+
+```bash
+python3 ~/.copilot/tools/mcp-server.py
+```
+
+Example stdio registration for MCP-capable clients:
+
+```json
+{
+  "copilot-session-knowledge": {
+    "command": "python3",
+    "args": ["/home/you/.copilot/tools/mcp-server.py"]
+  }
+}
+```
+
+Available tools:
+
+- `briefing` — task-scoped recall from `knowledge.db`
+- `query_session` — search indexed sessions and extracted knowledge
+
+Any MCP client that supports a stdio command (for example Claude Desktop, VS Code MCP extensions,
+or Amp) can point at the same command above.
+
+---
+
 ## Deploy AI Integration
 
 ### Skill deployment (Copilot CLI + Claude Code)

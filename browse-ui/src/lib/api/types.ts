@@ -1116,6 +1116,29 @@ export interface HostProfile {
   cli_kind: CliKind;
   /** When true, this profile is selected by default when no active selection exists. */
   is_default: boolean;
+  /**
+   * Demo-mode badge label (e.g. "Demo mode") when this profile was added from a
+   * static-pairing slot (#59). Persisted with the profile so the host row can
+   * display a stable "Demo mode" badge even after page reload.
+   * Absent/null for normal operator profiles.
+   */
+  demo_mode_badge?: string | null;
+  /**
+   * How this host is reached from the browser (#65).
+   *
+   * - `"direct"`  — standard direct HTTPS (or PNA-loopback) request.
+   * - `"tunnel"`  — explicit public HTTPS tunnel (ngrok, Cloudflare Tunnel, VS
+   *                 Code port forward). Semantically the same as "direct" from
+   *                 the browser's perspective but shown differently in the UI.
+   * - `"broker"`  — outbound control-bus relay (e.g. Telegram bot). No direct
+   *                 browser→backend connection is made; all traffic is routed
+   *                 through the relay service. `checkHostCompatibility` returns
+   *                 `broker-required` for these profiles.
+   *
+   * Absent on profiles saved before this field was introduced — treated as
+   * `"direct"` for backwards compatibility.
+   */
+  connectivity_mode?: "direct" | "tunnel" | "broker";
 }
 
 /**
@@ -1132,6 +1155,12 @@ export interface BrowseHostBootstrapResponse {
   manual_token_required: boolean;
   capabilities: string[];
   cors_origins_configured: boolean;
+  /** True when the backend supports browse:// ticket pairing (#58). */
+  pairing_supported?: boolean;
+  /** True when a static/demo pairing slot is active (#59). */
+  static_mode_active?: boolean;
+  /** Display label for the demo-mode banner when a static slot is active (#59). */
+  demo_mode_badge?: string | null;
 }
 
 /**

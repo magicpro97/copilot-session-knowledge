@@ -29,10 +29,12 @@ def get_rules_for_event(event):
     from .learn_reminder import LearnReminderRule
     from .nextjs_typecheck import NextjsTypecheckRule
     from .pnpm_lockfile_guard import PnpmLockfileGuardRule
+    from .read_before_edit import ReadBeforeEditRule
     from .session_lifecycle import SessionEndRule, SubagentStopRule
     from .subagent_guard import SubagentGitGuardRule
     from .syntax_gate import SyntaxGateRule
     from .tentacle import TentacleEnforceRule, TentacleSuggestRule
+    from .verification_gate import VerificationGateRule
 
     ALL_RULES = [
         # sessionStart (order: briefing first, then integrity)
@@ -47,12 +49,16 @@ def get_rules_for_event(event):
         BlockEditDistRule(),
         PnpmLockfileGuardRule(),
         BlockUnsafeHtmlRule(),
+        VerificationGateRule(),
+        ReadBeforeEditRule(),
         # postToolUse (all run, output is informational)
         TrackEditsRule(),
         LearnReminderRule(),
         TestReminderRule(),
         TentacleSuggestRule(),
         NextjsTypecheckRule(),
+        ReadBeforeEditRule(),  # also postToolUse for tracking views
+        # VerificationGateRule also handles postToolUse (already registered above)
         # errorOccurred
         ErrorKBRule(),
         # sessionEnd

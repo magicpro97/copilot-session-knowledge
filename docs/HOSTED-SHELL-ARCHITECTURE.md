@@ -1,8 +1,9 @@
 # Hosted Shell Architecture
 
 > Design specifications for the hosted browse-UI operating as a remote shell over Copilot CLI
-> backends. Covers issues **#36** (localhost bootstrap), **#37** (same-origin relay), and **#41**
-> (capability/version negotiation).
+> backends. Covers issues **#36** (localhost bootstrap), **#37** (same-origin relay), **#41**
+> (capability/version negotiation), and the hosted-connectivity follow-ups **#49**, **#62**, **#64**,
+> and **#68**.
 >
 > **Facts** = verified, reproducible. **Interpretation** = qualified inference. **Actions** =
 > executable next steps. **Verification evidence** = command or file ref that proves the claim.
@@ -407,9 +408,9 @@ _Evidence: `cat browse-ui/src/lib/hosts/local-bootstrap.ts`_
 
 | Browser family | HTTPS→HTTP loopback behavior | `--hosted-bootstrap` role |
 |---|---|---|
-| Chromium / Edge | PNA/LNA can require a permission prompt plus `Access-Control-Allow-Private-Network: true` on preflight. | Required for direct loopback. |
+| Chromium / Edge 104+ | PNA/LNA can require a permission prompt plus `Access-Control-Allow-Private-Network: true` on preflight. | Required for direct loopback; `--disable-web-security` is unnecessary when this path is configured correctly. |
 | Safari / Firefox | Does not use Chromium's PNA/LNA header flow; outcome depends on standard CORS and browser policy. | Harmless, but not the deciding mechanism. |
-| Strict CSP / enterprise browsers | May block local-network access regardless of app headers. | May still need an HTTPS tunnel. |
+| Strict CSP / enterprise browsers | May block local-network access regardless of app headers. | May still need an HTTPS tunnel or §5 outbound control-bus mode. |
 
 **Non-loopback HTTP** (e.g. `http://192.168.x.x`) is **not reachable** from HTTPS hosted pages
 in any browser and is not supported.
@@ -419,7 +420,10 @@ consistent cross-browser coverage or locked-down environments, use an HTTPS tunn
 - **Cloudflare Tunnel** (`cloudflared`) — zero port-forwarding; free tier available
 - **ngrok** — simple local setup
 
-Either option exposes the backend over HTTPS and eliminates the loopback/PNA requirement.
+Either option exposes the backend over HTTPS and eliminates the loopback/PNA requirement. If those
+tunnels are blocked by network policy (for example FPT, campus networks, or corporate intercepting
+proxies), use the diagnostics in [docs/CONNECTIVITY-TROUBLESHOOTING.md](CONNECTIVITY-TROUBLESHOOTING.md)
+and consider **§5 Outbound Control-Bus Mode** instead of weakening browser security.
 
 _Evidence: `grep -n "PNA\|Chromium\|Safari" browse-ui/src/lib/host-profiles.ts`_
 
@@ -493,6 +497,142 @@ cd browse-ui && pnpm vitest run src/app/insights/
 # 4. If blocked, use an HTTPS tunnel and add host manually
 ```
 
+## 5. Outbound Control-Bus Mode (Tunnel-Hostile Networks)
+
+### 5.1 Context — when tunnels are blocked
+
+**Facts:**
+- Some networks block tunnel products by **DNS**, **SNI-based DPI**, or **port reputation** before
+  the hosted UI ever reaches the local machine.
+- This is commonly reported on **FPT**, some **university networks**, and behind **corporate
+  intercepting proxies**.
+- In those environments, telling operators to keep retrying `ngrok` / `cloudflared` is usually not
+  enough; the transport itself is the blocked component.
+
+**Interpretation:** when the browser can reach the hosted UI but tunnel diagnostics fail, the next
+viable fallback is an **outbound-only control plane** where the local machine dials out to an
+allowed broker and the browser never talks to localhost.
+
+### 5.2 Recommended architecture
+
+This mode complements **§2 Same-Origin Relay**:
+
+- **§2 Same-Origin Relay** is the better long-term design when we can host a full backend/gateway.
+- **§5 Outbound Control-Bus Mode** is the fallback for operators who cannot get tunnels through the
+  current network and still need a cloud-mediated control path.
+
+```mermaid
+flowchart LR
+    Browser["Hosted UI / browser"] -->|HTTPS| Broker["Broker / control bus"]
+    Local["Local browse.py + Copilot CLI"] -->|Outbound HTTPS / WebSocket only| Broker
+    Broker -->|commands / events| Browser
+    Broker -->|queued work / responses| Local
+```
+
+**Key property:** there is **no browser → localhost hop**, so PNA/LNA and loopback browser policy
+stop being the deciding factor.
+
+### 5.3 Broker selection matrix
+
+| Broker family | Strength | Tradeoff | Best fit |
+|---|---|---|---|
+| Telegram bot API | Usually reachable on restrictive networks; simple HTTPS polling/webhook model | Message-oriented, not ideal for high-volume streaming | Emergency / low-throughput operator control |
+| Discord bot / gateway | Familiar team ops surface; often allowed where tunnels are blocked | Bot auth + rate limits; enterprise allowance varies | Team-shared operational relay |
+| Ably | Managed realtime channels with strong pub/sub semantics | SaaS dependency; pricing / account setup | Production-grade bidirectional event bus |
+| Slack app transport | Enterprise-friendly in many locked-down environments | App approval overhead, conversational framing | Corporate operator workflows |
+| Firebase (Firestore / RTDB / Functions) | Often allowed anywhere Google APIs are allowed; already aligned with hosted UI deployment | Product sprawl, auth/rules complexity | Teams already using Firebase hosting/auth |
+
+**Tracking references:** trend-scout issues **#4**, **#6**, and **#7** captured adjacent prior art
+around MCP surfaces, local-first memory servers, and cloud-mediated control patterns. This section
+**The Telegram broker backend is now shipped** as `browse/broker/telegram.py` (issue #71).
+Start it with `python browse.py --broker-mode telegram` — see `docs/OPERATOR-PLAYBOOK.md §
+Broker Mode` for startup instructions and acceptance evidence.
+
+### 5.3.1 Broker status — shipped vs blocked (as of 2026-05-07, updated broker-spikes wave)
+
+| Broker | Implementation status | Remaining blocker |
+|---|---|---|
+| **Telegram** | ✅ **Shipped** — `browse/broker/telegram.py`, `--broker-mode telegram`, 36 unit tests (issue #71) | Needs one manual FPT verification by the maintainer before #71 can be closed |
+| **Discord** | 🟡 **Code shipped** — `browse/broker/discord.py`, `--broker-mode discord`, 41 unit tests. HTTP REST-polling (`GET /channels/{id}/messages?after={snowflake}`), stdlib-only, no WebSocket, no inbound port. Poll latency ~2 s. Startup no-replay guarantee: if both cursor probes fail at startup, `_catch_up_cursor()` returns a synthetic Discord snowflake derived from `time.time()`, so the first successful poll uses `&after=<now-snowflake>` and can only return messages posted *after* startup (verified by regression test `test_first_poll_after_double_failure_cannot_replay_history`). | **Needs credentials** (BROWSE_BROKER_DISCORD_TOKEN, BROWSE_BROKER_DISCORD_CHANNEL_ID, BROWSE_BROKER_DISCORD_AUTHORIZED_USER_ID). Maintainer must measure median + p95 RTT over ≥100 messages on FPT network. WebSocket Gateway would reduce latency but requires non-stdlib `discord.py`. |
+| **Ably** | 🟡 **Code shipped** — `browse/broker/ably.py`, `--broker-mode ably`, 36 unit tests. HTTP REST-polling + REST publish (`/channels/{name}/messages`), stdlib-only, no WebSocket, no inbound port. Poll latency ~2 s. Pagination saturation warning added; clientId trust boundary documented. | **Needs credentials** (BROWSE_BROKER_ABLY_API_KEY). Maintainer must measure median + p95 RTT over ≥100 messages on FPT network. Ably Realtime (WebSocket) would reduce latency but requires non-stdlib `ably` PyPI package. clientId whitelist requires Ably key capability restriction to be server-enforced (see OPERATOR-PLAYBOOK.md). |
+| **Slack** | 🟡 **Code shipped** — `browse/broker/slack.py`, `--broker-mode slack`, 32 unit tests. HTTP-polling `conversations.history`, stdlib-only, no WebSocket, no inbound port. Poll latency ~2 s. | **Needs credentials** (BROWSE_BROKER_SLACK_BOT_TOKEN, BROWSE_BROKER_SLACK_CHANNEL_ID, BROWSE_BROKER_SLACK_AUTHORIZED_USER_ID). Maintainer must measure median + p95 RTT over ≥100 messages on FPT network. Socket Mode (WebSocket) would reduce latency but requires non-stdlib `slack_bolt`. |
+| iroh-Wasm + dumbpipe | 🔴 **Negative spike — closed #69 (`not_planned`)** | `relay.iroh.network` DNS-blocked in this environment (IROH-SPIKE-2: reachable=false, rttMs=4, error="Failed to fetch"); browser iroh is relay-only — no latency advantage over Telegram; `dumbpipe`/`rustc`/`cargo` not in PATH |
+
+**Architecture note — stdlib-only HTTP polling vs native WebSocket:**
+All three new brokers (Discord, Ably, Slack) use HTTP REST polling rather than their respective
+native WebSocket/realtime clients. This is intentional: the repository is pure stdlib Python and
+cannot take on non-stdlib pip dependencies in committed code. HTTP polling adds ~2 s latency versus
+<100 ms for native realtime clients, but is functionally complete for operator control workflows.
+If the latency is unacceptable in practice, the correct path is to adopt the native SDK (non-stdlib
+dependency decision) — not to simulate better numbers.
+
+**Decision:** Telegram is the only broker with FPT-verified evidence. Discord, Ably, and Slack now
+have shipped stdlib-only code and unit tests, but their full acceptance criteria (#72) require
+live credential testing and maintainer RTT benchmarks — those remain the honest remaining blockers.
+
+> **#69 iroh-Wasm sidecar note (closed `not_planned`):** The spike was built and run (2026-05-07). `relay.iroh.network` is DNS-blocked in this environment (IROH-SPIKE-2 failed: reachable=false, rttMs=4, error="Failed to fetch"). `iroh.computer` (CDN) was reachable (IROH-SPIKE-1: rttMs=664, statusCode=0). `dumbpipe`, `rustc`, and `cargo` are missing from PATH. Browser iroh is relay-only — no latency advantage over Telegram. #69 closed `not_planned`.
+>
+> **#72 Discord/Ably/Slack note:** Code is now shipped with correctness fixes. Discord startup no-replay guarantee fully eliminated (both cursor probe failure now returns a synthetic `time.time()`-derived snowflake, not `"0"` — regression test `test_first_poll_after_double_failure_cannot_replay_history` proves the guarantee holds even when both live cursor probes fail); Ably pagination saturation warning added; Ably clientId trust boundary documented. The remaining acceptance criteria require:
+> (1) live credentials (per-broker env vars documented in OPERATOR-PLAYBOOK.md),
+> (2) Ably operator must configure API key capabilities to restrict to the authorized clientId,
+> (3) maintainer-run median + p95 RTT benchmarks over ≥100 messages on a tunnel-hostile (FPT) network,
+> (4) confirmation that the ~2 s HTTP-polling latency is acceptable for the operator use case, OR a
+> decision to accept the non-stdlib WebSocket dependency for sub-second latency.
+> Issue #72 remains **open** pending these external validations.
+
+### 5.4 Frontend probe logic — when to suggest broker mode
+
+The hosted UI should prefer the lowest-friction path first:
+
+1. Same-origin local app (`LOCAL_HOST`)
+2. `--hosted-bootstrap` loopback probe (`127.0.0.1`, then `localhost`)
+3. Explicit remote HTTPS host profile
+4. **Outbound Control-Bus Mode suggestion**
+
+Show the broker-mode recommendation when:
+
+- the operator is on a hosted origin,
+- no explicit remote host is selected,
+- local loopback probe failed or is unsupported for the browser,
+- and troubleshooting confirms tunnel-hostile networking (`NXDOMAIN`, TLS reset, or blocked port).
+
+The recommendation should point operators to:
+
+- [docs/CONNECTIVITY-TROUBLESHOOTING.md](CONNECTIVITY-TROUBLESHOOTING.md)
+- **§2 Same-Origin Relay** when a full hosted backend is possible
+- **§5** when only outbound SaaS-style traffic is likely to pass
+
+### 5.5 Browser compatibility
+
+**N/A for loopback/PNA.** In this mode the browser only speaks normal HTTPS to the broker or hosted
+control plane. Chromium, Edge, Safari, and Firefox no longer differ on private-network policy
+because there is no browser-local-network fetch.
+
+### 5.6 Capability and verification checklist
+
+```bash
+# 1. Confirm the local backend itself is healthy
+curl -s http://127.0.0.1:8765/.well-known/browse-host | python3 -m json.tool
+
+# 2. Confirm the tunnel path is blocked on this network
+nslookup abc123.ngrok-free.app
+curl -vk https://abc123.ngrok-free.app
+nc -zv 198.41.192.7 7844
+
+# 3. Confirm outbound HTTPS to the proposed broker works
+curl -I https://api.telegram.org
+
+# 4. Keep same-origin relay as the preferred medium-term option when infra is available
+#    See §2 and issue #37.
+```
+
+**Verification evidence to collect before rollout:**
+
+1. Browser never issues localhost requests in broker mode
+2. Local agent can maintain an outbound-only control connection
+3. Hosted UI can receive command/result events through the broker
+4. Operators can distinguish “loopback blocked” from “backend down” using the troubleshooting page
+
 ---
 
 ## Related Issues
@@ -505,6 +645,12 @@ cd browse-ui && pnpm vitest run src/app/insights/
 | #46 capability gates (legacy fallback) | ✅ Shipped — `protocol: "v2"` marker + LEGACY_CORE_FEATURES fallback; documented in §4.6 |
 | #47 Insights child tab capability state | ✅ Shipped — `capabilityState` threaded; child tab test coverage added; documented in §4.7 |
 | #49 hosted loopback bootstrap / PNA | ✅ Shipped — `/.well-known/browse-host` + `--hosted-bootstrap` + PNA headers; documented in §4 |
+| #62 tunnel-hostile network troubleshooting | ✅ Documented — diagnostics + remediations linked from §4.5 and standalone troubleshooting page |
+| #64 outbound control-bus mode | ✅ Architecture documented in §5 |
+| #68 Edge hosted-bootstrap guidance | ✅ Documented in §4.5 (`--disable-web-security` unnecessary) |
+| #71 Telegram broker backend | ✅ Shipped — `browse/broker/telegram.py` + `--broker-mode telegram` flag; read-only command surface (/status /search /briefing /recent /help); single-user auth; rate limiting; outbound-only (no inbound port); 36 unit tests; see §5.3 and OPERATOR-PLAYBOOK.md §Broker Mode. **Stays open pending maintainer FPT manual verification.** |
+| #69 iroh-Wasm + dumbpipe sidecar | 🔴 Closed `not_planned` — spike built and confirmed negative: `relay.iroh.network` DNS-blocked, browser iroh relay-only (no latency advantage over Telegram), `dumbpipe`/`rustc`/`cargo` not in PATH. See §5.3.1 |
+| #72 Discord/Ably/Slack broker evaluation | 🟡 Code shipped + correctness bugs fixed — `browse/broker/discord.py`, `browse/broker/ably.py`, `browse/broker/slack.py`; `--broker-mode discord/ably/slack`; stdlib HTTP REST-polling (no WebSocket, no inbound port); 109 unit tests across all three backends (Telegram=36, Discord=41, Ably=36, Slack=32). **Correctness fixes shipped:** Discord startup no-replay guarantee fully eliminated — `_catch_up_cursor()` now returns a synthetic `time.time()`-derived snowflake on fetch failure (instead of `"0"`), so the first successful poll uses `&after=<now-snowflake>` and cannot replay pre-startup history; regression test `test_first_poll_after_double_failure_cannot_replay_history` proves the end-to-end guarantee. Ably pagination saturation warning added; Ably clientId trust boundary documented. **Remaining blockers:** live credentials + maintainer RTT benchmark (median + p95 over ≥100 messages on FPT network); Ably clientId key capability restriction must be configured by operator. Sub-second latency requires non-stdlib WebSocket SDK — that is a maintainer architecture decision. See §5.3.1. |
 
 **Cross-cutting issues closed by relay architecture (from #37 scope):**
 - #27–#34 browser CORS/HTTPS failures: the HTTPS loopback cert (future) resolves loopback
@@ -517,3 +663,9 @@ cd browse-ui && pnpm vitest run src/app/insights/
 |---|---|
 | 2026-05-05 | Initial spec for #36, #37, #41 (hosted-research-specs tentacle) |
 | 2026-05-05 | Added §4: PNA/HTTP loopback bootstrap (#46, #47, #49) (hosted-closeout-qa tentacle) |
+| 2026-05-07 | Added tunnel-hostile troubleshooting cross-links, Edge guidance, and §5 outbound control-bus mode (#62, #64, #68) |
+| 2026-05-07 | Shipped Telegram broker backend: `browse/broker/telegram.py`, `--broker-mode telegram` flag, 36 unit tests, OPERATOR-PLAYBOOK.md §Broker Mode (#71) |
+| 2026-05-07 | Added §5.3.1 broker status table: Telegram=shipped; Discord/Ably/Slack/iroh-Wasm=blocked pending real benchmarks. Added #69 and #72 to Related Issues table with honest evidence gaps (#69, #72) |
+| 2026-05-07 | Shipped Discord/Ably/Slack broker backends (issues-wave4-broker-spikes): `browse/broker/discord.py`, `browse/broker/ably.py`, `browse/broker/slack.py`; `--broker-mode discord/ably/slack`; stdlib HTTP REST-polling (no WebSocket deps, no inbound port); 96 unit tests. Remaining blocker for #72: live credentials + maintainer RTT benchmark. Architecture constraint documented: sub-second latency requires non-stdlib WebSocket SDK. |
+| 2026-05-07 | Fixed Discord/Ably correctness gaps (issues-wave4-broker-closeout-fix): Discord startup backlog-replay bug fixed (_catch_up_cursor); Ably pagination saturation warning added; Ably clientId trust boundary documented in code + docs; test counts: Discord=39, Ably=36, Slack=32 (verified). |
+| 2026-05-08 | Fully eliminated Discord startup replay path (issues-wave4-discord-cursor-hardening): `_catch_up_cursor()` now returns a synthetic `time.time()`-derived Discord snowflake on fetch failure instead of `"0"` — the `"0"` fallback caused the first successful poll to omit `&after=` and replay up to 100 historical messages. New constant `_DISCORD_EPOCH_MS` and helper `_make_now_snowflake()` added. Regression test `test_first_poll_after_double_failure_cannot_replay_history` proves the end-to-end no-replay guarantee. Discord test count: 39 → 41. |

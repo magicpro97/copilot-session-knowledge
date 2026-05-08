@@ -50,6 +50,7 @@ from browse.api import (
     embeddings,  # noqa: F401
     insights,  # noqa: F401
     operator,  # noqa: F401
+    pairing,  # noqa: F401 — pairing ticket verify + static slot management (#58/#59)
     retro,  # noqa: F401
     session_detail,  # noqa: F401
     sessions,  # noqa: F401

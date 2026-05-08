@@ -119,6 +119,18 @@ def _safe_int_list(values) -> list[int]:
     return out
 
 
+def _detect_session_id() -> str:
+    """Detect current session ID from environment or session-state path."""
+    sid = os.environ.get("COPILOT_SESSION_ID", "")
+    if sid:
+        return sid
+    # Try to extract from session-state path
+    state_dir = os.environ.get("COPILOT_SESSION_STATE", "")
+    if state_dir:
+        return os.path.basename(state_dir)
+    return ""
+
+
 def _estimate_tokens(output_chars: int) -> int:
     return int(math.ceil(output_chars / 4)) if output_chars > 0 else 0
 
@@ -1401,6 +1413,25 @@ def generate_briefing(
         file_matches = _extract_file_matches(db, rewritten_query, limit=min(5, max(3, limit)))
         next_open = _extract_next_open(limit=5)
 
+    # Record briefing deliveries for recurrence tracking
+    try:
+        session_id = _detect_session_id()
+        if session_id:
+            for entries in briefing_data.values():
+                for entry in entries:
+                    eid = entry.get("id")
+                    if eid:
+                        try:
+                            db.execute(
+                                "INSERT OR IGNORE INTO briefing_deliveries (session_id, entry_id) VALUES (?, ?)",
+                                (session_id, eid),
+                            )
+                        except Exception:
+                            pass
+            db.commit()
+    except Exception:
+        pass  # fail-open: delivery tracking is non-critical
+
     db.close()
 
     selected_entry_ids = _safe_int_list(
@@ -1528,10 +1559,23 @@ def _format_default(query: str, data: dict, past_work: list, categories: dict, b
                 ):
                     summary = ln[:80]
                     break
+            # Include error lifecycle metadata when available
+            meta_parts = []
+            sev = entry.get("severity", "")
+            if sev and sev != "medium":
+                sev_emoji = {"critical": "🔴", "high": "🟠", "low": "🟢"}.get(sev, "")
+                meta_parts.append(f"{sev_emoji}{sev}")
+            et = entry.get("error_type", "")
+            if et:
+                meta_parts.append(et)
+            rc = entry.get("root_cause", "")
+            if rc:
+                meta_parts.append(f"cause: {rc[:60]}")
+            meta_str = f" [{', '.join(meta_parts)}]" if meta_parts else ""
             if summary:
-                lines.append(f"  #{eid} {title} — {summary}")
+                lines.append(f"  #{eid} {title}{meta_str} — {summary}")
             else:
-                lines.append(f"  #{eid} {title}")
+                lines.append(f"  #{eid} {title}{meta_str}")
         lines.append("")
 
     if blast:

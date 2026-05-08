@@ -77,12 +77,13 @@ def download_lib(lib: dict, force: bool = False) -> dict | None:
         return {**lib, "sha384": sha384_b64(data), "size": len(data)}
 
     print(f"  [download] {lib['url']}")
+    no_proxy_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         req = urllib.request.Request(
             lib["url"],
             headers={"User-Agent": "hindsight-vendor-downloader/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with no_proxy_opener.open(req, timeout=30) as resp:
             data = resp.read()
     except urllib.error.URLError as e:
         print(f"  [ERROR] Failed to download {lib['url']}: {e}", file=sys.stderr)

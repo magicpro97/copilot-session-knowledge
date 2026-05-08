@@ -31,6 +31,7 @@ import {
 } from "@/lib/host-profiles";
 import type { HostProfile, CreateOperatorSessionRequest } from "@/lib/api/types";
 import { useHostState } from "@/providers/host-provider";
+import { DiagnosticPanel } from "@/components/DiagnosticPanel";
 import { WorkspacePicker } from "./workspace-picker";
 import { HostPicker } from "./host-picker";
 
@@ -57,7 +58,7 @@ type SessionCreateDialogProps = {
 
 export function SessionCreateDialog({ onSubmit, initialHost, loading }: SessionCreateDialogProps) {
   const pathname = usePathname();
-  const { diagnosticsEnabled, localDiagnosticsEnabled } = useHostState();
+  const { diagnosticsEnabled, localDiagnosticsEnabled, probeResult } = useHostState();
   const nameId = useId();
   const workspaceId = useId();
   const modelId = useId();
@@ -143,21 +144,12 @@ export function SessionCreateDialog({ onSubmit, initialHost, loading }: SessionC
                 : "Local (same origin) or a saved public tunnel URL."}
             </p>
             {!hostReady ? (
-              hostCompat && !hostCompat.compatible ? (
-                <p
-                  className="text-xs text-amber-600 dark:text-amber-400"
-                  data-testid="host-compat-warning"
-                >
-                  <strong>Cannot reach this host from a secure page.</strong> Open the local browse
-                  app directly, or expose your server via a public HTTPS tunnel (e.g. ngrok) and
-                  save it as a host.
-                </p>
-              ) : (
-                <p className="text-xs text-amber-600 dark:text-amber-400">
-                  This hosted web app needs a saved public HTTPS agent host before it can browse
-                  workspaces or start chats.
-                </p>
-              )
+              <DiagnosticPanel
+                compat={hostCompat}
+                probeResult={probeResult}
+                isHosted={isHosted}
+                hostUrl={host.base_url}
+              />
             ) : null}
           </div>
           <div className="space-y-1.5">

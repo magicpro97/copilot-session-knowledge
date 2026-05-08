@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { HostProfile } from "@/lib/api/types";
-import { LOCAL_HOST, checkHostCompatibility, isOperatorHostEnabled } from "@/lib/host-profiles";
+import {
+  LOCAL_HOST,
+  checkHostCompatibility,
+  getHostProfiles,
+  isOperatorHostEnabled,
+  saveHostProfile,
+  suggestBrokerFromProbeFail,
+} from "@/lib/host-profiles";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -204,5 +211,183 @@ describe("isOperatorHostEnabled", () => {
     // jsdom default origin is http://localhost — compatible path preserved
     const host = makeHost({ base_url: "http://localhost:8792" });
     expect(isOperatorHostEnabled(host, "/")).toBe(true);
+  });
+});
+
+// ── broker-required (#65) ─────────────────────────────────────────────────────
+
+describe("checkHostCompatibility — broker-required", () => {
+  it("returns broker-required when connectivity_mode === 'broker'", () => {
+    const host = makeHost({
+      base_url: "https://t.me/my_bot?start=abc123",
+      connectivity_mode: "broker",
+    });
+    const result = checkHostCompatibility(HTTPS_ORIGIN, host);
+    expect(result.compatible).toBe(true);
+    expect(result.code).toBe("broker-required");
+    expect(result.reason).toMatch(/broker/i);
+    // The broker-required branch must include recommendedBroker (#65)
+    if (result.code === "broker-required") {
+      expect(["telegram", "discord", "ably"]).toContain(result.recommendedBroker);
+    }
+  });
+
+  it("returns broker-required for a broker host on an HTTP control plane too", () => {
+    const host = makeHost({
+      base_url: "https://t.me/my_bot",
+      connectivity_mode: "broker",
+    });
+    const result = checkHostCompatibility(HTTP_ORIGIN, host);
+    expect(result.compatible).toBe(true);
+    expect(result.code).toBe("broker-required");
+    if (result.code === "broker-required") {
+      expect(result.recommendedBroker).toBe("telegram");
+    }
+  });
+
+  it("does NOT return broker-required when connectivity_mode is absent (legacy profile)", () => {
+    const host = makeHost({ base_url: "https://xxxx.ngrok.io" });
+    // connectivity_mode is undefined — normal direct path
+    const result = checkHostCompatibility(HTTPS_ORIGIN, host);
+    expect(result.code).toBe("ok");
+  });
+
+  it("does NOT return broker-required when connectivity_mode === 'direct'", () => {
+    const host = makeHost({
+      base_url: "https://xxxx.ngrok.io",
+      connectivity_mode: "direct",
+    });
+    const result = checkHostCompatibility(HTTPS_ORIGIN, host);
+    expect(result.code).toBe("ok");
+  });
+
+  it("does NOT return broker-required when connectivity_mode === 'tunnel'", () => {
+    const host = makeHost({
+      base_url: "https://xxxx.ngrok.io",
+      connectivity_mode: "tunnel",
+    });
+    const result = checkHostCompatibility(HTTPS_ORIGIN, host);
+    expect(result.code).toBe("ok");
+  });
+
+  it("broker-required takes priority over pna-required check for loopback broker URLs", () => {
+    // A broker profile whose base_url happens to be http://localhost should still
+    // return broker-required, not pna-required — connectivity_mode wins.
+    const host = makeHost({
+      base_url: "http://localhost:9999",
+      connectivity_mode: "broker",
+    });
+    const result = checkHostCompatibility(HTTPS_ORIGIN, host);
+    expect(result.code).toBe("broker-required");
+  });
+});
+
+// ── connectivity_mode localStorage migration (#65) ───────────────────────────
+
+describe("HostProfile connectivity_mode migration safety", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("loads a profile saved without connectivity_mode (legacy) and treats it as ok-compatible", () => {
+    // Simulate a profile saved before connectivity_mode was introduced.
+    const legacyProfile = {
+      id: "legacy-host",
+      label: "Legacy Host",
+      base_url: "https://xxxx.ngrok.io",
+      token: "tok",
+      cli_kind: "copilot",
+      is_default: false,
+    };
+    localStorage.setItem("browse_host_profiles", JSON.stringify([legacyProfile]));
+
+    const profiles = getHostProfiles();
+    expect(profiles).toHaveLength(1);
+    // Legacy profiles have connectivity_mode undefined — safe default.
+    expect(profiles[0].connectivity_mode).toBeUndefined();
+
+    // Compatibility should be "ok" — legacy profiles are treated as direct.
+    const compat = checkHostCompatibility(HTTPS_ORIGIN, profiles[0]);
+    expect(compat.code).toBe("ok");
+  });
+
+  it("round-trips a broker profile through localStorage without data loss", () => {
+    const brokerProfile: HostProfile = {
+      id: "broker-1",
+      label: "My Telegram Broker",
+      base_url: "https://t.me/my_bot?start=secret",
+      token: "secret",
+      cli_kind: "copilot",
+      is_default: false,
+      connectivity_mode: "broker",
+    };
+    saveHostProfile(brokerProfile);
+    const loaded = getHostProfiles().find((p) => p.id === "broker-1");
+    expect(loaded).toBeDefined();
+    expect(loaded?.connectivity_mode).toBe("broker");
+    expect(loaded?.base_url).toBe("https://t.me/my_bot?start=secret");
+  });
+
+  it("round-trips a tunnel profile through localStorage preserving connectivity_mode", () => {
+    const tunnelProfile: HostProfile = {
+      id: "tunnel-1",
+      label: "ngrok Tunnel",
+      base_url: "https://abc123.ngrok.io",
+      token: "tok2",
+      cli_kind: "copilot",
+      is_default: false,
+      connectivity_mode: "tunnel",
+    };
+    saveHostProfile(tunnelProfile);
+    const loaded = getHostProfiles().find((p) => p.id === "tunnel-1");
+    expect(loaded?.connectivity_mode).toBe("tunnel");
+  });
+});
+
+// ── suggestBrokerFromProbeFail (#65 — diagnosis-driven broker tab) ────────────
+
+describe("suggestBrokerFromProbeFail", () => {
+  it("returns broker-required for a non-auth probe failure", () => {
+    const result = suggestBrokerFromProbeFail("https://fail.example.com", false);
+    expect(result).not.toBeNull();
+    expect(result?.code).toBe("broker-required");
+    expect(result?.compatible).toBe(true);
+    expect(result?.reason).toMatch(/direct connection/i);
+    // Narrow to broker-required branch to access recommendedBroker
+    if (result?.code === "broker-required") {
+      expect(result.recommendedBroker).toBe("telegram");
+    } else {
+      throw new Error("Expected broker-required branch");
+    }
+  });
+
+  it("returns null for an auth error (401/403) — broker mode is not the fix", () => {
+    expect(suggestBrokerFromProbeFail("https://auth-fail.example.com", true)).toBeNull();
+  });
+
+  it("returns broker-required even when targetUrl is empty", () => {
+    const result = suggestBrokerFromProbeFail("", false);
+    expect(result?.code).toBe("broker-required");
+    expect(result?.reason).toMatch(/the remote host/i);
+  });
+
+  it("recommendedBroker is always a known relay platform value", () => {
+    const result = suggestBrokerFromProbeFail("https://any.host.example.com", false);
+    expect(result).not.toBeNull();
+    if (result?.code === "broker-required") {
+      expect(["telegram", "discord", "ably"]).toContain(result.recommendedBroker);
+    } else {
+      throw new Error("Expected broker-required branch");
+    }
+  });
+
+  it("includes the target URL in the reason for operator guidance", () => {
+    const url = "https://my-tunnel.ngrok.io";
+    const result = suggestBrokerFromProbeFail(url, false);
+    expect(result?.reason).toContain(url);
   });
 });

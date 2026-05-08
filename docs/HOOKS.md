@@ -39,6 +39,7 @@ hooks/
 | `block-edit-dist` | preToolUse | Blocks `edit`/`create` targeting `browse-ui/dist/`. These are build artifacts — run `cd browse-ui && pnpm build` instead. |
 | `pnpm-lockfile-guard` | preToolUse | Blocks staging `browse-ui/package.json` changes without a matching `pnpm-lock.yaml` update. Prevents lockfile drift. |
 | `block-unsafe-html` | preToolUse | Blocks `dangerouslySetInnerHTML` usage in `.ts`/`.tsx` files without `DOMPurify.sanitize()` or the `<Highlight>` component. |
+| `verification-gate` | preToolUse + postToolUse | Tracks dirty Python / `browse-ui` TS/JS surfaces, records successful verification commands, and blocks closeout-style actions (`task_complete`, `gh issue close/comment`, tentacle `handoff --status DONE`, tentacle `complete`) until the required fresh evidence exists. |
 | `track-edits` | postToolUse | Detects file changes via `git status` (language-agnostic) |
 | `learn-reminder` | postToolUse | Reminds to record learnings after task_complete; also surfaces [docs/SYNC-MATRIX.md](SYNC-MATRIX.md) for docs/memory follow-ups |
 | `test-reminder` | postToolUse | Reminds to run tests after 3+ Python file edits |
@@ -114,6 +115,33 @@ The **actual platform sends `toolArgs` as a parsed JSON object (dict)**, not a s
 - **Audit logging** — all decisions logged to `~/.copilot/markers/audit.jsonl`
 - **Dry-run mode** — set `HOOK_DRY_RUN=1` to test without blocking
 - **Merged duplicates** — tentacle enforce+suggest, track+test share code
+
+## Evidence Enforcement Policy (Rule 9)
+
+Rule 9 now has a **partial hook enforcement surface** via `verification-gate`. The hook does not parse every prose sentence an agent writes, but it does prevent common closeout actions from going through after tracked code edits unless matching verification commands have succeeded and been recorded in the signed ledger.
+
+**What this means in practice:**
+
+| Claim type | Hook enforcement | Policy enforcement |
+|------------|-----------------|-------------------|
+| "Format / lint clean" | `verification-gate` blocks closeout after dirty `browse-ui` TS/JS edits until `pnpm format:check` and `pnpm lint` succeed | For non-`browse-ui` surfaces, the agent must still run the command and attach output |
+| "Tests pass" | `verification-gate` blocks closeout after dirty Python edits until `test_security.py`, `test_fixes.py`, `pytest`, or equivalent recorded test commands succeed | Agent must still record pass/fail counts in the handoff/comment |
+| "CI is green" | None | Agent must supply CI run URL or job output |
+| "Build succeeds" | `verification-gate` blocks closeout after dirty `browse-ui` TS/JS edits until `pnpm build` succeeds; `syntax-gate` still covers Python syntax only | Non-`browse-ui` build claims still need explicit command output |
+| "Tool works" (runtime) | None | Agent must include runtime execution evidence |
+
+**Current hook scope:** `verification-gate` tracks two dirty surfaces today:
+
+- `py` — any `.py` edit/write
+- `ui` — `.ts` / `.tsx` / `.js` / `.jsx` edits/writes under `browse-ui/`
+
+It records successful verification commands into the signed `~/.copilot/markers/verification-ledger` marker and clears stale evidence when more edits land on the same surface. This is a closeout gate, not a prose parser: it blocks `task_complete`, `gh issue close/comment`, `tentacle.py handoff --status DONE`, and `tentacle.py complete` when tracked evidence is missing.
+
+**Orchestrator responsibility:** Even with `verification-gate`, the orchestrator must still treat any `DONE` status that lacks concrete verification evidence for runtime/tool/CI claims as `AMBIGUOUS` and triage accordingly before running the standard Build → Lint → Test → Review gates.
+
+**Still policy-level:** CI-green assertions, screenshot-diff proofs, benchmark thresholds, and runtime/tool-specific correctness claims are not inferred by the hook. Agents must still provide the actual run URL, hash, or runtime log.
+
+> Full Rule 9 text: **[docs/AGENT-RULES.md](AGENT-RULES.md#rule-9--claims-require-evidence)**
 
 ## Test Isolation
 

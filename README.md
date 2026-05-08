@@ -32,7 +32,8 @@
 [Hooks](docs/HOOKS.md) ·
 [Skills](docs/SKILLS.md) ·
 [Telemetry & Contracts](docs/TELEMETRY.md) ·
-[Operator Playbook](docs/OPERATOR-PLAYBOOK.md)
+[Operator Playbook](docs/OPERATOR-PLAYBOOK.md) ·
+[Connectivity Troubleshooting](docs/CONNECTIVITY-TROUBLESHOOTING.md)
 
 ## Why?
 
@@ -47,7 +48,6 @@ git clone https://github.com/magicpro97/copilot-session-knowledge.git ~/.copilot
 
 # 2. Build knowledge base
 python3 ~/.copilot/tools/sk.py index build && python3 ~/.copilot/tools/sk.py index extract
-# (fallback: python3 ~/.copilot/tools/build-session-index.py && python3 ~/.copilot/tools/extract-knowledge.py)
 
 # 3. Get a briefing
 python3 ~/.copilot/tools/sk.py briefing "your task description"

@@ -118,9 +118,38 @@ When running inside a tentacle (dispatched by the orchestrator via `tentacle.py`
    #   --status <STATUS> [--changed-file <path>] --learn
    ```
    Use one of `DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED` for `<STATUS>`. Add one `--changed-file` per modified file; omit it when no files changed. The handoff must list: which rules changed, which file is source of truth for each rule, and any remaining ambiguity.
-6. **Review-ready handoff** — the handoff must include enough detail for an independent reviewer to verify all claims independently.
+6. **Review-ready handoff** — the handoff must include enough detail for an independent reviewer to verify all claims independently. This means attaching or referencing concrete verification evidence (test output, lint result, runtime log) for every claim made in the handoff. A `DONE` handoff with no evidence for its claims is treated as `AMBIGUOUS` by the orchestrator.
 
 > The orchestrator runtime injects the core tentacle workflow (bundle, scope, todo, handoff, and git-operation guidance) per tentacle. The canonical full text lives here.
+
+---
+
+## Rule 9 — Claims Require Evidence
+
+**Any claim about code quality, tool output, or task completion must be backed by concrete, reproducible evidence.** Asserting that something works without running it is a documentation defect — not a verification. This applies equally to issue closeouts, tentacle `DONE` handoffs, and inline comments in PRs.
+
+| Claim | Required evidence |
+|-------|------------------|
+| "Tool / feature works" | Command output or test log showing successful execution at runtime |
+| "Tests pass" | Test runner output with pass/fail counts and any skipped items |
+| "Format / lint clean" | Output of the actual formatter/linter command, or an explicit "not proven yet — run `<command>`" |
+| "CI is green" | CI run URL or copy of the passing job output |
+| "Build succeeds" | Compiler or build tool output confirming exit code 0 |
+
+**Rules:**
+
+1. If you did not run a verification command, say so explicitly: "not proven yet — run `<command>`." Do not imply a passing status without proof.
+2. Do not infer status from code inspection alone ("the code looks correct"). Runtime proof is required for correctness claims.
+3. **Issue closeouts** must include verification evidence for each acceptance criterion, or explicitly list items that are "not yet proven" and the commands needed to prove them.
+4. **Tentacle `DONE` handoffs** must attach or reference concrete verification evidence (test output, lint result, runtime log) for every substantive claim. A `DONE` handoff with no evidence for its claims is treated as `AMBIGUOUS` by the orchestrator and requires triage before the verification gates proceed.
+5. In terms of Rule 7 (Docs Output Quality): verification evidence belongs in the **Verification evidence** layer — never in the Facts or Interpretation layers. Do not present unrun commands as established facts.
+
+```
+❌ BAD:  "All tests pass and lint is clean."  (no output, no proof)
+✅ GOOD: "Tests: python3 run_all_tests.py → 137 passed, 0 failed (output attached).
+          Lint: ruff check hooks/ → exit 0.
+          CI: not yet run — trigger with: gh workflow run quality-gates.yml"
+```
 
 ---
 
@@ -164,6 +193,7 @@ These rules are partially enforced at the tool level. All hooks **fail-open**: i
 | Syntax errors | `syntax-gate` (preToolUse) | Blocks `.py` edit/create payloads that fail `py_compile` |
 | Tentacle todo progress | runtime injection | Orchestrator expects `tentacle.py todo done` calls as tasks complete |
 | Tentacle handoff | runtime injection | Orchestrator expects `tentacle.py handoff` before agent stops |
+| Evidence for closeout claims (Rule 9) | `verification-gate` (preToolUse + postToolUse) | Tracks dirty Python / browse-ui surfaces, records fresh test / format / lint / typecheck / build evidence, and blocks `task_complete`, `gh issue close/comment`, and tentacle `DONE` / `complete` actions when that evidence is missing. CI/runtime proof beyond those gates remains policy-level. |
 
 > Full hook rule inventory: **[docs/HOOKS.md](HOOKS.md)**
 

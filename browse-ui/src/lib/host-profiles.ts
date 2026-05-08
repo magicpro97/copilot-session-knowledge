@@ -31,7 +31,31 @@ export type HostCompatibility =
    */
   | { compatible: true; code: "pna-required"; reason: string }
   /** HTTPS control plane → non-loopback HTTP host. This is unsafe mixed content. */
-  | { compatible: false; code: "mixed-content-http"; reason: string };
+  | { compatible: false; code: "mixed-content-http"; reason: string }
+  /**
+   * Broker relay mode: the operator has configured this host to be reached via
+   * an outbound control-bus relay (e.g. Telegram bot, #65).
+   *
+   * `compatible: true` because broker-mode connections succeed — they are routed
+   * through the relay service, not as direct browser→backend network requests.
+   * The UI should surface relay-specific status and setup guidance rather than
+   * standard connectivity error messages.
+   *
+   * Triggers when `host.connectivity_mode === "broker"`. Also returned by
+   * `suggestBrokerFromProbeFail()` when a live network probe fails in a way that
+   * indicates the network is tunnel-hostile (see §5.4 of
+   * docs/HOSTED-SHELL-ARCHITECTURE.md).
+   *
+   * `recommendedBroker` names the relay integration the UI should guide the
+   * operator through. Currently always `"telegram"` (the only shipped integration);
+   * future values: `"discord"`, `"ably"`.
+   */
+  | {
+      compatible: true;
+      code: "broker-required";
+      reason: string;
+      recommendedBroker: "telegram" | "discord" | "ably";
+    };
 
 /** Local hostnames/addresses that browsers block from HTTPS origins when served over HTTP. */
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]"]);
@@ -84,6 +108,23 @@ export function checkHostCompatibility(
   // LOCAL_HOST sentinel (empty base_url) — same-origin, always compatible.
   if (!host.base_url) return { compatible: true, code: "ok", reason: null };
 
+  // Broker-mode: operator has explicitly configured relay routing (#65).
+  // Return broker-required so the UI shows relay status, not a connectivity error.
+  // Direct browser→backend requests are not attempted for broker profiles.
+  if (host.connectivity_mode === "broker") {
+    return {
+      compatible: true,
+      code: "broker-required",
+      reason:
+        `${host.label || host.base_url} is configured for broker relay mode. ` +
+        "Browser requests are routed through the relay — no direct browser→backend " +
+        "connection is made. Ensure the broker agent is running on the host machine " +
+        "and that the relay service is reachable. " +
+        "See docs/HOSTED-SHELL-ARCHITECTURE.md §5.4 for setup guidance.",
+      recommendedBroker: "telegram",
+    };
+  }
+
   let controlScheme: string;
   try {
     controlScheme = new URL(controlPlaneOrigin).protocol; // "https:" | "http:"
@@ -130,6 +171,47 @@ export function checkHostCompatibility(
   }
 
   return { compatible: true, code: "ok", reason: null };
+}
+
+/**
+ * Returns a `broker-required` HostCompatibility suggestion when a live network
+ * probe has failed in a way that suggests the network is tunnel-hostile.
+ *
+ * This is a companion to the synchronous `checkHostCompatibility()` — it
+ * incorporates the result of an async probe (which that function cannot perform
+ * itself) to decide whether broker relay mode should be recommended.
+ *
+ * Called by the Add-Host UI after `probeRemoteHost()` fails. The Broker Mode
+ * tab and recommendation banner are shown only when this function returns a
+ * non-null result, making the display diagnosis-driven rather than unconditional.
+ *
+ * @param targetUrl   - The URL that was probed (used in the human-readable reason).
+ * @param isAuthError - True when the failure was a 401/403 (auth/CORS issue,
+ *                      not a tunnel-hostile network block). Auth errors are not
+ *                      tunnel-hostile, so broker mode is not suggested.
+ * @returns A `broker-required` HostCompatibility or null when broker mode
+ *          should not be recommended.
+ */
+export function suggestBrokerFromProbeFail(
+  targetUrl: string,
+  isAuthError: boolean
+): HostCompatibility | null {
+  // Auth errors (401/403) are token/CORS misconfigurations, not network blocks.
+  // The operator should fix the auth token or CORS allowlist, not switch to broker.
+  if (isAuthError) return null;
+
+  const label = targetUrl || "the remote host";
+  return {
+    compatible: true,
+    code: "broker-required",
+    reason:
+      `Direct connection to ${label} failed. ` +
+      "Your network may block direct browser→backend connections (tunnel-hostile network). " +
+      "Broker relay mode routes traffic through a relay service instead of a direct browser connection. " +
+      "Run `python browse.py --broker-mode telegram` on the host machine, then configure it below. " +
+      "See docs/HOSTED-SHELL-ARCHITECTURE.md §5.4 for full setup guidance.",
+    recommendedBroker: "telegram",
+  };
 }
 
 export const LOCAL_HOST_ID = "local";

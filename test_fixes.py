@@ -102,8 +102,16 @@ def _seed_briefing_test_home(base_dir: Path) -> Path:
 
     entries = [
         ("mistake", "Code review auth SQL pitfall", "In code review, avoid auth SQL string interpolation."),
-        ("pattern", "Code review uses deterministic DB fixture", "For review auth PR tests, seed deterministic briefing entries."),
-        ("decision", "Review workflow sets explicit HOME", "Set HOME/USERPROFILE for deterministic Path.home() in code review."),
+        (
+            "pattern",
+            "Code review uses deterministic DB fixture",
+            "For review auth PR tests, seed deterministic briefing entries.",
+        ),
+        (
+            "decision",
+            "Review workflow sets explicit HOME",
+            "Set HOME/USERPROFILE for deterministic Path.home() in code review.",
+        ),
         ("tool", "Briefing pack for auth review", "Use briefing --pack for code review auth machine output."),
     ]
     for cat, title, content in entries:
@@ -148,32 +156,32 @@ print("\n🔍 Fix 1: Noise Filter Tests")
 # Import the module
 sys.path.insert(0, str(REPO))
 from importlib import import_module
+
 ek = import_module("extract-knowledge")
 
 # 1a. User quotes should be detected as noise
 user_quote_samples = [
     'User said "fix hết đi" (fix everything)',
-    'User asked to investigate why screener.work is inaccessible',
+    "User asked to investigate why screener.work is inaccessible",
     'User reported: "Không thể tải lên CV" (Cannot upload CV)',
-    'User requested comprehensive lint check, noting code quality issues',
+    "User requested comprehensive lint check, noting code quality issues",
     '7. User said "fix hết đi" (fix everything)',
-    'User mentioned the fix should be quick',
-    'User confirmed the approach is correct',
-    'User wants to add dark mode support',
+    "User mentioned the fix should be quick",
+    "User confirmed the approach is correct",
+    "User wants to add dark mode support",
 ]
 
 # 1a-extra. Extended user narration patterns
 user_narration_extras = [
-    'User clarified dependency philosophy: USE existing npm libraries',
-    'User provided OpenRouter API key, asked to continue',
-    'User applied revision edits themselves, asked for review',
-    'User selected option B for the architecture',
+    "User clarified dependency philosophy: USE existing npm libraries",
+    "User provided OpenRouter API key, asked to continue",
+    "User applied revision edits themselves, asked for review",
+    "User selected option B for the architecture",
 ]
 
 for sample in user_quote_samples + user_narration_extras:
     result = ek._is_noise(sample)
-    test(f"User quote detected as noise: {sample[:50]}...", result,
-         f"_is_noise returned {result}")
+    test(f"User quote detected as noise: {sample[:50]}...", result, f"_is_noise returned {result}")
 
 # 1b. Action summaries should be detected as noise (short ones)
 action_samples = [
@@ -187,18 +195,15 @@ action_samples = [
 
 for sample in action_samples:
     result = ek._is_noise(sample)
-    test(f"Action summary detected as noise: {sample[:50]}...", result,
-         f"_is_noise returned {result}")
+    test(f"Action summary detected as noise: {sample[:50]}...", result, f"_is_noise returned {result}")
 
 # 1c. Real mistakes should NOT be filtered
 real_mistakes = [
     "The root cause was using wrong network driver in docker-compose. "
     "Should have used bridge mode instead of host mode. This caused DNS resolution to fail.",
-
     "Bug: AnimatedVisibility chicken-and-egg problem. The composable crashed "
     "because visibility state was not initialized before first composition. "
     "Fix: initialize state in remember block.",
-
     "Mistake: forgot to add --no-cache flag to docker build. "
     "Old layers were cached and the fix wasn't picked up. "
     "Always use --no-cache when debugging build issues.",
@@ -215,23 +220,20 @@ legitimate_feedback = [
 
 for sample in real_mistakes + legitimate_feedback:
     result = ek._is_noise(sample)
-    test(f"Real mistake NOT filtered: {sample[:50]}...", not result,
-         f"_is_noise returned {result}, should be False")
+    test(f"Real mistake NOT filtered: {sample[:50]}...", not result, f"_is_noise returned {result}, should be False")
 
 # 1d. Real mistakes still get classified correctly
 for sample in real_mistakes:
     classifications = ek.classify_paragraph(sample)
     categories = [c[0] for c in classifications]
-    test(f"Real mistake classified correctly: {sample[:50]}...",
-         "mistake" in categories,
-         f"Got categories: {categories}")
+    test(
+        f"Real mistake classified correctly: {sample[:50]}...", "mistake" in categories, f"Got categories: {categories}"
+    )
 
 # 1e. User quotes produce empty classifications
 for sample in user_quote_samples:
     classifications = ek.classify_paragraph(sample)
-    test(f"User quote not classified: {sample[:50]}...",
-         len(classifications) == 0,
-         f"Got: {classifications}")
+    test(f"User quote not classified: {sample[:50]}...", len(classifications) == 0, f"Got: {classifications}")
 
 
 # ─── Fix 2: Sub-agent Briefing ───────────────────────────────────────────
@@ -239,6 +241,7 @@ for sample in user_quote_samples:
 print("\n🤖 Fix 2: Sub-agent Briefing Tests")
 
 import shutil as _shutil
+
 _briefing_home = _seed_briefing_test_home(REPO)
 _briefing_env = dict(os.environ)
 _briefing_env["HOME"] = str(_briefing_home)
@@ -247,69 +250,95 @@ try:
     # 2a. --for-subagent flag exists and produces output
     result = subprocess.run(
         [sys.executable, str(REPO / "briefing.py"), "code review", "--for-subagent", "--min-confidence", "0"],
-        capture_output=True, text=True, cwd=str(REPO), env=_briefing_env, encoding="utf-8", errors="replace"
+        capture_output=True,
+        text=True,
+        cwd=str(REPO),
+        env=_briefing_env,
+        encoding="utf-8",
+        errors="replace",
     )
     output = result.stdout.strip()
 
-    test("--for-subagent runs without error", result.returncode == 0,
-         f"stderr: {result.stderr[:200]}")
+    test("--for-subagent runs without error", result.returncode == 0, f"stderr: {result.stderr[:200]}")
 
-    test("Output starts with [KNOWLEDGE CONTEXT]",
-         output.startswith("[KNOWLEDGE CONTEXT"),
-         f"Got: {output[:80]}")
+    test("Output starts with [KNOWLEDGE CONTEXT]", output.startswith("[KNOWLEDGE CONTEXT"), f"Got: {output[:80]}")
 
-    test("Output ends with [END KNOWLEDGE CONTEXT]",
-         "[END KNOWLEDGE CONTEXT]" in output,
-         f"Got last 80 chars: {output[-80:]}")
+    test(
+        "Output ends with [END KNOWLEDGE CONTEXT]",
+        "[END KNOWLEDGE CONTEXT]" in output,
+        f"Got last 80 chars: {output[-80:]}",
+    )
 
-    test("Output has category labels (AVOID/USE/NOTE/CONFIG)",
-         any(label in output for label in ["[AVOID]", "[USE]", "[NOTE]", "[CONFIG]"]),
-         f"No labels found in output")
+    test(
+        "Output has category labels (AVOID/USE/NOTE/CONFIG)",
+        any(label in output for label in ["[AVOID]", "[USE]", "[NOTE]", "[CONFIG]"]),
+        f"No labels found in output",
+    )
 
     # 2b. Output is compact (< 500 tokens ≈ < 2000 chars)
-    test("Output is compact (< 2000 chars)",
-         len(output) < 2000,
-         f"Got {len(output)} chars")
+    test("Output is compact (< 2000 chars)", len(output) < 2000, f"Got {len(output)} chars")
 
     # 2c. Regular briefing still works
     result2 = subprocess.run(
         [sys.executable, str(REPO / "briefing.py"), "kotlin compose"],
-        capture_output=True, text=True, cwd=str(REPO), env=_briefing_env, encoding="utf-8", errors="replace"
+        capture_output=True,
+        text=True,
+        cwd=str(REPO),
+        env=_briefing_env,
+        encoding="utf-8",
+        errors="replace",
     )
-    test("Regular briefing still works",
-         result2.returncode == 0,
-         f"stdout: {result2.stdout[:100]}")
+    test("Regular briefing still works", result2.returncode == 0, f"stdout: {result2.stdout[:100]}")
 
     # 2d. --for-subagent remains compact with explicit mode
     result3 = subprocess.run(
-        [sys.executable, str(REPO / "briefing.py"), "review auth PR", "--for-subagent", "--mode", "review", "--min-confidence", "0"],
-        capture_output=True, text=True, cwd=str(REPO), env=_briefing_env, encoding="utf-8", errors="replace"
+        [
+            sys.executable,
+            str(REPO / "briefing.py"),
+            "review auth PR",
+            "--for-subagent",
+            "--mode",
+            "review",
+            "--min-confidence",
+            "0",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO),
+        env=_briefing_env,
+        encoding="utf-8",
+        errors="replace",
     )
     output3 = result3.stdout.strip()
-    test("--for-subagent + --mode runs without error", result3.returncode == 0,
-         f"stderr: {result3.stderr[:200]}")
-    test("--for-subagent + --mode still starts with compact context header",
-         output3.startswith("[KNOWLEDGE CONTEXT"),
-         f"Got: {output3[:80]}")
+    test("--for-subagent + --mode runs without error", result3.returncode == 0, f"stderr: {result3.stderr[:200]}")
+    test(
+        "--for-subagent + --mode still starts with compact context header",
+        output3.startswith("[KNOWLEDGE CONTEXT"),
+        f"Got: {output3[:80]}",
+    )
 
     # 2e. --pack exposes machine-readable briefing surface
     result4 = subprocess.run(
         [sys.executable, str(REPO / "briefing.py"), "review auth PR", "--mode", "review", "--pack", "--limit", "1"],
-        capture_output=True, text=True, cwd=str(REPO), env=_briefing_env, encoding="utf-8", errors="replace"
+        capture_output=True,
+        text=True,
+        cwd=str(REPO),
+        env=_briefing_env,
+        encoding="utf-8",
+        errors="replace",
     )
-    test("--pack runs without error", result4.returncode == 0,
-         f"stderr: {result4.stderr[:200]}")
+    test("--pack runs without error", result4.returncode == 0, f"stderr: {result4.stderr[:200]}")
     try:
         pack_obj = json.loads(result4.stdout)
         test("--pack returns valid JSON", True)
         test("--pack includes mode field", "mode" in pack_obj, f"keys={list(pack_obj.keys())}")
-        test("--pack preserves explicit mode", pack_obj.get("mode") == "review",
-             f"mode={pack_obj.get('mode')!r}")
+        test("--pack preserves explicit mode", pack_obj.get("mode") == "review", f"mode={pack_obj.get('mode')!r}")
         entries_obj = pack_obj.get("entries", {})
-        test("--pack includes canonical entry buckets",
-             isinstance(entries_obj, dict)
-             and all(k in entries_obj for k in ("mistake", "pattern", "decision", "tool")),
-             f"entries keys={list(entries_obj.keys()) if isinstance(entries_obj, dict) else type(entries_obj).__name__}")
+        test(
+            "--pack includes canonical entry buckets",
+            isinstance(entries_obj, dict) and all(k in entries_obj for k in ("mistake", "pattern", "decision", "tool")),
+            f"entries keys={list(entries_obj.keys()) if isinstance(entries_obj, dict) else type(entries_obj).__name__}",
+        )
         first_entry = None
         if isinstance(entries_obj, dict):
             for bucket in ("mistake", "pattern", "decision", "tool"):
@@ -318,19 +347,29 @@ try:
                     first_entry = vals[0]
                     break
         if first_entry:
-            test("--pack entry includes source_document field",
-                 "source_document" in first_entry,
-                 f"keys={list(first_entry.keys())}")
-            test("--pack entry includes code-location/snippet fields",
-                 all(k in first_entry for k in ("source_file", "start_line", "end_line", "code_language", "code_snippet")),
-                 f"keys={list(first_entry.keys())}")
-            test("--pack entry includes snippet_freshness enum field",
-                 first_entry.get("snippet_freshness") in {"fresh", "drifted", "missing", "unknown"},
-                 f"snippet_freshness={first_entry.get('snippet_freshness')!r}")
+            test(
+                "--pack entry includes source_document field",
+                "source_document" in first_entry,
+                f"keys={list(first_entry.keys())}",
+            )
+            test(
+                "--pack entry includes code-location/snippet fields",
+                all(
+                    k in first_entry for k in ("source_file", "start_line", "end_line", "code_language", "code_snippet")
+                ),
+                f"keys={list(first_entry.keys())}",
+            )
+            test(
+                "--pack entry includes snippet_freshness enum field",
+                first_entry.get("snippet_freshness") in {"fresh", "drifted", "missing", "unknown"},
+                f"snippet_freshness={first_entry.get('snippet_freshness')!r}",
+            )
             rel_ids = first_entry.get("related_entry_ids", [])
-            test("--pack entry includes related_entry_ids as int list",
-                 isinstance(rel_ids, list) and all(isinstance(x, int) for x in rel_ids) and len(rel_ids) <= 3,
-                 f"related_entry_ids={rel_ids!r}")
+            test(
+                "--pack entry includes related_entry_ids as int list",
+                isinstance(rel_ids, list) and all(isinstance(x, int) for x in rel_ids) and len(rel_ids) <= 3,
+                f"related_entry_ids={rel_ids!r}",
+            )
         else:
             test("--pack entry includes source_document field", True, "(skipped — no entries)")
             test("--pack entry includes code-location/snippet fields", True, "(skipped — no entries)")
@@ -361,8 +400,7 @@ plist_under_test = plist_path if plist_is_user_install else template_plist
 # LaunchAgent is macOS-only — skip on Linux/WSL
 if sys.platform == "darwin":
     # 3a. Plist file exists (prefer user install, fallback to repo template)
-    test("Plist file exists", plist_under_test.exists(),
-         f"Expected at {plist_under_test}")
+    test("Plist file exists", plist_under_test.exists(), f"Expected at {plist_under_test}")
 
     if plist_under_test.exists():
         if not plist_is_user_install:
@@ -377,48 +415,48 @@ if sys.platform == "darwin":
             plist_data = {}
 
         # 3c. Required keys present
-        test("Has Label key", "Label" in plist_data,
-             f"Keys: {list(plist_data.keys())}")
+        test("Has Label key", "Label" in plist_data, f"Keys: {list(plist_data.keys())}")
         test("Label is correct", plist_data.get("Label") == "com.copilot.watch-sessions")
 
         test("Has ProgramArguments", "ProgramArguments" in plist_data)
         prog_args = plist_data.get("ProgramArguments", [])
-        test("Uses python3", "python3" in prog_args[0] if prog_args else False,
-             f"Got: {prog_args}")
-        test("Runs watch-sessions.py", any("watch-sessions" in a for a in prog_args),
-             f"Got: {prog_args}")
+        test("Uses python3", "python3" in prog_args[0] if prog_args else False, f"Got: {prog_args}")
+        test("Runs watch-sessions.py", any("watch-sessions" in a for a in prog_args), f"Got: {prog_args}")
         # launchd must own the watcher lifecycle — run in foreground (no --daemon).
         # --daemon causes a double-fork so launchd loses the PID and the detached
         # child conflicts with every subsequent launchd restart attempt.
-        test("No --daemon flag (launchd owns lifecycle)", "--daemon" not in prog_args,
-             f"Got: {prog_args} — remove --daemon so launchd manages the process")
+        test(
+            "No --daemon flag (launchd owns lifecycle)",
+            "--daemon" not in prog_args,
+            f"Got: {prog_args} — remove --daemon so launchd manages the process",
+        )
 
         test("RunAtLoad is true", plist_data.get("RunAtLoad") is True)
 
-        test("Has KeepAlive", "KeepAlive" in plist_data,
-             "Daemon should restart on crash")
+        test("Has KeepAlive", "KeepAlive" in plist_data, "Daemon should restart on crash")
 
-        test("WorkingDirectory is ~/.copilot",
-             plist_data.get("WorkingDirectory", "").endswith(".copilot"),
-             f"Got: {plist_data.get('WorkingDirectory')}")
+        test(
+            "WorkingDirectory is ~/.copilot",
+            plist_data.get("WorkingDirectory", "").endswith(".copilot"),
+            f"Got: {plist_data.get('WorkingDirectory')}",
+        )
 
         # 3d. plutil validates the plist
         plutil_result = subprocess.run(
             ["plutil", "-lint", str(plist_under_test)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace"
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
-        test("plutil lint passes",
-             plutil_result.returncode == 0,
-             plutil_result.stderr or plutil_result.stdout)
+        test("plutil lint passes", plutil_result.returncode == 0, plutil_result.stderr or plutil_result.stdout)
 
         # 3e. Python path exists (only deterministic for installed plist)
         python_path = prog_args[0] if prog_args else ""
         if plist_is_user_install:
-            test("Python3 path exists", Path(python_path).exists(),
-                 f"Path: {python_path}")
+            test("Python3 path exists", Path(python_path).exists(), f"Path: {python_path}")
         else:
-            test("Python3 path check skipped for template plist", True,
-                 f"Template path={python_path}")
+            test("Python3 path check skipped for template plist", True, f"Template path={python_path}")
 else:
     print("  ⏭️  Skipped — LaunchAgent is macOS-only (running on Linux/WSL)")
 
@@ -431,9 +469,7 @@ print("\n🔄 Integration: Verify noise filter reduces false positives")
 db_path = Path.home() / ".copilot/session-state/knowledge.db"
 if db_path.exists():
     db = sqlite3.connect(str(db_path))
-    total_mistakes = db.execute(
-        "SELECT COUNT(*) FROM knowledge_entries WHERE category = 'mistake'"
-    ).fetchone()[0]
+    total_mistakes = db.execute("SELECT COUNT(*) FROM knowledge_entries WHERE category = 'mistake'").fetchone()[0]
 
     user_quotes = db.execute("""
         SELECT COUNT(*) FROM knowledge_entries WHERE category = 'mistake'
@@ -454,14 +490,14 @@ if db_path.exists():
     """).fetchone()[0]
 
     false_positive_rate = (user_quotes + action_summaries) / max(total_mistakes, 1)
-    print(f"  📊 Current DB: {total_mistakes} mistakes, {user_quotes} user-quotes, "
-          f"{action_summaries} action-summaries ({false_positive_rate:.0%} FP)")
+    print(
+        f"  📊 Current DB: {total_mistakes} mistakes, {user_quotes} user-quotes, "
+        f"{action_summaries} action-summaries ({false_positive_rate:.0%} FP)"
+    )
 
     # Relaxed threshold: historical data may contain pre-filter entries
     # The _is_noise() function is tested with synthetic inputs above (Fix 1 tests)
-    test(f"FP rate below 20% (was 40%)",
-         false_positive_rate < 0.20,
-         f"FP rate is {false_positive_rate:.0%}")
+    test(f"FP rate below 20% (was 40%)", false_positive_rate < 0.20, f"FP rate is {false_positive_rate:.0%}")
 
     # Stale embeddings in the user's long-lived knowledge.db are environment state,
     # not a deterministic repo regression, so keep this as an informational health check.
@@ -489,9 +525,11 @@ if db_path.exists():
         AND title LIKE 'User said%' LIMIT 5
     """).fetchall()
     caught = sum(1 for (t,) in sample_quotes if ek._is_noise(t))
-    test(f"Noise filter catches user-quote DB entries ({caught}/{len(sample_quotes)})",
-         caught == len(sample_quotes),
-         f"Caught {caught}/{len(sample_quotes)}")
+    test(
+        f"Noise filter catches user-quote DB entries ({caught}/{len(sample_quotes)})",
+        caught == len(sample_quotes),
+        f"Caught {caught}/{len(sample_quotes)}",
+    )
 
     db.close()
 else:
@@ -513,19 +551,15 @@ test("SKILL.md exists in tools or skills path", skill_path.exists())
 if skill_path.exists():
     skill_content = skill_path.read_text(encoding="utf-8")
     template_skill_path = REPO / "templates" / "SKILL.md"
-    template_skill_content = (
-        template_skill_path.read_text(encoding="utf-8")
-        if template_skill_path.exists()
-        else ""
-    )
+    template_skill_content = template_skill_path.read_text(encoding="utf-8") if template_skill_path.exists() else ""
     test("Contains --for-subagent docs", "--for-subagent" in skill_content)
-    test("Documents structured tentacle recall path",
-         "tentacle.py" in template_skill_content and "[KNOWLEDGE EVIDENCE]" in template_skill_content)
+    test(
+        "Documents structured tentacle recall path",
+        "tentacle.py" in template_skill_content and "[KNOWLEDGE EVIDENCE]" in template_skill_content,
+    )
     test("Contains sub-agent workflow", "sub-agent" in skill_content.lower())
     test("Uses python3 (not python)", "python3 " in skill_content)
-    test("No bare 'python ' commands",
-         "python ~/.copilot" not in skill_content,
-         "Should use python3, not python")
+    test("No bare 'python ' commands", "python ~/.copilot" not in skill_content, "Should use python3, not python")
 
 
 # ─── Skill Packaging (validate-skill + setup-project references/) ────────
@@ -534,6 +568,7 @@ print("\n📦 Skill Packaging Tests")
 
 # Import validate function from validate-skill.py (no package init, import by path)
 import importlib.util as _ilu
+
 _vs_spec = _ilu.spec_from_file_location("validate_skill", REPO / "validate-skill.py")
 _vs = _ilu.module_from_spec(_vs_spec)
 _vs_spec.loader.exec_module(_vs)
@@ -541,6 +576,7 @@ validate = _vs.validate
 
 # Helper: create a minimal valid SKILL.md in a temp dir
 import tempfile as _tf
+
 
 def _make_skill_dir(skill_content: str, refs: dict[str, str] | None = None) -> Path:
     """Write SKILL.md (and optional references/ files) into a fresh temp dir.
@@ -586,9 +622,11 @@ Example usage here.
 _d1 = _make_skill_dir(MINIMAL_SKILL)
 try:
     _errs1, _warns1 = validate(_d1 / "SKILL.md")
-    test("Sp1: no spurious reference warnings when no refs mentioned",
-         not any("Dangling" in w for w in _warns1),
-         f"Got warnings: {_warns1}")
+    test(
+        "Sp1: no spurious reference warnings when no refs mentioned",
+        not any("Dangling" in w for w in _warns1),
+        f"Got warnings: {_warns1}",
+    )
 finally:
     _shutil.rmtree(_d1, ignore_errors=True)
 
@@ -597,9 +635,11 @@ _SKILL_WITH_REF = MINIMAL_SKILL + "\nSee `references/guide.md` for details.\n"
 _d2 = _make_skill_dir(_SKILL_WITH_REF, refs={"guide.md": "# Guide\nContent."})
 try:
     _errs2, _warns2 = validate(_d2 / "SKILL.md")
-    test("Sp2: existing references/guide.md → no dangling warning",
-         not any("guide.md" in w for w in _warns2),
-         f"Got warnings: {_warns2}")
+    test(
+        "Sp2: existing references/guide.md → no dangling warning",
+        not any("guide.md" in w for w in _warns2),
+        f"Got warnings: {_warns2}",
+    )
 finally:
     _shutil.rmtree(_d2, ignore_errors=True)
 
@@ -607,24 +647,27 @@ finally:
 _d3 = _make_skill_dir(_SKILL_WITH_REF)  # no refs/ created
 try:
     _errs3, _warns3 = validate(_d3 / "SKILL.md")
-    test("Sp3: missing references/guide.md → dangling warning emitted",
-         any("guide.md" in w and "Dangling" in w for w in _warns3),
-         f"Got warnings: {_warns3}")
+    test(
+        "Sp3: missing references/guide.md → dangling warning emitted",
+        any("guide.md" in w and "Dangling" in w for w in _warns3),
+        f"Got warnings: {_warns3}",
+    )
 finally:
     _shutil.rmtree(_d3, ignore_errors=True)
 
 # Sp4. Same reference mentioned twice → exactly ONE warning (deduplication)
 _SKILL_DOUBLE_REF = MINIMAL_SKILL + (
-    "\nSee `references/guide.md` for overview.\n"
-    "Also `references/guide.md` covers advanced topics.\n"
+    "\nSee `references/guide.md` for overview.\nAlso `references/guide.md` covers advanced topics.\n"
 )
 _d4 = _make_skill_dir(_SKILL_DOUBLE_REF)
 try:
     _errs4, _warns4 = validate(_d4 / "SKILL.md")
     dangling_count = sum(1 for w in _warns4 if "guide.md" in w and "Dangling" in w)
-    test("Sp4: duplicate reference mention → exactly 1 warning (deduplication)",
-         dangling_count == 1,
-         f"Got {dangling_count} dangling warnings for guide.md")
+    test(
+        "Sp4: duplicate reference mention → exactly 1 warning (deduplication)",
+        dangling_count == 1,
+        f"Got {dangling_count} dangling warnings for guide.md",
+    )
 finally:
     _shutil.rmtree(_d4, ignore_errors=True)
 
@@ -633,9 +676,11 @@ _SKILL_NONREL = MINIMAL_SKILL + "\nSee shared/references/guide.md elsewhere.\n"
 _d5 = _make_skill_dir(_SKILL_NONREL)
 try:
     _errs5, _warns5 = validate(_d5 / "SKILL.md")
-    test("Sp5: shared/references/guide.md (non-relative) → no dangling warning",
-         not any("guide.md" in w and "Dangling" in w for w in _warns5),
-         f"Got warnings: {_warns5}")
+    test(
+        "Sp5: shared/references/guide.md (non-relative) → no dangling warning",
+        not any("guide.md" in w and "Dangling" in w for w in _warns5),
+        f"Got warnings: {_warns5}",
+    )
 finally:
     _shutil.rmtree(_d5, ignore_errors=True)
 
@@ -644,9 +689,11 @@ _SKILL_NESTED_REF = MINIMAL_SKILL + "\nSee `references/sub/deep.md` for details.
 _d6 = _make_skill_dir(_SKILL_NESTED_REF, refs={"sub/deep.md": "# Deep\nContent."})
 try:
     _errs6, _warns6 = validate(_d6 / "SKILL.md")
-    test("Sp6: existing references/sub/deep.md (nested) → no dangling warning",
-         not any("sub/deep.md" in w and "Dangling" in w for w in _warns6),
-         f"Got warnings: {_warns6}")
+    test(
+        "Sp6: existing references/sub/deep.md (nested) → no dangling warning",
+        not any("sub/deep.md" in w and "Dangling" in w for w in _warns6),
+        f"Got warnings: {_warns6}",
+    )
 finally:
     _shutil.rmtree(_d6, ignore_errors=True)
 
@@ -654,9 +701,11 @@ finally:
 _d7 = _make_skill_dir(_SKILL_NESTED_REF)
 try:
     _errs7, _warns7 = validate(_d7 / "SKILL.md")
-    test("Sp7: missing references/sub/deep.md (nested) → dangling warning",
-         any("sub/deep.md" in w and "Dangling" in w for w in _warns7),
-         f"Got warnings: {_warns7}")
+    test(
+        "Sp7: missing references/sub/deep.md (nested) → dangling warning",
+        any("sub/deep.md" in w and "Dangling" in w for w in _warns7),
+        f"Got warnings: {_warns7}",
+    )
 finally:
     _shutil.rmtree(_d7, ignore_errors=True)
 
@@ -664,8 +713,8 @@ finally:
 # Use fully isolated temp dirs outside the repo — no mutation of the live source tree.
 import importlib as _imp
 
-_sp8_root = Path(_tf.mkdtemp())   # isolated skills dir (acts as SKILLS_DIR)
-_proj8 = Path(_tf.mkdtemp())      # isolated install target (acts as project root)
+_sp8_root = Path(_tf.mkdtemp())  # isolated skills dir (acts as SKILLS_DIR)
+_proj8 = Path(_tf.mkdtemp())  # isolated install target (acts as project root)
 
 # Build a minimal fake skill: fake-skill/SKILL.md + references/nested_test/nested-ref.md
 _fake_skill_name = "fake-nested-skill"
@@ -688,27 +737,32 @@ try:
     _sp8.install_skills(_proj8, dry_run=False)
 
     _expected = _proj8 / ".github" / "skills" / _fake_skill_name / "references" / "nested_test" / "nested-ref.md"
-    test("Sp8: nested references/nested_test/nested-ref.md deployed with relative path",
-         _expected.exists(),
-         f"Expected at {_expected}")
+    test(
+        "Sp8: nested references/nested_test/nested-ref.md deployed with relative path",
+        _expected.exists(),
+        f"Expected at {_expected}",
+    )
 finally:
     _shutil.rmtree(_sp8_root, ignore_errors=True)
     _shutil.rmtree(_proj8, ignore_errors=True)
 
 # Sp9. session-knowledge-creator reference files exist in repo
 _sk_refs = REPO / "skills" / "session-knowledge-creator" / "references"
-test("Sp9: references/instructions-template.md exists in session-knowledge-creator",
-     (_sk_refs / "instructions-template.md").exists())
-test("Sp9: references/skill-template.md exists in session-knowledge-creator",
-     (_sk_refs / "skill-template.md").exists())
+test(
+    "Sp9: references/instructions-template.md exists in session-knowledge-creator",
+    (_sk_refs / "instructions-template.md").exists(),
+)
+test("Sp9: references/skill-template.md exists in session-knowledge-creator", (_sk_refs / "skill-template.md").exists())
 
 # Sp10. Validator passes (no dangling refs) for session-knowledge-creator after fix
 _sk_path = REPO / "skills" / "session-knowledge-creator"
 _sk_errs, _sk_warns = validate(_sk_path)
 dangling_sk = [w for w in _sk_warns if "Dangling" in w]
-test("Sp10: session-knowledge-creator has no dangling reference warnings",
-     len(dangling_sk) == 0,
-     f"Dangling refs: {dangling_sk}")
+test(
+    "Sp10: session-knowledge-creator has no dangling reference warnings",
+    len(dangling_sk) == 0,
+    f"Dangling refs: {dangling_sk}",
+)
 
 # Sp11. Traversal guard: references/../SKILL.md and references/a/../../x.md are rejected
 # The skill dir has a real references/ subdirectory so that `references/../SKILL.md`
@@ -740,22 +794,30 @@ try:
     # Confirm the dangerous case: without the guard, the OS would resolve
     # `<d11>/references/../SKILL.md` → `<d11>/SKILL.md` which exists.
     _escape_path = _d11 / "references" / ".." / "SKILL.md"
-    test("Sp11: escape path references/../SKILL.md resolves to an existing file (danger confirmed)",
-         _escape_path.exists(),
-         f"Expected {_escape_path} to exist")
+    test(
+        "Sp11: escape path references/../SKILL.md resolves to an existing file (danger confirmed)",
+        _escape_path.exists(),
+        f"Expected {_escape_path} to exist",
+    )
 
     _errs11, _warns11 = validate(_d11 / "SKILL.md")
     _traversal_warns = [w for w in _warns11 if "Suspicious" in w or "traversal" in w.lower() or ".." in w]
     # Each traversal pattern must be caught individually — not via generic ".." membership.
-    test("Sp11: single-level escape references/../SKILL.md triggers traversal warning",
-         any("references/../SKILL.md" in w for w in _traversal_warns),
-         f"Got warnings: {_warns11}")
-    test("Sp11: double-level escape references/a/../../secret.md triggers traversal warning",
-         any("references/a/../../secret.md" in w for w in _traversal_warns),
-         f"Got warnings: {_warns11}")
-    test("Sp11: traversal path does NOT appear as a dangling reference warning",
-         not any("Dangling" in w and ".." in w for w in _warns11),
-         f"Got warnings: {_warns11}")
+    test(
+        "Sp11: single-level escape references/../SKILL.md triggers traversal warning",
+        any("references/../SKILL.md" in w for w in _traversal_warns),
+        f"Got warnings: {_warns11}",
+    )
+    test(
+        "Sp11: double-level escape references/a/../../secret.md triggers traversal warning",
+        any("references/a/../../secret.md" in w for w in _traversal_warns),
+        f"Got warnings: {_warns11}",
+    )
+    test(
+        "Sp11: traversal path does NOT appear as a dangling reference warning",
+        not any("Dangling" in w and ".." in w for w in _warns11),
+        f"Got warnings: {_warns11}",
+    )
 finally:
     _shutil.rmtree(_d11, ignore_errors=True)
 
@@ -765,7 +827,7 @@ finally:
 print("\n📦 Skill Packaging — Auxiliary Asset Dirs (Sp12 / Sp13)")
 
 _sp12_root = Path(_tf.mkdtemp())  # fake SKILLS_DIR
-_proj12 = Path(_tf.mkdtemp())     # fake project root
+_proj12 = Path(_tf.mkdtemp())  # fake project root
 
 _fake12 = _sp12_root / "conductor-creator"
 (_fake12 / "templates").mkdir(parents=True)
@@ -788,15 +850,21 @@ try:
     _sp12_mod.install_skills(_proj12, dry_run=False)
 
     _skill12_base = _proj12 / ".github" / "skills" / "conductor-creator"
-    test("Sp12: conductor.py deployed under templates/",
-         (_skill12_base / "templates" / "conductor.py").exists(),
-         f"Missing {_skill12_base / 'templates' / 'conductor.py'}")
-    test("Sp12: test-conductor.py deployed under templates/",
-         (_skill12_base / "templates" / "test-conductor.py").exists(),
-         f"Missing {_skill12_base / 'templates' / 'test-conductor.py'}")
-    test("Sp12: references/guide.md still deployed (regression: references/ preserved)",
-         (_skill12_base / "references" / "guide.md").exists(),
-         f"Missing {_skill12_base / 'references' / 'guide.md'}")
+    test(
+        "Sp12: conductor.py deployed under templates/",
+        (_skill12_base / "templates" / "conductor.py").exists(),
+        f"Missing {_skill12_base / 'templates' / 'conductor.py'}",
+    )
+    test(
+        "Sp12: test-conductor.py deployed under templates/",
+        (_skill12_base / "templates" / "test-conductor.py").exists(),
+        f"Missing {_skill12_base / 'templates' / 'test-conductor.py'}",
+    )
+    test(
+        "Sp12: references/guide.md still deployed (regression: references/ preserved)",
+        (_skill12_base / "references" / "guide.md").exists(),
+        f"Missing {_skill12_base / 'references' / 'guide.md'}",
+    )
 finally:
     _shutil.rmtree(_sp12_root, ignore_errors=True)
     _shutil.rmtree(_proj12, ignore_errors=True)
@@ -827,24 +895,34 @@ try:
     _sp13_mod.install_skills(_proj13, dry_run=False)
 
     _skill13_base = _proj13 / ".github" / "skills" / "multi-asset-skill"
-    test("Sp13: templates/tmpl.py deployed for skill with multiple asset subdirs",
-         (_skill13_base / "templates" / "tmpl.py").exists())
-    test("Sp13: evals/eval.json deployed for skill with multiple asset subdirs",
-         (_skill13_base / "evals" / "eval.json").exists())
-    test("Sp13: references/ref.md deployed for skill with multiple asset subdirs",
-         (_skill13_base / "references" / "ref.md").exists())
+    test(
+        "Sp13: templates/tmpl.py deployed for skill with multiple asset subdirs",
+        (_skill13_base / "templates" / "tmpl.py").exists(),
+    )
+    test(
+        "Sp13: evals/eval.json deployed for skill with multiple asset subdirs",
+        (_skill13_base / "evals" / "eval.json").exists(),
+    )
+    test(
+        "Sp13: references/ref.md deployed for skill with multiple asset subdirs",
+        (_skill13_base / "references" / "ref.md").exists(),
+    )
 finally:
     _shutil.rmtree(_sp13_root, ignore_errors=True)
     _shutil.rmtree(_proj13, ignore_errors=True)
 
 # Sp14. Live repo: conductor-creator templates/ files exist and are real files
 _cc_templates = REPO / "skills" / "conductor-creator" / "templates"
-test("Sp14: conductor-creator/templates/conductor.py exists in repo",
-     (_cc_templates / "conductor.py").exists(),
-     f"Expected at {_cc_templates / 'conductor.py'}")
-test("Sp14: conductor-creator/templates/test-conductor.py exists in repo",
-     (_cc_templates / "test-conductor.py").exists(),
-     f"Expected at {_cc_templates / 'test-conductor.py'}")
+test(
+    "Sp14: conductor-creator/templates/conductor.py exists in repo",
+    (_cc_templates / "conductor.py").exists(),
+    f"Expected at {_cc_templates / 'conductor.py'}",
+)
+test(
+    "Sp14: conductor-creator/templates/test-conductor.py exists in repo",
+    (_cc_templates / "test-conductor.py").exists(),
+    f"Expected at {_cc_templates / 'test-conductor.py'}",
+)
 
 # Sp15. Empty name value (bare `name:` with no value) → must report an error, not silently pass.
 # Before the fix, `\s*` in the regex could cross a newline and capture the next line
@@ -873,12 +951,16 @@ Example usage.
 _d15 = _make_skill_dir(_EMPTY_NAME_SKILL)
 try:
     _errs15, _warns15 = validate(_d15 / "SKILL.md")
-    test("Sp15: bare `name:` (empty value) → error reported",
-         any("no value" in e or "empty" in e.lower() for e in _errs15),
-         f"Expected empty-name error; got errors={_errs15}")
-    test("Sp15: bare `name:` does NOT capture next line as name value",
-         not any("description" in e.lower() and "invalid" in e.lower() for e in _errs15),
-         f"Regex crossed line boundary — captured 'description:' as name: errors={_errs15}")
+    test(
+        "Sp15: bare `name:` (empty value) → error reported",
+        any("no value" in e or "empty" in e.lower() for e in _errs15),
+        f"Expected empty-name error; got errors={_errs15}",
+    )
+    test(
+        "Sp15: bare `name:` does NOT capture next line as name value",
+        not any("description" in e.lower() and "invalid" in e.lower() for e in _errs15),
+        f"Regex crossed line boundary — captured 'description:' as name: errors={_errs15}",
+    )
 finally:
     _shutil.rmtree(_d15, ignore_errors=True)
 
@@ -906,9 +988,11 @@ Example usage.
 _d16 = _make_skill_dir(_WHITESPACE_NAME_SKILL)
 try:
     _errs16, _warns16 = validate(_d16 / "SKILL.md")
-    test("Sp16: whitespace-only `name:   ` → error reported (empty value)",
-         any("no value" in e or "empty" in e.lower() for e in _errs16),
-         f"Expected empty-name error; got errors={_errs16}")
+    test(
+        "Sp16: whitespace-only `name:   ` → error reported (empty value)",
+        any("no value" in e or "empty" in e.lower() for e in _errs16),
+        f"Expected empty-name error; got errors={_errs16}",
+    )
 finally:
     _shutil.rmtree(_d16, ignore_errors=True)
 
@@ -940,12 +1024,16 @@ Example usage.
 _d17 = _make_skill_dir(_EMPTY_DESC_SKILL)
 try:
     _errs17, _warns17 = validate(_d17 / "SKILL.md")
-    test("Sp17: bare `description:` (empty value) → error reported",
-         any("no value" in e or "empty" in e.lower() for e in _errs17),
-         f"Expected empty-description error; got errors={_errs17}")
-    test("Sp17: bare `description:` does NOT capture next YAML line as description",
-         not any("description only" in w.lower() for w in _warns17),
-         f"Regex crossed line boundary — word-count warning implies next key was captured as description: warns={_warns17}")
+    test(
+        "Sp17: bare `description:` (empty value) → error reported",
+        any("no value" in e or "empty" in e.lower() for e in _errs17),
+        f"Expected empty-description error; got errors={_errs17}",
+    )
+    test(
+        "Sp17: bare `description:` does NOT capture next YAML line as description",
+        not any("description only" in w.lower() for w in _warns17),
+        f"Regex crossed line boundary — word-count warning implies next key was captured as description: warns={_warns17}",
+    )
 finally:
     _shutil.rmtree(_d17, ignore_errors=True)
 
@@ -975,9 +1063,11 @@ Example usage.
 _d18 = _make_skill_dir(_WHITESPACE_DESC_SKILL)
 try:
     _errs18, _warns18 = validate(_d18 / "SKILL.md")
-    test("Sp18: whitespace-only `description:   ` → error reported (empty value)",
-         any("no value" in e or "empty" in e.lower() for e in _errs18),
-         f"Expected empty-description error; got errors={_errs18}")
+    test(
+        "Sp18: whitespace-only `description:   ` → error reported (empty value)",
+        any("no value" in e or "empty" in e.lower() for e in _errs18),
+        f"Expected empty-description error; got errors={_errs18}",
+    )
 finally:
     _shutil.rmtree(_d18, ignore_errors=True)
 
@@ -1191,8 +1281,7 @@ with tempfile.TemporaryDirectory(prefix="global-skills-test-") as _gs_tmp:
     class _NoGitRoot:
         def run(self, cmd, *a, **kw):
             if isinstance(cmd, list) and "--show-toplevel" in cmd:
-                return subprocess.CompletedProcess(args=cmd, returncode=1,
-                                                   stdout="", stderr="")
+                return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="")
             return _orig_gs_subprocess.run(cmd, *a, **kw)
 
         def __getattr__(self, name):
@@ -1270,6 +1359,7 @@ _au_spec_ld.loader.exec_module(_au_mod_ld)  # type: ignore[union-attr]
 # --- Ld1: restart_processes() on Darwin calls kickstart -k, not stop/start ---
 _ld_calls: list = []
 
+
 class _LaunchctlTracer:
     def run(self, cmd, *a, **kw):
         if isinstance(cmd, list) and "launchctl" in cmd[0]:
@@ -1278,6 +1368,7 @@ class _LaunchctlTracer:
 
     def __getattr__(self, name):
         return getattr(subprocess, name)
+
 
 with tempfile.TemporaryDirectory(prefix="ld-restart-") as _ld_tmp:
     _ld_home = Path(_ld_tmp)
@@ -1328,9 +1419,11 @@ test(
 # --- Ld2–Ld4: doctor() health semantics per agent role ---
 # We monkey-patch subprocess.run to simulate specific launchctl list responses.
 
+
 def _make_doctor_tracer(pid_for: set, loaded_for: set):
     """Return a subprocess stub where launchctl list returns PID for pid_for,
     loaded-only (no PID) for loaded_for, and returncode 1 for everything else."""
+
     class _Tracer:
         def run(self, cmd, *a, **kw):
             if isinstance(cmd, list) and cmd[:2] == ["launchctl", "list"]:
@@ -1344,10 +1437,12 @@ def _make_doctor_tracer(pid_for: set, loaded_for: set):
 
         def __getattr__(self, name):
             return getattr(subprocess, name)
+
     return _Tracer()
 
 
 import io as _io
+
 
 def _run_doctor_capture(mod, home_override):
     """Run doctor() with stdout captured; return (issues_found, output_text)."""
@@ -1380,6 +1475,7 @@ def _run_launchagent_block(mod, home_override):
     """Directly exercise the LaunchAgent health block under controlled conditions.
     Returns the number of issues incremented (0 = all healthy)."""
     import platform as _plt
+
     issues = 0
     system = "Darwin"
     home = home_override
@@ -1526,9 +1622,9 @@ _rg1_db.commit()
 
 ek.extract_relations(_rg1_db)
 
-_rg1_recent_ids = [r[0] for r in _rg1_db.execute(
-    "SELECT id FROM knowledge_entries WHERE session_id = 'recent-session'"
-).fetchall()]
+_rg1_recent_ids = [
+    r[0] for r in _rg1_db.execute("SELECT id FROM knowledge_entries WHERE session_id = 'recent-session'").fetchall()
+]
 _rg1_ph = ",".join("?" * len(_rg1_recent_ids))
 _rg1_recent_rels = _rg1_db.execute(
     f"SELECT COUNT(*) FROM knowledge_relations "
@@ -1542,9 +1638,9 @@ test(
     f"recent entries have {_rg1_recent_rels} SAME_SESSION relations (expected > 0)",
 )
 
-_rg1_old_ids = [r[0] for r in _rg1_db.execute(
-    "SELECT id FROM knowledge_entries WHERE session_id = 'old-session'"
-).fetchall()]
+_rg1_old_ids = [
+    r[0] for r in _rg1_db.execute("SELECT id FROM knowledge_entries WHERE session_id = 'old-session'").fetchall()
+]
 _rg1_old_ph = ",".join("?" * len(_rg1_old_ids))
 _rg1_old_rels = _rg1_db.execute(
     f"SELECT COUNT(*) FROM knowledge_relations "
@@ -1584,9 +1680,9 @@ ek.extract_relations(_rg2_db)
 
 _rg2_covered = 0
 for _rg2_sid in _rg2_recent_sessions:
-    _rg2_ids = [r[0] for r in _rg2_db.execute(
-        "SELECT id FROM knowledge_entries WHERE session_id = ?", (_rg2_sid,)
-    ).fetchall()]
+    _rg2_ids = [
+        r[0] for r in _rg2_db.execute("SELECT id FROM knowledge_entries WHERE session_id = ?", (_rg2_sid,)).fetchall()
+    ]
     _rg2_ph = ",".join("?" * len(_rg2_ids))
     _rg2_cnt = _rg2_db.execute(
         f"SELECT COUNT(*) FROM knowledge_relations "
@@ -1623,9 +1719,20 @@ _tp = REPO / "tentacle.py"
 
 # Gs1: goal init creates a valid goal.json
 _gs1_res = subprocess.run(
-    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
-     "goal", "init", "--title", "Test Goal", "--desc", "A test goal"],
-    capture_output=True, text=True,
+    [
+        sys.executable,
+        str(_tp),
+        "--session-dir",
+        str(_goal_tentacles),
+        "goal",
+        "init",
+        "--title",
+        "Test Goal",
+        "--desc",
+        "A test goal",
+    ],
+    capture_output=True,
+    text=True,
     env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
 )
 _gs1_goal_path = _goal_octogent / "goal.json"
@@ -1638,18 +1745,32 @@ if _gs1_goal_path.exists():
     test("Gs1: goal.json title correct", _gs1_state.get("title") == "Test Goal", f"got {_gs1_state.get('title')}")
     test("Gs1: goal.json status=active", _gs1_state.get("status") == "active", f"got {_gs1_state.get('status')}")
     test("Gs1: goal.json iteration=1", _gs1_state.get("iteration") == 1, f"got {_gs1_state.get('iteration')}")
-    test("Gs1: goal.json has empty tentacles list", _gs1_state.get("tentacles") == [], f"got {_gs1_state.get('tentacles')}")
-    test("Gs1: goal.json has empty eval_history", _gs1_state.get("eval_history") == [], f"got {_gs1_state.get('eval_history')}")
+    test(
+        "Gs1: goal.json has empty tentacles list",
+        _gs1_state.get("tentacles") == [],
+        f"got {_gs1_state.get('tentacles')}",
+    )
+    test(
+        "Gs1: goal.json has empty eval_history",
+        _gs1_state.get("eval_history") == [],
+        f"got {_gs1_state.get('eval_history')}",
+    )
 else:
-    for _lbl in ["Gs1: goal.json has goal_id", "Gs1: goal.json title correct",
-                 "Gs1: goal.json status=active", "Gs1: goal.json iteration=1",
-                 "Gs1: goal.json has empty tentacles list", "Gs1: goal.json has empty eval_history"]:
+    for _lbl in [
+        "Gs1: goal.json has goal_id",
+        "Gs1: goal.json title correct",
+        "Gs1: goal.json status=active",
+        "Gs1: goal.json iteration=1",
+        "Gs1: goal.json has empty tentacles list",
+        "Gs1: goal.json has empty eval_history",
+    ]:
         test(_lbl, False, "goal.json missing")
 
 # Gs2: goal status text output
 _gs2_res = subprocess.run(
     [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "status"],
-    capture_output=True, text=True,
+    capture_output=True,
+    text=True,
     env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
 )
 test("Gs2: goal status exits 0", _gs2_res.returncode == 0, _gs2_res.stderr[:200])
@@ -1659,7 +1780,8 @@ test("Gs2: goal status shows active", "active" in _gs2_res.stdout, _gs2_res.stdo
 # Gs3: goal status --format json
 _gs3_res = subprocess.run(
     [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "status", "--format", "json"],
-    capture_output=True, text=True,
+    capture_output=True,
+    text=True,
     env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
 )
 test("Gs3: goal status --format json exits 0", _gs3_res.returncode == 0, _gs3_res.stderr[:200])
@@ -1675,24 +1797,37 @@ except Exception as _e:
 # Gs4: Create a tentacle then goal link it
 _gs4_tname = f"test-t-{_uuid.uuid4().hex[:6]}"
 _gs4_create = subprocess.run(
-    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
-     "create", _gs4_tname, "--desc", "linked tentacle"],
-    capture_output=True, text=True,
+    [
+        sys.executable,
+        str(_tp),
+        "--session-dir",
+        str(_goal_tentacles),
+        "create",
+        _gs4_tname,
+        "--desc",
+        "linked tentacle",
+    ],
+    capture_output=True,
+    text=True,
     env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
 )
 test("Gs4: create tentacle exits 0", _gs4_create.returncode == 0, _gs4_create.stderr[:200])
 
 _gs4_link = subprocess.run(
     [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "link", _gs4_tname],
-    capture_output=True, text=True,
+    capture_output=True,
+    text=True,
     env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
 )
 test("Gs4: goal link exits 0", _gs4_link.returncode == 0, _gs4_link.stderr[:200])
 
 if _gs1_goal_path.exists():
     _gs4_state = json.loads(_gs1_goal_path.read_text())
-    test("Gs4: tentacle appears in goal.tentacles", _gs4_tname in _gs4_state.get("tentacles", []),
-         f"tentacles={_gs4_state.get('tentacles')}")
+    test(
+        "Gs4: tentacle appears in goal.tentacles",
+        _gs4_tname in _gs4_state.get("tentacles", []),
+        f"tentacles={_gs4_state.get('tentacles')}",
+    )
 else:
     test("Gs4: tentacle appears in goal.tentacles", False, "goal.json missing")
 
@@ -1700,11 +1835,19 @@ _gs4_meta_path = _goal_tentacles / _gs4_tname / "meta.json"
 if _gs4_meta_path.exists():
     _gs4_meta = json.loads(_gs4_meta_path.read_text())
     test("Gs4: meta.json has goal_id after link", bool(_gs4_meta.get("goal_id")), str(_gs4_meta.get("goal_id")))
-    test("Gs4: meta.json has goal_name after link", _gs4_meta.get("goal_name") == "Test Goal",
-         f"got {_gs4_meta.get('goal_name')}")
-    test("Gs4: meta.json has iteration after link", _gs4_meta.get("iteration") == 1, f"got {_gs4_meta.get('iteration')}")
-    test("Gs4: meta.json has goal_iteration after link", _gs4_meta.get("goal_iteration") == 1,
-         f"got {_gs4_meta.get('goal_iteration')}")
+    test(
+        "Gs4: meta.json has goal_name after link",
+        _gs4_meta.get("goal_name") == "Test Goal",
+        f"got {_gs4_meta.get('goal_name')}",
+    )
+    test(
+        "Gs4: meta.json has iteration after link", _gs4_meta.get("iteration") == 1, f"got {_gs4_meta.get('iteration')}"
+    )
+    test(
+        "Gs4: meta.json has goal_iteration after link",
+        _gs4_meta.get("goal_iteration") == 1,
+        f"got {_gs4_meta.get('goal_iteration')}",
+    )
 else:
     test("Gs4: meta.json has goal_id after link", False, "meta.json missing")
     test("Gs4: meta.json has goal_name after link", False, "meta.json missing")
@@ -1713,9 +1856,20 @@ else:
 
 # Gs5: goal eval --decision continue advances iteration
 _gs5_res = subprocess.run(
-    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
-     "goal", "eval", "--decision", "continue", "--notes", "test note"],
-    capture_output=True, text=True,
+    [
+        sys.executable,
+        str(_tp),
+        "--session-dir",
+        str(_goal_tentacles),
+        "goal",
+        "eval",
+        "--decision",
+        "continue",
+        "--notes",
+        "test note",
+    ],
+    capture_output=True,
+    text=True,
     env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
 )
 test("Gs5: goal eval exits 0", _gs5_res.returncode == 0, _gs5_res.stderr[:200])
@@ -1723,44 +1877,52 @@ test("Gs5: goal eval exits 0", _gs5_res.returncode == 0, _gs5_res.stderr[:200])
 if _gs1_goal_path.exists():
     _gs5_state = json.loads(_gs1_goal_path.read_text())
     test("Gs5: iteration advanced to 2", _gs5_state.get("iteration") == 2, f"got {_gs5_state.get('iteration')}")
-    test("Gs5: eval_history has one entry", len(_gs5_state.get("eval_history", [])) == 1,
-         f"got {len(_gs5_state.get('eval_history',[]))}")
+    test(
+        "Gs5: eval_history has one entry",
+        len(_gs5_state.get("eval_history", [])) == 1,
+        f"got {len(_gs5_state.get('eval_history', []))}",
+    )
     _gs5_entry = _gs5_state["eval_history"][0] if _gs5_state.get("eval_history") else {}
-    test("Gs5: eval entry decision=continue", _gs5_entry.get("decision") == "continue",
-         f"got {_gs5_entry.get('decision')}")
-    test("Gs5: eval entry has notes", "test note" in (_gs5_entry.get("notes") or ""),
-         f"got {_gs5_entry.get('notes')}")
+    test(
+        "Gs5: eval entry decision=continue",
+        _gs5_entry.get("decision") == "continue",
+        f"got {_gs5_entry.get('decision')}",
+    )
+    test("Gs5: eval entry has notes", "test note" in (_gs5_entry.get("notes") or ""), f"got {_gs5_entry.get('notes')}")
 else:
-    for _l in ["Gs5: iteration advanced to 2", "Gs5: eval_history has one entry",
-               "Gs5: eval entry decision=continue", "Gs5: eval entry has notes"]:
+    for _l in [
+        "Gs5: iteration advanced to 2",
+        "Gs5: eval_history has one entry",
+        "Gs5: eval entry decision=continue",
+        "Gs5: eval entry has notes",
+    ]:
         test(_l, False, "goal.json missing")
 
 # Gs6: goal eval --decision pause sets status=paused
 _gs6_res = subprocess.run(
-    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
-     "goal", "eval", "--decision", "pause"],
-    capture_output=True, text=True,
+    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "eval", "--decision", "pause"],
+    capture_output=True,
+    text=True,
     env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
 )
 test("Gs6: goal eval pause exits 0", _gs6_res.returncode == 0, _gs6_res.stderr[:200])
 if _gs1_goal_path.exists():
     _gs6_state = json.loads(_gs1_goal_path.read_text())
-    test("Gs6: status=paused after eval pause", _gs6_state.get("status") == "paused",
-         f"got {_gs6_state.get('status')}")
+    test("Gs6: status=paused after eval pause", _gs6_state.get("status") == "paused", f"got {_gs6_state.get('status')}")
 else:
     test("Gs6: status=paused after eval pause", False, "goal.json missing")
 
 # Gs7: goal resume sets status back to active
 _gs7_res = subprocess.run(
     [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "resume"],
-    capture_output=True, text=True,
+    capture_output=True,
+    text=True,
     env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
 )
 test("Gs7: goal resume exits 0", _gs7_res.returncode == 0, _gs7_res.stderr[:200])
 if _gs1_goal_path.exists():
     _gs7_state = json.loads(_gs1_goal_path.read_text())
-    test("Gs7: status=active after resume", _gs7_state.get("status") == "active",
-         f"got {_gs7_state.get('status')}")
+    test("Gs7: status=active after resume", _gs7_state.get("status") == "active", f"got {_gs7_state.get('status')}")
 else:
     test("Gs7: status=active after resume", False, "goal.json missing")
 
@@ -1768,21 +1930,35 @@ else:
 _gs8_tname = f"test-gid-{_uuid.uuid4().hex[:6]}"
 _gs8_gid = f"test-goal-{_uuid.uuid4().hex[:8]}"
 _gs8_create = subprocess.run(
-    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
-     "create", _gs8_tname, "--desc", "goal-id test", "--goal-id", _gs8_gid, "--iteration", "3"],
-    capture_output=True, text=True,
+    [
+        sys.executable,
+        str(_tp),
+        "--session-dir",
+        str(_goal_tentacles),
+        "create",
+        _gs8_tname,
+        "--desc",
+        "goal-id test",
+        "--goal-id",
+        _gs8_gid,
+        "--iteration",
+        "3",
+    ],
+    capture_output=True,
+    text=True,
     env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
 )
 test("Gs8: create --goal-id exits 0", _gs8_create.returncode == 0, _gs8_create.stderr[:200])
 _gs8_meta_path = _goal_tentacles / _gs8_tname / "meta.json"
 if _gs8_meta_path.exists():
     _gs8_meta = json.loads(_gs8_meta_path.read_text())
-    test("Gs8: meta.json goal_id matches", _gs8_meta.get("goal_id") == _gs8_gid,
-         f"got {_gs8_meta.get('goal_id')}")
-    test("Gs8: meta.json iteration=3", _gs8_meta.get("iteration") == 3,
-         f"got {_gs8_meta.get('iteration')}")
-    test("Gs8: meta.json goal_iteration=3", _gs8_meta.get("goal_iteration") == 3,
-         f"got {_gs8_meta.get('goal_iteration')}")
+    test("Gs8: meta.json goal_id matches", _gs8_meta.get("goal_id") == _gs8_gid, f"got {_gs8_meta.get('goal_id')}")
+    test("Gs8: meta.json iteration=3", _gs8_meta.get("iteration") == 3, f"got {_gs8_meta.get('iteration')}")
+    test(
+        "Gs8: meta.json goal_iteration=3",
+        _gs8_meta.get("goal_iteration") == 3,
+        f"got {_gs8_meta.get('goal_iteration')}",
+    )
 else:
     test("Gs8: meta.json goal_id matches", False, "meta.json missing")
     test("Gs8: meta.json iteration=3", False, "meta.json missing")
@@ -1790,6 +1966,7 @@ else:
 
 # Gs9: _ensure_metrics_schema adds goal_id and iteration columns
 import sqlite3 as _sqlite3
+
 _gs9_db_path = _goal_tmp / "test-skill-metrics.db"
 _gs9_conn = _sqlite3.connect(str(_gs9_db_path))
 # Simulate old schema without goal columns by creating the base table
@@ -1806,6 +1983,7 @@ _gs9_conn.commit()
 # Now import and call _ensure_metrics_schema
 import importlib as _importlib
 import sys as _sys
+
 _old_modules = set(_sys.modules.keys())
 _tp_module = _importlib.util.spec_from_file_location("tentacle_mod", str(_tp))
 _tp_loader = _importlib.util.module_from_spec(_tp_module)
@@ -1814,93 +1992,137 @@ _tp_loader = _importlib.util.module_from_spec(_tp_module)
 _gs9_conn.close()
 
 _gs9_check = subprocess.run(
-    [sys.executable, "-c", (
-        "import sys, sqlite3, importlib.util\n"
-        f"sys.path.insert(0, {repr(str(REPO))})\n"
-        f"spec = importlib.util.spec_from_file_location('tentacle', {repr(str(_tp))})\n"
-        "mod = importlib.util.module_from_spec(spec)\n"
-        "import unittest.mock\n"
-        "with unittest.mock.patch('sys.argv', ['tentacle.py', 'list']):\n"
-        "    try:\n"
-        "        spec.loader.exec_module(mod)\n"
-        "    except SystemExit:\n"
-        "        pass\n"
-        f"conn = sqlite3.connect({repr(str(_gs9_db_path))})\n"
-        "mod._ensure_metrics_schema(conn)\n"
-        "cols = {row[1] for row in conn.execute('PRAGMA table_info(tentacle_outcomes)').fetchall()}\n"
-        "conn.close()\n"
-        "print('goal_id' in cols, 'iteration' in cols)\n"
-    )],
-    capture_output=True, text=True,
+    [
+        sys.executable,
+        "-c",
+        (
+            "import sys, sqlite3, importlib.util\n"
+            f"sys.path.insert(0, {repr(str(REPO))})\n"
+            f"spec = importlib.util.spec_from_file_location('tentacle', {repr(str(_tp))})\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "import unittest.mock\n"
+            "with unittest.mock.patch('sys.argv', ['tentacle.py', 'list']):\n"
+            "    try:\n"
+            "        spec.loader.exec_module(mod)\n"
+            "    except SystemExit:\n"
+            "        pass\n"
+            f"conn = sqlite3.connect({repr(str(_gs9_db_path))})\n"
+            "mod._ensure_metrics_schema(conn)\n"
+            "cols = {row[1] for row in conn.execute('PRAGMA table_info(tentacle_outcomes)').fetchall()}\n"
+            "conn.close()\n"
+            "print('goal_id' in cols, 'iteration' in cols)\n"
+        ),
+    ],
+    capture_output=True,
+    text=True,
 )
 if _gs9_check.returncode == 0:
     _gs9_out = _gs9_check.stdout.strip()
-    test("Gs9: _ensure_metrics_schema adds goal_id column", "True" in _gs9_out.split()[0] if _gs9_out.split() else False,
-         f"output: {_gs9_out}")
-    test("Gs9: _ensure_metrics_schema adds iteration column",
-         len(_gs9_out.split()) >= 2 and _gs9_out.split()[1] == "True",
-         f"output: {_gs9_out}")
+    test(
+        "Gs9: _ensure_metrics_schema adds goal_id column",
+        "True" in _gs9_out.split()[0] if _gs9_out.split() else False,
+        f"output: {_gs9_out}",
+    )
+    test(
+        "Gs9: _ensure_metrics_schema adds iteration column",
+        len(_gs9_out.split()) >= 2 and _gs9_out.split()[1] == "True",
+        f"output: {_gs9_out}",
+    )
 else:
     test("Gs9: _ensure_metrics_schema adds goal_id column", False, _gs9_check.stderr[:200])
     test("Gs9: _ensure_metrics_schema adds iteration column", False, _gs9_check.stderr[:200])
 
 # Gs10: goal eval --decision complete marks goal as completed
 _gs10_res = subprocess.run(
-    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
-     "goal", "eval", "--decision", "complete", "--notes", "all done"],
-    capture_output=True, text=True,
+    [
+        sys.executable,
+        str(_tp),
+        "--session-dir",
+        str(_goal_tentacles),
+        "goal",
+        "eval",
+        "--decision",
+        "complete",
+        "--notes",
+        "all done",
+    ],
+    capture_output=True,
+    text=True,
     env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
 )
 test("Gs10: goal eval complete exits 0", _gs10_res.returncode == 0, _gs10_res.stderr[:200])
 if _gs1_goal_path.exists():
     _gs10_state = json.loads(_gs1_goal_path.read_text())
-    test("Gs10: status=completed after eval complete", _gs10_state.get("status") == "completed",
-         f"got {_gs10_state.get('status')}")
-    test("Gs10: completed_at is set", bool(_gs10_state.get("completed_at")),
-         "completed_at missing")
+    test(
+        "Gs10: status=completed after eval complete",
+        _gs10_state.get("status") == "completed",
+        f"got {_gs10_state.get('status')}",
+    )
+    test("Gs10: completed_at is set", bool(_gs10_state.get("completed_at")), "completed_at missing")
 else:
     test("Gs10: status=completed after eval complete", False, "goal.json missing")
     test("Gs10: completed_at is set", False, "goal.json missing")
 
 # Gs11: goal init --force reinitializes existing goal.json
 _gs10b_res = subprocess.run(
-    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
-     "goal", "eval", "--decision", "continue"],
-    capture_output=True, text=True,
+    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles), "goal", "eval", "--decision", "continue"],
+    capture_output=True,
+    text=True,
     env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
 )
-test("Gs10b: goal eval continue after complete exits nonzero", _gs10b_res.returncode != 0,
-     f"stdout={_gs10b_res.stdout[:120]} stderr={_gs10b_res.stderr[:120]}")
+test(
+    "Gs10b: goal eval continue after complete exits nonzero",
+    _gs10b_res.returncode != 0,
+    f"stdout={_gs10b_res.stdout[:120]} stderr={_gs10b_res.stderr[:120]}",
+)
 if _gs1_goal_path.exists():
     _gs10b_state = json.loads(_gs1_goal_path.read_text())
-    test("Gs10b: completed goal stays completed after rejected continue",
-         _gs10b_state.get("status") == "completed", f"got {_gs10b_state.get('status')}")
+    test(
+        "Gs10b: completed goal stays completed after rejected continue",
+        _gs10b_state.get("status") == "completed",
+        f"got {_gs10b_state.get('status')}",
+    )
 else:
     test("Gs10b: completed goal stays completed after rejected continue", False, "goal.json missing")
 
 # Gs11: goal init --force reinitializes existing goal.json
 _gs11_res = subprocess.run(
-    [sys.executable, str(_tp), "--session-dir", str(_goal_tentacles),
-     "goal", "init", "--title", "Reinit Goal", "--force"],
-    capture_output=True, text=True,
+    [
+        sys.executable,
+        str(_tp),
+        "--session-dir",
+        str(_goal_tentacles),
+        "goal",
+        "init",
+        "--title",
+        "Reinit Goal",
+        "--force",
+    ],
+    capture_output=True,
+    text=True,
     env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
 )
 test("Gs11: goal init --force exits 0", _gs11_res.returncode == 0, _gs11_res.stderr[:200])
 if _gs1_goal_path.exists():
     _gs11_state = json.loads(_gs1_goal_path.read_text())
-    test("Gs11: title updated after --force reinit", _gs11_state.get("title") == "Reinit Goal",
-         f"got {_gs11_state.get('title')}")
-    test("Gs11: iteration resets to 1 on reinit", _gs11_state.get("iteration") == 1,
-         f"got {_gs11_state.get('iteration')}")
+    test(
+        "Gs11: title updated after --force reinit",
+        _gs11_state.get("title") == "Reinit Goal",
+        f"got {_gs11_state.get('title')}",
+    )
+    test(
+        "Gs11: iteration resets to 1 on reinit",
+        _gs11_state.get("iteration") == 1,
+        f"got {_gs11_state.get('iteration')}",
+    )
 else:
     test("Gs11: title updated after --force reinit", False, "goal.json missing")
     test("Gs11: iteration resets to 1 on reinit", False, "goal.json missing")
 
 # Cleanup temp dir
 import shutil as _shutil
+
 _shutil.rmtree(str(_goal_tmp), ignore_errors=True)
-
-
 
 
 # ─── SK Launcher pipeline integration ────────────────────────────────────────────────────────
@@ -1908,6 +2130,7 @@ _shutil.rmtree(str(_goal_tmp), ignore_errors=True)
 print("\n🚀  SK Launcher pipeline")
 
 import importlib.util as _ilu_sk
+
 _sk_spec = _ilu_sk.spec_from_file_location("auto_update_sk", REPO / "auto-update-tools.py")
 _sk_aut = _ilu_sk.module_from_spec(_sk_spec)
 _saved_sk_argv = sys.argv[:]
@@ -1931,54 +2154,70 @@ def _sk_fake_changes(files: list) -> dict:
 # Sk1: classify_changes sets sk_launcher=True for sk.py, and refresh would be called
 with _sk_mock.patch.object(_sk_aut, "refresh_sk_launcher", side_effect=lambda: _sk_refresh_calls.append(1)):
     _sk_changes = _sk_fake_changes(["sk.py"])
-    test("Sk1: classify_changes sets sk_launcher=True for sk.py",
-         _sk_changes.get("sk_launcher") is True,
-         "got " + repr(_sk_changes.get("sk_launcher")))
+    test(
+        "Sk1: classify_changes sets sk_launcher=True for sk.py",
+        _sk_changes.get("sk_launcher") is True,
+        "got " + repr(_sk_changes.get("sk_launcher")),
+    )
     if _sk_changes.get("sk_launcher"):
         _sk_aut.refresh_sk_launcher()
-    test("Sk1: refresh_sk_launcher invoked when sk_launcher=True",
-         len(_sk_refresh_calls) == 1,
-         f"call count: {len(_sk_refresh_calls)}")
+    test(
+        "Sk1: refresh_sk_launcher invoked when sk_launcher=True",
+        len(_sk_refresh_calls) == 1,
+        f"call count: {len(_sk_refresh_calls)}",
+    )
 
 _sk_refresh_calls.clear()
 
 # Sk2: classify_changes sk_launcher=False for unrelated files
 with _sk_mock.patch.object(_sk_aut, "refresh_sk_launcher", side_effect=lambda: _sk_refresh_calls.append(1)):
     _sk_changes2 = _sk_fake_changes(["watch-sessions.py"])
-    test("Sk2: classify_changes sk_launcher=False for unrelated change",
-         _sk_changes2.get("sk_launcher") is False,
-         "got " + repr(_sk_changes2.get("sk_launcher")))
+    test(
+        "Sk2: classify_changes sk_launcher=False for unrelated change",
+        _sk_changes2.get("sk_launcher") is False,
+        "got " + repr(_sk_changes2.get("sk_launcher")),
+    )
     if _sk_changes2.get("sk_launcher"):
         _sk_aut.refresh_sk_launcher()
-    test("Sk2: refresh_sk_launcher NOT called when sk_launcher=False",
-         len(_sk_refresh_calls) == 0,
-         f"unexpected call count: {len(_sk_refresh_calls)}")
+    test(
+        "Sk2: refresh_sk_launcher NOT called when sk_launcher=False",
+        len(_sk_refresh_calls) == 0,
+        f"unexpected call count: {len(_sk_refresh_calls)}",
+    )
 
 # Sk3: instruction template changes trigger managed global-instructions refresh
 _sk_instruction_calls = []
 with _sk_mock.patch.object(_sk_aut, "refresh_global_instructions", side_effect=lambda: _sk_instruction_calls.append(1)):
     _sk_changes3 = _sk_fake_changes(["templates/copilot-instructions.md"])
-    test("Sk3: classify_changes detects global instruction refresh",
-         bool(_sk_changes3.get("global_instructions")),
-         "got " + repr(_sk_changes3.get("global_instructions")))
+    test(
+        "Sk3: classify_changes detects global instruction refresh",
+        bool(_sk_changes3.get("global_instructions")),
+        "got " + repr(_sk_changes3.get("global_instructions")),
+    )
     if _sk_changes3.get("global_instructions"):
         _sk_aut.refresh_global_instructions()
-    test("Sk3: refresh_global_instructions invoked when instruction templates change",
-         len(_sk_instruction_calls) == 1,
-         f"call count: {len(_sk_instruction_calls)}")
+    test(
+        "Sk3: refresh_global_instructions invoked when instruction templates change",
+        len(_sk_instruction_calls) == 1,
+        f"call count: {len(_sk_instruction_calls)}",
+    )
 
 # Sk4: hook config changes trigger managed hook refresh
 _sk_hook_calls = []
 with _sk_mock.patch.object(_sk_aut, "refresh_global_hooks", side_effect=lambda: _sk_hook_calls.append(1)):
     _sk_changes4 = _sk_fake_changes(["hooks/hooks.json"])
-    test("Sk4: classify_changes detects managed hook refresh",
-         bool(_sk_changes4.get("managed_hooks")),
-         "got " + repr(_sk_changes4.get("managed_hooks")))
+    test(
+        "Sk4: classify_changes detects managed hook refresh",
+        bool(_sk_changes4.get("managed_hooks")),
+        "got " + repr(_sk_changes4.get("managed_hooks")),
+    )
     if _sk_changes4.get("managed_hooks"):
         _sk_aut.refresh_global_hooks()
-    test("Sk4: refresh_global_hooks invoked when hook config changes",
-         len(_sk_hook_calls) == 1,
-         f"call count: {len(_sk_hook_calls)}")
+    test(
+        "Sk4: refresh_global_hooks invoked when hook config changes",
+        len(_sk_hook_calls) == 1,
+        f"call count: {len(_sk_hook_calls)}",
+    )
 
 # Sk5: refresh_sk_launcher handles missing install.py gracefully
 _orig_td_sk = _sk_aut.TOOLS_DIR
@@ -1992,9 +2231,505 @@ try:
 finally:
     _sk_aut.TOOLS_DIR = _orig_td_sk
 
+# ─── Semantic Proximity Tests ───────────────────────────────────────────
+
+print("\n🔗 Semantic Proximity Tests")
+
+import sys as _sp_sys
+import types as _sp_types
+
+
+def _make_sp_test_db():
+    db = sqlite3.connect(":memory:")
+    db.executescript(
+        """
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT '',
+            title TEXT DEFAULT '',
+            tags TEXT DEFAULT '',
+            topic_key TEXT DEFAULT '',
+            stable_id TEXT DEFAULT '',
+            content TEXT DEFAULT ''
+        );
+        CREATE TABLE knowledge_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL,
+            target_id INTEGER NOT NULL,
+            source_stable_id TEXT DEFAULT '',
+            target_stable_id TEXT DEFAULT '',
+            relation_type TEXT NOT NULL,
+            stable_id TEXT DEFAULT '',
+            confidence REAL DEFAULT 0.5,
+            created_at TEXT DEFAULT ''
+        );
+        """
+    )
+    return db
+
+
+class _FakeSemanticMatrix:
+    def __init__(self, texts):
+        self.texts = list(texts)
+
+
+class _FakeSimilarityMatrix:
+    def __init__(self, texts):
+        self.texts = list(texts)
+
+    def __getitem__(self, key):
+        i, j = key
+        left = set(self.texts[i].split())
+        right = set(self.texts[j].split())
+        if not left or not right:
+            return 0.0
+        return len(left & right) / max(len(left), len(right))
+
+
+def _install_fake_sklearn():
+    saved = {}
+    module_names = (
+        "sklearn",
+        "sklearn.feature_extraction",
+        "sklearn.feature_extraction.text",
+        "sklearn.metrics",
+        "sklearn.metrics.pairwise",
+    )
+    for name in module_names:
+        saved[name] = _sp_sys.modules.get(name)
+
+    sklearn_mod = _sp_types.ModuleType("sklearn")
+    feature_mod = _sp_types.ModuleType("sklearn.feature_extraction")
+    text_mod = _sp_types.ModuleType("sklearn.feature_extraction.text")
+    metrics_mod = _sp_types.ModuleType("sklearn.metrics")
+    pairwise_mod = _sp_types.ModuleType("sklearn.metrics.pairwise")
+
+    class _FakeTfidfVectorizer:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def fit_transform(self, texts):
+            return _FakeSemanticMatrix(texts)
+
+    def _fake_cosine_similarity(matrix):
+        return _FakeSimilarityMatrix(matrix.texts)
+
+    text_mod.TfidfVectorizer = _FakeTfidfVectorizer
+    pairwise_mod.cosine_similarity = _fake_cosine_similarity
+    feature_mod.text = text_mod
+    metrics_mod.pairwise = pairwise_mod
+    sklearn_mod.feature_extraction = feature_mod
+    sklearn_mod.metrics = metrics_mod
+
+    _sp_sys.modules["sklearn"] = sklearn_mod
+    _sp_sys.modules["sklearn.feature_extraction"] = feature_mod
+    _sp_sys.modules["sklearn.feature_extraction.text"] = text_mod
+    _sp_sys.modules["sklearn.metrics"] = metrics_mod
+    _sp_sys.modules["sklearn.metrics.pairwise"] = pairwise_mod
+    return saved
+
+
+def _restore_fake_sklearn(saved):
+    for name, module in saved.items():
+        if module is None:
+            _sp_sys.modules.pop(name, None)
+        else:
+            _sp_sys.modules[name] = module
+
+
+_sp1_db = _make_sp_test_db()
+_sp1_text = "async await coroutine event loop python concurrency asyncio tasks futures"
+_sp1_db.execute(
+    "INSERT INTO knowledge_entries (session_id, category, title, content) VALUES (?, ?, ?, ?)",
+    ("sp1-a", "pattern", "async patterns a", _sp1_text),
+)
+_sp1_db.execute(
+    "INSERT INTO knowledge_entries (session_id, category, title, content) VALUES (?, ?, ?, ?)",
+    ("sp1-b", "pattern", "async patterns b", _sp1_text),
+)
+_sp1_db.commit()
+_sp1_fake = _install_fake_sklearn()
+try:
+    ek.extract_relations(_sp1_db)
+finally:
+    _restore_fake_sklearn(_sp1_fake)
+_sp1_count = _sp1_db.execute(
+    "SELECT COUNT(*) FROM knowledge_relations WHERE relation_type = 'SEMANTIC_PROXIMITY'"
+).fetchone()[0]
+test("Sp1: SEMANTIC_PROXIMITY links similar cross-session entries", _sp1_count > 0, f"count={_sp1_count}")
+_sp1_db.close()
+
+_sp2_db = _make_sp_test_db()
+_sp2_text = "async await coroutine event loop python concurrency asyncio tasks futures"
+_sp2_db.execute(
+    "INSERT INTO knowledge_entries (session_id, category, title, content) VALUES (?, ?, ?, ?)",
+    ("same", "mistake", "async issue", _sp2_text),
+)
+_sp2_db.execute(
+    "INSERT INTO knowledge_entries (session_id, category, title, content) VALUES (?, ?, ?, ?)",
+    ("same", "pattern", "async fix", _sp2_text),
+)
+_sp2_db.commit()
+_sp2_fake = _install_fake_sklearn()
+try:
+    ek.extract_relations(_sp2_db)
+finally:
+    _restore_fake_sklearn(_sp2_fake)
+_sp2_same_session = _sp2_db.execute(
+    "SELECT COUNT(*) FROM knowledge_relations WHERE relation_type = 'SAME_SESSION'"
+).fetchone()[0]
+_sp2_semantic = _sp2_db.execute(
+    "SELECT COUNT(*) FROM knowledge_relations WHERE relation_type = 'SEMANTIC_PROXIMITY'"
+).fetchone()[0]
+test(
+    "Sp2: stronger SAME_SESSION relation suppresses SEMANTIC_PROXIMITY",
+    _sp2_same_session > 0 and _sp2_semantic == 0,
+    f"SAME_SESSION={_sp2_same_session} SEMANTIC_PROXIMITY={_sp2_semantic}",
+)
+_sp2_db.close()
+
+import builtins as _sp_builtins
+
+_sp_real_import = _sp_builtins.__import__
+
+
+def _sp_block_sklearn(name, *args, **kwargs):
+    if name == "sklearn" or name.startswith("sklearn."):
+        raise ImportError(f"blocked:{name}")
+    return _sp_real_import(name, *args, **kwargs)
+
+
+_sp3_db = _make_sp_test_db()
+_sp3_db.execute(
+    "INSERT INTO knowledge_entries (session_id, category, title, content) VALUES (?, ?, ?, ?)",
+    ("sp3-a", "pattern", "entry one", "some shared content text words tokens"),
+)
+_sp3_db.execute(
+    "INSERT INTO knowledge_entries (session_id, category, title, content) VALUES (?, ?, ?, ?)",
+    ("sp3-b", "pattern", "entry two", "some shared content text words tokens"),
+)
+_sp3_db.commit()
+_sp_builtins.__import__ = _sp_block_sklearn
+try:
+    ek.extract_relations(_sp3_db)
+    test("Sp3: extract_relations does not crash when sklearn import fails", True)
+except Exception as exc:
+    test("Sp3: extract_relations does not crash when sklearn import fails", False, str(exc))
+finally:
+    _sp_builtins.__import__ = _sp_real_import
+_sp3_db.close()
+
+# ─── MCP Server Tests ───────────────────────────────────────────────────
+
+print("\n🧰 MCP Server Tests")
+
+import queue as _mcp_queue
+import threading as _mcp_threading
+
+
+def _mcp_write(proc, payload):
+    data = json.dumps(payload).encode("utf-8")
+    proc.stdin.write(f"Content-Length: {len(data)}\r\n\r\n".encode("ascii"))
+    proc.stdin.write(data)
+    proc.stdin.flush()
+
+
+def _mcp_read(proc, timeout=15.0):
+    def _read_until_delimiter(stream, delimiter, out_queue):
+        try:
+            data = b""
+            while delimiter not in data:
+                chunk = stream.read(1)
+                if not chunk:
+                    break
+                data += chunk
+            out_queue.put(("ok", data))
+        except Exception as exc:
+            out_queue.put(("err", exc))
+
+    def _read_exact(stream, length, out_queue):
+        try:
+            data = b""
+            while len(data) < length:
+                chunk = stream.read(length - len(data))
+                if not chunk:
+                    break
+                data += chunk
+            out_queue.put(("ok", data))
+        except Exception as exc:
+            out_queue.put(("err", exc))
+
+    header = b""
+    header_queue = _mcp_queue.Queue()
+    header_thread = _mcp_threading.Thread(
+        target=_read_until_delimiter,
+        args=(proc.stdout, b"\r\n\r\n", header_queue),
+        daemon=True,
+    )
+    header_thread.start()
+    header_thread.join(timeout)
+    if header_thread.is_alive():
+        raise TimeoutError("timed out waiting for MCP header")
+    header_status, header_value = header_queue.get()
+    if header_status == "err":
+        raise header_value
+    header = header_value
+    if not header:
+        raise RuntimeError(proc.stderr.read().decode("utf-8", errors="replace"))
+    header_blob, body = header.split(b"\r\n\r\n", 1)
+    headers = {}
+    for raw_line in header_blob.decode("ascii").split("\r\n"):
+        key, value = raw_line.split(":", 1)
+        headers[key.strip().lower()] = value.strip()
+    length = int(headers["content-length"])
+    while len(body) < length:
+        body_queue = _mcp_queue.Queue()
+        body_thread = _mcp_threading.Thread(
+            target=_read_exact,
+            args=(proc.stdout, length - len(body), body_queue),
+            daemon=True,
+        )
+        body_thread.start()
+        body_thread.join(timeout)
+        if body_thread.is_alive():
+            raise TimeoutError("timed out waiting for MCP body")
+        body_status, body_value = body_queue.get()
+        if body_status == "err":
+            raise body_value
+        if not body_value:
+            raise RuntimeError(proc.stderr.read().decode("utf-8", errors="replace"))
+        body += body_value
+    return json.loads(body.decode("utf-8"))
+
+
+_mcp_ok = False
+with tempfile.TemporaryDirectory(prefix="mcp-server-test-") as _mcp_tmp:
+    _mcp_home = Path(_mcp_tmp)
+    _mcp_state = _mcp_home / ".copilot" / "session-state"
+    _mcp_state.mkdir(parents=True, exist_ok=True)
+    _mcp_db = sqlite3.connect(_mcp_state / "knowledge.db")
+    _mcp_db.executescript(
+        """
+        CREATE TABLE documents (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            doc_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            file_path TEXT DEFAULT '',
+            seq INTEGER DEFAULT 1,
+            size_bytes INTEGER DEFAULT 0,
+            source TEXT DEFAULT 'copilot'
+        );
+        CREATE TABLE sections (
+            id INTEGER PRIMARY KEY,
+            document_id INTEGER NOT NULL,
+            section_name TEXT DEFAULT '',
+            content TEXT DEFAULT ''
+        );
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY,
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT DEFAULT '',
+            tags TEXT DEFAULT '',
+            confidence REAL DEFAULT 0.8,
+            session_id TEXT DEFAULT '',
+            occurrence_count INTEGER DEFAULT 1,
+            document_id INTEGER,
+            source_section TEXT DEFAULT '',
+            source_file TEXT DEFAULT '',
+            start_line INTEGER,
+            end_line INTEGER,
+            code_language TEXT DEFAULT '',
+            code_snippet TEXT DEFAULT '',
+            task_id TEXT DEFAULT '',
+            affected_files TEXT DEFAULT ''
+        );
+        CREATE VIRTUAL TABLE knowledge_fts USING fts5(
+            title,
+            section_name,
+            content,
+            doc_type UNINDEXED,
+            session_id UNINDEXED,
+            document_id UNINDEXED
+        );
+        CREATE VIRTUAL TABLE ke_fts USING fts5(title, content);
+        CREATE VIRTUAL TABLE sessions_fts USING fts5(
+            session_id UNINDEXED,
+            title,
+            user_messages,
+            assistant_messages,
+            tool_names
+        );
+        """
+    )
+    _mcp_db.execute(
+        """
+        INSERT INTO documents (id, session_id, doc_type, title, file_path, seq, size_bytes, source)
+        VALUES (1, 'sess-auth-123', 'checkpoint', 'Auth troubleshooting doc', 'checkpoint.md', 1, 256, 'copilot')
+        """
+    )
+    _mcp_db.execute(
+        "INSERT INTO sections (id, document_id, section_name, content) VALUES (1, 1, 'summary', ?)",
+        ("Fix auth bug by validating JWT audience and token expiry.",),
+    )
+    _mcp_db.execute(
+        """
+        INSERT INTO knowledge_entries (
+            id, category, title, content, tags, confidence, session_id,
+            occurrence_count, document_id, source_section, task_id, affected_files
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            1,
+            "pattern",
+            "JWT audience validation",
+            "Validate JWT audience before accepting auth tokens.",
+            "auth,jwt",
+            0.9,
+            "sess-auth-123",
+            1,
+            1,
+            "summary",
+            "auth-task",
+            "src/auth.py",
+        ),
+    )
+    _mcp_db.execute(
+        """
+        INSERT INTO knowledge_fts (rowid, title, section_name, content, doc_type, session_id, document_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            1,
+            "Auth troubleshooting doc",
+            "summary",
+            "Fix auth bug by validating JWT audience and token expiry.",
+            "checkpoint",
+            "sess-auth-123",
+            1,
+        ),
+    )
+    _mcp_db.execute(
+        "INSERT INTO ke_fts (rowid, title, content) VALUES (?, ?, ?)",
+        (1, "JWT audience validation", "Validate JWT audience before accepting auth tokens."),
+    )
+    _mcp_db.execute(
+        "INSERT INTO sessions_fts (rowid, session_id, title, user_messages, assistant_messages, tool_names) VALUES (?, ?, ?, ?, ?, ?)",
+        (1, "sess-auth-123", "auth session", "need help with auth", "validated jwt audience", "python"),
+    )
+    _mcp_db.commit()
+    _mcp_db.close()
+
+    _mcp_env = os.environ.copy()
+    _mcp_env["HOME"] = str(_mcp_home)
+    _mcp_env["USERPROFILE"] = str(_mcp_home)
+    _mcp_proc = subprocess.Popen(
+        [sys.executable, str(REPO / "mcp-server.py")],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_mcp_env,
+    )
+    try:
+        _mcp_write(
+            _mcp_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test"}},
+            },
+        )
+        _mcp_init = _mcp_read(_mcp_proc)
+        test(
+            "Mcp1: initialize returns tools capability",
+            _mcp_init.get("result", {}).get("capabilities", {}).get("tools", {}).get("listChanged") is False,
+            str(_mcp_init),
+        )
+        _mcp_write(_mcp_proc, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+
+        _mcp_write(_mcp_proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+        _mcp_tools = _mcp_read(_mcp_proc)
+        _mcp_tool_names = [tool.get("name") for tool in _mcp_tools.get("result", {}).get("tools", [])]
+        test(
+            "Mcp2: tools/list exposes briefing and query_session",
+            "briefing" in _mcp_tool_names and "query_session" in _mcp_tool_names,
+            str(_mcp_tool_names),
+        )
+
+        _mcp_write(
+            _mcp_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "briefing", "arguments": {"task": "auth bug", "limit": 2}},
+            },
+        )
+        _mcp_brief = _mcp_read(_mcp_proc)
+        _mcp_brief_structured = _mcp_brief.get("result", {}).get("structuredContent", {})
+        test(
+            "Mcp3: briefing tool returns structured task briefing",
+            _mcp_brief_structured.get("query") == "auth bug",
+            json.dumps(_mcp_brief, ensure_ascii=False)[:200],
+        )
+
+        _mcp_write(
+            _mcp_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {"name": "query_session", "arguments": {"query": "auth", "limit": 5}},
+            },
+        )
+        _mcp_query = _mcp_read(_mcp_proc)
+        _mcp_query_text = _mcp_query.get("result", {}).get("structuredContent", {}).get("output", "")
+        test(
+            "Mcp4: query_session tool returns search output",
+            "Auth troubleshooting doc" in _mcp_query_text or "JWT audience validation" in _mcp_query_text,
+            _mcp_query_text[:200],
+        )
+
+        _mcp_write(
+            _mcp_proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {"name": "missing_tool", "arguments": {}},
+            },
+        )
+        _mcp_bad_tool = _mcp_read(_mcp_proc)
+        test(
+            "Mcp5: unknown tool returns JSON-RPC invalid params error",
+            _mcp_bad_tool.get("error", {}).get("code") == -32602,
+            str(_mcp_bad_tool),
+        )
+
+        _mcp_write(_mcp_proc, {"jsonrpc": "2.0", "id": 6, "method": "shutdown", "params": {}})
+        _mcp_shutdown = _mcp_read(_mcp_proc)
+        test("Mcp6: shutdown request succeeds", "result" in _mcp_shutdown, str(_mcp_shutdown))
+        _mcp_write(_mcp_proc, {"jsonrpc": "2.0", "method": "exit", "params": {}})
+        _mcp_proc.wait(timeout=5)
+        _mcp_ok = True
+    except Exception as exc:
+        test("Mcp server end-to-end handshake", False, str(exc))
+    finally:
+        if not _mcp_ok and _mcp_proc.poll() is None:
+            _mcp_proc.terminate()
+            try:
+                _mcp_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _mcp_proc.kill()
+                _mcp_proc.wait(timeout=5)
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
-print(f"\n{'='*50}")
+print(f"\n{'=' * 50}")
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")
 if FAIL == 0:
     print("🎉 All tests passed!")

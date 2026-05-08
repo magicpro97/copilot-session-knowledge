@@ -681,6 +681,21 @@ if __name__ == "__main__":
                 "ALTER TABLE knowledge_entries ADD COLUMN recurrence_after_briefing INTEGER DEFAULT 0",
             ],
         ),
+        (
+            17,
+            "briefing_deliveries",
+            [
+                """CREATE TABLE IF NOT EXISTS briefing_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    entry_id INTEGER NOT NULL,
+                    delivered_at TEXT DEFAULT (datetime('now')),
+                    UNIQUE(session_id, entry_id)
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_bd_session ON briefing_deliveries(session_id)",
+                "CREATE INDEX IF NOT EXISTS idx_bd_entry ON briefing_deliveries(entry_id)",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:

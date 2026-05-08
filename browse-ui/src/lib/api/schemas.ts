@@ -1074,6 +1074,11 @@ export const browseHostBootstrapSchema = z.object({
   manual_token_required: z.boolean(),
   capabilities: z.array(z.string()),
   cors_origins_configured: z.boolean(),
+  // Pairing extensions (issue #58 / #59) — optional for backward compatibility
+  // with older backends that have not yet been updated.
+  pairing_supported: z.boolean().optional(),
+  static_mode_active: z.boolean().optional(),
+  demo_mode_badge: z.string().nullable().optional(),
 });
 
 /**
@@ -1098,6 +1103,16 @@ export const hostProfileSchema = z.object({
   token: z.string(),
   cli_kind: cliKindSchema,
   is_default: z.boolean(),
+  /**
+   * Persisted demo-mode badge label (#59). Optional — older profiles without
+   * this field are valid and treated as non-demo.
+   */
+  demo_mode_badge: z.string().nullable().optional(),
+  /**
+   * Connectivity mode discriminator (#65). Optional — older profiles without
+   * this field are treated as "direct" for backwards compatibility.
+   */
+  connectivity_mode: z.enum(["direct", "tunnel", "broker"]).optional(),
 });
 
 /**

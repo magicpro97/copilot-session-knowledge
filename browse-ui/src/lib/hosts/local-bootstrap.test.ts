@@ -42,9 +42,12 @@ describe("probeLocalBootstrap", () => {
   });
 
   it("falls through to localhost when the 127.0.0.1 candidate fails", async () => {
+    // Three calls now: (1) primary 127.0.0.1 probe → fails; (2) secondary no-cors
+    // probe to 127.0.0.1/ to detect daemon state → also fails; (3) primary localhost probe → succeeds.
     const fetchMock = vi
       .fn()
-      .mockRejectedValueOnce(new Error("offline"))
+      .mockRejectedValueOnce(new Error("offline")) // (1) 127.0.0.1 primary
+      .mockRejectedValueOnce(new Error("offline")) // (2) 127.0.0.1 secondary no-cors
       .mockResolvedValueOnce(
         jsonResponse({
           schema: "browse-host/1",
@@ -54,14 +57,14 @@ describe("probeLocalBootstrap", () => {
           capabilities: ["discovery"],
           cors_origins_configured: true,
         })
-      );
+      ); // (3) localhost primary
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await probeLocalBootstrap();
 
     expect(result.status).toBe("detected");
     expect(result).toMatchObject({ url: "http://localhost:8765" });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("returns auth-required without inventing a token", async () => {
@@ -97,9 +100,10 @@ describe("probeLocalBootstrap", () => {
     const first = await probeLocalBootstrap();
     const second = await probeLocalBootstrap();
 
-    expect(first).toEqual({ status: "unavailable" });
+    expect(first).toEqual(expect.objectContaining({ status: "unavailable" }));
     expect(second).toEqual({ status: "cached-negative" });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // 2 primary probes (one per candidate) + 2 secondary no-cors probes = 4 total
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it("ignores malformed discovery payloads and reports unavailable", async () => {
@@ -108,7 +112,7 @@ describe("probeLocalBootstrap", () => {
 
     const result = await probeLocalBootstrap();
 
-    expect(result).toEqual({ status: "unavailable" });
+    expect(result).toEqual(expect.objectContaining({ status: "unavailable" }));
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

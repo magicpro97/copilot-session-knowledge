@@ -250,6 +250,25 @@ def test_hybrid_change_detection_source():
     print("  ✓ Hybrid change detection source tests passed")
 
 
+def test_no_proxy_http_client():
+    """Test that outbound HTTP helper paths bypass proxy env vars explicitly."""
+    init_src = Path(__file__).parent / "browse" / "__init__.py"
+    init_content = init_src.read_text(encoding="utf-8")
+    assert "ProxyHandler({})" in init_content, \
+        "browse/__init__.py is missing ProxyHandler({}) in _probe_public_url"
+    assert "no_proxy_opener.open" in init_content, \
+        "browse/__init__.py still uses a proxy-sensitive opener for _probe_public_url"
+
+    dl_src = Path(__file__).parent / "browse" / "static" / "vendor" / "_download.py"
+    dl_content = dl_src.read_text(encoding="utf-8")
+    assert "ProxyHandler({})" in dl_content, \
+        "browse/static/vendor/_download.py is missing ProxyHandler({}) in download_lib"
+    assert "no_proxy_opener.open" in dl_content, \
+        "browse/static/vendor/_download.py still uses a proxy-sensitive opener"
+
+    print("  ✓ No-proxy HTTP client pattern tests passed")
+
+
 
 
 # Create minimal stub modules for tests that need imports
@@ -304,6 +323,7 @@ def main():
         test_sql_parameterized_queries,
         test_db_write_safety,
         test_hybrid_change_detection_source,
+        test_no_proxy_http_client,
     ]
 
     for test in tests:

@@ -18,17 +18,23 @@ build-session-index.py  ──→  SQLite FTS5 (knowledge.db)
 extract-knowledge.py  ──→  7 knowledge categories
         │                   (mistake, pattern, decision,
         │                    tool, feature, refactor, discovery)
+        │                   + knowledge_relations
+        │                     (SAME_SESSION, SAME_TOPIC, TAG_OVERLAP,
+        │                      RESOLVED_BY, SEMANTIC_PROXIMITY*)
         ▼
-query-session.py / briefing.py  ──→  Search & recall
+query-session.py / briefing.py / mcp-server.py  ──→  Search, recall, MCP tools
         │
         ▼
 watch-sessions.py  ──→  Incremental re-indexing (adaptive polling)
 ```
 
+*`SEMANTIC_PROXIMITY` is populated when local TF-IDF / scikit-learn support is available; missing
+dependencies remain a silent no-op.*
+
 **Phases:**
 1. `build-session-index.py` — Phase 1 (session metadata) + Phase 2 (event content) via `providers/` → SQLite FTS5 (schema v8; current migration level v15)
-2. `extract-knowledge.py` — classifies into 7 types, deduplicates by content hash, auto-detects relations; category-aware confidence floors (pattern=0.5, others=0.4) and recurrence reward (+0.03 per upsert, capped)
-3. `query-session.py` / `briefing.py` — BM25 keyword search + optional semantic vector search (RRF blend)
+2. `extract-knowledge.py` — classifies into 7 types, deduplicates by content hash, auto-detects relations (`SAME_SESSION`, `SAME_TOPIC`, `TAG_OVERLAP`, `RESOLVED_BY`, `SEMANTIC_PROXIMITY`); category-aware confidence floors (pattern=0.5, others=0.4) and recurrence reward (+0.03 per upsert, capped)
+3. `query-session.py` / `briefing.py` / `mcp-server.py` — BM25 keyword search + optional semantic vector search (RRF blend) exposed via CLI and MCP
 4. `watch-sessions.py` — adaptive polling (5 s / 30 s / 300 s tiers), auto re-indexes on file changes
 5. `learn.py` — manual knowledge entry; CLI interface for agents to record learnings during a session
 
@@ -40,6 +46,7 @@ watch-sessions.py  ──→  Incremental re-indexing (adaptive polling)
 | `extract-knowledge.py` | Classifies + deduplicates knowledge entries; category-aware confidence floors; recurrence reward |
 | `query-session.py` | FTS5 + semantic search; JSON/markdown export |
 | `briefing.py` | Task-scoped recall; context packs for agent injection |
+| `mcp-server.py` | Read-only MCP stdio JSON-RPC surface for `briefing` and `query_session` |
 | `watch-sessions.py` | File watcher; triggers incremental re-indexing |
 | `learn.py` | Manual knowledge entry |
 | `tentacle.py` | Multi-agent orchestration (create → todo → bundle → swarm → complete) |

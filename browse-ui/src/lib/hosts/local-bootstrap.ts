@@ -23,13 +23,56 @@ const NEGATIVE_CACHE_DURATION_MS = 5 * 60 * 1000;
 /** In-memory negative cache expiry. 0 = no active negative cache. */
 let negativeCacheUntil = 0;
 
+/**
+ * Per-candidate failure reason recorded when a loopback probe attempt fails.
+ *
+ * - `"timeout"` — request was aborted by AbortSignal.timeout (backend not responding).
+ * - `"network-error"` — fetch threw a TypeError/network error; common causes are CORS
+ *   preflight rejection or Private Network Access (PNA) block by the browser.
+ * - `"bad-status"` — backend responded but with a non-ok HTTP status code.
+ * - `"parse-error"` — response body did not match the expected browse-host/1 schema.
+ */
+export type ProbeFailureReason = "timeout" | "network-error" | "bad-status" | "parse-error";
+
+/**
+ * Inferred daemon running state used to distinguish failure sub-types.
+ *
+ * After a `network-error` on the PNA-gated probe, a secondary no-cors probe is
+ * attempted against the base URL. The result indicates:
+ * - `"not-running"` — secondary probe also failed (connection refused; daemon is down).
+ * - `"running-no-pna"` — secondary probe succeeded (server is up, but PNA/CORS headers
+ *   are missing — daemon needs to be restarted with `--hosted-bootstrap`).
+ * - `"unknown"` — secondary probe was inconclusive (e.g. another network error).
+ *
+ * Note: in Chrome 126+ / LNA, the secondary no-cors probe may also be blocked for
+ * loopback addresses from a public HTTPS origin, making "unknown" the likely result
+ * on modern Chrome without LNA permission. Even so, the guidance surfaced to the user
+ * covers both "start daemon" and "restart with --hosted-bootstrap".
+ */
+export type DaemonState = "not-running" | "running-no-pna" | "unknown";
+
+/** Records the failure details for a single loopback candidate probe attempt. */
+export interface ProbeAttempt {
+  url: string;
+  reason: ProbeFailureReason;
+  /**
+   * Inferred daemon running state. Only populated when reason === "network-error"
+   * on an HTTPS-to-loopback probe where a secondary no-cors check was attempted.
+   */
+  daemonState?: DaemonState;
+}
+
 export type LocalBootstrapResult =
   /** Probe succeeded; backend is open-auth or no token required yet. */
   | { status: "detected"; url: string; response: BrowseHostBootstrapResponse }
   /** Probe succeeded; backend is present but requires a manual token from the user. */
   | { status: "auth-required"; url: string; response: BrowseHostBootstrapResponse }
-  /** All candidates failed; negative cache applied. */
-  | { status: "unavailable" }
+  /**
+   * All candidates failed; negative cache applied.
+   * `reasons` records per-candidate failure details for diagnostic surfaces.
+   * Callers that only care about `status` can ignore `reasons` without breakage.
+   */
+  | { status: "unavailable"; reasons?: ProbeAttempt[] }
   /** Skipped due to active negative cache. */
   | { status: "cached-negative" };
 
@@ -49,6 +92,8 @@ export async function probeLocalBootstrap(): Promise<LocalBootstrapResult> {
     return { status: "cached-negative" };
   }
 
+  const reasons: ProbeAttempt[] = [];
+
   for (const baseUrl of LOOPBACK_CANDIDATES) {
     try {
       const url = `${baseUrl}${WELL_KNOWN_PATH}`;
@@ -56,13 +101,26 @@ export async function probeLocalBootstrap(): Promise<LocalBootstrapResult> {
         method: "GET",
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
         cache: "no-store",
+        // Chrome 138+ Local Network Access (LNA): explicitly annotate this request as
+        // targeting the local address space so Chrome triggers the LNA permission flow
+        // instead of failing silently or blocking without a diagnostic.
+        // TypeScript lib.dom.d.ts does not yet include this option.
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-expect-error — targetAddressSpace is a Chrome LNA extension (Chrome 138+, stable Chrome 142+)
+        targetAddressSpace: "local",
       });
 
-      if (!response.ok) continue;
+      if (!response.ok) {
+        reasons.push({ url: baseUrl, reason: "bad-status" });
+        continue;
+      }
 
       const raw: unknown = await response.json();
       const parsed = browseHostBootstrapSchema.safeParse(raw);
-      if (!parsed.success) continue;
+      if (!parsed.success) {
+        reasons.push({ url: baseUrl, reason: "parse-error" });
+        continue;
+      }
 
       const data = parsed.data;
 
@@ -73,13 +131,37 @@ export async function probeLocalBootstrap(): Promise<LocalBootstrapResult> {
       }
 
       return { status: "detected", url: baseUrl, response: data };
-    } catch {
-      // Network error, AbortError (timeout), parse failure — try next candidate.
+    } catch (err) {
+      // Distinguish timeout (AbortError) from network errors (CORS/PNA block, connection refused).
+      const reason: ProbeFailureReason =
+        err instanceof Error && err.name === "AbortError" ? "timeout" : "network-error";
+
+      if (reason === "network-error") {
+        // Secondary no-cors probe to distinguish "daemon not running" (connection refused)
+        // from "daemon running without --hosted-bootstrap" (CORS/PNA preflight rejected).
+        // In Chrome 126+ / LNA the secondary may also be blocked, yielding "unknown".
+        let daemonState: DaemonState = "unknown";
+        try {
+          await fetch(`${baseUrl}/`, {
+            mode: "no-cors",
+            signal: AbortSignal.timeout(1_000),
+            cache: "no-store",
+          });
+          // Any response (even opaque) means something is listening → CORS/PNA is the blocker.
+          daemonState = "running-no-pna";
+        } catch {
+          // Connection refused or also blocked by LNA.
+          daemonState = "not-running";
+        }
+        reasons.push({ url: baseUrl, reason, daemonState });
+      } else {
+        reasons.push({ url: baseUrl, reason });
+      }
     }
   }
 
   negativeCacheUntil = Date.now() + NEGATIVE_CACHE_DURATION_MS;
-  return { status: "unavailable" };
+  return { status: "unavailable", reasons };
 }
 
 /**

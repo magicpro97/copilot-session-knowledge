@@ -103,6 +103,9 @@ sk install --install-git-hooks
 - ❌ Sub-agent edits files outside declared scope → silent conflicts with other parallel agents
 - ❌ Sub-agent silently expands scope instead of escalating → orchestrator loses visibility
 - ❌ Skipping `install.py --install-git-hooks` → git-level commit/push guard is inactive; enforcement falls back to preToolUse only (not guaranteed in subagent contexts)
+- ❌ Accepting sub-agent claims of "tests pass" / "lint clean" / "CI green" without running the commands → unverified claims are not evidence; always run the gates yourself and record output
+- ❌ Closing a tentacle `DONE` with no verification evidence → treated as `AMBIGUOUS`; requires triage before proceeding
+- ❌ Closing an issue without per-criterion evidence → acceptance criteria are unproven until commands run and output is recorded
 
 ## Core concept
 
@@ -241,6 +244,8 @@ Summary:
 
 The first 4 gates are mandatory. Skipping any of them means you don't know if the agent output is correct.
 
+**Evidence requirement:** Each gate must produce concrete, recorded output before being marked as passed. Do not rely on agent claims that "lint is clean" or "tests pass" — run the commands yourself and attach or reference the output. A gate is only passed when you hold the proof, not when the sub-agent says it is. See Rule 9 (Claims Require Evidence) in `docs/AGENT-RULES.md`.
+
 ### Phase 3.5: Goal Evaluation Loop
 
 After all verification gates pass, evaluate whether the overarching goal is met before proceeding to commit and close. This is the **loop-until-verified** phase — the orchestrator decides whether to iterate or close.
@@ -265,7 +270,8 @@ sk tentacle verify <name> "<success-criteria-command>" --label "goal-eval"
 1. Success criteria must be defined **before** dispatching tentacles (in Phase 1), not invented during evaluation.
 2. Evaluation is the **orchestrator's responsibility** — sub-agents do not loop. They report via handoff and stop.
 3. When looping, create **new tentacles** for remaining gaps; do not re-open completed tentacles.
-4. Record evidence for every evaluation using `tentacle.py verify` so the decision is auditable.
+4. Record evidence for every evaluation using `tentacle.py verify` so the decision is auditable. Closing without recorded evidence is an anti-pattern — it removes the audit trail.
+5. Do not infer goal status from handoff prose alone. Run the success-criteria command and record its output.
 
 **Example loop iteration:**
 

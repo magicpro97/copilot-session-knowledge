@@ -109,6 +109,20 @@ When running inside a tentacle (dispatched by the orchestrator via `tentacle.py`
 
 See [docs/AGENT-RULES.md](../docs/AGENT-RULES.md) for the complete Rule 8 text and goal-loop pattern. Goal-eval: `sk tentacle verify <name> "<check-command>" --label "goal-eval"` (fallback: `python3 ~/.copilot/tools/tentacle.py verify ...`).
 
+### 9. Claims Require Evidence
+
+Any claim about test status, lint, format, CI, or runtime correctness must be backed by concrete, reproducible output. Asserting something works without running it is a documentation defect.
+
+| Claim | Required evidence |
+|-------|------------------|
+| "Tool / feature works" | Command output or test log showing runtime execution |
+| "Tests pass" | Test runner output with pass/fail counts |
+| "Format / lint clean" | Actual linter/formatter command output |
+| "CI is green" | CI run URL or copy of passing job output |
+| "Build succeeds" | Compiler or build tool output confirming exit code 0 |
+
+If you did not run a verification command, say so: "not proven yet — run `<command>`." A `DONE` handoff with no evidence for its claims is treated as `AMBIGUOUS` by the orchestrator. Issue closeouts must include verification evidence per acceptance criterion or explicitly list unproven items.
+
 > **Drift-lock:** `docs/AGENT-RULES.md` is the canonical source for all agent rules. This file (`copilot-instructions.md`) is the Copilot CLI runtime enforcement surface — keep it in sync with `docs/AGENT-RULES.md`. Changes to agent rules should be reflected in both places.
 
 ## Hook Enforcement (Summary)
@@ -122,6 +136,7 @@ Hooks **fail-open**: if a hook crashes or is unavailable, the guarded operation 
 | Tentacle for broad changes | `tentacle-enforce` | Blocks edits across ≥3 files / ≥2 modules without tentacle setup |
 | No git ops in sub-agents | `subagent-git-guard` | Blocks `git commit`/`git push` while dispatched-subagent marker is active |
 | Syntax errors | `syntax-gate` | Blocks `.py` edit/create payloads that fail `py_compile` |
+| Evidence for closeout claims (Rule 9) | `verification-gate` | Tracks dirty Python / browse-ui surfaces, records fresh test / format / lint / typecheck / build evidence, and blocks `task_complete`, `gh issue close/comment`, and tentacle `DONE` / `complete` actions when that evidence is missing. CI/runtime proof beyond those gates remains policy-level. |
 
 > Full hook inventory: **[docs/AGENT-RULES.md](../docs/AGENT-RULES.md)** · **[docs/HOOKS.md](../docs/HOOKS.md)**
 

@@ -159,6 +159,69 @@ jobs:
       - name: Run E2E tests
         run: pnpm test:e2e
 
+  # Pairing E2E — Edge desktop + mobile Chrome (#58 acceptance proof).
+  #
+  # Runs only on manual dispatch to avoid burning CI minutes on every push.
+  # This job produces the honest Edge + mobile evidence required to close #58:
+  #   - pairing-edge-desktop: Desktop Edge (msedge channel, has BarcodeDetector)
+  #   - pairing-mobile-chrome: Pixel 5 emulation (touch viewport, mobile UA)
+  #
+  # To run:
+  #   gh workflow run ci.yml
+  # Then inspect the "pairing-e2e" job → "Upload Playwright report" artifact
+  # for trace files and screenshot SHA-256 evidence.
+  pairing-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    if: github.event_name == 'workflow_dispatch'
+    defaults:
+      run:
+        working-directory: browse-ui
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: browse-ui/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers (msedge + chromium)
+        # msedge is downloaded from Microsoft CDN by Playwright and works on
+        # ubuntu-latest runners. chromium is needed for pairing-mobile-chrome.
+        run: npx playwright install msedge chromium --with-deps
+
+      - name: Run pairing E2E — Edge desktop + mobile Chrome
+        run: >
+          pnpm exec playwright test e2e/host-pairing.spec.ts
+          --project=pairing-edge-desktop
+          --project=pairing-mobile-chrome
+          --reporter=html
+
+      - name: Upload Playwright report (trace + screenshot evidence)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pairing-e2e-report
+          path: browse-ui/playwright-report/
+          retention-days: 30
+
   agents-release-hook:
     runs-on: ubuntu-latest
     needs: [quality-gates, browse-ui]

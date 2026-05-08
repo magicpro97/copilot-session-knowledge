@@ -22,6 +22,7 @@
 6. **No guessing** — verify table names, function signatures, and file paths from source; never assume.
 7. **Docs output quality** — distinguish Facts / Interpretation / Actions / Verification evidence; never present inference as fact; every action must include the executable command.
 8. **Tentacle execution obligations** — when dispatched inside a tentacle: (a) read bundle files first, (b) stay in declared scope, (c) mark todos done with `sk tentacle todo <name> done <index>`, (d) do NOT run `git commit`/`git push`, (e) write a structured handoff with explicit `--status` (`DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED`) via `sk tentacle handoff <name> "<summary>" --status <STATUS> [--changed-file <path>] --learn` before stopping.
+9. **Claims require evidence** — any claim about test status, lint, format, CI, or runtime correctness must be backed by concrete output. If you did not run a verification command, say "not proven yet — run `<command>`." A `DONE` handoff with no evidence is treated as `AMBIGUOUS`. Issue closeouts must include verification evidence per acceptance criterion.
 
 **Goal-loop (orchestrators only)** — after all tentacle handoffs pass verification gates, evaluate whether the overarching goal is met. If unmet, loop back to Phase 1 (new tentacles for remaining gaps). Only commit and close when success criteria are verifiably satisfied. Sub-agents report via handoff and stop; orchestrators own continuation. Record goal-eval evidence with `sk tentacle verify <name> "<check-command>" --label "goal-eval"`.
 

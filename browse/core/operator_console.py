@@ -41,6 +41,11 @@ _MAX_OUTPUT_LINES = 10_000  # events buffered per run
 _MAX_FILE_SIZE = 256 * 1024  # 256 KB: file preview size cap
 _MAX_SUGGESTIONS = 50  # path suggestions cap
 
+# ── SSE fast-resume token constants (issue #60) ───────────────────────────────
+
+_TOKEN_TTL = 300  # seconds: resume token lifetime
+_CHECKPOINT_INTERVAL = 25  # issue a new SSE id: token every N events
+
 # ── Attachment / staged-file constants ────────────────────────────────────────
 
 _MAX_STAGED_FILES = 10  # maximum files per prompt submission
@@ -113,6 +118,13 @@ _ACTIVE_RUNS: dict[str, dict] = {}
 _RUNS_LOCK = threading.Lock()
 _TERMINAL_RUN_STATUSES = frozenset({"done", "failed", "timeout", "cancelled"})
 
+# ── SSE resume-token store (issue #60) ───────────────────────────────────────
+# Maps opaque UUID4 token → {session_id, run_id, from_idx, expires_at}
+# Tokens are single-use and short-lived; consumed on first valid read.
+
+_RESUME_TOKENS: dict[str, dict] = {}
+_RESUME_TOKENS_LOCK = threading.Lock()
+
 # ── In-process model catalog cache ───────────────────────────────────────────
 
 _MODEL_CACHE: dict = {
@@ -132,6 +144,65 @@ _UUID4_RE = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}
 
 def _is_valid_id(value: str) -> bool:
     return bool(value and _UUID4_RE.match(value))
+
+
+# ── SSE resume token helpers (issue #60) ─────────────────────────────────────
+
+
+def _purge_expired_tokens() -> None:
+    """Remove expired tokens from the store. Called lazily before issuing new tokens."""
+    now = time.monotonic()
+    with _RESUME_TOKENS_LOCK:
+        expired = [k for k, v in _RESUME_TOKENS.items() if v["expires_at"] <= now]
+        for k in expired:
+            _RESUME_TOKENS.pop(k, None)
+
+
+def issue_resume_token(session_id: str, run_id: str, from_idx: int) -> str:
+    """Issue an opaque single-use reconnect token for the given stream position.
+
+    The token encodes (session_id, run_id, from_idx) server-side and expires after
+    _TOKEN_TTL seconds.  It is returned as a UUID4 string safe to embed in SSE id:
+    fields or HTTP headers.  The token is NOT an auth credential — auth is enforced
+    separately via Bearer/cookie check.
+
+    Returns the token string.
+    """
+    token = str(uuid.uuid4())
+    _purge_expired_tokens()
+    with _RESUME_TOKENS_LOCK:
+        _RESUME_TOKENS[token] = {
+            "session_id": session_id,
+            "run_id": run_id,
+            "from_idx": from_idx,
+            "expires_at": time.monotonic() + _TOKEN_TTL,
+        }
+    return token
+
+
+def consume_resume_token(session_id: str, run_id: str, token_str: str) -> int | None:
+    """Validate and consume a resume token. Returns from_idx on success, None on failure.
+
+    Failure reasons (all fall back to idx=0 gracefully):
+    - token is not a valid UUID4
+    - token does not exist (never issued or already consumed)
+    - token belongs to a different session_id or run_id
+    - token has expired
+    The token is deleted from the store on first successful consumption (single-use).
+    """
+    if not token_str or not _is_valid_id(token_str):
+        return None
+    with _RESUME_TOKENS_LOCK:
+        entry = _RESUME_TOKENS.get(token_str)
+        if entry is None:
+            return None
+        if entry["session_id"] != session_id or entry["run_id"] != run_id:
+            return None
+        if time.monotonic() > entry["expires_at"]:
+            _RESUME_TOKENS.pop(token_str, None)
+            return None
+        _RESUME_TOKENS.pop(token_str, None)  # single-use: consume immediately
+        return int(entry["from_idx"])
 
 
 # ── Path helpers ──────────────────────────────────────────────────────────────
@@ -976,17 +1047,27 @@ def get_run_status(run_id: str) -> dict | None:
     return _load_persisted_run(run_id)
 
 
-def make_stream_generator(session_id: str, run_id: str):
+def make_stream_generator(session_id: str, run_id: str, resume_from: int = 0):
     """Return a callable(stop_event) → generator that streams run output as JSON SSE.
 
-    Each yielded value is a JSON string with:
-    - {"type": "<copilot-event-type>", "event": {...}, "idx": N}  — parsed Copilot JSONL
-    - {"type": "raw", "text": "...", "idx": N}  — non-JSON fallback line
-    - {"type": "status", "status": "...", "exit_code": N}  — final status
+    Each yielded value is either:
+    - A plain JSON string:      {"type": "...", ...}
+    - A (json_str, sse_id) tuple at checkpoint events, where sse_id is an opaque
+      single-use resume token embedded in the SSE ``id:`` field (issue #60).
+
+    Clients that receive the SSE ``id:`` field may present it via ``Last-Event-ID``
+    on reconnect to resume streaming from the checkpointed position.
+
+    Args:
+        session_id:   Session owning the run.
+        run_id:       Run to stream.
+        resume_from:  First event index to emit (0 = start from beginning).
+                      Values obtained from ``consume_resume_token``; graceful
+                      fallback is always resume_from=0.
     """
 
     def _gen(stop_event):
-        last_idx = 0
+        last_idx = max(0, resume_from)
         deadline = time.monotonic() + _EXEC_TIMEOUT + 60
         poll_tick = 0.05
 
@@ -1012,7 +1093,16 @@ def make_stream_generator(session_id: str, run_id: str):
             while last_idx < len(events):
                 if stop_event.is_set():
                     return
-                yield json.dumps(events[last_idx])
+                event_json = json.dumps(events[last_idx])
+                # Emit SSE id: at checkpoint intervals so clients can resume.
+                # The first event of each connection (last_idx == resume_from) always
+                # gets a token so the client has one immediately; subsequent tokens are
+                # issued every _CHECKPOINT_INTERVAL events.
+                if last_idx == resume_from or (last_idx > 0 and last_idx % _CHECKPOINT_INTERVAL == 0):
+                    sse_id = issue_resume_token(session_id, run_id, last_idx)
+                    yield (event_json, sse_id)
+                else:
+                    yield event_json
                 last_idx += 1
 
             status = run.get("status", "running")

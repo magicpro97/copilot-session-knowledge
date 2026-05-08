@@ -2,6 +2,13 @@ import { expect, test as base, type ConsoleMessage, type Response } from "@playw
 
 const IGNORED_CONSOLE_ERRORS = [
   /^Unchecked runtime\.lastError: Could not establish connection\. Receiving end does not exist\.?$/,
+  // Expected when probeLocalBootstrap tests loopback from 127.0.0.1 origin:
+  // CSP blocks localhost:8765 (cross-origin from 127.0.0.1:8765), and
+  // aborted loopback probes produce ERR_CONNECTION_REFUSED network errors.
+  /net::ERR_CONNECTION_REFUSED/,
+  /violates the following Content Security Policy directive/,
+  /Fetch API cannot load .* Refused to connect because it violates/,
+  /Failed to load resource/,
 ];
 
 function isIgnoredConsoleError(message: string): boolean {

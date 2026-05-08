@@ -9,12 +9,15 @@ import {
   Globe,
   Info,
   Loader2,
+  Network,
   Plus,
+  QrCode,
   RotateCcw,
   Search,
   ServerCog,
   Star,
   Trash2,
+  Zap,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -26,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { buildHostUrl } from "@/lib/api/client";
+import { getTelegramBotUrl } from "@/lib/api/broker-client";
 import type { HostProfile } from "@/lib/api/types";
 import {
   BROWSE_HOST_CHANGE_EVENT,
@@ -41,8 +45,11 @@ import {
   replaceHostProfiles,
   saveHostProfile,
   setSelectedHostId,
+  suggestBrokerFromProbeFail,
+  type HostCompatibility,
 } from "@/lib/host-profiles";
 import { probeLocalBootstrap, resetLocalBootstrapCache } from "@/lib/hosts/local-bootstrap";
+import { QrPairingPanel } from "@/components/hosts/qr-pairing-panel";
 import { cn } from "@/lib/utils";
 
 const CLI_KIND_OPTIONS = [
@@ -62,6 +69,11 @@ const CLI_KIND_OPTIONS = [
 /** Returns the current control-plane origin when not running on localhost. */
 function getHostedOrigin(): string | null {
   if (typeof window === "undefined") return null;
+  // E2E test escape hatch — allows cross-browser origin mocking without redefining
+  // window.location, which is non-configurable in real browsers (Edge, mobile Chrome).
+  // Set window.__E2E_HOSTED_ORIGIN__ via page.addInitScript() to simulate a hosted origin.
+  const testOrigin = (window as Window & { __E2E_HOSTED_ORIGIN__?: string }).__E2E_HOSTED_ORIGIN__;
+  if (testOrigin) return testOrigin;
   const origin = window.location.origin;
   if (isLocalOrigin(origin)) return null;
   return origin;
@@ -120,13 +132,38 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
   /** Informational note when PNA is required — not a blocking error. */
   const [pnaNote, setPnaNote] = useState<string | null>(null);
   const [originCopied, setOriginCopied] = useState(false);
+  /** True when the QR / browse:// pairing panel is open (#58). */
+  const [showQrPanel, setShowQrPanel] = useState(false);
+  /** Demo mode badge text from the most recent local backend probe (#59). */
+  const [localDemoModeBadge, setLocalDemoModeBadge] = useState<string | null>(null);
+
+  // ── Broker mode state (#65) ─────────────────────────────────────────────────
+  /** Connectivity mode for the new host being added. */
+  const [newConnectivityMode, setNewConnectivityMode] = useState<"direct" | "broker">("direct");
+  /** Telegram bot name for broker mode setup. */
+  const [newBotName, setNewBotName] = useState("");
+  /** Pairing token for broker mode setup. */
+  const [newPairingToken, setNewPairingToken] = useState("");
+  /**
+   * Diagnosis result from a failed probe. When `broker-required`, the Broker Mode
+   * tab becomes visible and a recommendation banner is shown. Null when no diagnosis
+   * has been run or the most recent probe succeeded (#65 diagnosis-driven display).
+   */
+  const [brokerDiagnosis, setBrokerDiagnosis] = useState<HostCompatibility | null>(null);
 
   // ── Detect local backend state ──────────────────────────────────────────────
   type DetectStatus = "idle" | "probing" | "detected" | "auth-required" | "unavailable";
   const [detectStatus, setDetectStatus] = useState<DetectStatus>("idle");
   const [detectedUrl, setDetectedUrl] = useState<string | null>(null);
 
-  const hostedOrigin = getHostedOrigin();
+  const [hostedOrigin, setHostedOrigin] = useState<string | null>(null);
+  // Defer hosted-origin detection to after mount to avoid SSR/hydration mismatch.
+  // getHostedOrigin() reads window.location.origin which is unavailable on the server;
+  // calling it synchronously during render causes React hydration error #418 when the
+  // SSR HTML (hostedOrigin=null) doesn't match the client render (hostedOrigin set).
+  useEffect(() => {
+    setHostedOrigin(getHostedOrigin());
+  }, []);
 
   function refresh() {
     setAllHosts(getAllHostProfiles());
@@ -198,8 +235,20 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
     if (error) {
       setValidationError(error);
       setValidating(false);
+      // Diagnosis-driven broker recommendation (#65): after a non-auth probe
+      // failure the network may be tunnel-hostile. Surface broker relay mode as
+      // an option (shows banner + tab) but DO NOT auto-switch — the operator
+      // must still see the validation error and can decide whether to use broker
+      // mode by clicking the newly-visible "Broker Mode" tab.
+      const isAuthError =
+        error.includes("Authentication failed (401)") || error.includes("Forbidden (403)");
+      const suggestion = suggestBrokerFromProbeFail(url, isAuthError);
+      setBrokerDiagnosis(suggestion);
       return;
     }
+
+    // Probe succeeded — clear any previous broker diagnosis.
+    setBrokerDiagnosis(null);
 
     const profile: HostProfile = {
       id: `host-${Date.now()}`,
@@ -208,6 +257,7 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
       token: newToken.trim(),
       cli_kind: newCliKind,
       is_default: false,
+      connectivity_mode: newConnectivityMode === "broker" ? "broker" : "tunnel",
     };
     saveHostProfile(profile);
     setSelectedHostId(profile.id);
@@ -216,7 +266,11 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
     setNewLabel("");
     setNewToken("");
     setNewCliKind("copilot");
+    setNewConnectivityMode("direct");
+    setNewBotName("");
+    setNewPairingToken("");
     setPnaNote(null);
+    setBrokerDiagnosis(null);
     setValidating(false);
     setValidationError(null);
     refresh();
@@ -233,6 +287,7 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
       token: newToken.trim(),
       cli_kind: newCliKind,
       is_default: false,
+      connectivity_mode: "tunnel",
     };
     saveHostProfile(profile);
     setSelectedHostId(profile.id);
@@ -241,7 +296,50 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
     setNewLabel("");
     setNewToken("");
     setNewCliKind("copilot");
+    setNewConnectivityMode("direct");
+    setNewBotName("");
+    setNewPairingToken("");
     setPnaNote(null);
+    setBrokerDiagnosis(null);
+    setValidationError(null);
+    refresh();
+  }
+
+  /**
+   * Saves a broker-mode host profile (#65).
+   * The base_url is constructed from the bot name and pairing token.
+   * No browser connectivity probe is performed — broker calls never hit the URL directly.
+   */
+  function handleAddBroker() {
+    const botName = newBotName.trim();
+    if (!botName) return;
+    const pairingToken = newPairingToken.trim();
+    // Build a valid HTTPS URL that identifies the broker endpoint.
+    // `getTelegramBotUrl` produces `https://t.me/<botName>?start=<token>` (valid HTTPS).
+    const brokerUrl = pairingToken
+      ? getTelegramBotUrl(botName, pairingToken)
+      : `https://t.me/${encodeURIComponent(botName)}`;
+    const profile: HostProfile = {
+      id: `host-${Date.now()}`,
+      label: newLabel.trim() || `@${botName} (Telegram broker)`,
+      base_url: brokerUrl,
+      token: pairingToken,
+      cli_kind: newCliKind,
+      is_default: false,
+      connectivity_mode: "broker",
+    };
+    saveHostProfile(profile);
+    setSelectedHostId(profile.id);
+    setAddingNew(false);
+    setNewUrl("");
+    setNewLabel("");
+    setNewToken("");
+    setNewCliKind("copilot");
+    setNewConnectivityMode("direct");
+    setNewBotName("");
+    setNewPairingToken("");
+    setPnaNote(null);
+    setBrokerDiagnosis(null);
     setValidationError(null);
     refresh();
   }
@@ -257,14 +355,17 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
   async function handleDetectLocal() {
     setDetectStatus("probing");
     setDetectedUrl(null);
+    setLocalDemoModeBadge(null);
     resetLocalBootstrapCache();
     const result = await probeLocalBootstrap();
     if (result.status === "detected") {
       setDetectStatus("detected");
       setDetectedUrl(result.url);
+      setLocalDemoModeBadge(result.response.demo_mode_badge ?? null);
     } else if (result.status === "auth-required") {
       setDetectStatus("auth-required");
       setDetectedUrl(result.url);
+      setLocalDemoModeBadge(result.response.demo_mode_badge ?? null);
       // Pre-fill the add-host form with the detected URL.
       setAddingNew(true);
       setNewUrl(result.url);
@@ -277,17 +378,42 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
     if (!detectedUrl) return;
     const profile: HostProfile = {
       id: `host-${Date.now()}`,
-      label: "Local backend (auto-detected)",
+      label: localDemoModeBadge
+        ? `Local backend (auto-detected) · ${localDemoModeBadge}`
+        : "Local backend (auto-detected)",
       base_url: detectedUrl,
       token: "",
       cli_kind: "copilot",
       is_default: false,
+      // Persist the demo-mode badge so the host row shows a stable "Demo mode"
+      // badge after the profile is saved (#59 stable-badge requirement).
+      demo_mode_badge: localDemoModeBadge ?? undefined,
     };
     saveHostProfile(profile);
     setSelectedHostId(profile.id);
     setDetectStatus("idle");
     setDetectedUrl(null);
     refresh();
+  }
+
+  /**
+   * Called by QrPairingPanel after a successful ticket decode (#58).
+   * Pre-fills the add-host form with the discovered base URL.
+   */
+  function handleQrPaired(baseUrl: string, isOpenAuth: boolean) {
+    setShowQrPanel(false);
+    setAddingNew(true);
+    setNewUrl(baseUrl);
+    setNewLabel("");
+    setNewToken("");
+    setNewCliKind("copilot");
+    setPnaNote(null);
+    setValidationError(null);
+    setIsCompatibilityError(false);
+    if (isOpenAuth) {
+      // Open-auth backend — no token needed; show informational note.
+      setPnaNote("Open-auth backend detected via QR pairing — no token required.");
+    }
   }
 
   function handleRemove(id: string) {
@@ -394,6 +520,24 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
                       default
                     </span>
                   )}
+                  {host.demo_mode_badge && (
+                    <span
+                      className="shrink-0 rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium tracking-wide text-amber-700 uppercase dark:text-amber-300"
+                      data-testid={`host-demo-badge-${host.id}`}
+                      title="This host was added from a static/demo pairing slot (read-only, separate audit log)"
+                    >
+                      demo
+                    </span>
+                  )}
+                  {host.connectivity_mode === "broker" && (
+                    <span
+                      className="shrink-0 rounded bg-purple-500/10 px-1 py-0.5 text-[10px] font-medium tracking-wide text-purple-700 uppercase dark:text-purple-300"
+                      data-testid={`host-broker-badge-${host.id}`}
+                      title="This host uses broker relay mode — traffic routes through the relay, not directly from your browser"
+                    >
+                      broker
+                    </span>
+                  )}
                 </div>
                 <p className="text-muted-foreground max-w-[200px] truncate font-mono text-xs">
                   {host.base_url.replace(/^https?:\/\//, "")}
@@ -463,13 +607,34 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
           type="button"
           variant="outline"
           size="sm"
-          onClick={() => setAddingNew((v) => !v)}
+          onClick={() => {
+            setAddingNew((v) => !v);
+            if (showQrPanel) setShowQrPanel(false);
+          }}
           aria-label="Add remote host"
           aria-expanded={addingNew}
         >
           <Plus className="mr-1.5 size-3.5" />
           Add host
         </Button>
+        {/* QR pairing button — shown on hosted origins where tunnels are common (#58) */}
+        {hostedOrigin ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setShowQrPanel((v) => !v);
+              if (addingNew) setAddingNew(false);
+            }}
+            aria-label="Pair via QR code"
+            aria-expanded={showQrPanel}
+            data-testid="qr-pairing-btn"
+          >
+            <QrCode className="mr-1.5 size-3.5" />
+            Pair via QR
+          </Button>
+        ) : null}
         {hostedOrigin ? (
           <Button
             type="button"
@@ -506,6 +671,30 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
           </Button>
         )}
       </div>
+
+      {/* QR / browse:// pairing panel (#58) */}
+      {showQrPanel && hostedOrigin ? (
+        <QrPairingPanel
+          onPaired={handleQrPaired}
+          onCancel={() => setShowQrPanel(false)}
+          data-testid="qr-pairing-panel-wrapper"
+        />
+      ) : null}
+
+      {/* Demo mode banner — shown when the local backend probe returned static_mode_active=true (#59) */}
+      {localDemoModeBadge ? (
+        <div
+          className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs"
+          data-testid="demo-mode-banner"
+          role="status"
+        >
+          <Zap className="size-3.5 shrink-0 text-amber-500" />
+          <p className="font-medium text-amber-700 dark:text-amber-300">
+            {localDemoModeBadge} active on the detected backend — connections via the static slot
+            are read-only and appear in a separate audit log.
+          </p>
+        </div>
+      ) : null}
 
       {/* Detect local backend result */}
       {detectStatus === "detected" && detectedUrl ? (
@@ -557,60 +746,250 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
       {/* Add host form */}
       {addingNew && (
         <div className="space-y-3 rounded-lg border p-4" data-testid="host-add-form">
-          <p className="text-muted-foreground text-xs">
-            Add a public tunnel URL (e.g. ngrok, Cloudflare Tunnel, VS Code forwarded port) that
-            exposes the Copilot CLI operator API.
-          </p>
-          <input
-            type="url"
-            value={newUrl}
-            onChange={(e) => {
-              setNewUrl(e.target.value);
-              setPnaNote(null);
-              if (validationError) {
+          {/* Broker relay mode recommendation banner — shown when a probe failure
+              has diagnosed the network as tunnel-hostile (#65 diagnosis-driven). */}
+          {brokerDiagnosis?.code === "broker-required" ? (
+            <div
+              className="flex items-start gap-2 rounded-lg border border-purple-500/30 bg-purple-500/5 px-3 py-2 text-xs"
+              data-testid="broker-recommendation-banner"
+              role="status"
+            >
+              <Network className="mt-0.5 size-3.5 shrink-0 text-purple-500" />
+              <p className="text-purple-700 dark:text-purple-300">
+                <span className="font-medium">Broker relay mode recommended.</span> Direct
+                connection failed — your network may block browser→backend connections. Configure
+                broker relay mode below, or{" "}
+                <button
+                  type="button"
+                  className="underline"
+                  onClick={() => {
+                    setBrokerDiagnosis(null);
+                    setNewConnectivityMode("direct");
+                  }}
+                >
+                  try direct again
+                </button>
+                .
+              </p>
+            </div>
+          ) : null}
+
+          {/* Connectivity mode tab selector (#65):
+              - Always shows "Tunnel / Direct" tab.
+              - "Broker Mode" tab is shown ONLY when a probe diagnosis has returned
+                broker-required (diagnosis-driven, not unconditional). */}
+          <div
+            className="bg-muted flex rounded-md p-0.5 text-xs"
+            role="tablist"
+            aria-label="Connection type"
+            data-testid="connectivity-mode-tabs"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={newConnectivityMode === "direct"}
+              onClick={() => {
+                setNewConnectivityMode("direct");
                 setValidationError(null);
                 setIsCompatibilityError(false);
-              }
-            }}
-            placeholder="https://abc123.ngrok.io"
-            aria-label="Tunnel URL"
-            className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-lg border bg-transparent px-3 py-1.5 font-mono text-xs outline-none focus-visible:ring-2"
-          />
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              type="text"
-              value={newLabel}
-              onChange={(e) => setNewLabel(e.target.value)}
-              placeholder="Label (optional)"
-              aria-label="Host label"
-              className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-lg border bg-transparent px-3 py-1.5 text-xs outline-none focus-visible:ring-2"
-            />
-            <input
-              type="password"
-              value={newToken}
-              onChange={(e) => setNewToken(e.target.value)}
-              placeholder="Auth token (optional)"
-              aria-label="Auth token"
-              className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-lg border bg-transparent px-3 py-1.5 text-xs outline-none focus-visible:ring-2"
-            />
+              }}
+              className={cn(
+                "flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-xs font-medium transition-colors",
+                newConnectivityMode === "direct"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+              data-testid="tab-direct"
+            >
+              <Globe className="size-3" />
+              Tunnel / Direct
+            </button>
+            {/* Broker Mode tab — only shown when diagnosis has determined
+                broker relay is required (tunnel-hostile probe failure). */}
+            {brokerDiagnosis?.code === "broker-required" ? (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={newConnectivityMode === "broker"}
+                onClick={() => {
+                  setNewConnectivityMode("broker");
+                  setValidationError(null);
+                  setIsCompatibilityError(false);
+                  setPnaNote(null);
+                }}
+                className={cn(
+                  "flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-xs font-medium transition-colors",
+                  newConnectivityMode === "broker"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+                data-testid="tab-broker"
+              >
+                <Network className="size-3" />
+                Broker Mode
+              </button>
+            ) : null}
           </div>
-          <Select
-            value={newCliKind}
-            onValueChange={(v) => {
-              if (v) setNewCliKind(v);
-            }}
-          >
-            <SelectTrigger className="h-8 text-xs" aria-label="CLI kind">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {CLI_KIND_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value} className="text-xs">
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+
+          {/* Direct / Tunnel form */}
+          {newConnectivityMode === "direct" && (
+            <>
+              <p className="text-muted-foreground text-xs">
+                Add a public tunnel URL (e.g. ngrok, Cloudflare Tunnel, VS Code forwarded port) that
+                exposes the Copilot CLI operator API.
+              </p>
+              <input
+                type="url"
+                value={newUrl}
+                onChange={(e) => {
+                  setNewUrl(e.target.value);
+                  setPnaNote(null);
+                  // Changing the URL invalidates the previous probe diagnosis.
+                  // (We're inside the direct form block so mode is already "direct".)
+                  setBrokerDiagnosis(null);
+                  if (validationError) {
+                    setValidationError(null);
+                    setIsCompatibilityError(false);
+                  }
+                }}
+                placeholder="https://abc123.ngrok.io"
+                aria-label="Tunnel URL"
+                className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-lg border bg-transparent px-3 py-1.5 font-mono text-xs outline-none focus-visible:ring-2"
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  value={newLabel}
+                  onChange={(e) => setNewLabel(e.target.value)}
+                  placeholder="Label (optional)"
+                  aria-label="Host label"
+                  className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-lg border bg-transparent px-3 py-1.5 text-xs outline-none focus-visible:ring-2"
+                />
+                <input
+                  type="password"
+                  value={newToken}
+                  onChange={(e) => setNewToken(e.target.value)}
+                  placeholder="Auth token (optional)"
+                  aria-label="Auth token"
+                  className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-lg border bg-transparent px-3 py-1.5 text-xs outline-none focus-visible:ring-2"
+                />
+              </div>
+              <Select
+                value={newCliKind}
+                onValueChange={(v) => {
+                  if (v) setNewCliKind(v);
+                }}
+              >
+                <SelectTrigger className="h-8 text-xs" aria-label="CLI kind">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CLI_KIND_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </>
+          )}
+
+          {/* Broker Mode form (#65) */}
+          {newConnectivityMode === "broker" && (
+            <div className="space-y-3" data-testid="broker-mode-form">
+              {/* Setup instructions */}
+              <div
+                className="space-y-1.5 rounded-lg border border-blue-500/30 bg-blue-500/5 px-3 py-2 text-xs"
+                data-testid="broker-instructions"
+              >
+                <p className="font-medium text-blue-700 dark:text-blue-300">
+                  Broker mode setup (Telegram)
+                </p>
+                <ol className="text-muted-foreground list-decimal space-y-1 pl-4">
+                  <li>
+                    On your machine, run:{" "}
+                    <code className="bg-muted rounded px-1">
+                      python browse.py --broker-mode telegram
+                    </code>
+                  </li>
+                  <li>Note the bot name and pairing token printed to the console.</li>
+                  <li>Enter them below, then tap the deep-link to open your bot on your phone.</li>
+                  <li>
+                    Verify: send <code className="bg-muted rounded px-1">/status</code> to your bot.
+                    If you receive a reply, the broker is running.
+                  </li>
+                </ol>
+                <p className="text-muted-foreground pt-1">
+                  See{" "}
+                  <a
+                    href="/docs/HOSTED-SHELL-ARCHITECTURE.md#54-frontend-probe-logic--when-to-suggest-broker-mode"
+                    className="text-blue-600 underline dark:text-blue-400"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    HOSTED-SHELL-ARCHITECTURE.md §5.4
+                  </a>{" "}
+                  for full setup guidance.
+                </p>
+              </div>
+
+              {/* Bot name */}
+              <input
+                type="text"
+                value={newBotName}
+                onChange={(e) => setNewBotName(e.target.value)}
+                placeholder="Telegram bot name (e.g. my_copilot_bot)"
+                aria-label="Telegram bot name"
+                className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-lg border bg-transparent px-3 py-1.5 font-mono text-xs outline-none focus-visible:ring-2"
+                data-testid="broker-bot-name"
+              />
+
+              <div className="grid grid-cols-2 gap-2">
+                {/* Label */}
+                <input
+                  type="text"
+                  value={newLabel}
+                  onChange={(e) => setNewLabel(e.target.value)}
+                  placeholder="Label (optional)"
+                  aria-label="Host label"
+                  className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-lg border bg-transparent px-3 py-1.5 text-xs outline-none focus-visible:ring-2"
+                />
+                {/* Pairing token */}
+                <input
+                  type="password"
+                  value={newPairingToken}
+                  onChange={(e) => setNewPairingToken(e.target.value)}
+                  placeholder="Pairing token (from console)"
+                  aria-label="Broker pairing token"
+                  className="border-input placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full rounded-lg border bg-transparent px-3 py-1.5 text-xs outline-none focus-visible:ring-2"
+                  data-testid="broker-pairing-token"
+                />
+              </div>
+
+              {/* Deep-link preview */}
+              {newBotName.trim() ? (
+                <div className="rounded-lg border border-dashed px-3 py-2 text-xs">
+                  <p className="text-muted-foreground mb-1 font-medium">Bot deep-link</p>
+                  <a
+                    href={
+                      newPairingToken.trim()
+                        ? getTelegramBotUrl(newBotName.trim(), newPairingToken.trim())
+                        : `https://t.me/${encodeURIComponent(newBotName.trim())}`
+                    }
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary font-mono break-all underline"
+                    data-testid="broker-deep-link"
+                  >
+                    {newPairingToken.trim()
+                      ? getTelegramBotUrl(newBotName.trim(), newPairingToken.trim())
+                      : `https://t.me/${encodeURIComponent(newBotName.trim())}`}
+                  </a>
+                </div>
+              ) : null}
+            </div>
+          )}
+
           <div className="flex justify-end gap-2">
             <Button
               type="button"
@@ -623,14 +1002,19 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
                 setNewLabel("");
                 setNewToken("");
                 setNewCliKind("copilot");
+                setNewConnectivityMode("direct");
+                setNewBotName("");
+                setNewPairingToken("");
                 setPnaNote(null);
+                setBrokerDiagnosis(null);
                 setValidationError(null);
                 setIsCompatibilityError(false);
               }}
             >
               Cancel
             </Button>
-            {validationError && !isCompatibilityError ? (
+            {/* Save anyway — only for direct/tunnel mode with non-deterministic errors */}
+            {newConnectivityMode === "direct" && validationError && !isCompatibilityError ? (
               <Button
                 type="button"
                 variant="ghost"
@@ -644,25 +1028,39 @@ export function HostManagement({ className, ...props }: ComponentProps<"div">) {
                 Save anyway
               </Button>
             ) : null}
-            <Button
-              type="button"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={() => void handleAdd()}
-              disabled={!newUrl.trim() || validating}
-              data-testid="save-host-btn"
-            >
-              {validating ? (
-                <>
-                  <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                  Validating…
-                </>
-              ) : (
-                "Save host"
-              )}
-            </Button>
+            {/* Save button — direct/tunnel vs broker paths */}
+            {newConnectivityMode === "broker" ? (
+              <Button
+                type="button"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={handleAddBroker}
+                disabled={!newBotName.trim()}
+                data-testid="save-broker-btn"
+              >
+                Save broker
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => void handleAdd()}
+                disabled={!newUrl.trim() || validating}
+                data-testid="save-host-btn"
+              >
+                {validating ? (
+                  <>
+                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                    Validating…
+                  </>
+                ) : (
+                  "Save host"
+                )}
+              </Button>
+            )}
           </div>
-          {pnaNote ? (
+          {pnaNote && newConnectivityMode === "direct" ? (
             <div
               className="flex items-start gap-2 rounded-lg border border-blue-500/30 bg-blue-500/5 px-3 py-2 text-xs"
               data-testid="pna-note"

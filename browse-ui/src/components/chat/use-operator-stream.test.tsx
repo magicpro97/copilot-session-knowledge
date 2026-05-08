@@ -91,6 +91,24 @@ function makeSseStream(frames: unknown[]): ReadableStream<Uint8Array> {
   });
 }
 
+/** Build a stream that emits SSE id: lines at checkpoints alongside data frames. */
+function makeSseStreamWithIds(
+  entries: Array<{ frame: unknown; id?: string }>
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      for (const { frame, id } of entries) {
+        let chunk = "";
+        if (id) chunk += `id: ${id}\n`;
+        chunk += `data: ${JSON.stringify(frame)}\n\n`;
+        controller.enqueue(encoder.encode(chunk));
+      }
+      controller.close();
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -300,5 +318,136 @@ describe("useOperatorStream", () => {
 
     await waitFor(() => expect(result.current.status).toBe("error"), { timeout: 2000 });
     expect(result.current.exitCode).toBe(1);
+  });
+
+  // ── Fast-resume / reconnect tests (issue #60) ────────────────────────────
+
+  it("captures SSE id: field from fetch stream as resume token (issue #60)", async () => {
+    const RESUME_TOKEN = "a1b2c3d4-0000-4000-8000-000000000001";
+    const stream = makeSseStreamWithIds([
+      { frame: { type: "raw", text: "hello", idx: 0 }, id: RESUME_TOKEN },
+      { frame: { type: "status", status: "done", exit_code: 0 } },
+    ]);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, body: stream }));
+
+    const { result } = renderHook(() => useOperatorStream("sess-1", "run-1", REMOTE_HOST));
+
+    await waitFor(() => expect(result.current.status).toBe("done"), { timeout: 2000 });
+    // Frames received normally
+    expect(result.current.frames).toHaveLength(1);
+  });
+
+  it("sends Last-Event-ID header on reconnect when resume token is available (issue #60)", async () => {
+    const RESUME_TOKEN = "a1b2c3d4-0000-4000-8000-000000000002";
+
+    // First call: stream with an id: field then closes without terminal status
+    const stream1 = makeSseStreamWithIds([
+      { frame: { type: "raw", text: "partial", idx: 0 }, id: RESUME_TOKEN },
+    ]);
+    // Second call (reconnect): completes normally
+    const stream2 = makeSseStream([
+      { type: "raw", text: "partial", idx: 0 }, // duplicate — should be filtered
+      { type: "raw", text: "more", idx: 1 },
+      { type: "status", status: "done", exit_code: 0 },
+    ]);
+
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, body: stream1 })
+      .mockResolvedValueOnce({ ok: true, body: stream2 });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const { result } = renderHook(() => useOperatorStream("sess-1", "run-1", REMOTE_HOST));
+
+    await waitFor(() => expect(result.current.status).toBe("done"), { timeout: 2000 });
+
+    // Reconnect attempt should have been made
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    // Second fetch must include Last-Event-ID header with the resume token
+    const [, secondInit] = mockFetch.mock.calls[1] as [string, RequestInit];
+    const headers = secondInit.headers as Record<string, string>;
+    expect(headers["Last-Event-ID"]).toBe(RESUME_TOKEN);
+
+    // Token must NOT appear in the URL
+    const [secondUrl] = mockFetch.mock.calls[1] as [string, RequestInit];
+    expect(secondUrl).not.toContain(RESUME_TOKEN);
+  });
+
+  it("deduplicates frames by idx when reconnect re-sends already-seen events (issue #60)", async () => {
+    const RESUME_TOKEN = "a1b2c3d4-0000-4000-8000-000000000003";
+
+    const stream1 = makeSseStreamWithIds([
+      { frame: { type: "raw", text: "line 0", idx: 0 }, id: RESUME_TOKEN },
+    ]);
+    // Reconnect re-delivers idx 0 (duplicate) and adds idx 1
+    const stream2 = makeSseStream([
+      { type: "raw", text: "line 0", idx: 0 }, // duplicate
+      { type: "raw", text: "line 1", idx: 1 },
+      { type: "status", status: "done", exit_code: 0 },
+    ]);
+
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({ ok: true, body: stream1 })
+        .mockResolvedValueOnce({ ok: true, body: stream2 })
+    );
+
+    const { result } = renderHook(() => useOperatorStream("sess-1", "run-1", REMOTE_HOST));
+
+    await waitFor(() => expect(result.current.status).toBe("done"), { timeout: 2000 });
+
+    // Should have exactly 2 unique frames (idx 0 and idx 1), not 3
+    expect(result.current.frames).toHaveLength(2);
+  });
+
+  it("does not reconnect when no resume token is available (issue #60)", async () => {
+    // Stream closes without terminal status and without any id: field
+    const stream = makeSseStream([{ type: "raw", text: "partial", idx: 0 }]);
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, body: stream });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const { result } = renderHook(() => useOperatorStream("sess-1", "run-1", REMOTE_HOST));
+
+    await waitFor(() => expect(result.current.status).toBe("error"), { timeout: 2000 });
+
+    // Only one fetch — no reconnect without a token
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reconnect more than once even with a resume token (issue #60)", async () => {
+    const RESUME_TOKEN = "a1b2c3d4-0000-4000-8000-000000000004";
+
+    // Both streams close without terminal status
+    const makeIncompleteStream = (id?: string) =>
+      makeSseStreamWithIds([{ frame: { type: "raw", text: "partial", idx: 0 }, id }]);
+
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, body: makeIncompleteStream(RESUME_TOKEN) })
+      .mockResolvedValueOnce({ ok: true, body: makeIncompleteStream() }); // no id on retry
+    vi.stubGlobal("fetch", mockFetch);
+
+    const { result } = renderHook(() => useOperatorStream("sess-1", "run-1", REMOTE_HOST));
+
+    await waitFor(() => expect(result.current.status).toBe("error"), { timeout: 2000 });
+
+    // Exactly two fetches: initial + one retry
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("EventSource onerror without token sets error (existing behaviour preserved, issue #60)", async () => {
+    const { result } = renderHook(() => useOperatorStream("sess-1", "run-1", LOCAL_HOST));
+
+    await act(async () => {
+      MockEventSource.instances[0].emitError();
+    });
+
+    // No resume token seen → error immediately (no retry)
+    expect(result.current.status).toBe("error");
+    expect(MockEventSource.instances[0].closed).toBe(true);
   });
 });

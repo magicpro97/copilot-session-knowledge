@@ -393,9 +393,11 @@ def test_cloudflared_yields_public_url_with_token():
     probe_response = mock.MagicMock()
     probe_response.__enter__.return_value.status = 200
     probe_response.__exit__.return_value = False
+    mock_opener = mock.MagicMock()
+    mock_opener.open.return_value = probe_response
 
     with mock.patch("subprocess.Popen", return_value=mock_proc):
-        with mock.patch("urllib.request.urlopen", return_value=probe_response):
+        with mock.patch("urllib.request.build_opener", return_value=mock_opener):
             with mock.patch("sys.stdout", stdout_capture):
                 cleanup = _start_cloudflared("http://127.0.0.1:9999", "mytoken")
                 time.sleep(0.3)
@@ -447,9 +449,11 @@ def test_cloudflared_yields_public_url_no_token():
     probe_response = mock.MagicMock()
     probe_response.__enter__.return_value.status = 200
     probe_response.__exit__.return_value = False
+    mock_opener = mock.MagicMock()
+    mock_opener.open.return_value = probe_response
 
     with mock.patch("subprocess.Popen", return_value=mock_proc):
-        with mock.patch("urllib.request.urlopen", return_value=probe_response):
+        with mock.patch("urllib.request.build_opener", return_value=mock_opener):
             with mock.patch("sys.stdout", stdout_capture):
                 cleanup = _start_cloudflared("http://127.0.0.1:9999", "")
                 time.sleep(0.3)
@@ -551,9 +555,11 @@ def test_cloudflared_unreachable_quick_tunnel_prints_error():
         hdrs=None,
         fp=None,
     )
+    mock_opener = mock.MagicMock()
+    mock_opener.open.side_effect = probe_error
 
     with mock.patch("subprocess.Popen", return_value=mock_proc):
-        with mock.patch("urllib.request.urlopen", side_effect=probe_error):
+        with mock.patch("urllib.request.build_opener", return_value=mock_opener):
             with mock.patch("time.monotonic", side_effect=[0, 0, 16]):
                 with mock.patch("threading.Event.wait", return_value=False):
                     with mock.patch("sys.stdout", stdout_capture):
@@ -613,9 +619,11 @@ def test_cloudflared_gateway_error_is_not_treated_as_success():
         hdrs=None,
         fp=None,
     )
+    mock_opener = mock.MagicMock()
+    mock_opener.open.side_effect = probe_error
 
     with mock.patch("subprocess.Popen", return_value=mock_proc):
-        with mock.patch("urllib.request.urlopen", side_effect=probe_error):
+        with mock.patch("urllib.request.build_opener", return_value=mock_opener):
             with mock.patch("time.monotonic", side_effect=[0, 0, 16]):
                 with mock.patch("threading.Event.wait", return_value=False):
                     with mock.patch("sys.stdout", stdout_capture):

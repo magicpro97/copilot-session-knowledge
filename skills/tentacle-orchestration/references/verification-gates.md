@@ -2,6 +2,11 @@
 
 Every tentacle's output goes through these gates before shipping.
 
+> **Evidence requirement (Rule 9):** Each gate must produce concrete, recorded output before
+> being marked passed. Do not rely on agent claims that "build is clean" or "tests pass."
+> Run the commands yourself and attach or reference the output. A gate is only passed when
+> you hold the proof. If a command was not run, say "not proven yet — run `<command>`."
+
 ## Gate Summary
 
 | Gate | What it catches | Skip when |
@@ -19,7 +24,7 @@ The first 4 gates are mandatory. Skipping any of them means you don't know if th
 
 ### Build Gate
 
-Run the project's compiler on all changed files. Do not trust agent claims that "it compiles."
+Run the project's compiler on all changed files. Do not trust agent claims that "it compiles" — run the command yourself and record the output.
 
 ```bash
 # Examples — use whatever your project uses:
@@ -31,9 +36,11 @@ python -m py_compile <file>         # Python
 
 If build fails → fix before proceeding. Either fix yourself or re-dispatch the responsible tentacle agent with the error output.
 
+**Evidence to record:** exit code, compiler output (or "0 warnings, 0 errors"), timestamp.
+
 ### Lint Gate
 
-Run the project's linter and formatter. Agents frequently produce code that compiles but violates project style rules (unused imports, missing JSDoc, inconsistent formatting).
+Run the project's linter and formatter. Agents frequently produce code that compiles but violates project style rules (unused imports, missing JSDoc, inconsistent formatting). Do not trust agent claims that "lint is clean" — run the command and record its output.
 
 ```bash
 # Examples — use whatever your project uses:
@@ -46,9 +53,11 @@ ruff check <changed-files>          # Python
 
 If lint fails → fix before proceeding. Most lint issues are auto-fixable (`--fix`), so fix them directly rather than re-dispatching an agent.
 
+**Evidence to record:** linter exit code and output (or "exit 0 — no violations"), formatter result.
+
 ### Test Gate
 
-Run actual tests. Agents often claim "all tests pass" without running them, or write tests that don't actually assert anything meaningful.
+Run actual tests. Agents often claim "all tests pass" without running them, or write tests that don't actually assert anything meaningful. Do not mark this gate passed until you have run the commands and recorded the output.
 
 ```bash
 # Run tests for the affected modules
@@ -58,6 +67,8 @@ go test ./...
 ```
 
 If tests fail → fix before proceeding. Check whether the agent wrote the tests — agents sometimes write tests that are trivially correct (e.g., testing that `true === true`).
+
+**Evidence to record:** pass/fail count, any failing test names and error messages.
 
 ### Code Review Gate
 
@@ -94,6 +105,25 @@ Skip when changes are purely internal refactors with no public API or behavior c
 For changes touching auth, data integrity, financial logic, or infrastructure, add a cross-check by a different agent. This catches errors that code-review misses because the reviewer may share the same blind spots as the author.
 
 Skip this step for low-risk changes (documentation, formatting, simple refactors).
+
+---
+
+## Evidence Ledger
+
+Before proceeding to Commit + Close, the orchestrator must hold concrete, recorded output for every mandatory gate. An **evidence ledger** is the collection of that proof. It does not need to be a formal document — inline notes in handoff.md or a short checklist are sufficient — but every item must name the command run and its result.
+
+**Minimum required entries:**
+
+| Gate | What to record |
+|------|---------------|
+| Build | Command run + exit code (or "0 errors" compiler output) |
+| Lint | Command run + exit code + any violation count |
+| Test | Command run + pass/fail counts + any failure names |
+| Review | Reviewer agent verdict: CLEAN, ISSUES (with detail), or BLOCKED |
+
+**Unproven claims:**  If a gate was not run, record: "not proven yet — run `<command>`." Do not omit the entry or mark the gate passed.
+
+**A `DONE` handoff with no evidence ledger entries is treated as `AMBIGUOUS`** and requires triage before Commit + Close can proceed.
 
 ---
 
@@ -156,3 +186,5 @@ sk tentacle verify my-feature "python3 benchmark.py --check --min-score 90" --la
 - ❌ Re-opening completed tentacles to fix goal gaps — create new ones
 - ❌ Dispatching sub-agents to evaluate the goal — the orchestrator evaluates; sub-agents stop after handoff
 - ❌ Closing without recorded evidence — always run `verify --label goal-eval` before `complete`
+- ❌ Accepting sub-agent prose ("all criteria met") as goal-eval evidence — run the success-criteria command yourself and record its output
+- ❌ Marking CI green based on a sub-agent claim — fetch the actual CI run URL or job output

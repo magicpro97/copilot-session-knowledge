@@ -54,7 +54,13 @@ def sse_response(
         for chunk in generator:
             if stop_event.is_set():
                 break
-            msg = f"data: {chunk}\n\n".encode()
+            # chunk may be a (data_str, event_id) tuple to emit an SSE id: field,
+            # or a plain string (backward-compatible).
+            if isinstance(chunk, tuple):
+                data_str, event_id = chunk
+                msg = f"id: {event_id}\ndata: {data_str}\n\n".encode()
+            else:
+                msg = f"data: {chunk}\n\n".encode()
             try:
                 handler.wfile.write(msg)
                 handler.wfile.flush()

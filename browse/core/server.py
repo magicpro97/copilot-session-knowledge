@@ -190,6 +190,18 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         auth_header = self.headers.get("Authorization", "")
         valid, token_val, should_set_cookie = check_token(self.token, params, cookie_header, auth_header)
 
+        # Static-slot token fallback (#59): if the main operator token check failed
+        # and a static slot is active, try its token on the same auth path so that
+        # static-slot requests reach the real auth path and produce session_kind=static.
+        if not valid and self.token:
+            from browse.core.pairing import get_static_slot as _get_ss_get
+
+            _slot = _get_ss_get()
+            if _slot and _slot.get("token"):
+                valid, token_val, should_set_cookie = check_token(_slot["token"], params, cookie_header, auth_header)
+                if valid:
+                    should_set_cookie = False  # Static tokens never issue cookies.
+
         if not valid:
             self._send(
                 b"401 Unauthorized",
@@ -200,6 +212,30 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 send_body=send_body,
             )
             return
+
+        # Inject session kind for audit logging / route handlers (#58/#59).
+        # Handlers receive params["_session_kind"][0] == "static"|"operator"|"open".
+        # Static-slot requests are also logged to stderr for audit traceability.
+        from browse.core.pairing import get_session_kind
+
+        session_kind = get_session_kind(token_val, self.token)
+        params["_session_kind"] = [session_kind]
+        if session_kind == "static":
+            print(
+                f"[audit] session_kind=static path={path} method=GET",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        # Inject SSE reconnect headers for stream resume (issue #60).
+        # Route handlers read params["_last_event_id"] / params["_x_resume_token"]
+        # instead of the raw HTTP header, keeping handler signatures stable.
+        last_event_id = self.headers.get("Last-Event-ID", "").strip()
+        if last_event_id:
+            params["_last_event_id"] = [last_event_id]
+        x_resume = self.headers.get("X-Resume-Token", "").strip()
+        if x_resume:
+            params["_x_resume_token"] = [x_resume]
 
         # Route dispatch: /api/* and .md data exports via registry;
         # everything else is served by the Next.js root app.
@@ -333,6 +369,26 @@ class _BrowseHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        # /.well-known/browse-host/verify — open ticket-verify preflight (#58).
+        if path == "/.well-known/browse-host/verify":
+            cors_ok, cors_origin = check_cors_origin(self.headers)
+            if not cors_ok:
+                self.send_response(403)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", cors_origin)
+            self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+            self.send_header("Access-Control-Max-Age", "86400")
+            self.send_header("Vary", "Origin")
+            if _pna_ok(self.headers):
+                self.send_header("Access-Control-Allow-Private-Network", "true")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
         # /healthz preflight: allowlisted origins get 204 with CORS headers;
         # non-allowlisted origins (or no Origin) get 403.
         if path == "/healthz":
@@ -392,6 +448,32 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
         nonce = generate_nonce()
 
+        # /.well-known/browse-host/verify — open (no-auth) ticket verification (#58).
+        # Allows the hosted UI to call authoritative server-side HMAC verification
+        # without requiring a Bearer token (the user is in the process of pairing).
+        if path == "/.well-known/browse-host/verify" and method == "POST":
+            cors_ok_dv, cors_origin_dv = check_cors_origin(self.headers)
+            dv_cors: dict = {}
+            if cors_ok_dv:
+                dv_cors = {"Access-Control-Allow-Origin": cors_origin_dv, "Vary": "Origin"}
+            _MAX_DV = 10 * 1024
+            try:
+                _cl = int(self.headers.get("Content-Length", "0") or "0")
+            except (ValueError, TypeError):
+                _cl = 0
+            if _cl > _MAX_DV:
+                self._send(b"413 Request Entity Too Large", "text/plain", 413, nonce, cors_headers=dv_cors or None)
+                return
+            _body_bytes = self.rfile.read(_cl) if _cl > 0 else b""
+            params["_body"] = [_body_bytes.decode("utf-8", errors="replace")]
+            handler_fn, kwargs = match_route(path, method)
+            if handler_fn:
+                body, ct, status = handler_fn(self.db, params, self.token, nonce, **kwargs)
+            else:
+                body, ct, status = b"404 Not Found", "text/plain", 404
+            self._send(body, ct, status, nonce, cors_headers=dv_cors or None)
+            return
+
         # CORS allowlist check for all /api/ routes (issue #27: deterministic
         # cross-origin behaviour for allowlisted origins beyond /api/operator/).
         # CSRF bypass is restricted to operator routes only.
@@ -408,6 +490,20 @@ class _BrowseHandler(BaseHTTPRequestHandler):
         cookie_header = self.headers.get("Cookie", "")
         auth_header = self.headers.get("Authorization", "")
         valid, token_val, should_set_cookie = check_token(self.token, params, cookie_header, auth_header)
+
+        # Static-slot token fallback (#59): if the main operator token check failed
+        # and a static slot is active, try its token on the same auth path so that
+        # static-slot requests genuinely reach the real auth path and produce
+        # session_kind=static in downstream handlers.
+        if not valid and self.token:
+            from browse.core.pairing import get_static_slot as _get_ss_mut
+
+            _slot = _get_ss_mut()
+            if _slot and _slot.get("token"):
+                valid, token_val, should_set_cookie = check_token(_slot["token"], params, cookie_header, auth_header)
+                if valid:
+                    should_set_cookie = False  # Static tokens never issue cookies.
+
         if not valid:
             self._send(
                 b"401 Unauthorized",
@@ -417,6 +513,18 @@ class _BrowseHandler(BaseHTTPRequestHandler):
                 cors_headers=cors_resp_headers or None,
             )
             return
+
+        # Inject session kind for audit logging / route handlers (#58/#59).
+        from browse.core.pairing import get_session_kind
+
+        session_kind = get_session_kind(token_val, self.token)
+        params["_session_kind"] = [session_kind]
+        if session_kind == "static":
+            print(
+                f"[audit] session_kind=static path={path} method={method}",
+                file=sys.stderr,
+                flush=True,
+            )
 
         if is_operator_path and cors_ok:
             # Allowlisted cross-origin request: bypass same-origin CSRF check

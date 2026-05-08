@@ -599,6 +599,95 @@ The proof test is skipped in normal CI. `pnpm release:check` enables it explicit
 
 **Verified repro (2026-05-03):** A root-hosted Firebase deployment of `browse-ui` returned HTML with `/v2/_next/static/…` URLs. Requests to `/v2/_next/…` returned 404; requests to `/_next/…` returned 200. Root cause: the build included `basePath: "/v2"` in `next.config.ts`.
 
+### Hosted Launcher — One-Shot Install/Uninstall (Issue #57)
+
+`browse.py --install-launcher` installs a convenience launcher for the hosted-shell Windows
+(and POSIX) flow so that a single command starts `browse.py` pre-configured for
+`https://agents.linhngo.dev`.
+
+#### What gets installed
+
+| File | Platform | Purpose |
+|------|----------|---------|
+| `~/.copilot/bin/browse-hosted` | POSIX (macOS / Linux) | Executable shell script; runs `browse.py --hosted-bootstrap --port 8765` |
+| `~/.copilot/bin/browse-hosted.cmd` | Windows | CMD script; same command |
+| `~/.copilot/bin/browse-hosted.url` | Windows only | Internet shortcut that opens `https://agents.linhngo.dev` in the default browser |
+| `~/Desktop/Browse Backend.lnk` | Windows only | Desktop shortcut; runs `python.exe browse.py --hosted-bootstrap --port 8765` |
+| `~/Desktop/Browse UI.lnk` | Windows only | Desktop shortcut; opens `https://agents.linhngo.dev` in Edge default profile |
+
+Desktop `.lnk` shortcuts are created via PowerShell `WScript.Shell` COM (stdlib `subprocess`).
+No browser security-bypass flags (`--disable-web-security`, `--allow-insecure-localhost`, etc.)
+are used in any shortcut target.
+
+`~/.copilot/bin/` must be on `PATH` (the `sk` launcher install already adds it; run
+`python3 install.py --install-sk` if it is not present yet).
+
+#### Install
+
+```bash
+# POSIX
+python3 browse.py --install-launcher
+
+# Windows
+python browse.py --install-launcher
+```
+
+After install, start the backend with:
+
+```bash
+browse-hosted                          # open-auth, random port will be 8765
+browse-hosted --token <your-token>    # token-protected
+```
+
+Then open `https://agents.linhngo.dev` (or double-click `Browse UI.lnk` on the Desktop, or
+`browse-hosted.url` in `~/.copilot/bin/`) and add `http://127.0.0.1:8765` as a host profile.
+Alternatively, double-click `Browse Backend.lnk` on the Desktop to start the backend in a
+console window.
+
+**Security note:** The launcher does **not** use any browser security-bypass flags
+(`--disable-web-security`, `--allow-insecure-localhost`, etc.). Use `--hosted-bootstrap` for
+proper CORS / PNA configuration.
+
+#### Edge caveat
+
+`Browse UI.lnk` targets `msedge.exe` at one of the standard install paths:
+- `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`
+- `C:\Program Files\Microsoft\Edge\Application\msedge.exe`
+
+If Edge is not found at either path, the UI shortcut is skipped and a warning is printed;
+install Edge first or create the shortcut manually.  The shortcut opens Edge in the **default
+profile** — no custom `--user-data-dir` and no security-bypass flags.
+
+#### Uninstall
+
+```bash
+python3 browse.py --uninstall-launcher
+```
+
+Removes `browse-hosted` (or `.cmd`), `browse-hosted.url`, and the desktop `.lnk` shortcuts.
+Does **not** affect the `sk` launcher or any other install.py-managed files.
+
+#### Manual proof path (Windows CI not available)
+
+Because this environment is macOS, Windows-specific behaviour (`.cmd` script execution,
+`.url` shortcut file association, PowerShell COM `.lnk` creation, Edge launch) cannot be
+exercised in CI here. If you are validating on Windows, perform these manual checks:
+
+1. Run `python browse.py --install-launcher` in a Command Prompt.
+2. Verify `%USERPROFILE%\.copilot\bin\browse-hosted.cmd` exists and contains `--hosted-bootstrap`.
+3. Verify `%USERPROFILE%\.copilot\bin\browse-hosted.url` exists and opens `https://agents.linhngo.dev`.
+4. Verify `%USERPROFILE%\Desktop\Browse Backend.lnk` exists (right-click → Properties shows Target: `python.exe` with `browse.py --hosted-bootstrap --port 8765` as Arguments; no security-bypass flags).
+5. Verify `%USERPROFILE%\Desktop\Browse UI.lnk` exists (Properties shows Target: `msedge.exe`, Arguments: `https://agents.linhngo.dev`; no `--user-data-dir`, no security-bypass flags).
+6. Double-click `Browse Backend.lnk` and confirm the backend starts in a console on port 8765.
+7. Double-click `Browse UI.lnk` and confirm Edge opens `https://agents.linhngo.dev` in the default profile.
+8. Run `browse-hosted` (if `~/.copilot/bin` is on PATH) and confirm the server starts on port 8765.
+9. Run `python browse.py --uninstall-launcher` and confirm `browse-hosted.cmd`, `browse-hosted.url`, `Browse Backend.lnk`, and `Browse UI.lnk` are all removed.
+
+**Interpretation (not a guaranteed fact from this macOS environment):** Steps 4–7 above
+confirm the Edge-specific shortcut target.  The CI gates verify only the Python-level logic
+(path helpers, PowerShell script generation, no-bypass-flag assertions, and POSIX install
+round-trip).  Windows runtime proof requires manual execution of the above checklist.
+
 ### Loopback Bootstrap for Hosted UI (Issue #49)
 
 The hosted static UI (`https://agents.linhngo.dev`, `https://agents-linhngo-dev.web.app`) can
@@ -656,9 +745,10 @@ auto-activating. The user supplies the token; the frontend never invents a blank
 
 | Browser family | Loopback from hosted HTTPS | Action |
 |---|---|---|
-| Chromium / Edge | Requires PNA/LNA preflight headers and may show a local-network permission prompt. | Use `--hosted-bootstrap`; accept the browser prompt if shown. |
+| Chromium / Edge 104+ (pre-Chrome 142) | Requires PNA preflight headers and may show a local-network permission prompt. | Use `--hosted-bootstrap`; accept the browser prompt if shown. Do **not** use `--disable-web-security` for normal operation. |
+| **Chromium / Edge Chrome 142+** | LNA (Local Network Access) is enforced. The first probe triggers a permission dialog. | Accept the permission prompt once; use `LocalNetworkAccessAllowedByOrigins` enterprise policy to suppress for managed fleets. See [CONNECTIVITY-TROUBLESHOOTING.md §Chrome LNA](CONNECTIVITY-TROUBLESHOOTING.md#chrome-138-local-network-access-lna-permission-model). |
 | Safari / Firefox | Does not use Chromium's PNA/LNA header flow; outcome depends on CORS/browser policy. | Try `--hosted-bootstrap`; use HTTPS tunnel if blocked. |
-| Strict enterprise browsers | May block local-network access regardless of headers. | Use HTTPS tunnel (Cloudflare Tunnel / ngrok). |
+| Strict enterprise browsers | May block local-network access regardless of headers. | Use HTTPS tunnel if available; otherwise see outbound control-bus guidance. |
 
 **Non-loopback HTTP hosts** (`http://192.168.x.x`, `http://custom.host`) are **not reachable**
 from HTTPS hosted pages in any browser.
@@ -666,7 +756,329 @@ from HTTPS hosted pages in any browser.
 For predictable cross-browser support, expose the backend over HTTPS via a tunnel and add it as
 a host profile manually in Settings → Hosts & connections.
 
+#### Tunnel-hostile networks (FPT / campus / corporate proxy)
+
+If `cloudflared` / `ngrok` never connect, confirm the network policy before debugging the app:
+
+```bash
+# DNS block / NXDOMAIN
+nslookup abc123.ngrok-free.app
+
+# SNI / TLS reset
+curl -vk https://abc123.ngrok-free.app
+
+# Alternate tunnel port blocked (Cloudflare Tunnel example)
+nc -zv 198.41.192.7 7844
+```
+
+If those checks fail:
+
+1. keep `--hosted-bootstrap` for Chromium / Edge loopback when available
+2. otherwise use Same-Origin Relay / Gateway
+3. otherwise fall back to the documented outbound control-bus architecture
+
+See:
+
+- [docs/CONNECTIVITY-TROUBLESHOOTING.md](CONNECTIVITY-TROUBLESHOOTING.md)
+- [docs/HOSTED-SHELL-ARCHITECTURE.md §5](HOSTED-SHELL-ARCHITECTURE.md#5-outbound-control-bus-mode-tunnel-hostile-networks)
+
 _Full spec: [docs/HOSTED-SHELL-ARCHITECTURE.md §4](HOSTED-SHELL-ARCHITECTURE.md#4-hosted-loopback-bootstrap--pnahttp-shipped-issue-49)_
+
+---
+
+## Broker Mode (Outbound-Only Control Bus, Issue #71)
+
+> Use this when tunnels (`cloudflared`, `ngrok`) are blocked on the operator's network (FPT,
+> corporate DPI, university filtering) and the operator wants to control browse.py from any
+> device. No inbound port is opened.
+
+### Prerequisites
+
+1. **Create a Telegram bot**: message `@BotFather`, run `/newbot`, copy the token.
+2. **Find your Telegram user ID**: message `@userinfobot` or `@RawDataBot`.
+3. Set environment variables:
+
+```bash
+export BROWSE_BROKER_TELEGRAM_TOKEN="123456:ABC-DEF..."
+export BROWSE_BROKER_AUTHORIZED_USER_ID="<your integer user_id>"
+```
+
+### Start the broker
+
+```bash
+python browse.py --broker-mode telegram [--db /path/to/knowledge.db]
+```
+
+Expected startup output:
+
+```
+[broker/telegram] Starting outbound-only long-poll loop (no inbound port opened). Ctrl-C to stop.
+[broker/telegram] Authenticated as @YourBot (id=123456)
+```
+
+### Available commands
+
+Send any of these to your bot:
+
+| Command | Description |
+|---|---|
+| `/status` | Daemon uptime, session count, DB schema version |
+| `/search <query>` | FTS5 search, returns top 5 results |
+| `/briefing <topic>` | Runs `briefing.py --compact` for the topic |
+| `/recent` | Lists 10 most recent sessions |
+| `/help` | Command list |
+
+### Security
+
+- Every Telegram update from a user_id ≠ `BROWSE_BROKER_AUTHORIZED_USER_ID` is **silently dropped** — no reply is sent.
+- No inbound port is opened. The broker loop polls `api.telegram.org:443` via outbound HTTPS only.
+- Outbound calls use `ProxyHandler({})` to bypass any local HTTP proxy that might intercept traffic.
+
+### Verification checklist
+
+```bash
+# 1. Confirm Telegram API is reachable from the operator's machine
+curl -I https://api.telegram.org
+
+# 2. Confirm no inbound port was opened (run in a second terminal while broker is running)
+netstat -an | grep LISTEN | grep -v 127.0.0.1
+# Expected: broker-mode does NOT add a new LISTEN entry
+
+# 3. Start broker and confirm "no inbound port opened" message
+python browse.py --broker-mode telegram
+# Expected first line: "[broker/telegram] Starting outbound-only long-poll loop (no inbound port opened)."
+
+# 4. Send /status to the bot — confirm it replies with uptime and session count.
+# 5. Send /search auth — confirm results appear (if index is built).
+# 6. Send /briefing authentication — confirm briefing.py runs and returns output.
+```
+
+### Blockers / unverified acceptance criteria
+
+The following acceptance criterion from issue #71 **cannot be verified from this machine**:
+
+> **"Verified working on FPT network (manual test by maintainer)"**
+
+The implementation is functionally complete and unit-tested. End-to-end verification on an
+actual FPT network requires a human maintainer with FPT access to:
+
+1. Set the two env vars.
+2. Run `python browse.py --broker-mode telegram`.
+3. Send the 5 commands from a Telegram client and confirm replies.
+4. Capture `netstat` output confirming no new LISTEN entry.
+
+Until this is done, issue #71 should remain **open** with the label `needs-manual-verification`.
+
+_Spec: [docs/HOSTED-SHELL-ARCHITECTURE.md §5](HOSTED-SHELL-ARCHITECTURE.md#5-outbound-control-bus-mode-tunnel-hostile-networks)_
+
+---
+
+## Discord Broker Mode (Issue #72)
+
+> **Status:** Code shipped. Needs live credentials to run end-to-end.
+> **Architecture:** HTTP REST-polling of Discord channel history. Stdlib-only.
+> No WebSocket, no inbound port. Poll latency ~2 s.
+
+### Prerequisites
+
+1. Create a Discord application and bot at <https://discord.com/developers/applications>.
+2. Under *Bot* settings, enable *Message Content Intent* and copy the bot token.
+3. Invite the bot to a server with **Read Messages** and **Send Messages** permissions.
+4. Copy the target channel ID (right-click channel → *Copy Channel ID* with Developer Mode on).
+5. Copy your Discord user ID (right-click your profile → *Copy User ID* with Developer Mode on).
+6. Set environment variables:
+
+```bash
+export BROWSE_BROKER_DISCORD_TOKEN="<your-bot-token>"
+export BROWSE_BROKER_DISCORD_CHANNEL_ID="<channel-snowflake-id>"
+export BROWSE_BROKER_DISCORD_AUTHORIZED_USER_ID="<your-user-snowflake-id>"
+```
+
+### Start the broker
+
+```bash
+python browse.py --broker-mode discord [--db /path/to/knowledge.db]
+```
+
+Expected startup output:
+
+```
+[broker/discord] Starting HTTP-polling loop (no inbound port opened; ~2 s poll interval). Ctrl-C to stop.
+[broker/discord] Authenticated as YourBot#1234 (id=123456789)
+```
+
+### Available commands
+
+Post any of these to the configured Discord channel:
+
+| Command | Description |
+|---|---|
+| `/status` | Daemon uptime, session count, DB schema version |
+| `/search <query>` | FTS5 search, returns top 5 results |
+| `/briefing <topic>` | Runs `briefing.py --compact` for the topic |
+| `/recent` | Lists 10 most recent sessions |
+| `/help` | Command list |
+
+### Architecture constraint
+
+This broker uses HTTP polling of `GET /channels/{channel_id}/messages?after={snowflake}`.
+Poll latency is ~2 s. If sub-second latency is required, the Discord Gateway (WebSocket)
+is the correct approach, but it requires a non-stdlib dependency (`discord.py ≥2.0`).
+That is a maintainer architecture decision, not something the broker code can resolve.
+
+### Blockers / unverified acceptance criteria (#72)
+
+> 1. **Credentials** — the three env vars above must be set.
+> 2. **Maintainer RTT benchmark** — median + p95 latency over ≥100 messages on a
+>    tunnel-hostile (FPT) network has not been measured.
+> 3. **Latency decision** — ~2 s HTTP-polling may be acceptable for control workflows;
+>    if not, the non-stdlib WebSocket SDK must be adopted.
+
+Until all three are resolved, issue #72 should remain **open**.
+
+---
+
+## Ably Broker Mode (Issue #72)
+
+> **Status:** Code shipped. Needs live credentials to run end-to-end.
+> **Architecture:** HTTP REST-polling of Ably channel history + REST publish. Stdlib-only.
+> No WebSocket, no inbound port. Poll latency ~2 s.
+
+### Prerequisites
+
+1. Create an Ably account at <https://ably.com> and create an app.
+2. Copy the API key (format: `app_id.key_id:key_secret`) from the app settings.
+3. Optionally, configure inbound/outbound channel names (defaults: `browse-commands` / `browse-responses`).
+4. Set environment variables:
+
+```bash
+export BROWSE_BROKER_ABLY_API_KEY="<app_id.key_id:key_secret>"
+# Optional overrides:
+export BROWSE_BROKER_ABLY_CHANNEL_IN="browse-commands"    # default
+export BROWSE_BROKER_ABLY_CHANNEL_OUT="browse-responses"  # default
+export BROWSE_BROKER_ABLY_AUTHORIZED_CLIENT_ID="operator" # default
+```
+
+### Start the broker
+
+```bash
+python browse.py --broker-mode ably [--db /path/to/knowledge.db]
+```
+
+Expected startup output:
+
+```
+[broker/ably] Starting REST-polling loop on 'browse-commands' (no inbound port; ~2.0s interval). Ctrl-C to stop.
+[broker/ably] API key accepted; polling 'browse-commands'.
+```
+
+### Sending commands
+
+Publish a message to the `browse-commands` Ably channel with your clientId set to
+`operator` (or whatever BROWSE_BROKER_ABLY_AUTHORIZED_CLIENT_ID is configured to).
+The broker will poll for new messages and publish responses to `browse-responses`.
+
+| Command | Description |
+|---|---|
+| `/status` | Daemon uptime, session count, DB schema version |
+| `/search <query>` | FTS5 search, returns top 5 results |
+| `/briefing <topic>` | Runs `briefing.py --compact` for the topic |
+| `/recent` | Lists 10 most recent sessions |
+| `/help` | Command list |
+
+### Architecture constraint
+
+This broker uses HTTP polling of `GET /channels/{name}/messages?start={ts}&direction=forwards`.
+Poll latency is ~2 s. The Ably Realtime WebSocket client would reduce latency to <100 ms but
+requires the `ably` PyPI package (non-stdlib). That is a maintainer architecture decision.
+
+### Blockers / unverified acceptance criteria (#72)
+
+> 1. **Credentials** — BROWSE_BROKER_ABLY_API_KEY must be set.
+> 2. **Maintainer RTT benchmark** — median + p95 latency over ≥100 messages on a FPT network
+>    has not been measured.
+> 3. **Latency decision** — ~2 s HTTP-polling may be acceptable; if not, the `ably` PyPI
+>    package must be adopted.
+> 4. **clientId trust boundary** — The broker drops messages where `clientId` does not match
+>    `BROWSE_BROKER_ABLY_AUTHORIZED_CLIENT_ID`. However, `clientId` in REST-published messages
+>    is self-reported by the publisher and is **not** server-verified by Ably unless the API
+>    key's [capability](https://ably.com/docs/auth/capabilities) is restricted to the authorized
+>    clientId.  Without that restriction, any holder of your API key can set any `clientId` and
+>    bypass the whitelist.  To enforce the boundary, create a narrowly-scoped Ably API key or
+>    token that allows publish only for the specific clientId used by your operator client.
+> 5. **Pagination gap** — polling fetches at most 100 messages per cycle.  Burst arrivals
+>    exceeding 100 messages in a 2 s poll window will emit a stderr warning and the overflow
+>    messages will be silently dropped.  This is safe for interactive usage but should be
+>    noted for high-volume environments.
+
+Until all five are resolved, issue #72 should remain **open**.
+
+---
+
+## Slack Broker Mode (Issue #72)
+
+> **Status:** Code shipped. Needs live credentials to run end-to-end.
+> **Architecture:** HTTP polling of `conversations.history` + `chat.postMessage`. Stdlib-only.
+> No WebSocket, no inbound port. Poll latency ~2 s.
+
+### Prerequisites
+
+1. Create a Slack app at <https://api.slack.com/apps> and install it to a workspace.
+2. Add OAuth scopes: `channels:history`, `chat:write` (for public channels) or
+   `groups:history` (for private channels).
+3. Copy the Bot User OAuth Token (`xoxb-...`).
+4. Copy the channel ID (from the channel URL or via API).
+5. Copy your Slack user ID (`UXXXXXXX` format — found in your profile settings).
+6. Set environment variables:
+
+```bash
+export BROWSE_BROKER_SLACK_BOT_TOKEN="xoxb-..."
+export BROWSE_BROKER_SLACK_CHANNEL_ID="C01ABCDEF"
+export BROWSE_BROKER_SLACK_AUTHORIZED_USER_ID="U01234567"
+```
+
+### Start the broker
+
+```bash
+python browse.py --broker-mode slack [--db /path/to/knowledge.db]
+```
+
+Expected startup output:
+
+```
+[broker/slack] Starting HTTP-polling loop (no inbound port opened; ~2 s poll interval). Ctrl-C to stop.
+[broker/slack] Authenticated as @yourbot (id=B01ABCDEF)
+```
+
+### Available commands
+
+Post any of these to the configured Slack channel:
+
+| Command | Description |
+|---|---|
+| `/status` | Daemon uptime, session count, DB schema version |
+| `/search <query>` | FTS5 search, returns top 5 results |
+| `/briefing <topic>` | Runs `briefing.py --compact` for the topic |
+| `/recent` | Lists 10 most recent sessions |
+| `/help` | Command list |
+
+### Architecture constraint
+
+This broker uses HTTP polling of `GET /conversations.history?oldest={ts}` at ~2 s intervals.
+Slack Socket Mode (WebSocket) would reduce latency to <500 ms but requires the `slack_bolt`
+PyPI package (non-stdlib). The Slack Events API (webhook) requires an inbound port (violates
+the "no inbound port" architecture constraint). HTTP polling is the only stdlib-compatible
+option without an inbound port.
+
+### Blockers / unverified acceptance criteria (#72)
+
+> 1. **Credentials** — the three env vars above must be set.
+> 2. **Maintainer RTT benchmark** — median + p95 latency over ≥100 messages on a FPT network
+>    has not been measured.
+> 3. **Latency decision** — ~2 s HTTP-polling may be acceptable; if not, the `slack_bolt`
+>    package must be adopted (non-stdlib dependency decision for maintainer).
+
+Until all three are resolved, issue #72 should remain **open**.
 
 ---
 

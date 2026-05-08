@@ -390,6 +390,10 @@ pre_names = [r.name for r in pre_tool_rules]
 test("preToolUse has enforce-briefing", "enforce-briefing" in pre_names)
 test("preToolUse has enforce-learn", "enforce-learn" in pre_names)
 test("preToolUse has tentacle-enforce", "tentacle-enforce" in pre_names)
+test("preToolUse has verification-gate", "verification-gate" in pre_names)
+
+post_names = [r.name for r in post_tool_rules]
+test("postToolUse has verification-gate", "verification-gate" in post_names)
 
 # Briefing must come before learn gate
 brief_idx = pre_names.index("enforce-briefing")

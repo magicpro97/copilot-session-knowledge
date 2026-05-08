@@ -32,6 +32,7 @@ if os.name == "nt":
 from browse.api._common import json_error, json_ok
 from browse.core.operator_console import (
     confine_path,
+    consume_resume_token,
     create_session,
     delete_session,
     get_available_models,
@@ -366,16 +367,41 @@ def handle_stream(db, params, token, nonce, session_id: str = "") -> tuple:
     Query params:
       run=<run_id>  (required)
 
+    Fast-resume (issue #60):
+      On reconnect, the client may supply a previously-issued, single-use resume
+      token via the ``Last-Event-ID`` HTTP header (standard SSE reconnect header,
+      forwarded automatically by EventSource) or the custom ``X-Resume-Token``
+      header (for fetch-based clients).  The token is NEVER accepted via URL
+      query parameters so it cannot appear in server access logs or browser history.
+
+      If the token is valid the stream resumes from the checkpointed position;
+      if it is absent, expired, or invalid the stream starts from index 0
+      (graceful fallback — no error is returned).
+
     Returns text/event-stream; each data frame is a JSON object:
       {"type": "<copilot-event-type>", "event": {...}, "idx": N}
       {"type": "raw", "text": "...", "idx": N}
       {"type": "status", "status": "done|failed|timeout|cancelled", "exit_code": N}
+
+    Checkpoint frames additionally carry an SSE ``id:`` field containing an opaque
+    single-use reconnect token that clients may use on the next reconnect.
     """
     run_id = _str_param(params, "run", max_len=64)
     if not run_id:
         return json_error("'run' query parameter is required", "MISSING_RUN_ID", 400)
 
-    factory = make_stream_generator(session_id, run_id)
+    # Fast-resume: validate the reconnect token if present.
+    # Accept via Last-Event-ID (browser EventSource) or X-Resume-Token (fetch).
+    # Token is NEVER read from URL params to preserve the no-secrets-in-URL guarantee.
+    resume_token = params.get("_last_event_id", [""])[0] or params.get("_x_resume_token", [""])[0]
+    resume_from = 0
+    if resume_token:
+        idx = consume_resume_token(session_id, run_id, resume_token)
+        if idx is not None:
+            resume_from = idx
+        # If token is absent / invalid / expired: resume_from stays 0 (graceful fallback).
+
+    factory = make_stream_generator(session_id, run_id, resume_from=resume_from)
     return factory, "text/event-stream", 200
 
 
