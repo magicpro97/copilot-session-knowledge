@@ -13,7 +13,8 @@ print(
   ------------------------------------------------------------
   STOP. Before ANY work, complete these steps IN ORDER:
 
-  [ ] 1. Run: python3 ~/.copilot/tools/briefing.py "<task>"
+  [ ] 1. Run: sk briefing --auto --compact
+       (fallback: python3 ~/.copilot/tools/briefing.py "<task>")
   [ ] 2. Read: WORKFLOW.md or project docs
   [ ] 3. Read: AGENTS.md (if multi-agent project)
   [ ] 4. THEN analyze code

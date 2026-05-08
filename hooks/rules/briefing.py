@@ -139,8 +139,9 @@ class EnforceBriefingRule(Rule):
             return None
 
         return deny(
-            "\u26a0\ufe0f BRIEFING REQUIRED: Run briefing.py before editing code. "
-            'Command: python3 ~/.copilot/tools/briefing.py "your task"'
+            "\u26a0\ufe0f BRIEFING REQUIRED: Run briefing before editing code. "
+            'Command: sk briefing --auto --compact\n'
+            '(fallback: python3 ~/.copilot/tools/briefing.py "your task")'
         )
 
     def _briefing_done(self):

@@ -79,7 +79,8 @@ class EnforceLearnRule(Rule):
             return deny(
                 f"\U0001f9e0 LEARN REQUIRED: {count} code files edited but learn.py not called. "
                 "Record what you learned before committing:\n"
-                "  python3 ~/.copilot/tools/learn.py\n"
+                "  sk learn --mistake \"Title\" \"Description\" --wing <wing> --room <room>\n"
+                "  (fallback: python3 ~/.copilot/tools/learn.py)\n"
             )
 
         # Block task_complete
@@ -90,7 +91,8 @@ class EnforceLearnRule(Rule):
             return deny(
                 f"\U0001f9e0 LEARN REQUIRED: {count} code files edited but learn.py not called. "
                 "Record learnings before completing task:\n"
-                "  python3 ~/.copilot/tools/learn.py\n"
+                "  sk learn --mistake \"Title\" \"Description\" --wing <wing> --room <room>\n"
+                "  (fallback: python3 ~/.copilot/tools/learn.py)\n"
             )
 
         return None

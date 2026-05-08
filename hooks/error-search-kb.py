@@ -51,7 +51,8 @@ def main():
             for line in lines:
                 print(f"  {line}")
             print()
-            print(f'  Run: python3 ~/.copilot/tools/query-session.py "{search_term}" --verbose')
+            print(f'  Run: sk query "{search_term}" --verbose')
+            print(f'  (fallback: python3 ~/.copilot/tools/query-session.py "{search_term}" --verbose)')
             print()
     except subprocess.TimeoutExpired:
         pass

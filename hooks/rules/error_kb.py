@@ -62,7 +62,8 @@ class ErrorKBRule(Rule):
                     *([ctx_line] if ctx_line else []),
                     *[f"  {line}" for line in lines],
                     "",
-                    f'  Run: python3 ~/.copilot/tools/query-session.py "{search_query[:80]}" --verbose',
+                    f'  Run: sk query "{search_query[:80]}" --verbose',
+                    f'  (fallback: python3 ~/.copilot/tools/query-session.py "{search_query[:80]}" --verbose)',
                     "",
                 ]
                 return info("\n".join(msg_lines))
