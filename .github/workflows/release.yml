@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v1.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            asset_name: sk-linux-x64.tar.gz
+            exe_name: sk
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            asset_name: sk-linux-arm64.tar.gz
+            exe_name: sk
+          - os: macos-13
+            target: darwin-x64
+            asset_name: sk-darwin-x64.tar.gz
+            exe_name: sk
+          - os: macos-latest
+            target: darwin-arm64
+            asset_name: sk-darwin-arm64.tar.gz
+            exe_name: sk
+          - os: windows-latest
+            target: windows-x64
+            asset_name: sk-windows-x64.zip
+            exe_name: sk.exe
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.target }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Nuitka
+        run: pip install nuitka ordered-set zstandard
+
+      - name: Install C compiler (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc patchelf
+
+      - name: Build executable
+        run: python build/nuitka-build.py --output-dir dist
+
+      - name: Verify executable runs
+        shell: bash
+        run: |
+          chmod +x dist/${{ matrix.exe_name }} 2>/dev/null || true
+          dist/${{ matrix.exe_name }} --version
+          dist/${{ matrix.exe_name }} --help | head -5
+
+      - name: Run dispatch tests
+        run: |
+          python -m pytest tests/test_sk_dispatch.py -v --tb=short 2>/dev/null || python tests/test_sk_dispatch.py
+
+      - name: Run integration tests against binary
+        shell: bash
+        env:
+          SK_EXE: dist/${{ matrix.exe_name }}
+        run: |
+          python tests/test_nuitka_exe.py
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd dist
+          tar czf ${{ matrix.asset_name }} ${{ matrix.exe_name }}
+          shasum -a 256 ${{ matrix.asset_name }} > ${{ matrix.asset_name }}.sha256
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd dist
+          Compress-Archive -Path ${{ matrix.exe_name }} -DestinationPath ${{ matrix.asset_name }}
+          $hash = (Get-FileHash ${{ matrix.asset_name }} -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.asset_name }}" | Out-File -FilePath "${{ matrix.asset_name }}.sha256" -Encoding utf8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            dist/${{ matrix.asset_name }}
+            dist/${{ matrix.asset_name }}.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    name: Create Release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: List artifacts
+        run: find artifacts/ -type f | sort
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            --title "sk ${{ steps.tag.outputs.tag }}" \
+            --generate-notes \
+            artifacts/*

@@ -30,6 +30,7 @@ Usage:
 """
 
 import os
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -39,7 +40,10 @@ if os.name == "nt":
         if hasattr(_stream, "reconfigure"):
             _stream.reconfigure(encoding="utf-8", errors="replace")
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
+
+# Detect frozen mode (Nuitka/PyInstaller compiled binary)
+_FROZEN = getattr(sys, "frozen", False)
 
 DEFAULT_TOOLS_DIR = Path(__file__).parent.resolve()
 CHECKOUT_MARKERS = ("briefing.py", "query-session.py", "install.py")
@@ -141,12 +145,34 @@ def _print_missing_script_error(tools_dir: Path, script: str, *, from_env: bool)
 
 
 def _run(script: str, extra_args: list[str]) -> int:
-    """Delegate to a standalone script via subprocess."""
+    """Delegate to a standalone script. Uses runpy in frozen mode, subprocess otherwise."""
     tools_dir, from_env = _resolve_tools_dir()
     script_path = tools_dir / script
     if not script_path.exists():
         _print_missing_script_error(tools_dir, script, from_env=from_env)
         return 2
+
+    if _FROZEN:
+        return _run_internal(script_path, extra_args)
+    else:
+        return _run_subprocess(script_path, extra_args)
+
+
+def _run_internal(script_path: Path, extra_args: list[str]) -> int:
+    """Run script in-process via runpy (for frozen/compiled binary)."""
+    saved_argv = sys.argv[:]
+    try:
+        sys.argv = [str(script_path)] + extra_args
+        runpy.run_path(str(script_path), run_name="__main__")
+        return 0
+    except SystemExit as e:
+        return e.code if isinstance(e.code, int) else (1 if e.code else 0)
+    finally:
+        sys.argv = saved_argv
+
+
+def _run_subprocess(script_path: Path, extra_args: list[str]) -> int:
+    """Run script as subprocess (for normal dev mode)."""
     cmd = [sys.executable, str(script_path)] + extra_args
     result = subprocess.run(cmd)
     return result.returncode
