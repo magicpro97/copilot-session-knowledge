@@ -112,6 +112,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
@@ -130,11 +132,38 @@ jobs:
             echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Generate changelog
+        id: changelog
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${TAG}$" | head -1 || echo "")
+          {
+            echo "## Installation"
+            echo ""
+            echo '```bash'
+            echo "# Linux/macOS"
+            echo "python3 install-binary.py ${TAG}"
+            echo ""
+            echo "# Windows"
+            echo "python install-binary.py ${TAG}"
+            echo '```'
+            echo ""
+            if [ -n "$PREV_TAG" ]; then
+              echo "## What's Changed"
+              echo ""
+              git log --pretty=format:"- %s (%h)" "${PREV_TAG}..${TAG}" -- ':!.octogent' ':!tests'
+              echo ""
+              echo ""
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${TAG}"
+            fi
+          } > release-notes.md
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ steps.tag.outputs.tag }}" \
             --title "sk ${{ steps.tag.outputs.tag }}" \
+            --notes-file release-notes.md \
             --generate-notes \
             artifacts/*
