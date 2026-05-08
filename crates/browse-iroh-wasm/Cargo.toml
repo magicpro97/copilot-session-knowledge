@@ -1,0 +1,53 @@
+[package]
+name = "browse-iroh-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Iroh relay/QUIC transport for browse-ui (Wasm target) — #69 spike scaffold"
+license = "MIT OR Apache-2.0"
+
+# ---------------------------------------------------------------------------
+# Build note (STATUS: 🔴 NOT IMPLEMENTED)
+# ---------------------------------------------------------------------------
+# This crate cannot be compiled in the current environment:
+#   - No Rust toolchain is installed (rustc/cargo not found)
+#   - relay.iroh.network is DNS-unresolvable from this network
+#
+# To build when environment allows:
+#   rustup target add wasm32-unknown-unknown
+#   cargo install wasm-pack
+#   wasm-pack build --target web
+#
+# Spike verdict (2026-05-07):
+#   relay-only path = no latency advantage over Telegram.
+#   Direct QUIC requires this sidecar + wasm-bindgen runtime.
+#   Deferred pending Rust toolchain and relay accessibility.
+# ---------------------------------------------------------------------------
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["console_error_panic_hook"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+  "console",
+  "Performance",
+  "Window",
+] }
+console_error_panic_hook = { version = "0.1", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+
+# iroh — browser Wasm support is relay-only until QUIC lands in browsers.
+# Pin to a known-good release; update when direct QUIC is viable.
+# NOTE: iroh crate has not been tested in this scaffold (no Rust toolchain).
+iroh = { version = "0.35", default-features = false, features = ["wasm-bindgen"] }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+opt-level = "s"  # Optimise for size (Wasm)

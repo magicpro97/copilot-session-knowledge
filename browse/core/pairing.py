@@ -1,12 +1,29 @@
-"""browse/core/pairing.py — Pairing ticket management and static slot (#58/#59).
+"""browse/core/pairing.py — QR pairing tickets and static pairing slot.
 
-Provides:
-  create_pairing_ticket(token, base_url) → browse:// URL
-  verify_pairing_ticket(ticket, token, max_age_seconds) → (valid, base_url, error)
-  create_static_slot(base_url) → slot dict
-  get_static_slot() → slot dict | None
-  get_session_kind(token_val, server_token) → "static"|"operator"|"open"
-  render_terminal_qr(url) → prints URL to stdout (QR library optional)
+Implements the pairing-ticket protocol for issue #58 (QR pairing) and
+issue #59 (static pairing / demo mode).
+
+Contract
+--------
+A pairing ticket is a browse://connect?ticket=<base64url_json> URL.
+The JSON payload contains:
+  url          — backend base URL (http://host:port)
+  nonce        — 32-hex-char random nonce
+  created_at   — Unix timestamp (int, seconds)
+  max_age_seconds — Signed ticket TTL in seconds (defaults to 300; static slots use 86400)
+  token_hmac   — HMAC-SHA256(token, nonce_bytes || created_at_le_bytes)
+                  Empty string when the backend runs in open-auth mode.
+
+The HMAC proof is parity with the Zedra pairing ticket spec (issue #58 reference).
+It binds the ticket to the specific operator — a ticket copied from logs can only
+be replayed within the allowed age window (default 300 s).
+
+Static pairing slot (#59)
+-------------------------
+A static slot is a separate, reusable read-only pairing slot created via
+``create_static_slot(base_url)``.  The slot lives only for the current daemon
+lifetime.  It uses a separate ``static_`` prefixed token so audit logs can
+distinguish demo-mode access from operator access.
 """
 
 import base64
@@ -17,160 +34,290 @@ import os
 import secrets
 import sys
 import time
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-# ── Module state ──────────────────────────────────────────────────────────
+# ── Ticket encoding helpers ────────────────────────────────────────────────────
 
-_static_slot: dict | None = None
-
-# Default ticket TTL (seconds).
-_TICKET_TTL = 300
-
-
-# ── Ticket creation ──────────────────────────────────────────────────────
+_SCHEME = "browse://connect"
+_TICKET_PARAM = "ticket"
+_STATIC_TOKEN_PREFIX = "static_"
+_DEFAULT_TICKET_MAX_AGE_SECONDS = 300
+_STATIC_SLOT_TICKET_MAX_AGE_SECONDS = 24 * 60 * 60
 
 
-def create_pairing_ticket(token: str, base_url: str, ttl: int = _TICKET_TTL) -> str:
-    """Create a browse:// pairing URL containing an HMAC-signed ticket.
+def _b64url_encode(data: bytes) -> str:
+    """URL-safe base64 encode without padding."""
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
-    The ticket encodes the base_url and an expiry timestamp.  The hosted UI
-    can present it as a QR code; scanning decodes the base_url and, after
-    server-side verification, pairs the browser to the backend.
+
+def _b64url_decode(s: str) -> bytes:
+    """URL-safe base64 decode with padding restoration."""
+    padding = (4 - len(s) % 4) % 4
+    return base64.urlsafe_b64decode(s + "=" * padding)
+
+
+def _ticket_hmac_message(nonce: str, created_at: int, max_age_seconds: int) -> bytes:
+    """Return the canonical signed payload for pairing-ticket HMACs."""
+    return (
+        nonce.encode("ascii")
+        + created_at.to_bytes(8, byteorder="little")
+        + max_age_seconds.to_bytes(8, byteorder="little")
+    )
+
+
+# ── Pairing ticket creation ────────────────────────────────────────────────────
+
+
+def create_pairing_ticket(
+    token: str,
+    base_url: str,
+    max_age_seconds: int = _DEFAULT_TICKET_MAX_AGE_SECONDS,
+) -> str:
+    """Generate a ``browse://connect?ticket=...`` URL.
+
+    Parameters
+    ----------
+    token:    The server auth token (empty string for open-auth backends).
+    base_url: The backend base URL, e.g. ``http://127.0.0.1:PORT``.
+
+    Returns a ``browse://connect?ticket=<base64url_json>`` string that the
+    hosted UI can parse and use to auto-configure a host profile.
+
+    The HMAC proof is ``HMAC-SHA256(token, nonce_bytes || created_at_le64 || max_age_le64)``
+    where the integer fields are encoded as 8 little-endian bytes.
     """
-    expires = int(time.time()) + ttl
-    payload = json.dumps({"base_url": base_url, "exp": expires}, separators=(",", ":"))
-    payload_b64 = base64.urlsafe_b64encode(payload.encode()).decode()
+    nonce = secrets.token_hex(16)  # 32 hex chars = 16 bytes of entropy
+    created_at = int(time.time())
 
-    key = (token or secrets.token_hex(16)).encode()
-    sig = hmac.new(key, payload_b64.encode(), hashlib.sha256).hexdigest()
+    if token:
+        msg = _ticket_hmac_message(nonce, created_at, max_age_seconds)
+        h = hmac.new(token.encode("utf-8"), msg, hashlib.sha256)
+        token_hmac: str = h.hexdigest()
+    else:
+        token_hmac = ""
 
-    ticket = f"{payload_b64}.{sig}"
-    return f"browse://connect?ticket={quote(ticket)}"
+    payload = {
+        "url": base_url,
+        "nonce": nonce,
+        "created_at": created_at,
+        "max_age_seconds": max_age_seconds,
+        "token_hmac": token_hmac,
+    }
+    encoded = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    return f"browse://connect?ticket={encoded}"
 
 
-# ── Ticket verification ──────────────────────────────────────────────────
+# ── Pairing ticket verification ────────────────────────────────────────────────
 
 
 def verify_pairing_ticket(
-    ticket: str,
-    server_token: str,
-    max_age_seconds: int = _TICKET_TTL,
+    ticket_str: str,
+    token: str,
+    max_age_seconds: int = _DEFAULT_TICKET_MAX_AGE_SECONDS,
 ) -> tuple:
-    """Verify a pairing ticket.
+    """Verify a pairing ticket string or full browse:// URL.
 
-    Returns (valid: bool, base_url: str, error: str).
+    Parameters
+    ----------
+    ticket_str:      Either a raw base64url ticket or a full ``browse://connect?ticket=...`` URL.
+    token:           The server auth token (empty string for open-auth mode).
+    max_age_seconds: Maximum ticket age in seconds (default 300 = 5 minutes).
+
+    Returns
+    -------
+    (valid: bool, base_url: str, error: str)
+    ``valid`` is True and ``base_url`` is set on success.
+    ``error`` describes the failure reason on False.
     """
-    # Strip browse:// prefix if present
-    if ticket.startswith("browse://connect?"):
-        parsed = parse_qs(ticket.split("?", 1)[1])
-        ticket = parsed.get("ticket", [""])[0]
-
-    ticket = unquote(ticket).strip()
-    if not ticket:
-        return False, "", "empty ticket"
-
-    parts = ticket.split(".")
-    if len(parts) != 2:
-        return False, "", "malformed ticket (expected payload.signature)"
-
-    payload_b64, sig = parts
-
-    # Verify HMAC
-    key = (server_token or "").encode()
-    expected_sig = hmac.new(key, payload_b64.encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(sig, expected_sig):
-        return False, "", "invalid signature"
-
-    # Decode payload
     try:
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=="))
+        raw = ticket_str.strip()
+        if raw.startswith("browse://"):
+            parsed = urlparse(raw)
+            qs = parse_qs(parsed.query)
+            tickets = qs.get(_TICKET_PARAM, [])
+            if not tickets:
+                return False, "", "no ticket parameter in URL"
+            raw = tickets[0]
+
+        payload = json.loads(_b64url_decode(raw).decode("utf-8"))
     except Exception as exc:
-        return False, "", f"payload decode error: {exc}"
+        return False, "", f"invalid ticket format: {exc}"
 
-    base_url = payload.get("base_url", "")
-    exp = payload.get("exp", 0)
+    base_url: str = payload.get("url", "")
+    nonce: str = payload.get("nonce", "")
+    created_at = payload.get("created_at", 0)
+    payload_max_age = payload.get("max_age_seconds", max_age_seconds)
+    token_hmac: str = payload.get("token_hmac", "")
 
-    # Check expiry
-    if time.time() > exp:
-        return False, "", "ticket expired"
-
-    # Validate base_url is a reasonable URL
+    if not base_url or not nonce or not isinstance(created_at, int) or created_at <= 0:
+        return False, "", "ticket missing required fields"
     try:
-        parsed = urlparse(base_url)
-        if parsed.scheme not in ("http", "https"):
-            return False, "", "invalid base_url scheme"
+        parsed_url = urlparse(base_url)
     except Exception:
         return False, "", "invalid base_url"
+    if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+        return False, "", "invalid base_url scheme"
+    if not isinstance(payload_max_age, int) or payload_max_age <= 0:
+        payload_max_age = max_age_seconds
+    payload_max_age = min(payload_max_age, _STATIC_SLOT_TICKET_MAX_AGE_SECONDS)
+
+    # Age check
+    now = int(time.time())
+    age = now - created_at
+    if age < 0 or age > payload_max_age:
+        return False, "", f"ticket expired (age={age}s, max={payload_max_age}s)"
+
+    # HMAC verification — skip for open-auth backends
+    if token:
+        if not token_hmac:
+            return False, "", "HMAC proof absent but token is configured"
+        try:
+            msg = _ticket_hmac_message(nonce, created_at, payload_max_age)
+            expected = hmac.new(token.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(token_hmac.encode("utf-8"), expected.encode("utf-8")):
+                return False, "", "HMAC proof mismatch — ticket may have been tampered with"
+        except Exception as exc:
+            return False, "", f"HMAC verification error: {exc}"
 
     return True, base_url, ""
 
 
-# ── Static slot management (#59) ─────────────────────────────────────────
+# ── Terminal QR rendering ──────────────────────────────────────────────────────
 
 
-def create_static_slot(base_url: str, label: str = "Demo mode") -> dict:
-    """Create a static (read-only) demo pairing slot.
+def _print_url_box(url: str) -> None:
+    """Fallback: print the URL in an ASCII bordered box with instructions."""
+    width = max(len(url) + 4, 60)
+    border = "─" * (width - 2)
+    print(f"┌{border}┐")
+    print(f"│  browse:// pairing URL{' ' * (width - 25)}│")
+    print(f"│{' ' * (width - 2)}│")
+    # Wrap long URLs
+    if len(url) <= width - 4:
+        padding = width - 4 - len(url)
+        print(f"│  {url}{' ' * padding}  │")
+    else:
+        # Split into two lines
+        mid = width - 4
+        print(f"│  {url[:mid]}  │")
+        print(f"│  {url[mid:]}{' ' * (width - 4 - len(url[mid:]))}  │")
+    print(f"│{' ' * (width - 2)}│")
+    print(f"└{border}┘")
+    print()
+    print("  ↑  Paste this URL in the 'Scan QR / paste browse://' field in the hosted UI.")
+    print("  ↑  Or install 'qrcode' (pip install qrcode) for a scannable terminal QR code.")
 
-    The slot has its own token so static-slot connections are distinguishable
-    from operator connections in audit logs.
+
+def render_terminal_qr(url: str) -> None:
+    """Render a QR code for *url* in the terminal.
+
+    Uses the ``qrcode`` library if available (``pip install qrcode``).
+    Falls back to printing the URL in an ASCII bordered box with instructions.
+    """
+    try:
+        import qrcode  # type: ignore[import]
+        import qrcode.constants  # type: ignore[import]
+
+        qr = qrcode.QRCode(
+            version=None,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=1,
+            border=2,
+        )
+        qr.add_data(url)
+        qr.make(fit=True)
+        qr.print_ascii(invert=True)
+    except ImportError:
+        _print_url_box(url)
+    except Exception as exc:
+        print(f"[pairing] QR render error: {exc}", file=sys.stderr)
+        _print_url_box(url)
+
+
+# ── Static pairing slot ────────────────────────────────────────────────────────
+
+# Module-level singleton for the static pairing slot.
+# A ``None`` value means no static slot is active.
+_static_slot: "dict | None" = None
+
+
+def create_static_slot(base_url: str) -> dict:
+    """Create a static pairing slot for demo/store-review access.
+
+    The static slot:
+    - uses a separate ``static_`` prefixed token (never the operator token)
+    - is read-only by convention (ACL ``"readonly"``)
+    - is tied to the current daemon lifetime (not persisted to disk)
+    - produces a ``session_kind: "static"`` marker for audit distinction
+
+    Returns the slot dict including the read-only token and the ticket URL.
     """
     global _static_slot
-    slot_token = secrets.token_hex(16)
-    ticket_url = create_pairing_ticket(slot_token, base_url, ttl=86400)
+    static_token = _STATIC_TOKEN_PREFIX + secrets.token_hex(24)
+    ticket_url = create_pairing_ticket(
+        static_token,
+        base_url,
+        max_age_seconds=_STATIC_SLOT_TICKET_MAX_AGE_SECONDS,
+    )
     _static_slot = {
+        "token": static_token,
         "base_url": base_url,
-        "token": slot_token,
-        "label": label,
+        "created_at": int(time.time()),
         "ticket_url": ticket_url,
-        "created_at": time.time(),
+        "acl": "readonly",
+        "session_kind": "static",
     }
     return _static_slot
 
 
-def get_static_slot() -> dict | None:
-    """Return the active static slot, or None."""
+def get_static_slot() -> "dict | None":
+    """Return the current static pairing slot, or None if not active."""
     return _static_slot
 
 
-# ── Session kind detection ────────────────────────────────────────────────
+def terminate_static_slot() -> bool:
+    """Terminate the static pairing slot.
 
-
-def get_session_kind(token_val: str, server_token: str) -> str:
-    """Determine the session kind based on the authenticated token value.
-
-    Returns:
-      "static"  — request used the static-slot token
-      "operator" — request used the main operator token
-      "open"    — no token required (open-auth mode)
+    Returns True if a slot was active (and has now been removed).
     """
-    if not server_token:
-        return "open"
+    global _static_slot
+    if _static_slot is not None:
+        _static_slot = None
+        return True
+    return False
 
+
+def is_static_token(token_value: str) -> bool:
+    """Return True when *token_value* matches the current static slot token.
+
+    Uses ``hmac.compare_digest`` to avoid timing side-channels.
+    """
     slot = get_static_slot()
-    if slot and token_val and token_val == slot.get("token"):
-        return "static"
-
-    return "operator"
-
-
-# ── Terminal QR rendering ─────────────────────────────────────────────────
-
-
-def render_terminal_qr(url: str) -> None:
-    """Print a URL to stdout, optionally as a QR code if qrcode lib is available."""
-    print(f"  {url}", flush=True)
+    if not slot:
+        return False
     try:
-        import qrcode  # type: ignore
+        return hmac.compare_digest(
+            token_value.encode("utf-8"),
+            slot["token"].encode("utf-8"),
+        )
+    except Exception:
+        return False
 
-        qr = qrcode.QRCode(border=1)
-        qr.add_data(url)
-        qr.make(fit=True)
-        qr.print_ascii(out=sys.stdout)
-    except ImportError:
-        # qrcode not installed — just print the URL (already done above)
-        pass
+
+def get_session_kind(token_value: str, main_token: str) -> str:
+    """Return the audit session kind for an authenticated request.
+
+    ``"static"`` when the token matches the static slot.
+    ``"operator"`` when the token matches the main operator token.
+    ``"open"`` when no token is required.
+    """
+    if token_value and is_static_token(token_value):
+        return "static"
+    if main_token:
+        return "operator"
+    return "open"

@@ -96,7 +96,7 @@ def handle_verify_ticket_open(db, params, token, nonce) -> tuple:
       { "valid": true,  "base_url": "http://127.0.0.1:PORT", "error": "" }
       { "valid": false, "base_url": "",                       "error": "<reason>" }
     """
-    from browse.core.pairing import verify_pairing_ticket
+    from browse.core.pairing import get_static_slot, verify_pairing_ticket
 
     raw_body = params.get("_body", [""])[0]
     if not raw_body:
@@ -137,4 +137,13 @@ def handle_verify_ticket_open(db, params, token, nonce) -> tuple:
     max_age = max(0, min(3600, max_age))
 
     valid, base_url, error = verify_pairing_ticket(ticket.strip(), token, max_age_seconds=max_age)
+    if not valid:
+        slot = get_static_slot()
+        static_token = slot.get("token", "") if isinstance(slot, dict) else ""
+        if static_token and static_token != token:
+            valid, base_url, error = verify_pairing_ticket(
+                ticket.strip(),
+                static_token,
+                max_age_seconds=max_age,
+            )
     return json.dumps({"valid": valid, "base_url": base_url, "error": error}).encode("utf-8"), "application/json", 200

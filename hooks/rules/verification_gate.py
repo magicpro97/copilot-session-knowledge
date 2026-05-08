@@ -1,22 +1,15 @@
-"""verification_gate.py — preToolUse/postToolUse hook that tracks which
-code surfaces have been edited and gates closeout actions (task_complete,
-gh issue close, tentacle handoff --status DONE) until matching verification
-evidence (test runs, lint, build) has been recorded.
+"""verification_gate.py — Require fresh verification evidence before closeout actions.
 
-Surfaces:
-  SURFACE_PY — any .py file
-  SURFACE_UI — browse-ui/**/*.{ts,tsx,js,jsx}
+Tracks two code surfaces (Python / browse-ui) and records evidence from
+successful verification commands (tests, pnpm lint/typecheck/format/build).
 
-Evidence keys:
-  EV_PY_TESTS    — python test_security.py / test_fixes.py / run_all_tests.py / pytest
-  EV_UI_FORMAT   — pnpm format:check / pnpm format
-  EV_UI_LINT     — pnpm lint
-  EV_UI_TYPECHECK — pnpm typecheck
-  EV_UI_BUILD    — pnpm build
+Blocks closeout-style actions (task_complete, gh issue close/comment,
+gh pr merge, tentacle handoff --status DONE, tentacle complete) when the
+evidence ledger is empty or stale for an edited surface.
 
-Ledger: a JSON file under MARKERS_DIR tracking {dirty: set, evidence: set}.
+Evidence becomes stale when further edits occur on the same surface.
 
-Fail-open: all exceptions are caught so the rule never blocks work by crashing.
+Fail-open: any exception inside this rule lets the operation through.
 """
 
 import json
@@ -25,203 +18,240 @@ import re
 import sys
 from pathlib import Path
 
-from . import Rule
-from .common import MARKERS_DIR, deny
-
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-# ── Surface and evidence constants ────────────────────────────────────────
+from . import Rule
+from .common import MARKERS_DIR, bash_writes_source_files, deny
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    from marker_auth import sign_list_marker, verify_list_marker
+except ImportError:
+
+    def sign_list_marker(p, lines):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("\n".join(sorted(lines)), encoding="utf-8")
+
+    def verify_list_marker(p):
+        try:
+            return set(p.read_text(encoding="utf-8").strip().splitlines()) if p.is_file() else set()
+        except Exception:
+            return set()
+
+
+LEDGER_FILE = MARKERS_DIR / "verification-ledger"
+
+# Surface keys
 SURFACE_PY = "py"
 SURFACE_UI = "ui"
 
+# Evidence keys
 EV_PY_TESTS = "py_tests"
 EV_UI_FORMAT = "ui_format"
 EV_UI_LINT = "ui_lint"
 EV_UI_TYPECHECK = "ui_typecheck"
 EV_UI_BUILD = "ui_build"
 
-# Evidence required per surface before closeout is allowed
-_REQUIRED_EVIDENCE = {
+# Required evidence per dirty surface (all must be present)
+_REQUIREMENTS = {
     SURFACE_PY: {EV_PY_TESTS},
     SURFACE_UI: {EV_UI_FORMAT, EV_UI_LINT, EV_UI_TYPECHECK, EV_UI_BUILD},
 }
 
-# Evidence to clear when a surface is re-dirtied (all evidence for that surface)
-_SURFACE_EVIDENCE = {
-    SURFACE_PY: {EV_PY_TESTS},
-    SURFACE_UI: {EV_UI_FORMAT, EV_UI_LINT, EV_UI_TYPECHECK, EV_UI_BUILD},
+# Human-readable commands to fix missing evidence
+_FIX_COMMANDS = {
+    EV_PY_TESTS: "python3 test_security.py && python3 test_fixes.py",
+    EV_UI_FORMAT: "cd browse-ui && pnpm format:check",
+    EV_UI_LINT: "cd browse-ui && pnpm lint",
+    EV_UI_TYPECHECK: "cd browse-ui && pnpm typecheck",
+    EV_UI_BUILD: "cd browse-ui && pnpm build",
 }
 
-LEDGER_FILE = MARKERS_DIR / "verification-ledger"
-
-# ── Path → surface mapping ────────────────────────────────────────────────
-
-_PY_SUFFIX = ".py"
-_UI_SUFFIXES = {".ts", ".tsx", ".js", ".jsx"}
-
-
-def _surfaces_from_path(path: str) -> set:
-    """Determine which surfaces a file path belongs to."""
-    surfaces = set()
-    p = Path(path)
-
-    if p.suffix == _PY_SUFFIX:
-        surfaces.add(SURFACE_PY)
-
-    # browse-ui source files (not CSS, not config)
-    parts = p.parts
-    if any(part == "browse-ui" for part in parts) and p.suffix in _UI_SUFFIXES:
-        surfaces.add(SURFACE_UI)
-
-    return surfaces
-
-
-# ── Command → evidence mapping ────────────────────────────────────────────
-
-_PY_TEST_PATTERNS = re.compile(r"test_security\.py|test_fixes\.py|run_all_tests\.py|pytest")
-_UI_FORMAT_PATTERNS = re.compile(r"pnpm\s+format(?::check)?")
-_UI_LINT_PATTERNS = re.compile(r"pnpm\s+lint")
-_UI_TYPECHECK_PATTERNS = re.compile(r"pnpm\s+typecheck")
-_UI_BUILD_PATTERNS = re.compile(r"pnpm\s+build")
-
-
-def _evidence_from_command(command: str) -> set:
-    """Determine which evidence keys a bash command produces."""
-    evidence = set()
-
-    if _PY_TEST_PATTERNS.search(command):
-        evidence.add(EV_PY_TESTS)
-    if _UI_FORMAT_PATTERNS.search(command):
-        evidence.add(EV_UI_FORMAT)
-    if _UI_LINT_PATTERNS.search(command):
-        evidence.add(EV_UI_LINT)
-    if _UI_TYPECHECK_PATTERNS.search(command):
-        evidence.add(EV_UI_TYPECHECK)
-    if _UI_BUILD_PATTERNS.search(command):
-        evidence.add(EV_UI_BUILD)
-
-    return evidence
-
-
-# ── Bash write detection for postToolUse ──────────────────────────────────
-
-_BASH_WRITE_RE = re.compile(
-    r">{1,2}\s*([^\s;|&]+)|"
-    r"\btee\s+(?:-a\s+)?([^\s;|&]+)|"
-    r"\bprintf\b.*>\s*([^\s;|&]+)"
+# Failure indicators in toolResult output (non-zero counts only)
+_FAIL_RE = re.compile(
+    r"(?:"
+    r"FAILED\b"
+    r"|[Ff]ailed:\s*[1-9]\d*"
+    r"|[Ee]rror(?:s)?:\s+[1-9]\d*"
+    r"|error\s+TS\d+"
+    r"|[Ee]xit\s+(?:code|status)\s*[1-9]"
+    r"|[1-9]\d*\s+fail(?:ed|ure)"
+    r")"
 )
 
 
-def _bash_write_targets(command: str) -> list:
-    """Extract file paths that a bash command writes to."""
-    targets = []
-    for m in _BASH_WRITE_RE.finditer(command):
-        path = m.group(1) or m.group(2) or m.group(3)
-        if path:
-            # Strip quotes
-            if len(path) >= 2 and path[0] == path[-1] and path[0] in ('"', "'"):
-                path = path[1:-1]
-            targets.append(path)
-    return targets
-
-
-# ── Success detection ─────────────────────────────────────────────────────
-
-
-def _looks_successful(data: dict) -> bool:
-    """Heuristic: did the tool run succeed? Fail-open (return True on ambiguity)."""
-    result = data.get("toolResult")
-    if result is None:
-        return True
-
-    if isinstance(result, dict):
-        exit_code = result.get("exitCode")
-        if isinstance(exit_code, int) and exit_code != 0:
-            return False
-        return True
-
-    if isinstance(result, str):
-        # TypeScript compiler errors (e.g. "error TS2339: Property 'x' does not exist")
-        if re.search(r"\berror TS\d", result):
-            return False
-        # Uppercase FAILED usually indicates test framework failure output
-        if re.search(r"\bFAILED\b", result):
-            return False
-        # "N failed" where N > 0 (lowercase, from test runners like "3 failed")
-        m = re.search(r"(\d+)\s+failed\b", result.lower())
-        if m and int(m.group(1)) > 0:
-            return False
-
-    return True
-
-
-# ── Closeout detection ────────────────────────────────────────────────────
-
-_CLOSEOUT_BASH_PATTERNS = [
-    (re.compile(r"\bgh\s+issue\s+close\b"), "gh issue close"),
-    (re.compile(r"\bgh\s+issue\s+comment\b"), "gh issue comment"),
-    (re.compile(r"\bgh\s+pr\s+merge\b"), "gh pr merge"),
-    (re.compile(r"tentacle\.py\s+handoff\b.*--status\s+DONE\b"), "tentacle handoff --status DONE"),
-    (re.compile(r"\bsk\s+tentacle\s+handoff\b.*--status\s+DONE\b"), "sk tentacle handoff --status DONE"),
-    (re.compile(r"tentacle\.py\s+complete\b"), "tentacle complete"),
-]
-
-
-def _is_closeout(tool_name: str, tool_args: dict) -> tuple:
-    """Return (is_closeout: bool, description: str)."""
-    if tool_name == "task_complete":
-        return True, "task_complete"
-
-    if tool_name == "bash":
-        command = tool_args.get("command", "")
-        for pattern, desc in _CLOSEOUT_BASH_PATTERNS:
-            if pattern.search(command):
-                return True, desc
-
-    return False, ""
-
-
-# ── Ledger I/O ────────────────────────────────────────────────────────────
-
-
-def _read_ledger() -> dict:
-    """Read the verification ledger. Returns {dirty: set, evidence: set}."""
+def _parse_ledger_payload(raw_text):
     try:
-        if LEDGER_FILE.exists():
-            raw = json.loads(LEDGER_FILE.read_text(encoding="utf-8"))
-            return {
-                "dirty": set(raw.get("dirty", [])),
-                "evidence": set(raw.get("evidence", [])),
-            }
-    except Exception:
-        pass
+        data = json.loads(raw_text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {
+        "dirty": set(data.get("dirty", [])),
+        "evidence": set(data.get("evidence", [])),
+    }
+
+
+def _read_ledger():
+    """Read the verification ledger. Returns dict: {dirty: set, evidence: set}."""
+    raw_set = verify_list_marker(LEDGER_FILE)
+    if raw_set:
+        if len(raw_set) == 1:
+            sole = next(iter(raw_set))
+            if sole.startswith("{"):
+                parsed = _parse_ledger_payload(sole)
+                if parsed is not None:
+                    return parsed
+        return {"dirty": set(), "evidence": set()}
+
+    # Backward compatibility: older upstream versions wrote plain JSON directly.
+    if LEDGER_FILE.is_file():
+        try:
+            parsed = _parse_ledger_payload(LEDGER_FILE.read_text(encoding="utf-8"))
+            if parsed is not None:
+                return parsed
+        except Exception:
+            pass
     return {"dirty": set(), "evidence": set()}
 
 
-def _write_ledger(dirty: set, evidence: set) -> None:
-    """Write the verification ledger atomically."""
+def _write_ledger(dirty, evidence):
+    """Write the verification ledger (HMAC-signed via sign_list_marker)."""
     try:
         MARKERS_DIR.mkdir(parents=True, exist_ok=True)
-        data = json.dumps(
-            {
-                "dirty": sorted(dirty),
-                "evidence": sorted(evidence),
-            }
+        payload = json.dumps(
+            {"dirty": sorted(dirty), "evidence": sorted(evidence)},
+            separators=(",", ":"),
+            sort_keys=True,
         )
-        LEDGER_FILE.write_text(data, encoding="utf-8")
+        sign_list_marker(LEDGER_FILE, {payload})
     except Exception:
         pass
 
 
-# ── Rule ──────────────────────────────────────────────────────────────────
+def _surfaces_from_path(path):
+    """Return set of surfaces affected by editing path."""
+    surfaces = set()
+    p = str(path)
+    suffix = Path(path).suffix.lower()
+    if "browse-ui/" in p or p.startswith("browse-ui/"):
+        if suffix in (".ts", ".tsx", ".js", ".jsx"):
+            surfaces.add(SURFACE_UI)
+    if suffix == ".py":
+        surfaces.add(SURFACE_PY)
+    return surfaces
+
+
+def _strip_shell_quotes(path):
+    if len(path) >= 2 and path[0] == path[-1] and path[0] in ('"', "'"):
+        return path[1:-1]
+    return path
+
+
+def _extract_written_paths(command):
+    """Best-effort extraction of source-file write targets from bash commands."""
+    paths = []
+    if "<<" in command and "open(" in command:
+        for m in re.finditer(r"open\(['\"]([^'\"]+)['\"]", command):
+            paths.append(m.group(1))
+    for m in re.finditer(r">{1,2}\s*([^\s;|&]+)", command):
+        paths.append(_strip_shell_quotes(m.group(1)))
+    for m in re.finditer(r"\bsed\s+-i[^\s]*\s+(?:'[^']*'|\"[^\"]*\")\s+(\S+)", command):
+        paths.append(_strip_shell_quotes(m.group(1)))
+    for m in re.finditer(r"\btee\s+(?:-[a-z]+\s+)?(\S+)", command):
+        paths.append(_strip_shell_quotes(m.group(1)))
+    return [p for p in paths if p]
+
+
+def _evidence_from_command(command):
+    """Detect evidence categories a bash command provides (pattern-based)."""
+    ev = set()
+    # Python tests
+    if (
+        "test_security.py" in command
+        or "test_fixes.py" in command
+        or "run_all_tests.py" in command
+        or re.search(r"\bpython3?\s+test_\w+\.py\b", command)
+    ):
+        ev.add(EV_PY_TESTS)
+    if re.search(r"\bpytest\b", command):
+        ev.add(EV_PY_TESTS)
+    # browse-ui pnpm checks
+    if "pnpm format" in command:
+        ev.add(EV_UI_FORMAT)
+    if "pnpm lint" in command:
+        ev.add(EV_UI_LINT)
+    if "pnpm typecheck" in command:
+        ev.add(EV_UI_TYPECHECK)
+    if "pnpm build" in command:
+        ev.add(EV_UI_BUILD)
+    return ev
+
+
+def _mark_dirty_surfaces(surfaces):
+    """Mark surfaces dirty and clear evidence that became stale."""
+    if not surfaces:
+        return
+    ledger = _read_ledger()
+    new_dirty = ledger["dirty"] | surfaces
+    new_ev = {
+        ev_key
+        for ev_key in ledger["evidence"]
+        if not any(ev_key in _REQUIREMENTS.get(surface, set()) for surface in surfaces)
+    }
+    _write_ledger(new_dirty, new_ev)
+
+
+def _looks_successful(data):
+    """Return True if toolResult shows no obvious failure indicators.
+
+    Fail-open: missing or unreadable toolResult → assume success.
+    """
+    tool_result = data.get("toolResult", "")
+    if not tool_result:
+        return True
+    # Handle dict result (may have exitCode or output key)
+    if isinstance(tool_result, dict):
+        exit_code = tool_result.get("exitCode") or tool_result.get("exit_code")
+        if isinstance(exit_code, int) and exit_code != 0:
+            return False
+        output = str(tool_result.get("output", tool_result.get("stdout", "")))
+    else:
+        output = str(tool_result)
+    return not bool(_FAIL_RE.search(output))
+
+
+def _is_closeout(tool_name, tool_args):
+    """Return (is_closeout: bool, description: str) for known closeout actions."""
+    if tool_name == "task_complete":
+        return True, "task_complete"
+    if tool_name != "bash":
+        return False, ""
+    cmd = tool_args.get("command", "")
+    if re.search(r"\bgh\b.*\bissue\b.*\bclose\b", cmd):
+        return True, "gh issue close"
+    if re.search(r"\bgh\b.*\bissue\b.*\bcomment\b", cmd):
+        return True, "gh issue comment"
+    if re.search(r"\bgh\b.*\bpr\b.*\bmerge\b", cmd):
+        return True, "gh pr merge"
+    if re.search(r"(?:tentacle\.py|sk\s+tentacle)\b.*\bhandoff\b.*--status\s+DONE\b", cmd):
+        return True, "tentacle handoff --status DONE"
+    if re.search(r"(?:tentacle\.py|sk\s+tentacle)\b.*\bcomplete\b", cmd):
+        return True, "tentacle complete"
+    return False, ""
 
 
 class VerificationGateRule(Rule):
-    """Track code edits and gate closeout until verification evidence exists."""
+    """Require verification evidence before closeout actions.
+
+    preToolUse[edit/create]: mark surface dirty, clear stale evidence.
+    postToolUse[bash]:       record evidence from successful commands.
+    preToolUse[bash/task_complete]: block closeout when evidence is missing.
+    """
 
     name = "verification-gate"
     events = ["preToolUse", "postToolUse"]
@@ -229,99 +259,85 @@ class VerificationGateRule(Rule):
 
     def evaluate(self, event, data):
         try:
-            return self._evaluate_inner(event, data)
+            if event == "preToolUse":
+                return self._pre(data)
+            if event == "postToolUse":
+                return self._post(data)
         except Exception:
-            # Fail-open: never block on internal errors
-            return None
+            pass  # fail-open: never block on rule errors
+        return None
 
-    def _evaluate_inner(self, event, data):
+    # ── preToolUse ─────────────────────────────────────────────────────────
+
+    def _pre(self, data):
         tool_name = data.get("toolName", "")
-        tool_args = data.get("toolArgs") or {}
+        tool_args = data.get("toolArgs", {})
         if not isinstance(tool_args, dict):
             tool_args = {}
 
-        if event == "preToolUse":
-            return self._on_pre(tool_name, tool_args, data)
-        elif event == "postToolUse":
-            return self._on_post(tool_name, tool_args, data)
-        return None
-
-    # ── preToolUse ────────────────────────────────────────────────────
-
-    def _on_pre(self, tool_name, tool_args, data):
-        # Track edit/create → mark surface dirty, clear stale evidence
+        # Track edits: mark surfaces dirty and clear now-stale evidence
         if tool_name in ("edit", "create"):
             path = tool_args.get("path", "")
-            surfaces = _surfaces_from_path(path)
-            if surfaces:
-                ledger = _read_ledger()
-                ledger["dirty"] |= surfaces
-                # Clear evidence for re-dirtied surfaces
-                for s in surfaces:
-                    ledger["evidence"] -= _SURFACE_EVIDENCE.get(s, set())
-                _write_ledger(ledger["dirty"], ledger["evidence"])
-            return None
+            if path:
+                _mark_dirty_surfaces(_surfaces_from_path(path))
+            return None  # always allow edits
 
         # Gate closeout actions
-        is_close, desc = _is_closeout(tool_name, tool_args)
-        if not is_close:
+        is_closeout, closeout_desc = _is_closeout(tool_name, tool_args)
+        if not is_closeout:
             return None
 
         ledger = _read_ledger()
         if not ledger["dirty"]:
-            return None  # No edits tracked → no requirement
+            return None  # No tracked edits → no requirement
 
-        missing = []
-        for surface in ledger["dirty"]:
-            required = _REQUIRED_EVIDENCE.get(surface, set())
-            lacking = required - ledger["evidence"]
-            if lacking:
-                missing.append((surface, lacking))
-
-        if not missing:
-            return None  # All evidence collected
-
-        # Build denial message
-        parts = ["⚠️ VERIFICATION REQUIRED before closeout\n"]
-        for surface, lacking in missing:
+        missing_msgs = []
+        for surface in sorted(ledger["dirty"]):
+            required = _REQUIREMENTS.get(surface, set())
+            gaps = required - ledger["evidence"]
+            if not gaps:
+                continue
+            fix_parts = [_FIX_COMMANDS[k] for k in sorted(gaps) if k in _FIX_COMMANDS]
             if surface == SURFACE_PY:
-                parts.append(
-                    "Python files were modified. Run verification:\n  python3 test_security.py && python3 test_fixes.py"
-                )
+                missing_msgs.append(f"Python edits need test evidence: {fix_parts[0] if fix_parts else 'run tests'}")
             elif surface == SURFACE_UI:
-                parts.append(
-                    "browse-ui files were modified. Run verification:\n"
-                    "  cd browse-ui && pnpm format:check && pnpm lint && pnpm typecheck && pnpm build"
+                missing_msgs.append(
+                    "browse-ui edits need format/lint/typecheck/build evidence:\n"
+                    + "\n".join(f"    {cmd}" for cmd in fix_parts)
                 )
 
-        return deny("\n".join(parts))
-
-    # ── postToolUse ───────────────────────────────────────────────────
-
-    def _on_post(self, tool_name, tool_args, data):
-        if tool_name != "bash":
+        if not missing_msgs:
             return None
 
+        bullet_list = "\n".join(f"  • {m}" for m in missing_msgs)
+        return deny(
+            f"\U0001f50e VERIFICATION REQUIRED before {closeout_desc}:\n"
+            f"{bullet_list}\n"
+            "Run the above commands and retry."
+        )
+
+    # ── postToolUse ────────────────────────────────────────────────────────
+
+    def _post(self, data):
+        tool_name = data.get("toolName", "")
+        if tool_name != "bash":
+            return None
+        tool_args = data.get("toolArgs", {})
+        if not isinstance(tool_args, dict):
+            return None
         command = tool_args.get("command", "")
-
-        # Check for bash writes that dirty surfaces
-        write_targets = _bash_write_targets(command)
-        write_surfaces = set()
-        for target in write_targets:
-            write_surfaces |= _surfaces_from_path(target)
-
-        if write_surfaces:
-            ledger = _read_ledger()
-            ledger["dirty"] |= write_surfaces
-            for s in write_surfaces:
-                ledger["evidence"] -= _SURFACE_EVIDENCE.get(s, set())
-            _write_ledger(ledger["dirty"], ledger["evidence"])
-
-        # Record evidence from successful verification commands
-        evidence = _evidence_from_command(command)
-        if evidence and _looks_successful(data):
-            ledger = _read_ledger()
-            ledger["evidence"] |= evidence
-            _write_ledger(ledger["dirty"], ledger["evidence"])
-
-        return None
+        if bash_writes_source_files(command):
+            written_surfaces = set()
+            for path in _extract_written_paths(command):
+                written_surfaces |= _surfaces_from_path(path)
+            _mark_dirty_surfaces(written_surfaces)
+        ev_detected = _evidence_from_command(command)
+        if not ev_detected:
+            return None
+        # Only record evidence if the command appeared to succeed
+        if not _looks_successful(data):
+            return None
+        ledger = _read_ledger()
+        new_evidence = ledger["evidence"] | ev_detected
+        _write_ledger(ledger["dirty"], new_evidence)
+        return None  # postToolUse: informational only
