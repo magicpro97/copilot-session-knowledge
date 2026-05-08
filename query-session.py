@@ -1251,24 +1251,33 @@ def show_graph(topic: str):
     db.close()
 
 
-def search_knowledge(query: str, limit: int = 10, export_fmt: str = None, retrieval_query: str = None):
+def search_knowledge(
+    query: str, limit: int = 10, export_fmt: str = None, retrieval_query: str = None, error_type: str = None
+):
     """Search knowledge entries with FTS5 and adaptive strictness."""
     db = get_db()
     query_for_retrieval = retrieval_query if retrieval_query is not None else query
 
     fts_query, strictness, _ = _build_adaptive_fts_query(query_for_retrieval)
 
+    # Build optional error_type WHERE clause
+    et_clause = ""
+    et_params: list = []
+    if error_type:
+        et_clause = " AND ke.error_type = ?"
+        et_params = [error_type]
+
     try:
         rows = db.execute(
-            """
+            f"""
             SELECT ke.*, snippet(ke_fts, 1, '>>>', '<<<', '...', 48) as excerpt
             FROM ke_fts fts
             JOIN knowledge_entries ke ON fts.rowid = ke.id
-            WHERE ke_fts MATCH ?
+            WHERE ke_fts MATCH ?{et_clause}
             ORDER BY rank
             LIMIT ?
         """,
-            (fts_query, limit),
+            [fts_query, *et_params, limit],
         ).fetchall()
     except sqlite3.OperationalError:
         rows = []
@@ -1278,15 +1287,15 @@ def search_knowledge(query: str, limit: int = 10, export_fmt: str = None, retrie
         base_query = _sanitize_fts_query(query_for_retrieval)
         try:
             rows = db.execute(
-                """
+                f"""
                 SELECT ke.*, snippet(ke_fts, 1, '>>>', '<<<', '...', 48) as excerpt
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
-                WHERE ke_fts MATCH ?
+                WHERE ke_fts MATCH ?{et_clause}
                 ORDER BY rank
                 LIMIT ?
             """,
-                (base_query, limit),
+                [base_query, *et_params, limit],
             ).fetchall()
         except sqlite3.OperationalError:
             rows = []
@@ -1295,16 +1304,24 @@ def search_knowledge(query: str, limit: int = 10, export_fmt: str = None, retrie
     if not rows:
         like_query_text = query.strip() or query_for_retrieval
         try:
+            et_like = " AND ke.error_type = ?" if error_type else ""
+            et_like_params = [error_type] if error_type else []
             rows = db.execute(
-                """
+                f"""
                 SELECT ke.*,
                        SUBSTR(ke.content, MAX(1, INSTR(LOWER(ke.content), LOWER(?)) - 40), 128) as excerpt
                 FROM knowledge_entries ke
-                WHERE LOWER(ke.title) LIKE ? OR LOWER(ke.content) LIKE ?
+                WHERE (LOWER(ke.title) LIKE ? OR LOWER(ke.content) LIKE ?){et_like}
                 ORDER BY ke.confidence DESC
                 LIMIT ?
             """,
-                (like_query_text, f"%{like_query_text.lower()}%", f"%{like_query_text.lower()}%", limit),
+                [
+                    like_query_text,
+                    f"%{like_query_text.lower()}%",
+                    f"%{like_query_text.lower()}%",
+                    *et_like_params,
+                    limit,
+                ],
             ).fetchall()
             if rows:
                 print(f"{DIM}(FTS returned 0 — showing substring matches){RESET}")
@@ -1321,7 +1338,19 @@ def search_knowledge(query: str, limit: int = 10, export_fmt: str = None, retrie
         for i, r in enumerate(rows, 1):
             sid = r["session_id"][:8]
             excerpt = r["excerpt"].replace(">>>", f"{BOLD}{YELLOW}").replace("<<<", f"{RESET}")
-            print(f"{BOLD}{i}. [{r['category']}] {r['title']}{RESET}")
+            # Show error lifecycle metadata when available
+            meta_parts = []
+            err_type = r["error_type"] if "error_type" in r.keys() else None
+            severity = r["severity"] if "severity" in r.keys() else None
+            root_cause = r["root_cause"] if "root_cause" in r.keys() else None
+            if err_type:
+                meta_parts.append(f"type:{err_type}")
+            if severity:
+                meta_parts.append(f"sev:{severity}")
+            if root_cause:
+                meta_parts.append(f"cause:{root_cause[:40]}")
+            meta_str = f" {DIM}({', '.join(meta_parts)}){RESET}" if meta_parts else ""
+            print(f"{BOLD}{i}. [{r['category']}] {r['title']}{RESET}{meta_str}")
             print(f"   {DIM}Session:{RESET} {sid}..  {DIM}Tags:{RESET} {r['tags']}")
             print(f"   {excerpt}")
             print()
@@ -2478,6 +2507,12 @@ def _run(args: list, compact: bool = False):
 
     # Knowledge category shortcuts (export_fmt already parsed above)
 
+    # Error-type filter for knowledge entries
+    error_type_filter = None
+    if "--error-type" in args:
+        idx = args.index("--error-type")
+        error_type_filter = args[idx + 1] if idx + 1 < len(args) and not args[idx + 1].startswith("--") else None
+
     # limit/verbose already parsed above; re-read for semantic/search paths
     for shortcut, category in [
         ("--mistakes", "mistake"),
@@ -2502,7 +2537,7 @@ def _run(args: list, compact: bool = False):
         if args[i] == "--type" and i + 1 < len(args):
             doc_type = args[i + 1]
             i += 2
-        elif args[i] in ("--limit", "--export", "--source", "--in", "--from"):
+        elif args[i] in ("--limit", "--export", "--source", "--in", "--from", "--error-type"):
             i += 2  # skip flag + value (already parsed)
         elif args[i] in ("--verbose", "-v"):
             verbose = True

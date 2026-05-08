@@ -793,9 +793,13 @@ def _is_noise(text: str) -> bool:
             return True
 
     # Pure code block (>70% of content inside ```)
+    # Exception: preserve blocks that contain stack traces or error info
     code_chars = sum(len(m.group(0)) for m in re.finditer(r"```[\s\S]*?```", text))
     if len(text) > 100 and code_chars / len(text) > 0.7:
-        return True
+        # Check if the code block contains error/traceback info worth keeping
+        has_error_info = bool(re.search(r"(?:Traceback|Error|Exception|FAILED|panic|stack trace)", text, re.IGNORECASE))
+        if not has_error_info:
+            return True
 
     return False
 
