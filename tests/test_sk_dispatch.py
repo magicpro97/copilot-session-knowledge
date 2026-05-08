@@ -35,7 +35,7 @@ class TestSkDispatchSubprocess(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        self.assertRegex(result.stdout.strip(), r"^sk \d+\.\d+")
+        self.assertRegex(result.stdout.strip(), r"^sk \d+\.\d+\.\d+")
 
     def test_help(self):
         """sk --help shows usage."""
