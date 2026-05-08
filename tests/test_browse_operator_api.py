@@ -474,7 +474,7 @@ def test_oc23_make_stream_generator_replays_persisted_events():
         ],
     }
     (run_dir / f"{run_id}.json").write_text(json.dumps(run_data), encoding="utf-8")
-    frames = [json.loads(frame) for frame in make_stream_generator(session["id"], run_id)(threading.Event())]
+    frames = [json.loads(frame if isinstance(frame, str) else frame[0]) for frame in make_stream_generator(session["id"], run_id)(threading.Event())]
     test("OC23: first frame keeps assistant delta type", frames[0].get("type") == "assistant.message_delta")
     test("OC23: second frame keeps result type", frames[1].get("type") == "result")
     test("OC23: final frame is terminal status", frames[-1].get("type") == "status")
