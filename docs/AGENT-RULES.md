@@ -24,7 +24,7 @@ Before starting any task that touches >1 file or involves unfamiliar code:
 
 ```bash
 sk briefing "your task description"
-# fallback: python3 ~/.copilot/tools/briefing.py "your task description"
+# fallback: sk briefing "your task description"
 ```
 
 This surfaces past mistakes, proven patterns, and relevant decisions. Skip only for trivial changes (typo fix, renaming, formatting).
@@ -107,14 +107,14 @@ When running inside a tentacle (dispatched by the orchestrator via `tentacle.py`
 3. **Mark todos as you complete them** — after completing each task:
    ```bash
    sk tentacle todo <tentacle-name> done <index>
-   # fallback: python3 ~/.copilot/tools/tentacle.py todo <tentacle-name> done <index>
+   # fallback: sk tentacle todo <tentacle-name> done <index>
    ```
 4. **No git operations** — do NOT run `git commit` or `git push`; the orchestrator owns all git operations.
 5. **Write a structured handoff before stopping**:
    ```bash
    sk tentacle handoff <tentacle-name> "<summary>" \
      --status <STATUS> [--changed-file <path>] --learn
-   # fallback: python3 ~/.copilot/tools/tentacle.py handoff <tentacle-name> "<summary>" \
+   # fallback: sk tentacle handoff <tentacle-name> "<summary>" \
    #   --status <STATUS> [--changed-file <path>] --learn
    ```
    Use one of `DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED` for `<STATUS>`. Add one `--changed-file` per modified file; omit it when no files changed. The handoff must list: which rules changed, which file is source of truth for each rule, and any remaining ambiguity.
@@ -161,7 +161,7 @@ When acting as an orchestrator with an active goal, the lifecycle is iterative, 
 2. **Evaluate after each Verify phase** — once Build → Lint → Test → Review gates pass, evaluate whether the overarching goal is met. Record evidence:
    ```bash
    sk tentacle verify <name> "<check-command>" --label "goal-eval"
-   # fallback: python3 ~/.copilot/tools/tentacle.py verify <name> "<check-command>" --label "goal-eval"
+   # fallback: sk tentacle verify <name> "<check-command>" --label "goal-eval"
    ```
 3. **Loop if unmet** — if the goal is not satisfied, return to Phase 1 (Plan). Create new tentacles scoped to the remaining gap. Do not re-open completed tentacles; create new ones.
 4. **Close only when verified** — proceed to commit and close only when goal success criteria are verifiably met and evidence is recorded.

@@ -45,7 +45,7 @@ cat AGENTS.md 2>/dev/null | head -30
 
 # Tools availability
 ls ~/.copilot/tools/briefing.py ~/.copilot/tools/learn.py 2>/dev/null
-python3 ~/.copilot/tools/learn.py --stats 2>/dev/null | head -10  # or: sk learn --stats
+sk learn --stats 2>/dev/null | head -10  # or: sk learn --stats
 ```
 
 If `briefing.py` or `learn.py` are missing, tell the user to install first:
@@ -107,10 +107,10 @@ Add a brief section pointing to the other two files. Keep it short — enforceme
 
 ```bash
 sk briefing --wakeup
-# fallback: python3 ~/.copilot/tools/briefing.py --wakeup
+# fallback: sk briefing --wakeup
 sk briefing "task description" --json    # verify JSON output works
 sk learn --discovery "Setup test" "Session knowledge configured" --tags "setup" --json
-# fallback: python3 ~/.copilot/tools/learn.py --discovery ...
+# fallback: sk learn --discovery ...
 cat .github/instructions/session-knowledge.instructions.md
 head -5 .github/skills/session-knowledge/SKILL.md
 

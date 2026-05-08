@@ -63,7 +63,7 @@ it — they are the reliable enforcement surface.
 
 ```bash
 sk install --install-git-hooks
-# fallback: python3 ~/.copilot/tools/install.py --install-git-hooks
+# fallback: sk install --install-git-hooks
 ```
 
 **Enforcement scope and known limitations:**
@@ -172,7 +172,7 @@ sk tentacle create <module-name> \
   --scope "<file-patterns>" \
   --desc "<short description>" \
   --briefing
-# fallback: python3 ~/.copilot/tools/tentacle.py create <module-name> ...
+# fallback: sk tentacle create <module-name> ...
 ```
 
 The `--briefing` flag injects past mistakes and patterns from session-knowledge into CONTEXT.md — use it every time.
@@ -181,7 +181,7 @@ The `--briefing` flag injects past mistakes and patterns from session-knowledge 
 
 ```bash
 sk tentacle todo <name> add "<specific, atomic task>"
-# fallback: python3 ~/.copilot/tools/tentacle.py todo <name> add "<task>"
+# fallback: sk tentacle todo <name> add "<task>"
 ```
 
 Each todo should be one deliverable — testable, reviewable, and completable in isolation.
@@ -203,7 +203,7 @@ This is the most important step. Agent quality is directly proportional to CONTE
 sk tentacle swarm <name> --agent-type <type> --model <model> --briefing
 sk tentacle swarm <name> --output parallel --briefing
 sk tentacle dispatch <name> --agent-type <type> --model <model> --briefing
-# fallback: python3 ~/.copilot/tools/tentacle.py swarm/dispatch <name> ...
+# fallback: sk tentacle swarm/dispatch <name> ...
 ```
 
 `swarm` and `dispatch` materialize a runtime bundle by default. The dispatch prompt stays
@@ -255,7 +255,7 @@ After all verification gates pass, evaluate whether the overarching goal is met 
 ```bash
 # Run the goal's success-criteria check and persist the result
 sk tentacle verify <name> "<success-criteria-command>" --label "goal-eval"
-# fallback: python3 ~/.copilot/tools/tentacle.py verify <name> ...
+# fallback: sk tentacle verify <name> ...
 ```
 
 **Decision logic:**
@@ -336,7 +336,7 @@ Only call `complete` after all verification gates pass. This marks all todos don
 ```bash
 sk tentacle resume <name>             # Refresh briefing, mark active
 sk tentacle resume <name> --no-briefing  # Skip briefing injection
-# fallback: python3 ~/.copilot/tools/tentacle.py resume <name> [--no-briefing]
+# fallback: sk tentacle resume <name> [--no-briefing]
 ```
 
 `resume` refreshes the live briefing in CONTEXT.md and marks the tentacle active again. Use it when returning to a tentacle after an interruption or session boundary. Pass `--no-briefing` only when the briefing is already fresh and re-fetching would be wasteful.
@@ -371,7 +371,7 @@ sk tentacle resume <name> --no-briefing    # resume without re-fetching briefing
 sk tentacle status
 sk tentacle complete <name>
 sk tentacle delete <name>
-# fallback: python3 ~/.copilot/tools/tentacle.py <cmd> <args>
+# fallback: sk tentacle <cmd> <args>
 ```
 
 ## Tips

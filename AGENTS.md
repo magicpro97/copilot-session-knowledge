@@ -42,7 +42,7 @@ See [docs/AGENT-RULES.md](docs/AGENT-RULES.md) for the complete rule text, goal-
 - **Trend Scout** — scheduled/manual only; never wire to `preToolUse`/`postToolUse` hooks
 - **Sync** — local DB is authoritative; remote is transport only; `sync-config.py --setup` takes HTTP(S) URLs only
 - **Hooks** — Copilot CLI only; `hook_runner.py` is the single entry point; fail-open; `pre-commit` also runs scoped Ruff + Prettier cleanliness checks (fail-open when tooling absent)
-- **Tentacle marker-cleanup** — use `tentacle.py marker-cleanup [--apply]` to inspect/remove stale dispatched-subagent marker entries without completing a tentacle
+- **Tentacle marker-cleanup** — use `sk tentacle marker-cleanup [--apply]` to inspect/remove stale dispatched-subagent marker entries without completing a tentacle
 
 > Full conventions, data pipeline, and script inventory: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 

@@ -80,7 +80,7 @@ and guardrails being in place.
 The AI repeats mistakes, forgets past decisions, and has no institutional memory.
 Briefing gives pre-task context; learn records post-task insights.
 
-**Verify:** `sk briefing --wakeup` returns output.  (fallback: `python3 ~/.copilot/tools/briefing.py --wakeup`)
+**Verify:** `sk briefing --wakeup` returns output.  (fallback: `sk briefing --wakeup`)
 
 ### 0.2 Agent Creator
 

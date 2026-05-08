@@ -11,7 +11,7 @@ Recall telemetry tracks how the knowledge base is accessed — counts, IDs, and 
 ```bash
 sk index health --recall         # Recall-only text dashboard
 sk index health --recall --json  # Recall-only JSON payload
-# fallback: python3 ~/.copilot/tools/knowledge-health.py --recall [--json]
+# fallback: sk index health --recall [--json]
 ```
 
 ### Telemetry contract
@@ -77,11 +77,11 @@ These output shapes are **stable contracts** — do not change key names or nest
 Single config key: `connection_string` in `~/.copilot/tools/sync-config.json`
 
 ```bash
-python3 ~/.copilot/tools/sync-config.py --setup https://gateway.example.com
-python3 ~/.copilot/tools/sync-config.py --setup-env SYNC_GATEWAY_URL
-python3 ~/.copilot/tools/sync-config.py --status --json
-python3 ~/.copilot/tools/sync-config.py --get
-python3 ~/.copilot/tools/sync-config.py --clear
+sk sync config --setup https://gateway.example.com
+sk sync config --setup-env SYNC_GATEWAY_URL
+sk sync config --status --json
+sk sync config --get
+sk sync config --clear
 ```
 
 - Accepts HTTP(S) gateway URLs **only** — not raw Postgres or libSQL DSNs
@@ -100,11 +100,11 @@ python3 ~/.copilot/tools/sync-config.py --clear
 ### Daemon behavior
 
 ```bash
-python3 ~/.copilot/tools/sync-daemon.py --once              # One-shot sync
-python3 ~/.copilot/tools/sync-daemon.py --daemon            # Continuous daemon
-python3 ~/.copilot/tools/sync-daemon.py --interval 30       # Custom interval (seconds)
-python3 ~/.copilot/tools/sync-daemon.py --push-only         # Push only
-python3 ~/.copilot/tools/sync-daemon.py --pull-only         # Pull only
+sk sync run --once              # One-shot sync
+sk sync run --daemon            # Continuous daemon
+sk sync run --interval 30       # Custom interval (seconds)
+sk sync run --push-only         # Push only
+sk sync run --pull-only         # Pull only
 ```
 
 - Backlog-aware adaptive per-cycle sync limits (`sync_txns` volume + relation-heavy queue boost)

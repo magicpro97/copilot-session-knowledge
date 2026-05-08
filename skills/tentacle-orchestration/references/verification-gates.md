@@ -160,7 +160,7 @@ during evaluation). Weak criteria ("looks good") cannot be evaluated; strong cri
 
 ```bash
 sk tentacle verify <name> "<success-criteria-check>" --label "goal-eval"
-# fallback: python3 ~/.copilot/tools/tentacle.py verify <name> ...
+# fallback: sk tentacle verify <name> ...
 ```
 
 Examples:

@@ -25,14 +25,14 @@ Clone directly to `~/.copilot/tools/` so the auto-update pipeline and LaunchAgen
 git clone https://github.com/magicpro97/copilot-session-knowledge.git ~/.copilot/tools
 
 # 2. Build knowledge base from existing sessions
-python3 ~/.copilot/tools/build-session-index.py
-python3 ~/.copilot/tools/extract-knowledge.py
+sk index build
+sk index extract
 
 # 3. Apply DB migrations
-python3 ~/.copilot/tools/migrate.py
+sk index migrate
 
 # 4. Verify install — also auto-provisions the sk launcher on your PATH
-python3 ~/.copilot/tools/install.py --test
+sk install --test
 ```
 
 After step 4, the `sk` launcher is available on your PATH. Verify with `sk --help`.
@@ -180,7 +180,7 @@ or Amp) can point at the same command above.
 
 ```bash
 # Deploy session-knowledge skill to current project
-python3 ~/.copilot/tools/install.py --deploy-skill
+sk install --deploy-skill
 # → .github/skills/session-knowledge/SKILL.md  (Copilot CLI)
 # → .claude/skills/session-knowledge/SKILL.md   (Claude Code)
 ```
@@ -190,25 +190,25 @@ python3 ~/.copilot/tools/install.py --deploy-skill
 Skills are suggestions — AI agents can skip them. To enforce usage:
 
 ```bash
-python3 ~/.copilot/tools/install.py --inject-global
+sk install --inject-global
 # → Adds "🧠 Session Knowledge — MANDATORY" section to ~/.github/copilot-instructions.md
 ```
 
 ### Hook deployment (Copilot CLI only)
 
 ```bash
-python3 ~/.copilot/tools/install.py --deploy-hooks        # Deploy enforcement hooks
-python3 ~/.copilot/tools/install.py --lock-hooks          # Lock against AI modification
-python3 ~/.copilot/tools/install.py --install-git-hooks   # Install pre-commit/pre-push (per repo)
+sk install --deploy-hooks        # Deploy enforcement hooks
+sk install --lock-hooks          # Lock against AI modification
+sk install --install-git-hooks   # Install pre-commit/pre-push (per repo)
 ```
 
 ### Full project setup (recommended for new projects)
 
 ```bash
-python3 ~/.copilot/tools/setup-project.py --profile python      # Python profile
-python3 ~/.copilot/tools/setup-project.py --profile typescript  # TypeScript profile
-python3 ~/.copilot/tools/setup-project.py --profile mobile      # Android/iOS/KMP profile
-python3 ~/.copilot/tools/setup-project.py --profile fullstack   # Full-stack web profile
+sk setup --profile python      # Python profile
+sk setup --profile typescript  # TypeScript profile
+sk setup --profile mobile      # Android/iOS/KMP profile
+sk setup --profile fullstack   # Full-stack web profile
 ```
 
 ---
@@ -221,12 +221,12 @@ The `sk` launcher is provisioned automatically by the standard install. Shell al
 # Add to ~/.bashrc or ~/.zshrc (optional backup)
 
 # Unified sk front door
-alias sk='python3 ~/.copilot/tools/sk.py'
+alias sk='sk'
 
 # Legacy per-script aliases (still work; use sk above if available)
-alias qs='python3 ~/.copilot/tools/query-session.py'
-alias brief='python3 ~/.copilot/tools/briefing.py'
-alias learn='python3 ~/.copilot/tools/learn.py'
+alias qs='sk query'
+alias brief='sk briefing'
+alias learn='sk learn'
 ```
 
 With the `sk` alias you can run: `sk briefing "task"`, `sk query "docker"`, `sk index build`, etc. See [docs/USAGE.md](USAGE.md#sk--unified-cli) for the full command surface.
@@ -256,16 +256,16 @@ To sync your knowledge base across machines (optional, local-first):
 
 ```bash
 # Point at a sync gateway (HTTP/HTTPS only, not a raw DB DSN)
-python3 ~/.copilot/tools/sync-config.py --setup https://your-gateway.example.com
+sk sync config --setup https://your-gateway.example.com
 
 # Or use an env var
-python3 ~/.copilot/tools/sync-config.py --setup-env SYNC_GATEWAY_URL
+sk sync config --setup-env SYNC_GATEWAY_URL
 
 # Run a one-shot sync
-python3 ~/.copilot/tools/sync-daemon.py --once
+sk sync run --once
 
 # Start as a background daemon
-python3 ~/.copilot/tools/sync-daemon.py --daemon
+sk sync run --daemon
 ```
 
 > Full sync reference: **[docs/USAGE.md](USAGE.md#sync-rollout)**
@@ -276,13 +276,13 @@ python3 ~/.copilot/tools/sync-daemon.py --daemon
 
 ```bash
 # Remove the sk launcher (auto-provisioned by install.py --test)
-python3 ~/.copilot/tools/install.py --uninstall-launcher 2>/dev/null || true
+sk install --uninstall-launcher 2>/dev/null || true
 
 # If you also used the editable pip install, remove that console command
 python3 -m pip uninstall copilot-session-knowledge 2>/dev/null || true
 
 # Then remove tools
-python3 ~/.copilot/tools/install.py --uninstall
+sk install --uninstall
 # or: rm -rf ~/.copilot/tools/
 
 # Remove knowledge DB (data loss — back up first)

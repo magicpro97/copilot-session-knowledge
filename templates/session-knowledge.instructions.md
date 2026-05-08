@@ -20,7 +20,7 @@ sk briefing --auto --compact  # ~500 tokens, top results
 # Complex or unfamiliar tasks — request full detail only after compact reveals a hit
 sk query --detail <id>  # Expand one entry by ID
 sk briefing "task" --full       # Full detail ~3K tokens
-# fallback: python3 ~/.copilot/tools/briefing.py <args> / python3 ~/.copilot/tools/query-session.py <args>
+# fallback: sk briefing <args> / sk query <args>
 ```
 
 Read the output before acting. It surfaces past mistakes and proven patterns.
@@ -31,7 +31,7 @@ When dispatching tentacle agents, prefer the structured recall path in `tentacle
 
 ```bash
 sk tentacle swarm <name> --briefing
-# fallback: python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
+# fallback: sk tentacle swarm <name> --briefing
 ```
 
 This injects bounded `[KNOWLEDGE EVIDENCE]` by trying `briefing.py --task <id> --json`
@@ -65,7 +65,7 @@ sk tentacle verify <name> "python3 test_fixes.py" --label "tests"
 sk tentacle handoff <name> "summary" --learn
 sk tentacle complete <name>   # marks done, clears marker, auto-learns
 sk tentacle worktree <name> cleanup
-# fallback: python3 ~/.copilot/tools/tentacle.py <subcommand> <args>
+# fallback: sk tentacle <subcommand> <args>
 ```
 
 For manual compatibility or ad hoc non-tentacle prompts, inject compact context directly:
@@ -73,7 +73,7 @@ For manual compatibility or ad hoc non-tentacle prompts, inject compact context 
 ```bash
 # Manual compatibility path — compact and directly injectable
 sk briefing "task description" --for-subagent
-# fallback: python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
+# fallback: sk briefing "task description" --for-subagent
 ```
 
 Include output verbatim in the sub-agent prompt under a `## Past Knowledge` section.
@@ -112,7 +112,7 @@ sk update --restart-watch
 sk update --watch-status
 sk update --health-check
 sk update --audit-runtime
-# fallback: python3 ~/.copilot/tools/sync-config.py / sync-daemon.py / sync-status.py / auto-update-tools.py
+# fallback: sk sync config / sync-daemon.py / sync-status.py / auto-update-tools.py
 ```
 
 - Missing `connection_string` means local-only idle sync (not fatal).
@@ -130,7 +130,7 @@ Use Trend Scout as explicit/scheduled automation, not an interactive hook:
 sk scout run --search-only
 sk scout run --dry-run --limit 1 --force
 sk scout run --limit 1 --force
-# fallback: python3 ~/.copilot/tools/trend-scout.py <args>
+# fallback: sk scout run <args>
 ```
 
 - It creates or updates marker-linked issues in the target repo.
@@ -142,7 +142,7 @@ sk scout run --limit 1 --force
 ```bash
 sk index health --recall
 sk index health --recall --json
-# fallback: python3 ~/.copilot/tools/knowledge-health.py --recall [--json]
+# fallback: sk index health --recall [--json]
 ```
 
 - `recall_events` is lean telemetry only (counts/IDs/output size), not verbose output logging.
@@ -163,7 +163,7 @@ sk learn --mistake "Title"   "Root cause and fix"  --tags "module,tech" --wing <
 sk learn --pattern "Title"   "What works well"     --tags "module,tech" --wing <wing> --room <room>
 sk learn --feature "Title"   "What was built"      --tags "module,tech" --wing <wing> --room <room>
 sk learn --discovery "Title" "Codebase insight"    --tags "module,tech" --wing <wing> --room <room>
-# fallback: python3 ~/.copilot/tools/learn.py <type> <args>
+# fallback: sk learn <type> <args>
 ```
 
 ## Rules

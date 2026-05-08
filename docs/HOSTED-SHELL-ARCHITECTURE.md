@@ -99,7 +99,7 @@ browse.py  ←  mkcert-issued cert  ←  installer provisions trust anchor
 - After 2 failed probes, surface the "Add host manually" sheet automatically.
 - The sheet pre-fills `https://127.0.0.1:8766` as the suggested URL.
 - On persistent failure, show actionable copy: _"No local backend detected. Install browse.py
-  and run `python3 ~/.copilot/tools/browse.py --https` to enable local access."_
+  and run `sk browse --https` to enable local access."_
 
 **Liveness vs version probe:**
 - `/healthz` = liveness only (no auth, <50 ms, no DB access). Returns `{"status":"ok","protocol_version":N}`.
@@ -195,7 +195,7 @@ Remote browse.py (on operator machine)
 - `install.py --gateway` installs a launchd/systemd unit for `browse.py --gateway`.
 - `auto-update-tools.py` restarts the gateway unit after updates (same pattern as watcher).
 - Auto-launch: the hosted UI detects absence of gateway at `/api/gateway/health`; if not found,
-  prompts to run `python3 ~/.copilot/tools/browse.py --gateway`.
+  prompts to run `sk browse --gateway`.
 
 **Interaction with stream reconnect cursor (see §#43 in HOSTED-SHELL-RESEARCH.md):**
 - The browser sends `Last-Event-ID` on reconnect.

@@ -37,11 +37,11 @@ proven solutions specific to this codebase.
 ```bash
 # Before task — get context
 sk briefing "<task description>" --compact
-# fallback: python3 ~/.copilot/tools/briefing.py "<task description>" --compact
+# fallback: sk briefing "<task description>" --compact
 
 # Search for a specific error
 sk query "<error message>" --verbose
-# fallback: python3 ~/.copilot/tools/query-session.py "<error message>" --verbose
+# fallback: sk query "<error message>" --verbose
 
 # See past decisions about <TECH>
 sk query "<TECH>" --decisions
@@ -49,7 +49,7 @@ sk query "<TECH>" --decisions
 # After fixing a bug — record it
 sk learn --mistake "Title" "Root cause and fix" \
   --tags "<KEY_TAG_1>,<KEY_TAG_2>" --wing <WING> --room <ROOM>
-# fallback: python3 ~/.copilot/tools/learn.py --mistake ...
+# fallback: sk learn --mistake ...
 
 # After implementing a feature
 sk learn --feature "Title" "What was built" \

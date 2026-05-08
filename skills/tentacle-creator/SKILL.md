@@ -163,7 +163,7 @@ fi
 
 ```bash
 ls ~/.copilot/tools/tentacle.py && sk tentacle --help
-# fallback: python3 ~/.copilot/tools/tentacle.py --help
+# fallback: sk tentacle --help
 ```
 
 If missing, tell the user:

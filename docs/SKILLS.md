@@ -92,7 +92,7 @@ sk setup --profile python      # Python hooks + WORKFLOW.md
 sk setup --profile typescript  # TypeScript hooks + WORKFLOW.md
 sk setup --profile mobile      # Android/iOS/KMP hooks + WORKFLOW.md
 sk setup --profile fullstack   # Full-stack web hooks + WORKFLOW.md
-# fallback: python3 ~/.copilot/tools/setup-project.py [flags]
+# fallback: sk setup [flags]
 ```
 
 `--profile` installs a **preset hook bundle** and generates a starter `WORKFLOW.md`. Available
@@ -125,7 +125,7 @@ sk profile build \
   --description "My team workflow" \
   --hooks dangerous-blocker.py commit-gate.py \
   --phases CLARIFY BUILD TEST COMMIT
-# fallback: python3 ~/.copilot/tools/profile-builder.py [flags]
+# fallback: sk profile build [flags]
 ```
 
 ### Sharing profiles (export / import)
@@ -136,7 +136,7 @@ Export profiles to JSON for sharing across machines or teams:
 sk profile export --profile python --output python.json
 sk profile export --all --output-dir ./exported/
 sk profile export --all --output all.bundle.json --format bundle
-# fallback: python3 ~/.copilot/tools/profile-export.py [flags]
+# fallback: sk profile export [flags]
 ```
 
 Import profiles shared by others:
@@ -145,7 +145,7 @@ Import profiles shared by others:
 sk profile import --file custom-profile.json
 sk profile import --file bundle.json --name python  # one from bundle
 sk profile import --file custom.json --dry-run      # validate first
-# fallback: python3 ~/.copilot/tools/profile-import.py [flags]
+# fallback: sk profile import [flags]
 ```
 
 ### Installing hooks standalone
@@ -169,8 +169,8 @@ When a dispatched-subagent marker becomes stale (visible in the Settings page un
 diagnostics** → Dispatch marker), use `marker-cleanup` to inspect and optionally remove stale entries:
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py marker-cleanup          # dry-run: show stale entries
-python3 ~/.copilot/tools/tentacle.py marker-cleanup --apply  # remove stale entries
+sk tentacle marker-cleanup          # dry-run: show stale entries
+sk tentacle marker-cleanup --apply  # remove stale entries
 ```
 
 ### Meta-skill rollout — global vs project scope
@@ -194,7 +194,7 @@ Creator and meta-skills (session-knowledge-creator, agent-creator, hook-creator,
 Deploy the skill into your project for automatic knowledge-base usage:
 
 ```bash
-python3 ~/.copilot/tools/install.py --deploy-skill
+sk install --deploy-skill
 # → Creates .github/skills/session-knowledge/SKILL.md (Copilot CLI)
 # → Creates .claude/skills/session-knowledge/SKILL.md (Claude Code)
 ```
@@ -204,7 +204,7 @@ python3 ~/.copilot/tools/install.py --deploy-skill
 Skills are suggestions — AI agents can skip them. To **enforce** usage:
 
 ```bash
-python3 ~/.copilot/tools/install.py --inject-global
+sk install --inject-global
 ```
 
 This adds a `🧠 Session Knowledge — MANDATORY` section to `~/.github/copilot-instructions.md` with HTML markers for idempotent updates.
@@ -214,7 +214,7 @@ This adds a `🧠 Session Knowledge — MANDATORY` section to `~/.github/copilot
 For tentacle dispatch, prefer the bundle-first structured recall path in `tentacle.py`:
 
 ```bash
-python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
+sk tentacle swarm <name> --briefing
 ```
 
 This path materializes `.octogent/tentacles/<name>/bundle/` by default, keeps the prompt lean,
@@ -225,7 +225,7 @@ task-scoped recall first (`briefing.py --task <id> --json`) and using
 For manual compatibility or ad hoc non-tentacle prompts, inject context directly:
 
 ```bash
-python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
+sk briefing "task description" --for-subagent
 ```
 
 Output is a compact `[KNOWLEDGE CONTEXT]` block (~200 tokens) for manual prompt injection.
@@ -237,10 +237,10 @@ When writing project setup/instruction guidance, keep sync wording aligned to sh
 - Local-first runtime: local `knowledge.db` remains primary.
 - Single config key: `connection_string` in `~/.copilot/tools/sync-config.json`.
 - Runtime/diagnostics commands:
-  - `python3 ~/.copilot/tools/sync-config.py --setup <url>|--setup-env <ENV_VAR>|--status|--status --json|--get|--clear`
-  - `python3 ~/.copilot/tools/sync-daemon.py --once|--daemon|--interval <seconds>|--push-only|--pull-only`
-  - `python3 ~/.copilot/tools/sync-status.py [--json]|--watch-status [--json]|--health-check [--json]|--audit [--json]`
-  - `python3 ~/.copilot/tools/auto-update-tools.py --restart-watch|--watch-status|--health-check|--audit-runtime`
+  - `sk sync config --setup <url>|--setup-env <ENV_VAR>|--status|--status --json|--get|--clear`
+  - `sk sync run --once|--daemon|--interval <seconds>|--push-only|--pull-only`
+  - `sk sync status [--json]|--watch-status [--json]|--health-check [--json]|--audit [--json]`
+  - `sk update --restart-watch|--watch-status|--health-check|--audit-runtime`
 - Runtime hardening: daemon uses backlog-aware adaptive limits, consumes multi-page pull in one cycle, and refreshes touched `knowledge_fts` / `ke_fts` rows after pull apply.
 - If `connection_string` is missing, sync daemon remains local-only/idle (not fatal).
 - `sync-gateway.py` is **reference/mock only** (`/sync/push`, `/sync/pull`, `/healthz`) — not a production authority.

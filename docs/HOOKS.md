@@ -220,7 +220,7 @@ sk install --deploy-hooks       # Deploy Copilot CLI hooks
 sk install --lock-hooks         # Lock (AI can't modify)
 sk install --unlock-hooks       # Unlock for updates
 sk install --install-git-hooks  # Install pre-commit/pre-push into current repo
-# fallback: python3 ~/.copilot/tools/install.py [flags]
+# fallback: sk install [flags]
 ```
 
 `~/.copilot/hooks/hooks.json` is treated as a **managed global file**. `sk update` may redeploy it
@@ -383,7 +383,7 @@ The git-level guard requires installation per repository:
 ```bash
 # Install into the current repo's .git/hooks/
 sk install --install-git-hooks
-# fallback: python3 ~/.copilot/tools/install.py --install-git-hooks
+# fallback: sk install --install-git-hooks
 
 # On Windows (PowerShell)
 python "$env:USERPROFILE\.copilot\tools\install.py" --install-git-hooks

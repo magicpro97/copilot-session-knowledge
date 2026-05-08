@@ -47,11 +47,11 @@ This tool **indexes all session data** into SQLite FTS5, **auto-extracts knowled
 git clone https://github.com/magicpro97/copilot-session-knowledge.git ~/.copilot/tools
 
 # 2. Build knowledge base
-python3 ~/.copilot/tools/sk.py index build && python3 ~/.copilot/tools/sk.py index extract
+sk index build && sk index extract
 
 # 3. Get a briefing
-python3 ~/.copilot/tools/sk.py briefing "your task description"
-# (fallback: python3 ~/.copilot/tools/briefing.py "your task description")
+sk briefing "your task description"
+# (fallback: sk briefing "your task description")
 ```
 After `install.py --test` (full install), the `sk` launcher is on your PATH automatically. On Windows without a PATH update, use `python ~/.copilot/tools/sk.py`.
 That's it. Your AI agent now has memory across sessions.
@@ -70,10 +70,10 @@ That's it. Your AI agent now has memory across sessions.
 
 ```bash
 git clone https://github.com/magicpro97/copilot-session-knowledge.git ~/.copilot/tools
-python3 ~/.copilot/tools/build-session-index.py
-python3 ~/.copilot/tools/extract-knowledge.py
-python3 ~/.copilot/tools/migrate.py
-python3 ~/.copilot/tools/install.py --test
+sk index build
+sk index extract
+sk index migrate
+sk install --test
 # → sk launcher auto-provisioned on PATH
 
 # macOS: install LaunchAgents (auto-start watcher + daily auto-update)
@@ -84,7 +84,7 @@ python3 ~/.copilot/tools/launchd/install-launchd.py
 
 - [Method 2 — Manual Copy](docs/INSTALL.md#method-2--manual-copy)
 - [Method 3 — Windows (PowerShell)](docs/INSTALL.md#method-3--windows-powershell)
-- Windows / no-PATH fallback: `python3 ~/.copilot/tools/sk.py`
+- Windows / no-PATH fallback: `sk`
 
 📖 **Full command surface:** [docs/USAGE.md — sk unified CLI](docs/USAGE.md#sk--unified-cli)
 
@@ -155,14 +155,14 @@ qs --session-raw <session-id>        # Dump raw events for a session
 ### Index Health
 
 ```bash
-python3 ~/.copilot/tools/index-status.py          # Row counts, FTS integrity, offset coverage
+sk index status          # Row counts, FTS integrity, offset coverage
 ```
 
 ### Recall Telemetry (Phase 5)
 
 ```bash
-python3 ~/.copilot/tools/knowledge-health.py --recall         # Recall-only telemetry dashboard
-python3 ~/.copilot/tools/knowledge-health.py --recall --json  # Recall-only JSON stats
+sk index health --recall         # Recall-only telemetry dashboard
+sk index health --recall --json  # Recall-only JSON stats
 ```
 
 - Telemetry is intentionally lean (`recall_events`): counts/IDs/size only, no verbose output bodies.
@@ -188,40 +188,40 @@ Multi-agent parallel execution via scoped work units. The runtime-bundle workflo
 
 ```bash
 # 1. Create a tentacle with scope + briefing + skills
-python3 ~/.copilot/tools/tentacle.py create api-export \
+sk tentacle create api-export \
   --scope "src/api/*.py" --desc "Export API endpoints" --briefing \
   --skill karpathy-guidelines --skill code-reviewer
 
 # 2. Add atomic todo items (one per agent delegation unit)
-python3 ~/.copilot/tools/tentacle.py todo api-export add "Generate OpenAPI schema"
+sk tentacle todo api-export add "Generate OpenAPI schema"
 
 # 3. (Optional) Prepare isolated git worktree
-python3 ~/.copilot/tools/tentacle.py worktree api-export prepare
-python3 ~/.copilot/tools/tentacle.py worktree api-export status
+sk tentacle worktree api-export prepare
+sk tentacle worktree api-export status
 
 # 4. (Optional) Pre-materialize isolated context bundle
 #    Writes briefing.md, instructions.md, skills.md, session-metadata.md,
 #    recall-pack.json (machine-readable JSON recall), and manifest.json to bundle/
-python3 ~/.copilot/tools/tentacle.py bundle api-export
+sk tentacle bundle api-export
 
 # 5. Dispatch — bundle is default; prompt stays lean and surfaces bundle_path
-python3 ~/.copilot/tools/tentacle.py swarm api-export \
+sk tentacle swarm api-export \
   --agent-type general-purpose --model claude-sonnet-4.6 --briefing      # single prompt
-python3 ~/.copilot/tools/tentacle.py swarm api-export --output parallel --briefing  # one dispatch per todo
-python3 ~/.copilot/tools/tentacle.py swarm api-export --output json --briefing      # structured JSON + bundle_path
-python3 ~/.copilot/tools/tentacle.py swarm api-export --worktree         # include worktree path reference
-python3 ~/.copilot/tools/tentacle.py dispatch api-export --worktree      # single-agent alias with worktree
-python3 ~/.copilot/tools/tentacle.py swarm api-export --no-bundle        # rare tiny-prompt opt-out
+sk tentacle swarm api-export --output parallel --briefing  # one dispatch per todo
+sk tentacle swarm api-export --output json --briefing      # structured JSON + bundle_path
+sk tentacle swarm api-export --worktree         # include worktree path reference
+sk tentacle dispatch api-export --worktree      # single-agent alias with worktree
+sk tentacle swarm api-export --no-bundle        # rare tiny-prompt opt-out
 
 # 6. Monitor runtime (read-only operator view)
-python3 ~/.copilot/tools/tentacle.py status           # Dashboard: all tentacles + states
+sk tentacle status           # Dashboard: all tentacles + states
 
 # 7. After agents finish: run verification commands, record results, and close (orchestrator only)
-python3 ~/.copilot/tools/tentacle.py verify api-export "python3 test_fixes.py" --label "tests"
-python3 ~/.copilot/tools/tentacle.py handoff api-export "Done. Learned X" --learn
-python3 ~/.copilot/tools/tentacle.py complete api-export  # Marks done, unblocks git commit
-python3 ~/.copilot/tools/tentacle.py complete api-export --auto-verify "python3 test_fixes.py"
-python3 ~/.copilot/tools/tentacle.py worktree api-export cleanup
+sk tentacle verify api-export "python3 test_fixes.py" --label "tests"
+sk tentacle handoff api-export "Done. Learned X" --learn
+sk tentacle complete api-export  # Marks done, unblocks git commit
+sk tentacle complete api-export --auto-verify "python3 test_fixes.py"
+sk tentacle worktree api-export cleanup
 ```
 
 > `--output parallel` maximises parallelism (one agent per todo). `swarm` and `dispatch`
@@ -240,29 +240,29 @@ orchestrator should commit after review + verification. Enforcement is local-onl
 > **Cross-repo isolation:** marker entries carry `git_root`, so repo A's active tentacle does not
 > block commits in repo B. Old entries without `git_root` conservatively block as before.
 
-> **Stuck marker:** markers expire after 4 hours. Manual clear: `python3 ~/.copilot/tools/tentacle.py complete <name>`
+> **Stuck marker:** markers expire after 4 hours. Manual clear: `sk tentacle complete <name>`
 > (or remove `~/.copilot/markers/dispatched-subagent-active` directly).
 
 ### Tentacle Next Step
 
 ```bash
 # Show the grounded next step for a named tentacle (read-only)
-python3 ~/.copilot/tools/tentacle.py next-step api-export         # First pending todo + checkpoint context
-python3 ~/.copilot/tools/tentacle.py next-step api-export --all   # All pending todos
-python3 ~/.copilot/tools/tentacle.py next-step api-export --briefing        # + live knowledge briefing
-python3 ~/.copilot/tools/tentacle.py next-step api-export --no-checkpoint   # Skip checkpoint context
-python3 ~/.copilot/tools/tentacle.py next-step api-export --format json     # JSON output
+sk tentacle next-step api-export         # First pending todo + checkpoint context
+sk tentacle next-step api-export --all   # All pending todos
+sk tentacle next-step api-export --briefing        # + live knowledge briefing
+sk tentacle next-step api-export --no-checkpoint   # Skip checkpoint context
+sk tentacle next-step api-export --format json     # JSON output
 ```
 
 ### Project Context
 
 ```bash
 # Generate deterministic project-context.md (repo structure, profile, hooks, test expectations)
-python3 ~/.copilot/tools/project-context.py                # Write to session files/ dir
-python3 ~/.copilot/tools/project-context.py --stdout       # Print to stdout only
-python3 ~/.copilot/tools/project-context.py --output PATH  # Write to explicit path
-python3 ~/.copilot/tools/project-context.py --profile python  # Force a preset profile
-python3 ~/.copilot/tools/project-context.py --list-profiles   # Show available profiles
+sk context project                # Write to session files/ dir
+sk context project --stdout       # Print to stdout only
+sk context project --output PATH  # Write to explicit path
+sk context project --profile python  # Force a preset profile
+sk context project --list-profiles   # Show available profiles
 ```
 
 No AI generation, no network access. The artifact is derived purely from repo/profile facts and is deterministic for the same repo state.
@@ -271,15 +271,15 @@ No AI generation, no network access. The artifact is derived purely from repo/pr
 
 ```bash
 # Save
-python3 ~/.copilot/tools/checkpoint-save.py --title "Auth done" --overview "JWT added"
+sk checkpoint save --title "Auth done" --overview "JWT added"
 # Read back (read-only)
-python3 ~/.copilot/tools/checkpoint-restore.py --list
-python3 ~/.copilot/tools/checkpoint-restore.py --show latest
-python3 ~/.copilot/tools/checkpoint-restore.py --export latest --format json
+sk checkpoint restore --list
+sk checkpoint restore --show latest
+sk checkpoint restore --export latest --format json
 # Compare
-python3 ~/.copilot/tools/checkpoint-diff.py --from 1 --to latest
-python3 ~/.copilot/tools/checkpoint-diff.py --summary
-python3 ~/.copilot/tools/checkpoint-diff.py --from 1 --to latest --pager   # external pager (safe allowlist)
+sk checkpoint diff --from 1 --to latest
+sk checkpoint diff --summary
+sk checkpoint diff --from 1 --to latest --pager   # external pager (safe allowlist)
 ```
 
 ### Web UI (browse.py)
@@ -337,11 +337,11 @@ The classic Python-rendered HTML routes remain available for backward compatibil
 Build, share, and deploy custom workflow profiles:
 
 ```bash
-python3 ~/.copilot/tools/profile-builder.py --name myteam \
+sk profile build --name myteam \
   --hooks dangerous-blocker.py commit-gate.py --phases CLARIFY BUILD TEST COMMIT
-python3 ~/.copilot/tools/profile-export.py --profile myteam --output myteam.json
-python3 ~/.copilot/tools/profile-import.py --file myteam.json
-python3 ~/.copilot/tools/setup-project.py --profile myteam   # deploy
+sk profile export --profile myteam --output myteam.json
+sk profile import --file myteam.json
+sk setup --profile myteam   # deploy
 ```
 
 📖 **Full command reference:** [docs/USAGE.md](docs/USAGE.md)
@@ -351,21 +351,21 @@ python3 ~/.copilot/tools/setup-project.py --profile myteam   # deploy
 Sync is **local-first and optional**: local `knowledge.db` remains the primary read/query source; remote sync is transport/storage only.
 
 - **Config** (`~/.copilot/tools/sync-config.json`, single `connection_string`):
-  - `python3 ~/.copilot/tools/sync-config.py --setup https://gateway.example.com`
-  - `python3 ~/.copilot/tools/sync-config.py --setup-env SYNC_GATEWAY_URL`
+  - `sk sync config --setup https://gateway.example.com`
+  - `sk sync config --setup-env SYNC_GATEWAY_URL`
   - Setup accepts an HTTP(S) gateway URL (not a raw Postgres/libSQL DSN).
-  - `python3 ~/.copilot/tools/sync-config.py --status --json`
-  - `python3 ~/.copilot/tools/sync-config.py --get`
-  - `python3 ~/.copilot/tools/sync-config.py --clear`
+  - `sk sync config --status --json`
+  - `sk sync config --get`
+  - `sk sync config --clear`
 - **Runtime**:
-  - `python3 ~/.copilot/tools/sync-daemon.py --once|--daemon|--interval 30|--push-only|--pull-only`
+  - `sk sync run --once|--daemon|--interval 30|--push-only|--pull-only`
   - Backlog-aware adaptive per-cycle sync limits are applied automatically (`sync_txns` volume + relation-heavy queue boost).
   - Pull consumes multiple pages per cycle (`MAX_PULL_PAGES_PER_CYCLE`) and refreshes local retrieval surfaces (`knowledge_fts`, `ke_fts`) for touched rows after canonical apply.
   - If no `connection_string` is configured, daemon stays local-only (no hard failure).
 - **Diagnostics**:
-  - `python3 ~/.copilot/tools/sync-status.py --watch-status [--json]`
-  - `python3 ~/.copilot/tools/sync-status.py --health-check [--json]` (exit 0/2)
-  - `python3 ~/.copilot/tools/sync-status.py --audit [--json]` (exit 0/2)
+  - `sk sync status --watch-status [--json]`
+  - `sk sync status --health-check [--json]` (exit 0/2)
+  - `sk sync status --audit [--json]` (exit 0/2)
   - Browse `/healthz` advertises `sync_status_endpoint: "/api/sync/status"`.
   - Browse `/api/sync/status` is read-only local queue/failure/config/cursor status.
 - **Gateway in this repo**: `sync-gateway.py` is **reference/mock only** (not production authority), exposing `/sync/push`, `/sync/pull`, `/healthz`.
@@ -409,7 +409,7 @@ flowchart TD
 6. **Host metadata** — `host_manifest.py` is the single source of truth (Copilot CLI + Claude Code only)
 7. **Tentacles** — `.octogent/` stores local multi-agent orchestration state (gitignored)
 
-**Schema:** v1–v6 (legacy) → v7 (two-phase + `event_offsets`) → **v8** (current: `sessions_fts` contentless FTS5). Run `python3 ~/.copilot/tools/migrate.py` to upgrade.
+**Schema:** v1–v6 (legacy) → v7 (two-phase + `event_offsets`) → **v8** (current: `sessions_fts` contentless FTS5). Run `sk index migrate` to upgrade.
 
 ## Auto-Update
 
@@ -419,7 +419,7 @@ sk update --force          # Force update now
 sk update --doctor         # Health check
 sk update --restart-watch  # Restart watcher
 sk update --watch-status   # Watcher status
-# fallback: python3 ~/.copilot/tools/auto-update-tools.py [flags]
+# fallback: sk update [flags]
 ```
 
 Smart pipeline analyzes `git diff` to run only what changed. Post-merge hook auto-triggers on `git pull`.
@@ -439,29 +439,29 @@ Unified hook runner architecture — 1 Python process per event with fail-open, 
 - Marker format uses `active_tentacles` objects (`{name, ts, git_root, tentacle_id}`); dedupe is by `tentacle_id` (fallback `(name, git_root)`), and `git_root` canonical matching provides cross-repo isolation.
 - Old entries without `git_root` conservatively block; for immediate isolation after upgrade, clear/recreate active markers (`tentacle.py complete <name>` or remove marker file, then re-dispatch).
 - Same-repo collisions auto-resolve to `<name>-<uuid[:8]>`; runtime writes the active slug in `manifest.json` (`slug`) and `session-metadata.md` (`Slug:`). Isolation is marker-level only: overlapping files in one repo can still conflict.
-- `auto-update-tools.py` does not reinstall per-repo git hooks automatically; after hook updates, re-run `python3 ~/.copilot/tools/install.py --install-git-hooks` in every protected repo.
+- `auto-update-tools.py` does not reinstall per-repo git hooks automatically; after hook updates, re-run `sk install --install-git-hooks` in every protected repo.
 
 ```bash
-python3 ~/.copilot/tools/install.py --deploy-skill        # Deploy skill to project
-python3 ~/.copilot/tools/install.py --deploy-hooks        # Deploy enforcement hooks (Copilot CLI)
-python3 ~/.copilot/tools/install.py --lock-hooks          # Lock hooks (tamper protection)
-python3 ~/.copilot/tools/install.py --install-git-hooks   # Install pre-commit/pre-push into current repo
+sk install --deploy-skill        # Deploy skill to project
+sk install --deploy-hooks        # Deploy enforcement hooks (Copilot CLI)
+sk install --lock-hooks          # Lock hooks (tamper protection)
+sk install --install-git-hooks   # Install pre-commit/pre-push into current repo
 
 # Project setup with a workflow profile
-python3 ~/.copilot/tools/setup-project.py --profile python      # Python hook bundle + WORKFLOW.md
+sk setup --profile python      # Python hook bundle + WORKFLOW.md
 python3 ~/.copilot/tools/install-project-hooks.py --profile mobile  # Mobile hooks standalone
 
 # Custom profile lifecycle
-python3 ~/.copilot/tools/profile-builder.py --name myteam --hooks dangerous-blocker.py --phases BUILD TEST COMMIT
-python3 ~/.copilot/tools/profile-export.py --profile myteam --output myteam.json
-python3 ~/.copilot/tools/profile-import.py --file myteam.json
+sk profile build --name myteam --hooks dangerous-blocker.py --phases BUILD TEST COMMIT
+sk profile export --profile myteam --output myteam.json
+sk profile import --file myteam.json
 ```
 
 **Session-start hooks** run through the unified `hook_runner.py` architecture (1 Python process per event, fail-open, HMAC-signed markers, audit logging) and automatically refresh the codebase map (`codebase-map.py`) at the start of each session — no manual step required.
 
 **Session lifecycle hooks** run through `hook_runner.py`: `sessionEnd` performs marker cleanup + sync flush signal, and `agentStop`/`subagentStop` perform best-effort dispatched-subagent marker cleanup using stop payload hints.
 Hooks never auto-save checkpoints.
-To save a checkpoint yourself, run `python3 ~/.copilot/tools/checkpoint-save.py`.
+To save a checkpoint yourself, run `sk checkpoint save`.
 
 ### Context Load Management
 
@@ -478,23 +478,23 @@ Excessive context load in Copilot sessions comes primarily from **duplicate skil
 `trend-scout.py` discovers relevant GitHub repositories via the **GitHub Search API** using a **multi-lane discovery** architecture and creates or updates structured issues in the target repo for review. Each lane is an independent search channel with its own keyword set, topic filters, language constraint, and `min_stars` threshold — allowing the pipeline to surface both language-specific repos and language-agnostic adjacent projects in parallel.
 
 ```bash
-python3 ~/.copilot/tools/trend-scout.py                 # Full pipeline
-python3 ~/.copilot/tools/trend-scout.py --dry-run       # Preview without creating issues
-python3 ~/.copilot/tools/trend-scout.py --search-only   # Discovery + shortlist, no issues
-python3 ~/.copilot/tools/trend-scout.py --explain       # Emit a discovery explainability artifact
-python3 ~/.copilot/tools/trend-scout.py --limit 3       # Cap issues created this run
-python3 ~/.copilot/tools/trend-scout.py --repo owner/repo  # Override target repo
-python3 ~/.copilot/tools/trend-scout.py --config path.json # Custom config file
-python3 ~/.copilot/tools/trend-scout.py --token TOKEN   # Explicit GitHub token (overrides GITHUB_TOKEN env)
-python3 ~/.copilot/tools/trend-scout.py --force         # Bypass grace window; force a new run
+sk scout run                 # Full pipeline
+sk scout run --dry-run       # Preview without creating issues
+sk scout run --search-only   # Discovery + shortlist, no issues
+sk scout run --explain       # Emit a discovery explainability artifact
+sk scout run --limit 3       # Cap issues created this run
+sk scout run --repo owner/repo  # Override target repo
+sk scout run --config path.json # Custom config file
+sk scout run --token TOKEN   # Explicit GitHub token (overrides GITHUB_TOKEN env)
+sk scout run --force         # Bypass grace window; force a new run
 ```
 
 Requires a `GITHUB_TOKEN` env var (or `--token TOKEN`). `--limit` caps new creates only; marker-matched open issues are updated in place. Supports multi-lane discovery (`lanes[]` in config), gold-set watchlists (`trend-scout-goldset.json`), optional GitHub Models analysis (`analysis.enabled=true`), veto gates, and a configurable grace window. Edit `trend-scout-config.json` to tune all settings.
 
 **GitHub Actions workflow:** `.github/workflows/trend-scout.yml` runs daily at 07:00 UTC (`contents: read`, `issues: write`, `models: read`). Manual `workflow_dispatch` supports `dry_run`, `search_only`, `repo`, `limit`, `force`, `explain` inputs; `explain=true` uploads the discovery JSON as an artifact. **Hook noise control:** Trend Scout is **not** wired to `preToolUse`/`postToolUse` — keep cron/workflow driven. 📖 **Details:** [docs/USAGE.md#trend-scout](docs/USAGE.md#trend-scout)
 ## Retrospective
-`retro.py` computes a composite operator score (0–100) across knowledge, skills, hooks, and git signals; run `python3 ~/.copilot/tools/retro.py`, `python3 ~/.copilot/tools/retro.py --mode repo`, `python3 ~/.copilot/tools/retro.py --json`, `python3 ~/.copilot/tools/retro.py --score`, or `python3 ~/.copilot/tools/retro.py --subreport behavior` (behavior section, local mode only).
-Local mode (`--mode local`) includes knowledge, skills, hooks, and git, but may report `score_confidence=low` with distortion flags like `hook_deny_dry_noise` or `skills_unverified`; repo mode (`--mode repo`) is git-only, cleaner, and CI-safe for trend tracking. The JSON payload includes additive top-level fields: `scout` (read-only Trend Scout coverage health) and `toward_100` (ranked per-section gap diagnostics with metric-derived barriers explaining what pulls each score below 100). Both fields are informational only and do **not** affect `retro_score`, `weights`, or existing subscores; surfaces that do not recognise them degrade gracefully. Browse surfaces: `/v2/insights` (Retrospective card with scout coverage panel), `http://localhost:<port>/retro?token=<token>`, and `/api/retro/summary?mode=repo`. Trigger `retro.yml` via `workflow_dispatch` for a read-only markdown artifact/job summary with score, confidence, distortions, accuracy notes, and recommended actions. For commit-keyed comparison, run `python3 ~/.copilot/tools/benchmark.py record`, `python3 ~/.copilot/tools/benchmark.py list --limit 5`, or `python3 ~/.copilot/tools/benchmark.py compare --commits <older> <newer>`; compare output includes `retro_gap` and `health_gap` gap-to-target fields (100 minus score) so measurable progress is explicit; snapshots live in `benchmark_snapshots` (default DB: `~/.copilot/session-state/knowledge.db`, override with `--db PATH`) and the manual-only `.github/workflows/benchmark.yml` workflow uploads the DB + JSON artifact without writing back to the branch. 📖 **Operator details:** [docs/OPERATOR-PLAYBOOK.md#retrospective](docs/OPERATOR-PLAYBOOK.md#retrospective)
+`retro.py` computes a composite operator score (0–100) across knowledge, skills, hooks, and git signals; run `sk retro`, `sk retro --mode repo`, `sk retro --json`, `sk retro --score`, or `sk retro --subreport behavior` (behavior section, local mode only).
+Local mode (`--mode local`) includes knowledge, skills, hooks, and git, but may report `score_confidence=low` with distortion flags like `hook_deny_dry_noise` or `skills_unverified`; repo mode (`--mode repo`) is git-only, cleaner, and CI-safe for trend tracking. The JSON payload includes additive top-level fields: `scout` (read-only Trend Scout coverage health) and `toward_100` (ranked per-section gap diagnostics with metric-derived barriers explaining what pulls each score below 100). Both fields are informational only and do **not** affect `retro_score`, `weights`, or existing subscores; surfaces that do not recognise them degrade gracefully. Browse surfaces: `/v2/insights` (Retrospective card with scout coverage panel), `http://localhost:<port>/retro?token=<token>`, and `/api/retro/summary?mode=repo`. Trigger `retro.yml` via `workflow_dispatch` for a read-only markdown artifact/job summary with score, confidence, distortions, accuracy notes, and recommended actions. For commit-keyed comparison, run `sk benchmark record`, `sk benchmark list --limit 5`, or `sk benchmark compare --commits <older> <newer>`; compare output includes `retro_gap` and `health_gap` gap-to-target fields (100 minus score) so measurable progress is explicit; snapshots live in `benchmark_snapshots` (default DB: `~/.copilot/session-state/knowledge.db`, override with `--db PATH`) and the manual-only `.github/workflows/benchmark.yml` workflow uploads the DB + JSON artifact without writing back to the branch. 📖 **Operator details:** [docs/OPERATOR-PLAYBOOK.md#retrospective](docs/OPERATOR-PLAYBOOK.md#retrospective)
 
 ## Security
 

@@ -105,7 +105,7 @@ When running inside a tentacle (dispatched by the orchestrator via `tentacle.py`
 5. **Write a structured handoff before stopping**: `sk tentacle handoff <tentacle-name> "<summary>" --status <STATUS> [--changed-file <path>] --learn` (fallback: `python3 ~/.copilot/tools/tentacle.py handoff ...`)
 6. Use one of `DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED` for `<STATUS>`. Add one `--changed-file` per modified file; omit it when no files changed. Handoff must list changed rules, source-of-truth file for each rule, and any remaining ambiguity.
 
-**Goal-loop (orchestrators only)** — after all tentacle handoffs pass verification gates, evaluate whether the overarching goal is met. If unmet, loop back to Phase 1 (new tentacles for remaining gaps). Only commit and close when success criteria are verifiably satisfied. Sub-agents report via handoff and stop; the orchestrator owns continuation. Record goal-eval evidence with `python3 ~/.copilot/tools/tentacle.py verify <name> "<check-command>" --label "goal-eval"`.
+**Goal-loop (orchestrators only)** — after all tentacle handoffs pass verification gates, evaluate whether the overarching goal is met. If unmet, loop back to Phase 1 (new tentacles for remaining gaps). Only commit and close when success criteria are verifiably satisfied. Sub-agents report via handoff and stop; the orchestrator owns continuation. Record goal-eval evidence with `sk tentacle verify <name> "<check-command>" --label "goal-eval"`.
 
 See [docs/AGENT-RULES.md](../docs/AGENT-RULES.md) for the complete Rule 8 text and goal-loop pattern. Goal-eval: `sk tentacle verify <name> "<check-command>" --label "goal-eval"` (fallback: `python3 ~/.copilot/tools/tentacle.py verify ...`).
 
@@ -168,6 +168,6 @@ Key facts every agent must remember:
 - **Trend Scout** — scheduled/manual only; never wire to `preToolUse`/`postToolUse` hooks
 - **Sync** — local DB is authoritative; remote is transport only; `sync-config.py --setup` takes HTTP(S) URLs only
 - **Hooks** — Copilot CLI only; `hook_runner.py` is the single entry point; fail-open; `pre-commit` also runs scoped Ruff + Prettier cleanliness checks (fail-open when tooling absent)
-- **Tentacle marker-cleanup** — use `tentacle.py marker-cleanup [--apply]` to inspect/remove stale dispatched-subagent marker entries without completing a tentacle
+- **Tentacle marker-cleanup** — use `sk tentacle marker-cleanup [--apply]` to inspect/remove stale dispatched-subagent marker entries without completing a tentacle
 
 For the full script inventory, data pipeline, host scope table, provider package, and all coding conventions: **[docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)**

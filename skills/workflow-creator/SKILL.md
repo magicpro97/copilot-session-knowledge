@@ -99,22 +99,22 @@ At every phase transition, verify artifacts exist and meet quality criteria.
 Instead of building a workflow from scratch, use `setup-project.py --profile` or `install-project-hooks.py --profile` to install a pre-built hook bundle and starter `WORKFLOW.md`:
 
 ```bash
-python3 ~/.copilot/tools/setup-project.py --profile python      # Python: TDD, test-reminder, commit-gate
-python3 ~/.copilot/tools/setup-project.py --profile typescript  # TypeScript: coding-standards, test-reminder
-python3 ~/.copilot/tools/setup-project.py --profile mobile      # Mobile: architecture-guard, QA phase
-python3 ~/.copilot/tools/setup-project.py --profile fullstack   # Full-stack: architecture-guard, session-banner
+sk setup --profile python      # Python: TDD, test-reminder, commit-gate
+sk setup --profile typescript  # TypeScript: coding-standards, test-reminder
+sk setup --profile mobile      # Mobile: architecture-guard, QA phase
+sk setup --profile fullstack   # Full-stack: architecture-guard, session-banner
 
 # Hooks only (no full project setup)
 python3 ~/.copilot/tools/install-project-hooks.py --profile python --workflow  # hooks + WORKFLOW.md
 python3 ~/.copilot/tools/install-project-hooks.py --list-profiles              # show available profiles
 
 # Build a custom profile and deploy it
-python3 ~/.copilot/tools/profile-builder.py --name myteam \
+sk profile build --name myteam \
   --hooks dangerous-blocker.py commit-gate.py \
   --phases CLARIFY BUILD TEST COMMIT                             # creates presets/myteam.json
-python3 ~/.copilot/tools/profile-export.py --profile myteam --output myteam.json   # export to share
-python3 ~/.copilot/tools/profile-import.py --file myteam.json                      # import on another machine
-python3 ~/.copilot/tools/setup-project.py --profile myteam                         # deploy
+sk profile export --profile myteam --output myteam.json   # export to share
+sk profile import --file myteam.json                      # import on another machine
+sk setup --profile myteam                         # deploy
 ```
 
 Profile bundles are defined in `presets/` (`default`, `python`, `typescript`, `mobile`, `fullstack`).

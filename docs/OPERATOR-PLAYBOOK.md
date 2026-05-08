@@ -11,8 +11,8 @@ sk index status                        # Row counts, FTS integrity, event-offset
 sk index health                        # Full health dashboard
 sk index health --recall               # Recall-only telemetry
 sk index health --recall --json        # Machine-readable recall stats
-# fallback: python3 ~/.copilot/tools/index-status.py
-# fallback: python3 ~/.copilot/tools/knowledge-health.py [--recall] [--json]
+# fallback: sk index status
+# fallback: sk index health [--recall] [--json]
 ```
 
 ### Sync health
@@ -22,7 +22,7 @@ sk sync status                                  # Local sync state summary
 sk sync status --health-check --json            # Exit 0/2 health check
 sk sync status --audit --json                   # Detailed audit
 sk sync status --watch-status --json            # File-watcher status
-# fallback: python3 ~/.copilot/tools/sync-status.py [--health-check|--audit|--watch-status] [--json]
+# fallback: sk sync status [--health-check|--audit|--watch-status] [--json]
 ```
 
 ### Runtime health
@@ -32,7 +32,7 @@ sk update --doctor                     # Auto-update pipeline health
 sk update --watch-status               # Watcher daemon status
 sk update --health-check               # Exit-code health check
 sk update --audit-runtime              # Runtime audit
-# fallback: python3 ~/.copilot/tools/auto-update-tools.py [--doctor|--watch-status|...]
+# fallback: sk update [--doctor|--watch-status|...]
 ```
 
 ---
@@ -43,7 +43,7 @@ sk update --audit-runtime              # Runtime audit
 sk update                  # Auto-update (24h cooldown)
 sk update --force          # Force update now
 sk update --restart-watch  # Restart watcher daemon
-# fallback: python3 ~/.copilot/tools/auto-update-tools.py [--force|--restart-watch]
+# fallback: sk update [--force|--restart-watch]
 ```
 
 The smart pipeline analyzes `git diff` to run only what changed. The post-merge hook auto-triggers on `git pull`.
@@ -68,7 +68,7 @@ sk install --unlock-hooks
 
 # Install per-repo git-level subagent guard
 sk install --install-git-hooks
-# fallback: python3 ~/.copilot/tools/install.py [--deploy-hooks|--lock-hooks|--unlock-hooks|--install-git-hooks]
+# fallback: sk install [--deploy-hooks|--lock-hooks|--unlock-hooks|--install-git-hooks]
 ```
 
 ### Dry-run mode
@@ -93,7 +93,7 @@ tail -f ~/.copilot/markers/audit.jsonl
 
 ```bash
 sk index migrate     # Apply all pending migrations
-# fallback: python3 ~/.copilot/tools/migrate.py
+# fallback: sk index migrate
 ```
 
 Migrations are versioned in `migrate.py`'s `MIGRATIONS` list. Running `migrate.py` is idempotent — it only applies migrations not already applied.
@@ -129,7 +129,7 @@ If `copilot update` fails with `ENOENT` or `EPERM` on a rename inside `pkg/unive
 sk heal --status   # Diagnose
 sk heal --heal     # Fix
 sk heal --update   # Heal + retry copilot update
-# fallback: python3 ~/.copilot/tools/copilot-cli-healer.py [--status|--heal|--update]
+# fallback: sk heal [--status|--heal|--update]
 ```
 
 Root cause: upstream Node updater calls `fs.rename(src, dst)` without checking that `src` exists, leaving stale `.replaced-*` dirs behind.
@@ -171,9 +171,9 @@ sk index build             # Rebuild index
 sk sync config --status --json   # Check config
 sk sync status --health-check    # Health check
 sk sync run --once               # Manual one-shot sync
-# fallback: python3 ~/.copilot/tools/sync-config.py --status --json
-# fallback: python3 ~/.copilot/tools/sync-status.py --health-check
-# fallback: python3 ~/.copilot/tools/sync-daemon.py --once
+# fallback: sk sync config --status --json
+# fallback: sk sync status --health-check
+# fallback: sk sync run --once
 ```
 
 Common issues:
@@ -260,7 +260,7 @@ sk checkpoint restore --show latest
 
 # Diff checkpoints
 sk checkpoint diff --from 1 --to latest
-# fallback: python3 ~/.copilot/tools/checkpoint-save.py / checkpoint-restore.py / checkpoint-diff.py
+# fallback: sk checkpoint save / checkpoint-restore.py / checkpoint-diff.py
 ```
 
 Hooks **never** auto-save checkpoints. Save them manually at meaningful milestones.
@@ -283,7 +283,7 @@ sk tentacle handoff <name> "Summary" --learn
 sk tentacle complete <name>
 # Or: combine verify + complete in one step (fail-open)
 sk tentacle complete <name> --auto-verify "python3 test_fixes.py"
-# fallback: python3 ~/.copilot/tools/tentacle.py [status|next-step|verify|handoff|complete] ...
+# fallback: sk tentacle [status|next-step|verify|handoff|complete] ...
 ```
 
 > Full tentacle workflow: **[docs/USAGE.md](USAGE.md#tentacle-orchestration)**
@@ -1153,7 +1153,7 @@ sk scout run --research-pack
 
 # Custom output path
 sk scout run --research-pack --research-pack-output my-pack.json
-# fallback: python3 ~/.copilot/tools/trend-scout.py [flags]
+# fallback: sk scout run [flags]
 ```
 
 The artifact is written to `.trend-scout-research-pack.json` adjacent to the script.
@@ -1233,7 +1233,7 @@ sk retro --score
 
 # One section only: knowledge | skills | hooks | git | behavior (local mode)
 sk retro --subreport knowledge
-# fallback: python3 ~/.copilot/tools/retro.py [flags]
+# fallback: sk retro [flags]
 ```
 
 ### Local vs CI (repo-mode) retro
@@ -1263,7 +1263,7 @@ sk benchmark list --limit 5
 
 # Compare two commits or snapshot IDs
 sk benchmark compare --commits <older> <newer>
-# fallback: python3 ~/.copilot/tools/benchmark.py [record|list|compare] [flags]
+# fallback: sk benchmark [record|list|compare] [flags]
 ```
 
 `benchmark.py` stores snapshots in `benchmark_snapshots` inside the default knowledge DB unless

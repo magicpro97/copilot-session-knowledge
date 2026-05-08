@@ -331,7 +331,7 @@ Backend status: Not connected
   → [Add host] [Detect local backend]
 
   Install a local backend:
-    python3 ~/.copilot/tools/browse.py --https
+    sk browse --https
 ```
 
 Links to GitHub releases for download when `browse.py` is not installed.

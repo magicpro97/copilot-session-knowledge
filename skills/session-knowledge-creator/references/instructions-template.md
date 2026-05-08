@@ -20,7 +20,7 @@ applyTo: "**/*"
 
 ```bash
 sk briefing --auto --compact
-# fallback: python3 ~/.copilot/tools/briefing.py --auto --compact
+# fallback: sk briefing --auto --compact
 ```
 
 Read the output — it contains past mistakes to avoid and patterns to follow for
@@ -42,7 +42,7 @@ sk learn --feature "Title" "What was built" \
 # After discovering a useful pattern:
 sk learn --pattern "Title" "What works well" \
   --tags "<MODULE>,<TECH>"
-# fallback: python3 ~/.copilot/tools/learn.py <type> <args>
+# fallback: sk learn <type> <args>
 ```
 
 ## Rules

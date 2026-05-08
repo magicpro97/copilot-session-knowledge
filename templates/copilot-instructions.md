@@ -49,10 +49,10 @@ Chi tiết nằm trong `~/.github/instructions/`:
 - Sync dùng mô hình local-first: local `knowledge.db` vẫn là nguồn đọc chính.
 - Cấu hình chỉ có **một** `connection_string` trong `~/.copilot/tools/sync-config.json`.
 - Lệnh runtime/diagnostics:
-  - `sk sync config --setup <url>|--setup-env <ENV_VAR>|--status|--status --json|--get|--clear` (fallback: `python3 ~/.copilot/tools/sync-config.py ...`)
-  - `sk sync run --once|--daemon|--interval <seconds>|--push-only|--pull-only` (fallback: `python3 ~/.copilot/tools/sync-daemon.py ...`)
-  - `sk sync status [--json]|--watch-status [--json]|--health-check [--json]|--audit [--json]` (fallback: `python3 ~/.copilot/tools/sync-status.py ...`)
-  - `sk update --restart-watch|--watch-status|--health-check|--audit-runtime` (fallback: `python3 ~/.copilot/tools/auto-update-tools.py ...`)
+  - `sk sync config --setup <url>|--setup-env <ENV_VAR>|--status|--status --json|--get|--clear` (fallback: `sk sync config ...`)
+  - `sk sync run --once|--daemon|--interval <seconds>|--push-only|--pull-only` (fallback: `sk sync run ...`)
+  - `sk sync status [--json]|--watch-status [--json]|--health-check [--json]|--audit [--json]` (fallback: `sk sync status ...`)
+  - `sk update --restart-watch|--watch-status|--health-check|--audit-runtime` (fallback: `sk update ...`)
 - Không có `connection_string` ⇒ sync daemon local-only/idle (không fail cứng).
 - Hardening runtime: daemon tự tăng giới hạn sync khi backlog lớn, pull nhiều page trong một cycle, và refresh `knowledge_fts` / `ke_fts` ngay sau pull apply.
 - `sync-gateway.py` chỉ là **reference/mock** contract surface (`/sync/push`, `/sync/pull`, `/healthz`), không phải production authority.

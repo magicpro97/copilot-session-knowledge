@@ -50,7 +50,7 @@ sk briefing --titles-only              # Index only ~10 tok/entry — progressiv
 sk briefing --titles-only "topic"      # Filtered titles
 sk briefing "task" --wing ui --room settings  # Filter by wing/room
 sk briefing "task" --min-confidence 0.7       # High-quality entries only
-# fallback: python3 ~/.copilot/tools/briefing.py <args>
+# fallback: sk briefing <args>
 ```
 
 Output includes: relevant mistakes to avoid, patterns to follow, related past work.
@@ -62,7 +62,7 @@ When dispatching tentacle agents, prefer the bundle-first structured recall path
 
 ```bash
 sk tentacle swarm <name> --briefing
-# fallback: python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
+# fallback: sk tentacle swarm <name> --briefing
 ```
 
 This materializes `.octogent/tentacles/<name>/bundle/` by default, keeps the dispatch prompt
@@ -76,7 +76,7 @@ only when the first evidence bullet has related entries.
 For manual compatibility and ad hoc non-tentacle prompts, inject context directly:
 
 ```bash
-python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
+sk briefing "task description" --for-subagent
 # (--for-subagent is also available via: sk briefing "task description" --for-subagent)
 ```
 
@@ -96,7 +96,7 @@ sk query "deployment error" --semantic            # Compact semantic output
 sk query "deployment error" --semantic --verbose  # Shows feedback bias only when non-zero
 sk query "spring" --source copilot   # Filter by agent
 sk query "gradle" --type research    # Filter by doc type
-# fallback: python3 ~/.copilot/tools/query-session.py <args>
+# fallback: sk query <args>
 ```
 
 ### 3. Drill Down (use entry IDs from search/briefing results)
@@ -105,7 +105,7 @@ sk query "gradle" --type research    # Filter by doc type
 sk query --detail <id>     # Full content of one entry
 sk query --context <id>    # Entry + same-session entries
 sk query --related <id>    # Entry + graph connections
-# fallback: python3 ~/.copilot/tools/query-session.py <flag> <id>
+# fallback: sk query <flag> <id>
 ```
 
 `sk query --detail <id>` writes stateless `detail_open` telemetry:
@@ -126,7 +126,7 @@ sk query --tools       # Tool configs and usage notes
 ```bash
 sk index health --recall
 sk index health --recall --json
-# fallback: python3 ~/.copilot/tools/knowledge-health.py --recall [--json]
+# fallback: sk index health --recall [--json]
 ```
 
 - `recall_events` is lean telemetry (counts/IDs/output size only), not verbose output logging.
@@ -173,7 +173,7 @@ sk learn --relate "ComponentX" "uses" "ThemeToken"
 sk learn --from-file notes.md    # Bulk import from markdown
 sk learn --list                   # List recent entries
 sk learn --stats                  # Knowledge base statistics
-# fallback: python3 ~/.copilot/tools/learn.py <args>
+# fallback: sk learn <args>
 ```
 
 ### 7. Auto-Update Tools
@@ -183,7 +183,7 @@ sk update              # Auto-update (24h cooldown)
 sk update --force       # Force update now
 sk update --status      # Show version info
 sk update --doctor      # Health check
-# fallback: python3 ~/.copilot/tools/auto-update-tools.py <args>
+# fallback: sk update <args>
 ```
 
 ### 8. Optional Sync Runtime (local-first)
@@ -213,7 +213,7 @@ sk update --restart-watch
 sk update --watch-status
 sk update --health-check
 sk update --audit-runtime
-# fallback: python3 ~/.copilot/tools/sync-config.py / sync-daemon.py / sync-status.py / auto-update-tools.py
+# fallback: sk sync config / sync-daemon.py / sync-status.py / auto-update-tools.py
 ```
 
 If no `connection_string` is configured, daemon sync remains local-only/idle.
@@ -228,7 +228,7 @@ Default provider rollout recommendation: Neon (backing Postgres) + Railway (thin
 sk scout run --search-only
 sk scout run --dry-run --limit 1 --force
 sk scout run --limit 1 --force
-# fallback: python3 ~/.copilot/tools/trend-scout.py <args>
+# fallback: sk scout run <args>
 ```
 
 - Trend Scout creates **or updates** marker-linked issues.
@@ -312,7 +312,7 @@ User: "Getting 'SSL: CERTIFICATE_VERIFY_FAILED' on CI — has this come up befor
 
 ```bash
 sk query "deployment error" --semantic
-# fallback: python3 ~/.copilot/tools/query-session.py "deployment error" --semantic
+# fallback: sk query "deployment error" --semantic
 ```
 
 Works with meaning, not just keywords. Requires API key setup via `embed.py --setup`.

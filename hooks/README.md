@@ -63,7 +63,7 @@ sk install --deploy-hooks        # Deploy to ~/.copilot/hooks/
 sk install --lock-hooks          # Lock with OS immutable flags
 sk install --unlock-hooks        # Unlock for updates
 sk install --install-git-hooks   # Install pre-commit/pre-push (per repo)
-# fallback: python3 ~/.copilot/tools/install.py <flag>
+# fallback: sk install <flag>
 ```
 
 `~/.copilot/hooks/hooks.json` is a **managed file**. `sk update` may refresh it from this repo

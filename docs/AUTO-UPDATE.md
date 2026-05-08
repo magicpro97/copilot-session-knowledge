@@ -5,12 +5,12 @@
 ## Commands
 
 ```bash
-python3 ~/.copilot/tools/auto-update-tools.py           # Auto-update (24h cooldown)
-python3 ~/.copilot/tools/auto-update-tools.py --force    # Force update now
-python3 ~/.copilot/tools/auto-update-tools.py --check    # Check only (no apply)
-python3 ~/.copilot/tools/auto-update-tools.py --status   # Show version info
-python3 ~/.copilot/tools/auto-update-tools.py --doctor   # Health check + manifest verify
-python3 ~/.copilot/tools/auto-update-tools.py --skip-pull # Run pipeline only (post-merge)
+sk update           # Auto-update (24h cooldown)
+sk update --force    # Force update now
+sk update --check    # Check only (no apply)
+sk update --status   # Show version info
+sk update --doctor   # Health check + manifest verify
+sk update --skip-pull # Run pipeline only (post-merge)
 ```
 
 ## Runtime Operator Commands
@@ -20,16 +20,16 @@ None of these commands trigger an update or restart:
 
 ```bash
 # Watcher status (delegates to sync-status.py --watch-status)
-python3 ~/.copilot/tools/auto-update-tools.py --watch-status
+sk update --watch-status
 
 # Sync runtime health check (delegates to sync-status.py --health-check)
-python3 ~/.copilot/tools/auto-update-tools.py --health-check
+sk update --health-check
 
 # Runtime operations audit (delegates to sync-status.py --audit)
-python3 ~/.copilot/tools/auto-update-tools.py --audit-runtime
+sk update --audit-runtime
 
 # List all tracked paths/patterns used by the smart-diff coverage check
-python3 ~/.copilot/tools/auto-update-tools.py --list-coverage
+sk update --list-coverage
 ```
 
 ### Lifecycle command
@@ -40,7 +40,7 @@ Task Scheduler, or the manual fallback path).
 
 ```bash
 # Restart the watch-sessions watcher (controlled restart, macOS/Linux/Windows)
-python3 ~/.copilot/tools/auto-update-tools.py --restart-watch
+sk update --restart-watch
 ```
 
 ### Watcher status semantics
@@ -129,7 +129,7 @@ After `git pull`, auto-update analyzes `git diff` to run only what changed:
 >
 > **Git hook reinstall reminder:** when git-hook scripts (pre-commit/pre-push/check_subagent marker guard)
 > change, auto-update prints an action-required warning and does **not** rewrite `.git/hooks/` across repos.
-> Re-run `python3 ~/.copilot/tools/install.py --install-git-hooks` in each protected repo.
+> Re-run `sk install --install-git-hooks` in each protected repo.
 
 ## Post-Merge Hook
 
@@ -147,7 +147,7 @@ If not using LaunchAgents/systemd:
 
 ```bash
 # Add to ~/.zshrc or ~/.bashrc
-(python3 ~/.copilot/tools/auto-update-tools.py &) 2>/dev/null
+(sk update &) 2>/dev/null
 ```
 
 ## Version Manifest
@@ -174,7 +174,7 @@ The auto-update pipeline and the browse UI operator console (`/chat`) are indepe
 After pulling a release that changes the Python operator backend, restart the browse server:
 
 ```bash
-python3 ~/.copilot/tools/browse.py --port <port>
+sk browse --port <port>
 ```
 
 ## Compatibility with browse-wide host state
