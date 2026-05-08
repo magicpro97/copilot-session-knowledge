@@ -63,6 +63,7 @@ dependencies remain a silent no-op.*
 | `host_manifest.py` | Single source of truth for supported hosts + their filesystem paths |
 | `index-status.py` | Row counts, FTS integrity, event-offset coverage |
 | `knowledge-health.py` | Knowledge base health + recall telemetry |
+| `error-analysis.py` | On-demand error pattern analysis: type distribution, severity, recurrence, root causes |
 | `benchmark.py` | Commit-keyed benchmark ledger for retro + health snapshots |
 | `checkpoint-save.py` | Save named checkpoint |
 | `checkpoint-restore.py` | List/restore checkpoints |
@@ -169,7 +170,7 @@ Hooks live in `hooks/` and are deployed to `~/.copilot/hooks/` (Copilot CLI only
 
 `~/.copilot/session-state/knowledge.db` — SQLite with FTS5, WAL journal mode, and optional vector embeddings.
 
-**Schema versions:** v1–v6 (legacy) → v7 (two-phase indexing + `event_offsets`) → v8 (`sessions_fts` contentless FTS5 + BM25) → v9–v14 (eval, provenance, recall, sync, benchmark) → v15 (`confidence_backfill_wave3`: raises pattern confidence floor to 0.5 and applies recurrence reward to existing entries). Run `python3 ~/.copilot/tools/migrate.py` to upgrade.
+**Schema versions:** v1–v6 (legacy) → v7 (two-phase indexing + `event_offsets`) → v8 (`sessions_fts` contentless FTS5 + BM25) → v9–v14 (eval, provenance, recall, sync, benchmark) → v15 (`confidence_backfill_wave3`: raises pattern confidence floor to 0.5 and applies recurrence reward to existing entries) → v16 (error lifecycle: `error_type`, `root_cause`, `severity`, `is_resolved`, `fix_steps`, `prevention_hook`, `recurrence_after_briefing` on `knowledge_entries`) → v17 (`briefing_deliveries` table for tracking which entries were briefed to each session). Run `python3 ~/.copilot/tools/migrate.py` to upgrade.
 
 ## `providers/` Package
 

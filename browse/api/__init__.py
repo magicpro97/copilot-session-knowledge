@@ -18,6 +18,8 @@ Endpoints exposed:
   GET /api/tentacles/status    → TentacleStatusResponse
   GET /api/skills/metrics      → SkillMetricsResponse
   GET /api/workflow/health     → WorkflowHealthResponse (proxied from workflow-health.py)
+  GET /api/errors              → Error type distribution, severity, trends
+  GET /api/recurrence          → Briefed-but-recurred mistake analysis
 
   POST /api/operator/sessions              → create operator session
   GET  /api/operator/sessions              → list operator sessions
@@ -48,6 +50,7 @@ from browse.api import (
     compare,  # noqa: F401
     dashboard,  # noqa: F401
     embeddings,  # noqa: F401
+    errors,  # noqa: F401
     insights,  # noqa: F401
     operator,  # noqa: F401
     pairing,  # noqa: F401 — pairing ticket verify + static slot management (#58/#59)

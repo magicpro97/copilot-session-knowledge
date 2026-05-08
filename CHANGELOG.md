@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Agent Error Prevention System (5-phase implementation):**
+  - **Phase 1 — Schema & Learn Enhancement:**
+    - `migrate.py` v16: 7 new columns on `knowledge_entries` — `error_type`, `root_cause`, `severity`, `is_resolved`, `fix_steps`, `prevention_hook`, `recurrence_after_briefing`.
+    - `learn.py`: New CLI flags `--error-type`, `--root-cause`, `--severity`, `--fix-step` for manual classification.
+    - `extract-knowledge.py`: Auto error-type classification (8 types), root-cause extraction, severity detection for `mistake` entries.
+    - FTS5 index now includes `error_type` and `root_cause` for full-text search.
+  - **Phase 2 — Core Hooks:**
+    - `hooks/rules/read_before_edit.py`: New `ReadBeforeEditRule` — tracks viewed files, warns on edit of unread files (fail-open).
+    - Briefing auto-budget increased from 500→2000 tokens.
+    - Enhanced briefing compact format with severity, error_type, root_cause metadata.
+    - `migrate.py` v17: `briefing_deliveries` table for tracking which entries were briefed per session.
+    - `briefing.py`: Delivery tracking — records briefed entries to `briefing_deliveries`.
+  - **Phase 3 — Verification & Feedback Loop:**
+    - `tentacle.py`: `--strict-verify` flag on `complete` — exits non-zero on verify failure, does not force-mark pending todos.
+    - `hooks/rules/recurrence_detector.py`: New `RecurrenceDetectorRule` — detects briefed mistakes that recurred in the same session, increments `recurrence_after_briefing` counter at session end.
+  - **Phase 4 — Enhanced Classification & Error KB:**
+    - `hooks/rules/error_kb.py`: Captures tool name, file path context; increased search from 100→500 chars; richer KB match output.
+    - `extract-knowledge.py`: Noise filter preserves code blocks containing stack traces/errors.
+    - `query-session.py`: `--error-type` filter for knowledge search; display error lifecycle metadata in results.
+  - **Phase 5 — Browse App & Research Tools:**
+    - `browse/api/errors.py`: New API endpoints `/api/errors` (error type distribution, severity, trends) and `/api/recurrence` (briefing effectiveness, recurring mistakes).
+    - `error-analysis.py`: New standalone CLI tool for on-demand error pattern analysis with `--type`, `--recurring`, `--root-causes`, `--export json` options.
+
+### Added
 - **Single-version browse app migration — root-served routes:**
   - The browse app now uses a unified root-served app (`/*`) for both the local Python browse
     server and the hosted static deployment.
