@@ -410,6 +410,98 @@ DISCOVERY_INDICATORS = [
     r"(?:phát\s+hiện|nhận\s+ra|hiểu|thấy\s+rằng)",
 ]
 
+# Error type classification patterns for auto-detection
+ERROR_TYPE_PATTERNS = {
+    "syntax": [
+        r"(?:syntax\s*error|parse\s*error|unexpected\s*token|unterminated)",
+        r"(?:indentation|missing\s*(?:bracket|paren|semicolon|colon|comma))",
+        r"(?:SyntaxError|ParseError|invalid\s*syntax)",
+    ],
+    "runtime": [
+        r"(?:runtime\s*error|exception|traceback|stack\s*trace)",
+        r"(?:TypeError|ValueError|AttributeError|KeyError|IndexError|NameError)",
+        r"(?:NullPointerException|segfault|segmentation\s*fault|SIGSEGV)",
+        r"(?:crash(?:ed|es|ing)?|abort|panic|unhandled)",
+    ],
+    "logic": [
+        r"(?:logic\s*error|wrong\s*(?:result|output|behavior|value))",
+        r"(?:incorrect|unexpected\s*(?:result|output|behavior))",
+        r"(?:off-by-one|race\s*condition|deadlock|infinite\s*loop)",
+    ],
+    "timeout": [
+        r"(?:timeout|timed?\s*out|hang(?:s|ing|ed)?|stuck|frozen)",
+        r"(?:too\s*(?:slow|long)|deadline\s*exceeded|connection\s*timeout)",
+    ],
+    "permission": [
+        r"(?:permission\s*denied|access\s*denied|unauthorized|forbidden)",
+        r"(?:EACCES|EPERM|403|401|authentication\s*fail)",
+    ],
+    "build": [
+        r"(?:build\s*(?:fail|error)|compilation\s*(?:fail|error))",
+        r"(?:linker\s*error|import\s*error|module\s*not\s*found)",
+        r"(?:cannot\s*find\s*module|unresolved\s*(?:import|reference))",
+    ],
+    "deploy": [
+        r"(?:deploy(?:ment)?\s*(?:fail|error)|rollback|service\s*(?:down|unavailable))",
+        r"(?:health\s*check\s*fail|container\s*(?:crash|restart))",
+    ],
+    "config": [
+        r"(?:config(?:uration)?\s*(?:error|missing|invalid))",
+        r"(?:env(?:ironment)?\s*(?:variable|missing)|\.env|settings?\s*(?:wrong|missing))",
+    ],
+}
+
+# Root cause extraction patterns
+ROOT_CAUSE_EXTRACTORS = [
+    r"(?:root\s*cause|caused\s*by|because|reason(?:\s*was)?|due\s*to|problem\s*was|issue\s*was)[:\s]+(.{10,200})",
+    r"(?:nguyên\s*nhân|do|vì|bởi\s*vì)[:\s]+(.{10,200})",
+    r"(?:the\s*(?:real|actual|underlying)\s*(?:issue|problem|cause)\s*(?:is|was))[:\s]+(.{10,200})",
+    r"(?:fixed\s*by|resolved\s*by|solution\s*was)[:\s]+(.{10,200})",
+]
+
+# Severity keywords for auto-detection
+SEVERITY_KEYWORDS = {
+    "critical": [r"critical", r"fatal", r"data\s*loss", r"security\s*(?:vuln|breach)", r"production\s*(?:down|crash)"],
+    "high": [r"crash", r"hang", r"block(?:ed|ing)", r"regression", r"broken\s*(?:build|deploy|test)"],
+    "low": [r"cosmetic", r"typo", r"formatting", r"style", r"minor", r"warning\b"],
+}
+
+
+def classify_error_type(text: str) -> str:
+    """Auto-classify error type from content. Returns empty string if no match."""
+    text_lower = text.lower()
+    best_type = ""
+    best_score = 0
+    for etype, patterns in ERROR_TYPE_PATTERNS.items():
+        score = 0
+        for p in patterns:
+            score += len(re.findall(p, text_lower, re.IGNORECASE))
+        if score > best_score:
+            best_score = score
+            best_type = etype
+    return best_type if best_score >= 1 else ""
+
+
+def extract_root_cause(text: str) -> str:
+    """Extract root cause description from content. Returns empty string if none found."""
+    for p in ROOT_CAUSE_EXTRACTORS:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            cause = m.group(1).strip().rstrip(".")
+            if len(cause) > 10:
+                return cause[:200]
+    return ""
+
+
+def detect_severity(text: str) -> str:
+    """Auto-detect severity from content keywords. Returns 'medium' as default."""
+    text_lower = text.lower()
+    for sev in ("critical", "high", "low"):
+        for p in SEVERITY_KEYWORDS[sev]:
+            if re.search(p, text_lower, re.IGNORECASE):
+                return sev
+    return "medium"
+
 
 def ensure_tables(db: sqlite3.Connection):
     """Create knowledge_entries table if not exists."""
@@ -1148,6 +1240,24 @@ def extract_from_sections(db: sqlite3.Connection, session_ids: list = None):
                     )
                     existing_hashes.add(content_hash)
                     extracted += 1
+
+                    # Auto-classify error lifecycle fields for mistake entries
+                    if category == "mistake":
+                        entry_id_row = db.execute("SELECT last_insert_rowid()").fetchone()
+                        if entry_id_row:
+                            eid = entry_id_row[0]
+                            et = classify_error_type(chunk)
+                            rc = extract_root_cause(chunk)
+                            sv = detect_severity(chunk)
+                            if et or rc or sv != "medium":
+                                try:
+                                    db.execute(
+                                        "UPDATE knowledge_entries SET error_type = ?, root_cause = ?, severity = ? WHERE id = ? AND COALESCE(error_type, '') = ''",
+                                        (et, rc, sv, eid),
+                                    )
+                                except sqlite3.OperationalError:
+                                    pass  # error lifecycle columns may not exist yet
+
                 except sqlite3.IntegrityError as e:
                     print(f"⚠ Duplicate entry skipped: {e}", file=sys.stderr)
                     skipped += 1
@@ -1238,10 +1348,13 @@ def extract_relations(db: sqlite3.Connection) -> int:
     """Detect and insert relationships between knowledge entries.
 
     Relation types:
-      SAME_SESSION  — entries from same session but different categories (0.7)
-      SAME_TOPIC    — entries with same topic_key from different sessions (0.9)
-      TAG_OVERLAP   — entries sharing 2+ tags (0.5 + 0.1 * shared_count)
-      RESOLVED_BY   — mistake paired with pattern/tool in same session (0.8)
+      SAME_SESSION       — entries from same session but different categories (0.7)
+      SAME_TOPIC         — entries with same topic_key from different sessions (0.9)
+      TAG_OVERLAP        — entries sharing 2+ tags (0.5 + 0.1 * shared_count)
+      RESOLVED_BY        — mistake paired with pattern/tool in same session (0.8)
+      SEMANTIC_PROXIMITY — TF-IDF cosine similarity >= 0.75 when scikit-learn is
+                           available; pairs already covered by stronger relation
+                           types are skipped and missing sklearn is a no-op
 
     Ordering: entries are processed newest-first (ORDER BY id DESC) so that
     recent context is never starved when per-type budgets fill.  A per-group
@@ -1399,6 +1512,69 @@ def extract_relations(db: sqlite3.Connection) -> int:
                     break
         if budget_done:
             break
+
+    # 5. SEMANTIC_PROXIMITY — TF-IDF cosine similarity >= 0.75 for pairs not
+    # already covered by stronger relation types. Keep this offline-safe:
+    # missing scikit-learn becomes a silent no-op.
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine_similarity
+    except ImportError:
+        TfidfVectorizer = None  # type: ignore[assignment]
+        sklearn_cosine_similarity = None  # type: ignore[assignment]
+
+    if TfidfVectorizer is not None and sklearn_cosine_similarity is not None:
+        semantic_threshold = 0.75
+        semantic_max_entries = 500
+        stronger_pairs: set[tuple[int, int]] = set()
+        for src_id, tgt_id, *_rest in relations:
+            stronger_pairs.add((src_id, tgt_id))
+            stronger_pairs.add((tgt_id, src_id))
+
+        try:
+            semantic_rows = db.execute(
+                """
+                SELECT id, COALESCE(title, ''), COALESCE(tags, ''), COALESCE(content, '')
+                FROM knowledge_entries
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (semantic_max_entries,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            semantic_rows = [(e[0], e[3] or "", e[4] or "", "") for e in entries[:semantic_max_entries]]
+
+        semantic_entries = []
+        for entry_id, title, tags, content in semantic_rows:
+            text = " ".join(part.strip() for part in (title, tags, content) if part and part.strip())
+            if text:
+                semantic_entries.append((int(entry_id), text))
+
+        if len(semantic_entries) >= 2:
+            try:
+                semantic_ids = [item[0] for item in semantic_entries]
+                semantic_texts = [item[1] for item in semantic_entries]
+                vectorizer = TfidfVectorizer(
+                    max_features=8000,
+                    ngram_range=(1, 2),
+                    sublinear_tf=True,
+                    strip_accents="unicode",
+                    min_df=1,
+                    max_df=0.95,
+                )
+                matrix = vectorizer.fit_transform(semantic_texts)
+                similarity_matrix = sklearn_cosine_similarity(matrix)
+                for i, src_id in enumerate(semantic_ids):
+                    for j in range(i + 1, len(semantic_ids)):
+                        score = float(similarity_matrix[i, j])
+                        if score < semantic_threshold:
+                            continue
+                        tgt_id = semantic_ids[j]
+                        if (src_id, tgt_id) in stronger_pairs or (tgt_id, src_id) in stronger_pairs:
+                            continue
+                        _add(src_id, tgt_id, "SEMANTIC_PROXIMITY", round(score, 2))
+            except ValueError:
+                pass
 
     # Batch insert all relations
     if relations:

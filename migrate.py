@@ -668,6 +668,19 @@ if __name__ == "__main__":
                 "UPDATE knowledge_entries SET confidence = MIN(1.0, confidence + 0.03 * MIN(COALESCE(occurrence_count, 1) - 1, 5)) WHERE COALESCE(occurrence_count, 1) >= 2 AND confidence <= 0.92",
             ],
         ),
+        (
+            16,
+            "error_lifecycle_columns",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN error_type TEXT DEFAULT ''",
+                "ALTER TABLE knowledge_entries ADD COLUMN root_cause TEXT DEFAULT ''",
+                "ALTER TABLE knowledge_entries ADD COLUMN severity TEXT DEFAULT 'medium'",
+                "ALTER TABLE knowledge_entries ADD COLUMN is_resolved INTEGER DEFAULT 0",
+                "ALTER TABLE knowledge_entries ADD COLUMN fix_steps TEXT DEFAULT ''",
+                "ALTER TABLE knowledge_entries ADD COLUMN prevention_hook TEXT DEFAULT ''",
+                "ALTER TABLE knowledge_entries ADD COLUMN recurrence_after_briefing INTEGER DEFAULT 0",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:
@@ -700,25 +713,30 @@ if __name__ == "__main__":
         needs_rebuild = False
         if fts_sql:
             fts_def = fts_sql[0] or ""
-            if "wing" not in fts_def or "facts" not in fts_def:
+            if (
+                "wing" not in fts_def
+                or "facts" not in fts_def
+                or "error_type" not in fts_def
+                or "root_cause" not in fts_def
+            ):
                 needs_rebuild = True
         if needs_rebuild:
-            print("  [migrate] Rebuilding FTS5 (adding facts column)...")
+            print("  [migrate] Rebuilding FTS5 (adding error_type, root_cause columns)...")
             # P0-9: use BEGIN EXCLUSIVE so the DROP→RENAME is atomic;
             # prevents FTS permanent loss if watch-sessions holds a read transaction.
             db.execute("BEGIN EXCLUSIVE")
             try:
                 db.execute("DROP TABLE IF EXISTS ke_fts_new")
                 db.execute(
-                    "CREATE VIRTUAL TABLE ke_fts_new USING fts5(title, content, tags, category, wing, room, facts, tokenize='unicode61 remove_diacritics 2')"
+                    "CREATE VIRTUAL TABLE ke_fts_new USING fts5(title, content, tags, category, wing, room, facts, error_type, root_cause, tokenize='unicode61 remove_diacritics 2')"
                 )
                 db.execute(
-                    "INSERT INTO ke_fts_new(rowid, title, content, tags, category, wing, room, facts) SELECT id, title, content, tags, category, COALESCE(wing,''), COALESCE(room,''), COALESCE(facts,'[]') FROM knowledge_entries"
+                    "INSERT INTO ke_fts_new(rowid, title, content, tags, category, wing, room, facts, error_type, root_cause) SELECT id, title, content, tags, category, COALESCE(wing,''), COALESCE(room,''), COALESCE(facts,'[]'), COALESCE(error_type,''), COALESCE(root_cause,'') FROM knowledge_entries"
                 )
                 db.execute("DROP TABLE IF EXISTS ke_fts")
                 db.execute("ALTER TABLE ke_fts_new RENAME TO ke_fts")
                 db.execute("COMMIT")
-                print("  [migrate] FTS5 rebuilt with facts column")
+                print("  [migrate] FTS5 rebuilt with error_type, root_cause columns")
             except Exception as e:
                 db.execute("ROLLBACK")
                 db.execute("DROP TABLE IF EXISTS ke_fts_new")

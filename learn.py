@@ -397,6 +397,10 @@ def add_entry(
     code_snippet: str = "",
     code_location_set: bool = False,
     quiet: bool = False,
+    error_type: str = "",
+    root_cause: str = "",
+    severity: str = "",
+    fix_steps: str = "",
 ) -> int:
     """Add a knowledge entry to the database. Returns entry ID.
 
@@ -419,6 +423,7 @@ def add_entry(
     )
     has_stable_id_column = "stable_id" in ke_columns
     has_topic_key_column = "topic_key" in ke_columns
+    has_error_lifecycle_columns = all(c in ke_columns for c in ("error_type", "root_cause", "severity", "fix_steps"))
     if code_location_set and not has_code_location_columns:
         print(
             "  [warn] DB schema missing code-location columns; run migrate.py to persist snippets",
@@ -705,6 +710,13 @@ def add_entry(
                     ),
                 )
         entry_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # Set error lifecycle columns if available
+        if has_error_lifecycle_columns and any([error_type, root_cause, severity, fix_steps]):
+            db.execute(
+                """UPDATE knowledge_entries SET error_type = ?, root_cause = ?, severity = ?, fix_steps = ?
+                   WHERE id = ?""",
+                (error_type or "", root_cause or "", severity or "medium", fix_steps or "", entry_id),
+            )
         if has_stable_id_column:
             inserted_stable_id = db.execute(
                 "SELECT COALESCE(stable_id, '') FROM knowledge_entries WHERE id = ?",
@@ -744,7 +756,19 @@ def add_entry(
         print(msg, file=sys.stderr if quiet else sys.stdout)
 
     # Update FTS index
-    _update_fts(db, entry_id, title, content, tags, category, wing, room, facts_json)
+    _update_fts(
+        db,
+        entry_id,
+        title,
+        content,
+        tags,
+        category,
+        wing,
+        room,
+        facts_json,
+        error_type=error_type or "",
+        root_cause=root_cause or "",
+    )
 
     # Generate embedding for the new entry
     _embed_entry(db, entry_id, title, content, quiet=quiet)
@@ -764,17 +788,30 @@ def _update_fts(
     wing: str = "",
     room: str = "",
     facts_json: str = "[]",
+    error_type: str = "",
+    root_cause: str = "",
 ):
     """Update the standalone FTS5 table for this entry."""
     try:
         db.execute("DELETE FROM ke_fts WHERE rowid = ?", (entry_id,))
-        db.execute(
-            """
-            INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-            (entry_id, title, content, tags, category, wing, room, facts_json),
-        )
+        # Try new schema with error_type, root_cause first
+        try:
+            db.execute(
+                """
+                INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts, error_type, root_cause)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (entry_id, title, content, tags, category, wing, room, facts_json, error_type, root_cause),
+            )
+        except sqlite3.OperationalError:
+            # Fall back to old schema without error_type, root_cause
+            db.execute(
+                """
+                INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (entry_id, title, content, tags, category, wing, room, facts_json),
+            )
     except sqlite3.OperationalError:
         pass  # ke_fts might not exist yet
 
@@ -1084,6 +1121,10 @@ def main():
     code_language = ""
     code_snippet = ""
     code_location_set = False
+    error_type = ""
+    root_cause = ""
+    severity = ""
+    fix_steps = ""
 
     if "--tags" in args:
         idx = args.index("--tags")
@@ -1123,6 +1164,25 @@ def main():
         code_snippet, code_language = _extract_code_snippet(source_file, start_line, end_line)
         code_location_set = True
 
+    if "--error-type" in args:
+        idx = args.index("--error-type")
+        error_type = args[idx + 1] if idx + 1 < len(args) else ""
+
+    if "--root-cause" in args:
+        idx = args.index("--root-cause")
+        root_cause = args[idx + 1] if idx + 1 < len(args) else ""
+
+    if "--severity" in args:
+        idx = args.index("--severity")
+        severity = args[idx + 1] if idx + 1 < len(args) else ""
+
+    if "--fix-step" in args:
+        fix_steps_parts = []
+        for i, a in enumerate(args):
+            if a == "--fix-step" and i + 1 < len(args):
+                fix_steps_parts.append(args[i + 1])
+        fix_steps = " → ".join(fix_steps_parts)
+
     # Collect all --fact and --file values (repeatable flags)
     for i, a in enumerate(args):
         if a == "--fact" and i + 1 < len(args):
@@ -1150,6 +1210,10 @@ def main():
             "--task",
             "--file",
             "--code-location",
+            "--error-type",
+            "--root-cause",
+            "--severity",
+            "--fix-step",
         ):
             skip_next = True
             continue
@@ -1203,6 +1267,10 @@ def main():
         code_snippet=code_snippet,
         code_location_set=code_location_set,
         quiet=json_mode,
+        error_type=error_type,
+        root_cause=root_cause,
+        severity=severity,
+        fix_steps=fix_steps,
     )
 
     if json_mode:
