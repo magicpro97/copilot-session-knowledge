@@ -17,7 +17,11 @@ export interface QrPairingPanelProps {
  * Allows operators to pair a remote backend by scanning a QR code or entering
  * a `browse://` deep-link URL manually.
  */
-export function QrPairingPanel({ onPaired, onCancel, ...rest }: QrPairingPanelProps & Record<string, unknown>) {
+export function QrPairingPanel({
+  onPaired,
+  onCancel,
+  ...rest
+}: QrPairingPanelProps & Record<string, unknown>) {
   const [manualUrl, setManualUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,11 +57,7 @@ export function QrPairingPanel({ onPaired, onCancel, ...rest }: QrPairingPanelPr
   }
 
   return (
-    <div
-      className="space-y-3 rounded-lg border px-4 py-3"
-      data-testid="qr-pairing-panel"
-      {...rest}
-    >
+    <div className="space-y-3 rounded-lg border px-4 py-3" data-testid="qr-pairing-panel" {...rest}>
       <div className="flex items-center gap-2 text-sm font-medium">
         <QrCode className="size-4" />
         QR / Deep-link pairing

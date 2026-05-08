@@ -105,7 +105,6 @@ export async function probeLocalBootstrap(): Promise<LocalBootstrapResult> {
         // targeting the local address space so Chrome triggers the LNA permission flow
         // instead of failing silently or blocking without a diagnostic.
         // TypeScript lib.dom.d.ts does not yet include this option.
-        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
         // @ts-expect-error — targetAddressSpace is a Chrome LNA extension (Chrome 138+, stable Chrome 142+)
         targetAddressSpace: "local",
       });

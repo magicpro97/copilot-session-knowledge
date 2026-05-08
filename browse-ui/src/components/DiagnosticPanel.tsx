@@ -27,7 +27,7 @@ export function DiagnosticPanel({ compat, probeResult, isHosted, hostUrl }: Diag
   if (probeResult) {
     if (probeResult.status === "unavailable") {
       messages.push(
-        "Local backend not detected — make sure the CLI is running with `--browse` enabled.",
+        "Local backend not detected — make sure the CLI is running with `--browse` enabled."
       );
     } else if (probeResult.status === "auth-required") {
       messages.push("Backend requires authentication — add a token in the host settings.");
@@ -38,7 +38,7 @@ export function DiagnosticPanel({ compat, probeResult, isHosted, hostUrl }: Diag
 
   if (messages.length === 0 && isHosted) {
     messages.push(
-      "Cannot reach the selected host from this origin. Check the URL and CORS settings.",
+      "Cannot reach the selected host from this origin. Check the URL and CORS settings."
     );
   }
 
