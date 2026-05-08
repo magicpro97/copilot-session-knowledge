@@ -1,0 +1,76 @@
+name: sk CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sk-rust/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'sk-rust/**'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt-check:
+    name: Format check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sk-rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sk-rust
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sk-rust/target/
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('sk-rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-clippy-
+      - run: cargo clippy -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sk-rust
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sk-rust/target/
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('sk-rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-test-
+      - run: cargo test

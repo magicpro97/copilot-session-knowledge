@@ -1627,6 +1627,12 @@ def main():
         install_sk_launcher(quiet=quiet)
         return
 
+    if "--install-binary" in args:
+        extra = [a for a in args if a not in ("--install-binary",)]
+        import subprocess as _sp
+        _sp.run([sys.executable, str(_SCRIPT_DIR / "install-binary.py")] + extra)
+        return
+
     if "--uninstall-launcher" in args:
         quiet = "--quiet" in args
         if not quiet:

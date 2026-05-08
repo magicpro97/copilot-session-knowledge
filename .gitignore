@@ -65,3 +65,6 @@ sync.log
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Rust / sk-rust build artifacts
+sk-rust/target/

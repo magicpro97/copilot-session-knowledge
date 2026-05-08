@@ -148,6 +148,7 @@ COVERAGE_MANIFEST: "dict[str, list[tuple[str, str]]]" = {
     ],
     "Launcher": [
         ("~/.copilot/bin/",      "managed sk launcher directory — refreshed on sk.py / install.py changes"),
+        ("sk-rust/",             "Rust sk binary source — triggers GitHub Release asset update check"),
     ],
 }
 
@@ -553,6 +554,8 @@ def classify_changes(old_sha: str, new_sha: str) -> dict:
         ],
         # Refresh the managed sk launcher when sk.py or install.py changes
         "sk_launcher":  any(f in changed for f in ("sk.py", "install.py")),
+        # Track Rust binary source changes (used for manifest; binary update is unconditional)
+        "sk_binary":    any(p.startswith("sk-rust/") for p in changed),
     }
 
 
@@ -644,6 +647,9 @@ def post_pull_pipeline(old_sha: str, new_sha: str):
         # 7c. sk.py or install.py changed → refresh managed sk launcher
         if changes.get("sk_launcher"):
             refresh_sk_launcher()
+
+        # 7d. Always check for new Rust binary release (unconditional — GitHub Release asset)
+        refresh_rust_binary()
 
         # 7. Install/update post-merge hook
         ensure_post_merge_hook()
@@ -768,6 +774,239 @@ def refresh_sk_launcher():
         "sk.py or install.py changed — refreshing managed sk launcher...",
         timeout=30,
     )
+
+
+# ---------------------------------------------------------------------------
+# Rust binary auto-update helpers
+# ---------------------------------------------------------------------------
+_RUST_BINARY_RELEASE_CACHE_KEY = "rust_binary_latest_release"
+_RUST_BINARY_RELEASE_CACHE_TS_KEY = "rust_binary_latest_release_ts"
+_RUST_BINARY_RELEASE_CACHE_TTL = 3600  # 1 hour
+
+_SK_REPO = "magicpro97/copilot-session-knowledge"
+_SK_BINARY_API_URL = f"https://api.github.com/repos/{_SK_REPO}/releases/latest"
+
+
+def _fetch_latest_rust_binary_release() -> str | None:
+    """Fetch the latest release tag from GitHub API with 1-hour caching.
+
+    Returns tag string (e.g. 'v0.2.0') or None on any network failure.
+    Uses _state_get/_state_set to cache the result for up to 1 hour.
+    """
+    import urllib.request
+
+    cached_ts = _state_get(_RUST_BINARY_RELEASE_CACHE_TS_KEY)
+    cached_tag = _state_get(_RUST_BINARY_RELEASE_CACHE_KEY)
+    try:
+        if cached_ts and cached_tag:
+            age = time.time() - float(cached_ts)
+            if age < _RUST_BINARY_RELEASE_CACHE_TTL:
+                return cached_tag
+    except (ValueError, TypeError):
+        pass
+
+    try:
+        req = urllib.request.Request(
+            _SK_BINARY_API_URL,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "sk-auto-update/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+            tag = data.get("tag_name", "")
+            if tag:
+                _state_set(_RUST_BINARY_RELEASE_CACHE_KEY, tag)
+                _state_set(_RUST_BINARY_RELEASE_CACHE_TS_KEY, str(time.time()))
+                return tag
+    except Exception as exc:
+        warn(f"[rust-binary] GitHub API request failed: {exc}")
+    return None
+
+
+def _rust_binary_asset_name(os_name: str, arch: str) -> tuple[str, str]:
+    """Return (archive_name, exe_name) for the given platform.
+
+    Asset naming convention: sk-{os}-{arch}.{ext}
+    Extension: .zip on Windows, .tar.gz on Linux/macOS.
+    """
+    ext = "zip" if os_name == "windows" else "tar.gz"
+    asset = f"sk-{os_name}-{arch}.{ext}"
+    exe = "sk.exe" if os_name == "windows" else "sk"
+    return asset, exe
+
+
+def _rust_binary_install_path() -> Path:
+    """Return the directory where the Rust sk binary should be installed.
+
+    On Unix the binary is installed as 'sk-native' to avoid overwriting
+    the Python sk shim.  On Windows, sk.exe coexists with sk.cmd and the
+    shell prefers the .exe automatically.
+    """
+    return Path.home() / ".copilot" / "bin"
+
+
+def _should_update_rust_binary(install_dir: Path, exe_name: str, remote_tag: str) -> bool:
+    """Return True when the installed binary is absent or older than remote_tag.
+
+    Compares the output of 'sk --version' (or 'sk-native --version' on Unix)
+    with the remote tag.  Returns True (needs update) if the binary is missing,
+    non-executable, or reports a different version.
+    """
+    # On Unix the binary is named 'sk-native'
+    if platform.system() != "Windows":
+        local_name = "sk-native"
+    else:
+        local_name = exe_name
+
+    exe_path = install_dir / local_name
+    if not exe_path.exists():
+        return True
+
+    try:
+        result = subprocess.run(
+            [str(exe_path), "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return True
+        version_line = (result.stdout or result.stderr).strip().splitlines()[0]
+        # version line typically: "sk 0.2.0" or "sk v0.2.0"
+        installed_version = version_line.split()[-1].lstrip("v")
+        remote_version = remote_tag.lstrip("v")
+        return installed_version != remote_version
+    except Exception:
+        return True
+
+
+def refresh_rust_binary() -> bool:
+    """Download and atomically install the latest sk Rust binary release.
+
+    Step 7d of the post-pull pipeline.  This function is called UNCONDITIONALLY
+    (not gated on classify_changes) because the binary is a GitHub Release asset,
+    not a git-tracked file — so there may be a new release even when no source
+    files changed in this pull.
+
+    Behaviour:
+    - Caches GitHub API response for 1 hour (avoids hammering the API on every pull).
+    - Verifies SHA-256 checksum when a .sha256 sidecar is present.
+    - Atomically replaces the binary (write .tmp → os.replace) to avoid torn writes.
+    - On Windows PermissionError (sk.exe in use): logs a warning and skips —
+      the update will be retried on the next run.
+    - FAIL-OPEN: any network/download/extraction error is logged as a warning;
+      the pipeline continues regardless.
+
+    Returns True on a successful install/up-to-date check, False on any failure.
+    """
+    import hashlib
+    import urllib.request
+    import zipfile
+
+    try:
+        sys_name = platform.system().lower()
+        machine = platform.machine().lower()
+        os_map = {"linux": "linux", "darwin": "darwin", "windows": "windows"}
+        arch_map = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
+        os_name = os_map.get(sys_name)
+        arch = arch_map.get(machine)
+        if not os_name or not arch:
+            warn(f"[rust-binary] Unsupported platform: {sys_name}/{machine} — skipping update")
+            return False
+
+        remote_tag = _fetch_latest_rust_binary_release()
+        if not remote_tag:
+            warn("[rust-binary] Could not determine latest release — skipping update")
+            return False
+
+        install_dir = _rust_binary_install_path()
+        asset_name, exe_name = _rust_binary_asset_name(os_name, arch)
+
+        if not _should_update_rust_binary(install_dir, exe_name, remote_tag):
+            log(f"[rust-binary] Already up-to-date ({remote_tag})")
+            return True
+
+        log(f"[rust-binary] New release {remote_tag} available — downloading {asset_name}...")
+
+        base_url = f"https://github.com/{_SK_REPO}/releases/download/{remote_tag}"
+        archive_url = f"{base_url}/{asset_name}"
+        checksum_url = f"{archive_url}.sha256"
+
+        install_dir.mkdir(parents=True, exist_ok=True)
+        tmp_archive = install_dir / (asset_name + ".tmp")
+        try:
+            # Download archive
+            try:
+                urllib.request.urlretrieve(archive_url, str(tmp_archive))
+            except Exception as exc:
+                warn(f"[rust-binary] Download failed: {exc}")
+                return False
+
+            # Verify SHA-256 (soft-fail if sidecar absent)
+            try:
+                req = urllib.request.Request(checksum_url)
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    expected = resp.read().decode().strip().split()[0].lower()
+                sha256 = hashlib.sha256()
+                with open(tmp_archive, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(8192), b""):
+                        sha256.update(chunk)
+                actual = sha256.hexdigest()
+                if expected != actual:
+                    warn(f"[rust-binary] Checksum mismatch — aborting update")
+                    return False
+                log("[rust-binary] Checksum verified")
+            except Exception:
+                log("[rust-binary] Checksum sidecar not available — skipping verification")
+
+            # Extract to temp location then atomically replace
+            tmp_extract = install_dir / ("sk-extract-" + remote_tag.lstrip("v"))
+            tmp_extract.mkdir(parents=True, exist_ok=True)
+            try:
+                if os_name == "windows":
+                    with zipfile.ZipFile(str(tmp_archive), "r") as zf:
+                        zf.extractall(str(tmp_extract))
+                else:
+                    import tarfile
+                    with tarfile.open(str(tmp_archive), "r:gz") as tf:
+                        tf.extractall(str(tmp_extract))
+
+                extracted_exe = tmp_extract / exe_name
+                if not extracted_exe.exists():
+                    warn(f"[rust-binary] Expected binary '{exe_name}' not found in archive")
+                    return False
+
+                # On Unix, install as 'sk-native' to avoid overwriting Python shim
+                dest_name = exe_name if os_name == "windows" else "sk-native"
+                dest_path = install_dir / dest_name
+                dest_tmp = install_dir / (dest_name + ".new.tmp")
+
+                shutil.copy2(str(extracted_exe), str(dest_tmp))
+                if os_name != "windows":
+                    dest_tmp.chmod(0o755)
+
+                try:
+                    _retry_windows_fs(os.replace, str(dest_tmp), str(dest_path))
+                except PermissionError as exc:
+                    warn(f"[rust-binary] Cannot replace binary (in use?): {exc} — will retry next run")
+                    try:
+                        dest_tmp.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    return False
+
+                ok(f"[rust-binary] Installed {remote_tag} → {dest_path}")
+                return True
+
+            finally:
+                shutil.rmtree(str(tmp_extract), ignore_errors=True)
+
+        finally:
+            try:
+                tmp_archive.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    except Exception as exc:
+        warn(f"[rust-binary] Unexpected error during update: {exc}")
+        return False
 
 
 def refresh_global_instructions():
@@ -982,7 +1221,7 @@ def write_manifest(sha: str, changes: dict):
         key: bool(changes.get(key))
         for key in ("browse", "browse_ui", "providers", "skills", "hooks", "hooks_rules",
                     "scripts", "workflows", "launchd", "templates", "py_scripts",
-                    "sk_launcher")
+                    "sk_launcher", "sk_binary")
         if key in changes
     }
     try:

@@ -60,6 +60,15 @@ Chi tiết nằm trong `~/.github/instructions/`:
 - Khuyến nghị rollout mặc định cho provider-backed gateway: Neon (Postgres backend) + Railway (host gateway mỏng); đây là khuyến nghị mặc định, không khóa vendor.
 - Browse diagnostics là read-only: `/healthz` công bố `/api/sync/status`; endpoint này báo trạng thái queue/failure/config/cursor local.
 
+## ⚡ sk CLI — Native Binary
+
+`sk` ships a native Rust binary (`~/.copilot/bin/sk.exe` on Windows, `~/.copilot/bin/sk` on Unix) that is **3–5× faster** than the Python fallback.
+
+- **Resolution order**: native binary → Python fallback (automatic, transparent)
+- On first install or when the binary is unavailable, the Python fallback kicks in with no action needed
+- Keep the binary up to date: `sk update` (or `python ~/.copilot/tools/auto-update-tools.py`) checks GitHub Releases and downloads a new binary when available
+- All `sk` sub-commands work identically through both paths
+
 ## 🔧 Skills
 
 Đọc skills liên quan trong `~/.copilot/skills/` (global) hoặc `.github/skills/` (project).

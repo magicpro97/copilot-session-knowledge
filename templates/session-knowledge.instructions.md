@@ -6,6 +6,12 @@ applyTo: "**/*"
 
 > Auto-injected into every context. Start minimal — escalate only when needed.
 
+> **`sk` binary resolution order:**
+> 1. Native Rust binary — `~/.copilot/bin/sk.exe` (Windows) · `~/.copilot/bin/sk` (Unix) — 3–5× faster
+> 2. Python fallback — `python ~/.copilot/tools/<script>.py` — always available, used automatically when binary is absent
+>
+> `sk update` checks for new binary releases in addition to script updates. No action needed when binary is missing — fallback is seamless.
+
 ## Before Starting a Task
 
 Use the lightest fetch that covers the task complexity:

@@ -1,0 +1,3 @@
+[target.x86_64-pc-windows-gnu]
+linker = "C:\\Users\\linhnt102\\scoop\\apps\\mingw\\current\\bin\\gcc.exe"
+ar = "C:\\Users\\linhnt102\\scoop\\apps\\mingw\\current\\bin\\ar.exe"

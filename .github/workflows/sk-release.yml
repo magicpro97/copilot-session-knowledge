@@ -1,0 +1,201 @@
+name: sk Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sk-rust
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sk-rust/target/
+          key: ubuntu-latest-cargo-test-${{ hashFiles('sk-rust/Cargo.lock') }}
+          restore-keys: ubuntu-latest-cargo-test-
+
+      - name: cargo test
+        run: cargo test
+
+      - name: cargo clippy
+        run: cargo clippy -- -D warnings
+
+  build:
+    name: Build ${{ matrix.archive }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sk-rust
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: sk-linux-x64
+            archive: sk-linux-x64.tar.gz
+            binary: sk
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: sk-linux-arm64
+            archive: sk-linux-arm64.tar.gz
+            binary: sk
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: sk-darwin-x64
+            archive: sk-darwin-x64.tar.gz
+            binary: sk
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: sk-darwin-arm64
+            archive: sk-darwin-arm64.tar.gz
+            binary: sk
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: sk-windows-x64
+            archive: sk-windows-x64.zip
+            binary: sk.exe
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sk-rust/target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-release-${{ hashFiles('sk-rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-release-
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package archive (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.artifact }}
+          tar czf ${{ matrix.archive }} ${{ matrix.artifact }}
+          sha256sum ${{ matrix.archive }} > ${{ matrix.archive }}.sha256
+
+      - name: Package archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item "target\${{ matrix.target }}\release\${{ matrix.binary }}" "${{ matrix.artifact }}.exe"
+          Compress-Archive -Path "${{ matrix.artifact }}.exe" -DestinationPath "${{ matrix.archive }}"
+          $hash = (Get-FileHash "${{ matrix.archive }}" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.archive }}" | Set-Content "${{ matrix.archive }}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: |
+            sk-rust/${{ matrix.archive }}
+            sk-rust/${{ matrix.archive }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV_TAG=$(git tag --sort=-version:refname | grep -E '^v' | sed -n '2p')
+          CURR_TAG=${GITHUB_REF_NAME}
+          if [ -n "$PREV_TAG" ]; then
+            LOG=$(git log "${PREV_TAG}..${CURR_TAG}" --pretty=format:"- %s (%h)" --no-merges)
+          else
+            LOG=$(git log "${CURR_TAG}" --pretty=format:"- %s (%h)" --no-merges)
+          fi
+          echo "changelog<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$LOG" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: sk ${{ github.ref_name }}
+          body: |
+            ## What's Changed
+
+            ${{ steps.changelog.outputs.changelog }}
+
+            ## Installation
+
+            ### Linux / macOS (curl)
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/magicpro97/copilot-session-knowledge/main/sk-rust/install.sh | bash
+            ```
+
+            ### Windows (PowerShell)
+            ```powershell
+            irm https://raw.githubusercontent.com/magicpro97/copilot-session-knowledge/main/sk-rust/install.ps1 | iex
+            ```
+
+            ### Manual download
+            Pick the archive for your platform from the assets below, extract, and place `sk` on your `PATH`.
+            Verify integrity with the companion `.sha256` file.
+
+            | Platform | Archive | Checksum |
+            |----------|---------|----------|
+            | Linux x64 | `sk-linux-x64.tar.gz` | `sk-linux-x64.tar.gz.sha256` |
+            | Linux arm64 | `sk-linux-arm64.tar.gz` | `sk-linux-arm64.tar.gz.sha256` |
+            | macOS x64 | `sk-darwin-x64.tar.gz` | `sk-darwin-x64.tar.gz.sha256` |
+            | macOS arm64 (Apple Silicon) | `sk-darwin-arm64.tar.gz` | `sk-darwin-arm64.tar.gz.sha256` |
+            | Windows x64 | `sk-windows-x64.zip` | `sk-windows-x64.zip.sha256` |
+          files: |
+            artifacts/sk-linux-x64.tar.gz
+            artifacts/sk-linux-x64.tar.gz.sha256
+            artifacts/sk-linux-arm64.tar.gz
+            artifacts/sk-linux-arm64.tar.gz.sha256
+            artifacts/sk-darwin-x64.tar.gz
+            artifacts/sk-darwin-x64.tar.gz.sha256
+            artifacts/sk-darwin-arm64.tar.gz
+            artifacts/sk-darwin-arm64.tar.gz.sha256
+            artifacts/sk-windows-x64.zip
+            artifacts/sk-windows-x64.zip.sha256
+          draft: false
+          prerelease: false

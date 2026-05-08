@@ -1,0 +1,215 @@
+mod commands;
+mod config;
+mod db;
+
+use std::process::ExitCode;
+use std::time::Instant;
+
+use clap::{Parser, Subcommand};
+
+use commands::fallback::run_fallback;
+
+const VERSION: &str = "1.2.0";
+
+#[derive(Parser)]
+#[command(
+    name = "sk",
+    bin_name = "sk",
+    about = "Unified front-door CLI for copilot-session-knowledge tools",
+    version = VERSION,
+    propagate_version = true
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    /// Print startup time (for benchmarking)
+    #[arg(long, hide = true)]
+    time: bool,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Run session briefing
+    Briefing {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Record a lesson (mistake / pattern / decision / discovery)
+    Learn {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Query session knowledge
+    Query {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Manage tentacles (orchestration)
+    Tentacle {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Install or update sk and tools
+    Install {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Set up a project for session-knowledge
+    Setup {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Auto-update tools from upstream
+    Update {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Launch the browse UI server
+    Browse {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Benchmark tools performance
+    Benchmark {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Generate a retrospective
+    Retro {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Heal / repair the knowledge database
+    Heal {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Manage session index (build / extract / migrate / status / health / embed)
+    Index {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Manage sync (run / config / status / gateway / merge)
+    Sync {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Manage checkpoints (save / restore / diff)
+    Checkpoint {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Manage profiles (build / import / export)
+    Profile {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Generate project / codebase context (project / map)
+    Context {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Trend scout (run / config / status)
+    Scout {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+}
+
+// Map a grouped namespace command (e.g. "index build") to a Python script name.
+fn resolve_group(group: &str, args: &[String]) -> (String, Vec<String>) {
+    let (subcommand, rest) = if args.is_empty() {
+        (None, vec![])
+    } else {
+        (Some(args[0].as_str()), args[1..].to_vec())
+    };
+
+    let script = match (group, subcommand) {
+        ("index", Some("build")) => "build-session-index.py",
+        ("index", Some("extract")) => "extract-knowledge.py",
+        ("index", Some("migrate")) => "migrate.py",
+        ("index", Some("status")) => "index-status.py",
+        ("index", Some("health")) => "knowledge-health.py",
+        ("index", Some("embed")) => "embed.py",
+        ("sync", Some("run")) => "sync-daemon.py",
+        ("sync", Some("config")) => "sync-config.py",
+        ("sync", Some("status")) => "sync-status.py",
+        ("sync", Some("gateway")) => "sync-gateway.py",
+        ("sync", Some("merge")) => "sync-knowledge.py",
+        ("checkpoint", Some("save")) => "checkpoint-save.py",
+        ("checkpoint", Some("restore")) => "checkpoint-restore.py",
+        ("checkpoint", Some("diff")) => "checkpoint-diff.py",
+        ("profile", Some("build")) => "profile-builder.py",
+        ("profile", Some("import")) => "profile-import.py",
+        ("profile", Some("export")) => "profile-export.py",
+        ("context", Some("project")) => "project-context.py",
+        ("context", Some("map")) => "codebase-map.py",
+        ("scout", Some("run")) => "trend-scout.py",
+        ("scout", Some("config")) => "scout-config.py",
+        ("scout", Some("status")) => "scout-status.py",
+        _ => {
+            // Pass through: let Python handle unknown subcommands with full args
+            return (format!("{group}.py"), args.to_vec());
+        }
+    };
+
+    (script.to_string(), rest)
+}
+
+fn main() -> ExitCode {
+    let start = Instant::now();
+
+    let cli = Cli::parse();
+
+    let exit_code = match cli.command {
+        None => {
+            // No subcommand — print help
+            let _ = Cli::parse_from(["sk", "--help"]);
+            ExitCode::SUCCESS
+        }
+
+        Some(Commands::Briefing { args }) => commands::briefing::run_briefing_command(&args),
+        Some(Commands::Learn { args }) => commands::learn::run_learn_command(&args),
+        Some(Commands::Query { args }) => commands::query::run_query_command(&args),
+        Some(Commands::Tentacle { args }) => run_fallback("tentacle.py", &args),
+        Some(Commands::Install { args }) => run_fallback("install.py", &args),
+        Some(Commands::Setup { args }) => run_fallback("setup-project.py", &args),
+        Some(Commands::Update { args }) => run_fallback("auto-update-tools.py", &args),
+        Some(Commands::Browse { args }) => run_fallback("browse.py", &args),
+        Some(Commands::Benchmark { args }) => run_fallback("benchmark.py", &args),
+        Some(Commands::Retro { args }) => run_fallback("retro.py", &args),
+        Some(Commands::Heal { args }) => run_fallback("copilot-cli-healer.py", &args),
+
+        Some(Commands::Index { args }) => {
+            let (script, rest) = resolve_group("index", &args);
+            run_fallback(&script, &rest)
+        }
+        Some(Commands::Sync { args }) => {
+            let (script, rest) = resolve_group("sync", &args);
+            run_fallback(&script, &rest)
+        }
+        Some(Commands::Checkpoint { args }) => {
+            let (script, rest) = resolve_group("checkpoint", &args);
+            run_fallback(&script, &rest)
+        }
+        Some(Commands::Profile { args }) => {
+            let (script, rest) = resolve_group("profile", &args);
+            run_fallback(&script, &rest)
+        }
+        Some(Commands::Context { args }) => {
+            let (script, rest) = resolve_group("context", &args);
+            run_fallback(&script, &rest)
+        }
+        Some(Commands::Scout { args }) => {
+            let (script, rest) = resolve_group("scout", &args);
+            run_fallback(&script, &rest)
+        }
+    };
+
+    if cli.time {
+        eprintln!("sk startup: {:?}", start.elapsed());
+    }
+
+    exit_code
+}
