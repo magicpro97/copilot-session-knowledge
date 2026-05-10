@@ -196,9 +196,11 @@ def collect_audit_signals(audit_path: Path = AUDIT_JSONL) -> dict:
                 if not line:
                     continue
                 try:
-                    entries.append(json.loads(line))
+                    entry = json.loads(line)
                 except json.JSONDecodeError:
-                    pass
+                    continue
+                if isinstance(entry, dict):
+                    entries.append(entry)
     except OSError:
         return out
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-test_install_wave3.py — Focused tests for install.py helper logic (Wave 3).
+test_install_helpers.py — Focused tests for install.py helper logic.
 
 Covers:
   - _atomic_write_text() writes and replaces atomically (no tmp leak)
@@ -13,7 +13,7 @@ Covers:
   - TOOL_FILES list completeness spot-checks
   - MINIMAL_SKILL_MD content sanity
 
-Run: python3 tests/test_install_wave3.py
+Run: python3 tests/test_install_helpers.py
 """
 
 import importlib.util
@@ -32,7 +32,7 @@ PASS = 0
 FAIL = 0
 REPO = Path(__file__).parent.parent
 
-SCRATCH = REPO / ".test-scratch" / "install-wave3-tests"
+SCRATCH = REPO / ".test-scratch" / "install-helper-tests"
 SCRATCH.mkdir(parents=True, exist_ok=True)
 
 # Ensure local modules importable

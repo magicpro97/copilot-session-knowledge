@@ -733,7 +733,7 @@ test_auto_update_syntax_still_valid()
 #   - sessions_fts for the non-JSONL Copilot path confirmed as remaining blocker
 #     (rust-watch-sessions-fts-spike-wave5 accepted as research-only).
 
-print("\n── Wave4 hooks parity regression ────────────────────────────────────────")
+print("\n── Hook parity and fallback regression ─────────────────────────────────")
 
 HOOKS_MD = REPO / "docs" / "HOOKS.md"
 
@@ -766,13 +766,13 @@ def test_hooks_run_path_preserves_python_parity():
     # The managed entry must keep python3 hook_runner.py as its fallback — confirming
     # that the parity path is always available even when sk is not installed.
     test(
-        "hooks.json bash entries retain python3 hook_runner.py fallback (wave2 parity requirement)",
+        "hooks.json bash entries retain python3 hook_runner.py fallback",
         "python3" in content and "hook_runner.py" in content,
         "hooks.json must keep python3 hook_runner.py fallback for full-parity events that are Python-only",
     )
 
 
-def test_wave2_hook_events_present_in_hooks_json():
+def test_required_hook_events_present_in_hooks_json():
     """sessionStart, agentStop, sessionEnd, and errorOccurred events must be present in hooks.json.
 
     Wave3 note: sk hooks run agentStop|subagentStop now routes natively via the Rust
@@ -790,27 +790,27 @@ def test_wave2_hook_events_present_in_hooks_json():
     payload = _json.loads(hooks_json.read_text(encoding="utf-8"))
     events = set(payload.get("hooks", {}).keys())
     test(
-        "hooks.json registers sessionStart event (wave2: SessionStartRule in Rust runner)",
+        "hooks.json registers sessionStart event",
         "sessionStart" in events,
         f"sessionStart missing from hooks — events registered: {sorted(events)}",
     )
     test(
-        "hooks.json registers agentStop event (wave3: native Rust routing via marker-cleanup)",
+        "hooks.json registers agentStop event",
         "agentStop" in events,
         f"agentStop missing from hooks — events registered: {sorted(events)}",
     )
     test(
-        "hooks.json registers subagentStop event (wave3: native Rust routing via marker-cleanup)",
+        "hooks.json registers subagentStop event",
         "subagentStop" in events,
         f"subagentStop missing from hooks — events registered: {sorted(events)}",
     )
     test(
-        "hooks.json registers sessionEnd event (wave4: native Rust SessionEndRule)",
+        "hooks.json registers sessionEnd event",
         "sessionEnd" in events,
         f"sessionEnd missing from hooks — events registered: {sorted(events)}",
     )
     test(
-        "hooks.json registers errorOccurred event (wave5: native Rust ErrorOccurredRule with direct DB path)",
+        "hooks.json registers errorOccurred event",
         "errorOccurred" in events,
         f"errorOccurred missing from hooks — events registered: {sorted(events)}",
     )
@@ -821,7 +821,7 @@ def test_wave2_hook_events_present_in_hooks_json():
     )
 
 
-def test_wave2_watch_index_fallback_chain_intact():
+def test_watch_index_fallback_chain_intact():
     """watch indexer: Python extract-knowledge.py must exist for the fallback chain.
 
     Wave3 note: sk watch now indexes Claude .jsonl sessions natively. However:
@@ -839,19 +839,19 @@ def test_wave2_watch_index_fallback_chain_intact():
     """
     extract = REPO / "extract-knowledge.py"
     test(
-        "extract-knowledge.py exists (extract + classify remain Python-backed after wave4)",
+        "extract-knowledge.py exists (extract + classify remain Python-backed)",
         extract.exists(),
         "extract-knowledge.py not found — watcher native indexer depends on this Python fallback",
     )
     watch = REPO / "watch-sessions.py"
     test(
-        "watch-sessions.py exists (Python watcher still in fallback chain after wave4)",
+        "watch-sessions.py exists (Python watcher still in fallback chain)",
         watch.exists(),
         "watch-sessions.py not found — sk watch Python compat path would break",
     )
 
 
-def test_wave4_postToolUse_stays_python_backed():
+def test_managed_posttooluse_stays_python_backed():
     """Managed postToolUse must stay Python-backed until the remaining parity rules land.
 
     After wave6 the direct Rust path is richer, but the managed `sk hooks run postToolUse`
@@ -861,7 +861,7 @@ def test_wave4_postToolUse_stays_python_backed():
     """
     hook_runner = REPO / "hooks" / "hook_runner.py"
     test(
-        "hooks/hook_runner.py exists (managed postToolUse parity is still Python-backed after wave6)",
+        "hooks/hook_runner.py exists (managed postToolUse parity is still Python-backed)",
         hook_runner.exists(),
         "hooks/hook_runner.py not found — managed postToolUse parity path would break",
     )
@@ -872,13 +872,13 @@ def test_wave4_postToolUse_stays_python_backed():
         payload = _json.loads(hooks_json.read_text(encoding="utf-8"))
         events = set(payload.get("hooks", {}).keys())
         test(
-            "hooks.json still registers postToolUse (wave6: managed path stays Python-backed via hook_runner.py)",
+            "hooks.json still registers postToolUse (managed path stays Python-backed via hook_runner.py)",
             "postToolUse" in events,
             f"postToolUse missing — events: {sorted(events)}",
         )
 
 
-def test_wave4_sync_daemon_py_exists_as_shim_fallback():
+def test_sync_daemon_py_exists_as_shim_fallback():
     """sync-daemon.py must exist as the Python shim / no-binary fallback for sk sync run.
 
     Wave4 fact: native-sync is now in the default Cargo feature set, so the compiled
@@ -890,7 +890,7 @@ def test_wave4_sync_daemon_py_exists_as_shim_fallback():
     """
     sync_daemon = REPO / "sync-daemon.py"
     test(
-        "sync-daemon.py exists (wave4: Python sk.py shim / no-binary fallback for sk sync run)",
+        "sync-daemon.py exists (Python sk.py shim / no-binary fallback for sk sync run)",
         sync_daemon.exists(),
         "sync-daemon.py not found — Python shim and no-binary installs would break sk sync run",
     )
@@ -898,10 +898,10 @@ def test_wave4_sync_daemon_py_exists_as_shim_fallback():
 
 test_hooks_md_exists_and_documents_parity_gap()
 test_hooks_run_path_preserves_python_parity()
-test_wave2_hook_events_present_in_hooks_json()
-test_wave2_watch_index_fallback_chain_intact()
-test_wave4_postToolUse_stays_python_backed()
-test_wave4_sync_daemon_py_exists_as_shim_fallback()
+test_required_hook_events_present_in_hooks_json()
+test_watch_index_fallback_chain_intact()
+test_managed_posttooluse_stays_python_backed()
+test_sync_daemon_py_exists_as_shim_fallback()
 
 
 # ── Wave6 hooks/watch regression ─────────────────────────────────────────────
@@ -913,26 +913,26 @@ test_wave4_sync_daemon_py_exists_as_shim_fallback()
 #      — managed sessionStart/preToolUse/postToolUse parity; extract-knowledge.py
 #   4. unresolved Python-backed gap — managed hook parity + extract/bootstrap surfaces
 
-print("\n── Wave6 hooks/watch regression ─────────────────────────────────────────")
+print("\n── Hook/watch native capability regression ─────────────────────────────")
 
 SK_RUST_HOOKS = REPO / "sk-rust" / "src" / "hooks"
 SK_RUST_INDEX = REPO / "sk-rust" / "src" / "index"
 
 
-def test_wave5_hmac_foundation_module_exists():
+def test_hmac_foundation_module_exists():
     """marker_auth.rs must exist and be wired into selected native rules after wave6."""
     marker_auth_rs = SK_RUST_HOOKS / "marker_auth.rs"
     test(
-        "sk-rust/src/hooks/marker_auth.rs exists (wave6 HMAC parity module)",
+        "sk-rust/src/hooks/marker_auth.rs exists (HMAC parity module)",
         marker_auth_rs.exists(),
-        "marker_auth.rs not found — wave6 HMAC parity module missing",
+        "marker_auth.rs not found — HMAC parity module missing",
     )
     if marker_auth_rs.exists():
         content = marker_auth_rs.read_text(encoding="utf-8")
         test(
-            "marker_auth.rs exports counter/list-marker helpers used by native wave6 rules",
+            "marker_auth.rs exports counter/list-marker helpers used by native rules",
             "sign_counter" in content and "verify_counter" in content and "sign_list_marker" in content and "verify_list_marker" in content,
-            "marker_auth.rs must define counter/list-marker helpers for wave6 native parity",
+            "marker_auth.rs must define counter/list-marker helpers for native parity",
         )
     rules_rs = SK_RUST_HOOKS / "rules.rs"
     if rules_rs.exists():
@@ -940,21 +940,21 @@ def test_wave5_hmac_foundation_module_exists():
         test(
             "rules.rs wires marker_auth into native git-guard or TrackEdits paths",
             "marker_auth::verify_marker" in rules_content or "marker_auth::sign_counter" in rules_content,
-            "rules.rs must wire marker_auth into selected native rules after wave6",
+            "rules.rs must wire marker_auth into selected native rules",
         )
 
 
-def test_wave5_sessions_fts_blocker_documented():
-    """docs/HOOKS.md must document that wave6 closed the Copilot sessions_fts gap."""
+def test_sessions_fts_state_documented():
+    """docs/HOOKS.md must document the current sessions_fts state."""
     content = HOOKS_MD.read_text(encoding="utf-8") if HOOKS_MD.exists() else ""
     test(
-        "docs/HOOKS.md still documents sessions_fts after wave6",
-        "sessions_fts" in content and ("wave6" in content.lower() or "local-only" in content.lower() or "native" in content.lower()),
-        "docs/HOOKS.md must document sessions_fts as native/local-only after wave6",
+        "docs/HOOKS.md still documents sessions_fts",
+        "sessions_fts" in content and ("local-only" in content.lower() or "native" in content.lower()),
+        "docs/HOOKS.md must document sessions_fts as native/local-only",
     )
 
 
-def test_wave5_watch_schema_migration_native():
+def test_watch_schema_migration_native():
     """session.rs must contain apply_sessions_column_migrations() (state 1 — native).
 
     Wave5 closes the sessions-table column-migration gap: file_mtime, indexed_at_r,
@@ -963,9 +963,9 @@ def test_wave5_watch_schema_migration_native():
     """
     session_rs = SK_RUST_INDEX / "session.rs"
     test(
-        "sk-rust/src/index/session.rs exists (wave5 native schema migration)",
+        "sk-rust/src/index/session.rs exists (native schema migration)",
         session_rs.exists(),
-        "session.rs not found — wave5 schema migration did not land",
+        "session.rs not found — native schema migration is missing",
     )
     if not session_rs.exists():
         return
@@ -973,7 +973,7 @@ def test_wave5_watch_schema_migration_native():
     test(
         "session.rs defines apply_sessions_column_migrations (state 1: native)",
         "apply_sessions_column_migrations" in content,
-        "session.rs must define apply_sessions_column_migrations() for wave5 native column migration",
+        "session.rs must define apply_sessions_column_migrations() for native column migration",
     )
     for col in ("file_mtime", "indexed_at_r", "fts_indexed_at", "event_count_estimate"):
         test(
@@ -983,7 +983,7 @@ def test_wave5_watch_schema_migration_native():
         )
 
 
-def test_wave5_watch_sync_enqueue_native():
+def test_watch_sync_enqueue_native():
     """session.rs must contain enqueue_doc_sync_op_fail_open() (state 1 — native).
 
     Wave5: native Copilot watch indexer now enqueues sync_txns/sync_ops rows after
@@ -998,7 +998,7 @@ def test_wave5_watch_sync_enqueue_native():
     test(
         "session.rs defines enqueue_doc_sync_op_fail_open (state 1: native sync enqueue)",
         "enqueue_doc_sync_op_fail_open" in content,
-        "session.rs must define enqueue_doc_sync_op_fail_open() for wave5 native sync enqueueing",
+        "session.rs must define enqueue_doc_sync_op_fail_open() for native sync enqueueing",
     )
     test(
         "session.rs sync enqueue is fail-open (does not crash when sync schema absent)",
@@ -1007,7 +1007,7 @@ def test_wave5_watch_sync_enqueue_native():
     )
 
 
-def test_wave5_error_occurred_rules_rs_documents_direct_db_path():
+def test_error_occurred_rules_rs_documents_direct_db_path():
     """rules.rs must document that ErrorOccurredRule uses native DB path (state 2).
 
     State 2: native routing with Python subprocess fallback only when DB is unavailable.
@@ -1030,7 +1030,7 @@ def test_wave5_error_occurred_rules_rs_documents_direct_db_path():
     )
 
 
-def test_wave5_extract_knowledge_py_still_python_backed():
+def test_extract_knowledge_py_still_python_backed():
     """extract-knowledge.py must exist — state 3: stable Python subprocess boundary.
 
     extract-knowledge.py and first-run DB bootstrap are intentionally Python-backed.
@@ -1038,18 +1038,18 @@ def test_wave5_extract_knowledge_py_still_python_backed():
     """
     extract = REPO / "extract-knowledge.py"
     test(
-        "extract-knowledge.py exists (wave5: extract + first-run DB bootstrap stable Python boundary)",
+        "extract-knowledge.py exists (extract + first-run DB bootstrap stable Python boundary)",
         extract.exists(),
-        "extract-knowledge.py not found — wave5: classification and first-run DB bootstrap are Python-backed",
+        "extract-knowledge.py not found — classification and first-run DB bootstrap are Python-backed",
     )
 
 
-test_wave5_hmac_foundation_module_exists()
-test_wave5_sessions_fts_blocker_documented()
-test_wave5_watch_schema_migration_native()
-test_wave5_watch_sync_enqueue_native()
-test_wave5_error_occurred_rules_rs_documents_direct_db_path()
-test_wave5_extract_knowledge_py_still_python_backed()
+test_hmac_foundation_module_exists()
+test_sessions_fts_state_documented()
+test_watch_schema_migration_native()
+test_watch_sync_enqueue_native()
+test_error_occurred_rules_rs_documents_direct_db_path()
+test_extract_knowledge_py_still_python_backed()
 
 
 # ── Wave7 hooks parity regression ────────────────────────────────────────────
@@ -1067,20 +1067,20 @@ test_wave5_extract_knowledge_py_still_python_backed()
 #   - verification-gate deny-capable preToolUse closeout machine (HMAC ledger)
 #   - syntax-gate (py_compile has no Rust equivalent without embedding Python)
 
-print("\n── Wave7 hooks parity regression ───────────────────────────────────────")
+print("\n── Native reminder and guard rule regression ───────────────────────────")
 
 
-def test_wave7_test_reminder_rule_full_counter_port():
-    """rules.rs must document TestReminderRule as a full counter-write port (wave7)."""
+def test_test_reminder_rule_full_counter_port():
+    """rules.rs must document TestReminderRule as a full counter-write port."""
     rules_rs = SK_RUST_HOOKS / "rules.rs"
     if not rules_rs.exists():
-        test("sk-rust/src/hooks/rules.rs exists for wave7 TestReminderRule check", False, str(rules_rs))
+        test("sk-rust/src/hooks/rules.rs exists for TestReminderRule check", False, str(rules_rs))
         return
     content = rules_rs.read_text(encoding="utf-8")
     test(
-        "rules.rs defines TestReminderRule (wave7 full counter-write port)",
+        "rules.rs defines TestReminderRule (full counter-write port)",
         "TestReminderRule" in content,
-        "rules.rs missing TestReminderRule — wave7 full counter-write port must be present",
+        "rules.rs missing TestReminderRule — full counter-write port must be present",
     )
     test(
         "rules.rs TestReminderRule documents py-edit-count (HMAC-signed counter)",
@@ -1094,17 +1094,17 @@ def test_wave7_test_reminder_rule_full_counter_port():
     )
 
 
-def test_wave7_nextjs_typecheck_reminder_full_counter_port():
-    """rules.rs must document NextjsTypecheckReminderRule as a full counter-write port (wave7)."""
+def test_nextjs_typecheck_reminder_full_counter_port():
+    """rules.rs must document NextjsTypecheckReminderRule as a full counter-write port."""
     rules_rs = SK_RUST_HOOKS / "rules.rs"
     if not rules_rs.exists():
-        test("sk-rust/src/hooks/rules.rs exists for wave7 NextjsTypecheckReminderRule check", False, str(rules_rs))
+        test("sk-rust/src/hooks/rules.rs exists for NextjsTypecheckReminderRule check", False, str(rules_rs))
         return
     content = rules_rs.read_text(encoding="utf-8")
     test(
-        "rules.rs defines NextjsTypecheckReminderRule (wave7 full counter-write port)",
+        "rules.rs defines NextjsTypecheckReminderRule (full counter-write port)",
         "NextjsTypecheckReminderRule" in content,
-        "rules.rs missing NextjsTypecheckReminderRule — wave7 full counter-write port must be present",
+        "rules.rs missing NextjsTypecheckReminderRule — full counter-write port must be present",
     )
     test(
         "rules.rs NextjsTypecheckReminderRule documents ts-edit-count (plain counter)",
@@ -1113,17 +1113,17 @@ def test_wave7_nextjs_typecheck_reminder_full_counter_port():
     )
 
 
-def test_wave7_read_before_edit_rule_native():
-    """rules.rs must define ReadBeforeEditRule for preToolUse + postToolUse (wave7)."""
+def test_read_before_edit_rule_native():
+    """rules.rs must define ReadBeforeEditRule for preToolUse + postToolUse."""
     rules_rs = SK_RUST_HOOKS / "rules.rs"
     if not rules_rs.exists():
-        test("sk-rust/src/hooks/rules.rs exists for wave7 ReadBeforeEditRule check", False, str(rules_rs))
+        test("sk-rust/src/hooks/rules.rs exists for ReadBeforeEditRule check", False, str(rules_rs))
         return
     content = rules_rs.read_text(encoding="utf-8")
     test(
-        "rules.rs defines ReadBeforeEditRule (wave7 native preToolUse + postToolUse)",
+        "rules.rs defines ReadBeforeEditRule (native preToolUse + postToolUse)",
         "ReadBeforeEditRule" in content,
-        "rules.rs missing ReadBeforeEditRule — wave7 native view-tracking rule must be present",
+        "rules.rs missing ReadBeforeEditRule — native view-tracking rule must be present",
     )
     test(
         "rules.rs ReadBeforeEditRule documents viewed-files list marker",
@@ -1132,17 +1132,17 @@ def test_wave7_read_before_edit_rule_native():
     )
 
 
-def test_wave7_pnpm_lockfile_guard_rule_native():
-    """rules.rs must define PnpmLockfileGuardRule as deny-capable preToolUse (wave7)."""
+def test_pnpm_lockfile_guard_rule_native():
+    """rules.rs must define PnpmLockfileGuardRule as deny-capable preToolUse."""
     rules_rs = SK_RUST_HOOKS / "rules.rs"
     if not rules_rs.exists():
-        test("sk-rust/src/hooks/rules.rs exists for wave7 PnpmLockfileGuardRule check", False, str(rules_rs))
+        test("sk-rust/src/hooks/rules.rs exists for PnpmLockfileGuardRule check", False, str(rules_rs))
         return
     content = rules_rs.read_text(encoding="utf-8")
     test(
-        "rules.rs defines PnpmLockfileGuardRule (wave7 native deny-capable preToolUse)",
+        "rules.rs defines PnpmLockfileGuardRule (native deny-capable preToolUse)",
         "PnpmLockfileGuardRule" in content,
-        "rules.rs missing PnpmLockfileGuardRule — wave7 native pnpm lockfile guard must be present",
+        "rules.rs missing PnpmLockfileGuardRule — native pnpm lockfile guard must be present",
     )
     test(
         "rules.rs PnpmLockfileGuardRule blocks git commit when pnpm-lock.yaml is not staged",
@@ -1151,27 +1151,27 @@ def test_wave7_pnpm_lockfile_guard_rule_native():
     )
 
 
-def test_wave7_verification_gate_post_rule_native():
-    """rules.rs must define VerificationGatePostRule (postToolUse evidence-recording, wave7)."""
+def test_verification_gate_post_rule_native():
+    """rules.rs must define VerificationGatePostRule for postToolUse evidence recording."""
     rules_rs = SK_RUST_HOOKS / "rules.rs"
     if not rules_rs.exists():
-        test("sk-rust/src/hooks/rules.rs exists for wave7 VerificationGatePostRule check", False, str(rules_rs))
+        test("sk-rust/src/hooks/rules.rs exists for VerificationGatePostRule check", False, str(rules_rs))
         return
     content = rules_rs.read_text(encoding="utf-8")
     test(
-        "rules.rs defines VerificationGatePostRule (wave7 postToolUse evidence-recording)",
+        "rules.rs defines VerificationGatePostRule (postToolUse evidence-recording)",
         "VerificationGatePostRule" in content,
-        "rules.rs missing VerificationGatePostRule — wave7 native verification evidence recording must be present",
+        "rules.rs missing VerificationGatePostRule — native verification evidence recording must be present",
     )
     test(
         "rules.rs VerificationGatePostRule handles sed -i path extraction",
         "sed -i" in content,
-        "VerificationGatePostRule path extraction must handle 'sed -i' (wave7 improvement)",
+        "VerificationGatePostRule path extraction must handle 'sed -i'",
     )
     test(
         "rules.rs VerificationGatePostRule handles tee path extraction",
         '"tee "' in content or "'tee '" in content or '("tee ")' in content or 'find("tee ")' in content,
-        "VerificationGatePostRule path extraction must handle 'tee' (wave7 improvement)",
+        "VerificationGatePostRule path extraction must handle 'tee'",
     )
     test(
         "rules.rs documents that deny-capable preToolUse half remains Python-only",
@@ -1180,15 +1180,15 @@ def test_wave7_verification_gate_post_rule_native():
     )
 
 
-def test_wave7_managed_postToolUse_still_python_backed():
-    """After wave7 the managed sk hooks run postToolUse path must still be Python-backed.
+def test_managed_posttooluse_still_python_backed_after_native_rule_growth():
+    """The managed sk hooks run postToolUse path must still be Python-backed.
 
     No routing flip happened in wave7. hook_runner.py must exist and hooks.json must still
     register postToolUse. docs/HOOKS.md must explicitly state no routing flip occurred.
     """
     hook_runner = REPO / "hooks" / "hook_runner.py"
     test(
-        "hooks/hook_runner.py exists after wave7 (managed postToolUse still Python-backed)",
+        "hooks/hook_runner.py exists (managed postToolUse still Python-backed)",
         hook_runner.exists(),
         "hooks/hook_runner.py not found — managed postToolUse parity path would break",
     )
@@ -1198,33 +1198,33 @@ def test_wave7_managed_postToolUse_still_python_backed():
         payload = _json.loads(hooks_json.read_text(encoding="utf-8"))
         events = set(payload.get("hooks", {}).keys())
         test(
-            "hooks.json still registers postToolUse after wave7 (managed path stays Python-backed)",
+            "hooks.json still registers postToolUse (managed path stays Python-backed)",
             "postToolUse" in events,
             f"postToolUse missing — events: {sorted(events)}",
         )
     if HOOKS_MD.exists():
         content = HOOKS_MD.read_text(encoding="utf-8")
         test(
-            "docs/HOOKS.md states managed postToolUse remains Python-backed (no wave7 routing flip)",
+            "docs/HOOKS.md states managed postToolUse remains Python-backed",
             "wave7" in content.lower() and "python-backed" in content.lower(),
-            "docs/HOOKS.md should document that managed postToolUse stayed Python-backed after wave7",
+            "docs/HOOKS.md should document that managed postToolUse stayed Python-backed",
         )
 
 
-test_wave7_test_reminder_rule_full_counter_port()
-test_wave7_nextjs_typecheck_reminder_full_counter_port()
-test_wave7_read_before_edit_rule_native()
-test_wave7_pnpm_lockfile_guard_rule_native()
-test_wave7_verification_gate_post_rule_native()
-test_wave7_managed_postToolUse_still_python_backed()
+test_test_reminder_rule_full_counter_port()
+test_nextjs_typecheck_reminder_full_counter_port()
+test_read_before_edit_rule_native()
+test_pnpm_lockfile_guard_rule_native()
+test_verification_gate_post_rule_native()
+test_managed_posttooluse_still_python_backed_after_native_rule_growth()
 
 
 # ---------------------------------------------------------------------------
 # Wave 8 — VerificationGatePreRule + TentacleSuggestRule native ports
 # ---------------------------------------------------------------------------
 
-def test_wave8_verification_gate_pre_rule_native():
-    """VerificationGatePreRule must be defined in rules.rs (wave8 preToolUse port).
+def test_verification_gate_pre_rule_native():
+    """VerificationGatePreRule must be defined in rules.rs.
 
     This rule ports the preToolUse half of Python VerificationGateRule:
       - dirty-marks surfaces on edit/create
@@ -1233,38 +1233,38 @@ def test_wave8_verification_gate_pre_rule_native():
     """
     rules_rs = SK_RUST_HOOKS / "rules.rs"
     if not rules_rs.exists():
-        test("sk-rust/src/hooks/rules.rs exists for wave8 VerificationGatePreRule check", False, str(rules_rs))
+        test("sk-rust/src/hooks/rules.rs exists for VerificationGatePreRule check", False, str(rules_rs))
         return
     content = rules_rs.read_text(encoding="utf-8")
     test(
-        "rules.rs defines VerificationGatePreRule struct (wave8)",
+        "rules.rs defines VerificationGatePreRule struct",
         "VerificationGatePreRule" in content,
-        "rules.rs must define VerificationGatePreRule for wave8 preToolUse port",
+        "rules.rs must define VerificationGatePreRule for the preToolUse port",
     )
     test(
-        "rules.rs includes VerificationGatePreRule in all_rules() (wave8)",
+        "rules.rs includes VerificationGatePreRule in all_rules()",
         "VerificationGatePreRule" in content and "all_rules" in content,
         "VerificationGatePreRule must appear in all_rules() to be dispatched",
     )
     test(
-        "VerificationGatePreRule fires on preToolUse (wave8)",
+        "VerificationGatePreRule fires on preToolUse",
         '"preToolUse"' in content or "preToolUse" in content,
         "rules.rs must handle the preToolUse event for VerificationGatePreRule",
     )
     test(
-        "VerificationGatePreRule has is_closeout_action helper (wave8)",
+        "VerificationGatePreRule has is_closeout_action helper",
         "is_closeout_action" in content,
         "rules.rs must define is_closeout_action() helper used by VerificationGatePreRule",
     )
     test(
-        "VerificationGatePreRule reuses mark_dirty_surfaces helper (wave8)",
+        "VerificationGatePreRule reuses mark_dirty_surfaces helper",
         "mark_dirty_surfaces" in content,
         "VerificationGatePreRule must call the shared mark_dirty_surfaces() helper",
     )
 
 
-def test_wave8_tentacle_suggest_rule_native():
-    """TentacleSuggestRule must be defined in rules.rs as read-only postToolUse rule (wave8).
+def test_tentacle_suggest_rule_native():
+    """TentacleSuggestRule must be defined in rules.rs as a read-only postToolUse rule.
 
     This rule ports the Python TentacleSuggestRule:
       - fires on postToolUse for edit/create/bash
@@ -1275,45 +1275,45 @@ def test_wave8_tentacle_suggest_rule_native():
     """
     rules_rs = SK_RUST_HOOKS / "rules.rs"
     if not rules_rs.exists():
-        test("sk-rust/src/hooks/rules.rs exists for wave8 TentacleSuggestRule check", False, str(rules_rs))
+        test("sk-rust/src/hooks/rules.rs exists for TentacleSuggestRule check", False, str(rules_rs))
         return
     content = rules_rs.read_text(encoding="utf-8")
     test(
-        "rules.rs defines TentacleSuggestRule struct (wave8)",
+        "rules.rs defines TentacleSuggestRule struct",
         "TentacleSuggestRule" in content,
-        "rules.rs must define TentacleSuggestRule for wave8 postToolUse suggestion port",
+        "rules.rs must define TentacleSuggestRule for the postToolUse suggestion port",
     )
     test(
-        "rules.rs includes TentacleSuggestRule in all_rules() (wave8)",
+        "rules.rs includes TentacleSuggestRule in all_rules()",
         "TentacleSuggestRule" in content and "all_rules" in content,
         "TentacleSuggestRule must appear in all_rules()",
     )
     test(
-        "TentacleSuggestRule is read-only — TrackEditsRule is sole writer of tentacle-edits (wave8)",
+        "TentacleSuggestRule is read-only — TrackEditsRule is sole writer of tentacle-edits",
         "TrackEditsRule" in content and "TentacleSuggestRule" in content,
         "rules.rs must retain TrackEditsRule as the sole writer of tentacle-edits",
     )
     test(
-        "TentacleSuggestRule handles both tentacle-edits marker formats (wave8)",
+        "TentacleSuggestRule handles both tentacle-edits marker formats",
         "read_tentacle_edits_paths" in content or (
             "starts_with" in content and "tentacle-edits" in content
         ),
         "rules.rs must handle both legacy flat and new JSON-dict tentacle-edits formats",
     )
     test(
-        "TentacleSuggestRule has SUGGEST_MIN_FILES and SUGGEST_MIN_MODULES thresholds (wave8)",
+        "TentacleSuggestRule has SUGGEST_MIN_FILES and SUGGEST_MIN_MODULES thresholds",
         "SUGGEST_MIN_FILES" in content and "SUGGEST_MIN_MODULES" in content,
         "rules.rs must define min-file and min-module thresholds for TentacleSuggestRule",
     )
     test(
-        "TentacleSuggestRule has get_module_for_path helper (wave8)",
+        "TentacleSuggestRule has get_module_for_path helper",
         "get_module_for_path" in content,
         "rules.rs must define get_module_for_path() helper for module detection",
     )
 
 
-def test_wave8_managed_routing_unchanged():
-    """Managed routing must NOT have been flipped in wave8.
+def test_managed_routing_unchanged_for_new_suggestion_rules():
+    """Managed routing must remain unchanged when new suggestion rules land.
 
     Wave8 only adds two new preToolUse/postToolUse rules via the native dispatch
     path (all_rules()). The managed postToolUse routing in hooks.json and the
@@ -1324,23 +1324,23 @@ def test_wave8_managed_routing_unchanged():
         payload = _json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
         events = set(payload.get("hooks", {}).keys())
         test(
-            "hooks.json still registers postToolUse after wave8 (managed path unchanged)",
+            "hooks.json still registers postToolUse (managed path unchanged)",
             "postToolUse" in events,
-            f"postToolUse missing after wave8 — events: {sorted(events)}",
+            f"postToolUse missing — events: {sorted(events)}",
         )
     if HOOKS_MD.exists():
         content = HOOKS_MD.read_text(encoding="utf-8")
         test(
-            "docs/HOOKS.md does not indicate a routing flip in wave8",
+            "docs/HOOKS.md does not indicate a routing flip",
             # wave8 should not have added routing-flip docs; just new rules
             "VerificationGatePreRule" not in content or "wave8" in content.lower(),
-            "docs/HOOKS.md must not claim a routing flip occurred in wave8",
+            "docs/HOOKS.md must not claim a routing flip occurred",
         )
 
 
-test_wave8_verification_gate_pre_rule_native()
-test_wave8_tentacle_suggest_rule_native()
-test_wave8_managed_routing_unchanged()
+test_verification_gate_pre_rule_native()
+test_tentacle_suggest_rule_native()
+test_managed_routing_unchanged_for_new_suggestion_rules()
 
 
 # ---------------------------------------------------------------------------
@@ -1348,10 +1348,10 @@ test_wave8_managed_routing_unchanged()
 #           RecurrenceDetectorRule (sessionEnd) native ports
 # ---------------------------------------------------------------------------
 
-print("\n── Wave9 hooks parity regression ───────────────────────────────────────")
+print("\n── Session lifecycle hook parity regression ───────────────────────────")
 
 
-def test_wave9_auto_briefing_rule_native():
+def test_auto_briefing_rule_native():
     """AutoBriefingRule must be defined in rules.rs as a native sessionStart rule (wave9).
 
     This rule ports Python AutoBriefingRule:
@@ -1398,7 +1398,7 @@ def test_wave9_auto_briefing_rule_native():
     )
 
 
-def test_wave9_integrity_rule_native():
+def test_integrity_rule_native():
     """IntegrityRule must be defined in rules.rs as a native sessionStart rule (wave9).
 
     This rule ports Python IntegrityRule:
@@ -1439,7 +1439,7 @@ def test_wave9_integrity_rule_native():
     )
 
 
-def test_wave9_recurrence_detector_rule_native():
+def test_recurrence_detector_rule_native():
     """RecurrenceDetectorRule must be defined in rules.rs as a native sessionEnd rule (wave9).
 
     This rule ports Python RecurrenceDetectorRule:
@@ -1486,7 +1486,7 @@ def test_wave9_recurrence_detector_rule_native():
     )
 
 
-def test_wave9_session_start_in_native_events():
+def test_session_start_in_native_events():
     """hooks.rs NATIVE_EVENTS must include sessionStart after wave9.
 
     Wave9 adds AutoBriefingRule and IntegrityRule to the native sessionStart path,
@@ -1510,7 +1510,7 @@ def test_wave9_session_start_in_native_events():
     )
 
 
-def test_wave9_managed_pre_post_routing_unchanged():
+def test_managed_pre_post_routing_unchanged():
     """Managed preToolUse and postToolUse routing must NOT have been flipped in wave9.
 
     Wave9 only adds sessionStart native routing and RecurrenceDetectorRule for
@@ -1539,11 +1539,11 @@ def test_wave9_managed_pre_post_routing_unchanged():
         )
 
 
-test_wave9_auto_briefing_rule_native()
-test_wave9_integrity_rule_native()
-test_wave9_recurrence_detector_rule_native()
-test_wave9_session_start_in_native_events()
-test_wave9_managed_pre_post_routing_unchanged()
+test_auto_briefing_rule_native()
+test_integrity_rule_native()
+test_recurrence_detector_rule_native()
+test_session_start_in_native_events()
+test_managed_pre_post_routing_unchanged()
 
 
 # ---------------------------------------------------------------------------
@@ -1561,12 +1561,12 @@ test_wave9_managed_pre_post_routing_unchanged()
 # tentacle-enforce, and syntax-gate are HMAC-gated denial rules with no native
 # equivalent.  preToolUse is NOT added to NATIVE_EVENTS.
 
-print("\n── Wave10 postToolUse routing flip regression ──────────────────────────")
+print("\n── postToolUse routing flip regression ─────────────────────────────────")
 
 HOOKS_CMD_RS = REPO / "sk-rust" / "src" / "commands" / "hooks.rs"
 
 
-def test_wave10_posttooluse_in_native_events():
+def test_posttooluse_in_native_events():
     """hooks.rs NATIVE_EVENTS must include postToolUse after the wave10 flip.
 
     Wave10 adds postToolUse to NATIVE_EVENTS so that 'sk hooks run postToolUse'
@@ -1589,14 +1589,14 @@ def test_wave10_posttooluse_in_native_events():
     )
 
 
-def test_wave10_pretooluse_not_in_native_events():
+def test_pretooluse_not_in_native_events_before_native_flip():
     """hooks.rs NATIVE_EVENTS historical note: preToolUse was NOT included after wave10.
 
     The wave10 flip covered postToolUse only.  preToolUse remained
     Python-backed through wave12.  Wave13 subsequently added preToolUse to
     NATIVE_EVENTS after SyntaxGateRule was ported natively.
     This function now documents the historical intent and is superseded by
-    test_wave13_pretooluse_in_native_events().
+    test_pretooluse_in_native_events().
     """
     # Historical note only — wave13 changed this.  The current state is
     # verified in the wave13 section.  We skip the NATIVE_EVENTS array check
@@ -1608,7 +1608,7 @@ def test_wave10_pretooluse_not_in_native_events():
     )
 
 
-def test_wave10_hook_runner_still_exists_for_pretooluse():
+def test_hook_runner_still_exists_for_pretooluse():
     """hooks/hook_runner.py must still exist after wave10 for preToolUse and Python shim.
 
     Even after the postToolUse native flip, hook_runner.py remains required:
@@ -1624,7 +1624,7 @@ def test_wave10_hook_runner_still_exists_for_pretooluse():
     )
 
 
-def test_wave10_sync_markers_rs_documents_posttooluse():
+def test_sync_markers_rs_documents_posttooluse():
     """sync_markers.rs must document postToolUse → sync-nudge.json behavior (wave10).
 
     This file is the native mirror of hook_runner.py::_record_sync_signal().
@@ -1648,7 +1648,7 @@ def test_wave10_sync_markers_rs_documents_posttooluse():
     )
 
 
-def test_wave10_rules_rs_posttooluse_comment_updated():
+def test_rules_rs_posttooluse_comment_updated():
     """rules.rs module doc must reference the wave10 routing flip.
 
     After wave10 the top-level rules.rs doc must acknowledge that managed
@@ -1672,19 +1672,19 @@ def test_wave10_rules_rs_posttooluse_comment_updated():
     )
 
 
-test_wave10_posttooluse_in_native_events()
-test_wave10_pretooluse_not_in_native_events()
-test_wave10_hook_runner_still_exists_for_pretooluse()
-test_wave10_sync_markers_rs_documents_posttooluse()
-test_wave10_rules_rs_posttooluse_comment_updated()
+test_posttooluse_in_native_events()
+test_pretooluse_not_in_native_events_before_native_flip()
+test_hook_runner_still_exists_for_pretooluse()
+test_sync_markers_rs_documents_posttooluse()
+test_rules_rs_posttooluse_comment_updated()
 
 
 # ── Wave11 — preToolUse native rule availability regression ──────────────────
 
-print("\n── Wave11 preToolUse native rule availability regression ──────────────────")
+print("\n── preToolUse native rule availability regression ──────────────────────")
 
 
-def test_wave11_enforce_briefing_rule_native():
+def test_enforce_briefing_rule_native():
     """EnforceBriefingRule must be defined in rules.rs and registered in all_rules().
 
     Wave11 ports EnforceBriefingRule to Rust for native availability.  The rule
@@ -1722,7 +1722,7 @@ def test_wave11_enforce_briefing_rule_native():
     )
 
 
-def test_wave11_enforce_learn_rule_native():
+def test_enforce_learn_rule_native():
     """EnforceLearnRule must be defined in rules.rs and registered in all_rules().
 
     Wave11 ports EnforceLearnRule to Rust for native availability.  The rule
@@ -1770,13 +1770,13 @@ def test_wave11_enforce_learn_rule_native():
     )
 
 
-def test_wave11_pretooluse_not_in_native_events():
+def test_pretooluse_not_in_native_events_before_managed_flip():
     """preToolUse historical note: was NOT in NATIVE_EVENTS after wave11.
 
     Wave11 added EnforceBriefingRule and EnforceLearnRule native availability
     but did NOT flip managed preToolUse routing.  Wave13 subsequently added
     preToolUse to NATIVE_EVENTS after SyntaxGateRule was ported natively.
-    This check is superseded by test_wave13_pretooluse_in_native_events().
+    This check is superseded by test_pretooluse_in_native_events().
     """
     hooks_rs = SK_RUST_HOOKS.parent / "commands" / "hooks.rs"
     if not hooks_rs.exists():
@@ -1806,7 +1806,7 @@ def test_wave11_pretooluse_not_in_native_events():
     )
 
 
-def test_wave11_hook_runner_still_exists():
+def test_hook_runner_still_exists_for_managed_pretooluse():
     """hooks/hook_runner.py must still exist after wave11 (manages preToolUse Python path)."""
     hook_runner = REPO / "hooks" / "hook_runner.py"
     test(
@@ -1816,7 +1816,7 @@ def test_wave11_hook_runner_still_exists():
     )
 
 
-def test_wave11_rules_rs_documents_wave11():
+def test_rules_rs_documents_pretooluse_native_rules():
     """rules.rs module doc must reference wave11 with EnforceBriefingRule and EnforceLearnRule.
 
     After wave11 the top-level rules.rs doc must acknowledge the new native rules.
@@ -1857,17 +1857,17 @@ def test_wave11_rules_rs_documents_wave11():
     )
 
 
-test_wave11_enforce_briefing_rule_native()
-test_wave11_enforce_learn_rule_native()
-test_wave11_pretooluse_not_in_native_events()
-test_wave11_hook_runner_still_exists()
-test_wave11_rules_rs_documents_wave11()
+test_enforce_briefing_rule_native()
+test_enforce_learn_rule_native()
+test_pretooluse_not_in_native_events_before_managed_flip()
+test_hook_runner_still_exists_for_managed_pretooluse()
+test_rules_rs_documents_pretooluse_native_rules()
 
 
 # ── Wave12: TentacleEnforceRule native parity ─────────────────────────────────
 
 
-def test_wave12_tentacle_enforce_rule_native():
+def test_tentacle_enforce_rule_native():
     """TentacleEnforceRule must be defined in rules.rs and registered in all_rules().
 
     Wave12 ports TentacleEnforceRule to Rust for native availability.  The rule
@@ -1918,7 +1918,7 @@ def test_wave12_tentacle_enforce_rule_native():
         )
 
 
-def test_wave12_tentacle_enforce_registration_order():
+def test_tentacle_enforce_registration_order():
     """TentacleEnforceRule must appear between EnforceLearnRule and SubagentGitGuardRule.
 
     The Python dispatch order requires TentacleEnforceRule to fire after the
@@ -1941,13 +1941,13 @@ def test_wave12_tentacle_enforce_registration_order():
     )
 
 
-def test_wave12_pretooluse_not_in_native_events():
+def test_pretooluse_not_in_native_events_before_full_native_flip():
     """preToolUse historical note: was NOT in NATIVE_EVENTS after wave12.
 
     Wave12 added TentacleEnforceRule native availability but did NOT flip
     managed preToolUse routing.  Wave13 subsequently added preToolUse to
     NATIVE_EVENTS after SyntaxGateRule was ported natively.
-    This check is superseded by test_wave13_pretooluse_in_native_events().
+    This check is superseded by test_pretooluse_in_native_events().
     """
     hooks_rs = SK_RUST_HOOKS.parent / "commands" / "hooks.rs"
     if not hooks_rs.exists():
@@ -1976,7 +1976,7 @@ def test_wave12_pretooluse_not_in_native_events():
     )
 
 
-def test_wave12_rules_rs_documents_wave12():
+def test_rules_rs_documents_tentacle_enforce_rule():
     """rules.rs module doc must reference wave12 with TentacleEnforceRule.
 
     After wave12 the top-level rules.rs doc must acknowledge the new native rule.
@@ -2004,18 +2004,18 @@ def test_wave12_rules_rs_documents_wave12():
     )
 
 
-test_wave12_tentacle_enforce_rule_native()
-test_wave12_tentacle_enforce_registration_order()
-test_wave12_pretooluse_not_in_native_events()
-test_wave12_rules_rs_documents_wave12()
+test_tentacle_enforce_rule_native()
+test_tentacle_enforce_registration_order()
+test_pretooluse_not_in_native_events_before_full_native_flip()
+test_rules_rs_documents_tentacle_enforce_rule()
 
 
 # ── Wave13: SyntaxGateRule native port + preToolUse routing flip ──────────────
 
-print("\n── Wave13 SyntaxGateRule native port + preToolUse routing flip ─────────────")
+print("\n── SyntaxGateRule native port + preToolUse routing flip ─────────────────")
 
 
-def test_wave13_syntax_gate_rule_native():
+def test_syntax_gate_rule_native():
     """SyntaxGateRule must be defined in rules.rs and registered in all_rules().
 
     Wave13 ports SyntaxGateRule to Rust using a Python subprocess boundary
@@ -2059,7 +2059,7 @@ def test_wave13_syntax_gate_rule_native():
     )
 
 
-def test_wave13_syntax_gate_registration_order():
+def test_syntax_gate_registration_order():
     """SyntaxGateRule must appear between SubagentGitGuardRule and BlockEditDistRule.
 
     The Python dispatch order requires SyntaxGateRule to fire after the
@@ -2082,7 +2082,7 @@ def test_wave13_syntax_gate_registration_order():
     )
 
 
-def test_wave13_pretooluse_in_native_events():
+def test_pretooluse_in_native_events():
     """preToolUse must NOW be in NATIVE_EVENTS after wave13 routing flip.
 
     Wave13 ports SyntaxGateRule natively (Python subprocess boundary) and
@@ -2123,7 +2123,7 @@ def test_wave13_pretooluse_in_native_events():
     )
 
 
-def test_wave13_hook_runner_still_exists():
+def test_hook_runner_still_exists_for_python_shim():
     """hooks/hook_runner.py must still exist after wave13 (required for Python shim).
 
     Even after the preToolUse native flip, hook_runner.py remains required:
@@ -2138,7 +2138,7 @@ def test_wave13_hook_runner_still_exists():
     )
 
 
-def test_wave13_rules_rs_documents_wave13():
+def test_rules_rs_documents_syntax_gate_and_native_flip():
     """rules.rs module doc must reference wave13 with SyntaxGateRule.
 
     After wave13 the top-level rules.rs doc must acknowledge the new native
@@ -2166,11 +2166,11 @@ def test_wave13_rules_rs_documents_wave13():
     )
 
 
-test_wave13_syntax_gate_rule_native()
-test_wave13_syntax_gate_registration_order()
-test_wave13_pretooluse_in_native_events()
-test_wave13_hook_runner_still_exists()
-test_wave13_rules_rs_documents_wave13()
+test_syntax_gate_rule_native()
+test_syntax_gate_registration_order()
+test_pretooluse_in_native_events()
+test_hook_runner_still_exists_for_python_shim()
+test_rules_rs_documents_syntax_gate_and_native_flip()
 
 
 # ── Summary ──────────────────────────────────────────────────────────────────

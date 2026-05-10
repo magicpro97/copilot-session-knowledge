@@ -6127,7 +6127,7 @@ class TestSubagentStopRuleNoneGuard(unittest.TestCase):
 
 
 class TestCmdCompleteVerification(unittest.TestCase):
-    """Tests for verify-before-complete ergonomics added in Wave 3.
+    """Tests for verify-before-complete ergonomics.
 
     Covers:
     - Warning emitted when completing without any verification evidence

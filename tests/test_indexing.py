@@ -625,7 +625,7 @@ test("I8: Copilot two-phase backfills metadata", _test_copilot_two_phase_backfil
 
 
 # ──────────────────────────────────────────────
-# Signal-correction regression tests (wave3-knowledge-signal)
+# Signal-correction regression tests
 # I9. occurrence_count: re-extraction must NOT inflate the count
 # I10. occurrence_count: cross-session topic match DOES increment count
 # I11. _backfill_affected_files: empty entries get session's important_files
@@ -1178,7 +1178,7 @@ def _test_stable_id_topic_key_drift():
         payload = "\0".join("" if p is None else str(p) for p in parts)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
-    session_id = "sess-test-wave14"
+    session_id = "sess-test-native-extract"
     category = "mistake"
     title = "Auth JWT missing check"
     topic_key = f"{category}/{_ek._slugify(title)}"
@@ -1491,7 +1491,7 @@ test(
 
 
 def _test_watch_routing_boundary():
-    """Proves the wave16 routing boundary: extract_from_sections + extract_relations
+    """Proves the routing boundary: extract_from_sections + extract_relations
     together produce the same deterministic types as the full Python hot path.
 
     This is the Python-side proof of the routing change: when the native Rust
@@ -1551,7 +1551,7 @@ test(
 )
 
 
-# ── Wave 17: --semantic-only and --residual-only backward compat ──────────────
+# ── Semantic-only and residual-only backward compatibility ───────────────────
 
 
 def _test_semantic_only_flag() -> None:
@@ -1638,7 +1638,7 @@ def _test_semantic_proximity_function_exists() -> None:
 
 
 test(
-    "I25: --semantic-only wave17 — _run_semantic_proximity returns 0 on empty DB",
+    "I25: --semantic-only — _run_semantic_proximity returns 0 on empty DB",
     _test_semantic_only_flag,
 )
 

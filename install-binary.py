@@ -119,7 +119,7 @@ def extract_archive(archive_path: Path, dest_dir: Path, os_name: str) -> None:
     import tarfile
 
     if archive_name.endswith((".tar.gz", ".tgz")) or tarfile.is_tarfile(archive_path):
-        with tarfile.open(archive_path, "r:gz") as tf:
+        with tarfile.open(archive_path, "r:*") as tf:
             tf.extractall(dest_dir)
         return
 

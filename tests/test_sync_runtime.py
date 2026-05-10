@@ -1277,13 +1277,13 @@ test("sync-knowledge runtime pending count is zero after push", status["pending_
 db.close()
 
 # ---------------------------------------------------------------------------
-# Wave 3 — knowledge_entries confidence MAX merge semantics
+# knowledge_entries confidence MAX merge semantics
 # ---------------------------------------------------------------------------
-print("\nwave3 — knowledge_entries confidence MAX merge semantics")
+print("\nknowledge_entries confidence MAX merge semantics")
 print("-" * 53)
 
 
-def _wave3_make_db(path: Path) -> sqlite3.Connection:
+def _make_confidence_merge_db(path: Path) -> sqlite3.Connection:
     """Create a minimal knowledge DB at path with sessions + knowledge_entries."""
     conn = sqlite3.connect(str(path))
     conn.execute("""
@@ -1316,13 +1316,13 @@ def _wave3_make_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
-_w3_dir = ARTIFACT_DIR / "wave3_merge"
-_w3_dir.mkdir(parents=True, exist_ok=True)
-_target_path = _w3_dir / "target.db"
-_source_path = _w3_dir / "source.db"
+_merge_dir = ARTIFACT_DIR / "confidence_merge"
+_merge_dir.mkdir(parents=True, exist_ok=True)
+_target_path = _merge_dir / "target.db"
+_source_path = _merge_dir / "source.db"
 
-_target_db = _wave3_make_db(_target_path)
-_source_db = _wave3_make_db(_source_path)
+_target_db = _make_confidence_merge_db(_target_path)
+_source_db = _make_confidence_merge_db(_source_path)
 
 # Seed target with a low-confidence pattern entry
 _target_db.execute("INSERT INTO sessions (id) VALUES ('s1')")
@@ -1361,10 +1361,10 @@ test(
 )
 
 # Also verify that sync does NOT downgrade if source has lower confidence
-_target2_path = _w3_dir / "target2.db"
-_source2_path = _w3_dir / "source2.db"
-_target2_db = _wave3_make_db(_target2_path)
-_source2_db = _wave3_make_db(_source2_path)
+_target2_path = _merge_dir / "target2.db"
+_source2_path = _merge_dir / "source2.db"
+_target2_db = _make_confidence_merge_db(_target2_path)
+_source2_db = _make_confidence_merge_db(_source2_path)
 _target2_db.execute("INSERT INTO sessions (id) VALUES ('s1')")
 _target2_db.execute(
     "INSERT INTO knowledge_entries (session_id, category, title, confidence) VALUES ('s1', 'pattern', 'validate early', 0.85)"
@@ -1544,9 +1544,9 @@ test_sk_binary_path_prefers_native_over_shim()
 test_restart_manual_source_references_sk_binary_path()
 
 # ---------------------------------------------------------------------------
-# Sync FTS refresh regression: Python fallback path + wave4 native-sync state
+# Sync FTS refresh regression: Python fallback path + current native-sync state
 # ---------------------------------------------------------------------------
-# Facts from wave2 handoff (rust-sync-engine-wave2):
+# Current sync runtime facts:
 #   - Native sync engine landed under 'native-sync' Cargo feature.
 #   - DB layer (schema, replica ID, collect txns, apply ops, mark committed,
 #     repair, failures) is ALWAYS compiled.
@@ -1554,13 +1554,13 @@ test_restart_manual_source_references_sk_binary_path()
 #   - Replica ID seed omits MAC address in Rust; existing Python-generated IDs
 #     are reused from the DB, so hybrid installs stay consistent.
 #
-# Wave3 update (rust-sync-fts-refresh-wave3):
+# Current FTS refresh state:
 #   - FTS blocker CLOSED: 'native-sync' feature now refreshes knowledge_fts
 #     and ke_fts after pull natively in Rust.
 #   - Python sync-daemon.py STILL defines the FTS refresh helpers; they remain
 #     as the authoritative fallback for the Python sk.py shim / no-binary path.
 #
-# Wave4 update:
+# Current feature-default state:
 #   - 'native-sync' is now in the DEFAULT Cargo feature set:
 #     default = ["native-embed", "native-sync"]
 #   - The standard compiled 'sk' binary routes 'sk sync run' natively (including
@@ -1568,23 +1568,23 @@ test_restart_manual_source_references_sk_binary_path()
 #   - The Python sk.py shim and installs without a compiled binary STILL delegate
 #     to sync-daemon.py --once; sync-daemon.py must NOT be removed.
 #
-# Wave6 update (rust-watch-sync-enqueue-wave5 + rust-sessions-fts-writer-wave6):
+# Current update:
 #   - Native Copilot watch indexer (sk-rust/src/index/session.rs) now enqueues
 #     sync_txns/sync_ops rows via enqueue_doc_sync_op_fail_open() after each
 #     indexed document. This is state 1 (native implementation), fail-open.
-#   - Wave6 adds a native local-only sessions_fts writer for the non-JSONL
+#   - A native local-only sessions_fts writer exists for the non-JSONL
 #     Copilot watch path, closing the prior confirmed gap.
 #
 # These tests guard that the Python fallback path remains intact and that
-# USAGE.md accurately reflects the wave6 hybrid state.
+# USAGE.md accurately reflects the current hybrid state.
 # ---------------------------------------------------------------------------
-print("\n── Sync FTS refresh regression (Python fallback + wave6 native watch parity) ───")
+print("\n── Sync FTS refresh regression (Python fallback + native watch parity) ───")
 
 
-def test_wave2_sync_fts_refresh_functions_exist():
+def test_sync_fts_refresh_functions_exist():
     """Python sync-daemon.py must still define FTS refresh helpers as the Python shim / no-binary fallback.
 
-    Wave4 note: native-sync is now in the default Cargo feature set, so the compiled sk binary
+    Note: native-sync is now in the default Cargo feature set, so the compiled sk binary
     routes sync natively. Python sync-daemon.py remains the authoritative fallback for:
     - The Python sk.py shim (always routes to sync-daemon.py)
     - Installs without a compiled binary
@@ -1601,14 +1601,14 @@ def test_wave2_sync_fts_refresh_functions_exist():
     )
 
 
-def test_wave2_fts_refresh_works_for_documents():
+def test_fts_refresh_works_for_documents():
     """Python _refresh_knowledge_fts_for_documents must update knowledge_fts rows after pull.
 
-    Wave4 note: native-sync is now in default Cargo features, so the compiled sk binary handles
+    Note: native-sync is now in default Cargo features, so the compiled sk binary handles
     FTS refresh natively. This test guards the Python fallback path used by the Python sk.py shim
     and installs without a compiled binary.
     """
-    fts_path = ARTIFACT_DIR / "wave2-fts-refresh.db"
+    fts_path = ARTIFACT_DIR / "fts-refresh.db"
     make_real_schema_db(fts_path)
     db = sync_daemon.get_db(fts_path)
     sync_daemon.ensure_sync_foundation(db)
@@ -1617,24 +1617,24 @@ def test_wave2_fts_refresh_works_for_documents():
     db.execute(
         """
         INSERT INTO sessions (id, path, summary, source, indexed_at)
-        VALUES ('s-fts-wave2', '/repo/fts-wave2', 'wave2 fts test', 'sync', '2026-05-09T00:00:00Z')
+        VALUES ('s-fts-refresh', '/repo/fts-refresh', 'fts refresh test', 'sync', '2026-05-09T00:00:00Z')
         """
     )
     db.execute(
         """
         INSERT INTO documents (session_id, doc_type, seq, title, stable_id, file_path,
                                file_hash, size_bytes, content_preview, source, indexed_at)
-        VALUES ('s-fts-wave2', 'checkpoint', 0, 'Wave2 FTS Doc', 'doc-fts-wave2',
-                '/repo/wave2.md', 'abc', 42, 'preview', 'sync', '2026-05-09T00:00:00Z')
+        VALUES ('s-fts-refresh', 'checkpoint', 0, 'FTS Refresh Doc', 'doc-fts-refresh',
+                '/repo/fts-refresh.md', 'abc', 42, 'preview', 'sync', '2026-05-09T00:00:00Z')
         """
     )
-    doc_row = db.execute("SELECT id FROM documents WHERE stable_id='doc-fts-wave2'").fetchone()
+    doc_row = db.execute("SELECT id FROM documents WHERE stable_id='doc-fts-refresh'").fetchone()
     doc_id = doc_row[0] if doc_row else None
     if doc_id is not None:
         db.execute(
             """
             INSERT INTO sections (document_id, section_name, stable_id, content)
-            VALUES (?, 'full', 'sec-fts-wave2', 'wave2 native sync section content')
+            VALUES (?, 'full', 'sec-fts-refresh', 'native sync section content')
             """,
             (doc_id,),
         )
@@ -1662,14 +1662,14 @@ def test_wave2_fts_refresh_works_for_documents():
     )
 
 
-def test_wave2_fts_refresh_works_for_entries():
+def test_fts_refresh_works_for_entries():
     """Python _refresh_ke_fts_for_entries must update ke_fts rows after pull.
 
-    Wave4 note: native-sync is now in default Cargo features, so the compiled sk binary handles
+    Note: native-sync is now in default Cargo features, so the compiled sk binary handles
     ke_fts refresh natively. This test guards the Python fallback path used by the Python sk.py
     shim and installs without a compiled binary.
     """
-    fts_path = ARTIFACT_DIR / "wave2-ke-fts-refresh.db"
+    fts_path = ARTIFACT_DIR / "ke-fts-refresh.db"
     make_real_schema_db(fts_path)
     db = sync_daemon.get_db(fts_path)
     sync_daemon.ensure_sync_foundation(db)
@@ -1677,20 +1677,20 @@ def test_wave2_fts_refresh_works_for_entries():
     db.execute(
         """
         INSERT INTO sessions (id, path, summary, source, indexed_at)
-        VALUES ('s-ke-wave2', '/repo/ke-wave2', 'ke wave2 test', 'sync', '2026-05-09T00:00:00Z')
+        VALUES ('s-ke-refresh', '/repo/ke-refresh', 'ke refresh test', 'sync', '2026-05-09T00:00:00Z')
         """
     )
     db.execute(
         """
         INSERT INTO knowledge_entries
             (session_id, category, title, content, stable_id, tags, confidence, topic_key)
-        VALUES ('s-ke-wave2', 'pattern', 'wave2 ke title', 'wave2 ke content', 'ke-fts-wave2',
-                'wave2,native', 0.7, 'wave2-topic')
+        VALUES ('s-ke-refresh', 'pattern', 'ke title', 'ke content', 'ke-fts-refresh',
+                'refresh,native', 0.7, 'refresh-topic')
         """
     )
     db.commit()
     entry_row = db.execute(
-        "SELECT id FROM knowledge_entries WHERE stable_id='ke-fts-wave2'"
+        "SELECT id FROM knowledge_entries WHERE stable_id='ke-fts-refresh'"
     ).fetchone()
     entry_id = entry_row[0] if entry_row else None
 
@@ -1714,10 +1714,10 @@ def test_wave2_fts_refresh_works_for_entries():
     )
 
 
-def test_wave2_usage_md_documents_fts_blocker():
-    """docs/USAGE.md must accurately document the wave4 native-sync state.
+def test_usage_md_documents_fts_blocker():
+    """docs/USAGE.md must accurately document the current native-sync state.
 
-    Wave4: native-sync is now in the default Cargo feature set. USAGE.md should document:
+    Native-sync is now in the default Cargo feature set. USAGE.md should document:
     - native-sync is now in the default build (compiled sk binary routes natively)
     - Python sk.py shim and no-binary installs still delegate to sync-daemon.py
     - no overclaiming that the Python sk.py shim is fully native
@@ -1739,28 +1739,28 @@ def test_wave2_usage_md_documents_fts_blocker():
     )
 
 
-def test_wave5_watch_sync_enqueue_module_exists():
-    """session.rs must define native sync enqueue and sessions_fts writer after wave6.
+def test_watch_sync_enqueue_module_exists():
+    """session.rs must define native sync enqueue and a sessions_fts writer.
 
-    Wave5: native Copilot watch indexer enqueues sync_txns/sync_ops rows after indexing
+    The native Copilot watch indexer enqueues sync_txns/sync_ops rows after indexing
     each document. The function is fail-open — if the sync schema is absent it logs and
     returns without crashing. This is a state 1 (native implementation) surface.
-    Wave6 adds write_copilot_sessions_fts(), closing the prior sessions_fts gap for the
+    write_copilot_sessions_fts() closes the prior sessions_fts gap for the
     non-JSONL Copilot path.
     """
     session_rs = REPO / "sk-rust" / "src" / "index" / "session.rs"
     test(
-        "sk-rust/src/index/session.rs exists (wave5 native sync enqueue)",
+        "sk-rust/src/index/session.rs exists (native sync enqueue)",
         session_rs.exists(),
-        "sk-rust/src/index/session.rs not found — wave5 sync enqueue did not land",
+        "sk-rust/src/index/session.rs not found — native sync enqueue did not land",
     )
     if not session_rs.exists():
         return
     content = session_rs.read_text(encoding="utf-8")
     test(
-        "session.rs defines enqueue_doc_sync_op_fail_open (wave5: state 1 native)",
+        "session.rs defines enqueue_doc_sync_op_fail_open (state 1 native)",
         "enqueue_doc_sync_op_fail_open" in content,
-        "session.rs missing enqueue_doc_sync_op_fail_open — wave5 native sync enqueue not found",
+        "session.rs missing enqueue_doc_sync_op_fail_open — native sync enqueue not found",
     )
     # Confirm fail-open guard is documented
     test(
@@ -1768,41 +1768,41 @@ def test_wave5_watch_sync_enqueue_module_exists():
         "fail-open" in content.lower() or "fail_open" in content.lower(),
         "session.rs sync enqueue must be documented as fail-open",
     )
-    # Confirm wave6 sessions_fts writer exists.
+    # Confirm the sessions_fts writer exists.
     test(
-        "session.rs defines write_copilot_sessions_fts (wave6 native local-only writer)",
+        "session.rs defines write_copilot_sessions_fts (native local-only writer)",
         "write_copilot_sessions_fts" in content,
-        "session.rs should define write_copilot_sessions_fts() after wave6",
+        "session.rs should define write_copilot_sessions_fts()",
     )
 
 
-def test_wave5_usage_md_documents_watch_state():
-    """docs/USAGE.md must document the wave6 hybrid watch state accurately.
+def test_usage_md_documents_watch_state():
+    """docs/USAGE.md must document the current hybrid watch state accurately.
 
-    Wave6 closes sessions_fts natively, but sk watch still is not fully native because
+    sessions_fts is native, but sk watch still is not fully native because
     `extract-knowledge.py` classification and first-run DB creation fallback remain Python.
     """
     usage_md = REPO / "docs" / "USAGE.md"
     if not usage_md.exists():
-        test("docs/USAGE.md exists for wave5 watch state check", False, str(usage_md))
+        test("docs/USAGE.md exists for watch state check", False, str(usage_md))
         return
     content = usage_md.read_text(encoding="utf-8")
     # Must still mention sessions_fts, but now as a native/local-only surface.
     test(
-        "docs/USAGE.md documents sessions_fts after wave6 watch parity work",
-        "sessions_fts" in content and ("wave6" in content.lower() or "native" in content.lower() or "local-only" in content.lower()),
-        "docs/USAGE.md must mention sessions_fts as native/local-only after wave6",
+        "docs/USAGE.md documents sessions_fts after watch parity work",
+        "sessions_fts" in content and ("native" in content.lower() or "local-only" in content.lower()),
+        "docs/USAGE.md must mention sessions_fts as native/local-only",
     )
     # Must still acknowledge that some Python fallback remains.
     test(
         "docs/USAGE.md still documents remaining Python watch fallback (no overclaim)",
         "extract-knowledge.py" in content or "first-run db creation" in content.lower() or "first-run db" in content.lower(),
-        "docs/USAGE.md must still document the remaining Python watch fallback after wave6",
+        "docs/USAGE.md must still document the remaining Python watch fallback",
     )
 
 
-test_wave5_watch_sync_enqueue_module_exists()
-test_wave5_usage_md_documents_watch_state()
+test_watch_sync_enqueue_module_exists()
+test_usage_md_documents_watch_state()
 
 print(f"\nFinal total: {PASS} passed, {FAIL} failed")
 if FAIL:
