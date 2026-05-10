@@ -1034,6 +1034,7 @@ def run_all_tests() -> int:
             _mock_sub.TimeoutExpired = subprocess_TimeoutExpired_sentinel
             status, hdrs, data = _get(host, port, "/api/knowledge/insights")
             _mock_sub.run.assert_called_once()
+            _call_kwargs = _mock_sub.run.call_args.kwargs
         test("T23: status 200", status == 200)
         test("T23: content-type json", "application/json" in hdrs.get("content-type", ""))
         test("T23: has generated_at", isinstance(data, dict) and isinstance(data.get("generated_at"), str))
@@ -1048,6 +1049,8 @@ def run_all_tests() -> int:
         test("T23: has hot_files list", isinstance(data.get("hot_files"), list))
         test("T23: has entries object", isinstance(data.get("entries"), dict))
         test("T23: entries has mistakes", isinstance(data.get("entries", {}).get("mistakes"), list))
+        test("T23: subprocess pins utf-8 decoding", _call_kwargs.get("encoding") == "utf-8")
+        test("T23: subprocess replaces decode errors", _call_kwargs.get("errors") == "replace")
     finally:
         server.shutdown()
 
@@ -1311,9 +1314,12 @@ def run_all_tests() -> int:
     tmp_home = tempfile.mkdtemp(prefix="browse_test_home_")
     tmp_cwd = tempfile.mkdtemp(prefix="browse_test_cwd_")
     orig_home = os.environ.get("HOME", "")
+    # Windows: Path.home() reads USERPROFILE, not HOME
+    orig_userprofile = os.environ.get("USERPROFILE", "")
     orig_cwd = os.getcwd()
     try:
         os.environ["HOME"] = tmp_home
+        os.environ["USERPROFILE"] = tmp_home
         os.chdir(tmp_cwd)
         db = _make_test_db()
         server, host, port = _start_server(db)
@@ -1327,6 +1333,10 @@ def run_all_tests() -> int:
     finally:
         os.chdir(orig_cwd)
         os.environ["HOME"] = orig_home
+        if orig_userprofile:
+            os.environ["USERPROFILE"] = orig_userprofile
+        elif "USERPROFILE" in os.environ:
+            del os.environ["USERPROFILE"]
         shutil.rmtree(tmp_home, ignore_errors=True)
         shutil.rmtree(tmp_cwd, ignore_errors=True)
 

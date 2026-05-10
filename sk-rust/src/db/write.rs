@@ -1,6 +1,7 @@
 use rusqlite::{Connection, OpenFlags, Result};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::connection::knowledge_db_path;
 
@@ -30,10 +31,32 @@ pub struct NewEntry {
     pub facts_json: String,
 }
 
-/// Compute stable_id matching Python's _knowledge_stable_id():
-///   SHA256("knowledge\0{session_id}\0{category}\0{title}\0{topic_key}")
+/// Compute stable_id for the **manual learn path** (topic_key is always "").
+///
+/// Matches Python's `_knowledge_stable_id(session_id, category, title, "")`.
+/// Do NOT change this function — it guards stable IDs for all `sk learn` entries.
+///   SHA256("knowledge\0{session_id}\0{category}\0{title}\0")
 pub fn compute_stable_id(session_id: &str, category: &str, title: &str) -> String {
     let parts: &[&str] = &["knowledge", session_id, category, title, ""];
+    let payload = parts.join("\0");
+    let hash = Sha256::digest(payload.as_bytes());
+    format!("{:x}", hash)
+}
+
+/// Compute stable_id for the **extract path** where topic_key is non-empty.
+///
+/// Wave-14 fix: extract-knowledge.py passes the computed topic_key
+/// (e.g. "mistake/null-pointer-in-auth") rather than an empty string,
+/// so the stable_id differs from manual-learn entries with the same title.
+/// Splitting into a separate helper prevents accidental drift of manual IDs.
+///   SHA256("knowledge\0{session_id}\0{category}\0{title}\0{topic_key}")
+pub fn compute_stable_id_with_topic_key(
+    session_id: &str,
+    category: &str,
+    title: &str,
+    topic_key: &str,
+) -> String {
+    let parts: &[&str] = &["knowledge", session_id, category, title, topic_key];
     let payload = parts.join("\0");
     let hash = Sha256::digest(payload.as_bytes());
     format!("{:x}", hash)
@@ -142,7 +165,17 @@ pub fn rebuild_fts(conn: &Connection, entry_id: i64) -> Result<()> {
                     COALESCE(wing,''), COALESCE(room,''), COALESCE(facts,'[]') \
              FROM knowledge_entries WHERE id = ?",
             rusqlite::params![entry_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
         )
         .ok();
 
@@ -152,7 +185,10 @@ pub fn rebuild_fts(conn: &Connection, entry_id: i64) -> Result<()> {
     };
 
     // Delete old FTS entry
-    let _ = conn.execute("DELETE FROM ke_fts WHERE rowid = ?", rusqlite::params![entry_id]);
+    let _ = conn.execute(
+        "DELETE FROM ke_fts WHERE rowid = ?",
+        rusqlite::params![entry_id],
+    );
 
     // Try new schema (with error_type, root_cause), fall back to older schema
     let new_schema_result = conn.execute(
@@ -194,7 +230,10 @@ fn format_datetime(secs: u64) -> String {
 
     // Days since Unix epoch (Jan 1, 1970)
     let (year, month, day) = days_to_ymd(days);
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}", year, month, day, hour, min, sec)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+        year, month, day, hour, min, sec
+    )
 }
 
 fn days_to_ymd(days: u64) -> (u32, u32, u32) {
@@ -212,9 +251,105 @@ fn days_to_ymd(days: u64) -> (u32, u32, u32) {
     (y as u32, m as u32, d as u32)
 }
 
+// ── Sync-op enqueue (fail-open) ───────────────────────────────────────────────
+
+/// Enqueue a sync operation for a row in a canonical-scope table.
+///
+/// Mirrors Python's `_enqueue_sync_op_fail_open()`. Any DB error is silently
+/// discarded — write paths must not be disrupted by sync unavailability.
+///
+/// Fails open when:
+/// - `stable_id` is empty
+/// - `sync_table_policies` table is absent or the table's scope is not "canonical"
+/// - `sync_state` does not contain a valid `local_replica_id`
+/// - any SQLite operation fails
+pub fn enqueue_sync_op_fail_open(
+    conn: &Connection,
+    table_name: &str,
+    stable_id: &str,
+    payload_json: &str,
+) {
+    if stable_id.is_empty() {
+        return;
+    }
+    let _ = try_enqueue_sync_op(conn, table_name, stable_id, payload_json);
+}
+
+fn try_enqueue_sync_op(
+    conn: &Connection,
+    table_name: &str,
+    stable_id: &str,
+    payload_json: &str,
+) -> Result<()> {
+    // Only enqueue for tables marked as "canonical" scope.
+    let scope: Option<String> = conn
+        .query_row(
+            "SELECT sync_scope FROM sync_table_policies WHERE table_name = ?",
+            rusqlite::params![table_name],
+            |r| r.get(0),
+        )
+        .ok();
+    if scope.as_deref() != Some("canonical") {
+        return Ok(());
+    }
+
+    // Read (but do not create) the local replica ID.
+    let replica_id: Option<String> = conn
+        .query_row(
+            "SELECT value FROM sync_state WHERE key = 'local_replica_id'",
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+    let replica_id = match replica_id {
+        Some(id) if !id.is_empty() && id != "local" => id,
+        _ => return Ok(()),
+    };
+
+    let now = chrono_now();
+    let ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let raw = format!("sync-txn\0{replica_id}\0{table_name}\0{stable_id}\0{ns}");
+    let txn_id = format!("{:x}", Sha256::digest(raw.as_bytes()));
+    let savepoint = format!("sp_sync_enqueue_{}", &txn_id[..16]);
+
+    // Use a savepoint so the paired sync_txns/sync_ops writes remain atomic
+    // even though this helper only has `&Connection` and may be called from
+    // code that is already inside a larger transaction.
+    conn.execute_batch(&format!("SAVEPOINT {savepoint}"))?;
+    let result = (|| -> Result<()> {
+        conn.execute(
+            "INSERT INTO sync_txns (txn_id, replica_id, status, created_at, committed_at) \
+             VALUES (?, ?, 'pending', ?, '')",
+            rusqlite::params![txn_id, replica_id, now],
+        )?;
+        conn.execute(
+            "INSERT INTO sync_ops \
+             (txn_id, table_name, op_type, row_stable_id, row_payload, op_index, created_at) \
+             VALUES (?, ?, 'upsert', ?, ?, 0, ?)",
+            rusqlite::params![txn_id, table_name, stable_id, payload_json, now],
+        )?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => conn.execute_batch(&format!("RELEASE SAVEPOINT {savepoint}"))?,
+        Err(err) => {
+            let _ = conn.execute_batch(&format!(
+                "ROLLBACK TO SAVEPOINT {savepoint}; RELEASE SAVEPOINT {savepoint};"
+            ));
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
 
     #[test]
     fn stable_id_is_hex_sha256() {
@@ -236,10 +371,92 @@ mod tests {
     }
 
     #[test]
+    fn stable_id_with_topic_key_differs_from_empty() {
+        // Extract path uses non-empty topic_key → different stable_id than learn path.
+        let learn_id = compute_stable_id("sess-abc", "mistake", "Auth Bug");
+        let extract_id =
+            compute_stable_id_with_topic_key("sess-abc", "mistake", "Auth Bug", "mistake/auth-bug");
+        assert_ne!(
+            learn_id, extract_id,
+            "extract-path stable_id must differ from learn-path (topic_key drift fix)"
+        );
+    }
+
+    #[test]
+    fn stable_id_with_topic_key_is_deterministic() {
+        let id1 = compute_stable_id_with_topic_key("s1", "pattern", "Title", "pattern/title");
+        let id2 = compute_stable_id_with_topic_key("s1", "pattern", "Title", "pattern/title");
+        assert_eq!(
+            id1, id2,
+            "compute_stable_id_with_topic_key must be deterministic"
+        );
+        assert_eq!(id1.len(), 64, "must be 64-char hex SHA-256");
+    }
+
+    #[test]
+    fn stable_id_with_empty_topic_key_equals_learn_path() {
+        // When topic_key is empty, the two functions must agree — ensures
+        // the split does not silently diverge for any future callers passing "".
+        let learn_id = compute_stable_id("manual", "decision", "Title X");
+        let extract_id = compute_stable_id_with_topic_key("manual", "decision", "Title X", "");
+        assert_eq!(
+            learn_id, extract_id,
+            "empty topic_key must match the learn-path formula"
+        );
+    }
+
+    #[test]
     fn format_datetime_basic() {
         // Unix epoch should be 1970-01-01T00:00:00
         assert_eq!(format_datetime(0), "1970-01-01T00:00:00");
         // One day later
         assert_eq!(format_datetime(86400), "1970-01-02T00:00:00");
+    }
+
+    #[test]
+    fn enqueue_sync_op_rolls_back_txn_when_op_insert_fails() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE sync_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE sync_table_policies (
+                table_name TEXT PRIMARY KEY,
+                sync_scope TEXT NOT NULL,
+                stable_id_column TEXT DEFAULT ''
+            );
+            CREATE TABLE sync_txns (
+                txn_id TEXT PRIMARY KEY,
+                replica_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                committed_at TEXT DEFAULT ''
+            );
+            ",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sync_state (key, value) VALUES ('local_replica_id', 'replica-1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sync_table_policies (table_name, sync_scope, stable_id_column)
+             VALUES ('knowledge_entries', 'canonical', 'stable_id')",
+            [],
+        )
+        .unwrap();
+
+        enqueue_sync_op_fail_open(&conn, "knowledge_entries", "stable-1", r#"{"k":"v"}"#);
+
+        let txn_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sync_txns", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            txn_count, 0,
+            "sync_txns insert must roll back when sync_ops insert fails"
+        );
     }
 }

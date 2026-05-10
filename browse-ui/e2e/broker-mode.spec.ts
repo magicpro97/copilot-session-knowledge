@@ -39,7 +39,10 @@ async function gotoHostsSettings(page: Page) {
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible({
     timeout: 20_000,
   });
-  await expect(page.getByText("Hosts & connections")).toBeVisible();
+  // Use the card's id anchor — unique on the page, unambiguous even when
+  // diagnostics-idle <p> elements also contain "Hosts & connections" as
+  // a substring (strict-mode would resolve multiple elements with getByText).
+  await expect(page.locator("#hosts")).toBeVisible();
 }
 
 /**

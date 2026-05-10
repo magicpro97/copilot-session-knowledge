@@ -101,22 +101,23 @@ fn run_compact_briefing(args: &[String], is_auto: bool) -> ExitCode {
 
     let categories = ["mistake", "pattern", "decision", "tool"];
     for cat in categories {
-        let entries = if fts_query == "\"\"" || (wing.is_none() && room.is_none() && fts_query.is_empty()) {
-            // No FTS query — use direct wing/room filter
-            search_by_wing_room(&db.conn, wing, room, cat, limit)
-        } else if wing.is_some() || room.is_some() {
-            // FTS + wing/room: search FTS then filter in memory by wing/room
-            let fts_results = search_fts(&db.conn, &fts_query, cat, limit * 2);
-            fts_results
-                .into_iter()
-                .filter(|e| {
-                    wing.map_or(true, |w| e.wing == w) && room.map_or(true, |r| e.room == r)
-                })
-                .take(limit)
-                .collect()
-        } else {
-            search_fts(&db.conn, &fts_query, cat, limit)
-        };
+        let entries =
+            if fts_query == "\"\"" || (wing.is_none() && room.is_none() && fts_query.is_empty()) {
+                // No FTS query — use direct wing/room filter
+                search_by_wing_room(&db.conn, wing, room, cat, limit)
+            } else if wing.is_some() || room.is_some() {
+                // FTS + wing/room: search FTS then filter in memory by wing/room
+                let fts_results = search_fts(&db.conn, &fts_query, cat, limit * 2);
+                fts_results
+                    .into_iter()
+                    .filter(|e| {
+                        wing.map_or(true, |w| e.wing == w) && room.map_or(true, |r| e.room == r)
+                    })
+                    .take(limit)
+                    .collect()
+            } else {
+                search_fts(&db.conn, &fts_query, cat, limit)
+            };
 
         if entries.is_empty() {
             continue;
@@ -210,9 +211,7 @@ fn auto_detect_query() -> String {
     if let Some(branch) = detect_git_branch() {
         let branch_owned = branch.replace(['/', '_'], "-");
         for part in branch_owned.split('-') {
-            if part.len() > 2
-                && !["feature", "fix", "chore", "update", "and"].contains(&part)
-            {
+            if part.len() > 2 && !["feature", "fix", "chore", "update", "and"].contains(&part) {
                 keywords.insert(part.to_lowercase());
             }
         }
@@ -247,7 +246,12 @@ fn auto_detect_query() -> String {
     if keywords.is_empty() {
         "general development".to_string()
     } else {
-        keywords.iter().take(15).cloned().collect::<Vec<_>>().join(" ")
+        keywords
+            .iter()
+            .take(15)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -306,7 +310,7 @@ fn xml_escape(s: &str) -> String {
 
 /// Try to read LAST-TASK and NEXT lines from the most recent plan.md.
 fn read_last_session_summary() -> Option<String> {
-    let session_state = dirs::home_dir()?
+    let session_state = crate::config::resolve_home_dir()?
         .join(".copilot")
         .join("session-state");
 
@@ -343,10 +347,7 @@ fn read_last_session_summary() -> Option<String> {
                 .trim()
                 .to_string();
             if first_para.len() > 10 {
-                parts.push(format!(
-                    "LAST-TASK: {}",
-                    truncate(&first_para, 120)
-                ));
+                parts.push(format!("LAST-TASK: {}", truncate(&first_para, 120)));
                 break;
             }
         }
@@ -364,7 +365,10 @@ fn read_last_session_summary() -> Option<String> {
         }
     }
     if !pending.is_empty() {
-        parts.push(format!("NEXT: {}", pending[..pending.len().min(3)].join(" | ")));
+        parts.push(format!(
+            "NEXT: {}",
+            pending[..pending.len().min(3)].join(" | ")
+        ));
     }
 
     if parts.is_empty() {

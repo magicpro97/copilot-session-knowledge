@@ -51,6 +51,29 @@ def _names_from_entries(entries):
 SCRATCH_DIR = TOOLS_DIR / "_test_tentacle_runtime_scratch"
 
 
+def _rmtree(path: Path) -> None:
+    """Remove a directory tree, handling read-only files on Windows.
+
+    Git creates read-only object files in .git/objects/ which cause
+    shutil.rmtree to fail with PermissionError on Windows.  This helper
+    uses an onerror callback to chmod those files before retrying deletion.
+    """
+    import shutil
+    import stat
+
+    if not path.exists():
+        return
+
+    def _handle_readonly(func, fpath, exc):
+        try:
+            os.chmod(fpath, stat.S_IWRITE)
+            func(fpath)
+        except Exception:
+            pass
+
+    shutil.rmtree(path, onerror=_handle_readonly)
+
+
 def make_tentacle(name: str, base: Path, desc: str = "Test tentacle") -> Path:
     """Create a minimal tentacle directory for testing."""
     d = base / name
@@ -259,7 +282,7 @@ class TestCmdResume(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def _args(self, name="test-resume", no_briefing=True):
         return fake_args(name=name, no_briefing=no_briefing)
@@ -430,7 +453,7 @@ class TestSwarmBriefingFlag(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def _swarm_args(self, briefing=False, output="prompt"):
         return fake_args(
@@ -562,7 +585,7 @@ class TestExistingBehaviorUnchanged(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def test_swarm_json_output_still_works(self):
         make_tentacle("smoke-test", self.base)
@@ -915,7 +938,7 @@ class TestCmdResumeWithCheckpoint(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def test_resume_appends_checkpoint_block_when_available(self):
         checkpoint_ctx = "### Latest Checkpoint (#3: Starting batch two)\n\n**Overview:** Some overview"
@@ -973,7 +996,7 @@ class TestCmdNextStep(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def _args(self, name="test-next", briefing=False, no_checkpoint=True, show_all=False, fmt="text"):
         a = fake_args(name=name, briefing=briefing, no_checkpoint=no_checkpoint, format=fmt)
@@ -1178,7 +1201,7 @@ class TestFileLocked(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def test_creates_lock_file(self):
         """file_locked must create the .lock file on disk while held."""
@@ -1855,7 +1878,7 @@ class TestSwarmGuardrails(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def _swarm_args(self, output="prompt"):
         return fake_args(
@@ -2077,7 +2100,7 @@ class TestDispatchPromptHandoffRecipe(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def _swarm_args(self, output="prompt"):
         return fake_args(
@@ -2173,7 +2196,7 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     # ── _write_dispatched_subagent_marker ─────────────────────────────────────
 
@@ -2620,7 +2643,7 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     # ── parallel dispatch merging ─────────────────────────────────────────────
 
@@ -2781,7 +2804,7 @@ class TestMarkerNewFormat(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     # ── entry shape ─────────────────────────────────────────────────────────
 
@@ -2951,7 +2974,7 @@ class TestMarkerOldFormatCompatibility(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def test_old_string_list_readable_via_get_state(self):
         """_get_marker_state must return names from an old string-list marker."""
@@ -3196,7 +3219,7 @@ class TestMarkerCrossRepoIsolation(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def test_same_name_different_repos_produce_two_entries(self):
         """Dispatching the same tentacle name from two repos creates two distinct entries."""
@@ -3337,7 +3360,7 @@ class TestMarkerLegacyUpgradePath(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def _write_legacy_entry(self, name):
         """Write an old-format dict entry with git_root=None directly to the marker."""
@@ -3502,7 +3525,7 @@ class TestSameRepoMultiSession(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     # ── core coexistence behaviour ────────────────────────────────────────────
 
@@ -3741,7 +3764,7 @@ class TestCrossReviewFixes(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     # ── Finding #1 write path ─────────────────────────────────────────────────
 
@@ -3914,7 +3937,7 @@ class TestMigrationCleanupGap(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def _write_phase4_entry(self, name, git_root, tentacle_id_sentinel=...):
         """Inject a phase-4 style dict entry into the marker.
@@ -4090,7 +4113,7 @@ class TestCanonicalRootComparison(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     # ── _same_canonical_root unit tests ──────────────────────────────────────
 
@@ -4273,7 +4296,7 @@ class TestCollisionLifecycleAndBundleMetadata(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def _make_collision_tentacle(self, logical_name: str, slug: str) -> Path:
         """Create a collision-renamed tentacle directory with proper meta.json."""
@@ -4557,7 +4580,7 @@ class TestDeclaredSkills(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def test_no_skills_creates_empty_list(self):
         args = fake_args(name="no-skills", scope=None, desc="test", briefing=False, skill=None)
@@ -4622,7 +4645,7 @@ class TestWorktreePrimitives(unittest.TestCase):
             )
             shutil.rmtree(wt_path, ignore_errors=True)
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def test_worktree_prepare_creates_real_worktree(self):
         state = T._worktree_prepare(self.tentacle_dir, "wt-test", self.repo_dir)
@@ -4756,7 +4779,7 @@ class TestWorktreeInBundleSwarmDispatch(unittest.TestCase):
             )
             shutil.rmtree(wt_path, ignore_errors=True)
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def test_swarm_worktree_flag_surfaces_path_in_prompt(self):
         args = fake_args(
@@ -4851,7 +4874,7 @@ class TestVerifyCommand(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def _args(self, cmd, label=None, timeout=30):
         return fake_args(name="vtest", command=cmd, label=label, timeout=timeout)
@@ -4975,17 +4998,26 @@ class TestCompleteOutcomePersistence(unittest.TestCase):
     """cmd_complete writes durable outcome rows to skill-metrics.db."""
 
     def setUp(self):
-        self.base = SCRATCH_DIR / "metrics"
+        # Use a per-test DB name to avoid cross-test contamination
+        # (tearDown may fail to delete the DB on Windows if handles linger)
+        self.metrics_db = SCRATCH_DIR / f"test-skill-metrics-{self._testMethodName}.db"
+        if self.metrics_db.exists():
+            try:
+                self.metrics_db.unlink()
+            except OSError:
+                pass
+        self.base = SCRATCH_DIR / f"metrics-{self._testMethodName}"
+        _rmtree(self.base)
         self.base.mkdir(parents=True, exist_ok=True)
         self.tentacle_dir = make_tentacle("metrics-test", self.base)
-        # Use a temp metrics db scoped to this test
-        self.metrics_db = SCRATCH_DIR / "test-skill-metrics.db"
 
     def tearDown(self):
-        import shutil
-
-        if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+        _rmtree(self.base)
+        if self.metrics_db.exists():
+            try:
+                self.metrics_db.unlink()
+            except OSError:
+                pass
 
     def test_complete_writes_outcome_row(self):
         args = fake_args(name="metrics-test", no_learn=True)
@@ -5184,7 +5216,7 @@ class TestNoProductionMarkerPollution(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def _real_marker_unchanged(self) -> bool:
         """True if the real production marker has not been touched since setUp."""
@@ -5277,7 +5309,7 @@ class TestHandoffContract(unittest.TestCase):
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     # -- helpers --
 
@@ -5668,7 +5700,7 @@ class TestConcurrentMarkerStress(unittest.TestCase):
         import shutil
 
         if SCRATCH_DIR.exists():
-            shutil.rmtree(SCRATCH_DIR)
+            _rmtree(SCRATCH_DIR)
 
     def test_concurrent_writes_all_entries_survive(self):
         """5 threads each write 3 distinct tentacle_ids concurrently.

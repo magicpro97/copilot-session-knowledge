@@ -48,8 +48,13 @@ fn parse_learn_args(args: &[String]) -> Result<LearnParams, String> {
     let mut facts: Vec<String> = Vec::new();
 
     let category_flags = [
-        "--mistake", "--pattern", "--decision", "--discovery",
-        "--feature", "--refactor", "--tool",
+        "--mistake",
+        "--pattern",
+        "--decision",
+        "--discovery",
+        "--feature",
+        "--refactor",
+        "--tool",
     ];
 
     let mut i = 0;
@@ -198,32 +203,80 @@ fn execute_learn(params: LearnParams) -> ExitCode {
 
 /// Simplified wing auto-detection (mirrors Python _WING_RULES).
 fn auto_detect_wing(tags: &str, title: &str, content: &str) -> String {
-    let text = format!("{} {} {}", tags.to_lowercase(), title.to_lowercase(), &content[..content.len().min(200)].to_lowercase());
+    let text = format!(
+        "{} {} {}",
+        tags.to_lowercase(),
+        title.to_lowercase(),
+        &content[..content.len().min(200)].to_lowercase()
+    );
     let tag_set: std::collections::HashSet<&str> = tags.split(',').map(|t| t.trim()).collect();
 
-    let backend_kws = ["lambda", "dynamodb", "sqs", "cdk", "api", "cognito", "s3", "eventbridge", "sns", "websocket"];
-    let frontend_kws = ["expo", "react", "react-native", "screen", "component", "css", "ui", "navigation", "hook"];
-    let devops_kws = ["git", "ci", "cd", "docker", "devops", "proxy", "tls", "npm", "yarn"];
-    let shared_kws = ["typescript", "javascript", "eslint", "prettier", "i18n", "openapi"];
+    let backend_kws = [
+        "lambda",
+        "dynamodb",
+        "sqs",
+        "cdk",
+        "api",
+        "cognito",
+        "s3",
+        "eventbridge",
+        "sns",
+        "websocket",
+    ];
+    let frontend_kws = [
+        "expo",
+        "react",
+        "react-native",
+        "screen",
+        "component",
+        "css",
+        "ui",
+        "navigation",
+        "hook",
+    ];
+    let devops_kws = [
+        "git", "ci", "cd", "docker", "devops", "proxy", "tls", "npm", "yarn",
+    ];
+    let shared_kws = [
+        "typescript",
+        "javascript",
+        "eslint",
+        "prettier",
+        "i18n",
+        "openapi",
+    ];
 
     for kw in &backend_kws {
-        if tag_set.contains(kw) || text.contains(kw) { return "backend".to_string(); }
+        if tag_set.contains(kw) || text.contains(kw) {
+            return "backend".to_string();
+        }
     }
     for kw in &frontend_kws {
-        if tag_set.contains(kw) || text.contains(kw) { return "frontend".to_string(); }
+        if tag_set.contains(kw) || text.contains(kw) {
+            return "frontend".to_string();
+        }
     }
     for kw in &devops_kws {
-        if tag_set.contains(kw) || text.contains(kw) { return "devops".to_string(); }
+        if tag_set.contains(kw) || text.contains(kw) {
+            return "devops".to_string();
+        }
     }
     for kw in &shared_kws {
-        if tag_set.contains(kw) || text.contains(kw) { return "shared".to_string(); }
+        if tag_set.contains(kw) || text.contains(kw) {
+            return "shared".to_string();
+        }
     }
     String::new()
 }
 
 /// Simplified room auto-detection (mirrors Python _ROOM_RULES).
 fn auto_detect_room(tags: &str, title: &str, content: &str) -> String {
-    let text = format!("{} {} {}", tags.to_lowercase(), title.to_lowercase(), &content[..content.len().min(300)].to_lowercase());
+    let text = format!(
+        "{} {} {}",
+        tags.to_lowercase(),
+        title.to_lowercase(),
+        &content[..content.len().min(300)].to_lowercase()
+    );
     let tag_set: std::collections::HashSet<&str> = tags.split(',').map(|t| t.trim()).collect();
 
     let rules: &[(&[&str], &str)] = &[

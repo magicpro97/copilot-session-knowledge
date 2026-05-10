@@ -498,7 +498,7 @@ def install_sk_launcher(quiet: bool = False) -> bool:
     changed = False
 
     for script in _sk_launcher_script_paths():
-        existing = script.read_text(encoding="utf-8") if script.is_file() else None
+        existing = script.read_bytes().decode("utf-8") if script.is_file() else None
         if existing == content:
             if not quiet:
                 print(f"  {INFO} sk launcher — already up to date ({_tilde(script)})")
@@ -820,6 +820,18 @@ def deploy_hooks():
     else:
         _atomic_write_text(hooks_dst, new)  # P1-5: atomic write
         print(f"  {OK} hooks.json — created")
+
+    # Inform about native sk preference
+    sk_bin_dir = HOME / ".copilot" / "bin"
+    sk_native = sk_bin_dir / ("sk.exe" if __import__("platform").system() == "Windows" else "sk-native")
+    sk_shim = sk_bin_dir / ("sk.cmd" if __import__("platform").system() == "Windows" else "sk")
+    if sk_native.exists():
+        print(f"  {INFO} Native sk binary detected ({sk_native.name}) — hooks will prefer 'sk hooks run <event>'")
+    elif sk_shim.exists():
+        print(f"  {INFO} sk shim detected ({sk_shim.name}) — hooks will prefer 'sk hooks run <event>'")
+    else:
+        print(f"  {INFO} sk binary not found in {_tilde(sk_bin_dir)} — hooks fall back to python3 hook_runner.py")
+        print(f"  {INFO} Run 'python {_tilde(_SCRIPT_DIR / 'install.py')} --install-sk' to install the sk launcher")
 
     # Ensure markers directory exists
     markers_dir = COPILOT_DIR / "markers"

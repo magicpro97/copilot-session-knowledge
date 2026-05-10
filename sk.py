@@ -17,6 +17,8 @@ Usage:
     sk benchmark [<args>...]      Run benchmark.py
     sk retro    [<args>...]       Run retro.py
     sk heal     [<args>...]       Run copilot-cli-healer.py
+    sk watch    [<args>...]       Run watch-sessions.py
+    sk hooks    run|list|<event>  Run hooks/hook_runner.py
 
     sk index  build|extract|migrate|status|health|embed [<args>...]
     sk sync   run|config|status|gateway|merge [<args>...]
@@ -61,6 +63,7 @@ _DIRECT: dict[str, str] = {
     "benchmark": "benchmark.py",
     "retro": "retro.py",
     "heal": "copilot-cli-healer.py",
+    "watch": "watch-sessions.py",
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}
@@ -160,6 +163,34 @@ def _help_groups() -> str:
     return "\n".join(lines)
 
 
+def _run_hooks(extra_args: list[str]) -> int:
+    """Dispatch `sk hooks ...` compatibly for both shim and Rust binary flows."""
+    if not extra_args:
+        print("Usage: sk hooks run <event> | sk hooks <event> | sk hooks list")
+        return 2
+
+    if extra_args[0] == "list":
+        for event in (
+            "sessionStart",
+            "sessionEnd",
+            "preToolUse",
+            "postToolUse",
+            "agentStop",
+            "subagentStop",
+            "errorOccurred",
+        ):
+            print(event)
+        return 0
+
+    if extra_args[0] == "run":
+        if len(extra_args) < 2:
+            print("sk hooks run: missing event name", file=sys.stderr)
+            return 2
+        return _run(str(Path("hooks") / "hook_runner.py"), [extra_args[1]])
+
+    return _run(str(Path("hooks") / "hook_runner.py"), extra_args)
+
+
 def _print_help() -> None:
     direct_list = "  " + "\n  ".join(
         f"sk {cmd:<12} → {script}" for cmd, script in _DIRECT.items()
@@ -190,6 +221,8 @@ def main(argv: list[str] | None = None) -> int:
     rest = args[1:]
 
     # Direct command?
+    if cmd == "hooks":
+        return _run_hooks(rest)
     if cmd in _DIRECT:
         return _run(_DIRECT[cmd], rest)
 

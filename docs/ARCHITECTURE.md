@@ -19,8 +19,8 @@ extract-knowledge.py  ──→  7 knowledge categories
         │                   (mistake, pattern, decision,
         │                    tool, feature, refactor, discovery)
         │                   + knowledge_relations
-        │                     (SAME_SESSION, SAME_TOPIC, TAG_OVERLAP,
-        │                      RESOLVED_BY, SEMANTIC_PROXIMITY*)
+        │                     (SAME_SESSION†, SAME_TOPIC†, TAG_OVERLAP†,
+        │                      RESOLVED_BY†, SEMANTIC_PROXIMITY*)
         ▼
 query-session.py / briefing.py / mcp-server.py  ──→  Search, recall, MCP tools
         │
@@ -31,12 +31,77 @@ watch-sessions.py  ──→  Incremental re-indexing (adaptive polling)
 *`SEMANTIC_PROXIMITY` is populated when local TF-IDF / scikit-learn support is available; missing
 dependencies remain a silent no-op.*
 
+*†Wave16: `SAME_SESSION`, `SAME_TOPIC`, `TAG_OVERLAP`, `RESOLVED_BY` are now extracted natively
+by the Rust binary (`sk-rust/src/index/extract.rs`). After a successful native extract pass,
+`sk watch` invoked `extract-knowledge.py --residual-only`, narrowing Python to: `SEMANTIC_PROXIMITY`,
+backfill helpers, confidence decay, and non-hot-path NLP. `extract-knowledge.py` is NOT removed.*
+
+*‡Wave17: Native residual helpers (`backfill_affected_files`, `infer_task_ids`, confidence decay)
+now run in Rust after a successful native extract pass. Python is invoked only when scikit-learn
+is available, and only for `SEMANTIC_PROXIMITY` (`--semantic-only`). When sklearn is absent, no
+Python subprocess is launched on the successful native watch path. First-run DB bootstrap
+(`spawn_indexer()`) and the Python `sk.py` shim / no-binary install paths remain Python-backed.
+`extract-knowledge.py` is NOT removed. Proof (Windows-local): `cargo test --quiet`
+(531 unit + 72 integration), `python tests\test_indexing.py` (28/28). WSL/Linux/macOS not
+separately re-proved.*
+
+*§Wave18: Native first-run DB bootstrap: `open_or_create_index_db` / `ensure_extract_tables` in
+`session.rs`/`claude.rs`/`extract.rs` create `knowledge.db` and extract-owned tables natively when
+absent. `spawn_indexer()` (Python bootstrap) is now only a last-resort fallback on genuine DB
+creation failures — not for a missing DB. `migrate.py` remains canonical for versioned schema
+upgrades. Python still invoked for `SEMANTIC_PROXIMITY` when sklearn is available. Python `sk.py`
+shim/no-binary paths remain fully Python-backed. `extract-knowledge.py` is NOT removed.*
+
+*¶Wave19: `SEMANTIC_PROXIMITY` is now computed natively in Rust (`watch.rs` via
+`sk-rust/src/embeddings/tfidf.rs` TF-IDF cosine). The successful native watch path **no longer
+auto-spawns Python at all**. `extract-knowledge.py --semantic-only` remains available for
+manual/fallback use but is NOT auto-called on the successful native watch path. Python is still
+triggered as a last-resort fallback on genuine DB creation failures. Python `sk.py` shim /
+no-binary install paths remain fully Python-backed. Three post-landing fixes: no-spawn tests now
+use side-channel flag files (not stdout sentinels); native bootstrap schema includes
+`error_type`/`root_cause`/`severity` for fresh DBs; backfill updated-count now tracks actual
+affected rows. `extract-knowledge.py` is NOT removed. Proof (Windows-local):
+`cargo test --quiet` (536 unit + 73 integration), `python tests\test_indexing.py` (28/28).
+WSL/Linux/macOS not separately re-proved.*
+
+*‖Wave20: `watch.rs` **never** spawns Python — including on error paths. The last-resort
+`spawn_indexer()` Python fallback on genuine DB open/create failures (wave18/19) is removed.
+On genuine DB open/create or native-extract failure, `watch` emits a structured recovery hint
+naming the exact manual command (e.g. `python build-session-index.py --incremental` or
+`python extract-knowledge.py`). **The remaining Python surfaces are intentional and not
+scheduled for removal:** Python `sk.py` shim / no-binary install paths remain fully
+Python-backed for all commands; `hook_runner.py` is the Python hook runner for shim and
+non-binary installs; `build-session-index.py`, `extract-knowledge.py` (including
+`--semantic-only`), and `migrate.py` remain on disk as intentional manual operator tools
+named in recovery hints. Integration proof: `wave20_db_failure_emits_recovery_no_python_spawn`
+in `sk-rust/tests/integration_test.rs`. Proof (Windows-local): `cargo test --quiet`
+(536 unit + 74 integration). WSL/Linux/macOS not separately re-proved.*
+
 **Phases:**
 1. `build-session-index.py` — Phase 1 (session metadata) + Phase 2 (event content) via `providers/` → SQLite FTS5 (schema v8; current migration level v15)
-2. `extract-knowledge.py` — classifies into 7 types, deduplicates by content hash, auto-detects relations (`SAME_SESSION`, `SAME_TOPIC`, `TAG_OVERLAP`, `RESOLVED_BY`, `SEMANTIC_PROXIMITY`); category-aware confidence floors (pattern=0.5, others=0.4) and recurrence reward (+0.03 per upsert, capped)
+2. `extract-knowledge.py` — classifies into 7 types, deduplicates by content hash, auto-detects relations; category-aware confidence floors (pattern=0.5, others=0.4) and recurrence reward (+0.03 per upsert, capped). **Wave16:** deterministic relations (`SAME_SESSION`, `SAME_TOPIC`, `TAG_OVERLAP`, `RESOLVED_BY`) are now extracted natively by Rust; `sk watch` invoked `extract-knowledge.py --residual-only` after a successful native pass, handling `SEMANTIC_PROXIMITY`, backfill, confidence decay, and remaining NLP work. **Wave17:** `backfill_affected_files`, `infer_task_ids`, and confidence decay are now Rust-native; Python is invoked only when sklearn is available and only for `SEMANTIC_PROXIMITY` (`--semantic-only`); when sklearn is absent, no Python spawn occurs on the successful native path. **Wave18:** Native first-run DB bootstrap (`open_or_create_index_db` / `ensure_extract_tables`); `spawn_indexer()` now only a last-resort fallback on real creation failures. **Wave19:** `SEMANTIC_PROXIMITY` is now Rust-native (`watch.rs`/`sk-rust/src/embeddings/tfidf.rs`); the successful native watch path no longer auto-spawns Python. `extract-knowledge.py --semantic-only` remains available for manual/fallback use only. `extract-knowledge.py` is NOT removed. **Wave20:** `watch.rs` never spawns Python on any path. On DB open/create or extract failure, a structured recovery hint names the manual command. `extract-knowledge.py` is an **intentional manual operator tool** — NOT removed.
 3. `query-session.py` / `briefing.py` / `mcp-server.py` — BM25 keyword search + optional semantic vector search (RRF blend) exposed via CLI and MCP
-4. `watch-sessions.py` — adaptive polling (5 s / 30 s / 300 s tiers), auto re-indexes on file changes
+4. `watch-sessions.py` / `sk watch` — adaptive polling (5 s / 30 s / 300 s tiers), auto re-indexes on file changes. **`sk watch` (Rust native) wave10 boundary:** no longer spawns `build-session-index.py --incremental` for existing-DB non-JSONL Copilot changes (native Rust covers those paths). **Wave15 (`native-extract` is now a default Cargo feature):** the Rust hot-path classification/write loop in `sk-rust/src/index/extract.rs` handles `knowledge_entries`/`ke_fts` writes for recurring watch events natively in the default Rust binary. Sync-op enqueue parity for native-extract writes landed in wave15. Error lifecycle metadata (`error_type`, `root_cause`, `severity`) is now filled natively for mistake entries. Integration proof: `sk-rust/tests/integration_test.rs`. Python `spawn_extractor()` still runs for `knowledge_relations`, relation budgets, semantic proximity, backfill, and confidence decay. First-run DB bootstrap (`spawn_indexer()`) remains Python-backed. `extract-knowledge.py` is NOT removed; it remains the source of truth for relation extraction and all non-hot-path NLP. Proof: Windows only (`cargo test --quiet`, `python tests\test_indexing.py`, and `python tests\test_hook_compat.py` passed after wave15 audit); WSL/Linux/macOS not separately re-proved. **Wave16 (native relation slice):** `SAME_SESSION`, `SAME_TOPIC`, `TAG_OVERLAP`, `RESOLVED_BY` are now extracted natively by Rust. After a successful native extract pass, `sk watch` invoked `extract-knowledge.py --residual-only`, narrowing Python residual ownership to: `SEMANTIC_PROXIMITY`, backfill helpers, confidence decay, and non-hot-path NLP. `extract-knowledge.py` is NOT removed. Proof (Windows-local): `cargo test --quiet` (519 unit + 71 integration), `python tests\test_indexing.py` (25/25). WSL/Linux/macOS not separately re-proved. **Wave17 (native residual helpers):** `backfill_affected_files`, `infer_task_ids`, and confidence decay now run natively in Rust after a successful native extract pass. Python is invoked only when sklearn is available, and only for `SEMANTIC_PROXIMITY` (`--semantic-only`). When sklearn is absent, no Python subprocess is launched on the successful native watch path. First-run DB bootstrap (`spawn_indexer()`) remains Python-backed. `extract-knowledge.py` is NOT removed. Proof (Windows-local): `cargo test --quiet` (531 unit + 72 integration), `python tests\test_indexing.py` (28/28). WSL/Linux/macOS not separately re-proved. **Wave18 (native first-run DB bootstrap):** `session.rs`, `claude.rs`, and `extract.rs` each call `open_or_create_index_db` / `ensure_extract_tables` when `knowledge.db` is absent, creating the DB and extract-owned tables (`knowledge_entries`, `ke_fts`, `knowledge_relations`, `embedding_meta`) natively. `None` from native indexers now means a genuine DB open/create failure (e.g. filesystem permission error), not merely "DB absent". `spawn_indexer()` (Python bootstrap via `build-session-index.py`) is now only triggered as a last-resort fallback for real creation failures — not on a missing DB. `migrate.py` remains canonical for versioned schema upgrades; wave18 only creates absent tables and does NOT replace `migrate.py`. Python is still invoked for `SEMANTIC_PROXIMITY` when sklearn is available (`--semantic-only`). Python `sk.py` shim/no-binary paths remain fully Python-backed. `extract-knowledge.py` is NOT removed. Proof (Windows-local): `cargo test --quiet` (535 unit + 73 integration), `python tests\test_indexing.py` (28/28). WSL/Linux/macOS not separately re-proved. **Wave19 (native SEMANTIC_PROXIMITY):** `SEMANTIC_PROXIMITY` is now computed natively in Rust (`watch.rs` via `sk-rust/src/embeddings/tfidf.rs` TF-IDF cosine). The successful native watch path **no longer auto-spawns Python at all**. `extract-knowledge.py --semantic-only` remains available for manual/fallback use but is **NOT** auto-called on the native path. Python is still triggered as a last-resort fallback on genuine DB creation failures. Three post-landing fixes: no-spawn tests now use side-channel flag files (not stdout sentinels); native bootstrap schema includes `error_type`/`root_cause`/`severity` for fresh DBs; backfill updated-count now tracks actual affected rows. Python `sk.py` shim/no-binary paths remain fully Python-backed. `extract-knowledge.py` is NOT removed. Proof (Windows-local): `cargo test --quiet` (536 unit + 73 integration), `python tests\test_indexing.py` (28/28). WSL/Linux/macOS not separately re-proved. **Wave20 (zero Python spawns, intentional boundaries):** `watch.rs` never spawns Python — including on error paths. The last-resort `spawn_indexer()` fallback is removed; on genuine DB open/create or native-extract failure, `watch` emits a structured recovery hint naming the exact manual command. **Intentional Python surfaces (not removed):** `sk.py` shim/no-binary installs remain fully Python-backed; `hook_runner.py` is the Python runner for shim installs; `build-session-index.py`, `extract-knowledge.py` (including `--semantic-only`), and `migrate.py` are intentional manual operator tools. Proof (Windows-local): `cargo test --quiet` (536 unit + 74 integration). WSL/Linux/macOS not separately re-proved.
 5. `learn.py` — manual knowledge entry; CLI interface for agents to record learnings during a session
+
+## Intentional Python Boundaries (post-wave20)
+
+After wave20, `watch.rs` **never** spawns Python — including error paths. The remaining Python
+surfaces are **permanent intentional architecture**, not residual code pending deletion:
+
+| Python surface | Role | Status |
+|----------------|------|--------|
+| `sk.py` shim | Thin launcher/dispatcher for non-binary installs; routes all `sk <cmd>` calls | **Intentional** — the no-binary install contract |
+| `hook_runner.py` | Python hook runner for `sk.py` shim and non-binary installs; owns all managed hook events when no Rust binary is present | **Intentional** — Python shim hook entry point |
+| `build-session-index.py` | Indexes session files → FTS5 DB; named in `sk watch` DB-failure recovery hints | **Intentional** — manual operator recovery tool |
+| `extract-knowledge.py` | Knowledge classification, relation extraction, `--semantic-only` fallback; named in `sk watch` extract-failure recovery hints | **Intentional** — manual/fallback operator tool |
+| `migrate.py` | Versioned schema migrations via `schema_version` table | **Intentional** — canonical schema upgrade owner; Rust native bootstrap does NOT replace this |
+| `sync-daemon.py` | Push/pull sync runtime for Python `sk.py` shim and non-binary installs | **Intentional** — shim sync path |
+| `briefing.py`, `learn.py`, `query-session.py`, etc. | Admin/operator CLI scripts | **Intentional** — these are the primary Python CLI surface |
+
+**What wave20 removed:** auto-spawning Python subprocess on `sk watch` error paths. The scripts
+above remain on disk, are invoked by operators manually, and are referenced by name in `sk watch`
+recovery hints. None of these scripts are candidates for deletion as a consequence of wave20.
 
 ## Script Inventory
 

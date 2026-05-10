@@ -1,3 +1,4 @@
+use crate::config::resolve_home_dir;
 use rusqlite::{Connection, OpenFlags, Result};
 use std::path::PathBuf;
 
@@ -27,7 +28,7 @@ pub fn knowledge_db_path() -> PathBuf {
     if let Ok(path) = std::env::var("SK_DB") {
         return PathBuf::from(path);
     }
-    dirs::home_dir()
+    resolve_home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".copilot")
         .join("session-state")

@@ -123,6 +123,31 @@ class TestSkDirectCommands(unittest.TestCase):
     def test_heal(self):
         self._assert_routes("heal", "copilot-cli-healer.py")
 
+    def test_watch(self):
+        self._assert_routes("watch", "watch-sessions.py")
+
+
+class TestSkHooksCompat(unittest.TestCase):
+    def test_hooks_run_drops_run_subcommand(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["hooks", "run", "sessionStart"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with(str(Path("hooks") / "hook_runner.py"), ["sessionStart"])
+
+    def test_hooks_direct_event_routes_to_runner(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["hooks", "preToolUse"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with(str(Path("hooks") / "hook_runner.py"), ["preToolUse"])
+
+    def test_hooks_list_prints_events(self):
+        with patch("builtins.print") as mock_print:
+            rc = sk.main(["hooks", "list"])
+        self.assertEqual(rc, 0)
+        output = " ".join(str(c) for call in mock_print.call_args_list for c in call[0])
+        self.assertIn("sessionStart", output)
+        self.assertIn("preToolUse", output)
+
 
 class TestSkGroupedCommands(unittest.TestCase):
     """Verify that grouped namespace commands route to the right script."""
@@ -257,6 +282,223 @@ class TestSkErrorCases(unittest.TestCase):
         output = " ".join(str(c) for call in mock_print.call_args_list for c in call[0])
         self.assertIn("pip install -e", output)
         self.assertIn("SK_TOOLS_DIR", output)
+
+
+class TestSkWave2Preconditions(unittest.TestCase):
+    """Regression guards for the four wave2 code tentacles.
+
+    Wave2 surface decisions (facts, not interpretation):
+    - rust-hooks-parity-wave2: managed 'sk hooks run <event>' stays Python-backed
+      (dispatches to hook_runner.py); direct 'sk hooks <event>' Rust path added for
+      incremental native rollout only.
+    - rust-watch-index-wave2: native Rust indexer added for Copilot session-state
+      before the Python subprocess runs; Claude JSONL + extract-knowledge still Python.
+    - rust-embed-build-wave2: 'sk index embed' flags --test/--setup/--status/--providers/
+      --rebuild-tfidf/--search are handled natively; --build remains Python (embed.py)
+      because it requires embedding HTTP calls + TF-IDF + scikit-learn.
+    - rust-sync-engine-wave2: native sync engine compiled under 'native-sync' feature;
+      FTS refresh (knowledge_fts/ke_fts) after pull is NOT ported to Rust (known blocker at wave2).
+
+    Wave4 update:
+    - 'native-sync' is now in the default Cargo feature set (default = ["native-embed", "native-sync"]).
+      The compiled sk binary routes 'sk sync run' natively for push/pull/FTS refresh.
+    - The Python sk.py shim STILL routes 'sk sync run' to sync-daemon.py regardless of Cargo
+      features — it has no awareness of native-sync. sync-daemon.py must remain.
+    - Wave3 FTS refresh blocker closed: native-sync feature now handles knowledge_fts/ke_fts.
+    """
+
+    def test_embed_py_exists_for_build_fallback(self):
+        """embed.py must exist — sk index embed --build Python fallback (embedding API + TF-IDF)."""
+        self.assertTrue(
+            (TOOLS_DIR / "embed.py").exists(),
+            "embed.py not found — 'sk index embed --build' would lose its Python-backed fallback",
+        )
+
+    def test_sync_daemon_py_exists_for_default_sync(self):
+        """sync-daemon.py must exist — Python sk.py shim and no-binary installs route to it.
+
+        Wave4 note: native-sync is now in the default Cargo features, so the compiled sk binary
+        routes sk sync run natively. However, sync-daemon.py MUST remain for the Python sk.py
+        shim (which always routes to sync-daemon.py) and for installs without a compiled binary.
+        """
+        self.assertTrue(
+            (TOOLS_DIR / "sync-daemon.py").exists(),
+            "sync-daemon.py not found — Python sk.py shim and no-binary sk sync run would break",
+        )
+
+    def test_extract_knowledge_py_exists_for_wave2_fallback(self):
+        """extract-knowledge.py must exist — Claude JSONL + extract-knowledge remain Python-backed."""
+        self.assertTrue(
+            (TOOLS_DIR / "extract-knowledge.py").exists(),
+            "extract-knowledge.py not found — wave2 Claude JSONL/extract fallback would break",
+        )
+
+    def test_python_sk_index_embed_routes_to_embed_py(self):
+        """Python sk shim routes 'sk index embed' to embed.py (preserving --build fallback path)."""
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["index", "embed"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("embed.py", [])
+
+    def test_python_sk_sync_run_routes_to_sync_daemon(self):
+        """Python sk.py shim routes 'sk sync run' to sync-daemon.py.
+
+        Wave4 note: this tests the Python sk.py shim routing, NOT the compiled Rust binary.
+        The shim has no awareness of Cargo features and always delegates to sync-daemon.py.
+        The compiled sk binary (with native-sync in default features) routes natively.
+        """
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["sync", "run"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("sync-daemon.py", [])
+
+    def test_python_sk_index_embed_with_build_flag_routes_to_embed_py(self):
+        """sk index embed --build must still route to embed.py (wave2 kept --build Python-backed)."""
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["index", "embed", "--build"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("embed.py", ["--build"])
+
+
+class TestSkNativeRoutingPreconditions(unittest.TestCase):
+    """Verify structural preconditions for `sk hooks` / `sk watch` compatibility.
+
+    Both the Rust binary and the Python shim must accept these command surfaces
+    so managed hooks and watcher restarts keep working while rollout is mixed.
+    """
+
+    def test_hook_runner_fallback_target_exists(self):
+        """hook_runner.py must exist at hooks/hook_runner.py for 'sk hooks' native fallback."""
+        self.assertTrue(
+            (TOOLS_DIR / "hooks" / "hook_runner.py").exists(),
+            "hooks/hook_runner.py not found — 'sk hooks run <event>' native fallback would break",
+        )
+
+    def test_watch_sessions_fallback_target_exists(self):
+        """watch-sessions.py must exist at TOOLS_DIR for 'sk watch' native fallback."""
+        self.assertTrue(
+            (TOOLS_DIR / "watch-sessions.py").exists(),
+            "watch-sessions.py not found — 'sk watch' native fallback would break",
+        )
+
+    def test_python_sk_supports_hooks_compatibly(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["hooks", "run", "sessionStart"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with(str(Path("hooks") / "hook_runner.py"), ["sessionStart"])
+
+    def test_python_sk_supports_watch_compatibly(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["watch", "--service"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("watch-sessions.py", ["--service"])
+
+    def test_hooks_json_prefers_sk_hooks_run(self):
+        """The managed hooks.json must use 'sk hooks run' as the preferred command."""
+        hooks_json = TOOLS_DIR / "hooks" / "hooks.json"
+        self.assertTrue(hooks_json.exists(), f"hooks/hooks.json not found: {hooks_json}")
+        content = hooks_json.read_text(encoding="utf-8")
+        self.assertIn("sk hooks run", content,
+                      "hooks.json bash/powershell fields should use 'sk hooks run <event>' for native routing")
+
+    def test_hooks_json_retains_python3_fallback(self):
+        """The managed hooks.json must retain python3 hook_runner.py as a fallback."""
+        hooks_json = TOOLS_DIR / "hooks" / "hooks.json"
+        self.assertTrue(hooks_json.exists(), f"hooks/hooks.json not found: {hooks_json}")
+        content = hooks_json.read_text(encoding="utf-8")
+        self.assertIn("python3", content, "hooks.json must retain python3 fallback")
+        self.assertIn("hook_runner.py", content, "hooks.json must retain hook_runner.py in fallback path")
+
+
+class TestSkWave6Preconditions(unittest.TestCase):
+    """Regression guards for wave6 rollout state.
+
+    Wave6 surface decisions (facts, not interpretation):
+    - rust-watch-schema-migrate-wave5: apply_sessions_column_migrations() native in
+      sk-rust/src/index/session.rs — adds file_mtime, indexed_at_r, fts_indexed_at,
+      event_count_estimate to the sessions table idempotently before indexing.
+    - rust-sessions-fts-writer-wave6: sessions_fts for the Copilot non-JSONL path now has
+      a native local-only writer in session.rs.
+    - rust-hooks-hmac-foundation-wave5 + wave6 follow-ups: marker_auth.rs exists and is now
+      wired into selected native rules (git guard verification, TrackEdits writes), while
+      managed sessionStart/preToolUse/postToolUse parity still remains Python-backed.
+    - rust-error-kb-native-wave5: ErrorOccurredRule now queries knowledge.db via native
+      Rust FTS5 as primary; falls back to query-session.py subprocess only when DB is
+      genuinely unavailable (first-run/migration).
+    - rust-watch-sync-enqueue-wave5: enqueue_doc_sync_op_fail_open() native in session.rs
+      — writes sync_txns/sync_ops rows fail-open when sync schema exists.
+    - extract-knowledge.py and first-run DB bootstrap remain Python-backed (not ported).
+    """
+
+    def test_wave5_session_rs_exists_with_column_migrations(self):
+        """sk-rust/src/index/session.rs must contain apply_sessions_column_migrations (wave5)."""
+        session_rs = TOOLS_DIR / "sk-rust" / "src" / "index" / "session.rs"
+        self.assertTrue(
+            session_rs.exists(),
+            "sk-rust/src/index/session.rs not found — wave5 schema migration did not land",
+        )
+        content = session_rs.read_text(encoding="utf-8")
+        self.assertIn(
+            "apply_sessions_column_migrations",
+            content,
+            "session.rs must define apply_sessions_column_migrations() for wave5 native column migration",
+        )
+        for col in ("file_mtime", "indexed_at_r", "fts_indexed_at", "event_count_estimate"):
+            self.assertIn(col, content, f"session.rs native migration must cover '{col}' column")
+
+    def test_wave5_session_rs_has_sync_enqueue(self):
+        """sk-rust/src/index/session.rs must contain enqueue_doc_sync_op_fail_open (wave5)."""
+        session_rs = TOOLS_DIR / "sk-rust" / "src" / "index" / "session.rs"
+        self.assertTrue(session_rs.exists(), "sk-rust/src/index/session.rs not found")
+        content = session_rs.read_text(encoding="utf-8")
+        self.assertIn(
+            "enqueue_doc_sync_op_fail_open",
+            content,
+            "session.rs must define enqueue_doc_sync_op_fail_open() for wave5 native sync enqueueing",
+        )
+
+    def test_wave5_hmac_foundation_module_exists(self):
+        """marker_auth.rs must exist and expose the helpers wave6 now uses natively.
+
+        Managed sessionStart, preToolUse, and postToolUse parity still remain Python-backed,
+        but selected native rules now use the same marker_auth read/write formats.
+        """
+        marker_auth_rs = TOOLS_DIR / "sk-rust" / "src" / "hooks" / "marker_auth.rs"
+        self.assertTrue(
+            marker_auth_rs.exists(),
+            "sk-rust/src/hooks/marker_auth.rs not found — HMAC parity module missing",
+        )
+        content = marker_auth_rs.read_text(encoding="utf-8")
+        self.assertTrue(
+            "sign_counter" in content and "verify_counter" in content and "sign_list_marker" in content,
+            "marker_auth.rs must expose counter/list-marker helpers used by wave6 native rules",
+        )
+
+    def test_wave5_sessions_fts_gap_documented_in_hooks_md(self):
+        """docs/HOOKS.md must document the wave6 native sessions_fts writer state."""
+        hooks_md = TOOLS_DIR / "docs" / "HOOKS.md"
+        self.assertTrue(hooks_md.exists(), f"docs/HOOKS.md not found: {hooks_md}")
+        content = hooks_md.read_text(encoding="utf-8")
+        self.assertIn(
+            "sessions_fts",
+            content,
+            "docs/HOOKS.md must continue to document sessions_fts after wave6",
+        )
+        self.assertTrue(
+            "wave6" in content.lower() or "local-only" in content.lower() or "native" in content.lower(),
+            "docs/HOOKS.md should describe sessions_fts as native/local-only after wave6",
+        )
+
+    def test_wave5_extract_knowledge_py_still_python_backed(self):
+        """extract-knowledge.py must exist — first-run DB bootstrap + classify remain Python-backed.
+
+        Wave5 does NOT port extract-knowledge.py. Native indexer still calls Python for
+        knowledge classification. First-run DB bootstrap also remains Python-backed.
+        """
+        self.assertTrue(
+            (TOOLS_DIR / "extract-knowledge.py").exists(),
+            "extract-knowledge.py not found — wave5: knowledge classification and first-run DB bootstrap are still Python-backed",
+        )
 
 
 if __name__ == "__main__":

@@ -184,11 +184,85 @@ pub fn search_recent_by_category(
     run_query(conn, sql, rusqlite::params![category, limit as i64])
 }
 
-fn run_query(
-    conn: &Connection,
-    sql: &str,
-    params: impl rusqlite::Params,
-) -> Vec<KnowledgeEntry> {
+/// Search knowledge entries across all categories, suitable for hook output.
+///
+/// Tries FTS5 MATCH first; falls back to LIKE substring search if FTS returns
+/// nothing.  Returns at most `limit` formatted snippet lines (numbered list).
+/// Each entry formats as:
+///   `N. [category] title`
+///   `   Tags: <tags>`        (if tags non-empty)
+///   `   <first content line>` (truncated to 80 chars)
+///
+/// Returns an empty vec when the DB has no matching entries.  Never panics.
+pub fn search_kb_snippet(conn: &Connection, query: &str, limit: usize) -> Vec<String> {
+    let fts_query = sanitize_fts_query(query);
+
+    let sql = "SELECT ke.category, ke.title, ke.content, COALESCE(ke.tags, '') \
+               FROM ke_fts fts \
+               JOIN knowledge_entries ke ON fts.rowid = ke.id \
+               WHERE ke_fts MATCH ? \
+               ORDER BY rank \
+               LIMIT ?";
+
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return search_kb_snippet_like(conn, query, limit),
+    };
+
+    let rows: Vec<(String, String, String, String)> = stmt
+        .query_map(rusqlite::params![fts_query, limit as i64], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .map(|r| r.filter_map(|x| x.ok()).collect())
+        .unwrap_or_default();
+
+    if rows.is_empty() {
+        return search_kb_snippet_like(conn, query, limit);
+    }
+
+    format_kb_snippet_rows(&rows)
+}
+
+fn search_kb_snippet_like(conn: &Connection, query: &str, limit: usize) -> Vec<String> {
+    let pattern = format!("%{}%", query.to_lowercase());
+    let sql = "SELECT category, title, content, COALESCE(tags,'') \
+               FROM knowledge_entries \
+               WHERE LOWER(title) LIKE ? OR LOWER(content) LIKE ? \
+               ORDER BY confidence DESC \
+               LIMIT ?";
+
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    let rows: Vec<(String, String, String, String)> = stmt
+        .query_map(rusqlite::params![pattern, pattern, limit as i64], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .map(|r| r.filter_map(|x| x.ok()).collect())
+        .unwrap_or_default();
+
+    format_kb_snippet_rows(&rows)
+}
+
+fn format_kb_snippet_rows(rows: &[(String, String, String, String)]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (i, (cat, title, content, tags)) in rows.iter().enumerate() {
+        lines.push(format!("{}. [{}] {}", i + 1, cat, title));
+        if !tags.is_empty() {
+            lines.push(format!("   Tags: {tags}"));
+        }
+        let first_line = content.lines().next().unwrap_or("").trim();
+        if !first_line.is_empty() {
+            let preview: String = first_line.chars().take(80).collect();
+            lines.push(format!("   {preview}"));
+        }
+    }
+    lines
+}
+
+fn run_query(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> Vec<KnowledgeEntry> {
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return vec![],
@@ -238,9 +312,15 @@ mod tests {
         // All terms from the input appear in the output (with prefix wildcard)
         assert!(result.contains("\"rust\"*"), "rust should appear: {result}");
         assert!(result.contains("\"fts5\"*"), "fts5 should appear: {result}");
-        assert!(result.contains("\"quote\"*"), "quote should appear: {result}");
+        assert!(
+            result.contains("\"quote\"*"),
+            "quote should appear: {result}"
+        );
         // The output should only contain * as part of "term"* patterns, not standalone
-        assert!(!result.contains(" * "), "no standalone * expected: {result}");
+        assert!(
+            !result.contains(" * "),
+            "no standalone * expected: {result}"
+        );
     }
 
     #[test]

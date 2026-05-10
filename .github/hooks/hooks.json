@@ -1,48 +1,68 @@
 {
   "version": 1,
+  "_comment": "Managed copy — semantically aligned with hooks/hooks.json. Deploy via: python3 install.py",
+  "_native_preference": "Commands prefer 'sk hooks run <event>' when sk is in PATH (native Rust binary or Python shim). Falls back to direct Python hook_runner.py invocation when sk is unavailable.",
   "hooks": {
     "sessionStart": [
       {
         "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" sessionStart",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" sessionStart",
-        "comment": "[GLOBAL] Unified hook runner \u2014 auto-briefing + integrity check",
+        "bash": "if command -v sk >/dev/null 2>&1; then sk hooks run sessionStart; else python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" sessionStart; fi",
+        "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run sessionStart } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" sessionStart }",
+        "comment": "[GLOBAL] Unified hook runner — auto-briefing + integrity check (prefers native sk)",
         "timeoutSec": 20
       }
     ],
     "sessionEnd": [
       {
         "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" sessionEnd",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" sessionEnd",
-        "comment": "[GLOBAL] Unified hook runner \u2014 marker cleanup",
+        "bash": "if command -v sk >/dev/null 2>&1; then sk hooks run sessionEnd; else python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" sessionEnd; fi",
+        "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run sessionEnd } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" sessionEnd }",
+        "comment": "[GLOBAL] Unified hook runner — marker cleanup + sync flush signal (prefers native sk)",
         "timeoutSec": 5
       }
     ],
     "preToolUse": [
       {
         "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" preToolUse",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" preToolUse",
-        "comment": "[GLOBAL] Unified hook runner \u2014 briefing + learn + tentacle enforcement",
+        "bash": "if command -v sk >/dev/null 2>&1; then sk hooks run preToolUse; else python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" preToolUse; fi",
+        "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run preToolUse } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" preToolUse }",
+        "comment": "[GLOBAL] Unified hook runner — briefing + learn + tentacle + syntax_gate enforcement (prefers native sk)",
         "timeoutSec": 10
       }
     ],
     "postToolUse": [
       {
         "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" postToolUse",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" postToolUse",
-        "comment": "[GLOBAL] Unified hook runner \u2014 edit tracking + reminders + suggestions",
+        "bash": "if command -v sk >/dev/null 2>&1; then sk hooks run postToolUse; else python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" postToolUse; fi",
+        "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run postToolUse } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" postToolUse }",
+        "comment": "[GLOBAL] Unified hook runner — edit tracking + reminders + sync nudge (prefers native sk)",
         "timeoutSec": 10
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "if command -v sk >/dev/null 2>&1; then sk hooks run agentStop; else python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" agentStop; fi",
+        "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run agentStop } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" agentStop }",
+        "comment": "[GLOBAL] Unified hook runner — marker cleanup after agent stop (prefers native sk)",
+        "timeoutSec": 5
+      }
+    ],
+    "subagentStop": [
+      {
+        "type": "command",
+        "bash": "if command -v sk >/dev/null 2>&1; then sk hooks run subagentStop; else python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" subagentStop; fi",
+        "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run subagentStop } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" subagentStop }",
+        "comment": "[GLOBAL] Unified hook runner — marker cleanup after subagent stop (prefers native sk)",
+        "timeoutSec": 5
       }
     ],
     "errorOccurred": [
       {
         "type": "command",
-        "bash": "python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" errorOccurred",
-        "powershell": "python3 \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" errorOccurred",
-        "comment": "[GLOBAL] Unified hook runner \u2014 KB error search",
+        "bash": "if command -v sk >/dev/null 2>&1; then sk hooks run errorOccurred; else python3 \"$HOME/.copilot/tools/hooks/hook_runner.py\" errorOccurred; fi",
+        "powershell": "if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run errorOccurred } else { python \"$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py\" errorOccurred }",
+        "comment": "[GLOBAL] Unified hook runner — KB error search (prefers native sk)",
         "timeoutSec": 10
       }
     ]

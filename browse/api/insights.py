@@ -89,6 +89,8 @@ def handle_api_knowledge_insights(db, params, token, nonce) -> tuple:
             [sys.executable, str(_HEALTH_SCRIPT), "--insights", "--json"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_TIMEOUT_S,
             cwd=str(_TOOLS_DIR),
         )

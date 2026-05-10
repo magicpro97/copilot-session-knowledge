@@ -549,7 +549,8 @@ test("/chat header host switcher navigates to Settings host management", async (
 
   await expect(page).toHaveURL(/\/settings\/?#hosts$/);
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
-  await expect(page.getByText("Hosts & connections")).toBeVisible();
+  // Use the card's id anchor — the text also appears in diagnostics idle copy.
+  await expect(page.locator("#hosts")).toBeVisible();
 });
 
 test("/chat header host switcher is visible on mobile viewport", async ({ page }) => {

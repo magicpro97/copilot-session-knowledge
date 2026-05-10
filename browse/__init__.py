@@ -301,7 +301,7 @@ def install_browse_hosted_launcher(quiet: bool = False) -> bool:
     # Backend launcher script
     script = _hosted_launcher_script_path()
     new_content = _hosted_launcher_script_content()
-    existing = script.read_text(encoding="utf-8") if script.is_file() else None
+    existing = script.read_bytes().decode("utf-8") if script.is_file() else None
     if existing == new_content:
         if not quiet:
             print(f"  [hosted-launcher] backend script already up to date: {script}")
@@ -318,7 +318,7 @@ def install_browse_hosted_launcher(quiet: bool = False) -> bool:
     if os.name == "nt":
         url_path = _hosted_launcher_url_path()
         url_content = _hosted_launcher_url_content()
-        existing_url = url_path.read_text(encoding="utf-8") if url_path.is_file() else None
+        existing_url = url_path.read_bytes().decode("utf-8") if url_path.is_file() else None
         if existing_url == url_content:
             if not quiet:
                 print(f"  [hosted-launcher] UI shortcut already up to date: {url_path}")

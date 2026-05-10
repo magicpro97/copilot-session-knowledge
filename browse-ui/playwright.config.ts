@@ -1,6 +1,16 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const releaseProof = Boolean(process.env.FIREBASE_PROOF);
+// Cross-platform: Windows ships `python`, Unix ships `python3`.
+const pythonCmd = process.platform === "win32" ? "python" : "python3";
+// Cross-platform build command: bypass `pnpm build` (which requires pnpm
+// allowBuilds approval) and invoke Next.js and post-build directly via node.
+const buildCmd = [
+  "node ./node_modules/next/dist/bin/next build",
+  "node scripts/post-build.mjs",
+  `${pythonCmd} ./scripts/create-e2e-db.py`,
+  `${pythonCmd} ../browse.py --port 8765 --db ./e2e/.fixtures/playwright.db`,
+].join(" && ");
 
 // NOTE (#58 / Edge+mobile proof): The 'edge-desktop' and 'mobile-chrome'
 // projects below add the browser coverage required by issue #58.
@@ -14,6 +24,9 @@ const skipEdgeMobile = Boolean(process.env.SKIP_EDGE_MOBILE);
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
+  // workers: 1 eliminates ChunkLoadError startup noise caused by concurrent
+  // browser contexts hitting the Next.js dev server before all chunks are warm.
+  workers: 1,
   retries: 1,
   grep: releaseProof ? /FIREBASE_PROOF/ : undefined,
   expect: {
@@ -76,8 +89,7 @@ export default defineConfig({
   webServer: releaseProof
     ? undefined
     : {
-        command:
-          "pnpm build && python3 ./scripts/create-e2e-db.py && python3 ../browse.py --port 8765 --db ./e2e/.fixtures/playwright.db",
+        command: buildCmd,
         port: 8765,
         reuseExistingServer: false,
         timeout: 180_000,
