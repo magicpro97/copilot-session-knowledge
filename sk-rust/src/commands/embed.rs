@@ -752,7 +752,7 @@ fn run_build(force: bool) -> ExitCode {
                         let dims = vecs.first().map(|v| v.len()).unwrap_or(0);
                         let items: Vec<(i64, Vec<f32>, String)> = new_sections
                             .iter()
-                            .zip(vecs.into_iter())
+                            .zip(vecs)
                             .map(|((id, label, _), vec)| (*id, vec, label.clone()))
                             .collect();
                         if let Err(e) = store_batch_embeddings(
@@ -792,7 +792,7 @@ fn run_build(force: bool) -> ExitCode {
                         let dims = vecs.first().map(|v| v.len()).unwrap_or(0);
                         let items: Vec<(i64, Vec<f32>, String)> = new_knowledge
                             .iter()
-                            .zip(vecs.into_iter())
+                            .zip(vecs)
                             .map(|((id, title, _), vec)| (*id, vec, title.clone()))
                             .collect();
                         if let Err(e) = store_batch_embeddings(

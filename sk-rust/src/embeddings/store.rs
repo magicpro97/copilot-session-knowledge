@@ -95,6 +95,7 @@ pub fn ensure_embedding_tables(conn: &Connection) -> rusqlite::Result<()> {
 ///
 /// This runs entirely in Rust without any network calls — it re-uses
 /// the float blobs already stored by `embed.py --build`.
+#[allow(dead_code)]
 pub fn vector_search_stored(
     conn: &Connection,
     query_vec: &[f32],

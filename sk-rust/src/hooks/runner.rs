@@ -71,8 +71,8 @@ pub fn run_hook(event: &str) {
 /// Separated from `run_hook` so unit tests can call it directly without
 /// needing to set up stdin.
 pub(crate) fn dispatch_rules(event: &str, data: &Value) {
-    let dry_run = std::env::var("HOOK_DRY_RUN").map_or(false, |v| v == "1");
-    let verbose = std::env::var("HOOK_LOG_LEVEL").map_or(false, |v| v == "DEBUG");
+    let dry_run = std::env::var("HOOK_DRY_RUN").is_ok_and(|v| v == "1");
+    let verbose = std::env::var("HOOK_LOG_LEVEL").is_ok_and(|v| v == "DEBUG");
 
     let tool_name = data.get("toolName").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -86,7 +86,7 @@ pub(crate) fn dispatch_rules(event: &str, data: &Value) {
     for rule in matching {
         // Tool filter: empty list means "all tools".
         let tools = rule.tools();
-        if !tools.is_empty() && !tools.iter().any(|&t| t == tool_name) {
+        if !tools.is_empty() && !tools.contains(&tool_name) {
             continue;
         }
 
@@ -373,7 +373,7 @@ mod tests {
         // SubagentGitGuardRule only fires for "bash".
         let tools = rule.tools();
         assert!(!tools.is_empty());
-        assert!(tools.iter().any(|&t| t == "bash"));
-        assert!(!tools.iter().any(|&t| t == "edit"));
+        assert!(tools.contains(&"bash"));
+        assert!(!tools.contains(&"edit"));
     }
 }

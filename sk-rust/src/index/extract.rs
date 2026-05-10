@@ -1146,6 +1146,7 @@ struct RelationCollector<'a> {
     rows: &'a [EntryRow],
     seen: HashSet<(i64, i64, String)>,
     type_counts: HashMap<String, usize>,
+    #[allow(clippy::type_complexity)]
     relations: Vec<(i64, i64, String, String, String, String, f64, String)>,
     now: String,
     max_per_type: usize,
@@ -1372,7 +1373,12 @@ pub fn extract_relations_native(conn: &Connection) -> anyhow::Result<usize> {
         .iter()
         .enumerate()
         .filter_map(|(idx, e)| {
-            let tags: HashSet<&str> = e.tags.split(',').map(str::trim).filter(|t| !t.is_empty()).collect();
+            let tags: HashSet<&str> = e
+                .tags
+                .split(',')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .collect();
             if tags.len() >= 2 {
                 Some((idx, tags))
             } else {
@@ -1383,12 +1389,11 @@ pub fn extract_relations_native(conn: &Connection) -> anyhow::Result<usize> {
 
     'tag_outer: for i in 0..entry_tags.len() {
         let (ai, ref atags) = entry_tags[i];
-        for j in (i + 1)..entry_tags.len() {
-            let (bi, ref btags) = entry_tags[j];
+        for (bi, btags) in &entry_tags[(i + 1)..] {
             let shared = atags.intersection(btags).count();
             if shared >= 2 {
                 let conf = f64::min(1.0, 0.5 + 0.1 * (shared.min(5) as f64));
-                if col.add(ai, bi, "TAG_OVERLAP", conf) {
+                if col.add(ai, *bi, "TAG_OVERLAP", conf) {
                     break 'tag_outer;
                 }
             }
@@ -1401,8 +1406,16 @@ pub fn extract_relations_native(conn: &Connection) -> anyhow::Result<usize> {
         let Some(group) = by_session.get(sid) else {
             continue;
         };
-        let mistakes: Vec<usize> = group.iter().copied().filter(|&i| rows[i].category == "mistake").collect();
-        let resolvers: Vec<usize> = group.iter().copied().filter(|&i| rows[i].category == "pattern" || rows[i].category == "tool").collect();
+        let mistakes: Vec<usize> = group
+            .iter()
+            .copied()
+            .filter(|&i| rows[i].category == "mistake")
+            .collect();
+        let resolvers: Vec<usize> = group
+            .iter()
+            .copied()
+            .filter(|&i| rows[i].category == "pattern" || rows[i].category == "tool")
+            .collect();
         for &mi in &mistakes {
             for &ri in &resolvers {
                 if col.add(mi, ri, "RESOLVED_BY", 0.8) {
@@ -1427,14 +1440,7 @@ pub fn extract_relations_native(conn: &Connection) -> anyhow::Result<usize> {
               relation_type, stable_id, confidence, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             rusqlite::params![
-                src_id,
-                tgt_id,
-                src_stable,
-                tgt_stable,
-                rtype,
-                stable_id,
-                conf,
-                created_at
+                src_id, tgt_id, src_stable, tgt_stable, rtype, stable_id, conf, created_at
             ],
         );
         // Enqueue sync op (fail-open).
@@ -1501,31 +1507,36 @@ fn compute_semantic_proximity_inner(conn: &Connection) -> anyhow::Result<usize> 
              COALESCE(category,''), COALESCE(topic_key,'') \
              FROM knowledge_entries ORDER BY id DESC LIMIT ?",
         )?;
-        let rows: Vec<rusqlite::Result<SemEntry>> = stmt.query_map(rusqlite::params![MAX_ENTRIES], |row| {
-            let eid: i64 = row.get(0)?;
-            let title: String = row.get(1)?;
-            let tags: String = row.get(2)?;
-            let content: String = row.get(3)?;
-            let stored_stable: String = row.get(4)?;
-            let session_id: String = row.get(5)?;
-            let category: String = row.get(6)?;
-            let topic_key: String = row.get(7)?;
-            // Mirror Python: title + tags + content joined by space, dropping blanks.
-            let text: String = [title.trim(), tags.trim(), content.trim()]
-                .iter()
-                .filter(|s| !s.is_empty())
-                .copied()
-                .collect::<Vec<_>>()
-                .join(" ");
-            // stable_id: use stored value or compute fallback.
-            let stable_id = if !stored_stable.is_empty() {
-                stored_stable
-            } else {
-                compute_stable_id_with_topic_key(&session_id, &category, &title, &topic_key)
-            };
-            Ok(SemEntry { id: eid, text, stable_id })
-        })?
-        .collect();
+        let rows: Vec<rusqlite::Result<SemEntry>> = stmt
+            .query_map(rusqlite::params![MAX_ENTRIES], |row| {
+                let eid: i64 = row.get(0)?;
+                let title: String = row.get(1)?;
+                let tags: String = row.get(2)?;
+                let content: String = row.get(3)?;
+                let stored_stable: String = row.get(4)?;
+                let session_id: String = row.get(5)?;
+                let category: String = row.get(6)?;
+                let topic_key: String = row.get(7)?;
+                // Mirror Python: title + tags + content joined by space, dropping blanks.
+                let text: String = [title.trim(), tags.trim(), content.trim()]
+                    .iter()
+                    .filter(|s| !s.is_empty())
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                // stable_id: use stored value or compute fallback.
+                let stable_id = if !stored_stable.is_empty() {
+                    stored_stable
+                } else {
+                    compute_stable_id_with_topic_key(&session_id, &category, &title, &topic_key)
+                };
+                Ok(SemEntry {
+                    id: eid,
+                    text,
+                    stable_id,
+                })
+            })?
+            .collect();
         rows.into_iter()
             .flatten()
             .filter(|e| !e.text.is_empty())
@@ -1568,7 +1579,10 @@ fn compute_semantic_proximity_inner(conn: &Connection) -> anyhow::Result<usize> 
     // ── Step 3: build per-document sparse vectors ────────────────────────────
     // doc_col_map[i] = HashMap<col, val> for doc i (vectors are L2-normalised).
     let mut doc_col_maps: Vec<HashMap<usize, f64>> = vec![HashMap::new(); n_docs];
-    let nnz = matrix_row.len().min(matrix_col.len()).min(matrix_data.len());
+    let nnz = matrix_row
+        .len()
+        .min(matrix_col.len())
+        .min(matrix_data.len());
     for k in 0..nnz {
         let r = matrix_row[k];
         let c = matrix_col[k];
@@ -1581,10 +1595,8 @@ fn compute_semantic_proximity_inner(conn: &Connection) -> anyhow::Result<usize> 
     // ── Step 4: build stronger_pairs from already-inserted relations ─────────
     let mut stronger_pairs: HashSet<(i64, i64)> = HashSet::new();
     {
-        let mut stmt =
-            conn.prepare("SELECT source_id, target_id FROM knowledge_relations")?;
-        let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
+        let mut stmt = conn.prepare("SELECT source_id, target_id FROM knowledge_relations")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
         for pair in rows.flatten() {
             stronger_pairs.insert(pair);
             stronger_pairs.insert((pair.1, pair.0));
@@ -1667,8 +1679,7 @@ fn compute_semantic_proximity_inner(conn: &Connection) -> anyhow::Result<usize> 
                 "confidence": conf,
                 "created_at": &now,
             });
-            let payload_json =
-                serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+            let payload_json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
             enqueue_sync_op_fail_open(conn, "knowledge_relations", stable_id, &payload_json);
         }
     }
@@ -1679,8 +1690,6 @@ fn compute_semantic_proximity_inner(conn: &Connection) -> anyhow::Result<usize> 
 
     Ok(inserted)
 }
-
-
 
 /// Derive Copilot session IDs from changed file paths.
 ///
@@ -1876,8 +1885,7 @@ pub fn backfill_affected_files(conn: &Connection, session_ids: Option<&[String]>
             continue;
         }
         let capped: Vec<&String> = files.iter().take(20).collect();
-        let files_json =
-            serde_json::to_string(&capped).unwrap_or_else(|_| "[]".to_string());
+        let files_json = serde_json::to_string(&capped).unwrap_or_else(|_| "[]".to_string());
         for entry_id in entry_ids {
             if conn
                 .execute(
@@ -2475,7 +2483,11 @@ mod tests {
     #[test]
     fn relation_stable_id_is_64_hex_chars() {
         let id = compute_relation_stable_id("src-stable", "tgt-stable", "SAME_SESSION");
-        assert_eq!(id.len(), 64, "relation stable_id must be 64-char SHA-256 hex");
+        assert_eq!(
+            id.len(),
+            64,
+            "relation stable_id must be 64-char SHA-256 hex"
+        );
         assert!(
             id.chars().all(|c| c.is_ascii_hexdigit()),
             "relation stable_id must be hex: {id:?}"
@@ -2493,7 +2505,10 @@ mod tests {
     fn relation_stable_id_changes_with_type() {
         let a = compute_relation_stable_id("s1", "s2", "SAME_SESSION");
         let b = compute_relation_stable_id("s1", "s2", "SAME_TOPIC");
-        assert_ne!(a, b, "different relation_type must produce different stable_id");
+        assert_ne!(
+            a, b,
+            "different relation_type must produce different stable_id"
+        );
     }
 
     /// Python parity check: verify the SHA-256 formula matches Python's
@@ -2519,12 +2534,23 @@ mod tests {
             format!("{:x}", hash)
         };
         let got = compute_relation_stable_id(src, tgt, rtype);
-        assert_eq!(got, expected, "relation stable_id must match Python's SHA-256 formula");
+        assert_eq!(
+            got, expected,
+            "relation stable_id must match Python's SHA-256 formula"
+        );
     }
 
     // ── extract_relations_native (in-memory DB) ───────────────────────────────
 
-    fn insert_entry(conn: &Connection, id_hint: &str, session_id: &str, category: &str, title: &str, tags: &str, topic_key: &str) -> i64 {
+    fn insert_entry(
+        conn: &Connection,
+        id_hint: &str,
+        session_id: &str,
+        category: &str,
+        title: &str,
+        tags: &str,
+        topic_key: &str,
+    ) -> i64 {
         insert_entry_with_content(
             conn,
             id_hint,
@@ -2537,6 +2563,7 @@ mod tests {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_entry_with_content(
         conn: &Connection,
         id_hint: &str,
@@ -2553,13 +2580,17 @@ mod tests {
                confidence, first_seen, last_seen, source, content_hash) \
              VALUES (?, ?, ?, ?, ?, ?, ?, 0.7, '2024-01-01', '2024-01-01', 'copilot', ?)",
             rusqlite::params![
-                session_id, category, title,
+                session_id,
+                category,
+                title,
                 content,
-                tags, topic_key,
+                tags,
+                topic_key,
                 compute_stable_id_with_topic_key(session_id, category, title, topic_key),
                 format!("hash-{id_hint}"),
             ],
-        ).unwrap();
+        )
+        .unwrap();
         conn.last_insert_rowid()
     }
 
@@ -2568,16 +2599,38 @@ mod tests {
         let conn = setup_test_db();
         let sid = "sess-rel-1";
         // Two entries in the same session, different categories.
-        insert_entry(&conn, "a", sid, "mistake", "Bug in auth", "", "mistake/bug-in-auth");
-        insert_entry(&conn, "b", sid, "pattern", "Use guard clauses", "", "pattern/use-guard-clauses");
+        insert_entry(
+            &conn,
+            "a",
+            sid,
+            "mistake",
+            "Bug in auth",
+            "",
+            "mistake/bug-in-auth",
+        );
+        insert_entry(
+            &conn,
+            "b",
+            sid,
+            "pattern",
+            "Use guard clauses",
+            "",
+            "pattern/use-guard-clauses",
+        );
 
         let count = extract_relations_native(&conn).unwrap();
-        assert!(count >= 1, "must write at least 1 SAME_SESSION relation; got {count}");
+        assert!(
+            count >= 1,
+            "must write at least 1 SAME_SESSION relation; got {count}"
+        );
 
-        let exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM knowledge_relations WHERE relation_type = 'SAME_SESSION'",
-            [], |r| r.get(0)
-        ).unwrap();
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_relations WHERE relation_type = 'SAME_SESSION'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert!(exists >= 1, "SAME_SESSION relation must be written");
     }
 
@@ -2585,16 +2638,35 @@ mod tests {
     fn extract_relations_resolved_by_written() {
         let conn = setup_test_db();
         let sid = "sess-rel-2";
-        insert_entry(&conn, "m", sid, "mistake", "Null ptr crash", "", "mistake/null-ptr-crash");
-        insert_entry(&conn, "p", sid, "pattern", "Always check null first", "", "pattern/always-check-null");
+        insert_entry(
+            &conn,
+            "m",
+            sid,
+            "mistake",
+            "Null ptr crash",
+            "",
+            "mistake/null-ptr-crash",
+        );
+        insert_entry(
+            &conn,
+            "p",
+            sid,
+            "pattern",
+            "Always check null first",
+            "",
+            "pattern/always-check-null",
+        );
 
         let count = extract_relations_native(&conn).unwrap();
         assert!(count >= 1, "must write RESOLVED_BY relation; got {count}");
 
-        let exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM knowledge_relations WHERE relation_type = 'RESOLVED_BY'",
-            [], |r| r.get(0)
-        ).unwrap();
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_relations WHERE relation_type = 'RESOLVED_BY'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert!(exists >= 1, "RESOLVED_BY relation must be written");
     }
 
@@ -2603,16 +2675,38 @@ mod tests {
         let conn = setup_test_db();
         let topic = "pattern/use-param-sql";
         // Same topic_key from two different sessions.
-        insert_entry(&conn, "x", "sess-a", "pattern", "Use param SQL A", "sql", topic);
-        insert_entry(&conn, "y", "sess-b", "pattern", "Use param SQL A", "sql", topic);
+        insert_entry(
+            &conn,
+            "x",
+            "sess-a",
+            "pattern",
+            "Use param SQL A",
+            "sql",
+            topic,
+        );
+        insert_entry(
+            &conn,
+            "y",
+            "sess-b",
+            "pattern",
+            "Use param SQL A",
+            "sql",
+            topic,
+        );
 
         let count = extract_relations_native(&conn).unwrap();
-        assert!(count >= 1, "must write at least 1 SAME_TOPIC relation; got {count}");
+        assert!(
+            count >= 1,
+            "must write at least 1 SAME_TOPIC relation; got {count}"
+        );
 
-        let exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM knowledge_relations WHERE relation_type = 'SAME_TOPIC'",
-            [], |r| r.get(0)
-        ).unwrap();
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_relations WHERE relation_type = 'SAME_TOPIC'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert!(exists >= 1, "SAME_TOPIC relation must be written");
     }
 
@@ -2620,16 +2714,35 @@ mod tests {
     fn extract_relations_tag_overlap_written() {
         let conn = setup_test_db();
         // Two entries in different sessions with 2+ shared tags.
-        insert_entry(&conn, "u", "sess-u", "pattern", "Redis caching pattern", "redis,python,database", "");
-        insert_entry(&conn, "v", "sess-v", "tool", "Redis config tips", "redis,python,docker", "");
+        insert_entry(
+            &conn,
+            "u",
+            "sess-u",
+            "pattern",
+            "Redis caching pattern",
+            "redis,python,database",
+            "",
+        );
+        insert_entry(
+            &conn,
+            "v",
+            "sess-v",
+            "tool",
+            "Redis config tips",
+            "redis,python,docker",
+            "",
+        );
 
         let count = extract_relations_native(&conn).unwrap();
         assert!(count >= 1, "must write TAG_OVERLAP relation; got {count}");
 
-        let exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM knowledge_relations WHERE relation_type = 'TAG_OVERLAP'",
-            [], |r| r.get(0)
-        ).unwrap();
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_relations WHERE relation_type = 'TAG_OVERLAP'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert!(exists >= 1, "TAG_OVERLAP relation must be written");
     }
 
@@ -2637,16 +2750,39 @@ mod tests {
     fn extract_relations_stable_id_is_64_hex() {
         let conn = setup_test_db();
         let sid = "sess-sid-check";
-        insert_entry(&conn, "p", sid, "mistake", "Auth crash", "", "mistake/auth-crash");
-        insert_entry(&conn, "q", sid, "pattern", "Auth guard", "", "pattern/auth-guard");
+        insert_entry(
+            &conn,
+            "p",
+            sid,
+            "mistake",
+            "Auth crash",
+            "",
+            "mistake/auth-crash",
+        );
+        insert_entry(
+            &conn,
+            "q",
+            sid,
+            "pattern",
+            "Auth guard",
+            "",
+            "pattern/auth-guard",
+        );
 
         extract_relations_native(&conn).unwrap();
 
-        let stable: String = conn.query_row(
-            "SELECT stable_id FROM knowledge_relations LIMIT 1",
-            [], |r| r.get(0)
-        ).unwrap();
-        assert_eq!(stable.len(), 64, "relation stable_id must be 64-char hex: {stable:?}");
+        let stable: String = conn
+            .query_row(
+                "SELECT stable_id FROM knowledge_relations LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stable.len(),
+            64,
+            "relation stable_id must be 64-char hex: {stable:?}"
+        );
         assert!(
             stable.chars().all(|c| c.is_ascii_hexdigit()),
             "relation stable_id must be hex: {stable:?}"
@@ -2657,13 +2793,32 @@ mod tests {
     fn extract_relations_idempotent_on_rehash() {
         let conn = setup_test_db();
         let sid = "sess-idem";
-        insert_entry(&conn, "i1", sid, "mistake", "Deploy crash", "", "mistake/deploy-crash");
-        insert_entry(&conn, "i2", sid, "tool", "Deploy checklist", "", "tool/deploy-checklist");
+        insert_entry(
+            &conn,
+            "i1",
+            sid,
+            "mistake",
+            "Deploy crash",
+            "",
+            "mistake/deploy-crash",
+        );
+        insert_entry(
+            &conn,
+            "i2",
+            sid,
+            "tool",
+            "Deploy checklist",
+            "",
+            "tool/deploy-checklist",
+        );
 
         let count1 = extract_relations_native(&conn).unwrap();
         // Second call: DELETE + re-INSERT — same count.
         let count2 = extract_relations_native(&conn).unwrap();
-        assert_eq!(count1, count2, "extract_relations_native must be idempotent (DELETE+reinsert)");
+        assert_eq!(
+            count1, count2,
+            "extract_relations_native must be idempotent (DELETE+reinsert)"
+        );
     }
 
     #[test]
@@ -2713,7 +2868,10 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert!(relation_count >= 1, "SEMANTIC_PROXIMITY relation must be written");
+        assert!(
+            relation_count >= 1,
+            "SEMANTIC_PROXIMITY relation must be written"
+        );
         assert!(
             confidence >= 0.75,
             "SEMANTIC_PROXIMITY confidence must respect the threshold; got {confidence}"
@@ -2731,7 +2889,10 @@ mod tests {
 
         let result = extract_from_changed_sessions(&[], &dir, &dir);
 
-        assert!(matches!(result, Some(Err(_))), "directory path must surface as Some(Err(_)); got {result:?}");
+        assert!(
+            matches!(result, Some(Err(_))),
+            "directory path must surface as Some(Err(_)); got {result:?}"
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -2743,7 +2904,10 @@ mod tests {
         let content = "- src/main.rs\n- tests/test.py\n- README.md";
         let files = parse_file_list(content);
         assert!(files.contains(&"src/main.rs".to_string()), "got: {files:?}");
-        assert!(files.contains(&"tests/test.py".to_string()), "got: {files:?}");
+        assert!(
+            files.contains(&"tests/test.py".to_string()),
+            "got: {files:?}"
+        );
         assert!(files.contains(&"README.md".to_string()), "got: {files:?}");
     }
 
@@ -2751,8 +2915,14 @@ mod tests {
     fn parse_file_list_strips_backticks_and_comments() {
         let content = "- `sk-rust/src/lib.rs` # main lib\n- docs/README.md | table col";
         let files = parse_file_list(content);
-        assert!(files.contains(&"sk-rust/src/lib.rs".to_string()), "got: {files:?}");
-        assert!(files.contains(&"docs/README.md".to_string()), "got: {files:?}");
+        assert!(
+            files.contains(&"sk-rust/src/lib.rs".to_string()),
+            "got: {files:?}"
+        );
+        assert!(
+            files.contains(&"docs/README.md".to_string()),
+            "got: {files:?}"
+        );
     }
 
     #[test]
@@ -2760,7 +2930,10 @@ mod tests {
         let long = "x".repeat(300);
         let content = format!("- https://example.com/page\n- {long}\n- src/real.rs");
         let files = parse_file_list(&content);
-        assert!(!files.iter().any(|f| f.starts_with("http")), "URL must be skipped: {files:?}");
+        assert!(
+            !files.iter().any(|f| f.starts_with("http")),
+            "URL must be skipped: {files:?}"
+        );
         assert!(files.contains(&"src/real.rs".to_string()), "got: {files:?}");
     }
 
@@ -2854,7 +3027,10 @@ mod tests {
         .unwrap();
 
         let n = backfill_affected_files(&conn, None);
-        assert_eq!(n, 0, "must not overwrite existing affected_files; updated={n}");
+        assert_eq!(
+            n, 0,
+            "must not overwrite existing affected_files; updated={n}"
+        );
     }
 
     // ── Wave 17: infer_task_ids ───────────────────────────────────────────────
@@ -3016,7 +3192,12 @@ mod tests {
     fn ensure_extract_tables_creates_all_four_tables() {
         let conn = Connection::open_in_memory().unwrap();
         ensure_extract_tables(&conn).unwrap();
-        for table in &["knowledge_entries", "knowledge_relations", "embedding_meta", "ke_fts"] {
+        for table in &[
+            "knowledge_entries",
+            "knowledge_relations",
+            "embedding_meta",
+            "ke_fts",
+        ] {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE name = ?",
@@ -3024,7 +3205,10 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert!(count > 0, "table {table} must exist after ensure_extract_tables()");
+            assert!(
+                count > 0,
+                "table {table} must exist after ensure_extract_tables()"
+            );
         }
     }
 
@@ -3062,7 +3246,10 @@ mod tests {
         );
 
         // Verify DB was created.
-        assert!(db_path.exists(), "DB must be created by extract_from_changed_sessions");
+        assert!(
+            db_path.exists(),
+            "DB must be created by extract_from_changed_sessions"
+        );
 
         // Verify extract tables were bootstrapped.
         let conn = Connection::open(&db_path).unwrap();

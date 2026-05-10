@@ -655,7 +655,7 @@ mod tests {
     fn list_marker_roundtrip_via_primitives() {
         let secret = "list-secret";
         let name = "dispatched-files";
-        let mut lines = vec![
+        let mut lines = [
             "file_c".to_string(),
             "file_a".to_string(),
             "file_b".to_string(),

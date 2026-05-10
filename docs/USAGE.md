@@ -32,7 +32,7 @@ sk index migrate     # migrate.py              — apply DB schema migrations
 sk index status      # index-status.py         — row counts, FTS integrity, offset coverage
 sk index health      # knowledge-health.py     — health dashboard + recall telemetry
 sk index embed       # embed.py / native Rust  — configure/run semantic embeddings
-                     #   native (wave3 default): --build, --test, --rebuild-tfidf, --setup, --status, --providers, --search
+                     #   native (default build): --build, --test, --rebuild-tfidf, --setup, --status, --providers, --search
                      #   Python fallback: embed.py (if native-embed feature unavailable)
 ```
 
@@ -84,59 +84,49 @@ sk scout config                     # scout-config.py
 sk scout status                     # scout-status.py
 ```
 
-### `sk hooks` — hook runner (hybrid: richer Rust direct path + selective native routing for managed events)
+### `sk hooks` — hook runner
 
-> **Wave13 hybrid state:** `sk hooks` is available in both the Rust binary and the Python `sk.py` compatibility shim. The following managed events route natively through the Rust runner (**Rust-binary installs only**):
-> - `agentStop`, `subagentStop` (wave3): native via `tentacle.py marker-cleanup --from-stop-event`
-> - `sessionEnd` (wave4+wave9): native `SessionEndRule` — per-session marker cleanup via `COPILOT_AGENT_SESSION_ID` + `session.log` write; wave9 adds `RecurrenceDetectorRule` — increments `recurrence_after_briefing` counter in `knowledge.db`
-> - `errorOccurred` (wave5): native `ErrorOccurredRule` — queries `knowledge.db` directly via native Rust FTS5 as primary path; falls back to `query-session.py` subprocess **only** when the DB is genuinely unavailable (e.g. first-run before migration)
-> - `sessionStart` (wave9): native `AutoBriefingRule` — spawns `briefing.py` (10s bounded timeout), signs HMAC `briefing-done` + `codebase-map-ran` markers; `IntegrityRule` — verifies/refreshes SHA256 hook-file manifest; `SessionStartRule` — emits acknowledgement
-> - `postToolUse` (**wave10**): all seven postToolUse rules fully ported natively (`TrackEditsRule`, `LearnReminderRule`, `TestReminderRule`, `NextjsTypecheckReminderRule`, `VerificationGatePostRule`, `ReadBeforeEditRule`, `TentacleSuggestRule`); `sync_markers.rs` writes `sync-nudge.json` after dispatch; native runner is now sole writer for postToolUse markers
-> - `preToolUse` (**wave13, Rust-binary installs**): `SyntaxGateRule` (via `python_exe()` + `py_compile` subprocess; fail-open) added to native runner; `preToolUse` is now in `NATIVE_EVENTS` — `sk hooks run preToolUse` routes natively for Rust-binary installs. All deny-capable preToolUse rules are active on this path. **Python `sk.py` shim boundary unchanged**: the Python shim still routes `sk hooks run preToolUse` through `hook_runner.py`. `hooks/rules/syntax_gate.py` and `hook_runner.py` are NOT removed. Windows proof accepted; WSL/Linux/macOS not separately re-proved in wave13.
->
-> **Wave6–13 direct-path additions:** direct `sk hooks <event>` now includes:
-> - sessionStart: `AutoBriefingRule` + `IntegrityRule` (wave9, same as managed path above)
-> - preToolUse: `subagent-git-guard` (deny), `block-edit-dist` (deny), `block-unsafe-html` (deny), `pnpm-lockfile-guard` (deny, wave7), `read-before-edit` warn (wave7), `VerificationGatePreRule` dirty-marking + informational deny (wave8), **`EnforceBriefingRule` deny-capable (wave11)**, **`EnforceLearnRule` deny-capable (wave11)**, **`TentacleEnforceRule` deny-capable (wave12)**, **`SyntaxGateRule` fail-open via py_compile subprocess (wave13)**
-> - postToolUse: `TrackEditsRule` bash counter/list-marker writes + direct edit/create `tentacle-edits` accumulation (wave8), `LearnReminderRule`, `TestReminderRule` (full counter-write, wave7), `NextjsTypecheckReminderRule` (full counter-write, wave7), `ReadBeforeEditRule` (wave7), `VerificationGatePostRule` evidence-recording (wave7), `TentacleSuggestRule` read-only (wave8)
->
-> **Three `preToolUse` paths (wave13):**
-> - Direct Rust path (`sk hooks preToolUse`): native runner; all deny rules active including `SyntaxGateRule`
-> - Managed Rust path (`sk hooks run preToolUse`, Rust binary): native runner via `NATIVE_EVENTS`; same rules including `SyntaxGateRule`; wave13 routing flip
-> - Python shim path (`sk hooks run preToolUse`, Python `sk.py`): `hook_runner.py`; shim always delegates to Python; unchanged
->
-> **Watch/bootstrap boundaries (wave20 update)**: First-run DB bootstrap is native (wave18); `SEMANTIC_PROXIMITY` is native (wave19). **Wave20:** `watch.rs` never spawns Python on any path — the last-resort `spawn_indexer()` fallback is removed. On genuine DB open/create or extract failure, `watch` emits a recovery hint naming the manual command; no Python subprocess is launched. `extract-knowledge.py --semantic-only` remains available for manual/fallback use only. `extract-knowledge.py` and `build-session-index.py` are intentional manual operator tools — NOT auto-called and NOT removed. `migrate.py` remains canonical for versioned schema upgrades. `native-extract` is a **default Cargo feature** since wave15. Wave20 proof (Windows-local): `cargo test --quiet` (536 unit + 74 integration). WSL/Linux/macOS not separately re-proved. The Python `sk.py` shim routes ALL hook events to `hook_runner.py` regardless of wave. See [docs/HOOKS.md](HOOKS.md) for the full parity gap analysis and preToolUse routing history.
+`sk hooks` is available in both the Rust binary and the Python `sk.py` compatibility shim.
+
+**Rust-binary installs:** all managed events route natively through the Rust runner:
+
+| Event | Native behavior |
+|-------|----------------|
+| `sessionStart` | `AutoBriefingRule` (spawns `briefing.py`, 10s timeout, signs HMAC markers) + `IntegrityRule` (SHA256 manifest) |
+| `sessionEnd` | `SessionEndRule` (marker cleanup + `session.log`) + `RecurrenceDetectorRule` |
+| `preToolUse` | All deny-capable rules active: `subagent-git-guard`, `block-edit-dist`, `block-unsafe-html`, `pnpm-lockfile-guard`, `read-before-edit`, `VerificationGatePreRule`, `EnforceBriefingRule`, `EnforceLearnRule`, `TentacleEnforceRule`, `SyntaxGateRule` |
+| `postToolUse` | All 7 rules: `TrackEditsRule`, `LearnReminderRule`, `TestReminderRule`, `NextjsTypecheckReminderRule`, `VerificationGatePostRule`, `ReadBeforeEditRule`, `TentacleSuggestRule` |
+| `agentStop` / `subagentStop` | `tentacle.py marker-cleanup --from-stop-event` |
+| `errorOccurred` | Native Rust FTS5 DB query; `query-session.py` subprocess only if DB unavailable |
+
+**Python `sk.py` shim:** always routes all events through `hook_runner.py` — unchanged regardless of Rust binary availability. `hooks/rules/syntax_gate.py` and `hook_runner.py` are intentional and NOT removed.
+
+> Full rule inventory, HMAC details, and platform event notes: **[docs/HOOKS.md](HOOKS.md)**
 
 ```bash
-sk hooks run sessionStart           # native Rust: AutoBriefingRule + IntegrityRule  (wave9 — briefing.py spawn + HMAC markers)
-sk hooks run preToolUse             # native Rust (Rust binary): SyntaxGateRule + all deny rules  (wave13 — py_compile subprocess; fail-open)
-                                    # hook_runner.py (Python sk.py shim): unchanged — shim always routes to Python
-sk hooks run postToolUse            # native Rust: all 7 postToolUse rules  (wave10 — sync-nudge.json via sync_markers)
-sk hooks run sessionEnd             # native Rust: SessionEndRule + RecurrenceDetectorRule  (wave4+wave9 — marker cleanup + session.log + recurrence counter)
-sk hooks run agentStop              # native Rust: marker-cleanup  (wave3 — tentacle.py --from-stop-event)
-sk hooks run subagentStop           # native Rust: marker-cleanup  (wave3 — tentacle.py --from-stop-event)
-sk hooks run errorOccurred          # native Rust: ErrorOccurredRule → native FTS5 (wave5); query-session.py subprocess only if DB unavailable
+sk hooks run sessionStart           # AutoBriefingRule + IntegrityRule
+sk hooks run preToolUse             # all deny rules (Rust binary); hook_runner.py (Python shim)
+sk hooks run postToolUse            # all 7 postToolUse rules
+sk hooks run sessionEnd             # SessionEndRule + RecurrenceDetectorRule
+sk hooks run agentStop              # marker-cleanup
+sk hooks run subagentStop           # marker-cleanup
+sk hooks run errorOccurred          # native FTS5; query-session.py fallback if DB unavailable
 ```
 
 The managed `hooks.json` prefers `sk hooks run <event>` when `sk` is in PATH. Bash falls back to `python3 hook_runner.py`; PowerShell falls back to `python hook_runner.py`. Install the launcher first: `python install.py --install-sk`.
 
-### `sk watch` — session watcher (hybrid: Rust native loop/indexer + Python last-resort/shim fallback)
+### `sk watch` — session watcher
 
-> **Wave10 watch boundary:** `sk watch` is available in both the Rust binary and the Python `sk.py` shim. The Rust binary indexes both Copilot session-state changes (wave2) and Claude `.jsonl` session changes (wave3) natively. Wave5 narrowed the watch blockers: sessions-table column migrations (`file_mtime`, `indexed_at_r`, `fts_indexed_at`, `event_count_estimate`) are applied natively via `apply_sessions_column_migrations()` before each indexing pass; sync-op enqueueing (writing to `sync_txns`/`sync_ops`) is native via `enqueue_doc_sync_op_fail_open()` (fail-open when sync schema absent). Wave6 closes the confirmed `sessions_fts` gap for the non-JSONL Copilot path with a native local-only writer. **Wave10** removes `build-session-index.py --incremental` for existing-DB non-JSONL Copilot changes — that path is now fully native. Remaining Python-backed surfaces: `extract-knowledge.py` classification and first-run DB creation fallback (these are intentionally preserved).
->
-> **Wave15 (`native-extract` is now a default Cargo feature):** `sk-rust/src/index/extract.rs` handles the hot-path classification/write loop for `knowledge_entries`/`ke_fts` natively in the default Rust binary. Sync-op enqueue parity for native-extract writes landed in wave15. Error lifecycle metadata (`error_type`, `root_cause`, `severity`) is now filled natively for mistake entries. Integration proof: `sk-rust/tests/integration_test.rs`. Python `spawn_extractor()` still runs for `knowledge_relations`, relation budgets, semantic proximity, backfill, and confidence decay. First-run DB bootstrap (`spawn_indexer()`) remains Python-backed and unchanged. `extract-knowledge.py` is **NOT removed**; it remains authoritative for relation extraction and all non-hot-path NLP. Windows proof accepted: `cargo test --quiet`, `python tests\test_indexing.py`, and `python tests\test_hook_compat.py` all passed after wave15 audit. WSL/Linux/macOS were not separately re-proved.
->
-> **Wave16 (native relation slice):** Deterministic knowledge relations — `SAME_SESSION`, `SAME_TOPIC`, `TAG_OVERLAP`, `RESOLVED_BY` — are now extracted natively by Rust (`sk-rust/src/index/extract.rs`). After a successful native extract pass, `sk watch` invokes `extract-knowledge.py --residual-only`, narrowing Python residual ownership to: `SEMANTIC_PROXIMITY`, backfill helpers, confidence decay, and non-hot-path NLP. `extract-knowledge.py` is **NOT removed**. First-run DB bootstrap (`spawn_indexer()`) is unchanged. Windows proof: `cargo test --quiet` (519 Rust unit + 71 integration), `python tests\test_indexing.py` (25/25). WSL/Linux/macOS not separately re-proved.
->
-> **Wave17 (native residual helpers):** `backfill_affected_files`, `infer_task_ids`, and confidence decay now run natively in Rust after a successful native extract pass. Python is only invoked when scikit-learn is available, and only for `SEMANTIC_PROXIMITY` (`extract-knowledge.py --semantic-only`). When sklearn is absent, **no Python subprocess is launched** on the successful native watch path. First-run DB bootstrap (`spawn_indexer()`) remains Python-backed. The Python `sk.py` shim/no-binary install paths remain fully Python-backed regardless of sklearn availability. `extract-knowledge.py` is **NOT removed**. Proof (Windows-local): `cargo test --quiet` (531 Rust unit + 72 integration), `python tests\test_indexing.py` (28/28). WSL/Linux/macOS not separately re-proved.
->
-> **Wave18 (native first-run DB bootstrap):** `session.rs`, `claude.rs`, and `extract.rs` each call `open_or_create_index_db` / `ensure_extract_tables` when `knowledge.db` is absent. The extract-owned tables (`knowledge_entries`, `ke_fts`, `knowledge_relations`, `embedding_meta`) are now created natively on first run. `None` from either native indexer now means a genuine DB open/create failure (e.g. filesystem permission error) — NOT merely "DB absent". `spawn_indexer()` (Python bootstrap via `build-session-index.py`) is now only triggered as a last-resort fallback for real creation failures, not for a missing DB. `migrate.py` remains the canonical owner of versioned schema upgrades; wave18 only creates absent tables and does **NOT** replace `migrate.py`. Python is still invoked for `SEMANTIC_PROXIMITY` when sklearn is available (`--semantic-only`). The Python `sk.py` shim/no-binary install paths remain fully Python-backed. `extract-knowledge.py` is **NOT removed**. Proof (Windows-local): `cargo test --quiet` (535 Rust unit + 73 integration), `python tests\test_indexing.py` (28/28). WSL/Linux/macOS not separately re-proved.
->
-> **Wave19 (native SEMANTIC_PROXIMITY):** `SEMANTIC_PROXIMITY` is now computed natively in Rust (`watch.rs` via `sk-rust/src/embeddings/tfidf.rs` TF-IDF cosine). The successful native watch path **no longer auto-spawns Python at all**. `extract-knowledge.py --semantic-only` remains available for manual/fallback use but is **NOT** auto-called on the successful native watch path. Python is still triggered as a last-resort fallback on genuine DB creation failures. Python `sk.py` shim/no-binary install paths remain fully Python-backed. Three post-landing fixes landed after the initial wave19 code review: no-spawn tests now use side-channel flag files (not stdout sentinels); native bootstrap schema includes `error_type`/`root_cause`/`severity` for fresh DBs; backfill updated-count now tracks actual affected rows. `extract-knowledge.py` is **NOT removed**. Proof (Windows-local): `cargo test --quiet` (536 Rust unit + 73 integration), `python tests\test_indexing.py` (28/28). WSL/Linux/macOS not separately re-proved.
->
-> **Wave20 (zero Python spawns; intentional boundaries declared):** `watch.rs` **never** spawns Python — including on error paths. The last-resort `spawn_indexer()` Python fallback on genuine DB open/create failures (wave18/19) is removed. On genuine DB open/create or native-extract failure, `watch` emits a structured recovery hint to stderr naming the exact manual command (`python build-session-index.py --incremental` or `python extract-knowledge.py`). **The following Python surfaces are intentional and not removed:** Python `sk.py` shim / no-binary installs remain fully Python-backed for all commands; `hook_runner.py` is the Python hook runner for shim and non-binary installs; `build-session-index.py`, `extract-knowledge.py` (including `--semantic-only`), and `migrate.py` are intentional manual operator tools. Integration proof: `wave20_db_failure_emits_recovery_no_python_spawn` in `sk-rust/tests/integration_test.rs`. Proof (Windows-local): `cargo test --quiet` (536 Rust unit + 74 integration). WSL/Linux/macOS not separately re-proved.
+`sk watch` is available in both the Rust binary and the Python `sk.py` shim.
+
+**Rust binary (default build):** native loop + indexer for Copilot (`.md`) and Claude (`.jsonl`) sessions; native extract (classification, relations, semantic proximity, first-run DB bootstrap). **Never** spawns Python — on DB or extract failure, emits a structured recovery hint naming the manual command (`python build-session-index.py --incremental` or `python extract-knowledge.py`).
+
+**Python `sk.py` shim / no binary:** delegates to `watch-sessions.py`.
+
+> Python surfaces (`extract-knowledge.py`, `build-session-index.py`, `migrate.py`) are intentional permanent operator tools — not auto-called by `sk watch` and not candidates for removal. See **[docs/ARCHITECTURE.md — Intentional Python Boundaries](ARCHITECTURE.md#intentional-python-boundaries)**.
 
 ```bash
-sk watch                            # watch-sessions.py
+sk watch                            # Rust binary or watch-sessions.py
 sk watch --once                     # watch-sessions.py --once
 sk watch --service                  # watch-sessions.py --service
 sk watch --install-hint             # watch-sessions.py --install-hint
@@ -144,7 +134,7 @@ sk watch --install-hint             # watch-sessions.py --install-hint
 
 `auto-update-tools.py --restart-watch` also prefers `sk watch` when the native binary is installed at `~/.copilot/bin/sk-native` (Unix) or `~/.copilot/bin/sk.exe` (Windows).
 
-> **Direct-script fallback:** many `sk` subcommands still delegate to the underlying `python3 ~/.copilot/tools/<script>.py` entrypoint. After wave20: `briefing`, `learn`, `query` have stable routing; `watch` has a native loop + native indexer (Copilot and Claude JSONL) + native sessions-table column migrations + native sync-op enqueueing (wave5) + native local-only `sessions_fts` writer (wave6) + no longer spawns `build-session-index.py --incremental` for existing-DB non-JSONL Copilot changes (wave10) + **native hot-path `knowledge_entries`/`ke_fts` writer (`native-extract` is now a default Cargo feature since wave15)** + **native deterministic relation extraction (wave16)** + **native residual helpers (wave17)** + **native first-run DB bootstrap (wave18)** + **native SEMANTIC_PROXIMITY (wave19)** + **wave20: no Python subprocess on any path, including error paths** — on DB open/create or extract failure, `watch` emits a structured recovery hint naming the exact manual command; `extract-knowledge.py --semantic-only` remains available for manual/fallback use only; `migrate.py` remains canonical for versioned schema upgrades; `index embed --build` is native (`native-embed` is a default feature); `sync run` in the **default Rust build** routes natively (`native-sync` is a default Cargo feature since wave4) — `sync-daemon.py` remains the fallback for the Python `sk.py` shim and installs without a compiled binary. Hook events `sessionStart` (wave9), `sessionEnd` (wave4+wave9), `errorOccurred` (wave5), `postToolUse` (wave10), and `preToolUse` (wave13, Rust-binary installs) route natively; the Python `sk.py` shim routes `sk hooks run preToolUse` through `hook_runner.py` — shim behavior unchanged. `hooks/rules/syntax_gate.py` and `hook_runner.py` are NOT removed. `extract-knowledge.py` is NOT removed — intentional manual operator tool. Python `sk.py` shim/no-binary paths remain fully Python-backed. If `sk` is unavailable, use the direct-script form shown in each section below.
+> **Direct-script fallback:** if `sk` is unavailable, use the direct-script form shown in each section below.
 
 ---
 
@@ -254,7 +244,7 @@ python3 ~/.copilot/tools/sync-config.py --clear
 
 ### Run sync runtime
 
-> **Wave4 state (`native-sync` now in default Cargo features):** `sk sync run` is backed by a native Rust daemon layer (lock, signal, adaptive loop) in `sk-rust/src/commands/sync_run.rs`. The HTTP push/pull engine and FTS refresh (`knowledge_fts`/`ke_fts`) are compiled under the `native-sync` Cargo feature. Since wave4, `native-sync` is in the **default** feature set (`default = ["native-embed", "native-sync"]`), so the standard compiled `sk` binary routes `sk sync run` natively — including push, pull, and FTS refresh. The Python `sk.py` shim and any install without a compiled binary still delegate to `sync-daemon.py --once` as the Python subprocess fallback.
+> **Current state (`native-sync` in default Cargo features):** the compiled `sk` binary routes `sk sync run` natively — Rust daemon loop, lock, signal, adaptive push/pull, and FTS refresh (`knowledge_fts`/`ke_fts`). The Python `sk.py` shim and any install without a compiled binary delegate to `sync-daemon.py --once` as the fallback.
 
 ```bash
 python3 ~/.copilot/tools/sync-daemon.py --once

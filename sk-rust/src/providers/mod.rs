@@ -29,6 +29,7 @@ const MAX_LINE_BYTES: usize = 50_000_000;
 ///
 /// Mirrors Python's `SessionMeta` when produced by `ClaudeProvider`.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ClaudeSession {
     /// Session UUID — stem of the `.jsonl` filename.
     pub id: String,
@@ -51,6 +52,7 @@ pub struct ClaudeSession {
 /// `kind` is one of: `user_msg`, `assistant_msg`, `tool_call`, `tool_result`,
 /// `system`, `note` (matches the 7-value EventKind literal set in Python's IR).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ClaudeEvent {
     /// FK → `sessions.id`.
     pub session_id: String,

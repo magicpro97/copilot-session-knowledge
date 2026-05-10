@@ -110,6 +110,7 @@ pub fn set_sync_state(conn: &Connection, key: &str, value: &str) -> Result<()> {
 }
 
 /// Read a key from `sync_state`.
+#[allow(dead_code)]
 pub fn get_sync_state(conn: &Connection, key: &str) -> Result<Option<String>> {
     conn.query_row("SELECT value FROM sync_state WHERE key=?", [key], |r| {
         r.get(0)
@@ -246,7 +247,7 @@ pub fn collect_pending_txns(
 /// Compute the effective batch limit, boosting for large pending queues.
 /// Mirrors `_effective_sync_limit`.
 pub fn effective_sync_limit(conn: &Connection, requested: usize, replica_id: &str) -> usize {
-    let limit = requested.max(1).min(MAX_SYNC_LIMIT);
+    let limit = requested.clamp(1, MAX_SYNC_LIMIT);
 
     let pending: i64 = {
         let row = if replica_id.is_empty() {
@@ -680,11 +681,10 @@ fn portable_apply_payload(
     payload.remove("target_id");
 
     match table_name {
-        "sessions" => {
-            if !row_stable_id.is_empty() {
-                payload.insert("id".into(), Value::String(row_stable_id.to_string()));
-            }
+        "sessions" if !row_stable_id.is_empty() => {
+            payload.insert("id".into(), Value::String(row_stable_id.to_string()));
         }
+        "sessions" => {}
         "sections" | "knowledge_entries" => {
             let doc_stable = payload
                 .remove("document_stable_id")

@@ -8,10 +8,10 @@
 //!
 //! 1. `gateway_health` → GET `{base_url}/healthz`
 //! 2. `push_once`      → collect pending txns, POST `{base_url}/sync/push`,
-//!                        validate response, mark committed
+//!    validate response, mark committed
 //! 3. `pull_once`      → paginated GET `{base_url}/sync/pull?…`,
-//!                        apply each remote txn to the local DB, then refresh
-//!                        `knowledge_fts` / `ke_fts` for touched rows
+//!    apply each remote txn to the local DB, then refresh
+//!    `knowledge_fts` / `ke_fts` for touched rows
 //! 4. `run_native_sync_cycle` — orchestrates health + push + pull
 
 #![cfg(feature = "native-sync")]
@@ -258,7 +258,7 @@ fn pull_once(
         let url = format!(
             "{}/sync/pull?replica_id={}&after={}&limit={}",
             base,
-            urlenccode(&replica_id),
+            urlenccode(replica_id),
             urlenccode(&next_after),
             limit.max(1)
         );

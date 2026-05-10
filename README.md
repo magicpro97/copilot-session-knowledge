@@ -294,18 +294,19 @@ python browse.py --port 8080 --token YOUR_TOKEN
 
 Security: token is required on every request; `Content-Security-Policy` blocks inline scripts. Do not expose this port externally.
 
-#### Primary UI (v2) — Next.js
+#### Primary UI — Next.js (root routes)
 
-The `/v2/*` routes are the primary browse experience and serve the modern Next.js 16 frontend (`browse-ui/`). Start at `http://127.0.0.1:8080/v2/sessions?token=YOUR_TOKEN`.
+The browse app serves the modern Next.js 16 frontend at root routes (`/*`). Start at `http://127.0.0.1:8080/sessions?token=YOUR_TOKEN`. Legacy `/v2/*` routes redirect to these canonical paths.
 
 | Route | Description |
 |-------|-------------|
-| `/v2/sessions` | Session list |
-| `/v2/sessions/[id]` | Session detail (real UUID paths) + timeline/mindmap/checkpoints |
-| `/v2/search` | Full-text + semantic search |
-| `/v2/insights` | Knowledge insights (5-tab workspace: Overview, Knowledge, Retro, Search Quality, Live feed) |
-| `/v2/graph` | Graph workspace: Insight (default) + Evidence + Similarity + Communities |
-| `/v2/settings` | Preferences |
+| `/sessions` | Session list |
+| `/sessions/[id]` | Session detail (real UUID paths) + timeline/mindmap/checkpoints |
+| `/search` | Full-text + semantic search |
+| `/insights` | Knowledge insights (Overview, Knowledge, Retro, Search Quality, Live feed tabs) |
+| `/graph` | Graph workspace: Insight (default) + Evidence + Similarity + Communities |
+| `/settings` | Preferences + host management |
+| `/chat` | Operator console — authenticated Copilot CLI execution surface |
 
 To rebuild the primary UI after editing `browse-ui/src/`, run `cd browse-ui && pnpm build`; to build and launch local browse in one step, run `cd browse-ui && node scripts/run-local.mjs -- --port 8080 --token YOUR_TOKEN --no-tunnel`.
 
@@ -409,7 +410,7 @@ flowchart TD
 6. **Host metadata** — `host_manifest.py` is the single source of truth (Copilot CLI + Claude Code only)
 7. **Tentacles** — `.octogent/` stores local multi-agent orchestration state (gitignored)
 
-**Schema:** v1–v6 (legacy) → v7 (two-phase + `event_offsets`) → **v8** (current: `sessions_fts` contentless FTS5). Run `python3 ~/.copilot/tools/migrate.py` to upgrade.
+**Schema:** v1–v6 (legacy) → v7 (two-phase + `event_offsets`) → v8 (`sessions_fts` FTS5) → v9–v14 (eval, sync, benchmark) → v15 (confidence backfill) → v16 (error lifecycle) → **v17** (current: `briefing_deliveries`). Run `python3 ~/.copilot/tools/migrate.py` to upgrade.
 
 ## Auto-Update
 

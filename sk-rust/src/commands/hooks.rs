@@ -139,7 +139,7 @@ pub fn run_hooks_command(args: &[String]) -> ExitCode {
                 ExitCode::SUCCESS
             } else {
                 // Python fallback: Python sk.py shim and non-Rust installs.
-                run_fallback("hooks/hook_runner.py", &[event.clone()])
+                run_fallback("hooks/hook_runner.py", std::slice::from_ref(event))
             }
         }
         [event, ..] => {

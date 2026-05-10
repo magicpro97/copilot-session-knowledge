@@ -211,7 +211,7 @@ pub fn batch_embed(
 ) -> Result<Vec<Vec<f32>>, EmbedApiError> {
     let total = texts.len();
     let effective_batch = batch_size.max(1);
-    let num_batches = (total + effective_batch - 1) / effective_batch;
+    let num_batches = total.div_ceil(effective_batch);
     let mut all_vecs: Vec<Vec<f32>> = Vec::with_capacity(total);
 
     for (batch_num, chunk) in texts.chunks(effective_batch).enumerate() {

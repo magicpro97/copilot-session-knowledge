@@ -158,7 +158,7 @@ pub fn build_tfidf_model(texts: &[&str], doc_ids: &[i64]) -> Vec<u8> {
     let mut data: Vec<f64> = Vec::new();
 
     for (row_idx, tf_map) in doc_term_freqs.iter().enumerate() {
-        let mut row_entries: Vec<(usize, f64)> = tf_map
+        let row_entries: Vec<(usize, f64)> = tf_map
             .iter()
             .filter_map(|(term, &tf)| {
                 vocabulary.get(term).and_then(|&col| {
@@ -392,7 +392,7 @@ mod tests {
         let doc_ids = vec![42i64];
         let blob = build_tfidf_model(&texts, &doc_ids);
         let model: serde_json::Value = serde_json::from_slice(&blob).unwrap();
-        assert!(model["vocabulary"].as_object().unwrap().len() > 0);
+        assert!(!model["vocabulary"].as_object().unwrap().is_empty());
         assert_eq!(model["doc_ids"][0], 42);
         assert_eq!(model["matrix_shape"][0], 1i64);
     }

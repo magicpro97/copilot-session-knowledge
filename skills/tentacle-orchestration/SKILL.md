@@ -89,6 +89,7 @@ sk install --install-git-hooks
 | **Escalate, don't expand** | If your scope is insufficient to complete the task, write the gap to `handoff.md` (e.g. "blocked: need changes in `src/db/` which is outside my scope") and stop. The orchestrator decides whether to create a new tentacle or adjust scope. |
 | **No over-implementation** | Implement only what your todos specify. Do not add features, refactors, or improvements that are not in your todo list — even if they seem obvious. |
 | **Handoff before stopping** | Always write a structured handoff before marking your work done — even if the session ends early. Use `tentacle.py handoff <name> "<prose summary>" --status <STATUS> --changed-file <path> --learn`. Required fields: a prose summary and `--status` (one of `DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, `REGRESSED`). Add one `--changed-file` per modified file; omit it when no files changed (common for `BLOCKED`, `TOO_BIG`, or `AMBIGUOUS`). Old form `handoff <name> "<message>" --learn` still works when no structured status is needed. The orchestrator reads `STATUS:` and `Changed:` receipts to decide next steps and triage. |
+| **No platform `create` for reports** | Do **not** use the runtime platform's `create` file-creation tool to save research output, investigation findings, or final reports. The `create` tool is a platform capability that is **not available in all agent runtimes** (cloud agents, Copilot cloud runs, background tasks). Use `tentacle.py handoff` to persist agent output to `handoff.md` — this is always available when `tentacle.py` is on disk. If even `tentacle.py` is unavailable, print the report to chat so the orchestrator can capture it. Orchestrators must not assume sub-agents can create arbitrary files. |
 
 ## Anti-patterns
 
@@ -106,6 +107,7 @@ sk install --install-git-hooks
 - ❌ Accepting sub-agent claims of "tests pass" / "lint clean" / "CI green" without running the commands → unverified claims are not evidence; always run the gates yourself and record output
 - ❌ Closing a tentacle `DONE` with no verification evidence → treated as `AMBIGUOUS`; requires triage before proceeding
 - ❌ Closing an issue without per-criterion evidence → acceptance criteria are unproven until commands run and output is recorded
+- ❌ Sub-agent uses the platform `create` file-creation tool to save research or investigation output → use `tentacle.py handoff` instead. The `create` tool is a runtime-platform capability and is **not guaranteed in all agent contexts** (cloud agents, Copilot cloud runs, background tasks). `tentacle.py handoff` writes to `handoff.md` in the tentacle directory and is always available as long as `tentacle.py` is on disk. If `tentacle.py` is also unavailable, fall back to printing the report to chat. Orchestrators should not assume sub-agents can create arbitrary files.
 
 ## Core concept
 

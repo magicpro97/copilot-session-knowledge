@@ -274,8 +274,7 @@ pub fn save_config(config: &EmbedConfig) -> std::io::Result<std::path::PathBuf> 
         "providers":       serde_json::Value::Object(providers_map),
     });
 
-    let json_str = serde_json::to_string_pretty(&output)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let json_str = serde_json::to_string_pretty(&output).map_err(std::io::Error::other)?;
     std::fs::write(&path, json_str)?;
     Ok(path)
 }
@@ -352,8 +351,10 @@ mod tests {
 
     #[test]
     fn resolve_provider_explicit_with_key() {
-        let mut cfg = EmbedConfig::default();
-        cfg.active_provider = "openai".to_string();
+        let mut cfg = EmbedConfig {
+            active_provider: "openai".to_string(),
+            ..Default::default()
+        };
         cfg.providers.get_mut("openai").unwrap().api_key = "test-key".to_string();
 
         let result = resolve_provider(&cfg);
@@ -365,8 +366,10 @@ mod tests {
     #[test]
     fn resolve_provider_explicit_without_key_returns_none() {
         let _guard = env_lock();
-        let mut cfg = EmbedConfig::default();
-        cfg.active_provider = "openai".to_string();
+        let mut cfg = EmbedConfig {
+            active_provider: "openai".to_string(),
+            ..Default::default()
+        };
         // No api_key, no env var
         cfg.providers.get_mut("openai").unwrap().api_key = String::new();
 
@@ -379,8 +382,10 @@ mod tests {
     #[test]
     fn resolve_provider_auto_picks_first_with_key() {
         let _guard = env_lock();
-        let mut cfg = EmbedConfig::default();
-        cfg.active_provider = "auto".to_string();
+        let mut cfg = EmbedConfig {
+            active_provider: "auto".to_string(),
+            ..Default::default()
+        };
 
         // Set only openai key (not fireworks, which is higher priority)
         std::env::remove_var("FIREWORKS_API_KEY");
@@ -444,10 +449,12 @@ mod tests {
     #[test]
     fn save_config_roundtrip_top_level_fields() {
         let _guard = env_lock();
-        let mut cfg = EmbedConfig::default();
-        cfg.active_provider = "fireworks".to_string();
-        cfg.fallback = "none".to_string();
-        cfg.batch_size = 42;
+        let cfg = EmbedConfig {
+            active_provider: "fireworks".to_string(),
+            fallback: "none".to_string(),
+            batch_size: 42,
+            ..Default::default()
+        };
 
         let tmp = unique_test_path("sk_test_save_cfg_roundtrip");
         // Set env var right before save (minimal race window)

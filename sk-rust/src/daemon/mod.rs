@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 // ── Lock file ─────────────────────────────────────────────────────────────────
 
@@ -172,13 +172,6 @@ pub fn adaptive_interval(most_recent_age_secs: Option<u64>) -> Duration {
         Some(age) if age <= 3600 => Duration::from_secs(30),
         _ => Duration::from_secs(300),
     }
-}
-
-/// Return the age in seconds of `mtime` relative to now, or `None` on error.
-pub fn mtime_age_secs(mtime: SystemTime) -> Option<u64> {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    let ts = mtime.duration_since(UNIX_EPOCH).ok()?.as_secs();
-    Some(now.saturating_sub(ts))
 }
 
 // ── Poll loop configuration ───────────────────────────────────────────────────

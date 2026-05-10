@@ -263,7 +263,6 @@ fn wave17_no_spawn_when_sklearn_unavailable() {
     let _ = fs::remove_dir_all(&test_root);
 }
 
-
 /// Wave 18 proof: `sk watch --once` with no DB and sklearn unavailable creates
 /// the DB and tables natively without spawning Python.
 ///
@@ -344,7 +343,10 @@ fn wave18_fresh_db_bootstrap_without_python() {
     );
 
     // Verify DB was created natively.
-    assert!(db_path.exists(), "DB must be created natively by sk watch --once (wave-18)");
+    assert!(
+        db_path.exists(),
+        "DB must be created natively by sk watch --once (wave-18)"
+    );
 
     // Verify core tables exist (session bootstrap + extract bootstrap).
     let conn = Connection::open(&db_path).unwrap();
@@ -364,7 +366,13 @@ fn wave18_fresh_db_bootstrap_without_python() {
 
     // Verify wave-18 bootstrap created the residual-helper and mistake-metadata
     // columns that native extract depends on before any Python migration runs.
-    for column in &["task_id", "affected_files", "error_type", "root_cause", "severity"] {
+    for column in &[
+        "task_id",
+        "affected_files",
+        "error_type",
+        "root_cause",
+        "severity",
+    ] {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('knowledge_entries') WHERE name = ?",
@@ -380,7 +388,6 @@ fn wave18_fresh_db_bootstrap_without_python() {
 
     let _ = fs::remove_dir_all(&test_root);
 }
-
 
 /// Wave 20 proof: when native DB open/create fails (directory planted at the DB path
 /// forces SQLite to fail), `sk watch --once` emits structured recovery guidance but
@@ -475,7 +482,6 @@ fn wave20_db_failure_emits_recovery_no_python_spawn() {
 
     let _ = fs::remove_dir_all(&test_root);
 }
-
 
 /// --wakeup uses native Rust (no Python fallback) and emits structured plain-text.
 #[test]
@@ -994,7 +1000,6 @@ fn hooks_pretooluse_deny_dry_run_exits_zero() {
             "unexpected dry-run output:\n{stdout}"
         );
     }
-
 }
 
 // ─── Sync run integration tests ─────────────────────────────────────────────
@@ -1213,9 +1218,9 @@ fn hooks_run_without_event_exits_two() {
     let mut cmd = assert_cmd::Command::cargo_bin("sk").unwrap();
     cmd.args(["hooks", "run"]);
 
-    cmd.assert()
-        .code(2)
-        .stderr(predicates::str::contains("sk hooks run: missing event name"));
+    cmd.assert().code(2).stderr(predicates::str::contains(
+        "sk hooks run: missing event name",
+    ));
 }
 
 /// `sk hooks run sessionEnd` must be routed natively (not to hook_runner.py).

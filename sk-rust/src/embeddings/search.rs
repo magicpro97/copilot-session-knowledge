@@ -30,6 +30,7 @@ pub enum SearchKey {
 
 /// A unified search result from any source (FTS or vector).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SearchResult {
     /// Source pipeline: "keyword", "semantic", or "keyword+semantic"
     pub source: String,

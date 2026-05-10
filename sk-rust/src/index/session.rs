@@ -200,10 +200,10 @@ pub fn index_session_dir(conn: &Connection, session_dir: &Path, incremental: boo
         if let Ok(entries) = std::fs::read_dir(&research_dir) {
             for entry in entries.flatten() {
                 let p = entry.path();
-                if p.extension().and_then(|e| e.to_str()) == Some("md") {
-                    if index_generic_doc(conn, &session_id, &p, "research", incremental) {
-                        stats.research += 1;
-                    }
+                if p.extension().and_then(|e| e.to_str()) == Some("md")
+                    && index_generic_doc(conn, &session_id, &p, "research", incremental)
+                {
+                    stats.research += 1;
                 }
             }
         }
@@ -217,10 +217,16 @@ pub fn index_session_dir(conn: &Connection, session_dir: &Path, incremental: boo
                 let p = entry.path();
                 if p.is_file() {
                     match p.extension().and_then(|e| e.to_str()) {
-                        Some("md") | Some("txt") => {
-                            if index_generic_doc(conn, &session_id, &p, "artifact", incremental) {
-                                stats.files += 1;
-                            }
+                        Some("md") | Some("txt")
+                            if index_generic_doc(
+                                conn,
+                                &session_id,
+                                &p,
+                                "artifact",
+                                incremental,
+                            ) =>
+                        {
+                            stats.files += 1;
                         }
                         _ => {}
                     }
@@ -338,10 +344,8 @@ fn index_checkpoint(
         None => return false,
     };
 
-    if incremental {
-        if get_document_hash(conn, &path_str).as_deref() == Some(fhash.as_str()) {
-            return false; // unchanged
-        }
+    if incremental && get_document_hash(conn, &path_str).as_deref() == Some(fhash.as_str()) {
+        return false; // unchanged
     }
 
     let content = match std::fs::read_to_string(cp_path) {
@@ -445,10 +449,8 @@ fn index_generic_doc(
         None => return false,
     };
 
-    if incremental {
-        if get_document_hash(conn, &path_str).as_deref() == Some(fhash.as_str()) {
-            return false;
-        }
+    if incremental && get_document_hash(conn, &path_str).as_deref() == Some(fhash.as_str()) {
+        return false;
     }
 
     let content = match std::fs::read_to_string(doc_path) {
@@ -1259,7 +1261,10 @@ mod tests {
         );
 
         // DB must have been created.
-        assert!(db_path.exists(), "DB must be created natively by wave-18 bootstrap");
+        assert!(
+            db_path.exists(),
+            "DB must be created natively by wave-18 bootstrap"
+        );
 
         // Verify base tables were created.
         let conn = rusqlite::Connection::open(&db_path).unwrap();
@@ -1271,7 +1276,10 @@ mod tests {
                     |r| r.get::<_, i64>(0),
                 )
                 .unwrap();
-            assert!(count > 0, "table {table} must exist after wave-18 native bootstrap");
+            assert!(
+                count > 0,
+                "table {table} must exist after wave-18 native bootstrap"
+            );
         }
 
         fs::remove_dir_all(&tmp).ok();
@@ -1929,7 +1937,7 @@ mod tests {
         fs::create_dir_all(&cp_dir).unwrap();
         fs::write(
             cp_dir.join("index.md"),
-            &format!("| {} | {} | cp1.md |\n", seq, title),
+            format!("| {} | {} | cp1.md |\n", seq, title),
         )
         .unwrap();
         fs::write(

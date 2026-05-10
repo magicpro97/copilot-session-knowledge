@@ -59,7 +59,7 @@ def main():
     print("  🧠 LEARN REMINDER: Task completed! Did you learn something?")
     print("  Record mistakes, patterns, or decisions for future sessions:")
     print()
-    print("    sk learn --mistake \"Title\" \"Description\" --wing <wing> --room <room>")
+    print('    sk learn --mistake "Title" "Description" --wing <wing> --room <room>')
     print("    (fallback: python3 ~/.copilot/tools/learn.py)")
     print()
 

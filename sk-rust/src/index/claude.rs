@@ -6,7 +6,7 @@
 //!   - `ClaudeProvider`-driven session discovery (via `crate::providers`)
 //!   - Phase 1: stat-only session upsert (fast, no JSONL content read)
 //!   - Phase 2: full event indexing with byte-offset tracking, noise filter,
-//!              `knowledge_fts`, `event_offsets`, and `sessions_fts` writes
+//!     `knowledge_fts`, `event_offsets`, and `sessions_fts` writes
 //!
 //! ## DB compatibility
 //!

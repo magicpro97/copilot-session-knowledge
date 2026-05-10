@@ -93,9 +93,9 @@
 ///     `markers/code-edit-count` HMAC-signed counter); blocks `git commit/push`
 ///     and `task_complete` when edits ≥ 3 without a `markers/learn-done` marker.
 ///     Mirrors `hooks/rules/learn_gate.py::EnforceLearnRule`.  Deny-capable.
-///   NOTE: `preToolUse` is still NOT in `NATIVE_EVENTS` — managed preToolUse
-///   routing remains Python-owned (`hook_runner.py`).  These rules are available
-///   for native direct calls and tests only.
+///     NOTE: `preToolUse` is still NOT in `NATIVE_EVENTS` — managed preToolUse
+///     routing remains Python-owned (`hook_runner.py`).  These rules are available
+///     for native direct calls and tests only.
 ///
 /// wave12 native rule availability (preToolUse parity, no routing flip):
 ///   - `TentacleEnforceRule` — preToolUse: denies `edit`/`create`/`bash`
@@ -106,9 +106,9 @@
 ///     `hooks/rules/tentacle.py::TentacleEnforceRule`.  Deny-capable.
 ///     Inserts between `EnforceLearnRule` and `SubagentGitGuardRule` to match
 ///     Python `first-deny-wins` dispatch order.
-///   NOTE: `preToolUse` was NOT in `NATIVE_EVENTS` after wave12 —
-///   managed preToolUse routing remained Python-owned (`hook_runner.py`).
-///   This was superseded by the wave13 routing flip (see below).
+///     NOTE: `preToolUse` was NOT in `NATIVE_EVENTS` after wave12 —
+///     managed preToolUse routing remained Python-owned (`hook_runner.py`).
+///     This was superseded by the wave13 routing flip (see below).
 ///
 /// wave13 native port + routing flip (preToolUse now native for Rust-binary installs):
 ///   - `SyntaxGateRule` — preToolUse: blocks `edit`/`create` on `*.py` files
@@ -125,10 +125,10 @@
 ///     than deny.  No HMAC dependency — pure syntax check via subprocess.
 ///     Inserts between `SubagentGitGuardRule` and `BlockEditDistRule` to match
 ///     the Python `first-deny-wins` dispatch order.
-///   Routing flip: `preToolUse` is now in `NATIVE_EVENTS` for Rust-binary
-///   installs (`sk hooks run preToolUse` routes natively).  Python `sk.py` shim
-///   and non-Rust installs continue to fall back to `hook_runner.py` for all
-///   events regardless of `NATIVE_EVENTS` — the Python path is unchanged.
+///     Routing flip: `preToolUse` is now in `NATIVE_EVENTS` for Rust-binary
+///     installs (`sk hooks run preToolUse` routes natively).  Python `sk.py` shim
+///     and non-Rust installs continue to fall back to `hook_runner.py` for all
+///     events regardless of `NATIVE_EVENTS` — the Python path is unchanged.
 use crate::config::resolve_home_dir;
 use std::collections::HashSet;
 use std::fs;
@@ -480,7 +480,7 @@ fn regenerate_manifest() {
             .filter(|e| {
                 e.path()
                     .extension()
-                    .map_or(false, |x| x.eq_ignore_ascii_case("py"))
+                    .is_some_and(|x| x.eq_ignore_ascii_case("py"))
             })
             .collect();
         paths.sort_by_key(|e| e.file_name());
@@ -501,7 +501,7 @@ fn regenerate_manifest() {
                 .filter(|e| {
                     e.path()
                         .extension()
-                        .map_or(false, |x| x.eq_ignore_ascii_case("py"))
+                        .is_some_and(|x| x.eq_ignore_ascii_case("py"))
                 })
                 .collect();
             rpaths.sort_by_key(|e| e.file_name());
@@ -582,13 +582,9 @@ impl HookRule for IntegrityRule {
             ));
         }
 
-        let manifest: serde_json::Value = match fs::read_to_string(&manifest_path)
+        let manifest: serde_json::Value = fs::read_to_string(&manifest_path)
             .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-        {
-            Some(v) => v,
-            None => return None, // fail-open: cannot read manifest
-        };
+            .and_then(|s| serde_json::from_str(&s).ok())?;
 
         let hooks_dir = hooks_src_dir();
         let dst_dir = hooks_dst_dir();
@@ -692,7 +688,7 @@ const SUBAGENT_MARKER_TTL_SECS: u64 = 14400; // 4 hours
 /// Wave6: calls `marker_auth::verify_marker` before trusting TTL data.
 /// - With a secret: unsigned or tampered markers are not trusted → `false`.
 /// - No secret: backward-compat — any existing file is accepted.
-/// Authentication failures never add new denials (fail-open).
+///   Authentication failures never add new denials (fail-open).
 fn subagent_marker_is_fresh() -> bool {
     let path = markers_dir().join("dispatched-subagent-active");
     if !path.is_file() {
@@ -1224,7 +1220,7 @@ fn is_py_source_path(file_path: &str) -> bool {
 ///   - `toolResult.filePath` (edit)
 ///   - `toolArgs.path` (edit/create direct-path tests and preToolUse)
 ///   - `input.filePath` (create in Python-managed postToolUse rules)
-fn hook_file_path<'a>(data: &'a Value) -> Option<&'a str> {
+fn hook_file_path(data: &Value) -> Option<&str> {
     data.get("toolResult")
         .and_then(|r| r.as_object())
         .and_then(|o| o.get("filePath"))
@@ -1482,7 +1478,7 @@ const READ_BEFORE_EDIT_EXTENSIONS: &[&str] = &[
 ///
 /// `toolInput` is the Copilot CLI native field; `toolArgs` is the normalised
 /// form used by some existing rules.  Try both to maximise coverage.
-fn tool_input_path<'a>(data: &'a Value) -> Option<&'a str> {
+fn tool_input_path(data: &Value) -> Option<&str> {
     data.get("toolInput")
         .and_then(|v| v.as_object())
         .and_then(|o| o.get("path"))
@@ -1684,14 +1680,13 @@ fn surfaces_from_path(path: &str) -> Vec<&'static str> {
     let mut surfaces = Vec::new();
     let lower = path.to_lowercase();
     let norm = path.replace('\\', "/");
-    if norm.contains("browse-ui/") || norm.starts_with("browse-ui/") {
-        if lower.ends_with(".ts")
+    if (norm.contains("browse-ui/") || norm.starts_with("browse-ui/"))
+        && (lower.ends_with(".ts")
             || lower.ends_with(".tsx")
             || lower.ends_with(".js")
-            || lower.ends_with(".jsx")
-        {
-            surfaces.push(SURFACE_UI);
-        }
+            || lower.ends_with(".jsx"))
+    {
+        surfaces.push(SURFACE_UI);
     }
     if lower.ends_with(".py") {
         surfaces.push(SURFACE_PY);
@@ -1715,10 +1710,9 @@ fn evidence_from_command(command: &str) -> Vec<&'static str> {
     if (command.contains("python3 ") || command.contains("python "))
         && command.contains("test_")
         && command.contains(".py")
+        && !ev.contains(&EV_PY_TESTS)
     {
-        if !ev.contains(&EV_PY_TESTS) {
-            ev.push(EV_PY_TESTS);
-        }
+        ev.push(EV_PY_TESTS);
     }
     if command.contains("pnpm format") {
         ev.push(EV_UI_FORMAT);
@@ -1933,7 +1927,7 @@ fn extract_written_paths_simple(command: &str) -> Vec<String> {
             let rest = &command[start..].trim_start_matches(' ');
             // Find end of path token.
             let end = rest
-                .find(|c: char| c == ' ' || c == ';' || c == '|' || c == '&' || c == '\n')
+                .find(|c: char| [' ', ';', '|', '&', '\n'].contains(&c))
                 .unwrap_or(rest.len());
             let raw = rest[..end].trim_matches(|c: char| c == '\'' || c == '"');
             if !raw.is_empty() && raw != "/" {
@@ -2239,10 +2233,7 @@ impl HookRule for RecurrenceDetectorRule {
                     .filter(|s| !s.is_empty())
             });
 
-        let session_id = match session_id {
-            Some(s) => s,
-            None => return None, // fail-open: no session ID
-        };
+        let session_id = session_id?;
 
         // --- Open DB read-write (fail-open if absent or locked) ---
         use crate::db::connection::knowledge_db_path;
@@ -3507,14 +3498,14 @@ fn bash_writes_source_files_detect(command: &str) -> bool {
         || command.contains("ruby ")
         || command.contains("perl ");
     let has_flag = command.contains(" -c ") || command.contains(" -e ");
-    if has_interp && has_flag {
-        if command.contains("open(")
+    if has_interp
+        && has_flag
+        && (command.contains("open(")
             || command.contains("writeFile")
             || command.contains("File.write")
-            || command.contains("File.open")
-        {
-            return true;
-        }
+            || command.contains("File.open"))
+    {
+        return true;
     }
 
     // `dd` with `of=` writes arbitrary bytes to a file.
@@ -5800,7 +5791,7 @@ mod tests {
         let lock_staged = staged.contains("browse-ui/pnpm-lock.yaml");
         // Both staged → no deny.
         assert!(
-            !(pkg_staged && !lock_staged),
+            !pkg_staged || lock_staged,
             "both staged must not trigger deny"
         );
     }
@@ -6030,9 +6021,9 @@ mod tests {
         // Python: json.dumps({"dirty": ["py"], "evidence": ["py_tests"]},
         //                    separators=(",", ":"), sort_keys=True)
         // → '{"dirty":["py"],"evidence":["py_tests"]}'
-        let mut dirty_sorted = vec!["py"];
+        let mut dirty_sorted = ["py"];
         dirty_sorted.sort_unstable();
-        let mut ev_sorted = vec!["py_tests"];
+        let mut ev_sorted = ["py_tests"];
         ev_sorted.sort_unstable();
 
         let payload = format!(

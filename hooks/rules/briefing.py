@@ -140,7 +140,7 @@ class EnforceBriefingRule(Rule):
 
         return deny(
             "\u26a0\ufe0f BRIEFING REQUIRED: Run briefing before editing code. "
-            'Command: sk briefing --auto --compact\n'
+            "Command: sk briefing --auto --compact\n"
             '(fallback: python3 ~/.copilot/tools/briefing.py "your task")'
         )
 

@@ -118,7 +118,7 @@ The **actual platform sends `toolArgs` as a parsed JSON object (dict)**, not a s
 - **Dry-run mode** — set `HOOK_DRY_RUN=1` to test without blocking
 - **Merged duplicates** — tentacle enforce+suggest, track+test share code
 
-## Native sk Routing (Foundation Wave)
+## Native sk Routing
 
 The managed `hooks.json` entries prefer the native `sk hooks run <event>` command surface when `sk` is available in PATH, falling back to direct hook-runner execution when not:
 
@@ -142,10 +142,10 @@ hooks.json → sk hooks run <event>    (when sk is in PATH — native Rust or Py
 sk hooks run <event>
   → [Rust binary] run_hooks_command(args)   (in sk-rust/src/commands/hooks.rs)
       OR [Python shim] sk.py::_run_hooks()
-  → hook_runner.py <event>                  (compatibility path for full parity today)
+  → hook_runner.py <event>                  (Python fallback path for non-binary installs)
 ```
 
-The `sk hooks` command is now available in both the **Rust binary** (`sk-rust/src/commands/hooks.rs`) and the Python `sk.py` shim. The managed `sk hooks run <event>` path intentionally preserves parity by dispatching through to `hook_runner.py`; direct Rust-native `sk hooks <event>` remains an incremental rollout/testing path rather than the source of truth for all rules.
+The `sk hooks` command is available in both the **Rust binary** (`sk-rust/src/commands/hooks.rs`) and the Python `sk.py` shim. For Rust-binary installs, all managed events route natively through the Rust runner. The Python `sk.py` shim always routes through `hook_runner.py` — shim behavior is unchanged regardless of native Rust availability.
 
 ### Install sk launcher
 
