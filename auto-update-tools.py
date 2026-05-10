@@ -373,6 +373,12 @@ def _update_lock():
     Stale locks (>= 10 min) are removed and the lock is re-acquired.
     """
     lock_path = _UPDATE_LOCK_FILE
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        warn(f"Could not prepare update lock dir: {exc}")
+        yield
+        return
     acquired = False
     for _attempt in range(2):
         try:

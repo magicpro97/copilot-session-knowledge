@@ -110,13 +110,20 @@ def verify_checksum(file_path: Path, checksum_url: str) -> bool:
 
 def extract_archive(archive_path: Path, dest_dir: Path, os_name: str) -> None:
     """Extract tar.gz or zip archive."""
-    if os_name == "windows":
+    archive_name = archive_path.name.lower()
+    if archive_name.endswith(".zip") or zipfile.is_zipfile(archive_path):
         with zipfile.ZipFile(archive_path, "r") as zf:
             zf.extractall(dest_dir)
-    else:
-        import tarfile
+        return
+
+    import tarfile
+
+    if archive_name.endswith((".tar.gz", ".tgz")) or tarfile.is_tarfile(archive_path):
         with tarfile.open(archive_path, "r:gz") as tf:
             tf.extractall(dest_dir)
+        return
+
+    raise ValueError(f"Unsupported archive format: {archive_path.name}")
 
 
 def setup_path_posix(install_dir: Path) -> None:
