@@ -118,7 +118,353 @@ The **actual platform sends `toolArgs` as a parsed JSON object (dict)**, not a s
 - **Dry-run mode** — set `HOOK_DRY_RUN=1` to test without blocking
 - **Merged duplicates** — tentacle enforce+suggest, track+test share code
 
-## Evidence Enforcement Policy (Rule 9)
+## Native sk Routing
+
+The managed `hooks.json` entries prefer the native `sk hooks run <event>` command surface when `sk` is available in PATH, falling back to direct hook-runner execution when not:
+
+```bash
+# hooks.json bash field (all events):
+if command -v sk >/dev/null 2>&1; then sk hooks run <event>; else python3 "$HOME/.copilot/tools/hooks/hook_runner.py" <event>; fi
+```
+
+```powershell
+# hooks.json powershell field (all events):
+if (Get-Command sk -ErrorAction SilentlyContinue) { sk hooks run <event> } else { python "$env:USERPROFILE\.copilot\tools\hooks\hook_runner.py" <event> }
+```
+
+### Routing chain
+
+```
+hooks.json → sk hooks run <event>    (when sk is in PATH — native Rust or Python shim)
+          OR → python3 hook_runner.py  (fallback when sk not installed)
+          OR → python hook_runner.py   (PowerShell fallback on Windows)
+
+sk hooks run <event>
+  → [Rust binary] run_hooks_command(args)   (in sk-rust/src/commands/hooks.rs)
+      OR [Python shim] sk.py::_run_hooks()
+  → hook_runner.py <event>                  (Python fallback path for non-binary installs)
+```
+
+The `sk hooks` command is available in both the **Rust binary** (`sk-rust/src/commands/hooks.rs`) and the Python `sk.py` shim. For Rust-binary installs, all managed events route natively through the Rust runner. The Python `sk.py` shim always routes through `hook_runner.py` — shim behavior is unchanged regardless of native Rust availability.
+
+### Install sk launcher
+
+To enable the native routing path, install the `sk` launcher:
+
+```bash
+python install.py --install-sk    # Creates ~/.copilot/bin/sk (Unix) or sk.cmd (Windows)
+# or let auto-update-tools.py do it automatically on next update
+```
+
+After install, `sk` must be in PATH (the installer adds `~/.copilot/bin` to your shell profile). The `--deploy-hooks` step informs you whether the native path is active.
+
+### Runtime restart via native sk
+
+`auto-update-tools.py --restart-watch` also prefers `sk watch` over direct `watch-sessions.py`:
+
+```
+_restart_manual():
+  1. Check _sk_binary_path() → sk-native (Rust) or sk (shim) in ~/.copilot/bin/
+  2. If found: spawn sk watch [--service]       ← native watcher on Rust binary, compat route on shim
+  3. If not:   spawn python/pythonw watch-sessions.py  ← direct Python fallback
+```
+
+## Native Parity Gap Analysis
+
+This section documents precisely which Python hook rules have been ported to the native Rust runner (`sk hooks <event>` direct path), which remain Python-only, and the exact hard blockers that prevent native parity.
+
+### Ported to native Rust (`sk-rust/src/hooks/rules.rs`)
+
+| Rule | Event(s) | Status | Notes |
+|------|----------|--------|-------|
+| `session-start` | sessionStart | ✅ Native (informational) | Emits "[sk] Session started" acknowledgement only; `AutoBriefingRule` and `IntegrityRule` follow in registration order |
+| `auto-briefing` | sessionStart | ✅ **Native (wave9)** | `AutoBriefingRule` spawns `briefing.py` via `python_exe()`, signs HMAC `briefing-done` + `codebase-map-ran` markers on completion; 10s bounded timeout (same cap as Python path); fail-open if `briefing.py` absent; HMAC write uses `marker_auth::sign_marker` |
+| `integrity` | sessionStart | ✅ **Native (wave9)** | `IntegrityRule` reads SHA256 hook-file manifest at `~/.copilot/hooks/integrity-manifest.json`; refreshes manifest when files change; emits integrity-verified or refresh notice; informational only; fail-open |
+| `subagent-git-guard` | preToolUse | ✅ Native (deny-capable, wave6 hardened) | Blocks `git commit/push` when dispatched-subagent marker is fresh; verifies HMAC marker authenticity when a secret exists, but stays backward-compatible without a secret |
+| `block-edit-dist` | preToolUse | ✅ Native (deny-capable, wave6; managed Rust path active in wave13) | Blocks `edit`/`create` targeting `browse-ui/dist/` on the direct Rust path and, after the wave13 routing flip, on managed `sk hooks run preToolUse` for Rust-binary installs. The Python `sk.py` shim still routes through `hook_runner.py`. |
+| `block-unsafe-html` | preToolUse | ✅ Native (deny-capable, wave6; managed Rust path active in wave13) | Blocks unsanitized `dangerouslySetInnerHTML` in `.ts/.tsx/.js/.jsx` on the direct Rust path and, after the wave13 routing flip, on managed `sk hooks run preToolUse` for Rust-binary installs. The Python `sk.py` shim still routes through `hook_runner.py`. |
+| `track-edits` | postToolUse | ✅ Native (wave6 write-side parity for `bash`; wave8 direct edit/create paths) | `bash` path now runs git-status diff, preserves HMAC `code-edit-count` / `py-edit-count`, updates `tentacle-edits`; wave8 also appends direct `edit`/`create` events to `tentacle-edits` for multi-step direct-edit flow accumulation; `TestReminderRule` remains authoritative for counter writes on edit/create to avoid dual-writer drift |
+| `learn-reminder` | postToolUse | ✅ Native direct path (wave6) | Emits the task-complete reminder and writes `learn-done` on `learn.py` bash runs |
+| `test-reminder` | postToolUse | ✅ Native managed + direct path (full counter-write; wave7 direct, wave10 managed) | Increments HMAC-signed `py-edit-count`, deletes/touches `tests-ran`; after the wave10 routing flip the native runner is the sole writer for managed `postToolUse` |
+| `nextjs-typecheck-reminder` | postToolUse | ✅ Native managed + direct path (full counter-write; wave7 direct, wave10 managed) | Increments `ts-edit-count` (plain counter) for `browse-ui` `.ts/.tsx`; after the wave10 routing flip the native runner is the sole writer for managed `postToolUse` |
+| `read-before-edit` | preToolUse + postToolUse | ✅ Native managed + direct path (wave7 direct; wave10 postToolUse managed; wave13 preToolUse managed) | postToolUse tracks viewed files in HMAC-signed `viewed-files` list marker; preToolUse warns when target file was not yet read on both direct and managed Rust paths. The Python `sk.py` shim still routes through `hook_runner.py`; fail-open. |
+| `pnpm-lockfile-guard` | preToolUse | ✅ Native (deny-capable, wave7) | Blocks `git commit` bash commands when `browse-ui/package.json` is staged but `browse-ui/pnpm-lock.yaml` is not; runs `git diff --cached --name-only` subprocess; fail-open |
+| `verification-gate` (postToolUse half) | postToolUse | ✅ Native direct path (evidence-recording, wave7) | Records evidence from successful verification commands (Python tests, pnpm checks) into HMAC-signed ledger; marks dirty surfaces when bash writes source files; path extraction handles `>`, `>>` redirects, `sed -i`, `tee`, and heredoc `open(...)` forms; preToolUse dirty-marking + informational deny resolved on direct path (wave8) — see `VerificationGatePreRule` |
+| `verification-gate` (preToolUse dirty-mark + informational deny) | preToolUse | ✅ Native managed + direct path (wave8 direct; wave13 managed Rust) | `VerificationGatePreRule` marks Python/`browse-ui` surfaces dirty on `edit`/`create`; emits informational deny on `task_complete`/bash closeout actions when evidence is missing. After wave13, the same native rule runs on managed `sk hooks run preToolUse` for Rust-binary installs; the Python `sk.py` shim still routes through `hook_runner.py`. |
+| `tentacle-suggest` | postToolUse | ✅ Native direct path (read-only, wave8) | `TentacleSuggestRule` reads `tentacle-edits` HMAC list marker and suggests tentacle-orchestration when edits span ≥3 files across ≥2 modules; `TrackEditsRule` remains the sole writer; handles both legacy flat-path and new JSON-dict marker formats; fail-open |
+| `recurrence-detector` | sessionEnd | ✅ **Native (wave9)** | `RecurrenceDetectorRule` increments `recurrence_after_briefing` counter in `knowledge.db` for briefed mistakes that recurred in the session; uses `COPILOT_AGENT_SESSION_ID`; informational side-effect only; fail-open when DB absent or session ID missing |
+| `enforce-briefing` | preToolUse | ✅ **Native managed + direct path (wave11 direct; wave13 managed Rust, deny-capable)** | `EnforceBriefingRule` blocks `edit`/`create`/bash writes to source files until a valid `briefing-done` marker is present, using the same `marker_auth` verification semantics as Python (HMAC-enforced when a secret exists, backward-compatible otherwise). Registered in `all_rules()` before `SubagentGitGuardRule` to match Python first-deny-wins order. Preserves tamper kill-switch behavior. After wave13, both direct `sk hooks preToolUse` and managed `sk hooks run preToolUse` for Rust-binary installs include this rule. The Python `sk.py` shim still routes through `hook_runner.py`. |
+| `enforce-learn` | preToolUse | ✅ **Native managed + direct path (wave11 direct; wave13 managed Rust, deny-capable)** | `EnforceLearnRule` tracks code-file edits (increments `code-edit-count` via the same `marker_auth` counter semantics as Python); blocks `git commit`/`git push`/`task_complete` when edits ≥ 3 without a `learn-done` marker. Registered after `EnforceBriefingRule` and before `SubagentGitGuardRule`. Preserves tamper kill-switch behavior. After wave13, both direct `sk hooks preToolUse` and managed `sk hooks run preToolUse` for Rust-binary installs include this rule. The Python `sk.py` shim still routes through `hook_runner.py`. |
+| `tentacle-enforce` | preToolUse | ✅ **Native managed + direct path (wave12 direct; wave13 managed Rust, deny-capable)** | `TentacleEnforceRule` mirrors Python `TentacleEnforceRule` in `hooks/rules/tentacle.py`. Reads the HMAC-signed `tentacle-edits` list marker, parsing both the legacy flat-path format (including the current Rust `TrackEditsRule` writer format) and the same-repo JSON bucket format. Fires when edits span ≥3 files across ≥2 modules without an active `tentacle-done` or `tentacle-bypass` marker; preserves tamper kill-switch. Session-state paths (`~/.copilot/session-state/`) remain exempt. Registered after `EnforceLearnRule` and before `SubagentGitGuardRule` (matching Python dispatch order). 24h TTL semantics preserved. After wave13, both direct `sk hooks preToolUse` and managed `sk hooks run preToolUse` for Rust-binary installs include this rule; the Python `sk.py` shim still routes to `hook_runner.py`. |
+| `syntax-gate` | preToolUse | ✅ **Native managed + direct path (wave13, fail-open via Python subprocess)** | `SyntaxGateRule` applies the proposed file content in memory and runs `py_compile` via `python_exe()` subprocess; registered between `SubagentGitGuardRule` and `BlockEditDistRule` in `all_rules()`. Fail-open on non-`.py` paths, missing files, and subprocess failures. **Rust-binary installs only**: active on both direct `sk hooks preToolUse` and managed `sk hooks run preToolUse` after wave13; `preToolUse` is now in `NATIVE_EVENTS`. The Python `sk.py` shim still routes `sk hooks run preToolUse` through `hook_runner.py`. `hooks/rules/syntax_gate.py` and `hook_runner.py` remain necessary for the Python shim and non-binary installs — do NOT delete. Windows proof accepted: `cargo test --quiet` + `python tests\test_hook_compat.py` passed. WSL/Linux/macOS not separately re-proved in wave13. |
+| `session-end` | sessionEnd | ✅ **Native + cleanup (wave4)** |Cleans per-session markers via `COPILOT_AGENT_SESSION_ID`; writes `session.log`; emits ack; fail-open when env var absent |
+| `agent-stop` | agentStop, subagentStop | ✅ **Native + cleanup** (wave3) | Calls `tentacle.py marker-cleanup --from-stop-event` subprocess for marker cleanup; emits event acknowledgement; fail-open |
+| `error-kb` | errorOccurred | ✅ **Native (direct DB, wave5)** | Queries `knowledge.db` natively via FTS5 (no subprocess on normal paths); falls back to `query-session.py` only when DB is unavailable; fail-open |
+
+### Events now routed natively by `sk hooks run` (wave3–wave13)
+
+As of wave3, `sk hooks run <event>` routes `agentStop` and `subagentStop` directly to the
+native Rust runner (`run_hook`) instead of `hook_runner.py`.  The stable CLI boundary
+`tentacle.py marker-cleanup --from-stop-event` (reads stop-event JSON from stdin, clears
+matching marker entries) allows `AgentStopRule` to perform cleanup without importing Python
+internals or reading HMAC secrets directly.
+
+As of wave4, `sessionEnd` and `errorOccurred` are also routed natively:
+- **`sessionEnd`**: `SessionEndRule` cleans per-session markers using `COPILOT_AGENT_SESSION_ID`
+  and writes a `session.log` entry.  All operations are pure filesystem — no HMAC required.
+  Fail-open: if `COPILOT_AGENT_SESSION_ID` is absent, cleanup is skipped.
+- **`errorOccurred`**: `ErrorOccurredRule` (wave5 upgrade) queries `knowledge.db` directly via
+  native Rust FTS5 (`crate::db::fts::search_kb_snippet`).  No subprocess on normal
+  DB-present paths.  Falls back to spawning `query-session.py` only when the DB is
+  genuinely unavailable (e.g. first-run before migration).  Fail-open at every step.
+
+As of wave9, **`sessionStart`** is also routed natively:
+- **`sessionStart`**: Three rules fire in registration order:
+  1. `SessionStartRule` — emits "[sk] Session started" acknowledgement.
+  2. `AutoBriefingRule` — spawns `briefing.py` via the correct Python interpreter; signs the
+     `briefing-done` and `codebase-map-ran` HMAC markers on successful completion.  Uses a
+     **10-second bounded timeout** (matching the Python path's `BRIEFING_TIMEOUT_SEC = 10`
+     constant); a timeout is treated as pass-through (the rule does not block the session).
+     Fail-open: if `briefing.py` is absent, the rule emits no output and returns `None`.
+  3. `IntegrityRule` — reads `~/.copilot/hooks/integrity-manifest.json`; refreshes the
+     manifest when hook files have changed since the last check; emits a verified or
+     refresh notice.  Informational only — never blocks.  Fail-open on missing manifest
+     or filesystem errors.
+
+  Additionally, `RecurrenceDetectorRule` on `sessionEnd` (wave9 addition): increments the
+  `recurrence_after_briefing` counter in `knowledge.db` for briefed mistakes that recurred
+  in the current session.  Uses `COPILOT_AGENT_SESSION_ID`; informational side-effect only;
+  fail-open when the DB is absent or the session ID is missing.
+
+**`sessionStart` HMAC note:** `AutoBriefingRule` writes HMAC-signed markers using the same
+`marker_auth::sign_marker` path used by `TrackEditsRule` (wave6).  The HMAC secret is read
+from `~/.copilot/hooks/.marker-secret` — the same file as the Python `marker_auth.py` path.
+This means native-written `briefing-done` markers are readable by Python hooks, and
+Python-written markers are readable by the native runner.  The shared-secret precondition
+(file must already exist; generated by `install.py --deploy-hooks`) still applies.
+
+**Wave6 watch improvements (not hook events, but documented here for completeness):**
+`sk-rust/src/index/session.rs` now applies sessions-table column migrations natively
+(`file_mtime`, `indexed_at_r`, `fts_indexed_at`, `event_count_estimate`) and enqueues
+sync-ops rows (state 1 — native, fail-open). Wave6 also adds a native local-only
+`sessions_fts` writer for the non-JSONL Copilot path. Remaining Python-backed watch
+surfaces are `extract-knowledge.py` classification and first-run DB creation fallback.
+
+**Wave10 watch boundary update:** `sk watch` no longer spawns
+`build-session-index.py --incremental` for existing-DB non-JSONL Copilot changes — the
+native Rust indexer covers those paths fully (sessions-table column migrations + sync-op
+enqueueing + `sessions_fts`). Python is now only invoked by `sk watch` for: (1) **first-run
+DB bootstrap** when `knowledge.db` does not yet exist, and (2) **`extract-knowledge.py`**
+NLP classification on non-JSONL Copilot checkpoint changes. These two Python surfaces are
+intentionally preserved; `build-session-index.py` and `extract-knowledge.py` are not
+removed. See `sk-rust/src/commands/watch.rs` for the authoritative boundary.
+
+**Wave16 watch boundary update (native relation slice):** `sk watch` now extracts
+deterministic knowledge relations natively in Rust: `SAME_SESSION`, `SAME_TOPIC`,
+`TAG_OVERLAP`, `RESOLVED_BY`. After a successful native extract pass, `sk watch` invokes
+`extract-knowledge.py --residual-only`, narrowing Python residual ownership to:
+`SEMANTIC_PROXIMITY`, backfill helpers, confidence decay, and non-hot-path NLP.
+`extract-knowledge.py` is NOT removed. First-run DB bootstrap (`spawn_indexer()`)
+is unchanged. Windows proof: `cargo test --quiet` (519 unit + 71 integration passed),
+`python tests\test_indexing.py` (25/25 passed). WSL/Linux/macOS not separately re-proved.
+
+**`sessionStart` managed routing is now native (wave9)**: `sk hooks run sessionStart`
+routes to the native Rust runner (`run_hook`) instead of `hook_runner.py`.
+`AutoBriefingRule` (briefing.py subprocess + HMAC marker writes) and `IntegrityRule`
+(SHA256 manifest check) run on the native path.  `RecurrenceDetectorRule` was also added
+on `sessionEnd` in wave9.  No routing flip occurred for `preToolUse` or `postToolUse` in wave9.
+
+**`postToolUse` managed routing is now native (wave10)**: `sk hooks run postToolUse`
+routes to the native Rust runner (`run_hook`) instead of `hook_runner.py` as of wave10.
+All seven postToolUse rules are informational-only and fully ported natively:
+`TrackEditsRule`, `LearnReminderRule`, `TestReminderRule`, `NextjsTypecheckReminderRule`,
+`VerificationGatePostRule`, `ReadBeforeEditRule`, `TentacleSuggestRule`.
+`sync_markers::record_sync_signal` writes `sync-nudge.json` after rule dispatch.
+No HMAC enforcement rules exist for `postToolUse` — all deny-capable rules (`enforce-briefing`,
+`enforce-learn`, `tentacle-enforce`, `syntax-gate`) are `preToolUse`-only.
+**Proof**: `sk hooks run postToolUse` with isolated USERPROFILE writes `sync-nudge.json`
+and all marker files; 148 `test_hook_compat.py` tests pass.
+
+**`preToolUse` managed routing remains Python-backed (wave8–wave12 unchanged)**: direct
+`sk hooks preToolUse` gained `VerificationGatePreRule` (dirty-marking + informational deny) in
+wave8, `EnforceBriefingRule` + `EnforceLearnRule` (deny-capable, native HMAC verification)
+in wave11, and `TentacleEnforceRule` (deny-capable, same-repo JSON + legacy flat-path reader) in
+wave12, but `sk hooks run preToolUse` still delegates to `hook_runner.py` because
+`syntax-gate` still requires Python, and managed preToolUse was not
+included in `NATIVE_EVENTS` during any wave through wave12. No routing flip occurred for
+`preToolUse` through wave12.
+
+**`preToolUse` managed routing is now native for Rust-binary installs (wave13)**: `SyntaxGateRule` —
+the final remaining blocker for the managed routing flip — is now implemented natively in
+`sk-rust/src/hooks/rules.rs`, registered between `SubagentGitGuardRule` and `BlockEditDistRule`.
+It invokes `py_compile` via a Python subprocess (`python_exe()`) and remains fail-open.
+`preToolUse` is now in `NATIVE_EVENTS` in `sk-rust/src/commands/hooks.rs`, so
+`sk hooks run preToolUse` routes to the native Rust runner on Rust-binary installs.
+**Python shim boundary unchanged**: the Python `sk.py` shim still routes `sk hooks run preToolUse`
+through `hook_runner.py`. `hooks/rules/syntax_gate.py`, `hook_runner.py`, and all Python hook
+fallback files remain necessary for the Python shim and non-binary installs; they are NOT removed.
+Windows proof accepted: `cargo test --quiet` (unit tests in `rules.rs`) and
+`python tests\test_hook_compat.py` passed after the wave13 audit. WSL/Linux/macOS parity
+for wave13 is **not separately re-proved** — no separate platform proof is available from repo files.
+
+### Python-only rules (via `sk hooks run` → `hook_runner.py`)
+
+For the Python `sk.py` shim and non-binary installs, `sk hooks run` delegates to
+`hook_runner.py` for all events. For Rust-binary installs, only the Python shim path
+still routes `preToolUse` through `hook_runner.py` — the native Rust runner handles
+all events including `preToolUse` (wave13). The table below lists each rule, its
+blockers (all resolved for Rust-binary installs as of wave13), and remaining notes.
+
+#### preToolUse — deny-capable (high risk if incorrectly ported)
+
+| Rule | Hard Blocker | Why dangerous to port partially |
+|------|-------------|--------------------------------|
+| ~~`enforce-briefing`~~ | ✅ **Resolved on direct path (wave11); also active on managed path (wave13, Rust-binary installs)** | `EnforceBriefingRule` now native (`sk hooks preToolUse` and `sk hooks run preToolUse` on Rust-binary installs); preserves tamper kill-switch; Python `sk.py` shim still routes through `hook_runner.py` |
+| ~~`enforce-learn`~~ | ✅ **Resolved on direct path (wave11); also active on managed path (wave13, Rust-binary installs)** | `EnforceLearnRule` now native; Python `sk.py` shim still routes through `hook_runner.py` |
+| ~~`tentacle-enforce`~~ | ✅ **Resolved on direct path (wave12); also active on managed path (wave13, Rust-binary installs)** | `TentacleEnforceRule` now native; reads same-repo JSON bucket plus legacy flat-path formats; session-state paths exempt; 24h TTL semantics preserved; Python `sk.py` shim still routes through `hook_runner.py` |
+| ~~`syntax-gate`~~ | ✅ **Resolved (wave13)** — `SyntaxGateRule` now native via Python subprocess (`python_exe()` + `py_compile`); registered between `SubagentGitGuardRule` and `BlockEditDistRule`; fail-open; active on both direct path and managed path (Rust-binary installs). Python `sk.py` shim still routes to `hook_runner.py`; `hooks/rules/syntax_gate.py` not removed. |
+| `block-edit-dist` | None — simple path check | Low risk, but low value to port alone |
+| ~~`pnpm-lockfile-guard`~~ | ✅ **Resolved on direct path (wave7); also active on managed path (wave13, Rust-binary installs)** | Now native (`sk hooks preToolUse`); Python `sk.py` shim still routes through `hook_runner.py` |
+| `block-unsafe-html` | None — regex on proposed file content | Medium; requires reading the full proposed content from `toolArgs` |
+| `verification-gate` | `marker_auth.py` HMAC ledger — `verification-ledger` multi-surface HMAC marker | postToolUse evidence-recording resolved on direct path (wave7); preToolUse dirty-marking + informational deny resolved on direct path (wave8); HMAC-gated managed enforcement remains Python-only for the `sk.py` shim |
+| ~~`read-before-edit`~~ | ✅ **Resolved on direct path (wave7); also active on managed path (wave13, Rust-binary installs)** | Now native (`sk hooks preToolUse/postToolUse`); Python `sk.py` shim still routes through `hook_runner.py` |
+
+#### postToolUse / lifecycle / errorOccurred
+
+| Rule | Hard Blocker |
+|------|-------------|
+| ~~`test-reminder`~~ | ✅ **Resolved (wave10)** — Full counter-write port landed on the direct path in wave7; managed `postToolUse` now also routes natively in wave10 | native runner is now the sole writer for managed `postToolUse` |
+| ~~`tentacle-suggest`~~ | ✅ **Resolved (wave10)** — read-only `TentacleSuggestRule` landed on the direct path in wave8; managed `postToolUse` now also routes natively in wave10 | native runner now owns the managed path too |
+| ~~`nextjs-typecheck-reminder`~~ | ✅ **Resolved (wave10)** — Full counter-write port landed on the direct path in wave7; managed `postToolUse` now also routes natively in wave10 | native runner is now the sole writer for managed `postToolUse` |
+| ~~`read-before-edit` (postToolUse half)~~ | ✅ **Resolved (wave10)** — Native `ReadBeforeEditRule` landed on the direct path in wave7; managed `postToolUse` now also routes natively in wave10 | native runner now owns the managed path too |
+| ~~`verification-gate` (postToolUse half)~~ | ✅ **Resolved on managed path (wave10)** — Evidence-recording native since wave7; managed `postToolUse` now routes natively in wave10; deny-capable preToolUse closeout-state machine and full HMAC ledger remain Python-only on `preToolUse` |
+| ~~`managed postToolUse routing`~~ | ✅ **Resolved (wave10)** — `sk hooks run postToolUse` now routes natively; all seven postToolUse rules fully ported; `sync_markers.rs` writes `sync-nudge.json`; dual-writer concern resolved (native runner is now sole writer for postToolUse markers) |
+| ~~`auto-briefing` (sessionStart)~~ | ✅ **Resolved (wave9)** — `AutoBriefingRule` spawns `briefing.py` via `python_exe()` and signs HMAC markers; 10s bounded timeout matching the Python path |
+| ~~`integrity` (sessionStart)~~ | ✅ **Resolved (wave9)** — `IntegrityRule` reads/refreshes the SHA256 manifest; informational only |
+| ~~`recurrence-detector` (sessionEnd)~~ | ✅ **Resolved (wave9)** — `RecurrenceDetectorRule` increments `recurrence_after_briefing` counter in `knowledge.db`; informational side-effect; fail-open |
+| ~~`session-end` (sessionEnd, Python)~~ | ✅ **Resolved (wave4)** — now handled natively via `COPILOT_AGENT_SESSION_ID` filesystem cleanup; Python `recurrence-detector` also ported to native in wave9 |
+| ~~`subagent-stop-cleanup`~~ (agentStop/subagentStop) | ✅ **Resolved (wave3)** — now handled natively via `tentacle.py marker-cleanup --from-stop-event` stable CLI boundary |
+| ~~`error-kb` (errorOccurred)~~ | ✅ **Resolved (wave5)** — now uses native Rust DB path (FTS5 direct query); `query-session.py` subprocess kept only as DB-unavailable fallback |
+
+### Prerequisite history — managed `sk hooks run preToolUse` routing flip
+
+`preToolUse` is now routed natively for **Rust-binary installs** as of wave13.
+This section records the resolved blockers and the remaining Python-shim boundary.
+
+The following blockers were present before wave13:
+
+1. **`syntax-gate` (`py_compile` dependency)** — the effective final blocker before wave13. `VerificationGatePreRule` was already native/deny-capable since wave8; `enforce-briefing`, `enforce-learn`, and `tentacle-enforce` were resolved on the direct path in wave11–wave12. The only remaining blocker for the managed routing flip was `SyntaxGateRule`. Wave13 resolves this via a Python subprocess (`python_exe()` + `py_compile`), keeping the Python boundary at the subprocess level rather than requiring an embedded interpreter.
+
+2. ~~**`py_compile` substitute for `syntax-gate`**~~ — ✅ **Resolved (wave13)** — `SyntaxGateRule` now uses `python_exe()` subprocess; fail-open; registered between `SubagentGitGuardRule` and `BlockEditDistRule`.
+
+3. **Full test coverage** — Windows proof accepted: `cargo test --quiet` (unit tests in `rules.rs`) and `python tests\test_hook_compat.py` passed after the wave13 audit. WSL/Linux/macOS parity for wave13 is **not separately re-proved**.
+
+> **Resolved (wave3):** blocker #3 from the original list — `tentacle._clear_dispatched_subagent_marker` ABI — is resolved by the `tentacle.py marker-cleanup --from-stop-event` stable CLI boundary. `agentStop`/`subagentStop` now use the native Rust path in `sk hooks run`.
+>
+> **Resolved (wave4):** `sessionEnd` and `errorOccurred` now use the native Rust path in `sk hooks run`. The `postToolUse` event intentionally remained Python-backed through wave9 due to HMAC-gated enforcement rules.
+>
+> **Resolved (wave5):** `errorOccurred` (`error-kb` rule) now queries `knowledge.db` directly via native Rust FTS5 — no Python subprocess on normal DB-present paths. `query-session.py` is retained as a DB-unavailable fallback only.
+>
+> **Wave6 HMAC progress:** `sk-rust/src/hooks/marker_auth.rs` is now partially wired into native rules — wave6 uses it for git-guard marker verification and TrackEdits counter/list-marker writes. `sessionStart`, managed `preToolUse`, and managed `postToolUse` still remained Python-backed until those rules were ported safely.
+>
+> **Wave7 direct-path progress:** `TestReminderRule` and `NextjsTypecheckReminderRule` are now full counter-write ports on the direct `sk hooks postToolUse` path (HMAC-signed `py-edit-count`, plain `ts-edit-count`, `tests-ran` marker). `ReadBeforeEditRule` (preToolUse + postToolUse), `PnpmLockfileGuardRule` (preToolUse, deny-capable), and `VerificationGatePostRule` (postToolUse evidence-recording with improved path extraction for `>`, `sed -i`, `tee`, and heredoc `open(...)`) are new native additions. The managed `sk hooks run postToolUse` path remained Python-backed through wave7.
+>
+> **Wave8 direct-path progress:** `VerificationGatePreRule` (preToolUse dirty-marking + informational closeout deny) and `TentacleSuggestRule` (postToolUse read-only, suggests tentacle when edits span ≥3 files across ≥2 modules) are new native additions. `TrackEditsRule` now also appends direct `edit`/`create` events to `tentacle-edits`, fixing multi-step direct-edit flow accumulation for `TentacleSuggestRule`. The managed `sk hooks run` paths remained Python-backed through wave8.
+>
+> **Wave9 routing flip (sessionStart only):** `sessionStart` now uses the native Rust path in `sk hooks run`. `AutoBriefingRule` spawns `briefing.py` with a 10s timeout and writes HMAC-signed `briefing-done` + `codebase-map-ran` markers via `marker_auth::sign_marker`. `IntegrityRule` verifies/refreshes the SHA256 hook-file manifest. `RecurrenceDetectorRule` on `sessionEnd` increments `recurrence_after_briefing` in `knowledge.db`. No routing flip occurred for `preToolUse` or `postToolUse` in wave9.
+>
+> **Wave10 routing flip (postToolUse):** `postToolUse` now uses the native Rust path in `sk hooks run`. All seven postToolUse rules (informational-only) are fully ported; `sync_markers::record_sync_signal` writes `sync-nudge.json` after dispatch. No HMAC enforcement rules exist for `postToolUse` — dual-writer concern is resolved (native runner is now the sole writer for postToolUse markers). `preToolUse` remained Python-backed; remaining blockers at that point were `tentacle-enforce`, `syntax-gate`, and (stale, as later clarified) the HMAC-gated `verification-gate` closeout block.
+>
+> **Wave11 direct-path progress (no routing flip):** `EnforceBriefingRule` and `EnforceLearnRule` are now implemented natively in `sk-rust/src/hooks/rules.rs` and registered in `all_rules()` before `SubagentGitGuardRule` (matching Python first-deny-wins order). Both preserve the tamper kill-switch behavior from the Python originals and reuse `marker_auth` verification semantics for markers/counters (HMAC-enforced when a secret exists, backward-compatible otherwise). Direct `sk hooks preToolUse` now denies via stdout JSON for these two rules. Tests in `tests/test_hook_compat.py` cover the wave11 checks (verified on Windows by `cargo test --quiet` + `python tests\test_hook_compat.py`). `preToolUse` is NOT in `NATIVE_EVENTS` — managed `sk hooks run preToolUse` still routes through `hook_runner.py`. `tentacle-enforce` and `syntax-gate` remained Python-only through wave11; WSL proof was not separately verified by the wave11 code tentacle.
+>
+> **Wave12 direct-path progress (no routing flip):** `TentacleEnforceRule` is now implemented natively in `sk-rust/src/hooks/rules.rs` and registered in `all_rules()` after `EnforceLearnRule` and before `SubagentGitGuardRule` (matching Python dispatch order). The native reader supports the same-repo JSON bucket format as well as legacy flat-path entries (including the current Rust direct-path writer shape); 24h TTL semantics are preserved. Session-state paths (`~/.copilot/session-state/`) remain exempt. Tamper kill-switch behavior is preserved. Direct `sk hooks preToolUse` now also denies via stdout JSON for this rule. Proof accepted on Windows: `cargo test --quiet` (unit tests in `rules.rs`) and `python tests\test_hook_compat.py` (all wave12 checks pass). WSL or macOS parity for wave12 is **not separately verified**. `preToolUse` is NOT in `NATIVE_EVENTS` — managed `sk hooks run preToolUse` still routes through `hook_runner.py`. After wave12, `syntax-gate` was the sole remaining blocker for a managed routing flip; the stale claim about the HMAC-gated `verification-gate` closeout as a managed-path blocker is corrected here — `VerificationGatePreRule` was already native/deny-capable since wave8.
+>
+> **Wave13 routing flip (preToolUse, Rust-binary installs):** `SyntaxGateRule` is now implemented natively in `sk-rust/src/hooks/rules.rs`, registered between `SubagentGitGuardRule` and `BlockEditDistRule`. It invokes `py_compile` via `python_exe()` subprocess; fail-open. `preToolUse` is now in `NATIVE_EVENTS` in `sk-rust/src/commands/hooks.rs` — `sk hooks run preToolUse` routes to the native Rust runner on Rust-binary installs. **Python shim boundary unchanged**: the Python `sk.py` shim still routes `sk hooks run preToolUse` through `hook_runner.py`. `hooks/rules/syntax_gate.py`, `hook_runner.py`, and all Python hook fallback files are NOT removed — they remain the authoritative path for the Python shim and non-binary installs. Proof accepted on Windows: `cargo test --quiet` + `python tests\test_hook_compat.py` passed. WSL/Linux/macOS parity for wave13 is **not separately re-proved**.
+
+
+### Testing the native direct path
+
+The native `sk hooks <event>` path (not `sk hooks run`) can be tested with:
+
+```bash
+# POSIX
+echo '{"toolName":"bash","toolArgs":{"command":"git commit -m test"}}' | sk hooks preToolUse
+echo '{}' | sk hooks sessionStart
+echo '{}' | sk hooks agentStop
+
+# Windows PowerShell
+'{"toolName":"bash","toolArgs":{"command":"git commit -m test"}}' | sk hooks preToolUse
+'{}' | sk hooks sessionStart
+'{}' | sk hooks agentStop
+```
+
+Set `HOOK_DRY_RUN=1` to verify denial logic without blocking, and `HOOK_LOG_LEVEL=DEBUG` for verbose audit output. Audit entries are written to `~/.copilot/markers/audit.jsonl`.
+
+## preToolUse Routing-Flip Specification
+
+This section records the verified state of the managed routing flip for `preToolUse`.
+The flip **has occurred** for Rust-binary installs as of wave13. The Python `sk.py` shim
+path remains unchanged.
+
+> **Note:** `postToolUse` was flipped to native in wave10. All seven postToolUse rules
+> are informational-only and fully ported; `sync_markers.rs` writes `sync-nudge.json`
+> after dispatch. `preToolUse` was flipped in wave13 (Rust-binary installs only).
+
+### Current managed routing state (post-wave13, Rust-binary installs)
+
+```
+# Rust-binary installs (sk binary present):
+sk hooks run sessionStart   → native Rust  (wave9: AutoBriefingRule + IntegrityRule + SessionStartRule)
+sk hooks run sessionEnd     → native Rust  (wave4+wave9: SessionEndRule + RecurrenceDetectorRule)
+sk hooks run agentStop      → native Rust  (wave3: AgentStopRule)
+sk hooks run subagentStop   → native Rust  (wave3: AgentStopRule)
+sk hooks run errorOccurred  → native Rust  (wave5: ErrorOccurredRule)
+sk hooks run postToolUse    → native Rust  (wave10: all postToolUse rules natively ported)
+sk hooks run preToolUse     → native Rust  (wave13: SyntaxGateRule via py_compile subprocess — Rust-binary installs only)
+
+# Python sk.py shim (no compiled binary, or sk.py used directly):
+sk hooks run <any event>    → hook_runner.py  (shim always delegates to Python; behavior unchanged)
+```
+
+### Three distinct `preToolUse` paths (wave13 and later)
+
+| Path | How invoked | Routing | Notes |
+|------|------------|---------|-------|
+| Direct Rust path | `sk hooks preToolUse` (no `run`) | Native Rust runner; all registered rules in `all_rules()` | Incremental rollout path; all deny rules active |
+| Managed Rust path | `sk hooks run preToolUse` (Rust binary) | Native Rust runner via `NATIVE_EVENTS` | All rules active including `SyntaxGateRule`; wave13 flip |
+| Python shim path | `sk hooks run preToolUse` (Python `sk.py`) | `hook_runner.py` | Unchanged; Python shim always routes all events to `hook_runner.py` |
+
+### Why the Python `sk.py` shim still routes `preToolUse` through `hook_runner.py`
+
+The direct Rust path (`sk hooks preToolUse`) and the managed Rust path (`sk hooks run preToolUse`
+on Rust-binary installs) now both use the native Rust runner.  The Python `sk.py` shim still
+routes `sk hooks run preToolUse` to `hook_runner.py` — this is the only remaining Python-backed
+surface for `preToolUse`. The Python shim is intentionally preserved for non-binary installs and
+fallback compatibility.
+
+| Rule | Status on managed Rust path (wave13) | Status on Python shim path |
+|------|--------------------------------------|---------------------------|
+| `enforce-briefing` | ✅ Native (`EnforceBriefingRule`; deny-capable) | Python (`hook_runner.py`) |
+| `enforce-learn` | ✅ Native (`EnforceLearnRule`; deny-capable) | Python (`hook_runner.py`) |
+| `tentacle-enforce` | ✅ Native (`TentacleEnforceRule`; deny-capable) | Python (`hook_runner.py`) |
+| `syntax-gate` | ✅ Native (`SyntaxGateRule`; via `python_exe()` subprocess; fail-open) | Python (`hook_runner.py`) |
+| `verification-gate` (HMAC-enforced closeout block) | `VerificationGatePreRule` (dirty-mark + info-deny) is native; full HMAC-enforced closeout block is Python-only on the shim | Python (`hook_runner.py`) |
+
+### Counter parity for `preToolUse` — wave13 status
+
+Counter write paths for `preToolUse`-triggered thresholds are now owned by the native Rust
+runner for Rust-binary installs (wave13). The `postToolUse` counter race was resolved in
+wave10: the native runner is the sole writer for postToolUse markers, and `hook_runner.py`
+no longer fires for `postToolUse`. For the Python `sk.py` shim, `hook_runner.py` remains
+the authoritative counter writer for `preToolUse`.
+
+### Non-goals for Python shim path
+
+The Python shim must NOT be removed or disabled:
+- `hook_runner.py` remains the Python fallback for non-binary installs and the Python `sk.py` shim
+- `hooks/rules/syntax_gate.py` remains necessary; it is the Python-side `syntax-gate` implementation
+- Claiming the Python fallback can be deleted is incorrect — the shim boundary is intentionally preserved
+- Deny-capable rule parity on the Rust path does not eliminate the need for the Python path; the shim always routes to `hook_runner.py`
 
 Rule 9 now has a **partial hook enforcement surface** via `verification-gate`. The hook does not parse every prose sentence an agent writes, but it does prevent common closeout actions from going through after tracked code edits unless matching verification commands have succeeded and been recorded in the signed ledger.
 

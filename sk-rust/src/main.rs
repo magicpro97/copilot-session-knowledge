@@ -1,6 +1,12 @@
 mod commands;
 mod config;
+mod daemon;
 mod db;
+mod embeddings;
+mod hooks;
+mod index;
+mod providers;
+mod sync;
 
 use std::process::ExitCode;
 use std::time::Instant;
@@ -115,6 +121,16 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Manage Copilot CLI hooks (run / list)
+    Hooks {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Watch sessions for real-time indexing
+    Watch {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 // Map a grouped namespace command (e.g. "index build") to a Python script name.
@@ -182,12 +198,26 @@ fn main() -> ExitCode {
         Some(Commands::Heal { args }) => run_fallback("copilot-cli-healer.py", &args),
 
         Some(Commands::Index { args }) => {
-            let (script, rest) = resolve_group("index", &args);
-            run_fallback(&script, &rest)
+            // Native handler for `sk index embed`; all other index subcommands
+            // fall through to the Python script resolver.
+            if args.first().map(|s| s.as_str()) == Some("embed") {
+                let rest = args.get(1..).unwrap_or(&[]).to_vec();
+                commands::embed::run_embed_command(&rest)
+            } else {
+                let (script, rest) = resolve_group("index", &args);
+                run_fallback(&script, &rest)
+            }
         }
         Some(Commands::Sync { args }) => {
-            let (script, rest) = resolve_group("sync", &args);
-            run_fallback(&script, &rest)
+            // Native handler for `sk sync run`; all other sync subcommands
+            // fall through to the Python script resolver.
+            if args.first().map(|s| s.as_str()) == Some("run") {
+                let rest = args.get(1..).unwrap_or(&[]).to_vec();
+                commands::sync_run::run_sync_run_command(&rest)
+            } else {
+                let (script, rest) = resolve_group("sync", &args);
+                run_fallback(&script, &rest)
+            }
         }
         Some(Commands::Checkpoint { args }) => {
             let (script, rest) = resolve_group("checkpoint", &args);
@@ -205,6 +235,8 @@ fn main() -> ExitCode {
             let (script, rest) = resolve_group("scout", &args);
             run_fallback(&script, &rest)
         }
+        Some(Commands::Hooks { args }) => commands::hooks::run_hooks_command(&args),
+        Some(Commands::Watch { args }) => commands::watch::run_watch_command(&args),
     };
 
     if cli.time {

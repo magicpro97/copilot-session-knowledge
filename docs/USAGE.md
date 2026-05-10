@@ -31,7 +31,9 @@ sk index extract     # extract-knowledge.py    — classify + deduplicate entrie
 sk index migrate     # migrate.py              — apply DB schema migrations
 sk index status      # index-status.py         — row counts, FTS integrity, offset coverage
 sk index health      # knowledge-health.py     — health dashboard + recall telemetry
-sk index embed       # embed.py                — configure/run semantic embeddings
+sk index embed       # embed.py / native Rust  — configure/run semantic embeddings
+                     #   native (default build): --build, --test, --rebuild-tfidf, --setup, --status, --providers, --search
+                     #   Python fallback: embed.py (if native-embed feature unavailable)
 ```
 
 ### `sk sync` — cross-machine sync
@@ -39,8 +41,8 @@ sk index embed       # embed.py                — configure/run semantic embedd
 ```bash
 sk sync config --setup https://gateway.example.com  # sync-config.py --setup
 sk sync config --status                              # sync-config.py --status
-sk sync run --once                                   # sync-daemon.py --once
-sk sync run --daemon                                 # sync-daemon.py --daemon
+sk sync run --once                                   # native Rust (default build); Python sk.py shim → sync-daemon.py --once
+sk sync run --daemon                                 # native Rust (default build); Python sk.py shim → sync-daemon.py --daemon
 sk sync status                                       # sync-status.py
 sk sync status --health-check                        # sync-status.py --health-check
 sk sync gateway --host 127.0.0.1 --port 8765         # sync-gateway.py (reference/mock)
@@ -82,7 +84,57 @@ sk scout config                     # scout-config.py
 sk scout status                     # scout-status.py
 ```
 
-> **Direct-script fallback:** every `sk` sub-command delegates to the underlying `python3 ~/.copilot/tools/<script>.py` call with identical flags. If `sk` is unavailable, use the direct-script form shown in each section below.
+### `sk hooks` — hook runner
+
+`sk hooks` is available in both the Rust binary and the Python `sk.py` compatibility shim.
+
+**Rust-binary installs:** all managed events route natively through the Rust runner:
+
+| Event | Native behavior |
+|-------|----------------|
+| `sessionStart` | `AutoBriefingRule` (spawns `briefing.py`, 10s timeout, signs HMAC markers) + `IntegrityRule` (SHA256 manifest) |
+| `sessionEnd` | `SessionEndRule` (marker cleanup + `session.log`) + `RecurrenceDetectorRule` |
+| `preToolUse` | All deny-capable rules active: `subagent-git-guard`, `block-edit-dist`, `block-unsafe-html`, `pnpm-lockfile-guard`, `read-before-edit`, `VerificationGatePreRule`, `EnforceBriefingRule`, `EnforceLearnRule`, `TentacleEnforceRule`, `SyntaxGateRule` |
+| `postToolUse` | All 7 rules: `TrackEditsRule`, `LearnReminderRule`, `TestReminderRule`, `NextjsTypecheckReminderRule`, `VerificationGatePostRule`, `ReadBeforeEditRule`, `TentacleSuggestRule` |
+| `agentStop` / `subagentStop` | `tentacle.py marker-cleanup --from-stop-event` |
+| `errorOccurred` | Native Rust FTS5 DB query; `query-session.py` subprocess only if DB unavailable |
+
+**Python `sk.py` shim:** always routes all events through `hook_runner.py` — unchanged regardless of Rust binary availability. `hooks/rules/syntax_gate.py` and `hook_runner.py` are intentional and NOT removed.
+
+> Full rule inventory, HMAC details, and platform event notes: **[docs/HOOKS.md](HOOKS.md)**
+
+```bash
+sk hooks run sessionStart           # AutoBriefingRule + IntegrityRule
+sk hooks run preToolUse             # all deny rules (Rust binary); hook_runner.py (Python shim)
+sk hooks run postToolUse            # all 7 postToolUse rules
+sk hooks run sessionEnd             # SessionEndRule + RecurrenceDetectorRule
+sk hooks run agentStop              # marker-cleanup
+sk hooks run subagentStop           # marker-cleanup
+sk hooks run errorOccurred          # native FTS5; query-session.py fallback if DB unavailable
+```
+
+The managed `hooks.json` prefers `sk hooks run <event>` when `sk` is in PATH. Bash falls back to `python3 hook_runner.py`; PowerShell falls back to `python hook_runner.py`. Install the launcher first: `python install.py --install-sk`.
+
+### `sk watch` — session watcher
+
+`sk watch` is available in both the Rust binary and the Python `sk.py` shim.
+
+**Rust binary (default build):** native loop + indexer for Copilot (`.md`) and Claude (`.jsonl`) sessions; native extract (classification, relations, semantic proximity, first-run DB bootstrap). **Never** spawns Python — on DB or extract failure, emits a structured recovery hint naming the manual command (`python build-session-index.py --incremental` or `python extract-knowledge.py`).
+
+**Python `sk.py` shim / no binary:** delegates to `watch-sessions.py`.
+
+> Python surfaces (`extract-knowledge.py`, `build-session-index.py`, `migrate.py`) are intentional permanent operator tools — not auto-called by `sk watch` and not candidates for removal. See **[docs/ARCHITECTURE.md — Intentional Python Boundaries](ARCHITECTURE.md#intentional-python-boundaries)**.
+
+```bash
+sk watch                            # Rust binary or watch-sessions.py
+sk watch --once                     # watch-sessions.py --once
+sk watch --service                  # watch-sessions.py --service
+sk watch --install-hint             # watch-sessions.py --install-hint
+```
+
+`auto-update-tools.py --restart-watch` also prefers `sk watch` when the native binary is installed at `~/.copilot/bin/sk-native` (Unix) or `~/.copilot/bin/sk.exe` (Windows).
+
+> **Direct-script fallback:** if `sk` is unavailable, use the direct-script form shown in each section below.
 
 ---
 
@@ -191,6 +243,8 @@ python3 ~/.copilot/tools/sync-config.py --clear
 ```
 
 ### Run sync runtime
+
+> **Current state (`native-sync` in default Cargo features):** the compiled `sk` binary routes `sk sync run` natively — Rust daemon loop, lock, signal, adaptive push/pull, and FTS refresh (`knowledge_fts`/`ke_fts`). The Python `sk.py` shim and any install without a compiled binary delegate to `sync-daemon.py --once` as the fallback.
 
 ```bash
 python3 ~/.copilot/tools/sync-daemon.py --once
@@ -935,6 +989,34 @@ WantedBy=default.target
 SVC
 
 systemctl --user enable --now copilot-watch.service
+```
+
+### macOS — launchd user agent
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cat > ~/Library/LaunchAgents/dev.linhngo.sk-watcher.plist << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.linhngo.sk-watcher</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>sk</string>
+    <string>watch</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>
+PLIST
+
+launchctl unload ~/Library/LaunchAgents/dev.linhngo.sk-watcher.plist 2>/dev/null || true
+launchctl load ~/Library/LaunchAgents/dev.linhngo.sk-watcher.plist
 ```
 
 ### Watch-sessions runtime semantics

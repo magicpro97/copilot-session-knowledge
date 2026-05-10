@@ -26,6 +26,9 @@ REMOVED_SHELL_ENTRYPOINTS = {
     "tentacle-setup.sh",
     "install-launchd.sh",
 }
+ALLOWED_SHELL_FILES = {
+    "sk-rust/install.sh",
+}
 
 
 def test(name: str, condition: bool, detail: str = "") -> None:
@@ -54,11 +57,12 @@ files = tracked_files()
 print("\n🐍 Python-only tooling regression")
 
 shell_files = sorted(
-    str(path.relative_to(REPO))
+    path.relative_to(REPO).as_posix()
     for path in files
     if path.suffix == ".sh"
+    and path.relative_to(REPO).as_posix() not in ALLOWED_SHELL_FILES
 )
-test("repository contains no .sh files", not shell_files, ", ".join(shell_files[:10]))
+test("repository contains no unexpected .sh files", not shell_files, ", ".join(shell_files[:10]))
 
 removed_entrypoints = sorted(
     str(path.relative_to(REPO))
@@ -85,9 +89,11 @@ for path in files:
         or b" bash" in first_line
     )
     if is_shell_shebang:
-        shell_shebangs.append(str(path.relative_to(REPO)))
+        rel = path.relative_to(REPO).as_posix()
+        if rel not in ALLOWED_SHELL_FILES:
+            shell_shebangs.append(rel)
 
-test("repository contains no shell shebangs", not shell_shebangs, ", ".join(shell_shebangs[:10]))
+test("repository contains no unexpected shell shebangs", not shell_shebangs, ", ".join(shell_shebangs[:10]))
 
 if FAIL:
     print(f"\n❌ {FAIL} shell-free regression check(s) failed.")

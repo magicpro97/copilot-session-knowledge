@@ -29,7 +29,9 @@ class _BrowseHandler(BaseHTTPRequestHandler):
     def _is_client_disconnect(exc: BaseException) -> bool:
         if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
             return True
-        return isinstance(exc, OSError) and exc.errno in (errno.EPIPE, errno.ECONNRESET)
+        return isinstance(exc, OSError) and (
+            exc.errno in (errno.EPIPE, errno.ECONNRESET, errno.ECONNABORTED) or getattr(exc, "winerror", None) == 10053
+        )
 
     def end_headers(self) -> None:
         """Emit any pending extra headers before finalising the HTTP header section."""

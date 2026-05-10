@@ -19,8 +19,8 @@ extract-knowledge.py  ──→  7 knowledge categories
         │                   (mistake, pattern, decision,
         │                    tool, feature, refactor, discovery)
         │                   + knowledge_relations
-        │                     (SAME_SESSION, SAME_TOPIC, TAG_OVERLAP,
-        │                      RESOLVED_BY, SEMANTIC_PROXIMITY*)
+        │                     (SAME_SESSION†, SAME_TOPIC†, TAG_OVERLAP†,
+        │                      RESOLVED_BY†, SEMANTIC_PROXIMITY*)
         ▼
 query-session.py / briefing.py / mcp-server.py  ──→  Search, recall, MCP tools
         │
@@ -28,15 +28,34 @@ query-session.py / briefing.py / mcp-server.py  ──→  Search, recall, MCP t
 watch-sessions.py  ──→  Incremental re-indexing (adaptive polling)
 ```
 
-*`SEMANTIC_PROXIMITY` is populated when local TF-IDF / scikit-learn support is available; missing
-dependencies remain a silent no-op.*
+*`SEMANTIC_PROXIMITY` is populated by the native Rust TF-IDF cosine implementation (`watch.rs`/`tfidf.rs`). `extract-knowledge.py --semantic-only` is available for manual/fallback use only — `sk watch` (Rust binary) never auto-spawns Python.*
+
+*†Deterministic relations (`SAME_SESSION`, `SAME_TOPIC`, `TAG_OVERLAP`, `RESOLVED_BY`) and residual helpers (`backfill_affected_files`, `infer_task_ids`, confidence decay) are extracted natively by the Rust binary (`sk-rust/src/index/extract.rs`). `extract-knowledge.py` is an intentional manual operator tool — NOT auto-called by `sk watch` in the default Rust build.*
 
 **Phases:**
-1. `build-session-index.py` — Phase 1 (session metadata) + Phase 2 (event content) via `providers/` → SQLite FTS5 (schema v8; current migration level v15)
-2. `extract-knowledge.py` — classifies into 7 types, deduplicates by content hash, auto-detects relations (`SAME_SESSION`, `SAME_TOPIC`, `TAG_OVERLAP`, `RESOLVED_BY`, `SEMANTIC_PROXIMITY`); category-aware confidence floors (pattern=0.5, others=0.4) and recurrence reward (+0.03 per upsert, capped)
+1. `build-session-index.py` — Phase 1 (session metadata) + Phase 2 (event content) via `providers/` → SQLite FTS5 (schema v8; current migration level v17)
+2. `extract-knowledge.py` — classifies into 7 types, deduplicates by content hash; category-aware confidence floors (pattern=0.5, others=0.4); recurrence reward (+0.03 per upsert, capped). **Intentional manual operator tool** — `sk watch` (Rust binary) runs all hot-path classification, relation extraction, and semantic proximity natively; this script is named in `sk watch` recovery hints and is NOT auto-called on the native watch path.
 3. `query-session.py` / `briefing.py` / `mcp-server.py` — BM25 keyword search + optional semantic vector search (RRF blend) exposed via CLI and MCP
-4. `watch-sessions.py` — adaptive polling (5 s / 30 s / 300 s tiers), auto re-indexes on file changes
+4. `watch-sessions.py` / `sk watch` — adaptive polling (5 s / 30 s / 300 s tiers), auto re-indexes on file changes. **`sk watch` Rust binary:** handles session indexing, extract, relations, semantic proximity, and first-run DB bootstrap natively; **never** spawns Python. On DB or extract failure, emits a structured recovery hint naming the exact manual command.
 5. `learn.py` — manual knowledge entry; CLI interface for agents to record learnings during a session
+
+## Intentional Python Boundaries
+
+`sk watch` (Rust binary) **never** spawns Python — including on error paths. The following Python surfaces are **permanent intentional architecture**, not residual code pending deletion:
+
+| Python surface | Role | Status |
+|----------------|------|--------|
+| `sk.py` shim | Thin launcher/dispatcher for non-binary installs; routes all `sk <cmd>` calls | **Intentional** — the no-binary install contract |
+| `hook_runner.py` | Python hook runner for `sk.py` shim and non-binary installs; owns all managed hook events when no Rust binary is present | **Intentional** — Python shim hook entry point |
+| `build-session-index.py` | Indexes session files → FTS5 DB; named in `sk watch` DB-failure recovery hints | **Intentional** — manual operator recovery tool |
+| `extract-knowledge.py` | Knowledge classification, relation extraction, `--semantic-only` fallback; named in `sk watch` extract-failure recovery hints | **Intentional** — manual/fallback operator tool |
+| `migrate.py` | Versioned schema migrations via `schema_version` table | **Intentional** — canonical schema upgrade owner; Rust native bootstrap does NOT replace this |
+| `sync-daemon.py` | Push/pull sync runtime for Python `sk.py` shim and non-binary installs | **Intentional** — shim sync path |
+| `briefing.py`, `learn.py`, `query-session.py`, etc. | Admin/operator CLI scripts | **Intentional** — these are the primary Python CLI surface |
+
+**What wave20 removed:** auto-spawning Python subprocess on `sk watch` error paths. The scripts
+above remain on disk, are invoked by operators manually, and are referenced by name in `sk watch`
+recovery hints. None of these scripts are candidates for deletion as a consequence of wave20.
 
 ## Script Inventory
 

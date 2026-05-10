@@ -405,13 +405,13 @@ def _make_skill_db(path: Path) -> None:
         "INSERT INTO tentacle_outcomes (tentacle_name, tentacle_id, outcome_status, "
         "recorded_at, verification_passed, verification_failed, todo_done, todo_total) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        ("wave3-retro-core", "t1", "completed", now, 3, 0, 5, 5),
+        ("retro-core-signals", "t1", "completed", now, 3, 0, 5, 5),
     )
     db.execute(
         "INSERT INTO tentacle_outcomes (tentacle_name, tentacle_id, outcome_status, "
         "recorded_at, verification_passed, verification_failed, todo_done, todo_total) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        ("wave2-hardening", "t2", "completed", now, 2, 1, 4, 4),
+        ("hardening-followup", "t2", "completed", now, 2, 1, 4, 4),
     )
     db.execute(
         "INSERT INTO tentacle_verifications (outcome_id, command, exit_code, verified_at) VALUES (1, 'python3 test_retro.py', 0, ?)",
@@ -2272,11 +2272,11 @@ def test_toward_100_empty_when_all_100():
         test("toward_100: empty when hooks=100", t100 == [], f"got {t100}")
 
 
-# ── Section 20: Wave 3 — verification evidence lifts skill signals ───────────
+# ── Section 20: verification evidence lifts skill signals ────────────────────
 
 
 def _make_skill_db_with_verifications(path: Path) -> None:
-    """Build a skill-metrics DB where verifications are fully populated (Wave 3 style)."""
+    """Build a skill-metrics DB where verifications are fully populated."""
     db = sqlite3.connect(str(path))
     db.executescript("""
         CREATE TABLE IF NOT EXISTS tentacle_outcomes (
@@ -2322,7 +2322,7 @@ def _make_skill_db_with_verifications(path: Path) -> None:
             "verification_total, verification_passed, verification_failed, "
             "todo_total, todo_done, learned, summary) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (f"wave3-tent-{i}", f"t{i}", "completed", now, 2, 2, 0, 3, 3, 1, f"All done #{i}"),
+            (f"verified-skill-tent-{i}", f"t{i}", "completed", now, 2, 2, 0, 3, 3, 1, f"All done #{i}"),
         )
         oid = i + 1
         for j in range(2):
@@ -2331,7 +2331,7 @@ def _make_skill_db_with_verifications(path: Path) -> None:
                 "(outcome_id, tentacle_name, tentacle_id, label, command, cwd, "
                 "exit_code, started_at, finished_at, duration_seconds) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (oid, f"wave3-tent-{i}", f"t{i}", f"check-{j}", "python3 test.py",
+                (oid, f"verified-skill-tent-{i}", f"t{i}", f"check-{j}", "python3 test.py",
                  "/repo", 0, now, now, 1.0),
             )
     db.commit()
@@ -2342,26 +2342,26 @@ def test_skill_signals_with_verification_evidence():
     """When tentacle_verifications rows exist, collect_skill_signals reports them."""
     retro = load_retro()
     reset_artifacts()
-    db_path = ARTIFACT_DIR / "wave3-verified.db"
+    db_path = ARTIFACT_DIR / "verified-skill-signals.db"
     _make_skill_db_with_verifications(db_path)
     original = retro.SKILL_METRICS_DB
     retro.SKILL_METRICS_DB = db_path
     try:
         result = retro.collect_skill_signals()
         test(
-            "wave3 skill signals: available=True",
+            "skill signals: available=True",
             result.get("available") is True,
             f"got {result}",
         )
         test(
-            "wave3 skill signals: total_outcomes == 3",
+            "skill signals: total_outcomes == 3",
             result.get("total_outcomes", 0) == 3,
             f"got {result.get('total_outcomes')}",
         )
         # verifications_passed should be non-zero (6 total: 2 per outcome × 3 outcomes)
         vp = result.get("verifications_passed", 0)
         test(
-            "wave3 skill signals: verifications_passed > 0",
+            "skill signals: verifications_passed > 0",
             vp > 0,
             f"got {vp}",
         )
@@ -2373,7 +2373,7 @@ def test_skill_signals_zero_verifications_keeps_low_subscore():
     """When verifications_passed == 0, compute_retro skills subscore stays at baseline (30.0)."""
     retro = load_retro()
     reset_artifacts()
-    db_path = ARTIFACT_DIR / "wave3-unverified.db"
+    db_path = ARTIFACT_DIR / "unverified-skill-signals.db"
     _make_skill_db(db_path)  # Uses existing helper that inserts 0 verification evidence
     original = retro.SKILL_METRICS_DB
     retro.SKILL_METRICS_DB = db_path
@@ -2390,7 +2390,7 @@ def test_skill_signals_zero_verifications_keeps_low_subscore():
         )
         skills_score = payload.get("subscores", {}).get("skills", 0)
         test(
-            "wave3: skills subscore <= 50 when zero verifications",
+            "skills subscore <= 50 when zero verifications",
             skills_score <= 50,
             f"got skills_score={skills_score}",
         )
@@ -2403,8 +2403,8 @@ def test_compute_retro_verifications_affect_skills_subscore():
     retro = load_retro()
     reset_artifacts()
 
-    db_verified = ARTIFACT_DIR / "wave3-with-verif.db"
-    db_unverified = ARTIFACT_DIR / "wave3-without-verif.db"
+    db_verified = ARTIFACT_DIR / "skills-with-verifications.db"
+    db_unverified = ARTIFACT_DIR / "skills-without-verifications.db"
     _make_skill_db_with_verifications(db_verified)
     _make_skill_db(db_unverified)
 
@@ -2430,12 +2430,12 @@ def test_compute_retro_verifications_affect_skills_subscore():
     score_u = payload_u.get("subscores", {}).get("skills", 0)
 
     test(
-        "wave3: skills subscore higher with verifications than without",
+        "skills subscore higher with verifications than without",
         score_v > score_u,
         f"verified={score_v} vs unverified={score_u}",
     )
     test(
-        "wave3: skills subscore with verifications is above 30",
+        "skills subscore with verifications is above 30",
         score_v > 30,
         f"got {score_v}",
     )
@@ -2562,7 +2562,7 @@ def main():
     test_text_report_includes_toward_100_section()
     test_toward_100_empty_when_all_100()
 
-    print("20. Wave 3: verification evidence lifts skill signals")
+    print("20. verification evidence lifts skill signals")
     test_skill_signals_with_verification_evidence()
     test_skill_signals_zero_verifications_keeps_low_subscore()
     test_compute_retro_verifications_affect_skills_subscore()

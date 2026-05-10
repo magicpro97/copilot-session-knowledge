@@ -1277,13 +1277,13 @@ test("sync-knowledge runtime pending count is zero after push", status["pending_
 db.close()
 
 # ---------------------------------------------------------------------------
-# Wave 3 — knowledge_entries confidence MAX merge semantics
+# knowledge_entries confidence MAX merge semantics
 # ---------------------------------------------------------------------------
-print("\nwave3 — knowledge_entries confidence MAX merge semantics")
+print("\nknowledge_entries confidence MAX merge semantics")
 print("-" * 53)
 
 
-def _wave3_make_db(path: Path) -> sqlite3.Connection:
+def _make_confidence_merge_db(path: Path) -> sqlite3.Connection:
     """Create a minimal knowledge DB at path with sessions + knowledge_entries."""
     conn = sqlite3.connect(str(path))
     conn.execute("""
@@ -1316,13 +1316,13 @@ def _wave3_make_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
-_w3_dir = ARTIFACT_DIR / "wave3_merge"
-_w3_dir.mkdir(parents=True, exist_ok=True)
-_target_path = _w3_dir / "target.db"
-_source_path = _w3_dir / "source.db"
+_merge_dir = ARTIFACT_DIR / "confidence_merge"
+_merge_dir.mkdir(parents=True, exist_ok=True)
+_target_path = _merge_dir / "target.db"
+_source_path = _merge_dir / "source.db"
 
-_target_db = _wave3_make_db(_target_path)
-_source_db = _wave3_make_db(_source_path)
+_target_db = _make_confidence_merge_db(_target_path)
+_source_db = _make_confidence_merge_db(_source_path)
 
 # Seed target with a low-confidence pattern entry
 _target_db.execute("INSERT INTO sessions (id) VALUES ('s1')")
@@ -1361,10 +1361,10 @@ test(
 )
 
 # Also verify that sync does NOT downgrade if source has lower confidence
-_target2_path = _w3_dir / "target2.db"
-_source2_path = _w3_dir / "source2.db"
-_target2_db = _wave3_make_db(_target2_path)
-_source2_db = _wave3_make_db(_source2_path)
+_target2_path = _merge_dir / "target2.db"
+_source2_path = _merge_dir / "source2.db"
+_target2_db = _make_confidence_merge_db(_target2_path)
+_source2_db = _make_confidence_merge_db(_source2_path)
 _target2_db.execute("INSERT INTO sessions (id) VALUES ('s1')")
 _target2_db.execute(
     "INSERT INTO knowledge_entries (session_id, category, title, confidence) VALUES ('s1', 'pattern', 'validate early', 0.85)"
@@ -1390,5 +1390,420 @@ test(
 )
 
 print(f"\nResult: {PASS} passed, {FAIL} failed")
+if FAIL:
+    sys.exit(1)
+
+# ---------------------------------------------------------------------------
+# Native sk runtime restart coverage
+# ---------------------------------------------------------------------------
+print("\n── Native sk runtime restart coverage ──────────────────────────────────")
+
+auto_update = load_module("auto_update_test", "auto-update-tools.py")
+
+
+def test_sk_binary_path_defined():
+    """auto-update-tools.py must export _sk_binary_path for native restart routing."""
+    test(
+        "_sk_binary_path is defined in auto-update-tools",
+        hasattr(auto_update, "_sk_binary_path"),
+        "auto-update-tools.py missing _sk_binary_path(); native sk restart routing broken",
+    )
+
+
+def test_sk_binary_path_returns_none_when_absent():
+    """_sk_binary_path must return None when ~/.copilot/bin has no sk binary."""
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    tmp_home = Path(_tempfile.mkdtemp(prefix="sk-path-test-"))
+    try:
+        original_home = auto_update.HOME
+        auto_update.HOME = tmp_home
+        result = auto_update._sk_binary_path()
+        test(
+            "_sk_binary_path returns None when no sk binary installed",
+            result is None,
+            f"expected None, got {result!r}",
+        )
+    finally:
+        auto_update.HOME = original_home
+        _shutil.rmtree(tmp_home, ignore_errors=True)
+
+
+def test_sk_binary_path_returns_native_when_present():
+    """_sk_binary_path returns native binary path (sk.exe / sk-native) when present."""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    import platform as _platform
+
+    tmp_home = Path(_tempfile.mkdtemp(prefix="sk-native-test-"))
+    try:
+        bin_dir = tmp_home / ".copilot" / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        if _platform.system() == "Windows":
+            native_name = "sk.exe"
+        else:
+            native_name = "sk-native"
+        native_bin = bin_dir / native_name
+        native_bin.write_text("#!/bin/sh\necho sk", encoding="utf-8")
+
+        original_home = auto_update.HOME
+        auto_update.HOME = tmp_home
+        result = auto_update._sk_binary_path()
+        test(
+            "_sk_binary_path returns native binary path when present",
+            result is not None and result.name == native_name,
+            f"expected {native_name!r}, got {result!r}",
+        )
+    finally:
+        auto_update.HOME = original_home
+        _shutil.rmtree(tmp_home, ignore_errors=True)
+
+
+def test_sk_binary_path_falls_back_to_shim():
+    """_sk_binary_path falls back to Python shim when native binary is absent."""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    import platform as _platform
+
+    tmp_home = Path(_tempfile.mkdtemp(prefix="sk-shim-test-"))
+    try:
+        bin_dir = tmp_home / ".copilot" / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        if _platform.system() == "Windows":
+            shim_name = "sk.cmd"
+        else:
+            shim_name = "sk"
+        shim = bin_dir / shim_name
+        shim.write_text("@echo off\npython sk.py %*" if _platform.system() == "Windows" else "#!/bin/sh\npython3 sk.py \"$@\"", encoding="utf-8")
+
+        original_home = auto_update.HOME
+        auto_update.HOME = tmp_home
+        result = auto_update._sk_binary_path()
+        test(
+            "_sk_binary_path falls back to Python shim when native binary absent",
+            result is not None and result.name == shim_name,
+            f"expected {shim_name!r}, got {result!r}",
+        )
+    finally:
+        auto_update.HOME = original_home
+        _shutil.rmtree(tmp_home, ignore_errors=True)
+
+
+def test_sk_binary_path_prefers_native_over_shim():
+    """_sk_binary_path must prefer native Rust binary over Python shim."""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    import platform as _platform
+
+    tmp_home = Path(_tempfile.mkdtemp(prefix="sk-prefer-test-"))
+    try:
+        bin_dir = tmp_home / ".copilot" / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        if _platform.system() == "Windows":
+            native_name, shim_name = "sk.exe", "sk.cmd"
+        else:
+            native_name, shim_name = "sk-native", "sk"
+        (bin_dir / native_name).write_text("native", encoding="utf-8")
+        (bin_dir / shim_name).write_text("shim", encoding="utf-8")
+
+        original_home = auto_update.HOME
+        auto_update.HOME = tmp_home
+        result = auto_update._sk_binary_path()
+        test(
+            "_sk_binary_path prefers native binary over Python shim",
+            result is not None and result.name == native_name,
+            f"expected {native_name!r}, got {result!r}",
+        )
+    finally:
+        auto_update.HOME = original_home
+        _shutil.rmtree(tmp_home, ignore_errors=True)
+
+
+def test_restart_manual_source_references_sk_binary_path():
+    """_restart_manual() source must call _sk_binary_path() for native watch routing."""
+    import inspect as _inspect
+    source = _inspect.getsource(auto_update._restart_manual)
+    test(
+        "_restart_manual calls _sk_binary_path() for native watch routing",
+        "_sk_binary_path()" in source,
+        "_restart_manual must use _sk_binary_path() to prefer sk binary over direct python3 spawn",
+    )
+    test(
+        "_restart_manual spawns 'watch' subcommand via sk binary",
+        '"watch"' in source or "'watch'" in source,
+        "_restart_manual should pass 'watch' as argument to the sk binary",
+    )
+
+
+test_sk_binary_path_defined()
+test_sk_binary_path_returns_none_when_absent()
+test_sk_binary_path_returns_native_when_present()
+test_sk_binary_path_falls_back_to_shim()
+test_sk_binary_path_prefers_native_over_shim()
+test_restart_manual_source_references_sk_binary_path()
+
+# ---------------------------------------------------------------------------
+# Sync FTS refresh regression: Python fallback path + current native-sync state
+# ---------------------------------------------------------------------------
+# Current sync runtime facts:
+#   - Native sync engine landed under 'native-sync' Cargo feature.
+#   - DB layer (schema, replica ID, collect txns, apply ops, mark committed,
+#     repair, failures) is ALWAYS compiled.
+#   - HTTP engine (health+push+pull) is gated behind 'native-sync' feature.
+#   - Replica ID seed omits MAC address in Rust; existing Python-generated IDs
+#     are reused from the DB, so hybrid installs stay consistent.
+#
+# Current FTS refresh state:
+#   - FTS blocker CLOSED: 'native-sync' feature now refreshes knowledge_fts
+#     and ke_fts after pull natively in Rust.
+#   - Python sync-daemon.py STILL defines the FTS refresh helpers; they remain
+#     as the authoritative fallback for the Python sk.py shim / no-binary path.
+#
+# Current feature-default state:
+#   - 'native-sync' is now in the DEFAULT Cargo feature set:
+#     default = ["native-embed", "native-sync"]
+#   - The standard compiled 'sk' binary routes 'sk sync run' natively (including
+#     push, pull, and FTS refresh) without any --features flag.
+#   - The Python sk.py shim and installs without a compiled binary STILL delegate
+#     to sync-daemon.py --once; sync-daemon.py must NOT be removed.
+#
+# Current update:
+#   - Native Copilot watch indexer (sk-rust/src/index/session.rs) now enqueues
+#     sync_txns/sync_ops rows via enqueue_doc_sync_op_fail_open() after each
+#     indexed document. This is state 1 (native implementation), fail-open.
+#   - A native local-only sessions_fts writer exists for the non-JSONL
+#     Copilot watch path, closing the prior confirmed gap.
+#
+# These tests guard that the Python fallback path remains intact and that
+# USAGE.md accurately reflects the current hybrid state.
+# ---------------------------------------------------------------------------
+print("\n── Sync FTS refresh regression (Python fallback + native watch parity) ───")
+
+
+def test_sync_fts_refresh_functions_exist():
+    """Python sync-daemon.py must still define FTS refresh helpers as the Python shim / no-binary fallback.
+
+    Note: native-sync is now in the default Cargo feature set, so the compiled sk binary
+    routes sync natively. Python sync-daemon.py remains the authoritative fallback for:
+    - The Python sk.py shim (always routes to sync-daemon.py)
+    - Installs without a compiled binary
+    """
+    test(
+        "sync-daemon._refresh_knowledge_fts_for_documents defined (Python fallback for default build)",
+        hasattr(sync_daemon, "_refresh_knowledge_fts_for_documents"),
+        "sync-daemon.py missing _refresh_knowledge_fts_for_documents — FTS refresh fallback broken",
+    )
+    test(
+        "sync-daemon._refresh_ke_fts_for_entries defined (Python fallback for default build)",
+        hasattr(sync_daemon, "_refresh_ke_fts_for_entries"),
+        "sync-daemon.py missing _refresh_ke_fts_for_entries — ke_fts refresh fallback broken",
+    )
+
+
+def test_fts_refresh_works_for_documents():
+    """Python _refresh_knowledge_fts_for_documents must update knowledge_fts rows after pull.
+
+    Note: native-sync is now in default Cargo features, so the compiled sk binary handles
+    FTS refresh natively. This test guards the Python fallback path used by the Python sk.py shim
+    and installs without a compiled binary.
+    """
+    fts_path = ARTIFACT_DIR / "fts-refresh.db"
+    make_real_schema_db(fts_path)
+    db = sync_daemon.get_db(fts_path)
+    sync_daemon.ensure_sync_foundation(db)
+
+    # Insert a document and section (simulating what a pull would create).
+    db.execute(
+        """
+        INSERT INTO sessions (id, path, summary, source, indexed_at)
+        VALUES ('s-fts-refresh', '/repo/fts-refresh', 'fts refresh test', 'sync', '2026-05-09T00:00:00Z')
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO documents (session_id, doc_type, seq, title, stable_id, file_path,
+                               file_hash, size_bytes, content_preview, source, indexed_at)
+        VALUES ('s-fts-refresh', 'checkpoint', 0, 'FTS Refresh Doc', 'doc-fts-refresh',
+                '/repo/fts-refresh.md', 'abc', 42, 'preview', 'sync', '2026-05-09T00:00:00Z')
+        """
+    )
+    doc_row = db.execute("SELECT id FROM documents WHERE stable_id='doc-fts-refresh'").fetchone()
+    doc_id = doc_row[0] if doc_row else None
+    if doc_id is not None:
+        db.execute(
+            """
+            INSERT INTO sections (document_id, section_name, stable_id, content)
+            VALUES (?, 'full', 'sec-fts-refresh', 'native sync section content')
+            """,
+            (doc_id,),
+        )
+    db.commit()
+
+    # knowledge_fts should be empty before refresh.
+    pre_fts = db.execute(
+        "SELECT document_id FROM knowledge_fts WHERE document_id=?", (doc_id,)
+    ).fetchone() if doc_id else None
+
+    # Call the Python FTS refresh function directly (mirrors what pull_once does).
+    if doc_id is not None:
+        sync_daemon._refresh_knowledge_fts_for_documents(db, {doc_id})
+    db.commit()
+
+    post_fts = db.execute(
+        "SELECT document_id FROM knowledge_fts WHERE document_id=?", (doc_id,)
+    ).fetchone() if doc_id else None
+    db.close()
+
+    test(
+        "Python FTS refresh fallback: knowledge_fts row added after _refresh_knowledge_fts_for_documents call",
+        pre_fts is None and post_fts is not None,
+        f"pre={pre_fts}, post={post_fts}",
+    )
+
+
+def test_fts_refresh_works_for_entries():
+    """Python _refresh_ke_fts_for_entries must update ke_fts rows after pull.
+
+    Note: native-sync is now in default Cargo features, so the compiled sk binary handles
+    ke_fts refresh natively. This test guards the Python fallback path used by the Python sk.py
+    shim and installs without a compiled binary.
+    """
+    fts_path = ARTIFACT_DIR / "ke-fts-refresh.db"
+    make_real_schema_db(fts_path)
+    db = sync_daemon.get_db(fts_path)
+    sync_daemon.ensure_sync_foundation(db)
+
+    db.execute(
+        """
+        INSERT INTO sessions (id, path, summary, source, indexed_at)
+        VALUES ('s-ke-refresh', '/repo/ke-refresh', 'ke refresh test', 'sync', '2026-05-09T00:00:00Z')
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO knowledge_entries
+            (session_id, category, title, content, stable_id, tags, confidence, topic_key)
+        VALUES ('s-ke-refresh', 'pattern', 'ke title', 'ke content', 'ke-fts-refresh',
+                'refresh,native', 0.7, 'refresh-topic')
+        """
+    )
+    db.commit()
+    entry_row = db.execute(
+        "SELECT id FROM knowledge_entries WHERE stable_id='ke-fts-refresh'"
+    ).fetchone()
+    entry_id = entry_row[0] if entry_row else None
+
+    pre_ke_fts = db.execute(
+        "SELECT rowid FROM ke_fts WHERE rowid=?", (entry_id,)
+    ).fetchone() if entry_id else None
+
+    if entry_id is not None:
+        sync_daemon._refresh_ke_fts_for_entries(db, {entry_id})
+    db.commit()
+
+    post_ke_fts = db.execute(
+        "SELECT rowid FROM ke_fts WHERE rowid=?", (entry_id,)
+    ).fetchone() if entry_id else None
+    db.close()
+
+    test(
+        "Python FTS refresh fallback: ke_fts row added after _refresh_ke_fts_for_entries call",
+        pre_ke_fts is None and post_ke_fts is not None,
+        f"pre={pre_ke_fts}, post={post_ke_fts}",
+    )
+
+
+def test_usage_md_documents_fts_blocker():
+    """docs/USAGE.md must accurately document the current native-sync state.
+
+    Native-sync is now in the default Cargo feature set. USAGE.md should document:
+    - native-sync is now in the default build (compiled sk binary routes natively)
+    - Python sk.py shim and no-binary installs still delegate to sync-daemon.py
+    - no overclaiming that the Python sk.py shim is fully native
+    """
+    usage_md = REPO / "docs" / "USAGE.md"
+    if not usage_md.exists():
+        test("docs/USAGE.md exists for sync FTS state check", False, str(usage_md))
+        return
+    content = usage_md.read_text(encoding="utf-8")
+    test(
+        "docs/USAGE.md mentions FTS and native-sync (sync hybrid state documented)",
+        "FTS" in content or "fts" in content or "native-sync" in content,
+        "docs/USAGE.md should mention FTS refresh and native-sync feature boundaries",
+    )
+    test(
+        "docs/USAGE.md does not claim the Python sk.py shim is natively-routed",
+        "fully native" not in content.lower() or "native-sync" in content,
+        "docs/USAGE.md must not overclaim Rust-only sync run without documenting the shim boundary",
+    )
+
+
+def test_watch_sync_enqueue_module_exists():
+    """session.rs must define native sync enqueue and a sessions_fts writer.
+
+    The native Copilot watch indexer enqueues sync_txns/sync_ops rows after indexing
+    each document. The function is fail-open — if the sync schema is absent it logs and
+    returns without crashing. This is a state 1 (native implementation) surface.
+    write_copilot_sessions_fts() closes the prior sessions_fts gap for the
+    non-JSONL Copilot path.
+    """
+    session_rs = REPO / "sk-rust" / "src" / "index" / "session.rs"
+    test(
+        "sk-rust/src/index/session.rs exists (native sync enqueue)",
+        session_rs.exists(),
+        "sk-rust/src/index/session.rs not found — native sync enqueue did not land",
+    )
+    if not session_rs.exists():
+        return
+    content = session_rs.read_text(encoding="utf-8")
+    test(
+        "session.rs defines enqueue_doc_sync_op_fail_open (state 1 native)",
+        "enqueue_doc_sync_op_fail_open" in content,
+        "session.rs missing enqueue_doc_sync_op_fail_open — native sync enqueue not found",
+    )
+    # Confirm fail-open guard is documented
+    test(
+        "session.rs documents fail-open behaviour for sync enqueue (no crash if sync schema absent)",
+        "fail-open" in content.lower() or "fail_open" in content.lower(),
+        "session.rs sync enqueue must be documented as fail-open",
+    )
+    # Confirm the sessions_fts writer exists.
+    test(
+        "session.rs defines write_copilot_sessions_fts (native local-only writer)",
+        "write_copilot_sessions_fts" in content,
+        "session.rs should define write_copilot_sessions_fts()",
+    )
+
+
+def test_usage_md_documents_watch_state():
+    """docs/USAGE.md must document the current hybrid watch state accurately.
+
+    sessions_fts is native, but sk watch still is not fully native because
+    `extract-knowledge.py` classification and first-run DB creation fallback remain Python.
+    """
+    usage_md = REPO / "docs" / "USAGE.md"
+    if not usage_md.exists():
+        test("docs/USAGE.md exists for watch state check", False, str(usage_md))
+        return
+    content = usage_md.read_text(encoding="utf-8")
+    # Must still mention sessions_fts, but now as a native/local-only surface.
+    test(
+        "docs/USAGE.md documents sessions_fts after watch parity work",
+        "sessions_fts" in content and ("native" in content.lower() or "local-only" in content.lower()),
+        "docs/USAGE.md must mention sessions_fts as native/local-only",
+    )
+    # Must still acknowledge that some Python fallback remains.
+    test(
+        "docs/USAGE.md still documents remaining Python watch fallback (no overclaim)",
+        "extract-knowledge.py" in content or "first-run db creation" in content.lower() or "first-run db" in content.lower(),
+        "docs/USAGE.md must still document the remaining Python watch fallback",
+    )
+
+
+test_watch_sync_enqueue_module_exists()
+test_usage_md_documents_watch_state()
+
+print(f"\nFinal total: {PASS} passed, {FAIL} failed")
 if FAIL:
     sys.exit(1)

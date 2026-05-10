@@ -150,6 +150,99 @@ If not using LaunchAgents/systemd:
 (python3 ~/.copilot/tools/auto-update-tools.py &) 2>/dev/null
 ```
 
+## `sk` Binary Installer
+
+`install-binary.py` installs the native `sk` binary from GitHub Releases.  The default
+flow fetches the latest release tag via the GitHub API and downloads the platform archive.
+
+```bash
+# Install latest release into ~/.copilot/bin/
+python install-binary.py
+
+# Install specific version
+python install-binary.py --version v1.2.0
+
+# Install into a custom directory
+python install-binary.py --dir /usr/local/bin
+```
+
+### Environment variable overrides
+
+| Variable | Effect |
+|---|---|
+| `SK_VERSION` | Pin to a specific release tag (same as `--version`) |
+| `SK_INSTALL_DIR` | Override the install directory (same as `--dir`) |
+| `SK_LOCAL_ARCHIVE` | **Opt-in testing/offline override** — point at a local archive file instead of downloading from GitHub.  The default GitHub release flow is unchanged when this variable is not set. |
+
+### Auto-update simulation environment variables
+
+`refresh_rust_binary()` in `auto-update-tools.py` honours the same `SK_LOCAL_ARCHIVE` variable,
+plus two additional overrides for isolated testing:
+
+| Variable | Effect |
+|---|---|
+| `SK_LOCAL_ARCHIVE` | Path to a local `.zip` (Windows) or `.tar.gz` (Linux/macOS) archive.  Skips GitHub API call and download; extracts and installs from the local file.  Sidecar `.sha256` honoured when present. |
+| `SK_BINARY_TAG` | Version tag to report when using `SK_LOCAL_ARCHIVE` (default: `"local"`).  Used by `_should_update_rust_binary()` to compare against the installed binary version. |
+| `SK_BINARY_INSTALL_DIR` | Redirect the install directory away from `~/.copilot/bin` for safe isolated testing.  Never set this in production; it is an explicit opt-in override. |
+
+All three variables are absent by default; the standard GitHub Releases flow is used when none are set.
+
+```powershell
+# Windows: isolated simulation proof
+$sim = New-Item -ItemType Directory -Force "$env:TEMP\sk-sim"
+# Build a minimal stub archive (or copy your real build output)
+python - <<'PY'
+import zipfile, pathlib, sys
+z = pathlib.Path(sys.argv[1])
+with zipfile.ZipFile(str(z), 'w') as zf:
+    zf.writestr('sk.exe', b'fake')
+PY "$sim\sk-windows-x64.zip"
+
+$env:SK_LOCAL_ARCHIVE    = "$sim\sk-windows-x64.zip"
+$env:SK_BINARY_TAG       = "v0.0.1-sim"
+$env:SK_BINARY_INSTALL_DIR = "$sim\install"
+
+# Exercise the --skip-pull pipeline (same-SHA → no git diff → only binary refresh)
+$head = (git rev-parse HEAD)
+python auto-update-tools.py --skip-pull "--old-sha=$head" "--new-sha=$head"
+
+# Or call refresh_rust_binary() directly from a Python session:
+# >>> from importlib.util import spec_from_file_location, module_from_spec
+# >>> spec = spec_from_file_location('aut', 'auto-update-tools.py')
+# >>> m = module_from_spec(spec); spec.loader.exec_module(m)
+# >>> m.refresh_rust_binary()   # uses SK_LOCAL_ARCHIVE from environment
+```
+
+#### Using `SK_LOCAL_ARCHIVE`
+
+When `SK_LOCAL_ARCHIVE` is set, the installer skips the GitHub API call and download
+and extracts the given local archive directly into the install directory.  This is
+useful for:
+
+- **Offline installs** — when the machine has no internet access to GitHub
+- **Local build testing** — proving a freshly compiled binary installs correctly before a release
+- **CI/integration proof** — staging a known binary and exercising the full install code path
+
+If a `.sha256` sidecar file exists at `<archive>.sha256`, its checksum is verified before
+extraction (optional integrity gate).  If no sidecar exists, extraction proceeds without
+remote checksum verification.
+
+```powershell
+# Windows example: install a local zip archive into an isolated directory
+$env:SK_LOCAL_ARCHIVE = "C:\builds\sk-windows-x64.zip"
+$env:SK_INSTALL_DIR   = "$env:TEMP\sk-test-install"
+python install-binary.py
+& "$env:TEMP\sk-test-install\sk.exe" --version
+```
+
+```bash
+# WSL / Linux example: install a local tar.gz into an isolated directory
+SK_LOCAL_ARCHIVE=/tmp/sk-linux-x64.tar.gz \
+SK_INSTALL_DIR=/tmp/sk-test-install \
+python3 install-binary.py
+/tmp/sk-test-install/sk --version
+```
+
 ## Version Manifest
 
 After each update, `.update-manifest.json` is written to the tools directory with:

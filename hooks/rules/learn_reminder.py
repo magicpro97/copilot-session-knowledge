@@ -48,7 +48,7 @@ class LearnReminderRule(Rule):
             return info(
                 "\n  \U0001f9e0 LEARN REMINDER: Task completed! Did you learn something?\n"
                 "  Record mistakes, patterns, or decisions for future sessions:\n\n"
-                "    sk learn --mistake \"Title\" \"Description\" --wing <wing> --room <room>\n"
+                '    sk learn --mistake "Title" "Description" --wing <wing> --room <room>\n'
                 "    (fallback: python3 ~/.copilot/tools/learn.py)\n\n"
                 "  \U0001f4cb SYNC CHECK: Did behavior change? Check the sync matrix:\n"
                 "    docs/SYNC-MATRIX.md — docs · memory · operator follow-ups\n"

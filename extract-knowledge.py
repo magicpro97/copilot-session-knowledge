@@ -1665,6 +1665,207 @@ def list_entries(db: sqlite3.Connection, category: str = None, limit: int = 20):
         print(f"{row[0]:4d} {row[1]:12s} {row[4]:5.2f} {sid:10s} {row[2][:50]}")
 
 
+def _run_semantic_proximity(db: sqlite3.Connection) -> int:
+    """Run SEMANTIC_PROXIMITY relation extraction using TF-IDF cosine similarity.
+
+    Wave 17 extraction point: called by both --residual-only (backward compat via
+    _run_residual_work) and --semantic-only (new mode for sk watch when sklearn IS
+    available, after native Rust helpers ran backfill/task_id/decay).
+
+    Missing scikit-learn is a silent no-op (fail-open).
+    Does NOT commit — caller is responsible.
+    Returns the number of SEMANTIC_PROXIMITY relations written (0 if sklearn absent).
+    """
+    now = datetime.now().isoformat()
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity as _sklearn_cos
+    except ImportError:
+        TfidfVectorizer = None  # type: ignore[assignment]
+        _sklearn_cos = None  # type: ignore[assignment]
+
+    if TfidfVectorizer is None or _sklearn_cos is None:
+        return 0
+
+    semantic_threshold = 0.75
+    semantic_max_entries = 500
+
+    # Build stronger_pairs from Rust-written relations already in the DB.
+    stronger_pairs: set[tuple[int, int]] = set()
+    try:
+        for row in db.execute("SELECT source_id, target_id FROM knowledge_relations"):
+            stronger_pairs.add((row[0], row[1]))
+            stronger_pairs.add((row[1], row[0]))
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        sem_rows = db.execute(
+            """
+            SELECT id, COALESCE(title,''), COALESCE(tags,''), COALESCE(content,'')
+            FROM knowledge_entries ORDER BY id DESC LIMIT ?
+            """,
+            (semantic_max_entries,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        sem_rows = []
+
+    semantic_entries = []
+    for eid, title, tags, content in sem_rows:
+        text = " ".join(p.strip() for p in (title, tags, content) if p and p.strip())
+        if text:
+            semantic_entries.append((int(eid), text))
+
+    if len(semantic_entries) < 2:
+        return 0
+
+    try:
+        sem_ids = [item[0] for item in semantic_entries]
+        sem_texts = [item[1] for item in semantic_entries]
+        vectorizer = TfidfVectorizer(
+            max_features=8000,
+            ngram_range=(1, 2),
+            sublinear_tf=True,
+            strip_accents="unicode",
+            min_df=1,
+            max_df=0.95,
+        )
+        matrix = vectorizer.fit_transform(sem_texts)
+        sim = _sklearn_cos(matrix)
+        # Collect (src_id, tgt_id, stable_id, conf) for batch insert.
+        all_entries_map = {
+            row[0]: row
+            for row in db.execute(
+                "SELECT id, session_id, category, title, COALESCE(topic_key,''), COALESCE(stable_id,'')"
+                " FROM knowledge_entries ORDER BY id DESC LIMIT ?",
+                (semantic_max_entries,),
+            ).fetchall()
+        }
+        sem_relations = []
+        for i, src_id in enumerate(sem_ids):
+            for j in range(i + 1, len(sem_ids)):
+                score = float(sim[i, j])
+                if score < semantic_threshold:
+                    continue
+                tgt_id = sem_ids[j]
+                if (src_id, tgt_id) in stronger_pairs or (tgt_id, src_id) in stronger_pairs:
+                    continue
+                src_row = all_entries_map.get(src_id)
+                tgt_row = all_entries_map.get(tgt_id)
+                if not src_row or not tgt_row:
+                    continue
+                src_stable = src_row[5] or _knowledge_stable_id(src_row[1], src_row[2], src_row[3], src_row[4])
+                tgt_stable = tgt_row[5] or _knowledge_stable_id(tgt_row[1], tgt_row[2], tgt_row[3], tgt_row[4])
+                stable_id = _knowledge_relation_stable_id(src_stable, tgt_stable, "SEMANTIC_PROXIMITY")
+                sem_relations.append(
+                    (src_id, tgt_id, src_stable, tgt_stable, "SEMANTIC_PROXIMITY", stable_id, round(score, 2), now)
+                )
+        if sem_relations:
+            # Ensure unique index exists before batch insert.
+            db.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_relations_unique
+                ON knowledge_relations(source_id, target_id, relation_type)
+            """)
+            db.executemany(
+                """
+                INSERT OR IGNORE INTO knowledge_relations
+                (source_id, target_id, source_stable_id, target_stable_id,
+                 relation_type, stable_id, confidence, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                sem_relations,
+            )
+            for rel in sem_relations:
+                _enqueue_sync_op_fail_open(
+                    db,
+                    "knowledge_relations",
+                    rel[5],
+                    {
+                        "source_stable_id": rel[2],
+                        "target_stable_id": rel[3],
+                        "relation_type": rel[4],
+                        "stable_id": rel[5],
+                        "confidence": rel[6],
+                        "created_at": rel[7],
+                    },
+                )
+        return len(sem_relations)
+    except (ValueError, Exception):
+        return 0  # TF-IDF failure is a no-op
+
+
+def _run_residual_work(db: sqlite3.Connection) -> None:
+    """Residual Python work when native Rust already wrote entries and relations.
+
+    Wave 16 boundary: Rust's native extract handles the classification/write
+    loop and SAME_SESSION/SAME_TOPIC/TAG_OVERLAP/RESOLVED_BY relations.
+    This function covers the remaining Python-owned work:
+
+      1. Backfill: affected_files and task_id from session-local evidence.
+      2. Confidence decay: daily sliding-window decay via embedding_meta.
+      3. SEMANTIC_PROXIMITY relations: TF-IDF cosine ≥ 0.75 (scikit-learn).
+         Appended on top of Rust-written rows via INSERT OR IGNORE.
+         Missing scikit-learn is a silent no-op (fail-open).
+
+    NOT run here:
+      - extract_from_sections()      — done natively by Rust
+      - SAME_SESSION / SAME_TOPIC / TAG_OVERLAP / RESOLVED_BY — done natively
+
+    Called by main() when --residual-only is passed (from sk watch after a
+    successful native extract pass).
+    """
+    now = datetime.now().isoformat()
+
+    # 1. Backfill
+    _backfill_affected_files_from_session_evidence(db)
+    _infer_task_ids_from_content(db)
+
+    # 2. Confidence decay (at most once per day)
+    try:
+        today = now[:10]
+        last_decay = None
+        try:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS embedding_meta (
+                    key TEXT PRIMARY KEY, value TEXT
+                )
+            """)
+            row = db.execute("SELECT value FROM embedding_meta WHERE key = 'last_decay_date'").fetchone()
+            if row:
+                last_decay = row[0]
+        except sqlite3.OperationalError:
+            pass
+        if last_decay != today:
+            db.execute(
+                """
+                UPDATE knowledge_entries
+                SET confidence = MAX(0.3,
+                    CASE WHEN confidence >= 0.8 THEN confidence * 0.98
+                         ELSE confidence * 0.95
+                    END)
+                WHERE last_seen < ? AND confidence > 0.3
+                """,
+                (today,),
+            )
+            try:
+                db.execute(
+                    "INSERT OR REPLACE INTO embedding_meta (key, value) VALUES ('last_decay_date', ?)",
+                    (today,),
+                )
+            except sqlite3.OperationalError:
+                pass
+    except sqlite3.OperationalError:
+        pass
+
+    # 3. SEMANTIC_PROXIMITY — delegated to _run_semantic_proximity() (wave 17 refactor).
+    # INSERT OR IGNORE preserves the Rust-written deterministic relation rows.
+    # Missing scikit-learn is a silent no-op (fail-open).
+    _run_semantic_proximity(db)
+
+    db.commit()
+    print("[residual] backfill + decay + SEMANTIC_PROXIMITY done")
+
+
 def main():
     args = sys.argv[1:]
 
@@ -1713,6 +1914,23 @@ def main():
                 print(f"    {row[0]:15s}: {row[1]:4d} relations (avg confidence: {row[2]})")
         except sqlite3.OperationalError:
             print("  No relations found. Run extraction first.")
+        db.close()
+        return
+
+    # --semantic-only: Wave 17 hot-path mode for sk watch when sklearn IS available.
+    # Native Rust handles backfill, task_id, and decay.  Only SEMANTIC_PROXIMITY runs here.
+    if "--semantic-only" in args:
+        n = _run_semantic_proximity(db)
+        db.commit()
+        db.close()
+        print(f"[semantic] SEMANTIC_PROXIMITY: {n} relations")
+        return
+
+    # --residual-only: Wave 16 hot-path mode.
+    # Called by sk watch after native Rust extract wrote entries and deterministic
+    # relations.  Python covers only the remaining residual work.
+    if "--residual-only" in args:
+        _run_residual_work(db)
         db.close()
         return
 

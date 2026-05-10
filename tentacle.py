@@ -99,36 +99,65 @@ GOAL_STATUS_ABANDONED = "abandoned"
 GOAL_EVAL_DECISIONS: frozenset[str] = frozenset({"continue", "pause", "complete", "abandon"})
 
 
+import threading as _threading
 from contextlib import contextmanager
+
+# Per-path threading locks for intra-process serialization.
+# msvcrt.locking() on Windows uses per-handle byte-range locks, which do NOT
+# provide mutual exclusion between threads in the same process (each thread
+# opens a separate file handle).  A threading.Lock() per canonical path is
+# required to serialize concurrent threads before the file-system lock is
+# acquired.  The file-system lock still guards against concurrent PROCESSES.
+_file_path_locks: dict[str, _threading.Lock] = {}
+_file_path_locks_mutex: _threading.Lock = _threading.Lock()
+
+
+def _get_path_lock(lock_path: "Path") -> _threading.Lock:
+    key = str(lock_path).lower() if os.name == "nt" else str(lock_path)
+    with _file_path_locks_mutex:
+        if key not in _file_path_locks:
+            _file_path_locks[key] = _threading.Lock()
+        return _file_path_locks[key]
 
 
 @contextmanager
 def file_locked(lock_path):
-    """Acquire an exclusive file lock for atomic read-modify-write operations."""
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_file = open(str(lock_path) + ".lock", "w")
-    locked = False
-    try:
-        if os.name == "nt":
-            # Windows: msvcrt byte-range locking on 1 byte (LK_LOCK retries for 10 s)
-            lock_file.write(" ")
-            lock_file.flush()
-            lock_file.seek(0)
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        locked = True
-        yield
-    finally:
+    """Acquire an exclusive file lock for atomic read-modify-write operations.
+
+    Two-layer locking:
+      1. threading.Lock per canonical path — serialises threads within the same
+         process (msvcrt.locking uses per-handle locks and is NOT thread-safe).
+      2. msvcrt.locking / fcntl.flock — guards against concurrent PROCESSES.
+    """
+    thread_lock = _get_path_lock(lock_path)
+    with thread_lock:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = open(str(lock_path) + ".lock", "w")
+        locked = False
         try:
-            if locked:
-                if os.name == "nt":
-                    lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            if os.name == "nt":
+                # Windows: msvcrt byte-range locking on 1 byte (LK_LOCK retries for 10 s).
+                # Since the threading.Lock() above already serialises threads,
+                # LK_LOCK will always succeed immediately here; its purpose is
+                # cross-PROCESS mutual exclusion only.
+                lock_file.write(" ")
+                lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            locked = True
+            yield
         finally:
-            lock_file.close()
+            try:
+                if locked:
+                    if os.name == "nt":
+                        lock_file.seek(0)
+                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_file.close()
 
 
 def find_git_root() -> Path | None:
@@ -2958,14 +2987,158 @@ def cmd_bundle(args):
             print(f"   {f.name} ({f.stat().st_size} bytes)")
 
 
+# ---------------------------------------------------------------------------
+# Stop-event cleanup helpers (stable CLI boundary for Rust callers)
+# ---------------------------------------------------------------------------
+
+_STOP_NAME_KEYS = frozenset(
+    {
+        "tentacle",
+        "tentacleName",
+        "tentacle_name",
+        "subagentName",
+        "subagent_name",
+        "agentName",
+        "agent_name",
+    }
+)
+_STOP_ID_KEYS = frozenset(
+    {
+        "tentacleId",
+        "tentacle_id",
+        "subagentId",
+        "subagent_id",
+        "agentId",
+        "agent_id",
+    }
+)
+_STOP_SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def _extract_stop_hints_from_payload(data: dict) -> tuple[set, set]:
+    """Extract candidate tentacle names/ids from agentStop/subagentStop payloads.
+
+    Mirrors hooks/rules/session_lifecycle.py::_extract_stop_hints.
+    Walks the full payload recursively; validates each token for safety.
+
+    Returns (names: set[str], ids: set[str]).
+    """
+    names: set = set()
+    ids: set = set()
+
+    def _collect(value):
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if k in _STOP_NAME_KEYS and isinstance(v, str):
+                    token = v.strip()
+                    if _STOP_SAFE_TOKEN.match(token):
+                        names.add(token)
+                elif k in _STOP_ID_KEYS and isinstance(v, str):
+                    token = v.strip()
+                    if _STOP_SAFE_TOKEN.match(token):
+                        ids.add(token)
+                _collect(v)
+        elif isinstance(value, list):
+            for item in value:
+                _collect(item)
+
+    _collect(data if isinstance(data, dict) else {})
+    return names, ids
+
+
+def _cmd_marker_cleanup_from_stop_event() -> None:
+    """Event-payload-based marker cleanup: reads stop-event JSON from stdin.
+
+    Called by cmd_marker_cleanup when --from-stop-event is set.  This is the
+    stable subprocess CLI boundary for the Rust hook runner:
+
+        python tentacle.py marker-cleanup --from-stop-event < <event-json>
+
+    Behaviour:
+    - Read and parse JSON from stdin (fail-open on parse error).
+    - Extract tentacle names/ids via _extract_stop_hints_from_payload.
+    - For each matching active entry, call _clear_dispatched_subagent_marker.
+    - Print "Cleared: <name>" for each successfully removed entry.
+    - Always exit 0 (fail-open; caller must not treat non-zero as an error).
+    """
+    try:
+        raw = sys.stdin.read()
+        data = json.loads(raw) if raw.strip() else {}
+    except Exception:
+        # Fail-open: unreadable/non-JSON payload → nothing to clean up
+        return
+
+    names, ids = _extract_stop_hints_from_payload(data)
+    if not names and not ids:
+        return
+
+    marker_data = _read_dispatched_subagent_marker()
+    if not isinstance(marker_data, dict):
+        return
+
+    # Collect active entries from the marker
+    raw_active: list = []
+    if "active_tentacles" in marker_data:
+        raw_active = list(marker_data["active_tentacles"])
+    elif "tentacle" in marker_data:
+        raw_active = [marker_data["tentacle"]]
+
+    active_entries: list[tuple[str, str | None]] = []
+    name_counts: dict[str, int] = {}
+    for entry in raw_active:
+        if isinstance(entry, str):
+            active_entries.append((entry, None))
+            name_counts[entry] = name_counts.get(entry, 0) + 1
+        elif isinstance(entry, dict):
+            name = entry.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            tid = entry.get("tentacle_id")
+            tid = tid if isinstance(tid, str) and tid else None
+            active_entries.append((name, tid))
+            name_counts[name] = name_counts.get(name, 0) + 1
+
+    # Determine which entries match the stop hints
+    clear_targets: set[tuple[str, str | None]] = set()
+    for name, tid in active_entries:
+        if tid and tid in ids:
+            clear_targets.add((name, tid))
+            continue
+        if name in names and name_counts.get(name, 0) == 1:
+            clear_targets.add((name, tid))
+
+    if not clear_targets:
+        return
+
+    for name, tid in sorted(clear_targets):
+        try:
+            ok = _clear_dispatched_subagent_marker(name, tentacle_id=tid)
+            if ok:
+                print(f"Cleared: {name}")
+        except Exception:
+            pass  # fail-open
+
+
 def cmd_marker_cleanup(args):
     """Show active dispatched-subagent marker state and optionally remove stale entries.
 
     By default runs in dry-run mode: prints stale entries that would be removed.
     Pass --apply to actually remove them via the standard clear mechanism.
-    Only entries whose per-entry ts exceeds the marker's declared TTL are eligible.
-    Live entries and entries with no ts are never touched.
+
+    Pass --from-stop-event to perform event-payload-based cleanup: reads a JSON
+    agentStop/subagentStop payload from stdin, extracts tentacle names/ids, and
+    removes matching entries from the active marker.  This is the stable CLI
+    boundary used by the native Rust hook runner (sk hooks agentStop/subagentStop)
+    instead of importing tentacle Python internals directly.  Always fail-open.
+
+    TTL-based stale cleanup: only entries whose per-entry ts exceeds the marker's
+    declared TTL are eligible.  Live entries and entries with no ts are never touched.
     """
+    # --from-stop-event: event-payload-based cleanup (stable boundary for Rust callers)
+    if getattr(args, "from_stop_event", False):
+        _cmd_marker_cleanup_from_stop_event()
+        return
+
     state = _get_marker_state()
     if not state["active"]:
         print("ℹ️  No active dispatched-subagent marker found.")
@@ -3281,6 +3454,16 @@ def main():
         "--apply",
         action="store_true",
         help="Actually remove stale entries (default is dry-run)",
+    )
+    p_marker_cleanup.add_argument(
+        "--from-stop-event",
+        dest="from_stop_event",
+        action="store_true",
+        help=(
+            "Read agentStop/subagentStop JSON payload from stdin and remove matching "
+            "marker entries.  Stable CLI boundary for native Rust hook runner.  "
+            "Always fail-open; incompatible with --apply."
+        ),
     )
 
     # verify subcommand

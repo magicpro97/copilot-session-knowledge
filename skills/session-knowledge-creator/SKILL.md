@@ -98,8 +98,8 @@ Add a brief section pointing to the other two files. Keep it short — enforceme
 ## Session Knowledge
 
 > Enforced by `.github/instructions/session-knowledge.instructions.md` (auto-loaded).
-> Tools: `~/.copilot/tools/briefing.py`, `learn.py`, `query-session.py`
-> JSON output: `briefing.py "task" --json`, `learn.py ... --json`, `query-session.py "q" --export json`
+> Tools: `sk briefing`, `sk learn`, `sk query`
+> JSON output: `sk briefing "task" --json`, `sk learn ... --json`, `sk query "q" --export json`
 > Details: `.github/skills/session-knowledge/SKILL.md`
 ```
 

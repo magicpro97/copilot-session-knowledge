@@ -123,6 +123,31 @@ class TestSkDirectCommands(unittest.TestCase):
     def test_heal(self):
         self._assert_routes("heal", "copilot-cli-healer.py")
 
+    def test_watch(self):
+        self._assert_routes("watch", "watch-sessions.py")
+
+
+class TestSkHooksCompat(unittest.TestCase):
+    def test_hooks_run_drops_run_subcommand(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["hooks", "run", "sessionStart"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with(str(Path("hooks") / "hook_runner.py"), ["sessionStart"])
+
+    def test_hooks_direct_event_routes_to_runner(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["hooks", "preToolUse"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with(str(Path("hooks") / "hook_runner.py"), ["preToolUse"])
+
+    def test_hooks_list_prints_events(self):
+        with patch("builtins.print") as mock_print:
+            rc = sk.main(["hooks", "list"])
+        self.assertEqual(rc, 0)
+        output = " ".join(str(c) for call in mock_print.call_args_list for c in call[0])
+        self.assertIn("sessionStart", output)
+        self.assertIn("preToolUse", output)
+
 
 class TestSkGroupedCommands(unittest.TestCase):
     """Verify that grouped namespace commands route to the right script."""
@@ -257,6 +282,205 @@ class TestSkErrorCases(unittest.TestCase):
         output = " ".join(str(c) for call in mock_print.call_args_list for c in call[0])
         self.assertIn("pip install -e", output)
         self.assertIn("SK_TOOLS_DIR", output)
+
+
+class TestSkHybridRoutingPreconditions(unittest.TestCase):
+    """Regression guards for the current Python/Rust split in sk surfaces.
+
+    Current routing invariants:
+    - managed `sk hooks run <event>` stays Python-backed via hook_runner.py fallback
+    - the native indexer covers Copilot session-state indexing, while Claude JSONL +
+      extract-knowledge remain Python-backed
+    - `sk index embed --build` stays Python-backed because it depends on the full
+      embedding/TF-IDF pipeline
+    - the compiled sk binary routes `sk sync run` natively, while the Python shim
+      still routes to sync-daemon.py for compatibility and no-binary installs
+    """
+
+    def test_embed_py_exists_for_build_fallback(self):
+        """embed.py must exist — sk index embed --build Python fallback (embedding API + TF-IDF)."""
+        self.assertTrue(
+            (TOOLS_DIR / "embed.py").exists(),
+            "embed.py not found — 'sk index embed --build' would lose its Python-backed fallback",
+        )
+
+    def test_sync_daemon_py_exists_for_default_sync(self):
+        """sync-daemon.py must exist — Python sk.py shim and no-binary installs route to it.
+
+        Current note: native-sync is now in the default Cargo features, so the compiled sk binary
+        routes sk sync run natively. However, sync-daemon.py MUST remain for the Python sk.py
+        shim (which always routes to sync-daemon.py) and for installs without a compiled binary.
+        """
+        self.assertTrue(
+            (TOOLS_DIR / "sync-daemon.py").exists(),
+            "sync-daemon.py not found — Python sk.py shim and no-binary sk sync run would break",
+        )
+
+    def test_extract_knowledge_py_exists_for_python_fallback(self):
+        """extract-knowledge.py must exist — Claude JSONL + extract-knowledge remain Python-backed."""
+        self.assertTrue(
+            (TOOLS_DIR / "extract-knowledge.py").exists(),
+            "extract-knowledge.py not found — Claude JSONL/extract fallback would break",
+        )
+
+    def test_python_sk_index_embed_routes_to_embed_py(self):
+        """Python sk shim routes 'sk index embed' to embed.py (preserving --build fallback path)."""
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["index", "embed"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("embed.py", [])
+
+    def test_python_sk_sync_run_routes_to_sync_daemon(self):
+        """Python sk.py shim routes 'sk sync run' to sync-daemon.py.
+
+        Current note: this tests the Python sk.py shim routing, NOT the compiled Rust binary.
+        The shim has no awareness of Cargo features and always delegates to sync-daemon.py.
+        The compiled sk binary (with native-sync in default features) routes natively.
+        """
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["sync", "run"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("sync-daemon.py", [])
+
+    def test_python_sk_index_embed_with_build_flag_routes_to_embed_py(self):
+        """sk index embed --build must still route to embed.py."""
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["index", "embed", "--build"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("embed.py", ["--build"])
+
+
+class TestSkNativeRoutingPreconditions(unittest.TestCase):
+    """Verify structural preconditions for `sk hooks` / `sk watch` compatibility.
+
+    Both the Rust binary and the Python shim must accept these command surfaces
+    so managed hooks and watcher restarts keep working while rollout is mixed.
+    """
+
+    def test_hook_runner_fallback_target_exists(self):
+        """hook_runner.py must exist at hooks/hook_runner.py for 'sk hooks' native fallback."""
+        self.assertTrue(
+            (TOOLS_DIR / "hooks" / "hook_runner.py").exists(),
+            "hooks/hook_runner.py not found — 'sk hooks run <event>' native fallback would break",
+        )
+
+    def test_watch_sessions_fallback_target_exists(self):
+        """watch-sessions.py must exist at TOOLS_DIR for 'sk watch' native fallback."""
+        self.assertTrue(
+            (TOOLS_DIR / "watch-sessions.py").exists(),
+            "watch-sessions.py not found — 'sk watch' native fallback would break",
+        )
+
+    def test_python_sk_supports_hooks_compatibly(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["hooks", "run", "sessionStart"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with(str(Path("hooks") / "hook_runner.py"), ["sessionStart"])
+
+    def test_python_sk_supports_watch_compatibly(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["watch", "--service"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("watch-sessions.py", ["--service"])
+
+    def test_hooks_json_prefers_sk_hooks_run(self):
+        """The managed hooks.json must use 'sk hooks run' as the preferred command."""
+        hooks_json = TOOLS_DIR / "hooks" / "hooks.json"
+        self.assertTrue(hooks_json.exists(), f"hooks/hooks.json not found: {hooks_json}")
+        content = hooks_json.read_text(encoding="utf-8")
+        self.assertIn("sk hooks run", content,
+                      "hooks.json bash/powershell fields should use 'sk hooks run <event>' for native routing")
+
+    def test_hooks_json_retains_python3_fallback(self):
+        """The managed hooks.json must retain python3 hook_runner.py as a fallback."""
+        hooks_json = TOOLS_DIR / "hooks" / "hooks.json"
+        self.assertTrue(hooks_json.exists(), f"hooks/hooks.json not found: {hooks_json}")
+        content = hooks_json.read_text(encoding="utf-8")
+        self.assertIn("python3", content, "hooks.json must retain python3 fallback")
+        self.assertIn("hook_runner.py", content, "hooks.json must retain hook_runner.py in fallback path")
+
+
+class TestSkNativeFeaturePreconditions(unittest.TestCase):
+    """Regression guards for current native feature surfaces.
+
+    These checks cover:
+    - native session column migrations in `session.rs`
+    - native `sessions_fts` writer state for the Copilot non-JSONL path
+    - marker_auth helpers reused by selected native hook rules
+    - native ErrorOccurredRule DB path with Python fallback only when needed
+    - native sync enqueue support in `session.rs`
+    - intentionally Python-backed extract/bootstrap surfaces
+    """
+
+    def test_session_rs_exists_with_column_migrations(self):
+        """sk-rust/src/index/session.rs must contain apply_sessions_column_migrations."""
+        session_rs = TOOLS_DIR / "sk-rust" / "src" / "index" / "session.rs"
+        self.assertTrue(
+            session_rs.exists(),
+            "sk-rust/src/index/session.rs not found — native schema migration is missing",
+        )
+        content = session_rs.read_text(encoding="utf-8")
+        self.assertIn(
+            "apply_sessions_column_migrations",
+            content,
+            "session.rs must define apply_sessions_column_migrations() for native column migration",
+        )
+        for col in ("file_mtime", "indexed_at_r", "fts_indexed_at", "event_count_estimate"):
+            self.assertIn(col, content, f"session.rs native migration must cover '{col}' column")
+
+    def test_session_rs_has_sync_enqueue(self):
+        """sk-rust/src/index/session.rs must contain enqueue_doc_sync_op_fail_open."""
+        session_rs = TOOLS_DIR / "sk-rust" / "src" / "index" / "session.rs"
+        self.assertTrue(session_rs.exists(), "sk-rust/src/index/session.rs not found")
+        content = session_rs.read_text(encoding="utf-8")
+        self.assertIn(
+            "enqueue_doc_sync_op_fail_open",
+            content,
+            "session.rs must define enqueue_doc_sync_op_fail_open() for native sync enqueueing",
+        )
+
+    def test_hmac_foundation_module_exists(self):
+        """marker_auth.rs must exist and expose the helpers now used natively.
+
+        Managed sessionStart, preToolUse, and postToolUse parity still remain Python-backed,
+        but selected native rules now use the same marker_auth read/write formats.
+        """
+        marker_auth_rs = TOOLS_DIR / "sk-rust" / "src" / "hooks" / "marker_auth.rs"
+        self.assertTrue(
+            marker_auth_rs.exists(),
+            "sk-rust/src/hooks/marker_auth.rs not found — HMAC parity module missing",
+        )
+        content = marker_auth_rs.read_text(encoding="utf-8")
+        self.assertTrue(
+            "sign_counter" in content and "verify_counter" in content and "sign_list_marker" in content,
+            "marker_auth.rs must expose counter/list-marker helpers used by native rules",
+        )
+
+    def test_sessions_fts_state_documented_in_hooks_md(self):
+        """docs/HOOKS.md must document the native sessions_fts writer state."""
+        hooks_md = TOOLS_DIR / "docs" / "HOOKS.md"
+        self.assertTrue(hooks_md.exists(), f"docs/HOOKS.md not found: {hooks_md}")
+        content = hooks_md.read_text(encoding="utf-8")
+        self.assertIn(
+            "sessions_fts",
+            content,
+            "docs/HOOKS.md must continue to document sessions_fts",
+        )
+        self.assertTrue(
+            "local-only" in content.lower() or "native" in content.lower(),
+            "docs/HOOKS.md should describe sessions_fts as native/local-only",
+        )
+
+    def test_extract_knowledge_py_still_python_backed(self):
+        """extract-knowledge.py must exist — first-run DB bootstrap + classify remain Python-backed.
+
+        The native indexer still calls Python for
+        knowledge classification. First-run DB bootstrap also remains Python-backed.
+        """
+        self.assertTrue(
+            (TOOLS_DIR / "extract-knowledge.py").exists(),
+            "extract-knowledge.py not found — knowledge classification and first-run DB bootstrap are still Python-backed",
+        )
 
 
 if __name__ == "__main__":

@@ -3,7 +3,19 @@ use std::process::ExitCode;
 use crate::db::connection::KnowledgeDb;
 use crate::db::fts::sanitize_fts_query;
 
-type DetailRow = (i64, String, String, String, String, f64, i64, String, String, String, String);
+type DetailRow = (
+    i64,
+    String,
+    String,
+    String,
+    String,
+    f64,
+    i64,
+    String,
+    String,
+    String,
+    String,
+);
 type FtsRow = (i64, String, String, String, String, f64, String, String);
 
 /// Entry point called from main's dispatch for the `query` command.
@@ -31,11 +43,25 @@ pub fn run_query_command(args: &[String]) -> ExitCode {
     }
 
     if let Some(cat) = params.category_filter.as_deref() {
-        return show_by_category(&db, cat, params.limit, params.verbose, params.wing_filter.as_deref(), params.room_filter.as_deref());
+        return show_by_category(
+            &db,
+            cat,
+            params.limit,
+            params.verbose,
+            params.wing_filter.as_deref(),
+            params.room_filter.as_deref(),
+        );
     }
 
     if !params.search_terms.is_empty() {
-        return search_fts_cmd(&db, &params.search_terms, params.limit, params.verbose, params.wing_filter.as_deref(), params.room_filter.as_deref());
+        return search_fts_cmd(
+            &db,
+            &params.search_terms,
+            params.limit,
+            params.verbose,
+            params.wing_filter.as_deref(),
+            params.room_filter.as_deref(),
+        );
     }
 
     // No args: show recent entries across all categories
@@ -68,11 +94,26 @@ fn parse_query_args(args: &[String]) -> QueryParams {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--mistakes" => { category_filter = Some("mistake".to_string()); i += 1; }
-            "--patterns" => { category_filter = Some("pattern".to_string()); i += 1; }
-            "--decisions" => { category_filter = Some("decision".to_string()); i += 1; }
-            "--tools" => { category_filter = Some("tool".to_string()); i += 1; }
-            "--wings" => { show_wings = true; i += 1; }
+            "--mistakes" => {
+                category_filter = Some("mistake".to_string());
+                i += 1;
+            }
+            "--patterns" => {
+                category_filter = Some("pattern".to_string());
+                i += 1;
+            }
+            "--decisions" => {
+                category_filter = Some("decision".to_string());
+                i += 1;
+            }
+            "--tools" => {
+                category_filter = Some("tool".to_string());
+                i += 1;
+            }
+            "--wings" => {
+                show_wings = true;
+                i += 1;
+            }
             "--rooms" => {
                 show_rooms = true;
                 // Optional wing argument after --rooms
@@ -97,7 +138,10 @@ fn parse_query_args(args: &[String]) -> QueryParams {
                 }
                 i += 2;
             }
-            "--verbose" => { verbose = true; i += 1; }
+            "--verbose" => {
+                verbose = true;
+                i += 1;
+            }
             "--wing" => {
                 wing_filter = args.get(i + 1).cloned();
                 i += 2;
@@ -114,7 +158,9 @@ fn parse_query_args(args: &[String]) -> QueryParams {
                 }
                 i += 1;
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -185,9 +231,11 @@ fn show_rooms(db: &KnowledgeDb, wing: Option<&str>) -> ExitCode {
                 return ExitCode::from(1);
             }
         };
-        stmt.query_map(rusqlite::params![w], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-            .map(|mapped| mapped.filter_map(|x| x.ok()).collect())
-            .unwrap_or_default()
+        stmt.query_map(rusqlite::params![w], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map(|mapped| mapped.filter_map(|x| x.ok()).collect())
+        .unwrap_or_default()
     } else {
         let mut stmt = match db.conn.prepare(
             "SELECT room, COALESCE(wing,''), COUNT(*) as cnt \
@@ -213,7 +261,9 @@ fn show_rooms(db: &KnowledgeDb, wing: Option<&str>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let title = wing.map(|w| format!("Rooms in '{w}'")).unwrap_or_else(|| "All Rooms".to_string());
+    let title = wing
+        .map(|w| format!("Rooms in '{w}'"))
+        .unwrap_or_else(|| "All Rooms".to_string());
     println!("\n{title}");
     println!("{}", "=".repeat(50));
     for (room, w, cnt) in &rows {
@@ -312,12 +362,23 @@ fn show_by_category(
         return ExitCode::SUCCESS;
     }
 
-    println!("\n{} entries ({} results)\n", category.to_uppercase(), entries.len());
+    println!(
+        "\n{} entries ({} results)\n",
+        category.to_uppercase(),
+        entries.len()
+    );
     for e in entries.iter() {
         let conf = format!("{:.1}", e.confidence);
         println!("  #{:>4} {} [conf:{}]", e.id, truncate(&e.title, 60), conf);
         if verbose && !e.content.is_empty() {
-            let first_line = e.content.lines().next().unwrap_or("").chars().take(80).collect::<String>();
+            let first_line = e
+                .content
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(80)
+                .collect::<String>();
             println!("        {first_line}");
         }
     }
@@ -383,7 +444,10 @@ fn search_fts_cmd(
         return search_like_fallback(db, query, limit, verbose);
     }
 
-    println!("\nKnowledge entries matching: {query} ({} results)\n", rows.len());
+    println!(
+        "\nKnowledge entries matching: {query} ({} results)\n",
+        rows.len()
+    );
     for (i, (_id, cat, title, content, tags, _conf, _w, _r)) in rows.iter().enumerate() {
         println!("{}. [{}] {}", i + 1, cat, title);
         println!("   Tags: {tags}");
@@ -391,7 +455,13 @@ fn search_fts_cmd(
             let preview = content.chars().take(300).collect::<String>();
             println!("   {}", preview.replace('\n', "\n   "));
         } else {
-            let first_line = content.lines().next().unwrap_or("").chars().take(80).collect::<String>();
+            let first_line = content
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(80)
+                .collect::<String>();
             if !first_line.is_empty() {
                 println!("   {first_line}");
             }
@@ -420,7 +490,13 @@ fn search_like_fallback(db: &KnowledgeDb, query: &str, limit: usize, verbose: bo
 
     let rows: Vec<(i64, String, String, String, String)> = stmt
         .query_map(rusqlite::params![pattern, pattern, limit as i64], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })
         .map(|r| r.filter_map(|x| x.ok()).collect())
         .unwrap_or_default();
@@ -432,7 +508,10 @@ fn search_like_fallback(db: &KnowledgeDb, query: &str, limit: usize, verbose: bo
     }
 
     println!("(FTS returned 0 — showing substring matches)");
-    println!("\nKnowledge entries matching: {query} ({} results)\n", rows.len());
+    println!(
+        "\nKnowledge entries matching: {query} ({} results)\n",
+        rows.len()
+    );
     for (i, (_id, cat, title, content, tags)) in rows.iter().enumerate() {
         println!("{}. [{}] {}", i + 1, cat, title);
         println!("   Tags: {tags}");
@@ -462,7 +541,14 @@ fn show_recent_all(db: &KnowledgeDb, limit: usize) -> ExitCode {
 
     let rows: Vec<(i64, String, String, f64, String, String)> = stmt
         .query_map(rusqlite::params![limit as i64], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get::<_, f64>(3).unwrap_or(0.0), row.get(4)?, row.get(5)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get::<_, f64>(3).unwrap_or(0.0),
+                row.get(4)?,
+                row.get(5)?,
+            ))
         })
         .map(|r| r.filter_map(|x| x.ok()).collect())
         .unwrap_or_default();
@@ -480,7 +566,13 @@ fn show_recent_all(db: &KnowledgeDb, limit: usize) -> ExitCode {
         } else {
             String::new()
         };
-        println!("  #{:>4} [{cat}] {} [conf:{:.1}]{}", id, truncate(title, 55), conf, loc);
+        println!(
+            "  #{:>4} [{cat}] {} [conf:{:.1}]{}",
+            id,
+            truncate(title, 55),
+            conf,
+            loc
+        );
     }
     println!("\nUse --mistakes/--patterns/--decisions or search terms to filter");
     ExitCode::SUCCESS
@@ -492,7 +584,9 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         let mut end = 0;
         for (count, c) in s.chars().enumerate() {
-            if count >= max.saturating_sub(3) { break; }
+            if count >= max.saturating_sub(3) {
+                break;
+            }
             end += c.len_utf8();
         }
         format!("{}...", &s[..end])

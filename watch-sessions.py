@@ -355,13 +355,19 @@ def check_and_index(prev_sigs: dict, watch_dirs: list[Path],
                 content_changed.add(fp)
             enriched_sigs[fp] = [mtime, size, h]
         else:
-            # mtime/size stable — carry forward stored hash without re-reading.
-            # One-time backfill: legacy 2-element entries carry "" which would
-            # cause a false-positive re-index the next time mtime changes.
+            # mtime/size stable — verify hash to catch same-tick or same-size
+            # content changes that bypass mtime/size detection.  Also handles the
+            # one-time legacy backfill for 2-element entries (no stored hash yet).
             prev = prev_sigs.get(fp, [])
             stored_hash = prev[2] if len(prev) >= 3 else ""
+            current_hash = _content_hash(Path(fp))
             if not stored_hash:
-                stored_hash = _content_hash(Path(fp))
+                # First poll after upgrade: backfill without re-indexing.
+                stored_hash = current_hash
+            elif current_hash != stored_hash:
+                # Content changed despite stable mtime/size (e.g. same-tick write).
+                content_changed.add(fp)
+                stored_hash = current_hash
             enriched_sigs[fp] = [mtime, size, stored_hash]
 
     all_changed = sorted(new_files | content_changed)

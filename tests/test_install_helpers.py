@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-test_install_wave3.py — Focused tests for install.py helper logic (Wave 3).
+test_install_helpers.py — Focused tests for install.py helper logic.
 
 Covers:
   - _atomic_write_text() writes and replaces atomically (no tmp leak)
@@ -13,7 +13,7 @@ Covers:
   - TOOL_FILES list completeness spot-checks
   - MINIMAL_SKILL_MD content sanity
 
-Run: python3 tests/test_install_wave3.py
+Run: python3 tests/test_install_helpers.py
 """
 
 import importlib.util
@@ -32,7 +32,7 @@ PASS = 0
 FAIL = 0
 REPO = Path(__file__).parent.parent
 
-SCRATCH = REPO / ".test-scratch" / "install-wave3-tests"
+SCRATCH = REPO / ".test-scratch" / "install-helper-tests"
 SCRATCH.mkdir(parents=True, exist_ok=True)
 
 # Ensure local modules importable
@@ -368,13 +368,14 @@ try:
             break
 
     profile_path = _SK_HOME / ".zshrc"
-    test("install_sk_launcher creates preferred shell profile when missing", profile_path.exists())
-    if profile_path.exists():
-        profile_content = profile_path.read_text(encoding="utf-8")
-        test("launcher PATH marker added to shell profile",
-             _install._SK_PATH_MARKER_START in profile_content)
-        test("launcher PATH export references SK_LAUNCHER_DIR",
-             str(_install.SK_LAUNCHER_DIR) in profile_content)
+    if os.name != "nt":
+        test("install_sk_launcher creates preferred shell profile when missing", profile_path.exists())
+        if profile_path.exists():
+            profile_content = profile_path.read_text(encoding="utf-8")
+            test("launcher PATH marker added to shell profile",
+                 _install._SK_PATH_MARKER_START in profile_content)
+            test("launcher PATH export references SK_LAUNCHER_DIR",
+                 str(_install.SK_LAUNCHER_DIR) in profile_content)
 
     # Idempotency: second call returns False (already installed)
     result2 = _install.install_sk_launcher(quiet=True)

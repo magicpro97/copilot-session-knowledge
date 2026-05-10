@@ -104,6 +104,7 @@ When running inside a tentacle (dispatched by the orchestrator via `tentacle.py`
 4. **No git operations** — do NOT run `git commit` or `git push`; the orchestrator owns all git operations.
 5. **Write a structured handoff before stopping**: `sk tentacle handoff <tentacle-name> "<summary>" --status <STATUS> [--changed-file <path>] --learn` (fallback: `python3 ~/.copilot/tools/tentacle.py handoff ...`)
 6. Use one of `DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED` for `<STATUS>`. Add one `--changed-file` per modified file; omit it when no files changed. Handoff must list changed rules, source-of-truth file for each rule, and any remaining ambiguity.
+7. **No platform `create` for reports** — do NOT use the runtime platform's `create` file-creation tool to save research output, investigation findings, or final reports. The `create` tool is a platform capability that is **not available in all agent runtimes** (cloud agents, Copilot cloud runs, background tasks). Write all persistent output to `handoff.md` via `tentacle.py handoff`. If `tentacle.py` is also unavailable, print the report to chat so the orchestrator can capture it. Orchestrators must not assume sub-agents can create arbitrary files.
 
 **Goal-loop (orchestrators only)** — after all tentacle handoffs pass verification gates, evaluate whether the overarching goal is met. If unmet, loop back to Phase 1 (new tentacles for remaining gaps). Only commit and close when success criteria are verifiably satisfied. Sub-agents report via handoff and stop; the orchestrator owns continuation. Record goal-eval evidence with `python3 ~/.copilot/tools/tentacle.py verify <name> "<check-command>" --label "goal-eval"`.
 
@@ -167,7 +168,15 @@ Key facts every agent must remember:
 - **JSON field envelopes are stable contracts** — `entries[]`, `tagged_entries[]`, `related_entries[]`, `entries.<category>[]` — do not rename
 - **Trend Scout** — scheduled/manual only; never wire to `preToolUse`/`postToolUse` hooks
 - **Sync** — local DB is authoritative; remote is transport only; `sync-config.py --setup` takes HTTP(S) URLs only
-- **Hooks** — Copilot CLI only; `hook_runner.py` is the single entry point; fail-open; `pre-commit` also runs scoped Ruff + Prettier cleanliness checks (fail-open when tooling absent)
+- **Hooks** — Copilot CLI only; `hook_runner.py` is the single entry point for the Python `sk.py` shim and non-binary installs; native Rust runner handles all managed events for Rust-binary installs; `pre-commit` also runs scoped Ruff + Prettier cleanliness checks (fail-open when tooling absent)
 - **Tentacle marker-cleanup** — use `tentacle.py marker-cleanup [--apply]` to inspect/remove stale dispatched-subagent marker entries without completing a tentacle
 
-For the full script inventory, data pipeline, host scope table, provider package, and all coding conventions: **[docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)**
+**Python/Rust boundary (current state)** — do NOT claim the repo is fully Rust-only:
+
+- **`sk watch`** (Rust binary) — native loop + native indexer + native extract; **never** auto-spawns Python. On DB open/create or extract failure, emits a structured recovery hint naming the manual command.
+- **`sk hooks run <event>`** (Rust binary) — all managed events route natively (`sessionStart`, `sessionEnd`, `preToolUse`, `postToolUse`, `agentStop`, `subagentStop`, `errorOccurred`). Python `sk.py` shim always delegates to `hook_runner.py` — shim behavior unchanged.
+- **`sk index embed`** — native (`native-embed` default Cargo feature); `embed.py` is the fallback when the feature is unavailable.
+- **`sk sync run`** (compiled binary) — native Rust daemon loop, push, pull, FTS refresh (`native-sync` default Cargo feature). Python `sk.py` shim → `sync-daemon.py`.
+- **Intentional Python surfaces (not removed):** `sk.py` shim, `hook_runner.py`, `build-session-index.py`, `extract-knowledge.py`, `migrate.py`, `sync-daemon.py`, and all operator/admin CLI scripts remain on disk as intentional tools.
+
+> Full Python/Rust boundary table and script inventory: **[docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)**

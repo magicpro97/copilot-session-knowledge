@@ -373,6 +373,12 @@ def _update_lock():
     Stale locks (>= 10 min) are removed and the lock is re-acquired.
     """
     lock_path = _UPDATE_LOCK_FILE
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        warn(f"Could not prepare update lock dir: {exc}")
+        yield
+        return
     acquired = False
     for _attempt in range(2):
         try:
@@ -840,7 +846,13 @@ def _rust_binary_install_path() -> Path:
     On Unix the binary is installed as 'sk-native' to avoid overwriting
     the Python sk shim.  On Windows, sk.exe coexists with sk.cmd and the
     shell prefers the .exe automatically.
+
+    SK_BINARY_INSTALL_DIR: opt-in override for tests/CI — redirects the
+    install directory so simulations never touch ~/.copilot/bin.
     """
+    override = os.environ.get("SK_BINARY_INSTALL_DIR")
+    if override:
+        return Path(override)
     return Path.home() / ".copilot" / "bin"
 
 
@@ -877,6 +889,97 @@ def _should_update_rust_binary(install_dir: Path, exe_name: str, remote_tag: str
         return True
 
 
+def _refresh_rust_binary_local(local_archive: str, os_name: str, arch: str) -> bool:
+    """Install the Rust sk binary from a local archive (SK_LOCAL_ARCHIVE override).
+
+    Called by refresh_rust_binary() when the SK_LOCAL_ARCHIVE env var is set.
+    Skips the GitHub API call and download entirely; uses the given local archive
+    file directly.  The default GitHub release flow is unchanged when the variable
+    is absent.
+
+    Optional env vars (honoured here):
+      SK_BINARY_TAG        — reported version tag (default: "local")
+      SK_BINARY_INSTALL_DIR — install directory override (default: ~/.copilot/bin)
+    """
+    import hashlib
+    import zipfile
+
+    archive_path = Path(local_archive)
+    if not archive_path.exists():
+        warn(f"[rust-binary] SK_LOCAL_ARCHIVE not found: {archive_path} — skipping update")
+        return False
+
+    remote_tag = os.environ.get("SK_BINARY_TAG") or "local"
+    install_dir = _rust_binary_install_path()
+    asset_name, exe_name = _rust_binary_asset_name(os_name, arch)
+
+    if not _should_update_rust_binary(install_dir, exe_name, remote_tag):
+        log(f"[rust-binary] Already up-to-date ({remote_tag}) [local archive]")
+        return True
+
+    log(f"[rust-binary] Installing from local archive: {archive_path} (tag: {remote_tag})...")
+
+    # Honour optional sidecar .sha256 for integrity check (same pattern as install-binary.py)
+    sidecar = Path(str(archive_path) + ".sha256")
+    if sidecar.exists():
+        try:
+            expected = sidecar.read_text(encoding="utf-8").strip().split()[0].lower()
+            h = hashlib.sha256()
+            with open(archive_path, "rb") as fh:
+                for chunk in iter(lambda: fh.read(8192), b""):
+                    h.update(chunk)
+            if h.hexdigest() != expected:
+                warn("[rust-binary] Local archive checksum mismatch — aborting update")
+                return False
+            log("[rust-binary] Local archive checksum verified")
+        except Exception as exc:
+            warn(f"[rust-binary] Local checksum check error: {exc}")
+
+    install_dir.mkdir(parents=True, exist_ok=True)
+    tmp_extract = install_dir / ("sk-extract-" + remote_tag.lstrip("v"))
+    tmp_extract.mkdir(parents=True, exist_ok=True)
+    try:
+        if os_name == "windows":
+            with zipfile.ZipFile(str(archive_path), "r") as zf:
+                zf.extractall(str(tmp_extract))
+        else:
+            import tarfile
+            with tarfile.open(str(archive_path), "r:gz") as tf:
+                tf.extractall(str(tmp_extract))
+
+        extracted_exe = tmp_extract / exe_name
+        if not extracted_exe.exists():
+            warn(f"[rust-binary] Expected binary '{exe_name}' not found in archive")
+            return False
+
+        dest_name = exe_name if os_name == "windows" else "sk-native"
+        dest_path = install_dir / dest_name
+        dest_tmp = install_dir / (dest_name + ".new.tmp")
+
+        shutil.copy2(str(extracted_exe), str(dest_tmp))
+        if os_name != "windows":
+            dest_tmp.chmod(0o755)
+
+        try:
+            _retry_windows_fs(os.replace, str(dest_tmp), str(dest_path))
+        except PermissionError as exc:
+            warn(f"[rust-binary] Cannot replace binary (in use?): {exc} — will retry next run")
+            try:
+                dest_tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return False
+
+        ok(f"[rust-binary] Installed {remote_tag} → {dest_path} [local archive]")
+        return True
+
+    except Exception as exc:
+        warn(f"[rust-binary] Extraction failed: {exc}")
+        return False
+    finally:
+        shutil.rmtree(str(tmp_extract), ignore_errors=True)
+
+
 def refresh_rust_binary() -> bool:
     """Download and atomically install the latest sk Rust binary release.
 
@@ -910,6 +1013,13 @@ def refresh_rust_binary() -> bool:
         if not os_name or not arch:
             warn(f"[rust-binary] Unsupported platform: {sys_name}/{machine} — skipping update")
             return False
+
+        # SK_LOCAL_ARCHIVE: opt-in simulation/offline override.
+        # When set, delegate to _refresh_rust_binary_local() which skips the
+        # GitHub API call and download entirely.  Default flow unchanged when absent.
+        _local_archive = os.environ.get("SK_LOCAL_ARCHIVE")
+        if _local_archive:
+            return _refresh_rust_binary_local(_local_archive, os_name, arch)
 
         remote_tag = _fetch_latest_rust_binary_release()
         if not remote_tag:
@@ -1473,6 +1583,35 @@ def deploy_skills():
 
 
 # ---------------------------------------------------------------------------
+# Native sk binary path helper
+# ---------------------------------------------------------------------------
+def _sk_binary_path() -> "Path | None":
+    """Return the best available sk binary: native Rust binary > Python shim > None.
+
+    On Windows the native Rust binary is installed as ``sk.exe``.
+    On Unix it is installed as ``sk-native`` (alongside the Python ``sk`` shim).
+    Falls back to the Python shim (``sk.cmd`` on Windows, ``sk`` on Unix) if the
+    native binary is absent.  Returns ``None`` when neither is present.
+
+    Used by ``_restart_manual()`` to prefer ``sk watch`` over a direct
+    ``watch-sessions.py`` spawn so that the restart path transparently benefits
+    from native Rust implementation as soon as it lands.
+    """
+    bin_dir = HOME / ".copilot" / "bin"
+    if platform.system() == "Windows":
+        native = bin_dir / "sk.exe"
+        shim = bin_dir / "sk.cmd"
+    else:
+        native = bin_dir / "sk-native"
+        shim = bin_dir / "sk"
+    if native.exists():
+        return native
+    if shim.exists():
+        return shim
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Restart processes
 # ---------------------------------------------------------------------------
 def restart_processes():
@@ -1536,7 +1675,12 @@ def restart_processes():
 
 
 def _restart_manual():
-    """Kill existing watcher and start a new one."""
+    """Kill existing watcher and start a new one.
+
+    Prefers ``sk watch`` via the native Rust binary (or Python shim) when
+    available so the restart path benefits from native implementation as it
+    lands.  Falls back to spawning ``watch-sessions.py`` directly via python3.
+    """
     system = platform.system()
 
     if system == "Windows":
@@ -1571,12 +1715,23 @@ def _restart_manual():
         else:
             time.sleep(1)
 
-        pythonw = shutil.which("pythonw") or shutil.which("python")
-        subprocess.Popen(
-            [pythonw, str(TOOLS_DIR / "watch-sessions.py"), "--service"],
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
-        )
-        ok("watch-sessions restarted (manual)")
+        sk_bin = _sk_binary_path()
+        if sk_bin is not None:
+            command = [str(sk_bin), "watch", "--service"]
+            if sk_bin.suffix.lower() in {".cmd", ".bat"}:
+                command = ["cmd.exe", "/c", *command]
+            subprocess.Popen(
+                command,
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+            )
+            ok(f"watch-sessions restarted via sk ({sk_bin.name}) (manual)")
+        else:
+            pythonw = shutil.which("pythonw") or shutil.which("python")
+            subprocess.Popen(
+                [pythonw, str(TOOLS_DIR / "watch-sessions.py"), "--service"],
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+            )
+            ok("watch-sessions restarted (manual)")
     else:
         # Unix fallback
         r = subprocess.run(
@@ -1593,13 +1748,23 @@ def _restart_manual():
                     pass
         time.sleep(1)
 
-        subprocess.Popen(
-            [sys.executable, str(TOOLS_DIR / "watch-sessions.py")],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        ok("watch-sessions restarted (manual)")
+        sk_bin = _sk_binary_path()
+        if sk_bin is not None:
+            subprocess.Popen(
+                [str(sk_bin), "watch"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            ok(f"watch-sessions restarted via sk ({sk_bin.name}) (manual)")
+        else:
+            subprocess.Popen(
+                [sys.executable, str(TOOLS_DIR / "watch-sessions.py")],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            ok("watch-sessions restarted (manual)")
 
 
 # ---------------------------------------------------------------------------

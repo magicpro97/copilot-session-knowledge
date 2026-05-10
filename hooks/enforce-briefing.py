@@ -193,7 +193,7 @@ def main():
                 "permissionDecision": "deny",
                 "permissionDecisionReason": (
                     "⚠️ BRIEFING REQUIRED: Run briefing before editing code. "
-                    'Command: sk briefing --auto --compact\n'
+                    "Command: sk briefing --auto --compact\n"
                     '(fallback: python3 ~/.copilot/tools/briefing.py "your task")'
                 ),
             }

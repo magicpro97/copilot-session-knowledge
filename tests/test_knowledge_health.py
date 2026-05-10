@@ -1010,18 +1010,18 @@ except TypeError as e:
     test("compute_health toward_100 is JSON serializable", False, str(e))
 
 # ===========================================================================
-# Wave 3 — confidence quality: high-confidence patterns improve metric
+# Confidence quality: high-confidence patterns improve metric
 # ===========================================================================
 
-section("wave3 — high-confidence patterns improve high_confidence_pct")
+section("high-confidence patterns improve high_confidence_pct")
 
-_uri_wave3 = _new_uri()
-_db_wave3 = _make_db(_uri_wave3)
-kh.get_db = _get_db_factory(_uri_wave3)
+_uri_high_conf = _new_uri()
+_db_high_conf = _make_db(_uri_high_conf)
+kh.get_db = _get_db_factory(_uri_high_conf)
 
 # Seed with 6 entries: 4 patterns at confidence >= 0.8, 2 mistakes at 0.4
 _insert_entries(
-    _db_wave3,
+    _db_high_conf,
     [
         {"category": "pattern", "confidence": 0.8, "title": "use context manager", "session_id": "s1"},
         {"category": "pattern", "confidence": 0.85, "title": "prefer dataclass", "session_id": "s1"},
@@ -1031,8 +1031,8 @@ _insert_entries(
         {"category": "mistake", "confidence": 0.45, "title": "import error", "session_id": "s2"},
     ],
 )
-_ins_wave3 = kh.compute_insights()
-_high_conf_pct = _ins_wave3.get("overview", {}).get("high_confidence_pct", 0)
+_ins_high_conf = kh.compute_insights()
+_high_conf_pct = _ins_high_conf.get("overview", {}).get("high_confidence_pct", 0)
 test("high_confidence_pct >= 50.0 with 4/6 high-conf entries", _high_conf_pct >= 50.0, f"got {_high_conf_pct}")
 test("high_confidence_pct <= 100.0", _high_conf_pct <= 100.0, f"got {_high_conf_pct}")
 

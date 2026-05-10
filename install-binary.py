@@ -110,13 +110,20 @@ def verify_checksum(file_path: Path, checksum_url: str) -> bool:
 
 def extract_archive(archive_path: Path, dest_dir: Path, os_name: str) -> None:
     """Extract tar.gz or zip archive."""
-    if os_name == "windows":
+    archive_name = archive_path.name.lower()
+    if archive_name.endswith(".zip") or zipfile.is_zipfile(archive_path):
         with zipfile.ZipFile(archive_path, "r") as zf:
             zf.extractall(dest_dir)
-    else:
-        import tarfile
-        with tarfile.open(archive_path, "r:gz") as tf:
+        return
+
+    import tarfile
+
+    if archive_name.endswith((".tar.gz", ".tgz")) or tarfile.is_tarfile(archive_path):
+        with tarfile.open(archive_path, "r:*") as tf:
             tf.extractall(dest_dir)
+        return
+
+    raise ValueError(f"Unsupported archive format: {archive_path.name}")
 
 
 def setup_path_posix(install_dir: Path) -> None:
@@ -180,10 +187,20 @@ def main() -> int:
 
     os_name, arch = detect_platform()
 
-    # Determine version
-    version = args.version or os.environ.get("SK_VERSION") or get_latest_version()
+    # SK_LOCAL_ARCHIVE: opt-in override for testing/offline use.
+    # When set, the installer uses the given local archive file instead of
+    # downloading from GitHub. The default GitHub release flow is unchanged
+    # when this variable is not set.
+    local_archive = os.environ.get("SK_LOCAL_ARCHIVE")
 
-    # Determine asset name
+    # Determine version (not used for download when local_archive is set,
+    # but still included in progress messages)
+    if local_archive:
+        version = args.version or os.environ.get("SK_VERSION") or "local"
+    else:
+        version = args.version or os.environ.get("SK_VERSION") or get_latest_version()
+
+    # Determine asset name and URLs (used only when not overriding locally)
     ext = "zip" if os_name == "windows" else "tar.gz"
     asset = f"{BINARY}-{os_name}-{arch}.{ext}"
     url = f"https://github.com/{REPO}/releases/download/{version}/{asset}"
@@ -200,20 +217,42 @@ def main() -> int:
     install_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Installing sk {version} ({os_name}/{arch})...")
-    print(f"  Downloading: {url}")
 
-    # Download to temp
     tmp_dir = Path(tempfile.mkdtemp())
     try:
-        archive_path = tmp_dir / asset
-        download_file(url, archive_path)
+        if local_archive:
+            # Use the provided local archive — no download, no remote checksum.
+            archive_path = Path(local_archive)
+            if not archive_path.exists():
+                print(f"Error: SK_LOCAL_ARCHIVE path not found: {archive_path}", file=sys.stderr)
+                return 1
+            print(f"  Using local archive: {archive_path}")
+            # Honour a sidecar .sha256 file if present (optional integrity check)
+            sidecar = Path(str(archive_path) + ".sha256")
+            if sidecar.exists():
+                expected = sidecar.read_text(encoding="utf-8").strip().split()[0].lower()
+                sha256 = hashlib.sha256()
+                with open(archive_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(8192), b""):
+                        sha256.update(chunk)
+                if sha256.hexdigest() != expected:
+                    print("Error: Local archive checksum mismatch!", file=sys.stderr)
+                    return 1
+                print("  Local checksum verified ✓")
+            # Extract directly into install_dir (archive already at final path)
+            extract_archive(archive_path, install_dir, os_name)
+        else:
+            # Normal GitHub release flow
+            print(f"  Downloading: {url}")
+            archive_path = tmp_dir / asset
+            download_file(url, archive_path)
 
-        # Verify checksum
-        if not verify_checksum(archive_path, checksum_url):
-            return 1
+            # Verify checksum
+            if not verify_checksum(archive_path, checksum_url):
+                return 1
 
-        # Extract
-        extract_archive(archive_path, install_dir, os_name)
+            # Extract
+            extract_archive(archive_path, install_dir, os_name)
 
         # Make executable (POSIX)
         exe_name = f"{BINARY}.exe" if os_name == "windows" else BINARY

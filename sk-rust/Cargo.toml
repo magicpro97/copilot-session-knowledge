@@ -6,13 +6,41 @@ rust-version = "1.75"
 description = "Unified front-door CLI for copilot-session-knowledge tools"
 default-run = "sk"
 
+# Feature flags for native ports — enable only when the port is ready to land.
+[features]
+default = ["native-embed", "native-sync", "native-extract"]
+native-embed   = ["dep:reqwest", "dep:tokio"]
+native-sync    = ["dep:reqwest", "dep:tokio"]
+native-watch   = ["dep:notify"]
+native-hooks   = ["dep:regex"]
+# Wave-14/16/17/19: hot-path classification/write loop, deterministic relation
+# extraction, native residual helpers, and SEMANTIC_PROXIMITY (TF-IDF cosine).
+# In scope: knowledge_entries write, ke_fts sync, knowledge_relations for
+#   SAME_SESSION, SAME_TOPIC, TAG_OVERLAP, RESOLVED_BY, SEMANTIC_PROXIMITY,
+#   backfill_affected_files, infer_task_ids, confidence decay.
+# Python `extract-knowledge.py` remains for manual/fallback use but is no
+#   longer auto-spawned on the successful native watch path.
+native-extract = ["dep:regex"]
+
 [dependencies]
-clap = { version = "4", features = ["derive"] }
-dirs = "5"
-rusqlite = { version = "0.31", features = ["bundled"] }
-serde = { version = "1", features = ["derive"] }
+clap      = { version = "4",    features = ["derive"] }
+dirs      = "5"
+rusqlite  = { version = "0.31", features = ["bundled"] }
+serde     = { version = "1",    features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2      = "0.10"
+hmac      = "0.12"
+
+# Always-on — low overhead, used across all native command implementations.
+anyhow  = "1"
+chrono  = { version = "0.4", features = ["serde"] }
+ctrlc   = "3"
+
+# Optional — compiled-in only when the matching native-* feature is enabled.
+notify  = { version = "6",    optional = true }
+regex   = { version = "1",    optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"], optional = true }
+tokio   = { version = "1",    features = ["rt-multi-thread", "macros"], optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"
@@ -23,3 +51,10 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 [[bin]]
 name = "sk"
 path = "src/main.rs"
+
+# Optimised release binary: smaller size, thin LTO, stripped symbols.
+[profile.release]
+opt-level     = "s"
+lto           = "thin"
+codegen-units = 1
+strip         = true

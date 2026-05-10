@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""test_hook_entrypoints_wave3.py — Subprocess-level tests for hook_runner.py
-dispatching the Wave 3 rule set.
+"""test_hook_runner_entrypoints.py — Subprocess-level tests for hook_runner.py
+dispatching managed hook events through the current rule set.
 
 Each test sends a JSON payload via stdin to hook_runner.py and asserts on the
 process exit code and stdout.  An isolated HOME directory is used for every
 subprocess call so no real audit logs or marker files are written.
 
 Run:
-    python3 tests/test_hook_entrypoints_wave3.py
+    python3 tests/test_hook_runner_entrypoints.py
 """
 
 import json
@@ -298,7 +298,7 @@ _sa_markers.mkdir(parents=True, exist_ok=True)
 _sa_marker_file = _sa_markers / "dispatched-subagent-active"
 _sa_marker_payload = json.dumps({
     "ts": int(time.time()),
-    "active_tentacles": ["wave3-tentacle"],
+    "active_tentacles": ["hook-entrypoints-tentacle"],
 })
 _sa_marker_file.write_text(_sa_marker_payload, encoding="utf-8")
 _sa_env = {**os.environ, "HOME": str(_sa_isolated), "USERPROFILE": str(_sa_isolated)}
