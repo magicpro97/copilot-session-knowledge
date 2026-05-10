@@ -430,6 +430,11 @@ def _git_output(*args, cwd=None) -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
+def _has_tracked_local_changes() -> bool:
+    """Return True when tracked files have staged or unstaged local changes."""
+    return bool(_git_output("status", "--porcelain", "--untracked-files=no"))
+
+
 # ---------------------------------------------------------------------------
 # Core: ensure tools dir is a git clone
 # ---------------------------------------------------------------------------
@@ -470,7 +475,15 @@ def pull_latest() -> tuple[bool, str, str]:
     old_sha = _git_output("rev-parse", "HEAD")
 
     # Stash local changes, pull, re-apply
-    _git("stash", "--quiet")
+    stashed_changes = False
+    if _has_tracked_local_changes():
+        r_stash = _git("stash", "push", "--quiet")
+        if r_stash.returncode != 0:
+            warn("Could not stash local tracked changes — aborting update.")
+            if r_stash.stderr:
+                warn(f"git stash push stderr: {r_stash.stderr[:200]}")
+            return False, old_sha, old_sha
+        stashed_changes = True
 
     r = _git("pull", "--ff-only", "--quiet", "origin", "main")
     if r.returncode != 0:
@@ -478,14 +491,15 @@ def pull_latest() -> tuple[bool, str, str]:
         _git("fetch", "--quiet", "origin")
         _git("reset", "--hard", "origin/main", "--quiet")
 
-    # P0-5: check stash pop result; abort if conflicted to avoid running on broken tree
-    r_pop = _git("stash", "pop", "--quiet")
-    if r_pop.returncode != 0:
-        warn("Stash pop failed — local changes are in stash. "
-             "Run 'git stash pop' manually after resolving conflicts.")
-        if r_pop.stderr:
-            warn(f"git stash pop stderr: {r_pop.stderr[:200]}")
-        return False, old_sha, old_sha  # treat as no-update; abort pipeline
+    if stashed_changes:
+        # P0-5: check stash pop result; abort if conflicted to avoid running on broken tree
+        r_pop = _git("stash", "pop", "--quiet")
+        if r_pop.returncode != 0:
+            warn("Stash pop failed — local changes are in stash. "
+                 "Run 'git stash pop' manually after resolving conflicts.")
+            if r_pop.stderr:
+                warn(f"git stash pop stderr: {r_pop.stderr[:200]}")
+            return False, old_sha, old_sha  # treat as no-update; abort pipeline
 
     new_sha = _git_output("rev-parse", "HEAD")
     short_old = old_sha[:8] if old_sha else "unknown"

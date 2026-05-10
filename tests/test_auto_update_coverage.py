@@ -476,6 +476,75 @@ test("--skip-pull produces pipeline output",
      "no output from --skip-pull")
 
 
+# ─── 10. Regression: pull_latest() stash handling stays quiet on clean trees ─
+
+print("\n🧰 Regression: pull_latest() stash handling")
+
+with _mock.patch.object(_aut, "_has_tracked_local_changes", return_value=False), \
+     _mock.patch.object(_aut, "_git_output", side_effect=["abc1234", "abc1234"]), \
+     _mock.patch.object(
+         _aut,
+         "_git",
+         return_value=subprocess.CompletedProcess(["git", "pull"], 0, stdout="", stderr=""),
+     ) as _mock_git, \
+     _mock.patch.object(_aut, "warn") as _mock_warn:
+    _updated, _old_sha, _new_sha = _aut.pull_latest()
+    _git_calls = [tuple(call.args) for call in _mock_git.call_args_list]
+    test("pull_latest clean tree skips stash push",
+         not any(args[:2] == ("stash", "push") for args in _git_calls),
+         f"calls={_git_calls!r}")
+    test("pull_latest clean tree skips stash pop",
+         not any(args[:2] == ("stash", "pop") for args in _git_calls),
+         f"calls={_git_calls!r}")
+    test("pull_latest clean tree does not warn",
+         not _mock_warn.called,
+         f"warnings={_mock_warn.call_args_list!r}")
+    test("pull_latest clean tree preserves HEAD",
+         (_updated, _old_sha, _new_sha) == (False, "abc1234", "abc1234"),
+         f"got {(_updated, _old_sha, _new_sha)!r}")
+
+with _mock.patch.object(_aut, "_has_tracked_local_changes", return_value=True), \
+     _mock.patch.object(_aut, "_git_output", side_effect=["abc1234", "abc1234"]), \
+     _mock.patch.object(
+         _aut,
+         "_git",
+         side_effect=[
+             subprocess.CompletedProcess(["git", "stash", "push"], 0, stdout="", stderr=""),
+             subprocess.CompletedProcess(["git", "pull"], 0, stdout="", stderr=""),
+             subprocess.CompletedProcess(["git", "stash", "pop"], 0, stdout="", stderr=""),
+         ],
+     ) as _mock_git, \
+     _mock.patch.object(_aut, "warn") as _mock_warn:
+    _aut.pull_latest()
+    _git_calls = [tuple(call.args) for call in _mock_git.call_args_list]
+    test("pull_latest dirty tree stashes changes before pull",
+         any(args[:2] == ("stash", "push") for args in _git_calls),
+         f"calls={_git_calls!r}")
+    test("pull_latest dirty tree restores stash after pull",
+         any(args[:2] == ("stash", "pop") for args in _git_calls),
+         f"calls={_git_calls!r}")
+    test("pull_latest dirty tree does not warn on successful stash/pop",
+         not _mock_warn.called,
+         f"warnings={_mock_warn.call_args_list!r}")
+
+with _mock.patch.object(_aut, "_has_tracked_local_changes", return_value=True), \
+     _mock.patch.object(_aut, "_git_output", return_value="abc1234"), \
+     _mock.patch.object(
+         _aut,
+         "_git",
+         return_value=subprocess.CompletedProcess(["git", "stash", "push"], 1, stdout="", stderr="fatal: cannot stash"),
+     ), \
+     _mock.patch.object(_aut, "warn") as _mock_warn:
+    _updated, _old_sha, _new_sha = _aut.pull_latest()
+    test("pull_latest stash failure aborts update",
+         (_updated, _old_sha, _new_sha) == (False, "abc1234", "abc1234"),
+         f"got {(_updated, _old_sha, _new_sha)!r}")
+    _warn_text = " ".join(str(call.args[0]) for call in _mock_warn.call_args_list if call.args)
+    test("pull_latest stash failure warns clearly",
+         "Could not stash local tracked changes" in _warn_text and "git stash push stderr" in _warn_text,
+         _warn_text)
+
+
 # ─── Summary ────────────────────────────────────────────────────────────────
 
 print(f"\n{'─' * 50}")
