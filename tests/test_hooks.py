@@ -417,6 +417,7 @@ for r in session_start_rules + pre_tool_rules + post_tool_rules + error_rules + 
 print("\n📄 Section 5: hooks.json Consistency")
 
 user_hooks_path = Path.home() / ".copilot" / "hooks" / "hooks.json"
+source_hooks_path = REPO / "hooks" / "hooks.json"
 project_hooks_path = REPO / ".github" / "hooks" / "hooks.json"
 
 # 5a. User-level hooks.json exists and is valid JSON
@@ -459,16 +460,16 @@ if project_hooks_path.exists():
 else:
     test("Project hooks.json exists", False, str(project_hooks_path))
 
-# 5d. User-level and project-level should be identical (both global)
-if user_hooks_path.exists() and project_hooks_path.exists():
+# 5d. Source and managed repo copies should be identical
+if source_hooks_path.exists() and project_hooks_path.exists():
     try:
-        uh = json.loads(user_hooks_path.read_text(encoding="utf-8"))
+        uh = json.loads(source_hooks_path.read_text(encoding="utf-8"))
         ph = json.loads(project_hooks_path.read_text(encoding="utf-8"))
         # Compare normalized
         test(
-            "User and project hooks.json match",
+            "Source and project hooks.json match",
             json.dumps(uh, sort_keys=True) == json.dumps(ph, sort_keys=True),
-            "User-level and project-level hooks have diverged!",
+            "Source and project hooks.json have diverged!",
         )
     except Exception as e:
         test("hooks.json comparison", False, str(e))

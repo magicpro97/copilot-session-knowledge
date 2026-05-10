@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "Managed copy — semantically aligned with hooks/hooks.json. Deploy via: python3 install.py",
+  "_comment": "Source copy of ~/.copilot/hooks/hooks.json. Deploy via: python3 install.py",
   "_native_preference": "Commands prefer 'sk hooks run <event>' when sk is in PATH (native Rust binary or Python shim). Falls back to direct Python hook_runner.py invocation when sk is unavailable.",
   "hooks": {
     "sessionStart": [

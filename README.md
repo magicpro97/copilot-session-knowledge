@@ -597,5 +597,4 @@ Motivated by a C1-class bug where a misindented top-level block caused a `Syntax
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on reporting bugs, suggesting features, and submitting pull requests.
 
 ## License
-
 [MIT](LICENSE) © [magicpro97](https://github.com/magicpro97)
