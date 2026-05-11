@@ -4527,5 +4527,292 @@ class TestGoalParserHelp(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Regression: issue #133 — bridge link parsing, warning paths, coverage mapping
+# ---------------------------------------------------------------------------
+
+
+class TestParseHandoffBridgeLinks(unittest.TestCase):
+    """Unit tests for _parse_handoff_bridge_links (issue #133).
+
+    Covers: empty input, single/multiple Bridge: lines, deduplication,
+    whitespace trimming, accumulation across multiple handoff sections.
+    """
+
+    def test_empty_content_returns_empty_list(self):
+        self.assertEqual(T._parse_handoff_bridge_links(""), [])
+
+    def test_no_bridge_lines_returns_empty_list(self):
+        content = "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nDone.\nSTATUS: DONE\n"
+        self.assertEqual(T._parse_handoff_bridge_links(content), [])
+
+    def test_single_bridge_line(self):
+        content = "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nDone.\nBridge: sc-1\n"
+        self.assertEqual(T._parse_handoff_bridge_links(content), ["sc-1"])
+
+    def test_multiple_bridge_lines_in_order(self):
+        content = (
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nDone.\n"
+            "Bridge: sc-1\nBridge: sc-2\n"
+        )
+        self.assertEqual(T._parse_handoff_bridge_links(content), ["sc-1", "sc-2"])
+
+    def test_deduplicates_repeated_id_keeps_first_seen_order(self):
+        content = (
+            "# Handoff Notes\n\n## [2024-01-01 11:00 UTC]\n\nFirst.\nBridge: sc-1\n"
+            "\n## [2024-01-01 12:00 UTC]\n\nSecond.\nBridge: sc-2\nBridge: sc-1\n"
+        )
+        result = T._parse_handoff_bridge_links(content)
+        self.assertEqual(result, ["sc-1", "sc-2"])
+
+    def test_strips_whitespace_around_id(self):
+        content = "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nDone.\nBridge:   sc-1  \n"
+        self.assertEqual(T._parse_handoff_bridge_links(content), ["sc-1"])
+
+    def test_accumulates_across_multiple_sections(self):
+        content = (
+            "# Handoff Notes\n\n## [2024-01-01 11:00 UTC]\n\nPartial.\nBridge: sc-1\n"
+            "\n## [2024-01-01 12:00 UTC]\n\nFinal.\nBridge: sc-3\n"
+        )
+        self.assertEqual(T._parse_handoff_bridge_links(content), ["sc-1", "sc-3"])
+
+    def test_only_bridge_line_prefix_matches(self):
+        """Mid-line occurrences of 'Bridge:' must not be matched."""
+        content = "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nSee Bridge: sc-1 for details.\n"
+        # "See Bridge:" is not at the start of the line — should not match
+        self.assertEqual(T._parse_handoff_bridge_links(content), [])
+
+
+class TestHandoffBridgeValidation(unittest.TestCase):
+    """Bridge validation warn paths in cmd_handoff (issue #133).
+
+    cmd_handoff must (fail-open):
+      - warn when goal has criteria and no --bridge was supplied
+      - warn per unknown criterion ID
+      - be silent when all bridge IDs are valid known criteria
+      - skip bridge validation silently when goal.json does not exist
+    """
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "bridge_validation"
+        _, self.tentacles = _make_octogent(self.base)
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    def _init_with_criterion(self, tentacle_name: str) -> Path:
+        """Create a tentacle and initialize a goal with one criterion sc-1."""
+        t = _make_tentacle(tentacle_name, self.tentacles)
+        _init_goal(self.tentacles, title="Bridge Validation Goal")
+        args = _fake_args(
+            goal_action="criteria",
+            criteria_action="add",
+            desc="Feature works",
+            id="sc-1",
+            verify_cmd="",
+        )
+        with patch("builtins.print"):
+            T._cmd_goal_criteria(args, self.tentacles)
+        return t
+
+    def _handoff(self, name: str, bridge: list = None) -> str:
+        """Run cmd_handoff and return all captured stdout lines joined."""
+        captured = []
+        args = _fake_args(
+            name=name,
+            message="Done",
+            status="DONE",
+            changed_file=[],
+            bridge=bridge if bridge is not None else [],
+            learn=False,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.tentacles):
+            with patch(
+                "builtins.print",
+                side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a)),
+            ):
+                T.cmd_handoff(args)
+        return "\n".join(captured)
+
+    def test_no_bridge_when_criteria_exist_warns(self):
+        """Missing --bridge while goal has criteria must emit WARNING."""
+        self._init_with_criterion("bv-no-bridge")
+        output = self._handoff("bv-no-bridge", bridge=[])
+        self.assertIn("WARNING", output)
+        self.assertIn("no Bridge link", output)
+
+    def test_unknown_bridge_id_warns_with_id_name(self):
+        """An unrecognized bridge ID must appear in the WARNING message."""
+        self._init_with_criterion("bv-unknown")
+        output = self._handoff("bv-unknown", bridge=["sc-99"])
+        self.assertIn("WARNING", output)
+        self.assertIn("sc-99", output)
+        self.assertIn("not found in goal.json", output)
+
+    def test_known_bridge_id_produces_no_warning(self):
+        """A valid, known bridge ID must not trigger any WARNING."""
+        self._init_with_criterion("bv-known")
+        output = self._handoff("bv-known", bridge=["sc-1"])
+        self.assertNotIn("WARNING", output)
+
+    def test_no_goal_json_no_crash_and_no_warning(self):
+        """When goal.json is absent, bridge validation must silently skip."""
+        _make_tentacle("bv-no-goal", self.tentacles)
+        output = self._handoff("bv-no-goal", bridge=[])
+        self.assertNotIn("WARNING", output)
+
+    def test_multiple_unknown_ids_warns_for_each_id(self):
+        """Each unknown bridge ID in a multi-bridge handoff must get its own WARNING."""
+        self._init_with_criterion("bv-multi-unknown")
+        output = self._handoff("bv-multi-unknown", bridge=["sc-99", "sc-100"])
+        self.assertIn("sc-99", output)
+        self.assertIn("sc-100", output)
+
+
+class TestGoalCoverageUnit(unittest.TestCase):
+    """Unit tests for _cmd_goal_coverage (issue #133).
+
+    Covers: no goal exits, no-criteria hint, covered/uncovered/orphan
+    classification, counts, JSON output contract.
+    """
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "goal_coverage_unit"
+        _, self.tentacles = _make_octogent(self.base)
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    def _coverage_args(self, fmt: str = "text") -> object:
+        return _fake_args(goal_action="coverage", format=fmt)
+
+    def _run_coverage(self, fmt: str = "text") -> str:
+        captured = []
+        with patch(
+            "builtins.print",
+            side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a)),
+        ):
+            T._cmd_goal_coverage(self._coverage_args(fmt), self.tentacles)
+        return "\n".join(captured)
+
+    def _add_criterion(self, sc_id: str, desc: str = "") -> None:
+        args = _fake_args(
+            goal_action="criteria",
+            criteria_action="add",
+            desc=desc or f"Criterion {sc_id}",
+            id=sc_id,
+            verify_cmd="",
+        )
+        with patch("builtins.print"):
+            T._cmd_goal_criteria(args, self.tentacles)
+
+    def _tentacle_with_bridges(self, name: str, bridge_links: list) -> Path:
+        d = _make_tentacle(name, self.tentacles)
+        meta_path = d / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if bridge_links:
+            meta["bridge_links"] = bridge_links
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        return d
+
+    def test_no_goal_initialized_exits_nonzero(self):
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_coverage(self._coverage_args(), self.tentacles)
+        self.assertNotEqual(cm.exception.code, 0)
+
+    def test_no_criteria_prints_hint(self):
+        _init_goal(self.tentacles, title="Empty Coverage Goal")
+        output = self._run_coverage()
+        self.assertIn("No success criteria", output)
+
+    def test_covered_criterion_shown_with_tentacle_name(self):
+        _init_goal(self.tentacles, title="Coverage Goal")
+        self._add_criterion("sc-1", "Feature works")
+        self._tentacle_with_bridges("cov-worker-a", ["sc-1"])
+        output = self._run_coverage()
+        self.assertIn("sc-1", output)
+        self.assertIn("cov-worker-a", output)
+
+    def test_uncovered_criterion_listed(self):
+        _init_goal(self.tentacles, title="Uncovered Goal")
+        self._add_criterion("sc-1", "Covered")
+        self._add_criterion("sc-2", "Not covered")
+        self._tentacle_with_bridges("cov-worker-b", ["sc-1"])
+        output = self._run_coverage()
+        # Both criterion IDs must appear in output
+        self.assertIn("sc-1", output)
+        self.assertIn("sc-2", output)
+
+    def test_covered_and_uncovered_counts_accurate(self):
+        _init_goal(self.tentacles, title="Count Goal")
+        self._add_criterion("sc-1", "First")
+        self._add_criterion("sc-2", "Second")
+        self._add_criterion("sc-3", "Third")
+        self._tentacle_with_bridges("cov-worker-d", ["sc-1", "sc-2"])
+        output = self._run_coverage()
+        self.assertIn("Covered        : 2", output)
+        self.assertIn("Uncovered      : 1", output)
+
+    def test_orphan_bridge_id_listed(self):
+        _init_goal(self.tentacles, title="Orphan Goal")
+        self._add_criterion("sc-1", "Real criterion")
+        self._tentacle_with_bridges("cov-worker-c", ["sc-orphan"])
+        output = self._run_coverage()
+        self.assertIn("sc-orphan", output)
+
+    def test_json_format_returns_all_required_keys(self):
+        _init_goal(self.tentacles, title="JSON Keys Goal")
+        self._add_criterion("sc-1", "Works")
+        self._tentacle_with_bridges("cov-worker-e", ["sc-1"])
+        output = self._run_coverage(fmt="json")
+        data = json.loads(output)
+        for key in (
+            "goal_id",
+            "goal_title",
+            "total_criteria",
+            "covered_count",
+            "uncovered_count",
+            "covered",
+            "uncovered",
+            "orphan_bridge_ids",
+        ):
+            self.assertIn(key, data, f"JSON coverage output must include key '{key}'")
+
+    def test_json_format_covered_entry_has_covered_by(self):
+        _init_goal(self.tentacles, title="JSON Covered")
+        self._add_criterion("sc-1", "Works")
+        self._tentacle_with_bridges("cov-worker-f", ["sc-1"])
+        output = self._run_coverage(fmt="json")
+        data = json.loads(output)
+        self.assertEqual(data["covered_count"], 1)
+        covered = data["covered"]
+        self.assertEqual(len(covered), 1)
+        self.assertEqual(covered[0]["id"], "sc-1")
+        self.assertIn("cov-worker-f", covered[0]["covered_by"])
+
+    def test_json_format_orphan_bridge_ids_populated(self):
+        _init_goal(self.tentacles, title="JSON Orphan")
+        self._add_criterion("sc-1", "Real")
+        self._tentacle_with_bridges("cov-worker-g", ["sc-orphan"])
+        output = self._run_coverage(fmt="json")
+        data = json.loads(output)
+        self.assertIn("sc-orphan", data["orphan_bridge_ids"])
+        self.assertEqual(data["covered_count"], 0)
+        self.assertEqual(data["uncovered_count"], 1)
+
+    def test_criterion_covered_by_multiple_tentacles(self):
+        _init_goal(self.tentacles, title="Multi Tentacle Cover")
+        self._add_criterion("sc-1", "Works")
+        self._tentacle_with_bridges("cov-worker-h1", ["sc-1"])
+        self._tentacle_with_bridges("cov-worker-h2", ["sc-1"])
+        output = self._run_coverage(fmt="json")
+        data = json.loads(output)
+        covered = data["covered"]
+        self.assertEqual(len(covered), 1)
+        self.assertIn("cov-worker-h1", covered[0]["covered_by"])
+        self.assertIn("cov-worker-h2", covered[0]["covered_by"])
+
+
 if __name__ == "__main__":
     unittest.main()
