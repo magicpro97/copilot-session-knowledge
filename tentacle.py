@@ -31,6 +31,9 @@ Usage:
     python3 ~/.copilot/tools/tentacle.py goal criteria list
     python3 ~/.copilot/tools/tentacle.py goal gate pass <gate-id> [--reason <text>]
     python3 ~/.copilot/tools/tentacle.py goal gate fail <gate-id> [--reason <text>]
+    python3 ~/.copilot/tools/tentacle.py goal gate add <gate-id> [--desc <desc>]
+    python3 ~/.copilot/tools/tentacle.py goal gate approve <gate-id> [--reason <text>]
+    python3 ~/.copilot/tools/tentacle.py goal gate reject <gate-id> --reason <text>
     python3 ~/.copilot/tools/tentacle.py goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINUTES] [--format text|json]
     python3 ~/.copilot/tools/tentacle.py goal next-iter
     python3 ~/.copilot/tools/tentacle.py goal verify-loop [--id <id>] [--max-retries N] [--retry-delay SECONDS] [--timeout SECONDS] [--escalate]
@@ -105,6 +108,7 @@ GOAL_STATUS_PAUSED = "paused"
 GOAL_STATUS_COMPLETED = "completed"
 GOAL_STATUS_ABANDONED = "abandoned"
 GOAL_STATUS_NEEDS_HUMAN = "needs-human"
+GOAL_STATUS_AWAITING_GATE = "awaiting-gate"
 GOAL_EVAL_DECISIONS: frozenset[str] = frozenset({"continue", "pause", "complete", "abandon"})
 
 
@@ -474,7 +478,14 @@ def _fetch_recall_pack_json(task_id: str, fallback_query: str = "") -> tuple[dic
     if fallback_query:
         try:
             result = subprocess.run(
-                [sys.executable, str(BRIEFING_PY), fallback_query, "--pack", "--limit", "3"],
+                [
+                    sys.executable,
+                    str(BRIEFING_PY),
+                    fallback_query,
+                    "--pack",
+                    "--limit",
+                    "3",
+                ],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -531,7 +542,14 @@ def _load_latest_checkpoint_context() -> str:
         return ""
     try:
         result = subprocess.run(
-            [sys.executable, str(CHECKPOINT_RESTORE_PY), "--export", "latest", "--format", "json"],
+            [
+                sys.executable,
+                str(CHECKPOINT_RESTORE_PY),
+                "--export",
+                "latest",
+                "--format",
+                "json",
+            ],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -585,8 +603,7 @@ def _render_dispatch_context(context: str, meta: dict, bundle_dir: Path | None) 
     """
     if not bundle_dir:
         return context.strip()
-    return textwrap.dedent(
-        f"""\
+    return textwrap.dedent(f"""\
         Runtime bundle is authoritative; inline context is intentionally minimal.
         Read first:
         1. `{bundle_dir}/manifest.json`
@@ -596,8 +613,7 @@ def _render_dispatch_context(context: str, meta: dict, bundle_dir: Path | None) 
 
         Scope: {_scope_summary(meta)}
         Context excerpt: {_context_excerpt(context)}
-        """
-    ).strip()
+        """).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -1305,7 +1321,10 @@ def _worktree_cleanup(tentacle_dir: Path, name: str, git_root: "Path | None") ->
 
     if not wt_path.exists():
         _clear()
-        return {"cleaned": True, "message": "worktree directory not found, already cleaned"}
+        return {
+            "cleaned": True,
+            "message": "worktree directory not found, already cleaned",
+        }
 
     cwd_for_git = str(git_root) if git_root else None
     try:
@@ -1350,7 +1369,10 @@ def cmd_worktree(args) -> None:
             else:
                 print(f"🌿 Worktree prepared: {state['path']}")
         else:
-            print(f"ERROR: Worktree prepare failed: {state.get('error', 'unknown')}", file=sys.stderr)
+            print(
+                f"ERROR: Worktree prepare failed: {state.get('error', 'unknown')}",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
     elif args.action == "status":
@@ -1695,14 +1717,20 @@ def _validate_tentacle_name(name: str, tentacles: Path) -> Path:
     """Validate tentacle name is safe and resolve the directory path."""
     # Reject names with path separators or traversal components
     if "/" in name or "\\" in name or ".." in name:
-        print(f"ERROR: Invalid tentacle name '{name}' — must not contain '/', '\\', or '..'", file=sys.stderr)
+        print(
+            f"ERROR: Invalid tentacle name '{name}' — must not contain '/', '\\', or '..'",
+            file=sys.stderr,
+        )
         sys.exit(1)
     tentacle_dir = tentacles / name
     # Verify resolved path is inside tentacles directory
     try:
         tentacle_dir.resolve().relative_to(tentacles.resolve())
     except ValueError:
-        print(f"ERROR: Tentacle name '{name}' resolves outside tentacles directory.", file=sys.stderr)
+        print(
+            f"ERROR: Tentacle name '{name}' resolves outside tentacles directory.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     return tentacle_dir
 
@@ -1856,6 +1884,12 @@ def _goal_gates_all_passed(state: dict) -> bool:
     return all(g.get("status") == "passed" for g in gates)
 
 
+def _goal_gates_blocking(state: dict) -> list:
+    """Return gates that block eval progress: those in 'pending' or 'rejected' state."""
+    gates = state.get("gates") or []
+    return [g for g in gates if g.get("status") in {"pending", "rejected"}]
+
+
 def _goal_criteria_run_one(criterion: dict, cwd: str, timeout: int = 60) -> tuple[int, str]:
     """Run the verification_command for one criterion. Returns (exit_code, output_snippet)."""
     cmd = criterion.get("verification_command", "")
@@ -1979,6 +2013,15 @@ def _cmd_goal_status(args, tentacles: Path) -> None:
     else:
         print("\n   No tentacles linked yet. Use `tentacle.py goal link <name>`.")
 
+    # awaiting-gate metadata
+    if state.get("status") == GOAL_STATUS_AWAITING_GATE:
+        blocking_gate_id = state.get("awaiting_gate_id", "?")
+        blocking_reason = state.get("awaiting_gate_reason", "")
+        print(f"\n   ⛔ Blocked on gate: [{blocking_gate_id}]")
+        if blocking_reason:
+            print(f"      Reason: {blocking_reason}")
+        print(f"      Resolve with: goal gate approve {blocking_gate_id} [--reason <text>]")
+
     # Gates summary
     gates = state.get("gates") or []
     if gates:
@@ -1986,8 +2029,20 @@ def _cmd_goal_status(args, tentacles: Path) -> None:
         gate_icon = "✅" if passed == len(gates) else "⛔"
         print(f"\n   Gates: {gate_icon} {passed}/{len(gates)} passed")
         for g in gates:
-            g_icon = "✅" if g.get("status") == "passed" else ("❌" if g.get("status") == "failed" else "⬜")
-            print(f"     {g_icon} [{g.get('id', '?')}] {g.get('description', '')[:60]}")
+            g_st = g.get("status", "pending")
+            if g_st == "passed":
+                g_icon = "✅"
+            elif g_st == "rejected":
+                g_icon = "❌"
+            elif g_st == "failed":
+                g_icon = "❌"
+            else:
+                g_icon = "⬜"
+            g_reason = g.get("reason", "")
+            g_line = f"     {g_icon} [{g.get('id', '?')}] {g.get('description', '')[:60]} — {g_st}"
+            print(g_line)
+            if g_reason and g_st in {"rejected", "failed"}:
+                print(f"        Reason: {g_reason[:80]}")
 
     # Success criteria summary
     criteria = state.get("success_criteria") or []
@@ -2010,7 +2065,10 @@ def _cmd_goal_link(args, tentacles: Path) -> None:
     """Link a tentacle to the current goal and write goal_id/iteration into meta.json."""
     state = _goal_load(tentacles)
     if not state:
-        print("ERROR: No goal initialized. Run `tentacle.py goal init` first.", file=sys.stderr)
+        print(
+            "ERROR: No goal initialized. Run `tentacle.py goal init` first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     tentacle_name = args.tentacle_name
@@ -2052,32 +2110,88 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
     """Record an evaluation checkpoint and optionally advance iteration or change status."""
     state = _goal_load(tentacles)
     if not state:
-        print("ERROR: No goal initialized. Run `tentacle.py goal init` first.", file=sys.stderr)
+        print(
+            "ERROR: No goal initialized. Run `tentacle.py goal init` first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     decision = getattr(args, "decision", "continue") or "continue"
     if decision not in GOAL_EVAL_DECISIONS:
-        print(f"ERROR: Unknown decision '{decision}'. Use: {', '.join(sorted(GOAL_EVAL_DECISIONS))}", file=sys.stderr)
+        print(
+            f"ERROR: Unknown decision '{decision}'. Use: {', '.join(sorted(GOAL_EVAL_DECISIONS))}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     notes = getattr(args, "notes", "") or ""
     current_iter = state.get("iteration", 1)
     current_status = state.get("status", GOAL_STATUS_ACTIVE)
-    if current_status in {GOAL_STATUS_COMPLETED, GOAL_STATUS_ABANDONED, GOAL_STATUS_NEEDS_HUMAN}:
+    if current_status in {
+        GOAL_STATUS_COMPLETED,
+        GOAL_STATUS_ABANDONED,
+        GOAL_STATUS_NEEDS_HUMAN,
+    }:
         print(
             f"ERROR: Goal is already {current_status}. Run `tentacle.py goal resume` before evaluating again.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    # Gate check: warn (but don't block) when completing without all gates passed.
+    # Human gate check: hard-block continue/complete when any gate is pending or rejected.
+    if decision in {"continue", "complete"}:
+        blocking = _goal_gates_blocking(state)
+        if blocking:
+            # Build and persist the eval snapshot first for auditability, but do not advance.
+            eval_entry_blocked: dict = {
+                "iteration": current_iter,
+                "decision": decision,
+                "notes": notes,
+                "evaluated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            _gates_snap = state.get("gates") or []
+            if _gates_snap:
+                eval_entry_blocked["gates_passed"] = sum(1 for g in _gates_snap if g.get("status") == "passed")
+                eval_entry_blocked["gates_total"] = len(_gates_snap)
+            _crit_snap = state.get("success_criteria") or []
+            if _crit_snap:
+                eval_entry_blocked["criteria_verified"] = sum(1 for c in _crit_snap if c.get("status") == "verified")
+                eval_entry_blocked["criteria_total"] = len(_crit_snap)
+            eval_entry_blocked["blocked_by_gates"] = [g.get("id", "?") for g in blocking]
+            history_b: list = state.setdefault("eval_history", [])
+            history_b.append(eval_entry_blocked)
+            state["status"] = GOAL_STATUS_AWAITING_GATE
+            primary = blocking[0]
+            state["awaiting_gate_id"] = primary.get("id", "?")
+            state["awaiting_gate_reason"] = primary.get("reason") or (
+                f"Gate '{primary.get('id', '?')}' is {primary.get('status', 'pending')}"
+            )
+            state["updated_at"] = datetime.now(timezone.utc).isoformat()
+            _goal_write(tentacles, state)
+            print(f"⛔ Eval blocked by {len(blocking)} gate(s) not yet approved:")
+            for g in blocking:
+                g_st = g.get("status", "pending")
+                icon = "❌" if g_st == "rejected" else "⬜"
+                print(f"   {icon} [{g.get('id', '?')}] {g.get('description', '')[:60]} — {g_st}")
+                if g.get("reason"):
+                    print(f"      Reason: {g['reason']}")
+            print(f"   Goal status set to '{GOAL_STATUS_AWAITING_GATE}'. Iteration not advanced.")
+            print("   Approve gate(s) with `goal gate approve <id>` then re-run eval.")
+            return
+        # If all blocking gates are now resolved and status was awaiting-gate, restore active.
+        if current_status == GOAL_STATUS_AWAITING_GATE:
+            state["status"] = GOAL_STATUS_ACTIVE
+            state.pop("awaiting_gate_id", None)
+            state.pop("awaiting_gate_reason", None)
+
+    # Gate check: warn (but don't block) when completing with failed gates.
     if decision == "complete":
-        if not _goal_gates_all_passed(state):
-            pending_gates = [g for g in (state.get("gates") or []) if g.get("status") != "passed"]
-            print(f"⚠️  WARNING: {len(pending_gates)} gate(s) not yet passed:")
-            for g in pending_gates:
-                print(f"   [{g.get('id', '?')}] {g.get('description', '')[:70]} — {g.get('status', 'pending')}")
-            print("   Use `goal gate pass <id>` to mark gates, or proceed with --decision complete anyway.")
+        failed_gates = [g for g in (state.get("gates") or []) if g.get("status") == "failed"]
+        if failed_gates:
+            print(f"⚠️  WARNING: {len(failed_gates)} gate(s) marked FAILED:")
+            for g in failed_gates:
+                print(f"   [{g.get('id', '?')}] {g.get('description', '')[:70]} — failed")
+            print("   Use `goal gate pass <id>` to override, or proceed with --decision complete anyway.")
 
         # Criteria check: warn if any unverified criteria remain.
         criteria = state.get("success_criteria") or []
@@ -2100,6 +2214,10 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
                 f"⚠️  NOTE: This is the last budgeted iteration "
                 f"({current_iter}/{bs['max_iterations']}). Consider `--decision complete`."
             )
+
+    if current_status == GOAL_STATUS_AWAITING_GATE and decision in {"pause", "abandon"}:
+        state.pop("awaiting_gate_id", None)
+        state.pop("awaiting_gate_reason", None)
 
     eval_entry: dict = {
         "iteration": current_iter,
@@ -2147,7 +2265,10 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
     """Set goal status back to active (e.g. after pause or to restart iteration loop)."""
     state = _goal_load(tentacles)
     if not state:
-        print("ERROR: No goal initialized. Run `tentacle.py goal init` first.", file=sys.stderr)
+        print(
+            "ERROR: No goal initialized. Run `tentacle.py goal init` first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     reset_failed = getattr(args, "reset_failed", False)
@@ -2175,6 +2296,10 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
         state.pop("needs_human_reason", None)
         state.pop("needs_human_failing_criteria", None)
         state.pop("needs_human_at", None)
+    # Clear awaiting-gate metadata when resuming from awaiting-gate state.
+    if prev_status == GOAL_STATUS_AWAITING_GATE:
+        state.pop("awaiting_gate_id", None)
+        state.pop("awaiting_gate_reason", None)
 
     pending_meta_writes: list[tuple[Path, dict]] = []
     rewound_names: set[str] = set()
@@ -2231,7 +2356,10 @@ def _cmd_goal_criteria(args, tentacles: Path) -> None:
     """Manage success criteria: add / check / list."""
     state = _goal_load(tentacles)
     if not state:
-        print("ERROR: No goal initialized. Run `tentacle.py goal init` first.", file=sys.stderr)
+        print(
+            "ERROR: No goal initialized. Run `tentacle.py goal init` first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     action = args.criteria_action
@@ -2259,7 +2387,10 @@ def _cmd_goal_criteria(args, tentacles: Path) -> None:
         desc = args.desc
         verify_cmd = getattr(args, "verify_cmd", None) or ""
         if any(c.get("id") == sc_id for c in criteria):
-            print(f"ERROR: Criterion id '{sc_id}' already exists. Use --id to specify a unique id.", file=sys.stderr)
+            print(
+                f"ERROR: Criterion id '{sc_id}' already exists. Use --id to specify a unique id.",
+                file=sys.stderr,
+            )
             sys.exit(1)
         criterion: dict = {
             "id": sc_id,
@@ -2322,43 +2453,184 @@ def _cmd_goal_criteria(args, tentacles: Path) -> None:
 
 
 def _cmd_goal_gate(args, tentacles: Path) -> None:
-    """Manage gates: pass / fail."""
+    """Manage gates: add / approve / reject / pass / fail."""
     state = _goal_load(tentacles)
     if not state:
-        print("ERROR: No goal initialized. Run `tentacle.py goal init` first.", file=sys.stderr)
+        print(
+            "ERROR: No goal initialized. Run `tentacle.py goal init` first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     action = args.gate_action
+    current_status = state.get("status")
+    if current_status in {
+        GOAL_STATUS_COMPLETED,
+        GOAL_STATUS_ABANDONED,
+        GOAL_STATUS_NEEDS_HUMAN,
+    }:
+        print(
+            f"ERROR: Goal is already {current_status}. Gate mutations are not allowed in this goal state.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     gate_id = args.gate_id
     gates: list = state.setdefault("gates", [])
 
     gate = next((g for g in gates if g.get("id") == gate_id), None)
+    gate_exists = gate is not None
+    if not gate_exists and action in {"approve", "reject"}:
+        print(
+            f"ERROR: Gate '{gate_id}' does not exist. Use `goal gate add {gate_id}` first.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if gate is None:
         gate = {"id": gate_id, "description": "", "status": "pending"}
         gates.append(gate)
 
     reason = getattr(args, "reason", "") or ""
 
-    if action == "pass":
+    if action == "add":
+        desc = getattr(args, "desc", "") or ""
+        if desc:
+            gate["description"] = desc
+        gate_status = gate.get("status", "pending")
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _goal_write(tentacles, state)
+        if gate_exists:
+            if gate_status == "pending":
+                print(f"ℹ️  Gate [{gate_id}] is already pending — awaiting human approval.")
+                if desc:
+                    print(f"   Desc: {desc}")
+                print(f"   Approve with: goal gate approve {gate_id}")
+                return
+            print(f"ℹ️  Gate [{gate_id}] already exists with status '{gate_status}'.")
+            if desc:
+                print(f"   Desc: {desc}")
+            if gate_status in {"rejected", "failed"}:
+                print(f"   Resolve with: goal gate approve {gate_id} [--reason <text>]")
+            else:
+                print("   Use a new gate id if you need another human gate for this check.")
+            return
+        print(f"⬜ Gate [{gate_id}] added — awaiting human approval")
+        if desc:
+            print(f"   Desc: {desc}")
+        print(f"   Approve with: goal gate approve {gate_id}")
+    elif action == "approve":
+        gate["status"] = "passed"
+        gate["approved_at"] = datetime.now(timezone.utc).isoformat()
+        if reason:
+            gate["reason"] = reason
+        unblocked_goal = False
+        # Keep awaiting-gate metadata aligned with the first remaining blocker.
+        if state.get("status") == GOAL_STATUS_AWAITING_GATE:
+            blocking = _goal_gates_blocking(state)
+            if blocking:
+                primary = blocking[0]
+                state["awaiting_gate_id"] = primary.get("id", "?")
+                state["awaiting_gate_reason"] = primary.get("reason") or (
+                    f"Gate '{primary.get('id', '?')}' is {primary.get('status', 'pending')}"
+                )
+            else:
+                state["status"] = GOAL_STATUS_ACTIVE
+                state.pop("awaiting_gate_id", None)
+                state.pop("awaiting_gate_reason", None)
+                unblocked_goal = True
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _goal_write(tentacles, state)
+        print(f"✅ Gate [{gate_id}] APPROVED")
+        if reason:
+            print(f"   Reason: {reason}")
+        if unblocked_goal:
+            print("   All blocking gates resolved — goal is unblocked for `goal eval`.")
+    elif action == "reject":
+        if not reason:
+            print("ERROR: --reason is required for `goal gate reject`.", file=sys.stderr)
+            sys.exit(1)
+        if gate.get("status") == "passed":
+            print(
+                f"ERROR: Gate '{gate_id}' is already passed. Reject only pending or rejected gates.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        gate["status"] = "rejected"
+        gate["rejected_at"] = datetime.now(timezone.utc).isoformat()
+        gate["reason"] = reason
+        blocking = _goal_gates_blocking(state)
+        primary = blocking[0]
+        if state.get("status") == GOAL_STATUS_PAUSED:
+            state.pop("awaiting_gate_id", None)
+            state.pop("awaiting_gate_reason", None)
+        else:
+            state["status"] = GOAL_STATUS_AWAITING_GATE
+            state["awaiting_gate_id"] = primary.get("id", "?")
+            state["awaiting_gate_reason"] = primary.get("reason") or (
+                f"Gate '{primary.get('id', '?')}' is {primary.get('status', 'pending')}"
+            )
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _goal_write(tentacles, state)
+        print(f"❌ Gate [{gate_id}] REJECTED — goal blocked")
+        print(f"   Reason: {reason}")
+        if state.get("status") == GOAL_STATUS_PAUSED:
+            print("   Goal remains paused. Re-run `goal eval` after resume to surface the blocking gate.")
+        else:
+            print(f"   Goal status set to '{GOAL_STATUS_AWAITING_GATE}'.")
+            print(f"   Resolve with: goal gate approve {primary.get('id', '?')} [--reason <text>]")
+    elif action == "pass":
         gate["status"] = "passed"
         gate["passed_at"] = datetime.now(timezone.utc).isoformat()
         if reason:
             gate["reason"] = reason
+        unblocked_goal = False
+        if state.get("status") == GOAL_STATUS_AWAITING_GATE:
+            blocking = _goal_gates_blocking(state)
+            if blocking:
+                primary = blocking[0]
+                state["awaiting_gate_id"] = primary.get("id", "?")
+                state["awaiting_gate_reason"] = primary.get("reason") or (
+                    f"Gate '{primary.get('id', '?')}' is {primary.get('status', 'pending')}"
+                )
+            else:
+                state["status"] = GOAL_STATUS_ACTIVE
+                state.pop("awaiting_gate_id", None)
+                state.pop("awaiting_gate_reason", None)
+                unblocked_goal = True
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
         _goal_write(tentacles, state)
         print(f"✅ Gate [{gate_id}] marked PASSED")
         if reason:
             print(f"   Reason: {reason}")
+        if unblocked_goal:
+            print("   All blocking gates resolved — goal is unblocked for `goal eval`.")
     elif action == "fail":
         gate["status"] = "failed"
         gate["failed_at"] = datetime.now(timezone.utc).isoformat()
         if reason:
             gate["reason"] = reason
+        unblocked_goal = False
+        if state.get("status") == GOAL_STATUS_AWAITING_GATE:
+            blocking = _goal_gates_blocking(state)
+            if blocking:
+                primary = blocking[0]
+                state["awaiting_gate_id"] = primary.get("id", "?")
+                state["awaiting_gate_reason"] = primary.get("reason") or (
+                    f"Gate '{primary.get('id', '?')}' is {primary.get('status', 'pending')}"
+                )
+            else:
+                state["status"] = GOAL_STATUS_ACTIVE
+                state.pop("awaiting_gate_id", None)
+                state.pop("awaiting_gate_reason", None)
+                unblocked_goal = True
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
         _goal_write(tentacles, state)
         print(f"❌ Gate [{gate_id}] marked FAILED")
         if reason:
             print(f"   Reason: {reason}")
+        if unblocked_goal:
+            print(
+                "   Blocking gate removed via FAIL — goal is unblocked for `goal eval`, but the gate is still FAILED."
+            )
     else:
         print(f"ERROR: Unknown gate action '{action}'", file=sys.stderr)
         sys.exit(1)
@@ -2413,7 +2685,10 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
     """Summarize iteration state and advise on the next step in the goal loop."""
     state = _goal_load(tentacles)
     if not state:
-        print("ERROR: No goal initialized. Run `tentacle.py goal init` first.", file=sys.stderr)
+        print(
+            "ERROR: No goal initialized. Run `tentacle.py goal init` first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     bs = _goal_budget_status(state)
@@ -2513,11 +2788,18 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
     """Blocking retry harness: re-run success criteria with stall detection and optional escalation."""
     state = _goal_load(tentacles)
     if not state:
-        print("ERROR: No goal initialized. Run `tentacle.py goal init` first.", file=sys.stderr)
+        print(
+            "ERROR: No goal initialized. Run `tentacle.py goal init` first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     current_status = state.get("status", GOAL_STATUS_ACTIVE)
-    if current_status in {GOAL_STATUS_COMPLETED, GOAL_STATUS_ABANDONED, GOAL_STATUS_NEEDS_HUMAN}:
+    if current_status in {
+        GOAL_STATUS_COMPLETED,
+        GOAL_STATUS_ABANDONED,
+        GOAL_STATUS_NEEDS_HUMAN,
+    }:
         print(
             f"ERROR: Goal is already {current_status}. Run `tentacle.py goal resume` before verifying again.",
             file=sys.stderr,
@@ -2537,7 +2819,10 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
         if check_id:
             print(f"ERROR: No criterion found with id='{check_id}'.", file=sys.stderr)
         else:
-            print("ERROR: No success criteria defined. Add criteria with `goal criteria add`.", file=sys.stderr)
+            print(
+                "ERROR: No success criteria defined. Add criteria with `goal criteria add`.",
+                file=sys.stderr,
+            )
         sys.exit(1)
 
     git_root = find_git_root()
@@ -2942,7 +3227,10 @@ def cmd_todo(args):
                 todo_path.write_text(render_todos(todos), encoding="utf-8")
                 print(f"✅ Marked done [{idx}]: {todos[idx]['text']}")
             else:
-                print(f"ERROR: Index {idx} out of range (0-{len(todos) - 1})", file=sys.stderr)
+                print(
+                    f"ERROR: Index {idx} out of range (0-{len(todos) - 1})",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
 
         elif args.action == "undone":
@@ -2956,7 +3244,10 @@ def cmd_todo(args):
                 todo_path.write_text(render_todos(todos), encoding="utf-8")
                 print(f"↩️  Marked undone [{idx}]: {todos[idx]['text']}")
             else:
-                print(f"ERROR: Index {idx} out of range (0-{len(todos) - 1})", file=sys.stderr)
+                print(
+                    f"ERROR: Index {idx} out of range (0-{len(todos) - 1})",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
 
         elif args.action == "list":
@@ -3995,11 +4286,24 @@ def main():
     p_create.add_argument("name", help="Tentacle name (kebab-case)")
     p_create.add_argument("--scope", help="Comma-separated file paths/patterns")
     p_create.add_argument("--desc", help="Short description")
-    p_create.add_argument("--briefing", action="store_true", help="Auto-inject relevant past knowledge into CONTEXT.md")
     p_create.add_argument(
-        "--skill", action="append", metavar="SKILL", help="Declare a skill used by this tentacle (repeatable)"
+        "--briefing",
+        action="store_true",
+        help="Auto-inject relevant past knowledge into CONTEXT.md",
     )
-    p_create.add_argument("--goal-id", dest="goal_id", metavar="GOAL_ID", default=None, help="Link to a goal by ID")
+    p_create.add_argument(
+        "--skill",
+        action="append",
+        metavar="SKILL",
+        help="Declare a skill used by this tentacle (repeatable)",
+    )
+    p_create.add_argument(
+        "--goal-id",
+        dest="goal_id",
+        metavar="GOAL_ID",
+        default=None,
+        help="Link to a goal by ID",
+    )
     p_create.add_argument(
         "--iteration",
         type=int,
@@ -4027,7 +4331,11 @@ def main():
     p_handoff = sub.add_parser("handoff", help="Write handoff message")
     p_handoff.add_argument("name", help="Tentacle name")
     p_handoff.add_argument("message", help="Handoff message content")
-    p_handoff.add_argument("--learn", action="store_true", help="Also record this handoff as a knowledge entry")
+    p_handoff.add_argument(
+        "--learn",
+        action="store_true",
+        help="Also record this handoff as a knowledge entry",
+    )
     p_handoff.add_argument(
         "--status",
         choices=sorted(HANDOFF_STATUS_ALLOWLIST),
@@ -4056,7 +4364,9 @@ def main():
         help="Output format: prompt (single agent), parallel (one per todo), json",
     )
     p_swarm.add_argument(
-        "--briefing", action="store_true", help="Inject live briefing into the dispatch prompt at runtime"
+        "--briefing",
+        action="store_true",
+        help="Inject live briefing into the dispatch prompt at runtime",
     )
     p_swarm.add_argument(
         "--bundle",
@@ -4083,7 +4393,9 @@ def main():
     p_dispatch.add_argument("--agent-type", default="general-purpose", help="Agent type")
     p_dispatch.add_argument("--model", default="claude-sonnet-4.6", help="Model")
     p_dispatch.add_argument(
-        "--briefing", action="store_true", help="Inject live briefing into the dispatch prompt at runtime"
+        "--briefing",
+        action="store_true",
+        help="Inject live briefing into the dispatch prompt at runtime",
     )
     p_dispatch.add_argument(
         "--bundle",
@@ -4107,17 +4419,35 @@ def main():
     # resume
     p_resume = sub.add_parser("resume", help="Resume a tentacle: refresh briefing, set active")
     p_resume.add_argument("name", help="Tentacle name")
-    p_resume.add_argument("--no-briefing", action="store_true", help="Skip live briefing injection on resume")
+    p_resume.add_argument(
+        "--no-briefing",
+        action="store_true",
+        help="Skip live briefing injection on resume",
+    )
 
     # next-step
-    p_next = sub.add_parser("next-step", help="Show grounded next step: first pending todo + checkpoint context")
+    p_next = sub.add_parser(
+        "next-step",
+        help="Show grounded next step: first pending todo + checkpoint context",
+    )
     p_next.add_argument("name", help="Tentacle name")
     p_next.add_argument(
-        "--briefing", action="store_true", help="Inject live knowledge briefing alongside the next step"
+        "--briefing",
+        action="store_true",
+        help="Inject live knowledge briefing alongside the next step",
     )
-    p_next.add_argument("--no-checkpoint", action="store_true", help="Skip loading latest checkpoint context")
+    p_next.add_argument(
+        "--no-checkpoint",
+        action="store_true",
+        help="Skip loading latest checkpoint context",
+    )
     p_next.add_argument("--all", action="store_true", help="Show all pending todos, not just the first")
-    p_next.add_argument("--format", choices=["text", "json"], default="text", help="Output format (default: text)")
+    p_next.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text)",
+    )
 
     # delete
     p_delete = sub.add_parser("delete", help="Delete a tentacle")
@@ -4165,7 +4495,11 @@ def main():
         action="store_true",
         help="Skip live prose briefing fetch; machine-readable recall pack is still fetched",
     )
-    p_bundle.add_argument("--no-checkpoint", action="store_true", help="Skip loading latest checkpoint context")
+    p_bundle.add_argument(
+        "--no-checkpoint",
+        action="store_true",
+        help="Skip loading latest checkpoint context",
+    )
     p_bundle.add_argument(
         "--output",
         choices=["text", "json"],
@@ -4213,7 +4547,12 @@ def main():
     p_verify.add_argument("name", help="Tentacle name")
     p_verify.add_argument("verify_command", help="Shell command to run")
     p_verify.add_argument("--label", help="Human-readable label for this verification")
-    p_verify.add_argument("--timeout", type=int, default=120, help="Command timeout in seconds (default: 120)")
+    p_verify.add_argument(
+        "--timeout",
+        type=int,
+        default=120,
+        help="Command timeout in seconds (default: 120)",
+    )
 
     # goal subcommand
     p_goal = sub.add_parser(
@@ -4294,20 +4633,38 @@ def main():
     p_criteria_add.add_argument("--desc", required=True, help="Description of this criterion")
     p_criteria_add.add_argument("--id", default=None, dest="id", help="Optional unique ID (e.g. sc-1)")
     p_criteria_add.add_argument(
-        "--verify-cmd", dest="verify_cmd", default="", help="Shell command to verify this criterion"
+        "--verify-cmd",
+        dest="verify_cmd",
+        default="",
+        help="Shell command to verify this criterion",
     )
     p_criteria_check = p_criteria_sub.add_parser("check", help="Run verification command(s) and update status")
     p_criteria_check.add_argument(
-        "--id", default=None, dest="id", help="Check only the criterion with this ID (default: all)"
+        "--id",
+        default=None,
+        dest="id",
+        help="Check only the criterion with this ID (default: all)",
     )
     p_criteria_check.add_argument(
-        "--timeout", type=int, default=60, help="Per-command timeout in seconds (default: 60)"
+        "--timeout",
+        type=int,
+        default=60,
+        help="Per-command timeout in seconds (default: 60)",
     )
 
     # goal gate
-    p_goal_gate = p_goal_sub.add_parser("gate", help="Manage gates: pass / fail")
+    p_goal_gate = p_goal_sub.add_parser("gate", help="Manage gates: add / approve / reject / pass / fail")
     p_gate_sub = p_goal_gate.add_subparsers(dest="gate_action", required=True)
-    p_gate_pass = p_gate_sub.add_parser("pass", help="Mark a gate as passed")
+    p_gate_add = p_gate_sub.add_parser("add", help="Add a new pending human gate")
+    p_gate_add.add_argument("gate_id", help="Gate ID (e.g. G1)")
+    p_gate_add.add_argument("--desc", default="", help="Optional description of what this gate checks")
+    p_gate_approve = p_gate_sub.add_parser("approve", help="Approve (pass) a gate — explicit human sign-off")
+    p_gate_approve.add_argument("gate_id", help="Gate ID (e.g. G1)")
+    p_gate_approve.add_argument("--reason", default="", help="Optional approval rationale")
+    p_gate_reject = p_gate_sub.add_parser("reject", help="Reject a gate — blocks goal eval with persisted reason")
+    p_gate_reject.add_argument("gate_id", help="Gate ID (e.g. G1)")
+    p_gate_reject.add_argument("--reason", required=True, help="Rejection reason (required)")
+    p_gate_pass = p_gate_sub.add_parser("pass", help="Mark a gate as passed (legacy alias for approve)")
     p_gate_pass.add_argument("gate_id", help="Gate ID (e.g. G1)")
     p_gate_pass.add_argument("--reason", default="", help="Optional reason/evidence text")
     p_gate_fail = p_gate_sub.add_parser("fail", help="Mark a gate as failed")

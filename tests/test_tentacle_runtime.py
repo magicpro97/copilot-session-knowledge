@@ -6570,11 +6570,6 @@ class TestGoalLoopRuntimeFlow(unittest.TestCase):
         w1 = self._make_worker("iter1-worker")
         self._goal_link("iter1-worker")
 
-        # Add a gate
-        state = T._goal_load(self.tentacles)
-        state["gates"] = [{"id": "G1", "description": "ready", "status": "pending"}]
-        T._goal_write(self.tentacles, state)
-
         # Mark iteration 1 worker done
         meta = json.loads((w1 / "meta.json").read_text(encoding="utf-8"))
         meta["terminal_status"] = "DONE"
@@ -6595,6 +6590,11 @@ class TestGoalLoopRuntimeFlow(unittest.TestCase):
         meta2["terminal_status"] = "DONE"
         meta2["goal_iteration"] = 2
         (w2 / "meta.json").write_text(json.dumps(meta2) + "\n", encoding="utf-8")
+
+        # Add and resolve the completion gate after iteration 2 work is ready.
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "G1", "description": "ready", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
 
         # Pass gate
         self._gate_pass("G1", reason="all workers done")

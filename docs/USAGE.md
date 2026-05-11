@@ -642,6 +642,58 @@ sk tentacle goal criteria list
 
 ### Gates
 
+Gates are named checkpoints that can require explicit human approval before the goal can
+advance. Any gate in `pending` or `rejected` state hard-blocks `goal eval continue` and
+`goal eval complete` — the goal status is set to `awaiting-gate` and a message is printed
+showing which gate is blocking and how to resolve it. Use `goal status` to surface the
+blocking gate ID and rejection reason at any time.
+
+#### Human gate workflow
+
+```bash
+# 1. Add a gate that requires human approval before eval can proceed
+sk tentacle goal gate add G1 [--desc "QA sign-off required"]
+# fallback: python3 ~/.copilot/tools/tentacle.py goal gate add G1 --desc "QA sign-off required"
+
+# 2a. Approve — marks the gate passed and unblocks eval (if no other gates remain)
+sk tentacle goal gate approve G1 [--reason "QA signed off on 2025-05-11"]
+# fallback: python3 ~/.copilot/tools/tentacle.py goal gate approve G1 --reason "..."
+
+# 2b. Reject — marks the gate rejected, sets goal status to awaiting-gate
+sk tentacle goal gate reject G1 --reason "QA found regressions in auth flow"
+# fallback: python3 ~/.copilot/tools/tentacle.py goal gate reject G1 --reason "..."
+# Note: --reason is required for reject.
+
+# 3. After fixing the issue, approve the gate to unblock eval
+sk tentacle goal gate approve G1 --reason "Regressions fixed, re-tested OK"
+
+# 4. If the goal is stuck in awaiting-gate and all blocking gates are resolved,
+#    or to force-clear the awaiting-gate metadata, use goal resume:
+sk tentacle goal resume
+# fallback: python3 ~/.copilot/tools/tentacle.py goal resume
+```
+
+**`awaiting-gate` status** — when a gate is rejected (or when `goal eval` is called while
+any gate is `pending` or `rejected`), the goal status becomes `awaiting-gate`. The eval is
+not recorded as a real iteration advance. Run `goal status` to see:
+
+```
+⛔ Blocked on gate: [G1]
+   Reason: QA found regressions in auth flow
+   Resolve with: goal gate approve G1 [--reason <text>]
+```
+
+`goal resume` clears the `awaiting-gate` metadata and re-activates the goal when the status
+was `awaiting-gate`, `paused`, or `abandoned`. It does not automatically re-approve any gate
+— approve each gate explicitly first.
+
+#### Legacy gate commands
+
+`pass` and `fail` predate the human-gate workflow and are still accepted. They do **not**
+create a new `awaiting-gate` block. `fail` marks a gate `failed`; if that removes the last
+blocking gate from an existing `awaiting-gate` goal, the goal returns to `active` and future
+`goal eval complete` still warns that the gate failed.
+
 ```bash
 # Mark a named gate passed or failed (with optional evidence note)
 sk tentacle goal gate pass G1 [--reason "test_security.py: 12/12"]
@@ -692,6 +744,11 @@ re-activate the goal before re-running `goal verify-loop`.
 goal init → (dispatch wave of tentacles) → handoffs collected
   → goal gate pass / goal criteria check → goal eval --decision continue
   → (new wave if goal unmet) → goal eval --decision complete → git commit + close
+
+Human gate path:
+  goal gate add G1 → (human reviews) → goal gate approve/reject G1
+  → if rejected: fix issues, goal gate approve G1, then retry goal eval
+  → if awaiting-gate and resolved: goal resume, then retry goal eval
 ```
 
 Record goal-eval evidence with:
