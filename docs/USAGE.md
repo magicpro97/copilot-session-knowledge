@@ -585,7 +585,11 @@ sk tentacle goal validate [--title "Implement auth"] [--desc "..."] [--format te
 # Show current goal state (linked tentacles, gates, budget, criteria)
 sk tentacle goal status [--format text|json]
 
-# Link a completed tentacle to the goal for tracking
+# Generate a concurrency-limited dispatch plan for the current iteration
+sk tentacle goal dispatch [--concurrency N] [--agent-type general-purpose] \
+  [--model claude-sonnet-4.6] [--briefing] [--worktree] [--format text|json]
+
+# Link a tentacle to the goal for tracking
 sk tentacle goal link <tentacle-name>
 
 # Evaluate after each Verify phase — advance iteration or change status
@@ -624,6 +628,33 @@ returns the same `iterations` object. Use that JSON when you need to answer ques
 "which tentacles were linked in iteration 2?" without guessing from current tentacle meta.
 Goal updates now use `.octogent/goal.json.lock` for exclusive writes. The CLI waits up to
 30 seconds for that lock and uses PID-aware stale-lock cleanup before retrying.
+
+### Dependency-aware goal dispatch
+
+`goal dispatch` reads the tentacles linked to the current iteration, checks each tentacle's
+pending todos, and prints the exact `sk tentacle dispatch ...` commands that are ready to run
+now. Use it when you want a clear dispatch wave instead of guessing which tentacles can start.
+
+```bash
+# Create tentacles with explicit dependencies for the current goal wave
+sk tentacle create prep-db --desc "Prepare migration plan"
+sk tentacle create apply-db --desc "Apply migration safely" --depends-on prep-db
+
+# Ask the goal loop which tentacles are ready right now
+sk tentacle goal dispatch --concurrency 2 --briefing --worktree
+# fallback: python3 ~/.copilot/tools/tentacle.py goal dispatch --concurrency 2 --briefing --worktree
+```
+
+Dispatch rules:
+
+- Tentacles with satisfied dependencies and pending todos are selected up to `--concurrency`.
+- Tentacles waiting on dependencies, already active, or out of pending todos are deferred with a reason.
+- Tentacles blocked by failed dependencies stay visible in the plan, but they do not keep `goal eval` stuck forever.
+- Tentacle dependencies are stored in `meta.json` as `todo_deps` and can be set at create time with `--depends-on a,b,c`.
+
+`goal eval --decision continue|complete` now refuses to move forward until every tentacle in the
+current iteration has written a terminal handoff. That keeps the goal loop honest: dispatch first,
+wait for handoffs, then evaluate.
 
 ### Goal text budget
 
@@ -781,7 +812,7 @@ re-activate the goal before re-running `goal verify-loop`.
 ### Typical orchestrator cycle
 
 ```
-goal init → (dispatch wave of tentacles) → handoffs collected
+goal init → goal dispatch → handoffs collected
   → goal gate pass / goal criteria check → goal eval --decision continue
   → (new wave if goal unmet) → goal eval --decision complete → git commit + close
 

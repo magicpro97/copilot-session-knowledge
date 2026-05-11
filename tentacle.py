@@ -24,6 +24,7 @@ Usage:
     python3 ~/.copilot/tools/tentacle.py goal init --title <title> [--desc <desc>] [--force] [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]
     python3 ~/.copilot/tools/tentacle.py goal validate [--title <title>] [--desc <desc>] [--format text|json]
     python3 ~/.copilot/tools/tentacle.py goal status [--format text|json]
+    python3 ~/.copilot/tools/tentacle.py goal dispatch [--concurrency N] [--format text|json]
     python3 ~/.copilot/tools/tentacle.py goal link <tentacle-name>
     python3 ~/.copilot/tools/tentacle.py goal eval [--decision continue|pause|complete|abandon] [--notes <notes>]
     python3 ~/.copilot/tools/tentacle.py goal resume
@@ -2138,6 +2139,193 @@ def _goal_validate_input_source(args, tentacles: Path) -> tuple[str, str] | None
     return title or "Unnamed Goal", desc or ""
 
 
+def _tentacle_meta(tentacles: Path, name: str) -> dict:
+    """Best-effort meta.json reader for one tentacle."""
+    meta_path = tentacles / name / "meta.json"
+    if not meta_path.exists():
+        return {}
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _tentacle_pending_todo_count(tentacles: Path, name: str) -> int:
+    """Return the number of unchecked todos for a tentacle."""
+    todo_path = tentacles / name / "todo.md"
+    if not todo_path.exists():
+        return 0
+    try:
+        todos = parse_todos(todo_path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    return sum(1 for todo in todos if not todo["done"])
+
+
+def _tentacle_goal_dependencies(meta: dict) -> list[str]:
+    """Return declared tentacle dependencies from meta.json."""
+    raw = meta.get("todo_deps")
+    if raw is None:
+        raw = meta.get("depends_on")
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        items = [item.strip() for item in raw.split(",")]
+    elif isinstance(raw, list):
+        items = [str(item).strip() for item in raw]
+    else:
+        return []
+    deps: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if item and item not in seen:
+            deps.append(item)
+            seen.add(item)
+    return deps
+
+
+def _tentacle_goal_resolved(meta: dict) -> bool:
+    """Return True when a tentacle has any terminal handoff/completion state."""
+    terminal = meta.get("terminal_status")
+    return terminal in HANDOFF_STATUS_ALLOWLIST or meta.get("status") == "completed"
+
+
+def _tentacle_goal_resolved_success(meta: dict) -> bool:
+    """Return True when a tentacle resolved successfully for dependency purposes."""
+    terminal = meta.get("terminal_status")
+    if terminal in HANDOFF_TRIAGE_STATUSES:
+        return False
+    if terminal == "DONE":
+        return True
+    return meta.get("status") == "completed"
+
+
+def _goal_iteration_tentacle_entries(state: dict, tentacles: Path) -> list[dict]:
+    """Describe current-iteration tentacles for dispatch/eval gating."""
+    current_iter = _goal_current_iteration(state)
+    tentacle_names = _goal_iteration_tentacles(state, current_iter)
+    meta_cache: dict[str, dict] = {}
+
+    def _meta_for(name: str) -> dict:
+        if name not in meta_cache:
+            meta_cache[name] = _tentacle_meta(tentacles, name)
+        return meta_cache[name]
+
+    entries: list[dict] = []
+    for name in tentacle_names:
+        meta = _meta_for(name)
+        deps = _tentacle_goal_dependencies(meta)
+        pending_deps: list[str] = []
+        failed_deps: list[str] = []
+        missing_deps: list[str] = []
+        for dep in deps:
+            dep_meta = _meta_for(dep)
+            dep_dir = tentacles / dep
+            if not dep_meta and not dep_dir.exists():
+                missing_deps.append(dep)
+            elif _tentacle_goal_resolved_success(dep_meta):
+                continue
+            elif _tentacle_goal_resolved(dep_meta):
+                failed_deps.append(dep)
+            else:
+                pending_deps.append(dep)
+
+        status = meta.get("status", "idle")
+        terminal = meta.get("terminal_status")
+        pending_todos = _tentacle_pending_todo_count(tentacles, name)
+
+        if _tentacle_goal_resolved(meta):
+            dispatch_state = "resolved_error" if terminal in HANDOFF_TRIAGE_STATUSES else "resolved"
+        elif failed_deps:
+            dispatch_state = "failed_dependencies"
+        elif pending_deps or missing_deps:
+            dispatch_state = "waiting_dependencies"
+        elif pending_todos == 0:
+            dispatch_state = "awaiting_handoff"
+        elif status == "active":
+            dispatch_state = "running"
+        else:
+            dispatch_state = "ready"
+
+        entries.append(
+            {
+                "name": name,
+                "status": status,
+                "terminal_status": terminal,
+                "pending_todos": pending_todos,
+                "todo_deps": deps,
+                "pending_dependencies": pending_deps,
+                "failed_dependencies": failed_deps,
+                "missing_dependencies": missing_deps,
+                "dispatch_state": dispatch_state,
+            }
+        )
+    return entries
+
+
+def _goal_dispatch_command(args, name: str) -> str:
+    """Render the concrete tentacle dispatch command for one ready tentacle."""
+    parts = ["sk tentacle"]
+    session_dir = getattr(args, "session_dir", None)
+    if session_dir:
+        parts.append(f'--session-dir "{session_dir}"')
+    parts.extend(
+        [
+            "dispatch",
+            name,
+            f'--agent-type "{getattr(args, "agent_type", "general-purpose") or "general-purpose"}"',
+            f'--model "{getattr(args, "model", "claude-sonnet-4.6") or "claude-sonnet-4.6"}"',
+        ]
+    )
+    if getattr(args, "briefing", False):
+        parts.append("--briefing")
+    if getattr(args, "worktree", False):
+        parts.append("--worktree")
+    if not _bundle_enabled(args):
+        parts.append("--no-bundle")
+    return " ".join(parts)
+
+
+def _goal_dispatch_plan(state: dict, tentacles: Path, *, concurrency: int) -> dict:
+    """Build a concurrency-limited dispatch plan for the current goal iteration."""
+    entries = _goal_iteration_tentacle_entries(state, tentacles)
+    ready_entries = [dict(entry) for entry in entries if entry["dispatch_state"] == "ready"]
+    selected: list[dict] = []
+    deferred: list[dict] = []
+    resolved: list[dict] = []
+    eval_blocking: list[dict] = []
+
+    for entry in entries:
+        if entry["dispatch_state"] in {"resolved", "resolved_error"}:
+            resolved.append(dict(entry))
+        elif entry["dispatch_state"] != "ready":
+            deferred_entry = dict(entry)
+            deferred_entry["reason"] = deferred_entry["dispatch_state"]
+            deferred.append(deferred_entry)
+            if deferred_entry["reason"] != "failed_dependencies":
+                eval_blocking.append(deferred_entry)
+
+    for index, entry in enumerate(ready_entries):
+        if index < concurrency:
+            selected.append(entry)
+            eval_blocking.append(entry)
+        else:
+            queued = dict(entry)
+            queued["dispatch_state"] = "concurrency_limit"
+            queued["reason"] = "concurrency_limit"
+            deferred.append(queued)
+            eval_blocking.append(queued)
+
+    return {
+        "iteration": _goal_current_iteration(state),
+        "ready_total": len(ready_entries),
+        "selected": selected,
+        "deferred": deferred,
+        "resolved": resolved,
+        "eval_blocking": eval_blocking,
+    }
+
+
 def _goal_budget_status(state: dict) -> dict:
     """Return a dict summarising current budget consumption vs limits."""
     budget = state.get("budget") or {}
@@ -2519,6 +2707,95 @@ def _cmd_goal_link(args, tentacles: Path) -> None:
     print(f"   Goal ID: {goal_id} | Iteration: {iteration}")
 
 
+def _cmd_goal_dispatch(args, tentacles: Path) -> None:
+    """Generate a concurrency-limited dispatch plan for ready goal tentacles."""
+    state = _goal_load(tentacles)
+    if not state:
+        print(
+            "ERROR: No goal initialized. Run `tentacle.py goal init` first.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    status = state.get("status", GOAL_STATUS_ACTIVE)
+    if status in {
+        GOAL_STATUS_COMPLETED,
+        GOAL_STATUS_ABANDONED,
+        GOAL_STATUS_NEEDS_HUMAN,
+    }:
+        print(
+            f"ERROR: Goal is already {status}. Run `tentacle.py goal resume` before dispatching again.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    plan = _goal_dispatch_plan(state, tentacles, concurrency=getattr(args, "concurrency", 4))
+    for entry in plan["selected"]:
+        entry["dispatch_command"] = _goal_dispatch_command(args, entry["name"])
+
+    fmt = getattr(args, "format", "text")
+    if fmt == "json":
+        payload = {
+            "goal_id": state.get("goal_id"),
+            "goal_title": state.get("title"),
+            "iteration": plan["iteration"],
+            "requested_concurrency": getattr(args, "concurrency", 4),
+            "selected": plan["selected"],
+            "deferred": plan["deferred"],
+            "resolved": plan["resolved"],
+            "eval_blocking_count": len(plan["eval_blocking"]),
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
+    print(f"🚀 Goal dispatch: '{state.get('title', '?')}' — iteration {plan['iteration']}")
+    print(f"   Requested concurrency: {getattr(args, 'concurrency', 4)}")
+    print(f"   Ready now: {len(plan['selected'])}/{plan['ready_total']} selected")
+    if plan["resolved"]:
+        print(f"   Resolved with handoff: {len(plan['resolved'])}")
+    if plan["deferred"]:
+        print(f"   Deferred: {len(plan['deferred'])}")
+
+    if plan["selected"]:
+        print("\nDispatch now:")
+        for entry in plan["selected"]:
+            print(f"  ▶ {entry['name']} ({entry['pending_todos']} pending todos)")
+            print(f"     Command: {entry['dispatch_command']}")
+    else:
+        print("\nNo tentacles are ready to dispatch right now.")
+
+    if plan["deferred"]:
+        print("\nDeferred:")
+        for entry in plan["deferred"]:
+            reason = entry["reason"]
+            if reason == "waiting_dependencies":
+                deps = entry["pending_dependencies"] + entry["missing_dependencies"]
+                print(f"  ⏳ {entry['name']} — waiting on dependencies: {', '.join(deps)}")
+            elif reason == "failed_dependencies":
+                print(
+                    f"  ⚠️  {entry['name']} — blocked by failed dependencies: {', '.join(entry['failed_dependencies'])}"
+                )
+            elif reason == "awaiting_handoff":
+                print(f"  📨 {entry['name']} — no pending todos; write handoff/complete before eval")
+            elif reason == "running":
+                print(f"  🔵 {entry['name']} — already active")
+            elif reason == "concurrency_limit":
+                print(f"  ⏱  {entry['name']} — ready, but waiting for a free concurrency slot")
+
+    if plan["resolved"]:
+        print("\nResolved:")
+        for entry in plan["resolved"]:
+            result = entry["terminal_status"] or "DONE"
+            icon = "⚠️" if entry["dispatch_state"] == "resolved_error" else "✅"
+            print(f"  {icon} {entry['name']} — {result}")
+
+    print("\nEval gate:")
+    if plan["eval_blocking"]:
+        print("  Wait for ready/running tentacles or unresolved dependencies before `goal eval`.")
+    else:
+        print("  Remaining tentacles are already resolved or blocked by failed dependencies — `goal eval` can proceed.")
+
+
 def _cmd_goal_eval(args, tentacles: Path) -> None:
     """Record an evaluation checkpoint and optionally advance iteration or change status."""
     decision = getattr(args, "decision", "continue") or "continue"
@@ -2554,6 +2831,33 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
             sys.exit(1)
 
         if decision in {"continue", "complete"}:
+            blocking_tentacles = [
+                entry
+                for entry in _goal_iteration_tentacle_entries(state, tentacles)
+                if entry["dispatch_state"] not in {"resolved", "resolved_error", "failed_dependencies"}
+            ]
+            if blocking_tentacles:
+                print(
+                    f"ERROR: Iteration {current_iter} still has {len(blocking_tentacles)} tentacle(s) without handoffs.",
+                    file=sys.stderr,
+                )
+                for entry in blocking_tentacles:
+                    reason = entry["dispatch_state"]
+                    if reason == "waiting_dependencies":
+                        deps = entry["pending_dependencies"] + entry["missing_dependencies"]
+                        detail = f"waiting on dependencies: {', '.join(deps)}"
+                    elif reason == "awaiting_handoff":
+                        detail = "no pending todos; write handoff/complete"
+                    elif reason == "running":
+                        detail = "already active"
+                    else:
+                        detail = "ready to dispatch"
+                    print(f"  - {entry['name']}: {detail}", file=sys.stderr)
+                print(
+                    "Run `tentacle.py goal dispatch` or `tentacle.py goal next-iter`, then wait for all handoffs before evaluating.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             blocking = _goal_gates_blocking(state)
             if blocking:
                 eval_entry_blocked: dict = {
@@ -3458,7 +3762,7 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
 
 
 def cmd_goal(args):
-    """Dispatch goal sub-commands: init / validate / status / link / eval / resume / criteria / gate / budget / next-iter / verify-loop."""
+    """Dispatch goal sub-commands: init / validate / status / dispatch / link / eval / resume / criteria / gate / budget / next-iter / verify-loop."""
     tentacles = get_tentacles_dir(args.session_dir)
     sub = args.goal_action
 
@@ -3469,6 +3773,8 @@ def cmd_goal(args):
             _cmd_goal_validate(args, tentacles)
         elif sub == "status":
             _cmd_goal_status(args, tentacles)
+        elif sub == "dispatch":
+            _cmd_goal_dispatch(args, tentacles)
         elif sub == "link":
             _cmd_goal_link(args, tentacles)
         elif sub == "eval":
@@ -3589,6 +3895,9 @@ def cmd_create(args):
     if iteration_value is not None:
         meta["iteration"] = iteration_value
         meta["goal_iteration"] = iteration_value
+    depends_on_arg = getattr(args, "depends_on", None)
+    if depends_on_arg:
+        meta["todo_deps"] = [item.strip() for item in depends_on_arg.split(",") if item.strip()]
     # When dir_name differs from name (collision case), record it explicitly.
     if actual_dir_name != args.name:
         meta["dir_name"] = actual_dir_name
@@ -3601,6 +3910,8 @@ def cmd_create(args):
         print(f"   🔧 Skills: {', '.join(skills)}")
     if goal_id_arg:
         print(f"   🎯 Goal: {goal_id_arg} (iteration {iteration_value})")
+    if meta.get("todo_deps"):
+        print(f"   ⛓️  Depends on: {', '.join(meta['todo_deps'])}")
 
 
 def cmd_list(args):
@@ -4811,6 +5122,7 @@ def main():
     p_create.add_argument("name", help="Tentacle name (kebab-case)")
     p_create.add_argument("--scope", help="Comma-separated file paths/patterns")
     p_create.add_argument("--desc", help="Short description")
+    p_create.add_argument("--depends-on", dest="depends_on", help="Comma-separated tentacle dependencies")
     p_create.add_argument(
         "--briefing",
         action="store_true",
@@ -5082,7 +5394,7 @@ def main():
     # goal subcommand
     p_goal = sub.add_parser(
         "goal",
-        help="Orchestrator-level goal loop: init/validate/status/link/eval/resume/criteria/gate/budget/next-iter",
+        help="Orchestrator-level goal loop: init/validate/status/dispatch/link/eval/resume/criteria/gate/budget/next-iter",
     )
     p_goal_sub = p_goal.add_subparsers(dest="goal_action", required=True)
 
@@ -5130,6 +5442,44 @@ def main():
     # goal status
     p_goal_status = p_goal_sub.add_parser("status", help="Show current goal state and linked tentacles")
     p_goal_status.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
+
+    # goal dispatch
+    p_goal_dispatch = p_goal_sub.add_parser(
+        "dispatch",
+        help="Generate a concurrency-limited dispatch plan for ready goal tentacles",
+    )
+    p_goal_dispatch.add_argument(
+        "--concurrency",
+        type=_positive_int_arg,
+        default=4,
+        help="Maximum ready tentacles to dispatch now (default: 4)",
+    )
+    p_goal_dispatch.add_argument("--agent-type", default="general-purpose", help="Agent type")
+    p_goal_dispatch.add_argument("--model", default="claude-sonnet-4.6", help="Model")
+    p_goal_dispatch.add_argument(
+        "--briefing",
+        action="store_true",
+        help="Include --briefing in the generated tentacle dispatch commands",
+    )
+    p_goal_dispatch.add_argument(
+        "--bundle",
+        dest="bundle",
+        action="store_true",
+        help="Use the default runtime bundle in generated dispatch commands",
+    )
+    p_goal_dispatch.add_argument(
+        "--no-bundle",
+        dest="bundle",
+        action="store_false",
+        help="Use --no-bundle in generated dispatch commands",
+    )
+    p_goal_dispatch.set_defaults(bundle=True)
+    p_goal_dispatch.add_argument(
+        "--worktree",
+        action="store_true",
+        help="Include --worktree in the generated dispatch commands",
+    )
+    p_goal_dispatch.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
 
     # goal link
     p_goal_link = p_goal_sub.add_parser("link", help="Link a tentacle to the current goal")

@@ -195,7 +195,7 @@ When acting as an orchestrator with an active goal, the lifecycle is iterative, 
 
 **Typical pattern:**
 ```
-goal init -> Execute tentacles -> Verify gates -> goal criteria check -> goal eval
+goal init -> goal dispatch -> wait for handoffs -> Verify gates -> goal criteria check -> goal eval
                                                        | not met
                                         Plan new tentacles for remaining gaps
                                                        | met

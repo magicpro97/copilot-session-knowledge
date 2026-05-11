@@ -4,7 +4,7 @@ test_tentacle_goal.py — Goal lifecycle and runtime-style tests for tentacle.py
 
 Tests cover:
   - Helper functions: _goal_budget_status, _goal_gates_all_passed, _goal_criteria_run_one
-  - goal init / validate / status / link / eval / resume / criteria / gate / budget / next-iter
+  - goal init / validate / status / dispatch / link / eval / resume / criteria / gate / budget / next-iter
   - Full end-to-end lifecycle: init → link → add criteria → pass gates → eval → complete
   - Budget enforcement: iteration/tentacle/timeout limits
   - Gate state: pass/fail, all-gates-check
@@ -108,6 +108,18 @@ def _init_goal(tentacles: Path, title: str = "Test Goal", **kwargs) -> dict:
     with patch("builtins.print"):
         T._cmd_goal_init(args, tentacles)
     return T._goal_load(tentacles)
+
+
+def _mark_terminal_handoff(tentacles: Path, name: str, terminal_status: str = "DONE") -> None:
+    """Stamp a tentacle with a terminal handoff for eval-gate tests."""
+    meta_path = tentacles / name / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["status"] = "completed"
+    meta["terminal_status"] = terminal_status
+    goal_state = T._goal_load(tentacles)
+    if goal_state:
+        meta["goal_iteration"] = T._goal_current_iteration(goal_state)
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -710,6 +722,7 @@ class TestGoalLink(unittest.TestCase):
         args = _fake_args(goal_action="link", tentacle_name="alpha")
         with patch("builtins.print"):
             T._cmd_goal_link(args, self.tentacles)
+            _mark_terminal_handoff(self.tentacles, "alpha")
             T._cmd_goal_eval(_fake_args(goal_action="eval", decision="continue", notes="iter 1 done"), self.tentacles)
             T._cmd_goal_link(args, self.tentacles)
         state = T._goal_load(self.tentacles)
@@ -1492,6 +1505,119 @@ class TestGoalBudget(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Tests for _cmd_goal_dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestGoalDispatch(unittest.TestCase):
+    def setUp(self):
+        self.base = SCRATCH_DIR / "goal_dispatch"
+        _, self.tentacles = _make_octogent(self.base)
+        _init_goal(self.tentacles, title="Dispatch Goal")
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    def _dispatch_args(self, **overrides):
+        base = {
+            "goal_action": "dispatch",
+            "concurrency": 2,
+            "agent_type": "general-purpose",
+            "model": "claude-sonnet-4.6",
+            "briefing": False,
+            "bundle": True,
+            "worktree": False,
+            "format": "json",
+        }
+        base.update(overrides)
+        return _fake_args(**base)
+
+    def _link_iteration(self, names: list[str]) -> None:
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = list(names)
+        state["iterations"]["1"]["tentacles"] = list(names)
+        T._goal_write(self.tentacles, state)
+
+    def test_dispatch_json_respects_dependencies_and_concurrency(self):
+        _make_tentacle("ready-a", self.tentacles, status="idle")
+        _make_tentacle("ready-b", self.tentacles, status="idle")
+        _make_tentacle("queue-c", self.tentacles, status="idle")
+        _make_tentacle("dep-d", self.tentacles, status="idle", todo_deps=["ready-a"])
+        _make_tentacle("run-e", self.tentacles, status="active")
+        _make_tentacle("done-f", self.tentacles, status="completed", terminal_status="DONE")
+        self._link_iteration(["ready-a", "ready-b", "queue-c", "dep-d", "run-e", "done-f"])
+
+        captured = []
+        args = self._dispatch_args()
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_dispatch(args, self.tentacles)
+        data = json.loads("\n".join(captured))
+        self.assertEqual([item["name"] for item in data["selected"]], ["ready-a", "ready-b"])
+        deferred = {item["name"]: item for item in data["deferred"]}
+        self.assertEqual(deferred["queue-c"]["reason"], "concurrency_limit")
+        self.assertEqual(deferred["dep-d"]["reason"], "waiting_dependencies")
+        self.assertEqual(deferred["dep-d"]["pending_dependencies"], ["ready-a"])
+        self.assertEqual(deferred["run-e"]["reason"], "running")
+        resolved = {item["name"]: item for item in data["resolved"]}
+        self.assertEqual(resolved["done-f"]["terminal_status"], "DONE")
+
+    def test_dispatch_without_goal_exits(self):
+        T._goal_path(self.tentacles).unlink()
+        args = self._dispatch_args()
+        with self.assertRaises(SystemExit) as cm:
+            T._cmd_goal_dispatch(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_eval_continue_blocks_until_iteration_handoffs_exist(self):
+        _make_tentacle("worker", self.tentacles, status="idle")
+        self._link_iteration(["worker"])
+        args = _fake_args(goal_action="eval", decision="continue", notes="")
+        stderr_lines = []
+
+        def _capture(*a, **kw):
+            line = " ".join(str(x) for x in a)
+            if kw.get("file") is sys.stderr:
+                stderr_lines.append(line)
+
+        with patch("builtins.print", side_effect=_capture):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_eval(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("without handoffs", "\n".join(stderr_lines))
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["iteration"], 1)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+
+    def test_eval_continue_allows_terminal_handoffs(self):
+        _make_tentacle("done-a", self.tentacles, status="completed", terminal_status="DONE")
+        _make_tentacle("blocked-b", self.tentacles, status="completed", terminal_status="BLOCKED")
+        self._link_iteration(["done-a", "blocked-b"])
+        args = _fake_args(goal_action="eval", decision="continue", notes="")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["iteration"], 2)
+
+    def test_failed_dependencies_do_not_keep_eval_stuck(self):
+        _make_tentacle("blocked-a", self.tentacles, status="completed", terminal_status="BLOCKED")
+        _make_tentacle("downstream-b", self.tentacles, status="idle", todo_deps=["blocked-a"])
+        self._link_iteration(["blocked-a", "downstream-b"])
+
+        captured = []
+        dispatch_args = self._dispatch_args(format="json")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_dispatch(dispatch_args, self.tentacles)
+        data = json.loads("\n".join(captured))
+        self.assertEqual(data["eval_blocking_count"], 0)
+
+        args = _fake_args(goal_action="eval", decision="continue", notes="")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["iteration"], 2)
+
+
+# ---------------------------------------------------------------------------
 # Tests for _cmd_goal_next_iter
 # ---------------------------------------------------------------------------
 
@@ -1793,7 +1919,10 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
         bs = T._goal_budget_status(state)
         self.assertFalse(bs["over_budget"])
 
-        # 8. Eval: complete
+        # 8. Tentacle work lands a terminal handoff, so eval can complete the goal.
+        _mark_terminal_handoff(self.tentacles, "worker-1")
+
+        # 9. Eval: complete
         args = _fake_args(goal_action="eval", decision="complete", notes="All checks passed")
         with patch("builtins.print"):
             T._cmd_goal_eval(args, self.tentacles)
@@ -1811,7 +1940,7 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
         self.assertEqual(entry["criteria_total"], 2)
         self.assertEqual(entry["notes"], "All checks passed")
 
-        # 9. Attempting another eval should be rejected
+        # 10. Attempting another eval should be rejected
         args2 = _fake_args(goal_action="eval", decision="continue", notes="")
         with patch("builtins.print"):
             with self.assertRaises(SystemExit) as cm:
