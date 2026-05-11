@@ -68,7 +68,7 @@ recovery hints. None of these scripts are candidates for deletion as a consequen
 | `mcp-server.py` | Read-only MCP stdio JSON-RPC surface for `briefing` and `query_session` |
 | `watch-sessions.py` | File watcher; triggers incremental re-indexing |
 | `learn.py` | Manual knowledge entry |
-| `tentacle.py` | Multi-agent orchestration (create → todo → bundle → swarm → complete) + orchestrator goal loop (`goal init/validate/status/dispatch/link/eval/resume/criteria/gate/budget/next-iter/verify-loop`). `goal.json` keeps both the legacy flat `tentacles` list and a structured per-iteration `iterations` map so status/history queries can answer which tentacles belonged to each iteration without breaking older readers. Goal writes are serialized with a `goal.json.lock` sidecar (`O_CREAT | O_EXCL`, 30 s timeout, PID-aware stale-lock cleanup), goal text uses a 3000-char warning / 5000-char hard limit with `goal validate` plus init-time enforcement, and `goal dispatch` reads tentacle `todo_deps` metadata to build a concurrency-limited ready/deferred plan. `goal eval --decision continue|complete` now blocks until every current-iteration tentacle has either a terminal handoff or a completed state. `sk tentacle goal …` routes here via Rust pass-through — no Rust code change is needed when adding new `goal` subcommands. |
+| `tentacle.py` | Multi-agent orchestration (create → todo → bundle → swarm → complete) + orchestrator goal loop (`goal init/validate/status/dispatch/link/eval/resume/criteria/gate/budget/next-iter/verify-loop/context`). `goal.json` keeps both the legacy flat `tentacles` list and a structured per-iteration `iterations` map so status/history queries can answer which tentacles belonged to each iteration without breaking older readers. Goal writes are serialized with a `goal.json.lock` sidecar (`O_CREAT | O_EXCL`, 30 s timeout, PID-aware stale-lock cleanup), goal text uses a 3000-char warning / 5000-char hard limit with `goal validate` plus init-time enforcement, and `goal dispatch` reads tentacle `todo_deps` metadata to build a concurrency-limited ready/deferred plan. `goal eval --decision continue|complete` now blocks until every current-iteration tentacle has either a terminal handoff or a completed state. `goal context` renders a compact continuation-context block (objective, iteration, budget, progress, remaining criteria, prior handoff summaries) suitable for injection into the next agent wave; `--write` persists it to `.octogent/goal-context.md`, and `goal eval --decision continue` / `goal resume` both auto-write the artifact. `sk tentacle goal …` routes here via Rust pass-through — no Rust code change is needed when adding new `goal` subcommands. |
 | `embed.py` | Optional semantic search via embedding APIs (OpenAI, Fireworks, etc.) with TF-IDF fallback |
 | `claude-adapter.py` | Parses Claude Code JSONL sessions into the common DB format |
 | `sync-knowledge.py` | Merges `knowledge.db` files across environments (Windows ↔ WSL); MAX confidence semantics |
@@ -213,6 +213,32 @@ tentacle.py handoff <name> "<summary>" --status DONE --changed-file <path> [--ch
 `tentacle.py marker-cleanup` (dry-run by default, `--apply` to act) inspects and removes stale
 entries from the dispatched-subagent marker without completing a tentacle. Only entries whose
 per-entry timestamp exceeds the declared TTL are eligible; live entries are never touched.
+
+### Bundle artifacts
+
+Each bundle directory contains a `manifest.json` listing all artifacts. The `goal_context`
+artifact is **optional** — it is only present when the tentacle is linked to a goal:
+
+| Artifact key | File | When present |
+|---|---|---|
+| `briefing` | `briefing.md` | Always (placeholder when empty) |
+| `instructions` | `instructions.md` | Always |
+| `session_metadata` | `session-metadata.md` | Always |
+| `recall_pack` | `recall-pack.json` | Always (empty when no matches) |
+| `goal_context` | `goal-context.md` | Only when tentacle is linked to a goal |
+
+The `goal_context` artifact is the output of `_goal_render_continuation_context`: a compact
+markdown block with objective, iteration counter, budget limits, criteria progress, remaining
+criteria IDs + descriptions, and the last N prior handoff summaries. Sub-agents must read
+`goal-context.md` (when `manifest.json` lists it as `populated: true`) to understand the
+overarching goal before making changes.
+
+**Python-only implementation** — `_goal_render_continuation_context`, `_goal_write_context_artifact`,
+and `_cmd_goal_context` live entirely in `tentacle.py` (Python). The Rust `sk` binary routes
+`sk tentacle goal context …` to `tentacle.py` via its standard pass-through mechanism — no
+Rust changes are required when adding or modifying `goal context` behavior. The bundle
+injection path (`_build_runtime_bundle`) similarly calls the Python renderer directly; the
+Rust binary never constructs the `goal-context.md` content itself.
 
 > Full tentacle workflow reference: **[docs/USAGE.md](USAGE.md)**
 
