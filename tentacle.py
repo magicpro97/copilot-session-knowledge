@@ -4085,7 +4085,7 @@ def _cmd_goal_coverage(args, tentacles: Path) -> None:
             print(f"  [{entry['id']}] {entry['description'][:60]}")
 
     if orphan_ids:
-        print(f"\nOrphan bridge IDs (in tentacle meta but not in goal.json):")
+        print("\nOrphan bridge IDs (in tentacle meta but not in goal.json):")
         for oid in orphan_ids:
             tentacle_list = ", ".join(coverage.get(oid, []))
             print(f"  {oid}  (from: {tentacle_list})")
