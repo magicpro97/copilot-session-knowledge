@@ -116,6 +116,7 @@ GOAL_STATUS_COMPLETED = "completed"
 GOAL_STATUS_ABANDONED = "abandoned"
 GOAL_STATUS_NEEDS_HUMAN = "needs-human"
 GOAL_STATUS_AWAITING_GATE = "awaiting-gate"
+GOAL_STATUS_BUDGET_LIMITED = "budget_limited"
 GOAL_EVAL_DECISIONS: frozenset[str] = frozenset({"continue", "pause", "complete", "abandon"})
 _GOAL_TEXT_SOFT_LIMIT = 3000
 _GOAL_TEXT_HARD_LIMIT = 5000
@@ -2735,6 +2736,18 @@ def _cmd_goal_status(args, tentacles: Path) -> None:
             print(f"      Reason: {blocking_reason}")
         print(f"      Resolve with: goal gate approve {blocking_gate_id} [--reason <text>]")
 
+    if state.get("status") == GOAL_STATUS_BUDGET_LIMITED:
+        budget_limited_reason = state.get("budget_limited_reason", "budget exceeded")
+        budget_limited_at = (state.get("budget_limited_at") or "")[:19]
+        print(f"\n   🚫 Budget limit reached: {budget_limited_reason}")
+        if budget_limited_at:
+            print(f"      Stopped at: {budget_limited_at}")
+        print(
+            "      To continue: adjust limits with `goal budget`"
+            " (e.g. --max-iterations N, --max-tentacles N, or --timeout MINUTES)"
+            " then `goal resume`."
+        )
+
     # Gates summary
     gates = state.get("gates") or []
     if gates:
@@ -2841,6 +2854,14 @@ def _cmd_goal_dispatch(args, tentacles: Path) -> None:
         sys.exit(1)
 
     status = state.get("status", GOAL_STATUS_ACTIVE)
+    if status == GOAL_STATUS_BUDGET_LIMITED:
+        print(
+            f"ERROR: Goal is already {status}. Adjust limits first with"
+            " `goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]`,"
+            " then run `goal resume`.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if status in {
         GOAL_STATUS_COMPLETED,
         GOAL_STATUS_ABANDONED,
@@ -2942,6 +2963,22 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
 
         current_iter = _goal_current_iteration(state)
         current_status = state.get("status", GOAL_STATUS_ACTIVE)
+        if current_status == GOAL_STATUS_BUDGET_LIMITED:
+            if decision == "continue":
+                print(
+                    f"ERROR: Goal is already {current_status}. Adjust limits first with"
+                    " `goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]`,"
+                    " then run `goal resume`.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"ERROR: Goal is already {current_status}."
+                    f" Run `goal resume` first, then re-run `goal eval --decision {decision}`."
+                    " No budget adjustment is required to terminate or pause the goal.",
+                    file=sys.stderr,
+                )
+            sys.exit(1)
         if current_status in {
             GOAL_STATUS_COMPLETED,
             GOAL_STATUS_ABANDONED,
@@ -3044,9 +3081,43 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
         if decision == "continue":
             bs = _goal_budget_status(state)
             if bs["over_budget"]:
-                print("⚠️  WARNING: Goal is over budget.")
+                # Build a human-readable reason explaining which limit was breached.
+                reason_parts: list[str] = []
                 if bs["over_iterations"]:
-                    print(f"   Iteration {current_iter} exceeds max_iterations={bs['max_iterations']}.")
+                    reason_parts.append(f"iteration {current_iter} exceeds max_iterations={bs['max_iterations']}")
+                if bs["over_tentacles"]:
+                    reason_parts.append(
+                        f"tentacle count {bs['tentacle_count']} exceeds max_tentacles={bs['max_tentacles']}"
+                    )
+                if bs["over_timeout"]:
+                    reason_parts.append(
+                        f"elapsed {bs['elapsed_minutes']}m exceeds timeout_minutes={bs['timeout_minutes']}"
+                    )
+                budget_limited_reason = "; ".join(reason_parts) or "budget exceeded"
+
+                eval_entry_budget: dict = {
+                    "iteration": current_iter,
+                    "decision": decision,
+                    "notes": notes,
+                    "evaluated_at": datetime.now(timezone.utc).isoformat(),
+                    "blocked_by_budget": True,
+                    "budget_limited_reason": budget_limited_reason,
+                }
+                history_budget: list = state.setdefault("eval_history", [])
+                history_budget.append(eval_entry_budget)
+                state["status"] = GOAL_STATUS_BUDGET_LIMITED
+                state["budget_limited_reason"] = budget_limited_reason
+                state["budget_limited_at"] = datetime.now(timezone.utc).isoformat()
+                state["updated_at"] = datetime.now(timezone.utc).isoformat()
+                _goal_write(tentacles, state)
+                print(f"🚫 Goal budget exceeded — status set to '{GOAL_STATUS_BUDGET_LIMITED}'.")
+                print(f"   Reason: {budget_limited_reason}")
+                print(
+                    "   To continue past budget, first adjust limits with `goal budget`"
+                    " (e.g. --max-iterations N, --max-tentacles N, or --timeout MINUTES)"
+                    " then resume with `goal resume`."
+                )
+                return
             elif bs["max_iterations"] is not None and current_iter >= bs["max_iterations"]:
                 print(
                     f"⚠️  NOTE: This is the last budgeted iteration "
@@ -3162,6 +3233,9 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
         if prev_status == GOAL_STATUS_AWAITING_GATE:
             state.pop("awaiting_gate_id", None)
             state.pop("awaiting_gate_reason", None)
+        if prev_status == GOAL_STATUS_BUDGET_LIMITED:
+            state.pop("budget_limited_reason", None)
+            state.pop("budget_limited_at", None)
 
         if from_iteration is not None or reset_failed:
             for name in tentacle_names:
@@ -3481,9 +3555,12 @@ def _cmd_goal_gate(args, tentacles: Path) -> None:
             gate["reason"] = reason
             blocking = _goal_gates_blocking(state)
             primary = blocking[0]
-            if state.get("status") == GOAL_STATUS_PAUSED:
+            if current_status == GOAL_STATUS_PAUSED:
                 state.pop("awaiting_gate_id", None)
                 state.pop("awaiting_gate_reason", None)
+            elif current_status == GOAL_STATUS_BUDGET_LIMITED:
+                # budget_limited takes precedence: do not overwrite status or inject awaiting-gate metadata.
+                pass
             else:
                 state["status"] = GOAL_STATUS_AWAITING_GATE
                 state["awaiting_gate_id"] = primary.get("id", "?")
@@ -3494,8 +3571,14 @@ def _cmd_goal_gate(args, tentacles: Path) -> None:
             _goal_write(tentacles, state)
             print(f"❌ Gate [{gate_id}] REJECTED — goal blocked")
             print(f"   Reason: {reason}")
-            if state.get("status") == GOAL_STATUS_PAUSED:
+            if current_status == GOAL_STATUS_PAUSED:
                 print("   Goal remains paused. Re-run `goal eval` after resume to surface the blocking gate.")
+            elif current_status == GOAL_STATUS_BUDGET_LIMITED:
+                print(
+                    f"   Goal remains '{GOAL_STATUS_BUDGET_LIMITED}' — adjust limits if needed with `goal budget`"
+                    " (e.g. --max-iterations N, --max-tentacles N, or --timeout MINUTES)"
+                    " then run `goal resume` before re-evaluating."
+                )
             else:
                 print(f"   Goal status set to '{GOAL_STATUS_AWAITING_GATE}'.")
                 print(f"   Resolve with: goal gate approve {primary.get('id', '?')} [--reason <text>]")
@@ -3558,7 +3641,14 @@ def _cmd_goal_gate(args, tentacles: Path) -> None:
             sys.exit(1)
 
         if _goal_gates_all_passed(state):
-            print("   All gates passed — goal is ready for `goal eval --decision complete`.")
+            if state.get("status") == GOAL_STATUS_BUDGET_LIMITED:
+                print("   All gates passed — but goal is budget_limited: eval decisions are blocked.")
+                print(
+                    "   Adjust limits if needed: `goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]`"
+                )
+                print("   Then re-activate: `goal resume`")
+            else:
+                print("   All gates passed — goal is ready for `goal eval --decision complete`.")
 
 
 def _cmd_goal_budget(args, tentacles: Path) -> None:
@@ -3627,7 +3717,7 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
     print(f"🔄 Goal loop: '{state.get('title', '?')}' — iteration {current_iter}")
     if bs["max_iterations"] is not None:
         print(f"   Budget: {current_iter}/{bs['max_iterations']} iterations")
-    if bs["over_budget"]:
+    if bs["over_budget"] and state.get("status") != GOAL_STATUS_BUDGET_LIMITED:
         print("⚠️  WARNING: Goal is over budget.")
 
     # Categorise tentacles by iteration and status.
@@ -3681,7 +3771,12 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
 
     # Recommendation.
     print()
-    if bs["max_iterations"] is not None and current_iter >= bs["max_iterations"]:
+    goal_status = state.get("status")
+    if goal_status == GOAL_STATUS_BUDGET_LIMITED:
+        print("⛔ Goal is budget_limited — all eval decisions are blocked.")
+        print("   Adjust limits if needed: `goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]`")
+        print("   Then re-activate: `goal resume`")
+    elif bs["max_iterations"] is not None and current_iter >= bs["max_iterations"]:
         print(f"   This is the final budgeted iteration ({current_iter}/{bs['max_iterations']}).")
         print("   Recommendation: `goal eval --decision complete` or `--decision abandon`")
     elif blocked_names:
@@ -3852,7 +3947,11 @@ def _escalate_goal_to_needs_human(state: dict, tentacles: Path, failing_ids: lis
 
     def _apply(locked_state: dict) -> None:
         nonlocal escalated
-        if locked_state.get("status") in {GOAL_STATUS_COMPLETED, GOAL_STATUS_ABANDONED}:
+        if locked_state.get("status") in {
+            GOAL_STATUS_COMPLETED,
+            GOAL_STATUS_ABANDONED,
+            GOAL_STATUS_BUDGET_LIMITED,
+        }:
             return
         locked_state["status"] = GOAL_STATUS_NEEDS_HUMAN
         locked_state["needs_human_at"] = needs_human_at
@@ -3889,6 +3988,14 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
             sys.exit(1)
 
         current_status = state.get("status", GOAL_STATUS_ACTIVE)
+        if current_status == GOAL_STATUS_BUDGET_LIMITED:
+            print(
+                f"ERROR: Goal is already {current_status}. Adjust limits first with"
+                " `goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]`,"
+                " then run `goal resume`.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         if current_status in {
             GOAL_STATUS_COMPLETED,
             GOAL_STATUS_ABANDONED,
