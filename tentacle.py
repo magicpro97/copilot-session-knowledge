@@ -21,11 +21,18 @@ Usage:
     python3 ~/.copilot/tools/tentacle.py next-step <name> [--briefing] [--no-checkpoint] [--all] [--format text|json]
     python3 ~/.copilot/tools/tentacle.py complete <name> [--no-learn]
     python3 ~/.copilot/tools/tentacle.py delete <name>
-    python3 ~/.copilot/tools/tentacle.py goal init --title <title> [--desc <desc>] [--force]
+    python3 ~/.copilot/tools/tentacle.py goal init --title <title> [--desc <desc>] [--force] [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]
     python3 ~/.copilot/tools/tentacle.py goal status [--format text|json]
     python3 ~/.copilot/tools/tentacle.py goal link <tentacle-name>
     python3 ~/.copilot/tools/tentacle.py goal eval [--decision continue|pause|complete|abandon] [--notes <notes>]
     python3 ~/.copilot/tools/tentacle.py goal resume
+    python3 ~/.copilot/tools/tentacle.py goal criteria add --desc <desc> [--id <id>] [--verify-cmd <cmd>]
+    python3 ~/.copilot/tools/tentacle.py goal criteria check [--id <id>] [--timeout <secs>]
+    python3 ~/.copilot/tools/tentacle.py goal criteria list
+    python3 ~/.copilot/tools/tentacle.py goal gate pass <gate-id> [--reason <text>]
+    python3 ~/.copilot/tools/tentacle.py goal gate fail <gate-id> [--reason <text>]
+    python3 ~/.copilot/tools/tentacle.py goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINUTES] [--format text|json]
+    python3 ~/.copilot/tools/tentacle.py goal next-iter
 
 Environment:
     TENTACLE_SESSION_DIR — Override session directory (default: auto-detect)
@@ -1736,6 +1743,131 @@ def _goal_update(tentacles_dir: Path, **fields) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Goal loop helper functions
+# ---------------------------------------------------------------------------
+
+
+def _positive_int_arg(value: str) -> int:
+    """Argparse type that accepts only positive integers."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _validate_goal_budget_value(value: int | None, flag_name: str) -> int | None:
+    """Reject zero/negative budget values even when commands are called directly in-process."""
+    if value is None:
+        return None
+    if value <= 0:
+        print(f"ERROR: {flag_name} must be a positive integer.", file=sys.stderr)
+        sys.exit(1)
+    return value
+
+
+def _goal_budget_status(state: dict) -> dict:
+    """Return a dict summarising current budget consumption vs limits."""
+    budget = state.get("budget") or {}
+    current_iter = state.get("iteration", 1)
+    max_iters = budget.get("max_iterations")
+    max_tentacles = budget.get("max_tentacles")
+    timeout_minutes = budget.get("timeout_minutes")
+    tentacle_count = len(state.get("tentacles", []))
+
+    over_iterations = max_iters is not None and current_iter > max_iters
+    over_tentacles = max_tentacles is not None and tentacle_count > max_tentacles
+
+    over_timeout = False
+    elapsed_minutes: float | None = None
+    created_at = state.get("created_at")
+    if timeout_minutes is not None and created_at:
+        try:
+            created_dt = datetime.fromisoformat(created_at)
+            if created_dt.tzinfo is None:
+                created_dt = created_dt.replace(tzinfo=timezone.utc)
+            elapsed_minutes = round((datetime.now(timezone.utc) - created_dt).total_seconds() / 60, 1)
+            over_timeout = elapsed_minutes > timeout_minutes
+        except Exception:
+            pass
+
+    return {
+        "max_iterations": max_iters,
+        "current_iteration": current_iter,
+        "over_iterations": over_iterations,
+        "max_tentacles": max_tentacles,
+        "tentacle_count": tentacle_count,
+        "over_tentacles": over_tentacles,
+        "timeout_minutes": timeout_minutes,
+        "elapsed_minutes": elapsed_minutes,
+        "over_timeout": over_timeout,
+        "over_budget": over_iterations or over_tentacles or over_timeout,
+        "budget_status": budget.get("status", "unknown"),
+    }
+
+
+def _goal_budget_text_lines(bs: dict, *, show_unset: bool) -> list[str]:
+    """Render human-readable budget lines for goal status/budget commands."""
+    lines: list[str] = []
+
+    if bs["max_iterations"] is not None:
+        remaining = max(0, bs["max_iterations"] - bs["current_iteration"])
+        over_str = " ⚠️  OVER BUDGET" if bs["over_iterations"] else f" ({remaining} remaining)"
+        lines.append(f"Iterations: {bs['current_iteration']}/{bs['max_iterations']}{over_str}")
+    elif show_unset:
+        lines.append(f"Iterations: {bs['current_iteration']} (no limit set)")
+
+    if bs["max_tentacles"] is not None:
+        over_str = " ⚠️  OVER BUDGET" if bs["over_tentacles"] else ""
+        lines.append(f"Tentacles:  {bs['tentacle_count']}/{bs['max_tentacles']}{over_str}")
+    elif show_unset:
+        lines.append(f"Tentacles:  {bs['tentacle_count']} (no limit set)")
+
+    if bs["timeout_minutes"] is not None:
+        if bs["elapsed_minutes"] is not None:
+            over_str = " ⚠️  OVER TIME" if bs["over_timeout"] else ""
+            lines.append(f"Elapsed:    {bs['elapsed_minutes']}m / {bs['timeout_minutes']}m{over_str}")
+        else:
+            lines.append(f"Timeout:    {bs['timeout_minutes']}m")
+
+    return lines
+
+
+def _goal_gates_all_passed(state: dict) -> bool:
+    """Return True iff all gates in state are marked 'passed' (or no gates exist)."""
+    gates = state.get("gates") or []
+    if not gates:
+        return True
+    return all(g.get("status") == "passed" for g in gates)
+
+
+def _goal_criteria_run_one(criterion: dict, cwd: str, timeout: int = 60) -> tuple[int, str]:
+    """Run the verification_command for one criterion. Returns (exit_code, output_snippet)."""
+    cmd = criterion.get("verification_command", "")
+    if not cmd:
+        return 0, "(no verification command)"
+    try:
+        proc = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=cwd,
+            timeout=timeout,
+        )
+        output = (proc.stdout + proc.stderr)[:500]
+        return proc.returncode, output
+    except subprocess.TimeoutExpired:
+        return -1, f"TIMEOUT after {timeout}s"
+    except Exception as exc:
+        return -1, f"ERROR: {exc}"
+
+
+# ---------------------------------------------------------------------------
 # Goal CLI sub-command implementations
 # ---------------------------------------------------------------------------
 
@@ -1752,6 +1884,19 @@ def _cmd_goal_init(args, tentacles: Path) -> None:
     title = getattr(args, "title", None) or "Unnamed Goal"
     desc = getattr(args, "desc", None) or ""
 
+    # Budget fields from CLI (optional)
+    max_iterations = _validate_goal_budget_value(getattr(args, "max_iterations", None), "--max-iterations")
+    max_tentacles_budget = _validate_goal_budget_value(getattr(args, "max_tentacles", None), "--max-tentacles")
+    timeout_minutes = _validate_goal_budget_value(getattr(args, "timeout", None), "--timeout")
+
+    budget: dict = {"status": "active"}
+    if max_iterations is not None:
+        budget["max_iterations"] = max_iterations
+    if max_tentacles_budget is not None:
+        budget["max_tentacles"] = max_tentacles_budget
+    if timeout_minutes is not None:
+        budget["timeout_minutes"] = timeout_minutes
+
     state = {
         "goal_id": goal_id,
         "title": title,
@@ -1762,11 +1907,16 @@ def _cmd_goal_init(args, tentacles: Path) -> None:
         "iteration": 1,
         "tentacles": [],
         "eval_history": [],
+        "success_criteria": [],
+        "gates": [],
+        "budget": budget,
     }
     _goal_write(tentacles, state)
     print(f"✅ Goal initialized: '{title}'")
     print(f"   Goal ID:  {goal_id}")
     print(f"   State:    {goal_path}")
+    if budget.get("max_iterations") is not None:
+        print(f"   Budget:   {budget['max_iterations']} iterations")
     print("   Tip: link tentacles with `tentacle.py goal link <tentacle-name>`")
 
 
@@ -1789,6 +1939,14 @@ def _cmd_goal_status(args, tentacles: Path) -> None:
     if state.get("description"):
         print(f"   Desc:      {state['description']}")
 
+    # Budget summary
+    bs = _goal_budget_status(state)
+    budget_lines = _goal_budget_text_lines(bs, show_unset=False)
+    if budget_lines:
+        print("   Budget:")
+        for line in budget_lines:
+            print(f"     {line}")
+
     tentacle_names = state.get("tentacles", [])
     if tentacle_names:
         print(f"\n   Linked tentacles ({len(tentacle_names)}):")
@@ -1796,13 +1954,37 @@ def _cmd_goal_status(args, tentacles: Path) -> None:
             t_dir = tentacles / name
             if t_dir.exists():
                 t_meta_path = t_dir / "meta.json"
-                t_meta = json.loads(t_meta_path.read_text(encoding="utf-8")) if t_meta_path.exists() else {}
+                try:
+                    t_meta = json.loads(t_meta_path.read_text(encoding="utf-8")) if t_meta_path.exists() else {}
+                except Exception:
+                    t_meta = {}
                 t_status = t_meta.get("status", "unknown")
-                print(f"     - {name} [{t_status}]")
+                t_iter = t_meta.get("goal_iteration") or t_meta.get("iteration", "?")
+                print(f"     - {name} [{t_status}] iter={t_iter}")
             else:
                 print(f"     - {name} [missing]")
     else:
         print("\n   No tentacles linked yet. Use `tentacle.py goal link <name>`.")
+
+    # Gates summary
+    gates = state.get("gates") or []
+    if gates:
+        passed = sum(1 for g in gates if g.get("status") == "passed")
+        gate_icon = "✅" if passed == len(gates) else "⛔"
+        print(f"\n   Gates: {gate_icon} {passed}/{len(gates)} passed")
+        for g in gates:
+            g_icon = "✅" if g.get("status") == "passed" else ("❌" if g.get("status") == "failed" else "⬜")
+            print(f"     {g_icon} [{g.get('id', '?')}] {g.get('description', '')[:60]}")
+
+    # Success criteria summary
+    criteria = state.get("success_criteria") or []
+    if criteria:
+        verified = sum(1 for c in criteria if c.get("status") == "verified")
+        crit_icon = "✅" if verified == len(criteria) else "⬜"
+        print(f"\n   Criteria: {crit_icon} {verified}/{len(criteria)} verified")
+        for c in criteria:
+            c_icon = "✅" if c.get("status") == "verified" else ("❌" if c.get("status") == "failed" else "⬜")
+            print(f"     {c_icon} [{c.get('id', '?')}] {c.get('description', '')[:60]}")
 
     history = state.get("eval_history", [])
     if history:
@@ -1831,18 +2013,22 @@ def _cmd_goal_link(args, tentacles: Path) -> None:
     goal_id = state.get("goal_id", "")
     goal_name = state.get("title", "")
     iteration = state.get("iteration", 1)
-    state["updated_at"] = datetime.now(timezone.utc).isoformat()
-    _goal_write(tentacles, state)
 
     # Stamp goal metadata into tentacle meta.json.
     meta_path = t_dir / "meta.json"
-    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    except Exception:
+        meta = {}
     meta["goal_id"] = goal_id
     if goal_name:
         meta["goal_name"] = goal_name
     meta["iteration"] = iteration
     meta["goal_iteration"] = iteration
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _goal_write(tentacles, state)
 
     verb = "Refreshed goal linkage for" if already_linked else "Linked"
     print(f"🔗 {verb} '{tentacle_name}' to goal '{state.get('title', '?')}'")
@@ -1871,12 +2057,53 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
         )
         sys.exit(1)
 
-    eval_entry = {
+    # Gate check: warn (but don't block) when completing without all gates passed.
+    if decision == "complete":
+        if not _goal_gates_all_passed(state):
+            pending_gates = [g for g in (state.get("gates") or []) if g.get("status") != "passed"]
+            print(f"⚠️  WARNING: {len(pending_gates)} gate(s) not yet passed:")
+            for g in pending_gates:
+                print(f"   [{g.get('id', '?')}] {g.get('description', '')[:70]} — {g.get('status', 'pending')}")
+            print("   Use `goal gate pass <id>` to mark gates, or proceed with --decision complete anyway.")
+
+        # Criteria check: warn if any unverified criteria remain.
+        criteria = state.get("success_criteria") or []
+        unverified = [c for c in criteria if c.get("status") != "verified"]
+        if unverified:
+            print(f"⚠️  WARNING: {len(unverified)} success criterion/criteria not yet verified:")
+            for c in unverified:
+                print(f"   [{c.get('id', '?')}] {c.get('description', '')[:70]}")
+            print("   Use `goal criteria check` to verify, or proceed anyway.")
+
+    # Budget check: warn on continue if at or over iteration limit.
+    if decision == "continue":
+        bs = _goal_budget_status(state)
+        if bs["over_budget"]:
+            print("⚠️  WARNING: Goal is over budget.")
+            if bs["over_iterations"]:
+                print(f"   Iteration {current_iter} exceeds max_iterations={bs['max_iterations']}.")
+        elif bs["max_iterations"] is not None and current_iter >= bs["max_iterations"]:
+            print(
+                f"⚠️  NOTE: This is the last budgeted iteration "
+                f"({current_iter}/{bs['max_iterations']}). Consider `--decision complete`."
+            )
+
+    eval_entry: dict = {
         "iteration": current_iter,
         "decision": decision,
         "notes": notes,
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
     }
+    # Snapshot gate/criteria status at eval time for auditability.
+    gates = state.get("gates") or []
+    criteria = state.get("success_criteria") or []
+    if gates:
+        eval_entry["gates_passed"] = sum(1 for g in gates if g.get("status") == "passed")
+        eval_entry["gates_total"] = len(gates)
+    if criteria:
+        eval_entry["criteria_verified"] = sum(1 for c in criteria if c.get("status") == "verified")
+        eval_entry["criteria_total"] = len(criteria)
+
     history: list = state.setdefault("eval_history", [])
     history.append(eval_entry)
 
@@ -1921,8 +2148,272 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
     print(f"   Linked tentacles: {len(state.get('tentacles', []))}")
 
 
+def _cmd_goal_criteria(args, tentacles: Path) -> None:
+    """Manage success criteria: add / check / list."""
+    state = _goal_load(tentacles)
+    if not state:
+        print("ERROR: No goal initialized. Run `tentacle.py goal init` first.", file=sys.stderr)
+        sys.exit(1)
+
+    action = args.criteria_action
+    criteria: list = state.setdefault("success_criteria", [])
+
+    if action == "list":
+        if not criteria:
+            print("ℹ️  No success criteria defined. Use `goal criteria add --desc <desc>`.")
+            return
+        print(f"Success criteria ({len(criteria)}):")
+        for c in criteria:
+            if c.get("status") == "verified":
+                icon = "✅"
+            elif c.get("status") == "failed":
+                icon = "❌"
+            else:
+                icon = "⬜"
+            print(f"  {icon} [{c.get('id', '?')}] {c.get('description', '')[:80]}")
+            if c.get("verification_command"):
+                print(f"        cmd: {c['verification_command'][:70]}")
+        return
+
+    if action == "add":
+        sc_id = getattr(args, "id", None) or f"sc-{len(criteria) + 1}"
+        desc = args.desc
+        verify_cmd = getattr(args, "verify_cmd", None) or ""
+        if any(c.get("id") == sc_id for c in criteria):
+            print(f"ERROR: Criterion id '{sc_id}' already exists. Use --id to specify a unique id.", file=sys.stderr)
+            sys.exit(1)
+        criterion: dict = {
+            "id": sc_id,
+            "description": desc,
+            "verification_command": verify_cmd,
+            "status": "unverified",
+        }
+        criteria.append(criterion)
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _goal_write(tentacles, state)
+        print(f"✅ Added criterion [{sc_id}]: {desc[:70]}")
+        if verify_cmd:
+            print(f"   verify cmd: {verify_cmd}")
+        return
+
+    if action == "check":
+        check_id = getattr(args, "id", None)
+        to_check = [c for c in criteria if not check_id or c.get("id") == check_id]
+        if not to_check:
+            msg = f"No criterion found with id='{check_id}'." if check_id else "No criteria to check."
+            print(f"ERROR: {msg}", file=sys.stderr)
+            sys.exit(1)
+
+        git_root = find_git_root()
+        cwd = str(git_root) if git_root else str(Path.cwd())
+        timeout = getattr(args, "timeout", 60) or 60
+
+        any_failed = False
+        for c in to_check:
+            cmd_str = c.get("verification_command", "")
+            if not cmd_str:
+                print(f"  ⬜ [{c.get('id', '?')}] (no verification command) — skipped")
+                continue
+            print(f"  Running [{c.get('id', '?')}]: {cmd_str[:60]}...")
+            exit_code, output = _goal_criteria_run_one(c, cwd, timeout)
+            if exit_code == 0:
+                c["status"] = "verified"
+                c["verified_at"] = datetime.now(timezone.utc).isoformat()
+                print(f"  ✅ [{c.get('id', '?')}] PASSED")
+            else:
+                c["status"] = "failed"
+                c["failed_at"] = datetime.now(timezone.utc).isoformat()
+                print(f"  ❌ [{c.get('id', '?')}] FAILED (exit={exit_code})")
+                for line in output.strip().splitlines()[:5]:
+                    print(f"     {line}")
+                any_failed = True
+
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _goal_write(tentacles, state)
+
+        all_verified = all(c.get("status") == "verified" for c in criteria)
+        if all_verified:
+            print("\n✅ All success criteria verified.")
+        if any_failed:
+            sys.exit(1)
+        return
+
+    print(f"ERROR: Unknown criteria action '{action}'", file=sys.stderr)
+    sys.exit(1)
+
+
+def _cmd_goal_gate(args, tentacles: Path) -> None:
+    """Manage gates: pass / fail."""
+    state = _goal_load(tentacles)
+    if not state:
+        print("ERROR: No goal initialized. Run `tentacle.py goal init` first.", file=sys.stderr)
+        sys.exit(1)
+
+    action = args.gate_action
+    gate_id = args.gate_id
+    gates: list = state.setdefault("gates", [])
+
+    gate = next((g for g in gates if g.get("id") == gate_id), None)
+    if gate is None:
+        gate = {"id": gate_id, "description": "", "status": "pending"}
+        gates.append(gate)
+
+    reason = getattr(args, "reason", "") or ""
+
+    if action == "pass":
+        gate["status"] = "passed"
+        gate["passed_at"] = datetime.now(timezone.utc).isoformat()
+        if reason:
+            gate["reason"] = reason
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _goal_write(tentacles, state)
+        print(f"✅ Gate [{gate_id}] marked PASSED")
+        if reason:
+            print(f"   Reason: {reason}")
+    elif action == "fail":
+        gate["status"] = "failed"
+        gate["failed_at"] = datetime.now(timezone.utc).isoformat()
+        if reason:
+            gate["reason"] = reason
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _goal_write(tentacles, state)
+        print(f"❌ Gate [{gate_id}] marked FAILED")
+        if reason:
+            print(f"   Reason: {reason}")
+    else:
+        print(f"ERROR: Unknown gate action '{action}'", file=sys.stderr)
+        sys.exit(1)
+
+    if _goal_gates_all_passed(state):
+        print("   All gates passed — goal is ready for `goal eval --decision complete`.")
+
+
+def _cmd_goal_budget(args, tentacles: Path) -> None:
+    """Show or set budget for the current goal."""
+    state = _goal_load(tentacles)
+    if not state:
+        print("ℹ️  No active goal found. Run `tentacle.py goal init` to create one.")
+        return
+
+    # If --set-max-iterations etc. provided, update budget fields.
+    updated = False
+    budget: dict = state.setdefault("budget", {"status": "active"})
+    max_iterations = _validate_goal_budget_value(getattr(args, "max_iterations", None), "--max-iterations")
+    max_tentacles = _validate_goal_budget_value(getattr(args, "max_tentacles", None), "--max-tentacles")
+    timeout_minutes = _validate_goal_budget_value(getattr(args, "timeout", None), "--timeout")
+    if max_iterations is not None:
+        budget["max_iterations"] = max_iterations
+        updated = True
+    if max_tentacles is not None:
+        budget["max_tentacles"] = max_tentacles
+        updated = True
+    if timeout_minutes is not None:
+        budget["timeout_minutes"] = timeout_minutes
+        updated = True
+    if updated:
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _goal_write(tentacles, state)
+        print("✅ Budget updated.")
+
+    fmt = getattr(args, "format", "text")
+    bs = _goal_budget_status(state)
+
+    if fmt == "json":
+        print(json.dumps(bs, indent=2))
+        return
+
+    print(f"📊 Budget for '{state.get('title', '?')}':")
+    for line in _goal_budget_text_lines(bs, show_unset=True):
+        print(f"   {line}")
+
+    status_str = "⚠️  Over budget" if bs["over_budget"] else "✅ Within budget"
+    print(f"   Status:     {status_str}")
+
+
+def _cmd_goal_next_iter(args, tentacles: Path) -> None:
+    """Summarize iteration state and advise on the next step in the goal loop."""
+    state = _goal_load(tentacles)
+    if not state:
+        print("ERROR: No goal initialized. Run `tentacle.py goal init` first.", file=sys.stderr)
+        sys.exit(1)
+
+    bs = _goal_budget_status(state)
+    current_iter = state.get("iteration", 1)
+    tentacle_names = state.get("tentacles", [])
+
+    print(f"🔄 Goal loop: '{state.get('title', '?')}' — iteration {current_iter}")
+    if bs["max_iterations"] is not None:
+        print(f"   Budget: {current_iter}/{bs['max_iterations']} iterations")
+    if bs["over_budget"]:
+        print("⚠️  WARNING: Goal is over budget.")
+
+    # Categorise tentacles by iteration and status.
+    done_names: list[str] = []
+    blocked_names: list[str] = []
+    in_progress_names: list[str] = []
+
+    for name in tentacle_names:
+        t_dir = tentacles / name
+        meta_path = t_dir / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            t_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        t_iter = t_meta.get("goal_iteration") or t_meta.get("iteration") or 1
+        if t_iter != current_iter:
+            continue
+        terminal = t_meta.get("terminal_status")
+        t_status = t_meta.get("status", "idle")
+        if terminal in {"BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"}:
+            blocked_names.append(name)
+        elif terminal == "DONE" or t_status == "completed":
+            done_names.append(name)
+        else:
+            in_progress_names.append(name)
+
+    print(f"\nIteration {current_iter} tentacles:")
+    for n in done_names:
+        print(f"  ✅ {n}")
+    for n in blocked_names:
+        print(f"  ⚠️  {n} (blocked/ambiguous)")
+    for n in in_progress_names:
+        print(f"  🔵 {n} (in progress / idle)")
+    if not (done_names or blocked_names or in_progress_names):
+        print("  (no tentacles assigned to this iteration)")
+
+    # Gate summary.
+    gates = state.get("gates") or []
+    pending_gates = [g for g in gates if g.get("status") != "passed"]
+    if pending_gates:
+        print(f"\n⛔ Pending gates ({len(pending_gates)}):")
+        for g in pending_gates:
+            print(f"  [{g.get('id', '?')}] {g.get('description', '')[:70]} — {g.get('status', 'pending')}")
+    elif gates:
+        print("\n✅ All gates passed.")
+
+    # Criteria summary.
+    criteria = state.get("success_criteria") or []
+    if criteria:
+        verified = sum(1 for c in criteria if c.get("status") == "verified")
+        print(f"\nSuccess criteria: {verified}/{len(criteria)} verified")
+
+    # Recommendation.
+    print()
+    if bs["max_iterations"] is not None and current_iter >= bs["max_iterations"]:
+        print(f"   This is the final budgeted iteration ({current_iter}/{bs['max_iterations']}).")
+        print("   Recommendation: `goal eval --decision complete` or `--decision abandon`")
+    elif blocked_names:
+        print("   Some tentacles are blocked. Resolve or create replacement tentacles.")
+        print(f"   Then `goal eval --decision continue` to advance to iteration {current_iter + 1}.")
+    else:
+        print(f"   When ready, `goal eval --decision continue` → iteration {current_iter + 1}.")
+        print("   Or `goal eval --decision complete` if success criteria are met.")
+
+
 def cmd_goal(args):
-    """Dispatch goal sub-commands: init / status / link / eval / resume."""
+    """Dispatch goal sub-commands: init / status / link / eval / resume / criteria / gate / budget / next-iter."""
     tentacles = get_tentacles_dir(args.session_dir)
     sub = args.goal_action
 
@@ -1936,6 +2427,14 @@ def cmd_goal(args):
         _cmd_goal_eval(args, tentacles)
     elif sub == "resume":
         _cmd_goal_resume(args, tentacles)
+    elif sub == "criteria":
+        _cmd_goal_criteria(args, tentacles)
+    elif sub == "gate":
+        _cmd_goal_gate(args, tentacles)
+    elif sub == "budget":
+        _cmd_goal_budget(args, tentacles)
+    elif sub == "next-iter":
+        _cmd_goal_next_iter(args, tentacles)
     else:
         print(f"ERROR: Unknown goal action '{sub}'", file=sys.stderr)
         sys.exit(1)
@@ -3474,7 +3973,10 @@ def main():
     p_verify.add_argument("--timeout", type=int, default=120, help="Command timeout in seconds (default: 120)")
 
     # goal subcommand
-    p_goal = sub.add_parser("goal", help="Orchestrator-level goal loop: init/status/link/eval/resume")
+    p_goal = sub.add_parser(
+        "goal",
+        help="Orchestrator-level goal loop: init/status/link/eval/resume/criteria/gate/budget/next-iter",
+    )
     p_goal_sub = p_goal.add_subparsers(dest="goal_action", required=True)
 
     # goal init
@@ -3482,6 +3984,27 @@ def main():
     p_goal_init.add_argument("--title", default="Unnamed Goal", help="Short title for this goal")
     p_goal_init.add_argument("--desc", default="", help="Optional description")
     p_goal_init.add_argument("--force", action="store_true", help="Overwrite existing goal.json")
+    p_goal_init.add_argument(
+        "--max-iterations",
+        dest="max_iterations",
+        type=_positive_int_arg,
+        default=None,
+        help="Budget: max loop iterations (positive integer)",
+    )
+    p_goal_init.add_argument(
+        "--max-tentacles",
+        dest="max_tentacles",
+        type=_positive_int_arg,
+        default=None,
+        help="Budget: max tentacle count (positive integer)",
+    )
+    p_goal_init.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=_positive_int_arg,
+        default=None,
+        help="Budget: timeout in minutes (positive integer)",
+    )
 
     # goal status
     p_goal_status = p_goal_sub.add_parser("status", help="Show current goal state and linked tentacles")
@@ -3503,6 +4026,66 @@ def main():
 
     # goal resume
     p_goal_sub.add_parser("resume", help="Resume a paused/abandoned goal (set status=active)")
+
+    # goal criteria
+    p_goal_criteria = p_goal_sub.add_parser("criteria", help="Manage success criteria: add / check / list")
+    p_criteria_sub = p_goal_criteria.add_subparsers(dest="criteria_action", required=True)
+    p_criteria_list = p_criteria_sub.add_parser("list", help="List all success criteria")
+    _ = p_criteria_list  # used for --help only
+    p_criteria_add = p_criteria_sub.add_parser("add", help="Add a success criterion")
+    p_criteria_add.add_argument("--desc", required=True, help="Description of this criterion")
+    p_criteria_add.add_argument("--id", default=None, dest="id", help="Optional unique ID (e.g. sc-1)")
+    p_criteria_add.add_argument(
+        "--verify-cmd", dest="verify_cmd", default="", help="Shell command to verify this criterion"
+    )
+    p_criteria_check = p_criteria_sub.add_parser("check", help="Run verification command(s) and update status")
+    p_criteria_check.add_argument(
+        "--id", default=None, dest="id", help="Check only the criterion with this ID (default: all)"
+    )
+    p_criteria_check.add_argument(
+        "--timeout", type=int, default=60, help="Per-command timeout in seconds (default: 60)"
+    )
+
+    # goal gate
+    p_goal_gate = p_goal_sub.add_parser("gate", help="Manage gates: pass / fail")
+    p_gate_sub = p_goal_gate.add_subparsers(dest="gate_action", required=True)
+    p_gate_pass = p_gate_sub.add_parser("pass", help="Mark a gate as passed")
+    p_gate_pass.add_argument("gate_id", help="Gate ID (e.g. G1)")
+    p_gate_pass.add_argument("--reason", default="", help="Optional reason/evidence text")
+    p_gate_fail = p_gate_sub.add_parser("fail", help="Mark a gate as failed")
+    p_gate_fail.add_argument("gate_id", help="Gate ID (e.g. G1)")
+    p_gate_fail.add_argument("--reason", default="", help="Optional reason text")
+
+    # goal budget
+    p_goal_budget = p_goal_sub.add_parser("budget", help="Show or update budget for the current goal")
+    p_goal_budget.add_argument(
+        "--max-iterations",
+        dest="max_iterations",
+        type=_positive_int_arg,
+        default=None,
+        help="Set max iterations (positive integer)",
+    )
+    p_goal_budget.add_argument(
+        "--max-tentacles",
+        dest="max_tentacles",
+        type=_positive_int_arg,
+        default=None,
+        help="Set max tentacle count (positive integer)",
+    )
+    p_goal_budget.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=_positive_int_arg,
+        default=None,
+        help="Set timeout in minutes (positive integer)",
+    )
+    p_goal_budget.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
+
+    # goal next-iter
+    p_goal_sub.add_parser(
+        "next-iter",
+        help="Summarise iteration state and advise on the next goal-loop step",
+    )
 
     args = parser.parse_args()
 

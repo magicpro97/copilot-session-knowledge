@@ -564,6 +564,83 @@ orchestrator then commits and pushes — sub-agents must never commit or push.
 
 ---
 
+## Orchestrator Goal Loop
+
+`tentacle.py goal` manages a long-running orchestrator goal across multiple tentacle waves.
+It stores state in `.octogent/goal.json`. The Rust `sk` binary passes `tentacle goal …`
+arguments directly to `tentacle.py` — no Rust change is needed as new subcommands are added.
+
+### Lifecycle commands
+
+```bash
+# Initialize a goal (once per project wave)
+sk tentacle goal init --title "Implement auth" [--desc "..."] [--force] \
+  [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]
+# fallback: python3 ~/.copilot/tools/tentacle.py goal init --title "Implement auth"
+
+# Show current goal state (linked tentacles, gates, budget, criteria)
+sk tentacle goal status [--format text|json]
+
+# Link a completed tentacle to the goal for tracking
+sk tentacle goal link <tentacle-name>
+
+# Evaluate after each Verify phase — advance iteration or change status
+sk tentacle goal eval [--decision continue|pause|complete|abandon] [--notes "..."]
+
+# Resume a paused or abandoned goal
+sk tentacle goal resume
+
+# Summarize iteration state and advise on the next step
+sk tentacle goal next-iter
+```
+
+### Success criteria
+
+```bash
+# Add a verifiable success criterion
+sk tentacle goal criteria add --desc "All 186 tests pass" --id sc-1 \
+  [--verify-cmd "python3 run_all_tests.py"]
+
+# Run verify commands for all criteria (or one by --id) and record pass/fail
+sk tentacle goal criteria check [--id sc-1] [--timeout 60]
+
+# List all criteria and their current status
+sk tentacle goal criteria list
+```
+
+### Gates
+
+```bash
+# Mark a named gate passed or failed (with optional evidence note)
+sk tentacle goal gate pass G1 [--reason "test_security.py: 12/12"]
+sk tentacle goal gate fail G1 [--reason "build error — see handoff"]
+```
+
+### Budget
+
+```bash
+# Show or update the iteration/tentacle/time budget
+sk tentacle goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINUTES] \
+  [--format text|json]
+```
+
+### Typical orchestrator cycle
+
+```
+goal init → (dispatch wave of tentacles) → handoffs collected
+  → goal gate pass / goal criteria check → goal eval --decision continue
+  → (new wave if goal unmet) → goal eval --decision complete → git commit + close
+```
+
+Record goal-eval evidence with:
+
+```bash
+sk tentacle verify <name> "<check-command>" --label "goal-eval"
+# fallback: python3 ~/.copilot/tools/tentacle.py verify <name> "<check-command>" --label "goal-eval"
+```
+
+---
+
 ## Tentacle Next Step
 
 `tentacle.py next-step` shows the grounded next step for a named tentacle — the first pending

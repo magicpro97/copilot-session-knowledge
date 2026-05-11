@@ -157,8 +157,19 @@ When running inside a tentacle (dispatched by the orchestrator via `tentacle.py`
 
 When acting as an orchestrator with an active goal, the lifecycle is iterative, not linear. After all tentacle handoffs are collected and verification gates pass, the orchestrator evaluates the goal before closing:
 
-1. **State success criteria upfront** — before dispatching any tentacle, write the goal's success criteria explicitly in `CONTEXT.md` or a shared artifact. Weak criteria ("make it work") prevent clean goal evaluation; strong criteria ("all 137 tests pass, benchmark score ≥ 90") enable independent verification.
-2. **Evaluate after each Verify phase** — once Build → Lint → Test → Review gates pass, evaluate whether the overarching goal is met. Record evidence:
+1. **State success criteria upfront** — before dispatching any tentacle, write the goal's success criteria explicitly in `CONTEXT.md` or a shared artifact. Weak criteria ("make it work") prevent clean goal evaluation; strong criteria ("all 186 tests pass, benchmark score >= 90") enable independent verification. Add them to the goal with:
+   ```bash
+   sk tentacle goal criteria add --desc "All 186 tests pass" --id sc-1 --verify-cmd "python3 run_all_tests.py"
+   # fallback: python3 ~/.copilot/tools/tentacle.py goal criteria add ...
+   ```
+2. **Evaluate after each Verify phase** — once Build -> Lint -> Test -> Review gates pass, evaluate whether the overarching goal is met. Check criteria and record evidence:
+   ```bash
+   sk tentacle goal criteria check          # run verify commands, update pass/fail
+   sk tentacle goal gate pass G1 --reason "test output: 186/186"
+   sk tentacle goal eval --decision continue   # or: complete | pause | abandon
+   # fallback: python3 ~/.copilot/tools/tentacle.py goal eval ...
+   ```
+   Also record iteration verification evidence:
    ```bash
    sk tentacle verify <name> "<check-command>" --label "goal-eval"
    # fallback: python3 ~/.copilot/tools/tentacle.py verify <name> "<check-command>" --label "goal-eval"
@@ -167,13 +178,15 @@ When acting as an orchestrator with an active goal, the lifecycle is iterative, 
 4. **Close only when verified** — proceed to commit and close only when goal success criteria are verifiably met and evidence is recorded.
 5. **Sub-agents do not loop** — sub-agents report via handoff and stop. The orchestrator reads handoff statuses, evaluates the goal, and decides whether to loop or close. Never dispatch sub-agents with an implicit expectation that they will self-continue.
 
+**Goal loop entry point:** `sk tentacle goal` (or `python3 ~/.copilot/tools/tentacle.py goal`). The Rust `sk` binary passes `tentacle goal` arguments to `tentacle.py` as a transparent pass-through — no Rust change is required when new `goal` subcommands are added. State is stored in `.octogent/goal.json`.
+
 **Typical pattern:**
 ```
-Plan → Execute tentacles → Verify gates → Goal Eval
-                                              ↓ not met
-                               Plan new tentacles for remaining gaps
-                                              ↓ met
-                               Commit + Close
+goal init -> Execute tentacles -> Verify gates -> goal criteria check -> goal eval
+                                                       | not met
+                                        Plan new tentacles for remaining gaps
+                                                       | met
+                                        goal eval --decision complete -> Commit + Close
 ```
 
 This is the **loop-until-verified** semantic applied at the orchestrator level. At the task level, Karpathy Guideline 4 applies the same principle: define success criteria, loop until verified.

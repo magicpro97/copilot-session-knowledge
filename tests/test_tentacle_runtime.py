@@ -12,19 +12,19 @@ Runs in-process using a temp directory for tentacle storage.
 Does NOT write to /tmp — uses a subdirectory of the tools dir instead.
 """
 
+import argparse
 import json
 import os
-import sys
-import argparse
 import subprocess
+import sys
 import textwrap
 import time
 import types
-import uuid
 import unittest
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 # Ensure we import from the local tools dir
 TOOLS_DIR = Path(__file__).resolve().parent.parent
@@ -94,6 +94,11 @@ def make_tentacle(name: str, base: Path, desc: str = "Test tentacle") -> Path:
 def fake_args(**kwargs):
     """Create a simple namespace for args."""
     return types.SimpleNamespace(session_dir=None, **kwargs)
+
+
+def _py_inline(code: str) -> str:
+    escaped = code.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{sys.executable} -c "{escaped}"'
 
 
 # ---------------------------------------------------------------------------
@@ -2069,7 +2074,6 @@ class TestSwarmGuardrails(unittest.TestCase):
         self.assertLess(guardrail_pos, when_done_pos, "Advisory guidance must precede 'When done'")
 
 
-
 # ---------------------------------------------------------------------------
 # Phase-2 dispatch prompt handoff recipe tests
 # ---------------------------------------------------------------------------
@@ -2235,13 +2239,14 @@ class TestDispatchedSubagentMarker(unittest.TestCase):
 
     def test_write_sig_matches_expected_hmac(self):
         """Sig must be HMAC-SHA256 over 'name:ts' — same formula as marker_auth."""
-        import hashlib, hmac as _hmac
+        import hashlib
+        import hmac as _hmac
 
         with patch.object(T, "_read_marker_secret", return_value="my-secret"):
             T._write_dispatched_subagent_marker("my-tent", [], "prompt")
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         expected = _hmac.new(
-            "my-secret".encode(),
+            b"my-secret",
             f"{self.MARKER_NAME}:{data['ts']}".encode(),
             hashlib.sha256,
         ).hexdigest()
@@ -2705,14 +2710,15 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
 
     def test_hmac_valid_after_second_dispatch(self):
         """sig must remain a valid HMAC-SHA256 over 'name:ts' after merging."""
-        import hashlib, hmac as _hmac
+        import hashlib
+        import hmac as _hmac
 
         with patch.object(T, "_read_marker_secret", return_value="shared-secret"):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
             T._write_dispatched_subagent_marker("tent-b", [], "json")
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         expected = _hmac.new(
-            "shared-secret".encode(),
+            b"shared-secret",
             f"{self.MARKER_NAME}:{data['ts']}".encode(),
             hashlib.sha256,
         ).hexdigest()
@@ -2729,7 +2735,8 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
 
     def test_hmac_valid_after_partial_clear(self):
         """sig must remain valid after one tentacle is cleared and file is rewritten."""
-        import hashlib, hmac as _hmac
+        import hashlib
+        import hmac as _hmac
 
         with patch.object(T, "_read_marker_secret", return_value="shared-secret"):
             T._write_dispatched_subagent_marker("tent-a", [], "prompt")
@@ -2737,7 +2744,7 @@ class TestDispatchedSubagentMarkerConcurrency(unittest.TestCase):
             T._clear_dispatched_subagent_marker("tent-a")
         data = json.loads(self.marker_path.read_text(encoding="utf-8"))
         expected = _hmac.new(
-            "shared-secret".encode(),
+            b"shared-secret",
             f"{self.MARKER_NAME}:{data['ts']}".encode(),
             hashlib.sha256,
         ).hexdigest()
@@ -5308,6 +5315,7 @@ class TestHandoffContract(unittest.TestCase):
         T._DISPATCHED_MARKER_PATH = self._orig_path
         T.MARKERS_DIR = self._orig_markers_dir
         import shutil
+
         if SCRATCH_DIR.exists():
             _rmtree(SCRATCH_DIR)
 
@@ -5403,10 +5411,7 @@ class TestHandoffContract(unittest.TestCase):
 
     def test_changed_file_multiple_receipts(self):
         make_tentacle("ho-multi", self.base)
-        args = self._handoff_args(
-            "ho-multi", "Two files",
-            changed_file=["src/a.py", "tests/test_a.py"]
-        )
+        args = self._handoff_args("ho-multi", "Two files", changed_file=["src/a.py", "tests/test_a.py"])
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             T.cmd_handoff(args)
         content = self._read_handoff("ho-multi")
@@ -5415,11 +5420,7 @@ class TestHandoffContract(unittest.TestCase):
 
     def test_changed_file_and_status_together(self):
         make_tentacle("ho-both", self.base)
-        args = self._handoff_args(
-            "ho-both", "Done and changed",
-            status="DONE",
-            changed_file=["src/foo.py"]
-        )
+        args = self._handoff_args("ho-both", "Done and changed", status="DONE", changed_file=["src/foo.py"])
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             T.cmd_handoff(args)
         content = self._read_handoff("ho-both")
@@ -5719,9 +5720,7 @@ class TestConcurrentMarkerStress(unittest.TestCase):
         def _writer(chunk_ids):
             try:
                 for tid in chunk_ids:
-                    ok = T._write_dispatched_subagent_marker(
-                        "stress-tent", [], "prompt", tentacle_id=tid
-                    )
+                    ok = T._write_dispatched_subagent_marker("stress-tent", [], "prompt", tentacle_id=tid)
                     if not ok:
                         errors.append(RuntimeError(f"write failed for {tid}"))
             except Exception as exc:
@@ -5780,11 +5779,7 @@ class TestConcurrentMarkerStress(unittest.TestCase):
         # Marker file must be gone (last clear deletes it) or contain no active entries.
         if self.marker_path.is_file():
             data = json.loads(self.marker_path.read_text(encoding="utf-8"))
-            remaining_ids = {
-                e.get("tentacle_id")
-                for e in data.get("active_tentacles", [])
-                if isinstance(e, dict)
-            }
+            remaining_ids = {e.get("tentacle_id") for e in data.get("active_tentacles", []) if isinstance(e, dict)}
             ghost_ids = remaining_ids & set(all_ids)
             self.assertEqual(
                 ghost_ids,
@@ -5816,10 +5811,9 @@ class TestConcurrentMarkerStress(unittest.TestCase):
             except Exception as exc:
                 errors.append(exc)
 
-        threads = (
-            [threading.Thread(target=_writer_a, args=(tid,), daemon=True) for tid in ids_a]
-            + [threading.Thread(target=_writer_b, args=(tid,), daemon=True) for tid in ids_b]
-        )
+        threads = [threading.Thread(target=_writer_a, args=(tid,), daemon=True) for tid in ids_a] + [
+            threading.Thread(target=_writer_b, args=(tid,), daemon=True) for tid in ids_b
+        ]
         for t in threads:
             t.start()
         for t in threads:
@@ -5967,8 +5961,7 @@ class TestAnyEntryRelevantTTLBoundary(unittest.TestCase):
         _sg = self._load_subagent_guard("sg_ttl_all_expired")
         now = self._now()
         entries = [
-            {"name": f"t{i}", "ts": str(int(now) - self.MARKER_TTL - i * 100), "git_root": None}
-            for i in range(3)
+            {"name": f"t{i}", "ts": str(int(now) - self.MARKER_TTL - i * 100), "git_root": None} for i in range(3)
         ]
         self.assertFalse(_sg._any_entry_relevant(entries, None, now))
 
@@ -6148,6 +6141,7 @@ class TestCmdCompleteVerification(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         if SCRATCH_DIR.exists():
             shutil.rmtree(SCRATCH_DIR, ignore_errors=True)
 
@@ -6160,6 +6154,7 @@ class TestCmdCompleteVerification(unittest.TestCase):
 
         import io
         from contextlib import redirect_stdout
+
         out = io.StringIO()
         with patch.object(T, "get_tentacles_dir", return_value=self.base):
             with patch.object(T, "_clear_dispatched_subagent_marker"):
@@ -6198,6 +6193,7 @@ class TestCmdCompleteVerification(unittest.TestCase):
         """--auto-verify with a passing command records verification in meta.json."""
         import io
         from contextlib import redirect_stdout
+
         args = fake_args(
             name="verify-test",
             no_learn=True,
@@ -6266,16 +6262,19 @@ class TestCmdCompleteVerification(unittest.TestCase):
             meta_path = tentacle_dir / "meta.json"
             meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
             verifs = meta.get("verifications") or []
-            captured_calls.append({
-                "tentacle_name": tentacle_name,
-                "outcome_status": outcome_status,
-                "verif_count": len(verifs),
-                "verif_passed": sum(1 for v in verifs if v.get("exit_code") == 0),
-            })
+            captured_calls.append(
+                {
+                    "tentacle_name": tentacle_name,
+                    "outcome_status": outcome_status,
+                    "verif_count": len(verifs),
+                    "verif_passed": sum(1 for v in verifs if v.get("exit_code") == 0),
+                }
+            )
             return True
 
         import io
         from contextlib import redirect_stdout
+
         args = fake_args(
             name="verify-test",
             no_learn=True,
@@ -6341,6 +6340,361 @@ class TestCmdCompleteVerification(unittest.TestCase):
         self.assertNotEqual(record["exit_code"], 0)
         # Still appended to meta
         self.assertEqual(len(meta["verifications"]), 1)
+
+
+# ---------------------------------------------------------------------------
+# Goal-loop runtime-style verification flow
+# ---------------------------------------------------------------------------
+
+
+def _make_octogent_in(base: Path) -> tuple[Path, Path]:
+    """Create .octogent/tentacles/ under *base* and return (octogent, tentacles)."""
+    octogent = base / ".octogent"
+    tentacles = octogent / "tentacles"
+    tentacles.mkdir(parents=True, exist_ok=True)
+    return octogent, tentacles
+
+
+def _goal_init_helper(tentacles: Path, title: str = "RT Goal", **kwargs) -> dict:
+    """Initialize a goal.json and return the loaded state."""
+    args = types.SimpleNamespace(
+        session_dir=None,
+        title=title,
+        desc=kwargs.get("desc", ""),
+        force=kwargs.get("force", False),
+        max_iterations=kwargs.get("max_iterations", None),
+        max_tentacles=kwargs.get("max_tentacles", None),
+        timeout=kwargs.get("timeout", None),
+        goal_action="init",
+    )
+    with patch("builtins.print"):
+        T._cmd_goal_init(args, tentacles)
+    return T._goal_load(tentacles)
+
+
+class TestGoalLoopRuntimeFlow(unittest.TestCase):
+    """Runtime-style integration tests for the goal-loop command surface.
+
+    These tests exercise the full command chain (init → criteria → gate →
+    link → eval → next-iter → status) through the same in-process helpers
+    that a real orchestrator would call, but with local temp directories and
+    deterministic subprocess commands only.
+    """
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "goal_runtime"
+        _, self.tentacles = _make_octogent_in(self.base)
+
+    def tearDown(self):
+        if SCRATCH_DIR.exists():
+            _rmtree(SCRATCH_DIR)
+
+    # ── helper shortcuts ──────────────────────────────────────────────────────
+
+    def _make_worker(self, name: str, status: str = "idle", **extra) -> Path:
+        d = self.tentacles / name
+        d.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "name": name,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "status": status,
+            **extra,
+        }
+        (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        (d / "CONTEXT.md").write_text(f"# {name}\n", encoding="utf-8")
+        (d / "todo.md").write_text("# Todo\n\n- [ ] Task A\n", encoding="utf-8")
+        return d
+
+    def _goal_eval(self, decision: str, notes: str = "") -> None:
+        args = types.SimpleNamespace(session_dir=None, goal_action="eval", decision=decision, notes=notes)
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args, self.tentacles)
+
+    def _goal_link(self, name: str) -> None:
+        args = types.SimpleNamespace(session_dir=None, goal_action="link", tentacle_name=name)
+        with patch("builtins.print"):
+            T._cmd_goal_link(args, self.tentacles)
+
+    def _gate_pass(self, gate_id: str, reason: str = "") -> None:
+        args = types.SimpleNamespace(
+            session_dir=None,
+            goal_action="gate",
+            gate_action="pass",
+            gate_id=gate_id,
+            reason=reason,
+        )
+        with patch("builtins.print"):
+            T._cmd_goal_gate(args, self.tentacles)
+
+    def _gate_fail(self, gate_id: str, reason: str = "") -> None:
+        args = types.SimpleNamespace(
+            session_dir=None,
+            goal_action="gate",
+            gate_action="fail",
+            gate_id=gate_id,
+            reason=reason,
+        )
+        with patch("builtins.print"):
+            T._cmd_goal_gate(args, self.tentacles)
+
+    def _criteria_add(self, desc: str, sc_id: str = None, verify_cmd: str = "") -> None:
+        args = types.SimpleNamespace(
+            session_dir=None,
+            goal_action="criteria",
+            criteria_action="add",
+            desc=desc,
+            id=sc_id,
+            verify_cmd=verify_cmd,
+        )
+        with patch("builtins.print"):
+            T._cmd_goal_criteria(args, self.tentacles)
+
+    def _criteria_check(self, sc_id: str = None, timeout: int = 30) -> None:
+        args = types.SimpleNamespace(
+            session_dir=None,
+            goal_action="criteria",
+            criteria_action="check",
+            id=sc_id,
+            timeout=timeout,
+        )
+        with patch("builtins.print"):
+            T._cmd_goal_criteria(args, self.tentacles)
+
+    def _status_json(self) -> dict:
+        captured = []
+        args = types.SimpleNamespace(
+            session_dir=None,
+            goal_action="status",
+            format="json",
+        )
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_status(args, self.tentacles)
+        return json.loads("\n".join(captured))
+
+    def _next_iter_text(self) -> str:
+        captured = []
+        args = types.SimpleNamespace(session_dir=None, goal_action="next-iter")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_next_iter(args, self.tentacles)
+        return "\n".join(captured)
+
+    # ── runtime flows ─────────────────────────────────────────────────────────
+
+    def test_runtime_init_and_status_visible(self):
+        """goal init → goal status (json) must reflect the initialized state."""
+        _goal_init_helper(self.tentacles, title="Runtime Init Test", max_iterations=3)
+        data = self._status_json()
+        self.assertEqual(data["title"], "Runtime Init Test")
+        self.assertEqual(data["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertEqual(data["iteration"], 1)
+        self.assertEqual(data["budget"]["max_iterations"], 3)
+
+    def test_runtime_link_tentacle_and_see_in_status(self):
+        """goal link → goal status must list the tentacle."""
+        _goal_init_helper(self.tentacles, title="Link Test")
+        self._make_worker("link-worker")
+        self._goal_link("link-worker")
+        data = self._status_json()
+        self.assertIn("link-worker", data["tentacles"])
+
+    def test_runtime_criteria_full_check_cycle(self):
+        """Add criteria → check → verify all pass → confirm in status."""
+        _goal_init_helper(self.tentacles, title="Criteria Cycle")
+        self._criteria_add("Python echo passes", sc_id="sc-1", verify_cmd=_py_inline("print('ok')"))
+        self._criteria_add("Python exit 0", sc_id="sc-2", verify_cmd=_py_inline("raise SystemExit(0)"))
+        self._criteria_check()
+        data = self._status_json()
+        criteria = data["success_criteria"]
+        self.assertEqual(len(criteria), 2)
+        self.assertTrue(all(c["status"] == "verified" for c in criteria))
+
+    def test_runtime_gate_pass_and_check_all_passed(self):
+        """Pass all gates → _goal_gates_all_passed returns True."""
+        _goal_init_helper(self.tentacles, title="Gate Test")
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [
+            {"id": "G1", "description": "Tests green", "status": "pending"},
+            {"id": "G2", "description": "Docs updated", "status": "pending"},
+        ]
+        T._goal_write(self.tentacles, state)
+
+        self.assertFalse(T._goal_gates_all_passed(T._goal_load(self.tentacles)))
+
+        self._gate_pass("G1", reason="test suite passed")
+        self.assertFalse(T._goal_gates_all_passed(T._goal_load(self.tentacles)))
+
+        self._gate_pass("G2", reason="docs PR merged")
+        self.assertTrue(T._goal_gates_all_passed(T._goal_load(self.tentacles)))
+
+    def test_runtime_eval_continue_advances_iteration(self):
+        """eval --decision continue must advance iteration counter."""
+        _goal_init_helper(self.tentacles, title="Iter Test")
+        self._goal_eval("continue", notes="iter 1 done")
+        data = self._status_json()
+        self.assertEqual(data["iteration"], 2)
+
+    def test_runtime_next_iter_reflects_worker_status(self):
+        """next-iter must categorise workers by terminal_status correctly."""
+        _goal_init_helper(self.tentacles, title="Next Iter Test")
+
+        done_dir = self._make_worker("done-worker")
+        wip_dir = self._make_worker("wip-worker")
+
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["done-worker", "wip-worker"]
+        T._goal_write(self.tentacles, state)
+
+        # Stamp done-worker as DONE at iteration 1
+        meta = json.loads((done_dir / "meta.json").read_text(encoding="utf-8"))
+        meta["terminal_status"] = "DONE"
+        meta["goal_iteration"] = 1
+        (done_dir / "meta.json").write_text(json.dumps(meta) + "\n", encoding="utf-8")
+
+        # wip-worker has no terminal_status
+        meta2 = json.loads((wip_dir / "meta.json").read_text(encoding="utf-8"))
+        meta2["goal_iteration"] = 1
+        (wip_dir / "meta.json").write_text(json.dumps(meta2) + "\n", encoding="utf-8")
+
+        text = self._next_iter_text()
+        self.assertIn("done-worker", text)
+        self.assertIn("wip-worker", text)
+        # done-worker should have ✅ prefix
+        done_lines = [l for l in text.splitlines() if "done-worker" in l]
+        self.assertTrue(any("✅" in l for l in done_lines), f"done-worker not shown as ✅: {done_lines}")
+
+    def test_runtime_full_two_iteration_complete_flow(self):
+        """Full two-iteration flow: init → link → eval continue → link again → gate → complete."""
+        _goal_init_helper(self.tentacles, title="Two Iter Flow", max_iterations=2)
+
+        # Create workers for iteration 1
+        w1 = self._make_worker("iter1-worker")
+        self._goal_link("iter1-worker")
+
+        # Add a gate
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "G1", "description": "ready", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        # Mark iteration 1 worker done
+        meta = json.loads((w1 / "meta.json").read_text(encoding="utf-8"))
+        meta["terminal_status"] = "DONE"
+        meta["goal_iteration"] = 1
+        (w1 / "meta.json").write_text(json.dumps(meta) + "\n", encoding="utf-8")
+
+        # Eval continue → advances to iter 2
+        self._goal_eval("continue", notes="iter 1 complete")
+        data = self._status_json()
+        self.assertEqual(data["iteration"], 2)
+
+        # Create worker for iteration 2
+        w2 = self._make_worker("iter2-worker")
+        self._goal_link("iter2-worker")
+
+        # Mark iter2 worker done
+        meta2 = json.loads((w2 / "meta.json").read_text(encoding="utf-8"))
+        meta2["terminal_status"] = "DONE"
+        meta2["goal_iteration"] = 2
+        (w2 / "meta.json").write_text(json.dumps(meta2) + "\n", encoding="utf-8")
+
+        # Pass gate
+        self._gate_pass("G1", reason="all workers done")
+        self.assertTrue(T._goal_gates_all_passed(T._goal_load(self.tentacles)))
+
+        # Eval complete
+        self._goal_eval("complete", notes="all done")
+        data = self._status_json()
+        self.assertEqual(data["status"], T.GOAL_STATUS_COMPLETED)
+        self.assertEqual(len(data["eval_history"]), 2)
+        self.assertIn("iter1-worker", data["tentacles"])
+        self.assertIn("iter2-worker", data["tentacles"])
+
+    def test_runtime_budget_status_json_reflects_real_state(self):
+        """Budget status must accurately reflect current iteration vs limit."""
+        _goal_init_helper(self.tentacles, title="Budget RT", max_iterations=2)
+        state = T._goal_load(self.tentacles)
+        bs = T._goal_budget_status(state)
+
+        self.assertEqual(bs["max_iterations"], 2)
+        self.assertEqual(bs["current_iteration"], 1)
+        self.assertFalse(bs["over_iterations"])
+        self.assertFalse(bs["over_budget"])
+
+        # After advancing past limit
+        self._goal_eval("continue")
+        self._goal_eval("continue")  # now at iter 3, over limit of 2
+        state = T._goal_load(self.tentacles)
+        bs = T._goal_budget_status(state)
+        self.assertTrue(bs["over_iterations"])
+        self.assertTrue(bs["over_budget"])
+
+    def test_runtime_criteria_partial_failure_blocks_exit(self):
+        """If one criterion fails, _cmd_goal_criteria check should exit nonzero."""
+        _goal_init_helper(self.tentacles, title="Partial Fail")
+        state = T._goal_load(self.tentacles)
+        state["success_criteria"] = [
+            {
+                "id": "sc-ok",
+                "description": "passes",
+                "verification_command": _py_inline("raise SystemExit(0)"),
+                "status": "unverified",
+            },
+            {
+                "id": "sc-fail",
+                "description": "fails",
+                "verification_command": _py_inline("raise SystemExit(42)"),
+                "status": "unverified",
+            },
+        ]
+        T._goal_write(self.tentacles, state)
+
+        args = types.SimpleNamespace(
+            session_dir=None,
+            goal_action="criteria",
+            criteria_action="check",
+            id=None,
+            timeout=30,
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_criteria(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+        state = T._goal_load(self.tentacles)
+        by_id = {c["id"]: c for c in state["success_criteria"]}
+        self.assertEqual(by_id["sc-ok"]["status"], "verified")
+        self.assertEqual(by_id["sc-fail"]["status"], "failed")
+
+    def test_runtime_goal_json_schema_stable_across_commands(self):
+        """goal.json must keep its top-level keys stable after every command in the chain."""
+        required = {
+            "goal_id",
+            "title",
+            "description",
+            "created_at",
+            "updated_at",
+            "status",
+            "iteration",
+            "tentacles",
+            "eval_history",
+            "success_criteria",
+            "gates",
+            "budget",
+        }
+
+        _goal_init_helper(self.tentacles, title="Schema Stable", max_iterations=3)
+        self._make_worker("schm-worker")
+        self._goal_link("schm-worker")
+
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "G1", "description": "ok", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        self._gate_pass("G1")
+        self._goal_eval("continue")
+
+        state = T._goal_load(self.tentacles)
+        missing = required - set(state.keys())
+        self.assertFalse(missing, f"Missing keys from goal.json after full chain: {missing}")
 
 
 if __name__ == "__main__":

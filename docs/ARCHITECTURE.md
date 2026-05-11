@@ -68,7 +68,7 @@ recovery hints. None of these scripts are candidates for deletion as a consequen
 | `mcp-server.py` | Read-only MCP stdio JSON-RPC surface for `briefing` and `query_session` |
 | `watch-sessions.py` | File watcher; triggers incremental re-indexing |
 | `learn.py` | Manual knowledge entry |
-| `tentacle.py` | Multi-agent orchestration (create → todo → bundle → swarm → complete) |
+| `tentacle.py` | Multi-agent orchestration (create → todo → bundle → swarm → complete) + orchestrator goal loop (`goal init/status/link/eval/resume/criteria/gate/budget/next-iter`). `sk tentacle goal …` routes here via Rust pass-through — no Rust code change is needed when adding new `goal` subcommands. |
 | `embed.py` | Optional semantic search via embedding APIs (OpenAI, Fireworks, etc.) with TF-IDF fallback |
 | `claude-adapter.py` | Parses Claude Code JSONL sessions into the common DB format |
 | `sync-knowledge.py` | Merges `knowledge.db` files across environments (Windows ↔ WSL); MAX confidence semantics |
