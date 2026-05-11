@@ -1747,6 +1747,27 @@ def _goal_update(tentacles_dir: Path, **fields) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _positive_int_arg(value: str) -> int:
+    """Argparse type that accepts only positive integers."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _validate_goal_budget_value(value: int | None, flag_name: str) -> int | None:
+    """Reject zero/negative budget values even when commands are called directly in-process."""
+    if value is None:
+        return None
+    if value <= 0:
+        print(f"ERROR: {flag_name} must be a positive integer.", file=sys.stderr)
+        sys.exit(1)
+    return value
+
+
 def _goal_budget_status(state: dict) -> dict:
     """Return a dict summarising current budget consumption vs limits."""
     budget = state.get("budget") or {}
@@ -1756,13 +1777,13 @@ def _goal_budget_status(state: dict) -> dict:
     timeout_minutes = budget.get("timeout_minutes")
     tentacle_count = len(state.get("tentacles", []))
 
-    over_iterations = bool(max_iters and current_iter > max_iters)
-    over_tentacles = bool(max_tentacles and tentacle_count > max_tentacles)
+    over_iterations = max_iters is not None and current_iter > max_iters
+    over_tentacles = max_tentacles is not None and tentacle_count > max_tentacles
 
     over_timeout = False
     elapsed_minutes: float | None = None
     created_at = state.get("created_at")
-    if timeout_minutes and created_at:
+    if timeout_minutes is not None and created_at:
         try:
             created_dt = datetime.fromisoformat(created_at)
             if created_dt.tzinfo is None:
@@ -1785,6 +1806,33 @@ def _goal_budget_status(state: dict) -> dict:
         "over_budget": over_iterations or over_tentacles or over_timeout,
         "budget_status": budget.get("status", "unknown"),
     }
+
+
+def _goal_budget_text_lines(bs: dict, *, show_unset: bool) -> list[str]:
+    """Render human-readable budget lines for goal status/budget commands."""
+    lines: list[str] = []
+
+    if bs["max_iterations"] is not None:
+        remaining = max(0, bs["max_iterations"] - bs["current_iteration"])
+        over_str = " ⚠️  OVER BUDGET" if bs["over_iterations"] else f" ({remaining} remaining)"
+        lines.append(f"Iterations: {bs['current_iteration']}/{bs['max_iterations']}{over_str}")
+    elif show_unset:
+        lines.append(f"Iterations: {bs['current_iteration']} (no limit set)")
+
+    if bs["max_tentacles"] is not None:
+        over_str = " ⚠️  OVER BUDGET" if bs["over_tentacles"] else ""
+        lines.append(f"Tentacles:  {bs['tentacle_count']}/{bs['max_tentacles']}{over_str}")
+    elif show_unset:
+        lines.append(f"Tentacles:  {bs['tentacle_count']} (no limit set)")
+
+    if bs["timeout_minutes"] is not None:
+        if bs["elapsed_minutes"] is not None:
+            over_str = " ⚠️  OVER TIME" if bs["over_timeout"] else ""
+            lines.append(f"Elapsed:    {bs['elapsed_minutes']}m / {bs['timeout_minutes']}m{over_str}")
+        else:
+            lines.append(f"Timeout:    {bs['timeout_minutes']}m")
+
+    return lines
 
 
 def _goal_gates_all_passed(state: dict) -> bool:
@@ -1837,9 +1885,9 @@ def _cmd_goal_init(args, tentacles: Path) -> None:
     desc = getattr(args, "desc", None) or ""
 
     # Budget fields from CLI (optional)
-    max_iterations = getattr(args, "max_iterations", None)
-    max_tentacles_budget = getattr(args, "max_tentacles", None)
-    timeout_minutes = getattr(args, "timeout", None)
+    max_iterations = _validate_goal_budget_value(getattr(args, "max_iterations", None), "--max-iterations")
+    max_tentacles_budget = _validate_goal_budget_value(getattr(args, "max_tentacles", None), "--max-tentacles")
+    timeout_minutes = _validate_goal_budget_value(getattr(args, "timeout", None), "--timeout")
 
     budget: dict = {"status": "active"}
     if max_iterations is not None:
@@ -1867,7 +1915,7 @@ def _cmd_goal_init(args, tentacles: Path) -> None:
     print(f"✅ Goal initialized: '{title}'")
     print(f"   Goal ID:  {goal_id}")
     print(f"   State:    {goal_path}")
-    if budget.get("max_iterations"):
+    if budget.get("max_iterations") is not None:
         print(f"   Budget:   {budget['max_iterations']} iterations")
     print("   Tip: link tentacles with `tentacle.py goal link <tentacle-name>`")
 
@@ -1893,11 +1941,11 @@ def _cmd_goal_status(args, tentacles: Path) -> None:
 
     # Budget summary
     bs = _goal_budget_status(state)
-    budget = state.get("budget") or {}
-    if budget.get("max_iterations"):
-        remaining = max(0, budget["max_iterations"] - bs["current_iteration"])
-        over_str = " ⚠️  OVER BUDGET" if bs["over_iterations"] else f" ({remaining} remaining)"
-        print(f"   Budget:    iter {bs['current_iteration']}/{budget['max_iterations']}{over_str}")
+    budget_lines = _goal_budget_text_lines(bs, show_unset=False)
+    if budget_lines:
+        print("   Budget:")
+        for line in budget_lines:
+            print(f"     {line}")
 
     tentacle_names = state.get("tentacles", [])
     if tentacle_names:
@@ -2034,7 +2082,7 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
             print("⚠️  WARNING: Goal is over budget.")
             if bs["over_iterations"]:
                 print(f"   Iteration {current_iter} exceeds max_iterations={bs['max_iterations']}.")
-        elif bs["max_iterations"] and current_iter >= bs["max_iterations"]:
+        elif bs["max_iterations"] is not None and current_iter >= bs["max_iterations"]:
             print(
                 f"⚠️  NOTE: This is the last budgeted iteration "
                 f"({current_iter}/{bs['max_iterations']}). Consider `--decision complete`."
@@ -2250,14 +2298,17 @@ def _cmd_goal_budget(args, tentacles: Path) -> None:
     # If --set-max-iterations etc. provided, update budget fields.
     updated = False
     budget: dict = state.setdefault("budget", {"status": "active"})
-    if getattr(args, "max_iterations", None) is not None:
-        budget["max_iterations"] = args.max_iterations
+    max_iterations = _validate_goal_budget_value(getattr(args, "max_iterations", None), "--max-iterations")
+    max_tentacles = _validate_goal_budget_value(getattr(args, "max_tentacles", None), "--max-tentacles")
+    timeout_minutes = _validate_goal_budget_value(getattr(args, "timeout", None), "--timeout")
+    if max_iterations is not None:
+        budget["max_iterations"] = max_iterations
         updated = True
-    if getattr(args, "max_tentacles", None) is not None:
-        budget["max_tentacles"] = args.max_tentacles
+    if max_tentacles is not None:
+        budget["max_tentacles"] = max_tentacles
         updated = True
-    if getattr(args, "timeout", None) is not None:
-        budget["timeout_minutes"] = args.timeout
+    if timeout_minutes is not None:
+        budget["timeout_minutes"] = timeout_minutes
         updated = True
     if updated:
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -2272,25 +2323,8 @@ def _cmd_goal_budget(args, tentacles: Path) -> None:
         return
 
     print(f"📊 Budget for '{state.get('title', '?')}':")
-    if bs["max_iterations"] is not None:
-        remaining = max(0, bs["max_iterations"] - bs["current_iteration"])
-        over_str = " ⚠️  OVER BUDGET" if bs["over_iterations"] else f" ({remaining} remaining)"
-        print(f"   Iterations: {bs['current_iteration']}/{bs['max_iterations']}{over_str}")
-    else:
-        print(f"   Iterations: {bs['current_iteration']} (no limit set)")
-
-    if bs["max_tentacles"] is not None:
-        over_str = " ⚠️  OVER BUDGET" if bs["over_tentacles"] else ""
-        print(f"   Tentacles:  {bs['tentacle_count']}/{bs['max_tentacles']}{over_str}")
-    else:
-        print(f"   Tentacles:  {bs['tentacle_count']} (no limit set)")
-
-    if bs["timeout_minutes"] is not None:
-        if bs["elapsed_minutes"] is not None:
-            over_str = " ⚠️  OVER TIME" if bs["over_timeout"] else ""
-            print(f"   Elapsed:    {bs['elapsed_minutes']}m / {bs['timeout_minutes']}m{over_str}")
-        else:
-            print(f"   Timeout:    {bs['timeout_minutes']}m")
+    for line in _goal_budget_text_lines(bs, show_unset=True):
+        print(f"   {line}")
 
     status_str = "⚠️  Over budget" if bs["over_budget"] else "✅ Within budget"
     print(f"   Status:     {status_str}")
@@ -2308,7 +2342,7 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
     tentacle_names = state.get("tentacles", [])
 
     print(f"🔄 Goal loop: '{state.get('title', '?')}' — iteration {current_iter}")
-    if bs["max_iterations"]:
+    if bs["max_iterations"] is not None:
         print(f"   Budget: {current_iter}/{bs['max_iterations']} iterations")
     if bs["over_budget"]:
         print("⚠️  WARNING: Goal is over budget.")
@@ -2367,7 +2401,7 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
 
     # Recommendation.
     print()
-    if bs["max_iterations"] and current_iter >= bs["max_iterations"]:
+    if bs["max_iterations"] is not None and current_iter >= bs["max_iterations"]:
         print(f"   This is the final budgeted iteration ({current_iter}/{bs['max_iterations']}).")
         print("   Recommendation: `goal eval --decision complete` or `--decision abandon`")
     elif blocked_names:
@@ -3951,12 +3985,26 @@ def main():
     p_goal_init.add_argument("--desc", default="", help="Optional description")
     p_goal_init.add_argument("--force", action="store_true", help="Overwrite existing goal.json")
     p_goal_init.add_argument(
-        "--max-iterations", dest="max_iterations", type=int, default=None, help="Budget: max loop iterations"
+        "--max-iterations",
+        dest="max_iterations",
+        type=_positive_int_arg,
+        default=None,
+        help="Budget: max loop iterations (positive integer)",
     )
     p_goal_init.add_argument(
-        "--max-tentacles", dest="max_tentacles", type=int, default=None, help="Budget: max tentacle count"
+        "--max-tentacles",
+        dest="max_tentacles",
+        type=_positive_int_arg,
+        default=None,
+        help="Budget: max tentacle count (positive integer)",
     )
-    p_goal_init.add_argument("--timeout", dest="timeout", type=int, default=None, help="Budget: timeout in minutes")
+    p_goal_init.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=_positive_int_arg,
+        default=None,
+        help="Budget: timeout in minutes (positive integer)",
+    )
 
     # goal status
     p_goal_status = p_goal_sub.add_parser("status", help="Show current goal state and linked tentacles")
@@ -4011,12 +4059,26 @@ def main():
     # goal budget
     p_goal_budget = p_goal_sub.add_parser("budget", help="Show or update budget for the current goal")
     p_goal_budget.add_argument(
-        "--max-iterations", dest="max_iterations", type=int, default=None, help="Set max iterations"
+        "--max-iterations",
+        dest="max_iterations",
+        type=_positive_int_arg,
+        default=None,
+        help="Set max iterations (positive integer)",
     )
     p_goal_budget.add_argument(
-        "--max-tentacles", dest="max_tentacles", type=int, default=None, help="Set max tentacle count"
+        "--max-tentacles",
+        dest="max_tentacles",
+        type=_positive_int_arg,
+        default=None,
+        help="Set max tentacle count (positive integer)",
     )
-    p_goal_budget.add_argument("--timeout", dest="timeout", type=int, default=None, help="Set timeout in minutes")
+    p_goal_budget.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=_positive_int_arg,
+        default=None,
+        help="Set timeout in minutes (positive integer)",
+    )
     p_goal_budget.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
 
     # goal next-iter

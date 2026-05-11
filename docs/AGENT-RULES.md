@@ -1,4 +1,4 @@
-﻿# Agent Rules
+# Agent Rules
 
 > Canonical reference for AI agent behavior rules in copilot-session-knowledge.
 >

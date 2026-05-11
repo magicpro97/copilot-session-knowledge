@@ -189,6 +189,20 @@ class TestGoalBudgetStatus(unittest.TestCase):
         self.assertFalse(bs["over_timeout"])
         self.assertIsNone(bs["elapsed_minutes"])
 
+    def test_zero_limits_are_not_treated_as_unset(self):
+        old_time = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        state = self._state(
+            iteration=1,
+            tentacles=["a"],
+            created_at=old_time,
+            budget={"max_iterations": 0, "max_tentacles": 0, "timeout_minutes": 0},
+        )
+        bs = T._goal_budget_status(state)
+        self.assertTrue(bs["over_iterations"])
+        self.assertTrue(bs["over_tentacles"])
+        self.assertTrue(bs["over_timeout"])
+        self.assertTrue(bs["over_budget"])
+
     def test_returns_budget_status_field(self):
         state = self._state(budget={"status": "frozen"})
         bs = T._goal_budget_status(state)
@@ -338,6 +352,23 @@ class TestGoalInit(unittest.TestCase):
         _init_goal(self.tentacles, title="Original")
         state = _init_goal(self.tentacles, title="Replacement", force=True)
         self.assertEqual(state["title"], "Replacement")
+
+    def test_init_rejects_non_positive_budget_values(self):
+        for field, value in (("max_iterations", 0), ("max_tentacles", -1), ("timeout", 0)):
+            args = _fake_args(
+                title="Bad Goal",
+                desc="",
+                force=False,
+                max_iterations=None,
+                max_tentacles=None,
+                timeout=None,
+                goal_action="init",
+            )
+            setattr(args, field, value)
+            with patch("builtins.print"):
+                with self.assertRaises(SystemExit) as cm:
+                    T._cmd_goal_init(args, self.tentacles)
+            self.assertEqual(cm.exception.code, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -958,6 +989,15 @@ class TestGoalBudget(unittest.TestCase):
         state = T._goal_load(self.tentacles)
         self.assertEqual(state["budget"]["timeout_minutes"], 90)
 
+    def test_budget_update_rejects_non_positive_values(self):
+        for field, value in (("max_iterations", 0), ("max_tentacles", -1), ("timeout", 0)):
+            args = _fake_args(goal_action="budget", max_iterations=None, max_tentacles=None, timeout=None, format="text")
+            setattr(args, field, value)
+            with patch("builtins.print"):
+                with self.assertRaises(SystemExit) as cm:
+                    T._cmd_goal_budget(args, self.tentacles)
+            self.assertEqual(cm.exception.code, 1)
+
     def test_budget_no_goal_shows_info_not_error(self):
         T._goal_path(self.tentacles).unlink()
         captured = []
@@ -1350,6 +1390,25 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
             T._cmd_goal_status(args, self.tentacles)
         combined = "\n".join(captured)
         self.assertIn("0 remaining", combined)
+
+    def test_status_reports_all_configured_budget_fields(self):
+        _init_goal(self.tentacles, title="Full Budget Status", max_iterations=3, max_tentacles=1, timeout=10)
+        state = T._goal_load(self.tentacles)
+        state["iteration"] = 2
+        state["tentacles"] = ["t1", "t2"]
+        state["created_at"] = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
+        T._goal_write(self.tentacles, state)
+
+        captured = []
+        args = _fake_args(goal_action="status", format="text")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_status(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("Iterations:", combined)
+        self.assertIn("Tentacles:", combined)
+        self.assertIn("Elapsed:", combined)
+        self.assertIn("OVER BUDGET", combined)
+        self.assertIn("OVER TIME", combined)
 
 
 if __name__ == "__main__":
