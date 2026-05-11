@@ -2702,11 +2702,17 @@ class TestGoalHumanGate(unittest.TestCase):
                     self.assertEqual(gate["status"], "pending")
 
     def test_gate_reject_without_reason_exits(self):
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "HGR2", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
         args = _fake_args(goal_action="gate", gate_action="reject", gate_id="HGR2", reason="")
         with patch("builtins.print"):
             with self.assertRaises(SystemExit) as cm:
                 T._cmd_goal_gate(args, self.tentacles)
         self.assertEqual(cm.exception.code, 1)
+        state = T._goal_load(self.tentacles)
+        gate = next(g for g in state["gates"] if g["id"] == "HGR2")
+        self.assertEqual(gate["status"], "pending")
 
     def test_gate_reject_missing_gate_exits_without_creating_blocker(self):
         args = _fake_args(goal_action="gate", gate_action="reject", gate_id="HGR404", reason="Not ready")

@@ -690,8 +690,9 @@ was `awaiting-gate`, `paused`, or `abandoned`. It does not automatically re-appr
 #### Legacy gate commands
 
 `pass` and `fail` predate the human-gate workflow and are still accepted. They do **not**
-trigger the `awaiting-gate` blocking path — `fail` only marks a gate `failed` and prints a
-warning; it does not change the goal status.
+create a new `awaiting-gate` block. `fail` marks a gate `failed`; if that removes the last
+blocking gate from an existing `awaiting-gate` goal, the goal returns to `active` and future
+`goal eval complete` still warns that the gate failed.
 
 ```bash
 # Mark a named gate passed or failed (with optional evidence note)
