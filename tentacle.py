@@ -95,13 +95,9 @@ _WORKTREE_STATE_ROOT = Path.home() / ".copilot" / "session-state" / "worktrees"
 # ---------------------------------------------------------------------------
 # Structured handoff contract constants
 # ---------------------------------------------------------------------------
-HANDOFF_STATUS_ALLOWLIST: frozenset[str] = frozenset(
-    {"DONE", "BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"}
-)
+HANDOFF_STATUS_ALLOWLIST: frozenset[str] = frozenset({"DONE", "BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"})
 # Statuses that require visible orchestrator triage (all non-DONE statuses)
-HANDOFF_TRIAGE_STATUSES: frozenset[str] = frozenset(
-    {"BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"}
-)
+HANDOFF_TRIAGE_STATUSES: frozenset[str] = frozenset({"BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"})
 
 # ---------------------------------------------------------------------------
 # Goal state model constants
@@ -113,9 +109,7 @@ GOAL_STATUS_COMPLETED = "completed"
 GOAL_STATUS_ABANDONED = "abandoned"
 GOAL_STATUS_NEEDS_HUMAN = "needs-human"
 GOAL_STATUS_AWAITING_GATE = "awaiting-gate"
-GOAL_EVAL_DECISIONS: frozenset[str] = frozenset(
-    {"continue", "pause", "complete", "abandon"}
-)
+GOAL_EVAL_DECISIONS: frozenset[str] = frozenset({"continue", "pause", "complete", "abandon"})
 
 
 import threading as _threading
@@ -411,9 +405,7 @@ def _extract_pack_entries(pack_data: dict) -> list[dict]:
 
 def _run_briefing_for_task(task_id: str, fallback_query: str = "") -> str:
     """Load evidence block for task recall using task-json then pack fallback."""
-    recall_pack_data, recall_source_mode = _fetch_recall_pack_json(
-        task_id, fallback_query=fallback_query
-    )
+    recall_pack_data, recall_source_mode = _fetch_recall_pack_json(task_id, fallback_query=fallback_query)
     return _render_recall_payload(task_id, recall_pack_data, recall_source_mode)
 
 
@@ -428,9 +420,7 @@ def _pack_payload_has_signal(pack_data: dict) -> bool:
     return bool(pack_data.get("next_open"))
 
 
-def _render_recall_payload(
-    task_id: str, recall_data: dict, source_mode: str | None
-) -> str:
+def _render_recall_payload(task_id: str, recall_data: dict, source_mode: str | None) -> str:
     """Render a fetched recall payload into the bounded prose evidence block."""
     if not recall_data or not source_mode:
         return ""
@@ -459,9 +449,7 @@ def _render_recall_payload(
     return ""
 
 
-def _fetch_recall_pack_json(
-    task_id: str, fallback_query: str = ""
-) -> tuple[dict, str | None]:
+def _fetch_recall_pack_json(task_id: str, fallback_query: str = "") -> tuple[dict, str | None]:
     """Fetch machine-readable recall JSON for task_id from briefing.py.
 
     Tries --task --json first (source_mode="task_json"), then --pack fallback
@@ -702,9 +690,7 @@ def _write_dispatched_subagent_marker(
             active: list[dict] = []
             if _DISPATCHED_MARKER_PATH.is_file():
                 try:
-                    existing = json.loads(
-                        _DISPATCHED_MARKER_PATH.read_text(encoding="utf-8")
-                    )
+                    existing = json.loads(_DISPATCHED_MARKER_PATH.read_text(encoding="utf-8"))
                     raw: list = []
                     if "active_tentacles" in existing:
                         raw = list(existing["active_tentacles"])
@@ -760,9 +746,7 @@ def _write_dispatched_subagent_marker(
                             e.get("git_root") is None
                             or (
                                 tentacle_id is not None
-                                and _same_canonical_root(
-                                    e.get("git_root"), current_git_root_str
-                                )
+                                and _same_canonical_root(e.get("git_root"), current_git_root_str)
                             )
                         )
                     )
@@ -788,9 +772,7 @@ def _write_dispatched_subagent_marker(
                     if entry.get("name") != tentacle_name:
                         continue
                     if (
-                        _same_canonical_root(
-                            entry.get("git_root"), current_git_root_str
-                        )
+                        _same_canonical_root(entry.get("git_root"), current_git_root_str)
                         and entry.get("tentacle_id") is None
                     ):
                         existing_idx = i
@@ -820,9 +802,7 @@ def _write_dispatched_subagent_marker(
                     hashlib.sha256,
                 ).hexdigest()
                 data["sig"] = sig
-            _DISPATCHED_MARKER_PATH.write_text(
-                json.dumps(data, indent=2) + "\n", encoding="utf-8"
-            )
+            _DISPATCHED_MARKER_PATH.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         return True
     except Exception:
         return False
@@ -923,9 +903,7 @@ def _clear_dispatched_subagent_marker(
                     data["sig"] = sig
                 elif "sig" in data:
                     del data["sig"]
-                _DISPATCHED_MARKER_PATH.write_text(
-                    json.dumps(data, indent=2) + "\n", encoding="utf-8"
-                )
+                _DISPATCHED_MARKER_PATH.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         return True
     except Exception:
         return False
@@ -1005,9 +983,7 @@ def _get_marker_state() -> dict:
     for entry in raw_active:
         if isinstance(entry, str):
             names.append(entry)
-            entries.append(
-                {"name": entry, "ts": None, "git_root": None, "tentacle_id": None}
-            )
+            entries.append({"name": entry, "ts": None, "git_root": None, "tentacle_id": None})
         elif isinstance(entry, dict):
             name = entry.get("name")
             if not isinstance(name, str) or not name:
@@ -1118,9 +1094,7 @@ def _build_runtime_bundle(
             "Expected: .github/copilot-instructions.md, CLAUDE.md, AGENTS.md, "
             ".github/instructions/*.md\n"
         )
-    (bundle_dir / "instructions.md").write_text(
-        "\n".join(instr_lines), encoding="utf-8"
-    )
+    (bundle_dir / "instructions.md").write_text("\n".join(instr_lines), encoding="utf-8")
     manifest["artifacts"]["instructions"] = {
         "file": "instructions.md",
         "sources": instr_paths,
@@ -1197,9 +1171,7 @@ def _build_runtime_bundle(
         meta_lines.append(checkpoint_text)
         meta_lines.append("")
 
-    (bundle_dir / "session-metadata.md").write_text(
-        "\n".join(meta_lines), encoding="utf-8"
-    )
+    (bundle_dir / "session-metadata.md").write_text("\n".join(meta_lines), encoding="utf-8")
     manifest["artifacts"]["session_metadata"] = {
         "file": "session-metadata.md",
         "has_context": context_path.exists(),
@@ -1213,9 +1185,7 @@ def _build_runtime_bundle(
     pack_obj["tentacle"] = name
     pack_obj["created_at"] = ts
     pack_obj["source_mode"] = recall_source_mode
-    (bundle_dir / "recall-pack.json").write_text(
-        json.dumps(pack_obj, indent=2) + "\n", encoding="utf-8"
-    )
+    (bundle_dir / "recall-pack.json").write_text(json.dumps(pack_obj, indent=2) + "\n", encoding="utf-8")
     manifest["artifacts"]["recall_pack"] = {
         "file": "recall-pack.json",
         "populated": bool(recall_pack_data),
@@ -1225,9 +1195,7 @@ def _build_runtime_bundle(
     # ── 6. Manifest ───────────────────────────────────────────────────────────
     if worktree_path:
         manifest["worktree_path"] = worktree_path
-    (bundle_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-    )
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     return bundle_dir
 
@@ -1255,9 +1223,7 @@ def _worktree_path_for(name: str, git_root: Path) -> Path:
 def _update_meta_worktree(tentacle_dir: Path, state: dict) -> None:
     """Persist worktree state into meta.json (atomic read-modify-write)."""
     meta_path = tentacle_dir / "meta.json"
-    meta = (
-        json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-    )
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
     meta["worktree"] = state
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
@@ -1319,9 +1285,7 @@ def _worktree_status(tentacle_dir: Path) -> dict:
         exists:   bool (whether the path exists on disk)
     """
     meta_path = tentacle_dir / "meta.json"
-    meta = (
-        json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-    )
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
     wt = meta.get("worktree") or {}
     path = wt.get("path")
     exists = bool(path) and Path(path).exists()
@@ -1351,11 +1315,7 @@ def _worktree_cleanup(tentacle_dir: Path, name: str, git_root: "Path | None") ->
 
     def _clear() -> None:
         meta_path = tentacle_dir / "meta.json"
-        meta = (
-            json.loads(meta_path.read_text(encoding="utf-8"))
-            if meta_path.exists()
-            else {}
-        )
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
         meta.pop("worktree", None)
         meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
@@ -1522,9 +1482,7 @@ def cmd_verify(args) -> None:
         sys.exit(1)
 
     meta_path = tentacle_dir / "meta.json"
-    meta = (
-        json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-    )
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
 
     cmd = getattr(args, "verify_command", None) or getattr(args, "command", "")
     label = args.label if getattr(args, "label", None) else cmd[:40].strip()
@@ -1540,9 +1498,7 @@ def cmd_verify(args) -> None:
     )
 
     icon = "✅" if exit_code == 0 else "❌"
-    print(
-        f"{icon} verify [{label}]: exit={exit_code} ({verif_record['duration_seconds']:.1f}s)"
-    )
+    print(f"{icon} verify [{label}]: exit={exit_code} ({verif_record['duration_seconds']:.1f}s)")
     print(f"   cwd: {verif_record['cwd']}")
     print(f"   log: {verif_record['log_path']}")
 
@@ -1600,10 +1556,7 @@ CREATE TABLE IF NOT EXISTS tentacle_verifications (
     log_path TEXT
 );
 """)
-    columns = {
-        row[1]
-        for row in conn.execute("PRAGMA table_info(tentacle_outcomes)").fetchall()
-    }
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(tentacle_outcomes)").fetchall()}
     if "terminal_status" not in columns:
         conn.execute("ALTER TABLE tentacle_outcomes ADD COLUMN terminal_status TEXT")
     if "goal_id" not in columns:
@@ -1625,19 +1578,11 @@ def _persist_outcome_metrics(
     """
     try:
         meta_path = tentacle_dir / "meta.json"
-        meta = (
-            json.loads(meta_path.read_text(encoding="utf-8"))
-            if meta_path.exists()
-            else {}
-        )
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
 
         # Todo stats
         todo_path = tentacle_dir / "todo.md"
-        todos = (
-            parse_todos(todo_path.read_text(encoding="utf-8"))
-            if todo_path.exists()
-            else []
-        )
+        todos = parse_todos(todo_path.read_text(encoding="utf-8")) if todo_path.exists() else []
         todo_total = len(todos)
         todo_done = sum(1 for t in todos if t["done"])
 
@@ -1884,9 +1829,7 @@ def _goal_budget_status(state: dict) -> dict:
             created_dt = datetime.fromisoformat(created_at)
             if created_dt.tzinfo is None:
                 created_dt = created_dt.replace(tzinfo=timezone.utc)
-            elapsed_minutes = round(
-                (datetime.now(timezone.utc) - created_dt).total_seconds() / 60, 1
-            )
+            elapsed_minutes = round((datetime.now(timezone.utc) - created_dt).total_seconds() / 60, 1)
             over_timeout = elapsed_minutes > timeout_minutes
         except Exception:
             pass
@@ -1912,29 +1855,21 @@ def _goal_budget_text_lines(bs: dict, *, show_unset: bool) -> list[str]:
 
     if bs["max_iterations"] is not None:
         remaining = max(0, bs["max_iterations"] - bs["current_iteration"])
-        over_str = (
-            " ⚠️  OVER BUDGET" if bs["over_iterations"] else f" ({remaining} remaining)"
-        )
-        lines.append(
-            f"Iterations: {bs['current_iteration']}/{bs['max_iterations']}{over_str}"
-        )
+        over_str = " ⚠️  OVER BUDGET" if bs["over_iterations"] else f" ({remaining} remaining)"
+        lines.append(f"Iterations: {bs['current_iteration']}/{bs['max_iterations']}{over_str}")
     elif show_unset:
         lines.append(f"Iterations: {bs['current_iteration']} (no limit set)")
 
     if bs["max_tentacles"] is not None:
         over_str = " ⚠️  OVER BUDGET" if bs["over_tentacles"] else ""
-        lines.append(
-            f"Tentacles:  {bs['tentacle_count']}/{bs['max_tentacles']}{over_str}"
-        )
+        lines.append(f"Tentacles:  {bs['tentacle_count']}/{bs['max_tentacles']}{over_str}")
     elif show_unset:
         lines.append(f"Tentacles:  {bs['tentacle_count']} (no limit set)")
 
     if bs["timeout_minutes"] is not None:
         if bs["elapsed_minutes"] is not None:
             over_str = " ⚠️  OVER TIME" if bs["over_timeout"] else ""
-            lines.append(
-                f"Elapsed:    {bs['elapsed_minutes']}m / {bs['timeout_minutes']}m{over_str}"
-            )
+            lines.append(f"Elapsed:    {bs['elapsed_minutes']}m / {bs['timeout_minutes']}m{over_str}")
         else:
             lines.append(f"Timeout:    {bs['timeout_minutes']}m")
 
@@ -1955,9 +1890,7 @@ def _goal_gates_blocking(state: dict) -> list:
     return [g for g in gates if g.get("status") in {"pending", "rejected"}]
 
 
-def _goal_criteria_run_one(
-    criterion: dict, cwd: str, timeout: int = 60
-) -> tuple[int, str]:
+def _goal_criteria_run_one(criterion: dict, cwd: str, timeout: int = 60) -> tuple[int, str]:
     """Run the verification_command for one criterion. Returns (exit_code, output_snippet)."""
     cmd = criterion.get("verification_command", "")
     if not cmd:
@@ -1999,15 +1932,9 @@ def _cmd_goal_init(args, tentacles: Path) -> None:
     desc = getattr(args, "desc", None) or ""
 
     # Budget fields from CLI (optional)
-    max_iterations = _validate_goal_budget_value(
-        getattr(args, "max_iterations", None), "--max-iterations"
-    )
-    max_tentacles_budget = _validate_goal_budget_value(
-        getattr(args, "max_tentacles", None), "--max-tentacles"
-    )
-    timeout_minutes = _validate_goal_budget_value(
-        getattr(args, "timeout", None), "--timeout"
-    )
+    max_iterations = _validate_goal_budget_value(getattr(args, "max_iterations", None), "--max-iterations")
+    max_tentacles_budget = _validate_goal_budget_value(getattr(args, "max_tentacles", None), "--max-tentacles")
+    timeout_minutes = _validate_goal_budget_value(getattr(args, "timeout", None), "--timeout")
 
     budget: dict = {"status": "active"}
     if max_iterations is not None:
@@ -2075,11 +2002,7 @@ def _cmd_goal_status(args, tentacles: Path) -> None:
             if t_dir.exists():
                 t_meta_path = t_dir / "meta.json"
                 try:
-                    t_meta = (
-                        json.loads(t_meta_path.read_text(encoding="utf-8"))
-                        if t_meta_path.exists()
-                        else {}
-                    )
+                    t_meta = json.loads(t_meta_path.read_text(encoding="utf-8")) if t_meta_path.exists() else {}
                 except Exception:
                     t_meta = {}
                 t_status = t_meta.get("status", "unknown")
@@ -2097,9 +2020,7 @@ def _cmd_goal_status(args, tentacles: Path) -> None:
         print(f"\n   ⛔ Blocked on gate: [{blocking_gate_id}]")
         if blocking_reason:
             print(f"      Reason: {blocking_reason}")
-        print(
-            f"      Resolve with: goal gate approve {blocking_gate_id} [--reason <text>]"
-        )
+        print(f"      Resolve with: goal gate approve {blocking_gate_id} [--reason <text>]")
 
     # Gates summary
     gates = state.get("gates") or []
@@ -2130,20 +2051,14 @@ def _cmd_goal_status(args, tentacles: Path) -> None:
         crit_icon = "✅" if verified == len(criteria) else "⬜"
         print(f"\n   Criteria: {crit_icon} {verified}/{len(criteria)} verified")
         for c in criteria:
-            c_icon = (
-                "✅"
-                if c.get("status") == "verified"
-                else ("❌" if c.get("status") == "failed" else "⬜")
-            )
+            c_icon = "✅" if c.get("status") == "verified" else ("❌" if c.get("status") == "failed" else "⬜")
             print(f"     {c_icon} [{c.get('id', '?')}] {c.get('description', '')[:60]}")
 
     history = state.get("eval_history", [])
     if history:
         last = history[-1]
         ts = (last.get("evaluated_at") or "")[:19]
-        print(
-            f"\n   Last eval: iteration={last.get('iteration', '?')} decision={last.get('decision', '?')} @ {ts}"
-        )
+        print(f"\n   Last eval: iteration={last.get('iteration', '?')} decision={last.get('decision', '?')} @ {ts}")
 
 
 def _cmd_goal_link(args, tentacles: Path) -> None:
@@ -2173,11 +2088,7 @@ def _cmd_goal_link(args, tentacles: Path) -> None:
     # Stamp goal metadata into tentacle meta.json.
     meta_path = t_dir / "meta.json"
     try:
-        meta = (
-            json.loads(meta_path.read_text(encoding="utf-8"))
-            if meta_path.exists()
-            else {}
-        )
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
     except Exception:
         meta = {}
     meta["goal_id"] = goal_id
@@ -2240,19 +2151,13 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
             }
             _gates_snap = state.get("gates") or []
             if _gates_snap:
-                eval_entry_blocked["gates_passed"] = sum(
-                    1 for g in _gates_snap if g.get("status") == "passed"
-                )
+                eval_entry_blocked["gates_passed"] = sum(1 for g in _gates_snap if g.get("status") == "passed")
                 eval_entry_blocked["gates_total"] = len(_gates_snap)
             _crit_snap = state.get("success_criteria") or []
             if _crit_snap:
-                eval_entry_blocked["criteria_verified"] = sum(
-                    1 for c in _crit_snap if c.get("status") == "verified"
-                )
+                eval_entry_blocked["criteria_verified"] = sum(1 for c in _crit_snap if c.get("status") == "verified")
                 eval_entry_blocked["criteria_total"] = len(_crit_snap)
-            eval_entry_blocked["blocked_by_gates"] = [
-                g.get("id", "?") for g in blocking
-            ]
+            eval_entry_blocked["blocked_by_gates"] = [g.get("id", "?") for g in blocking]
             history_b: list = state.setdefault("eval_history", [])
             history_b.append(eval_entry_blocked)
             state["status"] = GOAL_STATUS_AWAITING_GATE
@@ -2267,14 +2172,10 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
             for g in blocking:
                 g_st = g.get("status", "pending")
                 icon = "❌" if g_st == "rejected" else "⬜"
-                print(
-                    f"   {icon} [{g.get('id', '?')}] {g.get('description', '')[:60]} — {g_st}"
-                )
+                print(f"   {icon} [{g.get('id', '?')}] {g.get('description', '')[:60]} — {g_st}")
                 if g.get("reason"):
                     print(f"      Reason: {g['reason']}")
-            print(
-                f"   Goal status set to '{GOAL_STATUS_AWAITING_GATE}'. Iteration not advanced."
-            )
+            print(f"   Goal status set to '{GOAL_STATUS_AWAITING_GATE}'. Iteration not advanced.")
             print("   Approve gate(s) with `goal gate approve <id>` then re-run eval.")
             return
         # If all blocking gates are now resolved and status was awaiting-gate, restore active.
@@ -2285,26 +2186,18 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
 
     # Gate check: warn (but don't block) when completing with failed gates.
     if decision == "complete":
-        failed_gates = [
-            g for g in (state.get("gates") or []) if g.get("status") == "failed"
-        ]
+        failed_gates = [g for g in (state.get("gates") or []) if g.get("status") == "failed"]
         if failed_gates:
             print(f"⚠️  WARNING: {len(failed_gates)} gate(s) marked FAILED:")
             for g in failed_gates:
-                print(
-                    f"   [{g.get('id', '?')}] {g.get('description', '')[:70]} — failed"
-                )
-            print(
-                "   Use `goal gate pass <id>` to override, or proceed with --decision complete anyway."
-            )
+                print(f"   [{g.get('id', '?')}] {g.get('description', '')[:70]} — failed")
+            print("   Use `goal gate pass <id>` to override, or proceed with --decision complete anyway.")
 
         # Criteria check: warn if any unverified criteria remain.
         criteria = state.get("success_criteria") or []
         unverified = [c for c in criteria if c.get("status") != "verified"]
         if unverified:
-            print(
-                f"⚠️  WARNING: {len(unverified)} success criterion/criteria not yet verified:"
-            )
+            print(f"⚠️  WARNING: {len(unverified)} success criterion/criteria not yet verified:")
             for c in unverified:
                 print(f"   [{c.get('id', '?')}] {c.get('description', '')[:70]}")
             print("   Use `goal criteria check` to verify, or proceed anyway.")
@@ -2315,9 +2208,7 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
         if bs["over_budget"]:
             print("⚠️  WARNING: Goal is over budget.")
             if bs["over_iterations"]:
-                print(
-                    f"   Iteration {current_iter} exceeds max_iterations={bs['max_iterations']}."
-                )
+                print(f"   Iteration {current_iter} exceeds max_iterations={bs['max_iterations']}.")
         elif bs["max_iterations"] is not None and current_iter >= bs["max_iterations"]:
             print(
                 f"⚠️  NOTE: This is the last budgeted iteration "
@@ -2338,14 +2229,10 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
     gates = state.get("gates") or []
     criteria = state.get("success_criteria") or []
     if gates:
-        eval_entry["gates_passed"] = sum(
-            1 for g in gates if g.get("status") == "passed"
-        )
+        eval_entry["gates_passed"] = sum(1 for g in gates if g.get("status") == "passed")
         eval_entry["gates_total"] = len(gates)
     if criteria:
-        eval_entry["criteria_verified"] = sum(
-            1 for c in criteria if c.get("status") == "verified"
-        )
+        eval_entry["criteria_verified"] = sum(1 for c in criteria if c.get("status") == "verified")
         eval_entry["criteria_total"] = len(criteria)
 
     history: list = state.setdefault("eval_history", [])
@@ -2455,14 +2342,10 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
         meta_path.write_text(json.dumps(t_meta, indent=2) + "\n", encoding="utf-8")
 
     if from_iteration is not None:
-        print(
-            f"⏪ Rewound to iteration {from_iteration} (was {current_iter}); reset {len(rewound_names)} tentacle(s)."
-        )
+        print(f"⏪ Rewound to iteration {from_iteration} (was {current_iter}); reset {len(rewound_names)} tentacle(s).")
 
     if reset_failed:
-        print(
-            f"🔁 Reset {len(reset_failed_names)} BLOCKED/AMBIGUOUS tentacle(s) to idle."
-        )
+        print(f"🔁 Reset {len(reset_failed_names)} BLOCKED/AMBIGUOUS tentacle(s) to idle.")
 
     print(f"🔄 Goal '{state.get('title', '?')}' resumed (was: {prev_status})")
     print(f"   Iteration: {state.get('iteration', 1)}")
@@ -2484,9 +2367,7 @@ def _cmd_goal_criteria(args, tentacles: Path) -> None:
 
     if action == "list":
         if not criteria:
-            print(
-                "ℹ️  No success criteria defined. Use `goal criteria add --desc <desc>`."
-            )
+            print("ℹ️  No success criteria defined. Use `goal criteria add --desc <desc>`.")
             return
         print(f"Success criteria ({len(criteria)}):")
         for c in criteria:
@@ -2529,11 +2410,7 @@ def _cmd_goal_criteria(args, tentacles: Path) -> None:
         check_id = getattr(args, "id", None)
         to_check = [c for c in criteria if not check_id or c.get("id") == check_id]
         if not to_check:
-            msg = (
-                f"No criterion found with id='{check_id}'."
-                if check_id
-                else "No criteria to check."
-            )
+            msg = f"No criterion found with id='{check_id}'." if check_id else "No criteria to check."
             print(f"ERROR: {msg}", file=sys.stderr)
             sys.exit(1)
 
@@ -2623,9 +2500,7 @@ def _cmd_goal_gate(args, tentacles: Path) -> None:
         _goal_write(tentacles, state)
         if gate_exists:
             if gate_status == "pending":
-                print(
-                    f"ℹ️  Gate [{gate_id}] is already pending — awaiting human approval."
-                )
+                print(f"ℹ️  Gate [{gate_id}] is already pending — awaiting human approval.")
                 if desc:
                     print(f"   Desc: {desc}")
                 print(f"   Approve with: goal gate approve {gate_id}")
@@ -2636,9 +2511,7 @@ def _cmd_goal_gate(args, tentacles: Path) -> None:
             if gate_status in {"rejected", "failed"}:
                 print(f"   Resolve with: goal gate approve {gate_id} [--reason <text>]")
             else:
-                print(
-                    "   Use a new gate id if you need another human gate for this check."
-                )
+                print("   Use a new gate id if you need another human gate for this check.")
             return
         print(f"⬜ Gate [{gate_id}] added — awaiting human approval")
         if desc:
@@ -2673,9 +2546,7 @@ def _cmd_goal_gate(args, tentacles: Path) -> None:
             print("   All blocking gates resolved — goal is unblocked for `goal eval`.")
     elif action == "reject":
         if not reason:
-            print(
-                "ERROR: --reason is required for `goal gate reject`.", file=sys.stderr
-            )
+            print("ERROR: --reason is required for `goal gate reject`.", file=sys.stderr)
             sys.exit(1)
         if gate.get("status") == "passed":
             print(
@@ -2702,14 +2573,10 @@ def _cmd_goal_gate(args, tentacles: Path) -> None:
         print(f"❌ Gate [{gate_id}] REJECTED — goal blocked")
         print(f"   Reason: {reason}")
         if state.get("status") == GOAL_STATUS_PAUSED:
-            print(
-                "   Goal remains paused. Re-run `goal eval` after resume to surface the blocking gate."
-            )
+            print("   Goal remains paused. Re-run `goal eval` after resume to surface the blocking gate.")
         else:
             print(f"   Goal status set to '{GOAL_STATUS_AWAITING_GATE}'.")
-            print(
-                f"   Resolve with: goal gate approve {primary.get('id', '?')} [--reason <text>]"
-            )
+            print(f"   Resolve with: goal gate approve {primary.get('id', '?')} [--reason <text>]")
     elif action == "pass":
         gate["status"] = "passed"
         gate["passed_at"] = datetime.now(timezone.utc).isoformat()
@@ -2769,9 +2636,7 @@ def _cmd_goal_gate(args, tentacles: Path) -> None:
         sys.exit(1)
 
     if _goal_gates_all_passed(state):
-        print(
-            "   All gates passed — goal is ready for `goal eval --decision complete`."
-        )
+        print("   All gates passed — goal is ready for `goal eval --decision complete`.")
 
 
 def _cmd_goal_budget(args, tentacles: Path) -> None:
@@ -2784,15 +2649,9 @@ def _cmd_goal_budget(args, tentacles: Path) -> None:
     # If --set-max-iterations etc. provided, update budget fields.
     updated = False
     budget: dict = state.setdefault("budget", {"status": "active"})
-    max_iterations = _validate_goal_budget_value(
-        getattr(args, "max_iterations", None), "--max-iterations"
-    )
-    max_tentacles = _validate_goal_budget_value(
-        getattr(args, "max_tentacles", None), "--max-tentacles"
-    )
-    timeout_minutes = _validate_goal_budget_value(
-        getattr(args, "timeout", None), "--timeout"
-    )
+    max_iterations = _validate_goal_budget_value(getattr(args, "max_iterations", None), "--max-iterations")
+    max_tentacles = _validate_goal_budget_value(getattr(args, "max_tentacles", None), "--max-tentacles")
+    timeout_minutes = _validate_goal_budget_value(getattr(args, "timeout", None), "--timeout")
     if max_iterations is not None:
         budget["max_iterations"] = max_iterations
         updated = True
@@ -2884,9 +2743,7 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
     if pending_gates:
         print(f"\n⛔ Pending gates ({len(pending_gates)}):")
         for g in pending_gates:
-            print(
-                f"  [{g.get('id', '?')}] {g.get('description', '')[:70]} — {g.get('status', 'pending')}"
-            )
+            print(f"  [{g.get('id', '?')}] {g.get('description', '')[:70]} — {g.get('status', 'pending')}")
     elif gates:
         print("\n✅ All gates passed.")
 
@@ -2899,27 +2756,17 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
     # Recommendation.
     print()
     if bs["max_iterations"] is not None and current_iter >= bs["max_iterations"]:
-        print(
-            f"   This is the final budgeted iteration ({current_iter}/{bs['max_iterations']})."
-        )
-        print(
-            "   Recommendation: `goal eval --decision complete` or `--decision abandon`"
-        )
+        print(f"   This is the final budgeted iteration ({current_iter}/{bs['max_iterations']}).")
+        print("   Recommendation: `goal eval --decision complete` or `--decision abandon`")
     elif blocked_names:
         print("   Some tentacles are blocked. Resolve or create replacement tentacles.")
-        print(
-            f"   Then `goal eval --decision continue` to advance to iteration {current_iter + 1}."
-        )
+        print(f"   Then `goal eval --decision continue` to advance to iteration {current_iter + 1}.")
     else:
-        print(
-            f"   When ready, `goal eval --decision continue` → iteration {current_iter + 1}."
-        )
+        print(f"   When ready, `goal eval --decision continue` → iteration {current_iter + 1}.")
         print("   Or `goal eval --decision complete` if success criteria are met.")
 
 
-def _escalate_goal_to_needs_human(
-    state: dict, tentacles: Path, failing_ids: list, reason: str
-) -> None:
+def _escalate_goal_to_needs_human(state: dict, tentacles: Path, failing_ids: list, reason: str) -> None:
     """Mark goal as needs-human, persist state, and print advisory guidance."""
     state["status"] = GOAL_STATUS_NEEDS_HUMAN
     state["needs_human_at"] = datetime.now(timezone.utc).isoformat()
@@ -2982,12 +2829,8 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
     cwd = str(git_root) if git_root else str(Path.cwd())
 
     verify_loop_history: list = state.setdefault("verify_loop_history", [])
-    print(
-        f"🔄 verify-loop: '{state.get('title', '?')}' — {len(to_check)} criterion/criteria to check"
-    )
-    print(
-        f"   max-retries={max_retries}  retry-delay={retry_delay}s  timeout={timeout}s  escalate={escalate}"
-    )
+    print(f"🔄 verify-loop: '{state.get('title', '?')}' — {len(to_check)} criterion/criteria to check")
+    print(f"   max-retries={max_retries}  retry-delay={retry_delay}s  timeout={timeout}s  escalate={escalate}")
 
     last_failure_hashes: dict[str, str] = {}
     stall_counts: dict[str, int] = {}
@@ -3033,23 +2876,17 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
                 for line in output.strip().splitlines()[:5]:
                     print(f"     {line}")
                 all_passed = False
-                failure_key = hashlib.sha256(
-                    f"{exit_code}:{output}".encode()
-                ).hexdigest()[:16]
+                failure_key = hashlib.sha256(f"{exit_code}:{output}".encode()).hexdigest()[:16]
                 if last_failure_hashes.get(cid) == failure_key:
                     stall_counts[cid] = stall_counts.get(cid, 1) + 1
                     if stall_counts[cid] >= 3:
-                        print(
-                            f"  ⚠️  [{cid}] STALL — identical failure repeated {stall_counts[cid]}x"
-                        )
+                        print(f"  ⚠️  [{cid}] STALL — identical failure repeated {stall_counts[cid]}x")
                 else:
                     last_failure_hashes[cid] = failure_key
                     stall_counts[cid] = 1
 
         if all_passed and not ran_any:
-            print(
-                "\n⚠️  All selected criteria were skipped (no verification command) — not reporting success."
-            )
+            print("\n⚠️  All selected criteria were skipped (no verification command) — not reporting success.")
             all_passed = False
 
         verify_loop_history.append(
@@ -3071,18 +2908,12 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
         failing_ids = [r["id"] for r in attempt_results if r["exit_code"] != 0]
         stalled_ids = [cid for cid in failing_ids if stall_counts.get(cid, 0) >= 3]
         if failing_ids and set(stalled_ids) == set(failing_ids):
-            print(
-                "\n🛑 Stall detected — all failing criteria have repeated identical failures."
-            )
+            print("\n🛑 Stall detected — all failing criteria have repeated identical failures.")
             print(f"   Stalled: {', '.join(stalled_ids)}")
             if escalate:
-                _escalate_goal_to_needs_human(
-                    state, tentacles, stalled_ids, reason="stall"
-                )
+                _escalate_goal_to_needs_human(state, tentacles, stalled_ids, reason="stall")
             else:
-                print(
-                    "   Run with --escalate to mark goal needs-human, or investigate and fix the issues."
-                )
+                print("   Run with --escalate to mark goal needs-human, or investigate and fix the issues.")
             sys.exit(1)
 
         if attempt < max_retries:
@@ -3101,13 +2932,9 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
         f"\n❌ Retry limit reached ({max_retries + 1} attempts). Still failing: {', '.join(str(x) for x in still_failing)}"
     )
     if escalate:
-        _escalate_goal_to_needs_human(
-            state, tentacles, still_failing, reason="retry_exhausted"
-        )
+        _escalate_goal_to_needs_human(state, tentacles, still_failing, reason="retry_exhausted")
     else:
-        print(
-            "   Run with --escalate to mark goal needs-human, or increase --max-retries."
-        )
+        print("   Run with --escalate to mark goal needs-human, or increase --max-retries.")
     sys.exit(1)
 
 
@@ -3171,7 +2998,9 @@ def cmd_create(args):
         print(f"🧠 Fetching relevant knowledge for '{query}'...")
         briefing = _run_briefing(query)
         if briefing:
-            briefing_section = f"\n## Past Knowledge (auto-injected)\n\n<!-- From session-knowledge briefing -->\n\n{briefing}\n"
+            briefing_section = (
+                f"\n## Past Knowledge (auto-injected)\n\n<!-- From session-knowledge briefing -->\n\n{briefing}\n"
+            )
             print(f"   ✅ Injected {len(briefing)} chars of past knowledge")
         else:
             print("   ℹ️  No relevant past knowledge found")
@@ -3238,9 +3067,7 @@ def cmd_create(args):
     # When dir_name differs from name (collision case), record it explicitly.
     if actual_dir_name != args.name:
         meta["dir_name"] = actual_dir_name
-    (tentacle_dir / "meta.json").write_text(
-        json.dumps(meta, indent=2) + "\n", encoding="utf-8"
-    )
+    (tentacle_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
     print(f"✅ Tentacle '{actual_dir_name}' created at {tentacle_dir}")
     print("   📄 CONTEXT.md — edit to add area-specific context")
@@ -3265,11 +3092,7 @@ def cmd_list(args):
 
     for d in dirs:
         meta_path = d / "meta.json"
-        meta = (
-            json.loads(meta_path.read_text(encoding="utf-8"))
-            if meta_path.exists()
-            else {}
-        )
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
 
         todo_path = d / "todo.md"
         if todo_path.exists():
@@ -3299,18 +3122,10 @@ def cmd_status(args):
 
     for d in dirs:
         meta_path = d / "meta.json"
-        meta = (
-            json.loads(meta_path.read_text(encoding="utf-8"))
-            if meta_path.exists()
-            else {}
-        )
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
 
         todo_path = d / "todo.md"
-        todos = (
-            parse_todos(todo_path.read_text(encoding="utf-8"))
-            if todo_path.exists()
-            else []
-        )
+        todos = parse_todos(todo_path.read_text(encoding="utf-8")) if todo_path.exists() else []
         done = sum(1 for t in todos if t["done"])
         pending = len(todos) - done
         total_todos += len(todos)
@@ -3393,11 +3208,7 @@ def cmd_todo(args):
         sys.exit(1)
 
     with file_locked(todo_path):
-        content = (
-            todo_path.read_text(encoding="utf-8")
-            if todo_path.exists()
-            else "# Todo\n\n"
-        )
+        content = todo_path.read_text(encoding="utf-8") if todo_path.exists() else "# Todo\n\n"
         todos = parse_todos(content)
 
         if args.action == "add":
@@ -3472,9 +3283,7 @@ def _parse_handoff_changed_files(handoff_content: str) -> "list[str]":
     """
     seen: set[str] = set()
     changed_files: list[str] = []
-    for raw_path in re.findall(
-        r"^Changed:\s*(.+)", handoff_content, flags=re.MULTILINE
-    ):
+    for raw_path in re.findall(r"^Changed:\s*(.+)", handoff_content, flags=re.MULTILINE):
         path = raw_path.strip()
         if path and path not in seen:
             changed_files.append(path)
@@ -3528,11 +3337,7 @@ def cmd_handoff(args):
     # Auto-learn if --learn flag
     if args.learn:
         meta_path = tentacle_dir / "meta.json"
-        meta = (
-            json.loads(meta_path.read_text(encoding="utf-8"))
-            if meta_path.exists()
-            else {}
-        )
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
         tags = ",".join(["tentacle", args.name] + meta.get("scope", [])[:2])
         title = f"[{args.name}] {args.message[:60]}"
         if _run_learn("discovery", title, args.message, tags):
@@ -3559,11 +3364,7 @@ def cmd_complete(args):
     auto_verify_cmd = getattr(args, "auto_verify", None)
     auto_verify_failed = False
     if auto_verify_cmd:
-        meta_pre = (
-            json.loads(meta_path.read_text(encoding="utf-8"))
-            if meta_path.exists()
-            else {}
-        )
+        meta_pre = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
         label = auto_verify_cmd[:40].strip()
         timeout = getattr(args, "auto_verify_timeout", None) or 120
         print(f"🔍 Running auto-verify: {auto_verify_cmd}")
@@ -3580,14 +3381,10 @@ def cmd_complete(args):
         if av_exit != 0:
             auto_verify_failed = True
             if strict_verify:
-                print(
-                    f"❌ auto-verify failed (exit={av_exit}) — aborting (--strict-verify)"
-                )
+                print(f"❌ auto-verify failed (exit={av_exit}) — aborting (--strict-verify)")
                 sys.exit(1)
             else:
-                print(
-                    f"⚠️  auto-verify failed (exit={av_exit}) — completing anyway (fail-open)"
-                )
+                print(f"⚠️  auto-verify failed (exit={av_exit}) — completing anyway (fail-open)")
 
     # 1. Mark all todos done (skip in strict mode — don't force-mark)
     if todo_path.exists():
@@ -3595,9 +3392,7 @@ def cmd_complete(args):
             todos = parse_todos(todo_path.read_text(encoding="utf-8"))
             pending = [t for t in todos if not t["done"]]
             if strict_verify and pending:
-                print(
-                    f"⚠️  {len(pending)} pending todos remain (--strict-verify: not force-marking)"
-                )
+                print(f"⚠️  {len(pending)} pending todos remain (--strict-verify: not force-marking)")
             else:
                 for t in todos:
                     t["done"] = True
@@ -3608,17 +3403,13 @@ def cmd_complete(args):
                     print(f"✅ All {len(todos)} todos already done")
 
     # 2. Update status
-    meta = (
-        json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-    )
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
     meta["status"] = "completed"
     meta["completed_at"] = datetime.now(timezone.utc).isoformat()
 
     # 2a. Warn if no verification evidence (fail-open: warn only, never block)
     if not (meta.get("verifications") or []):
-        print(
-            "⚠️  No verification evidence recorded — run 'verify' or use --auto-verify before completing"
-        )
+        print("⚠️  No verification evidence recorded — run 'verify' or use --auto-verify before completing")
 
     # 2a. Extract structured handoff fields (terminal_status, changed_files)
     terminal_status = None
@@ -3682,9 +3473,7 @@ def cmd_complete(args):
     # 6. Summary
     print(f"\n🏁 Tentacle '{args.name}' completed!")
     if terminal_status in HANDOFF_TRIAGE_STATUSES:
-        print(
-            f"⚠️  TRIAGE: terminal_status={terminal_status} — orchestrator review required"
-        )
+        print(f"⚠️  TRIAGE: terminal_status={terminal_status} — orchestrator review required")
     if learned:
         print(f"   🧠 {learned} knowledge entry saved to long-term memory")
     print(f"   💡 Run `tentacle.py delete {args.name}` to clean up when ready")
@@ -3706,9 +3495,7 @@ def cmd_resume(args):
     handoff_path = tentacle_dir / "handoff.md"
 
     # 1. Load and update meta
-    meta = (
-        json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-    )
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
     prev_status = meta.get("status", "idle")
     meta["status"] = "active"
     meta["resumed_at"] = datetime.now(timezone.utc).isoformat()
@@ -3751,9 +3538,7 @@ def cmd_resume(args):
         context_path.write_text(updated, encoding="utf-8")
 
     # 4. Show current todo state
-    todos = (
-        parse_todos(todo_path.read_text(encoding="utf-8")) if todo_path.exists() else []
-    )
+    todos = parse_todos(todo_path.read_text(encoding="utf-8")) if todo_path.exists() else []
     done_count = sum(1 for t in todos if t["done"])
     pending = [t for t in todos if not t["done"]]
 
@@ -3784,9 +3569,7 @@ def cmd_swarm(args):
     context_path = tentacle_dir / "CONTEXT.md"
     meta_path = tentacle_dir / "meta.json"
 
-    todos = (
-        parse_todos(todo_path.read_text(encoding="utf-8")) if todo_path.exists() else []
-    )
+    todos = parse_todos(todo_path.read_text(encoding="utf-8")) if todo_path.exists() else []
     pending = [t for t in todos if not t["done"]]
 
     if not pending:
@@ -3795,11 +3578,7 @@ def cmd_swarm(args):
 
     bundle_enabled = _bundle_enabled(args)
 
-    if (
-        args.output == "json"
-        and getattr(args, "briefing", False)
-        and not bundle_enabled
-    ):
+    if args.output == "json" and getattr(args, "briefing", False) and not bundle_enabled:
         print(
             "ERROR: --briefing is not supported with --output json. "
             "Use the default runtime bundle (or pass --bundle) so briefing "
@@ -3809,9 +3588,7 @@ def cmd_swarm(args):
         sys.exit(1)
 
     context = context_path.read_text(encoding="utf-8") if context_path.exists() else ""
-    meta = (
-        json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-    )
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
 
     agent_type = args.agent_type or "general-purpose"
     model = args.model or "claude-sonnet-4.6"
@@ -3868,9 +3645,7 @@ def cmd_swarm(args):
             print(f"   ✅ Worktree {action}: {wt_path_str}\n")
             worktree_section = f"\n### Worktree Path\n\n`{wt_path_str}`\n"
         else:
-            print(
-                f"   ⚠️  Worktree prepare failed: {wt_state.get('error', 'unknown')}\n"
-            )
+            print(f"   ⚠️  Worktree prepare failed: {wt_state.get('error', 'unknown')}\n")
 
     if bundle_enabled:
         print("📦 Materializing runtime bundle...")
@@ -3880,9 +3655,7 @@ def cmd_swarm(args):
             b_recall, b_recall_mode = briefing_recall_data, briefing_recall_mode
             b_briefing = briefing_text
         else:
-            b_recall, b_recall_mode = _fetch_recall_pack_json(
-                args.name, fallback_query=b_fallback
-            )
+            b_recall, b_recall_mode = _fetch_recall_pack_json(args.name, fallback_query=b_fallback)
             b_briefing = _render_recall_payload(args.name, b_recall, b_recall_mode)
         bundle_dir = _build_runtime_bundle(
             tentacle_dir=tentacle_dir,
@@ -3912,12 +3685,8 @@ def cmd_swarm(args):
     )
     if marker_written:
         print(f"📌 Marker: {_DISPATCHED_MARKER_PATH}")
-        print(
-            f"   Active until tentacle.py complete OR {_DISPATCHED_MARKER_TTL // 3600}h TTL."
-        )
-        print(
-            "   Local enforcement surfaces (git hooks, preToolUse guards) may observe this.\n"
-        )
+        print(f"   Active until tentacle.py complete OR {_DISPATCHED_MARKER_TTL // 3600}h TTL.")
+        print("   Local enforcement surfaces (git hooks, preToolUse guards) may observe this.\n")
 
     if args.output == "prompt":
         # Output as a single dispatch prompt with all todos
@@ -4006,28 +3775,16 @@ Add `--changed-file <path>` once per modified file. Omit if no files changed (e.
             print(
                 "- If a Bundle Path is present, read `manifest.json` first and use the bundle files as authoritative context"
             )
-            print(
-                "- Stay within the scoped files only — DO NOT modify files outside your declared scope"
-            )
-            print(
-                "- **DO NOT run `git commit` or `git push`** — the orchestrator owns all git operations"
-            )
-            print(
-                "- **DO NOT widen your scope** without explicit escalation to the orchestrator"
-            )
-            print(
-                "- If the task requires files outside your scope, stop and write a scope escalation note to handoff"
-            )
+            print("- Stay within the scoped files only — DO NOT modify files outside your declared scope")
+            print("- **DO NOT run `git commit` or `git push`** — the orchestrator owns all git operations")
+            print("- **DO NOT widen your scope** without explicit escalation to the orchestrator")
+            print("- If the task requires files outside your scope, stop and write a scope escalation note to handoff")
             print("")
             print("### Cross-review (required before handoff)")
-            print(
-                "Re-read every file you modified and confirm correctness before writing handoff."
-            )
+            print("Re-read every file you modified and confirm correctness before writing handoff.")
             print("")
             print("### When done")
-            print(
-                f'python3 ~/.copilot/tools/tentacle.py todo "{args.name}" done {t["index"]}'
-            )
+            print(f'python3 ~/.copilot/tools/tentacle.py todo "{args.name}" done {t["index"]}')
             print(
                 f'python3 ~/.copilot/tools/tentacle.py handoff "{args.name}" "Completed: {t["text"]}" --status DONE --changed-file <path1> --changed-file <path2> --learn'
             )
@@ -4044,9 +3801,7 @@ Add `--changed-file <path>` once per modified file. Omit if no files changed (e.
             "agent_type": agent_type,
             "model": model,
             "context_file": str(context_path),
-            "pending_todos": [
-                {"index": t["index"], "text": t["text"]} for t in pending
-            ],
+            "pending_todos": [{"index": t["index"], "text": t["text"]} for t in pending],
             "execution_guidance": {
                 "git_ops": "Do not run git commit or git push — the orchestrator owns all git operations",
                 "scope": "Stay within declared files — do not widen scope without escalating to the orchestrator",
@@ -4082,12 +3837,8 @@ def cmd_next_step(args):
     meta_path = tentacle_dir / "meta.json"
     todo_path = tentacle_dir / "todo.md"
 
-    meta = (
-        json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-    )
-    todos = (
-        parse_todos(todo_path.read_text(encoding="utf-8")) if todo_path.exists() else []
-    )
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    todos = parse_todos(todo_path.read_text(encoding="utf-8")) if todo_path.exists() else []
     pending = [t for t in todos if not t["done"]]
     done_count = sum(1 for t in todos if t["done"])
 
@@ -4119,9 +3870,7 @@ def cmd_next_step(args):
 
     # Human-readable output
     print(f"🎯 Next step for '{args.name}'")
-    print(
-        f"   Status: {meta.get('status', 'idle')} | Progress: {done_count}/{len(todos)} done"
-    )
+    print(f"   Status: {meta.get('status', 'idle')} | Progress: {done_count}/{len(todos)} done")
     print()
 
     if not pending:
@@ -4164,9 +3913,7 @@ def cmd_delete(args):
     tentacle_id: str | None = None
     if meta_path.exists():
         try:
-            tentacle_id = json.loads(meta_path.read_text(encoding="utf-8")).get(
-                "tentacle_id"
-            )
+            tentacle_id = json.loads(meta_path.read_text(encoding="utf-8")).get("tentacle_id")
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -4191,15 +3938,11 @@ def cmd_bundle(args):
         sys.exit(1)
 
     meta_path = tentacle_dir / "meta.json"
-    meta = (
-        json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-    )
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
 
     # Fetch briefing + recall pack
     fallback = meta.get("description", "") or args.name.replace("-", " ")
-    recall_pack_data, recall_source_mode = _fetch_recall_pack_json(
-        args.name, fallback_query=fallback
-    )
+    recall_pack_data, recall_source_mode = _fetch_recall_pack_json(args.name, fallback_query=fallback)
     briefing_text = ""
     if not getattr(args, "no_briefing", False):
         if not json_output:
@@ -4215,9 +3958,7 @@ def cmd_bundle(args):
             else:
                 print("   ℹ️  No briefing data — placeholder will be written")
     if recall_pack_data and not json_output:
-        print(
-            f"   ✅ Recall pack: {recall_source_mode} ({len(json.dumps(recall_pack_data))} chars)"
-        )
+        print(f"   ✅ Recall pack: {recall_source_mode} ({len(json.dumps(recall_pack_data))} chars)")
 
     # Load checkpoint
     checkpoint_text = ""
@@ -4238,9 +3979,7 @@ def cmd_bundle(args):
                 print(f"   ✅ Worktree {action}: {wt_path_str}")
         else:
             if not json_output:
-                print(
-                    f"   ⚠️  Worktree prepare failed: {wt_state.get('error', 'unknown')}"
-                )
+                print(f"   ⚠️  Worktree prepare failed: {wt_state.get('error', 'unknown')}")
 
     bundle_dir = _build_runtime_bundle(
         tentacle_dir=tentacle_dir,
@@ -4439,11 +4178,7 @@ def cmd_marker_cleanup(args):
         return
 
     marker_data = _read_dispatched_subagent_marker()
-    ttl = (
-        int(marker_data.get("ttl_seconds", _DISPATCHED_MARKER_TTL))
-        if marker_data
-        else _DISPATCHED_MARKER_TTL
-    )
+    ttl = int(marker_data.get("ttl_seconds", _DISPATCHED_MARKER_TTL)) if marker_data else _DISPATCHED_MARKER_TTL
     now = time.time()
 
     def _entry_age_seconds(ts_value):
@@ -4492,16 +4227,12 @@ def cmd_marker_cleanup(args):
         print(f"✅ Live entries ({len(live_entries)}):")
         for entry, age in live_entries:
             age_str = f"{age}s" if age is not None else "unknown age"
-            print(
-                f"   • {entry['name']} (age: {age_str}, repo: {entry.get('git_root') or 'unknown'})"
-            )
+            print(f"   • {entry['name']} (age: {age_str}, repo: {entry.get('git_root') or 'unknown'})")
 
     if stale_entries:
         print(f"\n⚠️  Stale entries ({len(stale_entries)}) — exceeded TTL of {ttl}s:")
         for entry, age in stale_entries:
-            print(
-                f"   • {entry['name']} (age: {age}s, repo: {entry.get('git_root') or 'unknown'})"
-            )
+            print(f"   • {entry['name']} (age: {age}s, repo: {entry.get('git_root') or 'unknown'})")
 
     if not stale_entries:
         print("\n✅ No stale entries to clean up.")
@@ -4624,12 +4355,8 @@ def main():
     # swarm
     p_swarm = sub.add_parser("swarm", help="Generate dispatch from pending todos")
     p_swarm.add_argument("name", help="Tentacle name")
-    p_swarm.add_argument(
-        "--agent-type", default="general-purpose", help="Agent type for workers"
-    )
-    p_swarm.add_argument(
-        "--model", default="claude-sonnet-4.6", help="Model for workers"
-    )
+    p_swarm.add_argument("--agent-type", default="general-purpose", help="Agent type for workers")
+    p_swarm.add_argument("--model", default="claude-sonnet-4.6", help="Model for workers")
     p_swarm.add_argument(
         "--output",
         choices=["prompt", "parallel", "json"],
@@ -4661,13 +4388,9 @@ def main():
     )
 
     # dispatch (alias for swarm --output prompt)
-    p_dispatch = sub.add_parser(
-        "dispatch", help="Generate single-agent dispatch prompt"
-    )
+    p_dispatch = sub.add_parser("dispatch", help="Generate single-agent dispatch prompt")
     p_dispatch.add_argument("name", help="Tentacle name")
-    p_dispatch.add_argument(
-        "--agent-type", default="general-purpose", help="Agent type"
-    )
+    p_dispatch.add_argument("--agent-type", default="general-purpose", help="Agent type")
     p_dispatch.add_argument("--model", default="claude-sonnet-4.6", help="Model")
     p_dispatch.add_argument(
         "--briefing",
@@ -4694,9 +4417,7 @@ def main():
     )
 
     # resume
-    p_resume = sub.add_parser(
-        "resume", help="Resume a tentacle: refresh briefing, set active"
-    )
+    p_resume = sub.add_parser("resume", help="Resume a tentacle: refresh briefing, set active")
     p_resume.add_argument("name", help="Tentacle name")
     p_resume.add_argument(
         "--no-briefing",
@@ -4720,9 +4441,7 @@ def main():
         action="store_true",
         help="Skip loading latest checkpoint context",
     )
-    p_next.add_argument(
-        "--all", action="store_true", help="Show all pending todos, not just the first"
-    )
+    p_next.add_argument("--all", action="store_true", help="Show all pending todos, not just the first")
     p_next.add_argument(
         "--format",
         choices=["text", "json"],
@@ -4735,13 +4454,9 @@ def main():
     p_delete.add_argument("name", help="Tentacle name")
 
     # complete
-    p_complete = sub.add_parser(
-        "complete", help="Complete tentacle: mark done + learn from handoff"
-    )
+    p_complete = sub.add_parser("complete", help="Complete tentacle: mark done + learn from handoff")
     p_complete.add_argument("name", help="Tentacle name")
-    p_complete.add_argument(
-        "--no-learn", action="store_true", help="Skip auto-learning from handoff"
-    )
+    p_complete.add_argument("--no-learn", action="store_true", help="Skip auto-learning from handoff")
     p_complete.add_argument(
         "--auto-verify",
         metavar="COMMAND",
@@ -4773,9 +4488,7 @@ def main():
     )
 
     # bundle (standalone command)
-    p_bundle = sub.add_parser(
-        "bundle", help="Materialize a per-run context bundle for a tentacle subagent"
-    )
+    p_bundle = sub.add_parser("bundle", help="Materialize a per-run context bundle for a tentacle subagent")
     p_bundle.add_argument("name", help="Tentacle name")
     p_bundle.add_argument(
         "--no-briefing",
@@ -4800,9 +4513,7 @@ def main():
     )
 
     # worktree subcommand
-    p_wt = sub.add_parser(
-        "worktree", help="Manage isolated git worktrees for tentacles"
-    )
+    p_wt = sub.add_parser("worktree", help="Manage isolated git worktrees for tentacles")
     p_wt.add_argument("name", help="Tentacle name")
     p_wt.add_argument(
         "action",
@@ -4832,9 +4543,7 @@ def main():
     )
 
     # verify subcommand
-    p_verify = sub.add_parser(
-        "verify", help="Run a verification command and persist results"
-    )
+    p_verify = sub.add_parser("verify", help="Run a verification command and persist results")
     p_verify.add_argument("name", help="Tentacle name")
     p_verify.add_argument("verify_command", help="Shell command to run")
     p_verify.add_argument("--label", help="Human-readable label for this verification")
@@ -4853,16 +4562,10 @@ def main():
     p_goal_sub = p_goal.add_subparsers(dest="goal_action", required=True)
 
     # goal init
-    p_goal_init = p_goal_sub.add_parser(
-        "init", help="Initialize a new goal.json in .octogent/"
-    )
-    p_goal_init.add_argument(
-        "--title", default="Unnamed Goal", help="Short title for this goal"
-    )
+    p_goal_init = p_goal_sub.add_parser("init", help="Initialize a new goal.json in .octogent/")
+    p_goal_init.add_argument("--title", default="Unnamed Goal", help="Short title for this goal")
     p_goal_init.add_argument("--desc", default="", help="Optional description")
-    p_goal_init.add_argument(
-        "--force", action="store_true", help="Overwrite existing goal.json"
-    )
+    p_goal_init.add_argument("--force", action="store_true", help="Overwrite existing goal.json")
     p_goal_init.add_argument(
         "--max-iterations",
         dest="max_iterations",
@@ -4886,37 +4589,25 @@ def main():
     )
 
     # goal status
-    p_goal_status = p_goal_sub.add_parser(
-        "status", help="Show current goal state and linked tentacles"
-    )
-    p_goal_status.add_argument(
-        "--format", choices=["text", "json"], default="text", help="Output format"
-    )
+    p_goal_status = p_goal_sub.add_parser("status", help="Show current goal state and linked tentacles")
+    p_goal_status.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
 
     # goal link
-    p_goal_link = p_goal_sub.add_parser(
-        "link", help="Link a tentacle to the current goal"
-    )
+    p_goal_link = p_goal_sub.add_parser("link", help="Link a tentacle to the current goal")
     p_goal_link.add_argument("tentacle_name", help="Name of the tentacle to link")
 
     # goal eval
-    p_goal_eval = p_goal_sub.add_parser(
-        "eval", help="Record evaluation checkpoint; advance iteration or change status"
-    )
+    p_goal_eval = p_goal_sub.add_parser("eval", help="Record evaluation checkpoint; advance iteration or change status")
     p_goal_eval.add_argument(
         "--decision",
         choices=sorted(GOAL_EVAL_DECISIONS),
         default="continue",
         help="Evaluation decision (default: continue)",
     )
-    p_goal_eval.add_argument(
-        "--notes", default="", help="Optional notes for this evaluation"
-    )
+    p_goal_eval.add_argument("--notes", default="", help="Optional notes for this evaluation")
 
     # goal resume
-    p_goal_resume = p_goal_sub.add_parser(
-        "resume", help="Resume a paused/abandoned goal (set status=active)"
-    )
+    p_goal_resume = p_goal_sub.add_parser("resume", help="Resume a paused/abandoned goal (set status=active)")
     p_goal_resume.add_argument(
         "--reset-failed",
         dest="reset_failed",
@@ -4934,32 +4625,20 @@ def main():
     )
 
     # goal criteria
-    p_goal_criteria = p_goal_sub.add_parser(
-        "criteria", help="Manage success criteria: add / check / list"
-    )
-    p_criteria_sub = p_goal_criteria.add_subparsers(
-        dest="criteria_action", required=True
-    )
-    p_criteria_list = p_criteria_sub.add_parser(
-        "list", help="List all success criteria"
-    )
+    p_goal_criteria = p_goal_sub.add_parser("criteria", help="Manage success criteria: add / check / list")
+    p_criteria_sub = p_goal_criteria.add_subparsers(dest="criteria_action", required=True)
+    p_criteria_list = p_criteria_sub.add_parser("list", help="List all success criteria")
     _ = p_criteria_list  # used for --help only
     p_criteria_add = p_criteria_sub.add_parser("add", help="Add a success criterion")
-    p_criteria_add.add_argument(
-        "--desc", required=True, help="Description of this criterion"
-    )
-    p_criteria_add.add_argument(
-        "--id", default=None, dest="id", help="Optional unique ID (e.g. sc-1)"
-    )
+    p_criteria_add.add_argument("--desc", required=True, help="Description of this criterion")
+    p_criteria_add.add_argument("--id", default=None, dest="id", help="Optional unique ID (e.g. sc-1)")
     p_criteria_add.add_argument(
         "--verify-cmd",
         dest="verify_cmd",
         default="",
         help="Shell command to verify this criterion",
     )
-    p_criteria_check = p_criteria_sub.add_parser(
-        "check", help="Run verification command(s) and update status"
-    )
+    p_criteria_check = p_criteria_sub.add_parser("check", help="Run verification command(s) and update status")
     p_criteria_check.add_argument(
         "--id",
         default=None,
@@ -4974,44 +4653,26 @@ def main():
     )
 
     # goal gate
-    p_goal_gate = p_goal_sub.add_parser(
-        "gate", help="Manage gates: add / approve / reject / pass / fail"
-    )
+    p_goal_gate = p_goal_sub.add_parser("gate", help="Manage gates: add / approve / reject / pass / fail")
     p_gate_sub = p_goal_gate.add_subparsers(dest="gate_action", required=True)
     p_gate_add = p_gate_sub.add_parser("add", help="Add a new pending human gate")
     p_gate_add.add_argument("gate_id", help="Gate ID (e.g. G1)")
-    p_gate_add.add_argument(
-        "--desc", default="", help="Optional description of what this gate checks"
-    )
-    p_gate_approve = p_gate_sub.add_parser(
-        "approve", help="Approve (pass) a gate — explicit human sign-off"
-    )
+    p_gate_add.add_argument("--desc", default="", help="Optional description of what this gate checks")
+    p_gate_approve = p_gate_sub.add_parser("approve", help="Approve (pass) a gate — explicit human sign-off")
     p_gate_approve.add_argument("gate_id", help="Gate ID (e.g. G1)")
-    p_gate_approve.add_argument(
-        "--reason", default="", help="Optional approval rationale"
-    )
-    p_gate_reject = p_gate_sub.add_parser(
-        "reject", help="Reject a gate — blocks goal eval with persisted reason"
-    )
+    p_gate_approve.add_argument("--reason", default="", help="Optional approval rationale")
+    p_gate_reject = p_gate_sub.add_parser("reject", help="Reject a gate — blocks goal eval with persisted reason")
     p_gate_reject.add_argument("gate_id", help="Gate ID (e.g. G1)")
-    p_gate_reject.add_argument(
-        "--reason", required=True, help="Rejection reason (required)"
-    )
-    p_gate_pass = p_gate_sub.add_parser(
-        "pass", help="Mark a gate as passed (legacy alias for approve)"
-    )
+    p_gate_reject.add_argument("--reason", required=True, help="Rejection reason (required)")
+    p_gate_pass = p_gate_sub.add_parser("pass", help="Mark a gate as passed (legacy alias for approve)")
     p_gate_pass.add_argument("gate_id", help="Gate ID (e.g. G1)")
-    p_gate_pass.add_argument(
-        "--reason", default="", help="Optional reason/evidence text"
-    )
+    p_gate_pass.add_argument("--reason", default="", help="Optional reason/evidence text")
     p_gate_fail = p_gate_sub.add_parser("fail", help="Mark a gate as failed")
     p_gate_fail.add_argument("gate_id", help="Gate ID (e.g. G1)")
     p_gate_fail.add_argument("--reason", default="", help="Optional reason text")
 
     # goal budget
-    p_goal_budget = p_goal_sub.add_parser(
-        "budget", help="Show or update budget for the current goal"
-    )
+    p_goal_budget = p_goal_sub.add_parser("budget", help="Show or update budget for the current goal")
     p_goal_budget.add_argument(
         "--max-iterations",
         dest="max_iterations",
@@ -5033,9 +4694,7 @@ def main():
         default=None,
         help="Set timeout in minutes (positive integer)",
     )
-    p_goal_budget.add_argument(
-        "--format", choices=["text", "json"], default="text", help="Output format"
-    )
+    p_goal_budget.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
 
     # goal next-iter
     p_goal_sub.add_parser(
