@@ -761,7 +761,8 @@ sk tentacle goal gate approve G1 [--reason "QA signed off on 2025-05-11"]
 # fallback: python3 ~/.copilot/tools/tentacle.py goal gate approve G1 --reason "..."
 
 # 2b. Reject — marks the gate rejected, sets goal status to awaiting-gate
-#     (if goal is budget_limited, status stays budget_limited — run `goal resume` first)
+#     (if goal is budget_limited, status stays budget_limited — adjust limits with
+#      `goal budget` if needed, then run `goal resume` first)
 sk tentacle goal gate reject G1 --reason "QA found regressions in auth flow"
 # fallback: python3 ~/.copilot/tools/tentacle.py goal gate reject G1 --reason "..."
 # Note: --reason is required for reject.

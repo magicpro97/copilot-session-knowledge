@@ -2344,7 +2344,7 @@ class TestGoalNextIter(unittest.TestCase):
     def test_budget_limited_goal_next_iter_recommends_resume(self):
         """next-iter must NOT recommend goal eval commands when goal is budget_limited."""
         state = T._goal_load(self.tentacles)
-        state["status"] = "budget_limited"
+        state["status"] = T.GOAL_STATUS_BUDGET_LIMITED
         # Push iteration beyond max_iterations=3 so over_budget is True.
         # This ensures the WARNING-suppression assertion is non-vacuous.
         state["iteration"] = 4
@@ -2575,6 +2575,7 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
         self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
 
         import io
+
         # continue decision still requires goal budget + goal resume
         err_buf = io.StringIO()
         with self.assertRaises(SystemExit) as cm:
@@ -2588,6 +2589,7 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
     def test_budget_limited_eval_non_continue_guidance_only_requires_resume(self):
         """Blocked eval with non-continue decision on budget_limited must only require goal resume (no goal budget)."""
         import io
+
         for decision in ("abandon", "complete", "pause"):
             with self.subTest(decision=decision):
                 _init_goal(self.tentacles, title=f"Budget Non-Continue {decision}", max_iterations=1, force=True)
@@ -2608,8 +2610,7 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
                 err = err_buf.getvalue()
                 self.assertIn("goal resume", err, f"stderr must mention 'goal resume' for {decision}")
                 self.assertNotIn(
-                    "goal budget", err,
-                    f"stderr must NOT mention 'goal budget' for non-continue decision '{decision}'"
+                    "goal budget", err, f"stderr must NOT mention 'goal budget' for non-continue decision '{decision}'"
                 )
 
     def test_budget_limited_dispatch_guidance_mentions_budget_and_resume(self):
@@ -2624,6 +2625,7 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
         self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
 
         import io
+
         err_buf = io.StringIO()
         args_dispatch = _fake_args(goal_action="dispatch", concurrency=4, format="text")
         with self.assertRaises(SystemExit):
@@ -2688,8 +2690,6 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
             T._cmd_goal_eval(args_abandon, self.tentacles)
         state = T._goal_load(self.tentacles)
         self.assertEqual(state["status"], T.GOAL_STATUS_ABANDONED)
-
-
 
     def test_status_view_reflects_lifecycle_state(self):
         """goal status must show live state across lifecycle transitions."""
@@ -3258,6 +3258,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             escalate=False,
         )
         import io
+
         captured = io.StringIO()
         with patch("sys.stderr", captured):
             with self.assertRaises(SystemExit) as cm:
@@ -3276,9 +3277,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
         T._goal_write(self.tentacles, state)
 
         with patch("builtins.print"):
-            result = T._escalate_goal_to_needs_human(
-                state, self.tentacles, failing_ids=["sc-1"], reason="stall"
-            )
+            result = T._escalate_goal_to_needs_human(state, self.tentacles, failing_ids=["sc-1"], reason="stall")
 
         # escalation must return False (not escalated)
         self.assertFalse(result, "_escalate_goal_to_needs_human must return False for budget_limited goal")
@@ -3619,6 +3618,11 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=15,
         )
         combined = result.stdout + result.stderr
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"'goal verify-loop --help' must exit 0.\nstdout: {result.stdout!r}\nstderr: {result.stderr!r}",
+        )
         for flag in ("--max-retries", "--escalate", "--retry-delay", "--timeout", "--id"):
             self.assertIn(flag, combined, f"Parser must expose '{flag}'")
 
@@ -4511,11 +4515,15 @@ class TestGoalParserHelp(unittest.TestCase):
             timeout=15,
         )
         combined = result.stdout + result.stderr
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"'goal --help' must exit 0.\nstdout: {result.stdout!r}\nstderr: {result.stderr!r}",
+        )
         self.assertIn(
             "verify-loop",
             combined,
-            f"'verify-loop' must appear in 'goal --help' output.\n"
-            f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}",
+            f"'verify-loop' must appear in 'goal --help' output.\nstdout: {result.stdout!r}\nstderr: {result.stderr!r}",
         )
 
 
