@@ -4257,6 +4257,22 @@ def _parse_handoff_changed_files(handoff_content: str) -> "list[str]":
     return changed_files
 
 
+def _parse_handoff_bridge_links(handoff_content: str) -> "list[str]":
+    """Return all Bridge: criterion IDs from handoff sections.
+
+    Preserves first-seen handoff order while deduplicating repeated IDs.
+    Returns [] for handoffs with no Bridge: lines.
+    """
+    seen: set[str] = set()
+    bridge_links: list[str] = []
+    for raw_id in re.findall(r"^Bridge:\s*(.+)", handoff_content, flags=re.MULTILINE):
+        sc_id = raw_id.strip()
+        if sc_id and sc_id not in seen:
+            bridge_links.append(sc_id)
+            seen.add(sc_id)
+    return bridge_links
+
+
 def cmd_handoff(args):
     """Write a handoff message for a tentacle (agent output)."""
     tentacles = get_tentacles_dir(args.session_dir)
@@ -4269,6 +4285,7 @@ def cmd_handoff(args):
     # Validate optional structured status
     status = getattr(args, "status", None)
     changed_files: list[str] = list(getattr(args, "changed_file", None) or [])
+    bridge_links: list[str] = list(getattr(args, "bridge", None) or [])
 
     if status is not None and status not in HANDOFF_STATUS_ALLOWLIST:
         allowed = ", ".join(sorted(HANDOFF_STATUS_ALLOWLIST))
@@ -4286,6 +4303,8 @@ def cmd_handoff(args):
         entry += f"STATUS: {status}\n"
     for cf in changed_files:
         entry += f"Changed: {cf}\n"
+    for bl in bridge_links:
+        entry += f"Bridge: {bl}\n"
 
     with file_locked(handoff_path):
         if handoff_path.exists():
@@ -4295,6 +4314,24 @@ def cmd_handoff(args):
             handoff_path.write_text(f"# Handoff Notes\n{entry}", encoding="utf-8")
 
     print(f"📨 Handoff recorded for '{args.name}'")
+
+    # Validate bridge links against active goal criteria (fail-open)
+    try:
+        goal_state = _goal_load(tentacles)
+        criteria = goal_state.get("success_criteria", [])
+        if criteria:
+            criterion_ids = {c.get("id") for c in criteria if c.get("id")}
+            if not bridge_links:
+                print(
+                    "⚠️  WARNING: no Bridge link supplied — consider --bridge <sc-id> to link "
+                    "this handoff to a success criterion"
+                )
+            else:
+                for bl in bridge_links:
+                    if bl not in criterion_ids:
+                        print(f"⚠️  WARNING: criterion '{bl}' not found in goal.json success_criteria")
+    except Exception:
+        pass  # fail-open: skip validation if goal.json is unreadable
 
     # Triage signal for non-DONE statuses
     if status in HANDOFF_TRIAGE_STATUSES:
@@ -4377,17 +4414,21 @@ def cmd_complete(args):
     if not (meta.get("verifications") or []):
         print("⚠️  No verification evidence recorded — run 'verify' or use --auto-verify before completing")
 
-    # 2a. Extract structured handoff fields (terminal_status, changed_files)
+    # 2a. Extract structured handoff fields (terminal_status, changed_files, bridge_links)
     terminal_status = None
     changed_files: list[str] = []
+    bridge_links: list[str] = []
     if handoff_path.exists():
         raw_handoff = handoff_path.read_text(encoding="utf-8")
         terminal_status = _parse_handoff_status(raw_handoff)
         changed_files = _parse_handoff_changed_files(raw_handoff)
+        bridge_links = _parse_handoff_bridge_links(raw_handoff)
     if terminal_status:
         meta["terminal_status"] = terminal_status
     if changed_files:
         meta["changed_files"] = changed_files
+    if bridge_links:
+        meta["bridge_links"] = bridge_links
 
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
@@ -5317,6 +5358,14 @@ def main():
         metavar="FILE",
         default=[],
         help="Changed file receipt (repeatable); e.g. --changed-file src/foo.py",
+    )
+    p_handoff.add_argument(
+        "--bridge",
+        action="append",
+        dest="bridge",
+        metavar="SC_ID",
+        default=[],
+        help="Bridge link to a success criterion ID (repeatable); e.g. --bridge sc-1",
     )
 
     # swarm
