@@ -22,6 +22,7 @@ Usage:
     python3 ~/.copilot/tools/tentacle.py complete <name> [--no-learn]
     python3 ~/.copilot/tools/tentacle.py delete <name>
     python3 ~/.copilot/tools/tentacle.py goal init --title <title> [--desc <desc>] [--force] [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]
+    python3 ~/.copilot/tools/tentacle.py goal create --title <title> [--desc <desc>] [--force] [--max-iterations N] [--max-tentacles N] [--timeout MINUTES] [--criterion JSON] ...
     python3 ~/.copilot/tools/tentacle.py goal validate [--title <title>] [--desc <desc>] [--format text|json]
     python3 ~/.copilot/tools/tentacle.py goal status [--format text|json]
     python3 ~/.copilot/tools/tentacle.py goal dispatch [--concurrency N] [--format text|json]
@@ -31,6 +32,7 @@ Usage:
     python3 ~/.copilot/tools/tentacle.py goal criteria add --desc <desc> [--id <id>] [--verify-cmd <cmd>]
     python3 ~/.copilot/tools/tentacle.py goal criteria check [--id <id>] [--timeout <secs>]
     python3 ~/.copilot/tools/tentacle.py goal criteria list
+    python3 ~/.copilot/tools/tentacle.py goal verify [--id <id>] [--timeout <secs>]
     python3 ~/.copilot/tools/tentacle.py goal gate pass <gate-id> [--reason <text>]
     python3 ~/.copilot/tools/tentacle.py goal gate fail <gate-id> [--reason <text>]
     python3 ~/.copilot/tools/tentacle.py goal gate add <gate-id> [--desc <desc>]
@@ -2521,6 +2523,93 @@ def _cmd_goal_init(args, tentacles: Path) -> None:
     print("   Tip: link tentacles with `tentacle.py goal link <tentacle-name>`")
 
 
+def _cmd_goal_create(args, tentacles: Path) -> None:
+    """Create a new goal with optional initial success criteria (alias for goal init + criteria add).
+
+    Accepts all the same arguments as ``goal init``.  If one or more
+    ``--criterion`` values are supplied they are parsed as JSON objects with
+    optional keys ``id``, ``description``, and ``verification_command``, then
+    added to the newly created goal.
+
+    Example::
+
+        tentacle.py goal create --title "Ship v2" \\
+            --criterion '{"description":"tests pass","verification_command":"pytest"}' \\
+            --criterion '{"id":"sc-docs","description":"docs build"}'
+    """
+    import types as _types
+
+    # Validate ALL criteria before any write so that an invalid later value
+    # cannot leave a partial goal (with some criteria but not others) on disk.
+    raw_criteria: list[str] = getattr(args, "criterion", None) or []
+    parsed_criteria: list[dict] = []
+    for raw in raw_criteria:
+        try:
+            c = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            print(
+                f"ERROR: --criterion value is not valid JSON: {raw!r}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not isinstance(c, dict):
+            print(
+                f"ERROR: --criterion value must be a JSON object, got: {type(c).__name__}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        parsed_criteria.append(c)
+
+    # Prevalidate criterion IDs: reject duplicate explicit IDs and explicit/auto
+    # collisions before any write so no partial goal.json can survive ID conflicts.
+    # Simulate the same assignment logic used by _cmd_goal_criteria "add":
+    #   auto-ID = f"sc-{running_count + 1}" where running_count tracks added criteria.
+    seen_ids: set[str] = set()
+    running_count = 0
+    for c in parsed_criteria:
+        effective_id: str = c.get("id") or f"sc-{running_count + 1}"
+        if effective_id in seen_ids:
+            print(
+                f"ERROR: --criterion IDs would collide: '{effective_id}' appears more than once "
+                f"(check explicit 'id' fields and auto-generated sc-N IDs).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        seen_ids.add(effective_id)
+        running_count += 1
+
+    # All criteria are valid and IDs are unique — safe to create the goal now.
+    _cmd_goal_init(args, tentacles)
+
+    for c in parsed_criteria:
+        add_args = _types.SimpleNamespace(
+            goal_action="criteria",
+            criteria_action="add",
+            desc=c.get("description", ""),
+            id=c.get("id", None),
+            verify_cmd=c.get("verification_command", ""),
+        )
+        _cmd_goal_criteria(add_args, tentacles)
+
+
+def _cmd_goal_verify(args, tentacles: Path) -> None:
+    """Run all success criteria verification commands (alias for ``goal criteria check``).
+
+    Delegates directly to :func:`_cmd_goal_criteria` with ``criteria_action``
+    set to ``"check"``, so all persistence and exit-code semantics are identical
+    to ``goal criteria check``.
+    """
+    import types as _types
+
+    check_args = _types.SimpleNamespace(
+        goal_action="criteria",
+        criteria_action="check",
+        id=getattr(args, "id", None),
+        timeout=getattr(args, "timeout", 60) or 60,
+    )
+    _cmd_goal_criteria(check_args, tentacles)
+
+
 def _cmd_goal_validate(args, tentacles: Path) -> None:
     """Check goal title/description length against the soft/hard text budget."""
     source = _goal_validate_input_source(args, tentacles)
@@ -3202,13 +3291,13 @@ def _cmd_goal_criteria(args, tentacles: Path) -> None:
                 verified_at = datetime.now(timezone.utc).isoformat()
                 c["status"] = "verified"
                 c["verified_at"] = verified_at
-                criterion_updates[str(c.get("id", "?"))] = {"status": "verified", "verified_at": verified_at}
+                criterion_updates[str(c.get("id", "?"))] = {"status": "verified", "verified_at": verified_at, "evidence": output}
                 print(f"  ✅ [{c.get('id', '?')}] PASSED")
             else:
                 failed_at = datetime.now(timezone.utc).isoformat()
                 c["status"] = "failed"
                 c["failed_at"] = failed_at
-                criterion_updates[str(c.get("id", "?"))] = {"status": "failed", "failed_at": failed_at}
+                criterion_updates[str(c.get("id", "?"))] = {"status": "failed", "failed_at": failed_at, "evidence": output}
                 print(f"  ❌ [{c.get('id', '?')}] FAILED (exit={exit_code})")
                 for line in output.strip().splitlines()[:5]:
                     print(f"     {line}")
@@ -3232,6 +3321,8 @@ def _cmd_goal_criteria(args, tentacles: Path) -> None:
                     criterion["verified_at"] = update["verified_at"]
                 if "failed_at" in update:
                     criterion["failed_at"] = update["failed_at"]
+                if "evidence" in update:
+                    criterion["evidence"] = update["evidence"]
             state["updated_at"] = datetime.now(timezone.utc).isoformat()
             _goal_write(tentacles, state)
             all_verified = all(c.get("status") == "verified" for c in criteria)
@@ -3680,7 +3771,7 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
                 verified_at = datetime.now(timezone.utc).isoformat()
                 c["status"] = "verified"
                 c["verified_at"] = verified_at
-                criterion_updates[str(cid)] = {"status": "verified", "verified_at": verified_at}
+                criterion_updates[str(cid)] = {"status": "verified", "verified_at": verified_at, "evidence": output}
                 print(f"  ✅ [{cid}] PASSED")
                 last_failure_hashes.pop(cid, None)
                 stall_counts.pop(cid, None)
@@ -3688,7 +3779,7 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
                 failed_at = datetime.now(timezone.utc).isoformat()
                 c["status"] = "failed"
                 c["failed_at"] = failed_at
-                criterion_updates[str(cid)] = {"status": "failed", "failed_at": failed_at}
+                criterion_updates[str(cid)] = {"status": "failed", "failed_at": failed_at, "evidence": output}
                 print(f"  ❌ [{cid}] FAILED (exit={exit_code})")
                 for line in output.strip().splitlines()[:5]:
                     print(f"     {line}")
@@ -3733,6 +3824,8 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
                     criterion["verified_at"] = update["verified_at"]
                 if "failed_at" in update:
                     criterion["failed_at"] = update["failed_at"]
+                if "evidence" in update:
+                    criterion["evidence"] = update["evidence"]
             persisted_state["updated_at"] = datetime.now(timezone.utc).isoformat()
             _goal_write(tentacles, persisted_state)
 
@@ -3779,13 +3872,15 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
 
 
 def cmd_goal(args):
-    """Dispatch goal sub-commands: init / validate / status / dispatch / link / eval / resume / criteria / gate / budget / next-iter / verify-loop."""
+    """Dispatch goal sub-commands: init / create / validate / status / dispatch / link / eval / resume / criteria / gate / budget / next-iter / verify / verify-loop."""
     tentacles = get_tentacles_dir(args.session_dir)
     sub = args.goal_action
 
     try:
         if sub == "init":
             _cmd_goal_init(args, tentacles)
+        elif sub == "create":
+            _cmd_goal_create(args, tentacles)
         elif sub == "validate":
             _cmd_goal_validate(args, tentacles)
         elif sub == "status":
@@ -3806,6 +3901,8 @@ def cmd_goal(args):
             _cmd_goal_budget(args, tentacles)
         elif sub == "next-iter":
             _cmd_goal_next_iter(args, tentacles)
+        elif sub == "verify":
+            _cmd_goal_verify(args, tentacles)
         elif sub == "verify-loop":
             _cmd_goal_verify_loop(args, tentacles)
         else:
@@ -5411,7 +5508,7 @@ def main():
     # goal subcommand
     p_goal = sub.add_parser(
         "goal",
-        help="Orchestrator-level goal loop: init/validate/status/dispatch/link/eval/resume/criteria/gate/budget/next-iter",
+        help="Orchestrator-level goal loop: init/create/validate/status/dispatch/link/eval/resume/criteria/verify/gate/budget/next-iter/verify-loop",
     )
     p_goal_sub = p_goal.add_subparsers(dest="goal_action", required=True)
 
@@ -5441,6 +5538,48 @@ def main():
         default=None,
         help="Budget: timeout in minutes (positive integer)",
     )
+
+    # goal create (alias for goal init + optional --criterion entries)
+    p_goal_create = p_goal_sub.add_parser(
+        "create",
+        help="Create a new goal.json (alias for goal init) with optional initial success criteria",
+    )
+    p_goal_create.add_argument("--title", default="Unnamed Goal", help="Short title for this goal")
+    p_goal_create.add_argument("--desc", default="", help="Optional description")
+    p_goal_create.add_argument("--force", action="store_true", help="Overwrite existing goal.json")
+    p_goal_create.add_argument(
+        "--max-iterations",
+        dest="max_iterations",
+        type=_positive_int_arg,
+        default=None,
+        help="Budget: max loop iterations (positive integer)",
+    )
+    p_goal_create.add_argument(
+        "--max-tentacles",
+        dest="max_tentacles",
+        type=_positive_int_arg,
+        default=None,
+        help="Budget: max tentacle count (positive integer)",
+    )
+    p_goal_create.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=_positive_int_arg,
+        default=None,
+        help="Budget: timeout in minutes (positive integer)",
+    )
+    p_goal_create.add_argument(
+        "--criterion",
+        dest="criterion",
+        action="append",
+        default=[],
+        metavar="JSON",
+        help=(
+            'Add a success criterion as a JSON object, e.g. \'{"description":"tests pass",'
+            '"verification_command":"pytest"}\'. Repeatable.'
+        ),
+    )
+
 
     # goal validate
     p_goal_validate = p_goal_sub.add_parser("validate", help="Check goal title/description length")
@@ -5606,6 +5745,24 @@ def main():
     p_goal_sub.add_parser(
         "next-iter",
         help="Summarise iteration state and advise on the next goal-loop step",
+    )
+
+    # goal verify (single-pass alias for goal criteria check)
+    p_goal_verify_simple = p_goal_sub.add_parser(
+        "verify",
+        help="Run all success criteria verification commands once (alias for goal criteria check)",
+    )
+    p_goal_verify_simple.add_argument(
+        "--id",
+        default=None,
+        dest="id",
+        help="Check only the criterion with this ID (default: all criteria)",
+    )
+    p_goal_verify_simple.add_argument(
+        "--timeout",
+        type=_positive_int_arg,
+        default=60,
+        help="Per-command timeout in seconds (default: 60)",
     )
 
     # goal verify-loop
