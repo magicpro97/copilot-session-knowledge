@@ -2334,8 +2334,7 @@ def _cmd_goal_validate(args, tentacles: Path) -> None:
 
     if validation["hard_exceeded"]:
         print(
-            "ERROR: Goal title + description exceed the "
-            f"{validation['hard_limit']}-character hard limit.",
+            f"ERROR: Goal title + description exceed the {validation['hard_limit']}-character hard limit.",
             file=sys.stderr,
         )
         sys.exit(1)
