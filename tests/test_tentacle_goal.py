@@ -16,6 +16,7 @@ Tests cover:
 Runs in-process using a temp subdirectory. Does NOT write to /tmp.
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -1604,8 +1605,6 @@ class TestGoalVerifyLoop(unittest.TestCase):
 
         Two identical failures followed by a passing attempt must NOT trigger
         stall — the loop must reach attempt 3 and return successfully.
-
-        This test will FAIL until the stall threshold is corrected to >= 3.
         """
         results = [(1, "repeated error"), (1, "repeated error"), (0, "success")]
         call_count = [0]
@@ -2062,6 +2061,105 @@ class TestGoalVerifyLoop(unittest.TestCase):
         sc2 = next(c for c in state["success_criteria"] if c["id"] == "sc-2")
         self.assertEqual(sc1["status"], "verified")
         self.assertEqual(sc2["status"], "unverified", "sc-2 must be untouched when --id=sc-1")
+
+    # ------------------------------------------------------------------
+    # PR #142 follow-up regressions
+    # ------------------------------------------------------------------
+
+    def test_resume_clears_needs_human_metadata(self):
+        """Resume from needs-human must remove stale needs_human_* fields.
+
+        After escalation the goal carries needs_human_reason,
+        needs_human_failing_criteria, and needs_human_at.  Those fields must be
+        deleted when the goal is resumed so a subsequent verify-loop sees a
+        clean slate and does not carry stale escalation context.
+        """
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_NEEDS_HUMAN
+        state["needs_human_reason"] = "stall"
+        state["needs_human_failing_criteria"] = ["sc-1"]
+        state["needs_human_at"] = datetime.now(timezone.utc).isoformat()
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="resume")
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertNotIn("needs_human_reason", state, "needs_human_reason must be cleared on resume")
+        self.assertNotIn(
+            "needs_human_failing_criteria", state, "needs_human_failing_criteria must be cleared on resume"
+        )
+        self.assertNotIn("needs_human_at", state, "needs_human_at must be cleared on resume")
+
+    def test_max_retries_zero_means_single_attempt(self):
+        """--max-retries 0 must run exactly one attempt (no retries).
+
+        Before the fix, ``getattr(args, "max_retries", 3) or 3`` treated 0 as
+        falsy and silently fell back to 3 extra retries (4 total).  The
+        corrected logic must treat 0 as explicit: one initial run, then stop.
+        """
+        call_count = [0]
+
+        def _mock_run(c, cwd, timeout=60):
+            call_count[0] += 1
+            return (1, "still failing")
+
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=0,
+            retry_delay=1,
+            timeout=30,
+            escalate=False,
+        )
+        with patch("tentacle._goal_criteria_run_one", side_effect=_mock_run):
+            with patch("time.sleep"):
+                with patch("builtins.print"):
+                    with self.assertRaises(SystemExit) as cm:
+                        T._cmd_goal_verify_loop(args, self.tentacles)
+
+        self.assertEqual(cm.exception.code, 1)
+        self.assertEqual(
+            call_count[0],
+            1,
+            "--max-retries 0 must produce exactly 1 attempt; the or-3 fallback bug would give 4",
+        )
+
+    def test_verify_loop_history_stores_hash_not_raw_output(self):
+        """verify_loop_history entries must carry output_hash/output_len, not output_snippet.
+
+        Persisting raw output snippets can leak large or sensitive command
+        output into goal state.  Each per-result record must store a truncated
+        SHA-256 hash (output_hash) and the byte count (output_len) instead.
+        """
+        output_text = "sensitive-output-e🙂"
+        output_bytes = output_text.encode("utf-8")
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=0,
+            retry_delay=1,
+            timeout=30,
+            escalate=False,
+        )
+        with patch("tentacle._goal_criteria_run_one", return_value=(1, output_text)):
+            with patch("time.sleep"):
+                with patch("builtins.print"):
+                    with self.assertRaises(SystemExit):
+                        T._cmd_goal_verify_loop(args, self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        history = state.get("verify_loop_history", [])
+        self.assertTrue(history, "verify_loop_history must have at least one entry after a run")
+        for entry in history:
+            for result in entry.get("results", []):
+                self.assertIn("output_hash", result, "Each result must carry output_hash")
+                self.assertIn("output_len", result, "Each result must carry output_len")
+                self.assertNotIn("output_snippet", result, "Raw output_snippet must not be stored in history")
+                self.assertEqual(result["output_len"], len(output_bytes))
+                self.assertEqual(result["output_hash"], hashlib.sha256(output_bytes).hexdigest()[:16])
 
     # ------------------------------------------------------------------
     # CLI / parser plumbing

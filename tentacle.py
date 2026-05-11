@@ -1760,6 +1760,17 @@ def _positive_int_arg(value: str) -> int:
     return parsed
 
 
+def _nonneg_int_arg(value: str) -> int:
+    """Argparse type that accepts non-negative integers (0 or more)."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("must be a non-negative integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return parsed
+
+
 def _validate_goal_budget_value(value: int | None, flag_name: str) -> int | None:
     """Reject zero/negative budget values even when commands are called directly in-process."""
     if value is None:
@@ -2143,6 +2154,12 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
     state["status"] = GOAL_STATUS_ACTIVE
     state["resumed_at"] = datetime.now(timezone.utc).isoformat()
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # Clear stale needs-human metadata when resuming from needs-human state.
+    # Success-criteria pass/fail state is preserved intentionally.
+    if prev_status == GOAL_STATUS_NEEDS_HUMAN:
+        state.pop("needs_human_reason", None)
+        state.pop("needs_human_failing_criteria", None)
+        state.pop("needs_human_at", None)
     _goal_write(tentacles, state)
 
     print(f"🔄 Goal '{state.get('title', '?')}' resumed (was: {prev_status})")
@@ -2449,7 +2466,8 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
 
     criteria: list = state.get("success_criteria", [])
     check_id = getattr(args, "id", None)
-    max_retries = getattr(args, "max_retries", 3) or 3
+    _raw_retries = getattr(args, "max_retries", None)
+    max_retries = _raw_retries if _raw_retries is not None else 3
     retry_delay = getattr(args, "retry_delay", 10) or 10
     timeout = getattr(args, "timeout", 60) or 60
     escalate = getattr(args, "escalate", False)
@@ -2489,11 +2507,13 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
             ran_any = True
             print(f"  Running [{cid}]: {cmd_str[:60]}...")
             exit_code, output = _goal_criteria_run_one(c, cwd, timeout)
+            output_bytes = output.encode("utf-8", errors="replace")
             attempt_results.append(
                 {
                     "id": cid,
                     "exit_code": exit_code,
-                    "output_snippet": output[:200],
+                    "output_hash": hashlib.sha256(output_bytes).hexdigest()[:16],
+                    "output_len": len(output_bytes),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
             )
@@ -4264,9 +4284,9 @@ def main():
     p_goal_verify.add_argument(
         "--max-retries",
         dest="max_retries",
-        type=_positive_int_arg,
-        default=3,
-        help="Maximum number of retry attempts after the initial run (default: 3)",
+        type=_nonneg_int_arg,
+        default=None,
+        help="Maximum number of retry attempts after the initial run (default: 3; 0 means one run, no retries)",
     )
     p_goal_verify.add_argument(
         "--retry-delay",
