@@ -2189,7 +2189,11 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
                 t_meta = json.loads(meta_path.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            t_iter = t_meta.get("goal_iteration") or t_meta.get("iteration") or 1
+            raw_iter = t_meta.get("goal_iteration") or t_meta.get("iteration") or 1
+            try:
+                t_iter = int(raw_iter)
+            except (TypeError, ValueError):
+                t_iter = 1
             t_terminal = t_meta.get("terminal_status")
             needs_rewind = from_iteration is not None and t_iter >= from_iteration
             needs_reset_failed = reset_failed and t_terminal in {"BLOCKED", "AMBIGUOUS"}

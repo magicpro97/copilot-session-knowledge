@@ -741,17 +741,17 @@ class TestGoalResume(unittest.TestCase):
     def test_reset_failed_preserves_done_tentacle(self):
         """--reset-failed must NOT touch a DONE tentacle."""
         self._link_tentacle_with_meta("t-done", terminal_status="DONE")
-        # Manually set its status to done so the fixture is realistic.
+        # Manually set its status to completed so the fixture matches the real lifecycle values.
         meta_path = self.tentacles / "t-done" / "meta.json"
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        meta["status"] = "done"
+        meta["status"] = "completed"
         meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
         self._pause_goal()
         args = _fake_args(goal_action="resume", reset_failed=True, from_iteration=None)
         with patch("builtins.print"):
             T._cmd_goal_resume(args, self.tentacles)
         meta = self._read_meta("t-done")
-        self.assertEqual(meta["status"], "done", "DONE tentacle must not be reset by --reset-failed")
+        self.assertEqual(meta["status"], "completed", "DONE tentacle must not be reset by --reset-failed")
         self.assertEqual(meta["terminal_status"], "DONE")
 
     def test_reset_failed_preserves_regressed_tentacle(self):
@@ -787,6 +787,25 @@ class TestGoalResume(unittest.TestCase):
             T._cmd_goal_resume(args, self.tentacles)
         state = T._goal_load(self.tentacles)
         self.assertEqual(state["iteration"], 2)
+
+    def test_from_iteration_accepts_string_goal_iteration_metadata(self):
+        """String goal_iteration metadata must be normalized before numeric rewind comparisons."""
+        self._link_tentacle_with_meta("t-string-iter", goal_iteration="2")
+        meta_path = self.tentacles / "t-string-iter" / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["status"] = "completed"
+        meta["terminal_status"] = "DONE"
+        meta["completed_at"] = "2026-01-01T00:00:00Z"
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(_fake_args(goal_action="eval", decision="continue", notes=""), self.tentacles)
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", from_iteration=2, reset_failed=False)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        meta = self._read_meta("t-string-iter")
+        self.assertEqual(meta["status"], "idle")
+        self.assertNotIn("terminal_status", meta)
 
     def test_from_iteration_resets_tentacles_at_or_after_n(self):
         """--from-iteration N must reset tentacles whose goal_iteration >= N to idle."""
