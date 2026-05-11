@@ -2458,7 +2458,7 @@ def _cmd_goal_gate(args, tentacles: Path) -> None:
             if gate_status in {"rejected", "failed"}:
                 print(f"   Resolve with: goal gate approve {gate_id} [--reason <text>]")
             else:
-                print(f"   Use a new gate id if you need another human gate for this check.")
+                print("   Use a new gate id if you need another human gate for this check.")
             return
         print(f"⬜ Gate [{gate_id}] added — awaiting human approval")
         if desc:
