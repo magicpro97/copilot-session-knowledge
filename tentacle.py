@@ -1787,11 +1787,8 @@ def _goal_iteration_entry(iterations: dict, iteration: int | str, *, started_at:
         for name in tentacle_names:
             if isinstance(name, str) and name and name not in normalized_names:
                 normalized_names.append(name)
-    entry: dict = {"tentacles": normalized_names}
-    for field in ("started_at", "completed_at", "eval_decision"):
-        value = raw_entry.get(field)
-        if value:
-            entry[field] = value
+    entry: dict = dict(raw_entry)
+    entry["tentacles"] = normalized_names
     if started_at and not entry.get("started_at"):
         entry["started_at"] = started_at
     iterations[key] = entry
@@ -2103,16 +2100,17 @@ def _cmd_goal_init(args, tentacles: Path) -> None:
     if timeout_minutes is not None:
         budget["timeout_minutes"] = timeout_minutes
 
+    now_iso = datetime.now(timezone.utc).isoformat()
     state = {
         "goal_id": goal_id,
         "title": title,
         "description": desc,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": now_iso,
+        "updated_at": now_iso,
         "status": GOAL_STATUS_ACTIVE,
         "iteration": 1,
         "tentacles": [],
-        "iterations": {"1": {"tentacles": [], "started_at": datetime.now(timezone.utc).isoformat()}},
+        "iterations": {"1": {"tentacles": [], "started_at": now_iso}},
         "eval_history": [],
         "success_criteria": [],
         "gates": [],

@@ -321,8 +321,18 @@ class TestGoalInit(unittest.TestCase):
         self.assertIn("iterations", state)
         self.assertEqual(state["iterations"]["1"]["tentacles"], [])
         self.assertIn("started_at", state["iterations"]["1"])
+        self.assertEqual(state["iterations"]["1"]["started_at"], state["created_at"])
         self.assertEqual(state["success_criteria"], [])
         self.assertEqual(state["gates"], [])
+
+    def test_iteration_entry_round_trip_preserves_unknown_fields(self):
+        state = _init_goal(self.tentacles, title="Future Fields")
+        state["iterations"]["1"]["owner"] = "alice"
+        state["iterations"]["1"]["notes"] = {"kind": "future-proof"}
+        T._goal_write(self.tentacles, state)
+        loaded = T._goal_load(self.tentacles)
+        self.assertEqual(loaded["iterations"]["1"]["owner"], "alice")
+        self.assertEqual(loaded["iterations"]["1"]["notes"], {"kind": "future-proof"})
 
     def test_budget_fields_stored_when_provided(self):
         state = _init_goal(self.tentacles, max_iterations=5, max_tentacles=4, timeout=120)
