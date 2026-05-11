@@ -3113,8 +3113,8 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
         try:
             artifact_path = _goal_write_context_artifact(final_state, tentacles)
             print(f"   📄 Goal context artifact updated: {artifact_path}")
-        except Exception:
-            pass
+        except OSError as exc:
+            print(f"   ⚠️  Could not write goal-context artifact: {exc}", file=sys.stderr)
 
 
 def _cmd_goal_resume(args, tentacles: Path) -> None:
@@ -3227,8 +3227,8 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
     try:
         artifact_path = _goal_write_context_artifact(state, tentacles)
         print(f"   📄 Goal context artifact updated: {artifact_path}")
-    except Exception:
-        pass
+    except OSError as exc:
+        print(f"   ⚠️  Could not write goal-context artifact: {exc}", file=sys.stderr)
 
 
 def _cmd_goal_criteria(args, tentacles: Path) -> None:
@@ -3738,7 +3738,8 @@ def _goal_collect_prior_handoffs(state: dict, tentacles: Path, max_handoffs: int
 
     # Return most recent first (by iteration desc, insertion order within iter preserved)
     summaries.sort(key=lambda x: x["iteration"], reverse=True)
-    return summaries[:max_handoffs]
+    cap = max(0, max_handoffs)
+    return summaries[:cap]
 
 
 def _goal_render_continuation_context(state: dict, tentacles: Path, max_handoffs: int = 5) -> str:
@@ -3810,7 +3811,8 @@ def _cmd_goal_context(args, tentacles: Path) -> None:
         )
         sys.exit(1)
 
-    max_handoffs = getattr(args, "max_handoffs", 5) or 5
+    _raw_max = getattr(args, "max_handoffs", None)
+    max_handoffs = 5 if _raw_max is None else _raw_max
     fmt = getattr(args, "format", "text") or "text"
     write_artifact = getattr(args, "write", False)
 
@@ -5963,9 +5965,9 @@ def main():
     p_goal_context.add_argument(
         "--max-handoffs",
         dest="max_handoffs",
-        type=int,
+        type=_nonneg_int_arg,
         default=5,
-        help="Max prior handoff summaries to include (default: 5)",
+        help="Max prior handoff summaries to include (default: 5, 0 = none)",
     )
 
     # goal verify (single-pass alias for goal criteria check)

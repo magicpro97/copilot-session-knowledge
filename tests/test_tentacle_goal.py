@@ -4423,8 +4423,8 @@ class TestGoalContext(unittest.TestCase):
 
         artifact = self.octogent / "goal-context.md"
         content = artifact.read_text(encoding="utf-8")
-        # After advancing, iteration should be 2
-        self.assertIn("2", content)
+        # After advancing, iteration should be 2; rendered as "**Iteration:** 2" (with optional /N suffix)
+        self.assertIn("**Iteration:** 2", content)
 
     # ------------------------------------------------------------------
     # Auto-generation after goal resume
