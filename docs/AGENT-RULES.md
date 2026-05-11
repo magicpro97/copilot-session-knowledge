@@ -169,7 +169,7 @@ When acting as an orchestrator with an active goal, the lifecycle is iterative, 
    sk tentacle goal eval --decision continue   # or: complete | pause | abandon
    # fallback: python3 ~/.copilot/tools/tentacle.py goal eval ...
    ```
-   For automated retries with stall detection, use `goal verify-loop` instead of (or after) `goal criteria check`. It re-runs verification commands up to `--max-retries` times and detects stalls (identical repeated failures). On `--escalate`, it marks the goal `needs-human` and prints advisory recovery steps — fix the underlying issues, then run `goal resume` to re-activate the goal before retrying:
+   For automated retries with stall detection, use `goal verify-loop` instead of (or after) `goal criteria check`. It re-runs verification commands up to `--max-retries` times and detects stalls (identical repeated failures). On `--escalate`, it marks the goal `needs-human` and prints advisory recovery steps — fix the underlying issues, then run `goal resume` to re-activate the goal before retrying. If blocked or ambiguous tentacles need to be cleared at the same time, pass `--reset-failed` (resets every BLOCKED/AMBIGUOUS tentacle to idle) or `--from-iteration N` (rewinds the iteration counter to N and resets all tentacles assigned to that iteration or later). Success-criteria pass/fail state is preserved in both cases.
    ```bash
    sk tentacle goal verify-loop [--id sc-1] [--max-retries 3] [--retry-delay 10] [--timeout 60] [--escalate]
    # fallback: python3 ~/.copilot/tools/tentacle.py goal verify-loop ...

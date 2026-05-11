@@ -2150,6 +2150,21 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
         print("ERROR: No goal initialized. Run `tentacle.py goal init` first.", file=sys.stderr)
         sys.exit(1)
 
+    reset_failed = getattr(args, "reset_failed", False)
+    from_iteration = getattr(args, "from_iteration", None)
+
+    current_iter = state.get("iteration", 1)
+    tentacle_names = state.get("tentacles", [])
+
+    # Validate --from-iteration bounds before making any changes.
+    if from_iteration is not None:
+        if from_iteration < 1 or from_iteration > current_iter:
+            print(
+                f"ERROR: --from-iteration {from_iteration} is out of bounds (valid range: 1–{current_iter}).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     prev_status = state.get("status", "unknown")
     state["status"] = GOAL_STATUS_ACTIVE
     state["resumed_at"] = datetime.now(timezone.utc).isoformat()
@@ -2160,11 +2175,56 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
         state.pop("needs_human_reason", None)
         state.pop("needs_human_failing_criteria", None)
         state.pop("needs_human_at", None)
+
+    pending_meta_writes: list[tuple[Path, dict]] = []
+    rewound_names: set[str] = set()
+    reset_failed_names: set[str] = set()
+    if from_iteration is not None or reset_failed:
+        for name in tentacle_names:
+            t_dir = tentacles / name
+            meta_path = t_dir / "meta.json"
+            if not meta_path.exists():
+                continue
+            try:
+                t_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            raw_iter = t_meta.get("goal_iteration") or t_meta.get("iteration") or 1
+            try:
+                t_iter = int(raw_iter)
+            except (TypeError, ValueError):
+                t_iter = 1
+            t_terminal = t_meta.get("terminal_status")
+            needs_rewind = from_iteration is not None and t_iter >= from_iteration
+            needs_reset_failed = reset_failed and t_terminal in {"BLOCKED", "AMBIGUOUS"}
+            if not (needs_rewind or needs_reset_failed):
+                continue
+            t_meta["status"] = "idle"
+            t_meta.pop("terminal_status", None)
+            t_meta.pop("completed_at", None)
+            pending_meta_writes.append((meta_path, t_meta))
+            if needs_rewind:
+                rewound_names.add(name)
+            if needs_reset_failed:
+                reset_failed_names.add(name)
+
+    if from_iteration is not None:
+        state["iteration"] = from_iteration
+
     _goal_write(tentacles, state)
+
+    for meta_path, t_meta in pending_meta_writes:
+        meta_path.write_text(json.dumps(t_meta, indent=2) + "\n", encoding="utf-8")
+
+    if from_iteration is not None:
+        print(f"⏪ Rewound to iteration {from_iteration} (was {current_iter}); reset {len(rewound_names)} tentacle(s).")
+
+    if reset_failed:
+        print(f"🔁 Reset {len(reset_failed_names)} BLOCKED/AMBIGUOUS tentacle(s) to idle.")
 
     print(f"🔄 Goal '{state.get('title', '?')}' resumed (was: {prev_status})")
     print(f"   Iteration: {state.get('iteration', 1)}")
-    print(f"   Linked tentacles: {len(state.get('tentacles', []))}")
+    print(f"   Linked tentacles: {len(tentacle_names)}")
 
 
 def _cmd_goal_criteria(args, tentacles: Path) -> None:
@@ -4208,7 +4268,22 @@ def main():
     p_goal_eval.add_argument("--notes", default="", help="Optional notes for this evaluation")
 
     # goal resume
-    p_goal_sub.add_parser("resume", help="Resume a paused/abandoned goal (set status=active)")
+    p_goal_resume = p_goal_sub.add_parser("resume", help="Resume a paused/abandoned goal (set status=active)")
+    p_goal_resume.add_argument(
+        "--reset-failed",
+        dest="reset_failed",
+        action="store_true",
+        default=False,
+        help="Reset tentacles with BLOCKED or AMBIGUOUS terminal_status back to idle",
+    )
+    p_goal_resume.add_argument(
+        "--from-iteration",
+        dest="from_iteration",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Rewind goal to iteration N, resetting tentacles assigned to iteration >= N",
+    )
 
     # goal criteria
     p_goal_criteria = p_goal_sub.add_parser("criteria", help="Manage success criteria: add / check / list")

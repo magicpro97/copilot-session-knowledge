@@ -588,11 +588,43 @@ sk tentacle goal link <tentacle-name>
 sk tentacle goal eval [--decision continue|pause|complete|abandon] [--notes "..."]
 
 # Resume a paused or abandoned goal
-sk tentacle goal resume
+sk tentacle goal resume [--reset-failed] [--from-iteration N]
 
 # Summarize iteration state and advise on the next step
 sk tentacle goal next-iter
 ```
+
+### Resume with state reset
+
+`goal resume` re-activates a paused, abandoned, or `needs-human` goal. Two optional flags let
+operators reset tentacle state at the same time:
+
+```bash
+# Reset every BLOCKED and AMBIGUOUS tentacle back to idle so it can be re-dispatched
+sk tentacle goal resume --reset-failed
+# fallback: python3 ~/.copilot/tools/tentacle.py goal resume --reset-failed
+
+# Rewind the goal to iteration N and reset all tentacles assigned to iteration >= N
+sk tentacle goal resume --from-iteration N
+# fallback: python3 ~/.copilot/tools/tentacle.py goal resume --from-iteration N
+
+# Combine both: rewind and clear any remaining BLOCKED/AMBIGUOUS tentacles in one step
+sk tentacle goal resume --from-iteration N --reset-failed
+```
+
+**`--reset-failed`** — any tentacle whose `terminal_status` is `BLOCKED` or `AMBIGUOUS` has its
+status reset to `idle` and its terminal state cleared. Tentacles that completed with `DONE` are
+not touched.
+
+**`--from-iteration N`** — the goal's iteration counter is rewound to N, and every tentacle
+whose `goal_iteration` is >= N is reset to `idle`. Use this to re-run an entire wave when later
+work reveals that an earlier iteration's output is wrong. N must be between 1 and the current
+iteration (inclusive).
+
+Both flags can be used together in one command. In all cases:
+
+- Success-criteria pass/fail state is preserved — `goal resume` does not clear or re-run criteria.
+- Evaluation history is not truncated.
 
 ### Success criteria
 

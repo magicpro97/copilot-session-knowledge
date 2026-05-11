@@ -692,6 +692,248 @@ class TestGoalResume(unittest.TestCase):
         state = T._goal_load(self.tentacles)
         self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
 
+    # ------------------------------------------------------------------
+    # Issue #139 regressions: --reset-failed and --from-iteration
+    # ------------------------------------------------------------------
+
+    def _link_tentacle_with_meta(self, name: str, terminal_status: str | None = None, goal_iteration: int = 1) -> Path:
+        """Create a tentacle, add it to the goal's tentacles list, and stamp meta fields."""
+        t_dir = _make_tentacle(name, self.tentacles)
+        # Write goal_iteration and optional terminal_status into meta.json.
+        meta_path = t_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["goal_iteration"] = goal_iteration
+        if terminal_status is not None:
+            meta["terminal_status"] = terminal_status
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        # Register tentacle in the goal state.
+        state = T._goal_load(self.tentacles)
+        if name not in state.setdefault("tentacles", []):
+            state["tentacles"].append(name)
+        T._goal_write(self.tentacles, state)
+        return t_dir
+
+    def _read_meta(self, name: str) -> dict:
+        return json.loads((self.tentacles / name / "meta.json").read_text(encoding="utf-8"))
+
+    def test_reset_failed_resets_blocked_tentacle(self):
+        """--reset-failed must flip a BLOCKED tentacle back to idle."""
+        self._link_tentacle_with_meta("t-blocked", terminal_status="BLOCKED")
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", reset_failed=True, from_iteration=None)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        meta = self._read_meta("t-blocked")
+        self.assertEqual(meta["status"], "idle")
+        self.assertNotIn("terminal_status", meta)
+
+    def test_reset_failed_resets_ambiguous_tentacle(self):
+        """--reset-failed must flip an AMBIGUOUS tentacle back to idle."""
+        self._link_tentacle_with_meta("t-ambiguous", terminal_status="AMBIGUOUS")
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", reset_failed=True, from_iteration=None)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        meta = self._read_meta("t-ambiguous")
+        self.assertEqual(meta["status"], "idle")
+        self.assertNotIn("terminal_status", meta)
+
+    def test_reset_failed_preserves_done_tentacle(self):
+        """--reset-failed must NOT touch a DONE tentacle."""
+        self._link_tentacle_with_meta("t-done", terminal_status="DONE")
+        # Manually set its status to completed so the fixture matches the real lifecycle values.
+        meta_path = self.tentacles / "t-done" / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["status"] = "completed"
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", reset_failed=True, from_iteration=None)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        meta = self._read_meta("t-done")
+        self.assertEqual(meta["status"], "completed", "DONE tentacle must not be reset by --reset-failed")
+        self.assertEqual(meta["terminal_status"], "DONE")
+
+    def test_reset_failed_preserves_regressed_tentacle(self):
+        """--reset-failed must NOT touch a REGRESSED tentacle."""
+        self._link_tentacle_with_meta("t-regressed", terminal_status="REGRESSED")
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", reset_failed=True, from_iteration=None)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        meta = self._read_meta("t-regressed")
+        self.assertEqual(meta["terminal_status"], "REGRESSED")
+
+    def test_reset_failed_preserves_toobig_tentacle(self):
+        """--reset-failed must NOT touch a TOO_BIG tentacle."""
+        self._link_tentacle_with_meta("t-toobig", terminal_status="TOO_BIG")
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", reset_failed=True, from_iteration=None)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        meta = self._read_meta("t-toobig")
+        self.assertEqual(meta["terminal_status"], "TOO_BIG")
+
+    def test_from_iteration_rewinds_iteration_counter(self):
+        """--from-iteration N must set state['iteration'] back to N."""
+        # Advance to iteration 3 via two continue evals.
+        for _ in range(2):
+            with patch("builtins.print"):
+                T._cmd_goal_eval(_fake_args(goal_action="eval", decision="continue", notes=""), self.tentacles)
+        # Now pause and resume rewinding to iter 2.
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", from_iteration=2, reset_failed=False)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["iteration"], 2)
+
+    def test_from_iteration_accepts_string_goal_iteration_metadata(self):
+        """String goal_iteration metadata must be normalized before numeric rewind comparisons."""
+        self._link_tentacle_with_meta("t-string-iter", goal_iteration="2")
+        meta_path = self.tentacles / "t-string-iter" / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["status"] = "completed"
+        meta["terminal_status"] = "DONE"
+        meta["completed_at"] = "2026-01-01T00:00:00Z"
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(_fake_args(goal_action="eval", decision="continue", notes=""), self.tentacles)
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", from_iteration=2, reset_failed=False)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        meta = self._read_meta("t-string-iter")
+        self.assertEqual(meta["status"], "idle")
+        self.assertNotIn("terminal_status", meta)
+
+    def test_from_iteration_resets_tentacles_at_or_after_n(self):
+        """--from-iteration N must reset tentacles whose goal_iteration >= N to idle."""
+        self._link_tentacle_with_meta("t-iter2", goal_iteration=2)
+        self._link_tentacle_with_meta("t-iter3", goal_iteration=3)
+        for name in ("t-iter2", "t-iter3"):
+            meta_path = self.tentacles / name / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["status"] = "completed"
+            meta["terminal_status"] = "DONE"
+            meta["completed_at"] = "2026-01-01T00:00:00Z"
+            meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        # Advance goal to iteration 3.
+        for _ in range(2):
+            with patch("builtins.print"):
+                T._cmd_goal_eval(_fake_args(goal_action="eval", decision="continue", notes=""), self.tentacles)
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", from_iteration=2, reset_failed=False)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        self.assertEqual(self._read_meta("t-iter2")["status"], "idle")
+        self.assertEqual(self._read_meta("t-iter3")["status"], "idle")
+        self.assertNotIn("terminal_status", self._read_meta("t-iter2"))
+        self.assertNotIn("terminal_status", self._read_meta("t-iter3"))
+
+    def test_from_iteration_preserves_tentacles_before_n(self):
+        """--from-iteration N must NOT reset tentacles whose goal_iteration < N."""
+        self._link_tentacle_with_meta("t-iter1", goal_iteration=1)
+        meta_path = self.tentacles / "t-iter1" / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["status"] = "completed"
+        meta["terminal_status"] = "DONE"
+        meta["completed_at"] = "2026-01-01T00:00:00Z"
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        # Advance goal to iteration 2.
+        with patch("builtins.print"):
+            T._cmd_goal_eval(_fake_args(goal_action="eval", decision="continue", notes=""), self.tentacles)
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", from_iteration=2, reset_failed=False)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        self.assertEqual(
+            self._read_meta("t-iter1")["status"],
+            "completed",
+            "Tentacle from iteration 1 must not be reset when rewinding to iteration 2",
+        )
+        self.assertEqual(self._read_meta("t-iter1")["terminal_status"], "DONE")
+
+    def test_eval_history_preserved_after_reset_failed(self):
+        """--reset-failed must not truncate eval_history."""
+        with patch("builtins.print"):
+            T._cmd_goal_eval(_fake_args(goal_action="eval", decision="continue", notes=""), self.tentacles)
+        self._pause_goal()
+        history_before = T._goal_load(self.tentacles)["eval_history"]
+        self.assertGreater(len(history_before), 0)
+        args = _fake_args(goal_action="resume", reset_failed=True, from_iteration=None)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        history_after = T._goal_load(self.tentacles)["eval_history"]
+        self.assertEqual(len(history_after), len(history_before), "eval_history must be preserved by --reset-failed")
+
+    def test_eval_history_preserved_after_from_iteration(self):
+        """--from-iteration N must not truncate eval_history."""
+        with patch("builtins.print"):
+            T._cmd_goal_eval(_fake_args(goal_action="eval", decision="continue", notes=""), self.tentacles)
+        self._pause_goal()
+        # Capture history length after all evals (before the resume).
+        history_before = T._goal_load(self.tentacles)["eval_history"]
+        self.assertGreater(len(history_before), 0)
+        args = _fake_args(goal_action="resume", from_iteration=1, reset_failed=False)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        history_after = T._goal_load(self.tentacles)["eval_history"]
+        self.assertEqual(len(history_after), len(history_before), "eval_history must be preserved by --from-iteration")
+
+    def test_success_criteria_status_preserved_after_reset_failed(self):
+        """--reset-failed must not alter success_criteria pass/fail state."""
+        state = T._goal_load(self.tentacles)
+        state["success_criteria"] = [{"id": "sc-1", "description": "Tests pass", "status": "verified"}]
+        T._goal_write(self.tentacles, state)
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", reset_failed=True, from_iteration=None)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(
+            state["success_criteria"][0]["status"],
+            "verified",
+            "success_criteria status must be preserved by --reset-failed",
+        )
+
+    def test_success_criteria_status_preserved_after_from_iteration(self):
+        """--from-iteration N must not alter success_criteria pass/fail state."""
+        state = T._goal_load(self.tentacles)
+        state["success_criteria"] = [{"id": "sc-1", "description": "Tests pass", "status": "verified"}]
+        T._goal_write(self.tentacles, state)
+        with patch("builtins.print"):
+            T._cmd_goal_eval(_fake_args(goal_action="eval", decision="continue", notes=""), self.tentacles)
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", from_iteration=1, reset_failed=False)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(
+            state["success_criteria"][0]["status"],
+            "verified",
+            "success_criteria status must be preserved by --from-iteration",
+        )
+
+    def test_from_iteration_out_of_bounds_low_exits(self):
+        """--from-iteration 0 must exit with code 1 (below valid range)."""
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", from_iteration=0, reset_failed=False)
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_resume(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_from_iteration_out_of_bounds_high_exits(self):
+        """--from-iteration N > current iteration must exit with code 1."""
+        # Goal starts at iteration=1, so from_iteration=2 is out of bounds.
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", from_iteration=99, reset_failed=False)
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_resume(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
 
 # ---------------------------------------------------------------------------
 # Tests for _cmd_goal_criteria
