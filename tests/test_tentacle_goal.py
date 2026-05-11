@@ -238,6 +238,11 @@ class TestGoalTextValidation(unittest.TestCase):
         self.assertTrue(result["soft_exceeded"])
         self.assertTrue(result["hard_exceeded"])
 
+    def test_goal_title_preview_truncates_long_titles(self):
+        preview = T._goal_title_preview("Long Title " * 20, limit=40)
+        self.assertLessEqual(len(preview), 40)
+        self.assertTrue(preview.endswith("..."))
+
 
 class TestGoalGatesAllPassed(unittest.TestCase):
     """Unit tests for _goal_gates_all_passed."""
@@ -485,6 +490,13 @@ class TestGoalValidate(unittest.TestCase):
         self.assertIn("Within budget", combined)
         self.assertIn("Title chars", combined)
 
+    def test_validate_with_full_overrides_skips_goal_load(self):
+        args = _fake_args(goal_action="validate", title="Ad hoc", desc="custom", format="text")
+        with patch.object(T, "_goal_load", side_effect=AssertionError("should not load goal state")):
+            title, desc = T._goal_validate_input_source(args, self.tentacles)
+        self.assertEqual(title, "Ad hoc")
+        self.assertEqual(desc, "custom")
+
     def test_validate_warns_for_soft_limit(self):
         captured = []
         args = _fake_args(goal_action="validate", title="Soft", desc="x" * 3200, format="text")
@@ -494,10 +506,20 @@ class TestGoalValidate(unittest.TestCase):
         self.assertIn("Over soft limit", combined)
         self.assertIn(".goal-spec.md", combined)
 
+    def test_validate_truncates_long_title_in_header(self):
+        title = "Long Title " * 20
+        captured = []
+        args = _fake_args(goal_action="validate", title=title, desc="x" * 50, format="text")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_validate(args, self.tentacles)
+        self.assertIn("...", captured[0])
+        self.assertLess(len(captured[0]), len(title) + 20)
+
     def test_validate_hard_limit_exits_nonzero(self):
         captured = []
         stderr_lines = []
         args = _fake_args(goal_action="validate", title="Hard", desc="x" * 5100, format="text")
+
         def _capture(*a, **kw):
             line = " ".join(str(x) for x in a)
             if kw.get("file") is sys.stderr:

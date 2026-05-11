@@ -2112,10 +2112,20 @@ def _goal_text_validation(title: str, description: str) -> dict:
     }
 
 
+def _goal_title_preview(title: str, limit: int = 80) -> str:
+    """Render a single-line preview for validation output without flooding terminals."""
+    preview = (title or "").replace("\r", " ").replace("\n", " ").strip() or "Unnamed Goal"
+    if len(preview) <= limit:
+        return preview
+    return preview[: max(0, limit - 3)].rstrip() + "..."
+
+
 def _goal_validate_input_source(args, tentacles: Path) -> tuple[str, str] | None:
     """Resolve goal text from CLI overrides or the current goal state."""
     title_override = getattr(args, "title", None)
     desc_override = getattr(args, "desc", None)
+    if title_override is not None and desc_override is not None:
+        return title_override or "Unnamed Goal", desc_override or ""
     state = _goal_load(tentacles)
     if title_override is None and desc_override is None and not state:
         return None
@@ -2319,7 +2329,7 @@ def _cmd_goal_validate(args, tentacles: Path) -> None:
     if fmt == "json":
         print(json.dumps(validation, indent=2))
     else:
-        print(f"📏 Goal text validation for '{title}':")
+        print(f"📏 Goal text validation for '{_goal_title_preview(title)}':")
         print(f"   Title chars:       {validation['title_chars']}")
         print(f"   Description chars: {validation['description_chars']}")
         print(f"   Total chars:       {validation['total_chars']}/{validation['hard_limit']}")
