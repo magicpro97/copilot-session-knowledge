@@ -1072,6 +1072,7 @@ def _build_runtime_bundle(
     worktree_path: str | None = None,
     recall_pack_data: dict | None = None,
     recall_source_mode: str | None = None,
+    goal_context_text: str = "",
 ) -> Path:
     """Materialize a per-run context bundle under the tentacle workspace.
 
@@ -1246,7 +1247,15 @@ def _build_runtime_bundle(
         "source_mode": recall_source_mode,
     }
 
-    # ── 6. Manifest ───────────────────────────────────────────────────────────
+    # ── 6. Goal continuation context (optional) ───────────────────────────────
+    if goal_context_text:
+        (bundle_dir / "goal-context.md").write_text(goal_context_text, encoding="utf-8")
+        manifest["artifacts"]["goal_context"] = {
+            "file": "goal-context.md",
+            "populated": True,
+        }
+
+    # ── 7. Manifest ───────────────────────────────────────────────────────────
     if worktree_path:
         manifest["worktree_path"] = worktree_path
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -3171,6 +3180,13 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
     if final_state is not None:
         print(f"   Goal: {final_state.get('title', '?')} | Status: {final_state['status']}")
 
+    if decision == "continue" and final_state is not None:
+        try:
+            artifact_path = _goal_write_context_artifact(final_state, tentacles)
+            print(f"   📄 Goal context artifact updated: {artifact_path}")
+        except OSError as exc:
+            print(f"   ⚠️  Could not write goal-context artifact: {exc}", file=sys.stderr)
+
 
 def _cmd_goal_resume(args, tentacles: Path) -> None:
     """Set goal status back to active (e.g. after pause or to restart iteration loop)."""
@@ -3281,6 +3297,12 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
     print(f"🔄 Goal '{state.get('title', '?')}' resumed (was: {prev_status})")
     print(f"   Iteration: {state.get('iteration', 1)}")
     print(f"   Linked tentacles: {len(tentacle_names)}")
+
+    try:
+        artifact_path = _goal_write_context_artifact(state, tentacles)
+        print(f"   📄 Goal context artifact updated: {artifact_path}")
+    except OSError as exc:
+        print(f"   ⚠️  Could not write goal-context artifact: {exc}", file=sys.stderr)
 
 
 def _cmd_goal_criteria(args, tentacles: Path) -> None:
@@ -3765,6 +3787,158 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
         print("   Or `goal eval --decision complete` if success criteria are met.")
 
 
+# ---------------------------------------------------------------------------
+# Goal continuation context: shared renderer, artifact writer, and command
+# ---------------------------------------------------------------------------
+
+
+def _goal_collect_prior_handoffs(state: dict, tentacles: Path, max_handoffs: int = 5) -> list[dict]:
+    """Collect handoff summary snippets from completed prior iterations.
+
+    Returns a list of dicts: {"tentacle": str, "iteration": int, "summary": str}.
+    Limited to *max_handoffs* most recent entries.
+    """
+    current_iter = _goal_current_iteration(state)
+    iterations = state.get("iterations") or {}
+    summaries: list[dict] = []
+
+    for raw_key in _goal_sorted_iteration_keys(iterations):
+        try:
+            iter_no = int(raw_key)
+        except (TypeError, ValueError):
+            iter_no = 1
+        if iter_no >= current_iter:
+            continue
+        names = _goal_iteration_tentacles(state, iter_no)
+        for name in names:
+            handoff_path = tentacles / name / "handoff.md"
+            if not handoff_path.exists():
+                continue
+            try:
+                text = handoff_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            # Extract the first `## [` block (one handoff entry) or first 300 chars
+            block_start = text.find("## [")
+            if block_start != -1:
+                next_block = text.find("## [", block_start + 1)
+                if next_block != -1:
+                    snippet = text[block_start:next_block].strip()
+                else:
+                    snippet = text[block_start:].strip()
+            else:
+                snippet = text.strip()
+            snippet = snippet[:300]
+            summaries.append({"tentacle": name, "iteration": iter_no, "summary": snippet})
+
+    # Return most recent first (by iteration desc, insertion order within iter preserved)
+    summaries.sort(key=lambda x: x["iteration"], reverse=True)
+    cap = max(0, max_handoffs)
+    return summaries[:cap]
+
+
+def _goal_render_continuation_context(state: dict, tentacles: Path, max_handoffs: int = 5) -> str:
+    """Render a compact goal continuation context block suitable for injection.
+
+    Returns a markdown string with objective, iteration, budget, progress,
+    remaining criteria, and prior handoff summaries.
+    """
+    bs = _goal_budget_status(state)
+    current_iter = _goal_current_iteration(state)
+    criteria: list = state.get("success_criteria") or []
+    verified_count = sum(1 for c in criteria if c.get("status") == "verified")
+    remaining = [c for c in criteria if c.get("status") != "verified"]
+    prior_handoffs = _goal_collect_prior_handoffs(state, tentacles, max_handoffs=max_handoffs)
+
+    lines: list[str] = ["## Goal Continuation Context"]
+    lines.append(f"**Objective:** {state.get('title', '(untitled)')}")
+
+    iter_label = str(current_iter)
+    if bs.get("max_iterations") is not None:
+        iter_label = f"{current_iter}/{bs['max_iterations']}"
+    lines.append(f"**Iteration:** {iter_label}")
+
+    budget_lines = _goal_budget_text_lines(bs, show_unset=False)
+    if budget_lines:
+        lines.append(f"**Budget:** {' | '.join(budget_lines)}")
+    else:
+        lines.append("**Budget:** (no limits set)")
+
+    lines.append(f"**Progress:** {verified_count}/{len(criteria)} criteria verified")
+
+    if remaining:
+        lines.append("**Remaining criteria:**")
+        for c in remaining:
+            cid = c.get("id", "?")
+            desc = c.get("description", "")[:100]
+            lines.append(f"- [{cid}] {desc}")
+    else:
+        lines.append("**Remaining criteria:** (none — all verified or no criteria defined)")
+
+    if prior_handoffs:
+        lines.append(f"**Prior handoff summaries (last {len(prior_handoffs)}):**")
+        for entry in prior_handoffs:
+            header = f"[iter-{entry['iteration']} / {entry['tentacle']}]"
+            summary_first_line = entry["summary"].split("\n")[0][:120]
+            lines.append(f"- {header} {summary_first_line}")
+    else:
+        lines.append("**Prior handoff summaries:** (none — first iteration or no handoffs written)")
+
+    return "\n".join(lines) + "\n"
+
+
+def _goal_write_context_artifact(state: dict, tentacles: Path, max_handoffs: int = 5) -> Path:
+    """Write goal-context.md to the .octogent directory.  Returns the file path."""
+    octogent_dir = tentacles.parent
+    artifact_path = octogent_dir / "goal-context.md"
+    text = _goal_render_continuation_context(state, tentacles, max_handoffs=max_handoffs)
+    artifact_path.write_text(text, encoding="utf-8")
+    return artifact_path
+
+
+def _cmd_goal_context(args, tentacles: Path) -> None:
+    """Render a continuation context document for the current goal iteration."""
+    state = _goal_load(tentacles)
+    if not state:
+        print(
+            "ERROR: No goal initialized. Run `tentacle.py goal init` first.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    _raw_max = getattr(args, "max_handoffs", None)
+    max_handoffs = 5 if _raw_max is None else _raw_max
+    fmt = getattr(args, "format", "text") or "text"
+    write_artifact = getattr(args, "write", False)
+
+    if fmt == "json":
+        bs = _goal_budget_status(state)
+        criteria: list = state.get("success_criteria") or []
+        verified_count = sum(1 for c in criteria if c.get("status") == "verified")
+        remaining = [c for c in criteria if c.get("status") != "verified"]
+        prior_handoffs = _goal_collect_prior_handoffs(state, tentacles, max_handoffs=max_handoffs)
+        out = {
+            "title": state.get("title", ""),
+            "iteration": _goal_current_iteration(state),
+            "criteria_verified": verified_count,
+            "criteria_total": len(criteria),
+            "budget": bs,
+            "remaining_criteria": [
+                {"id": c.get("id", ""), "description": c.get("description", ""), "status": c.get("status", "")}
+                for c in remaining
+            ],
+            "prior_handoffs": prior_handoffs,
+        }
+        print(json.dumps(out, indent=2))
+    else:
+        text = _goal_render_continuation_context(state, tentacles, max_handoffs=max_handoffs)
+        print(text, end="")
+
+    if write_artifact:
+        artifact_path = _goal_write_context_artifact(state, tentacles, max_handoffs=max_handoffs)
+        print(f"\n✅ Goal context written to: {artifact_path}")
+
+
 def _escalate_goal_to_needs_human(state: dict, tentacles: Path, failing_ids: list, reason: str) -> bool:
     """Mark goal as needs-human when still allowed. Returns True when persisted."""
     needs_human_at = datetime.now(timezone.utc).isoformat()
@@ -4124,6 +4298,8 @@ def cmd_goal(args):
             _cmd_goal_budget(args, tentacles)
         elif sub == "next-iter":
             _cmd_goal_next_iter(args, tentacles)
+        elif sub == "context":
+            _cmd_goal_context(args, tentacles)
         elif sub == "verify":
             _cmd_goal_verify(args, tentacles)
         elif sub == "verify-loop":
@@ -5197,6 +5373,17 @@ def cmd_bundle(args):
             if not json_output:
                 print(f"   ⚠️  Worktree prepare failed: {wt_state.get('error', 'unknown')}")
 
+    # Gather goal context text if this tentacle is linked to a goal
+    goal_context_text = ""
+    try:
+        goal_state = _goal_load(tentacles)
+        if goal_state and args.name in (goal_state.get("tentacles") or []):
+            goal_context_text = _goal_render_continuation_context(goal_state, tentacles)
+            if not json_output:
+                print(f"   ✅ Goal context: {len(goal_context_text)} chars")
+    except Exception:
+        pass
+
     bundle_dir = _build_runtime_bundle(
         tentacle_dir=tentacle_dir,
         name=args.name,
@@ -5205,6 +5392,7 @@ def cmd_bundle(args):
         worktree_path=wt_path_str,
         recall_pack_data=recall_pack_data,
         recall_source_mode=recall_source_mode,
+        goal_context_text=goal_context_text,
     )
 
     # Write dispatched-subagent-active marker when materializing a bundle
@@ -6018,6 +6206,26 @@ def main():
     p_goal_sub.add_parser(
         "next-iter",
         help="Summarise iteration state and advise on the next goal-loop step",
+    )
+
+    # goal context
+    p_goal_context = p_goal_sub.add_parser(
+        "context",
+        help="Render continuation context document for the current goal iteration",
+    )
+    p_goal_context.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
+    p_goal_context.add_argument(
+        "--write",
+        action="store_true",
+        default=False,
+        help="Also write context to .octogent/goal-context.md",
+    )
+    p_goal_context.add_argument(
+        "--max-handoffs",
+        dest="max_handoffs",
+        type=_nonneg_int_arg,
+        default=5,
+        help="Max prior handoff summaries to include (default: 5, 0 = none)",
     )
 
     # goal verify (single-pass alias for goal criteria check)
