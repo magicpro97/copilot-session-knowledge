@@ -3075,9 +3075,7 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
                 # Build a human-readable reason explaining which limit was breached.
                 reason_parts: list[str] = []
                 if bs["over_iterations"]:
-                    reason_parts.append(
-                        f"iteration {current_iter} exceeds max_iterations={bs['max_iterations']}"
-                    )
+                    reason_parts.append(f"iteration {current_iter} exceeds max_iterations={bs['max_iterations']}")
                 if bs["over_tentacles"]:
                     reason_parts.append(
                         f"tentacle count {bs['tentacle_count']} exceeds max_tentacles={bs['max_tentacles']}"
@@ -3554,9 +3552,11 @@ def _cmd_goal_gate(args, tentacles: Path) -> None:
             if current_status == GOAL_STATUS_PAUSED:
                 print("   Goal remains paused. Re-run `goal eval` after resume to surface the blocking gate.")
             elif current_status == GOAL_STATUS_BUDGET_LIMITED:
-                print(f"   Goal remains '{GOAL_STATUS_BUDGET_LIMITED}' — adjust limits if needed with `goal budget`"
-                      " (e.g. --max-iterations N, --max-tentacles N, or --timeout MINUTES)"
-                      " then run `goal resume` before re-evaluating.")
+                print(
+                    f"   Goal remains '{GOAL_STATUS_BUDGET_LIMITED}' — adjust limits if needed with `goal budget`"
+                    " (e.g. --max-iterations N, --max-tentacles N, or --timeout MINUTES)"
+                    " then run `goal resume` before re-evaluating."
+                )
             else:
                 print(f"   Goal status set to '{GOAL_STATUS_AWAITING_GATE}'.")
                 print(f"   Resolve with: goal gate approve {primary.get('id', '?')} [--reason <text>]")
@@ -3621,7 +3621,9 @@ def _cmd_goal_gate(args, tentacles: Path) -> None:
         if _goal_gates_all_passed(state):
             if state.get("status") == GOAL_STATUS_BUDGET_LIMITED:
                 print("   All gates passed — but goal is budget_limited: eval decisions are blocked.")
-                print("   Adjust limits if needed: `goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]`")
+                print(
+                    "   Adjust limits if needed: `goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]`"
+                )
                 print("   Then re-activate: `goal resume`")
             else:
                 print("   All gates passed — goal is ready for `goal eval --decision complete`.")
