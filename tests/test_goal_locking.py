@@ -135,7 +135,7 @@ class TestGoalLockLifecycle(GoalLockingTestCase):
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         try:
-            os.write(fd, b"99999")
+            os.write(fd, str(os.getpid()).encode("utf-8"))
             future_time = os.path.getmtime(lock_path) + 3600.0
             os.utime(lock_path, (future_time, future_time))
             with patch.object(T, "_GOAL_LOCK_TIMEOUT_S", 0.05):
