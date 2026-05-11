@@ -578,6 +578,15 @@ sk tentacle goal init --title "Implement auth" [--desc "..."] [--force] \
   [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]
 # fallback: python3 ~/.copilot/tools/tentacle.py goal init --title "Implement auth"
 
+# Create a goal with optional initial success criteria (alias for goal init + criteria add)
+sk tentacle goal create --title "Implement auth" [--desc "..."] [--force] \
+  [--max-iterations N] [--max-tentacles N] [--timeout MINUTES] \
+  [--criterion '{"description":"tests pass","verification_command":"pytest"}'] \
+  [--criterion '{"id":"sc-docs","description":"docs build","verification_command":"mkdocs build"}']
+# fallback: python3 ~/.copilot/tools/tentacle.py goal create --title "Implement auth" --criterion '...'
+# --criterion is repeatable; each value must be a JSON object with optional keys:
+#   id, description, verification_command
+
 # Check current goal text, or dry-run a proposed title/description before init
 sk tentacle goal validate [--title "Implement auth"] [--desc "..."] [--format text|json]
 # fallback: python3 ~/.copilot/tools/tentacle.py goal validate --title "Implement auth"
@@ -704,11 +713,32 @@ Both flags can be used together in one command. In all cases:
 sk tentacle goal criteria add --desc "All 186 tests pass" --id sc-1 \
   [--verify-cmd "python3 run_all_tests.py"]
 
-# Run verify commands for all criteria (or one by --id) and record pass/fail
+# Run verify commands for all criteria (or one by --id) and record pass/fail + evidence
 sk tentacle goal criteria check [--id sc-1] [--timeout 60]
+
+# Single-pass alias: run all criteria verification once (alias for goal criteria check)
+sk tentacle goal verify [--id sc-1] [--timeout 60]
+# fallback: python3 ~/.copilot/tools/tentacle.py goal verify
 
 # List all criteria and their current status
 sk tentacle goal criteria list
+```
+
+After `goal verify` (or `goal criteria check`) runs, each criterion in `goal.json` is updated
+with `status` (`verified` or `failed`), a timestamp (`verified_at` / `failed_at`), and the
+`evidence` field containing the first 500 characters of the command's combined stdout+stderr output.
+
+`goal.json` criterion schema (each entry in `success_criteria`):
+
+```json
+{
+  "id": "sc-1",
+  "description": "All 186 tests pass",
+  "verification_command": "python3 run_all_tests.py",
+  "status": "verified",
+  "verified_at": "2026-05-11T10:00:00+00:00",
+  "evidence": "186 passed in 7.55s\n"
+}
 ```
 
 ### Gates
@@ -848,8 +878,8 @@ to re-activate the goal before re-running `goal verify-loop`.
 ### Typical orchestrator cycle
 
 ```
-goal init → goal dispatch → handoffs collected
-  → goal gate pass / goal criteria check → goal eval --decision continue
+goal create --title "..." [--criterion JSON] ... → goal dispatch → handoffs collected
+  → goal verify / goal gate pass → goal eval --decision continue
   → (new wave if goal unmet) → goal eval --decision complete → git commit + close
 
 Human gate path:

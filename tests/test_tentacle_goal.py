@@ -1352,6 +1352,501 @@ class TestGoalCriteria(unittest.TestCase):
                 T._cmd_goal_criteria(args, self.tentacles)
         self.assertEqual(cm.exception.code, 1)
 
+    def test_criteria_check_persists_evidence_on_pass(self):
+        state = T._goal_load(self.tentacles)
+        state["success_criteria"] = [
+            {
+                "id": "sc-ev",
+                "description": "Outputs hello",
+                "verification_command": _py_inline('print("hello")'),
+                "status": "unverified",
+            }
+        ]
+        T._goal_write(self.tentacles, state)
+        args = _fake_args(goal_action="criteria", criteria_action="check", id=None, timeout=30)
+        with patch("builtins.print"):
+            T._cmd_goal_criteria(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        criterion = state["success_criteria"][0]
+        self.assertEqual(criterion["status"], "verified")
+        self.assertIn("evidence", criterion)
+        self.assertIn("hello", criterion["evidence"])
+
+    def test_criteria_check_persists_evidence_on_fail(self):
+        state = T._goal_load(self.tentacles)
+        state["success_criteria"] = [
+            {
+                "id": "sc-ef",
+                "description": "Fails with output",
+                "verification_command": _py_inline('import sys; sys.stderr.write("boom"); sys.exit(1)'),
+                "status": "unverified",
+            }
+        ]
+        T._goal_write(self.tentacles, state)
+        args = _fake_args(goal_action="criteria", criteria_action="check", id=None, timeout=30)
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit):
+                T._cmd_goal_criteria(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        criterion = state["success_criteria"][0]
+        self.assertEqual(criterion["status"], "failed")
+        self.assertIn("evidence", criterion)
+        self.assertIn("boom", criterion["evidence"])
+
+
+# ---------------------------------------------------------------------------
+# Tests for _cmd_goal_create (issue #130 exact surface)
+# ---------------------------------------------------------------------------
+
+
+class TestGoalCreate(unittest.TestCase):
+    def setUp(self):
+        self.base = SCRATCH_DIR / "create"
+        _, self.tentacles = _make_octogent(self.base)
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    def test_create_without_criteria_creates_goal(self):
+        args = _fake_args(
+            title="Create Test",
+            desc="",
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="create",
+            criterion=[],
+        )
+        with patch("builtins.print"):
+            T._cmd_goal_create(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertIsNotNone(state)
+        self.assertEqual(state["title"], "Create Test")
+        self.assertEqual(state["success_criteria"], [])
+
+    def test_create_with_criteria_adds_them(self):
+        args = _fake_args(
+            title="Goal With Criteria",
+            desc="",
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="create",
+            criterion=[
+                '{"description": "first criterion", "verification_command": "echo 1"}',
+                '{"id": "sc-custom", "description": "custom id criterion", "verification_command": "echo 2"}',
+            ],
+        )
+        with patch("builtins.print"):
+            T._cmd_goal_create(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(len(state["success_criteria"]), 2)
+        self.assertEqual(state["success_criteria"][0]["description"], "first criterion")
+        self.assertEqual(state["success_criteria"][0]["status"], "unverified")
+        self.assertEqual(state["success_criteria"][1]["id"], "sc-custom")
+
+    def test_create_criterion_schema_has_required_fields(self):
+        args = _fake_args(
+            title="Schema Check",
+            desc="",
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="create",
+            criterion=['{"description": "test desc", "verification_command": "echo ok"}'],
+        )
+        with patch("builtins.print"):
+            T._cmd_goal_create(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        c = state["success_criteria"][0]
+        self.assertIn("id", c)
+        self.assertIn("description", c)
+        self.assertIn("verification_command", c)
+        self.assertIn("status", c)
+        self.assertEqual(c["status"], "unverified")
+
+    def test_create_invalid_json_criterion_exits(self):
+        args = _fake_args(
+            title="Bad JSON",
+            desc="",
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="create",
+            criterion=["not-valid-json"],
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_create(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_create_non_object_criterion_exits(self):
+        args = _fake_args(
+            title="Non-object",
+            desc="",
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="create",
+            criterion=["[1, 2, 3]"],
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_create(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_create_invalid_later_criterion_leaves_no_partial_goal(self):
+        """Regression: invalid later --criterion must not leave partial goal state on disk.
+
+        Before the fix, _cmd_goal_create wrote goal.json (via _cmd_goal_init) and
+        the first valid criterion before encountering the invalid second criterion,
+        leaving an incomplete goal on disk.  After the fix, all criteria are validated
+        before any write, so the goal file must not exist on failure.
+        """
+        args = _fake_args(
+            title="Partial Write Test",
+            desc="",
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="create",
+            criterion=[
+                '{"description": "valid first criterion"}',
+                "NOT_VALID_JSON",  # second criterion is intentionally bad
+            ],
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_create(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        # The goal file must NOT exist — no partial state was written.
+        goal_file = self.tentacles / "goal.json"
+        self.assertFalse(
+            goal_file.exists(),
+            "goal.json must not exist after validation failure (partial-write bug).",
+        )
+
+    def test_create_non_object_later_criterion_leaves_no_partial_goal(self):
+        """Regression: non-object later --criterion must not leave partial goal state on disk."""
+        args = _fake_args(
+            title="Partial Write Non-Object",
+            desc="",
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="create",
+            criterion=[
+                '{"description": "valid criterion"}',
+                "[1, 2, 3]",  # valid JSON but not an object
+            ],
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_create(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        goal_file = self.tentacles / "goal.json"
+        self.assertFalse(
+            goal_file.exists(),
+            "goal.json must not exist after non-object criterion failure (partial-write bug).",
+        )
+
+    def test_create_duplicate_explicit_ids_exits_before_write(self):
+        """Regression: two --criterion values with the same explicit 'id' must be rejected
+        before any goal write so no partial goal.json is left on disk."""
+        args = _fake_args(
+            title="Dup Explicit IDs",
+            desc="",
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="create",
+            criterion=[
+                '{"id": "sc-dup", "description": "first"}',
+                '{"id": "sc-dup", "description": "second"}',
+            ],
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_create(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        goal_file = self.tentacles / "goal.json"
+        self.assertFalse(
+            goal_file.exists(),
+            "goal.json must not exist when duplicate explicit IDs are supplied.",
+        )
+
+    def test_create_explicit_id_collides_with_auto_exits_before_write(self):
+        """Regression: an explicit 'id' that would collide with an auto-generated sc-N
+        must be rejected before any goal write so no partial goal.json is left on disk.
+
+        With three criteria where criterion[0] has no ID (auto -> sc-1), criterion[1]
+        has explicit id 'sc-1', the second criterion collides with the first auto-ID."""
+        args = _fake_args(
+            title="Auto-Explicit Collision",
+            desc="",
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="create",
+            criterion=[
+                '{"description": "auto sc-1"}',
+                '{"id": "sc-1", "description": "explicit sc-1 collides with auto"}',
+            ],
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_create(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        goal_file = self.tentacles / "goal.json"
+        self.assertFalse(
+            goal_file.exists(),
+            "goal.json must not exist when an explicit ID collides with an auto-generated ID.",
+        )
+
+    def test_create_explicit_id_forces_auto_collision_with_later_entry(self):
+        """Regression: explicit sc-2 in position[0] must collide with the auto-generated
+        sc-2 that would be assigned to position[1] (because running_count==1 after the
+        first criterion is counted)."""
+        args = _fake_args(
+            title="Explicit Forces Auto Collision",
+            desc="",
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="create",
+            criterion=[
+                '{"id": "sc-2", "description": "explicit sc-2 at position 0"}',
+                '{"description": "auto sc-2 at position 1"}',
+            ],
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_create(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        goal_file = self.tentacles / "goal.json"
+        self.assertFalse(
+            goal_file.exists(),
+            "goal.json must not exist when an explicit ID forces a later auto-ID collision.",
+        )
+
+    # ------------------------------------------------------------------
+    # PR follow-up: non-string criterion field values must be rejected
+    # ------------------------------------------------------------------
+
+    def _non_string_field_args(self, title: str, criterion_json: str):
+        return _fake_args(
+            title=title,
+            desc="",
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="create",
+            criterion=[criterion_json],
+        )
+
+    def test_create_non_string_description_exits(self):
+        """Regression (PR #152): non-string 'description' must be rejected before any write."""
+        args = self._non_string_field_args("Bad desc type", '{"description": 123}')
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_create(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertFalse(
+            (self.tentacles / "goal.json").exists(),
+            "goal.json must not be written when description is not a string.",
+        )
+
+    def test_create_non_string_id_exits(self):
+        """Regression (PR #152): non-string 'id' must be rejected before any write."""
+        args = self._non_string_field_args("Bad id type", '{"id": 42, "description": "ok"}')
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_create(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertFalse(
+            (self.tentacles / "goal.json").exists(),
+            "goal.json must not be written when id is not a string.",
+        )
+
+    def test_create_non_string_verification_command_exits(self):
+        """Regression (PR #152): non-string 'verification_command' must be rejected before any write."""
+        args = self._non_string_field_args(
+            "Bad cmd type",
+            '{"description": "ok", "verification_command": ["echo", "hello"]}',
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_create(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertFalse(
+            (self.tentacles / "goal.json").exists(),
+            "goal.json must not be written when verification_command is not a string.",
+        )
+
+    def test_create_non_string_later_criterion_leaves_no_partial_goal(self):
+        """Regression (PR #152): non-string field in a later criterion must not leave partial state."""
+        args = _fake_args(
+            title="Partial Non-String",
+            desc="",
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="create",
+            criterion=[
+                '{"description": "valid first criterion"}',
+                '{"description": 999}',  # second: non-string description
+            ],
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_create(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertFalse(
+            (self.tentacles / "goal.json").exists(),
+            "goal.json must not exist after non-string field failure in a later criterion.",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests for _cmd_goal_verify (issue #130 exact surface)
+# ---------------------------------------------------------------------------
+
+
+class TestGoalVerify(unittest.TestCase):
+    def setUp(self):
+        self.base = SCRATCH_DIR / "verify"
+        _, self.tentacles = _make_octogent(self.base)
+        _init_goal(self.tentacles, title="Verify Goal")
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    def test_verify_passes_all_criteria(self):
+        state = T._goal_load(self.tentacles)
+        state["success_criteria"] = [
+            {
+                "id": "sc-v1",
+                "description": "Pass",
+                "verification_command": _py_inline("import sys; sys.exit(0)"),
+                "status": "unverified",
+            }
+        ]
+        T._goal_write(self.tentacles, state)
+        args = _fake_args(goal_action="verify", id=None, timeout=30)
+        with patch("builtins.print"):
+            T._cmd_goal_verify(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["success_criteria"][0]["status"], "verified")
+
+    def test_verify_fails_and_exits_1(self):
+        state = T._goal_load(self.tentacles)
+        state["success_criteria"] = [
+            {
+                "id": "sc-v2",
+                "description": "Fail",
+                "verification_command": _py_inline("raise SystemExit(1)"),
+                "status": "unverified",
+            }
+        ]
+        T._goal_write(self.tentacles, state)
+        args = _fake_args(goal_action="verify", id=None, timeout=30)
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_verify(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["success_criteria"][0]["status"], "failed")
+
+    def test_verify_persists_evidence(self):
+        state = T._goal_load(self.tentacles)
+        state["success_criteria"] = [
+            {
+                "id": "sc-v3",
+                "description": "Outputs something",
+                "verification_command": _py_inline('print("evidence-output")'),
+                "status": "unverified",
+            }
+        ]
+        T._goal_write(self.tentacles, state)
+        args = _fake_args(goal_action="verify", id=None, timeout=30)
+        with patch("builtins.print"):
+            T._cmd_goal_verify(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        c = state["success_criteria"][0]
+        self.assertIn("evidence", c)
+        self.assertIn("evidence-output", c["evidence"])
+
+    def test_verify_no_goal_exits(self):
+        T._goal_path(self.tentacles).unlink()
+        args = _fake_args(goal_action="verify", id=None, timeout=30)
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_verify(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_verify_filter_by_id(self):
+        state = T._goal_load(self.tentacles)
+        state["success_criteria"] = [
+            {
+                "id": "sc-a",
+                "description": "A",
+                "verification_command": _py_inline("raise SystemExit(0)"),
+                "status": "unverified",
+            },
+            {
+                "id": "sc-b",
+                "description": "B",
+                "verification_command": _py_inline("raise SystemExit(0)"),
+                "status": "unverified",
+            },
+        ]
+        T._goal_write(self.tentacles, state)
+        args = _fake_args(goal_action="verify", id="sc-a", timeout=30)
+        with patch("builtins.print"):
+            T._cmd_goal_verify(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["success_criteria"][0]["status"], "verified")
+        self.assertEqual(state["success_criteria"][1]["status"], "unverified")
+
+    def test_verify_negative_timeout_rejected_by_parser(self):
+        """goal verify --timeout must reject negative values (uses _positive_int_arg)."""
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "tentacle.py"), "goal", "verify", "--timeout", "-5"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        # argparse exits with code 2 for argument type errors
+        self.assertEqual(result.returncode, 2, f"Expected exit 2 for negative timeout, got {result.returncode}")
+        self.assertIn("positive integer", result.stderr, "Error message must mention 'positive integer'")
+
+    def test_verify_zero_timeout_rejected_by_parser(self):
+        """goal verify --timeout must reject zero (uses _positive_int_arg, which requires >0)."""
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "tentacle.py"), "goal", "verify", "--timeout", "0"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertEqual(result.returncode, 2, f"Expected exit 2 for zero timeout, got {result.returncode}")
+        self.assertIn("positive integer", result.stderr, "Error message must mention 'positive integer'")
+
 
 # ---------------------------------------------------------------------------
 # Tests for _cmd_goal_gate
@@ -3125,6 +3620,36 @@ class TestGoalVerifyLoop(unittest.TestCase):
         )
         combined = result.stdout + result.stderr
         for flag in ("--max-retries", "--escalate", "--retry-delay", "--timeout", "--id"):
+            self.assertIn(flag, combined, f"Parser must expose '{flag}'")
+
+    def test_parser_registers_goal_create_with_expected_flags(self):
+        """CLI parser must expose goal create with --title, --desc, --criterion, --force."""
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "tentacle.py"), "goal", "create", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        combined = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, f"goal create --help failed:\n{combined}")
+        for flag in ("--title", "--desc", "--criterion", "--force"):
+            self.assertIn(flag, combined, f"Parser must expose '{flag}'")
+
+    def test_parser_registers_goal_verify_with_expected_flags(self):
+        """CLI parser must expose goal verify with --id and --timeout."""
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "tentacle.py"), "goal", "verify", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        combined = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, f"goal verify --help failed:\n{combined}")
+        for flag in ("--id", "--timeout"):
             self.assertIn(flag, combined, f"Parser must expose '{flag}'")
 
 
