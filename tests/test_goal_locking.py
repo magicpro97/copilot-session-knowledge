@@ -17,6 +17,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 TOOLS_DIR = Path(__file__).resolve().parent.parent
@@ -97,6 +98,28 @@ class GoalLockingTestCase(unittest.TestCase):
 
 
 class TestGoalLockLifecycle(GoalLockingTestCase):
+    def test_is_pid_running_windows_access_denied_counts_as_live(self):
+        fake_kernel32 = SimpleNamespace(
+            OpenProcess=lambda access, inherit, pid: 0,
+            CloseHandle=lambda handle: None,
+            GetLastError=lambda: 5,
+        )
+        fake_ctypes = SimpleNamespace(windll=SimpleNamespace(kernel32=fake_kernel32))
+        with patch.object(T.os, "name", "nt"):
+            with patch.dict(sys.modules, {"ctypes": fake_ctypes}):
+                self.assertTrue(T._is_pid_running(12345))
+
+    def test_is_pid_running_windows_invalid_parameter_counts_as_dead(self):
+        fake_kernel32 = SimpleNamespace(
+            OpenProcess=lambda access, inherit, pid: 0,
+            CloseHandle=lambda handle: None,
+            GetLastError=lambda: 87,
+        )
+        fake_ctypes = SimpleNamespace(windll=SimpleNamespace(kernel32=fake_kernel32))
+        with patch.object(T.os, "name", "nt"):
+            with patch.dict(sys.modules, {"ctypes": fake_ctypes}):
+                self.assertFalse(T._is_pid_running(999999))
+
     def test_goal_lock_path_is_goal_json_lock(self):
         lock_path = T._goal_lock_path(self.tentacles)
         self.assertEqual(lock_path.name, "goal.json.lock")

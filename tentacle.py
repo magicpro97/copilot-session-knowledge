@@ -196,10 +196,18 @@ def _is_pid_running(pid: int) -> bool:
         import ctypes
 
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        ERROR_ACCESS_DENIED = 5
+        ERROR_INVALID_PARAMETER = 87
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if handle:
-            ctypes.windll.kernel32.CloseHandle(handle)
+            kernel32.CloseHandle(handle)
             return True
+        err = kernel32.GetLastError()
+        if err == ERROR_ACCESS_DENIED:
+            return True
+        if err == ERROR_INVALID_PARAMETER:
+            return False
         return False
     try:
         os.kill(pid, 0)
