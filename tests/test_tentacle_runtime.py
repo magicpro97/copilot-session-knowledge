@@ -6496,6 +6496,7 @@ class TestGoalLoopRuntimeFlow(unittest.TestCase):
         self._goal_link("link-worker")
         data = self._status_json()
         self.assertIn("link-worker", data["tentacles"])
+        self.assertIn("link-worker", data["iterations"]["1"]["tentacles"])
 
     def test_runtime_criteria_full_check_cycle(self):
         """Add criteria → check → verify all pass → confirm in status."""
@@ -6607,6 +6608,10 @@ class TestGoalLoopRuntimeFlow(unittest.TestCase):
         self.assertEqual(len(data["eval_history"]), 2)
         self.assertIn("iter1-worker", data["tentacles"])
         self.assertIn("iter2-worker", data["tentacles"])
+        self.assertEqual(data["iterations"]["1"]["tentacles"], ["iter1-worker"])
+        self.assertEqual(data["iterations"]["1"]["eval_decision"], "continue")
+        self.assertEqual(data["iterations"]["2"]["tentacles"], ["iter2-worker"])
+        self.assertEqual(data["iterations"]["2"]["eval_decision"], "complete")
 
     def test_runtime_budget_status_json_reflects_real_state(self):
         """Budget status must accurately reflect current iteration vs limit."""
@@ -6675,6 +6680,7 @@ class TestGoalLoopRuntimeFlow(unittest.TestCase):
             "status",
             "iteration",
             "tentacles",
+            "iterations",
             "eval_history",
             "success_criteria",
             "gates",

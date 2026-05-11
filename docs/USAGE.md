@@ -594,6 +594,31 @@ sk tentacle goal resume [--reset-failed] [--from-iteration N]
 sk tentacle goal next-iter
 ```
 
+`goal.json` keeps a backward-compatible flat `tentacles` list and a structured `iterations`
+map. Each iteration bucket records its own tentacles plus lifecycle metadata:
+
+```json
+{
+  "tentacles": ["iter1-worker", "iter2-worker"],
+  "iterations": {
+    "1": {
+      "tentacles": ["iter1-worker"],
+      "started_at": "2026-05-11T06:00:00+00:00",
+      "completed_at": "2026-05-11T06:10:00+00:00",
+      "eval_decision": "continue"
+    },
+    "2": {
+      "tentacles": ["iter2-worker"],
+      "started_at": "2026-05-11T06:10:00+00:00"
+    }
+  }
+}
+```
+
+`goal status` text output now prints an iteration map, and `goal status --format json`
+returns the same `iterations` object. Use that JSON when you need to answer questions like
+"which tentacles were linked in iteration 2?" without guessing from current tentacle meta.
+
 ### Resume with state reset
 
 `goal resume` re-activates a paused, abandoned, or `needs-human` goal. Two optional flags let
@@ -617,9 +642,11 @@ status reset to `idle` and its terminal state cleared. Tentacles that completed 
 not touched.
 
 **`--from-iteration N`** — the goal's iteration counter is rewound to N, and every tentacle
-whose `goal_iteration` is >= N is reset to `idle`. Use this to re-run an entire wave when later
-work reveals that an earlier iteration's output is wrong. N must be between 1 and the current
-iteration (inclusive).
+whose `goal_iteration` is >= N is reset to `idle`. The structured `iterations` map keeps the
+tentacle membership for each iteration, but the rewound iteration and any later iteration have
+their stored eval decision cleared so the loop can run again cleanly. Use this to re-run an
+entire wave when later work reveals that an earlier iteration's output is wrong. N must be
+between 1 and the current iteration (inclusive).
 
 Both flags can be used together in one command. In all cases:
 

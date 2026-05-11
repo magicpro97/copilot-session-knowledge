@@ -318,6 +318,9 @@ class TestGoalInit(unittest.TestCase):
         self.assertIn("goal_id", state)
         self.assertIn("created_at", state)
         self.assertEqual(state["tentacles"], [])
+        self.assertIn("iterations", state)
+        self.assertEqual(state["iterations"]["1"]["tentacles"], [])
+        self.assertIn("started_at", state["iterations"]["1"])
         self.assertEqual(state["success_criteria"], [])
         self.assertEqual(state["gates"], [])
 
@@ -412,6 +415,7 @@ class TestGoalStatus(unittest.TestCase):
         data = json.loads("\n".join(captured))
         self.assertEqual(data["title"], "JSON Goal")
         self.assertIn("goal_id", data)
+        self.assertEqual(data["iterations"]["1"]["tentacles"], [])
 
     def test_status_shows_budget_when_set(self):
         _init_goal(self.tentacles, max_iterations=3)
@@ -460,6 +464,36 @@ class TestGoalStatus(unittest.TestCase):
         self.assertIn("broken-meta", combined)
         self.assertIn("[unknown]", combined)
 
+    def test_status_shows_per_iteration_tentacles(self):
+        _make_tentacle("alpha", self.tentacles, goal_iteration=1)
+        _make_tentacle("beta", self.tentacles, goal_iteration=2)
+        state = _init_goal(self.tentacles, title="Iter Status")
+        state["iteration"] = 2
+        state["tentacles"] = ["alpha", "beta"]
+        state["iterations"] = {
+            "1": {
+                "tentacles": ["alpha"],
+                "started_at": state["created_at"],
+                "completed_at": state["updated_at"],
+                "eval_decision": "continue",
+            },
+            "2": {
+                "tentacles": ["beta"],
+                "started_at": state["updated_at"],
+            },
+        }
+        T._goal_write(self.tentacles, state)
+        captured = []
+        args = _fake_args(goal_action="status", format="text")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_status(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("Iteration map", combined)
+        self.assertIn("Iteration 1", combined)
+        self.assertIn("Iteration 2", combined)
+        self.assertIn("alpha", combined)
+        self.assertIn("beta", combined)
+
 
 # ---------------------------------------------------------------------------
 # Tests for _cmd_goal_link
@@ -482,6 +516,7 @@ class TestGoalLink(unittest.TestCase):
             T._cmd_goal_link(args, self.tentacles)
         state = T._goal_load(self.tentacles)
         self.assertIn("alpha", state["tentacles"])
+        self.assertIn("alpha", state["iterations"]["1"]["tentacles"])
 
     def test_link_stamps_goal_id_into_tentacle_meta(self):
         goal_id = T._goal_load(self.tentacles)["goal_id"]
@@ -499,6 +534,18 @@ class TestGoalLink(unittest.TestCase):
             T._cmd_goal_link(args, self.tentacles)
         state = T._goal_load(self.tentacles)
         self.assertEqual(state["tentacles"].count("alpha"), 1)
+        self.assertEqual(state["iterations"]["1"]["tentacles"].count("alpha"), 1)
+
+    def test_link_preserves_previous_iteration_membership(self):
+        args = _fake_args(goal_action="link", tentacle_name="alpha")
+        with patch("builtins.print"):
+            T._cmd_goal_link(args, self.tentacles)
+            T._cmd_goal_eval(_fake_args(goal_action="eval", decision="continue", notes="iter 1 done"), self.tentacles)
+            T._cmd_goal_link(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["tentacles"].count("alpha"), 1)
+        self.assertIn("alpha", state["iterations"]["1"]["tentacles"])
+        self.assertIn("alpha", state["iterations"]["2"]["tentacles"])
 
     def test_link_recovers_from_malformed_tentacle_meta(self):
         (self.tentacles / "alpha" / "meta.json").write_text("{not-json", encoding="utf-8")
@@ -525,6 +572,27 @@ class TestGoalLink(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 T._cmd_goal_link(args, self.tentacles)
         self.assertEqual(cm.exception.code, 1)
+
+    def test_load_backfills_iterations_from_legacy_flat_state(self):
+        _make_tentacle("legacy-alpha", self.tentacles, goal_iteration=1)
+        state = T._goal_load(self.tentacles)
+        state["title"] = "Legacy Goal"
+        state.pop("iterations", None)
+        state["iteration"] = 2
+        state["tentacles"] = ["legacy-alpha"]
+        state["eval_history"] = [
+            {
+                "iteration": 1,
+                "decision": "continue",
+                "notes": "iter 1 done",
+                "evaluated_at": "2026-01-01T00:00:00+00:00",
+            }
+        ]
+        T._goal_path(self.tentacles).write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        loaded = T._goal_load(self.tentacles)
+        self.assertEqual(loaded["iterations"]["1"]["tentacles"], ["legacy-alpha"])
+        self.assertEqual(loaded["iterations"]["1"]["eval_decision"], "continue")
+        self.assertIn("2", loaded["iterations"])
 
 
 # ---------------------------------------------------------------------------
@@ -1343,6 +1411,65 @@ class TestGoalNextIter(unittest.TestCase):
         text = self._captured()
         self.assertIn("wip-t", text)
 
+    def test_only_current_iteration_tentacles_are_shown(self):
+        old_dir = _make_tentacle("old-t", self.tentacles, status="completed", goal_iteration=1)
+        new_dir = _make_tentacle("new-t", self.tentacles, status="active", goal_iteration=2)
+        state = T._goal_load(self.tentacles)
+        state["iteration"] = 2
+        state["tentacles"] = ["old-t", "new-t"]
+        state["iterations"] = {
+            "1": {
+                "tentacles": ["old-t"],
+                "started_at": state["created_at"],
+                "completed_at": state["updated_at"],
+                "eval_decision": "continue",
+            },
+            "2": {
+                "tentacles": ["new-t"],
+                "started_at": state["updated_at"],
+            },
+        }
+        T._goal_write(self.tentacles, state)
+        old_meta = json.loads((old_dir / "meta.json").read_text(encoding="utf-8"))
+        old_meta["terminal_status"] = "DONE"
+        old_meta["goal_iteration"] = 1
+        (old_dir / "meta.json").write_text(json.dumps(old_meta, indent=2) + "\n", encoding="utf-8")
+        new_meta = json.loads((new_dir / "meta.json").read_text(encoding="utf-8"))
+        new_meta["goal_iteration"] = 2
+        (new_dir / "meta.json").write_text(json.dumps(new_meta, indent=2) + "\n", encoding="utf-8")
+        text = self._captured()
+        self.assertIn("new-t", text)
+        self.assertNotIn("old-t", text)
+
+    def test_rewound_iteration_uses_iteration_map_not_stale_meta_iteration(self):
+        carry_dir = _make_tentacle("carry-t", self.tentacles, status="active", goal_iteration=2)
+        state = T._goal_load(self.tentacles)
+        state["iteration"] = 2
+        state["tentacles"] = ["carry-t"]
+        state["iterations"] = {
+            "1": {
+                "tentacles": ["carry-t"],
+                "started_at": state["created_at"],
+                "completed_at": state["updated_at"],
+                "eval_decision": "continue",
+            },
+            "2": {
+                "tentacles": ["carry-t"],
+                "started_at": state["updated_at"],
+            },
+        }
+        T._goal_write(self.tentacles, state)
+        meta = json.loads((carry_dir / "meta.json").read_text(encoding="utf-8"))
+        meta["goal_iteration"] = 2
+        (carry_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        args = _fake_args(goal_action="resume", reset_failed=False, from_iteration=1)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+
+        text = self._captured()
+        self.assertIn("carry-t", text)
+
     def test_shows_pending_gates(self):
         state = T._goal_load(self.tentacles)
         state["gates"] = [{"id": "G1", "description": "Gate one", "status": "pending"}]
@@ -1387,8 +1514,20 @@ class TestGoalNextIter(unittest.TestCase):
     def test_tentacle_from_previous_iteration_not_counted(self):
         t_dir = _make_tentacle("old-t", self.tentacles, status="completed")
         state = T._goal_load(self.tentacles)
-        state["tentacles"] = ["old-t"]
         state["iteration"] = 2
+        state["tentacles"] = ["old-t"]
+        state["iterations"] = {
+            "1": {
+                "tentacles": ["old-t"],
+                "started_at": state["created_at"],
+                "completed_at": state["updated_at"],
+                "eval_decision": "continue",
+            },
+            "2": {
+                "tentacles": [],
+                "started_at": state["updated_at"],
+            },
+        }
         T._goal_write(self.tentacles, state)
         meta = json.loads((t_dir / "meta.json").read_text(encoding="utf-8"))
         meta["goal_iteration"] = 1  # iteration 1, not current (2)
@@ -2589,7 +2728,9 @@ class TestGoalHumanGate(unittest.TestCase):
         T._goal_write(self.tentacles, state)
 
         with patch("builtins.print"):
-            T._cmd_goal_gate(_fake_args(goal_action="gate", gate_action="pass", gate_id="HGPASS", reason=""), self.tentacles)
+            T._cmd_goal_gate(
+                _fake_args(goal_action="gate", gate_action="pass", gate_id="HGPASS", reason=""), self.tentacles
+            )
 
         state = T._goal_load(self.tentacles)
         self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
@@ -2759,7 +2900,10 @@ class TestGoalHumanGate(unittest.TestCase):
         T._goal_write(self.tentacles, state)
 
         with patch("builtins.print"):
-            T._cmd_goal_gate(_fake_args(goal_action="gate", gate_action="fail", gate_id="HGFAIL", reason="legacy fail"), self.tentacles)
+            T._cmd_goal_gate(
+                _fake_args(goal_action="gate", gate_action="fail", gate_id="HGFAIL", reason="legacy fail"),
+                self.tentacles,
+            )
 
         state = T._goal_load(self.tentacles)
         gate = next(g for g in state["gates"] if g["id"] == "HGFAIL")
@@ -2800,7 +2944,10 @@ class TestGoalHumanGate(unittest.TestCase):
         T._goal_write(self.tentacles, state)
 
         with patch("builtins.print"):
-            T._cmd_goal_gate(_fake_args(goal_action="gate", gate_action="fail", gate_id="HGFAIL1", reason="legacy fail"), self.tentacles)
+            T._cmd_goal_gate(
+                _fake_args(goal_action="gate", gate_action="fail", gate_id="HGFAIL1", reason="legacy fail"),
+                self.tentacles,
+            )
 
         state = T._goal_load(self.tentacles)
         self.assertEqual(state["status"], T.GOAL_STATUS_AWAITING_GATE)
@@ -2902,7 +3049,9 @@ class TestGoalHumanGate(unittest.TestCase):
 
         # Approve the gate.
         with patch("builtins.print"):
-            T._cmd_goal_gate(_fake_args(goal_action="gate", gate_action="approve", gate_id="APV", reason=""), self.tentacles)
+            T._cmd_goal_gate(
+                _fake_args(goal_action="gate", gate_action="approve", gate_id="APV", reason=""), self.tentacles
+            )
 
         # Now eval should succeed — status was awaiting-gate, gate is now approved.
         with patch("builtins.print"):
@@ -2941,9 +3090,7 @@ class TestGoalHumanGate(unittest.TestCase):
         state["status"] = T.GOAL_STATUS_AWAITING_GATE
         state["awaiting_gate_id"] = "REJST"
         state["awaiting_gate_reason"] = "Tests still red"
-        state["gates"] = [
-            {"id": "REJST", "description": "", "status": "rejected", "reason": "Tests still red"}
-        ]
+        state["gates"] = [{"id": "REJST", "description": "", "status": "rejected", "reason": "Tests still red"}]
         T._goal_write(self.tentacles, state)
 
         captured = []
@@ -3001,7 +3148,9 @@ class TestGoalHumanGate(unittest.TestCase):
         T._goal_write(self.tentacles, state)
 
         with patch("builtins.print"):
-            T._cmd_goal_eval(_fake_args(goal_action="eval", decision="pause", notes="pause after review"), self.tentacles)
+            T._cmd_goal_eval(
+                _fake_args(goal_action="eval", decision="pause", notes="pause after review"), self.tentacles
+            )
 
         state = T._goal_load(self.tentacles)
         self.assertEqual(state["status"], T.GOAL_STATUS_PAUSED)
@@ -3025,7 +3174,9 @@ class TestGoalHumanGate(unittest.TestCase):
         T._goal_write(self.tentacles, state)
 
         with patch("builtins.print"):
-            T._cmd_goal_eval(_fake_args(goal_action="eval", decision="abandon", notes="abandon after review"), self.tentacles)
+            T._cmd_goal_eval(
+                _fake_args(goal_action="eval", decision="abandon", notes="abandon after review"), self.tentacles
+            )
 
         state = T._goal_load(self.tentacles)
         self.assertEqual(state["status"], T.GOAL_STATUS_ABANDONED)
@@ -3108,21 +3259,27 @@ class TestGoalHumanGate(unittest.TestCase):
 
         # Approve G1 → should roll to G2.
         with patch("builtins.print"):
-            T._cmd_goal_gate(_fake_args(goal_action="gate", gate_action="approve", gate_id="G1", reason=""), self.tentacles)
+            T._cmd_goal_gate(
+                _fake_args(goal_action="gate", gate_action="approve", gate_id="G1", reason=""), self.tentacles
+            )
         state = T._goal_load(self.tentacles)
         self.assertEqual(state["status"], T.GOAL_STATUS_AWAITING_GATE)
         self.assertEqual(state["awaiting_gate_id"], "G2")
 
         # Approve G2 → should roll to G3.
         with patch("builtins.print"):
-            T._cmd_goal_gate(_fake_args(goal_action="gate", gate_action="approve", gate_id="G2", reason=""), self.tentacles)
+            T._cmd_goal_gate(
+                _fake_args(goal_action="gate", gate_action="approve", gate_id="G2", reason=""), self.tentacles
+            )
         state = T._goal_load(self.tentacles)
         self.assertEqual(state["status"], T.GOAL_STATUS_AWAITING_GATE)
         self.assertEqual(state["awaiting_gate_id"], "G3")
 
         # Approve G3 → all clear, goal is active.
         with patch("builtins.print"):
-            T._cmd_goal_gate(_fake_args(goal_action="gate", gate_action="approve", gate_id="G3", reason=""), self.tentacles)
+            T._cmd_goal_gate(
+                _fake_args(goal_action="gate", gate_action="approve", gate_id="G3", reason=""), self.tentacles
+            )
         state = T._goal_load(self.tentacles)
         self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
         self.assertNotIn("awaiting_gate_id", state)

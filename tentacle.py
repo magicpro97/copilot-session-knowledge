@@ -1745,14 +1745,172 @@ def _goal_path(tentacles_dir: Path) -> Path:
     return tentacles_dir.parent / GOAL_STATE_FILENAME
 
 
+def _goal_current_iteration(state: dict) -> int:
+    """Return the current goal iteration as a positive integer."""
+    try:
+        current = int(state.get("iteration", 1))
+    except (TypeError, ValueError):
+        current = 1
+    return max(1, current)
+
+
+def _goal_iteration_key(iteration: int | str | None) -> str:
+    """Normalize an iteration identifier to the goal.json string-key format."""
+    try:
+        parsed = int(iteration)
+    except (TypeError, ValueError):
+        parsed = 1
+    return str(max(1, parsed))
+
+
+def _goal_sorted_iteration_keys(iterations: dict) -> list[str]:
+    """Sort iteration keys numerically when possible, then lexically as fallback."""
+
+    def _sort_key(raw_key: str) -> tuple[int, int | str]:
+        try:
+            return (0, int(raw_key))
+        except (TypeError, ValueError):
+            return (1, str(raw_key))
+
+    return sorted(iterations.keys(), key=_sort_key)
+
+
+def _goal_iteration_entry(iterations: dict, iteration: int | str, *, started_at: str | None = None) -> dict:
+    """Return a normalized per-iteration entry, creating it when needed."""
+    key = _goal_iteration_key(iteration)
+    raw_entry = iterations.get(key)
+    if not isinstance(raw_entry, dict):
+        raw_entry = {}
+    tentacle_names = raw_entry.get("tentacles")
+    normalized_names: list[str] = []
+    if isinstance(tentacle_names, list):
+        for name in tentacle_names:
+            if isinstance(name, str) and name and name not in normalized_names:
+                normalized_names.append(name)
+    entry: dict = {"tentacles": normalized_names}
+    for field in ("started_at", "completed_at", "eval_decision"):
+        value = raw_entry.get(field)
+        if value:
+            entry[field] = value
+    if started_at and not entry.get("started_at"):
+        entry["started_at"] = started_at
+    iterations[key] = entry
+    return entry
+
+
+def _goal_build_iterations_from_legacy(state: dict) -> dict[str, dict]:
+    """Reconstruct per-iteration metadata from the legacy flat goal shape."""
+    current_iter = _goal_current_iteration(state)
+    created_at = state.get("created_at")
+    iterations: dict[str, dict] = {}
+    if created_at:
+        _goal_iteration_entry(iterations, 1, started_at=created_at)
+    else:
+        _goal_iteration_entry(iterations, current_iter)
+
+    for eval_entry in state.get("eval_history") or []:
+        iter_no = _goal_current_iteration({"iteration": eval_entry.get("iteration", 1)})
+        entry = _goal_iteration_entry(iterations, iter_no)
+        if eval_entry.get("blocked_by_gates"):
+            continue
+        decision = eval_entry.get("decision")
+        if decision not in GOAL_EVAL_DECISIONS:
+            continue
+        evaluated_at = eval_entry.get("evaluated_at")
+        if evaluated_at:
+            entry["completed_at"] = evaluated_at
+        entry["eval_decision"] = decision
+        if decision == "continue":
+            _goal_iteration_entry(iterations, iter_no + 1, started_at=evaluated_at)
+
+    _goal_iteration_entry(iterations, current_iter)
+    if created_at:
+        _goal_iteration_entry(iterations, 1, started_at=created_at)
+    return iterations
+
+
+def _goal_sync_iterations(state: dict, tentacles_dir: Path | None = None) -> dict:
+    """Keep the structured iteration map and legacy flat tentacle list in sync."""
+    current_iter = _goal_current_iteration(state)
+    state["iteration"] = current_iter
+    created_at = state.get("created_at")
+
+    raw_iterations = state.get("iterations")
+    if isinstance(raw_iterations, dict):
+        iterations: dict[str, dict] = {}
+        for raw_key in _goal_sorted_iteration_keys(raw_iterations):
+            started_at = created_at if _goal_iteration_key(raw_key) == "1" else None
+            normalized_key = _goal_iteration_key(raw_key)
+            existing = raw_iterations.get(raw_key)
+            iterations[normalized_key] = existing if isinstance(existing, dict) else {}
+            _goal_iteration_entry(iterations, normalized_key, started_at=started_at)
+    else:
+        iterations = _goal_build_iterations_from_legacy(state)
+
+    if not iterations:
+        iterations = {_goal_iteration_key(current_iter): {"tentacles": []}}
+    if created_at:
+        _goal_iteration_entry(iterations, 1, started_at=created_at)
+    _goal_iteration_entry(iterations, current_iter)
+
+    legacy_flat: list[str] = []
+    for name in state.get("tentacles") or []:
+        if isinstance(name, str) and name and name not in legacy_flat:
+            legacy_flat.append(name)
+
+    for name in legacy_flat:
+        if any(name in entry.get("tentacles", []) for entry in iterations.values()):
+            continue
+        assigned_iter = current_iter
+        if tentacles_dir is not None:
+            meta_path = tentacles_dir / name / "meta.json"
+            if meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                except Exception:
+                    meta = {}
+                assigned_iter = _goal_current_iteration(
+                    {"iteration": meta.get("goal_iteration") or meta.get("iteration") or current_iter}
+                )
+        entry = _goal_iteration_entry(
+            iterations,
+            assigned_iter,
+            started_at=created_at if assigned_iter == 1 else None,
+        )
+        if name not in entry["tentacles"]:
+            entry["tentacles"].append(name)
+
+    flattened: list[str] = []
+    for key in _goal_sorted_iteration_keys(iterations):
+        entry = _goal_iteration_entry(iterations, key, started_at=created_at if key == "1" else None)
+        for name in entry["tentacles"]:
+            if name not in flattened:
+                flattened.append(name)
+
+    state["iterations"] = iterations
+    state["tentacles"] = flattened
+    return state
+
+
+def _goal_iteration_tentacles(state: dict, iteration: int | str) -> list[str]:
+    """Return the tentacles recorded for a specific iteration."""
+    iterations = state.get("iterations") or {}
+    entry = iterations.get(_goal_iteration_key(iteration)) or {}
+    names = entry.get("tentacles") or []
+    return [name for name in names if isinstance(name, str) and name]
+
+
 def _goal_load(tentacles_dir: Path) -> dict:
     """Load goal.json; return empty dict if missing or malformed."""
     gp = _goal_path(tentacles_dir)
     if gp.exists():
         try:
-            return json.loads(gp.read_text(encoding="utf-8"))
+            state = json.loads(gp.read_text(encoding="utf-8"))
         except Exception:
             return {}
+        if not isinstance(state, dict):
+            return {}
+        return _goal_sync_iterations(state, tentacles_dir)
     return {}
 
 
@@ -1760,6 +1918,7 @@ def _goal_write(tentacles_dir: Path, state: dict) -> None:
     """Write goal.json (orchestrator-only state; no concurrent writers expected)."""
     gp = _goal_path(tentacles_dir)
     gp.parent.mkdir(parents=True, exist_ok=True)
+    _goal_sync_iterations(state, tentacles_dir)
     gp.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
 
@@ -1812,7 +1971,7 @@ def _validate_goal_budget_value(value: int | None, flag_name: str) -> int | None
 def _goal_budget_status(state: dict) -> dict:
     """Return a dict summarising current budget consumption vs limits."""
     budget = state.get("budget") or {}
-    current_iter = state.get("iteration", 1)
+    current_iter = _goal_current_iteration(state)
     max_iters = budget.get("max_iterations")
     max_tentacles = budget.get("max_tentacles")
     timeout_minutes = budget.get("timeout_minutes")
@@ -1953,6 +2112,7 @@ def _cmd_goal_init(args, tentacles: Path) -> None:
         "status": GOAL_STATUS_ACTIVE,
         "iteration": 1,
         "tentacles": [],
+        "iterations": {"1": {"tentacles": [], "started_at": datetime.now(timezone.utc).isoformat()}},
         "eval_history": [],
         "success_criteria": [],
         "gates": [],
@@ -1995,21 +2155,40 @@ def _cmd_goal_status(args, tentacles: Path) -> None:
             print(f"     {line}")
 
     tentacle_names = state.get("tentacles", [])
+    iteration_map = state.get("iterations") or {}
     if tentacle_names:
-        print(f"\n   Linked tentacles ({len(tentacle_names)}):")
-        for name in tentacle_names:
-            t_dir = tentacles / name
-            if t_dir.exists():
-                t_meta_path = t_dir / "meta.json"
-                try:
-                    t_meta = json.loads(t_meta_path.read_text(encoding="utf-8")) if t_meta_path.exists() else {}
-                except Exception:
-                    t_meta = {}
-                t_status = t_meta.get("status", "unknown")
-                t_iter = t_meta.get("goal_iteration") or t_meta.get("iteration", "?")
-                print(f"     - {name} [{t_status}] iter={t_iter}")
-            else:
-                print(f"     - {name} [missing]")
+        print(
+            f"\n   Linked tentacles: {len(tentacle_names)} total across "
+            f"{len(iteration_map) if iteration_map else 1} iteration(s)"
+        )
+        print("   Iteration map:")
+        for iter_key in _goal_sorted_iteration_keys(iteration_map):
+            entry = iteration_map.get(iter_key) or {}
+            header_bits: list[str] = []
+            if _goal_iteration_key(iter_key) == _goal_iteration_key(state.get("iteration", 1)):
+                header_bits.append("current")
+            if entry.get("eval_decision"):
+                header_bits.append(str(entry["eval_decision"]))
+            header = f"     Iteration {iter_key}"
+            if header_bits:
+                header += f" ({', '.join(header_bits)})"
+            print(header)
+            iter_names = _goal_iteration_tentacles(state, iter_key)
+            if not iter_names:
+                print("       - (no tentacles linked)")
+                continue
+            for name in iter_names:
+                t_dir = tentacles / name
+                if t_dir.exists():
+                    t_meta_path = t_dir / "meta.json"
+                    try:
+                        t_meta = json.loads(t_meta_path.read_text(encoding="utf-8")) if t_meta_path.exists() else {}
+                    except Exception:
+                        t_meta = {}
+                    t_status = t_meta.get("status", "unknown")
+                    print(f"       - {name} [{t_status}]")
+                else:
+                    print(f"       - {name} [missing]")
     else:
         print("\n   No tentacles linked yet. Use `tentacle.py goal link <name>`.")
 
@@ -2078,12 +2257,19 @@ def _cmd_goal_link(args, tentacles: Path) -> None:
         sys.exit(1)
 
     linked: list = state.setdefault("tentacles", [])
-    already_linked = tentacle_name in linked
-    if not already_linked:
+    if tentacle_name not in linked:
         linked.append(tentacle_name)
     goal_id = state.get("goal_id", "")
     goal_name = state.get("title", "")
-    iteration = state.get("iteration", 1)
+    iteration = _goal_current_iteration(state)
+    iter_entry = _goal_iteration_entry(
+        state.setdefault("iterations", {}),
+        iteration,
+        started_at=state.get("created_at") if iteration == 1 else None,
+    )
+    already_linked = tentacle_name in iter_entry["tentacles"]
+    if not already_linked:
+        iter_entry["tentacles"].append(tentacle_name)
 
     # Stamp goal metadata into tentacle meta.json.
     meta_path = t_dir / "meta.json"
@@ -2125,7 +2311,7 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
         sys.exit(1)
 
     notes = getattr(args, "notes", "") or ""
-    current_iter = state.get("iteration", 1)
+    current_iter = _goal_current_iteration(state)
     current_status = state.get("status", GOAL_STATUS_ACTIVE)
     if current_status in {
         GOAL_STATUS_COMPLETED,
@@ -2219,11 +2405,18 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
         state.pop("awaiting_gate_id", None)
         state.pop("awaiting_gate_reason", None)
 
+    evaluated_at = datetime.now(timezone.utc).isoformat()
+    current_iter_entry = _goal_iteration_entry(
+        state.setdefault("iterations", {}),
+        current_iter,
+        started_at=state.get("created_at") if current_iter == 1 else None,
+    )
+
     eval_entry: dict = {
         "iteration": current_iter,
         "decision": decision,
         "notes": notes,
-        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+        "evaluated_at": evaluated_at,
     }
     # Snapshot gate/criteria status at eval time for auditability.
     gates = state.get("gates") or []
@@ -2237,10 +2430,13 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
 
     history: list = state.setdefault("eval_history", [])
     history.append(eval_entry)
+    current_iter_entry["eval_decision"] = decision
+    current_iter_entry["completed_at"] = evaluated_at
 
     if decision == "continue":
         state["status"] = GOAL_STATUS_ACTIVE
         state["iteration"] = current_iter + 1
+        _goal_iteration_entry(state.setdefault("iterations", {}), current_iter + 1, started_at=evaluated_at)
         print(f"▶  Eval: continuing — advancing to iteration {current_iter + 1}")
     elif decision == "pause":
         state["status"] = GOAL_STATUS_PAUSED
@@ -2274,8 +2470,9 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
     reset_failed = getattr(args, "reset_failed", False)
     from_iteration = getattr(args, "from_iteration", None)
 
-    current_iter = state.get("iteration", 1)
+    current_iter = _goal_current_iteration(state)
     tentacle_names = state.get("tentacles", [])
+    iteration_map = state.setdefault("iterations", {})
 
     # Validate --from-iteration bounds before making any changes.
     if from_iteration is not None:
@@ -2335,6 +2532,20 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
 
     if from_iteration is not None:
         state["iteration"] = from_iteration
+        resumed_at = state["resumed_at"]
+        for raw_key in _goal_sorted_iteration_keys(iteration_map):
+            iter_no = _goal_current_iteration({"iteration": raw_key})
+            entry = _goal_iteration_entry(
+                iteration_map, iter_no, started_at=state.get("created_at") if iter_no == 1 else None
+            )
+            if iter_no < from_iteration:
+                continue
+            entry.pop("completed_at", None)
+            entry.pop("eval_decision", None)
+            if iter_no == from_iteration:
+                entry["started_at"] = resumed_at
+            elif iter_no > from_iteration:
+                entry.pop("started_at", None)
 
     _goal_write(tentacles, state)
 
@@ -2692,8 +2903,8 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
         sys.exit(1)
 
     bs = _goal_budget_status(state)
-    current_iter = state.get("iteration", 1)
-    tentacle_names = state.get("tentacles", [])
+    current_iter = _goal_current_iteration(state)
+    tentacle_names = _goal_iteration_tentacles(state, current_iter)
 
     print(f"🔄 Goal loop: '{state.get('title', '?')}' — iteration {current_iter}")
     if bs["max_iterations"] is not None:
@@ -2714,9 +2925,6 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
         try:
             t_meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except Exception:
-            continue
-        t_iter = t_meta.get("goal_iteration") or t_meta.get("iteration") or 1
-        if t_iter != current_iter:
             continue
         terminal = t_meta.get("terminal_status")
         t_status = t_meta.get("status", "idle")
