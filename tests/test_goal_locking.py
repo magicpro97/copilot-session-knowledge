@@ -119,7 +119,7 @@ class TestGoalLockLifecycle(GoalLockingTestCase):
     def test_stale_goal_lock_is_recovered(self):
         lock_path = T._goal_lock_path(self.tentacles)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path.write_text("99999", encoding="utf-8")
+        lock_path.write_text("999999999", encoding="utf-8")
         stale_time = max(0.0, os.path.getmtime(lock_path) - 60.0)
         os.utime(lock_path, (stale_time, stale_time))
 
@@ -184,6 +184,22 @@ class TestGoalLockLifecycle(GoalLockingTestCase):
             except OSError:
                 pass
 
+    def test_stale_age_does_not_break_live_pid_lock(self):
+        lock_path = T._goal_lock_path(self.tentacles)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(str(os.getpid()), encoding="utf-8")
+        stale_time = max(0.0, os.path.getmtime(lock_path) - 60.0)
+        os.utime(lock_path, (stale_time, stale_time))
+
+        with patch.object(T, "_GOAL_LOCK_TIMEOUT_S", 0.05):
+            with patch.object(T, "_GOAL_LOCK_POLL_S", 0.01):
+                with self.assertRaises(TimeoutError):
+                    with T._goal_lock(self.tentacles):
+                        pass
+
+        self.assertTrue(lock_path.exists())
+        lock_path.unlink(missing_ok=True)
+
 
 class TestGoalLockConcurrency(GoalLockingTestCase):
     def test_concurrent_goal_update_preserves_all_fields(self):
@@ -213,8 +229,9 @@ class TestGoalLockConcurrency(GoalLockingTestCase):
                 raise PermissionError("busy")
             return real_replace(src, dst)
 
-        with patch.object(T.os, "replace", side_effect=_flaky_replace):
-            T._goal_write(self.tentacles, state)
+        with patch.object(T.os, "name", "nt"):
+            with patch.object(T.os, "replace", side_effect=_flaky_replace):
+                T._goal_write(self.tentacles, state)
 
         reloaded = T._goal_load(self.tentacles)
         self.assertEqual(reloaded.get("extra"), "ok")
@@ -264,9 +281,11 @@ class TestGoalLockConcurrency(GoalLockingTestCase):
         state = T._goal_load(self.tentacles)
 
         with patch("builtins.print"):
-            T._escalate_goal_to_needs_human(state, self.tentacles, ["sc-1"], reason="stall")
+            did_escalate = T._escalate_goal_to_needs_human(state, self.tentacles, ["sc-1"], reason="stall")
 
         reloaded = T._goal_load(self.tentacles)
+        self.assertFalse(did_escalate)
+        self.assertEqual(state.get("status"), T.GOAL_STATUS_COMPLETED)
         self.assertEqual(reloaded.get("status"), T.GOAL_STATUS_COMPLETED)
         self.assertEqual(reloaded.get("completed_at"), "2026-05-11T00:00:00+00:00")
         self.assertNotIn("needs_human_reason", reloaded)

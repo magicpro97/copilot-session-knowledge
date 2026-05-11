@@ -619,7 +619,7 @@ map. Each iteration bucket records its own tentacles plus lifecycle metadata:
 returns the same `iterations` object. Use that JSON when you need to answer questions like
 "which tentacles were linked in iteration 2?" without guessing from current tentacle meta.
 Goal updates now use `.octogent/goal.json.lock` for exclusive writes. The CLI waits up to
-30 seconds for that lock and automatically cleans up stale lock files before retrying.
+30 seconds for that lock and uses PID-aware stale-lock cleanup before retrying.
 
 ### Resume with state reset
 

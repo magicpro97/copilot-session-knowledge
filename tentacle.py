@@ -190,6 +190,26 @@ def _retry_windows_fs(func, *args, retries: int = 5, delay: float = 0.05):
         raise last_exc
 
 
+def _is_pid_running(pid: int) -> bool:
+    """Return True when *pid* is a currently running process."""
+    if os.name == "nt":
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
 def find_git_root() -> Path | None:
     """Walk up from cwd to find the git repository root."""
     current = Path.cwd()
@@ -1769,7 +1789,7 @@ def _goal_lock_path(tentacles_dir: Path) -> Path:
 
 @contextmanager
 def _goal_lock(tentacles_dir: Path):
-    """Acquire goal.json.lock via O_CREAT|O_EXCL with stale-lock recovery."""
+    """Acquire goal.json.lock via O_CREAT|O_EXCL with PID-aware stale-lock recovery."""
     lock_path = _goal_lock_path(tentacles_dir)
     thread_lock = _get_path_lock(lock_path)
     with thread_lock:
@@ -1783,10 +1803,21 @@ def _goal_lock(tentacles_dir: Path):
                 break
             except FileExistsError:
                 try:
+                    holder_pid = int(lock_path.read_text(encoding="utf-8").strip())
+                except (OSError, ValueError):
+                    holder_pid = None
+                if holder_pid is not None and not _is_pid_running(holder_pid):
+                    try:
+                        lock_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    else:
+                        continue
+                try:
                     age = time.time() - lock_path.stat().st_mtime
                 except OSError:
                     age = 0
-                if age > _GOAL_LOCK_TIMEOUT_S:
+                if holder_pid is None and age > _GOAL_LOCK_TIMEOUT_S:
                     try:
                         lock_path.unlink(missing_ok=True)
                     except OSError:
@@ -3102,17 +3133,14 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
         print("   Or `goal eval --decision complete` if success criteria are met.")
 
 
-def _escalate_goal_to_needs_human(state: dict, tentacles: Path, failing_ids: list, reason: str) -> None:
-    """Mark goal as needs-human, persist state, and print advisory guidance."""
+def _escalate_goal_to_needs_human(state: dict, tentacles: Path, failing_ids: list, reason: str) -> bool:
+    """Mark goal as needs-human when still allowed. Returns True when persisted."""
     needs_human_at = datetime.now(timezone.utc).isoformat()
     updated_at = datetime.now(timezone.utc).isoformat()
-    state["status"] = GOAL_STATUS_NEEDS_HUMAN
-    state["needs_human_at"] = needs_human_at
-    state["needs_human_reason"] = reason
-    state["needs_human_failing_criteria"] = [str(x) for x in failing_ids]
-    state["updated_at"] = updated_at
+    escalated = False
 
     def _apply(locked_state: dict) -> None:
+        nonlocal escalated
         if locked_state.get("status") in {GOAL_STATUS_COMPLETED, GOAL_STATUS_ABANDONED}:
             return
         locked_state["status"] = GOAL_STATUS_NEEDS_HUMAN
@@ -3120,8 +3148,13 @@ def _escalate_goal_to_needs_human(state: dict, tentacles: Path, failing_ids: lis
         locked_state["needs_human_reason"] = reason
         locked_state["needs_human_failing_criteria"] = [str(x) for x in failing_ids]
         locked_state["updated_at"] = updated_at
+        escalated = True
 
-    _goal_transact(tentacles, _apply)
+    persisted_state = _goal_transact(tentacles, _apply)
+    state.clear()
+    state.update(persisted_state)
+    if not escalated:
+        return False
     print(f"\n🚨 Goal escalated to '{GOAL_STATUS_NEEDS_HUMAN}' (reason: {reason})")
     print(f"   Failing criteria: {', '.join(str(x) for x in failing_ids)}")
     print("\n   Advisory next steps:")
@@ -3130,6 +3163,7 @@ def _escalate_goal_to_needs_human(state: dict, tentacles: Path, failing_ids: lis
     print("   3. Fix the underlying issues manually or dispatch targeted tentacles.")
     print("   4. Resume the goal after fixing: `goal resume`")
     print("   5. Re-run verification: `goal verify-loop [--id <id>]`")
+    return True
 
 
 def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
@@ -3283,7 +3317,9 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
             print("\n🛑 Stall detected — all failing criteria have repeated identical failures.")
             print(f"   Stalled: {', '.join(stalled_ids)}")
             if escalate:
-                _escalate_goal_to_needs_human(state, tentacles, stalled_ids, reason="stall")
+                did_escalate = _escalate_goal_to_needs_human(state, tentacles, stalled_ids, reason="stall")
+                if not did_escalate:
+                    print("   Goal already reached a terminal state — escalation skipped.")
             else:
                 print("   Run with --escalate to mark goal needs-human, or investigate and fix the issues.")
             sys.exit(1)
@@ -3304,7 +3340,9 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
         f"\n❌ Retry limit reached ({max_retries + 1} attempts). Still failing: {', '.join(str(x) for x in still_failing)}"
     )
     if escalate:
-        _escalate_goal_to_needs_human(state, tentacles, still_failing, reason="retry_exhausted")
+        did_escalate = _escalate_goal_to_needs_human(state, tentacles, still_failing, reason="retry_exhausted")
+        if not did_escalate:
+            print("   Goal already reached a terminal state — escalation skipped.")
     else:
         print("   Run with --escalate to mark goal needs-human, or increase --max-retries.")
     sys.exit(1)
