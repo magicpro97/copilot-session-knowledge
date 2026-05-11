@@ -4168,8 +4168,111 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
     sys.exit(1)
 
 
+def _cmd_goal_coverage(args, tentacles: Path) -> None:
+    """Report which success criteria are covered by completed tentacles via bridge_links."""
+    state = _goal_load(tentacles)
+    if not state:
+        print(
+            "ERROR: No goal initialized. Run `tentacle.py goal init` first.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    criteria: list[dict] = state.get("success_criteria") or []
+    fmt = getattr(args, "format", "text")
+
+    # Build coverage map: criterion_id -> list of tentacle names that bridge to it.
+    coverage: dict[str, list[str]] = {}
+    if tentacles.is_dir():
+        for t_dir in sorted(tentacles.iterdir()):
+            if not t_dir.is_dir():
+                continue
+            meta_path = t_dir / "meta.json"
+            if not meta_path.exists():
+                continue
+            try:
+                t_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            # Only count bridge_links from completed tentacles (contract: docs + docstring).
+            if t_meta.get("status") != "completed":
+                continue
+            for sc_id in t_meta.get("bridge_links") or []:
+                coverage.setdefault(sc_id, []).append(t_dir.name)
+
+    # Classify each criterion.
+    covered: list[dict] = []
+    uncovered: list[dict] = []
+    orphan_ids: list[str] = []
+
+    criterion_ids = {c.get("id") for c in criteria if c.get("id")}
+    for c in criteria:
+        cid = c.get("id", "")
+        bridging = coverage.get(cid, [])
+        entry = {
+            "id": cid,
+            "description": c.get("description", ""),
+            "status": c.get("status", "pending"),
+            "covered_by": bridging,
+        }
+        if bridging:
+            covered.append(entry)
+        else:
+            uncovered.append(entry)
+
+    # Criterion IDs referenced in bridge links but absent from goal.json.
+    for sc_id in sorted(coverage):
+        if sc_id not in criterion_ids:
+            orphan_ids.append(sc_id)
+
+    if fmt == "json":
+        print(
+            json.dumps(
+                {
+                    "goal_id": state.get("goal_id"),
+                    "goal_title": state.get("title"),
+                    "total_criteria": len(criteria),
+                    "covered_count": len(covered),
+                    "uncovered_count": len(uncovered),
+                    "covered": covered,
+                    "uncovered": uncovered,
+                    "orphan_bridge_ids": orphan_ids,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    # Text output.
+    print(f"Coverage report for: {state.get('title', '(untitled)')}")
+    print(f"  Total criteria : {len(criteria)}")
+    print(f"  Covered        : {len(covered)}")
+    print(f"  Uncovered      : {len(uncovered)}")
+
+    if covered:
+        print(f"\nCovered ({len(covered)}):")
+        for entry in covered:
+            tentacle_list = ", ".join(entry["covered_by"])
+            print(f"  [{entry['id']}] {entry['description'][:60]}")
+            print(f"       covered by: {tentacle_list}")
+
+    if uncovered:
+        print(f"\nUncovered ({len(uncovered)}):")
+        for entry in uncovered:
+            print(f"  [{entry['id']}] {entry['description'][:60]}")
+
+    if orphan_ids:
+        print("\nOrphan bridge IDs (in tentacle meta but not in goal.json):")
+        for oid in orphan_ids:
+            tentacle_list = ", ".join(coverage.get(oid, []))
+            print(f"  {oid}  (from: {tentacle_list})")
+
+    if not criteria:
+        print("\n  No success criteria defined. Add criteria with `goal criteria add`.")
+
+
 def cmd_goal(args):
-    """Dispatch goal sub-commands: init / create / validate / status / dispatch / link / eval / resume / criteria / gate / budget / next-iter / verify / verify-loop."""
+    """Dispatch goal sub-commands: init / create / validate / status / dispatch / link / eval / resume / criteria / gate / budget / next-iter / verify / verify-loop / coverage."""
     tentacles = get_tentacles_dir(args.session_dir)
     sub = args.goal_action
 
@@ -4204,6 +4307,8 @@ def cmd_goal(args):
             _cmd_goal_verify(args, tentacles)
         elif sub == "verify-loop":
             _cmd_goal_verify_loop(args, tentacles)
+        elif sub == "coverage":
+            _cmd_goal_coverage(args, tentacles)
         else:
             print(f"ERROR: Unknown goal action '{sub}'", file=sys.stderr)
             sys.exit(1)
@@ -4540,6 +4645,22 @@ def _parse_handoff_changed_files(handoff_content: str) -> "list[str]":
     return changed_files
 
 
+def _parse_handoff_bridge_links(handoff_content: str) -> "list[str]":
+    """Return all Bridge: criterion IDs from handoff sections.
+
+    Preserves first-seen handoff order while deduplicating repeated IDs.
+    Returns [] for handoffs with no Bridge: lines.
+    """
+    seen: set[str] = set()
+    bridge_links: list[str] = []
+    for raw_id in re.findall(r"^Bridge:\s*(.+)", handoff_content, flags=re.MULTILINE):
+        sc_id = raw_id.strip()
+        if sc_id and sc_id not in seen:
+            bridge_links.append(sc_id)
+            seen.add(sc_id)
+    return bridge_links
+
+
 def cmd_handoff(args):
     """Write a handoff message for a tentacle (agent output)."""
     tentacles = get_tentacles_dir(args.session_dir)
@@ -4552,6 +4673,7 @@ def cmd_handoff(args):
     # Validate optional structured status
     status = getattr(args, "status", None)
     changed_files: list[str] = list(getattr(args, "changed_file", None) or [])
+    bridge_links: list[str] = list(getattr(args, "bridge", None) or [])
 
     if status is not None and status not in HANDOFF_STATUS_ALLOWLIST:
         allowed = ", ".join(sorted(HANDOFF_STATUS_ALLOWLIST))
@@ -4569,6 +4691,8 @@ def cmd_handoff(args):
         entry += f"STATUS: {status}\n"
     for cf in changed_files:
         entry += f"Changed: {cf}\n"
+    for bl in bridge_links:
+        entry += f"Bridge: {bl}\n"
 
     with file_locked(handoff_path):
         if handoff_path.exists():
@@ -4578,6 +4702,24 @@ def cmd_handoff(args):
             handoff_path.write_text(f"# Handoff Notes\n{entry}", encoding="utf-8")
 
     print(f"📨 Handoff recorded for '{args.name}'")
+
+    # Validate bridge links against active goal criteria (fail-open)
+    try:
+        goal_state = _goal_load(tentacles)
+        criteria = goal_state.get("success_criteria", [])
+        if criteria:
+            criterion_ids = {c.get("id") for c in criteria if c.get("id")}
+            if not bridge_links:
+                print(
+                    "⚠️  WARNING: no Bridge link supplied — consider --bridge <sc-id> to link "
+                    "this handoff to a success criterion"
+                )
+            else:
+                for bl in bridge_links:
+                    if bl not in criterion_ids:
+                        print(f"⚠️  WARNING: criterion '{bl}' not found in goal.json success_criteria")
+    except Exception:
+        pass  # fail-open: skip validation if goal.json is unreadable
 
     # Triage signal for non-DONE statuses
     if status in HANDOFF_TRIAGE_STATUSES:
@@ -4660,17 +4802,21 @@ def cmd_complete(args):
     if not (meta.get("verifications") or []):
         print("⚠️  No verification evidence recorded — run 'verify' or use --auto-verify before completing")
 
-    # 2a. Extract structured handoff fields (terminal_status, changed_files)
+    # 2a. Extract structured handoff fields (terminal_status, changed_files, bridge_links)
     terminal_status = None
     changed_files: list[str] = []
+    bridge_links: list[str] = []
     if handoff_path.exists():
         raw_handoff = handoff_path.read_text(encoding="utf-8")
         terminal_status = _parse_handoff_status(raw_handoff)
         changed_files = _parse_handoff_changed_files(raw_handoff)
+        bridge_links = _parse_handoff_bridge_links(raw_handoff)
     if terminal_status:
         meta["terminal_status"] = terminal_status
     if changed_files:
         meta["changed_files"] = changed_files
+    if bridge_links:
+        meta["bridge_links"] = bridge_links
 
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
@@ -5613,6 +5759,14 @@ def main():
         default=[],
         help="Changed file receipt (repeatable); e.g. --changed-file src/foo.py",
     )
+    p_handoff.add_argument(
+        "--bridge",
+        action="append",
+        dest="bridge",
+        metavar="SC_ID",
+        default=[],
+        help="Bridge link to a success criterion ID (repeatable); e.g. --bridge sc-1",
+    )
 
     # swarm
     p_swarm = sub.add_parser("swarm", help="Generate dispatch from pending todos")
@@ -5819,7 +5973,7 @@ def main():
     # goal subcommand
     p_goal = sub.add_parser(
         "goal",
-        help="Orchestrator-level goal loop: init/create/validate/status/dispatch/link/eval/resume/criteria/verify/gate/budget/next-iter/verify-loop",
+        help="Orchestrator-level goal loop: init/create/validate/status/dispatch/link/eval/resume/criteria/verify/gate/budget/next-iter/verify-loop/coverage",
     )
     p_goal_sub = p_goal.add_subparsers(dest="goal_action", required=True)
 
@@ -6132,6 +6286,18 @@ def main():
         action="store_true",
         default=False,
         help="On retry exhaustion or stall, mark goal as needs-human and print advisory next steps",
+    )
+
+    # goal coverage
+    p_goal_coverage = p_goal_sub.add_parser(
+        "coverage",
+        help="Report which success criteria are covered by completed tentacles via bridge_links",
+    )
+    p_goal_coverage.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format: text (default) or json",
     )
 
     args = parser.parse_args()

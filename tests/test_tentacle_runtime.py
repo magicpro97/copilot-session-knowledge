@@ -6732,5 +6732,246 @@ class TestGoalLoopRuntimeFlow(unittest.TestCase):
         self.assertFalse(missing, f"Missing keys from goal.json after full chain: {missing}")
 
 
+# ---------------------------------------------------------------------------
+# Regression: issue #133 — bridge link runtime flow
+# ---------------------------------------------------------------------------
+
+
+class TestBridgeLinkRuntimeFlow(unittest.TestCase):
+    """Runtime coverage for handoff --bridge → complete → goal coverage (issue #133).
+
+    These tests exercise the full command chain (cmd_handoff → cmd_complete →
+    _cmd_goal_coverage) through real in-process helpers with a local temp
+    directory.  They cover the end-to-end session-dir path, not just the
+    parser helpers.
+    """
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "bridge_runtime"
+        _, self.tentacles = _make_octogent_in(self.base)
+        # Redirect marker to test dir (matches TestHandoffContract pattern)
+        self.marker_path = self.base / "dispatched-subagent-active"
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        if SCRATCH_DIR.exists():
+            _rmtree(SCRATCH_DIR)
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _make_worker(self, name: str) -> Path:
+        return make_tentacle(name, self.tentacles)
+
+    def _handoff(self, name: str, bridge: list = None, status: str = "DONE") -> str:
+        """Run cmd_handoff and return all captured stdout lines joined."""
+        captured = []
+        args = fake_args(
+            name=name,
+            message="Handoff message",
+            status=status,
+            changed_file=[],
+            bridge=bridge if bridge is not None else [],
+            learn=False,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.tentacles):
+            with patch(
+                "builtins.print",
+                side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a)),
+            ):
+                T.cmd_handoff(args)
+        return "\n".join(captured)
+
+    def _complete(self, name: str) -> None:
+        """Run cmd_complete with no_learn=True."""
+        args = fake_args(name=name, no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.tentacles):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+
+    def _coverage(self, fmt: str = "text") -> str:
+        """Run _cmd_goal_coverage and return all captured stdout lines joined."""
+        captured = []
+        args = types.SimpleNamespace(session_dir=None, goal_action="coverage", format=fmt)
+        with patch(
+            "builtins.print",
+            side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a)),
+        ):
+            T._cmd_goal_coverage(args, self.tentacles)
+        return "\n".join(captured)
+
+    def _criteria_add(self, sc_id: str, desc: str = "") -> None:
+        args = types.SimpleNamespace(
+            session_dir=None,
+            goal_action="criteria",
+            criteria_action="add",
+            desc=desc or f"Criterion {sc_id}",
+            id=sc_id,
+            verify_cmd="",
+        )
+        with patch("builtins.print"):
+            T._cmd_goal_criteria(args, self.tentacles)
+
+    # ── tests ─────────────────────────────────────────────────────────────────
+
+    def test_handoff_with_bridge_writes_bridge_line_to_handoff_md(self):
+        """cmd_handoff --bridge sc-1 must write 'Bridge: sc-1' to handoff.md."""
+        _goal_init_helper(self.tentacles, title="Bridge RT Goal")
+        self._criteria_add("sc-1")
+        self._make_worker("brt-write")
+
+        self._handoff("brt-write", bridge=["sc-1"])
+
+        content = (self.tentacles / "brt-write" / "handoff.md").read_text(encoding="utf-8")
+        self.assertIn("Bridge: sc-1", content)
+
+    def test_complete_extracts_bridge_links_into_meta(self):
+        """cmd_complete must parse Bridge: lines and store bridge_links in meta.json."""
+        self._make_worker("brt-complete")
+        (self.tentacles / "brt-complete" / "handoff.md").write_text(
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nDone.\n"
+            "STATUS: DONE\nBridge: sc-1\nBridge: sc-2\n",
+            encoding="utf-8",
+        )
+
+        self._complete("brt-complete")
+
+        meta = json.loads(
+            (self.tentacles / "brt-complete" / "meta.json").read_text(encoding="utf-8")
+        )
+        self.assertIn("bridge_links", meta)
+        self.assertIn("sc-1", meta["bridge_links"])
+        self.assertIn("sc-2", meta["bridge_links"])
+
+    def test_no_bridge_in_handoff_leaves_bridge_links_absent_from_meta(self):
+        """cmd_complete with no Bridge: lines must not add bridge_links to meta.json."""
+        self._make_worker("brt-no-bridge")
+        (self.tentacles / "brt-no-bridge" / "handoff.md").write_text(
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nDone.\nSTATUS: DONE\n",
+            encoding="utf-8",
+        )
+
+        self._complete("brt-no-bridge")
+
+        meta = json.loads(
+            (self.tentacles / "brt-no-bridge" / "meta.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("bridge_links", meta)
+
+    def test_goal_coverage_shows_covered_criterion_after_handoff_and_complete(self):
+        """Full flow: handoff --bridge sc-1 → complete → coverage shows sc-1 covered."""
+        _goal_init_helper(self.tentacles, title="Full Bridge Flow")
+        self._criteria_add("sc-1", "Full feature works")
+        self._make_worker("brt-flow-worker")
+
+        self._handoff("brt-flow-worker", bridge=["sc-1"])
+        self._complete("brt-flow-worker")
+
+        output = self._coverage(fmt="json")
+        data = json.loads(output)
+        self.assertEqual(data["covered_count"], 1)
+        self.assertEqual(data["uncovered_count"], 0)
+        self.assertEqual(len(data["covered"]), 1)
+        self.assertEqual(data["covered"][0]["id"], "sc-1")
+        self.assertIn("brt-flow-worker", data["covered"][0]["covered_by"])
+
+    def test_goal_coverage_shows_uncovered_when_no_bridge_in_handoff(self):
+        """Criterion with no bridging tentacle must appear in the uncovered list."""
+        _goal_init_helper(self.tentacles, title="Uncovered Flow")
+        self._criteria_add("sc-1", "Uncovered feature")
+        self._make_worker("brt-unbridged")
+
+        # handoff with no bridge
+        self._handoff("brt-unbridged", bridge=[])
+        self._complete("brt-unbridged")
+
+        output = self._coverage(fmt="json")
+        data = json.loads(output)
+        self.assertEqual(data["covered_count"], 0)
+        self.assertEqual(data["uncovered_count"], 1)
+        uncovered_ids = [e["id"] for e in data["uncovered"]]
+        self.assertIn("sc-1", uncovered_ids)
+
+    def test_handoff_warns_when_no_bridge_and_criteria_exist(self):
+        """cmd_handoff without --bridge must emit WARNING when goal has criteria."""
+        _goal_init_helper(self.tentacles, title="Warn No Bridge RT")
+        self._criteria_add("sc-1", "Must be covered")
+        self._make_worker("brt-warn-worker")
+
+        output = self._handoff("brt-warn-worker", bridge=[])
+
+        self.assertIn("WARNING", output)
+        self.assertIn("no Bridge link", output)
+
+    def test_handoff_warns_for_unknown_bridge_id(self):
+        """cmd_handoff with an unrecognized --bridge ID must warn with that ID."""
+        _goal_init_helper(self.tentacles, title="Warn Unknown Bridge RT")
+        self._criteria_add("sc-1")
+        self._make_worker("brt-unknown-worker")
+
+        output = self._handoff("brt-unknown-worker", bridge=["sc-999"])
+
+        self.assertIn("WARNING", output)
+        self.assertIn("sc-999", output)
+
+    def test_goal_coverage_json_includes_all_contract_keys(self):
+        """JSON coverage output must include all documented contract fields."""
+        _goal_init_helper(self.tentacles, title="JSON Keys RT")
+        self._criteria_add("sc-1")
+
+        output = self._coverage(fmt="json")
+        data = json.loads(output)
+
+        for key in (
+            "goal_id",
+            "goal_title",
+            "total_criteria",
+            "covered_count",
+            "uncovered_count",
+            "covered",
+            "uncovered",
+            "orphan_bridge_ids",
+        ):
+            self.assertIn(key, data, f"JSON coverage output must include key '{key}'")
+
+    def test_bridge_deduplication_across_multiple_handoff_sections(self):
+        """Multiple handoff sections with the same bridge ID must deduplicate in meta.json."""
+        self._make_worker("brt-dedup")
+        (self.tentacles / "brt-dedup" / "handoff.md").write_text(
+            "# Handoff Notes\n\n## [2024-01-01 11:00 UTC]\n\nFirst.\nBridge: sc-1\n"
+            "\n## [2024-01-01 12:00 UTC]\n\nSecond.\nBridge: sc-1\nBridge: sc-2\n",
+            encoding="utf-8",
+        )
+
+        self._complete("brt-dedup")
+
+        meta = json.loads(
+            (self.tentacles / "brt-dedup" / "meta.json").read_text(encoding="utf-8")
+        )
+        bridge_links = meta.get("bridge_links", [])
+        # sc-1 must appear exactly once (deduplicated)
+        self.assertEqual(bridge_links.count("sc-1"), 1)
+        self.assertIn("sc-2", bridge_links)
+
+    def test_coverage_text_output_lists_covered_and_uncovered(self):
+        """Text coverage output must label covered and uncovered sections."""
+        _goal_init_helper(self.tentacles, title="Text Output RT")
+        self._criteria_add("sc-1", "Covered criterion")
+        self._criteria_add("sc-2", "Uncovered criterion")
+        self._make_worker("brt-text-worker")
+
+        self._handoff("brt-text-worker", bridge=["sc-1"])
+        self._complete("brt-text-worker")
+
+        output = self._coverage(fmt="text")
+        self.assertIn("sc-1", output)
+        self.assertIn("sc-2", output)
+        self.assertIn("brt-text-worker", output)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
