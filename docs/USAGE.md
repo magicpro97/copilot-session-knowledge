@@ -578,6 +578,10 @@ sk tentacle goal init --title "Implement auth" [--desc "..."] [--force] \
   [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]
 # fallback: python3 ~/.copilot/tools/tentacle.py goal init --title "Implement auth"
 
+# Check current goal text, or dry-run a proposed title/description before init
+sk tentacle goal validate [--title "Implement auth"] [--desc "..."] [--format text|json]
+# fallback: python3 ~/.copilot/tools/tentacle.py goal validate --title "Implement auth"
+
 # Show current goal state (linked tentacles, gates, budget, criteria)
 sk tentacle goal status [--format text|json]
 
@@ -620,6 +624,13 @@ returns the same `iterations` object. Use that JSON when you need to answer ques
 "which tentacles were linked in iteration 2?" without guessing from current tentacle meta.
 Goal updates now use `.octogent/goal.json.lock` for exclusive writes. The CLI waits up to
 30 seconds for that lock and uses PID-aware stale-lock cleanup before retrying.
+
+### Goal text budget
+
+`goal validate` checks the combined length of the goal title and description. If the total is
+over 3000 characters, it prints a warning and suggests moving the long detail into
+`.goal-spec.md`. If the total is over 5000 characters, it exits non-zero. `goal init` uses the
+same check, so over-limit goals are rejected before they become active.
 
 ### Resume with state reset
 

@@ -4,7 +4,7 @@ test_tentacle_goal.py — Goal lifecycle and runtime-style tests for tentacle.py
 
 Tests cover:
   - Helper functions: _goal_budget_status, _goal_gates_all_passed, _goal_criteria_run_one
-  - goal init / status / link / eval / resume / criteria / gate / budget / next-iter
+  - goal init / validate / status / link / eval / resume / criteria / gate / budget / next-iter
   - Full end-to-end lifecycle: init → link → add criteria → pass gates → eval → complete
   - Budget enforcement: iteration/tentacle/timeout limits
   - Gate state: pass/fail, all-gates-check
@@ -216,6 +216,29 @@ class TestGoalBudgetStatus(unittest.TestCase):
         self.assertEqual(bs["budget_status"], "unknown")
 
 
+class TestGoalTextValidation(unittest.TestCase):
+    """Unit tests for goal title/description text-budget validation."""
+
+    def test_ok_when_total_is_within_soft_limit(self):
+        result = T._goal_text_validation("Goal", "x" * 100)
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["soft_exceeded"])
+        self.assertFalse(result["hard_exceeded"])
+
+    def test_warn_when_total_exceeds_soft_limit(self):
+        result = T._goal_text_validation("G" * 1000, "x" * 2201)
+        self.assertEqual(result["status"], "warn")
+        self.assertTrue(result["soft_exceeded"])
+        self.assertFalse(result["hard_exceeded"])
+        self.assertIn(".goal-spec.md", result["hint"])
+
+    def test_error_when_total_exceeds_hard_limit(self):
+        result = T._goal_text_validation("G" * 2500, "x" * 2501)
+        self.assertEqual(result["status"], "error")
+        self.assertTrue(result["soft_exceeded"])
+        self.assertTrue(result["hard_exceeded"])
+
+
 class TestGoalGatesAllPassed(unittest.TestCase):
     """Unit tests for _goal_gates_all_passed."""
 
@@ -383,6 +406,121 @@ class TestGoalInit(unittest.TestCase):
                 with self.assertRaises(SystemExit) as cm:
                     T._cmd_goal_init(args, self.tentacles)
             self.assertEqual(cm.exception.code, 1)
+
+    def test_init_warns_when_goal_text_exceeds_soft_limit(self):
+        desc = "x" * 3100
+        captured = []
+        args = _fake_args(
+            title="Warn Goal",
+            desc=desc,
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="init",
+        )
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_init(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("Warning: goal title + description use", combined)
+        self.assertIn(".goal-spec.md", combined)
+        self.assertEqual(T._goal_load(self.tentacles)["description"], desc)
+
+    def test_init_rejects_when_goal_text_exceeds_hard_limit(self):
+        desc = "x" * 5001
+        args = _fake_args(
+            title="Too Long",
+            desc=desc,
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="init",
+        )
+        stdout_lines = []
+        stderr_lines = []
+
+        def _capture(*a, **kw):
+            line = " ".join(str(x) for x in a)
+            if kw.get("file") is sys.stderr:
+                stderr_lines.append(line)
+            else:
+                stdout_lines.append(line)
+
+        with patch("builtins.print", side_effect=_capture):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_init(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("hard limit", "\n".join(stderr_lines))
+        self.assertFalse(T._goal_path(self.tentacles).exists())
+
+
+# ---------------------------------------------------------------------------
+# Tests for _cmd_goal_validate
+# ---------------------------------------------------------------------------
+
+
+class TestGoalValidate(unittest.TestCase):
+    def setUp(self):
+        self.base = SCRATCH_DIR / "validate"
+        _, self.tentacles = _make_octogent(self.base)
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    def test_validate_without_goal_prints_info(self):
+        captured = []
+        args = _fake_args(goal_action="validate", title=None, desc=None, format="text")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_validate(args, self.tentacles)
+        self.assertIn("No active goal", "\n".join(captured))
+
+    def test_validate_current_goal_reports_within_budget(self):
+        _init_goal(self.tentacles, title="Short Goal", desc="short desc")
+        captured = []
+        args = _fake_args(goal_action="validate", title=None, desc=None, format="text")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_validate(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("Within budget", combined)
+        self.assertIn("Title chars", combined)
+
+    def test_validate_warns_for_soft_limit(self):
+        captured = []
+        args = _fake_args(goal_action="validate", title="Soft", desc="x" * 3200, format="text")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_validate(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("Over soft limit", combined)
+        self.assertIn(".goal-spec.md", combined)
+
+    def test_validate_hard_limit_exits_nonzero(self):
+        captured = []
+        stderr_lines = []
+        args = _fake_args(goal_action="validate", title="Hard", desc="x" * 5100, format="text")
+        def _capture(*a, **kw):
+            line = " ".join(str(x) for x in a)
+            if kw.get("file") is sys.stderr:
+                stderr_lines.append(line)
+            else:
+                captured.append(line)
+
+        with patch("builtins.print", side_effect=_capture):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_validate(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("Over hard limit", "\n".join(captured))
+        self.assertIn("hard limit", "\n".join(stderr_lines))
+
+    def test_validate_json_format_is_parseable(self):
+        args = _fake_args(goal_action="validate", title="Json", desc="x" * 3201, format="json")
+        captured = []
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_validate(args, self.tentacles)
+        data = json.loads("\n".join(captured))
+        self.assertEqual(data["status"], "warn")
+        self.assertTrue(data["soft_exceeded"])
+        self.assertFalse(data["hard_exceeded"])
 
 
 # ---------------------------------------------------------------------------
