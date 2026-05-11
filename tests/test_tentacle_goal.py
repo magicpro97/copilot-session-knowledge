@@ -4118,5 +4118,415 @@ class TestGoalHumanGate(unittest.TestCase):
         self.assertNotIn("awaiting_gate_id", state)
 
 
+# ---------------------------------------------------------------------------
+# Issue #132 — Goal continuation context regressions
+# ---------------------------------------------------------------------------
+
+
+class TestGoalContext(unittest.TestCase):
+    """Regression coverage for issue #132: goal context command and artifact.
+
+    Covers:
+    - CLI help exposes --format, --write, --max-handoffs
+    - Empty-goal error path (exits with code 1)
+    - Text (markdown) rendering contains expected sections
+    - JSON rendering returns correct keys
+    - Prior handoff summary aggregation from previous iterations
+    - --write creates .octogent/goal-context.md artifact
+    - Auto-generation after goal eval --decision continue
+    - Auto-generation after goal resume
+    - Bundle artifact presence and manifest exposure
+    """
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "goal_context"
+        self.octogent, self.tentacles = _make_octogent(self.base)
+        _init_goal(self.tentacles, title="Context Test Goal", max_iterations=5)
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    # ------------------------------------------------------------------
+    # CLI help
+    # ------------------------------------------------------------------
+
+    def test_parser_registers_goal_context_with_expected_flags(self):
+        """CLI parser must expose --format, --write, --max-handoffs for goal context."""
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "tentacle.py"), "goal", "context", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        combined = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, f"goal context --help failed:\n{combined}")
+        for flag in ("--format", "--write", "--max-handoffs"):
+            self.assertIn(flag, combined, f"Parser must expose '{flag}'")
+
+    # ------------------------------------------------------------------
+    # Empty-goal error path
+    # ------------------------------------------------------------------
+
+    def test_context_without_goal_exits_with_code_1(self):
+        """Running goal context with no goal.json must exit with code 1 and an error message."""
+        T._goal_path(self.tentacles).unlink()
+        args = _fake_args(goal_action="context", format="text", write=False, max_handoffs=5)
+        stderr_lines = []
+        with patch("builtins.print", side_effect=lambda *a, **kw: None):
+            with patch("sys.stderr") as mock_stderr:
+                mock_stderr.write = lambda s: stderr_lines.append(s)
+                with self.assertRaises(SystemExit) as cm:
+                    T._cmd_goal_context(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_context_without_goal_prints_error_to_stderr(self):
+        T._goal_path(self.tentacles).unlink()
+        args = _fake_args(goal_action="context", format="text", write=False, max_handoffs=5)
+        stderr_captured = []
+
+        def _cap(*a, **kw):
+            if kw.get("file") is sys.stderr:
+                stderr_captured.append(" ".join(str(x) for x in a))
+
+        with patch("builtins.print", side_effect=_cap):
+            with self.assertRaises(SystemExit):
+                T._cmd_goal_context(args, self.tentacles)
+        self.assertTrue(any("No goal" in line for line in stderr_captured), stderr_captured)
+
+    # ------------------------------------------------------------------
+    # Text rendering
+    # ------------------------------------------------------------------
+
+    def test_context_text_contains_objective(self):
+        """Text output must include the goal title as objective."""
+        args = _fake_args(goal_action="context", format="text", write=False, max_handoffs=5)
+        captured = []
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_context(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("Context Test Goal", combined)
+        self.assertIn("Objective", combined)
+
+    def test_context_text_contains_iteration(self):
+        args = _fake_args(goal_action="context", format="text", write=False, max_handoffs=5)
+        captured = []
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_context(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("Iteration", combined)
+
+    def test_context_text_contains_progress(self):
+        args = _fake_args(goal_action="context", format="text", write=False, max_handoffs=5)
+        captured = []
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_context(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("Progress", combined)
+        self.assertIn("0/0 criteria", combined)
+
+    def test_context_text_contains_criteria(self):
+        """With criteria, output must show them in remaining section."""
+        add_args = _fake_args(criteria_action="add", desc="Tests pass", id="sc-1", verify_cmd="echo ok")
+        with patch("builtins.print"):
+            T._cmd_goal_criteria(add_args, self.tentacles)
+
+        args = _fake_args(goal_action="context", format="text", write=False, max_handoffs=5)
+        captured = []
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_context(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("sc-1", combined)
+        self.assertIn("Tests pass", combined)
+        self.assertIn("0/1 criteria", combined)
+
+    def test_context_text_shows_verified_criteria_in_progress(self):
+        """Verified criteria should update progress count."""
+        state = T._goal_load(self.tentacles)
+        state.setdefault("success_criteria", []).append(
+            {"id": "sc-2", "description": "Already done", "status": "verified"}
+        )
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="context", format="text", write=False, max_handoffs=5)
+        captured = []
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_context(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("1/1 criteria", combined)
+
+    # ------------------------------------------------------------------
+    # JSON rendering
+    # ------------------------------------------------------------------
+
+    def test_context_json_format_returns_valid_json(self):
+        args = _fake_args(goal_action="context", format="json", write=False, max_handoffs=5)
+        captured = []
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_context(args, self.tentacles)
+        data = json.loads("\n".join(captured))
+        self.assertIsInstance(data, dict)
+
+    def test_context_json_has_required_keys(self):
+        args = _fake_args(goal_action="context", format="json", write=False, max_handoffs=5)
+        captured = []
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_context(args, self.tentacles)
+        data = json.loads("\n".join(captured))
+        for key in (
+            "title",
+            "iteration",
+            "criteria_verified",
+            "criteria_total",
+            "budget",
+            "remaining_criteria",
+            "prior_handoffs",
+        ):
+            self.assertIn(key, data, f"JSON output must contain key '{key}'")
+
+    def test_context_json_title_matches_goal(self):
+        args = _fake_args(goal_action="context", format="json", write=False, max_handoffs=5)
+        captured = []
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_context(args, self.tentacles)
+        data = json.loads("\n".join(captured))
+        self.assertEqual(data["title"], "Context Test Goal")
+
+    def test_context_json_iteration_is_int(self):
+        args = _fake_args(goal_action="context", format="json", write=False, max_handoffs=5)
+        captured = []
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_context(args, self.tentacles)
+        data = json.loads("\n".join(captured))
+        self.assertIsInstance(data["iteration"], int)
+
+    # ------------------------------------------------------------------
+    # Prior handoff summaries
+    # ------------------------------------------------------------------
+
+    def test_prior_handoffs_from_previous_iterations(self):
+        """Handoffs from completed iteration N-1 must appear in prior_handoffs."""
+        # Set up iteration 1 with a tentacle that has a handoff
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["iter1-worker"]
+        state.setdefault("iterations", {})["1"] = {"tentacles": ["iter1-worker"], "eval_decision": "continue"}
+        state["iteration"] = 2
+        T._goal_write(self.tentacles, state)
+
+        t_dir = _make_tentacle("iter1-worker", self.tentacles, status="completed", terminal_status="DONE")
+        handoff_path = t_dir / "handoff.md"
+        handoff_path.write_text("## [2026-01-01]\n\nCompleted core feature.\nSTATUS: DONE\n", encoding="utf-8")
+
+        args = _fake_args(goal_action="context", format="json", write=False, max_handoffs=5)
+        captured = []
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_context(args, self.tentacles)
+        data = json.loads("\n".join(captured))
+        self.assertEqual(len(data["prior_handoffs"]), 1)
+        self.assertEqual(data["prior_handoffs"][0]["tentacle"], "iter1-worker")
+        self.assertEqual(data["prior_handoffs"][0]["iteration"], 1)
+        self.assertIn("Completed core feature", data["prior_handoffs"][0]["summary"])
+
+    def test_prior_handoffs_excluded_for_current_iteration(self):
+        """Tentacles in the current iteration must NOT appear in prior handoffs."""
+        t_dir = _make_tentacle("current-worker", self.tentacles, status="active")
+        handoff_path = t_dir / "handoff.md"
+        handoff_path.write_text("## [2026-01-01]\n\nIn progress.\n", encoding="utf-8")
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["current-worker"]
+        state.setdefault("iterations", {})["1"] = {"tentacles": ["current-worker"]}
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="context", format="json", write=False, max_handoffs=5)
+        captured = []
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_context(args, self.tentacles)
+        data = json.loads("\n".join(captured))
+        # Current iteration (1) handoffs are excluded
+        self.assertEqual(len(data["prior_handoffs"]), 0)
+
+    def test_prior_handoffs_capped_by_max_handoffs(self):
+        """max_handoffs must limit the returned prior handoff count."""
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["w1", "w2", "w3"]
+        state.setdefault("iterations", {})["1"] = {"tentacles": ["w1", "w2", "w3"], "eval_decision": "continue"}
+        state["iteration"] = 2
+        T._goal_write(self.tentacles, state)
+        for name in ("w1", "w2", "w3"):
+            t_dir = _make_tentacle(name, self.tentacles, status="completed", terminal_status="DONE")
+            (t_dir / "handoff.md").write_text(f"## [{name}]\n\nDone.\n", encoding="utf-8")
+
+        args = _fake_args(goal_action="context", format="json", write=False, max_handoffs=2)
+        captured = []
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_context(args, self.tentacles)
+        data = json.loads("\n".join(captured))
+        self.assertLessEqual(len(data["prior_handoffs"]), 2)
+
+    # ------------------------------------------------------------------
+    # --write artifact
+    # ------------------------------------------------------------------
+
+    def test_write_flag_creates_goal_context_md(self):
+        """--write must create .octogent/goal-context.md."""
+        args = _fake_args(goal_action="context", format="text", write=True, max_handoffs=5)
+        with patch("builtins.print"):
+            T._cmd_goal_context(args, self.tentacles)
+        artifact = self.octogent / "goal-context.md"
+        self.assertTrue(artifact.exists(), "goal-context.md must exist after --write")
+
+    def test_write_flag_artifact_contains_goal_title(self):
+        args = _fake_args(goal_action="context", format="text", write=True, max_handoffs=5)
+        with patch("builtins.print"):
+            T._cmd_goal_context(args, self.tentacles)
+        artifact = self.octogent / "goal-context.md"
+        content = artifact.read_text(encoding="utf-8")
+        self.assertIn("Context Test Goal", content)
+
+    def test_write_goal_context_artifact_helper(self):
+        """_goal_write_context_artifact must write and return the correct path."""
+        state = T._goal_load(self.tentacles)
+        path = T._goal_write_context_artifact(state, self.tentacles)
+        self.assertTrue(path.exists())
+        self.assertEqual(path.name, "goal-context.md")
+
+    # ------------------------------------------------------------------
+    # Auto-generation after goal eval --decision continue
+    # ------------------------------------------------------------------
+
+    def test_eval_continue_auto_generates_context_artifact(self):
+        """goal eval --decision continue must auto-write goal-context.md."""
+        _make_tentacle("eval-worker", self.tentacles, status="completed", terminal_status="DONE")
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["eval-worker"]
+        state.setdefault("iterations", {})["1"] = {"tentacles": ["eval-worker"]}
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="eval", decision="continue", notes="")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args, self.tentacles)
+
+        artifact = self.octogent / "goal-context.md"
+        self.assertTrue(artifact.exists(), "goal-context.md must be auto-written after eval continue")
+
+    def test_eval_continue_artifact_has_updated_iteration(self):
+        _make_tentacle("eval-worker2", self.tentacles, status="completed", terminal_status="DONE")
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["eval-worker2"]
+        state.setdefault("iterations", {})["1"] = {"tentacles": ["eval-worker2"]}
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="eval", decision="continue", notes="")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args, self.tentacles)
+
+        artifact = self.octogent / "goal-context.md"
+        content = artifact.read_text(encoding="utf-8")
+        # After advancing, iteration should be 2
+        self.assertIn("2", content)
+
+    # ------------------------------------------------------------------
+    # Auto-generation after goal resume
+    # ------------------------------------------------------------------
+
+    def test_resume_auto_generates_context_artifact(self):
+        """goal resume must auto-write goal-context.md."""
+        # First pause the goal so resume has something to do
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_PAUSED
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="resume", reset_failed=False, from_iteration=None)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+
+        artifact = self.octogent / "goal-context.md"
+        self.assertTrue(artifact.exists(), "goal-context.md must be auto-written after resume")
+
+    # ------------------------------------------------------------------
+    # Bundle artifact presence and manifest exposure
+    # ------------------------------------------------------------------
+
+    def test_bundle_includes_goal_context_when_tentacle_linked_to_goal(self):
+        """When a tentacle is linked to a goal, bundle must contain goal-context.md."""
+        _make_tentacle("bundled-t1", self.tentacles, status="idle")
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["bundled-t1"]
+        T._goal_write(self.tentacles, state)
+
+        tentacle_dir = self.tentacles / "bundled-t1"
+        bundle_dir = T._build_runtime_bundle(
+            tentacle_dir=tentacle_dir,
+            name="bundled-t1",
+            goal_context_text=T._goal_render_continuation_context(state, self.tentacles),
+        )
+
+        goal_context_file = bundle_dir / "goal-context.md"
+        self.assertTrue(goal_context_file.exists(), "goal-context.md must be present in bundle")
+
+    def test_bundle_manifest_includes_goal_context_artifact(self):
+        """Bundle manifest.json must expose goal_context artifact when present."""
+        _make_tentacle("bundled-t2", self.tentacles, status="idle")
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["bundled-t2"]
+        T._goal_write(self.tentacles, state)
+
+        tentacle_dir = self.tentacles / "bundled-t2"
+        bundle_dir = T._build_runtime_bundle(
+            tentacle_dir=tentacle_dir,
+            name="bundled-t2",
+            goal_context_text=T._goal_render_continuation_context(state, self.tentacles),
+        )
+
+        manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertIn("goal_context", manifest["artifacts"], "manifest must include goal_context artifact")
+        self.assertTrue(manifest["artifacts"]["goal_context"]["populated"])
+
+    def test_bundle_without_goal_link_has_no_goal_context(self):
+        """Bundle for an unlinked tentacle must not include goal-context.md."""
+        _make_tentacle("unlinked-t", self.tentacles, status="idle")
+        tentacle_dir = self.tentacles / "unlinked-t"
+        bundle_dir = T._build_runtime_bundle(
+            tentacle_dir=tentacle_dir,
+            name="unlinked-t",
+        )
+        manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertNotIn("goal_context", manifest["artifacts"])
+
+    def test_render_continuation_context_returns_markdown_string(self):
+        """_goal_render_continuation_context must return a non-empty markdown string."""
+        state = T._goal_load(self.tentacles)
+        text = T._goal_render_continuation_context(state, self.tentacles)
+        self.assertIsInstance(text, str)
+        self.assertGreater(len(text), 0)
+        self.assertIn("## Goal Continuation Context", text)
+
+    def test_render_continuation_context_budget_shown(self):
+        state = T._goal_load(self.tentacles)
+        text = T._goal_render_continuation_context(state, self.tentacles)
+        # max_iterations=5 set in setUp via _init_goal
+        self.assertIn("Budget", text)
+
+    def test_collect_prior_handoffs_empty_on_first_iteration(self):
+        """On iteration 1, there are no prior iterations — result must be empty."""
+        state = T._goal_load(self.tentacles)
+        result = T._goal_collect_prior_handoffs(state, self.tentacles)
+        self.assertEqual(result, [])
+
+    def test_collect_prior_handoffs_skips_missing_handoff_file(self):
+        """Tentacles without handoff.md must not cause errors — just omitted."""
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["no-handoff"]
+        state.setdefault("iterations", {})["1"] = {"tentacles": ["no-handoff"], "eval_decision": "continue"}
+        state["iteration"] = 2
+        T._goal_write(self.tentacles, state)
+        _make_tentacle("no-handoff", self.tentacles, status="completed", terminal_status="DONE")
+        # no handoff.md written
+
+        result = T._goal_collect_prior_handoffs(state, self.tentacles)
+        self.assertEqual(result, [])
+
+
 if __name__ == "__main__":
     unittest.main()
