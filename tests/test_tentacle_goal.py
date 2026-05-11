@@ -1846,6 +1846,25 @@ class TestGoalNextIter(unittest.TestCase):
         # Old tentacle belongs to iter 1 — should not appear in iter 2 categories.
         self.assertIn("no tentacles assigned to this iteration", combined)
 
+    def test_budget_limited_goal_next_iter_recommends_resume(self):
+        """next-iter must NOT recommend goal eval commands when goal is budget_limited."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = "budget_limited"
+        # Push iteration beyond max_iterations=3 so over_budget is True.
+        # This ensures the WARNING-suppression assertion is non-vacuous.
+        state["iteration"] = 4
+        state["budget_limited_reason"] = "iteration 4 exceeds max_iterations=3"
+        state["budget_limited_at"] = "2026-05-11T10:00:00+00:00"
+        T._goal_write(self.tentacles, state)
+        text = self._captured()
+        # Must tell the user the goal is budget_limited and to run goal resume.
+        self.assertIn("budget_limited", text)
+        self.assertIn("goal resume", text)
+        # Must NOT recommend any eval --decision command.
+        self.assertNotIn("goal eval", text)
+        # Must NOT show the generic over-budget WARNING (contradicts the hard block).
+        self.assertNotIn("WARNING: Goal is over budget", text)
+
 
 # ---------------------------------------------------------------------------
 # End-to-end lifecycle test
@@ -2009,8 +2028,8 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
         state = T._goal_load(self.tentacles)
         self.assertEqual(state["status"], T.GOAL_STATUS_COMPLETED)
 
-    def test_budget_over_iterations_does_not_block_eval(self):
-        """Going over iteration budget warns but does not prevent eval."""
+    def test_budget_over_iterations_blocks_eval_continue(self):
+        """Going over iteration budget with --decision continue transitions to budget_limited."""
         _init_goal(self.tentacles, title="Over Budget", max_iterations=1)
 
         # First eval continues (advances to iter 2, now over budget)
@@ -2021,12 +2040,161 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
         bs = T._goal_budget_status(state)
         self.assertTrue(bs["over_iterations"])
 
-        # Second eval should still succeed (warn, not block)
-        args2 = _fake_args(goal_action="eval", decision="complete", notes="finishing over budget")
+        # Second continue eval should be blocked — goal transitions to budget_limited
+        args2 = _fake_args(goal_action="eval", decision="continue", notes="trying to continue over budget")
         with patch("builtins.print"):
-            T._cmd_goal_eval(args2, self.tentacles)  # must not raise
+            T._cmd_goal_eval(args2, self.tentacles)
         state = T._goal_load(self.tentacles)
-        self.assertEqual(state["status"], T.GOAL_STATUS_COMPLETED)
+        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+        self.assertIn("budget_limited_reason", state)
+        self.assertIn("budget_limited_at", state)
+
+    def test_budget_limited_blocks_further_eval(self):
+        """eval on a budget_limited goal should error."""
+        _init_goal(self.tentacles, title="Budget Limited", max_iterations=1)
+        # Advance to iter 2 (over budget)
+        args = _fake_args(goal_action="eval", decision="continue", notes="")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args, self.tentacles)
+        # Trigger budget_limited
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+
+        # Further eval must fail
+        args3 = _fake_args(goal_action="eval", decision="complete", notes="")
+        with self.assertRaises(SystemExit):
+            with patch("builtins.print"):
+                T._cmd_goal_eval(args3, self.tentacles)
+
+    def test_budget_limited_eval_guidance_mentions_budget_and_resume(self):
+        """Blocked eval with continue on budget_limited must mention goal budget and goal resume."""
+        _init_goal(self.tentacles, title="Budget Guidance Eval", max_iterations=1)
+        args_cont = _fake_args(goal_action="eval", decision="continue", notes="")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args_cont, self.tentacles)
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args_cont, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+
+        import io
+        # continue decision still requires goal budget + goal resume
+        err_buf = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err_buf):
+                T._cmd_goal_eval(args_cont, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        err = err_buf.getvalue()
+        self.assertIn("goal budget", err)
+        self.assertIn("goal resume", err)
+
+    def test_budget_limited_eval_non_continue_guidance_only_requires_resume(self):
+        """Blocked eval with non-continue decision on budget_limited must only require goal resume (no goal budget)."""
+        import io
+        for decision in ("abandon", "complete", "pause"):
+            with self.subTest(decision=decision):
+                _init_goal(self.tentacles, title=f"Budget Non-Continue {decision}", max_iterations=1, force=True)
+                args_cont = _fake_args(goal_action="eval", decision="continue", notes="")
+                with patch("builtins.print"):
+                    T._cmd_goal_eval(args_cont, self.tentacles)
+                with patch("builtins.print"):
+                    T._cmd_goal_eval(args_cont, self.tentacles)
+                state = T._goal_load(self.tentacles)
+                self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+
+                args_nc = _fake_args(goal_action="eval", decision=decision, notes="")
+                err_buf = io.StringIO()
+                with self.assertRaises(SystemExit) as cm:
+                    with patch("sys.stderr", err_buf):
+                        T._cmd_goal_eval(args_nc, self.tentacles)
+                self.assertEqual(cm.exception.code, 1)
+                err = err_buf.getvalue()
+                self.assertIn("goal resume", err, f"stderr must mention 'goal resume' for {decision}")
+                self.assertNotIn(
+                    "goal budget", err,
+                    f"stderr must NOT mention 'goal budget' for non-continue decision '{decision}'"
+                )
+
+    def test_budget_limited_dispatch_guidance_mentions_budget_and_resume(self):
+        """Blocked dispatch on budget_limited must mention goal budget and goal resume."""
+        _init_goal(self.tentacles, title="Budget Guidance Dispatch", max_iterations=1)
+        args_cont = _fake_args(goal_action="eval", decision="continue", notes="")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args_cont, self.tentacles)
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args_cont, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+
+        import io
+        err_buf = io.StringIO()
+        args_dispatch = _fake_args(goal_action="dispatch", concurrency=4, format="text")
+        with self.assertRaises(SystemExit):
+            with patch("sys.stderr", err_buf):
+                T._cmd_goal_dispatch(args_dispatch, self.tentacles)
+        err = err_buf.getvalue()
+        self.assertIn("goal budget", err)
+        self.assertIn("goal resume", err)
+
+    def test_budget_limited_resume_clears_reason(self):
+        """goal resume on budget_limited clears budget_limited_reason and restores active."""
+        _init_goal(self.tentacles, title="Budget Resume", max_iterations=1)
+        # Advance to iter 2 over budget, then trigger budget_limited
+        args_cont = _fake_args(goal_action="eval", decision="continue", notes="")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args_cont, self.tentacles)
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args_cont, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+
+        args_resume = _fake_args(goal_action="resume", reset_failed=False, from_iteration=None)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args_resume, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertNotIn("budget_limited_reason", state)
+        self.assertNotIn("budget_limited_at", state)
+
+    def test_budget_limited_status_shows_reason(self):
+        """goal status shows budget_limited_reason when status is budget_limited."""
+        _init_goal(self.tentacles, title="Budget Status Show", max_iterations=1)
+        args_cont = _fake_args(goal_action="eval", decision="continue", notes="")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args_cont, self.tentacles)
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args_cont, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+
+        captured = []
+        args_status = _fake_args(goal_action="status", format="text")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_status(args_status, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("budget_limited", combined)
+        self.assertIn("Budget limit reached", combined)
+
+    def test_budget_non_continue_decisions_not_blocked_by_budget(self):
+        """pause/complete/abandon decisions are NOT blocked when over budget."""
+        _init_goal(self.tentacles, title="Over Budget Abandon", max_iterations=1)
+        # Advance to iter 2 (over budget)
+        args_cont = _fake_args(goal_action="eval", decision="continue", notes="")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args_cont, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertTrue(T._goal_budget_status(state)["over_iterations"])
+
+        # abandon should succeed even when over budget
+        args_abandon = _fake_args(goal_action="eval", decision="abandon", notes="done")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args_abandon, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ABANDONED)
+
+
 
     def test_status_view_reflects_lifecycle_state(self):
         """goal status must show live state across lifecycle transitions."""
@@ -2541,6 +2709,97 @@ class TestGoalVerifyLoop(unittest.TestCase):
                         T._cmd_goal_verify_loop(args, self.tentacles)
                 self.assertEqual(cm.exception.code, 1)
                 self.assertEqual(T._goal_load(self.tentacles)["status"], status)
+
+    # ------------------------------------------------------------------
+    # Regression: issue #131 — budget_limited must not be overwritten
+    # ------------------------------------------------------------------
+
+    def test_budget_limited_goal_cannot_verify_until_resumed(self):
+        """verify-loop must reject a budget_limited goal and leave status unchanged."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_BUDGET_LIMITED
+        state["budget_limited_reason"] = "iteration budget exceeded"
+        state["budget_limited_at"] = "2026-05-01T00:00:00+00:00"
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=3,
+            retry_delay=1,
+            timeout=30,
+            escalate=True,
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_verify_loop(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+        # Status must NOT have been overwritten
+        persisted = T._goal_load(self.tentacles)
+        self.assertEqual(
+            persisted["status"],
+            T.GOAL_STATUS_BUDGET_LIMITED,
+            "verify-loop must not overwrite budget_limited status",
+        )
+        # budget_limited metadata must remain intact
+        self.assertEqual(persisted["budget_limited_reason"], "iteration budget exceeded")
+        self.assertIn("budget_limited_at", persisted)
+
+    def test_budget_limited_verify_loop_guidance_mentions_goal_budget_and_resume(self):
+        """verify-loop blocked by budget_limited must tell operators to use goal budget then goal resume."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_BUDGET_LIMITED
+        state["budget_limited_reason"] = "iteration budget exceeded"
+        state["budget_limited_at"] = "2026-05-01T00:00:00+00:00"
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=3,
+            retry_delay=1,
+            timeout=30,
+            escalate=False,
+        )
+        import io
+        captured = io.StringIO()
+        with patch("sys.stderr", captured):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_verify_loop(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        output = captured.getvalue()
+        self.assertIn("goal budget", output, "stderr must mention 'goal budget' for budget_limited")
+        self.assertIn("goal resume", output, "stderr must mention 'goal resume' for budget_limited")
+
+    def test_escalate_does_not_overwrite_budget_limited_status(self):
+        """_escalate_goal_to_needs_human must not overwrite a budget_limited goal."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_BUDGET_LIMITED
+        state["budget_limited_reason"] = "tentacle budget exceeded"
+        state["budget_limited_at"] = "2026-05-01T00:00:00+00:00"
+        T._goal_write(self.tentacles, state)
+
+        with patch("builtins.print"):
+            result = T._escalate_goal_to_needs_human(
+                state, self.tentacles, failing_ids=["sc-1"], reason="stall"
+            )
+
+        # escalation must return False (not escalated)
+        self.assertFalse(result, "_escalate_goal_to_needs_human must return False for budget_limited goal")
+
+        # Status must remain budget_limited
+        persisted = T._goal_load(self.tentacles)
+        self.assertEqual(
+            persisted["status"],
+            T.GOAL_STATUS_BUDGET_LIMITED,
+            "_escalate_goal_to_needs_human must not overwrite budget_limited status",
+        )
+        # budget_limited metadata must still be present (not replaced by needs-human fields)
+        self.assertIn("budget_limited_reason", persisted)
+        self.assertNotIn("needs_human_reason", persisted)
+        self.assertNotIn("needs_human_at", persisted)
+        self.assertNotIn("needs_human_failing_criteria", persisted)
 
     def test_needs_human_after_escalation_then_resume_then_verify_succeeds(self):
         """Full recovery path: escalate → needs-human → resume → verify-loop succeeds."""
@@ -3126,6 +3385,112 @@ class TestGoalHumanGate(unittest.TestCase):
                 self.assertEqual(gate["status"], "pending")
                 self.assertEqual(state["status"], terminal_status)
 
+    # Regression: issue #131 — gate reject must not overwrite budget_limited
+    def test_gate_reject_on_budget_limited_goal_keeps_status_and_metadata(self):
+        """gate reject on a budget_limited goal must not overwrite the status
+        or leave stale awaiting_gate_id / awaiting_gate_reason metadata."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_BUDGET_LIMITED
+        state["budget_limited_reason"] = "max_iterations=3 reached"
+        state["budget_limited_at"] = "2026-05-11T10:00:00+00:00"
+        state["gates"] = [{"id": "HGRBDG", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="gate", gate_action="reject", gate_id="HGRBDG", reason="Not ready")
+        with patch("builtins.print"):
+            T._cmd_goal_gate(args, self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        gate = next(g for g in state["gates"] if g["id"] == "HGRBDG")
+        # Gate itself is marked rejected
+        self.assertEqual(gate["status"], "rejected")
+        self.assertIn("rejected_at", gate)
+        self.assertEqual(gate["reason"], "Not ready")
+        # Goal status must remain budget_limited — not overwritten to awaiting-gate
+        self.assertEqual(
+            state["status"],
+            T.GOAL_STATUS_BUDGET_LIMITED,
+            "gate reject must not overwrite budget_limited status",
+        )
+        # budget_limited metadata must remain intact
+        self.assertEqual(state["budget_limited_reason"], "max_iterations=3 reached")
+        self.assertIn("budget_limited_at", state)
+        # awaiting_gate metadata must NOT be injected
+        self.assertNotIn("awaiting_gate_id", state)
+        self.assertNotIn("awaiting_gate_reason", state)
+
+    # Regression: issue #131 — all-gates-passed guidance must not suggest blocked eval commands
+    def test_all_gates_passed_on_budget_limited_goal_shows_resume_guidance(self):
+        """When the last gate is passed and the goal is budget_limited, the printed
+        guidance must NOT say 'goal eval --decision complete' (that command is blocked).
+        Instead it must tell the operator to adjust limits and run goal resume."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_BUDGET_LIMITED
+        state["budget_limited_reason"] = "max_iterations=3 reached"
+        state["budget_limited_at"] = "2026-05-11T10:00:00+00:00"
+        state["gates"] = [{"id": "HGPASBUDGET", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        captured = []
+        args = _fake_args(goal_action="gate", gate_action="pass", gate_id="HGPASBUDGET", reason="")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_gate(args, self.tentacles)
+
+        combined = "\n".join(captured)
+        # Must tell the operator the goal is budget_limited and to use goal resume.
+        self.assertIn("budget_limited", combined)
+        self.assertIn("goal resume", combined)
+        # Must NOT suggest any blocked eval --decision command.
+        self.assertNotIn("goal eval --decision complete", combined)
+        self.assertNotIn("goal eval --decision continue", combined)
+
+    # Regression: issue #131 review finding — guidance must be generic for all budget limit types
+    def test_gate_reject_on_budget_limited_goal_mentions_budget_adjustment(self):
+        """gate reject on a budget_limited goal must print a budget-adjustment hint,
+        not just 'goal resume'.  The hint must cover all limit types, not only
+        --max-iterations."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_BUDGET_LIMITED
+        state["budget_limited_reason"] = "tentacle budget exceeded"
+        state["budget_limited_at"] = "2026-05-11T10:00:00+00:00"
+        state["gates"] = [{"id": "HGRBDG2", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        captured = []
+        args = _fake_args(goal_action="gate", gate_action="reject", gate_id="HGRBDG2", reason="Not ready")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_gate(args, self.tentacles)
+
+        combined = "\n".join(captured)
+        # Must mention adjusting budget limits
+        self.assertIn("goal budget", combined)
+        # Must still mention goal resume
+        self.assertIn("goal resume", combined)
+        # Must NOT hardcode only --max-iterations
+        self.assertNotIn("goal budget --max-iterations N", combined)
+
+    def test_all_gates_passed_budget_limited_guidance_is_generic(self):
+        """When all gates pass and the goal is budget_limited, the printed guidance
+        must cover all budget-limit types, not only --max-iterations N."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_BUDGET_LIMITED
+        state["budget_limited_reason"] = "timeout exceeded"
+        state["budget_limited_at"] = "2026-05-11T10:00:00+00:00"
+        state["gates"] = [{"id": "HGPASGEN", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        captured = []
+        args = _fake_args(goal_action="gate", gate_action="pass", gate_id="HGPASGEN", reason="")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_gate(args, self.tentacles)
+
+        combined = "\n".join(captured)
+        # Must mention --timeout as well as the other limit types in the hint
+        self.assertIn("timeout", combined.lower())
+        self.assertIn("max-tentacles", combined)
+        # Must NOT hardcode only --max-iterations N
+        self.assertNotIn("goal budget --max-iterations N", combined)
+
     def test_gate_mutations_are_blocked_for_terminal_or_needs_human_goals(self):
         for terminal_status in (T.GOAL_STATUS_COMPLETED, T.GOAL_STATUS_ABANDONED, T.GOAL_STATUS_NEEDS_HUMAN):
             for action in ("add", "approve", "pass", "fail"):
@@ -3591,6 +3956,42 @@ class TestGoalHumanGate(unittest.TestCase):
         state = T._goal_load(self.tentacles)
         self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
         self.assertNotIn("awaiting_gate_id", state)
+
+
+# ---------------------------------------------------------------------------
+# Regression: issue #131 — goal --help discoverability for verify-loop
+# ---------------------------------------------------------------------------
+
+
+class TestGoalParserHelp(unittest.TestCase):
+    """Regression coverage: goal --help must list all registered subcommands.
+
+    Specifically, 'verify-loop' must appear in the parent 'goal' subparser
+    help text so that operators discover it without reading source code.
+    """
+
+    def test_goal_parent_help_mentions_verify_loop(self):
+        """Parent 'goal --help' output must list 'verify-loop' as a subcommand.
+
+        Regression guard for the issue-131 discoverability regression where
+        the 'goal' sub-parser help string dropped 'verify-loop' even though
+        the subcommand was still registered and dispatched.
+        """
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "tentacle.py"), "goal", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        combined = result.stdout + result.stderr
+        self.assertIn(
+            "verify-loop",
+            combined,
+            f"'verify-loop' must appear in 'goal --help' output.\n"
+            f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}",
+        )
 
 
 if __name__ == "__main__":

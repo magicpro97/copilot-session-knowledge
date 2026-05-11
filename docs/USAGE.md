@@ -665,7 +665,7 @@ same check, so over-limit goals are rejected before they become active.
 
 ### Resume with state reset
 
-`goal resume` re-activates a paused, abandoned, or `needs-human` goal. Two optional flags let
+`goal resume` re-activates a paused, abandoned, `needs-human`, or `budget_limited` goal. Two optional flags let
 operators reset tentacle state at the same time:
 
 ```bash
@@ -731,6 +731,7 @@ sk tentacle goal gate approve G1 [--reason "QA signed off on 2025-05-11"]
 # fallback: python3 ~/.copilot/tools/tentacle.py goal gate approve G1 --reason "..."
 
 # 2b. Reject — marks the gate rejected, sets goal status to awaiting-gate
+#     (if goal is budget_limited, status stays budget_limited — run `goal resume` first)
 sk tentacle goal gate reject G1 --reason "QA found regressions in auth flow"
 # fallback: python3 ~/.copilot/tools/tentacle.py goal gate reject G1 --reason "..."
 # Note: --reason is required for reject.
@@ -779,6 +780,37 @@ sk tentacle goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINU
   [--format text|json]
 ```
 
+**Enforced budget limits** — when an operator runs `goal eval --decision continue` and the
+goal is already over any budget limit, the eval is blocked: the goal transitions to
+`budget_limited` status and the reason is persisted in `goal.json`. Further `eval` commands
+are rejected until the goal is resumed. To continue past the original limit:
+
+```bash
+# 1. Increase the limit
+sk tentacle goal budget --max-iterations 5
+# 2. Resume the goal (clears budget_limited status and reason)
+sk tentacle goal resume
+# 3. Continue the goal loop normally
+sk tentacle goal eval --decision continue
+```
+
+`goal status` shows the `budget_limited` status and reason:
+
+```
+Status:    budget_limited
+Budget:
+  Iterations: 4/3 ⚠️  OVER BUDGET
+
+🚫 Budget limit reached: iteration 4 exceeds max_iterations=3
+   Stopped at: 2026-05-11T10:00:00
+   To continue: adjust limits with `goal budget` (e.g. --max-iterations N, --max-tentacles N, or --timeout MINUTES) then `goal resume`.
+```
+
+Note: While a goal is **active** and merely over budget, only `--decision continue` triggers the
+`budget_limited` transition — `pause`, `complete`, and `abandon` are not blocked at that point.
+Once the status is already `budget_limited`, **all** eval decisions are blocked until `goal
+resume` clears the status.
+
 ### Verify-loop
 
 `goal verify-loop` is a CLI-native retry helper — it re-runs success-criteria verification
@@ -809,6 +841,10 @@ are printed: inspect failing criteria (`goal criteria list`), review history (`g
 json`), fix the underlying issues manually or with targeted tentacles, then run `goal resume` to
 re-activate the goal before re-running `goal verify-loop`.
 
+`goal verify-loop` will not run — and `--escalate` will not overwrite — a goal whose status is
+already `budget_limited`, `needs-human`, `completed`, or `abandoned`.  Run `goal resume` first
+to re-activate the goal before re-running `goal verify-loop`.
+
 ### Typical orchestrator cycle
 
 ```
@@ -820,6 +856,11 @@ Human gate path:
   goal gate add G1 → (human reviews) → goal gate approve/reject G1
   → if rejected: fix issues, goal gate approve G1, then retry goal eval
   → if awaiting-gate and resolved: goal resume, then retry goal eval
+
+Budget-limited path:
+  goal eval --decision continue (while over budget) → status = budget_limited
+  → goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINUTES] (adjust the exceeded limit)
+  → goal resume → goal eval --decision continue (continues loop)
 ```
 
 Record goal-eval evidence with:
