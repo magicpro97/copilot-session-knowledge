@@ -473,8 +473,10 @@ python3 ~/.copilot/tools/tentacle.py status                # dashboard: all tent
 
 # 6. Sub-agent: cross-review then write structured handoff when done
 #    Re-read every changed file, then write handoff with --status and --changed-file receipts
+#    Use --bridge to link this tentacle's outcome to a goal success criterion (repeatable)
 python3 ~/.copilot/tools/tentacle.py handoff api-export "Completed API export. OpenAPI schema written." \
-  --status DONE --changed-file src/api/schema.py --changed-file src/api/auth.py --learn
+  --status DONE --changed-file src/api/schema.py --changed-file src/api/auth.py \
+  --bridge sc-1 --learn
 
 # 7. Orchestrator: verify results and close
 python3 ~/.copilot/tools/tentacle.py complete api-export   # marks done, auto-learns from handoff
@@ -722,7 +724,16 @@ sk tentacle goal verify [--id sc-1] [--timeout 60]
 
 # List all criteria and their current status
 sk tentacle goal criteria list
+
+# Show which criteria are covered by completed tentacles (via --bridge links)
+sk tentacle goal coverage [--format text|json]
+# fallback: python3 ~/.copilot/tools/tentacle.py goal coverage
 ```
+
+`goal coverage` reads `bridge_links` from each completed tentacle's `meta.json` and prints a
+per-criterion row showing which tentacles linked to it. Uncovered criteria and orphan bridge
+IDs (criterion IDs that appear in bridge links but are not in `goal.json`) are flagged at the
+end. Use this after `goal eval` to verify that all criteria are accounted for before closing.
 
 After `goal verify` (or `goal criteria check`) runs, each criterion in `goal.json` is updated
 with `status` (`verified` or `failed`), a timestamp (`verified_at` / `failed_at`), and the
@@ -882,6 +893,10 @@ to re-activate the goal before re-running `goal verify-loop`.
 goal create --title "..." [--criterion JSON] ... → goal dispatch → handoffs collected
   → goal verify / goal gate pass → goal eval --decision continue
   → (new wave if goal unmet) → goal eval --decision complete → git commit + close
+
+Bridge-link path:
+  handoff <name> "..." --status DONE --bridge sc-1  (sub-agent links to a criterion)
+  → goal coverage  (orchestrator checks which criteria are covered and flags gaps)
 
 Human gate path:
   goal gate add G1 → (human reviews) → goal gate approve/reject G1
