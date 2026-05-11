@@ -609,6 +609,10 @@ sk tentacle goal resume [--reset-failed] [--from-iteration N]
 
 # Summarize iteration state and advise on the next step
 sk tentacle goal next-iter
+
+# Render continuation context for the current iteration (inject into next wave)
+sk tentacle goal context [--format text|json] [--write] [--max-handoffs N]
+# fallback: python3 ~/.copilot/tools/tentacle.py goal context
 ```
 
 `goal.json` keeps a backward-compatible flat `tentacles` list and a structured `iterations`
@@ -875,6 +879,43 @@ re-activate the goal before re-running `goal verify-loop`.
 `goal verify-loop` will not run — and `--escalate` will not overwrite — a goal whose status is
 already `budget_limited`, `needs-human`, `completed`, or `abandoned`.  Run `goal resume` first
 to re-activate the goal before re-running `goal verify-loop`.
+
+### Goal continuation context
+
+`goal context` renders a compact markdown summary of the current goal iteration — suitable
+for injection into the next agent wave so it can resume with full situational awareness.
+
+```bash
+# Print continuation context to stdout (default: text/markdown)
+sk tentacle goal context
+# fallback: python3 ~/.copilot/tools/tentacle.py goal context
+
+# Machine-readable JSON output (includes budget, remaining_criteria, prior_handoffs)
+sk tentacle goal context --format json
+
+# Write artifact to .octogent/goal-context.md (also printed to stdout)
+sk tentacle goal context --write
+
+# Limit prior handoff summaries included (default: 5)
+sk tentacle goal context --max-handoffs 3
+```
+
+The rendered context contains: **objective**, **iteration** (current/max), **budget** (iterations/tentacles/time remaining), **progress** (N/total criteria verified), **remaining criteria** (ID + description), and **prior handoff summaries** (last N entries from linked tentacles).
+
+`--format json` returns a structured object with these top-level keys:
+`title`, `iteration`, `criteria_verified`, `criteria_total`, `budget`, `remaining_criteria`, `prior_handoffs`.
+
+**Auto-generation** — the artifact is written automatically (without `--write`) by two commands:
+
+- `goal eval --decision continue` — updates `.octogent/goal-context.md` after advancing the iteration, so the next wave can read it without a manual step.
+- `goal resume` — updates `.octogent/goal-context.md` when re-activating a paused, abandoned, or `needs-human` goal.
+
+**Bundle injection** — when `tentacle bundle` (or `tentacle dispatch`) materializes a runtime
+bundle for a tentacle that is linked to the current goal, the goal continuation context is
+automatically included in the bundle as `goal-context.md`. Sub-agents should read this file
+(if present) to understand the overarching objective, remaining criteria, and recent handoff
+history before editing any code. See [Architecture — Tentacle Bundle Artifacts](ARCHITECTURE.md#bundle-artifacts) for the
+contract details.
 
 ### Typical orchestrator cycle
 
