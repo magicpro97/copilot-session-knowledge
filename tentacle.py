@@ -4194,6 +4194,9 @@ def _cmd_goal_coverage(args, tentacles: Path) -> None:
                 t_meta = json.loads(meta_path.read_text(encoding="utf-8"))
             except Exception:
                 continue
+            # Only count bridge_links from completed tentacles (contract: docs + docstring).
+            if t_meta.get("status") != "completed":
+                continue
             for sc_id in t_meta.get("bridge_links") or []:
                 coverage.setdefault(sc_id, []).append(t_dir.name)
 

@@ -5116,8 +5116,17 @@ class TestGoalCoverageUnit(unittest.TestCase):
         with patch("builtins.print"):
             T._cmd_goal_criteria(args, self.tentacles)
 
-    def _tentacle_with_bridges(self, name: str, bridge_links: list) -> Path:
-        d = _make_tentacle(name, self.tentacles)
+    def _tentacle_with_bridges(
+        self, name: str, bridge_links: list, *, status: str = "completed"
+    ) -> Path:
+        """Create a tentacle with the given bridge_links.
+
+        Defaults to ``status="completed"`` because ``goal coverage`` only counts
+        bridge links from completed tentacles (see docstring contract).
+        Pass ``status="idle"`` (or any other non-completed value) to verify that
+        those tentacles are correctly excluded from coverage.
+        """
+        d = _make_tentacle(name, self.tentacles, status=status)
         meta_path = d / "meta.json"
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         if bridge_links:
@@ -5222,6 +5231,36 @@ class TestGoalCoverageUnit(unittest.TestCase):
         self.assertEqual(len(covered), 1)
         self.assertIn("cov-worker-h1", covered[0]["covered_by"])
         self.assertIn("cov-worker-h2", covered[0]["covered_by"])
+
+    def test_idle_tentacle_bridge_links_are_ignored(self):
+        """Regression: idle tentacles with bridge_links must not appear in coverage.
+
+        ``goal coverage`` documents that it reports coverage from *completed*
+        tentacles only.  A tentacle that is still idle (or any non-completed
+        status) must contribute zero coverage even if it carries bridge_links.
+        """
+        _init_goal(self.tentacles, title="Idle Ignored Goal")
+        self._add_criterion("sc-1", "Should stay uncovered")
+        # Deliberately create an idle tentacle — coverage must ignore it.
+        self._tentacle_with_bridges("idle-worker", ["sc-1"], status="idle")
+        output = self._run_coverage(fmt="json")
+        data = json.loads(output)
+        self.assertEqual(
+            data["covered_count"],
+            0,
+            "idle tentacle bridge_links must not contribute to covered_count",
+        )
+        self.assertEqual(data["uncovered_count"], 1)
+        self.assertEqual(
+            data["covered"],
+            [],
+            "covered list must be empty when only idle tentacles have bridge_links",
+        )
+        self.assertEqual(
+            data["orphan_bridge_ids"],
+            [],
+            "orphan_bridge_ids must be empty — idle tentacles are skipped entirely",
+        )
 
 
 if __name__ == "__main__":
