@@ -641,6 +641,9 @@ sk tentacle goal verify-loop --id sc-1
 # Override retry/timeout limits
 sk tentacle goal verify-loop --max-retries 5 --retry-delay 30 --timeout 120
 
+# Run once with no retries (--max-retries 0)
+sk tentacle goal verify-loop --max-retries 0
+
 # On stall or retry exhaustion, mark goal needs-human and print advisory next steps
 sk tentacle goal verify-loop --escalate
 ```
