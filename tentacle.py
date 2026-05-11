@@ -33,6 +33,7 @@ Usage:
     python3 ~/.copilot/tools/tentacle.py goal gate fail <gate-id> [--reason <text>]
     python3 ~/.copilot/tools/tentacle.py goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINUTES] [--format text|json]
     python3 ~/.copilot/tools/tentacle.py goal next-iter
+    python3 ~/.copilot/tools/tentacle.py goal verify-loop [--id <id>] [--max-retries N] [--retry-delay SECONDS] [--timeout SECONDS] [--escalate]
 
 Environment:
     TENTACLE_SESSION_DIR — Override session directory (default: auto-detect)
@@ -103,6 +104,7 @@ GOAL_STATUS_ACTIVE = "active"
 GOAL_STATUS_PAUSED = "paused"
 GOAL_STATUS_COMPLETED = "completed"
 GOAL_STATUS_ABANDONED = "abandoned"
+GOAL_STATUS_NEEDS_HUMAN = "needs-human"
 GOAL_EVAL_DECISIONS: frozenset[str] = frozenset({"continue", "pause", "complete", "abandon"})
 
 
@@ -2050,7 +2052,7 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
     notes = getattr(args, "notes", "") or ""
     current_iter = state.get("iteration", 1)
     current_status = state.get("status", GOAL_STATUS_ACTIVE)
-    if current_status in {GOAL_STATUS_COMPLETED, GOAL_STATUS_ABANDONED}:
+    if current_status in {GOAL_STATUS_COMPLETED, GOAL_STATUS_ABANDONED, GOAL_STATUS_NEEDS_HUMAN}:
         print(
             f"ERROR: Goal is already {current_status}. Run `tentacle.py goal resume` before evaluating again.",
             file=sys.stderr,
@@ -2412,8 +2414,167 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
         print("   Or `goal eval --decision complete` if success criteria are met.")
 
 
+def _escalate_goal_to_needs_human(state: dict, tentacles: Path, failing_ids: list, reason: str) -> None:
+    """Mark goal as needs-human, persist state, and print advisory guidance."""
+    state["status"] = GOAL_STATUS_NEEDS_HUMAN
+    state["needs_human_at"] = datetime.now(timezone.utc).isoformat()
+    state["needs_human_reason"] = reason
+    state["needs_human_failing_criteria"] = [str(x) for x in failing_ids]
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _goal_write(tentacles, state)
+    print(f"\n🚨 Goal escalated to '{GOAL_STATUS_NEEDS_HUMAN}' (reason: {reason})")
+    print(f"   Failing criteria: {', '.join(str(x) for x in failing_ids)}")
+    print("\n   Advisory next steps:")
+    print("   1. Review verify-loop history: `goal status --format json`")
+    print("   2. Inspect failing criteria: `goal criteria list`")
+    print("   3. Fix the underlying issues manually or dispatch targeted tentacles.")
+    print("   4. Resume the goal after fixing: `goal resume`")
+    print("   5. Re-run verification: `goal verify-loop [--id <id>]`")
+
+
+def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
+    """Blocking retry harness: re-run success criteria with stall detection and optional escalation."""
+    state = _goal_load(tentacles)
+    if not state:
+        print("ERROR: No goal initialized. Run `tentacle.py goal init` first.", file=sys.stderr)
+        sys.exit(1)
+
+    current_status = state.get("status", GOAL_STATUS_ACTIVE)
+    if current_status in {GOAL_STATUS_COMPLETED, GOAL_STATUS_ABANDONED, GOAL_STATUS_NEEDS_HUMAN}:
+        print(
+            f"ERROR: Goal is already {current_status}. Run `tentacle.py goal resume` before verifying again.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    criteria: list = state.get("success_criteria", [])
+    check_id = getattr(args, "id", None)
+    max_retries = getattr(args, "max_retries", 3) or 3
+    retry_delay = getattr(args, "retry_delay", 10) or 10
+    timeout = getattr(args, "timeout", 60) or 60
+    escalate = getattr(args, "escalate", False)
+
+    to_check = [c for c in criteria if not check_id or c.get("id") == check_id]
+    if not to_check:
+        if check_id:
+            print(f"ERROR: No criterion found with id='{check_id}'.", file=sys.stderr)
+        else:
+            print("ERROR: No success criteria defined. Add criteria with `goal criteria add`.", file=sys.stderr)
+        sys.exit(1)
+
+    git_root = find_git_root()
+    cwd = str(git_root) if git_root else str(Path.cwd())
+
+    verify_loop_history: list = state.setdefault("verify_loop_history", [])
+    print(f"🔄 verify-loop: '{state.get('title', '?')}' — {len(to_check)} criterion/criteria to check")
+    print(f"   max-retries={max_retries}  retry-delay={retry_delay}s  timeout={timeout}s  escalate={escalate}")
+
+    last_failure_hashes: dict[str, str] = {}
+    stall_counts: dict[str, int] = {}
+
+    for attempt in range(max_retries + 1):
+        attempt_ts = datetime.now(timezone.utc).isoformat()
+        print(f"\n   Attempt {attempt + 1}/{max_retries + 1} — {attempt_ts[:19]}Z")
+
+        attempt_results: list[dict] = []
+        all_passed = True
+        ran_any = False
+
+        for c in to_check:
+            cid = c.get("id", "?")
+            cmd_str = c.get("verification_command", "")
+            if not cmd_str:
+                print(f"  ⬜ [{cid}] (no verification command) — skipped")
+                continue
+            ran_any = True
+            print(f"  Running [{cid}]: {cmd_str[:60]}...")
+            exit_code, output = _goal_criteria_run_one(c, cwd, timeout)
+            attempt_results.append(
+                {
+                    "id": cid,
+                    "exit_code": exit_code,
+                    "output_snippet": output[:200],
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+
+            if exit_code == 0:
+                c["status"] = "verified"
+                c["verified_at"] = datetime.now(timezone.utc).isoformat()
+                print(f"  ✅ [{cid}] PASSED")
+                last_failure_hashes.pop(cid, None)
+                stall_counts.pop(cid, None)
+            else:
+                c["status"] = "failed"
+                c["failed_at"] = datetime.now(timezone.utc).isoformat()
+                print(f"  ❌ [{cid}] FAILED (exit={exit_code})")
+                for line in output.strip().splitlines()[:5]:
+                    print(f"     {line}")
+                all_passed = False
+                failure_key = hashlib.sha256(f"{exit_code}:{output}".encode()).hexdigest()[:16]
+                if last_failure_hashes.get(cid) == failure_key:
+                    stall_counts[cid] = stall_counts.get(cid, 1) + 1
+                    if stall_counts[cid] >= 3:
+                        print(f"  ⚠️  [{cid}] STALL — identical failure repeated {stall_counts[cid]}x")
+                else:
+                    last_failure_hashes[cid] = failure_key
+                    stall_counts[cid] = 1
+
+        if all_passed and not ran_any:
+            print("\n⚠️  All selected criteria were skipped (no verification command) — not reporting success.")
+            all_passed = False
+
+        verify_loop_history.append(
+            {
+                "attempt": attempt + 1,
+                "timestamp": attempt_ts,
+                "results": attempt_results,
+                "all_passed": all_passed,
+            }
+        )
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _goal_write(tentacles, state)
+
+        if all_passed:
+            print(f"\n✅ All criteria passed on attempt {attempt + 1}.")
+            return
+
+        # Stall detection: stop early if every failing criterion is stalled
+        failing_ids = [r["id"] for r in attempt_results if r["exit_code"] != 0]
+        stalled_ids = [cid for cid in failing_ids if stall_counts.get(cid, 0) >= 3]
+        if failing_ids and set(stalled_ids) == set(failing_ids):
+            print("\n🛑 Stall detected — all failing criteria have repeated identical failures.")
+            print(f"   Stalled: {', '.join(stalled_ids)}")
+            if escalate:
+                _escalate_goal_to_needs_human(state, tentacles, stalled_ids, reason="stall")
+            else:
+                print("   Run with --escalate to mark goal needs-human, or investigate and fix the issues.")
+            sys.exit(1)
+
+        if attempt < max_retries:
+            print(f"\n   Waiting {retry_delay}s before next attempt...")
+            time.sleep(retry_delay)
+
+    # All retries exhausted
+    still_failing = [c.get("id") for c in to_check if c.get("status") == "failed"]
+    if not still_failing:
+        print(
+            "\n❌ Retry limit reached, but no selected criteria ran a failing verification command. "
+            "Add verification commands before retrying."
+        )
+        sys.exit(1)
+    print(
+        f"\n❌ Retry limit reached ({max_retries + 1} attempts). Still failing: {', '.join(str(x) for x in still_failing)}"
+    )
+    if escalate:
+        _escalate_goal_to_needs_human(state, tentacles, still_failing, reason="retry_exhausted")
+    else:
+        print("   Run with --escalate to mark goal needs-human, or increase --max-retries.")
+    sys.exit(1)
+
+
 def cmd_goal(args):
-    """Dispatch goal sub-commands: init / status / link / eval / resume / criteria / gate / budget / next-iter."""
+    """Dispatch goal sub-commands: init / status / link / eval / resume / criteria / gate / budget / next-iter / verify-loop."""
     tentacles = get_tentacles_dir(args.session_dir)
     sub = args.goal_action
 
@@ -2435,6 +2596,8 @@ def cmd_goal(args):
         _cmd_goal_budget(args, tentacles)
     elif sub == "next-iter":
         _cmd_goal_next_iter(args, tentacles)
+    elif sub == "verify-loop":
+        _cmd_goal_verify_loop(args, tentacles)
     else:
         print(f"ERROR: Unknown goal action '{sub}'", file=sys.stderr)
         sys.exit(1)
@@ -4085,6 +4248,45 @@ def main():
     p_goal_sub.add_parser(
         "next-iter",
         help="Summarise iteration state and advise on the next goal-loop step",
+    )
+
+    # goal verify-loop
+    p_goal_verify = p_goal_sub.add_parser(
+        "verify-loop",
+        help="Blocking retry harness: re-run success criteria with stall detection and optional escalation",
+    )
+    p_goal_verify.add_argument(
+        "--id",
+        default=None,
+        dest="id",
+        help="Check only the criterion with this ID (default: all criteria)",
+    )
+    p_goal_verify.add_argument(
+        "--max-retries",
+        dest="max_retries",
+        type=_positive_int_arg,
+        default=3,
+        help="Maximum number of retry attempts after the initial run (default: 3)",
+    )
+    p_goal_verify.add_argument(
+        "--retry-delay",
+        dest="retry_delay",
+        type=_positive_int_arg,
+        default=10,
+        help="Seconds to wait between attempts (default: 10)",
+    )
+    p_goal_verify.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=_positive_int_arg,
+        default=60,
+        help="Per-criterion command timeout in seconds (default: 60)",
+    )
+    p_goal_verify.add_argument(
+        "--escalate",
+        action="store_true",
+        default=False,
+        help="On retry exhaustion or stall, mark goal as needs-human and print advisory next steps",
     )
 
     args = parser.parse_args()

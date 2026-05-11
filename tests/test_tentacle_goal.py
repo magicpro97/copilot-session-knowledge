@@ -991,7 +991,9 @@ class TestGoalBudget(unittest.TestCase):
 
     def test_budget_update_rejects_non_positive_values(self):
         for field, value in (("max_iterations", 0), ("max_tentacles", -1), ("timeout", 0)):
-            args = _fake_args(goal_action="budget", max_iterations=None, max_tentacles=None, timeout=None, format="text")
+            args = _fake_args(
+                goal_action="budget", max_iterations=None, max_tentacles=None, timeout=None, format="text"
+            )
             setattr(args, field, value)
             with patch("builtins.print"):
                 with self.assertRaises(SystemExit) as cm:
@@ -1409,6 +1411,675 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
         self.assertIn("Elapsed:", combined)
         self.assertIn("OVER BUDGET", combined)
         self.assertIn("OVER TIME", combined)
+
+
+# ---------------------------------------------------------------------------
+# Tests for _cmd_goal_verify_loop (issue #140)
+# ---------------------------------------------------------------------------
+
+
+class TestGoalVerifyLoop(unittest.TestCase):
+    """Regression coverage for issue #140: goal verify-loop blocking retry harness.
+
+    Contract enforced here:
+    - Succeeds (no SystemExit) when all criteria pass on any attempt.
+    - Retries failed criteria up to max_retries additional attempts.
+    - Stall detection fires after 3 consecutive identical failures per criterion
+      and stops the loop early.  (Two identical failures then a pass must NOT
+      trigger stall — the loop must reach the passing attempt.)
+    - --escalate on stall or retry exhaustion marks goal needs-human.
+    - A needs-human goal is recoverable via `goal resume`.
+    """
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "verify_loop"
+        _, self.tentacles = _make_octogent(self.base)
+        _init_goal(self.tentacles, title="Verify Loop Goal")
+        state = T._goal_load(self.tentacles)
+        state["success_criteria"] = [
+            {
+                "id": "sc-1",
+                "description": "Test criterion",
+                "verification_command": "echo placeholder",
+                "status": "unverified",
+            }
+        ]
+        T._goal_write(self.tentacles, state)
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    # ------------------------------------------------------------------
+    # Internal helper: run verify-loop with a controlled mock
+    # ------------------------------------------------------------------
+
+    def _run_verify_loop(self, results_sequence, max_retries=3, escalate=False):
+        """Invoke _cmd_goal_verify_loop with _goal_criteria_run_one mocked.
+
+        results_sequence: list of (exit_code, output) tuples consumed in order.
+        Raises SystemExit if the implementation does.
+        Returns the number of times the mock was called.
+        """
+        seq = list(results_sequence)
+        call_count = [0]
+
+        def _mock_run(c, cwd, timeout=60):
+            idx = call_count[0]
+            call_count[0] += 1
+            if idx < len(seq):
+                return seq[idx]
+            return (0, "fallback-ok")
+
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=max_retries,
+            retry_delay=1,
+            timeout=30,
+            escalate=escalate,
+        )
+        with patch("tentacle._goal_criteria_run_one", side_effect=_mock_run):
+            with patch("time.sleep"):
+                with patch("builtins.print"):
+                    T._cmd_goal_verify_loop(args, self.tentacles)
+        return call_count[0]
+
+    # ------------------------------------------------------------------
+    # First-pass success
+    # ------------------------------------------------------------------
+
+    def test_first_pass_success_returns_normally(self):
+        """All criteria pass on the first attempt — no SystemExit."""
+        try:
+            self._run_verify_loop([(0, "ok")])
+        except SystemExit:
+            self.fail("verify-loop raised SystemExit on first-pass success")
+
+    def test_first_pass_success_marks_criterion_verified(self):
+        """Criterion status is 'verified' after a first-pass success."""
+        self._run_verify_loop([(0, "ok")])
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["success_criteria"][0]["status"], "verified")
+        self.assertIn("verified_at", state["success_criteria"][0])
+
+    def test_first_pass_success_records_history(self):
+        """One history entry recorded for the single successful attempt."""
+        self._run_verify_loop([(0, "ok")])
+        state = T._goal_load(self.tentacles)
+        self.assertIn("verify_loop_history", state)
+        self.assertEqual(len(state["verify_loop_history"]), 1)
+        self.assertTrue(state["verify_loop_history"][0]["all_passed"])
+
+    # ------------------------------------------------------------------
+    # Fail-then-pass retry
+    # ------------------------------------------------------------------
+
+    def test_fail_then_pass_retry_succeeds(self):
+        """Failure on attempt 1, pass on attempt 2 — loop must not stall."""
+        try:
+            count = self._run_verify_loop([(1, "error-A"), (0, "ok")], max_retries=3)
+        except SystemExit:
+            self.fail("verify-loop raised SystemExit; should have succeeded on retry")
+        self.assertEqual(count, 2, "Expected exactly 2 criterion calls (fail + pass)")
+
+    def test_fail_then_pass_marks_criterion_verified(self):
+        """Criterion is marked verified after failing once and passing on retry."""
+        self._run_verify_loop([(1, "error-A"), (0, "ok")], max_retries=3)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["success_criteria"][0]["status"], "verified")
+
+    def test_fail_then_pass_history_has_multiple_attempts(self):
+        """verify_loop_history must contain one entry per attempt."""
+        self._run_verify_loop([(1, "error-A"), (0, "ok")], max_retries=3)
+        state = T._goal_load(self.tentacles)
+        history = state.get("verify_loop_history", [])
+        self.assertGreaterEqual(len(history), 2)
+        self.assertFalse(history[0]["all_passed"])
+        self.assertTrue(history[-1]["all_passed"])
+
+    # ------------------------------------------------------------------
+    # Stall detection (issue #140 contract: 3 identical failures → stop)
+    # ------------------------------------------------------------------
+
+    def test_stall_detection_stops_before_max_retries(self):
+        """Repeated identical failures must trigger stall and stop early (before max_retries)."""
+        max_retries = 10
+        call_count = [0]
+
+        def _always_same_failure(c, cwd, timeout=60):
+            call_count[0] += 1
+            return (1, "identical output")
+
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=max_retries,
+            retry_delay=1,
+            timeout=30,
+            escalate=False,
+        )
+        with patch("tentacle._goal_criteria_run_one", side_effect=_always_same_failure):
+            with patch("time.sleep"):
+                with patch("builtins.print"):
+                    with self.assertRaises(SystemExit) as cm:
+                        T._cmd_goal_verify_loop(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        # Stall fires after exactly 3 identical failures (issue #140 contract).
+        # With one criterion and max_retries=10, the loop must stop on attempt 3.
+        self.assertEqual(
+            call_count[0], 3, "Stall detection must fire after exactly 3 identical failures (not sooner, not later)"
+        )
+
+    def test_stall_requires_identical_output_hash(self):
+        """Failures with *different* outputs do not trigger stall (unique error per attempt)."""
+        call_count = [0]
+
+        def _unique_failures(c, cwd, timeout=60):
+            idx = call_count[0]
+            call_count[0] += 1
+            return (1, f"unique error {idx}")  # always different output
+
+        max_retries = 2
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=max_retries,
+            retry_delay=1,
+            timeout=30,
+            escalate=False,
+        )
+        with patch("tentacle._goal_criteria_run_one", side_effect=_unique_failures):
+            with patch("time.sleep"):
+                with patch("builtins.print"):
+                    with self.assertRaises(SystemExit) as cm:
+                        T._cmd_goal_verify_loop(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        # Must have used ALL attempts (no early stall stop)
+        self.assertEqual(
+            call_count[0], max_retries + 1, "Without identical outputs, stall must not fire before retry exhaustion"
+        )
+
+    def test_two_identical_failures_then_success_is_not_stall(self):
+        """Issue #140 contract: stall requires 3 consecutive identical failures.
+
+        Two identical failures followed by a passing attempt must NOT trigger
+        stall — the loop must reach attempt 3 and return successfully.
+
+        This test will FAIL until the stall threshold is corrected to >= 3.
+        """
+        results = [(1, "repeated error"), (1, "repeated error"), (0, "success")]
+        call_count = [0]
+
+        def _mock_run(c, cwd, timeout=60):
+            result = results[call_count[0]]
+            call_count[0] += 1
+            return result
+
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=2,  # 3 total attempts
+            retry_delay=1,
+            timeout=30,
+            escalate=False,
+        )
+        with patch("tentacle._goal_criteria_run_one", side_effect=_mock_run):
+            with patch("time.sleep"):
+                with patch("builtins.print"):
+                    try:
+                        # Issue #140: must NOT raise SystemExit — pass on attempt 3
+                        T._cmd_goal_verify_loop(args, self.tentacles)
+                    except SystemExit:
+                        self.fail(
+                            "verify-loop raised SystemExit after 2 identical failures; "
+                            "issue #140 contract requires stall only after 3 identical failures — "
+                            "the 3rd attempt (which would pass) must be reached."
+                        )
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(
+            state["success_criteria"][0]["status"],
+            "verified",
+            "Criterion must be verified when it passes on attempt 3 after two identical failures",
+        )
+        self.assertEqual(
+            call_count[0],
+            3,
+            "Loop must have made exactly 3 attempts, not stopped early due to 2 identical failures",
+        )
+
+    # ------------------------------------------------------------------
+    # Stall + --escalate → needs-human
+    # ------------------------------------------------------------------
+
+    def test_stall_with_escalate_marks_needs_human(self):
+        """Stall + --escalate → goal status becomes needs-human."""
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=5,
+            retry_delay=1,
+            timeout=30,
+            escalate=True,
+        )
+        with patch("tentacle._goal_criteria_run_one", return_value=(1, "stall output")):
+            with patch("time.sleep"):
+                with patch("builtins.print"):
+                    with self.assertRaises(SystemExit) as cm:
+                        T._cmd_goal_verify_loop(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
+        self.assertEqual(state["needs_human_reason"], "stall")
+        self.assertIn("sc-1", state["needs_human_failing_criteria"])
+        self.assertIn("needs_human_at", state)
+
+    def test_stall_without_escalate_leaves_goal_active(self):
+        """Stall without --escalate must NOT change goal status to needs-human."""
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=5,
+            retry_delay=1,
+            timeout=30,
+            escalate=False,
+        )
+        with patch("tentacle._goal_criteria_run_one", return_value=(1, "stall output")):
+            with patch("time.sleep"):
+                with patch("builtins.print"):
+                    with self.assertRaises(SystemExit):
+                        T._cmd_goal_verify_loop(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+
+    # ------------------------------------------------------------------
+    # Retry exhaustion
+    # ------------------------------------------------------------------
+
+    def test_retry_exhaustion_exits_with_code_1(self):
+        """Varied failures exhausting all retries → SystemExit(1)."""
+        call_count = [0]
+
+        def _unique_failures(c, cwd, timeout=60):
+            result = (1, f"failure-{call_count[0]}")
+            call_count[0] += 1
+            return result
+
+        max_retries = 2
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=max_retries,
+            retry_delay=1,
+            timeout=30,
+            escalate=False,
+        )
+        with patch("tentacle._goal_criteria_run_one", side_effect=_unique_failures):
+            with patch("time.sleep"):
+                with patch("builtins.print"):
+                    with self.assertRaises(SystemExit) as cm:
+                        T._cmd_goal_verify_loop(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        # All max_retries+1 attempts must have been made
+        self.assertEqual(call_count[0], max_retries + 1)
+
+    def test_retry_exhaustion_with_escalate_marks_needs_human(self):
+        """Retry exhaustion + --escalate → goal marked needs-human, reason=retry_exhausted."""
+        call_count = [0]
+
+        def _unique_failures(c, cwd, timeout=60):
+            result = (1, f"failure-{call_count[0]}")
+            call_count[0] += 1
+            return result
+
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=2,
+            retry_delay=1,
+            timeout=30,
+            escalate=True,
+        )
+        with patch("tentacle._goal_criteria_run_one", side_effect=_unique_failures):
+            with patch("time.sleep"):
+                with patch("builtins.print"):
+                    with self.assertRaises(SystemExit) as cm:
+                        T._cmd_goal_verify_loop(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
+        self.assertEqual(state["needs_human_reason"], "retry_exhausted")
+        self.assertIn("sc-1", state["needs_human_failing_criteria"])
+        self.assertIn("needs_human_at", state)
+
+    def test_retry_exhaustion_without_escalate_leaves_goal_active(self):
+        """Retry exhaustion without --escalate must NOT change goal to needs-human."""
+        call_count = [0]
+
+        def _unique_failures(c, cwd, timeout=60):
+            result = (1, f"failure-{call_count[0]}")
+            call_count[0] += 1
+            return result
+
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=1,
+            retry_delay=1,
+            timeout=30,
+            escalate=False,
+        )
+        with patch("tentacle._goal_criteria_run_one", side_effect=_unique_failures):
+            with patch("time.sleep"):
+                with patch("builtins.print"):
+                    with self.assertRaises(SystemExit):
+                        T._cmd_goal_verify_loop(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+
+    # ------------------------------------------------------------------
+    # needs-human recovery via goal resume
+    # ------------------------------------------------------------------
+
+    def test_needs_human_goal_recoverable_via_resume(self):
+        """A goal escalated to needs-human by verify-loop can be resumed to active."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_NEEDS_HUMAN
+        state["needs_human_reason"] = "stall"
+        state["needs_human_failing_criteria"] = ["sc-1"]
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="resume")
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertIn("resumed_at", state)
+
+    def test_needs_human_goal_cannot_eval_until_resumed(self):
+        """needs-human is a blocked state until the orchestrator explicitly resumes the goal."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_NEEDS_HUMAN
+        state["needs_human_reason"] = "stall"
+        state["needs_human_failing_criteria"] = ["sc-1"]
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="eval", decision="continue", notes="")
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_eval(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_needs_human_goal_cannot_verify_until_resumed(self):
+        """verify-loop must reject needs-human goals until the orchestrator resumes them."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_NEEDS_HUMAN
+        state["needs_human_reason"] = "stall"
+        state["needs_human_failing_criteria"] = ["sc-1"]
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=3,
+            retry_delay=1,
+            timeout=30,
+            escalate=True,
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_verify_loop(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_terminal_goal_cannot_verify_until_resumed(self):
+        """verify-loop must reject terminal goals instead of rewriting their state."""
+        for status in (T.GOAL_STATUS_COMPLETED, T.GOAL_STATUS_ABANDONED):
+            with self.subTest(status=status):
+                state = T._goal_load(self.tentacles)
+                state["status"] = status
+                T._goal_write(self.tentacles, state)
+
+                args = _fake_args(
+                    goal_action="verify-loop",
+                    id=None,
+                    max_retries=3,
+                    retry_delay=1,
+                    timeout=30,
+                    escalate=True,
+                )
+                with patch("builtins.print"):
+                    with self.assertRaises(SystemExit) as cm:
+                        T._cmd_goal_verify_loop(args, self.tentacles)
+                self.assertEqual(cm.exception.code, 1)
+                self.assertEqual(T._goal_load(self.tentacles)["status"], status)
+
+    def test_needs_human_after_escalation_then_resume_then_verify_succeeds(self):
+        """Full recovery path: escalate → needs-human → resume → verify-loop succeeds."""
+        # Step 1: escalate to needs-human via stall
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=5,
+            retry_delay=1,
+            timeout=30,
+            escalate=True,
+        )
+        with patch("tentacle._goal_criteria_run_one", return_value=(1, "stall-output")):
+            with patch("time.sleep"):
+                with patch("builtins.print"):
+                    with self.assertRaises(SystemExit):
+                        T._cmd_goal_verify_loop(args, self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
+
+        # Step 2: resume
+        with patch("builtins.print"):
+            T._cmd_goal_resume(_fake_args(goal_action="resume"), self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+
+        # Step 3: verify-loop succeeds after fix
+        try:
+            with patch("tentacle._goal_criteria_run_one", return_value=(0, "now passing")):
+                with patch("time.sleep"):
+                    with patch("builtins.print"):
+                        T._cmd_goal_verify_loop(
+                            _fake_args(
+                                goal_action="verify-loop",
+                                id=None,
+                                max_retries=3,
+                                retry_delay=1,
+                                timeout=30,
+                                escalate=False,
+                            ),
+                            self.tentacles,
+                        )
+        except SystemExit:
+            self.fail("verify-loop should succeed after resume when criteria now pass")
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["success_criteria"][0]["status"], "verified")
+
+    # ------------------------------------------------------------------
+    # Edge cases
+    # ------------------------------------------------------------------
+
+    def test_no_criteria_exits(self):
+        """verify-loop with no criteria → SystemExit(1)."""
+        state = T._goal_load(self.tentacles)
+        state["success_criteria"] = []
+        T._goal_write(self.tentacles, state)
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=3,
+            retry_delay=1,
+            timeout=30,
+            escalate=False,
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_verify_loop(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_unknown_criterion_id_exits(self):
+        """--id for a non-existent criterion → SystemExit(1)."""
+        args = _fake_args(
+            goal_action="verify-loop",
+            id="no-such",
+            max_retries=3,
+            retry_delay=1,
+            timeout=30,
+            escalate=False,
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_verify_loop(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_no_goal_exits(self):
+        """verify-loop without an initialized goal → SystemExit(1)."""
+        T._goal_path(self.tentacles).unlink()
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=3,
+            retry_delay=1,
+            timeout=30,
+            escalate=False,
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_verify_loop(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_criterion_without_verification_command_is_skipped(self):
+        """Criteria with no verification_command are skipped; loop must NOT report success when nothing ran."""
+        state = T._goal_load(self.tentacles)
+        state["success_criteria"] = [
+            {"id": "sc-nocd", "description": "No command", "verification_command": "", "status": "unverified"}
+        ]
+        T._goal_write(self.tentacles, state)
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=1,
+            retry_delay=1,
+            timeout=30,
+            escalate=False,
+        )
+        with patch("time.sleep"):
+            with patch("builtins.print"):
+                with self.assertRaises(SystemExit) as cm:
+                    T._cmd_goal_verify_loop(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1, "All-skipped criteria must not be reported as success")
+
+    def test_retry_exhaustion_escalation_ignores_skipped_no_command_criteria(self):
+        """Retry exhaustion should only blame criteria that actually ran and failed."""
+        state = T._goal_load(self.tentacles)
+        state["success_criteria"] = [
+            {
+                "id": "sc-fail",
+                "description": "Failing",
+                "verification_command": "echo placeholder",
+                "status": "unverified",
+            },
+            {"id": "sc-skip", "description": "Skipped", "verification_command": "", "status": "unverified"},
+        ]
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=1,
+            retry_delay=1,
+            timeout=30,
+            escalate=True,
+        )
+        with patch("tentacle._goal_criteria_run_one", return_value=(1, "still failing")):
+            with patch("time.sleep"):
+                with patch("builtins.print"):
+                    with self.assertRaises(SystemExit) as cm:
+                        T._cmd_goal_verify_loop(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
+        self.assertEqual(state["needs_human_reason"], "retry_exhausted")
+        self.assertEqual(state["needs_human_failing_criteria"], ["sc-fail"])
+
+    def test_retry_exhaustion_escalation_with_only_skipped_criteria_keeps_goal_active(self):
+        """Skipped-only retries must not escalate the goal into needs-human with an empty failing list."""
+        state = T._goal_load(self.tentacles)
+        state["success_criteria"] = [
+            {"id": "sc-skip", "description": "Skipped", "verification_command": "", "status": "unverified"}
+        ]
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(
+            goal_action="verify-loop",
+            id=None,
+            max_retries=1,
+            retry_delay=1,
+            timeout=30,
+            escalate=True,
+        )
+        with patch("time.sleep"):
+            with patch("builtins.print"):
+                with self.assertRaises(SystemExit) as cm:
+                    T._cmd_goal_verify_loop(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertFalse(state.get("needs_human_reason"))
+        self.assertFalse(state.get("needs_human_failing_criteria"))
+
+    def test_filter_by_id_checks_only_matching_criterion(self):
+        """--id filters to a single criterion; others are untouched."""
+        state = T._goal_load(self.tentacles)
+        state["success_criteria"] = [
+            {"id": "sc-1", "description": "First", "verification_command": "echo placeholder", "status": "unverified"},
+            {"id": "sc-2", "description": "Second", "verification_command": "echo placeholder", "status": "unverified"},
+        ]
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(
+            goal_action="verify-loop",
+            id="sc-1",
+            max_retries=3,
+            retry_delay=1,
+            timeout=30,
+            escalate=False,
+        )
+        with patch("tentacle._goal_criteria_run_one", return_value=(0, "ok")):
+            with patch("time.sleep"):
+                with patch("builtins.print"):
+                    T._cmd_goal_verify_loop(args, self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        sc1 = next(c for c in state["success_criteria"] if c["id"] == "sc-1")
+        sc2 = next(c for c in state["success_criteria"] if c["id"] == "sc-2")
+        self.assertEqual(sc1["status"], "verified")
+        self.assertEqual(sc2["status"], "unverified", "sc-2 must be untouched when --id=sc-1")
+
+    # ------------------------------------------------------------------
+    # CLI / parser plumbing
+    # ------------------------------------------------------------------
+
+    def test_parser_registers_verify_loop_with_expected_flags(self):
+        """CLI parser must expose --max-retries, --escalate, --retry-delay, --timeout, --id."""
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, str(TOOLS_DIR / "tentacle.py"), "goal", "verify-loop", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        combined = result.stdout + result.stderr
+        for flag in ("--max-retries", "--escalate", "--retry-delay", "--timeout", "--id"):
+            self.assertIn(flag, combined, f"Parser must expose '{flag}'")
 
 
 if __name__ == "__main__":

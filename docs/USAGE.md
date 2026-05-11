@@ -624,6 +624,33 @@ sk tentacle goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINU
   [--format text|json]
 ```
 
+### Verify-loop
+
+`goal verify-loop` is a CLI-native retry helper — it re-runs success-criteria verification
+commands with configurable retries, stall detection, and optional `needs-human` escalation.
+It does **not** autonomously spawn agents or run hidden orchestration in the background.
+
+```bash
+# Retry all success criteria (up to 3 retries, 10 s between, 60 s per-command timeout)
+sk tentacle goal verify-loop
+# fallback: python3 ~/.copilot/tools/tentacle.py goal verify-loop
+
+# Check only one criterion by ID
+sk tentacle goal verify-loop --id sc-1
+
+# Override retry/timeout limits
+sk tentacle goal verify-loop --max-retries 5 --retry-delay 30 --timeout 120
+
+# On stall or retry exhaustion, mark goal needs-human and print advisory next steps
+sk tentacle goal verify-loop --escalate
+```
+
+When `--escalate` is set and retries are exhausted (or a stall is detected — the same failure
+repeating with identical output), the goal status is set to `needs-human` and advisory next steps
+are printed: inspect failing criteria (`goal criteria list`), review history (`goal status --format
+json`), fix the underlying issues manually or with targeted tentacles, then run `goal resume` to
+re-activate the goal before re-running `goal verify-loop`.
+
 ### Typical orchestrator cycle
 
 ```
