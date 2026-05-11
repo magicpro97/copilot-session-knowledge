@@ -3677,6 +3677,24 @@ class TestSameRepoMultiSession(unittest.TestCase):
         # Must be a valid UUID4 (36 chars with hyphens)
         self.assertEqual(len(meta["tentacle_id"]), 36)
 
+    def test_create_persists_depends_on_as_todo_deps(self):
+        tentacles_dir = self.base / "tentacles5"
+        tentacles_dir.mkdir(parents=True, exist_ok=True)
+
+        args = argparse.Namespace(
+            name="epsilon",
+            desc="",
+            scope="",
+            briefing=False,
+            session_dir=str(self.base),
+            depends_on="alpha,beta",
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=tentacles_dir):
+            T.cmd_create(args)
+
+        meta = json.loads((tentacles_dir / "epsilon" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta["todo_deps"], ["alpha", "beta"])
+
     # ── backward compat: old tentacle without tentacle_id ─────────────────────
 
     def test_old_tentacle_without_tentacle_id_write_still_works(self):
@@ -6471,6 +6489,16 @@ class TestGoalLoopRuntimeFlow(unittest.TestCase):
             T._cmd_goal_status(args, self.tentacles)
         return json.loads("\n".join(captured))
 
+    def _mark_worker_terminal(self, name: str, terminal_status: str = "DONE") -> None:
+        meta_path = self.tentacles / name / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["status"] = "completed"
+        meta["terminal_status"] = terminal_status
+        goal_state = T._goal_load(self.tentacles)
+        if goal_state:
+            meta["goal_iteration"] = T._goal_current_iteration(goal_state)
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
     def _next_iter_text(self) -> str:
         captured = []
         args = types.SimpleNamespace(session_dir=None, goal_action="next-iter")
@@ -6696,6 +6724,7 @@ class TestGoalLoopRuntimeFlow(unittest.TestCase):
         T._goal_write(self.tentacles, state)
 
         self._gate_pass("G1")
+        self._mark_worker_terminal("schm-worker")
         self._goal_eval("continue")
 
         state = T._goal_load(self.tentacles)

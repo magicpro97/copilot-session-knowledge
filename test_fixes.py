@@ -8,14 +8,14 @@ test_fixes.py — Tests for the three limitation fixes:
 Run: python3 test_fixes.py
 """
 
-import sys
-import os
-import re
 import json
+import os
+import plistlib
+import re
 import sqlite3
 import subprocess
+import sys
 import tempfile
-import plistlib
 from pathlib import Path
 
 if os.name == "nt":
@@ -272,7 +272,7 @@ try:
     test(
         "Output has category labels (AVOID/USE/NOTE/CONFIG)",
         any(label in output for label in ["[AVOID]", "[USE]", "[NOTE]", "[CONFIG]"]),
-        f"No labels found in output",
+        "No labels found in output",
     )
 
     # 2b. Output is compact (< 500 tokens ≈ < 2000 chars)
@@ -497,7 +497,7 @@ if db_path.exists():
 
     # Relaxed threshold: historical data may contain pre-filter entries
     # The _is_noise() function is tested with synthetic inputs above (Fix 1 tests)
-    test(f"FP rate below 20% (was 40%)", false_positive_rate < 0.20, f"FP rate is {false_positive_rate:.0%}")
+    test("FP rate below 20% (was 40%)", false_positive_rate < 0.20, f"FP rate is {false_positive_rate:.0%}")
 
     # Stale embeddings in the user's long-lived knowledge.db are environment state,
     # not a deterministic repo regression, so keep this as an informational health check.
@@ -1122,7 +1122,7 @@ test(
 test(
     "Ga5: canonical template includes --for-subagent guidance",
     "--for-subagent" in _template_text,
-    f"session-knowledge.instructions.md missing --for-subagent section",
+    "session-knowledge.instructions.md missing --for-subagent section",
 )
 
 # Ga6. Canonical template should mention structured tentacle evidence path
@@ -1854,7 +1854,41 @@ else:
     test("Gs4: meta.json has iteration after link", False, "meta.json missing")
     test("Gs4: meta.json has goal_iteration after link", False, "meta.json missing")
 
-# Gs5: goal eval --decision continue advances iteration
+# Gs5a: goal eval --decision continue blocks until the linked tentacle has a terminal handoff
+_gs5_block = subprocess.run(
+    [
+        sys.executable,
+        str(_tp),
+        "--session-dir",
+        str(_goal_tentacles),
+        "goal",
+        "eval",
+        "--decision",
+        "continue",
+        "--notes",
+        "test note",
+    ],
+    capture_output=True,
+    text=True,
+    env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
+)
+test("Gs5a: goal eval blocks before terminal handoff", _gs5_block.returncode != 0, _gs5_block.stderr[:200])
+test(
+    "Gs5a: block output mentions missing handoffs",
+    "without handoffs" in (_gs5_block.stderr or ""),
+    _gs5_block.stderr[:200],
+)
+
+if _gs4_meta_path.exists():
+    _gs5_meta = json.loads(_gs4_meta_path.read_text())
+    _gs5_meta["status"] = "completed"
+    _gs5_meta["terminal_status"] = "DONE"
+    _gs5_meta["goal_iteration"] = 1
+    _gs4_meta_path.write_text(json.dumps(_gs5_meta, indent=2) + "\n")
+else:
+    test("Gs5b: terminal handoff fixture exists", False, "meta.json missing")
+
+# Gs5b: goal eval --decision continue advances iteration after the terminal handoff lands
 _gs5_res = subprocess.run(
     [
         sys.executable,
@@ -1872,29 +1906,29 @@ _gs5_res = subprocess.run(
     text=True,
     env={**os.environ, "TENTACLE_SESSION_DIR": str(_goal_tentacles)},
 )
-test("Gs5: goal eval exits 0", _gs5_res.returncode == 0, _gs5_res.stderr[:200])
+test("Gs5b: goal eval exits 0 after terminal handoff", _gs5_res.returncode == 0, _gs5_res.stderr[:200])
 
 if _gs1_goal_path.exists():
     _gs5_state = json.loads(_gs1_goal_path.read_text())
-    test("Gs5: iteration advanced to 2", _gs5_state.get("iteration") == 2, f"got {_gs5_state.get('iteration')}")
+    test("Gs5b: iteration advanced to 2", _gs5_state.get("iteration") == 2, f"got {_gs5_state.get('iteration')}")
     test(
-        "Gs5: eval_history has one entry",
+        "Gs5b: eval_history has one entry",
         len(_gs5_state.get("eval_history", [])) == 1,
         f"got {len(_gs5_state.get('eval_history', []))}",
     )
     _gs5_entry = _gs5_state["eval_history"][0] if _gs5_state.get("eval_history") else {}
     test(
-        "Gs5: eval entry decision=continue",
+        "Gs5b: eval entry decision=continue",
         _gs5_entry.get("decision") == "continue",
         f"got {_gs5_entry.get('decision')}",
     )
-    test("Gs5: eval entry has notes", "test note" in (_gs5_entry.get("notes") or ""), f"got {_gs5_entry.get('notes')}")
+    test("Gs5b: eval entry has notes", "test note" in (_gs5_entry.get("notes") or ""), f"got {_gs5_entry.get('notes')}")
 else:
     for _l in [
-        "Gs5: iteration advanced to 2",
-        "Gs5: eval_history has one entry",
-        "Gs5: eval entry decision=continue",
-        "Gs5: eval entry has notes",
+        "Gs5b: iteration advanced to 2",
+        "Gs5b: eval_history has one entry",
+        "Gs5b: eval entry decision=continue",
+        "Gs5b: eval entry has notes",
     ]:
         test(_l, False, "goal.json missing")
 
