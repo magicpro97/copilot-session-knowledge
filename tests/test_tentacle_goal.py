@@ -1568,6 +1568,15 @@ class TestGoalDispatch(unittest.TestCase):
             T._cmd_goal_dispatch(args, self.tentacles)
         self.assertEqual(cm.exception.code, 1)
 
+    def test_dispatch_command_quotes_special_values_on_windows(self):
+        args = self._dispatch_args(agent_type="general purpose", model='claude-sonnet "preview"')
+        args.session_dir = r"C:\\Work Tree\\O'Brien"
+        with patch.object(T.os, "name", "nt"):
+            command = T._goal_dispatch_command(args, "ready-a")
+        self.assertIn("--session-dir 'C:\\\\Work Tree\\\\O''Brien'", command)
+        self.assertIn("--agent-type 'general purpose'", command)
+        self.assertIn("--model 'claude-sonnet \"preview\"'", command)
+
     def test_eval_continue_blocks_until_iteration_handoffs_exist(self):
         _make_tentacle("worker", self.tentacles, status="idle")
         self._link_iteration(["worker"])

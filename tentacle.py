@@ -50,6 +50,7 @@ import hmac
 import json
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -2263,18 +2264,34 @@ def _goal_iteration_tentacle_entries(state: dict, tentacles: Path) -> list[dict]
     return entries
 
 
+def _shell_quote_arg(value: str) -> str:
+    """Quote one CLI argument for display in the current shell family."""
+    if os.name == "nt":
+        if re.fullmatch(r"[A-Za-z0-9_./:\\-]+", value):
+            return value
+        return "'" + value.replace("'", "''") + "'"
+    return shlex.quote(value)
+
+
+def _render_shell_command(argv: list[str]) -> str:
+    """Render an argv list as a copy/paste command string."""
+    return " ".join(_shell_quote_arg(part) for part in argv)
+
+
 def _goal_dispatch_command(args, name: str) -> str:
     """Render the concrete tentacle dispatch command for one ready tentacle."""
-    parts = ["sk tentacle"]
+    parts = ["sk", "tentacle"]
     session_dir = getattr(args, "session_dir", None)
     if session_dir:
-        parts.append(f'--session-dir "{session_dir}"')
+        parts.extend(["--session-dir", session_dir])
     parts.extend(
         [
             "dispatch",
             name,
-            f'--agent-type "{getattr(args, "agent_type", "general-purpose") or "general-purpose"}"',
-            f'--model "{getattr(args, "model", "claude-sonnet-4.6") or "claude-sonnet-4.6"}"',
+            "--agent-type",
+            getattr(args, "agent_type", "general-purpose") or "general-purpose",
+            "--model",
+            getattr(args, "model", "claude-sonnet-4.6") or "claude-sonnet-4.6",
         ]
     )
     if getattr(args, "briefing", False):
@@ -2283,7 +2300,7 @@ def _goal_dispatch_command(args, name: str) -> str:
         parts.append("--worktree")
     if not _bundle_enabled(args):
         parts.append("--no-bundle")
-    return " ".join(parts)
+    return _render_shell_command(parts)
 
 
 def _goal_dispatch_plan(state: dict, tentacles: Path, *, concurrency: int) -> dict:

@@ -653,8 +653,8 @@ Dispatch rules:
 - Tentacle dependencies are stored in `meta.json` as `todo_deps` and can be set at create time with `--depends-on a,b,c`.
 
 `goal eval --decision continue|complete` now refuses to move forward until every tentacle in the
-current iteration has written a terminal handoff. That keeps the goal loop honest: dispatch first,
-wait for handoffs, then evaluate.
+current iteration has either written a terminal handoff or reached a completed state. That keeps
+the goal loop honest: dispatch first, wait for tentacles to resolve, then evaluate.
 
 ### Goal text budget
 
