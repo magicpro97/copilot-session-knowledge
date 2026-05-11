@@ -1639,6 +1639,85 @@ class TestGoalCreate(unittest.TestCase):
             "goal.json must not exist when an explicit ID forces a later auto-ID collision.",
         )
 
+    # ------------------------------------------------------------------
+    # PR follow-up: non-string criterion field values must be rejected
+    # ------------------------------------------------------------------
+
+    def _non_string_field_args(self, title: str, criterion_json: str):
+        return _fake_args(
+            title=title,
+            desc="",
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="create",
+            criterion=[criterion_json],
+        )
+
+    def test_create_non_string_description_exits(self):
+        """Regression (PR #152): non-string 'description' must be rejected before any write."""
+        args = self._non_string_field_args("Bad desc type", '{"description": 123}')
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_create(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertFalse(
+            (self.tentacles / "goal.json").exists(),
+            "goal.json must not be written when description is not a string.",
+        )
+
+    def test_create_non_string_id_exits(self):
+        """Regression (PR #152): non-string 'id' must be rejected before any write."""
+        args = self._non_string_field_args("Bad id type", '{"id": 42, "description": "ok"}')
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_create(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertFalse(
+            (self.tentacles / "goal.json").exists(),
+            "goal.json must not be written when id is not a string.",
+        )
+
+    def test_create_non_string_verification_command_exits(self):
+        """Regression (PR #152): non-string 'verification_command' must be rejected before any write."""
+        args = self._non_string_field_args(
+            "Bad cmd type",
+            '{"description": "ok", "verification_command": ["echo", "hello"]}',
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_create(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertFalse(
+            (self.tentacles / "goal.json").exists(),
+            "goal.json must not be written when verification_command is not a string.",
+        )
+
+    def test_create_non_string_later_criterion_leaves_no_partial_goal(self):
+        """Regression (PR #152): non-string field in a later criterion must not leave partial state."""
+        args = _fake_args(
+            title="Partial Non-String",
+            desc="",
+            force=False,
+            max_iterations=None,
+            max_tentacles=None,
+            timeout=None,
+            goal_action="create",
+            criterion=[
+                '{"description": "valid first criterion"}',
+                '{"description": 999}',  # second: non-string description
+            ],
+        )
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_create(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        self.assertFalse(
+            (self.tentacles / "goal.json").exists(),
+            "goal.json must not exist after non-string field failure in a later criterion.",
+        )
+
 
 # ---------------------------------------------------------------------------
 # Tests for _cmd_goal_verify (issue #130 exact surface)

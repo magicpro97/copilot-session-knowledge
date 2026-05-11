@@ -2558,6 +2558,14 @@ def _cmd_goal_create(args, tentacles: Path) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        for _field in ("id", "description", "verification_command"):
+            _val = c.get(_field)
+            if _val is not None and not isinstance(_val, str):
+                print(
+                    f"ERROR: --criterion field '{_field}' must be a string, got: {type(_val).__name__} ({_val!r})",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
         parsed_criteria.append(c)
 
     # Prevalidate criterion IDs: reject duplicate explicit IDs and explicit/auto
@@ -3291,13 +3299,21 @@ def _cmd_goal_criteria(args, tentacles: Path) -> None:
                 verified_at = datetime.now(timezone.utc).isoformat()
                 c["status"] = "verified"
                 c["verified_at"] = verified_at
-                criterion_updates[str(c.get("id", "?"))] = {"status": "verified", "verified_at": verified_at, "evidence": output}
+                criterion_updates[str(c.get("id", "?"))] = {
+                    "status": "verified",
+                    "verified_at": verified_at,
+                    "evidence": output,
+                }
                 print(f"  ✅ [{c.get('id', '?')}] PASSED")
             else:
                 failed_at = datetime.now(timezone.utc).isoformat()
                 c["status"] = "failed"
                 c["failed_at"] = failed_at
-                criterion_updates[str(c.get("id", "?"))] = {"status": "failed", "failed_at": failed_at, "evidence": output}
+                criterion_updates[str(c.get("id", "?"))] = {
+                    "status": "failed",
+                    "failed_at": failed_at,
+                    "evidence": output,
+                }
                 print(f"  ❌ [{c.get('id', '?')}] FAILED (exit={exit_code})")
                 for line in output.strip().splitlines()[:5]:
                     print(f"     {line}")
@@ -5579,7 +5595,6 @@ def main():
             '"verification_command":"pytest"}\'. Repeatable.'
         ),
     )
-
 
     # goal validate
     p_goal_validate = p_goal_sub.add_parser("validate", help="Check goal title/description length")
