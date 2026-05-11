@@ -2507,12 +2507,13 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
             ran_any = True
             print(f"  Running [{cid}]: {cmd_str[:60]}...")
             exit_code, output = _goal_criteria_run_one(c, cwd, timeout)
+            output_bytes = output.encode("utf-8", errors="replace")
             attempt_results.append(
                 {
                     "id": cid,
                     "exit_code": exit_code,
-                    "output_hash": hashlib.sha256(output.encode()).hexdigest()[:16],
-                    "output_len": len(output),
+                    "output_hash": hashlib.sha256(output_bytes).hexdigest()[:16],
+                    "output_len": len(output_bytes),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
             )

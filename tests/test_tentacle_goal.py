@@ -16,6 +16,7 @@ Tests cover:
 Runs in-process using a temp subdirectory. Does NOT write to /tmp.
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -2133,6 +2134,8 @@ class TestGoalVerifyLoop(unittest.TestCase):
         output into goal state.  Each per-result record must store a truncated
         SHA-256 hash (output_hash) and the byte count (output_len) instead.
         """
+        output_text = "sensitive-output-e🙂"
+        output_bytes = output_text.encode("utf-8")
         args = _fake_args(
             goal_action="verify-loop",
             id=None,
@@ -2141,7 +2144,7 @@ class TestGoalVerifyLoop(unittest.TestCase):
             timeout=30,
             escalate=False,
         )
-        with patch("tentacle._goal_criteria_run_one", return_value=(1, "sensitive-output-content")):
+        with patch("tentacle._goal_criteria_run_one", return_value=(1, output_text)):
             with patch("time.sleep"):
                 with patch("builtins.print"):
                     with self.assertRaises(SystemExit):
@@ -2155,6 +2158,8 @@ class TestGoalVerifyLoop(unittest.TestCase):
                 self.assertIn("output_hash", result, "Each result must carry output_hash")
                 self.assertIn("output_len", result, "Each result must carry output_len")
                 self.assertNotIn("output_snippet", result, "Raw output_snippet must not be stored in history")
+                self.assertEqual(result["output_len"], len(output_bytes))
+                self.assertEqual(result["output_hash"], hashlib.sha256(output_bytes).hexdigest()[:16])
 
     # ------------------------------------------------------------------
     # CLI / parser plumbing
