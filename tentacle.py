@@ -22,6 +22,7 @@ Usage:
     python3 ~/.copilot/tools/tentacle.py complete <name> [--no-learn]
     python3 ~/.copilot/tools/tentacle.py delete <name>
     python3 ~/.copilot/tools/tentacle.py goal init --title <title> [--desc <desc>] [--force] [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]
+    python3 ~/.copilot/tools/tentacle.py goal validate [--title <title>] [--desc <desc>] [--format text|json]
     python3 ~/.copilot/tools/tentacle.py goal status [--format text|json]
     python3 ~/.copilot/tools/tentacle.py goal link <tentacle-name>
     python3 ~/.copilot/tools/tentacle.py goal eval [--decision continue|pause|complete|abandon] [--notes <notes>]
@@ -112,6 +113,9 @@ GOAL_STATUS_ABANDONED = "abandoned"
 GOAL_STATUS_NEEDS_HUMAN = "needs-human"
 GOAL_STATUS_AWAITING_GATE = "awaiting-gate"
 GOAL_EVAL_DECISIONS: frozenset[str] = frozenset({"continue", "pause", "complete", "abandon"})
+_GOAL_TEXT_SOFT_LIMIT = 3000
+_GOAL_TEXT_HARD_LIMIT = 5000
+_GOAL_TEXT_EXTERNALIZE_HINT = "Move detailed steps to .goal-spec.md and keep goal.json concise."
 
 
 import threading as _threading
@@ -2087,6 +2091,53 @@ def _validate_goal_budget_value(value: int | None, flag_name: str) -> int | None
     return value
 
 
+def _goal_text_validation(title: str, description: str) -> dict:
+    """Return combined title/description text-budget status for goal state."""
+    title_text = title or ""
+    description_text = description or ""
+    total_chars = len(title_text) + len(description_text)
+    hard_exceeded = total_chars > _GOAL_TEXT_HARD_LIMIT
+    soft_exceeded = total_chars > _GOAL_TEXT_SOFT_LIMIT
+    status = "error" if hard_exceeded else "warn" if soft_exceeded else "ok"
+    return {
+        "title_chars": len(title_text),
+        "description_chars": len(description_text),
+        "total_chars": total_chars,
+        "soft_limit": _GOAL_TEXT_SOFT_LIMIT,
+        "hard_limit": _GOAL_TEXT_HARD_LIMIT,
+        "soft_exceeded": soft_exceeded,
+        "hard_exceeded": hard_exceeded,
+        "status": status,
+        "hint": _GOAL_TEXT_EXTERNALIZE_HINT if soft_exceeded else "",
+    }
+
+
+def _goal_title_preview(title: str, limit: int = 80) -> str:
+    """Render a single-line preview for validation output without flooding terminals."""
+    preview = (title or "").replace("\r", " ").replace("\n", " ").strip() or "Unnamed Goal"
+    if len(preview) <= limit:
+        return preview
+    return preview[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _goal_validate_input_source(args, tentacles: Path) -> tuple[str, str] | None:
+    """Resolve goal text from CLI overrides or the current goal state."""
+    title_override = getattr(args, "title", None)
+    desc_override = getattr(args, "desc", None)
+    if title_override is not None and desc_override is not None:
+        return title_override or "Unnamed Goal", desc_override or ""
+    state = _goal_load(tentacles)
+    if title_override is None and desc_override is None and not state:
+        return None
+    if state:
+        title = state.get("title", "Unnamed Goal") if title_override is None else title_override
+        desc = state.get("description", "") if desc_override is None else desc_override
+    else:
+        title = "Unnamed Goal" if title_override is None else title_override
+        desc = "" if desc_override is None else desc_override
+    return title or "Unnamed Goal", desc or ""
+
+
 def _goal_budget_status(state: dict) -> dict:
     """Return a dict summarising current budget consumption vs limits."""
     budget = state.get("budget") or {}
@@ -2240,13 +2291,63 @@ def _cmd_goal_init(args, tentacles: Path) -> None:
             print(f"⚠️  goal.json already exists at {goal_path}")
             print("   Use --force to reinitialize.")
             sys.exit(1)
+        text_validation = _goal_text_validation(title, desc)
+        if text_validation["hard_exceeded"]:
+            print(
+                "ERROR: Goal title + description exceed the "
+                f"{_GOAL_TEXT_HARD_LIMIT}-character hard limit "
+                f"({text_validation['total_chars']} chars).",
+                file=sys.stderr,
+            )
+            print(f"Hint: {_GOAL_TEXT_EXTERNALIZE_HINT}", file=sys.stderr)
+            sys.exit(1)
         _goal_write(tentacles, state)
     print(f"✅ Goal initialized: '{title}'")
     print(f"   Goal ID:  {goal_id}")
     print(f"   State:    {goal_path}")
     if budget.get("max_iterations") is not None:
         print(f"   Budget:   {budget['max_iterations']} iterations")
+    if text_validation["soft_exceeded"]:
+        print(
+            f"   Warning: goal title + description use {text_validation['total_chars']} chars "
+            f"(soft limit: {_GOAL_TEXT_SOFT_LIMIT})."
+        )
+        print(f"   Tip:     {_GOAL_TEXT_EXTERNALIZE_HINT}")
     print("   Tip: link tentacles with `tentacle.py goal link <tentacle-name>`")
+
+
+def _cmd_goal_validate(args, tentacles: Path) -> None:
+    """Check goal title/description length against the soft/hard text budget."""
+    source = _goal_validate_input_source(args, tentacles)
+    if source is None:
+        print("ℹ️  No active goal found. Run `tentacle.py goal init` or pass --title/--desc to validate text.")
+        return
+
+    title, desc = source
+    validation = _goal_text_validation(title, desc)
+    fmt = getattr(args, "format", "text")
+    if fmt == "json":
+        print(json.dumps(validation, indent=2))
+    else:
+        print(f"📏 Goal text validation for '{_goal_title_preview(title)}':")
+        print(f"   Title chars:       {validation['title_chars']}")
+        print(f"   Description chars: {validation['description_chars']}")
+        print(f"   Total chars:       {validation['total_chars']}/{validation['hard_limit']}")
+        if validation["hard_exceeded"]:
+            print(f"   Status:            ❌ Over hard limit ({validation['hard_limit']} chars)")
+        elif validation["soft_exceeded"]:
+            print(f"   Status:            ⚠️  Over soft limit ({validation['soft_limit']} chars)")
+        else:
+            print("   Status:            ✅ Within budget")
+        if validation["hint"]:
+            print(f"   Suggestion:        {validation['hint']}")
+
+    if validation["hard_exceeded"]:
+        print(
+            f"ERROR: Goal title + description exceed the {validation['hard_limit']}-character hard limit.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def _cmd_goal_status(args, tentacles: Path) -> None:
@@ -3357,13 +3458,15 @@ def _cmd_goal_verify_loop(args, tentacles: Path) -> None:
 
 
 def cmd_goal(args):
-    """Dispatch goal sub-commands: init / status / link / eval / resume / criteria / gate / budget / next-iter / verify-loop."""
+    """Dispatch goal sub-commands: init / validate / status / link / eval / resume / criteria / gate / budget / next-iter / verify-loop."""
     tentacles = get_tentacles_dir(args.session_dir)
     sub = args.goal_action
 
     try:
         if sub == "init":
             _cmd_goal_init(args, tentacles)
+        elif sub == "validate":
+            _cmd_goal_validate(args, tentacles)
         elif sub == "status":
             _cmd_goal_status(args, tentacles)
         elif sub == "link":
@@ -4979,7 +5082,7 @@ def main():
     # goal subcommand
     p_goal = sub.add_parser(
         "goal",
-        help="Orchestrator-level goal loop: init/status/link/eval/resume/criteria/gate/budget/next-iter",
+        help="Orchestrator-level goal loop: init/validate/status/link/eval/resume/criteria/gate/budget/next-iter",
     )
     p_goal_sub = p_goal.add_subparsers(dest="goal_action", required=True)
 
@@ -5009,6 +5112,20 @@ def main():
         default=None,
         help="Budget: timeout in minutes (positive integer)",
     )
+
+    # goal validate
+    p_goal_validate = p_goal_sub.add_parser("validate", help="Check goal title/description length")
+    p_goal_validate.add_argument(
+        "--title",
+        default=None,
+        help="Validate this title instead of the current goal title",
+    )
+    p_goal_validate.add_argument(
+        "--desc",
+        default=None,
+        help="Validate this description instead of the current goal description",
+    )
+    p_goal_validate.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
 
     # goal status
     p_goal_status = p_goal_sub.add_parser("status", help="Show current goal state and linked tentacles")
