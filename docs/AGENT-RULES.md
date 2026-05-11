@@ -179,6 +179,14 @@ When acting as an orchestrator with an active goal, the lifecycle is iterative, 
    sk tentacle verify <name> "<check-command>" --label "goal-eval"
    # fallback: python3 ~/.copilot/tools/tentacle.py verify <name> "<check-command>" --label "goal-eval"
    ```
+   **Human gate blocking** — `goal eval continue` and `goal eval complete` are hard-blocked
+   when any gate is in `pending` or `rejected` state. The goal status becomes `awaiting-gate`
+   and the blocking gate ID and reason are printed. To unblock: approve the gate with
+   `goal gate approve <id> [--reason ...]`, then re-run `goal eval`. If the goal was left in
+   `awaiting-gate` state after all gates are resolved, run `goal resume` to re-activate it.
+   Use `goal gate reject <id> --reason ...` to signal that a gate failed human review; this
+   also sets the goal to `awaiting-gate`. See **[docs/USAGE.md — Gates](USAGE.md#gates)** for
+   the full `add / approve / reject` command reference.
 3. **Loop if unmet** — if the goal is not satisfied, return to Phase 1 (Plan). Create new tentacles scoped to the remaining gap. Do not re-open completed tentacles; create new ones.
 4. **Close only when verified** — proceed to commit and close only when goal success criteria are verifiably met and evidence is recorded.
 5. **Sub-agents do not loop** — sub-agents report via handoff and stop. The orchestrator reads handoff statuses, evaluates the goal, and decides whether to loop or close. Never dispatch sub-agents with an implicit expectation that they will self-continue.

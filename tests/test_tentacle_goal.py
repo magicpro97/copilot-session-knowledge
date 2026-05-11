@@ -2422,5 +2422,705 @@ class TestGoalVerifyLoop(unittest.TestCase):
             self.assertIn(flag, combined, f"Parser must expose '{flag}'")
 
 
+# ---------------------------------------------------------------------------
+# Issue #138 — Human Gate Pattern regressions
+# ---------------------------------------------------------------------------
+
+
+class TestGoalHumanGate(unittest.TestCase):
+    """Regression coverage for issue #138: human-gate lifecycle.
+
+    Covers:
+    - gate add: creates gate in pending state
+    - gate add on existing non-pending gate: preserves state and prints accurate guidance
+    - gate approve: marks gate passed, sets approved_at, stores reason
+    - gate reject: marks gate rejected, sets GOAL_STATUS_AWAITING_GATE + metadata
+    - gate reject without --reason: exits with code 1
+    - Pending gate blocks goal eval continue/complete
+    - Rejected gate blocks goal eval continue/complete
+    - Blocked eval records blocked_by_gates in eval_history (no iteration advance)
+    - Approving all gates unblocks eval (auto-restores active on next eval)
+    - goal resume from awaiting-gate: clears metadata, sets active
+    - goal status shows awaiting-gate block info and rejected reason
+    - Multi-blocker rollover: approving first blocker while a second remains
+      updates awaiting_gate_id to the second blocker (not stale first-gate id)
+    """
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "human_gate"
+        _, self.tentacles = _make_octogent(self.base)
+        _init_goal(self.tentacles, title="Human Gate Goal")
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    # ------------------------------------------------------------------
+    # gate add
+    # ------------------------------------------------------------------
+
+    def test_gate_add_creates_gate_in_pending_state(self):
+        args = _fake_args(goal_action="gate", gate_action="add", gate_id="HG1", desc="")
+        with patch("builtins.print"):
+            T._cmd_goal_gate(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        gate = next((g for g in state["gates"] if g["id"] == "HG1"), None)
+        self.assertIsNotNone(gate)
+        self.assertEqual(gate["status"], "pending")
+
+    def test_gate_add_stores_description(self):
+        args = _fake_args(goal_action="gate", gate_action="add", gate_id="HG2", desc="Human review required")
+        with patch("builtins.print"):
+            T._cmd_goal_gate(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        gate = next(g for g in state["gates"] if g["id"] == "HG2")
+        self.assertEqual(gate["description"], "Human review required")
+
+    def test_gate_add_prints_approval_instruction(self):
+        captured = []
+        args = _fake_args(goal_action="gate", gate_action="add", gate_id="HG3", desc="")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_gate(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("HG3", combined)
+        self.assertIn("approve", combined)
+
+    def test_gate_add_existing_rejected_gate_keeps_status_and_prints_current_state(self):
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "HG4", "description": "", "status": "rejected", "reason": "Need more proof"}]
+        T._goal_write(self.tentacles, state)
+
+        captured = []
+        args = _fake_args(goal_action="gate", gate_action="add", gate_id="HG4", desc="Re-check after changes")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_gate(args, self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        gate = next(g for g in state["gates"] if g["id"] == "HG4")
+        combined = "\n".join(captured)
+        self.assertEqual(gate["status"], "rejected")
+        self.assertEqual(gate["description"], "Re-check after changes")
+        self.assertIn("already exists with status 'rejected'", combined)
+        self.assertIn("approve", combined.lower())
+
+    def test_gate_add_existing_pending_gate_reports_already_pending(self):
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "HG5", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        captured = []
+        args = _fake_args(goal_action="gate", gate_action="add", gate_id="HG5", desc="Still waiting")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_gate(args, self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        gate = next(g for g in state["gates"] if g["id"] == "HG5")
+        combined = "\n".join(captured)
+        self.assertEqual(gate["status"], "pending")
+        self.assertEqual(gate["description"], "Still waiting")
+        self.assertIn("already pending", combined.lower())
+        self.assertIn("approve", combined.lower())
+
+    # ------------------------------------------------------------------
+    # gate approve
+    # ------------------------------------------------------------------
+
+    def test_gate_approve_marks_passed_and_sets_approved_at(self):
+        # Pre-add gate in pending state.
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "HGA", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="gate", gate_action="approve", gate_id="HGA", reason="")
+        with patch("builtins.print"):
+            T._cmd_goal_gate(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        gate = next(g for g in state["gates"] if g["id"] == "HGA")
+        self.assertEqual(gate["status"], "passed")
+        self.assertIn("approved_at", gate)
+
+    def test_gate_approve_stores_reason(self):
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "HGB", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="gate", gate_action="approve", gate_id="HGB", reason="Looks good to me")
+        with patch("builtins.print"):
+            T._cmd_goal_gate(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        gate = next(g for g in state["gates"] if g["id"] == "HGB")
+        self.assertEqual(gate["reason"], "Looks good to me")
+
+    def test_gate_approve_without_prior_block_does_not_claim_goal_was_unblocked(self):
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "HGB2", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        captured = []
+        args = _fake_args(goal_action="gate", gate_action="approve", gate_id="HGB2", reason="")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_gate(args, self.tentacles)
+
+        combined = "\n".join(captured)
+        self.assertNotIn("goal is unblocked", combined.lower())
+
+    def test_gate_approve_all_unblocks_goal_when_status_was_awaiting_gate(self):
+        """Approving the only blocking gate while goal is awaiting-gate restores active."""
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "HGC", "description": "", "status": "pending"}]
+        state["status"] = T.GOAL_STATUS_AWAITING_GATE
+        state["awaiting_gate_id"] = "HGC"
+        state["awaiting_gate_reason"] = "Gate 'HGC' is pending"
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="gate", gate_action="approve", gate_id="HGC", reason="")
+        with patch("builtins.print"):
+            T._cmd_goal_gate(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertNotIn("awaiting_gate_id", state)
+        self.assertNotIn("awaiting_gate_reason", state)
+
+    def test_gate_pass_all_unblocks_goal_when_status_was_awaiting_gate(self):
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "HGPASS", "description": "", "status": "pending"}]
+        state["status"] = T.GOAL_STATUS_AWAITING_GATE
+        state["awaiting_gate_id"] = "HGPASS"
+        state["awaiting_gate_reason"] = "Gate 'HGPASS' is pending"
+        T._goal_write(self.tentacles, state)
+
+        with patch("builtins.print"):
+            T._cmd_goal_gate(_fake_args(goal_action="gate", gate_action="pass", gate_id="HGPASS", reason=""), self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertNotIn("awaiting_gate_id", state)
+        self.assertNotIn("awaiting_gate_reason", state)
+
+    # ------------------------------------------------------------------
+    # gate reject
+    # ------------------------------------------------------------------
+
+    def test_gate_reject_marks_rejected_and_sets_awaiting_gate_status(self):
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "HGR", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="gate", gate_action="reject", gate_id="HGR", reason="Not ready")
+        with patch("builtins.print"):
+            T._cmd_goal_gate(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        gate = next(g for g in state["gates"] if g["id"] == "HGR")
+        self.assertEqual(gate["status"], "rejected")
+        self.assertIn("rejected_at", gate)
+        self.assertEqual(gate["reason"], "Not ready")
+        self.assertEqual(state["status"], T.GOAL_STATUS_AWAITING_GATE)
+        self.assertEqual(state["awaiting_gate_id"], "HGR")
+        self.assertEqual(state["awaiting_gate_reason"], "Not ready")
+
+    def test_gate_reject_recomputes_primary_blocker_when_another_gate_is_first(self):
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [
+            {"id": "HGRP1", "description": "", "status": "pending"},
+            {"id": "HGRP2", "description": "", "status": "pending"},
+        ]
+        state["status"] = T.GOAL_STATUS_AWAITING_GATE
+        state["awaiting_gate_id"] = "HGRP1"
+        state["awaiting_gate_reason"] = "Gate 'HGRP1' is pending"
+        T._goal_write(self.tentacles, state)
+
+        with patch("builtins.print"):
+            T._cmd_goal_gate(
+                _fake_args(goal_action="gate", gate_action="reject", gate_id="HGRP2", reason="Docs still red"),
+                self.tentacles,
+            )
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_AWAITING_GATE)
+        self.assertEqual(state["awaiting_gate_id"], "HGRP1")
+        self.assertEqual(state["awaiting_gate_reason"], "Gate 'HGRP1' is pending")
+
+    def test_gate_reject_on_paused_goal_keeps_paused_status(self):
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_PAUSED
+        state["gates"] = [{"id": "HGRPAUSE", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        with patch("builtins.print"):
+            T._cmd_goal_gate(
+                _fake_args(goal_action="gate", gate_action="reject", gate_id="HGRPAUSE", reason="Pause first"),
+                self.tentacles,
+            )
+
+        state = T._goal_load(self.tentacles)
+        gate = next(g for g in state["gates"] if g["id"] == "HGRPAUSE")
+        self.assertEqual(gate["status"], "rejected")
+        self.assertEqual(state["status"], T.GOAL_STATUS_PAUSED)
+        self.assertNotIn("awaiting_gate_id", state)
+        self.assertNotIn("awaiting_gate_reason", state)
+
+    def test_gate_reject_terminal_goal_exits_without_overwriting_status(self):
+        for terminal_status in (T.GOAL_STATUS_COMPLETED, T.GOAL_STATUS_ABANDONED, T.GOAL_STATUS_NEEDS_HUMAN):
+            with self.subTest(status=terminal_status):
+                state = T._goal_load(self.tentacles)
+                state["status"] = terminal_status
+                state["gates"] = [{"id": "HGRTERM", "description": "", "status": "pending"}]
+                T._goal_write(self.tentacles, state)
+
+                args = _fake_args(goal_action="gate", gate_action="reject", gate_id="HGRTERM", reason="Too late")
+                with patch("builtins.print"):
+                    with self.assertRaises(SystemExit) as cm:
+                        T._cmd_goal_gate(args, self.tentacles)
+                self.assertEqual(cm.exception.code, 1)
+
+                state = T._goal_load(self.tentacles)
+                gate = next(g for g in state["gates"] if g["id"] == "HGRTERM")
+                self.assertEqual(gate["status"], "pending")
+                self.assertEqual(state["status"], terminal_status)
+
+    def test_gate_mutations_are_blocked_for_terminal_or_needs_human_goals(self):
+        for terminal_status in (T.GOAL_STATUS_COMPLETED, T.GOAL_STATUS_ABANDONED, T.GOAL_STATUS_NEEDS_HUMAN):
+            for action in ("add", "approve", "pass", "fail"):
+                with self.subTest(status=terminal_status, action=action):
+                    state = T._goal_load(self.tentacles)
+                    state["status"] = terminal_status
+                    state["gates"] = [{"id": "HGMUT", "description": "", "status": "pending"}]
+                    T._goal_write(self.tentacles, state)
+
+                    args = _fake_args(goal_action="gate", gate_action=action, gate_id="HGMUT", reason="", desc="")
+                    if action == "add":
+                        args.gate_id = "HGMUTNEW"
+                        args.desc = "new gate"
+                    with patch("builtins.print"):
+                        with self.assertRaises(SystemExit) as cm:
+                            T._cmd_goal_gate(args, self.tentacles)
+                    self.assertEqual(cm.exception.code, 1)
+
+                    state = T._goal_load(self.tentacles)
+                    self.assertEqual(state["status"], terminal_status)
+                    self.assertFalse(any(g["id"] == "HGMUTNEW" for g in state["gates"]))
+                    gate = next(g for g in state["gates"] if g["id"] == "HGMUT")
+                    self.assertEqual(gate["status"], "pending")
+
+    def test_gate_reject_without_reason_exits(self):
+        args = _fake_args(goal_action="gate", gate_action="reject", gate_id="HGR2", reason="")
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_gate(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_gate_reject_missing_gate_exits_without_creating_blocker(self):
+        args = _fake_args(goal_action="gate", gate_action="reject", gate_id="HGR404", reason="Not ready")
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_gate(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertFalse(any(g["id"] == "HGR404" for g in state["gates"]))
+
+    def test_gate_approve_missing_gate_exits_without_creating_gate(self):
+        args = _fake_args(goal_action="gate", gate_action="approve", gate_id="HGA404", reason="")
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_gate(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+        state = T._goal_load(self.tentacles)
+        self.assertFalse(any(g["id"] == "HGA404" for g in state["gates"]))
+
+    def test_gate_reject_passed_gate_exits_without_reblocking_goal(self):
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "HGRP", "description": "", "status": "passed"}]
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="gate", gate_action="reject", gate_id="HGRP", reason="Undo sign-off")
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_gate(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+        state = T._goal_load(self.tentacles)
+        gate = next(g for g in state["gates"] if g["id"] == "HGRP")
+        self.assertEqual(gate["status"], "passed")
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertNotIn("awaiting_gate_id", state)
+
+    def test_gate_fail_last_blocker_clears_awaiting_gate_metadata(self):
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "HGFAIL", "description": "", "status": "pending"}]
+        state["status"] = T.GOAL_STATUS_AWAITING_GATE
+        state["awaiting_gate_id"] = "HGFAIL"
+        state["awaiting_gate_reason"] = "Gate 'HGFAIL' is pending"
+        T._goal_write(self.tentacles, state)
+
+        with patch("builtins.print"):
+            T._cmd_goal_gate(_fake_args(goal_action="gate", gate_action="fail", gate_id="HGFAIL", reason="legacy fail"), self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        gate = next(g for g in state["gates"] if g["id"] == "HGFAIL")
+        self.assertEqual(gate["status"], "failed")
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertNotIn("awaiting_gate_id", state)
+        self.assertNotIn("awaiting_gate_reason", state)
+
+    def test_gate_fail_unblock_message_mentions_failed_state(self):
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "HGFAILMSG", "description": "", "status": "pending"}]
+        state["status"] = T.GOAL_STATUS_AWAITING_GATE
+        state["awaiting_gate_id"] = "HGFAILMSG"
+        state["awaiting_gate_reason"] = "Gate 'HGFAILMSG' is pending"
+        T._goal_write(self.tentacles, state)
+
+        captured = []
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_gate(
+                _fake_args(goal_action="gate", gate_action="fail", gate_id="HGFAILMSG", reason="legacy fail"),
+                self.tentacles,
+            )
+
+        combined = "\n".join(captured)
+        self.assertIn("marked FAILED", combined)
+        self.assertIn("still FAILED", combined)
+        self.assertNotIn("All blocking gates resolved", combined)
+
+    def test_gate_fail_rolls_over_to_next_blocker(self):
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [
+            {"id": "HGFAIL1", "description": "", "status": "pending"},
+            {"id": "HGFAIL2", "description": "", "status": "pending"},
+        ]
+        state["status"] = T.GOAL_STATUS_AWAITING_GATE
+        state["awaiting_gate_id"] = "HGFAIL1"
+        state["awaiting_gate_reason"] = "Gate 'HGFAIL1' is pending"
+        T._goal_write(self.tentacles, state)
+
+        with patch("builtins.print"):
+            T._cmd_goal_gate(_fake_args(goal_action="gate", gate_action="fail", gate_id="HGFAIL1", reason="legacy fail"), self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_AWAITING_GATE)
+        self.assertEqual(state["awaiting_gate_id"], "HGFAIL2")
+        self.assertEqual(state["awaiting_gate_reason"], "Gate 'HGFAIL2' is pending")
+
+    # ------------------------------------------------------------------
+    # Pending/rejected gate blocks eval continue/complete
+    # ------------------------------------------------------------------
+
+    def test_eval_continue_blocked_by_pending_gate(self):
+        """goal eval continue must be blocked (no iteration advance) when a gate is pending."""
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "BLK", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="eval", decision="continue", notes="")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args, self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        # Goal blocked: iteration must NOT advance.
+        self.assertEqual(state["iteration"], 1)
+        self.assertEqual(state["status"], T.GOAL_STATUS_AWAITING_GATE)
+
+    def test_eval_complete_blocked_by_pending_gate(self):
+        """goal eval complete must also be hard-blocked by a pending gate."""
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "BLK2", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="eval", decision="complete", notes="")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args, self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        self.assertNotEqual(state["status"], T.GOAL_STATUS_COMPLETED)
+        self.assertEqual(state["status"], T.GOAL_STATUS_AWAITING_GATE)
+
+    def test_eval_continue_blocked_by_rejected_gate(self):
+        """A rejected gate blocks eval just like a pending gate."""
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "REJ", "description": "", "status": "rejected", "reason": "Nope"}]
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="eval", decision="continue", notes="")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args, self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["iteration"], 1)
+        self.assertEqual(state["status"], T.GOAL_STATUS_AWAITING_GATE)
+
+    def test_blocked_eval_records_blocked_by_gates_in_history(self):
+        """Blocked eval must append a history entry with blocked_by_gates."""
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "H1", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="eval", decision="continue", notes="some note")
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args, self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        self.assertGreater(len(state.get("eval_history", [])), 0)
+        entry = state["eval_history"][-1]
+        self.assertIn("blocked_by_gates", entry)
+        self.assertIn("H1", entry["blocked_by_gates"])
+        # The iteration field should be present and match.
+        self.assertEqual(entry["iteration"], 1)
+        self.assertEqual(entry["decision"], "continue")
+
+    def test_blocked_eval_does_not_advance_iteration(self):
+        """After a blocked eval the iteration counter stays unchanged."""
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "NOP", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        with patch("builtins.print"):
+            T._cmd_goal_eval(_fake_args(goal_action="eval", decision="continue", notes=""), self.tentacles)
+            T._cmd_goal_eval(_fake_args(goal_action="eval", decision="continue", notes=""), self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["iteration"], 1, "Iteration must not advance while gates are blocking")
+
+    # ------------------------------------------------------------------
+    # Eval unblocked after approving all gates
+    # ------------------------------------------------------------------
+
+    def test_eval_proceed_after_all_gates_approved(self):
+        """After approving the blocking gate, goal eval continue must advance iteration."""
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "APV", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        # Block the goal first.
+        with patch("builtins.print"):
+            T._cmd_goal_eval(_fake_args(goal_action="eval", decision="continue", notes=""), self.tentacles)
+
+        # Approve the gate.
+        with patch("builtins.print"):
+            T._cmd_goal_gate(_fake_args(goal_action="gate", gate_action="approve", gate_id="APV", reason=""), self.tentacles)
+
+        # Now eval should succeed — status was awaiting-gate, gate is now approved.
+        with patch("builtins.print"):
+            T._cmd_goal_eval(_fake_args(goal_action="eval", decision="continue", notes=""), self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["iteration"], 2)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertNotIn("awaiting_gate_id", state)
+        self.assertNotIn("awaiting_gate_reason", state)
+
+    # ------------------------------------------------------------------
+    # goal status shows awaiting-gate info
+    # ------------------------------------------------------------------
+
+    def test_status_shows_awaiting_gate_block_info(self):
+        """goal status must surface the blocking gate id and resolve instructions."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_AWAITING_GATE
+        state["awaiting_gate_id"] = "SHW1"
+        state["awaiting_gate_reason"] = "Docs not updated"
+        state["gates"] = [{"id": "SHW1", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        captured = []
+        args = _fake_args(goal_action="status", format="text")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_status(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("SHW1", combined)
+        self.assertIn("approve", combined.lower())
+
+    def test_status_shows_rejected_reason_in_gate_listing(self):
+        """goal status gate listing must show the rejection reason for rejected gates."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_AWAITING_GATE
+        state["awaiting_gate_id"] = "REJST"
+        state["awaiting_gate_reason"] = "Tests still red"
+        state["gates"] = [
+            {"id": "REJST", "description": "", "status": "rejected", "reason": "Tests still red"}
+        ]
+        T._goal_write(self.tentacles, state)
+
+        captured = []
+        args = _fake_args(goal_action="status", format="text")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_status(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("REJST", combined)
+        self.assertIn("awaiting-gate", combined)
+
+    # ------------------------------------------------------------------
+    # goal resume clears awaiting-gate metadata
+    # ------------------------------------------------------------------
+
+    def test_resume_from_awaiting_gate_clears_metadata(self):
+        """goal resume must clear awaiting_gate_id and awaiting_gate_reason."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_AWAITING_GATE
+        state["awaiting_gate_id"] = "CLR1"
+        state["awaiting_gate_reason"] = "Some reason"
+        T._goal_write(self.tentacles, state)
+
+        args = _fake_args(goal_action="resume")
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertNotIn("awaiting_gate_id", state, "awaiting_gate_id must be cleared on resume")
+        self.assertNotIn("awaiting_gate_reason", state, "awaiting_gate_reason must be cleared on resume")
+        self.assertIn("resumed_at", state)
+
+    def test_resume_from_awaiting_gate_does_not_approve_gates(self):
+        """goal resume must NOT automatically approve or remove pending gates."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_AWAITING_GATE
+        state["awaiting_gate_id"] = "STILL"
+        state["awaiting_gate_reason"] = "Pending"
+        state["gates"] = [{"id": "STILL", "description": "", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+
+        with patch("builtins.print"):
+            T._cmd_goal_resume(_fake_args(goal_action="resume"), self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        gate = next(g for g in state["gates"] if g["id"] == "STILL")
+        self.assertEqual(gate["status"], "pending", "Resume must not auto-approve gates")
+
+    def test_eval_pause_from_awaiting_gate_clears_metadata(self):
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_AWAITING_GATE
+        state["gates"] = [{"id": "PAUSE1", "description": "", "status": "passed"}]
+        state["awaiting_gate_id"] = "PAUSE1"
+        state["awaiting_gate_reason"] = "Old blocker"
+        T._goal_write(self.tentacles, state)
+
+        with patch("builtins.print"):
+            T._cmd_goal_eval(_fake_args(goal_action="eval", decision="pause", notes="pause after review"), self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_PAUSED)
+        self.assertNotIn("awaiting_gate_id", state)
+        self.assertNotIn("awaiting_gate_reason", state)
+
+        with patch("builtins.print"):
+            T._cmd_goal_resume(_fake_args(goal_action="resume"), self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertNotIn("awaiting_gate_id", state)
+        self.assertNotIn("awaiting_gate_reason", state)
+
+    def test_eval_abandon_from_awaiting_gate_clears_metadata(self):
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_AWAITING_GATE
+        state["gates"] = [{"id": "ABANDON1", "description": "", "status": "passed"}]
+        state["awaiting_gate_id"] = "ABANDON1"
+        state["awaiting_gate_reason"] = "Old blocker"
+        T._goal_write(self.tentacles, state)
+
+        with patch("builtins.print"):
+            T._cmd_goal_eval(_fake_args(goal_action="eval", decision="abandon", notes="abandon after review"), self.tentacles)
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ABANDONED)
+        self.assertNotIn("awaiting_gate_id", state)
+        self.assertNotIn("awaiting_gate_reason", state)
+
+    # ------------------------------------------------------------------
+    # Multi-blocker metadata rollover (orchestrator hardening)
+    # ------------------------------------------------------------------
+
+    def test_approve_first_blocker_rolls_over_to_second_blocker(self):
+        """Approving gate A while gate B is still pending must update awaiting_gate_id to B.
+
+        Before the orchestrator hardening landed, approving the first blocking gate
+        while a second remained left stale metadata pointing at the now-approved gate.
+        This regression ensures the rollover logic keeps awaiting_gate_id aligned with
+        the first *remaining* blocker after each approval.
+        """
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [
+            {"id": "GA", "description": "", "status": "pending"},
+            {"id": "GB", "description": "", "status": "pending"},
+        ]
+        state["status"] = T.GOAL_STATUS_AWAITING_GATE
+        state["awaiting_gate_id"] = "GA"
+        state["awaiting_gate_reason"] = "Gate 'GA' is pending"
+        T._goal_write(self.tentacles, state)
+
+        # Approve gate A — gate B is still pending.
+        with patch("builtins.print"):
+            T._cmd_goal_gate(
+                _fake_args(goal_action="gate", gate_action="approve", gate_id="GA", reason=""),
+                self.tentacles,
+            )
+
+        state = T._goal_load(self.tentacles)
+        # Goal must still be awaiting-gate (GB is still blocking).
+        self.assertEqual(state["status"], T.GOAL_STATUS_AWAITING_GATE)
+        # awaiting_gate_id must now point at GB, not the stale GA.
+        self.assertEqual(state["awaiting_gate_id"], "GB")
+        # GA must be approved.
+        ga = next(g for g in state["gates"] if g["id"] == "GA")
+        self.assertEqual(ga["status"], "passed")
+
+    def test_approve_last_of_two_blockers_fully_unblocks_goal(self):
+        """Approving the last remaining blocking gate must set goal back to active."""
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [
+            {"id": "GX", "description": "", "status": "passed"},
+            {"id": "GY", "description": "", "status": "pending"},
+        ]
+        state["status"] = T.GOAL_STATUS_AWAITING_GATE
+        state["awaiting_gate_id"] = "GY"
+        state["awaiting_gate_reason"] = "Gate 'GY' is pending"
+        T._goal_write(self.tentacles, state)
+
+        with patch("builtins.print"):
+            T._cmd_goal_gate(
+                _fake_args(goal_action="gate", gate_action="approve", gate_id="GY", reason=""),
+                self.tentacles,
+            )
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertNotIn("awaiting_gate_id", state)
+        self.assertNotIn("awaiting_gate_reason", state)
+
+    def test_three_blocker_rollover_sequence(self):
+        """Approving blockers one-by-one correctly advances awaiting_gate_id each time."""
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [
+            {"id": "G1", "description": "", "status": "pending"},
+            {"id": "G2", "description": "", "status": "pending"},
+            {"id": "G3", "description": "", "status": "pending"},
+        ]
+        state["status"] = T.GOAL_STATUS_AWAITING_GATE
+        state["awaiting_gate_id"] = "G1"
+        state["awaiting_gate_reason"] = "Gate 'G1' is pending"
+        T._goal_write(self.tentacles, state)
+
+        # Approve G1 → should roll to G2.
+        with patch("builtins.print"):
+            T._cmd_goal_gate(_fake_args(goal_action="gate", gate_action="approve", gate_id="G1", reason=""), self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_AWAITING_GATE)
+        self.assertEqual(state["awaiting_gate_id"], "G2")
+
+        # Approve G2 → should roll to G3.
+        with patch("builtins.print"):
+            T._cmd_goal_gate(_fake_args(goal_action="gate", gate_action="approve", gate_id="G2", reason=""), self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_AWAITING_GATE)
+        self.assertEqual(state["awaiting_gate_id"], "G3")
+
+        # Approve G3 → all clear, goal is active.
+        with patch("builtins.print"):
+            T._cmd_goal_gate(_fake_args(goal_action="gate", gate_action="approve", gate_id="G3", reason=""), self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertNotIn("awaiting_gate_id", state)
+
+
 if __name__ == "__main__":
     unittest.main()
