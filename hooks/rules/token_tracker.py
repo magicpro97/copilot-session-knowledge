@@ -29,13 +29,25 @@ import time
 from pathlib import Path
 
 from . import Rule
-from .common import info, load_session_state, save_session_state, update_session_state
+from .common import info, update_session_state
 
 # Default token budget; override with TOKEN_BUDGET env var.
 DEFAULT_BUDGET = 100_000
 
 # Percentage thresholds at which to emit a one-time warning per session.
 _WARN_THRESHOLDS = [80, 95]
+
+
+def _parse_token_budget() -> int:
+    """Parse TOKEN_BUDGET, falling back to DEFAULT_BUDGET on invalid input."""
+    raw = os.environ.get("TOKEN_BUDGET", "")
+    try:
+        budget = int(raw)
+        if budget < 1:
+            return DEFAULT_BUDGET
+        return budget
+    except (TypeError, ValueError):
+        return DEFAULT_BUDGET
 
 
 def _estimate_from_path(path: str) -> int:
@@ -102,7 +114,7 @@ class TokenTrackerRule(Rule):
             # grep, glob, bash, etc. — no reliable proxy; skip.
             return None
 
-        budget = int(os.environ.get("TOKEN_BUDGET", DEFAULT_BUDGET))
+        budget = _parse_token_budget()
         result_holder = [None]
 
         def _updater(state, under_lock):

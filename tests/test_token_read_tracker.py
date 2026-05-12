@@ -55,14 +55,16 @@ def test(name: str, condition: bool, detail: str = "") -> None:
 
 print("\n\U0001f4ca Section 1: Token estimation helpers")
 
-from rules.token_tracker import _estimate_from_path, _estimate_from_text
+from rules.token_tracker import DEFAULT_BUDGET, _estimate_from_path, _estimate_from_text, _parse_token_budget
 
 test("empty text → 0 tokens", _estimate_from_text("") == 0)
 test("3.75 chars → 1 token", _estimate_from_text("abc") == 1)  # ceil(3/3.75)=1
 test("750 chars → 200 tokens", _estimate_from_text("x" * 750) == 200)
 
 # estimate_from_path with temp file
-_tmp = Path(tempfile.mktemp(suffix=".py", dir=REPO))
+_tmp_fd, _tmp_name = tempfile.mkstemp(suffix=".py", dir=REPO)
+os.close(_tmp_fd)
+_tmp = Path(_tmp_name)
 try:
     _tmp.write_text("x" * 375, encoding="utf-8")  # 375 bytes → ceil(375/3.75) = 100
     test("375-byte file → 100 tokens", _estimate_from_path(str(_tmp)) == 100)
@@ -73,6 +75,22 @@ finally:
         pass
 
 test("non-existent path → 0 tokens", _estimate_from_path("/nonexistent/ghost.py") == 0)
+
+_orig_budget_parse_env = os.environ.get("TOKEN_BUDGET")
+try:
+    os.environ["TOKEN_BUDGET"] = "1000"
+    test("valid TOKEN_BUDGET parses", _parse_token_budget() == 1000)
+    for _bad_budget in ("notanint", "", "0", "-5"):
+        os.environ["TOKEN_BUDGET"] = _bad_budget
+        test(
+            f"invalid TOKEN_BUDGET '{_bad_budget or '<empty>'}' falls back to default",
+            _parse_token_budget() == DEFAULT_BUDGET,
+        )
+finally:
+    if _orig_budget_parse_env is None:
+        os.environ.pop("TOKEN_BUDGET", None)
+    else:
+        os.environ["TOKEN_BUDGET"] = _orig_budget_parse_env
 
 
 # ════════════════════════════════════════════════════════════
@@ -101,12 +119,7 @@ def _fake_state_path(data=None):
 _common.get_session_id = _fake_session_id
 _common.get_session_state_path = _fake_state_path
 
-# Also patch inside token_tracker module
 import rules.token_tracker as _tt_mod
-_orig_tt_load = _tt_mod.load_session_state
-_orig_tt_save = _tt_mod.save_session_state
-_tt_mod.load_session_state = _common.load_session_state
-_tt_mod.save_session_state = _common.save_session_state
 
 try:
     rule = TokenTrackerRule()
@@ -167,8 +180,6 @@ except Exception as e:
 finally:
     _common.get_session_id = _orig_session_id
     _common.get_session_state_path = _orig_state_path
-    _tt_mod.load_session_state = _orig_tt_load
-    _tt_mod.save_session_state = _orig_tt_save
     shutil.rmtree(_state_home, ignore_errors=True)
 
 
@@ -190,8 +201,6 @@ def _th_fake_state_path(data=None):
 
 _common.get_session_id = _th_fake_session_id
 _common.get_session_state_path = _th_fake_state_path
-_tt_mod.load_session_state = _common.load_session_state
-_tt_mod.save_session_state = _common.save_session_state
 
 try:
     rule2 = TokenTrackerRule()
@@ -203,14 +212,6 @@ try:
     # Single 2-token edit should push us to 801 / 1000 → 80.1% → warn
     _small_file = _th_home / "small.py"
     _small_file.write_text("x" * 8, encoding="utf-8")  # ceil(8/3.75) = 3 tok
-
-    result_80 = rule2.evaluate("postToolUse", {
-        "toolName": "view",
-        "toolInput": {"path": str(_small_file)},
-    }, ) if False else rule2._run({
-        "toolName": "view",
-        "toolInput": {"path": str(_small_file)},
-    })
 
     # Override budget via env
     old_budget_env = os.environ.get("TOKEN_BUDGET")
@@ -292,8 +293,6 @@ except Exception as e:
 finally:
     _common.get_session_id = _orig_session_id
     _common.get_session_state_path = _orig_state_path
-    _tt_mod.load_session_state = _orig_tt_load
-    _tt_mod.save_session_state = _orig_tt_save
     shutil.rmtree(_th_home, ignore_errors=True)
 
 
@@ -536,8 +535,6 @@ def _jump_state_path(data=None):
 
 _common.get_session_id = _jump_session_id
 _common.get_session_state_path = _jump_state_path
-_tt_mod.load_session_state = _common.load_session_state
-_tt_mod.save_session_state = _common.save_session_state
 
 try:
     rule_jump = TokenTrackerRule()
@@ -592,8 +589,6 @@ except Exception as e:
 finally:
     _common.get_session_id = _orig_session_id
     _common.get_session_state_path = _orig_state_path
-    _tt_mod.load_session_state = _orig_tt_load
-    _tt_mod.save_session_state = _orig_tt_save
     shutil.rmtree(_jump_home, ignore_errors=True)
 
 
@@ -692,6 +687,10 @@ try:
     test("13b: state file written in custom directory", state_file.is_file())
     loaded = _common.load_session_state()
     test("13c: round-trip load from custom path succeeds", loaded.get("total_tokens") == 0)
+    state_file.write_text('["not-a-dict"]', encoding="utf-8")
+    loaded_bad = _common.load_session_state()
+    test("13d: non-dict JSON falls back to default state", loaded_bad.get("total_tokens") == 0)
+    test("13d: non-dict JSON returns dict shape", isinstance(loaded_bad, dict))
 
     test("Section 13 ran without exception", True)
 except Exception as e:

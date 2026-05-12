@@ -370,7 +370,9 @@ def load_session_state(data=None) -> dict:
     try:
         p = get_session_state_path(data)
         if p.is_file():
-            return json.loads(p.read_text(encoding="utf-8"))
+            loaded = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                return loaded
     except Exception:
         pass
     return {"files_read": {}, "total_tokens": 0, "thresholds_warned": []}
