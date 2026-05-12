@@ -4424,11 +4424,11 @@ def _cmd_goal_loop(args, tentacles: Path) -> None:
             gate_ids = [g.get("id", "?") for g in blocking]
             primary = blocking[0]
             primary_id = primary.get("id", "?")
-            primary_reason = primary.get("reason") or (
-                f"Gate '{primary_id}' is {primary.get('status', 'pending')}"
-            )
+            primary_reason = primary.get("reason") or (f"Gate '{primary_id}' is {primary.get('status', 'pending')}")
 
-            def _apply_gate_block(s: dict, _gate_ids=gate_ids, _iter=current_iter, _at=blocked_at, _pid=primary_id, _pr=primary_reason) -> None:
+            def _apply_gate_block(
+                s: dict, _gate_ids=gate_ids, _iter=current_iter, _at=blocked_at, _pid=primary_id, _pr=primary_reason
+            ) -> None:
                 eval_entry: dict = {
                     "iteration": _iter,
                     "decision": "continue",
@@ -4449,7 +4449,9 @@ def _cmd_goal_loop(args, tentacles: Path) -> None:
                 g_st = g.get("status", "pending")
                 icon = "❌" if g_st == "rejected" else "⬜"
                 print(f"      {icon} [{g.get('id', '?')}] {g.get('description', '')[:60]} — {g_st}")
-            print(f"   Goal status set to '{GOAL_STATUS_AWAITING_GATE}'. Approve gate(s) with `goal gate approve <id>` then re-run `goal loop`.")
+            print(
+                f"   Goal status set to '{GOAL_STATUS_AWAITING_GATE}'. Approve gate(s) with `goal gate approve <id>` then re-run `goal loop`."
+            )
             break
 
         # 4. Run success criteria.
