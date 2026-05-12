@@ -1047,6 +1047,26 @@ def _extract_next_open(limit: int = 5) -> list[dict]:
     return []
 
 
+def _ke_has_intensity(db: sqlite3.Connection) -> bool:
+    """Return True if knowledge_entries has the intensity column (v21 migration applied)."""
+    try:
+        cols = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        return "intensity" in cols
+    except Exception:
+        return False
+
+
+def _intensity_order_expr(alias: str = "ke") -> str:
+    """SQL ORDER BY expression that weights high-intensity entries higher.
+
+    Score = COALESCE(intensity, 0.5) * confidence, so a penalty entry with
+    intensity=0.9 and confidence=0.8 scores 0.72 vs a neutral entry with
+    intensity=0.5 and confidence=0.8 scoring 0.40.
+    The FTS 'rank' column (negative BM25) is appended as tiebreaker.
+    """
+    return f"(COALESCE({alias}.intensity, 0.5) * {alias}.confidence) DESC, rank"
+
+
 def search_knowledge_entries(
     db: sqlite3.Connection, query: str, category: str, limit: int = 3, min_confidence: float = 0.0
 ) -> list[dict]:
@@ -1054,10 +1074,13 @@ def search_knowledge_entries(
     fts_query, strictness, confidence_delta = _build_adaptive_fts_query(query)
     effective_confidence = max(0.0, min(1.0, min_confidence + confidence_delta))
 
+    has_intensity = _ke_has_intensity(db)
+    order_by = _intensity_order_expr("ke") if has_intensity else "ke.confidence DESC, rank"
+
     results = []
     try:
         rows = db.execute(
-            """
+            f"""
             SELECT ke.id, ke.title, ke.content, ke.tags,
                    ke.confidence, ke.session_id, ke.occurrence_count,
                    ke.document_id, ke.source_section,
@@ -1073,7 +1096,7 @@ def search_knowledge_entries(
             WHERE ke_fts MATCH ?
             AND ke.category = ?
             AND ke.confidence >= ?
-            ORDER BY ke.confidence DESC, rank
+            ORDER BY {order_by}
             LIMIT ?
         """,
             (fts_query, category, effective_confidence, limit),
@@ -1082,7 +1105,7 @@ def search_knowledge_entries(
     except sqlite3.OperationalError:
         try:
             rows = db.execute(
-                """
+                f"""
                 SELECT ke.id, ke.title, ke.content, ke.tags,
                        ke.confidence, ke.session_id, ke.occurrence_count
                 FROM ke_fts fts
@@ -1090,7 +1113,7 @@ def search_knowledge_entries(
                 WHERE ke_fts MATCH ?
                 AND ke.category = ?
                 AND ke.confidence >= ?
-                ORDER BY ke.confidence DESC, rank
+                ORDER BY {order_by}
                 LIMIT ?
             """,
                 (fts_query, category, effective_confidence, limit),
@@ -1104,7 +1127,7 @@ def search_knowledge_entries(
         base_query = _sanitize_fts_query(query)
         try:
             rows = db.execute(
-                """
+                f"""
                 SELECT ke.id, ke.title, ke.content, ke.tags,
                        ke.confidence, ke.session_id, ke.occurrence_count,
                        ke.document_id, ke.source_section,
@@ -1120,7 +1143,7 @@ def search_knowledge_entries(
                 WHERE ke_fts MATCH ?
                 AND ke.category = ?
                 AND ke.confidence >= ?
-                ORDER BY ke.confidence DESC, rank
+                ORDER BY {order_by}
                 LIMIT ?
             """,
                 (base_query, category, min_confidence, limit),
@@ -1129,7 +1152,7 @@ def search_knowledge_entries(
         except sqlite3.OperationalError:
             try:
                 rows = db.execute(
-                    """
+                    f"""
                     SELECT ke.id, ke.title, ke.content, ke.tags,
                            ke.confidence, ke.session_id, ke.occurrence_count
                     FROM ke_fts fts
@@ -1137,7 +1160,7 @@ def search_knowledge_entries(
                     WHERE ke_fts MATCH ?
                     AND ke.category = ?
                     AND ke.confidence >= ?
-                    ORDER BY ke.confidence DESC, rank
+                    ORDER BY {order_by}
                     LIMIT ?
                 """,
                     (base_query, category, min_confidence, limit),
@@ -2048,14 +2071,25 @@ def generate_wakeup() -> str:
         rows = db.execute("""
             SELECT title FROM knowledge_entries
             WHERE category = 'mistake' AND confidence >= 0.5
-            ORDER BY occurrence_count DESC, confidence DESC
+            ORDER BY COALESCE(intensity, 0.5) * confidence DESC, occurrence_count DESC
             LIMIT 3
         """).fetchall()
         if rows:
             items = " | ".join(f"({i + 1}) {r['title'][:50]}" for i, r in enumerate(rows))
             lines.append(f"TOP-MISTAKES: {items}")
     except sqlite3.OperationalError:
-        pass
+        try:
+            rows = db.execute("""
+                SELECT title FROM knowledge_entries
+                WHERE category = 'mistake' AND confidence >= 0.5
+                ORDER BY occurrence_count DESC, confidence DESC
+                LIMIT 3
+            """).fetchall()
+            if rows:
+                items = " | ".join(f"({i + 1}) {r['title'][:50]}" for i, r in enumerate(rows))
+                lines.append(f"TOP-MISTAKES: {items}")
+        except sqlite3.OperationalError:
+            pass
 
     # Top patterns (3)
     try:
