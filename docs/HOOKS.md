@@ -16,8 +16,10 @@ hooks/
     briefing.py           # Auto-briefing + enforce-briefing
     learn_gate.py         # Enforce learn.py before commit/task_complete
     learn_reminder.py     # Remind to record learnings
+    read_tracker.py       # Warn on repeated view reads via shared session state
     tentacle.py           # Tentacle enforce + suggest (merged)
     edit_tracker.py       # Track bash edits + test reminder (merged)
+    token_tracker.py      # Estimate session token usage + budget warnings
     error_kb.py           # Auto-search KB on errors
     integrity.py          # Verify hook file integrity
     session_lifecycle.py  # Session end + subagent/agent stop marker cleanup
@@ -38,6 +40,7 @@ hooks/
 | `subagent-git-guard` | preToolUse | **Defense-in-depth**: blocks `git commit`/`git push` bash commands when the `dispatched-subagent-active` marker is fresh. This is a secondary surface — **not** the primary enforcement path (see §Dispatched-Subagent Git Guard below). Whether `preToolUse` fires inside a delegated subagent context is not guaranteed by the platform. |
 | `syntax-gate` | preToolUse | Blocks `edit`/`create` payloads that introduce Python syntax errors — applies the proposed change in memory and runs `py_compile`; fail-open on non-`.py` paths and missing files. Catches errors before they land on disk. |
 | `read-before-edit` | preToolUse + postToolUse | Tracks viewed files (postToolUse on `view`), warns on `edit`/`create` of files not yet read in session (fail-open). |
+| `read-tracker` | preToolUse | Warns on repeated `view` reads of the same file in a session, using shared per-session state populated by `token-tracker`; configurable ignores via `READ_TRACKER_IGNORE_SUFFIXES`; never blocks. |
 | `block-edit-dist` | preToolUse | Blocks `edit`/`create` targeting `browse-ui/dist/`. These are build artifacts — run `cd browse-ui && pnpm build` instead. |
 | `pnpm-lockfile-guard` | preToolUse | Blocks staging `browse-ui/package.json` changes without a matching `pnpm-lock.yaml` update. Prevents lockfile drift. |
 | `block-unsafe-html` | preToolUse | Blocks `dangerouslySetInnerHTML` usage in `.ts`/`.tsx` files without `DOMPurify.sanitize()` or the `<Highlight>` component. |
@@ -47,6 +50,7 @@ hooks/
 | `test-reminder` | postToolUse | Reminds to run tests after 3+ Python file edits |
 | `tentacle-suggest` | postToolUse | Suggests tentacle when edits reach ≥3 files across ≥2 modules (same threshold as tentacle-enforce); also references [docs/SYNC-MATRIX.md](SYNC-MATRIX.md) |
 | `nextjs-typecheck-reminder` | postToolUse | Reminds to run `pnpm typecheck` after editing `.ts`/`.tsx` files in `browse-ui/` |
+| `token-tracker` | postToolUse | Estimates per-session token usage from `view`/`edit`/`create`, stores totals plus `files_read` metadata in shared session state, and emits one-time budget warnings (default 80% / 95%; `TOKEN_BUDGET` override). |
 | `error-kb` | errorOccurred | Auto-searches knowledge base on errors |
 | `pre-commit` | git pre-commit | (1) Blocks commit when `dispatched-subagent-active` marker is fresh (primary subagent guard); (2) validates `.agent.md` / `SKILL.md` via `lint-skills.py`; (3) runs `scripts/check_syntax.py` on **all** staged `.py` files — fail-open when `check_syntax.py` is absent; (4) runs scoped Ruff format + lint check on staged Python files in the Ruff surface (see §Local vs CI below); (5) runs Prettier format check on supported staged files under `browse-ui/src/`. Checks (3)–(5) are **fail-open** — they silently skip when the respective tool is not installed. Requires `install.py --install-git-hooks`. |
 | `pre-push` | git pre-push | Blocks push when `dispatched-subagent-active` marker is fresh. Requires `install.py --install-git-hooks`. |
