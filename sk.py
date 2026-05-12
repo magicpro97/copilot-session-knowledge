@@ -18,6 +18,8 @@ Usage:
     sk retro    [<args>...]       Run retro.py
     sk heal     [<args>...]       Run copilot-cli-healer.py
     sk watch    [<args>...]       Run watch-sessions.py
+    sk export-buglog [<args>...]  Run buglog-export.py
+    sk buglog   [<args>...]       Run buglog-export.py (alias for export-buglog)
     sk hooks    run|list|<event>  Run hooks/hook_runner.py
 
     sk index  build|extract|migrate|status|health|embed [<args>...]
@@ -64,6 +66,8 @@ _DIRECT: dict[str, str] = {
     "retro": "retro.py",
     "heal": "copilot-cli-healer.py",
     "watch": "watch-sessions.py",
+    "export-buglog": "buglog-export.py",
+    "buglog": "buglog-export.py",  # alias for export-buglog (backward compat)
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}

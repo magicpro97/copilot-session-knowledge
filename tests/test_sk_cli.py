@@ -16,6 +16,7 @@ Run: python3 tests/test_sk_cli.py
 import importlib.util
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -125,6 +126,24 @@ class TestSkDirectCommands(unittest.TestCase):
 
     def test_watch(self):
         self._assert_routes("watch", "watch-sessions.py")
+
+    def test_export_buglog(self):
+        self._assert_routes("export-buglog", "buglog-export.py")
+
+    def test_export_buglog_with_format_flag(self):
+        self._assert_routes("export-buglog", "buglog-export.py", ["--format", "json"])
+
+    def test_export_buglog_with_output_flag(self):
+        self._assert_routes("export-buglog", "buglog-export.py", ["--output", "BUGLOG.md"])
+
+    def test_buglog(self):
+        self._assert_routes("buglog", "buglog-export.py")
+
+    def test_buglog_with_format_flag(self):
+        self._assert_routes("buglog", "buglog-export.py", ["--format", "json"])
+
+    def test_buglog_with_output_flag(self):
+        self._assert_routes("buglog", "buglog-export.py", ["--output", "BUGLOG.md"])
 
 
 class TestSkHooksCompat(unittest.TestCase):
@@ -483,5 +502,309 @@ class TestSkNativeFeaturePreconditions(unittest.TestCase):
         )
 
 
+
+class TestBuglogTagFilterSemantics(unittest.TestCase):
+    """Regression tests for issue #90: --limit must apply after --tags filtering.
+
+    The original bug: SQL LIMIT ran before Python-side tag filtering.  When all
+    entries with a matching tag ranked below the LIMIT cutoff (by confidence),
+    they were silently excluded — a false-negative that the caller had no way to
+    detect.
+
+    Fix: fetch without LIMIT when tags are active, filter, then slice to limit.
+    """
+
+    BUGLOG_PATH = TOOLS_DIR / "buglog-export.py"
+
+    @classmethod
+    def setUpClass(cls):
+        if not cls.BUGLOG_PATH.exists():
+            raise unittest.SkipTest(
+                "buglog-export.py not present — skipping filter-semantics tests"
+            )
+        spec = importlib.util.spec_from_file_location("buglog_export", cls.BUGLOG_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        cls.buglog = mod
+
+    def _make_db(self) -> sqlite3.Connection:
+        """In-memory DB with 3 high-confidence untagged rows + 1 low-confidence tagged row."""
+        db = sqlite3.connect(":memory:")
+        db.row_factory = sqlite3.Row
+        db.execute("""
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY,
+                title TEXT,
+                content TEXT,
+                tags TEXT,
+                confidence REAL,
+                session_id TEXT,
+                occurrence_count INTEGER DEFAULT 1,
+                category TEXT DEFAULT 'mistake',
+                wing TEXT,
+                room TEXT,
+                source TEXT DEFAULT 'copilot'
+            )
+        """)
+        # Three entries WITHOUT the target tag at high confidence (ranked 1-3).
+        for i in range(3):
+            db.execute(
+                "INSERT INTO knowledge_entries "
+                "(id, title, content, tags, confidence, session_id, category) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'mistake')",
+                (i + 1, f"High entry {i+1}", f"Content {i+1}", "python,database",
+                 1.0 - i * 0.01, f"sess-{i+1}"),
+            )
+        # One entry WITH the target tag at lower confidence (ranked 4th — below limit=3).
+        db.execute(
+            "INSERT INTO knowledge_entries "
+            "(id, title, content, tags, confidence, session_id, category) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'mistake')",
+            (4, "Docker mistake", "Docker content", "docker,ci", 0.5, "sess-docker"),
+        )
+        db.commit()
+        return db
+
+    def test_limit_truncates_before_tag_filter_reproduces_false_negative(self):
+        """Reproduce the false-negative: old behaviour returned 0 matching rows.
+
+        With limit=3 applied in SQL before tag filtering, the 'docker' entry
+        (ranked 4th) is never fetched, so the tag filter finds nothing.
+        This test directly demonstrates the pre-fix failure path.
+        """
+        db = self._make_db()
+        try:
+            # Simulate old (broken) logic: LIMIT in SQL before Python tag filter.
+            sql = """
+                SELECT id, title, content, tags, confidence, session_id, occurrence_count,
+                       COALESCE(wing, '') AS wing, COALESCE(room, '') AS room,
+                       COALESCE(source, 'copilot') AS source
+                FROM knowledge_entries
+                WHERE category = 'mistake'
+                  AND confidence >= 0.0
+                ORDER BY confidence DESC, id ASC
+                LIMIT 3
+            """
+            rows = db.execute(sql).fetchall()
+            entries = [dict(r) for r in rows]
+            # Apply tag filter after truncated fetch — this is the buggy path.
+            filtered = [e for e in entries if "docker" in (e.get("tags") or "").lower()]
+            # False-negative: the docker entry was excluded by LIMIT before filtering.
+            self.assertEqual(
+                filtered, [],
+                "Reproducer: old LIMIT-first logic produces an empty result (false-negative)",
+            )
+        finally:
+            db.close()
+
+    def test_fetch_mistakes_with_tags_applies_limit_after_filter(self):
+        """Fixed _fetch_mistakes: --limit applies after tag filtering, not before.
+
+        With limit=3 and tags=['docker'], the function should return the docker
+        entry even though it ranks 4th by confidence — because LIMIT is now
+        applied only after the tag filter narrows the result set.
+        """
+        db = self._make_db()
+        try:
+            results = self.buglog._fetch_mistakes(
+                db, limit=3, tags_filter=["docker"], min_confidence=0.0
+            )
+        finally:
+            db.close()
+        titles = [r["title"] for r in results]
+        self.assertIn(
+            "Docker mistake",
+            titles,
+            "--limit should not truncate before tag filtering (issue #90 regression)",
+        )
+        self.assertEqual(len(results), 1, "Only the docker-tagged entry should match")
+
+    def test_fetch_mistakes_limit_respected_after_filter(self):
+        """When multiple tagged entries exist, limit is honoured after filtering."""
+        db = sqlite3.connect(":memory:")
+        db.row_factory = sqlite3.Row
+        db.execute("""
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY,
+                title TEXT,
+                content TEXT,
+                tags TEXT,
+                confidence REAL,
+                session_id TEXT,
+                occurrence_count INTEGER DEFAULT 1,
+                category TEXT DEFAULT 'mistake',
+                wing TEXT,
+                room TEXT,
+                source TEXT DEFAULT 'copilot'
+            )
+        """)
+        # 5 high-confidence untagged entries.
+        for i in range(5):
+            db.execute(
+                "INSERT INTO knowledge_entries "
+                "(id, title, content, tags, confidence, session_id, category) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'mistake')",
+                (i + 1, f"Top {i+1}", "body", "python", 1.0 - i * 0.01, f"s{i}"),
+            )
+        # 3 low-confidence tagged entries.
+        for j in range(3):
+            db.execute(
+                "INSERT INTO knowledge_entries "
+                "(id, title, content, tags, confidence, session_id, category) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'mistake')",
+                (100 + j, f"Docker {j}", "body", "docker", 0.3 - j * 0.01, f"d{j}"),
+            )
+        db.commit()
+        try:
+            # limit=2 with tags=['docker'] — should return the 2 highest-confidence docker entries.
+            results = self.buglog._fetch_mistakes(
+                db, limit=2, tags_filter=["docker"], min_confidence=0.0
+            )
+        finally:
+            db.close()
+        self.assertEqual(len(results), 2, "limit=2 should cap filtered results at 2")
+        self.assertTrue(
+            all("docker" in (r.get("tags") or "").lower() for r in results),
+            "All returned entries must match the docker tag",
+        )
+
+    def test_fetch_mistakes_no_tags_uses_sql_limit(self):
+        """Without --tags, LIMIT is pushed into SQL (efficiency path); result count is correct."""
+        db = self._make_db()
+        try:
+            results = self.buglog._fetch_mistakes(
+                db, limit=2, tags_filter=[], min_confidence=0.0
+            )
+        finally:
+            db.close()
+        self.assertEqual(len(results), 2, "Without tags, limit=2 should return exactly 2 entries")
+
+    def test_exact_tag_matching_no_false_positive(self):
+        """Substring 'doc' must NOT match the tag 'docker' — exact token matching required.
+
+        Regression: old code used ``t in tags_string.lower()`` which caused
+        'doc' to match 'docker,ci' because 'doc' is a substring of 'docker'.
+        """
+        db = self._make_db()
+        try:
+            results = self.buglog._fetch_mistakes(
+                db, limit=200, tags_filter=["doc"], min_confidence=0.0
+            )
+        finally:
+            db.close()
+        titles = [r["title"] for r in results]
+        self.assertNotIn(
+            "Docker mistake",
+            titles,
+            "Tag 'doc' must NOT match entry tagged 'docker' — exact token match required",
+        )
+        self.assertEqual(results, [], "No entries carry the exact tag 'doc'")
+
+    def test_empty_tag_tokens_are_ignored(self):
+        """Empty items from trailing commas in --tags must not disable filtering.
+
+        'docker,' splits to ['docker', ''] — the empty string matches every
+        entry ('' in any_string is True), effectively disabling the filter.
+        The fix strips empty tokens before tag matching.
+        """
+        # Simulate what main() does after parsing '--tags docker,'
+        raw_tags = "docker,"
+        tags_filter = [t.strip() for t in raw_tags.split(",") if t.strip()]
+        self.assertEqual(tags_filter, ["docker"], "Empty token must be stripped from tags_filter")
+
+        db = self._make_db()
+        try:
+            results = self.buglog._fetch_mistakes(
+                db, limit=200, tags_filter=tags_filter, min_confidence=0.0
+            )
+        finally:
+            db.close()
+        # Only the docker-tagged entry should be returned, not all 4 entries.
+        titles = [r["title"] for r in results]
+        self.assertEqual(
+            titles,
+            ["Docker mistake"],
+            "Trailing comma in tags must not disable filtering (empty token bug)",
+        )
+
+    def test_markdown_output_has_no_timestamp(self):
+        """Markdown comment must not contain a timestamp — it would break git-diff determinism.
+
+        The docstring promises 'git-diff friendly' / 'deterministic' output.
+        A timestamp that changes every run defeats this contract.
+        """
+        entries = [
+            {"id": 1, "title": "T", "content": "C", "tags": "x", "confidence": 0.9,
+             "session_id": "abc12345", "occurrence_count": 1, "wing": "", "room": "", "source": "copilot"}
+        ]
+        md = self.buglog._render_markdown(entries)
+        # Must not contain any timestamp pattern like 2024-01-01T00:00:00Z
+        import re
+        self.assertIsNone(
+            re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", md),
+            "Markdown output must not contain a timestamp (breaks git-diff determinism)",
+        )
+        # Entry count IS deterministic and should be present
+        self.assertIn("entries: 1", md)
+
+
+class TestBuglogArgValidation(unittest.TestCase):
+    """Tests for --limit and --min-confidence input validation in buglog-export.py."""
+
+    BUGLOG_PATH = TOOLS_DIR / "buglog-export.py"
+
+    @classmethod
+    def setUpClass(cls):
+        if not cls.BUGLOG_PATH.exists():
+            raise unittest.SkipTest(
+                "buglog-export.py not present — skipping arg-validation tests"
+            )
+        spec = importlib.util.spec_from_file_location("buglog_export_val", cls.BUGLOG_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        cls.buglog = mod
+
+    def _call_main(self, argv):
+        """Call main() and return (exit_code, stderr_output).  Patches _get_db to avoid needing a real DB."""
+        import io
+        from unittest.mock import patch, MagicMock
+        fake_db = MagicMock()
+        fake_db.execute.return_value.fetchall.return_value = []
+        stderr_capture = io.StringIO()
+        try:
+            with patch.object(self.buglog, "_get_db", return_value=fake_db), \
+                 patch("sys.stderr", stderr_capture):
+                rc = self.buglog.main(argv)
+            return rc, stderr_capture.getvalue()
+        except SystemExit as exc:
+            return exc.code, stderr_capture.getvalue()
+
+    def test_limit_zero_rejected(self):
+        """--limit 0 must be rejected with exit code 2."""
+        rc, _ = self._call_main(["--limit", "0"])
+        self.assertEqual(rc, 2, "--limit 0 must exit with code 2")
+
+    def test_limit_negative_rejected(self):
+        """--limit -1 must be rejected (would produce entries[:-1] = all-but-last)."""
+        rc, _ = self._call_main(["--limit", "-1"])
+        self.assertEqual(rc, 2, "--limit -1 must exit with code 2")
+
+    def test_min_confidence_above_one_rejected(self):
+        """--min-confidence 1.5 is out of range [0.0, 1.0] and must be rejected."""
+        rc, _ = self._call_main(["--min-confidence", "1.5"])
+        self.assertEqual(rc, 2, "--min-confidence 1.5 must exit with code 2")
+
+    def test_min_confidence_negative_rejected(self):
+        """--min-confidence -0.1 is out of range and must be rejected."""
+        rc, _ = self._call_main(["--min-confidence", "-0.1"])
+        self.assertEqual(rc, 2, "--min-confidence -0.1 must exit with code 2")
+
+    def test_valid_limit_and_confidence_accepted(self):
+        """Valid values must not trigger an error."""
+        rc, _ = self._call_main(["--limit", "50", "--min-confidence", "0.5"])
+        self.assertEqual(rc, 0, "Valid --limit and --min-confidence must succeed")
+
+
 if __name__ == "__main__":
     unittest.main()
+

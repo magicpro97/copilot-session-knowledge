@@ -21,7 +21,53 @@ sk browse --port 8080 --token TOKEN      # → browse.py
 sk benchmark record                      # → benchmark.py
 sk retro                                 # → retro.py
 sk heal                                  # → copilot-cli-healer.py
+sk export-buglog                         # → buglog-export.py  (Markdown to stdout)
+sk export-buglog --format json           # → buglog-export.py  (JSON to stdout)
+sk export-buglog --output BUGLOG.md      # → buglog-export.py  (write Markdown to file)
+sk buglog                                # → buglog-export.py  (alias for export-buglog)
+sk buglog --format json                  # → buglog-export.py  (JSON to stdout)
+sk buglog --output BUGLOG.md             # → buglog-export.py  (write Markdown to file)
 ```
+
+### `sk export-buglog` — BUGLOG export
+
+Export mistake-category knowledge entries as a deterministic, git-friendly document.
+Useful for committing a `BUGLOG.md` to a repo or piping to downstream tools.
+`sk buglog` is an alias for `sk export-buglog` (backward-compatible).
+
+```bash
+sk export-buglog                                 # Markdown to stdout
+sk export-buglog --format json                   # JSON to stdout
+sk export-buglog --output BUGLOG.md              # Write Markdown to BUGLOG.md
+sk export-buglog --output bugs.json --format json # Write JSON to file
+sk export-buglog --limit 50                      # Cap at 50 entries (default: 200, must be ≥ 1)
+sk export-buglog --tags docker,ci                # Filter by tag (exact token match, comma-separated)
+sk export-buglog --min-confidence 0.7            # High-quality entries only (range: 0.0–1.0)
+sk buglog                                        # Markdown to stdout (alias)
+sk buglog --format json                          # JSON to stdout (alias)
+sk buglog --output BUGLOG.md                     # Write Markdown to BUGLOG.md (alias)
+sk buglog --output bugs.json --format json       # Write JSON to file (alias)
+sk buglog --limit 50                             # Cap at 50 entries (default: 200, must be ≥ 1)
+sk buglog --tags docker,ci                       # Filter by tag (exact token match, comma-separated)
+sk buglog --min-confidence 0.7                   # High-quality entries only (range: 0.0–1.0)
+```
+
+**`--tags` semantics:** each token in the comma-separated list is matched against the entry's
+tag tokens exactly (whole-token, case-insensitive). A query of `--tags doc` will **not** match
+entries tagged `docker`; use `--tags docker` for that. Trailing commas and empty tokens are ignored.
+
+**`--limit`:** must be a positive integer (≥ 1). Applied after tag filtering so `--tags + --limit`
+always returns the top-N *matching* entries. Errors with exit code 2 if ≤ 0.
+
+**`--min-confidence`:** float in [0.0, 1.0]. Errors with exit code 2 if out of range.
+
+JSON envelope:
+```json
+{"generated_at": "2024-01-01T00:00:00Z", "entry_count": 5, "entries": [...]}
+```
+
+Ordering is deterministic: `confidence DESC, id ASC` — stable for git diffs.
+Markdown output omits a run-timestamp so repeated exports on unchanged data produce identical output.
 
 ### `sk index` — knowledge index lifecycle
 
