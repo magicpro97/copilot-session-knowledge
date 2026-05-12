@@ -262,6 +262,37 @@ def scan_content_for_injection(title: str, content: str) -> list:
     return warnings
 
 
+# Patterns that identify operational status notes, not actionable knowledge.
+# Entries whose *title* matches these patterns are rejected at write time so
+# they don't pollute compact briefing output with noise like
+# "Wave19 verification is complete … tou: Wave19 … touched …".
+_STATUS_NOTE_PATTERNS = [
+    re.compile(r"(?i)^wave\d+\s+verification\s+is\s+complete"),
+    re.compile(r"(?i)\bverification\s+is\s+complete\s+on\s+this\s+workstation"),
+    re.compile(r"(?i)^wave\d+\s+\S.*\s+is\s+complete\b"),
+]
+
+
+def _is_status_note_title(title: str) -> str:
+    """Return a rejection reason if *title* is an operational status note.
+
+    Operational status notes (e.g. "Wave19 verification is complete …") are
+    progress markers, not reusable knowledge.  Storing them as mistake/pattern/
+    discovery entries pollutes briefing output without adding agent value.
+
+    Returns an empty string when the title is acceptable.
+    """
+    for pat in _STATUS_NOTE_PATTERNS:
+        if pat.search(title):
+            return (
+                f"status-note title rejected: '{title[:80]}' matches "
+                "an operational progress-report pattern (WaveN complete, "
+                "verification complete on workstation, …). "
+                "Record the specific finding instead, or use a discovery/milestone note for progress tracking."
+            )
+    return ""
+
+
 def _parse_code_location(value: str) -> tuple[str, int, int]:
     """Parse <path>:<line> or <path>:<start>-<end> from rightmost numeric suffix."""
     m = re.match(r"^(?P<path>.+):(?P<start>\d+)(?:-(?P<end>\d+))?$", value or "")
@@ -439,6 +470,15 @@ def add_entry(
             for w in injection_warnings:
                 print(f"    ✗ {w}", file=sys.stderr)
             print("  Use --skip-scan to bypass (only for documenting injection patterns)", file=sys.stderr)
+            return -1
+
+    # Status-note guard: reject operational progress-report titles stored as
+    # mistake/pattern/discovery — they produce repeated-prefix noise in briefings.
+    if category in ("mistake", "pattern", "discovery") and not skip_gate:
+        status_note_reason = _is_status_note_title(title)
+        if status_note_reason:
+            print(f"  ⚠ REJECTED — {status_note_reason}", file=sys.stderr)
+            print("  Use --skip-gate to bypass if you intentionally want to record this.", file=sys.stderr)
             return -1
 
     if not session_id:

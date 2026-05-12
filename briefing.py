@@ -53,6 +53,34 @@ TOOLS_DIR = Path(__file__).parent
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
 
+# Read-side filter: suppress Wave-style progress/status-note entries that were
+# mistakenly stored as knowledge (WaveN verification, rust-wave tentacle reports).
+# These are project status updates, not actionable knowledge. Applied in
+# _format_compact only — does not affect the DB or other output formats.
+_STATUS_NOTE_RE = re.compile(
+    r"""
+    ^(?:
+        Wave[-\s]?\d+\b            # "Wave14 …" or "Wave-14 …"
+        .*?\b(?:verification\s+is\s+complete|phase[-\s\d]+\s+verification\s+is\s+complete)
+        |                          # OR
+        Wave[-\s]?\d+\b            # "Wave11 planner recommendation (not yet implemented)"
+        .*?\(not\s+yet\s+implemented\)
+        |                          # OR
+        wave\d+[-\w]+\s+completed  # "wave6-pretooluse-deny completed …"
+        |                          # OR
+        \[rust-wave                # "[rust-wave7-hook-parity] …"
+    )
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+# Maximum entries per category rendered by _format_compact (issue #163).
+# Entries are already relevance-ordered (confidence DESC + FTS rank) from
+# generate_briefing; this cap keeps compact output at ≤ 3 entries per block,
+# even when callers request a higher --limit for broader, non-compact surfaces.
+# Status-note entries suppressed by _STATUS_NOTE_RE do NOT consume cap slots.
+_COMPACT_MAX_PER_CAT = 3
+
 BASE_CATEGORIES = {
     "mistake": {
         "emoji": "⚠️",
@@ -1793,6 +1821,30 @@ def _format_json(query: str, data: dict, past_work: list, categories: dict, blas
     return json.dumps(output, indent=2, ensure_ascii=False)
 
 
+def _word_trim(s: str, limit: int = 80) -> str:
+    """Trim *s* to at most *limit* chars.
+
+    When the string is already at *limit* (i.e. stored-truncated) and the
+    trailing fragment looks like an incomplete word (≤ 3 alpha chars after the
+    last space), strips that fragment so the output does not expose raw suffixes
+    like ``tou`` (from ``touched``). This is a narrow heuristic, not a full
+    word-boundary reflow.
+
+    The threshold is deliberately ≤ 3 (not 4) to avoid false-positive stripping
+    of legitimate 4-char terminal words such as "null", "stop", "hang", "call",
+    "from", etc., which can naturally appear at position 80 in a complete title.
+    """
+    if len(s) > limit:
+        s = s[:limit]
+    if len(s) == limit:
+        idx = s.rfind(" ")
+        if idx != -1:
+            last_word = s[idx + 1 :]
+            if last_word.isalpha() and len(last_word) <= 3:
+                return s[:idx].rstrip()
+    return s
+
+
 def _format_compact(query: str, data: dict, past_work: list, categories: dict, blast: list = None) -> str:
     """Compact format optimized for AI agent context injection.
 
@@ -1805,13 +1857,26 @@ def _format_compact(query: str, data: dict, past_work: list, categories: dict, b
     lines.append(f'<briefing task="{safe_query}">\n')
 
     def _cat_block(cat: str) -> None:
-        """Append one XML-style category block to *lines*."""
+        """Append one XML-style category block to *lines*.
+
+        Entries matching _STATUS_NOTE_RE (Wave-style progress/verification
+        status notes stored as knowledge) are suppressed at read time without
+        touching the DB.
+        """
         entries = data.get(cat, [])
         if not entries:
             return
-        lines.append(f"<{cat}s>")
+        rendered = []
         for entry in entries:
-            title = entry.get("title", "")[:80]
+            # Cap at _COMPACT_MAX_PER_CAT real entries per category (issue #163).
+            # Status-note entries suppressed below do NOT consume cap slots —
+            # we check cap first so we stop iterating once we have enough.
+            if len(rendered) >= _COMPACT_MAX_PER_CAT:
+                break
+            raw_title = entry.get("title", "")
+            if _STATUS_NOTE_RE.search(raw_title):
+                continue  # suppress persisted status-note rows (issue #163)
+            title = _word_trim(raw_title, 80)
             content = entry.get("content", "")
             first_line = ""
             for ln in content.split("\n"):
@@ -1830,7 +1895,18 @@ def _format_compact(query: str, data: dict, past_work: list, categories: dict, b
                     break
             if not first_line:
                 first_line = content[:150].replace("\n", " ")
-            lines.append(f"- {title}: {first_line}")
+            # Suppress repeated-prefix: when first_line begins with the same text as
+            # title (common when title is the truncated start of a long sentence),
+            # showing both creates noise like "Wave19 … tou: Wave19 … touched …".
+            title_prefix = title.rstrip(".… ").lower()
+            if first_line.lower().startswith(title_prefix[:60]):
+                rendered.append(f"- {title}")
+            else:
+                rendered.append(f"- {title}: {first_line}")
+        if not rendered:
+            return
+        lines.append(f"<{cat}s>")
+        lines.extend(rendered)
         lines.append(f"</{cat}s>\n")
 
     # 1. Mistakes first — highest-priority risk-avoidance signal
