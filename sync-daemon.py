@@ -821,7 +821,8 @@ class DreamingScheduler:
         self.min_score = float(min_score)
         self.min_recall_count = int(min_recall_count)
         self.min_unique_queries = int(min_unique_queries)
-        self.memory_path = str(memory_path).strip() if memory_path else DEFAULT_DREAM_MEMORY_PATH
+        _stripped_path = str(memory_path).strip()
+        self.memory_path = _stripped_path if _stripped_path else DEFAULT_DREAM_MEMORY_PATH
 
     @classmethod
     def from_config(cls, config_path: Path) -> "DreamingScheduler":

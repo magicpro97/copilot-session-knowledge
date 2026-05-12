@@ -1929,6 +1929,23 @@ def test_dreaming_scheduler_defaults():
     )
 
 
+def test_dreaming_scheduler_whitespace_memory_path():
+    """DreamingScheduler normalizes whitespace-only memory_path to the default."""
+    sched = sync_daemon.DreamingScheduler(memory_path="   ")
+    test(
+        "DreamingScheduler: whitespace-only memory_path normalizes to MEMORY.md",
+        sched.memory_path == "MEMORY.md",
+        f"got {sched.memory_path!r}",
+    )
+    # Empty string should also normalize.
+    sched2 = sync_daemon.DreamingScheduler(memory_path="")
+    test(
+        "DreamingScheduler: empty memory_path normalizes to MEMORY.md",
+        sched2.memory_path == "MEMORY.md",
+        f"got {sched2.memory_path!r}",
+    )
+
+
 def test_dreaming_scheduler_from_config_no_file():
     """DreamingScheduler.from_config falls back to defaults when no config file exists."""
     nonexistent = ARTIFACT_DIR / "sync-config-nonexistent.json"
@@ -2161,7 +2178,7 @@ def test_dream_sweep_no_update_on_failure():
     try:
         state: dict = {"last_dream_run": ""}
         result = sched.run_sweep(db_path=ARTIFACT_DIR / "knowledge.db")
-        if result.get("ok") or result.get("skipped"):
+        if result.get("ok") and not result.get("skipped"):
             state["last_dream_run"] = sync_daemon.utc_now()
         test(
             "run_sweep (failure): last_dream_run NOT updated on failure",
@@ -2395,6 +2412,7 @@ def test_dreaming_scheduler_from_config_defaults():
 
 
 test_dreaming_scheduler_defaults()
+test_dreaming_scheduler_whitespace_memory_path()
 test_dreaming_scheduler_from_config_no_file()
 test_dreaming_scheduler_from_config_reads_keys()
 test_dream_is_due_no_last_run()
