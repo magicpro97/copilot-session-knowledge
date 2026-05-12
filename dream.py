@@ -78,6 +78,9 @@ _TAGS_CAP = 10.0  # tag count above this â†’ saturates at 1.0
 _RECENCY_HALFLIFE_DAYS = 30.0  # recency half-life: 30 days â†’ signal 0.5
 
 
+_REQUIRED_TABLES = ("knowledge_entries", "entry_recall_stats", "entry_concept_tags")
+
+
 def _open_db(db_path: Path) -> sqlite3.Connection:
     if not db_path.exists():
         print(f"dream: database not found: {db_path}", file=sys.stderr)
@@ -85,6 +88,19 @@ def _open_db(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _check_required_tables(conn: sqlite3.Connection) -> None:
+    """Exit with a friendly error if required tables are missing (unmigrated DB)."""
+    existing = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    missing = [t for t in _REQUIRED_TABLES if t not in existing]
+    if missing:
+        print(
+            f"dream: database is missing required table(s): {', '.join(missing)}\n"
+            f"  Run `sk index migrate` (or `python migrate.py`) to apply migrations.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def _ensure_dream_scores_table(conn: sqlite3.Connection) -> None:
@@ -219,6 +235,7 @@ def run_scoring(
     as_json: bool,
 ) -> int:
     """Run dream-score computation, persist (unless dry_run), and report."""
+    _check_required_tables(conn)
     _ensure_dream_scores_table(conn)
     entries = fetch_entries(conn)
 

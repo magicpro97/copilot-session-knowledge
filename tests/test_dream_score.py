@@ -834,8 +834,106 @@ def _test_low_sum_weights_warning():
 _test_low_sum_weights_warning()
 
 
-# ─── Summary ─────────────────────────────────────────────────────────────────
+# ─── 13. Unmigrated DB — missing required tables ────────────────────────────
 
+print("\n🚫 Unmigrated DB — missing required tables")
+
+
+def _test_unmigrated_db_bare_exits_cleanly():
+    """A completely bare DB (no tables) must yield a clean nonzero exit, not a traceback."""
+    fd, db_path = tempfile.mkstemp(suffix=".db", prefix="dream_test_bare_")
+    os.close(fd)
+
+    import io
+
+    old_stderr = sys.stderr
+    sys.stderr = io.StringIO()
+    exited_code = None
+    main_rc = None
+    try:
+        try:
+            main_rc = dream.main(["--db", db_path, "--dry-run", "--json"])
+        except SystemExit as exc:
+            exited_code = exc.code
+        stderr_out = sys.stderr.getvalue()
+    finally:
+        sys.stderr = old_stderr
+    try:
+        os.unlink(db_path)
+    except OSError:
+        pass
+
+    if exited_code is not None:
+        test("bare DB: exits with code 1", exited_code == 1, f"code={exited_code}")
+    else:
+        test("bare DB: returns nonzero", main_rc not in (None, 0), f"rc={main_rc}")
+
+    test(
+        "bare DB: stderr mentions missing table(s)",
+        "missing" in stderr_out and ("knowledge_entries" in stderr_out or "required" in stderr_out),
+        f"stderr={stderr_out!r}",
+    )
+    test(
+        "bare DB: stderr hints to run migrate",
+        "migrate" in stderr_out,
+        f"stderr={stderr_out!r}",
+    )
+
+
+_test_unmigrated_db_bare_exits_cleanly()
+
+
+def _test_partial_schema_db_exits_cleanly():
+    """A DB with only knowledge_entries (no recall/tags tables) must exit cleanly."""
+    fd, db_path = tempfile.mkstemp(suffix=".db", prefix="dream_test_partial_")
+    os.close(fd)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE knowledge_entries (id INTEGER PRIMARY KEY, title TEXT, category TEXT, confidence REAL, occurrence_count INTEGER)"
+    )
+    conn.commit()
+    conn.close()
+
+    import io
+
+    old_stderr = sys.stderr
+    sys.stderr = io.StringIO()
+    exited_code = None
+    main_rc = None
+    try:
+        try:
+            main_rc = dream.main(["--db", db_path, "--dry-run", "--json"])
+        except SystemExit as exc:
+            exited_code = exc.code
+        stderr_out = sys.stderr.getvalue()
+    finally:
+        sys.stderr = old_stderr
+    try:
+        os.unlink(db_path)
+    except OSError:
+        pass
+
+    if exited_code is not None:
+        test("partial schema DB: exits with code 1", exited_code == 1, f"code={exited_code}")
+    else:
+        test("partial schema DB: returns nonzero", main_rc not in (None, 0), f"rc={main_rc}")
+
+    test(
+        "partial schema: stderr names a missing table",
+        "entry_recall_stats" in stderr_out or "entry_concept_tags" in stderr_out,
+        f"stderr={stderr_out!r}",
+    )
+    test(
+        "partial schema: stderr hints to run migrate",
+        "migrate" in stderr_out,
+        f"stderr={stderr_out!r}",
+    )
+
+
+_test_partial_schema_db_exits_cleanly()
+
+
+# ─── Summary ─────────────────────────────────────────────────────────────────
 print(f"\n{'=' * 50}")
 print(f"  PASS: {PASS}  FAIL: {FAIL}")
 print(f"{'=' * 50}")
