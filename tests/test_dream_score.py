@@ -744,6 +744,96 @@ def _test_weights_renormalized_via_cli():
 _test_weights_renormalized_via_cli()
 
 
+# ─── 12. Regression: low-sum weights make gate unreachable ────────────────────
+
+print("\n\u26a0\ufe0f  Regression — low-sum weights (gate unreachable)")
+
+
+def _test_low_sum_weights_warning():
+    """When total weight < min_score, the gate can never be satisfied.
+
+    main() must emit a clear stderr diagnostic instead of silently returning
+    gate_count=0 with no explanation.
+    """
+    db_path, conn = _make_db(
+        entries=[{"title": "LowWeightEntry", "confidence": 1.0, "occurrence_count": 20}],
+        recall_stats=[
+            {
+                "entry_id": 1,
+                "recall_count": 100,
+                "unique_queries": 50,
+                "last_recalled_at": "2025-01-01T00:00:00Z",
+            }
+        ],
+        tags=[{"entry_id": 1, "tag": "python"}],
+    )
+    conn.close()
+
+    import io
+
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    sys.stdout = io.StringIO()
+    sys.stderr = io.StringIO()
+    try:
+        # weights sum = 0.10 + 0.05 = 0.15, far below default min_score=0.75
+        rc = dream.main(
+            [
+                "--json",
+                "--dry-run",
+                "--db",
+                db_path,
+                "--w-frequency",
+                "0.10",
+                "--w-relevance",
+                "0.05",
+                "--w-diversity",
+                "0.00",
+                "--w-recency",
+                "0.00",
+                "--w-consolidation",
+                "0.00",
+                "--w-conceptual",
+                "0.00",
+            ]
+        )
+        stdout_out = sys.stdout.getvalue()
+        stderr_out = sys.stderr.getvalue()
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+    try:
+        os.unlink(db_path)
+    except OSError:
+        pass
+
+    test("low-sum weights: returns 0 (not an error exit)", rc == 0, f"rc={rc}")
+    test(
+        "low-sum weights: stderr warns gate is unreachable",
+        "max" in stderr_out and "min-score" in stderr_out,
+        f"stderr={stderr_out!r}",
+    )
+    try:
+        data = json.loads(stdout_out)
+        test(
+            "low-sum weights: gate_count=0 (gate is unreachable)",
+            data.get("gate_count") == 0,
+            f"gate_count={data.get('gate_count')}",
+        )
+        top = data.get("top", [])
+        if top:
+            test(
+                "low-sum weights: max score <= weight sum (0.15)",
+                top[0]["score"] <= 0.15 + 1e-9,
+                f"score={top[0]['score']}",
+            )
+    except json.JSONDecodeError as exc:
+        test("low-sum weights: JSON parseable", False, str(exc))
+
+
+_test_low_sum_weights_warning()
+
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
 print(f"\n{'=' * 50}")

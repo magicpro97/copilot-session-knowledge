@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-dream.py — Dream-score ranking for knowledge promotion (issue #159).
+dream.py â€” Dream-score ranking for knowledge promotion (issue #159).
 
 Computes a weighted dream-score for each knowledge entry using recall
 telemetry (entry_recall_stats) and concept tags (entry_concept_tags).
@@ -56,7 +56,7 @@ if os.name == "nt":
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
 
-# Default weights (must sum ≤ 1.0)
+# Default weights (must sum â‰¤ 1.0)
 DEFAULT_WEIGHTS = {
     "frequency": 0.24,
     "relevance": 0.30,
@@ -72,10 +72,10 @@ DEFAULT_MIN_RECALL = 3
 DEFAULT_MIN_QUERIES = 2
 
 # Normalization caps
-_RECALL_CAP = 100.0  # recall_count above this → saturates at 1.0
-_QUERIES_CAP = 50.0  # unique_queries above this → saturates at 1.0
-_TAGS_CAP = 10.0  # tag count above this → saturates at 1.0
-_RECENCY_HALFLIFE_DAYS = 30.0  # recency half-life: 30 days → signal 0.5
+_RECALL_CAP = 100.0  # recall_count above this â†’ saturates at 1.0
+_QUERIES_CAP = 50.0  # unique_queries above this â†’ saturates at 1.0
+_TAGS_CAP = 10.0  # tag count above this â†’ saturates at 1.0
+_RECENCY_HALFLIFE_DAYS = 30.0  # recency half-life: 30 days â†’ signal 0.5
 
 
 def _open_db(db_path: Path) -> sqlite3.Connection:
@@ -316,7 +316,7 @@ def run_scoring(
         return 0
 
     # Human output
-    mode = "[DRY RUN — not persisted]" if dry_run else "[persisted]"
+    mode = "[DRY RUN â€” not persisted]" if dry_run else "[persisted]"
     print(f"Dream Score Report {mode}")
     print(f"  Entries scored  : {len(results)}")
     print(f"  Gate candidates : {gate_count}  (score>={min_score}, recall>={min_recall}, queries>={min_queries})")
@@ -329,7 +329,7 @@ def run_scoring(
     print(header)
     print("  " + "-" * (len(header) - 2))
     for i, r in enumerate(top, 1):
-        gate_mark = "✓" if r["passes_gate"] else " "
+        gate_mark = "âœ“" if r["passes_gate"] else " "
         title = (r["title"] or "")[:60]
         print(
             f"  {i:>3}.  {r['score']:>6.3f}  {r['recall_count']:>4}  "
@@ -449,6 +449,19 @@ def main(argv: list[str] | None = None) -> int:
         weights = {k: v / total_w for k, v in weights.items()}
         print(
             f"dream: warning: weights summed to {total_w:.4f} > 1.0; renormalized to sum=1.0",
+            file=sys.stderr,
+        )
+        total_w = 1.0
+
+    # Warn when the gate is structurally unreachable: maximum achievable score
+    # equals sum(weights) because each signal is in [0, 1].  If that ceiling is
+    # below min_score, gate_count will always be zero with no other indication.
+    if total_w < args.min_score - 1e-9:
+        print(
+            f"dream: warning: weights sum to {total_w:.4f}, which is below --min-score "
+            f"{args.min_score:.4f}; the maximum achievable dream score is {total_w:.4f} "
+            f"so no entry can ever pass the score gate. "
+            f"Lower --min-score or increase the weights.",
             file=sys.stderr,
         )
 
