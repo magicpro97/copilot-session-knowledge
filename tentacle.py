@@ -2417,7 +2417,8 @@ def _goal_loop_dispatch_and_wait(
             return False, {}
         entries = _goal_iteration_tentacle_entries(current, tentacles)
         blocking = [
-            e for e in entries
+            e
+            for e in entries
             if e["name"] in dispatched_names
             and e["dispatch_state"] not in {"resolved", "resolved_error", "failed_dependencies"}
         ]
@@ -4562,10 +4563,7 @@ def _cmd_goal_loop(
                 _monotonic_fn=_monotonic_fn,
             )
             if not all_resolved:
-                reason = (
-                    f"poll_timeout={poll_timeout:.0f}s waiting for tentacle handoffs "
-                    f"in iteration {current_iter}"
-                )
+                reason = f"poll_timeout={poll_timeout:.0f}s waiting for tentacle handoffs in iteration {current_iter}"
                 _goal_loop_mark_budget_limited(tentacles, current_iter, reason)
                 break
 
