@@ -767,6 +767,19 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_eds_passes_gate ON entry_dream_scores(passes_gate)",
             ],
         ),
+        # v21: issue #88 — Valence + Intensity metadata (Hippocampus-inspired).
+        # valence: reward | neutral | penalty | trauma (empty = unset/legacy).
+        # intensity: 0.0 (weak) to 1.0 (strong signal), default 0.5.
+        # High-intensity penalty/trauma entries rank higher in briefing.
+        (
+            21,
+            "valence_intensity",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN valence TEXT DEFAULT ''",
+                "ALTER TABLE knowledge_entries ADD COLUMN intensity REAL DEFAULT 0.5",
+                "CREATE INDEX IF NOT EXISTS idx_ke_intensity ON knowledge_entries(intensity DESC)",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:
