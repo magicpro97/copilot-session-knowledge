@@ -20,6 +20,8 @@ Usage:
     sk watch    [<args>...]       Run watch-sessions.py
     sk export-buglog [<args>...]  Run buglog-export.py
     sk buglog   [<args>...]       Run buglog-export.py (alias for export-buglog)
+    sk export-cerebrum [<args>...] Run export-cerebrum.py
+    sk cerebrum [<args>...]       Run export-cerebrum.py (alias for export-cerebrum)
     sk dream    [<args>...]       Run dream.py
     sk hooks    run|list|<event>  Run hooks/hook_runner.py
 
@@ -69,6 +71,8 @@ _DIRECT: dict[str, str] = {
     "watch": "watch-sessions.py",
     "export-buglog": "buglog-export.py",
     "buglog": "buglog-export.py",  # alias for export-buglog (backward compat)
+    "export-cerebrum": "export-cerebrum.py",
+    "cerebrum": "export-cerebrum.py",  # alias for export-cerebrum (short form)
     "dream": "dream.py",
 }
 
