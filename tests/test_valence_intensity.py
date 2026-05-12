@@ -315,6 +315,10 @@ expr = briefing._intensity_order_expr()
 test("_intensity_order_expr uses COALESCE(ke.intensity...)", "COALESCE(ke.intensity" in expr)
 test("_intensity_order_expr includes confidence", "confidence" in expr)
 test("_intensity_order_expr includes DESC", "DESC" in expr)
+# Intensity must be the leading sort key (not multiplied by confidence)
+test("_intensity_order_expr intensity-first (not product formula)",
+     expr.startswith("COALESCE(ke.intensity"),
+     "expr=%r" % expr)
 
 expr_t = briefing._intensity_order_expr("t")
 test("_intensity_order_expr respects custom alias", "COALESCE(t.intensity" in expr_t)
@@ -359,6 +363,117 @@ if both_present:
     test("high-intensity before low-intensity in results",
          ids_in_order.index(high_id) < ids_in_order.index(low_id),
          "order=%s high=%s low=%s" % (ids_in_order, high_id, low_id))
+
+# ---------------------------------------------------------------------------
+# 7. Counterexample regression: higher-intensity lower-confidence must win
+#
+# This is the exact acceptance-gap scenario from the orchestrator audit:
+#   Entry A: intensity=0.6, confidence=0.5  -> old score = 0.30 (lost!)
+#   Entry B: intensity=0.4, confidence=0.8  -> old score = 0.32 (won!)
+# With intensity-first ranking Entry A must always win.
+# ---------------------------------------------------------------------------
+
+print("\n[7] Counterexample regression - intensity beats confidence product")
+
+ce_db = REPO / "_test_vi_counterexample.db"
+_cleanup(ce_db)
+_make_base_db(ce_db)
+_apply_v21(ce_db)
+
+ce_learn = _load_module("learn.py", ce_db)
+
+# Entry A: higher intensity, lower confidence — must rank first
+ce_high_int_id = ce_learn.add_entry(
+    "mistake", "counterexample high intensity low confidence", "high intensity entry counterexample",
+    skip_gate=True, skip_scan=True,
+    confidence=0.5, valence="penalty", intensity=0.6,
+)
+# Entry B: lower intensity, higher confidence — must rank second
+ce_low_int_id = ce_learn.add_entry(
+    "mistake", "counterexample low intensity high confidence", "low intensity entry counterexample",
+    skip_gate=True, skip_scan=True,
+    confidence=0.8, valence="penalty", intensity=0.4,
+)
+
+# Verify old product scores to document what would go wrong with old formula
+old_score_a = 0.6 * 0.5  # 0.30
+old_score_b = 0.4 * 0.8  # 0.32
+test("counterexample sanity: old product formula would rank B above A",
+     old_score_b > old_score_a,
+     "old_score_a=%.2f old_score_b=%.2f" % (old_score_a, old_score_b))
+
+ce_brief = _load_module("briefing.py", ce_db)
+ce_conn = sqlite3.connect(str(ce_db))
+ce_conn.row_factory = sqlite3.Row
+ce_results = ce_brief.search_knowledge_entries(
+    ce_conn, "counterexample intensity confidence", "mistake", limit=5
+)
+ce_conn.close()
+_cleanup(ce_db)
+
+ce_ids = [r.get("id") for r in ce_results]
+ce_both = ce_high_int_id in ce_ids and ce_low_int_id in ce_ids
+test("counterexample: both entries returned",
+     ce_both,
+     "ids=%s high_int=%s low_int=%s" % (ce_ids, ce_high_int_id, ce_low_int_id))
+if ce_both:
+    test("counterexample: higher-intensity lower-confidence entry ranks first",
+         ce_ids.index(ce_high_int_id) < ce_ids.index(ce_low_int_id),
+         "order=%s high_int=%s low_int=%s" % (ce_ids, ce_high_int_id, ce_low_int_id))
+
+# ---------------------------------------------------------------------------
+# 8. Regression: valence-only UPDATE must NOT overwrite existing intensity
+#
+# Bug: supplying --valence without --intensity used to reset intensity to 0.5
+# (the fallback default) because the UPDATE SQL did not guard intensity with
+# a CASE expression.  The fix uses:
+#   intensity = CASE WHEN ? IS NOT NULL THEN ? ELSE intensity END
+# so that a NULL (absent) caller argument leaves the stored value untouched.
+# ---------------------------------------------------------------------------
+
+print("\n[8] Regression - valence-only UPDATE preserves prior intensity")
+
+vi_db = REPO / "_test_vi_valence_only_update.db"
+_cleanup(vi_db)
+_make_base_db(vi_db)
+_apply_v21(vi_db)
+
+vi_learn = _load_module("learn.py", vi_db)
+
+# Step 1 – insert entry with a non-default intensity
+vi_id1 = vi_learn.add_entry(
+    "mistake", "Valence-only update test", "Initial version with intensity 0.8",
+    skip_gate=True, skip_scan=True,
+    valence="neutral", intensity=0.8,
+)
+
+# Step 2 – update the SAME entry using only valence (no intensity argument)
+vi_id2 = vi_learn.add_entry(
+    "mistake", "Valence-only update test", "Second version — only valence changes",
+    skip_gate=True, skip_scan=True,
+    valence="penalty",  # intensity intentionally omitted
+)
+
+vi_conn = sqlite3.connect(str(vi_db))
+vi_conn.row_factory = sqlite3.Row
+vi_row = vi_conn.execute(
+    "SELECT id, valence, intensity, occurrence_count FROM knowledge_entries WHERE title = 'Valence-only update test'"
+).fetchone()
+vi_conn.close()
+_cleanup(vi_db)
+
+test("valence-only UPDATE: same entry ID (no new row created)",
+     vi_id1 == vi_id2,
+     "id1=%s id2=%s" % (vi_id1, vi_id2))
+test("valence-only UPDATE: valence changed to 'penalty'",
+     vi_row is not None and vi_row["valence"] == "penalty",
+     repr(vi_row["valence"] if vi_row else None))
+test("valence-only UPDATE: intensity preserved at 0.8 (not reset to 0.5)",
+     vi_row is not None and abs(vi_row["intensity"] - 0.8) < 1e-9,
+     "intensity=%r (expected 0.8, bug would give 0.5)" % (vi_row["intensity"] if vi_row else None))
+test("valence-only UPDATE: occurrence_count incremented",
+     vi_row is not None and vi_row["occurrence_count"] >= 2,
+     repr(vi_row["occurrence_count"] if vi_row else None))
 
 # ---------------------------------------------------------------------------
 # Summary

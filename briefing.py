@@ -1057,14 +1057,13 @@ def _ke_has_intensity(db: sqlite3.Connection) -> bool:
 
 
 def _intensity_order_expr(alias: str = "ke") -> str:
-    """SQL ORDER BY expression that weights high-intensity entries higher.
+    """SQL ORDER BY expression that ranks high-intensity entries first.
 
-    Score = COALESCE(intensity, 0.5) * confidence, so a penalty entry with
-    intensity=0.9 and confidence=0.8 scores 0.72 vs a neutral entry with
-    intensity=0.5 and confidence=0.8 scoring 0.40.
-    The FTS 'rank' column (negative BM25) is appended as tiebreaker.
+    Intensity is the primary sort key so that a high-intensity lower-confidence
+    entry always outranks a lower-intensity higher-confidence entry.
+    Confidence and FTS rank are secondary tiebreakers only.
     """
-    return f"(COALESCE({alias}.intensity, 0.5) * {alias}.confidence) DESC, rank"
+    return f"COALESCE({alias}.intensity, 0.5) DESC, {alias}.confidence DESC, rank"
 
 
 def search_knowledge_entries(
@@ -2071,7 +2070,7 @@ def generate_wakeup() -> str:
         rows = db.execute("""
             SELECT title FROM knowledge_entries
             WHERE category = 'mistake' AND confidence >= 0.5
-            ORDER BY COALESCE(intensity, 0.5) * confidence DESC, occurrence_count DESC
+            ORDER BY COALESCE(intensity, 0.5) DESC, confidence DESC, occurrence_count DESC
             LIMIT 3
         """).fetchall()
         if rows:

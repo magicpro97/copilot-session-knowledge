@@ -787,9 +787,11 @@ def add_entry(
                 ]
             )
         if has_valence_intensity_columns and (valence or intensity is not None):
-            _intensity = intensity if intensity is not None else 0.5
-            update_sql += " valence = CASE WHEN ? != '' THEN ? ELSE valence END, intensity = ?,"
-            update_params.extend([valence or "", valence or "", _intensity])
+            update_sql += (
+                " valence = CASE WHEN ? != '' THEN ? ELSE valence END,"
+                " intensity = CASE WHEN ? IS NOT NULL THEN ? ELSE intensity END,"
+            )
+            update_params.extend([valence or "", valence or "", intensity, intensity])
         update_sql += " est_tokens = ? WHERE id = ?"
         update_params.extend([est_tokens, existing["id"]])
         db.execute(update_sql, update_params)
