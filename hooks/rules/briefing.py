@@ -7,7 +7,15 @@ import time
 from pathlib import Path
 
 from . import Rule
-from .common import MARKERS_DIR, TOOLS_DIR, _is_pid_running, bash_writes_source_files, deny, get_session_marker_suffix, info
+from .common import (
+    MARKERS_DIR,
+    TOOLS_DIR,
+    _is_pid_running,
+    bash_writes_source_files,
+    deny,
+    get_session_marker_suffix,
+    info,
+)
 
 # ── MEMORY.md injection config ──────────────────────────────────────────────
 # Primary config: ~/.copilot/hooks-config.json using keys defined in issue #161:
