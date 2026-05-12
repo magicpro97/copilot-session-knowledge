@@ -290,19 +290,24 @@ def render_memory_md(candidates: list[dict], output_path: "Path", gates: dict) -
 
     content = "\n".join(lines)
 
-    # Atomic write: write to sibling temp file, then rename
+    # Atomic write: write to sibling temp file, then rename.
+    # Any OSError from mkdir, write, replace, or the fallback direct write is
+    # intentionally propagated to the caller so it can report cleanly to stderr.
     output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = output_path.parent / (output_path.name + ".tmp")
     try:
-        tmp_path.write_text(content, encoding="utf-8")
-        tmp_path.replace(output_path)
-    except OSError:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = output_path.parent / (output_path.name + ".tmp")
         try:
-            tmp_path.unlink()
+            tmp_path.write_text(content, encoding="utf-8")
+            tmp_path.replace(output_path)
         except OSError:
-            pass
-        output_path.write_text(content, encoding="utf-8")
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+            output_path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        raise OSError(f"MEMORY.md write failed ({output_path}): {exc}") from exc
 
 
 def run_scoring(
@@ -400,11 +405,15 @@ def run_scoring(
 
     # Write MEMORY.md promotion surface (non-dry-run only, when path is provided)
     if not dry_run and memory_output is not None:
-        render_memory_md(
-            candidates=candidates,
-            output_path=memory_output,
-            gates={"min_score": min_score, "min_recall": min_recall, "min_queries": min_queries},
-        )
+        try:
+            render_memory_md(
+                candidates=candidates,
+                output_path=memory_output,
+                gates={"min_score": min_score, "min_recall": min_recall, "min_queries": min_queries},
+            )
+        except OSError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     if as_json:
         output = {

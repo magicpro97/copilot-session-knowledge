@@ -1536,6 +1536,136 @@ def _test_memory_md_recall_count_rendered():
 _test_memory_md_recall_count_rendered()
 
 
+# ─── 23. MEMORY.md — write failure reported cleanly (no traceback) ───────────
+
+print("\n💥 MEMORY.md — write failure path")
+
+
+def _test_memory_md_write_failure_clean():
+    """When render_memory_md raises OSError, run_scoring must return nonzero and
+    print a message to stderr instead of propagating a raw traceback."""
+    import io
+    import unittest.mock
+    from pathlib import Path
+
+    db_path, conn = _make_db(
+        entries=[
+            {"title": "Stable entry", "category": "pattern", "confidence": 1.0, "occurrence_count": 5},
+        ],
+        recall_stats=[
+            {"entry_id": 1, "recall_count": 10, "unique_queries": 5, "last_recalled_at": "2025-01-01T00:00:00Z"},
+        ],
+    )
+
+    fake_mem_path = Path("/nonexistent_dir_that_will_fail/MEMORY.md")
+
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    captured_stderr = io.StringIO()
+    sys.stdout = io.StringIO()
+    sys.stderr = captured_stderr
+
+    try:
+        with unittest.mock.patch.object(
+            Path,
+            "mkdir",
+            side_effect=OSError("permission denied"),
+        ):
+            rc = dream.run_scoring(
+                conn=conn,
+                weights=W,
+                min_score=0.0,
+                min_recall=0,
+                min_queries=0,
+                dry_run=False,
+                top_n=20,
+                as_json=False,
+                memory_output=fake_mem_path,
+            )
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+
+    _cleanup(db_path, conn)
+
+    stderr_out = captured_stderr.getvalue()
+
+    test("write failure: run_scoring returns nonzero", rc != 0, f"rc={rc}")
+    test(
+        "write failure: stderr contains 'error'",
+        "error" in stderr_out.lower(),
+        f"stderr={stderr_out!r}",
+    )
+    test(
+        "write failure: stderr contains 'MEMORY.md' or path fragment",
+        "MEMORY.md" in stderr_out or "nonexistent_dir" in stderr_out or "permission" in stderr_out,
+        f"stderr={stderr_out!r}",
+    )
+
+
+_test_memory_md_write_failure_clean()
+
+
+# ─── 24. MEMORY.md — DB committed before write failure, scoring preserved ────
+
+print("\n💾 MEMORY.md — DB persisted even when MEMORY.md write fails")
+
+
+def _test_memory_md_db_committed_before_write_failure():
+    """Scores must be committed to the DB even when the subsequent MEMORY.md write fails."""
+    import io
+    import unittest.mock
+    from pathlib import Path
+
+    db_path, conn = _make_db(
+        entries=[
+            {"title": "Persist me", "category": "pattern", "confidence": 1.0, "occurrence_count": 3},
+        ],
+        recall_stats=[
+            {"entry_id": 1, "recall_count": 5, "unique_queries": 2, "last_recalled_at": "2025-01-01T00:00:00Z"},
+        ],
+    )
+
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    sys.stdout = io.StringIO()
+    sys.stderr = io.StringIO()
+
+    try:
+        with unittest.mock.patch.object(
+            Path,
+            "mkdir",
+            side_effect=OSError("disk full"),
+        ):
+            dream.run_scoring(
+                conn=conn,
+                weights=W,
+                min_score=0.0,
+                min_recall=0,
+                min_queries=0,
+                dry_run=False,
+                top_n=20,
+                as_json=False,
+                memory_output=Path("/bad/path/MEMORY.md"),
+            )
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+
+    # DB row must have been committed despite the MEMORY.md failure
+    row = conn.execute("SELECT COUNT(*) FROM entry_dream_scores").fetchone()
+    _cleanup(db_path, conn)
+
+    test(
+        "DB scores committed despite MEMORY.md write failure",
+        row[0] >= 1,
+        f"entry_dream_scores row count={row[0]}",
+    )
+
+
+_test_memory_md_db_committed_before_write_failure()
+
+
 print(f"\n{'=' * 50}")
 print(f"  PASS: {PASS}  FAIL: {FAIL}")
 print(f"{'=' * 50}")
