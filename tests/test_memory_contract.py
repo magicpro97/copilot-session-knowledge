@@ -187,6 +187,24 @@ _DB_SCHEMA = """
         output_chars INTEGER DEFAULT 0,
         output_est_tokens INTEGER DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS entry_recall_stats (
+        entry_id INTEGER PRIMARY KEY,
+        recall_count INTEGER NOT NULL DEFAULT 0,
+        recall_days INTEGER NOT NULL DEFAULT 0,
+        unique_queries INTEGER NOT NULL DEFAULT 0,
+        first_recalled_at TEXT,
+        last_recalled_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS entry_recall_day_log (
+        entry_id INTEGER NOT NULL,
+        day TEXT NOT NULL,
+        PRIMARY KEY (entry_id, day)
+    );
+    CREATE TABLE IF NOT EXISTS entry_recall_query_log (
+        entry_id INTEGER NOT NULL,
+        query_hash TEXT NOT NULL,
+        PRIMARY KEY (entry_id, query_hash)
+    );
 """
 
 
@@ -2276,6 +2294,15 @@ def _test_migrate_stable_ids_and_policy(db_path):
     test("sync policy: recall_events is upload_only",
          ("recall_events", "upload_only", "") in policies,
          f"policies={sorted(policies)!r}")
+    test("sync policy: entry_recall_stats is upload_only",
+         ("entry_recall_stats", "upload_only", "") in policies,
+         f"policies={sorted(policies)!r}")
+    test("sync policy: entry_recall_day_log is upload_only",
+         ("entry_recall_day_log", "upload_only", "") in policies,
+         f"policies={sorted(policies)!r}")
+    test("sync policy: entry_recall_query_log is upload_only",
+         ("entry_recall_query_log", "upload_only", "") in policies,
+         f"policies={sorted(policies)!r}")
     test("sync policy: local-only embeddings present",
          ("embeddings", "local_only", "") in policies,
          f"policies={sorted(policies)!r}")
@@ -2299,6 +2326,281 @@ def _test_migrate_stable_ids_and_policy(db_path):
 
 
 _test_migrate_stable_ids_and_policy()
+
+
+# ─── Per-entry recall telemetry (issue #157) ────────────────────────────────
+
+print("\n📊 Per-entry recall telemetry — _upsert_entry_recall_stats")
+
+
+@with_test_db
+def _test_recall_stats_counter_increment(db_path):
+    """recall_count increments on every call."""
+    _briefing.DB_PATH = Path(db_path)
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    # Seed a knowledge_entries row so FK-style int reference is valid.
+    db.execute("INSERT INTO knowledge_entries (id, session_id, category, title, content) VALUES (1, 's', 'pattern', 'T', 'C')")
+    db.commit()
+
+    _briefing._upsert_entry_recall_stats(db, [1], "query-a")
+    _briefing._upsert_entry_recall_stats(db, [1], "query-a")  # same day, same query
+    _briefing._upsert_entry_recall_stats(db, [1], "query-a")
+
+    row = db.execute("SELECT recall_count FROM entry_recall_stats WHERE entry_id = 1").fetchone()
+    test("recall_count increments on every call",
+         row is not None and row["recall_count"] == 3,
+         f"row={dict(row) if row else None!r}")
+    db.close()
+
+
+_test_recall_stats_counter_increment()
+
+
+@with_test_db
+def _test_recall_stats_dedupes_duplicate_entry_ids(db_path):
+    """A single recall pass counts each entry once even if duplicate IDs slip in."""
+    _briefing.DB_PATH = Path(db_path)
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    db.execute("INSERT INTO knowledge_entries (id, session_id, category, title, content) VALUES (1, 's', 'pattern', 'T', 'C')")
+    db.commit()
+
+    _briefing._upsert_entry_recall_stats(db, [1, 1, 1], "dup-query")
+
+    row = db.execute(
+        "SELECT recall_count, recall_days, unique_queries FROM entry_recall_stats WHERE entry_id = 1"
+    ).fetchone()
+    test("duplicate entry_ids count once per helper call",
+         row is not None and row["recall_count"] == 1 and row["recall_days"] == 1 and row["unique_queries"] == 1,
+         f"row={dict(row) if row else None!r}")
+    test("duplicate entry_ids create one day-log row",
+         db.execute("SELECT COUNT(*) FROM entry_recall_day_log WHERE entry_id = 1").fetchone()[0] == 1,
+         "")
+    test("duplicate entry_ids create one query-log row",
+         db.execute("SELECT COUNT(*) FROM entry_recall_query_log WHERE entry_id = 1").fetchone()[0] == 1,
+         "")
+    db.close()
+
+
+_test_recall_stats_dedupes_duplicate_entry_ids()
+
+
+@with_test_db
+def _test_recall_stats_unique_day(db_path):
+    """recall_days only increments when a new calendar day is seen."""
+    _briefing.DB_PATH = Path(db_path)
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    db.execute("INSERT INTO knowledge_entries (id, session_id, category, title, content) VALUES (1, 's', 'pattern', 'T', 'C')")
+    db.commit()
+
+    # Two calls on the same day — recall_days should be 1, recall_count should be 2.
+    _briefing._upsert_entry_recall_stats(db, [1], "query-b")
+    _briefing._upsert_entry_recall_stats(db, [1], "query-b")
+
+    row = db.execute("SELECT recall_count, recall_days FROM entry_recall_stats WHERE entry_id = 1").fetchone()
+    test("recall_days=1 after two same-day recalls",
+         row is not None and row["recall_days"] == 1,
+         f"recall_days={row['recall_days'] if row else None!r}")
+
+    # Simulate calendar rollover: rename today's dedupe row to "yesterday" so the
+    # next helper call sees a genuinely new calendar day and increments recall_days.
+    import time as _time
+    yesterday = _time.strftime("%Y-%m-%d", _time.gmtime(_time.time() - 86400))
+    db.execute(
+        "UPDATE entry_recall_day_log SET day = ? WHERE entry_id = 1",
+        (yesterday,),
+    )
+    db.commit()
+
+    # Third call — drives the second-day path inside _upsert_entry_recall_stats.
+    _briefing._upsert_entry_recall_stats(db, [1], "query-b")
+
+    row2 = db.execute("SELECT recall_count, recall_days FROM entry_recall_stats WHERE entry_id = 1").fetchone()
+    test("recall_days=2 after second-day recall",
+         row2 is not None and row2["recall_days"] == 2,
+         f"recall_days={row2['recall_days'] if row2 else None!r}")
+    test("recall_count=3 after three total recalls",
+         row2 is not None and row2["recall_count"] == 3,
+         f"recall_count={row2['recall_count'] if row2 else None!r}")
+    db.close()
+
+
+_test_recall_stats_unique_day()
+
+
+@with_test_db
+def _test_recall_stats_unique_query(db_path):
+    """unique_queries only increments for distinct rewritten queries."""
+    _briefing.DB_PATH = Path(db_path)
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    db.execute("INSERT INTO knowledge_entries (id, session_id, category, title, content) VALUES (1, 's', 'pattern', 'T', 'C')")
+    db.commit()
+
+    _briefing._upsert_entry_recall_stats(db, [1], "query-x")   # new query → unique_queries = 1
+    _briefing._upsert_entry_recall_stats(db, [1], "query-x")   # same → still 1
+    _briefing._upsert_entry_recall_stats(db, [1], "query-y")   # new query → unique_queries = 2
+
+    row = db.execute("SELECT unique_queries FROM entry_recall_stats WHERE entry_id = 1").fetchone()
+    test("unique_queries=2 after two distinct queries",
+         row is not None and row["unique_queries"] == 2,
+         f"unique_queries={row['unique_queries'] if row else None!r}")
+    test("entry_recall_query_log holds two distinct hashes",
+         db.execute("SELECT COUNT(*) FROM entry_recall_query_log WHERE entry_id = 1").fetchone()[0] == 2,
+         "")
+    db.close()
+
+
+_test_recall_stats_unique_query()
+
+
+@with_test_db
+def _test_recall_stats_fail_open_no_tables(db_path):
+    """_upsert_entry_recall_stats is silent when recall tables are absent."""
+    _briefing.DB_PATH = Path(db_path)
+    # Open a stripped DB without the new tables.
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    db.execute("DROP TABLE IF EXISTS entry_recall_stats")
+    db.execute("DROP TABLE IF EXISTS entry_recall_day_log")
+    db.execute("DROP TABLE IF EXISTS entry_recall_query_log")
+    db.commit()
+    try:
+        _briefing._upsert_entry_recall_stats(db, [1], "test-query")
+        raised = False
+    except Exception:
+        raised = True
+    test("_upsert_entry_recall_stats: no exception when tables absent",
+         not raised, "helper should be fail-open")
+    db.close()
+
+
+_test_recall_stats_fail_open_no_tables()
+
+
+@with_test_db
+def _test_recall_stats_multiple_entries(db_path):
+    """Stats are tracked independently per entry_id."""
+    _briefing.DB_PATH = Path(db_path)
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    for eid in (1, 2, 3):
+        db.execute(
+            "INSERT INTO knowledge_entries (id, session_id, category, title, content) VALUES (?, 's', 'pattern', 'T', 'C')",
+            (eid,)
+        )
+    db.commit()
+
+    _briefing._upsert_entry_recall_stats(db, [1, 2, 3], "q1")
+    _briefing._upsert_entry_recall_stats(db, [1, 3], "q2")     # entry 2 not recalled this time
+
+    row1 = db.execute("SELECT recall_count, unique_queries FROM entry_recall_stats WHERE entry_id = 1").fetchone()
+    row2 = db.execute("SELECT recall_count, unique_queries FROM entry_recall_stats WHERE entry_id = 2").fetchone()
+    row3 = db.execute("SELECT recall_count, unique_queries FROM entry_recall_stats WHERE entry_id = 3").fetchone()
+    test("entry 1: recall_count=2 unique_queries=2",
+         row1 is not None and row1["recall_count"] == 2 and row1["unique_queries"] == 2,
+         f"row1={dict(row1) if row1 else None!r}")
+    test("entry 2: recall_count=1 unique_queries=1 (not in second call)",
+         row2 is not None and row2["recall_count"] == 1 and row2["unique_queries"] == 1,
+         f"row2={dict(row2) if row2 else None!r}")
+    test("entry 3: recall_count=2 unique_queries=2",
+         row3 is not None and row3["recall_count"] == 2 and row3["unique_queries"] == 2,
+         f"row3={dict(row3) if row3 else None!r}")
+    db.close()
+
+
+_test_recall_stats_multiple_entries()
+
+
+@with_test_db
+def _test_recall_stats_new_tables_exist(db_path):
+    """The three new telemetry tables must exist in the test schema."""
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    tables = {r["name"] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    test("entry_recall_stats table exists in test schema",
+         "entry_recall_stats" in tables, f"tables={sorted(tables)!r}")
+    test("entry_recall_day_log table exists in test schema",
+         "entry_recall_day_log" in tables, f"tables={sorted(tables)!r}")
+    test("entry_recall_query_log table exists in test schema",
+         "entry_recall_query_log" in tables, f"tables={sorted(tables)!r}")
+    db.close()
+
+
+_test_recall_stats_new_tables_exist()
+
+
+# ─── 29. Sync-policy parity: build-session-index.py, embed.py, extract-knowledge.py ────
+
+print("\n🔗 Sync-policy parity: build-session-index.py, embed.py, extract-knowledge.py")
+
+_ENTRY_RECALL_TABLES = ("entry_recall_stats", "entry_recall_day_log", "entry_recall_query_log")
+
+
+def _assert_entry_recall_policies(policies: set, source_label: str):
+    for tbl in _ENTRY_RECALL_TABLES:
+        test(f"{source_label}: {tbl} is upload_only",
+             (tbl, "upload_only", "") in policies,
+             f"policies={sorted(policies)!r}")
+
+
+@with_test_db
+def _test_bsi_entry_recall_policies(db_path):
+    """build-session-index.py _seed_sync_table_policies must include entry_recall_* tables."""
+    bsi = _load_module("bsi_mc_parity", TOOLS_DIR / "build-session-index.py")
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    bsi._seed_sync_table_policies(db)
+    db.commit()
+    policies = {
+        (r["table_name"], r["sync_scope"], r["stable_id_column"])
+        for r in db.execute("SELECT table_name, sync_scope, stable_id_column FROM sync_table_policies")
+    }
+    db.close()
+    _assert_entry_recall_policies(policies, "build-session-index.py")
+
+
+_test_bsi_entry_recall_policies()
+
+
+@with_test_db
+def _test_embed_entry_recall_policies(db_path):
+    """embed.py _seed_local_only_sync_policy must include entry_recall_* tables."""
+    emb = _load_module("emb_mc_parity", TOOLS_DIR / "embed.py")
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    emb._seed_local_only_sync_policy(db)
+    db.commit()
+    policies = {
+        (r["table_name"], r["sync_scope"], r["stable_id_column"])
+        for r in db.execute("SELECT table_name, sync_scope, stable_id_column FROM sync_table_policies")
+    }
+    db.close()
+    _assert_entry_recall_policies(policies, "embed.py")
+
+
+_test_embed_entry_recall_policies()
+
+
+@with_test_db
+def _test_extract_knowledge_entry_recall_policies(db_path):
+    """extract-knowledge.py _seed_sync_table_policies must include entry_recall_* tables."""
+    ek = _load_module("ek_mc_parity", TOOLS_DIR / "extract-knowledge.py")
+    db = sqlite3.connect(db_path)
+    db.row_factory = sqlite3.Row
+    ek._seed_sync_table_policies(db)
+    db.commit()
+    policies = {
+        (r["table_name"], r["sync_scope"], r["stable_id_column"])
+        for r in db.execute("SELECT table_name, sync_scope, stable_id_column FROM sync_table_policies")
+    }
+    db.close()
+    _assert_entry_recall_policies(policies, "extract-knowledge.py")
+
+
+_test_extract_knowledge_entry_recall_policies()
 
 
 # ─── Summary ─────────────────────────────────────────────────────────────

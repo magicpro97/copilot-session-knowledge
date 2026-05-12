@@ -30,6 +30,67 @@ sk index health --recall --json  # Recall-only JSON payload
 
 ---
 
+## Per-Entry Aggregated Recall Telemetry (issue #157 / migration v18)
+
+Per-entry counters give each knowledge entry its own recall history: how many times it has been
+surfaced, on how many unique calendar days, and from how many distinct queries.
+
+### Tables
+
+| Table | Purpose |
+|-------|---------|
+| `entry_recall_stats` | One row per `knowledge_entries.id`. Aggregated counters. |
+| `entry_recall_day_log` | Dedupe log keyed by `(entry_id, day)`. Prevents same-day double-counting. |
+| `entry_recall_query_log` | Dedupe log keyed by `(entry_id, query_hash)`. Prevents same-query double-counting. |
+
+#### `entry_recall_stats` schema
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `entry_id` | INTEGER PK | References `knowledge_entries.id` |
+| `recall_count` | INTEGER | Total times this entry was surfaced (increments every recall) |
+| `recall_days` | INTEGER | Unique calendar days this entry was surfaced (UTC date) |
+| `unique_queries` | INTEGER | Unique rewritten queries that surfaced this entry (SHA-256[:16] hash) |
+| `first_recalled_at` | TEXT | ISO 8601 UTC timestamp of first recall |
+| `last_recalled_at` | TEXT | ISO 8601 UTC timestamp of most recent recall |
+
+### How counters are updated
+
+`briefing.py` calls `_upsert_entry_recall_stats(db, entry_ids, rewritten_query)` using the
+**caller's already-open DB connection** (not a fresh connection) from both `generate_briefing()`
+and `generate_task_briefing()`, just before the connection is closed.
+
+Increment semantics:
+
+- **`recall_count`** — always `+1` once per unique entry per call (duplicate `entry_id`s in a
+  single helper invocation are deduplicated before writing).
+- **`recall_days`** — `+1` only when the today's UTC date is new for that entry (guarded by
+  `INSERT OR IGNORE INTO entry_recall_day_log`).
+- **`unique_queries`** — `+1` only when the `sha256[:16]` of the rewritten query is new for that
+  entry (guarded by `INSERT OR IGNORE INTO entry_recall_query_log`).
+
+All writes are **best-effort** (wrapped in `try/except`). A missing table or any DB error is
+silently swallowed — the main briefing surface is never impacted.
+
+### Sync policy
+
+All three tables are registered as `upload_only` — they are pushed to the remote replica but
+never pulled back, matching the same policy as `recall_events`.
+
+```
+entry_recall_stats    → upload_only
+entry_recall_day_log  → upload_only
+entry_recall_query_log → upload_only
+```
+
+This policy is registered in:
+- `migrate.py` → `_seed_sync_table_policies()`
+- `sync-daemon.py` → `DEFAULT_SYNC_TABLE_POLICIES`
+- `sync-knowledge.py` → `ensure_sync_runtime_schema()`
+- `sk-rust/src/sync/schema.rs` → `DEFAULT_SYNC_TABLE_POLICIES`
+
+---
+
 ## JSON Field Envelopes
 
 These output shapes are **stable contracts** — do not change key names or nesting without a migration path.
