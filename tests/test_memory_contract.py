@@ -2603,7 +2603,438 @@ def _test_extract_knowledge_entry_recall_policies(db_path):
 _test_extract_knowledge_entry_recall_policies()
 
 
-# ─── Summary ─────────────────────────────────────────────────────────────
+# ─── 25. briefing.py — _format_compact() no repeated-prefix noise ────────
+
+print("\n🔇 briefing.py — _format_compact() repeated-prefix deduplication (issue #163)")
+
+
+def _test_format_compact_no_repeated_prefix():
+    """_format_compact must not duplicate prefix when title and first_line overlap.
+
+    Wave-style status-note entries are now suppressed by _STATUS_NOTE_RE before
+    reaching the repeated-prefix check. This test covers the deduplication logic
+    for legitimate (non-Wave) entries whose title is a truncated prefix of content.
+    """
+    categories = {
+        "mistake": {"emoji": "⚠️", "title": "Past Mistakes", "desc": ""},
+        "pattern": {"emoji": "✅", "title": "Patterns", "desc": ""},
+        "decision": {"emoji": "🏗️", "title": "Decisions", "desc": ""},
+        "tool": {"emoji": "🔧", "title": "Tools", "desc": ""},
+    }
+
+    # Non-Wave repeated-prefix scenario: 80-char title ending with the 4-char word "stop"
+    # (≤3 threshold means "stop" is NOT word-trimmed by _word_trim, but deduplication
+    # still fires via title_prefix[:60] match against first_line).
+    long_title = "Forgot to close DB connections which caused resource exhaustion and service stop"
+    long_content = (
+        "- Forgot to close DB connections which caused resource exhaustion and service stoppage.\n"
+        "  Fix: use context managers or explicit close() in finally blocks."
+    )
+    data_noisy = {
+        "mistake": [{"id": 1, "title": long_title, "content": long_content,
+                     "tags": "python", "confidence": 1.0}],
+        "pattern": [], "decision": [], "tool": [],
+    }
+
+    output = _briefing._format_compact("fix briefing noise", data_noisy, [], categories)
+
+    # The rendered mistake line must NOT contain the repeated prefix
+    mistake_line = [ln for ln in output.splitlines() if ln.startswith("- Forgot")]
+    test("_format_compact: at least one mistake line rendered",
+         len(mistake_line) >= 1, f"output={output!r}")
+    if mistake_line:
+        line = mistake_line[0]
+        # The key symptom: title text should not appear twice in the same line
+        title_prefix = long_title[:40].lower()
+        lower_line = line.lower()
+        first_occ = lower_line.find(title_prefix)
+        second_occ = lower_line.find(title_prefix, first_occ + 1) if first_occ != -1 else -1
+        test("_format_compact: title text does not appear twice in same line",
+             second_occ == -1,
+             f"line={line!r}")
+
+    # When title and first_line differ meaningfully, both should still be shown.
+    data_distinct = {
+        "mistake": [{"id": 2,
+                     "title": "Auth token expiry bug",
+                     "content": "JWT tokens were not refreshed; the fix is to call refresh() before expiry.",
+                     "tags": "", "confidence": 0.9}],
+        "pattern": [], "decision": [], "tool": [],
+    }
+    output_distinct = _briefing._format_compact("auth", data_distinct, [], categories)
+    mistake_distinct = [ln for ln in output_distinct.splitlines() if ln.startswith("- Auth")]
+    test("_format_compact: distinct title+content still shows both parts",
+         mistake_distinct and ": " in mistake_distinct[0],
+         f"line={mistake_distinct[0] if mistake_distinct else '(none)'!r}")
+
+
+_test_format_compact_no_repeated_prefix()
+
+
+# ─── 26. learn.py — status-note guard (issue #163) ───────────────────────
+
+print("\n🚦 learn.py — status-note title guard (issue #163)")
+
+
+def _test_learn_status_note_title_detector():
+    """_is_status_note_title rejects operational progress-report titles."""
+    # Must have the function exposed
+    test("learn has _is_status_note_title",
+         hasattr(_learn, "_is_status_note_title"),
+         "function missing from learn.py")
+    if not hasattr(_learn, "_is_status_note_title"):
+        return
+
+    reject_cases = [
+        "Wave19 verification is complete on this workstation for the runtime surfaces touched",
+        "Wave20 verification is complete on this workstation for the runtime surfaces touched",
+        "Wave5 verification is complete",
+        "Wave18 verification is complete on this workstation for the runtime surfaces touched in this iter",
+    ]
+    accept_cases = [
+        "Auth token expiry bug — tokens were not refreshed",
+        "FTS5 sanitization must strip OR/AND operators before MATCH queries",
+        "Atomic lock pattern using O_CREAT | O_EXCL prevents TOCTOU races",
+        "wave-shaped LED pattern looks nice",   # "wave" in context, no digit
+    ]
+
+    for title in reject_cases:
+        reason = _learn._is_status_note_title(title)
+        test(f"_is_status_note_title rejects: '{title[:50]}…'",
+             bool(reason), f"reason={reason!r}")
+
+    for title in accept_cases:
+        reason = _learn._is_status_note_title(title)
+        test(f"_is_status_note_title accepts: '{title[:50]}'",
+             not reason, f"unexpected rejection={reason!r}")
+
+
+_test_learn_status_note_title_detector()
+
+
+@with_test_db
+def _test_learn_status_note_guard_blocks_add_entry(db_path):
+    """add_entry rejects status-note titles for mistake/pattern/discovery at write time."""
+    _learn.DB_PATH = Path(db_path)
+
+    bad_title = "Wave19 verification is complete on this workstation for the runtime surfaces touched"
+
+    # Should be rejected (returns -1) without skip_gate
+    captured_stderr = io.StringIO()
+    old_stderr = sys.stderr
+    sys.stderr = captured_stderr
+    result = _learn.add_entry("mistake", bad_title, "Some detail.", session_id="test-sess")
+    sys.stderr = old_stderr
+    stderr_out = captured_stderr.getvalue()
+
+    test("add_entry: status-note mistake title returns -1",
+         result == -1, f"result={result!r}")
+    test("add_entry: rejection message printed to stderr",
+         "REJECTED" in stderr_out or "status-note" in stderr_out,
+         f"stderr={stderr_out!r}")
+
+    # skip_gate=True should bypass the guard
+    result_bypassed = _learn.add_entry(
+        "mistake", bad_title, "Some detail.", session_id="test-sess", skip_gate=True
+    )
+    test("add_entry: skip_gate=True bypasses status-note guard",
+         result_bypassed > 0, f"result={result_bypassed!r}")
+
+    # Legitimate mistake title must not be blocked
+    result_legit = _learn.add_entry(
+        "mistake", "FTS5 MATCH query crashed when input contained bare AND operator",
+        "The fix is to strip AND/OR/NOT before passing to FTS5 MATCH.",
+        session_id="test-sess",
+    )
+    test("add_entry: legitimate mistake title is NOT blocked",
+         result_legit > 0, f"result={result_legit!r}")
+
+    # status-note guard only applies to mistake/pattern/discovery — decision is exempt
+    result_decision = _learn.add_entry(
+        "decision", bad_title, "Decision content.",
+        session_id="test-sess",
+    )
+    test("add_entry: status-note guard does NOT apply to 'decision' category",
+         result_decision > 0, f"result={result_decision!r}")
+
+
+_test_learn_status_note_guard_blocks_add_entry()
+
+
+# ─── 27. briefing.py — _word_trim word-boundary truncation ───────────────
+
+print("\n✂️  briefing.py — _word_trim word-boundary truncation (issue #163)")
+
+
+def _test_issue163_word_trim():
+    """_word_trim must strip raw mid-word suffixes from stored-truncated titles."""
+    wt = _briefing._word_trim
+
+    # Normal title (< limit): returned unchanged
+    short = "Fence closer allowed unlimited leading whitespace"
+    test("_word_trim: short title unchanged", wt(short, 80) == short,
+         f"got={wt(short, 80)!r}")
+
+    # Simulates stored-truncated title ending with a 3-char fragment ("tou" from "touched")
+    stored = "Wave14 verification is complete on this workstation for the runtime surfaces tou"
+    assert len(stored) == 80, f"test fixture length changed: {len(stored)}"
+    trimmed = wt(stored, 80)
+    test("_word_trim: mid-word suffix 'tou' stripped",
+         not trimmed.endswith("tou") and "surfaces" in trimmed,
+         f"got={trimmed!r}")
+    test("_word_trim: trimmed result shorter than original",
+         len(trimmed) < len(stored),
+         f"len={len(trimmed)}")
+
+    # Title longer than limit: hard-cut then word-trim
+    long_title = "A" * 70 + " fragment"
+    result = wt(long_title, 80)
+    test("_word_trim: over-limit title clamped to <= 80",
+         len(result) <= 80,
+         f"len={len(result)}")
+
+    # Title of exactly limit chars ending with a complete word (≥5 chars) → unchanged
+    # "undetected" is 10 chars, so the heuristic should not trim
+    normal_80 = "Avoid skipping tests after code changes because bugs may slip through undetected"
+    assert len(normal_80) == 80, f"test fixture length changed: {len(normal_80)}"
+    result_80 = wt(normal_80, 80)
+    test("_word_trim: 80-char title ending with long word left untouched",
+         result_80 == normal_80,
+         f"got={result_80!r}")
+
+    # Regression guard (issue #163 wave5): 80-char title ending with 4-char complete
+    # word "null" must NOT be stripped — only ≤3-char alpha fragments are candidates.
+    null_title = "Avoid calling subprocess.run without timeout argument to prevent hanging on null"
+    assert len(null_title) == 80, f"test fixture length changed: {len(null_title)}"
+    result_null = wt(null_title, 80)
+    test("_word_trim: 80-char title ending with 4-char word 'null' left untouched",
+         result_null == null_title,
+         f"got={result_null!r}")
+
+
+_test_issue163_word_trim()
+
+
+# ─── 28. briefing.py — _format_compact Wave status-note suppression ───────
+
+print("\n🚫 briefing.py — _format_compact Wave status-note suppression (issue #163)")
+
+
+def _test_issue163_status_note_suppression():
+    """_format_compact must suppress Wave-style status-note entries (issue #163)."""
+    categories = {
+        "mistake": {"emoji": "⚠️", "title": "Past Mistakes", "desc": ""},
+        "pattern": {"emoji": "✅", "title": "Patterns", "desc": ""},
+    }
+
+    # Entries: one real mistake, one Wave-style status note
+    data_mixed = {
+        "mistake": [
+            {"id": 1, "title": "Real bug: forgot to close DB connection",
+             "content": "Always close the DB connection after use.", "tags": "", "confidence": 0.9},
+            # Wave-style stored-truncated status note (the polluted rows from issue #163)
+            {"id": 2,
+             "title": "Wave19 verification is complete on this workstation for the runtime surfaces tou",
+             "content": "Wave19 verification is complete on this workstation for the runtime surfaces "
+                        "touched in this iteration:\n- sk watch: ...",
+             "tags": "", "confidence": 0.9},
+            {"id": 3,
+             "title": "Wave20 verification is complete on this workstation for the runtime surfaces tou",
+             "content": "Wave20 verification is complete on this workstation for the runtime surfaces "
+                        "touched in this iteration:\n- sk sync: ...",
+             "tags": "", "confidence": 0.9},
+        ],
+        "pattern": [],
+    }
+
+    output = _briefing._format_compact("test task", data_mixed, [], categories, None)
+
+    test("_format_compact[163]: real mistake entry is present",
+         "Real bug" in output,
+         f"output={output!r}")
+    test("_format_compact[163]: Wave19 status-note suppressed",
+         "Wave19 verification is complete" not in output,
+         f"output={output!r}")
+    test("_format_compact[163]: Wave20 status-note suppressed",
+         "Wave20 verification is complete" not in output,
+         f"output={output!r}")
+
+    # All-suppressed block: if only status notes in a category, the tag must not appear
+    data_only_noise = {
+        "mistake": [
+            {"id": 4,
+             "title": "Wave18 verification is complete on this workstation for the runtime surfaces tou",
+             "content": "Wave18 complete.", "tags": "", "confidence": 0.9},
+        ],
+        "pattern": [],
+    }
+    output_noise = _briefing._format_compact("test", data_only_noise, [], categories, None)
+    test("_format_compact[163]: <mistakes> tag absent when all entries suppressed",
+         "<mistakes>" not in output_noise,
+         f"output_noise={output_noise!r}")
+
+    # Wave planner-recommendation entries flagged "(not yet implemented)" must be suppressed.
+    # These are aspirational planning notes, not actionable past lessons (issue #163).
+    data_planner = {
+        "mistake": [
+            {"id": 1, "title": "Real bug: forgot to close DB connection",
+             "content": "Always close the DB connection after use.", "tags": "", "confidence": 0.9},
+        ],
+        "pattern": [
+            {"id": 10,
+             "title": "Wave11 planner recommendation (not yet implemented):",
+             "content": "**Wave11 planner recommendation (not yet implemented):**\n"
+                        "Do not target a full managed preToolUse routing flip yet.",
+             "tags": "python", "confidence": 1.0},
+        ],
+    }
+    output_planner = _briefing._format_compact(
+        "Implement P0 audio foundation slices in isolated worktree",
+        data_planner, [], categories, None)
+    test("_format_compact[163]: Wave planner '(not yet implemented)' suppressed",
+         "Wave11 planner recommendation" not in output_planner,
+         f"output_planner={output_planner!r}")
+    test("_format_compact[163]: real mistake still present after planner suppression",
+         "Real bug" in output_planner,
+         f"output_planner={output_planner!r}")
+    test("_format_compact[163]: <patterns> absent when only planner noise remains",
+         "<patterns>" not in output_planner,
+         f"output_planner={output_planner!r}")
+
+    # [rust-wave…] tentacle titles must also be suppressed
+    data_rust = {
+        "mistake": [
+            {"id": 5,
+             "title": "[rust-wave7-hook-parity] Wave7 hook parity complete: all four sub-tasks",
+             "content": "Tentacle summary.", "tags": "", "confidence": 0.9},
+        ],
+        "pattern": [],
+    }
+    output_rust = _briefing._format_compact("test", data_rust, [], categories, None)
+    test("_format_compact[163]: [rust-wave…] tentacle titles suppressed",
+         "[rust-wave7-hook-parity]" not in output_rust,
+         f"output_rust={output_rust!r}")
+
+    # Non-Wave title truncated mid-word must be word-trimmed in output
+    data_long = {
+        "mistake": [
+            {"id": 6,
+             "title": "Avoid using shutil.rmtree on git repos on Window",  # naturally 49 chars, clean
+             "content": "shutil.rmtree may fail on Windows with git repos.", "tags": "", "confidence": 0.9},
+        ],
+        "pattern": [],
+    }
+    output_long = _briefing._format_compact("test", data_long, [], categories, None)
+    test("_format_compact[163]: clean 49-char title not truncated",
+         "Avoid using shutil.rmtree on git repos on Window" in output_long,
+         f"output_long={output_long!r}")
+
+
+_test_issue163_status_note_suppression()
+
+
+# ─── 29. briefing.py — _format_compact() entry cap <= 3 (issue #163) ────
+
+print("\n🔢 briefing.py — _format_compact() compact cap <= 3 per category (issue #163)")
+
+
+def _test_issue163_compact_cap():
+    """_format_compact must render at most _COMPACT_MAX_PER_CAT (3) entries per block.
+
+    Acceptance criteria for issue #163:
+    - mistakes block: at most 3 rendered lines even when data has more.
+    - patterns block: at most 3 rendered lines even when data has more.
+    - Status-note entries suppressed by _STATUS_NOTE_RE do not consume cap slots,
+      so 3 real entries are still visible even if status-notes precede them.
+    - Entries appear in the order provided (relevance-first, since generate_briefing
+      already orders by confidence DESC + FTS rank before passing to _format_compact).
+    """
+    categories = {
+        "mistake": {"emoji": "⚠️", "title": "Past Mistakes", "desc": ""},
+        "pattern": {"emoji": "✅", "title": "Patterns", "desc": ""},
+        "decision": {"emoji": "🏗️", "title": "Decisions", "desc": ""},
+        "tool": {"emoji": "🔧", "title": "Tools", "desc": ""},
+    }
+
+    def _mk_entry(eid, title, conf=0.9):
+        return {"id": eid, "title": title,
+                "content": f"Content for {title}.", "tags": "", "confidence": conf}
+
+    # 5 real mistake entries — compact must show only the first 3.
+    data_many = {
+        "mistake": [
+            _mk_entry(1, "Real mistake alpha", 1.0),
+            _mk_entry(2, "Real mistake beta", 0.9),
+            _mk_entry(3, "Real mistake gamma", 0.8),
+            _mk_entry(4, "Real mistake delta should NOT appear", 0.7),
+            _mk_entry(5, "Real mistake epsilon should NOT appear", 0.6),
+        ],
+        "pattern": [
+            _mk_entry(10, "Pattern one", 1.0),
+            _mk_entry(11, "Pattern two", 0.9),
+            _mk_entry(12, "Pattern three", 0.8),
+            _mk_entry(13, "Pattern four should NOT appear", 0.7),
+        ],
+        "decision": [], "tool": [],
+    }
+
+    output = _briefing._format_compact("test cap", data_many, [], categories)
+    mistake_lines = [ln for ln in output.splitlines() if ln.startswith("- Real mistake")]
+    pattern_lines = [ln for ln in output.splitlines() if ln.startswith("- Pattern")]
+
+    test("_format_compact[163-cap]: mistakes capped at 3",
+         len(mistake_lines) <= 3,
+         f"rendered {len(mistake_lines)} mistake lines: {mistake_lines}")
+    test("_format_compact[163-cap]: patterns capped at 3",
+         len(pattern_lines) <= 3,
+         f"rendered {len(pattern_lines)} pattern lines: {pattern_lines}")
+    test("_format_compact[163-cap]: 4th mistake entry absent",
+         not any("delta" in ln for ln in mistake_lines),
+         f"mistake_lines={mistake_lines}")
+    test("_format_compact[163-cap]: 4th pattern entry absent",
+         not any("four" in ln for ln in pattern_lines),
+         f"pattern_lines={pattern_lines}")
+
+    # Relevance order: first 3 entries (highest confidence) must appear,
+    # in the order they were provided (alpha, beta, gamma).
+    test("_format_compact[163-cap]: top-3 mistakes present (alpha)",
+         any("alpha" in ln for ln in mistake_lines),
+         f"mistake_lines={mistake_lines}")
+    test("_format_compact[163-cap]: top-3 mistakes present (beta)",
+         any("beta" in ln for ln in mistake_lines),
+         f"mistake_lines={mistake_lines}")
+    test("_format_compact[163-cap]: top-3 mistakes present (gamma)",
+         any("gamma" in ln for ln in mistake_lines),
+         f"mistake_lines={mistake_lines}")
+
+    # Status notes do NOT consume cap slots: 2 Wave status-notes + 4 real entries
+    # → should yield 3 real entries rendered (not 1).
+    data_with_noise = {
+        "mistake": [
+            {"id": 20, "title": "Wave19 verification is complete for runtime surfaces touched in this iteration",
+             "content": "Wave19 done.", "tags": "", "confidence": 1.0},
+            {"id": 21, "title": "Wave20 verification is complete for runtime surfaces touched in this iteration",
+             "content": "Wave20 done.", "tags": "", "confidence": 1.0},
+            _mk_entry(22, "Real mistake after noise one", 0.9),
+            _mk_entry(23, "Real mistake after noise two", 0.8),
+            _mk_entry(24, "Real mistake after noise three", 0.7),
+            _mk_entry(25, "Real mistake after noise four should NOT appear", 0.6),
+        ],
+        "pattern": [], "decision": [], "tool": [],
+    }
+
+    output_noise = _briefing._format_compact("test noise cap", data_with_noise, [], categories)
+    real_lines = [ln for ln in output_noise.splitlines() if ln.startswith("- Real mistake after noise")]
+
+    test("_format_compact[163-cap]: status-notes don't consume cap slots — 3 real entries shown",
+         len(real_lines) == 3,
+         f"rendered {len(real_lines)} lines: {real_lines}")
+    test("_format_compact[163-cap]: 4th real entry after noise absent",
+         not any("four" in ln for ln in real_lines),
+         f"real_lines={real_lines}")
+
+
+_test_issue163_compact_cap()
 
 print(f"\n{'='*50}")
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL} tests")
