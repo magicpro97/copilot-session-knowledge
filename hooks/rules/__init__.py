@@ -30,11 +30,13 @@ def get_rules_for_event(event):
     from .nextjs_typecheck import NextjsTypecheckRule
     from .pnpm_lockfile_guard import PnpmLockfileGuardRule
     from .read_before_edit import ReadBeforeEditRule
+    from .read_tracker import ReadTrackerRule
     from .recurrence_detector import RecurrenceDetectorRule
     from .session_lifecycle import SessionEndRule, SubagentStopRule
     from .subagent_guard import SubagentGitGuardRule
     from .syntax_gate import SyntaxGateRule
     from .tentacle import TentacleEnforceRule, TentacleSuggestRule
+    from .token_tracker import TokenTrackerRule
     from .verification_gate import VerificationGateRule
 
     ALL_RULES = [
@@ -52,6 +54,7 @@ def get_rules_for_event(event):
         BlockUnsafeHtmlRule(),
         VerificationGateRule(),
         ReadBeforeEditRule(),
+        ReadTrackerRule(),   # Issue #85: warn on repeat reads (preToolUse)
         # postToolUse (all run, output is informational)
         TrackEditsRule(),
         LearnReminderRule(),
@@ -59,6 +62,7 @@ def get_rules_for_event(event):
         TentacleSuggestRule(),
         NextjsTypecheckRule(),
         ReadBeforeEditRule(),  # also postToolUse for tracking views
+        TokenTrackerRule(),   # Issue #84: token usage tracking (postToolUse)
         # VerificationGateRule also handles postToolUse (already registered above)
         # errorOccurred
         ErrorKBRule(),

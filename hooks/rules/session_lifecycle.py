@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from . import Rule
-from .common import MARKERS_DIR
+from .common import MARKERS_DIR, get_session_marker_suffix
 
 _TOOLS_DIR = Path(__file__).resolve().parents[2]
 if str(_TOOLS_DIR) not in sys.path:
@@ -83,7 +83,7 @@ class SessionEndRule(Rule):
 
     def evaluate(self, event, data):
         reason = data.get("reason", "unknown")
-        session_id = os.environ.get("COPILOT_AGENT_SESSION_ID", str(os.getppid()))
+        session_id = get_session_marker_suffix(data)
 
         # Only clean THIS session's markers
         if MARKERS_DIR.is_dir():
@@ -93,8 +93,10 @@ class SessionEndRule(Rule):
                     # Preserve system files
                     if name in ("audit.jsonl", "session.log", "hooks-tampered"):
                         continue
-                    # Delete session-specific markers for THIS session only
-                    if name.endswith(f"-{session_id}"):
+                    # Delete session-specific markers for THIS session only.
+                    # Also remove the companion .lock file (session-state-<id>.lock)
+                    # which would otherwise survive session end and block future writers.
+                    if name.endswith(f"-{session_id}") or name.endswith(f"-{session_id}.lock"):
                         f.unlink()
                 except Exception:
                     pass
