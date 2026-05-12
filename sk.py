@@ -75,6 +75,7 @@ _GROUPS: dict[str, dict[str, str]] = {
         "status": "index-status.py",
         "health": "knowledge-health.py",
         "embed": "embed.py",
+        "tag": "tag-entries.py",
     },
     "sync": {
         "run": "sync-daemon.py",

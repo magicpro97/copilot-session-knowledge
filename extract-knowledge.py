@@ -158,6 +158,7 @@ def _seed_sync_table_policies(db: sqlite3.Connection):
         ("embeddings", "local_only", ""),
         ("embedding_meta", "local_only", ""),
         ("tfidf_model", "local_only", ""),
+        ("entry_concept_tags", "local_only", ""),
     ]
     policy_sql = db.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='sync_table_policies'"
@@ -504,6 +505,51 @@ def detect_severity(text: str) -> str:
             if re.search(p, text_lower, re.IGNORECASE):
                 return sev
     return "medium"
+
+
+# Stopwords for concept tag extraction (pure stdlib, no ML imports)
+_CONCEPT_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "can", "it", "this", "that", "these", "those",
+    "i", "we", "you", "he", "she", "they", "not", "no", "so", "if", "then",
+    "when", "where", "what", "which", "who", "how", "all", "any", "each",
+    "more", "most", "also", "just", "up", "out", "as", "into", "than",
+    "their", "its", "our", "my", "your", "his", "her", "them", "us", "me",
+    "after", "before", "during", "while", "since", "until", "too", "very",
+    "about", "above", "below", "between", "through", "use", "used", "using",
+    "run", "running", "make", "new", "only", "now", "then", "time", "way",
+    "need", "needs", "see", "get", "set", "add", "can", "put", "let", "say",
+    "one", "two", "per", "via", "etc", "yet", "got", "had", "has", "was",
+})
+
+
+def extract_concept_tags(text: str, top_k: int = 5) -> list:
+    """Extract top_k concept tags from text using pure-stdlib term frequency.
+
+    Distinct from extract_tags() (which parses explicit user-supplied tags from
+    checkpoint text). This function performs automatic keyword extraction from
+    free-form entry title + content using stopword-filtered term frequency.
+
+    Args:
+        text: Combined title and content text to analyze.
+        top_k: Maximum number of concept tags to return.
+
+    Returns:
+        List of up to top_k lowercase concept tag strings, sorted by frequency desc.
+    """
+    if not text:
+        return []
+    # Tokenize: sequences of letters/digits/hyphens/underscores, min 3 chars
+    tokens = re.findall(r'[a-zA-Z][a-zA-Z0-9_-]{2,}', text.lower())
+    freq: dict = {}
+    for tok in tokens:
+        if tok not in _CONCEPT_STOPWORDS:
+            freq[tok] = freq.get(tok, 0) + 1
+    # Sort by frequency descending, then alphabetically for stability
+    ranked = sorted(freq.items(), key=lambda x: (-x[1], x[0]))
+    return [tag for tag, _ in ranked[:top_k]]
 
 
 def ensure_tables(db: sqlite3.Connection):
