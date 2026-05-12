@@ -127,6 +127,15 @@ class TestSkDirectCommands(unittest.TestCase):
     def test_watch(self):
         self._assert_routes("watch", "watch-sessions.py")
 
+    def test_export_buglog(self):
+        self._assert_routes("export-buglog", "buglog-export.py")
+
+    def test_export_buglog_with_format_flag(self):
+        self._assert_routes("export-buglog", "buglog-export.py", ["--format", "json"])
+
+    def test_export_buglog_with_output_flag(self):
+        self._assert_routes("export-buglog", "buglog-export.py", ["--output", "BUGLOG.md"])
+
     def test_buglog(self):
         self._assert_routes("buglog", "buglog-export.py")
 

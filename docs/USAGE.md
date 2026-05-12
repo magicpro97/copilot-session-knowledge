@@ -21,21 +21,32 @@ sk browse --port 8080 --token TOKEN      # → browse.py
 sk benchmark record                      # → benchmark.py
 sk retro                                 # → retro.py
 sk heal                                  # → copilot-cli-healer.py
-sk buglog                                # → buglog-export.py  (Markdown to stdout)
+sk export-buglog                         # → buglog-export.py  (Markdown to stdout)
+sk export-buglog --format json           # → buglog-export.py  (JSON to stdout)
+sk export-buglog --output BUGLOG.md      # → buglog-export.py  (write Markdown to file)
+sk buglog                                # → buglog-export.py  (alias for export-buglog)
 sk buglog --format json                  # → buglog-export.py  (JSON to stdout)
 sk buglog --output BUGLOG.md             # → buglog-export.py  (write Markdown to file)
 ```
 
-### `sk buglog` — BUGLOG export
+### `sk export-buglog` — BUGLOG export
 
 Export mistake-category knowledge entries as a deterministic, git-friendly document.
 Useful for committing a `BUGLOG.md` to a repo or piping to downstream tools.
+`sk buglog` is an alias for `sk export-buglog` (backward-compatible).
 
 ```bash
-sk buglog                                        # Markdown to stdout
-sk buglog --format json                          # JSON to stdout
-sk buglog --output BUGLOG.md                     # Write Markdown to BUGLOG.md
-sk buglog --output bugs.json --format json       # Write JSON to file
+sk export-buglog                                 # Markdown to stdout
+sk export-buglog --format json                   # JSON to stdout
+sk export-buglog --output BUGLOG.md              # Write Markdown to BUGLOG.md
+sk export-buglog --output bugs.json --format json # Write JSON to file
+sk export-buglog --limit 50                      # Cap at 50 entries (default: 200)
+sk export-buglog --tags docker,ci                # Filter by tag (any match)
+sk export-buglog --min-confidence 0.7            # High-quality entries only
+sk buglog                                        # Markdown to stdout (alias)
+sk buglog --format json                          # JSON to stdout (alias)
+sk buglog --output BUGLOG.md                     # Write Markdown to BUGLOG.md (alias)
+sk buglog --output bugs.json --format json       # Write JSON to file (alias)
 sk buglog --limit 50                             # Cap at 50 entries (default: 200)
 sk buglog --tags docker,ci                       # Filter by tag (any match)
 sk buglog --min-confidence 0.7                   # High-quality entries only
