@@ -679,6 +679,132 @@ class TestBuglogTagFilterSemantics(unittest.TestCase):
             db.close()
         self.assertEqual(len(results), 2, "Without tags, limit=2 should return exactly 2 entries")
 
+    def test_exact_tag_matching_no_false_positive(self):
+        """Substring 'doc' must NOT match the tag 'docker' — exact token matching required.
+
+        Regression: old code used ``t in tags_string.lower()`` which caused
+        'doc' to match 'docker,ci' because 'doc' is a substring of 'docker'.
+        """
+        db = self._make_db()
+        try:
+            results = self.buglog._fetch_mistakes(
+                db, limit=200, tags_filter=["doc"], min_confidence=0.0
+            )
+        finally:
+            db.close()
+        titles = [r["title"] for r in results]
+        self.assertNotIn(
+            "Docker mistake",
+            titles,
+            "Tag 'doc' must NOT match entry tagged 'docker' — exact token match required",
+        )
+        self.assertEqual(results, [], "No entries carry the exact tag 'doc'")
+
+    def test_empty_tag_tokens_are_ignored(self):
+        """Empty items from trailing commas in --tags must not disable filtering.
+
+        'docker,' splits to ['docker', ''] — the empty string matches every
+        entry ('' in any_string is True), effectively disabling the filter.
+        The fix strips empty tokens before tag matching.
+        """
+        # Simulate what main() does after parsing '--tags docker,'
+        raw_tags = "docker,"
+        tags_filter = [t.strip() for t in raw_tags.split(",") if t.strip()]
+        self.assertEqual(tags_filter, ["docker"], "Empty token must be stripped from tags_filter")
+
+        db = self._make_db()
+        try:
+            results = self.buglog._fetch_mistakes(
+                db, limit=200, tags_filter=tags_filter, min_confidence=0.0
+            )
+        finally:
+            db.close()
+        # Only the docker-tagged entry should be returned, not all 4 entries.
+        titles = [r["title"] for r in results]
+        self.assertEqual(
+            titles,
+            ["Docker mistake"],
+            "Trailing comma in tags must not disable filtering (empty token bug)",
+        )
+
+    def test_markdown_output_has_no_timestamp(self):
+        """Markdown comment must not contain a timestamp — it would break git-diff determinism.
+
+        The docstring promises 'git-diff friendly' / 'deterministic' output.
+        A timestamp that changes every run defeats this contract.
+        """
+        entries = [
+            {"id": 1, "title": "T", "content": "C", "tags": "x", "confidence": 0.9,
+             "session_id": "abc12345", "occurrence_count": 1, "wing": "", "room": "", "source": "copilot"}
+        ]
+        md = self.buglog._render_markdown(entries)
+        # Must not contain any timestamp pattern like 2024-01-01T00:00:00Z
+        import re
+        self.assertIsNone(
+            re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", md),
+            "Markdown output must not contain a timestamp (breaks git-diff determinism)",
+        )
+        # Entry count IS deterministic and should be present
+        self.assertIn("entries: 1", md)
+
+
+class TestBuglogArgValidation(unittest.TestCase):
+    """Tests for --limit and --min-confidence input validation in buglog-export.py."""
+
+    BUGLOG_PATH = TOOLS_DIR / "buglog-export.py"
+
+    @classmethod
+    def setUpClass(cls):
+        if not cls.BUGLOG_PATH.exists():
+            raise unittest.SkipTest(
+                "buglog-export.py not present — skipping arg-validation tests"
+            )
+        spec = importlib.util.spec_from_file_location("buglog_export_val", cls.BUGLOG_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        cls.buglog = mod
+
+    def _call_main(self, argv):
+        """Call main() and return (exit_code, stderr_output).  Patches _get_db to avoid needing a real DB."""
+        import io
+        from unittest.mock import patch, MagicMock
+        fake_db = MagicMock()
+        fake_db.execute.return_value.fetchall.return_value = []
+        stderr_capture = io.StringIO()
+        try:
+            with patch.object(self.buglog, "_get_db", return_value=fake_db), \
+                 patch("sys.stderr", stderr_capture):
+                rc = self.buglog.main(argv)
+            return rc, stderr_capture.getvalue()
+        except SystemExit as exc:
+            return exc.code, stderr_capture.getvalue()
+
+    def test_limit_zero_rejected(self):
+        """--limit 0 must be rejected with exit code 2."""
+        rc, _ = self._call_main(["--limit", "0"])
+        self.assertEqual(rc, 2, "--limit 0 must exit with code 2")
+
+    def test_limit_negative_rejected(self):
+        """--limit -1 must be rejected (would produce entries[:-1] = all-but-last)."""
+        rc, _ = self._call_main(["--limit", "-1"])
+        self.assertEqual(rc, 2, "--limit -1 must exit with code 2")
+
+    def test_min_confidence_above_one_rejected(self):
+        """--min-confidence 1.5 is out of range [0.0, 1.0] and must be rejected."""
+        rc, _ = self._call_main(["--min-confidence", "1.5"])
+        self.assertEqual(rc, 2, "--min-confidence 1.5 must exit with code 2")
+
+    def test_min_confidence_negative_rejected(self):
+        """--min-confidence -0.1 is out of range and must be rejected."""
+        rc, _ = self._call_main(["--min-confidence", "-0.1"])
+        self.assertEqual(rc, 2, "--min-confidence -0.1 must exit with code 2")
+
+    def test_valid_limit_and_confidence_accepted(self):
+        """Valid values must not trigger an error."""
+        rc, _ = self._call_main(["--limit", "50", "--min-confidence", "0.5"])
+        self.assertEqual(rc, 0, "Valid --limit and --min-confidence must succeed")
+
+
 if __name__ == "__main__":
     unittest.main()
 

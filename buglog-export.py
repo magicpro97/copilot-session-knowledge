@@ -91,20 +91,22 @@ def _fetch_mistakes(
     entries = [dict(r) for r in rows]
 
     if tags_filter:
-        lower_tags = [t.lower() for t in tags_filter]
+        lower_tags = {t.lower() for t in tags_filter}
         entries = [
             e for e in entries
-            if any(t in (e.get("tags") or "").lower() for t in lower_tags)
+            if {tok.strip().lower() for tok in (e.get("tags") or "").split(",") if tok.strip()} & lower_tags
         ]
 
     # Apply limit after filtering so --limit counts filtered rows, not raw DB rows.
     return entries[:limit]
 
 
-def _render_markdown(entries: list[dict], generated_at: str) -> str:
+def _render_markdown(entries: list[dict]) -> str:
     lines: list[str] = []
     lines.append("# BUGLOG — Mistake Entries\n")
-    lines.append(f"<!-- generated: {generated_at} | entries: {len(entries)} -->\n")
+    # Omit timestamp from the comment so repeated runs on unchanged data produce
+    # identical output — a requirement for git-diff-friendly / deterministic output.
+    lines.append(f"<!-- entries: {len(entries)} -->\n")
 
     if not entries:
         lines.append("*No mistake entries found.*\n")
@@ -195,7 +197,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    tags_filter = [t.strip() for t in args.tags.split(",")] if args.tags else []
+    if args.limit <= 0:
+        parser.error(f"--limit must be a positive integer, got {args.limit}")
+    if not (0.0 <= args.min_confidence <= 1.0):
+        parser.error(f"--min-confidence must be between 0.0 and 1.0, got {args.min_confidence}")
+
+    # Filter empty tokens so `--tags docker,` or `--tags ,` do not silently
+    # disable filtering by injecting an empty string that matches everything.
+    tags_filter = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
     output_path = Path(args.output) if args.output else None
 
     db = _get_db()
@@ -209,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.format == "json":
         text = _render_json(entries, generated_at)
     else:
-        text = _render_markdown(entries, generated_at)
+        text = _render_markdown(entries)
 
     _write_output(text, output_path)
     return 0
