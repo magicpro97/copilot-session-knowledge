@@ -147,6 +147,9 @@ def _seed_sync_table_policies(db: sqlite3.Connection):
         ("entity_relations", "canonical", "stable_id"),
         ("search_feedback", "canonical", "stable_id"),
         ("recall_events", "upload_only", ""),
+        ("entry_recall_stats", "upload_only", ""),
+        ("entry_recall_day_log", "upload_only", ""),
+        ("entry_recall_query_log", "upload_only", ""),
         ("knowledge_fts", "local_only", ""),
         ("ke_fts", "local_only", ""),
         ("sessions_fts", "local_only", ""),
@@ -694,6 +697,34 @@ if __name__ == "__main__":
                 )""",
                 "CREATE INDEX IF NOT EXISTS idx_bd_session ON briefing_deliveries(session_id)",
                 "CREATE INDEX IF NOT EXISTS idx_bd_entry ON briefing_deliveries(entry_id)",
+            ],
+        ),
+        (
+            18,
+            "entry_recall_telemetry",
+            [
+                # Aggregated per-entry recall stats (one row per knowledge_entries.id).
+                """CREATE TABLE IF NOT EXISTS entry_recall_stats (
+                    entry_id INTEGER PRIMARY KEY,
+                    recall_count INTEGER NOT NULL DEFAULT 0,
+                    recall_days INTEGER NOT NULL DEFAULT 0,
+                    unique_queries INTEGER NOT NULL DEFAULT 0,
+                    first_recalled_at TEXT,
+                    last_recalled_at TEXT
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_ers_last_recalled ON entry_recall_stats(last_recalled_at)",
+                # Dedupe log: one row per (entry_id, calendar day) — prevents double-counting same-day recalls.
+                """CREATE TABLE IF NOT EXISTS entry_recall_day_log (
+                    entry_id INTEGER NOT NULL,
+                    day TEXT NOT NULL,
+                    PRIMARY KEY (entry_id, day)
+                )""",
+                # Dedupe log: one row per (entry_id, query_hash) — prevents double-counting same-query recalls.
+                """CREATE TABLE IF NOT EXISTS entry_recall_query_log (
+                    entry_id INTEGER NOT NULL,
+                    query_hash TEXT NOT NULL,
+                    PRIMARY KEY (entry_id, query_hash)
+                )""",
             ],
         ),
     ]

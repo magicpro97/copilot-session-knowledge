@@ -30,6 +30,7 @@ Use --full for complete content with tags, confidence scores, and full text.
 """
 
 import json
+import hashlib
 import math
 import os
 import re
@@ -186,6 +187,74 @@ def _record_recall_event(
     finally:
         if db is not None:
             db.close()
+
+
+def _upsert_entry_recall_stats(
+    db: sqlite3.Connection,
+    entry_ids: list[int],
+    query: str,
+) -> None:
+    """Best-effort upsert of per-entry recall counters using the caller's open DB connection.
+
+    Tracks recall_count (every recall), recall_days (unique calendar days), and
+    unique_queries (unique rewritten queries) without double-counting repeats.
+    Companion dedupe tables entry_recall_day_log and entry_recall_query_log prevent
+    same-day / same-query inflation, and duplicate entry IDs in one call are
+    collapsed so each surfaced entry counts once per recall pass. Never raises —
+    fail-open by design.
+    """
+    normalized_entry_ids: list[int] = []
+    seen_entry_ids: set[int] = set()
+    for entry_id in _safe_int_list(entry_ids):
+        if entry_id in seen_entry_ids:
+            continue
+        seen_entry_ids.add(entry_id)
+        normalized_entry_ids.append(entry_id)
+
+    if not normalized_entry_ids:
+        return
+    try:
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        query_hash = hashlib.sha256((query or "").encode("utf-8", errors="replace")).hexdigest()[:16]
+        now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        for eid in normalized_entry_ids:
+            try:
+                # Day dedupe — INSERT OR IGNORE; check rowcount to detect new day.
+                db.execute(
+                    "INSERT OR IGNORE INTO entry_recall_day_log (entry_id, day) VALUES (?, ?)",
+                    (eid, today),
+                )
+                is_new_day = db.execute("SELECT changes()").fetchone()[0] > 0
+
+                # Query dedupe — INSERT OR IGNORE; check rowcount to detect new unique query.
+                db.execute(
+                    "INSERT OR IGNORE INTO entry_recall_query_log (entry_id, query_hash) VALUES (?, ?)",
+                    (eid, query_hash),
+                )
+                is_new_query = db.execute("SELECT changes()").fetchone()[0] > 0
+
+                # Upsert main stats row — always bump recall_count; conditionally bump recall_days / unique_queries.
+                day_delta = 1 if is_new_day else 0
+                query_delta = 1 if is_new_query else 0
+                db.execute(
+                    """
+                    INSERT INTO entry_recall_stats
+                        (entry_id, recall_count, recall_days, unique_queries, first_recalled_at, last_recalled_at)
+                    VALUES (?, 1, ?, ?, ?, ?)
+                    ON CONFLICT(entry_id) DO UPDATE SET
+                        recall_count = COALESCE(recall_count, 0) + 1,
+                        recall_days = COALESCE(recall_days, 0) + excluded.recall_days,
+                        unique_queries = COALESCE(unique_queries, 0) + excluded.unique_queries,
+                        first_recalled_at = COALESCE(first_recalled_at, excluded.first_recalled_at),
+                        last_recalled_at = excluded.last_recalled_at
+                    """,
+                    (eid, day_delta, query_delta, now, now),
+                )
+            except Exception:
+                pass  # fail-open per-entry
+        db.commit()
+    except Exception:
+        pass  # fail-open: per-entry telemetry is non-critical
 
 
 def auto_detect_context() -> str:
@@ -1432,11 +1501,13 @@ def generate_briefing(
     except Exception:
         pass  # fail-open: delivery tracking is non-critical
 
-    db.close()
-
+    # Per-entry recall stats — compute IDs while connection is still open.
     selected_entry_ids = _safe_int_list(
         row.get("id") for rows in briefing_data.values() for row in rows if isinstance(row, dict)
     )
+    _upsert_entry_recall_stats(db, selected_entry_ids, rewritten_query)
+
+    db.close()
 
     # Check if we have anything
     total_entries = sum(len(v) for v in briefing_data.values()) + len(past_work)
@@ -2162,6 +2233,9 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text", wit
 
     selected_entry_ids = _safe_int_list([r["id"] for r in tagged_rows] + [r["id"] for r in fts_rows[:5]])
     hit_count = len(selected_entry_ids)
+
+    # Per-entry recall stats — record before any db.close() path.
+    _upsert_entry_recall_stats(db, selected_entry_ids, safe_task)
 
     if not tagged_rows and not fts_rows:
         if fmt == "json":
