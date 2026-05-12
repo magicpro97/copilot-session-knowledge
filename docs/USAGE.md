@@ -223,7 +223,7 @@ sk scout status                     # scout-status.py
 
 | Event | Native behavior |
 |-------|----------------|
-| `sessionStart` | `AutoBriefingRule` (spawns `briefing.py`, 10s timeout, signs HMAC markers) + `IntegrityRule` (SHA256 manifest) |
+| `sessionStart` | `AutoBriefingRule` (spawns `briefing.py`, 10s timeout, signs HMAC markers, injects MEMORY.md) + `IntegrityRule` (SHA256 manifest) |
 | `sessionEnd` | `SessionEndRule` (marker cleanup + `session.log`) + `RecurrenceDetectorRule` |
 | `preToolUse` | All deny-capable rules active: `subagent-git-guard`, `block-edit-dist`, `block-unsafe-html`, `pnpm-lockfile-guard`, `read-before-edit`, `VerificationGatePreRule`, `EnforceBriefingRule`, `EnforceLearnRule`, `TentacleEnforceRule`, `SyntaxGateRule` |
 | `postToolUse` | All 7 rules: `TrackEditsRule`, `LearnReminderRule`, `TestReminderRule`, `NextjsTypecheckReminderRule`, `VerificationGatePostRule`, `ReadBeforeEditRule`, `TentacleSuggestRule` |
@@ -235,13 +235,65 @@ sk scout status                     # scout-status.py
 > Full rule inventory, HMAC details, and platform event notes: **[docs/HOOKS.md](HOOKS.md)**
 
 ```bash
-sk hooks run sessionStart           # AutoBriefingRule + IntegrityRule
+sk hooks run sessionStart           # AutoBriefingRule + IntegrityRule (+ MEMORY.md injection)
 sk hooks run preToolUse             # all deny rules (Rust binary); hook_runner.py (Python shim)
 sk hooks run postToolUse            # all 7 postToolUse rules
 sk hooks run sessionEnd             # SessionEndRule + RecurrenceDetectorRule
 sk hooks run agentStop              # marker-cleanup
 sk hooks run subagentStop           # marker-cleanup
 sk hooks run errorOccurred          # native FTS5; query-session.py fallback if DB unavailable
+```
+
+#### MEMORY.md injection at `sessionStart`
+
+When `MEMORY.md` exists in the project root (written by `sk dream`), its promoted-knowledge
+content is automatically **prepended** to every `sessionStart` auto-briefing so the AI sees the
+highest-value knowledge entries before other briefing output.
+
+**Guards — injection is skipped (graceful no-op) when:**
+
+| Guard | Default |
+|-------|---------|
+| `memory_inject_enabled: false` in `~/.copilot/hooks-config.json` | Disabled entirely |
+| File is older than max-age | Default: 1 day |
+| File does not exist | Always silently skipped |
+| Effective content is empty | Silently skipped |
+
+**Token budget:** content is truncated to an approximate token budget (default 500 tokens,
+estimated at 4 chars/token).  Truncated content ends with `… (truncated to token budget)`.
+
+**Config keys (`~/.copilot/hooks-config.json`):**
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `memory_inject_enabled` | bool | `true` | Set to `false` to disable injection entirely |
+| `memory_inject_max_age_days` | number | `1` | Max MEMORY.md age in days (e.g. `0.5` = 12 h) |
+| `memory_inject_max_tokens` | int | `500` | Approximate token cap for injected content |
+
+**Example `~/.copilot/hooks-config.json`:**
+
+```json
+{
+  "memory_inject_enabled": true,
+  "memory_inject_max_age_days": 1,
+  "memory_inject_max_tokens": 500
+}
+```
+
+**Example — disable injection:**
+
+```bash
+# Add to ~/.copilot/hooks-config.json:
+# { "memory_inject_enabled": false }
+```
+
+**Example — keep injection fresh (12-hour max age):**
+
+```json
+{
+  "memory_inject_enabled": true,
+  "memory_inject_max_age_days": 0.5
+}
 ```
 
 The managed `hooks.json` prefers `sk hooks run <event>` when `sk` is in PATH. Bash falls back to `python3 hook_runner.py`; PowerShell falls back to `python hook_runner.py`. Install the launcher first: `python install.py --install-sk`.

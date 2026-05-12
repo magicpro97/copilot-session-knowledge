@@ -4346,6 +4346,219 @@ except Exception as _e24:
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  Section 25: MEMORY.md injection into sessionStart auto-briefing
+#  Tests _load_memory_md() and AutoBriefingRule prepend behaviour.
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n\U0001f4cc Section 25: MEMORY.md injection into sessionStart")
+
+try:
+    import importlib as _il25
+    import sys as _sys25
+    import os as _os25
+    import time as _time25
+
+    # Import the briefing rule module
+    sys.path.insert(0, str(REPO / "hooks"))
+    import rules.briefing as _rb25
+    from rules.briefing import _load_memory_md as _lmm25, _DEFAULT_MAX_AGE_DAYS as _DMA25, _DEFAULT_TOKEN_BUDGET as _DTB25
+
+    _td25 = Path(tempfile.mkdtemp(prefix="test-25-"))
+
+    # ── 25a. Disabled via memory_inject_enabled=False config key → None ──
+    try:
+        _orig_cfg25a = _rb25._load_hooks_config
+        _rb25._load_hooks_config = lambda: {"memory_inject_enabled": False}
+        (_td25 / "MEMORY.md").write_text("# Promoted Memory\n\nEntry A", encoding="utf-8")
+        _r25a = _lmm25(cwd=_td25)
+        test("25a: memory_inject_enabled=False → None (no-op)", _r25a is None, f"got: {_r25a!r}")
+    finally:
+        _rb25._load_hooks_config = _orig_cfg25a
+
+    # ── 25b. Missing MEMORY.md → None ────────────────────────────────
+    _td25b = Path(tempfile.mkdtemp(prefix="test-25b-"))
+    try:
+        _r25b = _lmm25(cwd=_td25b)
+        test("25b: missing MEMORY.md → None (no-op)", _r25b is None, f"got: {_r25b!r}")
+    finally:
+        shutil.rmtree(str(_td25b), ignore_errors=True)
+
+    # ── 25c. Stale MEMORY.md (older than max_age_secs) → None ────────
+    _td25c = Path(tempfile.mkdtemp(prefix="test-25c-"))
+    try:
+        _mem25c = _td25c / "MEMORY.md"
+        _mem25c.write_text("# Promoted Memory\n\nEntry B", encoding="utf-8")
+        # Set mtime to 2 days ago (172800 s), max_age = 1 day (86400 s)
+        _old_time = _time25.time() - 172800
+        os.utime(str(_mem25c), (_old_time, _old_time))
+        _r25c = _lmm25(cwd=_td25c, max_age_secs=86400)
+        test("25c: stale MEMORY.md (2d old, max_age=1d) → None (no-op)", _r25c is None, f"got: {_r25c!r}")
+    finally:
+        shutil.rmtree(str(_td25c), ignore_errors=True)
+
+    # ── 25d. Fresh MEMORY.md → returns content ───────────────────────
+    _td25d = Path(tempfile.mkdtemp(prefix="test-25d-"))
+    try:
+        _mem25d = _td25d / "MEMORY.md"
+        _content25d = "# Promoted Memory\n\n## Pattern\nUse parameterised SQL."
+        _mem25d.write_text(_content25d, encoding="utf-8")
+        _r25d = _lmm25(cwd=_td25d)
+        test("25d: fresh MEMORY.md → returns content", _r25d is not None and "Promoted Memory" in _r25d,
+             f"got: {_r25d!r}")
+        test("25d: returned content contains entry text", _r25d is not None and "parameterised SQL" in _r25d,
+             f"got: {_r25d!r}")
+    finally:
+        shutil.rmtree(str(_td25d), ignore_errors=True)
+
+    # ── 25e. Token budget cap → content truncated ─────────────────────
+    _td25e = Path(tempfile.mkdtemp(prefix="test-25e-"))
+    try:
+        _mem25e = _td25e / "MEMORY.md"
+        # Create content well over 5-token budget (5 * 4 = 20 chars)
+        _big_content25e = "A" * 200
+        _mem25e.write_text(_big_content25e, encoding="utf-8")
+        _r25e = _lmm25(cwd=_td25e, token_budget=5)
+        test("25e: token_budget=5 → content truncated", _r25e is not None and len(_r25e) < len(_big_content25e),
+             f"length: {len(_r25e) if _r25e else 0}")
+        test("25e: truncated content includes ellipsis marker", _r25e is not None and "truncated" in _r25e.lower(),
+             f"got: {_r25e!r}")
+    finally:
+        shutil.rmtree(str(_td25e), ignore_errors=True)
+
+    # ── 25f. AutoBriefingRule.evaluate() PREPENDS memory before briefing ─
+    _td25f = Path(tempfile.mkdtemp(prefix="test-25f-"))
+    _markers25f = _td25f / ".copilot" / "markers"
+    _markers25f.mkdir(parents=True, exist_ok=True)
+    # Dummy briefing script that emits a distinguishable marker so we can verify order
+    _dummy_briefing25f = _td25f / "briefing.py"
+    _dummy_briefing25f.write_text(
+        'import sys\nprint("BRIEFING_OUTPUT_SENTINEL")\n', encoding="utf-8"
+    )
+    try:
+        _mem25f = _td25f / "MEMORY.md"
+        _mem25f.write_text("# Promoted Memory\n\n## Pattern\nAlways use atomic locks.", encoding="utf-8")
+
+        from rules.briefing import AutoBriefingRule as _ABR25
+        _rule25f = _ABR25()
+
+        # Patch _load_memory_md to load from our temp dir
+        _orig_lmm25f = _rb25._load_memory_md
+        _rb25._load_memory_md = lambda **kw: _lmm25(cwd=_td25f)
+
+        # Patch MARKERS_DIR and sign_marker to isolate filesystem side-effects
+        _orig_mdir25f = _rb25.MARKERS_DIR
+        _rb25.MARKERS_DIR = _markers25f
+        _orig_sm25f = _rb25.sign_marker
+        _rb25.sign_marker = lambda p, n: None
+        # Point BRIEFING_SCRIPT to the dummy script (exists, emits sentinel)
+        _orig_bs25f = _rb25.BRIEFING_SCRIPT
+        _rb25.BRIEFING_SCRIPT = _dummy_briefing25f
+
+        _result25f = _rule25f.evaluate("sessionStart", {})
+        _msg25f = _result25f.get("message", "") if isinstance(_result25f, dict) else ""
+
+        test("25f: AutoBriefingRule returns info() dict", isinstance(_result25f, dict) and "message" in _result25f,
+             f"got: {_result25f!r}")
+        test("25f: returned message contains MEMORY.md content", "atomic locks" in _msg25f,
+             f"message: {_msg25f[:300]!r}")
+        test("25f: returned message contains MEMORY.md header marker", "MEMORY" in _msg25f,
+             f"message: {_msg25f[:200]!r}")
+        # Ordering: MEMORY.md content must come BEFORE briefing output (true prepend)
+        _idx_memory = _msg25f.find("atomic locks")
+        _idx_briefing = _msg25f.find("BRIEFING_OUTPUT_SENTINEL")
+        test("25f: MEMORY.md content precedes briefing output (true prepend)",
+             _idx_memory != -1 and _idx_briefing != -1 and _idx_memory < _idx_briefing,
+             f"memory@{_idx_memory} briefing@{_idx_briefing} msg={_msg25f[:400]!r}")
+
+    finally:
+        _rb25._load_memory_md = _orig_lmm25f
+        _rb25.MARKERS_DIR = _orig_mdir25f
+        _rb25.sign_marker = _orig_sm25f
+        _rb25.BRIEFING_SCRIPT = _orig_bs25f
+        shutil.rmtree(str(_td25f), ignore_errors=True)
+
+    # ── 25g. AutoBriefingRule.evaluate() — no MEMORY.md → no injection ─
+    _td25g = Path(tempfile.mkdtemp(prefix="test-25g-"))
+    _markers25g = _td25g / ".copilot" / "markers"
+    _markers25g.mkdir(parents=True, exist_ok=True)
+    try:
+        from rules.briefing import AutoBriefingRule as _ABR25g
+        _rule25g = _ABR25g()
+
+        _orig_lmm25g = _rb25._load_memory_md
+        _rb25._load_memory_md = lambda **kw: None  # simulate missing MEMORY.md
+        _orig_mdir25g = _rb25.MARKERS_DIR
+        _rb25.MARKERS_DIR = _markers25g
+        _orig_sm25g = _rb25.sign_marker
+        _rb25.sign_marker = lambda p, n: None
+        _orig_bs25g = _rb25.BRIEFING_SCRIPT
+        _rb25.BRIEFING_SCRIPT = _td25g / "nonexistent_briefing.py"
+
+        _result25g = _rule25g.evaluate("sessionStart", {})
+        _msg25g = _result25g.get("message", "") if isinstance(_result25g, dict) else ""
+
+        test("25g: no MEMORY.md → message has no MEMORY injection", "MEMORY.md" not in _msg25g,
+             f"message: {_msg25g[:200]!r}")
+
+    finally:
+        _rb25._load_memory_md = _orig_lmm25g
+        _rb25.MARKERS_DIR = _orig_mdir25g
+        _rb25.sign_marker = _orig_sm25g
+        _rb25.BRIEFING_SCRIPT = _orig_bs25g
+        shutil.rmtree(str(_td25g), ignore_errors=True)
+
+    # ── 25h. Default constants have expected values ────────────────────
+    test("25h: default max_age_days == 1", _DMA25 == 1,
+         f"got: {_DMA25}")
+    test("25h: default token_budget == 500", _DTB25 == 500,
+         f"got: {_DTB25}")
+
+    # ── 25i. memory_inject_max_tokens config key controls budget ──────
+    _td25i = Path(tempfile.mkdtemp(prefix="test-25i-"))
+    try:
+        _orig_cfg25i = _rb25._load_hooks_config
+        # Set max_tokens=5 → char_limit = 20 → content truncated
+        _rb25._load_hooks_config = lambda: {"memory_inject_enabled": True, "memory_inject_max_tokens": 5}
+        (_td25i / "MEMORY.md").write_text("A" * 200, encoding="utf-8")
+        _r25i = _lmm25(cwd=_td25i)
+        test("25i: memory_inject_max_tokens=5 via config → content truncated",
+             _r25i is not None and len(_r25i) < 200,
+             f"got length: {len(_r25i) if _r25i else 0}")
+        test("25i: truncated content includes ellipsis marker",
+             _r25i is not None and "truncated" in _r25i.lower(),
+             f"got: {_r25i!r}")
+    finally:
+        _rb25._load_hooks_config = _orig_cfg25i
+        shutil.rmtree(str(_td25i), ignore_errors=True)
+
+    # ── 25j. memory_inject_max_age_days config key controls max age ───
+    _td25j = Path(tempfile.mkdtemp(prefix="test-25j-"))
+    try:
+        _orig_cfg25j = _rb25._load_hooks_config
+        # Set max_age_days=0.0001 (~8 seconds) → any file older than 8s is stale
+        _rb25._load_hooks_config = lambda: {"memory_inject_enabled": True, "memory_inject_max_age_days": 0.0001}
+        _mem25j = _td25j / "MEMORY.md"
+        _mem25j.write_text("# Promoted Memory\n\nEntry J", encoding="utf-8")
+        # Age the file to 1 minute old (well past 0.0001 days = ~8.6 seconds)
+        _old_j = _time25.time() - 60
+        os.utime(str(_mem25j), (_old_j, _old_j))
+        _r25j = _lmm25(cwd=_td25j)
+        test("25j: memory_inject_max_age_days=0.0001 → stale file → None",
+             _r25j is None,
+             f"got: {_r25j!r}")
+    finally:
+        _rb25._load_hooks_config = _orig_cfg25j
+        shutil.rmtree(str(_td25j), ignore_errors=True)
+
+    # ── Cleanup ──────────────────────────────────────────────────────
+    shutil.rmtree(str(_td25), ignore_errors=True)
+
+    test("Section 25 MEMORY.md injection tests ran without exception", True)
+except Exception as _e25:
+    test("Section 25 MEMORY.md injection tests ran without exception", False, str(_e25))
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  Results
 # ═══════════════════════════════════════════════════════════════════
 
