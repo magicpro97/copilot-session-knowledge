@@ -2805,7 +2805,9 @@ def _test_issue163_word_trim():
     # Regression guard (issue #163 wave5): 80-char title ending with 4-char complete
     # word "null" must NOT be stripped — only ≤3-char alpha fragments are candidates.
     null_title = "Avoid calling subprocess.run without timeout argument to prevent hanging on null"
-    assert len(null_title) == 80, f"test fixture length changed: {len(null_title)}"
+    test("_word_trim: null fixture length remains 80", len(null_title) == 80, f"len={len(null_title)}")
+    if len(null_title) != 80:
+        return
     result_null = wt(null_title, 80)
     test("_word_trim: 80-char title ending with 4-char word 'null' left untouched",
          result_null == null_title,

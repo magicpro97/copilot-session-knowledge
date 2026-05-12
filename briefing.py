@@ -58,7 +58,7 @@ DB_PATH = SESSION_STATE / "knowledge.db"
 # These are project status updates, not actionable knowledge. Applied in
 # _format_compact only — does not affect the DB or other output formats.
 _STATUS_NOTE_RE = re.compile(
-    r"""(?ix)
+    r"""
     ^(?:
         Wave[-\s]?\d+\b            # "Wave14 …" or "Wave-14 …"
         .*?\b(?:verification\s+is\s+complete|phase[-\s\d]+\s+verification\s+is\s+complete)
@@ -76,8 +76,8 @@ _STATUS_NOTE_RE = re.compile(
 
 # Maximum entries per category rendered by _format_compact (issue #163).
 # Entries are already relevance-ordered (confidence DESC + FTS rank) from
-# generate_briefing; this cap ensures compact output stays ≤ 3 per block
-# regardless of mode weights that may push cat_limit above 3.
+# generate_briefing; this cap keeps compact output at ≤ 3 entries per block,
+# even when callers request a higher --limit for broader, non-compact surfaces.
 # Status-note entries suppressed by _STATUS_NOTE_RE do NOT consume cap slots.
 _COMPACT_MAX_PER_CAT = 3
 
@@ -1822,12 +1822,13 @@ def _format_json(query: str, data: dict, past_work: list, categories: dict, blas
 
 
 def _word_trim(s: str, limit: int = 80) -> str:
-    """Trim *s* to at most *limit* chars, preferring a word boundary.
+    """Trim *s* to at most *limit* chars.
 
     When the string is already at *limit* (i.e. stored-truncated) and the
     trailing fragment looks like an incomplete word (≤ 3 alpha chars after the
     last space), strips that fragment so the output does not expose raw suffixes
-    like ``tou`` (from ``touched``).
+    like ``tou`` (from ``touched``). This is a narrow heuristic, not a full
+    word-boundary reflow.
 
     The threshold is deliberately ≤ 3 (not 4) to avoid false-positive stripping
     of legitimate 4-char terminal words such as "null", "stop", "hang", "call",

@@ -288,7 +288,7 @@ def _is_status_note_title(title: str) -> str:
                 f"status-note title rejected: '{title[:80]}' matches "
                 "an operational progress-report pattern (WaveN complete, "
                 "verification complete on workstation, …). "
-                "Record the specific finding instead."
+                "Record the specific finding instead, or use a discovery/milestone note for progress tracking."
             )
     return ""
 
