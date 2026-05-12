@@ -16,7 +16,7 @@ from .common import MARKERS_DIR, TOOLS_DIR, bash_writes_source_files, deny, info
 #   memory_inject_max_tokens   — int, default 500
 #   memory_inject_max_age_days — int/float, default 1
 _HOOKS_CONFIG_PATH = Path.home() / ".copilot" / "hooks-config.json"
-_DEFAULT_MAX_AGE_DAYS = 1    # 1 day
+_DEFAULT_MAX_AGE_DAYS = 1  # 1 day
 _DEFAULT_TOKEN_BUDGET = 500  # approximate tokens (1 token ≈ 4 chars)
 
 
@@ -95,6 +95,7 @@ def _load_memory_md(cwd=None, max_age_secs=None, token_budget=None):
         return content
     except Exception:
         return None
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
@@ -179,7 +180,9 @@ class AutoBriefingRule(Rule):
             lines.append("\n  \U0001f4cc MEMORY.md (promoted knowledge):")
             for mem_line in memory_content.splitlines():
                 lines.append(f"  {mem_line}")
-            lines.append("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+            lines.append(
+                "  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            )
 
         # Run briefing subprocess, capturing output so it follows MEMORY.md in the message
         try:

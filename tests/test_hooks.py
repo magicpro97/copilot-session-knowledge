@@ -4399,6 +4399,8 @@ try:
     # ── 25d. Fresh MEMORY.md → returns content ───────────────────────
     _td25d = Path(tempfile.mkdtemp(prefix="test-25d-"))
     try:
+        _orig_cfg25d = _rb25._load_hooks_config
+        _rb25._load_hooks_config = lambda: {"memory_inject_enabled": True}
         _mem25d = _td25d / "MEMORY.md"
         _content25d = "# Promoted Memory\n\n## Pattern\nUse parameterised SQL."
         _mem25d.write_text(_content25d, encoding="utf-8")
@@ -4408,11 +4410,14 @@ try:
         test("25d: returned content contains entry text", _r25d is not None and "parameterised SQL" in _r25d,
              f"got: {_r25d!r}")
     finally:
+        _rb25._load_hooks_config = _orig_cfg25d
         shutil.rmtree(str(_td25d), ignore_errors=True)
 
     # ── 25e. Token budget cap → content truncated ─────────────────────
     _td25e = Path(tempfile.mkdtemp(prefix="test-25e-"))
     try:
+        _orig_cfg25e = _rb25._load_hooks_config
+        _rb25._load_hooks_config = lambda: {"memory_inject_enabled": True}
         _mem25e = _td25e / "MEMORY.md"
         # Create content well over 5-token budget (5 * 4 = 20 chars)
         _big_content25e = "A" * 200
@@ -4423,6 +4428,7 @@ try:
         test("25e: truncated content includes ellipsis marker", _r25e is not None and "truncated" in _r25e.lower(),
              f"got: {_r25e!r}")
     finally:
+        _rb25._load_hooks_config = _orig_cfg25e
         shutil.rmtree(str(_td25e), ignore_errors=True)
 
     # ── 25f. AutoBriefingRule.evaluate() PREPENDS memory before briefing ─

@@ -38,7 +38,7 @@ MARKER = MARKERS_DIR / "briefing-done"
 #   memory_inject_max_tokens   — int, default 500
 #   memory_inject_max_age_days — int/float, default 1
 _HOOKS_CONFIG_PATH = Path.home() / ".copilot" / "hooks-config.json"
-_DEFAULT_MAX_AGE_DAYS = 1    # 1 day
+_DEFAULT_MAX_AGE_DAYS = 1  # 1 day
 _DEFAULT_TOKEN_BUDGET = 500  # approximate tokens
 
 
