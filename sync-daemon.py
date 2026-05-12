@@ -123,6 +123,8 @@ DEFAULT_SYNC_TABLE_POLICIES = [
     ("embeddings", "local_only", ""),
     ("embedding_meta", "local_only", ""),
     ("tfidf_model", "local_only", ""),
+    ("entry_concept_tags", "local_only", ""),
+    ("entry_dream_scores", "local_only", ""),
 ]
 
 REQUIRED_SYNC_TABLES = {

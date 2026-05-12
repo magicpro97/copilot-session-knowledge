@@ -20,6 +20,7 @@ Usage:
     sk watch    [<args>...]       Run watch-sessions.py
     sk export-buglog [<args>...]  Run buglog-export.py
     sk buglog   [<args>...]       Run buglog-export.py (alias for export-buglog)
+    sk dream    [<args>...]       Run dream.py
     sk hooks    run|list|<event>  Run hooks/hook_runner.py
 
     sk index  build|extract|migrate|status|health|embed|tag [<args>...]
@@ -68,6 +69,7 @@ _DIRECT: dict[str, str] = {
     "watch": "watch-sessions.py",
     "export-buglog": "buglog-export.py",
     "buglog": "buglog-export.py",  # alias for export-buglog (backward compat)
+    "dream": "dream.py",
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}
@@ -197,9 +199,7 @@ def _run_hooks(extra_args: list[str]) -> int:
 
 
 def _print_help() -> None:
-    direct_list = "  " + "\n  ".join(
-        f"sk {cmd:<12} → {script}" for cmd, script in _DIRECT.items()
-    )
+    direct_list = "  " + "\n  ".join(f"sk {cmd:<12} → {script}" for cmd, script in _DIRECT.items())
     print(
         f"sk {__version__} — copilot-session-knowledge unified CLI\n"
         "\nDirect commands:\n"
@@ -243,8 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         if sub not in _GROUPS[cmd]:
             subs = list(_GROUPS[cmd].keys())
             print(
-                f"sk {cmd}: unknown subcommand '{sub}'. "
-                f"Choose from: {', '.join(subs)}",
+                f"sk {cmd}: unknown subcommand '{sub}'. Choose from: {', '.join(subs)}",
                 file=sys.stderr,
             )
             return 2

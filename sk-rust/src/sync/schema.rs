@@ -80,6 +80,8 @@ pub const DEFAULT_SYNC_TABLE_POLICIES: &[(&str, &str, &str)] = &[
     ("embeddings", "local_only", ""),
     ("embedding_meta", "local_only", ""),
     ("tfidf_model", "local_only", ""),
+    ("entry_concept_tags", "local_only", ""),
+    ("entry_dream_scores", "local_only", ""),
 ];
 
 pub const REQUIRED_SYNC_TABLES: &[&str] = &[
