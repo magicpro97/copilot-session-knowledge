@@ -319,18 +319,20 @@ fn load_memory_md(cwd: Option<&Path>) -> Option<String> {
         return None;
     }
 
-    // Approximate token budget: 1 token ≈ 4 characters.
+    // Approximate token budget: 1 token ≈ 4 Unicode characters (matching
+    // Python's len() semantics which counts Unicode code points, not bytes).
     let char_limit = ((token_budget * 4) as usize).max(1);
-    if trimmed.len() > char_limit {
-        // Walk back to the nearest UTF-8 char boundary at or before
-        // char_limit.  String::truncate panics when the index falls inside
-        // a multi-byte codepoint, so this prevents a runtime panic on
-        // non-ASCII MEMORY.md content (issue #161 regression fix).
-        let mut safe_limit = char_limit;
-        while safe_limit > 0 && !trimmed.is_char_boundary(safe_limit) {
-            safe_limit -= 1;
-        }
-        trimmed.truncate(safe_limit);
+    if trimmed.chars().count() > char_limit {
+        // Find the byte offset of the char_limit-th Unicode scalar so that
+        // String::truncate lands on a valid char boundary.  This preserves
+        // UTF-8 safety while counting characters rather than bytes, matching
+        // Python's character-count semantics for non-ASCII content (issue #161).
+        let byte_offset = trimmed
+            .char_indices()
+            .nth(char_limit)
+            .map(|(i, _)| i)
+            .unwrap_or(trimmed.len());
+        trimmed.truncate(byte_offset);
         trimmed = trimmed.trim_end().to_string();
         trimmed.push_str("\n\u{2026} (truncated to token budget)");
     }
@@ -4698,6 +4700,7 @@ mod tests {
     fn auto_briefing_is_fail_open_when_briefing_py_absent() {
         // Point SK_TOOLS_DIR at an empty directory so briefing.py is absent.
         use std::fs;
+        let _guard = env_lock();
         let tmp = std::env::temp_dir().join("sk_auto_briefing_test");
         let _ = fs::create_dir_all(&tmp);
 
@@ -4725,6 +4728,7 @@ mod tests {
     fn auto_briefing_never_denies() {
         // Even when briefing.py is absent, the rule must not return a deny.
         use std::fs;
+        let _guard = env_lock();
         let tmp = std::env::temp_dir().join("sk_auto_briefing_no_deny_test");
         let _ = fs::create_dir_all(&tmp);
 
@@ -4937,6 +4941,94 @@ mod tests {
         assert!(
             std::str::from_utf8(text.as_bytes()).is_ok(),
             "truncated output must be valid UTF-8"
+        );
+
+        match old_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match old_up {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Non-ASCII character-count parity with Python's `len()` semantics.
+    ///
+    /// Python's `len()` counts Unicode code points, not UTF-8 bytes.
+    /// CJK characters (e.g. '中') are 3 UTF-8 bytes but 1 Unicode char.
+    ///
+    /// With budget=5 tokens: char_limit = 20.
+    /// 20 CJK chars = 20 bytes under old (byte-count) code → would truncate.
+    /// 20 CJK chars = 20 chars under new (char-count) code → must NOT truncate.
+    /// 21 CJK chars = 21 chars → must truncate at exactly 20 chars.
+    #[test]
+    fn memory_inject_non_ascii_char_count_parity() {
+        use std::fs;
+        let _guard = env_lock();
+        let tmp = std::env::temp_dir().join("sk_mem_inject_nonascii_parity");
+        let copilot_dir = tmp.join(".copilot");
+        let _ = fs::create_dir_all(&copilot_dir);
+        // Budget: 5 tokens × 4 chars = 20-char limit.
+        fs::write(
+            copilot_dir.join("hooks-config.json"),
+            r#"{"memory_inject_max_tokens": 5}"#,
+        )
+        .unwrap();
+
+        let old_home = std::env::var("HOME").ok();
+        let old_up = std::env::var("USERPROFILE").ok();
+        std::env::set_var("HOME", &tmp);
+        std::env::set_var("USERPROFILE", &tmp);
+
+        // --- Case 1: exactly at budget (20 CJK chars = 60 UTF-8 bytes) ---
+        // Old byte-count code: 60 bytes > 20 → would truncate (bug).
+        // New char-count code: 20 chars == 20 → must NOT truncate.
+        let exactly_budget = "中".repeat(20);
+        fs::write(tmp.join("MEMORY.md"), &exactly_budget).unwrap();
+        let result = load_memory_md(Some(&tmp));
+        assert!(
+            result.is_some(),
+            "load_memory_md must return Some for content at char budget"
+        );
+        let text = result.unwrap();
+        assert!(
+            !text.contains("truncated to token budget"),
+            "20 CJK chars at 20-char budget must NOT be truncated; got: {text:?}"
+        );
+        assert_eq!(
+            text.chars().count(),
+            20,
+            "returned text must have exactly 20 Unicode chars; got {}",
+            text.chars().count()
+        );
+
+        // --- Case 2: one over budget (21 CJK chars) ---
+        let over_budget = "中".repeat(21);
+        fs::write(tmp.join("MEMORY.md"), &over_budget).unwrap();
+        let result2 = load_memory_md(Some(&tmp));
+        assert!(
+            result2.is_some(),
+            "21-char CJK content must return Some (truncated)"
+        );
+        let text2 = result2.unwrap();
+        assert!(
+            text2.contains("truncated to token budget"),
+            "21-char CJK content must include truncation notice; got: {text2:?}"
+        );
+        // The body before the truncation notice must be exactly 20 Unicode chars.
+        let body = text2.split('\n').next().unwrap_or("");
+        assert_eq!(
+            body.chars().count(),
+            20,
+            "truncated body must be exactly 20 Unicode chars; got {} chars: {body:?}",
+            body.chars().count()
+        );
+        // Truncated output must be valid UTF-8.
+        assert!(
+            std::str::from_utf8(text2.as_bytes()).is_ok(),
+            "truncated non-ASCII output must be valid UTF-8"
         );
 
         match old_home {
@@ -5402,9 +5494,12 @@ mod tests {
         // the rule must return None (fail-open).
         // We use SK_DB pointing to a non-existent file (native fails-open) and
         // SK_TOOLS_DIR pointing to a temp dir without query-session.py (Python fails-open).
+        let _guard = env_lock();
         let tmp = std::env::temp_dir().join("sk_error_kb_test");
         let _ = std::fs::create_dir_all(&tmp);
         let nonexistent_db = tmp.join("nonexistent.db");
+        let old_tools_dir = std::env::var("SK_TOOLS_DIR").ok();
+        let old_db = std::env::var("SK_DB").ok();
         std::env::set_var("SK_TOOLS_DIR", &tmp);
         std::env::set_var("SK_DB", &nonexistent_db);
         let rule = ErrorOccurredRule;
@@ -5415,8 +5510,14 @@ mod tests {
             result.is_none(),
             "must return None when native DB and Python fallback are both unavailable"
         );
-        std::env::remove_var("SK_TOOLS_DIR");
-        std::env::remove_var("SK_DB");
+        match old_tools_dir {
+            Some(v) => std::env::set_var("SK_TOOLS_DIR", v),
+            None => std::env::remove_var("SK_TOOLS_DIR"),
+        }
+        match old_db {
+            Some(v) => std::env::set_var("SK_DB", v),
+            None => std::env::remove_var("SK_DB"),
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
