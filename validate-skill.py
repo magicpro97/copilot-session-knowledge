@@ -9,6 +9,7 @@ Usage:
     python3 validate-skill.py path/to/skill-dir/
 """
 
+import collections
 import sys
 import re
 from pathlib import Path
@@ -23,6 +24,244 @@ MAX_LINES = 500
 MIN_DESCRIPTION_WORDS = 10
 MAX_HEAVY_HANDED = 5  # MUST/ALWAYS/NEVER without reasoning
 
+# ---------------------------------------------------------------------------
+# Security finding infrastructure
+# ---------------------------------------------------------------------------
+
+#: Severity constants (ordered from least to most severe)
+SEVERITY_LOW      = "low"
+SEVERITY_MEDIUM   = "medium"
+SEVERITY_HIGH     = "high"
+SEVERITY_CRITICAL = "critical"
+
+#: A single security finding produced by validate_security().
+Finding = collections.namedtuple("Finding", ["severity", "category", "message", "line"])
+
+#: A compiled security rule used by validate_security().
+_SecurityRule = collections.namedtuple("_SecurityRule", ["category", "severity", "rx", "message"])
+
+def _rule(category: str, severity: str, flags: int, pattern: str, message: str) -> _SecurityRule:
+    """Compile a security rule, raising ValueError on bad regex at import time."""
+    return _SecurityRule(category=category, severity=severity,
+                         rx=re.compile(pattern, flags), message=message)
+
+
+def _mask_code_blocks(content: str) -> str:
+    """Replace fenced code block interiors with spaces so security rules don't
+    false-positive on code examples (e.g. ``system:`` in a YAML snippet).
+
+    Newlines are preserved verbatim so that line numbers in findings remain
+    accurate.  Only triple-backtick and triple-tilde fences are handled; the
+    opening and closing fence lines themselves are kept as-is.
+
+    Two important behaviours (CommonMark-compatible):
+    - A closing fence may be *longer* than its opener (e.g. 5 backticks can
+      close a 3-backtick opener) as long as it uses the same fence character.
+    - An *unclosed* fence does NOT mask content from the opener to EOF.
+      Without this guard a single forgotten closing fence would suppress all
+      security findings that appear after it in the document.
+    """
+    lines = content.splitlines(keepends=True)
+
+    # First pass: identify line indices that are interior to a *closed* fence.
+    # Unclosed fences are intentionally excluded so their content is still
+    # scanned for security findings.
+    masked_indices: set[int] = set()
+    in_fence = False
+    fence_char = ""
+    fence_min_len = 0
+    interior_start = 0
+
+    for i, line in enumerate(lines):
+        stripped = line.rstrip("\r\n")
+        if not in_fence:
+            # CommonMark §4.5: fence opener may have at most 3 spaces of indentation.
+            # 4+ leading spaces make the line an indented code block, not a fence opener.
+            m = re.match(r"^ {0,3}(```+|~~~+)", stripped)
+            if m:
+                in_fence = True
+                marker = m.group(1)
+                fence_char = marker[0]
+                fence_min_len = len(marker)
+                interior_start = i + 1  # first interior line index
+        else:
+            # CommonMark §4.5: closer must be same character, at least as long as opener,
+            # and may have at most 3 leading spaces (same restriction as the opener).
+            # 4+ leading spaces make the line an indented code block, not a fence closer.
+            close_rx = r"^ {0,3}" + re.escape(fence_char) + "{" + str(fence_min_len) + r",}\s*$"
+            if re.match(close_rx, stripped):
+                in_fence = False
+                for j in range(interior_start, i):
+                    masked_indices.add(j)
+            # else: still inside fence — don't add to masked_indices yet (may be unclosed)
+
+    # Second pass: build output, masking only confirmed-closed interior lines.
+    result: list[str] = []
+    for i, line in enumerate(lines):
+        if i in masked_indices:
+            stripped = line.rstrip("\r\n")
+            eol = line[len(stripped):]
+            result.append(" " * len(stripped) + eol)
+        else:
+            result.append(line)
+    return "".join(result)
+
+# ---------------------------------------------------------------------------
+# Security rules — 35 patterns across four categories
+# ---------------------------------------------------------------------------
+# Findings are mapped to errors (critical/high) or warnings (medium/low) by
+# validate() so that the existing (errors, warnings) return signature is
+# preserved.  The SECURITY prefix "[SECURITY:<SEVERITY>]" on each message
+# lets callers distinguish security findings from structural findings.
+# ---------------------------------------------------------------------------
+
+SECURITY_RULES: list[_SecurityRule] = [
+
+    # ── Prompt Injection ────────────────────────────────────────────────────
+    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
+          r"ignore\s+(all\s+)?previous\s+(instructions?|commands?|context|rules?|guidelines?|prompt)",
+          "Prompt injection: 'ignore previous instructions' pattern detected"),
+    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
+          r"disregard\s+(all\s+)?previous\s+(instructions?|commands?|context|rules?|guidelines?)",
+          "Prompt injection: 'disregard previous instructions' pattern detected"),
+    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
+          r"forget\s+(everything|all\s+previous|your\s+(instructions?|training|guidelines?|rules?))",
+          "Prompt injection: 'forget your instructions' pattern detected"),
+    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE | re.MULTILINE,
+          r"^system:\s",
+          "Prompt injection: line starts with 'system:' — may hijack system prompt"),
+    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
+          r"<system>",
+          "Prompt injection: <system> tag may inject system-level instructions"),
+    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
+          r"\bact\s+as\b.{0,40}\b(hacker|attacker|evil|malicious|unrestricted|jailbreak|no[- ]restriction)",
+          "Prompt injection: 'act as [unconstrained role]' persona injection pattern"),
+    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
+          r"you\s+are\s+now\b.{0,40}\b(hacker|unrestricted|jailbreak|DAN|evil|no[- ]restriction)",
+          "Prompt injection: 'you are now [persona]' identity injection pattern"),
+    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
+          r"\b(jailbreak|DAN)\s+mode\b",
+          "Prompt injection: jailbreak/DAN mode activation pattern detected"),
+    _rule("prompt-injection", SEVERITY_HIGH, re.IGNORECASE,
+          r"override\s+(your|all|the)\s+(instructions?|training|guidelines?|safety[\s_-]measures?|constraints?)",
+          "Prompt injection: instruction override attempt detected"),
+    _rule("prompt-injection", SEVERITY_MEDIUM, re.IGNORECASE,
+          r"\[INST\]|\[/INST\]",
+          "Prompt injection: LLaMA/instruction-tuning special tokens detected"),
+    _rule("prompt-injection", SEVERITY_MEDIUM, re.IGNORECASE,
+          r"pretend\s+(you\s+are|to\s+be).{0,60}(unrestricted|no\s+rules?|no\s+restrictions?|no\s+limits?|without\s+restriction)",
+          "Prompt injection: 'pretend to be unrestricted' pattern detected"),
+    _rule("prompt-injection", SEVERITY_MEDIUM, re.IGNORECASE,
+          r"<\|im_start\|>|<\|im_end\|>|<\|endoftext\|>|\[SYSTEM\]",
+          "Prompt injection: model special tokens detected (ChatML/GPT format)"),
+
+    # ── Destructive Commands ────────────────────────────────────────────────
+    _rule("destructive", SEVERITY_CRITICAL, re.IGNORECASE,
+          r"\brm\s+-[rRf]*[rf][rRf]*\s+[/~]",
+          "Destructive command: recursive/force rm on root or home path"),
+    _rule("destructive", SEVERITY_HIGH, re.IGNORECASE,
+          r"\brm\s+-[rRf]*[rf][rRf]*\s+(?:\*|\.\.?(?:[/\\]|(?=\s|$)))",
+          "Destructive command: recursive/force rm with glob or relative path (may wipe project directory)"),
+    _rule("destructive", SEVERITY_HIGH, re.IGNORECASE,
+          r"\bdel(?:ete)?\s+/[fsqFSQ]|\bdel\s+\*\.[*a-zA-Z]",
+          "Destructive command: Windows forced/silent delete pattern"),
+    _rule("destructive", SEVERITY_CRITICAL, re.IGNORECASE | re.MULTILINE,
+          r"\bformat\s+[a-zA-Z]:\s*(?:/[a-zA-Z0-9]|\s*$)",
+          "Destructive command: Windows disk format command detected"),
+    _rule("destructive", SEVERITY_HIGH, re.IGNORECASE,
+          r"\bDROP\s+(TABLE|DATABASE|SCHEMA|INDEX)\b",
+          "Destructive command: SQL DROP statement detected"),
+    _rule("destructive", SEVERITY_MEDIUM, re.IGNORECASE,
+          r"\bDELETE\s+FROM\s+\w",
+          "Destructive command: SQL DELETE FROM statement detected"),
+    _rule("destructive", SEVERITY_MEDIUM, re.IGNORECASE,
+          r"\bTRUNCATE\s+TABLE\b",
+          "Destructive command: SQL TRUNCATE TABLE statement detected"),
+    _rule("destructive", SEVERITY_HIGH, re.IGNORECASE,
+          r"\bkill\s+-9\s+(-1|1)\b",
+          "Destructive command: kill -9 all/init processes detected"),
+    _rule("destructive", SEVERITY_HIGH, re.IGNORECASE,
+          r"\bshutdown\s+(now|/[sS]|-[hHrRpP])\b",
+          "Destructive command: system shutdown/reboot command detected"),
+    _rule("destructive", SEVERITY_CRITICAL, re.IGNORECASE,
+          r"\bmkfs\b",
+          "Destructive command: filesystem format utility (mkfs) detected"),
+    _rule("destructive", SEVERITY_CRITICAL, re.IGNORECASE,
+          r"\bdd\b[^\n]*\bof=/dev/(?:(?:s|h|xv|v)d|nvme\d+n\d+|mmcblk\d+|dm-\d+|loop\d+|mapper/\S+)",
+          "Destructive command: dd writing to raw block device detected"),
+
+    # ── Exfiltration ────────────────────────────────────────────────────────
+    _rule("exfiltration", SEVERITY_CRITICAL, re.IGNORECASE,
+          r"\bcurl\b[^|\n`]*\|\s*(?:sh|bash|zsh|python3?|perl|ruby|exec)\b",
+          "Exfiltration: curl-pipe-to-shell pattern (remote code execution risk)"),
+    _rule("exfiltration", SEVERITY_CRITICAL, re.IGNORECASE,
+          r"\bwget\b[^|\n`]*\|\s*(?:sh|bash|zsh|python3?|perl)\b",
+          "Exfiltration: wget-pipe-to-shell pattern (remote code execution risk)"),
+    _rule("exfiltration", SEVERITY_CRITICAL, re.IGNORECASE,
+          r"\bbase64\s*(?:--decode|-d)\b[^|\n`]*\|\s*(?:sh|bash|zsh|python3?|perl)\b",
+          "Exfiltration: base64 decode pipe to shell (obfuscated RCE risk)"),
+    _rule("exfiltration", SEVERITY_HIGH, re.IGNORECASE,
+          r"\bnc\s+\d{1,3}(?:\.\d{1,3}){3}\s+\d{2,5}\b",
+          "Exfiltration: netcat to IP address/port detected"),
+    _rule("exfiltration", SEVERITY_HIGH, re.IGNORECASE,
+          r"(?:curl|wget)\b[^\n`]*\$\(",
+          "Exfiltration: command substitution in curl/wget URL (data exfiltration risk)"),
+    _rule("exfiltration", SEVERITY_HIGH, re.IGNORECASE,
+          r"(?:curl|wget)\b[^\n`]*\$\{?(?:[A-Z0-9]*_)*(?:TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIALS?|PRIVATE|AUTH)(?![A-Za-z])\w*\}?",
+          "Exfiltration: secret-like environment variable in curl/wget (credential leak risk)"),
+    _rule("exfiltration", SEVERITY_HIGH, re.IGNORECASE,
+          r"/dev/tcp/[^/\s]+/\d+",
+          "Exfiltration: bash /dev/tcp network redirect detected"),
+    _rule("exfiltration", SEVERITY_HIGH, re.IGNORECASE,
+          r"\bpython3?\s+-c\s+['\"][^'\"]*(?:import\s+socket|urllib\.request|http\.client|requests\.)"
+          r"[^'\"]*(?:send|post|get|connect)\(",
+          "Exfiltration: Python one-liner with network socket/HTTP call detected"),
+
+    # ── Obfuscation ─────────────────────────────────────────────────────────
+    _rule("obfuscation", SEVERITY_MEDIUM, 0,
+          r"[A-Za-z0-9+/]{100,}={0,2}",
+          "Obfuscation: unusually long base64-like string may hide a payload"),
+    _rule("obfuscation", SEVERITY_HIGH, 0,
+          "[\u202e\u2066\u2067\u2069\u200b\u200c\u200d\ufeff]",
+          "Obfuscation: Unicode direction-override or invisible character detected"),
+    _rule("obfuscation", SEVERITY_HIGH, re.IGNORECASE,
+          r"\beval\s*\(\s*base64_decode\s*\(",
+          "Obfuscation: eval(base64_decode()) PHP-style obfuscated code execution"),
+    _rule("obfuscation", SEVERITY_MEDIUM, re.IGNORECASE,
+          r"(?:\\x[0-9a-fA-F]{2}){4,}",
+          r"Obfuscation: multiple hex escape sequences (\xNN) may hide malicious content"),
+    _rule("obfuscation", SEVERITY_LOW, re.IGNORECASE,
+          r"(?:%[0-9a-fA-F]{2}){4,}",
+          "Obfuscation: multiple URL-encoded sequences may conceal path traversal or injection"),
+]
+
+
+def validate_security(content: str) -> list[Finding]:
+    """Run all security rules against *content* and return a list of Findings.
+
+    Fenced code blocks (``` or ~~~) are masked before scanning so that code
+    examples — e.g. a YAML snippet containing ``system: root`` — do not produce
+    false positives.  Line numbers are still reported relative to the original
+    content (newlines are preserved in the mask).
+
+    Each rule reports at most one Finding (first match) to avoid noise.
+    Line numbers are 1-based.  Never raises; bad regex is caught at module
+    import time by _rule().
+    """
+    scanned = _mask_code_blocks(content)
+    findings: list[Finding] = []
+    for rule in SECURITY_RULES:
+        m = rule.rx.search(scanned)
+        if m:
+            line_no = scanned[: m.start()].count("\n") + 1
+            findings.append(Finding(
+                severity=rule.severity,
+                category=rule.category,
+                message=f"{rule.message} (line {line_no})",
+                line=line_no,
+            ))
+    return findings
+
 def validate(path: Path) -> tuple[list[str], list[str]]:
     """Validate a SKILL.md file. Returns (errors, warnings)."""
     errors = []
@@ -34,7 +273,7 @@ def validate(path: Path) -> tuple[list[str], list[str]]:
     if not path.exists():
         return [f"File not found: {path}"], []
 
-    content = path.read_text(encoding="utf-8", errors="replace")
+    content = path.read_text(encoding="utf-8-sig", errors="replace")
     lines = content.splitlines()
 
     # --- 1. YAML frontmatter ---
@@ -215,6 +454,19 @@ def validate(path: Path) -> tuple[list[str], list[str]]:
                 f"Create the file or remove the link (setup-project.py won't deploy it)."
             )
 
+    # --- 7. Security checks ---
+    # validate_security() inspects the full content for injection, destructive
+    # commands, exfiltration patterns, and obfuscation.  Findings are folded
+    # into errors (critical/high) or warnings (medium/low) to preserve the
+    # existing (errors, warnings) contract.  Each message is prefixed with
+    # "[SECURITY:<SEVERITY>]" so callers can distinguish security findings.
+    for f in validate_security(content):
+        prefix = f"[SECURITY:{f.severity.upper()}] "
+        if f.severity in (SEVERITY_CRITICAL, SEVERITY_HIGH):
+            errors.append(prefix + f.message)
+        else:
+            warnings.append(prefix + f.message)
+
     return errors, warnings
 
 
@@ -235,7 +487,7 @@ def main():
 
     line_count = 0
     if display_path.exists():
-        line_count = len(display_path.read_text(encoding="utf-8", errors="replace").splitlines())
+        line_count = len(display_path.read_text(encoding="utf-8-sig", errors="replace").splitlines())
 
     print(f"\n{'='*60}")
     print(f"  Skill Validation: {display_path.name}")
@@ -255,14 +507,37 @@ def main():
             print(f"  • {w}")
         print()
 
-    if not errors and not warnings:
-        print("✅ All checks passed!\n")
-    elif not errors:
-        print("✅ No errors (warnings above are suggestions)\n")
-    else:
-        print("❌ FAIL — fix errors above before using this skill.\n")
+    # Severity summary — count security findings by severity level
+    def _sev(items: list[str], level: str) -> int:
+        tag = f"[SECURITY:{level.upper()}]"
+        return sum(1 for x in items if x.startswith(tag))
 
-    sys.exit(1 if errors else 0)
+    crit = _sev(errors, SEVERITY_CRITICAL)
+    high = _sev(errors, SEVERITY_HIGH)
+    med  = _sev(warnings, SEVERITY_MEDIUM)
+    low  = _sev(warnings, SEVERITY_LOW)
+    sec_total = crit + high + med + low
+    if sec_total:
+        parts = []
+        if crit: parts.append(f"critical={crit}")
+        if high: parts.append(f"high={high}")
+        if med:  parts.append(f"medium={med}")
+        if low:  parts.append(f"low={low}")
+        print(f"🔒 Security findings: {' '.join(parts)}\n")
+
+    # Verdict: FAIL / WARN / PASS
+    if errors:
+        print("Verdict: FAIL ❌\n")
+        print("❌ FAIL — fix errors above before using this skill.\n")
+        sys.exit(1)
+    elif warnings:
+        print("Verdict: WARN ⚠️\n")
+        print("✅ No errors (warnings above are suggestions)\n")
+        sys.exit(0)
+    else:
+        print("Verdict: PASS ✅\n")
+        print("✅ All checks passed!\n")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
