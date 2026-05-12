@@ -375,6 +375,19 @@ def test_main_sections_filter(tmp_db_path):
     test("main sections: other section absent", "Key Learnings" not in output)
 
 
+def test_main_sections_dedupes_duplicates(tmp_db_path):
+    import io
+    import contextlib
+
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        rc = ec.main(["--sections", "mistakes,mistakes,decisions", "--db", str(tmp_db_path)])
+    test("main sections dedupe: returns 0", rc == 0)
+    output = captured.getvalue()
+    test("main sections dedupe: Do-Not-Repeat rendered once", output.count("Do-Not-Repeat") == 1)
+    test("main sections dedupe: Decision Log rendered once", output.count("Decision Log") == 1)
+
+
 def test_main_invalid_section(tmp_db_path):
     try:
         rc = ec.main(["--sections", "nonexistent", "--db", str(tmp_db_path)])
@@ -770,6 +783,7 @@ if __name__ == "__main__":
         test_main_json_stdout(_tmp_db)
         test_main_output_file(_tmp_db, _out_dir)
         test_main_sections_filter(_tmp_db)
+        test_main_sections_dedupes_duplicates(_tmp_db)
         test_main_invalid_section(_tmp_db)
         test_main_bad_limit(_tmp_db)
         test_main_bad_confidence(_tmp_db)

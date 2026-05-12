@@ -37,6 +37,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import unittest.mock
 from contextlib import ExitStack
 from pathlib import Path
@@ -624,6 +625,31 @@ def test_from_file_no_entries_exits_nonzero():
     test("from_file_no_entries_exit: exit code is non-zero", code is not None and code != 0)
 
 
+def test_import_from_file_not_found_uses_stderr():
+    """File-not-found diagnostics should go to stderr, not stdout."""
+    captured_out = io.StringIO()
+    captured_err = io.StringIO()
+    with unittest.mock.patch("sys.stdout", captured_out), unittest.mock.patch("sys.stderr", captured_err):
+        rv = learn.import_from_file("nonexistent.md")
+    test("from_file_not_found_stderr: returns 0", rv == 0)
+    test("from_file_not_found_stderr: stdout stays empty", captured_out.getvalue() == "")
+    test("from_file_not_found_stderr: stderr has message", "Error: File not found" in captured_err.getvalue())
+
+
+def test_import_from_file_no_entries_uses_stderr():
+    """No-entry diagnostics should go to stderr, not stdout."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "no-entries.md"
+        path.write_text("plain text without headers\n", encoding="utf-8")
+        captured_out = io.StringIO()
+        captured_err = io.StringIO()
+        with unittest.mock.patch("sys.stdout", captured_out), unittest.mock.patch("sys.stderr", captured_err):
+            rv = learn.import_from_file(str(path))
+    test("from_file_no_entries_stderr: returns 0", rv == 0)
+    test("from_file_no_entries_stderr: stdout stays empty", captured_out.getvalue() == "")
+    test("from_file_no_entries_stderr: stderr has message", "No entries found" in captured_err.getvalue())
+
+
 # ===========================================================================
 # Test 23 — --from-file with no filepath argument → exit non-zero
 # ===========================================================================
@@ -797,6 +823,8 @@ def _run_all():
     # Exit-code regressions: failed --from-file must exit non-zero
     test_from_file_not_found_exits_nonzero()
     test_from_file_no_entries_exits_nonzero()
+    test_import_from_file_not_found_uses_stderr()
+    test_import_from_file_no_entries_uses_stderr()
     # Bug: --from-file with no filepath must exit non-zero
     test_from_file_missing_arg_exits_nonzero()
     # Fix-1 regressions: header-only import must exit 0

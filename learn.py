@@ -1167,7 +1167,7 @@ def import_from_file(filepath: str) -> int:
     """
     path = Path(filepath)
     if not path.exists():
-        print(f"Error: File not found: {filepath}")
+        print(f"Error: File not found: {filepath}", file=sys.stderr)
         return 0
 
     content = path.read_text(encoding="utf-8", errors="replace")
@@ -1196,7 +1196,7 @@ def import_from_file(filepath: str) -> int:
         entries.append(current)
 
     if not entries:
-        print("No entries found. Use format: ## category: Title")
+        print("No entries found. Use format: ## category: Title", file=sys.stderr)
         return 0
 
     print(f"Importing {len(entries)} entries from {filepath}...")

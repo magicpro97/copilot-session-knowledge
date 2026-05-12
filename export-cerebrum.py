@@ -379,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Validate and normalise sections
     raw_sections = [s.strip().lower() for s in args.sections.split(",") if s.strip()]
+    raw_sections = list(dict.fromkeys(raw_sections))
     invalid = [s for s in raw_sections if s not in _SECTION_META]
     if invalid:
         parser.error(
