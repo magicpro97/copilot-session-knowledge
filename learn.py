@@ -1567,7 +1567,8 @@ def main():
         _vi_select = (
             ",\n                   COALESCE(valence, '') AS valence,"
             "\n                   COALESCE(intensity, 0.5) AS intensity"
-            if _has_vi else ""
+            if _has_vi
+            else ""
         )
         row = db.execute(
             f"""
