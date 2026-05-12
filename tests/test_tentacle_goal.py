@@ -5539,5 +5539,353 @@ class TestGoalLoop(unittest.TestCase):
         self.assertIn("G2", blocked[0]["blocked_by_gates"])
 
 
+# ---------------------------------------------------------------------------
+# Tests for --auto-dispatch dispatch/wait cycle (issue #129)
+# ---------------------------------------------------------------------------
+
+
+class TestGoalLoopAutoDispatch(unittest.TestCase):
+    """
+    Test the dispatch → wait → eval → continue/complete cycle.
+
+    By default ``goal loop`` dispatches ready tentacles and waits for handoffs.
+    Pass ``--no-auto-dispatch`` to skip that step.
+
+    Uses injected _dispatch_fn / _sleep_fn / _monotonic_fn instead of real subprocess
+    and clock calls so tests are deterministic and fast.
+    """
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "loop_autodispatch"
+        _, self.tentacles = _make_octogent(self.base)
+        _init_goal(self.tentacles, title="AutoDispatch Goal", max_iterations=10)
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    # -- helpers --
+
+    def _link_tentacle(self, name: str, **meta_extra) -> Path:
+        """Create a tentacle and link it to the current goal iteration."""
+        d = _make_tentacle(name, self.tentacles, **meta_extra)
+        state = T._goal_load(self.tentacles)
+        state.setdefault("tentacles", [])
+        if name not in state["tentacles"]:
+            state["tentacles"].append(name)
+        iter_key = str(T._goal_current_iteration(state))
+        state.setdefault("iterations", {}).setdefault(iter_key, {"tentacles": []})
+        if name not in state["iterations"][iter_key]["tentacles"]:
+            state["iterations"][iter_key]["tentacles"].append(name)
+        T._goal_write(self.tentacles, state)
+        return d
+
+    def _add_passing_criterion(self) -> None:
+        state = T._goal_load(self.tentacles)
+        state.setdefault("success_criteria", []).append(
+            {
+                "id": "sc-pass",
+                "description": "always passes",
+                "status": "pending",
+                "verification_command": _py_inline("raise SystemExit(0)"),
+            }
+        )
+        T._goal_write(self.tentacles, state)
+
+    def _make_instant_monotonic(self, advance: float = 1000.0):
+        """Return a monotonic mock that jumps `advance` seconds on every call."""
+        calls = [0.0]
+
+        def _mono():
+            calls[0] += advance
+            return calls[0]
+
+        return _mono
+
+    def _run_auto(
+        self,
+        *,
+        max_iterations=None,
+        timeout=60,
+        poll_interval=0,
+        poll_timeout=60,
+        dispatch_fn=None,
+        sleep_fn=None,
+        monotonic_fn=None,
+        auto_dispatch=True,
+    ) -> None:
+        args = _fake_args(
+            goal_action="loop",
+            max_iterations=max_iterations,
+            timeout=timeout,
+            auto_dispatch=auto_dispatch,
+            poll_interval=poll_interval,
+            poll_timeout=poll_timeout,
+            # attrs required by _goal_dispatch_command
+            agent_type="general-purpose",
+            model="claude-sonnet-4.6",
+            briefing=False,
+            bundle=True,
+            worktree=False,
+        )
+        with patch("builtins.print"):
+            T._cmd_goal_loop(
+                args,
+                self.tentacles,
+                _dispatch_fn=dispatch_fn if dispatch_fn is not None else (lambda cmd, name: None),
+                _sleep_fn=sleep_fn if sleep_fn is not None else (lambda s: None),
+                _monotonic_fn=monotonic_fn,
+            )
+
+    # -- tests --
+
+    def test_dispatch_fn_called_for_ready_tentacle(self):
+        """_dispatch_fn must be called for each ready tentacle when --auto-dispatch is active."""
+        self._link_tentacle("task-a")
+        dispatched: list[str] = []
+
+        def mock_dispatch(cmd, name):
+            dispatched.append(name)
+            _mark_terminal_handoff(self.tentacles, name, "DONE")
+
+        self._add_passing_criterion()
+        self._run_auto(max_iterations=2, dispatch_fn=mock_dispatch)
+        self.assertIn("task-a", dispatched)
+
+    def test_loop_completes_after_dispatch_resolves_tentacle(self):
+        """When dispatch_fn resolves the tentacle, loop reaches 'completed' on criteria pass."""
+        self._link_tentacle("task-b")
+
+        def mock_dispatch(cmd, name):
+            _mark_terminal_handoff(self.tentacles, name, "DONE")
+
+        self._add_passing_criterion()
+        self._run_auto(max_iterations=3, dispatch_fn=mock_dispatch)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_COMPLETED)
+
+    def test_poll_timeout_marks_budget_limited(self):
+        """If tentacle never resolves before poll_timeout, goal is marked budget_limited."""
+        self._link_tentacle("slow-task")
+        self._add_passing_criterion()
+        # Advance monotonic by 1000s per call so the deadline is always exceeded.
+        self._run_auto(
+            max_iterations=2,
+            dispatch_fn=lambda cmd, name: None,  # never resolves tentacle
+            monotonic_fn=self._make_instant_monotonic(advance=1000.0),
+            poll_timeout=60,
+        )
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+
+    def test_budget_limited_reason_mentions_poll_timeout(self):
+        """budget_limited_reason must reference poll_timeout on handoff timeout."""
+        self._link_tentacle("stuck-task")
+        self._add_passing_criterion()
+        self._run_auto(
+            max_iterations=2,
+            dispatch_fn=lambda cmd, name: None,
+            monotonic_fn=self._make_instant_monotonic(advance=1000.0),
+            poll_timeout=42,
+        )
+        state = T._goal_load(self.tentacles)
+        reason = state.get("budget_limited_reason", "")
+        self.assertIn("poll_timeout", reason)
+
+    def test_dispatch_fn_called_by_default_no_flags_needed(self):
+        """Default goal loop (no auto_dispatch attr) MUST invoke _dispatch_fn for ready tentacles."""
+        self._link_tentacle("task-default")
+        dispatched: list[str] = []
+
+        def mock_dispatch(cmd, name):
+            dispatched.append(name)
+            _mark_terminal_handoff(self.tentacles, name, "DONE")
+
+        # Build args with NO auto_dispatch attribute — mirrors argparse default (True).
+        args = _fake_args(
+            goal_action="loop",
+            max_iterations=2,
+            timeout=60,
+            # auto_dispatch intentionally absent — _cmd_goal_loop falls back to getattr default True
+            poll_interval=0,
+            poll_timeout=60,
+            agent_type="general-purpose",
+            model="claude-sonnet-4.6",
+            briefing=False,
+            bundle=True,
+            worktree=False,
+        )
+        self._add_passing_criterion()
+        with patch("builtins.print"):
+            T._cmd_goal_loop(
+                args,
+                self.tentacles,
+                _dispatch_fn=mock_dispatch,
+                _sleep_fn=lambda s: None,
+            )
+        self.assertIn("task-default", dispatched, "Default path must dispatch ready tentacles")
+
+    def test_dispatch_fn_not_called_with_no_auto_dispatch_flag(self):
+        """With auto_dispatch=False (--no-auto-dispatch), _dispatch_fn must NOT be invoked."""
+        self._link_tentacle("task-c")
+        dispatched: list[str] = []
+        self._add_passing_criterion()
+        self._run_auto(
+            max_iterations=1,
+            auto_dispatch=False,
+            dispatch_fn=lambda cmd, name: dispatched.append(name),
+        )
+        self.assertEqual(dispatched, [], "_dispatch_fn must NOT be called when --no-auto-dispatch")
+
+    def test_poll_wait_resumes_after_tentacle_resolves_during_sleep(self):
+        """Tentacle resolving during a sleep cycle causes loop to proceed to criteria."""
+        self._link_tentacle("async-task")
+        resolved = [False]
+
+        def mock_dispatch(cmd, name):
+            pass  # agent is "in flight"; resolution happens during poll sleep
+
+        call_count = [0]
+
+        def mock_sleep(seconds):
+            # On first sleep, simulate agent completing handoff.
+            if not resolved[0]:
+                _mark_terminal_handoff(self.tentacles, "async-task", "DONE")
+                resolved[0] = True
+            call_count[0] += 1
+
+        self._add_passing_criterion()
+        self._run_auto(
+            max_iterations=3,
+            dispatch_fn=mock_dispatch,
+            sleep_fn=mock_sleep,
+            poll_timeout=60,
+        )
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_COMPLETED)
+        self.assertTrue(resolved[0], "mock_sleep should have been called at least once")
+
+    def test_auto_dispatch_skips_dispatch_when_no_ready_tentacles(self):
+        """With no ready tentacles, dispatch_fn is never called."""
+        # Link a tentacle that is already resolved.
+        self._link_tentacle("done-task", status="completed", terminal_status="DONE")
+        dispatched: list[str] = []
+        self._add_passing_criterion()
+        self._run_auto(dispatch_fn=lambda cmd, name: dispatched.append(name))
+        self.assertEqual(dispatched, [])
+
+    def test_goal_loop_help_includes_no_auto_dispatch_flag(self):
+        """--no-auto-dispatch flag must appear in `goal loop --help` output."""
+        import subprocess as _sp
+
+        result = _sp.run(
+            [sys.executable, "tentacle.py", "goal", "loop", "--help"],
+            capture_output=True,
+            text=True,
+            cwd=str(TOOLS_DIR),
+        )
+        self.assertIn("--no-auto-dispatch", result.stdout)
+        self.assertIn("--poll-interval", result.stdout)
+        self.assertIn("--poll-timeout", result.stdout)
+
+    # -- concurrency-cap tests --
+
+    def test_concurrency_cap_does_not_deadlock_with_extra_ready_tentacles(self):
+        """
+        When more ready tentacles exist than the concurrency cap allows, the poll
+        loop must NOT wait on the un-dispatched ones.
+
+        Scenario: 5 ready tentacles, concurrency=4 (hard-coded in _goal_loop_dispatch_and_wait).
+        The dispatch_fn resolves the 4 dispatched ones immediately; the 5th remains "ready"
+        (not dispatched).  The call must return True (not time out).
+        """
+        names = [f"task-cap-{i}" for i in range(5)]
+        for name in names:
+            self._link_tentacle(name)
+
+        dispatched: list[str] = []
+
+        def mock_dispatch(cmd, name):
+            dispatched.append(name)
+            _mark_terminal_handoff(self.tentacles, name, "DONE")
+
+        self._add_passing_criterion()
+        # Tight poll_timeout — would fire if the poll waits on the un-dispatched entry.
+        self._run_auto(
+            max_iterations=3,
+            dispatch_fn=mock_dispatch,
+            poll_timeout=5,
+        )
+        # Exactly 4 dispatched (concurrency cap).
+        self.assertEqual(len(dispatched), 4, f"Expected 4 dispatched, got {len(dispatched)}")
+        # Goal must complete (not be budget_limited).
+        state = T._goal_load(self.tentacles)
+        self.assertNotEqual(
+            state.get("status"),
+            T.GOAL_STATUS_BUDGET_LIMITED,
+            "Goal must NOT be budget_limited when the concurrency cap deferred a ready tentacle",
+        )
+
+    def test_concurrency_cap_poll_only_includes_dispatched_names(self):
+        """
+        _goal_loop_dispatch_and_wait must return all_resolved=True as soon as the
+        dispatched batch resolves, even when extra ready tentacles were deferred.
+        Uses a fast-advancing monotonic so any spurious wait would exceed poll_timeout.
+        """
+        names = [f"task-poll-{i}" for i in range(6)]
+        for name in names:
+            self._link_tentacle(name)
+
+        dispatched: list[str] = []
+
+        def mock_dispatch(cmd, name):
+            dispatched.append(name)
+            _mark_terminal_handoff(self.tentacles, name, "DONE")
+
+        self._add_passing_criterion()
+        # If the poll erroneously waits on un-dispatched entries the monotonic mock
+        # would advance past poll_timeout and budget_limit the goal.
+        self._run_auto(
+            max_iterations=5,
+            dispatch_fn=mock_dispatch,
+            poll_timeout=60,
+        )
+        state = T._goal_load(self.tentacles)
+        self.assertNotEqual(
+            state.get("status"),
+            T.GOAL_STATUS_BUDGET_LIMITED,
+            "Poll must not time out waiting on un-dispatched (concurrency-deferred) entries",
+        )
+
+    def test_timeout_still_fires_when_dispatched_entry_stalls(self):
+        """
+        Even with concurrency-cap deferred entries present, a genuinely stalled
+        dispatched tentacle must still trigger budget_limited (timeout still works).
+        """
+        # 5 tentacles: 4 will be dispatched; the 5th deferred.
+        names = [f"task-stall-{i}" for i in range(5)]
+        for name in names:
+            self._link_tentacle(name)
+
+        def mock_dispatch_stall(cmd, name):
+            # Never resolves any tentacle — simulates stalled agents.
+            pass
+
+        self._add_passing_criterion()
+        self._run_auto(
+            max_iterations=2,
+            dispatch_fn=mock_dispatch_stall,
+            monotonic_fn=self._make_instant_monotonic(advance=1000.0),
+            poll_timeout=10,
+        )
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(
+            state.get("status"),
+            T.GOAL_STATUS_BUDGET_LIMITED,
+            "Stalled dispatched tentacles must still cause budget_limited",
+        )
+        reason = state.get("budget_limited_reason", "")
+        self.assertIn("poll_timeout", reason)
+
+
 if __name__ == "__main__":
     unittest.main()
