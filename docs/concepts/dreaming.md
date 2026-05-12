@@ -271,3 +271,69 @@ Fields written by the scheduler:
   daemon re-reads `sync-config.json` at the start of every loop iteration, so
   changes made with `python sync-config.py` are picked up automatically on the
   next cycle.
+
+## sessionStart Auto-Injection
+
+`MEMORY.md` is automatically **prepended** into every `sessionStart` auto-briefing by
+`AutoBriefingRule` — natively in `sk-rust/src/hooks/rules.rs` for Rust-binary installs,
+and via `hooks/rules/briefing.py` for the Python fallback — and by the standalone
+`hooks/auto-briefing.py` script.  This surfaces the most valuable promoted entries
+before other briefing output at the beginning of every AI session without requiring
+the operator to run an extra command.
+
+Both runtime paths implement the same semantics: config-guard, max-age check, token
+budget cap, and graceful no-op behavior.
+
+### Guards
+
+Injection is a **graceful no-op** when any of the following apply:
+
+| Guard | Behaviour |
+|-------|-----------|
+| `memory_inject_enabled` explicitly set to `false` in `~/.copilot/hooks-config.json` | Explicit opt-out; injection is **on by default** |
+| `MEMORY.md` does not exist in the project root | File missing |
+| `MEMORY.md` is older than *max-age* | Default: 1 day |
+| Effective content is empty | Silently skipped |
+
+### Token budget
+
+Injected content is truncated to an approximate token budget (1 token ≈ 4 chars).
+The default budget is **500 tokens**.  Truncated content ends with
+`… (truncated to token budget)`.
+
+### Configuration
+
+Config is stored in `~/.copilot/hooks-config.json` using the exact key names from
+issue #161:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `memory_inject_enabled` | bool | `true` | Set to `false` to skip injection |
+| `memory_inject_max_age_days` | number | `1` | Max file age in days (e.g. `0.5` = 12 h) |
+| `memory_inject_max_tokens` | int | `500` | Approximate token cap |
+
+Example `~/.copilot/hooks-config.json`:
+
+```json
+{
+  "memory_inject_enabled": true,
+  "memory_inject_max_age_days": 1,
+  "memory_inject_max_tokens": 500
+}
+```
+
+### Typical workflow
+
+```bash
+# 1. Run dream to promote entries into MEMORY.md
+sk dream
+
+# 2. Start a new session — MEMORY.md prepended automatically at sessionStart
+#    (hook_runner dispatches AutoBriefingRule → _load_memory_md())
+
+# 3. To force a refresh of injected content mid-day:
+sk dream               # re-scores and overwrites MEMORY.md
+
+# 4. To opt out permanently, set in ~/.copilot/hooks-config.json:
+#    { "memory_inject_enabled": false }
+```

@@ -222,10 +222,130 @@ impl HookRule for SessionStartRule {
 }
 
 // ---------------------------------------------------------------------------
+// MEMORY.md injection helpers (issue #161)
+// ---------------------------------------------------------------------------
+
+/// Load `~/.copilot/hooks-config.json`; returns a null `Value` on any error.
+///
+/// Mirrors `hooks/rules/briefing.py::_load_hooks_config()`.
+fn load_hooks_config() -> Value {
+    let home = resolve_home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let path = home.join(".copilot").join("hooks-config.json");
+    if path.is_file() {
+        if let Ok(text) = fs::read_to_string(&path) {
+            if let Ok(val) = serde_json::from_str::<Value>(&text) {
+                return val;
+            }
+        }
+    }
+    Value::Null
+}
+
+/// Load `MEMORY.md` from `cwd` (defaults to the process working directory)
+/// for injection into the `sessionStart` auto-briefing.
+///
+/// Returns the (possibly truncated) file content when:
+///   - `memory_inject_enabled` is not explicitly `false` in hooks-config,
+///   - `MEMORY.md` exists in `cwd`,
+///   - the file is not older than `memory_inject_max_age_days` (default 1 day),
+///   - the effective content is non-empty.
+///
+/// Returns `None` for a graceful no-op in all other cases.
+///
+/// Config keys (`~/.copilot/hooks-config.json`):
+///   `memory_inject_enabled`      — bool, default `true`
+///   `memory_inject_max_tokens`   — int, default `500` (1 token ≈ 4 chars)
+///   `memory_inject_max_age_days` — number, default `1`
+///
+/// Mirrors `hooks/rules/briefing.py::_load_memory_md()`.
+fn load_memory_md(cwd: Option<&Path>) -> Option<String> {
+    let cfg = load_hooks_config();
+
+    // memory_inject_enabled: default true; skip only when explicitly false.
+    if cfg
+        .get("memory_inject_enabled")
+        .and_then(|v| v.as_bool())
+        .map(|b| !b)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    // Max age in seconds; default 1 day (86 400 s).
+    let max_age_secs: u64 = cfg
+        .get("memory_inject_max_age_days")
+        .and_then(|v| v.as_f64())
+        .map(|days| (days * 86_400.0) as u64)
+        .unwrap_or(86_400);
+
+    // Token budget (1 token ≈ 4 chars); default 500 tokens.
+    let token_budget: u64 = cfg
+        .get("memory_inject_max_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(500);
+
+    let base = cwd
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let memory_path = base.join("MEMORY.md");
+
+    if !memory_path.is_file() {
+        return None;
+    }
+
+    // Age guard: skip if the file is older than max_age_secs.
+    // `duration_since` returns Err when mtime is in the future (clock skew);
+    // treat that as age = 0 (fresh), matching the Python hook behaviour where
+    //   age_secs = time.time() - mtime  →  negative  →  not > max_age_secs.
+    let age_ok = memory_path
+        .metadata()
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(|mtime| {
+            SystemTime::now()
+                .duration_since(mtime)
+                .unwrap_or(Duration::ZERO)
+                .as_secs()
+                <= max_age_secs
+        })
+        .unwrap_or(false);
+    if !age_ok {
+        return None;
+    }
+
+    let content = fs::read_to_string(&memory_path).ok()?;
+    let mut trimmed = content.trim().to_string();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Approximate token budget: 1 token ≈ 4 Unicode characters (matching
+    // Python's len() semantics which counts Unicode code points, not bytes).
+    let char_limit = ((token_budget * 4) as usize).max(1);
+    if trimmed.chars().count() > char_limit {
+        // Find the byte offset of the char_limit-th Unicode scalar so that
+        // String::truncate lands on a valid char boundary.  This preserves
+        // UTF-8 safety while counting characters rather than bytes, matching
+        // Python's character-count semantics for non-ASCII content (issue #161).
+        let byte_offset = trimmed
+            .char_indices()
+            .nth(char_limit)
+            .map(|(i, _)| i)
+            .unwrap_or(trimmed.len());
+        trimmed.truncate(byte_offset);
+        trimmed = trimmed.trim_end().to_string();
+        trimmed.push_str("\n\u{2026} (truncated to token budget)");
+    }
+
+    Some(trimmed)
+}
+
+// ---------------------------------------------------------------------------
 // AutoBriefingRule
 // ---------------------------------------------------------------------------
 
-/// Run `briefing.py` at session start and sign HMAC markers (wave9).
+/// Run `briefing.py` at session start, prepend `MEMORY.md`, and sign HMAC
+/// markers (wave9, extended in wave10 with issue #161 MEMORY.md injection).
 ///
 /// Ports `hooks/rules/briefing.py::AutoBriefingRule`.
 ///
@@ -234,10 +354,13 @@ impl HookRule for SessionStartRule {
 ///   2. Cleans up stale session-specific markers (own session: deleted and
 ///      re-signed below; orphaned `briefing-done*` markers older than 2h:
 ///      deleted).
-///   3. Spawns `briefing.py <project> --budget 2000` as a subprocess.
-///   4. Signs `briefing-done` and `briefing-done-{session_id}` HMAC markers
+///   3. Prepends `MEMORY.md` content when present, fresh, and injection is
+///      not explicitly disabled via `hooks-config.json` (issue #161).
+///   4. Spawns `briefing.py <project> --budget 2000` as a subprocess and
+///      captures its stdout to follow the MEMORY.md section.
+///   5. Signs `briefing-done` and `briefing-done-{session_id}` HMAC markers
 ///      via [`marker_auth::sign_marker`].
-///   5. Returns an informational message.
+///   6. Returns an informational message.
 ///
 /// Fail-open at every step:
 ///   - `briefing.py` absent → `None` (no briefing, no markers).
@@ -245,6 +368,7 @@ impl HookRule for SessionStartRule {
 ///   - Hung subprocess → killed after 10s with a timeout notice (mirrors Python).
 ///   - Marker signing error → silently skipped.
 ///   - Filesystem errors during cleanup → silently swallowed.
+///   - MEMORY.md absent, stale, or disabled → silently skipped (no-op).
 ///
 /// Informational only; never produces `permissionDecision`.
 pub struct AutoBriefingRule;
@@ -352,17 +476,44 @@ impl HookRule for AutoBriefingRule {
             "  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}".to_string(),
         ];
 
-        // --- Spawn briefing.py (fail-open; enforce the same 10s timeout as Python) ---
+        // --- MEMORY.md injection (issue #161): prepend promoted knowledge ---
+        if let Some(mem) = load_memory_md(None) {
+            lines.push("\n  \u{1f4cc} MEMORY.md (promoted knowledge):".to_string());
+            for mem_line in mem.lines() {
+                lines.push(format!("  {mem_line}"));
+            }
+            lines.push("  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}".to_string());
+        }
+
+        // --- Spawn briefing.py (capture stdout so it follows MEMORY.md in the message) ---
+        // Drain stdout in a dedicated thread to prevent pipe-buffer deadlock.
+        // If briefing.py writes more bytes than the OS pipe buffer (~64 KB on
+        // Linux, 4–64 KB on Windows) the child blocks mid-write and never
+        // exits; the parent's try_wait() loop sees None forever and eventually
+        // kills what appeared to be a 10-second hang — even though the child
+        // had real output ready.  Moving the read into a separate thread lets
+        // the OS buffer stay empty while we poll for exit.
         let python = python_exe();
         match Command::new(python)
             .arg(&briefing_script)
             .arg(&project)
             .args(["--budget", "2000"])
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
         {
             Ok(mut child) => {
+                // Take the stdout handle *before* any wait/poll call so the
+                // reader thread can drain the pipe concurrently.
+                let reader_thread = child.stdout.take().map(|mut stdout| {
+                    std::thread::spawn(move || -> Vec<u8> {
+                        let mut buf = Vec::new();
+                        let _ = stdout.read_to_end(&mut buf);
+                        buf
+                    })
+                });
                 let deadline = Instant::now() + Duration::from_secs(10);
+                let mut timed_out = false;
                 loop {
                     match child.try_wait() {
                         Ok(Some(_status)) => break,
@@ -370,12 +521,27 @@ impl HookRule for AutoBriefingRule {
                             if Instant::now() >= deadline {
                                 let _ = child.kill();
                                 let _ = child.wait();
-                                lines.push("  \u{23f1} Briefing timed out (10s)".to_string());
+                                timed_out = true;
                                 break;
                             }
                             std::thread::sleep(Duration::from_millis(50));
                         }
                         Err(_) => break,
+                    }
+                }
+                if timed_out {
+                    // Reap the reader thread (pipe is closed after kill+wait).
+                    if let Some(handle) = reader_thread {
+                        let _ = handle.join();
+                    }
+                    lines.push("  \u{23f1} Briefing timed out (10s)".to_string());
+                } else if let Some(handle) = reader_thread {
+                    if let Ok(bytes) = handle.join() {
+                        let output = String::from_utf8_lossy(&bytes);
+                        let briefing_out = output.trim_end().to_string();
+                        if !briefing_out.is_empty() {
+                            lines.push(briefing_out);
+                        }
                     }
                 }
             }
@@ -4534,6 +4700,7 @@ mod tests {
     fn auto_briefing_is_fail_open_when_briefing_py_absent() {
         // Point SK_TOOLS_DIR at an empty directory so briefing.py is absent.
         use std::fs;
+        let _guard = env_lock();
         let tmp = std::env::temp_dir().join("sk_auto_briefing_test");
         let _ = fs::create_dir_all(&tmp);
 
@@ -4561,6 +4728,7 @@ mod tests {
     fn auto_briefing_never_denies() {
         // Even when briefing.py is absent, the rule must not return a deny.
         use std::fs;
+        let _guard = env_lock();
         let tmp = std::env::temp_dir().join("sk_auto_briefing_no_deny_test");
         let _ = fs::create_dir_all(&tmp);
 
@@ -4579,6 +4747,346 @@ mod tests {
         match old {
             Some(v) => std::env::set_var("SK_TOOLS_DIR", v),
             None => std::env::remove_var("SK_TOOLS_DIR"),
+        }
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // --- load_memory_md helper tests (issue #161 native parity) ---
+
+    /// Graceful no-op: MEMORY.md absent → returns None.
+    #[test]
+    fn memory_inject_returns_none_when_memory_md_absent() {
+        let tmp = std::env::temp_dir().join("sk_mem_inject_absent");
+        let _ = std::fs::create_dir_all(&tmp);
+        // Ensure no MEMORY.md in tmp.
+        let _ = std::fs::remove_file(tmp.join("MEMORY.md"));
+        let result = load_memory_md(Some(&tmp));
+        assert!(
+            result.is_none(),
+            "load_memory_md must return None when MEMORY.md is absent"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Fresh MEMORY.md with default config → returns content.
+    #[test]
+    fn memory_inject_returns_content_when_memory_md_present() {
+        use std::fs;
+        let _guard = env_lock();
+        let tmp = std::env::temp_dir().join("sk_mem_inject_present");
+        let copilot_dir = tmp.join(".copilot");
+        let _ = fs::create_dir_all(&copilot_dir);
+        fs::write(tmp.join("MEMORY.md"), "## Key Facts\n- Important thing\n").unwrap();
+        // No hooks-config.json → defaults apply (enabled=true, max_age=1 day).
+        let old_home = std::env::var("HOME").ok();
+        let old_up = std::env::var("USERPROFILE").ok();
+        std::env::set_var("HOME", &tmp);
+        std::env::set_var("USERPROFILE", &tmp);
+
+        let result = load_memory_md(Some(&tmp));
+        assert!(
+            result.is_some(),
+            "load_memory_md must return content when MEMORY.md is fresh"
+        );
+        let content = result.unwrap();
+        assert!(
+            content.contains("Important thing"),
+            "returned content must include MEMORY.md text; got: {content:?}"
+        );
+
+        match old_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match old_up {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Explicit opt-out: `memory_inject_enabled: false` → returns None even with fresh file.
+    #[test]
+    fn memory_inject_skipped_when_disabled_in_config() {
+        use std::fs;
+        let _guard = env_lock();
+        let tmp = std::env::temp_dir().join("sk_mem_inject_disabled");
+        let copilot_dir = tmp.join(".copilot");
+        let _ = fs::create_dir_all(&copilot_dir);
+        // Explicit opt-out in hooks-config.json.
+        fs::write(
+            copilot_dir.join("hooks-config.json"),
+            r#"{"memory_inject_enabled": false}"#,
+        )
+        .unwrap();
+        // Write a fresh MEMORY.md so file-absence is not the reason for skip.
+        fs::write(
+            tmp.join("MEMORY.md"),
+            "## Should not appear\n- Hidden content\n",
+        )
+        .unwrap();
+
+        let old_home = std::env::var("HOME").ok();
+        let old_up = std::env::var("USERPROFILE").ok();
+        std::env::set_var("HOME", &tmp);
+        std::env::set_var("USERPROFILE", &tmp);
+
+        let result = load_memory_md(Some(&tmp));
+        assert!(
+            result.is_none(),
+            "load_memory_md must return None when memory_inject_enabled is false"
+        );
+
+        match old_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match old_up {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Token budget truncation: content longer than budget ends with truncation notice.
+    #[test]
+    fn memory_inject_truncates_to_token_budget() {
+        use std::fs;
+        let _guard = env_lock();
+        let tmp = std::env::temp_dir().join("sk_mem_inject_truncate");
+        let copilot_dir = tmp.join(".copilot");
+        let _ = fs::create_dir_all(&copilot_dir);
+        // Very small budget: 5 tokens × 4 chars = 20-char limit.
+        fs::write(
+            copilot_dir.join("hooks-config.json"),
+            r#"{"memory_inject_max_tokens": 5}"#,
+        )
+        .unwrap();
+        // Write MEMORY.md much longer than 20 chars.
+        let long_content = "A".repeat(200);
+        fs::write(tmp.join("MEMORY.md"), &long_content).unwrap();
+
+        let old_home = std::env::var("HOME").ok();
+        let old_up = std::env::var("USERPROFILE").ok();
+        std::env::set_var("HOME", &tmp);
+        std::env::set_var("USERPROFILE", &tmp);
+
+        let result = load_memory_md(Some(&tmp));
+        assert!(
+            result.is_some(),
+            "load_memory_md must return truncated content (not None)"
+        );
+        let content = result.unwrap();
+        assert!(
+            content.contains("truncated to token budget"),
+            "truncated output must include notice; got: {content:?}"
+        );
+        assert!(
+            content.len() < long_content.len(),
+            "truncated output must be shorter than original"
+        );
+
+        match old_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match old_up {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Non-ASCII (multi-byte UTF-8) content must truncate without panic.
+    ///
+    /// token_budget = 0 → char_limit = max(1, 0) = 1.  The content starts
+    /// with '中' (3 UTF-8 bytes), so byte 1 is a continuation byte — not a
+    /// char boundary.  The old `String::truncate(1)` would panic; the fixed
+    /// `is_char_boundary` walk-back must produce valid UTF-8 + truncation notice.
+    #[test]
+    fn memory_inject_truncates_non_ascii_utf8_safe() {
+        use std::fs;
+        let _guard = env_lock();
+        let tmp = std::env::temp_dir().join("sk_mem_inject_utf8_safe");
+        let copilot_dir = tmp.join(".copilot");
+        let _ = fs::create_dir_all(&copilot_dir);
+        // token_budget 0 → char_limit = max(1, 0*4) = 1; the first byte of
+        // '中' (U+4E2D, encoded as [0xE4,0xB8,0xAD]) is a char boundary but
+        // byte 1 is not — the old truncate(1) would panic here.
+        fs::write(
+            copilot_dir.join("hooks-config.json"),
+            r#"{"memory_inject_max_tokens": 0}"#,
+        )
+        .unwrap();
+        let content = "中文重要笔记".repeat(20);
+        fs::write(tmp.join("MEMORY.md"), &content).unwrap();
+
+        let old_home = std::env::var("HOME").ok();
+        let old_up = std::env::var("USERPROFILE").ok();
+        std::env::set_var("HOME", &tmp);
+        std::env::set_var("USERPROFILE", &tmp);
+
+        // Must not panic; must return Some with a truncation notice.
+        let result = load_memory_md(Some(&tmp));
+        assert!(
+            result.is_some(),
+            "non-ASCII MEMORY.md with tiny budget must return Some (not panic)"
+        );
+        let text = result.unwrap();
+        assert!(
+            text.contains("truncated to token budget"),
+            "output must contain truncation notice; got: {text:?}"
+        );
+        // The String type guarantees valid UTF-8, but verify explicitly.
+        assert!(
+            std::str::from_utf8(text.as_bytes()).is_ok(),
+            "truncated output must be valid UTF-8"
+        );
+
+        match old_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match old_up {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Non-ASCII character-count parity with Python's `len()` semantics.
+    ///
+    /// Python's `len()` counts Unicode code points, not UTF-8 bytes.
+    /// CJK characters (e.g. '中') are 3 UTF-8 bytes but 1 Unicode char.
+    ///
+    /// With budget=5 tokens: char_limit = 20.
+    /// 20 CJK chars = 20 bytes under old (byte-count) code → would truncate.
+    /// 20 CJK chars = 20 chars under new (char-count) code → must NOT truncate.
+    /// 21 CJK chars = 21 chars → must truncate at exactly 20 chars.
+    #[test]
+    fn memory_inject_non_ascii_char_count_parity() {
+        use std::fs;
+        let _guard = env_lock();
+        let tmp = std::env::temp_dir().join("sk_mem_inject_nonascii_parity");
+        let copilot_dir = tmp.join(".copilot");
+        let _ = fs::create_dir_all(&copilot_dir);
+        // Budget: 5 tokens × 4 chars = 20-char limit.
+        fs::write(
+            copilot_dir.join("hooks-config.json"),
+            r#"{"memory_inject_max_tokens": 5}"#,
+        )
+        .unwrap();
+
+        let old_home = std::env::var("HOME").ok();
+        let old_up = std::env::var("USERPROFILE").ok();
+        std::env::set_var("HOME", &tmp);
+        std::env::set_var("USERPROFILE", &tmp);
+
+        // --- Case 1: exactly at budget (20 CJK chars = 60 UTF-8 bytes) ---
+        // Old byte-count code: 60 bytes > 20 → would truncate (bug).
+        // New char-count code: 20 chars == 20 → must NOT truncate.
+        let exactly_budget = "中".repeat(20);
+        fs::write(tmp.join("MEMORY.md"), &exactly_budget).unwrap();
+        let result = load_memory_md(Some(&tmp));
+        assert!(
+            result.is_some(),
+            "load_memory_md must return Some for content at char budget"
+        );
+        let text = result.unwrap();
+        assert!(
+            !text.contains("truncated to token budget"),
+            "20 CJK chars at 20-char budget must NOT be truncated; got: {text:?}"
+        );
+        assert_eq!(
+            text.chars().count(),
+            20,
+            "returned text must have exactly 20 Unicode chars; got {}",
+            text.chars().count()
+        );
+
+        // --- Case 2: one over budget (21 CJK chars) ---
+        let over_budget = "中".repeat(21);
+        fs::write(tmp.join("MEMORY.md"), &over_budget).unwrap();
+        let result2 = load_memory_md(Some(&tmp));
+        assert!(
+            result2.is_some(),
+            "21-char CJK content must return Some (truncated)"
+        );
+        let text2 = result2.unwrap();
+        assert!(
+            text2.contains("truncated to token budget"),
+            "21-char CJK content must include truncation notice; got: {text2:?}"
+        );
+        // The body before the truncation notice must be exactly 20 Unicode chars.
+        let body = text2.split('\n').next().unwrap_or("");
+        assert_eq!(
+            body.chars().count(),
+            20,
+            "truncated body must be exactly 20 Unicode chars; got {} chars: {body:?}",
+            body.chars().count()
+        );
+        // Truncated output must be valid UTF-8.
+        assert!(
+            std::str::from_utf8(text2.as_bytes()).is_ok(),
+            "truncated non-ASCII output must be valid UTF-8"
+        );
+
+        match old_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match old_up {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Regression: a future mtime (clock skew) must be treated as fresh, not stale.
+    ///
+    /// Python behaviour:
+    ///   `age_secs = time.time() - mtime`  →  negative when mtime is future
+    ///   `if age_secs > max_age_secs`      →  False  →  file is fresh
+    ///
+    /// Previous Rust behaviour:
+    ///   `duration_since(future_mtime).ok()` → `None` → `unwrap_or(false)` → stale
+    ///   The file was silently skipped even though it was not old.
+    #[test]
+    fn memory_inject_future_mtime_treated_as_fresh() {
+        use std::fs::{File, FileTimes};
+        let _guard = env_lock();
+        let tmp = std::env::temp_dir().join("sk_mem_inject_future_mtime");
+        let copilot_dir = tmp.join(".copilot");
+        let _ = fs::create_dir_all(&copilot_dir);
+        let memory_path = tmp.join("MEMORY.md");
+        fs::write(&memory_path, "## Future mtime\n- content\n").unwrap();
+
+        // Set the file's mtime 30 seconds into the future to simulate clock skew.
+        let future_mtime = SystemTime::now() + Duration::from_secs(30);
+        let file = File::options().write(true).open(&memory_path).unwrap();
+        let times = FileTimes::new().set_modified(future_mtime);
+        file.set_times(times).unwrap();
+        drop(file);
+
+        let old_home = std::env::var("HOME").ok();
+        let old_up = std::env::var("USERPROFILE").ok();
+        std::env::set_var("HOME", &tmp);
+        std::env::set_var("USERPROFILE", &tmp);
+
+        // Must return Some — future mtime is treated as fresh (age = 0).
+        let result = load_memory_md(Some(&tmp));
+        assert!(
+            result.is_some(),
+            "load_memory_md must treat a future mtime as fresh (not stale); got None"
+        );
+
+        match old_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match old_up {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
         }
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -4986,9 +5494,12 @@ mod tests {
         // the rule must return None (fail-open).
         // We use SK_DB pointing to a non-existent file (native fails-open) and
         // SK_TOOLS_DIR pointing to a temp dir without query-session.py (Python fails-open).
+        let _guard = env_lock();
         let tmp = std::env::temp_dir().join("sk_error_kb_test");
         let _ = std::fs::create_dir_all(&tmp);
         let nonexistent_db = tmp.join("nonexistent.db");
+        let old_tools_dir = std::env::var("SK_TOOLS_DIR").ok();
+        let old_db = std::env::var("SK_DB").ok();
         std::env::set_var("SK_TOOLS_DIR", &tmp);
         std::env::set_var("SK_DB", &nonexistent_db);
         let rule = ErrorOccurredRule;
@@ -4999,8 +5510,14 @@ mod tests {
             result.is_none(),
             "must return None when native DB and Python fallback are both unavailable"
         );
-        std::env::remove_var("SK_TOOLS_DIR");
-        std::env::remove_var("SK_DB");
+        match old_tools_dir {
+            Some(v) => std::env::set_var("SK_TOOLS_DIR", v),
+            None => std::env::remove_var("SK_TOOLS_DIR"),
+        }
+        match old_db {
+            Some(v) => std::env::set_var("SK_DB", v),
+            None => std::env::remove_var("SK_DB"),
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

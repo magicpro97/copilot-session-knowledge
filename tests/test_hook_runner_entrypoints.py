@@ -398,6 +398,142 @@ test("Edit src/utils.py → no deny from any rule", '"deny"' not in r.stdout,
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  Section 10: sessionStart with MEMORY.md injection
+# ══════════════════════════════════════════════════════════════════════
+
+print("\n\U0001f4cc Section 10: sessionStart MEMORY.md injection via hook_runner")
+
+# 10a. sessionStart with fresh MEMORY.md in project cwd → output includes memory content
+#      Config: no hooks-config.json → default (injection enabled)
+_mi_isolated = Path(tempfile.mkdtemp(prefix="test-mi-ep-home-"))
+_mi_copilot = _mi_isolated / ".copilot"
+_mi_copilot.mkdir(parents=True, exist_ok=True)
+(_mi_isolated / ".copilot" / "markers").mkdir(parents=True, exist_ok=True)
+# Create a dummy briefing.py so AutoBriefingRule doesn't short-circuit
+_mi_tools = _mi_isolated / ".copilot" / "tools"
+_mi_tools.mkdir(parents=True, exist_ok=True)
+(_mi_tools / "briefing.py").write_text("# dummy briefing\nimport sys\n", encoding="utf-8")
+# Put a fresh MEMORY.md in the working dir we'll run from
+_mi_cwd = Path(tempfile.mkdtemp(prefix="test-mi-cwd-"))
+_mi_memory = _mi_cwd / "MEMORY.md"
+_mi_memory.write_text("# Promoted Memory\n\n## Pattern\nUse parameterised SQL always.", encoding="utf-8")
+# No hooks-config.json → default enabled
+_mi_env = {**os.environ, "HOME": str(_mi_isolated), "USERPROFILE": str(_mi_isolated)}
+
+try:
+    r = subprocess.run(
+        [sys.executable, str(RUNNER), "sessionStart"],
+        input=json.dumps({}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=_mi_env,
+        cwd=str(_mi_cwd),
+        timeout=15,
+    )
+    test("10a: sessionStart with fresh MEMORY.md → exit 0", r.returncode == 0,
+         f"rc={r.returncode} stderr={r.stderr[:200]}")
+    _combined_output10a = r.stdout + r.stderr
+    test("10a: sessionStart output contains 'MEMORY'",
+         "MEMORY" in _combined_output10a or "parameterised SQL" in _combined_output10a,
+         f"stdout={r.stdout[:400]}")
+finally:
+    shutil.rmtree(str(_mi_isolated), ignore_errors=True)
+    shutil.rmtree(str(_mi_cwd), ignore_errors=True)
+
+# 10b. sessionStart with memory_inject_enabled=false in hooks-config.json → no memory content
+_mi2_isolated = Path(tempfile.mkdtemp(prefix="test-mi2-ep-home-"))
+(_mi2_isolated / ".copilot" / "markers").mkdir(parents=True, exist_ok=True)
+# Write hooks-config.json with injection disabled
+import json as _json10b
+(_mi2_isolated / ".copilot" / "hooks-config.json").write_text(
+    _json10b.dumps({"memory_inject_enabled": False}), encoding="utf-8"
+)
+_mi2_cwd = Path(tempfile.mkdtemp(prefix="test-mi2-cwd-"))
+(_mi2_cwd / "MEMORY.md").write_text("# Promoted Memory\n\n## Pattern\nThis must NOT appear.", encoding="utf-8")
+_mi2_env = {**os.environ, "HOME": str(_mi2_isolated), "USERPROFILE": str(_mi2_isolated)}
+
+try:
+    r = subprocess.run(
+        [sys.executable, str(RUNNER), "sessionStart"],
+        input=json.dumps({}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=_mi2_env,
+        cwd=str(_mi2_cwd),
+        timeout=15,
+    )
+    test("10b: sessionStart memory_inject_enabled=false → exit 0", r.returncode == 0,
+         f"rc={r.returncode}")
+    test("10b: disabled injection → memory text not in output",
+         "This must NOT appear." not in r.stdout,
+         f"stdout={r.stdout[:400]}")
+finally:
+    shutil.rmtree(str(_mi2_isolated), ignore_errors=True)
+    shutil.rmtree(str(_mi2_cwd), ignore_errors=True)
+
+# 10c. sessionStart with no MEMORY.md → no crash, exit 0
+_mi3_isolated = Path(tempfile.mkdtemp(prefix="test-mi3-ep-home-"))
+(_mi3_isolated / ".copilot" / "markers").mkdir(parents=True, exist_ok=True)
+_mi3_cwd = Path(tempfile.mkdtemp(prefix="test-mi3-cwd-"))  # no MEMORY.md
+_mi3_env = {**os.environ, "HOME": str(_mi3_isolated), "USERPROFILE": str(_mi3_isolated)}
+
+try:
+    r = subprocess.run(
+        [sys.executable, str(RUNNER), "sessionStart"],
+        input=json.dumps({}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=_mi3_env,
+        cwd=str(_mi3_cwd),
+        timeout=15,
+    )
+    test("10c: sessionStart without MEMORY.md → no crash (exit 0)", r.returncode == 0,
+         f"rc={r.returncode} stderr={r.stderr[:200]}")
+finally:
+    shutil.rmtree(str(_mi3_isolated), ignore_errors=True)
+    shutil.rmtree(str(_mi3_cwd), ignore_errors=True)
+
+# 10d. sessionStart with memory_inject_max_tokens=5 in config → content truncated
+_mi4_isolated = Path(tempfile.mkdtemp(prefix="test-mi4-ep-home-"))
+(_mi4_isolated / ".copilot" / "markers").mkdir(parents=True, exist_ok=True)
+(_mi4_isolated / ".copilot" / "hooks-config.json").write_text(
+    _json10b.dumps({"memory_inject_enabled": True, "memory_inject_max_tokens": 5}),
+    encoding="utf-8"
+)
+_mi4_cwd = Path(tempfile.mkdtemp(prefix="test-mi4-cwd-"))
+(_mi4_cwd / "MEMORY.md").write_text("A" * 200, encoding="utf-8")
+_mi4_env = {**os.environ, "HOME": str(_mi4_isolated), "USERPROFILE": str(_mi4_isolated)}
+
+try:
+    r = subprocess.run(
+        [sys.executable, str(RUNNER), "sessionStart"],
+        input=json.dumps({}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=_mi4_env,
+        cwd=str(_mi4_cwd),
+        timeout=15,
+    )
+    test("10d: sessionStart memory_inject_max_tokens=5 → exit 0", r.returncode == 0,
+         f"rc={r.returncode}")
+    _out10d = r.stdout + r.stderr
+    test("10d: output does not contain 200 'A's (content was truncated)",
+         "A" * 200 not in _out10d,
+         f"stdout={r.stdout[:400]}")
+finally:
+    shutil.rmtree(str(_mi4_isolated), ignore_errors=True)
+    shutil.rmtree(str(_mi4_cwd), ignore_errors=True)
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  Cleanup
 # ══════════════════════════════════════════════════════════════════════
 
