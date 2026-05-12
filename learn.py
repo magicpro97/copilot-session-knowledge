@@ -623,6 +623,8 @@ def add_entry(
     root_cause: str = "",
     severity: str = "",
     fix_steps: str = "",
+    valence: str = "",
+    intensity: float = None,
 ) -> int:
     """Add a knowledge entry to the database. Returns entry ID.
 
@@ -646,6 +648,7 @@ def add_entry(
     has_stable_id_column = "stable_id" in ke_columns
     has_topic_key_column = "topic_key" in ke_columns
     has_error_lifecycle_columns = all(c in ke_columns for c in ("error_type", "root_cause", "severity", "fix_steps"))
+    has_valence_intensity_columns = all(c in ke_columns for c in ("valence", "intensity"))
     if code_location_set and not has_code_location_columns:
         print(
             "  [warn] DB schema missing code-location columns; run migrate.py to persist snippets",
@@ -783,6 +786,12 @@ def add_entry(
                     code_snippet,
                 ]
             )
+        if has_valence_intensity_columns and (valence or intensity is not None):
+            update_sql += (
+                " valence = CASE WHEN ? != '' THEN ? ELSE valence END,"
+                " intensity = CASE WHEN ? IS NOT NULL THEN ? ELSE intensity END,"
+            )
+            update_params.extend([valence or "", valence or "", intensity, intensity])
         update_sql += " est_tokens = ? WHERE id = ?"
         update_params.extend([est_tokens, existing["id"]])
         db.execute(update_sql, update_params)
@@ -947,6 +956,13 @@ def add_entry(
                 """UPDATE knowledge_entries SET error_type = ?, root_cause = ?, severity = ?, fix_steps = ?
                    WHERE id = ?""",
                 (error_type or "", root_cause or "", severity or "medium", fix_steps or "", entry_id),
+            )
+        # Set valence/intensity columns if available
+        if has_valence_intensity_columns and (valence or intensity is not None):
+            _intensity = intensity if intensity is not None else 0.5
+            db.execute(
+                "UPDATE knowledge_entries SET valence = ?, intensity = ? WHERE id = ?",
+                (valence or "", _intensity, entry_id),
             )
         if has_stable_id_column:
             inserted_stable_id = db.execute(
@@ -1359,6 +1375,8 @@ def main():
     root_cause = ""
     severity = ""
     fix_steps = ""
+    valence = ""
+    intensity = None
 
     if "--tags" in args:
         idx = args.index("--tags")
@@ -1417,6 +1435,32 @@ def main():
                 fix_steps_parts.append(args[i + 1])
         fix_steps = " → ".join(fix_steps_parts)
 
+    if "--valence" in args:
+        idx = args.index("--valence")
+        raw_valence = args[idx + 1] if idx + 1 < len(args) else ""
+        _valid_valences = ("reward", "neutral", "penalty", "trauma", "")
+        if raw_valence not in _valid_valences:
+            print(
+                f"Error: --valence must be one of: reward, neutral, penalty, trauma (got {raw_valence!r})",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        valence = raw_valence
+
+    if "--intensity" in args:
+        idx = args.index("--intensity")
+        raw_intensity = args[idx + 1] if idx + 1 < len(args) else ""
+        try:
+            intensity = float(raw_intensity)
+            if not (0.0 <= intensity <= 1.0):
+                raise ValueError("out of range")
+        except (ValueError, TypeError):
+            print(
+                f"Error: --intensity must be a float between 0.0 and 1.0 (got {raw_intensity!r})",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     # Collect all --fact and --file values (repeatable flags)
     for i, a in enumerate(args):
         if a == "--fact" and i + 1 < len(args):
@@ -1448,6 +1492,8 @@ def main():
             "--root-cause",
             "--severity",
             "--fix-step",
+            "--valence",
+            "--intensity",
         ):
             skip_next = True
             continue
@@ -1505,6 +1551,8 @@ def main():
         root_cause=root_cause,
         severity=severity,
         fix_steps=fix_steps,
+        valence=valence,
+        intensity=intensity,
     )
 
     if json_mode:
@@ -1513,10 +1561,19 @@ def main():
             print(json.dumps({"status": "rejected", "reason": "injection_scan_failed"}, indent=2))
             return
         db = get_db()
+        # Guard against pre-v21 DBs that lack valence/intensity columns.
+        _json_cols = {r[1] for r in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        _has_vi = all(c in _json_cols for c in ("valence", "intensity"))
+        _vi_select = (
+            ",\n                   COALESCE(valence, '') AS valence,"
+            "\n                   COALESCE(intensity, 0.5) AS intensity"
+            if _has_vi
+            else ""
+        )
         row = db.execute(
-            """
+            f"""
             SELECT id, category, title, confidence, session_id, task_id,
-                   affected_files, facts, occurrence_count, last_seen
+                   affected_files, facts, occurrence_count, last_seen{_vi_select}
             FROM knowledge_entries WHERE id = ?
         """,
             (entry_id,),
@@ -1532,25 +1589,26 @@ def main():
             except Exception:
                 facts_out = []
             status = "added" if row["occurrence_count"] == 1 else "updated"
-            print(
-                json.dumps(
-                    {
-                        "status": status,
-                        "id": row["id"],
-                        "category": row["category"],
-                        "title": row["title"],
-                        "confidence": row["confidence"],
-                        "session_id": row["session_id"],
-                        "task_id": row["task_id"] or "",
-                        "affected_files": files,
-                        "facts": facts_out,
-                        "occurrence_count": row["occurrence_count"],
-                        "last_seen": row["last_seen"],
-                    },
-                    indent=2,
-                    ensure_ascii=False,
-                )
-            )
+            out_dict = {
+                "status": status,
+                "id": row["id"],
+                "category": row["category"],
+                "title": row["title"],
+                "confidence": row["confidence"],
+                "session_id": row["session_id"],
+                "task_id": row["task_id"] or "",
+                "affected_files": files,
+                "facts": facts_out,
+                "occurrence_count": row["occurrence_count"],
+                "last_seen": row["last_seen"],
+            }
+            if _has_vi:
+                try:
+                    out_dict["valence"] = row["valence"]
+                    out_dict["intensity"] = row["intensity"]
+                except (IndexError, KeyError):
+                    pass
+            print(json.dumps(out_dict, indent=2, ensure_ascii=False))
         else:
             print(json.dumps({"status": "error", "id": entry_id, "reason": "entry_not_found_after_write"}, indent=2))
         return
