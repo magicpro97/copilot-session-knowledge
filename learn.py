@@ -131,9 +131,9 @@ _CONCEPT_STOPWORDS = frozenset({
     "their", "its", "our", "my", "your", "his", "her", "them", "us", "me",
     "after", "before", "during", "while", "since", "until", "too", "very",
     "about", "above", "below", "between", "through", "use", "used", "using",
-    "run", "running", "make", "new", "only", "now", "then", "time", "way",
-    "need", "needs", "see", "get", "set", "add", "can", "put", "let", "say",
-    "one", "two", "per", "via", "etc", "yet", "got", "had", "has", "was",
+    "run", "running", "make", "new", "only", "now", "time", "way",
+    "need", "needs", "see", "get", "set", "add", "put", "let", "say",
+    "one", "two", "per", "via", "etc", "yet", "got",
 })
 
 # Injection scanning patterns (inspired by Hermes Agent memory security)

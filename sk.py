@@ -20,7 +20,7 @@ Usage:
     sk watch    [<args>...]       Run watch-sessions.py
     sk hooks    run|list|<event>  Run hooks/hook_runner.py
 
-    sk index  build|extract|migrate|status|health|embed [<args>...]
+    sk index  build|extract|migrate|status|health|embed|tag [<args>...]
     sk sync   run|config|status|gateway|merge [<args>...]
     sk checkpoint save|restore|diff [<args>...]
     sk profile build|import|export [<args>...]

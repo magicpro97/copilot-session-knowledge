@@ -46,13 +46,13 @@ _CONCEPT_STOPWORDS = frozenset({
     "their", "its", "our", "my", "your", "his", "her", "them", "us", "me",
     "after", "before", "during", "while", "since", "until", "too", "very",
     "about", "above", "below", "between", "through", "use", "used", "using",
-    "run", "running", "make", "new", "only", "now", "then", "time", "way",
-    "need", "needs", "see", "get", "set", "add", "can", "put", "let", "say",
-    "one", "two", "per", "via", "etc", "yet", "got", "had", "has", "was",
+    "run", "running", "make", "new", "only", "now", "time", "way",
+    "need", "needs", "see", "get", "set", "add", "put", "let", "say",
+    "one", "two", "per", "via", "etc", "yet", "got",
 })
 
 
-def extract_concept_tags(text: str, top_k: int = 5) -> list:
+def extract_concept_tags(text: str, top_k: int = 5) -> list[str]:
     """Extract top_k concept tags from text using pure-stdlib term frequency.
 
     Distinct from existing tag parsing that reads explicit user-supplied tags.
@@ -68,7 +68,7 @@ def extract_concept_tags(text: str, top_k: int = 5) -> list:
     if not text:
         return []
     tokens = re.findall(r'[a-zA-Z][a-zA-Z0-9_-]{2,}', text.lower())
-    freq: dict = {}
+    freq: dict[str, int] = {}
     for tok in tokens:
         if tok not in _CONCEPT_STOPWORDS:
             freq[tok] = freq.get(tok, 0) + 1
@@ -157,22 +157,37 @@ def run_batch_tag(
 
         if retag_all:
             # Process every entry
-            query = "SELECT id, title, content FROM knowledge_entries ORDER BY id"
+            if limit > 0:
+                query = "SELECT id, title, content FROM knowledge_entries ORDER BY id LIMIT ?"
+                rows = db.execute(query, (limit,)).fetchall()
+            else:
+                query = "SELECT id, title, content FROM knowledge_entries ORDER BY id"
+                rows = db.execute(query).fetchall()
         else:
             # Only entries without any auto-generated concept tags
-            query = """
-                SELECT ke.id, ke.title, ke.content
-                FROM knowledge_entries ke
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM entry_concept_tags ect
-                    WHERE ect.entry_id = ke.id AND ect.source = 'auto'
-                )
-                ORDER BY ke.id
-            """
-        rows = db.execute(query).fetchall()
-
-        if limit > 0:
-            rows = rows[:limit]
+            if limit > 0:
+                query = """
+                    SELECT ke.id, ke.title, ke.content
+                    FROM knowledge_entries ke
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM entry_concept_tags ect
+                        WHERE ect.entry_id = ke.id AND ect.source = 'auto'
+                    )
+                    ORDER BY ke.id
+                    LIMIT ?
+                """
+                rows = db.execute(query, (limit,)).fetchall()
+            else:
+                query = """
+                    SELECT ke.id, ke.title, ke.content
+                    FROM knowledge_entries ke
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM entry_concept_tags ect
+                        WHERE ect.entry_id = ke.id AND ect.source = 'auto'
+                    )
+                    ORDER BY ke.id
+                """
+                rows = db.execute(query).fetchall()
 
         stats = {"processed": 0, "tagged": 0, "skipped": 0, "errors": 0, "available": True}
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
