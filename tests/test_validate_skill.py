@@ -548,17 +548,35 @@ test("utf-8-sig read strips BOM from first line", not _first_sig.startswith("\uf
      detail=f"first_line={_first_sig!r}")
 test("utf-8 read (old) keeps BOM in first line", _first_raw.startswith("\ufeff"),
      detail=f"first_line={_first_raw!r}")
-# main() must use utf-8-sig — validate that the module source contains utf-8-sig
-# in the display-path read rather than plain utf-8.
+# main() must use utf-8-sig — prove it with an AST walk rather than a
+# substring search that would match any occurrence in the file.
 import ast as _ast
 _vs_src = (_vs.__spec__.origin if hasattr(_vs, '__spec__') and _vs.__spec__ else
            str(Path(__file__).parent.parent / 'validate-skill.py'))
 _vs_text = open(_vs_src, encoding="utf-8").read()
-# Check: the main() function read must use utf-8-sig, not bare utf-8
-# We look for the display_path.read_text encoding inside main().
-_main_read_sig = 'encoding="utf-8-sig"' in _vs_text
-test("main() line-count read uses utf-8-sig encoding", _main_read_sig,
-     detail="Check validate-skill.py main() display_path.read_text call")
+_vs_tree = _ast.parse(_vs_text)
+
+def _find_main_read_text_encoding(_tree: _ast.AST) -> str | None:
+    """Return the encoding kwarg value of display_path.read_text() inside main(), or None."""
+    for node in _ast.walk(_tree):
+        if not (isinstance(node, _ast.FunctionDef) and node.name == "main"):
+            continue
+        for child in _ast.walk(node):
+            if not isinstance(child, _ast.Call):
+                continue
+            func = child.func
+            if not (isinstance(func, _ast.Attribute) and func.attr == "read_text"):
+                continue
+            if not (isinstance(func.value, _ast.Name) and func.value.id == "display_path"):
+                continue
+            for kw in child.keywords:
+                if kw.arg == "encoding" and isinstance(kw.value, _ast.Constant):
+                    return kw.value.value
+    return None
+
+_main_encoding = _find_main_read_text_encoding(_vs_tree)
+test("main() line-count read uses utf-8-sig encoding", _main_encoding == "utf-8-sig",
+     detail=f"display_path.read_text encoding={_main_encoding!r} (expected 'utf-8-sig')")
 
 
 # ── 17. Security: obfuscation patterns ───────────────────────────────────────

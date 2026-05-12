@@ -34,8 +34,6 @@ SEVERITY_MEDIUM   = "medium"
 SEVERITY_HIGH     = "high"
 SEVERITY_CRITICAL = "critical"
 
-_SEVERITY_ORDER = {SEVERITY_LOW: 0, SEVERITY_MEDIUM: 1, SEVERITY_HIGH: 2, SEVERITY_CRITICAL: 3}
-
 #: A single security finding produced by validate_security().
 Finding = collections.namedtuple("Finding", ["severity", "category", "message", "line"])
 
@@ -510,7 +508,6 @@ def main():
         print()
 
     # Severity summary — count security findings by severity level
-    _sec_prefix = "[SECURITY:"
     def _sev(items: list[str], level: str) -> int:
         tag = f"[SECURITY:{level.upper()}]"
         return sum(1 for x in items if x.startswith(tag))
