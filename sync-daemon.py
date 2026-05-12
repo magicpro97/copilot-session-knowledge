@@ -44,7 +44,13 @@ SYNC_CONFIG_PATH = TOOLS_DIR / "sync-config.json"
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 SYNC_NUDGE_MARKER = MARKERS_DIR / "sync-nudge.json"
 SYNC_FLUSH_MARKER = MARKERS_DIR / "sync-flush.json"
+DREAM_TRIGGER_MARKER = MARKERS_DIR / "dream-trigger.json"
 DEFAULT_INTERVAL = 60
+DEFAULT_DREAM_INTERVAL_HOURS = 24  # hours between dream sweeps (issue #162 contract)
+DEFAULT_DREAM_MIN_SCORE = 0.75
+DEFAULT_DREAM_MIN_RECALL_COUNT = 3
+DEFAULT_DREAM_MIN_UNIQUE_QUERIES = 2
+DEFAULT_DREAM_MEMORY_PATH = "MEMORY.md"
 MAX_SYNC_LIMIT = 1000
 MAX_PULL_PAGES_PER_CYCLE = 10
 PUSH_TIMEOUT_SECONDS = 120
@@ -216,11 +222,11 @@ def release_lock() -> None:
 
 def load_state() -> dict:
     if not STATE_FILE.exists():
-        return {"last_activity": "", "last_error": ""}
+        return {"last_activity": "", "last_error": "", "last_dream_run": ""}
     try:
         return json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return {"last_activity": "", "last_error": ""}
+        return {"last_activity": "", "last_error": "", "last_dream_run": ""}
 
 
 def save_state(state: dict) -> None:
@@ -776,6 +782,190 @@ def _consume_sync_markers() -> dict:
     return consumed
 
 
+class DreamingScheduler:
+    """Manages automated dream sweep scheduling for the sync daemon (issue #162).
+
+    Reads configuration from sync-config.json and drives dream.py on the
+    configured interval.  Supports manual one-shot triggers via a marker file
+    and provides operator-visible logging including the promoted-entry count.
+
+    Config keys read from sync-config.json:
+        dream_enabled            (bool)  – whether scheduled sweeps are active
+        dream_interval_hours     (float) – hours between sweeps (default 24)
+        dream_min_score          (float) – gate threshold score (default 0.75)
+        dream_min_recall_count   (int)   – gate threshold recall count (default 3)
+        dream_min_unique_queries (int)   – gate threshold unique queries (default 2)
+        dream_memory_path        (str)   – output path for MEMORY.md (default "MEMORY.md")
+    """
+
+    def __init__(
+        self,
+        *,
+        enabled: bool = True,
+        interval_hours: float = DEFAULT_DREAM_INTERVAL_HOURS,
+        min_score: float = DEFAULT_DREAM_MIN_SCORE,
+        min_recall_count: int = DEFAULT_DREAM_MIN_RECALL_COUNT,
+        min_unique_queries: int = DEFAULT_DREAM_MIN_UNIQUE_QUERIES,
+        memory_path: str = DEFAULT_DREAM_MEMORY_PATH,
+    ) -> None:
+        self.enabled = bool(enabled)
+        raw_interval = float(interval_hours)
+        if raw_interval <= 0:
+            print(
+                f"[sync] dream_interval_hours={raw_interval!r} is not positive; "
+                f"normalizing to default ({DEFAULT_DREAM_INTERVAL_HOURS}h)",
+                file=sys.stderr,
+            )
+            raw_interval = float(DEFAULT_DREAM_INTERVAL_HOURS)
+        self.interval_hours = raw_interval
+        self.min_score = float(min_score)
+        self.min_recall_count = int(min_recall_count)
+        self.min_unique_queries = int(min_unique_queries)
+        _stripped_path = str(memory_path).strip()
+        self.memory_path = _stripped_path if _stripped_path else DEFAULT_DREAM_MEMORY_PATH
+
+    @classmethod
+    def from_config(cls, config_path: Path) -> "DreamingScheduler":
+        """Load scheduler settings from sync-config.json; fall back to defaults."""
+        kwargs: dict = {
+            "enabled": True,
+            "interval_hours": DEFAULT_DREAM_INTERVAL_HOURS,
+            "min_score": DEFAULT_DREAM_MIN_SCORE,
+            "min_recall_count": DEFAULT_DREAM_MIN_RECALL_COUNT,
+            "min_unique_queries": DEFAULT_DREAM_MIN_UNIQUE_QUERIES,
+            "memory_path": DEFAULT_DREAM_MEMORY_PATH,
+        }
+        if not config_path.exists():
+            return cls(**kwargs)
+        try:
+            obj = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(obj, dict):
+                if "dream_enabled" in obj:
+                    kwargs["enabled"] = bool(obj["dream_enabled"])
+                if "dream_interval_hours" in obj:
+                    try:
+                        v = float(obj["dream_interval_hours"])
+                        kwargs["interval_hours"] = v  # __init__ normalizes zero/negative
+                    except (TypeError, ValueError):
+                        pass
+                if "dream_min_score" in obj:
+                    try:
+                        kwargs["min_score"] = float(obj["dream_min_score"])
+                    except (TypeError, ValueError):
+                        pass
+                if "dream_min_recall_count" in obj:
+                    try:
+                        kwargs["min_recall_count"] = int(obj["dream_min_recall_count"])
+                    except (TypeError, ValueError):
+                        pass
+                if "dream_min_unique_queries" in obj:
+                    try:
+                        kwargs["min_unique_queries"] = int(obj["dream_min_unique_queries"])
+                    except (TypeError, ValueError):
+                        pass
+                if "dream_memory_path" in obj:
+                    val = str(obj["dream_memory_path"] or "").strip()
+                    if val:
+                        kwargs["memory_path"] = val
+        except (json.JSONDecodeError, OSError):
+            pass
+        return cls(**kwargs)
+
+    def is_due(self, state: dict) -> bool:
+        """Return True if a dream sweep should run now based on config and elapsed time."""
+        if not self.enabled:
+            return False
+        interval_secs = self.interval_hours * 3600.0
+        last_run = str(state.get("last_dream_run", "") or "")
+        if not last_run:
+            return True
+        try:
+            ts = datetime.fromisoformat(last_run.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return True
+        return (time.time() - ts) >= interval_secs
+
+    def consume_trigger(self) -> bool:
+        """Consume the dream-trigger marker; return True if it was present AND enabled.
+
+        When ``dream_enabled=False`` the marker is removed (to avoid stale marker
+        accumulation) but ``False`` is returned so the caller skips the sweep.
+        """
+        try:
+            if not DREAM_TRIGGER_MARKER.exists():
+                return False
+            DREAM_TRIGGER_MARKER.unlink(missing_ok=True)
+            if not self.enabled:
+                print(
+                    "[sync] dream-trigger.json marker found but dream_enabled=False; marker consumed, sweep suppressed"
+                )
+                return False
+            return True
+        except OSError:
+            return False
+
+    def run_sweep(self, db_path: Path = DB_PATH) -> dict:
+        """Run a dream sweep by invoking dream.py as a subprocess.
+
+        Passes all gate thresholds and memory path as CLI arguments.
+        Returns a dict with keys:
+            ok             (bool) – True if sweep succeeded or was skipped.
+            error          (str)  – non-empty on failure.
+            skipped        (bool) – True if dream.py was absent (non-fatal).
+            promoted_count (int)  – entries that passed the gate (0 if unknown).
+        """
+        import subprocess as _subprocess
+
+        dream_script = TOOLS_DIR / "dream.py"
+        if not dream_script.exists():
+            print("[sync] dream sweep skipped: dream.py not found (fail-open)")
+            return {"ok": True, "error": "", "skipped": True, "promoted_count": 0}
+        memory_path = self.memory_path if Path(self.memory_path).is_absolute() else str(TOOLS_DIR / self.memory_path)
+        cmd = [
+            sys.executable,
+            str(dream_script),
+            "--db",
+            str(db_path),
+            "--json",
+            "--min-score",
+            str(self.min_score),
+            "--min-recall",
+            str(self.min_recall_count),
+            "--min-queries",
+            str(self.min_unique_queries),
+            "--memory-output",
+            memory_path,
+        ]
+        try:
+            result = _subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if result.returncode == 0:
+                promoted_count = 0
+                try:
+                    out_data = json.loads(result.stdout.strip() or "{}")
+                    promoted_count = int(out_data.get("gate_count", 0))
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    pass
+                print(
+                    f"[sync] dream sweep OK | promoted={promoted_count} "
+                    f"min_score={self.min_score} interval_hours={self.interval_hours}"
+                )
+                return {"ok": True, "error": "", "skipped": False, "promoted_count": promoted_count}
+            else:
+                err = result.stderr.strip()
+                print(f"[sync] dream sweep failed: {err}")
+                return {"ok": False, "error": err, "skipped": False, "promoted_count": 0}
+        except Exception as exc:
+            print(f"[sync] dream sweep error: {exc}")
+            return {"ok": False, "error": str(exc), "skipped": False, "promoted_count": 0}
+
+
 def _refresh_knowledge_fts_for_documents(db: sqlite3.Connection, document_ids: set[int]) -> None:
     if not document_ids:
         return
@@ -1080,6 +1270,7 @@ def run_loop(
     if not base_url:
         print("[sync] No connection_string configured; daemon will remain idle (local-first fail-open).")
 
+    dream_scheduler = DreamingScheduler.from_config(SYNC_CONFIG_PATH)
     state = load_state()
 
     try:
@@ -1100,12 +1291,29 @@ def run_loop(
             else:
                 state["last_error"] = cycle["error"]
                 print(f"[sync] once degraded: {cycle['error']}")
+            # Dream sweep in --once mode: only on explicit manual trigger.
+            # Scheduled-due sweeps are NOT run in --once mode to preserve fast
+            # one-shot semantics.  DreamingScheduler.run_sweep uses a 300 s
+            # subprocess timeout, so allowing is_due() to fire on a fresh
+            # install (no last_dream_run) or on any overdue interval would block
+            # one-shot runs for up to 5 minutes.  Scheduled sweeps run only in
+            # the continuous daemon loop below.
+            manual_dream = dream_scheduler.consume_trigger()
+            if manual_dream:
+                dream_result = dream_scheduler.run_sweep(db_path=DB_PATH)
+                # Only stamp last_dream_run on a real successful sweep.
+                # A skipped sweep (dream.py absent) must NOT stamp last_dream_run so
+                # the scheduler does not suppress retries for the full interval.
+                if dream_result.get("ok") and not dream_result.get("skipped"):
+                    state["last_dream_run"] = utc_now()
             save_state(state)
             return 0
 
         print(f"[sync] Running sync loop | interval={interval}s")
         pending_flush = False
         while running:
+            # Hot-reload dream scheduler config so operator changes take effect without restart.
+            dream_scheduler = DreamingScheduler.from_config(SYNC_CONFIG_PATH)
             signals = _consume_sync_markers()
             pending_flush = pending_flush or signals["flush"]
             cycle = run_sync_cycle(
@@ -1125,6 +1333,17 @@ def run_loop(
                 print(f"[sync] degraded: {cycle['error']}")
             save_state(state)
 
+            # Dream sweep: run if manually triggered or scheduled interval has elapsed.
+            manual_dream = dream_scheduler.consume_trigger()
+            if manual_dream or dream_scheduler.is_due(state):
+                dream_result = dream_scheduler.run_sweep(db_path=DB_PATH)
+                # Only stamp last_dream_run on a real successful sweep.
+                # A skipped sweep (dream.py absent) must NOT stamp last_dream_run so
+                # the scheduler does not suppress retries for the full interval.
+                if dream_result.get("ok") and not dream_result.get("skipped"):
+                    state["last_dream_run"] = utc_now()
+                    save_state(state)
+
             sleep_secs = interval if "--interval" in sys.argv else _adaptive_poll_interval(state)
             for _ in range(max(1, int(sleep_secs))):
                 if not running:
@@ -1132,6 +1351,9 @@ def run_loop(
                 signals = _consume_sync_markers()
                 if signals["nudge"] or signals["flush"]:
                     pending_flush = pending_flush or signals["flush"]
+                    break
+                # Wake early if a manual dream trigger is dropped during sleep.
+                if DREAM_TRIGGER_MARKER.exists():
                     break
                 time.sleep(1)
 
