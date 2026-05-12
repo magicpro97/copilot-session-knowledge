@@ -2315,6 +2315,36 @@ def _goal_dispatch_command(args, name: str) -> str:
     return _render_shell_command(parts)
 
 
+def _goal_dispatch_argv(args, name: str) -> list[str]:
+    """Return the argv list for dispatching one ready tentacle.
+
+    Produces the same logical command as :func:`_goal_dispatch_command` but as
+    a list suitable for ``subprocess.run(..., shell=False)`` — no shell injection
+    risk, and a bounded timeout can be applied.
+    """
+    argv = [sys.executable, str(Path(__file__).resolve())]
+    session_dir = getattr(args, "session_dir", None)
+    if session_dir:
+        argv.extend(["--session-dir", session_dir])
+    argv.extend(
+        [
+            "dispatch",
+            name,
+            "--agent-type",
+            getattr(args, "agent_type", "general-purpose") or "general-purpose",
+            "--model",
+            getattr(args, "model", "claude-sonnet-4.6") or "claude-sonnet-4.6",
+        ]
+    )
+    if getattr(args, "briefing", False):
+        argv.append("--briefing")
+    if getattr(args, "worktree", False):
+        argv.append("--worktree")
+    if not _bundle_enabled(args):
+        argv.append("--no-bundle")
+    return argv
+
+
 def _goal_dispatch_plan(state: dict, tentacles: Path, *, concurrency: int) -> dict:
     """Build a concurrency-limited dispatch plan for the current goal iteration."""
     entries = _goal_iteration_tentacle_entries(state, tentacles)
@@ -2353,6 +2383,113 @@ def _goal_dispatch_plan(state: dict, tentacles: Path, *, concurrency: int) -> di
         "resolved": resolved,
         "eval_blocking": eval_blocking,
     }
+
+
+def _goal_loop_dispatch_and_wait(
+    args,
+    state: dict,
+    tentacles: Path,
+    *,
+    concurrency: int = 4,
+    poll_interval: float = 10.0,
+    poll_timeout: float = 300.0,
+    _dispatch_fn=None,
+    _sleep_fn=None,
+    _monotonic_fn=None,
+) -> tuple[bool, dict]:
+    """
+    Auto-dispatch step for ``goal loop`` (runs by default; disabled with ``--no-auto-dispatch``).
+
+    Dispatches ready tentacles in concurrency-bounded batches and polls until
+    every *dispatched* tentacle reaches a terminal state
+    (``resolved`` / ``resolved_error`` / ``failed_dependencies``) or
+    ``poll_timeout`` seconds expire.  When the concurrency cap defers some ready
+    tentacles, this function keeps dispatching subsequent batches within the same
+    call so that no ready tentacle in the current iteration is stranded — the
+    outer goal loop only advances to criteria evaluation once all current-iteration
+    tentacles have been dispatched and resolved.
+
+    Returns ``(all_resolved: bool, latest_state: dict)``.
+    - ``all_resolved`` is True when all dispatched tentacles reached a terminal state.
+    - ``latest_state`` is the freshest ``goal.json`` read after polling.
+
+    Keyword-only injection points (for testing):
+    - ``_dispatch_fn(cmd_str, tentacle_name)`` replaces the real subprocess call.
+    - ``_sleep_fn(seconds)`` replaces ``time.sleep``.
+    - ``_monotonic_fn()`` replaces ``time.monotonic``.
+    """
+    _sleep = _sleep_fn if _sleep_fn is not None else time.sleep
+    _monotonic = _monotonic_fn if _monotonic_fn is not None else time.monotonic
+
+    terminal_states = {"resolved", "resolved_error", "failed_dependencies"}
+
+    # Single shared deadline for all batches in this iteration.
+    deadline = _monotonic() + poll_timeout
+    dispatched_names: set[str] = set()
+
+    # Multi-batch loop: dispatch → wait → check for more ready → repeat.
+    while True:
+        current_state = _goal_load(tentacles)
+        if not current_state:
+            return False, {}
+
+        plan = _goal_dispatch_plan(current_state, tentacles, concurrency=concurrency)
+        if not plan["selected"]:
+            # No more ready tentacles to dispatch in this iteration.
+            break
+
+        # Dispatch this batch.
+        batch_dispatched: set[str] = set()
+        for entry in plan["selected"]:
+            cmd_str = _goal_dispatch_command(args, entry["name"])
+            argv = _goal_dispatch_argv(args, entry["name"])
+            print(f"   \U0001f680 Auto-dispatching: {entry['name']}")
+            dispatched_names.add(entry["name"])
+            batch_dispatched.add(entry["name"])
+            if _dispatch_fn is not None:
+                _dispatch_fn(cmd_str, entry["name"])
+            else:
+                try:
+                    subprocess.run(
+                        argv,
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=30,
+                    )
+                except subprocess.TimeoutExpired:
+                    print(f"   \u26a0\ufe0f  Dispatch timed out for '{entry['name']}'")
+                except Exception as exc:
+                    print(f"   \u26a0\ufe0f  Dispatch subprocess failed for '{entry['name']}': {exc}")
+
+        remaining_ready = plan["ready_total"] - len(plan["selected"])
+        if remaining_ready > 0:
+            print(f"   \u23f1  {remaining_ready} ready tentacle(s) queued for dispatch after this batch resolves")
+
+        # Poll until this batch resolves (or the shared deadline expires).
+        while True:
+            current = _goal_load(tentacles)
+            if not current:
+                return False, {}
+            entries = _goal_iteration_tentacle_entries(current, tentacles)
+            blocking = [
+                e for e in entries if e["name"] in batch_dispatched and e["dispatch_state"] not in terminal_states
+            ]
+            if not blocking:
+                break  # Batch resolved — check for more ready tentacles.
+            remaining_s = deadline - _monotonic()
+            if remaining_s <= 0:
+                names = ", ".join(e["name"] for e in blocking)
+                print(f"   \u23f0 Poll timeout after {poll_timeout:.0f}s — still unresolved: {names}")
+                return False, current
+            wait_s = min(poll_interval, remaining_s)
+            names = ", ".join(e["name"] for e in blocking)
+            print(f"   \u23f3 Waiting for handoffs: {names} ({int(remaining_s)}s left)")
+            _sleep(wait_s)
+
+    # All batches dispatched and resolved.
+    final_state = _goal_load(tentacles)
+    return True, (final_state or {})
 
 
 def _goal_budget_status(state: dict) -> dict:
@@ -4335,7 +4472,14 @@ def _goal_loop_mark_budget_limited(tentacles: Path, current_iter: int, reason: s
     print("   Run `goal resume` then `goal loop` to continue.")
 
 
-def _cmd_goal_loop(args, tentacles: Path) -> None:
+def _cmd_goal_loop(
+    args,
+    tentacles: Path,
+    *,
+    _dispatch_fn=None,
+    _sleep_fn=None,
+    _monotonic_fn=None,
+) -> None:
     """
     Auto-continuation goal loop: verify criteria → eval continue/complete/budget_limited.
 
@@ -4343,13 +4487,23 @@ def _cmd_goal_loop(args, tentacles: Path) -> None:
     1. Check goal status — stop if already terminal or needs-human.
     2. Check budget (iteration/tentacle/timeout) — stop and mark budget_limited if exceeded.
     3. Check blocking gates — stop and set awaiting-gate status if any gate blocks.
+    3b. Dispatch ready tentacles and wait for their handoffs (skip with --no-auto-dispatch).
     4. Run success criteria verification commands.
     5. All criteria pass → eval complete.
     6. Criteria fail, goal iteration budget reached → mark budget_limited.
     7. Criteria fail, budget OK → eval continue (advance iteration) and repeat.
+
+    Keyword-only injection points (for testing):
+    - ``_dispatch_fn(cmd_str, tentacle_name)`` replaces ``subprocess.run`` in dispatch.
+    - ``_sleep_fn(seconds)`` replaces ``time.sleep`` in the poll loop.
+    - ``_monotonic_fn()`` replaces ``time.monotonic`` in the poll loop.
     """
     max_steps: int | None = getattr(args, "max_iterations", None)
     criterion_timeout: int = getattr(args, "timeout", 60) or 60
+    auto_dispatch: bool = bool(getattr(args, "auto_dispatch", True))
+    concurrency: int = int(getattr(args, "concurrency", 4) or 4)
+    poll_interval: float = float(getattr(args, "poll_interval", 10) or 10)
+    poll_timeout: float = float(getattr(args, "poll_timeout", 300) or 300)
 
     state = _goal_load(tentacles)
     if not state:
@@ -4453,6 +4607,24 @@ def _cmd_goal_loop(args, tentacles: Path) -> None:
                 f"   Goal status set to '{GOAL_STATUS_AWAITING_GATE}'. Approve gate(s) with `goal gate approve <id>` then re-run `goal loop`."
             )
             break
+
+        # 3b. Dispatch ready tentacles and wait for handoffs (--no-auto-dispatch to skip).
+        if auto_dispatch:
+            all_resolved, state = _goal_loop_dispatch_and_wait(
+                args,
+                state,
+                tentacles,
+                concurrency=concurrency,
+                poll_interval=poll_interval,
+                poll_timeout=poll_timeout,
+                _dispatch_fn=_dispatch_fn,
+                _sleep_fn=_sleep_fn,
+                _monotonic_fn=_monotonic_fn,
+            )
+            if not all_resolved:
+                reason = f"poll_timeout={poll_timeout:.0f}s waiting for tentacle handoffs in iteration {current_iter}"
+                _goal_loop_mark_budget_limited(tentacles, current_iter, reason)
+                break
 
         # 4. Run success criteria.
         runnable = [c for c in (state.get("success_criteria") or []) if c.get("verification_command", "")]
@@ -6547,6 +6719,45 @@ def main():
         type=_positive_int_arg,
         default=60,
         help="Per-criterion verification timeout in seconds (default: 60)",
+    )
+    p_goal_loop.add_argument(
+        "--no-auto-dispatch",
+        dest="auto_dispatch",
+        action="store_false",
+        default=True,
+        help=(
+            "Skip the automatic dispatch-and-wait step so that ready tentacles are NOT "
+            "dispatched by the loop. By default, `goal loop` dispatches ready tentacles "
+            "and waits for their handoffs before each criteria check, implementing the "
+            "dispatch \u2192 wait \u2192 eval \u2192 continue/complete cycle described in "
+            "issue #129. Pass this flag to disable that behavior."
+        ),
+    )
+    p_goal_loop.add_argument(
+        "--concurrency",
+        type=_positive_int_arg,
+        default=4,
+        help=(
+            "Maximum ready tentacles to dispatch per batch during auto-dispatch (default: 4). "
+            "Matches the concurrency contract of `goal dispatch`."
+        ),
+    )
+    p_goal_loop.add_argument(
+        "--poll-interval",
+        dest="poll_interval",
+        type=_positive_int_arg,
+        default=10,
+        help="Seconds between handoff-poll checks during auto-dispatch (default: 10).",
+    )
+    p_goal_loop.add_argument(
+        "--poll-timeout",
+        dest="poll_timeout",
+        type=_positive_int_arg,
+        default=300,
+        help=(
+            "Maximum seconds to wait for tentacle handoffs per iteration during auto-dispatch. "
+            "Marks goal budget_limited if this expires (default: 300)."
+        ),
     )
 
     args = parser.parse_args()
