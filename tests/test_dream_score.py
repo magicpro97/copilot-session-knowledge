@@ -1083,6 +1083,73 @@ def _test_memory_md_grouped_and_sorted():
 _test_memory_md_grouped_and_sorted()
 
 
+# ─── 15b. MEMORY.md — deterministic tie-breaker for equal scores ─────────────
+
+print("\n🔢 MEMORY.md — equal-score tie-breaker (entry_id ASC)")
+
+
+def _test_memory_md_tiebreaker():
+    """Entries with identical dream scores must appear in entry_id ASC order."""
+    import tempfile
+    from pathlib import Path
+
+    # Two entries that will receive the exact same score: identical stats.
+    db_path, conn = _make_db(
+        entries=[
+            {"title": "Alpha Entry", "category": "pattern", "confidence": 1.0, "occurrence_count": 1},
+            {"title": "Beta Entry", "category": "pattern", "confidence": 1.0, "occurrence_count": 1},
+        ],
+        recall_stats=[
+            {"entry_id": 1, "recall_count": 5, "recall_days": 3, "unique_queries": 2, "last_recalled_at": None},
+            {"entry_id": 2, "recall_count": 5, "recall_days": 3, "unique_queries": 2, "last_recalled_at": None},
+        ],
+    )
+
+    fd, mem_path = tempfile.mkstemp(suffix=".md", prefix="memory_tie_")
+    os.close(fd)
+    os.unlink(mem_path)
+
+    import io
+
+    old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    try:
+        dream.run_scoring(
+            conn=conn,
+            weights=W,
+            min_score=0.0,
+            min_recall=0,
+            min_queries=0,
+            dry_run=False,
+            top_n=20,
+            as_json=False,
+            memory_output=Path(mem_path),
+        )
+    finally:
+        sys.stdout = old_stdout
+    _cleanup(db_path, conn)
+
+    if os.path.isfile(mem_path):
+        with open(mem_path, encoding="utf-8") as fh:
+            mem_content = fh.read()
+        alpha_pos = mem_content.find("Alpha Entry")
+        beta_pos = mem_content.find("Beta Entry")
+        test(
+            "tie-breaker: equal-score entries ordered by entry_id ASC (Alpha before Beta)",
+            alpha_pos != -1 and beta_pos != -1 and alpha_pos < beta_pos,
+            f"alpha_pos={alpha_pos}, beta_pos={beta_pos}",
+        )
+        try:
+            os.unlink(mem_path)
+        except OSError:
+            pass
+    else:
+        test("tie-breaker: MEMORY.md created", False, f"path={mem_path}")
+
+
+_test_memory_md_tiebreaker()
+
+
 # ─── 16. MEMORY.md — configurable output path ────────────────────────────────
 
 print("\n📂 MEMORY.md — configurable output path")
@@ -1306,7 +1373,8 @@ def _test_memory_md_no_candidates():
 
     test("MEMORY.md created even with 0 candidates", os.path.isfile(mem_path), f"path={mem_path}")
     if os.path.isfile(mem_path):
-        content = open(mem_path, encoding="utf-8").read()
+        with open(mem_path, encoding="utf-8") as fh:
+            content = fh.read()
         test("MEMORY.md has placeholder when empty", "No entries passed" in content, content[:200])
         try:
             os.unlink(mem_path)

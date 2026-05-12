@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-dream.py â€” Dream-score ranking and MEMORY.md promotion surface (issues #159, #160).
+dream.py -- Dream-score ranking and MEMORY.md promotion surface (issues #159, #160).
 
 Computes a weighted dream-score for each knowledge entry using recall
 telemetry (entry_recall_stats) and concept tags (entry_concept_tags).
@@ -63,7 +63,7 @@ if os.name == "nt":
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
 
-# Default weights (must sum â‰¤ 1.0)
+# Default weights (must sum <= 1.0)
 DEFAULT_WEIGHTS = {
     "frequency": 0.24,
     "relevance": 0.30,
@@ -82,10 +82,10 @@ DEFAULT_MIN_QUERIES = 2
 DEFAULT_MEMORY_OUTPUT = "MEMORY.md"
 
 # Normalization caps
-_RECALL_CAP = 100.0  # recall_count above this â†’ saturates at 1.0
-_QUERIES_CAP = 50.0  # unique_queries above this â†’ saturates at 1.0
-_TAGS_CAP = 10.0  # tag count above this â†’ saturates at 1.0
-_RECENCY_HALFLIFE_DAYS = 30.0  # recency half-life: 30 days â†’ signal 0.5
+_RECALL_CAP = 100.0  # recall_count above this -> saturates at 1.0
+_QUERIES_CAP = 50.0  # unique_queries above this -> saturates at 1.0
+_TAGS_CAP = 10.0  # tag count above this -> saturates at 1.0
+_RECENCY_HALFLIFE_DAYS = 30.0  # recency half-life: 30 days -> signal 0.5
 
 
 _REQUIRED_TABLES = ("knowledge_entries", "entry_recall_stats", "entry_concept_tags")
@@ -257,10 +257,10 @@ def render_memory_md(candidates: list[dict], output_path: "Path", gates: dict) -
             by_category[cat] = []
         by_category[cat].append(entry)
 
-    # Sort categories deterministically; sort entries by score desc within each group
+    # Sort categories deterministically; sort entries by score desc, entry_id ASC tie-breaker
     sorted_cats = sorted(by_category.keys())
     for cat in sorted_cats:
-        by_category[cat].sort(key=lambda r: r["score"], reverse=True)
+        by_category[cat].sort(key=lambda r: (-r["score"], r["entry_id"]))
 
     lines: list[str] = [
         "# Promoted Memory",
@@ -355,8 +355,8 @@ def run_scoring(
         }
         results.append(rec)
 
-    # Sort by score descending
-    results.sort(key=lambda r: r["score"], reverse=True)
+    # Sort by score descending; entry_id ASC as a stable tie-breaker
+    results.sort(key=lambda r: (-r["score"], r["entry_id"]))
 
     # Persist unless dry-run
     if not dry_run:
@@ -434,7 +434,7 @@ def run_scoring(
 
     # Human output
     mem_note = f"  Memory surface  : {memory_output}" if (not dry_run and memory_output is not None) else ""
-    mode = "[DRY RUN â€” not persisted]" if dry_run else "[persisted]"
+    mode = "[DRY RUN -- not persisted]" if dry_run else "[persisted]"
     print(f"Dream Score Report {mode}")
     print(f"  Entries scored  : {len(results)}")
     print(f"  Gate candidates : {gate_count}  (score>={min_score}, recall>={min_recall}, queries>={min_queries})")
@@ -449,7 +449,7 @@ def run_scoring(
     print(header)
     print("  " + "-" * (len(header) - 2))
     for i, r in enumerate(top, 1):
-        gate_mark = "âœ“" if r["passes_gate"] else " "
+        gate_mark = "✓" if r["passes_gate"] else " "
         title = (r["title"] or "")[:60]
         print(
             f"  {i:>3}.  {r['score']:>6.3f}  {r['recall_count']:>4}  "
@@ -461,7 +461,12 @@ def run_scoring(
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="dream",
-        description="Dream-score ranking for knowledge promotion (issue #159).",
+        description=(
+            "Dream-score ranking and MEMORY.md promotion surface for knowledge entries "
+            "(issues #159, #160). Scores all entries, persists results to the DB, and writes "
+            "gate-passing entries to a promoted-memory Markdown file (MEMORY.md by default). "
+            "Use --dry-run to score and preview without writing anything."
+        ),
     )
     p.add_argument("--dry-run", action="store_true", help="List top-N candidates without persisting scores to DB.")
     p.add_argument("--top", type=int, default=20, metavar="N", help="Show top-N entries (default: 20).")
