@@ -4564,6 +4564,451 @@ except Exception as _e25:
     test("Section 25 MEMORY.md injection tests ran without exception", False, str(_e25))
 
 
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Section 26: Per-file repeated-edit alert (issue #93)
+# ═══════════════════════════════════════════════════════════════════
+
+print("\n── Section 26: Per-file repeated-edit alert (issue #93) ──")
+
+try:
+    import rules.edit_tracker as _et26
+    from rules.edit_tracker import TestReminderRule as _TRR26
+
+    # ── Helpers: patch module-level update_session_state + threshold ──────────
+    _orig_thresh26 = _et26.FILE_EDIT_THRESHOLD
+    _orig_uss26 = _et26.update_session_state
+
+    def _make_rule26(counts_store, threshold=3):
+        """Return a TestReminderRule instance with patched update_session_state for file-count I/O."""
+        _et26.FILE_EDIT_THRESHOLD = threshold
+        _state = {"file_edit_counts": dict(counts_store)}
+        def _fake_uss(updater, data=None, **kwargs):
+            updater(_state)
+            counts_store.clear()
+            counts_store.update(_state.get("file_edit_counts", {}))
+            return (True, True)
+        _et26.update_session_state = _fake_uss
+        return _TRR26()
+
+    def _reset26():
+        _et26.FILE_EDIT_THRESHOLD = _orig_thresh26
+        _et26.update_session_state = _orig_uss26
+        _et26.verify_counter = _true_orig_vc26
+        _et26.sign_counter = _true_orig_sc26
+
+    # ── Isolate 26a/26b from real on-disk PY_EDIT_COUNTER state ───
+    # patch verify_counter/sign_counter to an in-memory counter so that
+    # _increment_and_warn() never reads or writes the real disk marker.
+    # True originals are saved here for restoration at "Final restore".
+    _true_orig_vc26 = _et26.verify_counter
+    _true_orig_sc26 = _et26.sign_counter
+    _py_cnt26 = [0]
+    _et26.verify_counter = lambda p: _py_cnt26[0]
+    _et26.sign_counter = lambda p, v: _py_cnt26.__setitem__(0, v)
+
+    # ── 26a: first edit — no warning ──────────────────────────────
+    _store26 = {}
+    _rule26 = _make_rule26(_store26)
+    _r26a = _rule26.evaluate(
+        "postToolUse",
+        {"toolName": "edit", "toolResult": {"filePath": "src/foo.py"}},
+    )
+    test("26a: first edit to file → no warning", _r26a is None, f"Got: {_r26a!r}")
+    test("26a: first edit → count stored as 1", _store26.get("src/foo.py") == 1, f"Store: {_store26}")
+
+    # ── 26b: second edit — still no warning ───────────────────────
+    _r26b = _rule26.evaluate(
+        "postToolUse",
+        {"toolName": "edit", "toolResult": {"filePath": "src/foo.py"}},
+    )
+    test("26b: second edit to file → count stored as 2", _store26.get("src/foo.py") == 2, f"Store: {_store26}")
+    test("26b: second edit → no repeated-edit alert below threshold", _r26b is None, f"Got: {_r26b!r}")
+
+    # ── 26c: third edit — warning IS emitted ──────────────────────
+    # Reset the in-memory PY_EDIT_COUNTER so no spurious test-reminder fires.
+    # The lambdas installed above close over _py_cnt26 by name (it is a module-
+    # level global in this script), so rebinding _py_cnt26 here is sufficient —
+    # the existing lambdas already see the new list at call time.
+    _py_cnt26 = [0]
+
+    _r26c = _rule26.evaluate(
+        "postToolUse",
+        {"toolName": "edit", "toolResult": {"filePath": "src/foo.py"}},
+    )
+
+    test(
+        "26c: third edit to same file → warning emitted",
+        _r26c is not None and "message" in _r26c,
+        f"Expected warning dict, got: {_r26c!r}",
+    )
+    test(
+        "26c: warning message contains 'REPEATED EDIT ALERT'",
+        _r26c is not None and "REPEATED EDIT ALERT" in _r26c.get("message", ""),
+        f"Message: {(_r26c or {}).get('message', '')!r}",
+    )
+    test(
+        "26c: warning message contains file name",
+        _r26c is not None and "foo.py" in _r26c.get("message", ""),
+        f"Message: {(_r26c or {}).get('message', '')!r}",
+    )
+    test(
+        "26c: warning message contains edit count",
+        _r26c is not None and "3x" in _r26c.get("message", ""),
+        f"Message: {(_r26c or {}).get('message', '')!r}",
+    )
+    test(
+        "26c: warning message nudges bug logging with 'sk learn --mistake'",
+        _r26c is not None and "sk learn --mistake" in _r26c.get("message", ""),
+        f"Message: {(_r26c or {}).get('message', '')!r}",
+    )
+    test("26c: third edit → count stored as 3", _store26.get("src/foo.py") == 3, f"Store: {_store26}")
+
+    # ── 26d: fourth edit — warning still emitted (above threshold) ─
+    # 26c's sign_counter set _py_cnt26[0] = 1; reset before 26d so the
+    # test-reminder does not spuriously fire on the .py file edit.
+    _py_cnt26 = [0]
+    _r26d = _rule26.evaluate(
+        "postToolUse",
+        {"toolName": "edit", "toolResult": {"filePath": "src/foo.py"}},
+    )
+
+    test(
+        "26d: fourth edit to same file → warning still emitted",
+        _r26d is not None and "REPEATED EDIT ALERT" in _r26d.get("message", ""),
+        f"Got: {_r26d!r}",
+    )
+    test("26d: fourth edit → count stored as 4", _store26.get("src/foo.py") == 4, f"Store: {_store26}")
+
+    # ── 26e: different files do not cross-trigger ──────────────────
+    _store26e = {}
+    _rule26e = _make_rule26(_store26e)
+    _r26e1 = _rule26e.evaluate(
+        "postToolUse",
+        {"toolName": "create", "input": {"filePath": "src/bar.ts"}},
+    )
+    _r26e2 = _rule26e.evaluate(
+        "postToolUse",
+        {"toolName": "create", "input": {"filePath": "src/baz.ts"}},
+    )
+    test("26e: two different files, each once → no warning", _r26e1 is None and _r26e2 is None,
+         f"Got: {_r26e1!r}, {_r26e2!r}")
+    test("26e: each file has count 1", _store26e.get("src/bar.ts") == 1 and _store26e.get("src/baz.ts") == 1,
+         f"Store: {_store26e}")
+
+    # ── 26f: custom threshold via FILE_EDIT_THRESHOLD ─────────────
+    _store26f = {}
+    _rule26f = _make_rule26(_store26f, threshold=2)
+    # First edit to file with threshold=2
+    _r26f1 = _rule26f.evaluate(
+        "postToolUse",
+        {"toolName": "create", "input": {"filePath": "src/config.json"}},
+    )
+    test("26f: custom threshold=2, first edit → no warning", _r26f1 is None, f"Got: {_r26f1!r}")
+    # Second edit hits threshold=2
+    _r26f2 = _rule26f.evaluate(
+        "postToolUse",
+        {"toolName": "create", "input": {"filePath": "src/config.json"}},
+    )
+    test(
+        "26f: custom threshold=2, second edit → warning",
+        _r26f2 is not None and "REPEATED EDIT ALERT" in _r26f2.get("message", ""),
+        f"Got: {_r26f2!r}",
+    )
+    test(
+        "26f: warning message contains custom threshold",
+        _r26f2 is not None and "(threshold: 2)" in _r26f2.get("message", ""),
+        f"Message: {(_r26f2 or {}).get('message', '')!r}",
+    )
+
+    # ── 26g: session-state path is NOT tracked ────────────────────
+    _store26g = {}
+    _rule26g = _make_rule26(_store26g)
+    import platform as _plat26
+    _ss_path26 = str(Path.home() / ".copilot" / "session-state" / "abc" / "notes.py")
+    # Intentionally set the py counter to threshold-1 (2) so that a broken
+    # session-state guard in the .py test-reminder branch would call
+    # _increment_and_warn(), reach count=3 >= threshold, and return a non-None
+    # warning — making this test fail explicitly rather than by coincidence.
+    _py_cnt26[0] = 2  # threshold-1; _increment_and_warn fires at count >= 3
+    _r26g = _rule26g.evaluate(
+        "postToolUse",
+        {"toolName": "edit", "toolResult": {"filePath": _ss_path26}},
+    )
+    _py_cnt26[0] = 0  # reset so subsequent sections are unaffected
+    test(
+        "26g: edit to session-state path → per-file alert not triggered",
+        _store26g == {},
+        f"Store should be empty for session-state, got: {_store26g}",
+    )
+    test(
+        "26g: edit to session-state .py path → return value is None (no test reminder)",
+        _r26g is None,
+        f"Expected None, got: {_r26g!r}",
+    )
+
+    # ── 26h: fresh state — update_session_state callback initialises file_edit_counts ─
+    # Proves the real persistence contract: the updater creates 'file_edit_counts'
+    # when absent and sets the count to 1 for the first edit in a fresh session.
+    _captured26h = {}
+    _orig_uss26h = _et26.update_session_state
+
+    def _uss26h(updater, data=None, **kwargs):
+        state = {}  # simulate fresh session state with no prior file_edit_counts
+        updater(state)
+        _captured26h.update(state)
+        return (True, True)
+
+    _et26.update_session_state = _uss26h
+    _rule_26h = _TRR26()
+    _r26h_nowarning = _rule_26h._track_file_edit("src/firstfile.py")
+    _et26.update_session_state = _orig_uss26h
+    test(
+        "26h: update_session_state callback creates file_edit_counts with count=1 on first edit",
+        _captured26h.get("file_edit_counts", {}).get("src/firstfile.py") == 1,
+        f"State: {_captured26h!r}",
+    )
+    test(
+        "26h: first edit in fresh state → no warning (count 1 < threshold 3)",
+        _r26h_nowarning is None,
+        f"Got: {_r26h_nowarning!r}",
+    )
+
+    # ── 26i: get_session_state_path uses data['sessionId'] for session routing ─
+    # The real routing function for shared session state uses get_session_marker_suffix(data),
+    # which sanitizes and embeds the sessionId in the filename.
+    from rules.common import get_session_state_path as _gsp26i
+    _path26i = _gsp26i(data={"sessionId": "test-session-id-999"})
+    test(
+        "26i: session-state path contains sanitized sessionId from data payload",
+        "test-session-id-999" in _path26i.name,
+        f"Path name: {_path26i.name!r}",
+    )
+    test(
+        "26i: session-state path has session-state marker prefix",
+        _path26i.name.startswith("session-state-"),
+        f"Path name: {_path26i.name!r}",
+    )
+
+    # ── 26j: _track_file_edit forwards data payload to update_session_state ─
+    # Proves the session-scoping contract: the hook event data is passed through
+    # to update_session_state so the correct session-scoped state file is used.
+    _captured_data26j = [None]
+    _orig_uss26j = _et26.update_session_state
+
+    def _uss26j(updater, data=None, **kwargs):
+        _captured_data26j[0] = data
+        state = {"file_edit_counts": {}}
+        updater(state)
+        return (True, True)
+
+    _et26.update_session_state = _uss26j
+    _rule_26j = _TRR26()
+    _payload26j = {"sessionId": "session-scoping-test-999"}
+    _rule_26j._track_file_edit("lib/target.py", data=_payload26j)
+    _et26.update_session_state = _orig_uss26j
+    test(
+        "26j: _track_file_edit forwards data payload to update_session_state for session scoping",
+        _captured_data26j[0] is _payload26j,
+        f"Expected payload {_payload26j!r}, got {_captured_data26j[0]!r}",
+    )
+
+    # ── 26k: bad env value → _parse_file_edit_threshold falls back to 3 ─
+    _orig_env_val = os.environ.pop("COPILOT_FILE_EDIT_THRESHOLD", None)
+    try:
+        for _bad_val in ("notanint", "", "3.5", "abc123", "  "):
+            os.environ["COPILOT_FILE_EDIT_THRESHOLD"] = _bad_val
+            _parsed_thresh = _et26._parse_file_edit_threshold()
+            test(
+                f"26k: COPILOT_FILE_EDIT_THRESHOLD={_bad_val!r} → default 3",
+                _parsed_thresh == 3,
+                f"Got: {_parsed_thresh!r}",
+            )
+        # valid integer value still works
+        os.environ["COPILOT_FILE_EDIT_THRESHOLD"] = "5"
+        _parsed_thresh5 = _et26._parse_file_edit_threshold()
+        test(
+            "26k: COPILOT_FILE_EDIT_THRESHOLD='5' → 5",
+            _parsed_thresh5 == 5,
+            f"Got: {_parsed_thresh5!r}",
+        )
+    finally:
+        if _orig_env_val is None:
+            os.environ.pop("COPILOT_FILE_EDIT_THRESHOLD", None)
+        else:
+            os.environ["COPILOT_FILE_EDIT_THRESHOLD"] = _orig_env_val
+
+    # ── 26l: module import does not raise on bad env var ─────────────
+    # Simulate import-time parsing with a bad env value
+    _orig_env_l = os.environ.pop("COPILOT_FILE_EDIT_THRESHOLD", None)
+    try:
+        os.environ["COPILOT_FILE_EDIT_THRESHOLD"] = "notanint"
+        # Re-invoke the parse function (same logic as module-level call)
+        _safe_thresh = _et26._parse_file_edit_threshold()
+        test(
+            "26l: import-time parse with 'notanint' env → no ValueError raised, defaults to 3",
+            _safe_thresh == 3,
+            f"Got: {_safe_thresh!r}",
+        )
+    finally:
+        if _orig_env_l is None:
+            os.environ.pop("COPILOT_FILE_EDIT_THRESHOLD", None)
+        else:
+            os.environ["COPILOT_FILE_EDIT_THRESHOLD"] = _orig_env_l
+
+    # ── 26m: threshold ≤ 0 falls back to 3 ────────────────────────
+    _orig_env_m = os.environ.pop("COPILOT_FILE_EDIT_THRESHOLD", None)
+    try:
+        for _bad_thresh in ("0", "-1", "-100"):
+            os.environ["COPILOT_FILE_EDIT_THRESHOLD"] = _bad_thresh
+            _parsed_m = _et26._parse_file_edit_threshold()
+            test(
+                f"26m: COPILOT_FILE_EDIT_THRESHOLD={_bad_thresh!r} (≤0) → default 3",
+                _parsed_m == 3,
+                f"Got: {_parsed_m!r}",
+            )
+        # Confirm 0-threshold does NOT warn on every edit: first edit must be silent.
+        _store26m = {}
+        _rule26m = _make_rule26(_store26m, threshold=3)  # threshold clamped to 3
+        _r26m1 = _rule26m.evaluate(
+            "postToolUse",
+            {"toolName": "create", "input": {"filePath": "src/m_test.ts"}},
+        )
+        test(
+            "26m: first edit with effective threshold=3 → no warning (not every-edit)",
+            _r26m1 is None,
+            f"Got: {_r26m1!r}",
+        )
+    finally:
+        if _orig_env_m is None:
+            os.environ.pop("COPILOT_FILE_EDIT_THRESHOLD", None)
+        else:
+            os.environ["COPILOT_FILE_EDIT_THRESHOLD"] = _orig_env_m
+
+    # ── 26n: session-state scoping via update_session_state ─────────────────
+    # Proves that _track_file_edit delegates session scoping to update_session_state:
+    # • data payload is forwarded through so the correct session-scoped state file is used
+    # • separate sessions accumulate counts independently (no cross-session bleed)
+    # • get_session_state_path (the real routing function) uses data['sessionId']
+
+    # Part 1: data payload is passed through to update_session_state.
+    _n_captured_data = [None]
+    _orig_uss26n = _et26.update_session_state
+
+    def _uss26n_cap(updater, data=None, **kwargs):
+        _n_captured_data[0] = data
+        state = {"file_edit_counts": {}}
+        updater(state)
+        return (True, True)
+
+    _et26.update_session_state = _uss26n_cap
+    _rule_26n = _TRR26()
+    _n_payload = {"sessionId": "session-n-abc"}
+    _rule_26n._track_file_edit("hooks/rule.py", data=_n_payload)
+    _et26.update_session_state = _orig_uss26n
+    test(
+        "26n: _track_file_edit passes data payload to update_session_state (delegation contract)",
+        _n_captured_data[0] is _n_payload,
+        f"Expected {_n_payload!r}, got {_n_captured_data[0]!r}",
+    )
+
+    # Part 2: independent sessions do not share counts (no cross-session bleed).
+    _state_n_A: dict = {}
+    _state_n_B: dict = {}
+    _orig_uss26n2 = _et26.update_session_state
+
+    def _make_uss26n(state_dict):
+        def _uss(updater, data=None, **kwargs):
+            updater(state_dict)
+            return (True, True)
+        return _uss
+
+    _et26.update_session_state = _make_uss26n(_state_n_A)
+    _rule_26n_A = _TRR26()
+    _rule_26n_A._track_file_edit("src/shared.py")
+    _rule_26n_A._track_file_edit("src/shared.py")
+    _et26.update_session_state = _make_uss26n(_state_n_B)
+    _rule_26n_B = _TRR26()
+    _rule_26n_B._track_file_edit("src/shared.py")
+    _et26.update_session_state = _orig_uss26n2
+    test(
+        "26n: session-A count = 2 after two edits",
+        _state_n_A.get("file_edit_counts", {}).get("src/shared.py") == 2,
+        f"State A: {_state_n_A!r}",
+    )
+    test(
+        "26n: session-B count = 1, no bleed from session-A",
+        _state_n_B.get("file_edit_counts", {}).get("src/shared.py") == 1,
+        f"State B: {_state_n_B!r}",
+    )
+
+    # Part 3: get_session_state_path correctly routes by data['sessionId'].
+    from rules.common import get_session_state_path as _gsp26n
+    _path_n_sid = _gsp26n(data={"sessionId": "payload-sid-777"})
+    test(
+        "26n: get_session_state_path uses data['sessionId'] for session scoping",
+        "payload-sid-777" in _path_n_sid.name,
+        f"Path name: {_path_n_sid.name!r}",
+    )
+    _path_n_1 = _gsp26n(data={"sessionId": "session-alpha"})
+    _path_n_2 = _gsp26n(data={"sessionId": "session-beta"})
+    test(
+        "26n: distinct sessionId values produce distinct session state paths",
+        _path_n_1 != _path_n_2,
+        f"Both same: {_path_n_1}",
+    )
+    _path_n_trav = _gsp26n(data={"sessionId": "../../../evil"})
+    test(
+        "26n: path-traversal chars in sessionId are sanitized in session state path",
+        ".." not in _path_n_trav.name and "/" not in _path_n_trav.name and "\\" not in _path_n_trav.name,
+        f"Path name: {_path_n_trav.name!r}",
+    )
+
+    # ── 26o: combined repeated-edit + test-reminder branch ────────
+    # Proves the `if per_file_msg and py_msg:` branch in evaluate():
+    # both the repeated-edit alert AND the generic test-reminder fire
+    # together on the same call, and the result is their concatenation.
+    _store26o = {"src/combined.py": 2}  # 2 edits already, next hits threshold=3
+    _rule26o = _make_rule26(_store26o, threshold=3)
+    # Set PY_EDIT_COUNTER to 2 so the 3rd .py edit → count=3 → TEST REMINDER fires.
+    _py_cnt26o = [2]
+    _et26.verify_counter = lambda p: _py_cnt26o[0]
+    _et26.sign_counter = lambda p, v: _py_cnt26o.__setitem__(0, v)
+    _r26o = _rule26o.evaluate(
+        "postToolUse",
+        {"toolName": "edit", "toolResult": {"filePath": "src/combined.py"}},
+    )
+    _et26.verify_counter = _true_orig_vc26
+    _et26.sign_counter = _true_orig_sc26
+    _reset26()
+    test(
+        "26o: combined branch — per_file_msg AND py_msg both fire simultaneously",
+        _r26o is not None
+        and "REPEATED EDIT ALERT" in _r26o.get("message", "")
+        and "TEST REMINDER" in _r26o.get("message", ""),
+        f"Got: {_r26o!r}",
+    )
+    test(
+        "26o: combined message contains bug-log nudge from per_file_msg",
+        _r26o is not None and "sk learn --mistake" in _r26o.get("message", ""),
+        f"Message: {(_r26o or {}).get('message', '')!r}",
+    )
+    test(
+        "26o: combined message contains test-run nudge from py_msg",
+        _r26o is not None and "test_security.py" in _r26o.get("message", ""),
+        f"Message: {(_r26o or {}).get('message', '')!r}",
+    )
+
+    # ── Final restore ───────────────────────────────────────────────
+    _et26.verify_counter = _true_orig_vc26
+    _et26.sign_counter = _true_orig_sc26
+    _reset26()
+    test("Section 26 per-file edit alert tests ran without exception", True)
+except Exception as _e26:
+    test("Section 26 per-file edit alert tests ran without exception", False, str(_e26))
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  Results
 # ═══════════════════════════════════════════════════════════════════

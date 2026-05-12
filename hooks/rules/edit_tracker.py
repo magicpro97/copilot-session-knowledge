@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from . import Rule
-from .common import CODE_EXTENSIONS, MARKERS_DIR, info, is_session_path
+from .common import CODE_EXTENSIONS, MARKERS_DIR, get_session_marker_suffix, info, is_session_path, update_session_state
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
@@ -46,6 +46,24 @@ TENTACLE_EDITS = MARKERS_DIR / "tentacle-edits"
 TESTS_RAN = MARKERS_DIR / "tests-ran"
 
 SAFE_PATH_PREFIXES = ("/tmp/", "/var/", "/dev/", "/proc/")
+
+
+# Per-file repeated-edit tracking (issue #93).
+# Warn when the same file is edited >= FILE_EDIT_THRESHOLD times in one session.
+def _parse_file_edit_threshold() -> int:
+    """Parse COPILOT_FILE_EDIT_THRESHOLD, falling back to 3 on invalid or sub-1 input."""
+    raw = os.environ.get("COPILOT_FILE_EDIT_THRESHOLD", "")
+    try:
+        val = int(raw)
+        # 0 or negative would fire on every edit — use the safe default instead.
+        if val < 1:
+            return 3
+        return val
+    except (ValueError, TypeError):
+        return 3
+
+
+FILE_EDIT_THRESHOLD: int = _parse_file_edit_threshold()
 
 
 class TrackEditsRule(Rule):
@@ -153,9 +171,21 @@ class TestReminderRule(Rule):
                 file_path = (data.get("toolResult") or {}).get("filePath", "")
             elif tool_name == "create":
                 file_path = (data.get("input") or {}).get("filePath", "")
-            if file_path and file_path.endswith(".py"):
-                return self._increment_and_warn()
-            return None
+
+            # Per-file repeated-edit tracking (issue #93) — informational only.
+            per_file_msg = None
+            if file_path and not is_session_path(file_path):
+                per_file_msg = self._track_file_edit(file_path, data=data)
+
+            # Existing .py test-run reminder.
+            if file_path and file_path.endswith(".py") and not is_session_path(file_path):
+                py_msg = self._increment_and_warn()
+                if per_file_msg and py_msg:
+                    combined = per_file_msg.get("message", "") + py_msg.get("message", "")
+                    return info(combined)
+                return py_msg or per_file_msg
+
+            return per_file_msg
 
         if tool_name == "bash":
             command = tool_args.get("command", "")
@@ -172,6 +202,36 @@ class TestReminderRule(Rule):
             return None
 
         return None
+
+    def _track_file_edit(self, file_path: str, data=None):
+        """Increment per-file edit count and warn if threshold is reached.
+
+        Uses ``common.update_session_state`` for a locked per-session RMW so
+        that concurrent ``postToolUse`` calls in the same session cannot lose
+        increments or double-fire the threshold warning.  This is informational
+        only — never blocks (fail-open).  The state is session-scoped and lives
+        under the ``file_edit_counts`` key of the shared session-state JSON,
+        which is cleaned up by SessionEndRule via the shared session-state file.
+        """
+        result_holder = [None]
+
+        def _updater(state):
+            counts = state.setdefault("file_edit_counts", {})
+            counts[file_path] = counts.get(file_path, 0) + 1
+            n = counts[file_path]
+            if n >= FILE_EDIT_THRESHOLD:
+                result_holder[0] = info(
+                    f"\n  ⚠️ REPEATED EDIT ALERT: '{Path(file_path).name}' has been edited "
+                    f"{n}x this session (threshold: {FILE_EDIT_THRESHOLD}).\n"
+                    "  If this edit fixes a bug, log it: sk learn --mistake\n"
+                    "  Consider splitting changes into smaller commits or reviewing your approach.\n"
+                )
+
+        try:
+            update_session_state(_updater, data)
+        except Exception:
+            pass
+        return result_holder[0]
 
     def _detect_py_writes(self, command):
         paths = []
