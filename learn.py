@@ -28,12 +28,18 @@ Usage:
     python learn.py --from-file notes.md          # Bulk import from markdown
     python learn.py --list                        # List recent entries
     python learn.py --stats                       # Show knowledge stats
+
+Auto-update cerebrum snapshot (opt-in):
+    python learn.py --pattern "Title" "Desc" --update-cerebrum
+    python learn.py --mistake "Title" "Desc" --update-cerebrum --cerebrum-output CEREBRUM.md
+    python learn.py --decision "Title" "Desc" --update-cerebrum --cerebrum-sections mistakes,decisions
 """
 
 import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -521,6 +527,46 @@ def _extract_code_snippet(source_file: str, start_line: int, end_line: int, quie
     if len(snippet) > 2000:
         snippet = snippet[:1999] + "…"
     return snippet, code_language
+
+
+def _auto_update_cerebrum(output_path: str, sections: str | None, *, json_mode: bool = False) -> int:
+    """Invoke export-cerebrum.py to regenerate the cerebrum snapshot after a learn write.
+
+    This is an opt-in path triggered only when --update-cerebrum is passed.  It spawns
+    export-cerebrum.py as a subprocess so the two standalone scripts remain decoupled.
+
+    Args:
+        output_path: Destination file path for the cerebrum snapshot (e.g. CEREBRUM.md).
+        sections: Comma-separated section names to include, or None for all sections.
+        json_mode: When True, redirect subprocess stdout to DEVNULL so the
+            caller-visible JSON stream is not contaminated by exporter output.
+
+    Returns:
+        The subprocess exit code.  Non-zero indicates export failure.
+    """
+    exporter = TOOLS_DIR / "export-cerebrum.py"
+    cmd = [sys.executable, str(exporter), "--output", output_path]
+    if sections:
+        cmd += ["--sections", sections]
+    print(f"  Updating cerebrum snapshot → {output_path}", file=sys.stderr)
+    # In JSON mode the caller-visible stdout stream must stay clean; redirect
+    # subprocess stdout away from it.  In non-JSON mode stdout is inherited so
+    # the user can see exporter progress.
+    stdout_arg = subprocess.DEVNULL if json_mode else None
+    try:
+        result = subprocess.run(cmd, stdout=stdout_arg, timeout=120)
+        if result.returncode != 0:
+            print(
+                f"  ⚠ export-cerebrum failed (exit {result.returncode})",
+                file=sys.stderr,
+            )
+        return result.returncode
+    except subprocess.TimeoutExpired:
+        print("  ⚠ export-cerebrum timed out (120 s)", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"  ⚠ export-cerebrum error: {exc}", file=sys.stderr)
+        return 1
 
 
 def get_db() -> sqlite3.Connection:
@@ -1107,7 +1153,7 @@ def _embed_entry(db: sqlite3.Connection, entry_id: int, title: str, content: str
         print(f"  [info] Embedding skipped: {e}", file=sys.stderr)
 
 
-def import_from_file(filepath: str):
+def import_from_file(filepath: str) -> int:
     """Bulk import knowledge entries from a markdown file.
 
     Expected format:
@@ -1116,11 +1162,13 @@ def import_from_file(filepath: str):
 
     ## pattern: Title Here
     Content describing the pattern...
+
+    Returns the number of entries actually imported (0 on failure or no entries).
     """
     path = Path(filepath)
     if not path.exists():
-        print(f"Error: File not found: {filepath}")
-        return
+        print(f"Error: File not found: {filepath}", file=sys.stderr)
+        return 0
 
     content = path.read_text(encoding="utf-8", errors="replace")
     entries = []
@@ -1148,16 +1196,24 @@ def import_from_file(filepath: str):
         entries.append(current)
 
     if not entries:
-        print("No entries found. Use format: ## category: Title")
-        return
+        print("No entries found. Use format: ## category: Title", file=sys.stderr)
+        return 0
 
     print(f"Importing {len(entries)} entries from {filepath}...")
+    imported = 0
     for entry in entries:
         content = "\n".join(entry["lines"]).strip()
         if content:
             with_retry(add_entry, entry["category"], entry["title"], content)
+            imported += 1
 
-    print(f"Done. Imported {len(entries)} entries.")
+    print(f"Done. Imported {imported} entries.")
+    if imported == 0:
+        # Headers parsed successfully but all entries had empty body content.
+        # This is not the same error as "file not found" or "no headers found";
+        # return -1 so the caller can exit 0 rather than treating it as a hard failure.
+        return -1
+    return imported
 
 
 def list_recent(limit: int = 10):
@@ -1320,9 +1376,34 @@ def main():
     if "--from-file" in args:
         idx = args.index("--from-file")
         if idx + 1 < len(args):
-            import_from_file(args[idx + 1])
+            imported = import_from_file(args[idx + 1])
+            # -1 means "headers parsed but no body content" — valid but empty; exit 0.
+            if imported == -1:
+                return
+            # 0 means "file not found" or "no headers found" — hard failure.
+            if not imported:
+                sys.exit(1)
+            # Support --update-cerebrum after bulk import (same opt-in contract as
+            # single-entry writes; cerebrum refresh runs once after all entries land).
+            # Only run if the import actually succeeded (imported > 0).
+            if "--update-cerebrum" in args:
+                _co = "CEREBRUM.md"
+                if "--cerebrum-output" in args:
+                    _ci = args.index("--cerebrum-output")
+                    _cnext = args[_ci + 1] if _ci + 1 < len(args) else None
+                    _co = _cnext if _cnext and not _cnext.startswith("--") else "CEREBRUM.md"
+                _cs: str | None = None
+                if "--cerebrum-sections" in args:
+                    _ci = args.index("--cerebrum-sections")
+                    _cnext = args[_ci + 1] if _ci + 1 < len(args) else None
+                    _cs = _cnext if _cnext and not _cnext.startswith("--") else None
+                _json_mode = "--json" in args
+                rc = _auto_update_cerebrum(_co, _cs, json_mode=_json_mode)
+                if rc != 0:
+                    sys.exit(rc)
         else:
             print("Error: --from-file requires a filepath")
+            sys.exit(1)
         return
 
     # Handle --relate command
@@ -1494,8 +1575,11 @@ def main():
             "--fix-step",
             "--valence",
             "--intensity",
+            "--cerebrum-output",
+            "--cerebrum-sections",
         ):
-            skip_next = True
+            _next = args[i + 1] if i + 1 < len(args) else None
+            skip_next = bool(_next and not _next.startswith("--"))
             continue
         if a.startswith("--"):
             continue
@@ -1513,6 +1597,19 @@ def main():
     skip_gate = "--skip-gate" in args
     skip_scan = "--skip-scan" in args
     json_mode = "--json" in args
+    update_cerebrum = "--update-cerebrum" in args
+
+    cerebrum_output = "CEREBRUM.md"
+    if "--cerebrum-output" in args:
+        idx = args.index("--cerebrum-output")
+        _cnext = args[idx + 1] if idx + 1 < len(args) else None
+        cerebrum_output = _cnext if _cnext and not _cnext.startswith("--") else "CEREBRUM.md"
+
+    cerebrum_sections: str | None = None
+    if "--cerebrum-sections" in args:
+        idx = args.index("--cerebrum-sections")
+        _cnext = args[idx + 1] if idx + 1 < len(args) else None
+        cerebrum_sections = _cnext if _cnext and not _cnext.startswith("--") else None
     gate_categories = {"mistake", "pattern", "discovery"}
     if not json_mode:
         if category in gate_categories and not skip_gate:
@@ -1611,6 +1708,10 @@ def main():
             print(json.dumps(out_dict, indent=2, ensure_ascii=False))
         else:
             print(json.dumps({"status": "error", "id": entry_id, "reason": "entry_not_found_after_write"}, indent=2))
+        if update_cerebrum and entry_id >= 0:
+            rc = _auto_update_cerebrum(cerebrum_output, cerebrum_sections, json_mode=True)
+            if rc != 0:
+                sys.exit(rc)
         return
 
     if facts:
@@ -1618,6 +1719,10 @@ def main():
     if affected_files:
         print(f"  Affecting {len(affected_files)} file(s): {', '.join(affected_files[:3])}")
     print("Done.")
+    if update_cerebrum and entry_id >= 0:
+        rc = _auto_update_cerebrum(cerebrum_output, cerebrum_sections)
+        if rc != 0:
+            sys.exit(rc)
 
 
 if __name__ == "__main__":
