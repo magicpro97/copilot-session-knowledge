@@ -90,6 +90,5 @@ class ReadTrackerRule(Rule):
         name = os.path.basename(path)
         tok_hint = f" (~{tokens:,} tok)" if tokens else ""
         return info(
-            f"  \u26a0 {name} already read this session{tok_hint}."
-            " Use existing knowledge instead of re-reading."
+            f"  \u26a0 {name} already read this session{tok_hint}. Use existing knowledge instead of re-reading."
         )

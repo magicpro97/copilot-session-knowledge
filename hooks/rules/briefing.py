@@ -173,10 +173,10 @@ class AutoBriefingRule(Rule):
                                 f.unlink()
                             continue
                         # Plain state file — PID-aware or long-threshold pruning.
-                        sid_part = name[len("session-state-"):]
+                        sid_part = name[len("session-state-") :]
                         if sid_part.startswith("ppid-"):
                             try:
-                                owner_pid = int(sid_part[len("ppid-"):])
+                                owner_pid = int(sid_part[len("ppid-") :])
                             except ValueError:
                                 owner_pid = None
                             if owner_pid is not None and _is_pid_running(owner_pid):

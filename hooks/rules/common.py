@@ -511,19 +511,21 @@ def update_session_state(updater, data=None, *, max_retries=20, retry_delay=0.05
                 try:
                     _sig = inspect.signature(updater)
                     _params = list(_sig.parameters.values())
-                    _accepts_lock_state = any(
-                        p.kind == inspect.Parameter.VAR_POSITIONAL for p in _params
-                    ) or len(
-                        [
-                            p
-                            for p in _params
-                            if p.kind
-                            in (
-                                inspect.Parameter.POSITIONAL_ONLY,
-                                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                            )
-                        ]
-                    ) >= 2
+                    _accepts_lock_state = (
+                        any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in _params)
+                        or len(
+                            [
+                                p
+                                for p in _params
+                                if p.kind
+                                in (
+                                    inspect.Parameter.POSITIONAL_ONLY,
+                                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                                )
+                            ]
+                        )
+                        >= 2
+                    )
                 except (TypeError, ValueError):
                     _accepts_lock_state = False
 
