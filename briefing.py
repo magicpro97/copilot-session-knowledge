@@ -1093,9 +1093,7 @@ def _get_briefing_half_life(db: sqlite3.Connection) -> float:
     Falls back to 30.0 days when the key is absent or the table does not exist.
     """
     try:
-        row = db.execute(
-            "SELECT value FROM wakeup_config WHERE key='briefing_recency_half_life'"
-        ).fetchone()
+        row = db.execute("SELECT value FROM wakeup_config WHERE key='briefing_recency_half_life'").fetchone()
         if row and row[0]:
             v = float(row[0])
             return v if v > 0 else 30.0
@@ -1137,11 +1135,7 @@ def search_knowledge_entries(
     has_intensity = _ke_has_intensity(db)
     order_by = _intensity_order_expr("ke") if has_intensity else "ke.confidence DESC, rank"
     # Extra columns fetched so Python-level recency composite scoring has intensity + age.
-    _rec_cols = (
-        ", COALESCE(ke.intensity, 0.5) as intensity, ke.last_seen"
-        if has_intensity
-        else ", ke.last_seen"
-    )
+    _rec_cols = ", COALESCE(ke.intensity, 0.5) as intensity, ke.last_seen" if has_intensity else ", ke.last_seen"
 
     results = []
     try:
