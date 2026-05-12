@@ -1561,12 +1561,18 @@ def main():
             print(json.dumps({"status": "rejected", "reason": "injection_scan_failed"}, indent=2))
             return
         db = get_db()
+        # Guard against pre-v21 DBs that lack valence/intensity columns.
+        _json_cols = {r[1] for r in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        _has_vi = all(c in _json_cols for c in ("valence", "intensity"))
+        _vi_select = (
+            ",\n                   COALESCE(valence, '') AS valence,"
+            "\n                   COALESCE(intensity, 0.5) AS intensity"
+            if _has_vi else ""
+        )
         row = db.execute(
-            """
+            f"""
             SELECT id, category, title, confidence, session_id, task_id,
-                   affected_files, facts, occurrence_count, last_seen,
-                   COALESCE(valence, '') AS valence,
-                   COALESCE(intensity, 0.5) AS intensity
+                   affected_files, facts, occurrence_count, last_seen{_vi_select}
             FROM knowledge_entries WHERE id = ?
         """,
             (entry_id,),
@@ -1595,11 +1601,12 @@ def main():
                 "occurrence_count": row["occurrence_count"],
                 "last_seen": row["last_seen"],
             }
-            try:
-                out_dict["valence"] = row["valence"]
-                out_dict["intensity"] = row["intensity"]
-            except (IndexError, KeyError):
-                pass
+            if _has_vi:
+                try:
+                    out_dict["valence"] = row["valence"]
+                    out_dict["intensity"] = row["intensity"]
+                except (IndexError, KeyError):
+                    pass
             print(json.dumps(out_dict, indent=2, ensure_ascii=False))
         else:
             print(json.dumps({"status": "error", "id": entry_id, "reason": "entry_not_found_after_write"}, indent=2))
