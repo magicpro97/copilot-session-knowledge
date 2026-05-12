@@ -5263,5 +5263,281 @@ class TestGoalCoverageUnit(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Goal loop helpers and tests (issue #129)
+# ---------------------------------------------------------------------------
+
+
+def _run_loop(tentacles, *, max_iterations=None, timeout=60) -> None:
+    """Helper: invoke _cmd_goal_loop with fake args."""
+    args = _fake_args(
+        goal_action="loop",
+        max_iterations=max_iterations,
+        timeout=timeout,
+    )
+    with patch("builtins.print"):
+        T._cmd_goal_loop(args, tentacles)
+
+
+class TestGoalLoopConstants(unittest.TestCase):
+    """Verify the budget_limited status constant exists and is distinct."""
+
+    def test_budget_limited_constant_is_string(self):
+        self.assertIsInstance(T.GOAL_STATUS_BUDGET_LIMITED, str)
+
+    def test_budget_limited_distinct_from_others(self):
+        others = {
+            T.GOAL_STATUS_ACTIVE,
+            T.GOAL_STATUS_PAUSED,
+            T.GOAL_STATUS_COMPLETED,
+            T.GOAL_STATUS_ABANDONED,
+            T.GOAL_STATUS_NEEDS_HUMAN,
+            T.GOAL_STATUS_AWAITING_GATE,
+        }
+        self.assertNotIn(T.GOAL_STATUS_BUDGET_LIMITED, others)
+
+
+class TestGoalLoop(unittest.TestCase):
+    def setUp(self):
+        self.base = SCRATCH_DIR / "loop"
+        _, self.tentacles = _make_octogent(self.base)
+        _init_goal(self.tentacles, title="Loop Goal", max_iterations=10)
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    # -- helpers --
+
+    def _add_passing_criterion(self, cid: str = "sc-pass") -> None:
+        """Add a criterion whose verification command always exits 0."""
+        state = T._goal_load(self.tentacles)
+        state.setdefault("success_criteria", []).append(
+            {
+                "id": cid,
+                "description": "always passes",
+                "status": "pending",
+                "verification_command": _py_inline("raise SystemExit(0)"),
+            }
+        )
+        T._goal_write(self.tentacles, state)
+
+    def _add_failing_criterion(self, cid: str = "sc-fail") -> None:
+        """Add a criterion whose verification command always exits 1."""
+        state = T._goal_load(self.tentacles)
+        state.setdefault("success_criteria", []).append(
+            {
+                "id": cid,
+                "description": "always fails",
+                "status": "pending",
+                "verification_command": _py_inline("raise SystemExit(1)"),
+            }
+        )
+        T._goal_write(self.tentacles, state)
+
+    # -- tests --
+
+    def test_loop_marks_complete_when_all_criteria_pass(self):
+        self._add_passing_criterion()
+        _run_loop(self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_COMPLETED)
+
+    def test_loop_records_complete_eval_in_history(self):
+        self._add_passing_criterion()
+        _run_loop(self.tentacles)
+        state = T._goal_load(self.tentacles)
+        history = state.get("eval_history", [])
+        last = history[-1]
+        self.assertEqual(last["decision"], "complete")
+        self.assertEqual(last["source"], "goal-loop")
+
+    def test_loop_marks_budget_limited_when_max_steps_exceeded(self):
+        self._add_failing_criterion()
+        _run_loop(self.tentacles, max_iterations=1)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+
+    def test_budget_limited_records_eval_history_entry(self):
+        self._add_failing_criterion()
+        _run_loop(self.tentacles, max_iterations=1)
+        state = T._goal_load(self.tentacles)
+        last = state["eval_history"][-1]
+        self.assertEqual(last["decision"], "budget_limited")
+        self.assertEqual(last["source"], "goal-loop")
+
+    def test_budget_limited_state_has_timestamp_and_reason(self):
+        self._add_failing_criterion()
+        _run_loop(self.tentacles, max_iterations=1)
+        state = T._goal_load(self.tentacles)
+        self.assertIn("budget_limited_at", state)
+        self.assertIn("budget_limited_reason", state)
+
+    def test_loop_records_continue_eval_before_budget_limited(self):
+        """Failing criteria → continue recorded → then budget_limited on next step."""
+        self._add_failing_criterion()
+        _run_loop(self.tentacles, max_iterations=2)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+        decisions = [e["decision"] for e in state.get("eval_history", [])]
+        self.assertIn("continue", decisions)
+        self.assertIn("budget_limited", decisions)
+
+    def test_loop_advances_iteration_on_continue(self):
+        """After a continue eval the iteration counter must increment."""
+        _rmtree(SCRATCH_DIR)
+        _, self.tentacles = _make_octogent(self.base)
+        _init_goal(self.tentacles, title="Loop Goal", max_iterations=10)
+        self._add_failing_criterion()
+        _run_loop(self.tentacles, max_iterations=2)
+        state = T._goal_load(self.tentacles)
+        # iteration should have advanced at least once (from 1)
+        current_iter = T._goal_current_iteration(state)
+        self.assertGreaterEqual(current_iter, 2)
+
+    def test_loop_exits_immediately_when_already_complete(self):
+        """Loop should exit without error if goal is already completed."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_COMPLETED
+        T._goal_write(self.tentacles, state)
+        _run_loop(self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_COMPLETED)
+
+    def test_loop_exits_immediately_when_budget_limited(self):
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_BUDGET_LIMITED
+        T._goal_write(self.tentacles, state)
+        _run_loop(self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+
+    def test_loop_exits_immediately_when_abandoned(self):
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_ABANDONED
+        T._goal_write(self.tentacles, state)
+        _run_loop(self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ABANDONED)
+
+    def test_loop_stops_when_goal_iteration_budget_reached(self):
+        """Goal with max_iterations=2 and failing criteria → budget_limited at iter 2."""
+        _rmtree(SCRATCH_DIR)
+        _, tentacles = _make_octogent(self.base)
+        _init_goal(tentacles, title="Budget Goal", max_iterations=2)
+        args = _fake_args(goal_action="loop", max_iterations=None, timeout=60)
+        state = T._goal_load(tentacles)
+        state.setdefault("success_criteria", []).append(
+            {
+                "id": "sc1",
+                "description": "fails",
+                "status": "pending",
+                "verification_command": _py_inline("raise SystemExit(1)"),
+            }
+        )
+        T._goal_write(tentacles, state)
+        with patch("builtins.print"):
+            T._cmd_goal_loop(args, tentacles)
+        state = T._goal_load(tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+
+    def test_loop_stops_at_blocking_gate(self):
+        """A pending gate should stop the loop and set status to awaiting-gate."""
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "G1", "description": "gate", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+        self._add_passing_criterion()
+        _run_loop(self.tentacles)
+        state = T._goal_load(self.tentacles)
+        # Gate blocking must transition goal to awaiting-gate (not stay active).
+        self.assertEqual(state["status"], T.GOAL_STATUS_AWAITING_GATE)
+        # eval_history must contain a blocked_by_gates entry.
+        history = state.get("eval_history", [])
+        blocked_entries = [e for e in history if e.get("blocked_by_gates")]
+        self.assertTrue(blocked_entries, "expected an eval_history entry with blocked_by_gates")
+        self.assertIn("G1", blocked_entries[0]["blocked_by_gates"])
+        # awaiting_gate_id must be set.
+        self.assertEqual(state.get("awaiting_gate_id"), "G1")
+
+    def test_loop_exits_when_no_goal_initialized(self):
+        _, empty_tentacles = _make_octogent(SCRATCH_DIR / "empty")
+        args = _fake_args(goal_action="loop", max_iterations=None, timeout=60)
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_loop(args, empty_tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_resume_clears_budget_limited_fields(self):
+        """After goal resume from budget_limited, budget_limited_* fields must be gone."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_BUDGET_LIMITED
+        state["budget_limited_at"] = "2026-01-01T00:00:00Z"
+        state["budget_limited_reason"] = "max_steps=1 reached"
+        T._goal_write(self.tentacles, state)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(
+                _fake_args(goal_action="resume", reset_failed=False, from_iteration=None),
+                self.tentacles,
+            )
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertNotIn("budget_limited_at", state)
+        self.assertNotIn("budget_limited_reason", state)
+
+    def test_eval_blocked_on_budget_limited_goal(self):
+        """Direct eval on a budget_limited goal must exit with error."""
+        state = T._goal_load(self.tentacles)
+        state["status"] = T.GOAL_STATUS_BUDGET_LIMITED
+        T._goal_write(self.tentacles, state)
+        args = _fake_args(goal_action="eval", decision="continue", notes="")
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_eval(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_loop_no_criteria_auto_advances_until_budget(self):
+        """Goal with no verifiable criteria auto-continues until budget or max_steps."""
+        _rmtree(SCRATCH_DIR)
+        _, tentacles = _make_octogent(self.base)
+        _init_goal(tentacles, title="No Criteria", max_iterations=3)
+        _run_loop(tentacles, max_iterations=2)
+        state = T._goal_load(tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+
+    def test_loop_budget_limited_stamps_iter_metadata(self):
+        """budget_limited transition must stamp eval_decision/completed_at on the iteration entry."""
+        self._add_failing_criterion()
+        _run_loop(self.tentacles, max_iterations=1)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+        iterations = state.get("iterations", {})
+        has_budget_decision = any(
+            v.get("eval_decision") == "budget_limited"
+            for v in iterations.values()
+            if isinstance(v, dict)
+        )
+        self.assertTrue(has_budget_decision, "expected an iteration entry with eval_decision='budget_limited'")
+        budget_entry = next(
+            v for v in iterations.values()
+            if isinstance(v, dict) and v.get("eval_decision") == "budget_limited"
+        )
+        self.assertIn("completed_at", budget_entry)
+
+    def test_loop_gate_block_records_awaiting_gate_state(self):
+        """Gate blocking in goal loop must write awaiting-gate status and eval_history entry."""
+        state = T._goal_load(self.tentacles)
+        state["gates"] = [{"id": "G2", "description": "security gate", "status": "pending"}]
+        T._goal_write(self.tentacles, state)
+        self._add_passing_criterion()
+        _run_loop(self.tentacles)
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_AWAITING_GATE)
+        self.assertEqual(state.get("awaiting_gate_id"), "G2")
+        self.assertIn("awaiting_gate_reason", state)
+        history = state.get("eval_history", [])
+        blocked = [e for e in history if e.get("blocked_by_gates")]
+        self.assertEqual(len(blocked), 1)
+        self.assertIn("G2", blocked[0]["blocked_by_gates"])
+
+
 if __name__ == "__main__":
     unittest.main()

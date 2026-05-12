@@ -4271,8 +4271,227 @@ def _cmd_goal_coverage(args, tentacles: Path) -> None:
         print("\n  No success criteria defined. Add criteria with `goal criteria add`.")
 
 
+# ---------------------------------------------------------------------------
+# Goal loop helpers (issue #129)
+# ---------------------------------------------------------------------------
+
+
+def _goal_loop_record_eval(tentacles: Path, decision: str, current_iter: int, notes: str) -> None:
+    """Record a loop-driven eval entry in goal state (internal helper, no gate/warning checks)."""
+    evaluated_at = datetime.now(timezone.utc).isoformat()
+
+    def _apply(state: dict) -> None:
+        eval_entry: dict = {
+            "iteration": current_iter,
+            "decision": decision,
+            "notes": notes,
+            "evaluated_at": evaluated_at,
+            "source": "goal-loop",
+        }
+        state.setdefault("eval_history", []).append(eval_entry)
+        iter_entry = _goal_iteration_entry(state.setdefault("iterations", {}), current_iter)
+        iter_entry["eval_decision"] = decision
+        iter_entry["completed_at"] = evaluated_at
+        if decision == "complete":
+            state["status"] = GOAL_STATUS_COMPLETED
+            state["completed_at"] = evaluated_at
+        elif decision == "continue":
+            state["status"] = GOAL_STATUS_ACTIVE
+            state["iteration"] = current_iter + 1
+            _goal_iteration_entry(
+                state.setdefault("iterations", {}),
+                current_iter + 1,
+                started_at=evaluated_at,
+            )
+        state["updated_at"] = evaluated_at
+
+    _goal_transact(tentacles, _apply)
+
+
+def _goal_loop_mark_budget_limited(tentacles: Path, current_iter: int, reason: str) -> None:
+    """Mark goal as budget_limited and record in eval_history."""
+    marked_at = datetime.now(timezone.utc).isoformat()
+
+    def _apply(state: dict) -> None:
+        state["status"] = GOAL_STATUS_BUDGET_LIMITED
+        state["budget_limited_at"] = marked_at
+        state["budget_limited_reason"] = reason
+        eval_entry: dict = {
+            "iteration": current_iter,
+            "decision": "budget_limited",
+            "notes": f"goal-loop: {reason}",
+            "evaluated_at": marked_at,
+            "source": "goal-loop",
+        }
+        state.setdefault("eval_history", []).append(eval_entry)
+        # Stamp per-iteration metadata consistently with other eval decisions.
+        iter_entry = _goal_iteration_entry(state.setdefault("iterations", {}), current_iter)
+        iter_entry["eval_decision"] = "budget_limited"
+        iter_entry["completed_at"] = marked_at
+        state["updated_at"] = marked_at
+
+    _goal_transact(tentacles, _apply)
+    print(f"\n⚠️  Goal marked '{GOAL_STATUS_BUDGET_LIMITED}': {reason}")
+    print("   Run `goal resume` then `goal loop` to continue.")
+
+
+def _cmd_goal_loop(args, tentacles: Path) -> None:
+    """
+    Auto-continuation goal loop: verify criteria → eval continue/complete/budget_limited.
+
+    Each step:
+    1. Check goal status — stop if already terminal or needs-human.
+    2. Check budget (iteration/tentacle/timeout) — stop and mark budget_limited if exceeded.
+    3. Check blocking gates — stop and set awaiting-gate status if any gate blocks.
+    4. Run success criteria verification commands.
+    5. All criteria pass → eval complete.
+    6. Criteria fail, goal iteration budget reached → mark budget_limited.
+    7. Criteria fail, budget OK → eval continue (advance iteration) and repeat.
+    """
+    max_steps: int | None = getattr(args, "max_iterations", None)
+    criterion_timeout: int = getattr(args, "timeout", 60) or 60
+
+    state = _goal_load(tentacles)
+    if not state:
+        print(
+            "ERROR: No goal initialized. Run `tentacle.py goal init` first.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    _terminal = {GOAL_STATUS_COMPLETED, GOAL_STATUS_ABANDONED, GOAL_STATUS_BUDGET_LIMITED}
+    current_status = state.get("status", GOAL_STATUS_ACTIVE)
+    if current_status in _terminal:
+        print(f"ℹ️  Goal is already '{current_status}' — nothing to loop.")
+        return
+    if current_status == GOAL_STATUS_NEEDS_HUMAN:
+        print(f"ℹ️  Goal is '{current_status}' — resolve issues and run `goal resume` first.")
+        return
+
+    git_root = find_git_root()
+    cwd = str(git_root) if git_root else str(Path.cwd())
+
+    step = 0
+    print(
+        f"🔄 goal loop: '{state.get('title', '?')}' "
+        f"— max_steps={max_steps if max_steps is not None else 'unlimited (governed by budget)'}"
+    )
+
+    while True:
+        step += 1
+
+        # Reload state fresh each step.
+        state = _goal_load(tentacles)
+        if not state:
+            print("ERROR: Goal state disappeared during loop.", file=sys.stderr)
+            sys.exit(1)
+
+        current_status = state.get("status", GOAL_STATUS_ACTIVE)
+        if current_status in _terminal:
+            print(f"\n   Goal reached '{current_status}' — loop complete.")
+            break
+        if current_status == GOAL_STATUS_NEEDS_HUMAN:
+            print(f"\n🚨 Goal is '{current_status}' — loop stopped. Resolve and `goal resume`.")
+            break
+
+        current_iter = _goal_current_iteration(state)
+        print(f"\n   Step {step} — iteration {current_iter}")
+
+        # 1. Budget check.
+        bs = _goal_budget_status(state)
+        if bs["over_budget"]:
+            over_reasons = []
+            if bs["over_iterations"]:
+                over_reasons.append(f"iterations {current_iter}>{bs['max_iterations']}")
+            if bs["over_tentacles"]:
+                over_reasons.append(f"tentacles {bs['tentacle_count']}>{bs['max_tentacles']}")
+            if bs["over_timeout"]:
+                over_reasons.append(f"timeout {bs['elapsed_minutes']}m>{bs['timeout_minutes']}m")
+            reason = "; ".join(over_reasons) or "budget exceeded"
+            _goal_loop_mark_budget_limited(tentacles, current_iter, reason)
+            break
+
+        # 2. max_steps guard for this loop invocation.
+        if max_steps is not None and step > max_steps:
+            reason = f"loop max_steps={max_steps} reached"
+            _goal_loop_mark_budget_limited(tentacles, current_iter, reason)
+            break
+
+        # 3. Gate check.
+        blocking = _goal_gates_blocking(state)
+        if blocking:
+            blocked_at = datetime.now(timezone.utc).isoformat()
+            gate_ids = [g.get("id", "?") for g in blocking]
+            primary = blocking[0]
+            primary_id = primary.get("id", "?")
+            primary_reason = primary.get("reason") or (
+                f"Gate '{primary_id}' is {primary.get('status', 'pending')}"
+            )
+
+            def _apply_gate_block(s: dict, _gate_ids=gate_ids, _iter=current_iter, _at=blocked_at, _pid=primary_id, _pr=primary_reason) -> None:
+                eval_entry: dict = {
+                    "iteration": _iter,
+                    "decision": "continue",
+                    "notes": f"goal-loop: blocked by gate(s) {_gate_ids}",
+                    "evaluated_at": _at,
+                    "blocked_by_gates": _gate_ids,
+                    "source": "goal-loop",
+                }
+                s.setdefault("eval_history", []).append(eval_entry)
+                s["status"] = GOAL_STATUS_AWAITING_GATE
+                s["awaiting_gate_id"] = _pid
+                s["awaiting_gate_reason"] = _pr
+                s["updated_at"] = _at
+
+            _goal_transact(tentacles, _apply_gate_block)
+            print(f"   ⛔ {len(blocking)} gate(s) blocking progress:")
+            for g in blocking:
+                g_st = g.get("status", "pending")
+                icon = "❌" if g_st == "rejected" else "⬜"
+                print(f"      {icon} [{g.get('id', '?')}] {g.get('description', '')[:60]} — {g_st}")
+            print(f"   Goal status set to '{GOAL_STATUS_AWAITING_GATE}'. Approve gate(s) with `goal gate approve <id>` then re-run `goal loop`.")
+            break
+
+        # 4. Run success criteria.
+        runnable = [c for c in (state.get("success_criteria") or []) if c.get("verification_command", "")]
+        if not runnable:
+            print("   ℹ️  No success criteria with verification_command set — auto-advancing.")
+        all_passed = bool(runnable)
+        for c in runnable:
+            cid = c.get("id", "?")
+            exit_code, output = _goal_criteria_run_one(c, cwd, timeout=criterion_timeout)
+            if exit_code == 0:
+                print(f"      ✅ [{cid}] passed")
+            else:
+                print(f"      ❌ [{cid}] failed (exit={exit_code})")
+                for line in output.strip().splitlines()[:3]:
+                    print(f"         {line}")
+                all_passed = False
+
+        # 5. Decide.
+        if all_passed:
+            _goal_loop_record_eval(tentacles, "complete", current_iter, "goal-loop: all criteria verified")
+            print(f"\n✅ Goal complete at iteration {current_iter} (step {step}).")
+            break
+
+        # Check goal's own iteration budget before continuing.
+        goal_max_iters = (state.get("budget") or {}).get("max_iterations")
+        if goal_max_iters is not None and current_iter >= goal_max_iters:
+            reason = f"iteration {current_iter} reached goal max_iterations={goal_max_iters}"
+            _goal_loop_mark_budget_limited(tentacles, current_iter, reason)
+            break
+
+        _goal_loop_record_eval(
+            tentacles,
+            "continue",
+            current_iter,
+            f"goal-loop: step {step}, criteria not yet met",
+        )
+        print(f"   ▶  Advancing to iteration {current_iter + 1}...")
+
+
 def cmd_goal(args):
-    """Dispatch goal sub-commands: init / create / validate / status / dispatch / link / eval / resume / criteria / gate / budget / next-iter / verify / verify-loop / coverage."""
+    """Dispatch goal sub-commands: init / create / validate / status / dispatch / link / eval / resume / criteria / gate / budget / next-iter / verify / verify-loop / coverage / loop."""
     tentacles = get_tentacles_dir(args.session_dir)
     sub = args.goal_action
 
@@ -4309,6 +4528,8 @@ def cmd_goal(args):
             _cmd_goal_verify_loop(args, tentacles)
         elif sub == "coverage":
             _cmd_goal_coverage(args, tentacles)
+        elif sub == "loop":
+            _cmd_goal_loop(args, tentacles)
         else:
             print(f"ERROR: Unknown goal action '{sub}'", file=sys.stderr)
             sys.exit(1)
@@ -5973,7 +6194,7 @@ def main():
     # goal subcommand
     p_goal = sub.add_parser(
         "goal",
-        help="Orchestrator-level goal loop: init/create/validate/status/dispatch/link/eval/resume/criteria/verify/gate/budget/next-iter/verify-loop/coverage",
+        help="Orchestrator-level goal loop: init/create/validate/status/dispatch/link/eval/resume/criteria/verify/gate/budget/next-iter/verify-loop/coverage/loop",
     )
     p_goal_sub = p_goal.add_subparsers(dest="goal_action", required=True)
 
@@ -6298,6 +6519,32 @@ def main():
         choices=["text", "json"],
         default="text",
         help="Output format: text (default) or json",
+    )
+
+    # goal loop
+    p_goal_loop = p_goal_sub.add_parser(
+        "loop",
+        help=(
+            "Auto-continuation loop: verify criteria → eval continue/complete/budget_limited. "
+            "Stops when goal is complete, budget exceeded, or gates block."
+        ),
+    )
+    p_goal_loop.add_argument(
+        "--max-iterations",
+        dest="max_iterations",
+        type=_positive_int_arg,
+        default=None,
+        help=(
+            "Maximum loop steps for this invocation — marks goal budget_limited when exceeded. "
+            "Defaults to unlimited (governed by goal budget)."
+        ),
+    )
+    p_goal_loop.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=_positive_int_arg,
+        default=60,
+        help="Per-criterion verification timeout in seconds (default: 60)",
     )
 
     args = parser.parse_args()
