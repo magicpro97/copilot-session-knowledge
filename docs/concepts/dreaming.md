@@ -1,0 +1,121 @@
+# Dreaming — Knowledge Promotion via Dream-Score Ranking
+
+> Issue #159 · Depends on: #157 (recall telemetry), #158 (concept tags)
+
+## What is a Dream-Score?
+
+A *dream-score* is a weighted composite signal (0–1) that ranks each knowledge
+entry by its promotion readiness. Entries that exceed the configured **gate**
+thresholds are promotion candidates — they have been recalled often, from
+diverse queries, have associated concept tags, and were recently accessed.
+
+The name "Dreaming" is borrowed from neuroscience: the system periodically
+"dreams" over its memory, surfaces the most valuable entries, and marks them
+for promotion to higher-priority surfaces such as `MEMORY.md`.
+
+## Score Formula
+
+```
+dream_score = w_frequency    * signal_frequency
+            + w_relevance    * signal_relevance
+            + w_diversity    * signal_diversity
+            + w_recency      * signal_recency
+            + w_consolidation * signal_consolidation
+            + w_conceptual   * signal_conceptual
+```
+
+### Signals
+
+| Signal | Source | Normalization |
+|---|---|---|
+| `frequency` | `entry_recall_stats.recall_count` | `min(count / 100, 1.0)` |
+| `relevance` | `entry_recall_stats.unique_queries` | `min(queries / 50, 1.0)` |
+| `diversity` | `COUNT(entry_concept_tags)` | `min(tags / 10, 1.0)` |
+| `recency` | `entry_recall_stats.last_recalled_at` | Exponential decay, half-life 30 days |
+| `consolidation` | `knowledge_entries.confidence × occurrence_count` | `confidence × min(occ/20, 1.0)` |
+| `conceptual` | `entry_concept_tags` exists | `1.0` if any tag, else `0.0` |
+
+### Weight Overrides
+
+Use `--w-<signal>` flags to supply custom weights.  If the supplied weights sum
+to more than 1.0, `dream.py` **automatically renormalizes** them so the total is
+exactly 1.0 and emits a warning to stderr.  This keeps the dream-score bounded
+to `[0, 1]` and preserves the meaning of the default gate threshold (`0.75`).
+
+### Default Weights
+
+Derived from OpenClaw `extensions/memory-core/src/short-term-promotion.ts`:
+
+| Weight | Default |
+|---|---|
+| `frequency` | 0.24 |
+| `relevance` | 0.30 |
+| `diversity` | 0.15 |
+| `recency` | 0.15 |
+| `consolidation` | 0.10 |
+| `conceptual` | 0.06 |
+
+## Gate Thresholds
+
+An entry **passes the gate** when all three conditions hold:
+
+| Condition | Default |
+|---|---|
+| `dream_score >= min_score` | `0.75` |
+| `recall_count >= min_recall` | `3` |
+| `unique_queries >= min_queries` | `2` |
+
+## Persistence
+
+Scores are written to `entry_dream_scores` (migration v20):
+
+```sql
+CREATE TABLE entry_dream_scores (
+    entry_id          INTEGER PRIMARY KEY,
+    score             REAL    NOT NULL DEFAULT 0.0,
+    signal_frequency  REAL    DEFAULT 0.0,
+    signal_relevance  REAL    DEFAULT 0.0,
+    signal_diversity  REAL    DEFAULT 0.0,
+    signal_recency    REAL    DEFAULT 0.0,
+    signal_consolidation REAL DEFAULT 0.0,
+    signal_conceptual REAL    DEFAULT 0.0,
+    passes_gate       INTEGER NOT NULL DEFAULT 0,
+    scored_at         TEXT    DEFAULT (datetime('now'))
+);
+```
+
+`entry_dream_scores` is **`local_only`** — it is never synced to remote replicas
+because scores are computed from local telemetry and can be regenerated on any
+machine.
+
+## CLI Usage
+
+```bash
+# Score all entries, persist results, show top 20
+sk dream
+
+# Dry-run: score and list without persisting
+sk dream --dry-run
+
+# Show top 10 candidates as JSON
+sk dream --dry-run --top 10 --json
+
+# Override gate thresholds
+sk dream --min-score 0.5 --min-recall 1 --min-queries 1
+
+# Override weights
+sk dream --w-frequency 0.3 --w-relevance 0.4 --w-diversity 0.1 \
+         --w-recency 0.1 --w-consolidation 0.05 --w-conceptual 0.05
+
+# Point at a different database
+sk dream --db /path/to/knowledge.db
+```
+
+## Out of Scope (future issues)
+
+- **#160** Promotion executor: writing gate-passing entries to `MEMORY.md`.
+- **#161** Scheduling: periodic automatic dream runs.
+- **#162** Cross-replica score merging / collaborative dreaming.
+
+These phases are intentionally excluded from the `dream.py` implementation.
+`dream.py` computes and persists scores; the promotion action lives elsewhere.

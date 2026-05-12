@@ -145,6 +145,18 @@ class TestSkDirectCommands(unittest.TestCase):
     def test_buglog_with_output_flag(self):
         self._assert_routes("buglog", "buglog-export.py", ["--output", "BUGLOG.md"])
 
+    def test_dream(self):
+        self._assert_routes("dream", "dream.py")
+
+    def test_dream_dry_run(self):
+        self._assert_routes("dream", "dream.py", ["--dry-run"])
+
+    def test_dream_json(self):
+        self._assert_routes("dream", "dream.py", ["--json"])
+
+    def test_dream_top_n(self):
+        self._assert_routes("dream", "dream.py", ["--top", "10"])
+
 
 class TestSkHooksCompat(unittest.TestCase):
     def test_hooks_run_drops_run_subcommand(self):
@@ -410,8 +422,11 @@ class TestSkNativeRoutingPreconditions(unittest.TestCase):
         hooks_json = TOOLS_DIR / "hooks" / "hooks.json"
         self.assertTrue(hooks_json.exists(), f"hooks/hooks.json not found: {hooks_json}")
         content = hooks_json.read_text(encoding="utf-8")
-        self.assertIn("sk hooks run", content,
-                      "hooks.json bash/powershell fields should use 'sk hooks run <event>' for native routing")
+        self.assertIn(
+            "sk hooks run",
+            content,
+            "hooks.json bash/powershell fields should use 'sk hooks run <event>' for native routing",
+        )
 
     def test_hooks_json_retains_python3_fallback(self):
         """The managed hooks.json must retain python3 hook_runner.py as a fallback."""
@@ -505,7 +520,6 @@ class TestSkNativeFeaturePreconditions(unittest.TestCase):
         )
 
 
-
 class TestBuglogTagFilterSemantics(unittest.TestCase):
     """Regression tests for issue #90: --limit must apply after --tags filtering.
 
@@ -522,9 +536,7 @@ class TestBuglogTagFilterSemantics(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not cls.BUGLOG_PATH.exists():
-            raise unittest.SkipTest(
-                "buglog-export.py not present — skipping filter-semantics tests"
-            )
+            raise unittest.SkipTest("buglog-export.py not present — skipping filter-semantics tests")
         spec = importlib.util.spec_from_file_location("buglog_export", cls.BUGLOG_PATH)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -555,8 +567,7 @@ class TestBuglogTagFilterSemantics(unittest.TestCase):
                 "INSERT INTO knowledge_entries "
                 "(id, title, content, tags, confidence, session_id, category) "
                 "VALUES (?, ?, ?, ?, ?, ?, 'mistake')",
-                (i + 1, f"High entry {i+1}", f"Content {i+1}", "python,database",
-                 1.0 - i * 0.01, f"sess-{i+1}"),
+                (i + 1, f"High entry {i + 1}", f"Content {i + 1}", "python,database", 1.0 - i * 0.01, f"sess-{i + 1}"),
             )
         # One entry WITH the target tag at lower confidence (ranked 4th — below limit=3).
         db.execute(
@@ -594,7 +605,8 @@ class TestBuglogTagFilterSemantics(unittest.TestCase):
             filtered = [e for e in entries if "docker" in (e.get("tags") or "").lower()]
             # False-negative: the docker entry was excluded by LIMIT before filtering.
             self.assertEqual(
-                filtered, [],
+                filtered,
+                [],
                 "Reproducer: old LIMIT-first logic produces an empty result (false-negative)",
             )
         finally:
@@ -609,9 +621,7 @@ class TestBuglogTagFilterSemantics(unittest.TestCase):
         """
         db = self._make_db()
         try:
-            results = self.buglog._fetch_mistakes(
-                db, limit=3, tags_filter=["docker"], min_confidence=0.0
-            )
+            results = self.buglog._fetch_mistakes(db, limit=3, tags_filter=["docker"], min_confidence=0.0)
         finally:
             db.close()
         titles = [r["title"] for r in results]
@@ -647,7 +657,7 @@ class TestBuglogTagFilterSemantics(unittest.TestCase):
                 "INSERT INTO knowledge_entries "
                 "(id, title, content, tags, confidence, session_id, category) "
                 "VALUES (?, ?, ?, ?, ?, ?, 'mistake')",
-                (i + 1, f"Top {i+1}", "body", "python", 1.0 - i * 0.01, f"s{i}"),
+                (i + 1, f"Top {i + 1}", "body", "python", 1.0 - i * 0.01, f"s{i}"),
             )
         # 3 low-confidence tagged entries.
         for j in range(3):
@@ -660,9 +670,7 @@ class TestBuglogTagFilterSemantics(unittest.TestCase):
         db.commit()
         try:
             # limit=2 with tags=['docker'] — should return the 2 highest-confidence docker entries.
-            results = self.buglog._fetch_mistakes(
-                db, limit=2, tags_filter=["docker"], min_confidence=0.0
-            )
+            results = self.buglog._fetch_mistakes(db, limit=2, tags_filter=["docker"], min_confidence=0.0)
         finally:
             db.close()
         self.assertEqual(len(results), 2, "limit=2 should cap filtered results at 2")
@@ -675,9 +683,7 @@ class TestBuglogTagFilterSemantics(unittest.TestCase):
         """Without --tags, LIMIT is pushed into SQL (efficiency path); result count is correct."""
         db = self._make_db()
         try:
-            results = self.buglog._fetch_mistakes(
-                db, limit=2, tags_filter=[], min_confidence=0.0
-            )
+            results = self.buglog._fetch_mistakes(db, limit=2, tags_filter=[], min_confidence=0.0)
         finally:
             db.close()
         self.assertEqual(len(results), 2, "Without tags, limit=2 should return exactly 2 entries")
@@ -690,9 +696,7 @@ class TestBuglogTagFilterSemantics(unittest.TestCase):
         """
         db = self._make_db()
         try:
-            results = self.buglog._fetch_mistakes(
-                db, limit=200, tags_filter=["doc"], min_confidence=0.0
-            )
+            results = self.buglog._fetch_mistakes(db, limit=200, tags_filter=["doc"], min_confidence=0.0)
         finally:
             db.close()
         titles = [r["title"] for r in results]
@@ -717,9 +721,7 @@ class TestBuglogTagFilterSemantics(unittest.TestCase):
 
         db = self._make_db()
         try:
-            results = self.buglog._fetch_mistakes(
-                db, limit=200, tags_filter=tags_filter, min_confidence=0.0
-            )
+            results = self.buglog._fetch_mistakes(db, limit=200, tags_filter=tags_filter, min_confidence=0.0)
         finally:
             db.close()
         # Only the docker-tagged entry should be returned, not all 4 entries.
@@ -737,12 +739,23 @@ class TestBuglogTagFilterSemantics(unittest.TestCase):
         A timestamp that changes every run defeats this contract.
         """
         entries = [
-            {"id": 1, "title": "T", "content": "C", "tags": "x", "confidence": 0.9,
-             "session_id": "abc12345", "occurrence_count": 1, "wing": "", "room": "", "source": "copilot"}
+            {
+                "id": 1,
+                "title": "T",
+                "content": "C",
+                "tags": "x",
+                "confidence": 0.9,
+                "session_id": "abc12345",
+                "occurrence_count": 1,
+                "wing": "",
+                "room": "",
+                "source": "copilot",
+            }
         ]
         md = self.buglog._render_markdown(entries)
         # Must not contain any timestamp pattern like 2024-01-01T00:00:00Z
         import re
+
         self.assertIsNone(
             re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", md),
             "Markdown output must not contain a timestamp (breaks git-diff determinism)",
@@ -759,9 +772,7 @@ class TestBuglogArgValidation(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not cls.BUGLOG_PATH.exists():
-            raise unittest.SkipTest(
-                "buglog-export.py not present — skipping arg-validation tests"
-            )
+            raise unittest.SkipTest("buglog-export.py not present — skipping arg-validation tests")
         spec = importlib.util.spec_from_file_location("buglog_export_val", cls.BUGLOG_PATH)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -770,13 +781,13 @@ class TestBuglogArgValidation(unittest.TestCase):
     def _call_main(self, argv):
         """Call main() and return (exit_code, stderr_output).  Patches _get_db to avoid needing a real DB."""
         import io
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
+
         fake_db = MagicMock()
         fake_db.execute.return_value.fetchall.return_value = []
         stderr_capture = io.StringIO()
         try:
-            with patch.object(self.buglog, "_get_db", return_value=fake_db), \
-                 patch("sys.stderr", stderr_capture):
+            with patch.object(self.buglog, "_get_db", return_value=fake_db), patch("sys.stderr", stderr_capture):
                 rc = self.buglog.main(argv)
             return rc, stderr_capture.getvalue()
         except SystemExit as exc:
@@ -810,4 +821,3 @@ class TestBuglogArgValidation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

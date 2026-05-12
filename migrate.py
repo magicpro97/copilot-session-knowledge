@@ -158,6 +158,7 @@ def _seed_sync_table_policies(db: sqlite3.Connection):
         ("embedding_meta", "local_only", ""),
         ("tfidf_model", "local_only", ""),
         ("entry_concept_tags", "local_only", ""),
+        ("entry_dream_scores", "local_only", ""),
     ]
     db.executemany(
         """
@@ -743,6 +744,27 @@ if __name__ == "__main__":
                 )""",
                 "CREATE INDEX IF NOT EXISTS idx_ect_entry ON entry_concept_tags(entry_id)",
                 "CREATE INDEX IF NOT EXISTS idx_ect_tag ON entry_concept_tags(tag)",
+            ],
+        ),
+        (
+            20,
+            "dream_scores",
+            [
+                # Persisted dream-score per knowledge entry (issue #159, local_only).
+                """CREATE TABLE IF NOT EXISTS entry_dream_scores (
+                    entry_id INTEGER PRIMARY KEY,
+                    score REAL NOT NULL DEFAULT 0.0,
+                    signal_frequency REAL DEFAULT 0.0,
+                    signal_relevance REAL DEFAULT 0.0,
+                    signal_diversity REAL DEFAULT 0.0,
+                    signal_recency REAL DEFAULT 0.0,
+                    signal_consolidation REAL DEFAULT 0.0,
+                    signal_conceptual REAL DEFAULT 0.0,
+                    passes_gate INTEGER NOT NULL DEFAULT 0,
+                    scored_at TEXT DEFAULT (datetime('now'))
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_eds_score ON entry_dream_scores(score DESC)",
+                "CREATE INDEX IF NOT EXISTS idx_eds_passes_gate ON entry_dream_scores(passes_gate)",
             ],
         ),
     ]
