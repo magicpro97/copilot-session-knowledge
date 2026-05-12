@@ -29,8 +29,8 @@ Use --wakeup for ultra-compact AI wake-up context (~170 tokens).
 Use --full for complete content with tags, confidence scores, and full text.
 """
 
-import json
 import hashlib
+import json
 import math
 import os
 import re
