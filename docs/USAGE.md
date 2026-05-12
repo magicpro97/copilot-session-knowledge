@@ -131,6 +131,55 @@ sk sync gateway --host 127.0.0.1 --port 8765         # sync-gateway.py (referenc
 sk sync merge --source /path/to/other.db             # sync-knowledge.py
 ```
 
+#### Dream scheduler config
+
+The sync daemon runs periodic **dream sweeps** (calling `dream.py`) on a configurable interval
+via the `DreamingScheduler` class (issue #162).  Sweeps score knowledge entries and promote
+high-signal entries to `MEMORY.md`.
+
+```bash
+python sync-config.py --dream-status                    # show current dream scheduler config
+python sync-config.py --dream-interval-hours 12         # set sweep interval to 12 h (default: 24)
+python sync-config.py --dream-disable                   # pause scheduled sweeps
+python sync-config.py --dream-enable                    # resume scheduled sweeps
+python sync-config.py --dream-min-score 0.8             # gate: min dream score (default: 0.75)
+python sync-config.py --dream-min-recall-count 5        # gate: min recall count (default: 3)
+python sync-config.py --dream-min-unique-queries 3      # gate: min unique queries (default: 2)
+python sync-config.py --dream-memory-path /path/MEMORY.md  # promoted-memory output path (default: MEMORY.md)
+python sync-config.py --status                          # includes dream config in the output
+```
+
+**Manual trigger:** drop a `dream-trigger.json` marker in `~/.copilot/markers/` and the
+daemon will run a sweep immediately — the sleep loop wakes early on this marker,
+so there is no full-interval wait.  **Note:** the manual trigger is suppressed when
+`dream_enabled=false`; the marker is consumed but no sweep fires.
+
+```bash
+echo '{}' > ~/.copilot/markers/dream-trigger.json  # trigger one sweep immediately
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `dream_enabled` | bool | `true` | Enable/disable scheduled sweeps |
+| `dream_interval_hours` | float | `24` | Hours between sweeps (**must be > 0**) |
+| `dream_min_score` | float | `0.75` | Gate: minimum dream score |
+| `dream_min_recall_count` | int | `3` | Gate: minimum recall count |
+| `dream_min_unique_queries` | int | `2` | Gate: minimum unique queries |
+| `dream_memory_path` | str | `MEMORY.md` | Output path for promoted-memory surface |
+
+**Operator notes:**
+- `last_dream_run` is persisted in `.sync-daemon-state.json` (never synced remotely).
+- A sweep that fails is logged (including promoted-entry count on success) but does **not** update `last_dream_run`, so it retries on the next cycle.
+- Disabling sweeps (`--dream-disable`) does not clear `last_dream_run`; re-enabling resumes from where the scheduler left off.
+- **Manual trigger markers are suppressed when sweeps are disabled**: the marker is consumed (removed) but no sweep fires.
+- `dream_interval_hours` must be **greater than 0**; the CLI exits 1 on zero or negative values.  A pre-existing config with `0` is normalized to `24` on load.
+- **Config changes take effect without restarting the daemon** — the running daemon re-reads `sync-config.json` at the start of every loop cycle.
+- Each successful sweep logs: `[sync] dream sweep OK | promoted=N min_score=0.75 interval_hours=24`
+- **`--once` mode**: scheduled-due sweeps do **not** fire in one-shot runs.  Only an
+  explicit `dream-trigger.json` manual marker causes a sweep in `--once` mode.  This
+  preserves fast one-shot exit semantics (`run_sweep` has a 300 s subprocess timeout
+  that would otherwise block a fresh-install `--once` run for up to 5 minutes).
+
 ### `sk checkpoint` — session checkpoints
 
 ```bash

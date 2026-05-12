@@ -172,5 +172,102 @@ When `--json` is used, the response includes a `memory_output` key:
 
 ## Out of Scope (future issues)
 
-- **#161** Scheduling: periodic automatic dream runs.
-- **#162** Cross-replica score merging / collaborative dreaming.
+- **#163** Cross-replica score merging / collaborative dreaming.
+
+## Dream Scheduler (issue #162)
+
+Dream sweeps can be automated via the sync daemon using the `DreamingScheduler` class.
+The scheduler runs `dream.py` on a configurable hour-based interval, passes all gate
+thresholds as CLI arguments, and persists state between restarts.
+
+### Configuration
+
+Scheduler settings live in `sync-config.json` alongside the gateway URL:
+
+```bash
+python sync-config.py --dream-status                    # show current settings
+python sync-config.py --dream-interval-hours 12         # sweep every 12 hours
+python sync-config.py --dream-disable                   # pause automatic sweeps
+python sync-config.py --dream-enable                    # resume automatic sweeps
+python sync-config.py --dream-min-score 0.8             # gate: min dream score (default: 0.75)
+python sync-config.py --dream-min-recall-count 5        # gate: min recall count (default: 3)
+python sync-config.py --dream-min-unique-queries 3      # gate: min unique queries (default: 2)
+python sync-config.py --dream-memory-path /path/MEMORY.md  # promoted-memory output path (default: MEMORY.md)
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `dream_enabled` | `true` | Whether the daemon runs scheduled sweeps |
+| `dream_interval_hours` | `24` | Hours between sweeps (**must be > 0**; zero/negative values are rejected by the CLI and normalized to 24h on config load) |
+| `dream_min_score` | `0.75` | Gate: minimum dream score to pass |
+| `dream_min_recall_count` | `3` | Gate: minimum recall count to pass |
+| `dream_min_unique_queries` | `2` | Gate: minimum unique queries to pass |
+| `dream_memory_path` | `MEMORY.md` | Output path for promoted-memory surface |
+
+### Manual trigger
+
+Drop a `dream-trigger.json` marker to run one sweep immediately.  The daemon's
+sleep loop wakes as soon as the marker appears — no full-interval wait required:
+
+```bash
+echo '{}' > ~/.copilot/markers/dream-trigger.json
+```
+
+The marker is consumed (deleted) after the sweep fires.
+
+> **Important:** when `dream_enabled=false`, a manual trigger marker is **not**
+> honoured — the marker is consumed and removed (to prevent stale accumulation)
+> but the sweep is suppressed.  Re-enable sweeps first with
+> `python sync-config.py --dream-enable` if you want the trigger to fire.
+
+### Operator-visible logging
+
+Each successful sweep emits a structured log line:
+
+```
+[sync] dream sweep OK | promoted=3 min_score=0.75 interval_hours=24
+```
+
+Sweep failures are logged as:
+
+```
+[sync] dream sweep failed: <error>
+```
+
+When `dream.py` is absent the daemon logs a skip and continues running (fail-open):
+
+```
+[sync] dream sweep skipped: dream.py not found (fail-open)
+```
+
+### State persistence
+
+`last_dream_run` is stored in `.sync-daemon-state.json`.  It records the ISO
+timestamp of the last **successful** sweep.  If a sweep fails, `last_dream_run`
+is not updated, so the scheduler retries on the next daemon cycle.
+
+Fields written by the scheduler:
+
+| Key | Description |
+|---|---|
+| `last_dream_run` | ISO-8601 UTC timestamp of the last successful sweep |
+
+### Operator notes
+
+- Disabling sweeps via `--dream-disable` does **not** clear `last_dream_run`.
+  Re-enabling picks up from the previous timestamp.
+- **Manual trigger markers are suppressed when `dream_enabled=false`**: the marker
+  is consumed (removed) but no sweep fires.  This prevents stale markers from
+  accidentally running a sweep the operator intended to pause.
+- In `--once` mode the daemon runs a dream sweep **only on explicit manual trigger** —
+  scheduled-due sweeps do not fire in one-shot runs to preserve fast exit semantics
+  (`run_sweep` has a 300 s subprocess timeout, which would block a fresh-install
+  `--once` run for up to 5 minutes).
+- `entry_dream_scores` remains **`local_only`** — scores are never synced.
+- **`dream_interval_hours` must be greater than 0.**  The CLI rejects 0 or negative
+  values (exit 1).  If a pre-existing config file contains 0, the value is
+  silently normalized to the 24h default on load.
+- **Dream config changes take effect without restarting the daemon.**  The running
+  daemon re-reads `sync-config.json` at the start of every loop iteration, so
+  changes made with `python sync-config.py` are picked up automatically on the
+  next cycle.
