@@ -432,8 +432,290 @@ def test_sk_help_contains_export_cerebrum():
 
 
 # ---------------------------------------------------------------------------
-# Fixtures helper and runner
+# Tests: renormalized limit allocation (blocker-2 regressions)
 # ---------------------------------------------------------------------------
+
+def test_single_section_uses_full_limit():
+    """--sections mistakes --limit 200 should return up to 200 entries, not just ~60."""
+    db = _make_db()
+    # Insert 150 mistake entries — all should be returned when limit=200 and only
+    # the mistakes section is active (renormalized fraction = 1.0).
+    _insert(db, [{"category": "mistake", "title": f"M{i}", "confidence": 0.5} for i in range(150)])
+    text = ec.export_cerebrum(
+        db,
+        sections=["mistakes"],
+        limit=200,
+        tags_filter=[],
+        min_confidence=0.0,
+        fmt="json",
+        generated_at="2026-01-01T00:00:00Z",
+    )
+    data = json.loads(text)
+    count = len(data["sections"]["mistakes"])
+    test("single_section_full_limit: all 150 entries returned (not capped at 60)", count == 150)
+
+
+def test_subset_sections_proportional_allocation():
+    """With --sections mistakes,decisions --limit 200 the weight ratio is preserved."""
+    db = _make_db()
+    # Insert plenty of each category so limits are the binding constraint.
+    _insert(db, [{"category": "mistake", "title": f"M{i}", "confidence": 0.5} for i in range(200)])
+    _insert(db, [{"category": "decision", "title": f"D{i}", "confidence": 0.5} for i in range(200)])
+    # mistakes fraction=0.30, decisions fraction=0.15 → ratio 2:1
+    # total_fraction = 0.45; mistakes_norm = 0.30/0.45 ≈ 0.667, decisions_norm = 0.15/0.45 ≈ 0.333
+    text = ec.export_cerebrum(
+        db,
+        sections=["mistakes", "decisions"],
+        limit=200,
+        tags_filter=[],
+        min_confidence=0.0,
+        fmt="json",
+        generated_at="2026-01-01T00:00:00Z",
+    )
+    data = json.loads(text)
+    m_count = len(data["sections"]["mistakes"])
+    d_count = len(data["sections"]["decisions"])
+    # Combined they should use most of the 200 budget.
+    test("subset_proportional: combined count within budget", m_count + d_count <= 200)
+    # Mistakes should be allocated roughly twice as many slots as decisions.
+    test("subset_proportional: mistakes gets more entries than decisions", m_count > d_count)
+    # Neither section should be empty.
+    test("subset_proportional: decisions section non-empty", d_count >= 1)
+
+
+# ---------------------------------------------------------------------------
+# Tests: preferences / learnings distinct (blocker-1 regressions)
+# ---------------------------------------------------------------------------
+
+def test_preferences_learnings_no_overlap_default_export():
+    """Default export must not emit the same entry in both preferences and learnings."""
+    db = _make_db()
+    # Insert patterns: some with preference-hint tags, some without.
+    _insert(db, [
+        {"category": "pattern", "title": "Style guide rule", "tags": "style,python", "confidence": 0.9},
+        {"category": "pattern", "title": "Naming rule", "tags": "naming", "confidence": 0.85},
+        {"category": "pattern", "title": "General pattern A", "tags": "backend", "confidence": 0.8},
+        {"category": "pattern", "title": "General pattern B", "tags": "ci", "confidence": 0.75},
+    ])
+    text = ec.export_cerebrum(
+        db,
+        sections=["preferences", "learnings"],
+        limit=200,
+        tags_filter=[],
+        min_confidence=0.0,
+        fmt="json",
+        generated_at="2026-01-01T00:00:00Z",
+    )
+    data = json.loads(text)
+    pref_titles = {e["title"] for e in data["sections"].get("preferences", [])}
+    learn_titles = {e["title"] for e in data["sections"].get("learnings", [])}
+    overlap = pref_titles & learn_titles
+    test("pref_learnings_no_overlap: no entry appears in both sections", overlap == set())
+
+
+def test_preferences_contains_preference_tagged_entries():
+    """Preferences section must contain entries with preference-hint tags."""
+    db = _make_db()
+    _insert(db, [
+        {"category": "pattern", "title": "Snake case naming", "tags": "naming,python", "confidence": 0.9},
+        {"category": "pattern", "title": "Unrelated pattern", "tags": "docker", "confidence": 0.8},
+    ])
+    text = ec.export_cerebrum(
+        db,
+        sections=["preferences", "learnings"],
+        limit=200,
+        tags_filter=[],
+        min_confidence=0.0,
+        fmt="json",
+        generated_at="2026-01-01T00:00:00Z",
+    )
+    data = json.loads(text)
+    pref_titles = {e["title"] for e in data["sections"].get("preferences", [])}
+    learn_titles = {e["title"] for e in data["sections"].get("learnings", [])}
+    test("pref_tagged: naming entry in preferences", "Snake case naming" in pref_titles)
+    test("pref_tagged: naming entry NOT in learnings", "Snake case naming" not in learn_titles)
+    test("pref_tagged: unrelated pattern in learnings", "Unrelated pattern" in learn_titles)
+    test("pref_tagged: unrelated pattern NOT in preferences", "Unrelated pattern" not in pref_titles)
+
+
+def test_is_preference_entry_heuristic():
+    """_is_preference_entry must classify by tags_hint keywords in tags and title."""
+    test("heuristic: style tag → preference", ec._is_preference_entry({"tags": "style", "title": "X"}))
+    test("heuristic: naming tag → preference", ec._is_preference_entry({"tags": "naming,python", "title": "X"}))
+    test("heuristic: convention in title → preference", ec._is_preference_entry({"tags": "", "title": "Follow naming convention"}))
+    test("heuristic: unrelated tags → NOT preference", not ec._is_preference_entry({"tags": "backend,ci", "title": "General rule"}))
+    test("heuristic: empty tags and title → NOT preference", not ec._is_preference_entry({"tags": "", "title": ""}))
+
+
+def test_pref_overflow_not_in_learnings():
+    """Preference-like entries beyond pref_limit must NOT appear in learnings.
+
+    Regression for the blocker where additional heuristic-matching entries above
+    the preferences cap were bleeding into the learnings section.  Uses limit=4 so
+    pref_limit ≈ 1 (25 % of 4), leaving 5 style-tagged overflow entries that must
+    be excluded from learnings.
+    """
+    db = _make_db()
+    # 6 preference-like pattern entries (style tag triggers the heuristic)
+    _insert(db, [
+        {"category": "pattern", "title": f"Style rule {i}", "tags": "style", "confidence": 0.9 - i * 0.01}
+        for i in range(6)
+    ])
+    # 3 non-preference pattern entries — these are the only ones allowed in learnings
+    _insert(db, [
+        {"category": "pattern", "title": f"General pattern {i}", "tags": "backend", "confidence": 0.8 - i * 0.01}
+        for i in range(3)
+    ])
+    text = ec.export_cerebrum(
+        db,
+        sections=["preferences", "learnings"],
+        limit=4,
+        tags_filter=[],
+        min_confidence=0.0,
+        fmt="json",
+        generated_at="2026-01-01T00:00:00Z",
+    )
+    data = json.loads(text)
+    learn_titles = {e["title"] for e in data["sections"].get("learnings", [])}
+    style_in_learnings = {t for t in learn_titles if "Style rule" in t}
+    test("pref_overflow: no style/pref entries bleed into learnings", style_in_learnings == set())
+
+
+def test_is_preference_entry_no_false_positives():
+    """Titles containing hint keywords only as substrings must NOT match.
+
+    Regression for the word-boundary fix: substring matches like
+    'renaming' ⊃ 'naming' and 'unconventional' ⊃ 'convention' must be
+    rejected; only whole-word occurrences of a hint trigger classification.
+    """
+    test(
+        "heuristic FP: 'renaming' does not match hint 'naming'",
+        not ec._is_preference_entry({"tags": "", "title": "Variable renaming technique"}),
+    )
+    test(
+        "heuristic FP: 'unconventional' does not match hint 'convention'",
+        not ec._is_preference_entry({"tags": "", "title": "Unconventional solution"}),
+    )
+    # Standalone hint words must still match.
+    test(
+        "heuristic FP: standalone 'naming' in title → preference",
+        ec._is_preference_entry({"tags": "", "title": "Naming rule for variables"}),
+    )
+    test(
+        "heuristic FP: standalone 'convention' in title → preference",
+        ec._is_preference_entry({"tags": "", "title": "Follow this convention always"}),
+    )
+    # Only a preference-hint tag (not a substring) should also still fire.
+    test(
+        "heuristic FP: exact 'naming' tag still classifies as preference",
+        ec._is_preference_entry({"tags": "naming", "title": "Variable renaming technique"}),
+    )
+
+
+def test_pref_overflow_exceeds_old_cap():
+    """Hundreds of preference-like entries must not bleed into learnings.
+
+    Regression for the capped-overfetch bug: with limit=10, pref_limit ≈ 4 and
+    the old cap was pref_limit*5+20 = 40.  Inserting 300 style-tagged pattern
+    entries means the old code missed 260 of them and they leaked into learnings.
+    """
+    db = _make_db()
+    # 300 preference-like pattern entries (all trigger the style-tag heuristic).
+    _insert(db, [
+        {
+            "category": "pattern",
+            "title": f"Style guide entry {i}",
+            "tags": "style",
+            "confidence": round(0.9 - i * 0.001, 4),
+        }
+        for i in range(300)
+    ])
+    # 10 non-preference pattern entries — the only ones allowed in learnings.
+    _insert(db, [
+        {
+            "category": "pattern",
+            "title": f"General best practice {i}",
+            "tags": "backend",
+            "confidence": round(0.5 - i * 0.001, 4),
+        }
+        for i in range(10)
+    ])
+    text = ec.export_cerebrum(
+        db,
+        sections=["preferences", "learnings"],
+        limit=10,
+        tags_filter=[],
+        min_confidence=0.0,
+        fmt="json",
+        generated_at="2026-01-01T00:00:00Z",
+    )
+    data = json.loads(text)
+    learn_titles = {e["title"] for e in data["sections"].get("learnings", [])}
+    style_leaked = {t for t in learn_titles if "Style guide entry" in t}
+    test(
+        "pref_overflow_large: none of the 300 style entries leak into learnings",
+        style_leaked == set(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tests: --limit total cap (fix-2 regressions)
+# ---------------------------------------------------------------------------
+
+def test_limit_one_total_cap():
+    """limit=1 must export exactly 1 entry in total, not 4 (one per section)."""
+    db = _make_db()
+    _insert(db, [
+        {"category": "mistake", "title": f"M{i}", "confidence": 0.5} for i in range(5)
+    ])
+    _insert(db, [
+        {"category": "pattern", "title": f"P{i}", "tags": "style", "confidence": 0.5}
+        for i in range(5)
+    ])
+    _insert(db, [
+        {"category": "decision", "title": f"D{i}", "confidence": 0.5} for i in range(5)
+    ])
+    text = ec.export_cerebrum(
+        db,
+        sections=["preferences", "learnings", "mistakes", "decisions"],
+        limit=1,
+        tags_filter=[],
+        min_confidence=0.0,
+        fmt="json",
+        generated_at="2026-01-01T00:00:00Z",
+    )
+    data = json.loads(text)
+    total = sum(
+        len(data["sections"].get(s, []))
+        for s in ["preferences", "learnings", "mistakes", "decisions"]
+    )
+    test("limit_one_total_cap: total exported is exactly 1 (not 4)", total == 1)
+
+
+def test_limit_total_cap_two_sections():
+    """limit=3 with mistakes+decisions must export exactly 3 entries total."""
+    db = _make_db()
+    _insert(db, [
+        {"category": "mistake", "title": f"M{i}", "confidence": 0.5} for i in range(10)
+    ])
+    _insert(db, [
+        {"category": "decision", "title": f"D{i}", "confidence": 0.5} for i in range(10)
+    ])
+    text = ec.export_cerebrum(
+        db,
+        sections=["mistakes", "decisions"],
+        limit=3,
+        tags_filter=[],
+        min_confidence=0.0,
+        fmt="json",
+        generated_at="2026-01-01T00:00:00Z",
+    )
+    data = json.loads(text)
+    total = sum(len(data["sections"].get(s, [])) for s in ["mistakes", "decisions"])
+    test("limit_cap_two_sections: total is exactly 3", total == 3)
+
+
+
 
 def _make_temp_db(tmp_path: Path) -> Path:
     """Create a minimal temporary knowledge.db for CLI tests."""
@@ -500,6 +782,25 @@ if __name__ == "__main__":
         _sk_alias.mkdir(exist_ok=True)
         test_sk_dispatch_cerebrum_alias(_tmp_db, _sk_alias)
         test_sk_help_contains_export_cerebrum()
+
+        # Blocker-2 regressions: renormalized limit allocation
+        test_single_section_uses_full_limit()
+        test_subset_sections_proportional_allocation()
+
+        # Blocker-1 regressions: preferences/learnings must be distinct
+        test_preferences_learnings_no_overlap_default_export()
+        test_preferences_contains_preference_tagged_entries()
+        test_is_preference_entry_heuristic()
+        # Blocker: pref overflow entries must not bleed into learnings
+        test_pref_overflow_not_in_learnings()
+        # New regressions: word-boundary title matching (issue 2)
+        test_is_preference_entry_no_false_positives()
+        # New regressions: overflow exceeds old capped-overfetch cap (issue 1)
+        test_pref_overflow_exceeds_old_cap()
+
+        # Limit total-cap regressions (fix-2)
+        test_limit_one_total_cap()
+        test_limit_total_cap_two_sections()
 
         print(f"\nResults: {_PASS} passed, {_FAIL} failed")
         sys.exit(0 if _FAIL == 0 else 1)

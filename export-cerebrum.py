@@ -16,7 +16,7 @@ Usage:
     python export-cerebrum.py --output CEREBRUM.md        # Write to file
     python export-cerebrum.py --format json               # JSON → stdout
     python export-cerebrum.py --output cerebrum.json --format json
-    python export-cerebrum.py --limit 50                  # Max entries per section
+    python export-cerebrum.py --limit 50                  # Max total entries across all sections
     python export-cerebrum.py --sections mistakes,decisions  # Select sections
     python export-cerebrum.py --tags docker,ci            # Filter all sections by tag
     python export-cerebrum.py --min-confidence 0.7        # Minimum confidence
@@ -32,6 +32,7 @@ Output contracts:
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -84,6 +85,21 @@ _SECTION_META: dict[str, dict] = {
 ALL_SECTIONS = list(_SECTION_META.keys())
 
 
+def _is_preference_entry(entry: dict) -> bool:
+    """Classify a pattern entry as preference-like using tags_hint + title heuristic.
+
+    An entry is considered a "preference" if any hint keyword from the preferences
+    section's tags_hint appears in the entry's tags or title.  This is deterministic
+    and reuses existing metadata so no new user-facing flags are needed.
+    """
+    hints = set(_SECTION_META["preferences"]["tags_hint"])  # {"style","naming","preference","convention"}
+    entry_tags = {t.strip().lower() for t in (entry.get("tags") or "").split(",") if t.strip()}
+    if entry_tags & hints:
+        return True
+    title_lower = (entry.get("title") or "").lower()
+    return any(re.search(r"\b" + re.escape(hint) + r"\b", title_lower) for hint in hints)
+
+
 def _get_db(db_path: Path) -> sqlite3.Connection:
     if not db_path.exists():
         print(
@@ -100,11 +116,14 @@ def _get_db(db_path: Path) -> sqlite3.Connection:
 def _fetch_entries(
     db: sqlite3.Connection,
     category: str,
-    limit: int,
+    limit: int | None,
     tags_filter: list[str],
     min_confidence: float,
 ) -> list[dict]:
-    """Fetch knowledge entries for a given category, deterministically ordered."""
+    """Fetch knowledge entries for a given category, deterministically ordered.
+
+    Pass ``limit=None`` to fetch the entire matching pool without any cap.
+    """
     sql = """
         SELECT id, title, content, tags, confidence, session_id, occurrence_count,
                COALESCE(wing, '') AS wing, COALESCE(room, '') AS room,
@@ -115,7 +134,7 @@ def _fetch_entries(
           AND confidence >= ?
         ORDER BY confidence DESC, id ASC
     """
-    if not tags_filter:
+    if not tags_filter and limit is not None:
         sql += "\nLIMIT ?"
         params: tuple = (category, min_confidence, limit)
     else:
@@ -135,7 +154,8 @@ def _fetch_entries(
             e for e in entries
             if {tok.strip().lower() for tok in (e.get("tags") or "").split(",") if tok.strip()} & lower_tags
         ]
-        entries = entries[:limit]
+        if limit is not None:
+            entries = entries[:limit]
 
     return entries
 
@@ -244,14 +264,54 @@ def export_cerebrum(
 ) -> str:
     """Core export logic — returns the rendered string.  Separated for testability."""
     sections_data: dict[str, list[dict]] = {}
+    # Renormalize limit fractions across the active sections so that a
+    # single-section export (e.g. --sections mistakes --limit 200) can use the
+    # full limit rather than only its global fraction.  For all-sections exports
+    # the fractions sum to 1.0 so behaviour is identical to before.
+    total_fraction = sum(_SECTION_META[s]["limit_fraction"] for s in sections)
+
+    # --- Largest Remainder Method allocation -----------------------------------
+    # Guarantees total exported == limit (the documented contract).  Each section
+    # receives floor(limit * norm_fraction); remaining slots go to sections with
+    # the largest fractional remainder, tie-broken by section key descending for
+    # determinism.
+    _base = total_fraction if total_fraction > 0 else 1.0
+    _exact: dict[str, float] = {
+        s: limit * (_SECTION_META[s]["limit_fraction"] / _base) for s in sections
+    }
+    _floor: dict[str, int] = {s: int(v) for s, v in _exact.items()}
+    _remaining = limit - sum(_floor.values())
+    _sorted_rem = sorted(sections, key=lambda s: (_exact[s] - _floor[s], s), reverse=True)
+    section_limits: dict[str, int] = dict(_floor)
+    for _i, _s in enumerate(_sorted_rem):
+        if _i < _remaining:
+            section_limits[_s] += 1
+
+    # --- Pre-compute full pattern pool for preferences + learnings. ----------
+    # Fetching the entire pool (no top-N cap) before any slicing ensures that
+    # _is_preference_entry classifies ALL entries, so preference-like entries
+    # can never bleed into learnings regardless of how many there are.
+    pref_all: list[dict] = []
+    learn_all: list[dict] = []
+    if "preferences" in sections or "learnings" in sections:
+        pattern_pool = _fetch_entries(db, "pattern", None, tags_filter, min_confidence)
+        pref_all = [e for e in pattern_pool if _is_preference_entry(e)]
+        learn_all = [e for e in pattern_pool if not _is_preference_entry(e)]
+
+    if "preferences" in sections:
+        sections_data["preferences"] = pref_all[:section_limits["preferences"]]
+
     for section_key in sections:
-        meta = _SECTION_META[section_key]
-        category = meta["category"]
-        # Allocate limit proportionally per section; minimum 1.
-        section_limit = max(1, int(limit * meta["limit_fraction"]))
-        sections_data[section_key] = _fetch_entries(
-            db, category, section_limit, tags_filter, min_confidence
-        )
+        if section_key == "preferences":
+            continue  # already handled above
+
+        if section_key == "learnings":
+            sections_data["learnings"] = learn_all[:section_limits["learnings"]]
+        else:
+            sections_data[section_key] = _fetch_entries(
+                db, _SECTION_META[section_key]["category"],
+                section_limits[section_key], tags_filter, min_confidence,
+            )
 
     if fmt == "json":
         return _render_json(sections_data, sections, generated_at)
