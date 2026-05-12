@@ -294,12 +294,20 @@ fn load_memory_md(cwd: Option<&Path>) -> Option<String> {
     }
 
     // Age guard: skip if the file is older than max_age_secs.
+    // `duration_since` returns Err when mtime is in the future (clock skew);
+    // treat that as age = 0 (fresh), matching the Python hook behaviour where
+    //   age_secs = time.time() - mtime  →  negative  →  not > max_age_secs.
     let age_ok = memory_path
         .metadata()
         .ok()
         .and_then(|m| m.modified().ok())
-        .and_then(|mtime| SystemTime::now().duration_since(mtime).ok())
-        .map(|age| age.as_secs() <= max_age_secs)
+        .map(|mtime| {
+            SystemTime::now()
+                .duration_since(mtime)
+                .unwrap_or(Duration::ZERO)
+                .as_secs()
+                <= max_age_secs
+        })
         .unwrap_or(false);
     if !age_ok {
         return None;
@@ -4929,6 +4937,55 @@ mod tests {
         assert!(
             std::str::from_utf8(text.as_bytes()).is_ok(),
             "truncated output must be valid UTF-8"
+        );
+
+        match old_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match old_up {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Regression: a future mtime (clock skew) must be treated as fresh, not stale.
+    ///
+    /// Python behaviour:
+    ///   `age_secs = time.time() - mtime`  →  negative when mtime is future
+    ///   `if age_secs > max_age_secs`      →  False  →  file is fresh
+    ///
+    /// Previous Rust behaviour:
+    ///   `duration_since(future_mtime).ok()` → `None` → `unwrap_or(false)` → stale
+    ///   The file was silently skipped even though it was not old.
+    #[test]
+    fn memory_inject_future_mtime_treated_as_fresh() {
+        use std::fs::{File, FileTimes};
+        let _guard = env_lock();
+        let tmp = std::env::temp_dir().join("sk_mem_inject_future_mtime");
+        let copilot_dir = tmp.join(".copilot");
+        let _ = fs::create_dir_all(&copilot_dir);
+        let memory_path = tmp.join("MEMORY.md");
+        fs::write(&memory_path, "## Future mtime\n- content\n").unwrap();
+
+        // Set the file's mtime 30 seconds into the future to simulate clock skew.
+        let future_mtime = SystemTime::now() + Duration::from_secs(30);
+        let file = File::options().write(true).open(&memory_path).unwrap();
+        let times = FileTimes::new().set_modified(future_mtime);
+        file.set_times(times).unwrap();
+        drop(file);
+
+        let old_home = std::env::var("HOME").ok();
+        let old_up = std::env::var("USERPROFILE").ok();
+        std::env::set_var("HOME", &tmp);
+        std::env::set_var("USERPROFILE", &tmp);
+
+        // Must return Some — future mtime is treated as fresh (age = 0).
+        let result = load_memory_md(Some(&tmp));
+        assert!(
+            result.is_some(),
+            "load_memory_md must treat a future mtime as fresh (not stale); got None"
         );
 
         match old_home {
