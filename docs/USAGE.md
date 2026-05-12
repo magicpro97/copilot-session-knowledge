@@ -69,27 +69,36 @@ JSON envelope:
 Ordering is deterministic: `confidence DESC, id ASC` — stable for git diffs.
 Markdown output omits a run-timestamp so repeated exports on unchanged data produce identical output.
 
-### `sk dream` — dream-score ranking for knowledge promotion
+### `sk dream` — dream-score ranking and MEMORY.md promotion surface
 
 Computes a weighted dream-score for each knowledge entry using recall telemetry
 (`entry_recall_stats`) and concept tags (`entry_concept_tags`). Scores are
-persisted in `entry_dream_scores` (local-only, never synced).
+persisted in `entry_dream_scores` (local-only, never synced). On non-dry-run
+runs, gate-passing entries are also written to a promoted-memory Markdown
+surface (`MEMORY.md` by default), grouped by entry type and sorted by dream
+score descending.
 
 ```bash
-sk dream                    # Score all entries, persist, show top 20
-sk dream --dry-run          # List top candidates without persisting scores
-sk dream --dry-run --top 10 --json          # Top-10 as JSON (no persist)
+sk dream                    # Score all entries, persist, show top 20, write MEMORY.md
+sk dream --dry-run          # List top candidates without persisting or writing MEMORY.md
+sk dream --dry-run --top 10 --json          # Top-10 as JSON (no persist, no MEMORY.md)
 sk dream --min-score 0.5 --min-recall 1     # Relaxed gate thresholds
 sk dream --w-frequency 0.3 --w-relevance 0.4 \
          --w-diversity 0.1 --w-recency 0.1 \
          --w-consolidation 0.05 --w-conceptual 0.05  # Custom weights
 sk dream --db /path/to/knowledge.db         # Custom DB path
+sk dream --memory-output /path/to/MEMORY.md # Custom MEMORY.md output path
 ```
 
 Gate (default): `score >= 0.75 AND recall_count >= 3 AND unique_queries >= 2`.
 
+**MEMORY.md surface:** `MEMORY.md` is fully overwritten on every non-dry-run
+(idempotent). Entries are grouped by category (e.g. `## Pattern`, `## Mistake`)
+and sorted by dream score descending within each group. Use `--memory-output`
+to write to a custom path. The file is never written in `--dry-run` mode.
+
 See [docs/concepts/dreaming.md](concepts/dreaming.md) for the full formula, signal
-normalization, and out-of-scope future phases (#160, #161, #162).
+normalization, and MEMORY.md promotion contract.
 
 ### `sk index` — knowledge index lifecycle
 
