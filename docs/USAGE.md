@@ -250,12 +250,18 @@ When `MEMORY.md` exists in the project root (written by `sk dream`), its promote
 content is automatically **prepended** to every `sessionStart` auto-briefing so the AI sees the
 highest-value knowledge entries before other briefing output.
 
+**Both runtime paths inject MEMORY.md:**
+- **Rust-binary installs** (`sk hooks run sessionStart`): native `AutoBriefingRule` in
+  `sk-rust/src/hooks/rules.rs` handles injection directly.
+- **Python `sk.py` shim / non-binary installs**: `hook_runner.py` delegates to
+  `hooks/rules/briefing.py::AutoBriefingRule`.
+
 **Guards — injection is skipped (graceful no-op) when:**
 
-| Guard | Default |
-|-------|---------|
-| `memory_inject_enabled: false` in `~/.copilot/hooks-config.json` | Disabled entirely |
-| File is older than max-age | Default: 1 day |
+| Guard | Behaviour |
+|-------|-----------|
+| `memory_inject_enabled` explicitly set to `false` in `~/.copilot/hooks-config.json` | Explicit opt-out; injection is **on by default** |
+| File is older than max-age | Default max age: 1 day |
 | File does not exist | Always silently skipped |
 | Effective content is empty | Silently skipped |
 

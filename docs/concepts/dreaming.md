@@ -275,18 +275,22 @@ Fields written by the scheduler:
 ## sessionStart Auto-Injection
 
 `MEMORY.md` is automatically **prepended** into every `sessionStart` auto-briefing by
-`AutoBriefingRule` (in `hooks/rules/briefing.py`) and by the standalone
+`AutoBriefingRule` — natively in `sk-rust/src/hooks/rules.rs` for Rust-binary installs,
+and via `hooks/rules/briefing.py` for the Python fallback — and by the standalone
 `hooks/auto-briefing.py` script.  This surfaces the most valuable promoted entries
 before other briefing output at the beginning of every AI session without requiring
 the operator to run an extra command.
+
+Both runtime paths implement the same semantics: config-guard, max-age check, token
+budget cap, and graceful no-op behavior.
 
 ### Guards
 
 Injection is a **graceful no-op** when any of the following apply:
 
-| Guard | Default |
-|-------|---------|
-| `memory_inject_enabled: false` in `~/.copilot/hooks-config.json` | Explicitly disabled |
+| Guard | Behaviour |
+|-------|-----------|
+| `memory_inject_enabled` explicitly set to `false` in `~/.copilot/hooks-config.json` | Explicit opt-out; injection is **on by default** |
 | `MEMORY.md` does not exist in the project root | File missing |
 | `MEMORY.md` is older than *max-age* | Default: 1 day |
 | Effective content is empty | Silently skipped |
