@@ -207,10 +207,38 @@ def info(message):
 
 # ── Shared per-session state helpers (used by token_tracker and read_tracker) ──
 
+import inspect
 import json
 import os
+import threading as _threading
 import time
 import uuid
+
+# Per-path thread locks for in-process serialization of update_session_state.
+# Same pattern as tentacle.py's _get_path_lock / _file_path_locks: a
+# threading.Lock per canonical path serializes same-process threads BEFORE the
+# PID-aware file lock is attempted.  On Windows, concurrent read_text() calls
+# on the .lock file can prevent unlink() from succeeding (PermissionError),
+# which silently leaks the lock.  The thread lock eliminates that race
+# entirely by ensuring only one thread ever touches the file lock at a time
+# within a single process.  Cross-process safety is still provided by the
+# O_CREAT | O_EXCL file lock.
+_state_path_locks: dict = {}
+_state_path_locks_mutex: _threading.Lock = _threading.Lock()
+
+
+def _get_state_lock(lock_path) -> _threading.Lock:
+    """Return a per-path threading.Lock for in-process serialization.
+
+    Uses the canonical path key (case-insensitive on Windows) so that
+    different Path objects pointing to the same file share the same lock.
+    Identical pattern to tentacle.py's ``_get_path_lock``.
+    """
+    key = str(lock_path).lower() if os.name == "nt" else str(lock_path)
+    with _state_path_locks_mutex:
+        if key not in _state_path_locks:
+            _state_path_locks[key] = _threading.Lock()
+        return _state_path_locks[key]
 
 
 def _is_pid_running(pid: int) -> bool:
@@ -227,12 +255,16 @@ def _is_pid_running(pid: int) -> bool:
             import ctypes
 
             PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            kernel32 = ctypes.windll.kernel32
-            # Declare restype to avoid 32-bit truncation on 64-bit Windows.
-            kernel32.OpenProcess.restype = ctypes.c_void_p
-            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            # Use a local WinDLL instance (not the ctypes.windll.kernel32 singleton)
+            # so that setting argtypes/restype does not mutate shared global ctypes
+            # state on every call.
+            _k32 = ctypes.WinDLL("kernel32")
+            _open_process = _k32.OpenProcess
+            _open_process.argtypes = [ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong]
+            _open_process.restype = ctypes.c_void_p
+            handle = _open_process(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if handle:
-                kernel32.CloseHandle(ctypes.c_void_p(handle))
+                _k32.CloseHandle(ctypes.c_void_p(handle))
                 return True
             return False
         else:
@@ -369,96 +401,141 @@ def save_session_state(state: dict, data=None) -> bool:
         return False
 
 
-def update_session_state(updater, data=None, *, max_retries=20, retry_delay=0.05) -> bool:
+def update_session_state(updater, data=None, *, max_retries=20, retry_delay=0.05) -> tuple:
     """Load, mutate, and save per-session state under an exclusive per-session lock.
 
     ``updater`` is a callable that receives the current state dict and must
-    mutate it in-place.  The caller's closure can capture any computed output.
+    mutate it in-place.  Callers may optionally declare a second positional
+    parameter to receive ``under_lock`` so they can distinguish locked writes
+    from fail-open unlocked writes while mutating the state.
 
-    Returns ``True`` when the load→mutate→save cycle completed and the state
-    was successfully persisted, ``False`` on any failure.  Never raises.
+    Returns a 2-tuple ``(saved, under_lock)`` where:
+    * ``saved`` (bool) — ``True`` when the load→mutate→save cycle completed and
+      the state was successfully persisted, ``False`` on any failure.
+    * ``under_lock`` (bool) — ``True`` when the O_CREAT | O_EXCL file lock was
+      acquired before the cycle ran; ``False`` when lock exhaustion caused the
+      cycle to run on the fail-open unlocked path.
 
-    Lock strategy (PID-aware, repo-standard O_CREAT | O_EXCL pattern)
+    Callers that gate **one-shot** warnings on persisted state (e.g.
+    ``TokenTrackerRule``) SHOULD require both ``saved and under_lock`` before
+    emitting the warning.  The unlocked path offers no deduplication guarantee
+    across concurrent processes, so the same threshold could be reached by two
+    processes simultaneously — leading to duplicate warnings.  Suppressing the
+    warning on the fail-open path means it fires exactly once on the first
+    locked, successful persist.
+
+    Never raises.
+
+    Lock strategy (two-layer, same pattern as tentacle.py's file_locked)
     ------------------------------------------------------------------
-    * Acquisition: ``O_CREAT | O_EXCL`` writes the holder PID into the file,
-      so any future reader can verify whether the holder is still alive.
-    * On ``FileExistsError``:
-      - If the lock file contains a valid PID and the process is **alive**:
-        the lock is held legitimately — sleep and retry.
-      - If the lock file contains a valid PID and the process is **dead**:
-        safe to steal — unlink and retry immediately.
-      - If the lock file is malformed/unreadable (old format or corrupt):
-        fall back to the mtime age threshold (≥ 5 s → stale orphan).
-    * This prevents the TOCTOU race where an age-only check could delete a
-      fresh valid lock that was acquired by another process in the stat→unlink
-      window (original issue identified by code review).
-    * After exhausting retries, the cycle still runs without the lock
-      (fail-open) — the caller's update is not silently discarded, but
-      accuracy is **not** guaranteed.  The return value will be ``False`` if
-      the save itself fails; it can be ``True`` even when the lock was not
-      acquired (best-effort unlocked path).
+    Layer 1 — threading.Lock per canonical path (``_get_state_lock``):
+      Serializes all threads within the same process.  This is necessary on
+      Windows because concurrent ``read_text()`` calls on the .lock file hold
+      it open, which prevents ``unlink()`` from succeeding (PermissionError
+      silently swallowed) — permanently leaking the lock and causing all
+      subsequent threads to exhaust retries and fall through to an unlocked
+      read-modify-write path.
+
+    Layer 2 — O_CREAT | O_EXCL file lock (PID-aware):
+      Guards against concurrent PROCESSES.  Because Layer 1 ensures only one
+      thread per process ever enters this section at a time, the file lock
+      will always be uncontested within the current process.
+      * Acquisition: writes the holder PID into the file so any future reader
+        can verify whether the holder is still alive.
+      * On ``FileExistsError``:
+        - Live PID: legitimate cross-process holder — sleep and retry.
+        - Dead PID: safe to steal — unlink and retry immediately.
+        - Malformed: fall back to mtime age threshold (≥ 5 s → stale orphan).
+      * After exhausting retries, the cycle still runs without the file lock
+        (fail-open) — accuracy is **not** guaranteed but the update is not
+        silently discarded.
     """
     try:
         p = get_session_state_path(data)
         p.parent.mkdir(parents=True, exist_ok=True)
         lock_path = p.with_name(p.name + ".lock")
 
-        acquired = False
-        for _ in range(max_retries):
-            try:
-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, str(os.getpid()).encode("utf-8"))
-                os.close(fd)
-                acquired = True
-                break
-            except FileExistsError:
-                # PID-aware stale-lock recovery.
-                holder_pid = None
+        # Layer 1: acquire the per-path thread lock before touching the file lock.
+        thread_lock = _get_state_lock(lock_path)
+        with thread_lock:
+            acquired = False
+            for _ in range(max_retries):
                 try:
-                    holder_pid = int(lock_path.read_text(encoding="utf-8").strip())
-                except (OSError, ValueError):
-                    pass
+                    fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    os.write(fd, str(os.getpid()).encode("utf-8"))
+                    os.close(fd)
+                    acquired = True
+                    break
+                except FileExistsError:
+                    # Layer 2: PID-aware stale-lock recovery for cross-process case.
+                    holder_pid = None
+                    try:
+                        holder_pid = int(lock_path.read_text(encoding="utf-8").strip())
+                    except (OSError, ValueError):
+                        pass
 
-                if holder_pid is not None:
-                    if not _is_pid_running(holder_pid):
-                        # Dead holder — safe to steal the lock.
+                    if holder_pid is not None:
+                        if not _is_pid_running(holder_pid):
+                            # Dead holder — safe to steal the lock.
+                            try:
+                                lock_path.unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                            continue  # retry immediately
+                        # Live holder — respect the lock, sleep and retry.
+                        time.sleep(retry_delay)
+                        continue
+
+                    # Malformed / empty lock file — fall back to age threshold.
+                    # Only steal after 5 s; fresh malformed locks might be mid-write.
+                    try:
+                        age = time.time() - lock_path.stat().st_mtime
+                    except OSError:
+                        age = 0
+                    if age >= 5:
                         try:
                             lock_path.unlink(missing_ok=True)
                         except Exception:
                             pass
-                        continue  # retry immediately
-                    # Live holder — respect the lock, sleep and retry.
+                        continue  # retry immediately after removing stale lock
                     time.sleep(retry_delay)
-                    continue
-
-                # Malformed / empty lock file — fall back to age threshold.
-                # Only steal after 5 s; fresh malformed locks might be mid-write.
-                try:
-                    age = time.time() - lock_path.stat().st_mtime
                 except OSError:
-                    age = 0
-                if age >= 5:
+                    # Other OS errors (permissions, etc.) — retry with sleep.
+                    time.sleep(retry_delay)
+
+            saved = False
+            try:
+                state = load_session_state(data)
+                try:
+                    _sig = inspect.signature(updater)
+                    _params = list(_sig.parameters.values())
+                    _accepts_lock_state = any(
+                        p.kind == inspect.Parameter.VAR_POSITIONAL for p in _params
+                    ) or len(
+                        [
+                            p
+                            for p in _params
+                            if p.kind
+                            in (
+                                inspect.Parameter.POSITIONAL_ONLY,
+                                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                            )
+                        ]
+                    ) >= 2
+                except (TypeError, ValueError):
+                    _accepts_lock_state = False
+
+                if _accepts_lock_state:
+                    updater(state, acquired)
+                else:
+                    updater(state)
+                saved = save_session_state(state, data)
+            finally:
+                if acquired:
                     try:
                         lock_path.unlink(missing_ok=True)
                     except Exception:
                         pass
-                    continue  # retry immediately after removing stale lock
-                time.sleep(retry_delay)
-            except OSError:
-                # Other OS errors (permissions, etc.) — retry with sleep.
-                time.sleep(retry_delay)
-
-        saved = False
-        try:
-            state = load_session_state(data)
-            updater(state)
-            saved = save_session_state(state, data)
-        finally:
-            if acquired:
-                try:
-                    lock_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-        return saved
+            return (saved, acquired)
     except Exception:
-        return False
+        return (False, False)

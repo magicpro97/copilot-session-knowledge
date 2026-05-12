@@ -248,7 +248,38 @@ try:
             msg95 = result_95.get("message", "")
             test("95% threshold: message present", bool(msg95))
 
+        # Fail-open unlocked path: total should persist, but threshold warning
+        # must remain pending until a later locked save can emit it once.
+        _orig_update_session_state = _tt_mod.update_session_state
+
+        def _fake_unlocked_update_session_state(updater, data=None, **kwargs):
+            state = _common.load_session_state(data)
+            updater(state, False)
+            saved = _common.save_session_state(state, data)
+            return (saved, False)
+
+        _common.save_session_state({"files_read": {}, "total_tokens": 799, "thresholds_warned": []})
+        _tt_mod.update_session_state = _fake_unlocked_update_session_state
+        delayed_warn = rule2.evaluate("postToolUse", {
+            "toolName": "view",
+            "toolInput": {"path": str(_small_file)},
+        })
+        delayed_state = _common.load_session_state()
+        test("delayed warn: unlocked path does not emit warning", delayed_warn is None)
+        test("delayed warn: unlocked path still persists total_tokens", delayed_state.get("total_tokens", 0) >= 802)
+        test("delayed warn: unlocked path does not consume threshold", delayed_state.get("thresholds_warned", []) == [])
+
+        _tt_mod.update_session_state = _orig_update_session_state
+        delayed_warn_locked = rule2.evaluate("postToolUse", {
+            "toolName": "view",
+            "toolInput": {"path": str(_small_file)},
+        })
+        delayed_state_locked = _common.load_session_state()
+        test("delayed warn: later locked path emits warning", delayed_warn_locked is not None)
+        test("delayed warn: later locked path records threshold", 80 in delayed_state_locked.get("thresholds_warned", []))
+
     finally:
+        _tt_mod.update_session_state = _common.update_session_state
         if old_budget_env is None:
             os.environ.pop("TOKEN_BUDGET", None)
         else:

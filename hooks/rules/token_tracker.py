@@ -105,7 +105,7 @@ class TokenTrackerRule(Rule):
         budget = int(os.environ.get("TOKEN_BUDGET", DEFAULT_BUDGET))
         result_holder = [None]
 
-        def _updater(state):
+        def _updater(state, under_lock):
             prev_total = state.get("total_tokens", 0)
             new_total = prev_total + est_tokens
             state["total_tokens"] = new_total
@@ -121,7 +121,7 @@ class TokenTrackerRule(Rule):
                 files_read[read_path] = entry
 
             # Check budget thresholds (highest first so we only report the most urgent).
-            if budget > 0:
+            if budget > 0 and under_lock:
                 thresholds_warned = state.get("thresholds_warned", [])
                 for threshold in sorted(_WARN_THRESHOLDS, reverse=True):
                     if threshold not in thresholds_warned and new_total >= budget * threshold / 100:
@@ -139,13 +139,11 @@ class TokenTrackerRule(Rule):
                         )
                         break
 
-        # Only emit the threshold warning when the updated state was actually
-        # persisted.  If the save fails, thresholds_warned was not written, so
-        # the same threshold would fire again on the next call — producing a
-        # repeated warning that was never intended.  Suppressing the warning on
-        # failed saves means the threshold fires once on the first successful
-        # persist rather than every call until one succeeds.
-        saved = update_session_state(_updater, data)
-        if saved:
+        # Only emit and record the threshold warning when the update ran under
+        # the file lock. On the fail-open unlocked path, token totals still
+        # accumulate but the warning stays pending so the first later locked
+        # update can emit it exactly once instead of losing or duplicating it.
+        saved, under_lock = update_session_state(_updater, data)
+        if saved and under_lock:
             return result_holder[0]
         return None

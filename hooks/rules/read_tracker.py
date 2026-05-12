@@ -17,7 +17,7 @@ estimated token cost from the last recorded read.  Never blocks.
 Configuration
 -------------
 * ``READ_TRACKER_IGNORE_SUFFIXES`` env var: comma-separated list of file
-  extensions to skip (e.g. ``".lock,.txt"``).  Defaults to ``{".lock"}``.
+  extensions to skip (e.g. ``".lock,.txt"``).  Defaults to ``{".lock", ".txt"}``.
 * Files not yet in the state dict are silently ignored (first read = no warn).
 
 Fail-open: any exception returns None (never blocks tool use).
