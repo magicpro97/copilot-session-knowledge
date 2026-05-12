@@ -80,6 +80,11 @@ sk index health      # knowledge-health.py     — health dashboard + recall tel
 sk index embed       # embed.py / native Rust  — configure/run semantic embeddings
                      #   native (default build): --build, --test, --rebuild-tfidf, --setup, --status, --providers, --search
                      #   Python fallback: embed.py (if native-embed feature unavailable)
+sk index tag         # tag-entries.py          — batch concept-tag extraction for entries
+                     #   --all          re-tag all entries (replace stale auto tags)
+                     #   --dry-run      preview without writing
+                     #   --limit N      process at most N entries
+                     #   --stats        show concept tag coverage statistics
 ```
 
 ### `sk sync` — cross-machine sync

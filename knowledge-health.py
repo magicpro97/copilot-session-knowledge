@@ -165,9 +165,24 @@ def compute_health(stale_days: int = 30) -> dict:
         WHERE session_id IS NOT NULL AND session_id != ''
     """).fetchone()[0]
 
+    # Concept tag coverage (informational stat only — does NOT affect weighted score)
+    concept_tagged = 0
+    try:
+        has_ect = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='entry_concept_tags'"
+        ).fetchone()
+        if has_ect:
+            concept_tagged = db.execute(
+                "SELECT COUNT(DISTINCT entry_id) FROM entry_concept_tags WHERE source = 'auto'"
+            ).fetchone()[0]
+    except sqlite3.OperationalError:
+        pass
+    concept_tag_coverage_pct = round((concept_tagged / total) * 100, 1) if total > 0 else 0.0
+
     db.close()
 
     # Compute composite score (0-100)
+    # NOTE: concept_tag_coverage_pct is informational only; it is NOT part of the weighted score.
     scores = {
         "categorization": min(categorized_pct, 100) * 0.20,  # 20%
         "learning_curve": min(mp_ratio * 50, 100) * 0.20,  # 20% — higher ratio = better
@@ -234,6 +249,7 @@ def compute_health(stale_days: int = 30) -> dict:
         "wings": wings,
         "rooms": rooms,
         "sessions": sessions,
+        "concept_tag_coverage_pct": concept_tag_coverage_pct,
         "subscores": {k: round(v, 1) for k, v in scores.items()},
         "toward_100": toward_100,
     }

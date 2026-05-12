@@ -119,6 +119,130 @@ def _detect_room(tags: str, title: str, content: str) -> str:
     return ""
 
 
+# Stopwords for concept tag extraction (pure stdlib, no ML imports)
+_CONCEPT_STOPWORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "can",
+        "it",
+        "this",
+        "that",
+        "these",
+        "those",
+        "i",
+        "we",
+        "you",
+        "he",
+        "she",
+        "they",
+        "not",
+        "no",
+        "so",
+        "if",
+        "then",
+        "when",
+        "where",
+        "what",
+        "which",
+        "who",
+        "how",
+        "all",
+        "any",
+        "each",
+        "more",
+        "most",
+        "also",
+        "just",
+        "up",
+        "out",
+        "as",
+        "into",
+        "than",
+        "their",
+        "its",
+        "our",
+        "my",
+        "your",
+        "his",
+        "her",
+        "them",
+        "us",
+        "me",
+        "after",
+        "before",
+        "during",
+        "while",
+        "since",
+        "until",
+        "too",
+        "very",
+        "about",
+        "above",
+        "below",
+        "between",
+        "through",
+        "use",
+        "used",
+        "using",
+        "run",
+        "running",
+        "make",
+        "new",
+        "only",
+        "now",
+        "time",
+        "way",
+        "need",
+        "needs",
+        "see",
+        "get",
+        "set",
+        "add",
+        "put",
+        "let",
+        "say",
+        "one",
+        "two",
+        "per",
+        "via",
+        "etc",
+        "yet",
+        "got",
+    }
+)
+
 # Injection scanning patterns (inspired by Hermes Agent memory security)
 # Block prompt injection, role hijacking, credential exfiltration, invisible Unicode
 import re
@@ -166,6 +290,73 @@ _CODE_LANGUAGE_MAP = {
 def _stable_sha256(*parts) -> str:
     payload = "\0".join("" if p is None else str(p) for p in parts)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def extract_concept_tags(text: str, top_k: int = 5) -> list:
+    """Extract top_k concept tags from text using pure-stdlib term frequency.
+
+    Distinct from existing tag parsing that reads explicit user-supplied tags.
+    This performs automatic keyword extraction from free-form text using
+    stopword-filtered term frequency, with no numpy/sklearn/ML imports.
+
+    Args:
+        text: Combined title and content text to analyze.
+        top_k: Maximum number of concept tags to return.
+
+    Returns:
+        List of up to top_k lowercase concept tag strings, sorted by frequency desc.
+    """
+    if not text:
+        return []
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", text.lower())
+    freq: dict = {}
+    for tok in tokens:
+        if tok not in _CONCEPT_STOPWORDS:
+            freq[tok] = freq.get(tok, 0) + 1
+    ranked = sorted(freq.items(), key=lambda x: (-x[1], x[0]))
+    return [tag for tag, _ in ranked[:top_k]]
+
+
+def _auto_tag_entry(db: sqlite3.Connection, entry_id: int, title: str, content: str) -> None:
+    """Insert auto-generated concept tags for an entry, replacing any stale auto tags.
+
+    Safe to call for both insert and update paths:
+    - On update: deletes existing source='auto' rows first, then inserts fresh tags.
+    - On insert: simply inserts fresh tags (no prior rows exist).
+    - Gracefully no-ops if the entry_concept_tags table does not exist yet.
+    """
+    try:
+        has_table = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='entry_concept_tags'"
+        ).fetchone()
+        if not has_table:
+            return
+        tags = extract_concept_tags(f"{title} {content}", top_k=5)
+        if not tags:
+            return
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        # Atomic delete-then-insert via SAVEPOINT so a failed insert cannot
+        # commit the deletion and silently erase existing tags.
+        db.execute("SAVEPOINT _auto_tag")
+        try:
+            db.execute(
+                "DELETE FROM entry_concept_tags WHERE entry_id = ? AND source = 'auto'",
+                (entry_id,),
+            )
+            db.executemany(
+                """
+                INSERT INTO entry_concept_tags (entry_id, tag, source, tagged_at)
+                VALUES (?, ?, 'auto', ?)
+                ON CONFLICT(entry_id, tag) DO UPDATE SET tagged_at = excluded.tagged_at
+                """,
+                [(entry_id, tag, now) for tag in tags],
+            )
+            db.execute("RELEASE _auto_tag")
+        except Exception:
+            db.execute("ROLLBACK TO _auto_tag")
+            db.execute("RELEASE _auto_tag")
+    except Exception:
+        pass  # Never break add_entry convergence for tagging failures
 
 
 def _knowledge_stable_id(session_id: str, category: str, title: str, topic_key: str = "") -> str:
@@ -809,6 +1000,9 @@ def add_entry(
         error_type=error_type or "",
         root_cause=root_cause or "",
     )
+
+    # Auto-tag with concept tags (local_only; replace stale tags on update)
+    _auto_tag_entry(db, entry_id, title, content)
 
     # Generate embedding for the new entry
     _embed_entry(db, entry_id, title, content, quiet=quiet)

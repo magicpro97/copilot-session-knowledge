@@ -197,6 +197,9 @@ class TestSkGroupedCommands(unittest.TestCase):
     def test_index_embed(self):
         self._assert_group_routes("index", "embed", "embed.py")
 
+    def test_index_tag(self):
+        self._assert_group_routes("index", "tag", "tag-entries.py")
+
     # sync group
     def test_sync_run(self):
         self._assert_group_routes("sync", "run", "sync-daemon.py")

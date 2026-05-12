@@ -22,7 +22,7 @@ Usage:
     sk buglog   [<args>...]       Run buglog-export.py (alias for export-buglog)
     sk hooks    run|list|<event>  Run hooks/hook_runner.py
 
-    sk index  build|extract|migrate|status|health|embed [<args>...]
+    sk index  build|extract|migrate|status|health|embed|tag [<args>...]
     sk sync   run|config|status|gateway|merge [<args>...]
     sk checkpoint save|restore|diff [<args>...]
     sk profile build|import|export [<args>...]
@@ -79,6 +79,7 @@ _GROUPS: dict[str, dict[str, str]] = {
         "status": "index-status.py",
         "health": "knowledge-health.py",
         "embed": "embed.py",
+        "tag": "tag-entries.py",
     },
     "sync": {
         "run": "sync-daemon.py",

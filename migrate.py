@@ -157,6 +157,7 @@ def _seed_sync_table_policies(db: sqlite3.Connection):
         ("embeddings", "local_only", ""),
         ("embedding_meta", "local_only", ""),
         ("tfidf_model", "local_only", ""),
+        ("entry_concept_tags", "local_only", ""),
     ]
     db.executemany(
         """
@@ -725,6 +726,23 @@ if __name__ == "__main__":
                     query_hash TEXT NOT NULL,
                     PRIMARY KEY (entry_id, query_hash)
                 )""",
+            ],
+        ),
+        (
+            19,
+            "entry_concept_tags",
+            [
+                # Auto-extracted concept tags per knowledge entry (local_only: never synced).
+                """CREATE TABLE IF NOT EXISTS entry_concept_tags (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entry_id INTEGER NOT NULL,
+                    tag TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'auto',
+                    tagged_at TEXT DEFAULT (datetime('now')),
+                    UNIQUE(entry_id, tag)
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_ect_entry ON entry_concept_tags(entry_id)",
+                "CREATE INDEX IF NOT EXISTS idx_ect_tag ON entry_concept_tags(tag)",
             ],
         ),
     ]
