@@ -533,6 +533,106 @@ finally:
     shutil.rmtree(str(_mi4_cwd), ignore_errors=True)
 
 
+
+# ══════════════════════════════════════════════════════════════════════
+#  Section 11: preToolUse info message + later deny → clean JSON on stdout
+# ══════════════════════════════════════════════════════════════════════
+
+print("\n⚠️  Section 11: preToolUse info message does not pollute stdout before deny")
+
+# Create an isolated HOME with a read-tracker state simulating a file already read
+_rt_isolated = Path(tempfile.mkdtemp(prefix="test-rt-ep-home-"))
+_rt_markers = _rt_isolated / ".copilot" / "markers"
+_rt_markers.mkdir(parents=True, exist_ok=True)
+# Pre-create briefing-done marker so enforce-briefing passes
+(_rt_markers / "briefing-done").write_text("test-briefing-done", encoding="utf-8")
+_rt_env = {**os.environ, "HOME": str(_rt_isolated), "USERPROFILE": str(_rt_isolated)}
+
+# Pre-populate session state so ReadTrackerRule will emit an info message on second read
+_rt_session_state = _rt_markers / "session-state-test-info-deny-sess"
+_rt_session_state.write_text(
+    json.dumps({
+        "files_read": {
+            "/repo/hooks/hook_runner.py": {"count": 1, "tokens": 50, "first_read": 1000000}
+        },
+        "total_tokens": 50,
+        "thresholds_warned": [],
+    }),
+    encoding="utf-8",
+)
+_rt_env2 = {**_rt_env, "COPILOT_AGENT_SESSION_ID": "test-info-deny-sess"}
+
+try:
+    # 11a. A preToolUse that yields only an info/warn (e.g. repeat read of a .py file)
+    #      must NOT place that message on stdout — only stderr.
+    r11a = _run("preToolUse", {
+        "sessionId": "test-info-deny-sess",
+        "toolName": "view",
+        "toolArgs": {"path": "/repo/hooks/hook_runner.py"},
+    }, env=_rt_env2)
+    test(
+        "11a: preToolUse info message → stdout is empty or pure JSON (no plain text)",
+        r11a.stdout == "" or r11a.stdout.strip().startswith("{"),
+        f"stdout={r11a.stdout[:300]!r}",
+    )
+    test(
+        "11a: preToolUse info message exit code 0 (no deny)", r11a.returncode == 0,
+        f"rc={r11a.returncode}",
+    )
+
+    # 11b. A preToolUse that triggers a deny must produce valid JSON deny on stdout.
+    #      Use a deny-triggering payload: edit browse-ui/dist/ → block-edit-dist denies.
+    #      Note: ReadTrackerRule only fires on `view`, not `edit`, so no info message
+    #      is emitted here — this test verifies the stdout JSON channel is clean for
+    #      deny-only scenarios (no plain text mixed into stdout before the deny JSON).
+    r11b = _run("preToolUse", {
+        "sessionId": "test-info-deny-sess",
+        "toolName": "edit",
+        "toolArgs": {
+            "path": "browse-ui/dist/bundle.js",
+            "old_str": "a",
+            "new_str": "b",
+        },
+    }, env=_rt_env2)
+    # stdout must contain exactly one parseable JSON object
+    stdout_lines = [ln for ln in r11b.stdout.splitlines() if ln.strip()]
+    parseable = False
+    deny_found = False
+    for ln in stdout_lines:
+        try:
+            obj = json.loads(ln)
+            parseable = True
+            if obj.get("permissionDecision") == "deny":
+                deny_found = True
+        except Exception:
+            pass
+    test(
+        "11b: deny present on stdout after any info message",
+        deny_found,
+        f"stdout={r11b.stdout[:400]!r} lines={stdout_lines}",
+    )
+    test(
+        "11b: stdout lines that look like JSON are actually parseable",
+        not stdout_lines or parseable,
+        f"unparseable stdout={r11b.stdout[:400]!r}",
+    )
+    test(
+        "11b: no plain-text line precedes the deny JSON on stdout",
+        all(
+            (lambda _ln: (lambda _s: _s == "" or _s.startswith("{"))(_ln.strip()))(_ln)
+            for _ln in r11b.stdout.splitlines()
+        ),
+        f"mixed stdout={r11b.stdout[:400]!r}",
+    )
+
+    test("Section 11 ran without exception", True)
+
+except Exception as e:
+    test("Section 11 ran without exception", False, str(e))
+finally:
+    shutil.rmtree(_rt_isolated, ignore_errors=True)
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  Cleanup
 # ══════════════════════════════════════════════════════════════════════

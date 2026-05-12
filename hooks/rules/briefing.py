@@ -1,14 +1,21 @@
 """Briefing enforcement rules."""
 
 import json
-import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 from . import Rule
-from .common import MARKERS_DIR, TOOLS_DIR, bash_writes_source_files, deny, info
+from .common import (
+    MARKERS_DIR,
+    TOOLS_DIR,
+    _is_pid_running,
+    bash_writes_source_files,
+    deny,
+    get_session_marker_suffix,
+    info,
+)
 
 # ── MEMORY.md injection config ──────────────────────────────────────────────
 # Primary config: ~/.copilot/hooks-config.json using keys defined in issue #161:
@@ -120,11 +127,6 @@ MARKER = MARKERS_DIR / "briefing-done"
 BRIEFING_SCRIPT = TOOLS_DIR / "briefing.py"
 
 
-def _get_session_id():
-    """Get stable session ID (env var from Copilot CLI, or parent PID)."""
-    return os.environ.get("COPILOT_AGENT_SESSION_ID", str(os.getppid()))
-
-
 class AutoBriefingRule(Rule):
     """Run briefing.py at session start and create HMAC-signed marker."""
 
@@ -133,7 +135,7 @@ class AutoBriefingRule(Rule):
 
     def evaluate(self, event, data):
         # Clean up only THIS session's stale markers, not other sessions'
-        session_id = _get_session_id()
+        session_id = get_session_marker_suffix(data)
         if MARKERS_DIR.is_dir():
             stale_cutoff = time.time() - 7200  # 2 hours
             for f in MARKERS_DIR.iterdir():
@@ -141,13 +143,51 @@ class AutoBriefingRule(Rule):
                     name = f.name
                     if name in ("hooks-tampered", "session.log", "audit.jsonl"):
                         continue
-                    # Delete own session markers (will re-sign below)
-                    if name.endswith(f"-{session_id}"):
+                    # Delete own session markers (will re-sign below).
+                    # Also remove the companion .lock file so orphaned locks from
+                    # a prior crash of this session don't block future writers.
+                    if name.endswith(f"-{session_id}") or name.endswith(f"-{session_id}.lock"):
                         f.unlink()
                         continue
-                    # Delete stale markers older than 2h (orphans from crashed sessions)
+                    # Delete stale briefing-done markers older than 2h (orphans
+                    # from crashed sessions).
                     if name.startswith("briefing-done") and f.stat().st_mtime < stale_cutoff:
                         f.unlink()
+                        continue
+                    # Prune session-state-* markers from orphaned sessions.
+                    # Strategy:
+                    #   .lock companions — short-lived by design (held only during
+                    #     a single write cycle, typically < 1 s).  Prune aggressively
+                    #     at the 2 h threshold.
+                    #   Plain state files with a ppid-<pid> suffix — we can check
+                    #     whether the owning session's parent process is still alive.
+                    #     Only prune when the PID is dead; a live PID means the
+                    #     session is still active regardless of mtime.
+                    #   Plain state files with an opaque session ID — we cannot
+                    #     check liveness, so use a much longer threshold (24 h) to
+                    #     avoid deleting a concurrently active session's state file.
+                    if name.startswith("session-state-"):
+                        if name.endswith(".lock"):
+                            # Aggressive pruning for .lock companions.
+                            if f.stat().st_mtime < stale_cutoff:
+                                f.unlink()
+                            continue
+                        # Plain state file — PID-aware or long-threshold pruning.
+                        sid_part = name[len("session-state-") :]
+                        if sid_part.startswith("ppid-"):
+                            try:
+                                owner_pid = int(sid_part[len("ppid-") :])
+                            except ValueError:
+                                owner_pid = None
+                            if owner_pid is not None and _is_pid_running(owner_pid):
+                                continue  # Owner still alive — do not prune.
+                            # Owner dead (or PID unreadable) → prune regardless of mtime.
+                            f.unlink()
+                        else:
+                            # Opaque session ID: only prune after 24 h to avoid
+                            # deleting another active session's state.
+                            if f.stat().st_mtime < time.time() - 86400:
+                                f.unlink()
                 except Exception:
                     pass
 
@@ -240,7 +280,7 @@ class EnforceBriefingRule(Rule):
         if not is_file_mod:
             return None
 
-        if self._briefing_done():
+        if self._briefing_done(data):
             return None
 
         return deny(
@@ -249,10 +289,10 @@ class EnforceBriefingRule(Rule):
             '(fallback: python3 ~/.copilot/tools/briefing.py "your task")'
         )
 
-    def _briefing_done(self):
+    def _briefing_done(self, data=None):
         if verify_marker(MARKER, "briefing-done"):
             return True
-        session_id = os.environ.get("COPILOT_AGENT_SESSION_ID", str(os.getppid()))
+        session_id = get_session_marker_suffix(data)
         state_file = MARKERS_DIR / f"briefing-done-{session_id}"
         if verify_marker(state_file, f"briefing-done-{session_id}"):
             return True

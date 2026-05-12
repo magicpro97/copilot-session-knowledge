@@ -160,8 +160,16 @@ def main():
                     _audit_log(event, tool_name, rule.name, "deny", reason)
                     return  # First deny wins
             else:
+                # Non-deny results may carry a user-visible warning (e.g. ReadTrackerRule
+                # info()).  For preToolUse, stdout is the JSON permission channel, so send
+                # info messages to stderr to keep stdout parseable for deny decisions.
+                msg = result.get("message", "")
+                if msg:
+                    print(msg, file=sys.stderr)
+                # Preserve audit contract: preToolUse non-deny outcomes are "allow".
+                # Verbose gate: only write audit entry when DEBUG logging is enabled.
                 if verbose:
-                    _audit_log(event, tool_name, rule.name, "allow")
+                    _audit_log(event, tool_name, rule.name, "allow", msg[:100] if msg else "")
         else:
             # postToolUse/sessionStart/sessionEnd/agentStop/subagentStop/errorOccurred: informational
             msg = result.get("message", "")
