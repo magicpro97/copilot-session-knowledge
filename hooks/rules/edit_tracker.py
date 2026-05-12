@@ -47,6 +47,7 @@ TESTS_RAN = MARKERS_DIR / "tests-ran"
 
 SAFE_PATH_PREFIXES = ("/tmp/", "/var/", "/dev/", "/proc/")
 
+
 # Per-file repeated-edit tracking (issue #93).
 # Warn when the same file is edited >= FILE_EDIT_THRESHOLD times in one session.
 def _parse_file_edit_threshold() -> int:
@@ -180,7 +181,7 @@ class TestReminderRule(Rule):
             if file_path and file_path.endswith(".py") and not is_session_path(file_path):
                 py_msg = self._increment_and_warn()
                 if per_file_msg and py_msg:
-                    combined = (per_file_msg.get("message", "") + py_msg.get("message", ""))
+                    combined = per_file_msg.get("message", "") + py_msg.get("message", "")
                     return info(combined)
                 return py_msg or per_file_msg
 
