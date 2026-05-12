@@ -16,6 +16,7 @@ Run: python3 tests/test_sk_cli.py
 import importlib.util
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -125,6 +126,15 @@ class TestSkDirectCommands(unittest.TestCase):
 
     def test_watch(self):
         self._assert_routes("watch", "watch-sessions.py")
+
+    def test_buglog(self):
+        self._assert_routes("buglog", "buglog-export.py")
+
+    def test_buglog_with_format_flag(self):
+        self._assert_routes("buglog", "buglog-export.py", ["--format", "json"])
+
+    def test_buglog_with_output_flag(self):
+        self._assert_routes("buglog", "buglog-export.py", ["--output", "BUGLOG.md"])
 
 
 class TestSkHooksCompat(unittest.TestCase):
@@ -483,5 +493,183 @@ class TestSkNativeFeaturePreconditions(unittest.TestCase):
         )
 
 
+
+class TestBuglogTagFilterSemantics(unittest.TestCase):
+    """Regression tests for issue #90: --limit must apply after --tags filtering.
+
+    The original bug: SQL LIMIT ran before Python-side tag filtering.  When all
+    entries with a matching tag ranked below the LIMIT cutoff (by confidence),
+    they were silently excluded — a false-negative that the caller had no way to
+    detect.
+
+    Fix: fetch without LIMIT when tags are active, filter, then slice to limit.
+    """
+
+    BUGLOG_PATH = TOOLS_DIR / "buglog-export.py"
+
+    @classmethod
+    def setUpClass(cls):
+        if not cls.BUGLOG_PATH.exists():
+            raise unittest.SkipTest(
+                "buglog-export.py not present — skipping filter-semantics tests"
+            )
+        spec = importlib.util.spec_from_file_location("buglog_export", cls.BUGLOG_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        cls.buglog = mod
+
+    def _make_db(self) -> sqlite3.Connection:
+        """In-memory DB with 3 high-confidence untagged rows + 1 low-confidence tagged row."""
+        db = sqlite3.connect(":memory:")
+        db.row_factory = sqlite3.Row
+        db.execute("""
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY,
+                title TEXT,
+                content TEXT,
+                tags TEXT,
+                confidence REAL,
+                session_id TEXT,
+                occurrence_count INTEGER DEFAULT 1,
+                category TEXT DEFAULT 'mistake',
+                wing TEXT,
+                room TEXT,
+                source TEXT DEFAULT 'copilot'
+            )
+        """)
+        # Three entries WITHOUT the target tag at high confidence (ranked 1-3).
+        for i in range(3):
+            db.execute(
+                "INSERT INTO knowledge_entries "
+                "(id, title, content, tags, confidence, session_id, category) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'mistake')",
+                (i + 1, f"High entry {i+1}", f"Content {i+1}", "python,database",
+                 1.0 - i * 0.01, f"sess-{i+1}"),
+            )
+        # One entry WITH the target tag at lower confidence (ranked 4th — below limit=3).
+        db.execute(
+            "INSERT INTO knowledge_entries "
+            "(id, title, content, tags, confidence, session_id, category) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'mistake')",
+            (4, "Docker mistake", "Docker content", "docker,ci", 0.5, "sess-docker"),
+        )
+        db.commit()
+        return db
+
+    def test_limit_truncates_before_tag_filter_reproduces_false_negative(self):
+        """Reproduce the false-negative: old behaviour returned 0 matching rows.
+
+        With limit=3 applied in SQL before tag filtering, the 'docker' entry
+        (ranked 4th) is never fetched, so the tag filter finds nothing.
+        This test directly demonstrates the pre-fix failure path.
+        """
+        db = self._make_db()
+        try:
+            # Simulate old (broken) logic: LIMIT in SQL before Python tag filter.
+            sql = """
+                SELECT id, title, content, tags, confidence, session_id, occurrence_count,
+                       COALESCE(wing, '') AS wing, COALESCE(room, '') AS room,
+                       COALESCE(source, 'copilot') AS source
+                FROM knowledge_entries
+                WHERE category = 'mistake'
+                  AND confidence >= 0.0
+                ORDER BY confidence DESC, id ASC
+                LIMIT 3
+            """
+            rows = db.execute(sql).fetchall()
+            entries = [dict(r) for r in rows]
+            # Apply tag filter after truncated fetch — this is the buggy path.
+            filtered = [e for e in entries if "docker" in (e.get("tags") or "").lower()]
+            # False-negative: the docker entry was excluded by LIMIT before filtering.
+            self.assertEqual(
+                filtered, [],
+                "Reproducer: old LIMIT-first logic produces an empty result (false-negative)",
+            )
+        finally:
+            db.close()
+
+    def test_fetch_mistakes_with_tags_applies_limit_after_filter(self):
+        """Fixed _fetch_mistakes: --limit applies after tag filtering, not before.
+
+        With limit=3 and tags=['docker'], the function should return the docker
+        entry even though it ranks 4th by confidence — because LIMIT is now
+        applied only after the tag filter narrows the result set.
+        """
+        db = self._make_db()
+        try:
+            results = self.buglog._fetch_mistakes(
+                db, limit=3, tags_filter=["docker"], min_confidence=0.0
+            )
+        finally:
+            db.close()
+        titles = [r["title"] for r in results]
+        self.assertIn(
+            "Docker mistake",
+            titles,
+            "--limit should not truncate before tag filtering (issue #90 regression)",
+        )
+        self.assertEqual(len(results), 1, "Only the docker-tagged entry should match")
+
+    def test_fetch_mistakes_limit_respected_after_filter(self):
+        """When multiple tagged entries exist, limit is honoured after filtering."""
+        db = sqlite3.connect(":memory:")
+        db.row_factory = sqlite3.Row
+        db.execute("""
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY,
+                title TEXT,
+                content TEXT,
+                tags TEXT,
+                confidence REAL,
+                session_id TEXT,
+                occurrence_count INTEGER DEFAULT 1,
+                category TEXT DEFAULT 'mistake',
+                wing TEXT,
+                room TEXT,
+                source TEXT DEFAULT 'copilot'
+            )
+        """)
+        # 5 high-confidence untagged entries.
+        for i in range(5):
+            db.execute(
+                "INSERT INTO knowledge_entries "
+                "(id, title, content, tags, confidence, session_id, category) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'mistake')",
+                (i + 1, f"Top {i+1}", "body", "python", 1.0 - i * 0.01, f"s{i}"),
+            )
+        # 3 low-confidence tagged entries.
+        for j in range(3):
+            db.execute(
+                "INSERT INTO knowledge_entries "
+                "(id, title, content, tags, confidence, session_id, category) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'mistake')",
+                (100 + j, f"Docker {j}", "body", "docker", 0.3 - j * 0.01, f"d{j}"),
+            )
+        db.commit()
+        try:
+            # limit=2 with tags=['docker'] — should return the 2 highest-confidence docker entries.
+            results = self.buglog._fetch_mistakes(
+                db, limit=2, tags_filter=["docker"], min_confidence=0.0
+            )
+        finally:
+            db.close()
+        self.assertEqual(len(results), 2, "limit=2 should cap filtered results at 2")
+        self.assertTrue(
+            all("docker" in (r.get("tags") or "").lower() for r in results),
+            "All returned entries must match the docker tag",
+        )
+
+    def test_fetch_mistakes_no_tags_uses_sql_limit(self):
+        """Without --tags, LIMIT is pushed into SQL (efficiency path); result count is correct."""
+        db = self._make_db()
+        try:
+            results = self.buglog._fetch_mistakes(
+                db, limit=2, tags_filter=[], min_confidence=0.0
+            )
+        finally:
+            db.close()
+        self.assertEqual(len(results), 2, "Without tags, limit=2 should return exactly 2 entries")
+
 if __name__ == "__main__":
     unittest.main()
+

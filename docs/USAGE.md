@@ -21,7 +21,32 @@ sk browse --port 8080 --token TOKEN      # → browse.py
 sk benchmark record                      # → benchmark.py
 sk retro                                 # → retro.py
 sk heal                                  # → copilot-cli-healer.py
+sk buglog                                # → buglog-export.py  (Markdown to stdout)
+sk buglog --format json                  # → buglog-export.py  (JSON to stdout)
+sk buglog --output BUGLOG.md             # → buglog-export.py  (write Markdown to file)
 ```
+
+### `sk buglog` — BUGLOG export
+
+Export mistake-category knowledge entries as a deterministic, git-friendly document.
+Useful for committing a `BUGLOG.md` to a repo or piping to downstream tools.
+
+```bash
+sk buglog                                        # Markdown to stdout
+sk buglog --format json                          # JSON to stdout
+sk buglog --output BUGLOG.md                     # Write Markdown to BUGLOG.md
+sk buglog --output bugs.json --format json       # Write JSON to file
+sk buglog --limit 50                             # Cap at 50 entries (default: 200)
+sk buglog --tags docker,ci                       # Filter by tag (any match)
+sk buglog --min-confidence 0.7                   # High-quality entries only
+```
+
+JSON envelope:
+```json
+{"generated_at": "2024-01-01T00:00:00Z", "entry_count": 5, "entries": [...]}
+```
+
+Ordering is deterministic: `confidence DESC, id ASC` — stable for git diffs.
 
 ### `sk index` — knowledge index lifecycle
 
