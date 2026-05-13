@@ -476,6 +476,10 @@ python3 ~/.copilot/tools/tentacle.py status                # dashboard: all tent
 python3 ~/.copilot/tools/tentacle.py handoff api-export "Completed API export. OpenAPI schema written." \
   --status DONE --changed-file src/api/schema.py --changed-file src/api/auth.py --learn
 
+# 6b. Sub-agent: quota/rate-limit blocked — write BLOCKED handoff with quota metadata
+python3 ~/.copilot/tools/tentacle.py handoff api-export "Blocked: model rate limit hit." \
+  --status BLOCKED --quota-reason rate_limit --retry-hint 2026-05-14T00:00:00Z
+
 # 7. Orchestrator: verify results and close
 python3 ~/.copilot/tools/tentacle.py complete api-export   # marks done, auto-learns from handoff
 ```
@@ -667,7 +671,35 @@ Both flags can be used together in one command. In all cases:
 - Success-criteria pass/fail state is preserved — `goal resume` does not clear or re-run criteria.
 - Evaluation history is not truncated.
 
-### Success criteria
+### Quota-blocked tentacles
+
+When a dispatched agent hits a quota or rate-limit wall, it should write a `BLOCKED` handoff with machine-readable quota metadata:
+
+```bash
+# Sub-agent: blocked by quota
+sk tentacle handoff <name> "Rate limit hit — daily quota exhausted." \
+  --status BLOCKED --quota-reason rate_limit --retry-hint 2026-05-14T00:00:00Z
+# fallback: python3 ~/.copilot/tools/tentacle.py handoff <name> "..." \
+#   --status BLOCKED --quota-reason rate_limit --retry-hint 2026-05-14T00:00:00Z
+```
+
+`--quota-reason` tokens: `rate_limit`, `quota_exceeded`, `daily_quota`, `monthly_quota`, `token_quota`, `context_limit`.  
+`--retry-hint` is optional (ISO timestamp or human-readable string).
+
+When `cmd_complete` runs on the tentacle:
+- `quota_reason` and `retry_hint` are written into `meta.json` so `tentacle show` and the browse API surface them.
+- An entry is appended to `goal.json["quota_retry_queue"]` for orchestrator tracking.
+- `goal next-iter` shows quota-blocked tentacles with a 🚦 icon and distinct recommendation (vs generic ⚠️ BLOCKED tentacles).
+
+Orchestrator retry flow:
+```bash
+sk tentacle goal next-iter          # Shows 🚦 quota-blocked lane + retry queue
+# Wait for retry_hint window to pass
+sk tentacle goal resume --reset-failed   # Resets BLOCKED tentacles to idle
+sk tentacle dispatch <name>              # Re-dispatch after quota resets
+```
+
+
 
 ```bash
 # Add a verifiable success criterion

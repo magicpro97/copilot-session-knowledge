@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Quota-blocked handoff metadata and retry queue (#187):**
+  - `tentacle.py`: `_classify_quota_signal(text)` — classifies raw dispatch output into a machine-readable `quota_reason` token (`rate_limit`, `quota_exceeded`, `daily_quota`, `monthly_quota`, `token_quota`, `context_limit`). Pattern list is intentionally minimal pending `#183`.
+  - `tentacle.py handoff` gains `--quota-reason <reason>` and `--retry-hint <hint>` optional flags for `BLOCKED` handoffs. These serialize as `QUOTA_REASON:` / `RETRY_HINT:` lines in `handoff.md`.
+  - `tentacle.py`: `_parse_handoff_quota_metadata(content)` extracts `(quota_reason, retry_hint)` from the most recent handoff section. Old `BLOCKED` handoffs without these lines are fully backward compatible.
+  - `tentacle.py complete`: when a tentacle's handoff carries `quota_reason`, `meta.json` gains `quota_reason` and `retry_hint` fields, and an entry is appended to `goal.json["quota_retry_queue"]` for orchestrator tracking.
+  - `tentacle.py goal next-iter`: quota-blocked tentacles (BLOCKED + `quota_reason`) are rendered with a 🚦 icon and quota hint, distinct from generic ⚠️ blocked tentacles. Quota retry queue summary is printed when non-empty. Recommendation advice is quota-aware.
+  - `browse/routes/tentacles.py`: `_parse_handoff_quota_metadata` added; each tentacle entry now includes optional `quota_reason` and `retry_hint` fields from `meta.json` (or live handoff for not-yet-completed tentacles).
+  - Docs updated: `docs/ARCHITECTURE.md` (handoff contract), `docs/USAGE.md` (quota-blocked operator flow), `docs/SYNC-MATRIX.md` (handoff field parity note).
+
 - **Agent Error Prevention System (5-phase implementation):**
   - **Phase 1 — Schema & Learn Enhancement:**
     - `migrate.py` v16: 7 new columns on `knowledge_entries` — `error_type`, `root_cause`, `severity`, `is_resolved`, `fix_steps`, `prevention_hook`, `recurrence_after_briefing`.

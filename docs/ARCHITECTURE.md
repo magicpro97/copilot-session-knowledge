@@ -210,6 +210,16 @@ tentacle.py handoff <name> "<summary>" --status DONE --changed-file <path> [--ch
 ```
 `--status` must be one of `DONE`, `BLOCKED`, `TOO_BIG`, `AMBIGUOUS`, or `REGRESSED`. Include one `--changed-file` receipt per modified file so the orchestrator can verify the handoff trail.
 
+**Quota-blocked handoffs** — when a tentacle is `BLOCKED` due to a quota or rate-limit signal, add machine-readable metadata:
+```
+tentacle.py handoff <name> "<summary>" --status BLOCKED \
+  --quota-reason rate_limit \
+  --retry-hint 2026-05-14T00:00:00Z
+```
+`--quota-reason` is a short token (`rate_limit`, `quota_exceeded`, `daily_quota`, `monthly_quota`, `token_quota`, `context_limit`). `--retry-hint` is an optional ISO timestamp or human-readable hint.  `cmd_complete` persists these fields into `meta.json["quota_reason"]` / `meta.json["retry_hint"]` and appends an entry to `goal.json["quota_retry_queue"]` for orchestrator tracking.  Old `BLOCKED` handoffs without quota metadata are fully backward compatible.
+
+`_classify_quota_signal(text)` is available to classify raw dispatch output into a `quota_reason` token. The pattern list is intentionally minimal pending the fuller failure-mode matrix (`#183`).
+
 `tentacle.py marker-cleanup` (dry-run by default, `--apply` to act) inspects and removes stale
 entries from the dispatched-subagent marker without completing a tentacle. Only entries whose
 per-entry timestamp exceeds the declared TTL are eligible; live entries are never touched.
