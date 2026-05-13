@@ -452,7 +452,7 @@ class AutoBugDetectorRule(Rule):
         results = [f.result() for f in futures]
 
         messages = []
-        for (category, confidence), ok in zip(detections, results):
+        for (category, confidence), ok in zip(detections, results, strict=True):
             if ok:
                 messages.append(
                     f"  \U0001f41b Auto-detected {category} in {Path(file_path).name} "
