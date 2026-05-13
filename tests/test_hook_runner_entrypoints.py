@@ -71,32 +71,40 @@ def _run(event: str, payload: dict, env: dict | None = None, timeout: int = 15):
 print("\n🚫 Section 1: block-edit-dist via hook_runner subprocess")
 
 # 1a. Edit targeting browse-ui/dist/ → deny output
-r = _run("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {"path": "browse-ui/dist/bundle.js", "old_str": "a", "new_str": "b"},
-})
-test("edit browse-ui/dist/ → non-zero exit (denied)", r.returncode != 0 or "permissionDecision" in r.stdout,
-     f"rc={r.returncode}, stdout={r.stdout[:200]}")
-test("edit browse-ui/dist/ → deny JSON present", '"deny"' in r.stdout,
-     f"stdout={r.stdout[:200]}")
-test("edit browse-ui/dist/ → pnpm build in reason", "pnpm build" in r.stdout,
-     f"stdout={r.stdout[:200]}")
+r = _run(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {"path": "browse-ui/dist/bundle.js", "old_str": "a", "new_str": "b"},
+    },
+)
+test(
+    "edit browse-ui/dist/ → non-zero exit (denied)",
+    r.returncode != 0 or "permissionDecision" in r.stdout,
+    f"rc={r.returncode}, stdout={r.stdout[:200]}",
+)
+test("edit browse-ui/dist/ → deny JSON present", '"deny"' in r.stdout, f"stdout={r.stdout[:200]}")
+test("edit browse-ui/dist/ → pnpm build in reason", "pnpm build" in r.stdout, f"stdout={r.stdout[:200]}")
 
 # 1b. Edit targeting browse-ui/src/ → allowed (exit 0, no deny)
-r = _run("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {"path": "browse-ui/src/components/Header.tsx", "old_str": "a", "new_str": "b"},
-})
-test("edit browse-ui/src/ → allowed (no deny JSON)", '"deny"' not in r.stdout,
-     f"stdout={r.stdout[:200]}")
+r = _run(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {"path": "browse-ui/src/components/Header.tsx", "old_str": "a", "new_str": "b"},
+    },
+)
+test("edit browse-ui/src/ → allowed (no deny JSON)", '"deny"' not in r.stdout, f"stdout={r.stdout[:200]}")
 
 # 1c. Create targeting browse-ui/dist/ → deny
-r = _run("preToolUse", {
-    "toolName": "create",
-    "toolArgs": {"path": "browse-ui/dist/chunk.js", "file_text": "// generated"},
-})
-test("create browse-ui/dist/ → deny JSON present", '"deny"' in r.stdout,
-     f"stdout={r.stdout[:200]}")
+r = _run(
+    "preToolUse",
+    {
+        "toolName": "create",
+        "toolArgs": {"path": "browse-ui/dist/chunk.js", "file_text": "// generated"},
+    },
+)
+test("create browse-ui/dist/ → deny JSON present", '"deny"' in r.stdout, f"stdout={r.stdout[:200]}")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -106,42 +114,50 @@ test("create browse-ui/dist/ → deny JSON present", '"deny"' in r.stdout,
 print("\n🛡️  Section 2: block-unsafe-html via hook_runner subprocess")
 
 # 2a. dangerouslySetInnerHTML without sanitize in .tsx → deny
-r = _run("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {
-        "path": "browse-ui/src/Widget.tsx",
-        "old_str": "return null;",
-        "new_str": "return <div dangerouslySetInnerHTML={{ __html: content }} />;",
+r = _run(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {
+            "path": "browse-ui/src/Widget.tsx",
+            "old_str": "return null;",
+            "new_str": "return <div dangerouslySetInnerHTML={{ __html: content }} />;",
+        },
     },
-})
-test("dangerouslySetInnerHTML without sanitize → deny JSON", '"deny"' in r.stdout,
-     f"stdout={r.stdout[:300]}")
-test("XSS denial mentions sanitize/XSS",
-     "sanitize" in r.stdout.lower() or "xss" in r.stdout.lower() or "DOMPurify" in r.stdout,
-     f"stdout={r.stdout[:300]}")
+)
+test("dangerouslySetInnerHTML without sanitize → deny JSON", '"deny"' in r.stdout, f"stdout={r.stdout[:300]}")
+test(
+    "XSS denial mentions sanitize/XSS",
+    "sanitize" in r.stdout.lower() or "xss" in r.stdout.lower() or "DOMPurify" in r.stdout,
+    f"stdout={r.stdout[:300]}",
+)
 
 # 2b. dangerouslySetInnerHTML WITH DOMPurify.sanitize → allowed
-r = _run("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {
-        "path": "browse-ui/src/Safe.tsx",
-        "old_str": "return null;",
-        "new_str": "const html = DOMPurify.sanitize(raw); return <div dangerouslySetInnerHTML={{ __html: html }} />;",
+r = _run(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {
+            "path": "browse-ui/src/Safe.tsx",
+            "old_str": "return null;",
+            "new_str": "const html = DOMPurify.sanitize(raw); return <div dangerouslySetInnerHTML={{ __html: html }} />;",
+        },
     },
-})
-test("dangerouslySetInnerHTML + DOMPurify → allowed (no deny)", '"deny"' not in r.stdout,
-     f"stdout={r.stdout[:300]}")
+)
+test("dangerouslySetInnerHTML + DOMPurify → allowed (no deny)", '"deny"' not in r.stdout, f"stdout={r.stdout[:300]}")
 
 # 2c. Non-TS/JS file with dangerouslySetInnerHTML → allowed
-r = _run("preToolUse", {
-    "toolName": "create",
-    "toolArgs": {
-        "path": "docs/notes.md",
-        "file_text": "<!-- dangerouslySetInnerHTML is dangerous -->",
+r = _run(
+    "preToolUse",
+    {
+        "toolName": "create",
+        "toolArgs": {
+            "path": "docs/notes.md",
+            "file_text": "<!-- dangerouslySetInnerHTML is dangerous -->",
+        },
     },
-})
-test("dangerouslySetInnerHTML in .md → allowed (non-JS)", '"deny"' not in r.stdout,
-     f"stdout={r.stdout[:200]}")
+)
+test("dangerouslySetInnerHTML in .md → allowed (non-JS)", '"deny"' not in r.stdout, f"stdout={r.stdout[:200]}")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -151,40 +167,44 @@ test("dangerouslySetInnerHTML in .md → allowed (non-JS)", '"deny"' not in r.st
 print("\n🔧 Section 3: syntax-gate via hook_runner subprocess")
 
 # 3a. create with invalid Python → deny
-r = _run("preToolUse", {
-    "toolName": "create",
-    "toolArgs": {
-        "path": "broken.py",
-        "file_text": "def foo(\n    syntactically broken !!!",
+r = _run(
+    "preToolUse",
+    {
+        "toolName": "create",
+        "toolArgs": {
+            "path": "broken.py",
+            "file_text": "def foo(\n    syntactically broken !!!",
+        },
     },
-})
-test("create invalid Python → deny JSON", '"deny"' in r.stdout,
-     f"stdout={r.stdout[:300]}")
-test("Syntax denial mentions SyntaxError or syntax",
-     "yntax" in r.stdout,
-     f"stdout={r.stdout[:300]}")
+)
+test("create invalid Python → deny JSON", '"deny"' in r.stdout, f"stdout={r.stdout[:300]}")
+test("Syntax denial mentions SyntaxError or syntax", "yntax" in r.stdout, f"stdout={r.stdout[:300]}")
 
 # 3b. create with valid Python → allowed
-r = _run("preToolUse", {
-    "toolName": "create",
-    "toolArgs": {
-        "path": "valid.py",
-        "file_text": "def greet(name: str) -> str:\n    return f'Hello, {name}'\n",
+r = _run(
+    "preToolUse",
+    {
+        "toolName": "create",
+        "toolArgs": {
+            "path": "valid.py",
+            "file_text": "def greet(name: str) -> str:\n    return f'Hello, {name}'\n",
+        },
     },
-})
-test("create valid Python → allowed (no deny)", '"deny"' not in r.stdout,
-     f"stdout={r.stdout[:200]}")
+)
+test("create valid Python → allowed (no deny)", '"deny"' not in r.stdout, f"stdout={r.stdout[:200]}")
 
 # 3c. create non-Python file (even with bad syntax) → allowed
-r = _run("preToolUse", {
-    "toolName": "create",
-    "toolArgs": {
-        "path": "data.json",
-        "file_text": "{this is not valid json!!!}",
+r = _run(
+    "preToolUse",
+    {
+        "toolName": "create",
+        "toolArgs": {
+            "path": "data.json",
+            "file_text": "{this is not valid json!!!}",
+        },
     },
-})
-test("create invalid JSON (non-Python) → allowed", '"deny"' not in r.stdout,
-     f"stdout={r.stdout[:200]}")
+)
+test("create invalid JSON (non-Python) → allowed", '"deny"' not in r.stdout, f"stdout={r.stdout[:200]}")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -194,30 +214,45 @@ test("create invalid JSON (non-Python) → allowed", '"deny"' not in r.stdout,
 print("\n📦 Section 4: pnpm-lockfile-guard via hook_runner subprocess")
 
 # 4a. git status command (not commit) → allowed
-r = _run("preToolUse", {
-    "toolName": "bash",
-    "toolArgs": {"command": "git status"},
-})
-test("git status → pnpm guard doesn't trigger", '"permissionDecision"' not in r.stdout or '"deny"' not in r.stdout,
-     f"stdout={r.stdout[:200]}")
+r = _run(
+    "preToolUse",
+    {
+        "toolName": "bash",
+        "toolArgs": {"command": "git status"},
+    },
+)
+test(
+    "git status → pnpm guard doesn't trigger",
+    '"permissionDecision"' not in r.stdout or '"deny"' not in r.stdout,
+    f"stdout={r.stdout[:200]}",
+)
 
 # 4b. Non-bash tool → allowed (guard only on bash)
-r = _run("preToolUse", {
-    "toolName": "view",
-    "toolArgs": {"path": "browse-ui/package.json"},
-})
-test("view tool → no lockfile guard (not bash)", '"deny"' not in r.stdout,
-     f"stdout={r.stdout[:200]}")
+r = _run(
+    "preToolUse",
+    {
+        "toolName": "view",
+        "toolArgs": {"path": "browse-ui/package.json"},
+    },
+)
+test("view tool → no lockfile guard (not bash)", '"deny"' not in r.stdout, f"stdout={r.stdout[:200]}")
 
 # 4c. git commit command — without real git state, subprocess call returns safely
 # (no staged files in isolated env → allow is expected)
-r = _run("preToolUse", {
-    "toolName": "bash",
-    "toolArgs": {"command": "git commit -m 'test'"},
-}, env={**_ISOLATED_ENV})
+r = _run(
+    "preToolUse",
+    {
+        "toolName": "bash",
+        "toolArgs": {"command": "git commit -m 'test'"},
+    },
+    env={**_ISOLATED_ENV},
+)
 # In the isolated home there are no staged files, so the guard should allow.
-test("git commit with no staged files in isolated env → no lockfile deny", '"deny"' not in r.stdout or "pnpm" not in r.stdout,
-     f"stdout={r.stdout[:300]}")
+test(
+    "git commit with no staged files in isolated env → no lockfile deny",
+    '"deny"' not in r.stdout or "pnpm" not in r.stdout,
+    f"stdout={r.stdout[:300]}",
+)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -237,20 +272,30 @@ _nj_env = {**os.environ, "HOME": str(_nj_isolated), "USERPROFILE": str(_nj_isola
 
 try:
     # 5a. 6th browse-ui .ts edit → should fire reminder
-    r = _run("postToolUse", {
-        "toolName": "edit",
-        "toolArgs": {"path": "browse-ui/src/api/types.ts"},
-    }, env=_nj_env)
-    test("6th browse-ui .ts edit → typecheck reminder output", "typecheck" in r.stdout or "pnpm" in r.stdout,
-         f"stdout={r.stdout[:300]}")
+    r = _run(
+        "postToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {"path": "browse-ui/src/api/types.ts"},
+        },
+        env=_nj_env,
+    )
+    test(
+        "6th browse-ui .ts edit → typecheck reminder output",
+        "typecheck" in r.stdout or "pnpm" in r.stdout,
+        f"stdout={r.stdout[:300]}",
+    )
 
     # 5b. Non-browse-ui .ts file → no reminder
-    r = _run("postToolUse", {
-        "toolName": "edit",
-        "toolArgs": {"path": "src/utils.ts"},
-    }, env=_nj_env)
-    test("Non-browse-ui .ts file → no typecheck reminder", "typecheck" not in r.stdout,
-         f"stdout={r.stdout[:300]}")
+    r = _run(
+        "postToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {"path": "src/utils.ts"},
+        },
+        env=_nj_env,
+    )
+    test("Non-browse-ui .ts file → no typecheck reminder", "typecheck" not in r.stdout, f"stdout={r.stdout[:300]}")
 finally:
     shutil.rmtree(_nj_isolated, ignore_errors=True)
 
@@ -262,25 +307,32 @@ finally:
 print("\n🔍 Section 6: error-kb via hook_runner subprocess")
 
 # 6a. errorOccurred with no query_script → no crash, exit 0
-r = _run("errorOccurred", {
-    "error": "ModuleNotFoundError: No module named 'nonexistent'",
-    "toolName": "bash",
-})
-test("errorOccurred with error message → no crash (exit 0)", r.returncode == 0,
-     f"rc={r.returncode} stderr={r.stderr[:200]}")
+r = _run(
+    "errorOccurred",
+    {
+        "error": "ModuleNotFoundError: No module named 'nonexistent'",
+        "toolName": "bash",
+    },
+)
+test(
+    "errorOccurred with error message → no crash (exit 0)",
+    r.returncode == 0,
+    f"rc={r.returncode} stderr={r.stderr[:200]}",
+)
 
 # 6b. errorOccurred with dict error → no crash
-r = _run("errorOccurred", {
-    "error": {"message": "AttributeError: 'NoneType' object has no attribute 'strip'"},
-    "toolName": "bash",
-})
-test("errorOccurred with dict error → no crash", r.returncode == 0,
-     f"rc={r.returncode} stderr={r.stderr[:200]}")
+r = _run(
+    "errorOccurred",
+    {
+        "error": {"message": "AttributeError: 'NoneType' object has no attribute 'strip'"},
+        "toolName": "bash",
+    },
+)
+test("errorOccurred with dict error → no crash", r.returncode == 0, f"rc={r.returncode} stderr={r.stderr[:200]}")
 
 # 6c. errorOccurred with empty error → no crash
 r = _run("errorOccurred", {"error": "", "toolName": "bash"})
-test("errorOccurred with empty error → no crash", r.returncode == 0,
-     f"rc={r.returncode} stderr={r.stderr[:200]}")
+test("errorOccurred with empty error → no crash", r.returncode == 0, f"rc={r.returncode} stderr={r.stderr[:200]}")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -296,54 +348,82 @@ _sa_markers.mkdir(parents=True, exist_ok=True)
 # Pre-create briefing marker so enforce-briefing doesn't block the bash tests
 (_sa_markers / "briefing-done").write_text("test-briefing-done", encoding="utf-8")
 _sa_marker_file = _sa_markers / "dispatched-subagent-active"
-_sa_marker_payload = json.dumps({
-    "ts": int(time.time()),
-    "active_tentacles": ["hook-entrypoints-tentacle"],
-})
+_sa_marker_payload = json.dumps(
+    {
+        "ts": int(time.time()),
+        "active_tentacles": ["hook-entrypoints-tentacle"],
+    }
+)
 _sa_marker_file.write_text(_sa_marker_payload, encoding="utf-8")
 _sa_env = {**os.environ, "HOME": str(_sa_isolated), "USERPROFILE": str(_sa_isolated)}
 
 try:
     # 7a. git commit with marker present (no HMAC secret → fall back to existence check)
-    r = _run("preToolUse", {
-        "toolName": "bash",
-        "toolArgs": {"command": "git commit -m 'blocked by guard'"},
-    }, env=_sa_env)
+    r = _run(
+        "preToolUse",
+        {
+            "toolName": "bash",
+            "toolArgs": {"command": "git commit -m 'blocked by guard'"},
+        },
+        env=_sa_env,
+    )
     # verify_marker falls back to existence-only when no secret configured
     # so the marker IS recognised → guard should block
-    test("git commit with subagent marker → deny or exit non-zero",
-         '"deny"' in r.stdout or r.returncode != 0,
-         f"rc={r.returncode}, stdout={r.stdout[:300]}")
+    test(
+        "git commit with subagent marker → deny or exit non-zero",
+        '"deny"' in r.stdout or r.returncode != 0,
+        f"rc={r.returncode}, stdout={r.stdout[:300]}",
+    )
 
     # 7b. git push with marker present → also blocked
-    r = _run("preToolUse", {
-        "toolName": "bash",
-        "toolArgs": {"command": "git push origin feature"},
-    }, env=_sa_env)
-    test("git push with subagent marker → deny or exit non-zero",
-         '"deny"' in r.stdout or r.returncode != 0,
-         f"rc={r.returncode}, stdout={r.stdout[:300]}")
+    r = _run(
+        "preToolUse",
+        {
+            "toolName": "bash",
+            "toolArgs": {"command": "git push origin feature"},
+        },
+        env=_sa_env,
+    )
+    test(
+        "git push with subagent marker → deny or exit non-zero",
+        '"deny"' in r.stdout or r.returncode != 0,
+        f"rc={r.returncode}, stdout={r.stdout[:300]}",
+    )
 
     # 7c. Non-git command with marker present → allowed
-    r = _run("preToolUse", {
-        "toolName": "bash",
-        "toolArgs": {"command": "python3 test_fixes.py"},
-    }, env=_sa_env)
-    test("Non-git command with marker → allowed (no deny)", '"deny"' not in r.stdout,
-         f"stdout={r.stdout[:200]}")
+    r = _run(
+        "preToolUse",
+        {
+            "toolName": "bash",
+            "toolArgs": {"command": "python3 test_fixes.py"},
+        },
+        env=_sa_env,
+    )
+    test("Non-git command with marker → allowed (no deny)", '"deny"' not in r.stdout, f"stdout={r.stdout[:200]}")
 
     # 7d. Stale marker file (no active_tentacles) → allowed (zombie)
-    _sa_marker_file.write_text(json.dumps({
-        "ts": int(time.time()),
-        "active_tentacles": [],
-    }), encoding="utf-8")
-    r = _run("preToolUse", {
-        "toolName": "bash",
-        "toolArgs": {"command": "git commit -m 'zombie check'"},
-    }, env=_sa_env)
-    test("Zombie marker (empty active_tentacles) → allowed",
-         '"deny"' not in r.stdout or "SUBAGENT" not in r.stdout,
-         f"stdout={r.stdout[:300]}")
+    _sa_marker_file.write_text(
+        json.dumps(
+            {
+                "ts": int(time.time()),
+                "active_tentacles": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    r = _run(
+        "preToolUse",
+        {
+            "toolName": "bash",
+            "toolArgs": {"command": "git commit -m 'zombie check'"},
+        },
+        env=_sa_env,
+    )
+    test(
+        "Zombie marker (empty active_tentacles) → allowed",
+        '"deny"' not in r.stdout or "SUBAGENT" not in r.stdout,
+        f"stdout={r.stdout[:300]}",
+    )
 
 finally:
     shutil.rmtree(_sa_isolated, ignore_errors=True)
@@ -357,19 +437,22 @@ print("\n🔚 Section 8: session-end via hook_runner subprocess")
 
 # 8a. sessionEnd event → no crash, exit 0
 r = _run("sessionEnd", {"reason": "normal_exit"})
-test("sessionEnd event → no crash (exit 0)", r.returncode == 0,
-     f"rc={r.returncode} stderr={r.stderr[:200]}")
+test("sessionEnd event → no crash (exit 0)", r.returncode == 0, f"rc={r.returncode} stderr={r.stderr[:200]}")
 
 # 8b. sessionEnd event with unknown reason → no crash
 r = _run("sessionEnd", {"reason": "unexpected_disconnect"})
-test("sessionEnd with unexpected_disconnect → no crash", r.returncode == 0,
-     f"rc={r.returncode} stderr={r.stderr[:200]}")
+test(
+    "sessionEnd with unexpected_disconnect → no crash", r.returncode == 0, f"rc={r.returncode} stderr={r.stderr[:200]}"
+)
 
 # 8c. sessionEnd with no goal.json present → no crash (fail-open path)
 #     Even though there is no active goal, the hook must exit 0.
 r = _run("sessionEnd", {"reason": "no_active_goal"})
-test("sessionEnd with no active goal → no crash (exit 0)", r.returncode == 0,
-     f"rc={r.returncode} stderr={r.stderr[:200]}")
+test(
+    "sessionEnd with no active goal → no crash (exit 0)",
+    r.returncode == 0,
+    f"rc={r.returncode} stderr={r.stderr[:200]}",
+)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -379,10 +462,13 @@ test("sessionEnd with no active goal → no crash (exit 0)", r.returncode == 0,
 print("\n🔗 Section 9: Multiple rules — no cross-contamination")
 
 # 9a. preToolUse payload that triggers block-edit-dist should NOT also mention syntax errors
-r = _run("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {"path": "browse-ui/dist/app.js", "old_str": "x", "new_str": "y"},
-})
+r = _run(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {"path": "browse-ui/dist/app.js", "old_str": "x", "new_str": "y"},
+    },
+)
 deny_reason = ""
 if r.stdout:
     try:
@@ -390,17 +476,19 @@ if r.stdout:
         deny_reason = out.get("permissionDecisionReason", "")
     except Exception:
         deny_reason = r.stdout
-test("block-edit-dist deny does not mention SyntaxError",
-     "SyntaxError" not in deny_reason,
-     f"reason={deny_reason[:200]}")
+test(
+    "block-edit-dist deny does not mention SyntaxError", "SyntaxError" not in deny_reason, f"reason={deny_reason[:200]}"
+)
 
 # 9b. Valid edit targeting a src/ file should not trigger any deny
-r = _run("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {"path": "src/utils.py", "old_str": "x = 1", "new_str": "x = 2"},
-})
-test("Edit src/utils.py → no deny from any rule", '"deny"' not in r.stdout,
-     f"stdout={r.stdout[:200]}")
+r = _run(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {"path": "src/utils.py", "old_str": "x = 1", "new_str": "x = 2"},
+    },
+)
+test("Edit src/utils.py → no deny from any rule", '"deny"' not in r.stdout, f"stdout={r.stdout[:200]}")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -438,12 +526,17 @@ try:
         cwd=str(_mi_cwd),
         timeout=15,
     )
-    test("10a: sessionStart with fresh MEMORY.md → exit 0", r.returncode == 0,
-         f"rc={r.returncode} stderr={r.stderr[:200]}")
+    test(
+        "10a: sessionStart with fresh MEMORY.md → exit 0",
+        r.returncode == 0,
+        f"rc={r.returncode} stderr={r.stderr[:200]}",
+    )
     _combined_output10a = r.stdout + r.stderr
-    test("10a: sessionStart output contains 'MEMORY'",
-         "MEMORY" in _combined_output10a or "parameterised SQL" in _combined_output10a,
-         f"stdout={r.stdout[:400]}")
+    test(
+        "10a: sessionStart output contains 'MEMORY'",
+        "MEMORY" in _combined_output10a or "parameterised SQL" in _combined_output10a,
+        f"stdout={r.stdout[:400]}",
+    )
 finally:
     shutil.rmtree(str(_mi_isolated), ignore_errors=True)
     shutil.rmtree(str(_mi_cwd), ignore_errors=True)
@@ -453,6 +546,7 @@ _mi2_isolated = Path(tempfile.mkdtemp(prefix="test-mi2-ep-home-"))
 (_mi2_isolated / ".copilot" / "markers").mkdir(parents=True, exist_ok=True)
 # Write hooks-config.json with injection disabled
 import json as _json10b
+
 (_mi2_isolated / ".copilot" / "hooks-config.json").write_text(
     _json10b.dumps({"memory_inject_enabled": False}), encoding="utf-8"
 )
@@ -472,11 +566,12 @@ try:
         cwd=str(_mi2_cwd),
         timeout=15,
     )
-    test("10b: sessionStart memory_inject_enabled=false → exit 0", r.returncode == 0,
-         f"rc={r.returncode}")
-    test("10b: disabled injection → memory text not in output",
-         "This must NOT appear." not in r.stdout,
-         f"stdout={r.stdout[:400]}")
+    test("10b: sessionStart memory_inject_enabled=false → exit 0", r.returncode == 0, f"rc={r.returncode}")
+    test(
+        "10b: disabled injection → memory text not in output",
+        "This must NOT appear." not in r.stdout,
+        f"stdout={r.stdout[:400]}",
+    )
 finally:
     shutil.rmtree(str(_mi2_isolated), ignore_errors=True)
     shutil.rmtree(str(_mi2_cwd), ignore_errors=True)
@@ -499,8 +594,11 @@ try:
         cwd=str(_mi3_cwd),
         timeout=15,
     )
-    test("10c: sessionStart without MEMORY.md → no crash (exit 0)", r.returncode == 0,
-         f"rc={r.returncode} stderr={r.stderr[:200]}")
+    test(
+        "10c: sessionStart without MEMORY.md → no crash (exit 0)",
+        r.returncode == 0,
+        f"rc={r.returncode} stderr={r.stderr[:200]}",
+    )
 finally:
     shutil.rmtree(str(_mi3_isolated), ignore_errors=True)
     shutil.rmtree(str(_mi3_cwd), ignore_errors=True)
@@ -509,8 +607,7 @@ finally:
 _mi4_isolated = Path(tempfile.mkdtemp(prefix="test-mi4-ep-home-"))
 (_mi4_isolated / ".copilot" / "markers").mkdir(parents=True, exist_ok=True)
 (_mi4_isolated / ".copilot" / "hooks-config.json").write_text(
-    _json10b.dumps({"memory_inject_enabled": True, "memory_inject_max_tokens": 5}),
-    encoding="utf-8"
+    _json10b.dumps({"memory_inject_enabled": True, "memory_inject_max_tokens": 5}), encoding="utf-8"
 )
 _mi4_cwd = Path(tempfile.mkdtemp(prefix="test-mi4-cwd-"))
 (_mi4_cwd / "MEMORY.md").write_text("A" * 200, encoding="utf-8")
@@ -528,16 +625,16 @@ try:
         cwd=str(_mi4_cwd),
         timeout=15,
     )
-    test("10d: sessionStart memory_inject_max_tokens=5 → exit 0", r.returncode == 0,
-         f"rc={r.returncode}")
+    test("10d: sessionStart memory_inject_max_tokens=5 → exit 0", r.returncode == 0, f"rc={r.returncode}")
     _out10d = r.stdout + r.stderr
-    test("10d: output does not contain 200 'A's (content was truncated)",
-         "A" * 200 not in _out10d,
-         f"stdout={r.stdout[:400]}")
+    test(
+        "10d: output does not contain 200 'A's (content was truncated)",
+        "A" * 200 not in _out10d,
+        f"stdout={r.stdout[:400]}",
+    )
 finally:
     shutil.rmtree(str(_mi4_isolated), ignore_errors=True)
     shutil.rmtree(str(_mi4_cwd), ignore_errors=True)
-
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -557,13 +654,13 @@ _rt_env = {**os.environ, "HOME": str(_rt_isolated), "USERPROFILE": str(_rt_isola
 # Pre-populate session state so ReadTrackerRule will emit an info message on second read
 _rt_session_state = _rt_markers / "session-state-test-info-deny-sess"
 _rt_session_state.write_text(
-    json.dumps({
-        "files_read": {
-            "/repo/hooks/hook_runner.py": {"count": 1, "tokens": 50, "first_read": 1000000}
-        },
-        "total_tokens": 50,
-        "thresholds_warned": [],
-    }),
+    json.dumps(
+        {
+            "files_read": {"/repo/hooks/hook_runner.py": {"count": 1, "tokens": 50, "first_read": 1000000}},
+            "total_tokens": 50,
+            "thresholds_warned": [],
+        }
+    ),
     encoding="utf-8",
 )
 _rt_env2 = {**_rt_env, "COPILOT_AGENT_SESSION_ID": "test-info-deny-sess"}
@@ -571,18 +668,23 @@ _rt_env2 = {**_rt_env, "COPILOT_AGENT_SESSION_ID": "test-info-deny-sess"}
 try:
     # 11a. A preToolUse that yields only an info/warn (e.g. repeat read of a .py file)
     #      must NOT place that message on stdout — only stderr.
-    r11a = _run("preToolUse", {
-        "sessionId": "test-info-deny-sess",
-        "toolName": "view",
-        "toolArgs": {"path": "/repo/hooks/hook_runner.py"},
-    }, env=_rt_env2)
+    r11a = _run(
+        "preToolUse",
+        {
+            "sessionId": "test-info-deny-sess",
+            "toolName": "view",
+            "toolArgs": {"path": "/repo/hooks/hook_runner.py"},
+        },
+        env=_rt_env2,
+    )
     test(
         "11a: preToolUse info message → stdout is empty or pure JSON (no plain text)",
         r11a.stdout == "" or r11a.stdout.strip().startswith("{"),
         f"stdout={r11a.stdout[:300]!r}",
     )
     test(
-        "11a: preToolUse info message exit code 0 (no deny)", r11a.returncode == 0,
+        "11a: preToolUse info message exit code 0 (no deny)",
+        r11a.returncode == 0,
         f"rc={r11a.returncode}",
     )
 
@@ -591,15 +693,19 @@ try:
     #      Note: ReadTrackerRule only fires on `view`, not `edit`, so no info message
     #      is emitted here — this test verifies the stdout JSON channel is clean for
     #      deny-only scenarios (no plain text mixed into stdout before the deny JSON).
-    r11b = _run("preToolUse", {
-        "sessionId": "test-info-deny-sess",
-        "toolName": "edit",
-        "toolArgs": {
-            "path": "browse-ui/dist/bundle.js",
-            "old_str": "a",
-            "new_str": "b",
+    r11b = _run(
+        "preToolUse",
+        {
+            "sessionId": "test-info-deny-sess",
+            "toolName": "edit",
+            "toolArgs": {
+                "path": "browse-ui/dist/bundle.js",
+                "old_str": "a",
+                "new_str": "b",
+            },
         },
-    }, env=_rt_env2)
+        env=_rt_env2,
+    )
     # stdout must contain exactly one parseable JSON object
     stdout_lines = [ln for ln in r11b.stdout.splitlines() if ln.strip()]
     parseable = False
@@ -637,6 +743,201 @@ except Exception as e:
     test("Section 11 ran without exception", False, str(e))
 finally:
     shutil.rmtree(_rt_isolated, ignore_errors=True)
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Section 12: sessionStart paused-goal resume banner (issue #185)
+# ══════════════════════════════════════════════════════════════════════
+
+print("\n⏸️  Section 12: sessionStart paused-goal resume banner via hook_runner (issue #185)")
+
+import json as _json12  # noqa: E402 (already imported, re-alias for clarity below)
+
+# ── helpers ──────────────────────────────────────────────────────────
+
+
+def _make_12_home(prefix: str) -> "tuple[Path, dict]":
+    """Create an isolated HOME with a dummy briefing.py and markers dir."""
+    home = Path(tempfile.mkdtemp(prefix=prefix))
+    markers = home / ".copilot" / "markers"
+    markers.mkdir(parents=True, exist_ok=True)
+    # Pre-sign briefing-done so EnforceBriefingRule never blocks
+    (markers / "briefing-done").write_text("test-briefing-done", encoding="utf-8")
+    tools = home / ".copilot" / "tools"
+    tools.mkdir(parents=True, exist_ok=True)
+    # Minimal dummy so AutoBriefingRule.evaluate() doesn't early-exit
+    (tools / "briefing.py").write_text(
+        "# dummy briefing\nimport sys\nprint('dummy-briefing-output')\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
+    return home, env
+
+
+def _make_12_cwd(
+    home: Path,
+    goal_status: "str | None" = "paused",
+    goal_title: str = "Test Paused Goal",
+    pause_reason: str = "session_end:normal",
+    include_breadcrumb: bool = True,
+) -> Path:
+    """Create a temp cwd with .octogent/breadcrumb and goal.json.
+
+    goal_status=None skips goal.json creation (breadcrumb points at non-existent file).
+    include_breadcrumb=False skips breadcrumb creation entirely.
+    """
+    cwd = Path(tempfile.mkdtemp(prefix="test12-cwd-"))
+    octogent = cwd / ".octogent"
+    octogent.mkdir(parents=True, exist_ok=True)
+    if include_breadcrumb:
+        goal_json_path = str(octogent / "goal.json")
+        bc = {
+            "goal_title": goal_title,
+            "goal_id": "g12",
+            "pause_reason": pause_reason,
+            "resume_command": "sk tentacle goal resume",
+            "paused_at": "2026-01-01T00:00:00Z",
+            "goal_path": goal_json_path,
+        }
+        (octogent / "goal-resume-breadcrumb.json").write_text(_json12.dumps(bc), encoding="utf-8")
+    if goal_status is not None:
+        goal_state = {"status": goal_status, "title": goal_title, "goal_id": "g12"}
+        (octogent / "goal.json").write_text(_json12.dumps(goal_state), encoding="utf-8")
+    return cwd
+
+
+# ── 12a: paused breadcrumb + paused goal → banner before briefing header ──
+
+_h12a, _e12a = _make_12_home("test12a-home-")
+_cwd12a = _make_12_cwd(_h12a, goal_status="paused", goal_title="My Wave16 Goal")
+try:
+    r12a = subprocess.run(
+        [sys.executable, str(RUNNER), "sessionStart"],
+        input=json.dumps({"sessionId": "test-resume-sess-12a"}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=_e12a,
+        cwd=str(_cwd12a),
+        timeout=15,
+    )
+    test(
+        "12a: sessionStart with paused breadcrumb → exit 0",
+        r12a.returncode == 0,
+        f"rc={r12a.returncode} stderr={r12a.stderr[:200]}",
+    )
+    _out12a = r12a.stdout + r12a.stderr
+    test(
+        "12a: resume banner present (Paused goal)",
+        "Paused goal" in _out12a or "My Wave16 Goal" in _out12a,
+        f"combined={_out12a[:500]!r}",
+    )
+    test("12a: Session briefing header present", "Session briefing" in _out12a, f"combined={_out12a[:500]!r}")
+    # Order check: "Paused goal" must appear BEFORE "Session briefing"
+    _idx_banner = _out12a.find("Paused goal")
+    if _idx_banner == -1:
+        _idx_banner = _out12a.find("My Wave16 Goal")
+    _idx_header = _out12a.find("Session briefing")
+    test(
+        "12a: resume banner appears BEFORE Session briefing header",
+        0 <= _idx_banner < _idx_header,
+        f"banner_pos={_idx_banner} header_pos={_idx_header} out={_out12a[:500]!r}",
+    )
+    test("12a: resume command present in banner", "sk tentacle goal resume" in _out12a, f"combined={_out12a[:500]!r}")
+finally:
+    shutil.rmtree(str(_h12a), ignore_errors=True)
+    shutil.rmtree(str(_cwd12a), ignore_errors=True)
+
+# ── 12b: breadcrumb present but goal is active (already resumed) → banner suppressed ──
+
+_h12b, _e12b = _make_12_home("test12b-home-")
+_cwd12b = _make_12_cwd(_h12b, goal_status="active", goal_title="Resumed Goal")
+try:
+    r12b = subprocess.run(
+        [sys.executable, str(RUNNER), "sessionStart"],
+        input=json.dumps({"sessionId": "test-resume-sess-12b"}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=_e12b,
+        cwd=str(_cwd12b),
+        timeout=15,
+    )
+    test(
+        "12b: sessionStart with stale breadcrumb → exit 0",
+        r12b.returncode == 0,
+        f"rc={r12b.returncode} stderr={r12b.stderr[:200]}",
+    )
+    _out12b = r12b.stdout + r12b.stderr
+    test(
+        "12b: banner suppressed when goal already resumed (active)",
+        "Paused goal" not in _out12b,
+        f"unexpected banner in combined={_out12b[:500]!r}",
+    )
+    test("12b: Session briefing header still present", "Session briefing" in _out12b, f"combined={_out12b[:500]!r}")
+finally:
+    shutil.rmtree(str(_h12b), ignore_errors=True)
+    shutil.rmtree(str(_cwd12b), ignore_errors=True)
+
+# ── 12c: breadcrumb absent → no banner, normal exit 0 ────────────────
+
+_h12c, _e12c = _make_12_home("test12c-home-")
+_cwd12c = _make_12_cwd(_h12c, include_breadcrumb=False)
+try:
+    r12c = subprocess.run(
+        [sys.executable, str(RUNNER), "sessionStart"],
+        input=json.dumps({"sessionId": "test-resume-sess-12c"}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=_e12c,
+        cwd=str(_cwd12c),
+        timeout=15,
+    )
+    test(
+        "12c: sessionStart without breadcrumb → exit 0",
+        r12c.returncode == 0,
+        f"rc={r12c.returncode} stderr={r12c.stderr[:200]}",
+    )
+    _out12c = r12c.stdout + r12c.stderr
+    test("12c: no resume banner when breadcrumb absent", "Paused goal" not in _out12c, f"combined={_out12c[:400]!r}")
+finally:
+    shutil.rmtree(str(_h12c), ignore_errors=True)
+    shutil.rmtree(str(_cwd12c), ignore_errors=True)
+
+# ── 12d: breadcrumb present, goal.json absent → fail-open (banner shown) ──
+
+_h12d, _e12d = _make_12_home("test12d-home-")
+_cwd12d = _make_12_cwd(_h12d, goal_status=None, goal_title="Fail-Open Goal")
+try:
+    r12d = subprocess.run(
+        [sys.executable, str(RUNNER), "sessionStart"],
+        input=json.dumps({"sessionId": "test-resume-sess-12d"}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=_e12d,
+        cwd=str(_cwd12d),
+        timeout=15,
+    )
+    test(
+        "12d: sessionStart with breadcrumb but no goal.json → exit 0",
+        r12d.returncode == 0,
+        f"rc={r12d.returncode} stderr={r12d.stderr[:200]}",
+    )
+    _out12d = r12d.stdout + r12d.stderr
+    test(
+        "12d: banner shown fail-open when goal.json absent",
+        "Paused goal" in _out12d or "Fail-Open Goal" in _out12d,
+        f"combined={_out12d[:500]!r}",
+    )
+finally:
+    shutil.rmtree(str(_h12d), ignore_errors=True)
+    shutil.rmtree(str(_cwd12d), ignore_errors=True)
 
 
 # ══════════════════════════════════════════════════════════════════════

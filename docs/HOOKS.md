@@ -29,7 +29,7 @@ hooks/
 
 | Rule | Event | Description |
 |------|-------|-------------|
-| `auto-briefing` | sessionStart | Auto-runs briefing.py + refreshes codebase-map.py, creates HMAC-signed marker |
+| `auto-briefing` | sessionStart | Auto-runs briefing.py + refreshes codebase-map.py, creates HMAC-signed marker; also surfaces paused-goal resume banner from `.octogent/goal-resume-breadcrumb.json` when a goal was paused at last session end (issue #185) |
 | `integrity` | sessionStart | Verifies hook files via SHA256 manifest |
 | `session-end` | sessionEnd | Cleans up marker files, writes session.log entry, opt-in checkpoint reminder (`COPILOT_CHECKPOINT_REMIND=1`) |
 | `recurrence-detector` | sessionEnd | Detects briefed mistakes that recurred in the same session; increments `recurrence_after_briefing` counter |
@@ -183,7 +183,7 @@ This section documents precisely which Python hook rules have been ported to the
 | Rule | Event(s) | Status | Notes |
 |------|----------|--------|-------|
 | `session-start` | sessionStart | ✅ Native (informational) | Emits "[sk] Session started" acknowledgement only; `AutoBriefingRule` and `IntegrityRule` follow in registration order |
-| `auto-briefing` | sessionStart | ✅ **Native (wave9)** | `AutoBriefingRule` spawns `briefing.py` via `python_exe()`, signs HMAC `briefing-done` + `codebase-map-ran` markers on completion; 10s bounded timeout (same cap as Python path); fail-open if `briefing.py` absent; HMAC write uses `marker_auth::sign_marker` |
+| `auto-briefing` | sessionStart | ✅ **Native (wave9)** | `AutoBriefingRule` spawns `briefing.py` via `python_exe()`, signs HMAC `briefing-done` + `codebase-map-ran` markers on completion; 10s bounded timeout (same cap as Python path); fail-open if `briefing.py` absent; HMAC write uses `marker_auth::sign_marker`. **wave16 (#185):** prepends paused-goal resume banner (from `.octogent/goal-resume-breadcrumb.json`) before the `📋 Session briefing` header; staleness-checked via `goal.json`; fail-open |
 | `integrity` | sessionStart | ✅ **Native (wave9)** | `IntegrityRule` reads SHA256 hook-file manifest at `~/.copilot/hooks/integrity-manifest.json`; refreshes manifest when files change; emits integrity-verified or refresh notice; informational only; fail-open |
 | `subagent-git-guard` | preToolUse | ✅ Native (deny-capable, wave6 hardened) | Blocks `git commit/push` when dispatched-subagent marker is fresh; verifies HMAC marker authenticity when a secret exists, but stays backward-compatible without a secret |
 | `block-edit-dist` | preToolUse | ✅ Native (deny-capable, wave6; managed Rust path active in wave13) | Blocks `edit`/`create` targeting `browse-ui/dist/` on the direct Rust path and, after the wave13 routing flip, on managed `sk hooks run preToolUse` for Rust-binary installs. The Python `sk.py` shim still routes through `hook_runner.py`. |
@@ -231,6 +231,12 @@ As of wave9, **`sessionStart`** is also routed natively:
      **10-second bounded timeout** (matching the Python path's `BRIEFING_TIMEOUT_SEC = 10`
      constant); a timeout is treated as pass-through (the rule does not block the session).
      Fail-open: if `briefing.py` is absent, the rule emits no output and returns `None`.
+     **wave16 (#185):** before the `📋 Session briefing` header, reads
+     `.octogent/goal-resume-breadcrumb.json` (written by session-end when a goal is paused)
+     and surfaces a concise `⏸ Paused goal: <title>  (<reason>)` / `▶ Run: sk tentacle goal
+     resume` banner.  Staleness check: if `goal.json` status ≠ `"paused"`, banner is
+     suppressed.  Fail-open: goal.json absent or unreadable → banner shown.  Breadcrumb
+     absent or unreadable → no banner.
   3. `IntegrityRule` — reads `~/.copilot/hooks/integrity-manifest.json`; refreshes the
      manifest when hook files have changed since the last check; emits a verified or
      refresh notice.  Informational only — never blocks.  Fail-open on missing manifest

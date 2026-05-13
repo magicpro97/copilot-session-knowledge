@@ -88,7 +88,8 @@ def test_watch_sessions_syntax():
     """watch-sessions.py must be syntactically valid Python."""
     result = subprocess.run(
         [sys.executable, "-m", "py_compile", str(WATCH_SESSIONS)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     test(
         "watch-sessions.py compiles without syntax error",
@@ -101,7 +102,8 @@ def test_auto_update_syntax():
     """auto-update-tools.py must be syntactically valid Python."""
     result = subprocess.run(
         [sys.executable, "-m", "py_compile", str(AUTO_UPDATE)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     test(
         "auto-update-tools.py compiles without syntax error",
@@ -114,7 +116,8 @@ def test_check_syntax_covers_watch():
     """check_syntax.py must report exit 0 when run against watch-sessions.py."""
     result = subprocess.run(
         [sys.executable, str(CHECK_SYNTAX), str(WATCH_SESSIONS)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     test(
         "check_syntax.py exits 0 for watch-sessions.py",
@@ -127,7 +130,8 @@ def test_check_syntax_covers_auto_update():
     """check_syntax.py must report exit 0 when run against auto-update-tools.py."""
     result = subprocess.run(
         [sys.executable, str(CHECK_SYNTAX), str(AUTO_UPDATE)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     test(
         "check_syntax.py exits 0 for auto-update-tools.py",
@@ -264,7 +268,8 @@ def test_pre_commit_syntax_gate_wont_fire_on_valid_file():
     """Simulate what the pre-commit gate does: check_syntax on a valid file exits 0."""
     r = subprocess.run(
         [sys.executable, str(CHECK_SYNTAX), str(WATCH_SESSIONS)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     test(
         "pre-commit syntax gate passes watch-sessions.py (exit 0)",
@@ -273,7 +278,8 @@ def test_pre_commit_syntax_gate_wont_fire_on_valid_file():
     )
     r2 = subprocess.run(
         [sys.executable, str(CHECK_SYNTAX), str(AUTO_UPDATE)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     test(
         "pre-commit syntax gate passes auto-update-tools.py (exit 0)",
@@ -331,12 +337,12 @@ def test_pre_commit_ruff_surface_covers_all_browse_depths():
     content = PRE_COMMIT.read_text(encoding="utf-8")
     test(
         "pre-commit _py_in_surface uses browse/* (all depths, consistent with CI)",
-        "path.startswith((\"browse/\", \"hooks/\", \"scripts/\"))" in content or "browse/*)" in content,
+        'path.startswith(("browse/", "hooks/", "scripts/"))' in content or "browse/*)" in content,
         "pre-commit _py_in_surface should use browse/* to match all depths under browse/",
     )
     test(
         "pre-commit _py_in_surface uses hooks/* (all depths, consistent with CI)",
-        "path.startswith((\"browse/\", \"hooks/\", \"scripts/\"))" in content or "hooks/*)" in content,
+        'path.startswith(("browse/", "hooks/", "scripts/"))' in content or "hooks/*)" in content,
         "pre-commit _py_in_surface should use hooks/* to match all depths under hooks/",
     )
     # Depth-limited patterns that would miss browse/static/vendor/ should not be present
@@ -594,7 +600,10 @@ def test_hooks_json_uses_sk_hooks_run():
         )
         test(
             f"{label} powershell fallback uses python hook_runner.py",
-            all('python "$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py"' in powershell for _, powershell in commands),
+            all(
+                'python "$env:USERPROFILE\\.copilot\\tools\\hooks\\hook_runner.py"' in powershell
+                for _, powershell in commands
+            ),
             f"{label} powershell fallback must use python hook_runner.py for standard Windows installs",
         )
 
@@ -623,6 +632,7 @@ def test_hooks_json_copies_in_sync():
         test("both hooks.json copies exist for sync check", False)
         return
     import json as _json
+
     src = _json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
     github = _json.loads(GITHUB_HOOKS_JSON.read_text(encoding="utf-8"))
     src_events = set(src.get("hooks", {}).keys())
@@ -675,7 +685,7 @@ def test_restart_manual_uses_sk_watch():
     )
     test(
         "_restart_manual wraps sk.cmd via cmd.exe on Windows",
-        '"cmd.exe"' in content and '"/c"' in content and 'sk_bin.suffix.lower()' in content,
+        '"cmd.exe"' in content and '"/c"' in content and "sk_bin.suffix.lower()" in content,
         "_restart_manual must route sk.cmd / sk.bat through cmd.exe /c on Windows",
     )
 
@@ -684,7 +694,8 @@ def test_auto_update_syntax_still_valid():
     """auto-update-tools.py must still compile after native sk routing changes."""
     result = subprocess.run(
         [sys.executable, "-m", "py_compile", str(AUTO_UPDATE)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     test(
         "auto-update-tools.py compiles after _sk_binary_path addition",
@@ -787,6 +798,7 @@ def test_required_hook_events_present_in_hooks_json():
         test("hooks/hooks.json exists for hook events check", False, str(hooks_json))
         return
     import json as _json
+
     payload = _json.loads(hooks_json.read_text(encoding="utf-8"))
     events = set(payload.get("hooks", {}).keys())
     test(
@@ -869,6 +881,7 @@ def test_managed_posttooluse_stays_python_backed():
     hooks_json = REPO / "hooks" / "hooks.json"
     if hooks_json.exists():
         import json as _json
+
         payload = _json.loads(hooks_json.read_text(encoding="utf-8"))
         events = set(payload.get("hooks", {}).keys())
         test(
@@ -931,7 +944,10 @@ def test_hmac_foundation_module_exists():
         content = marker_auth_rs.read_text(encoding="utf-8")
         test(
             "marker_auth.rs exports counter/list-marker helpers used by native rules",
-            "sign_counter" in content and "verify_counter" in content and "sign_list_marker" in content and "verify_list_marker" in content,
+            "sign_counter" in content
+            and "verify_counter" in content
+            and "sign_list_marker" in content
+            and "verify_list_marker" in content,
             "marker_auth.rs must define counter/list-marker helpers for native parity",
         )
     rules_rs = SK_RUST_HOOKS / "rules.rs"
@@ -1195,6 +1211,7 @@ def test_managed_posttooluse_still_python_backed_after_native_rule_growth():
     hooks_json = REPO / "hooks" / "hooks.json"
     if hooks_json.exists():
         import json as _json
+
         payload = _json.loads(hooks_json.read_text(encoding="utf-8"))
         events = set(payload.get("hooks", {}).keys())
         test(
@@ -1222,6 +1239,7 @@ test_managed_posttooluse_still_python_backed_after_native_rule_growth()
 # ---------------------------------------------------------------------------
 # Wave 8 — VerificationGatePreRule + TentacleSuggestRule native ports
 # ---------------------------------------------------------------------------
+
 
 def test_verification_gate_pre_rule_native():
     """VerificationGatePreRule must be defined in rules.rs.
@@ -1295,9 +1313,7 @@ def test_tentacle_suggest_rule_native():
     )
     test(
         "TentacleSuggestRule handles both tentacle-edits marker formats",
-        "read_tentacle_edits_paths" in content or (
-            "starts_with" in content and "tentacle-edits" in content
-        ),
+        "read_tentacle_edits_paths" in content or ("starts_with" in content and "tentacle-edits" in content),
         "rules.rs must handle both legacy flat and new JSON-dict tentacle-edits formats",
     )
     test(
@@ -1321,6 +1337,7 @@ def test_managed_routing_unchanged_for_new_suggestion_rules():
     """
     if HOOKS_JSON.exists():
         import json as _json
+
         payload = _json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
         events = set(payload.get("hooks", {}).keys())
         test(
@@ -1393,7 +1410,8 @@ def test_auto_briefing_rule_native():
     test(
         "AutoBriefingRule is fail-open — never denies (wave9)",
         "permissionDecision" not in content.split("AutoBriefingRule")[1].split("struct ")[0]
-        if "AutoBriefingRule" in content else False,
+        if "AutoBriefingRule" in content
+        else False,
         "AutoBriefingRule must never produce a permissionDecision",
     )
 
@@ -1525,6 +1543,7 @@ def test_managed_pre_post_routing_unchanged():
     )
     if HOOKS_JSON.exists():
         import json as _json
+
         payload = _json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
         events = set(payload.get("hooks", {}).keys())
         test(
@@ -2266,6 +2285,7 @@ def test_goal_pause_preserves_terminal_states():
     sys.path.insert(0, str(REPO / "hooks"))
     try:
         from rules.session_lifecycle import _PAUSE_STATES
+
         terminal = {"completed", "abandoned", "paused", "needs-human"}
         overlap = _PAUSE_STATES & terminal
         test(
@@ -2291,6 +2311,225 @@ test_session_lifecycle_has_goal_pause()
 test_session_end_py_has_goal_pause()
 test_rules_rs_documents_goal_pause_boundary()
 test_goal_pause_preserves_terminal_states()
+
+
+# ── Wave 16 — sessionStart paused-goal resume banner (issue #185) ────────────
+
+print("\n── wave16: sessionStart paused-goal resume banner — Python/native parity (#185) ──")
+
+BRIEFING_PY = REPO / "hooks" / "rules" / "briefing.py"
+AUTO_BRIEFING_PY = REPO / "hooks" / "auto-briefing.py"
+RULES_RS_185 = REPO / "sk-rust" / "src" / "hooks" / "rules.rs"
+
+
+def test_briefing_py_has_resume_hint():
+    """hooks/rules/briefing.py must implement the paused-goal resume-hint helpers (issue #185)."""
+    if not BRIEFING_PY.exists():
+        test("hooks/rules/briefing.py exists for wave16 check", False, str(BRIEFING_PY))
+        return
+    content = BRIEFING_PY.read_text(encoding="utf-8")
+    test(
+        "briefing.py defines _load_goal_resume_hint (wave16)",
+        "_load_goal_resume_hint" in content,
+        "briefing.py must define _load_goal_resume_hint for issue #185",
+    )
+    test(
+        "briefing.py defines _BREADCRUMB_FILENAME (wave16)",
+        "_BREADCRUMB_FILENAME" in content,
+        "briefing.py must define _BREADCRUMB_FILENAME constant",
+    )
+    test(
+        "briefing.py defines _PAUSE_REASON_LABELS mapping (wave16)",
+        "_PAUSE_REASON_LABELS" in content,
+        "briefing.py must define _PAUSE_REASON_LABELS dict",
+    )
+    test(
+        "briefing.py defines _format_pause_reason helper (wave16)",
+        "_format_pause_reason" in content,
+        "briefing.py must define _format_pause_reason helper",
+    )
+    # Ordering contract: resume hint prepended BEFORE Session briefing header
+    resume_call_idx = content.find("_load_goal_resume_hint")
+    briefing_header_idx = content.find("Session briefing")
+    test(
+        "briefing.py calls _load_goal_resume_hint before Session briefing header (wave16)",
+        0 <= resume_call_idx < briefing_header_idx,
+        f"resume_call_idx={resume_call_idx} briefing_header_idx={briefing_header_idx}",
+    )
+    # Suppression contract: staleness check present
+    test(
+        "briefing.py suppresses banner when goal not paused (staleness check)",
+        'status" != "paused"' in content or '!= "paused"' in content or "!= 'paused'" in content,
+        "briefing.py must suppress banner when goal.json status is not 'paused'",
+    )
+    # Fail-open: breadcrumb read errors must not raise
+    test(
+        "briefing.py _load_goal_resume_hint is fail-open (outer try/except)",
+        "except Exception" in content,
+        "_load_goal_resume_hint must be wrapped in try/except for fail-open behaviour",
+    )
+
+
+def test_auto_briefing_py_has_resume_hint():
+    """hooks/auto-briefing.py (direct legacy path) must also implement resume-hint (issue #185)."""
+    if not AUTO_BRIEFING_PY.exists():
+        test("hooks/auto-briefing.py exists for wave16 check", False, str(AUTO_BRIEFING_PY))
+        return
+    content = AUTO_BRIEFING_PY.read_text(encoding="utf-8")
+    test(
+        "auto-briefing.py defines _load_goal_resume_hint (wave16)",
+        "_load_goal_resume_hint" in content,
+        "auto-briefing.py must define _load_goal_resume_hint for issue #185",
+    )
+    test(
+        "auto-briefing.py defines _BREADCRUMB_FILENAME (wave16)",
+        "_BREADCRUMB_FILENAME" in content,
+        "auto-briefing.py must define _BREADCRUMB_FILENAME constant",
+    )
+    test(
+        "auto-briefing.py prepends resume hint before Session briefing header (wave16)",
+        "_load_goal_resume_hint" in content and "Session briefing" in content,
+        "auto-briefing.py must call _load_goal_resume_hint before printing briefing header",
+    )
+    # Ordering: the resume_hint call must come before the briefing header print
+    resume_call_idx = content.find("_load_goal_resume_hint")
+    briefing_header_idx = content.find("Session briefing")
+    test(
+        "auto-briefing.py resume hint call precedes briefing header (wave16)",
+        0 <= resume_call_idx < briefing_header_idx,
+        f"resume_call_idx={resume_call_idx} briefing_header_idx={briefing_header_idx}",
+    )
+
+
+def test_rules_rs_has_native_resume_hint():
+    """sk-rust/src/hooks/rules.rs must implement native parity for resume hint (issue #185)."""
+    if not RULES_RS_185.exists():
+        test("sk-rust/src/hooks/rules.rs exists for wave16 check", False, str(RULES_RS_185))
+        return
+    content = RULES_RS_185.read_text(encoding="utf-8")
+    test(
+        "rules.rs defines load_goal_resume_hint native function (wave16)",
+        "load_goal_resume_hint" in content,
+        "rules.rs must define a load_goal_resume_hint fn for native parity",
+    )
+    test(
+        "rules.rs defines BREADCRUMB_FILENAME constant (wave16)",
+        "BREADCRUMB_FILENAME" in content,
+        "rules.rs must define BREADCRUMB_FILENAME constant",
+    )
+    test(
+        "rules.rs defines format_pause_reason helper (wave16)",
+        "format_pause_reason" in content,
+        "rules.rs must define format_pause_reason fn mirroring Python",
+    )
+    test(
+        "rules.rs references issue #185 in comments (wave16)",
+        "185" in content,
+        "rules.rs must reference issue #185 in AutoBriefingRule comment",
+    )
+    # Ordering contract: load_goal_resume_hint called before session briefing header emission
+    hint_call_idx = content.find("load_goal_resume_hint")
+    briefing_header_idx = content.find("Session briefing")
+    test(
+        "rules.rs calls load_goal_resume_hint before Session briefing header (wave16)",
+        0 <= hint_call_idx < briefing_header_idx,
+        f"hint_call_idx={hint_call_idx} briefing_header_idx={briefing_header_idx}",
+    )
+    # Suppression contract
+    test(
+        "rules.rs suppresses banner when goal not paused (staleness check)",
+        '"paused"' in content and "suppress" in content.lower(),
+        "rules.rs must suppress banner when goal.json status is not 'paused'",
+    )
+    # Fail-open: banner shown when goal.json is absent
+    test(
+        "rules.rs load_goal_resume_hint is fail-open for goal.json absence",
+        "None" in content or "Ok(" in content,
+        "rules.rs load_goal_resume_hint must return banner when goal.json is absent (fail-open)",
+    )
+
+
+def test_wave16_python_native_naming_parity():
+    """Python and Rust must use matching breadcrumb filename and pause-reason labels (issue #185)."""
+    if not BRIEFING_PY.exists() or not RULES_RS_185.exists():
+        test("wave16 parity check skipped (files absent)", True)
+        return
+    py_content = BRIEFING_PY.read_text(encoding="utf-8")
+    rs_content = RULES_RS_185.read_text(encoding="utf-8")
+    # Both must reference the same breadcrumb filename
+    test(
+        "Python and Rust both use breadcrumb filename 'goal-resume-breadcrumb.json'",
+        "goal-resume-breadcrumb.json" in py_content and "goal-resume-breadcrumb.json" in rs_content,
+        "breadcrumb filename must match across Python/Rust boundaries",
+    )
+    # Both must map 'session_end' → 'session end'
+    test(
+        "Python and Rust both map 'session_end' pause_reason (wave16 parity)",
+        "session_end" in py_content and "session_end" in rs_content,
+        "pause_reason key 'session_end' must be recognised by both Python and Rust",
+    )
+    # Both must reference the resume command
+    test(
+        "Python and Rust both reference 'sk tentacle goal resume' command (wave16)",
+        "sk tentacle goal resume" in py_content and "sk tentacle goal resume" in rs_content,
+        "resume_command fallback must be 'sk tentacle goal resume' in both paths",
+    )
+
+
+def _extract_function_body(
+    content: str, start_marker: str, end_markers: "tuple[str, ...]" = ("\ndef ", "\nclass ")
+) -> str:
+    """Return the text of a function/method from content, stopping at the first end_marker."""
+    start = content.find(start_marker)
+    if start == -1:
+        return ""
+    best_end = len(content)
+    for em in end_markers:
+        idx = content.find(em, start + 1)
+        if idx != -1 and idx < best_end:
+            best_end = idx
+    return content[start:best_end]
+
+
+def test_wave16_breadcrumb_consumption_contract():
+    """Structural contract: breadcrumb must be consumed (not deleted) on sessionStart.
+
+    The banner is informational only — the breadcrumb file is NOT removed by
+    sessionStart so that the operator can start multiple sessions and still see
+    the hint.  Only ``sk tentacle goal resume`` removes the breadcrumb.
+    """
+    if not BRIEFING_PY.exists():
+        test("wave16 breadcrumb consumption check skipped (briefing.py absent)", True)
+        return
+    content = BRIEFING_PY.read_text(encoding="utf-8")
+    hint_body = _extract_function_body(content, "def _load_goal_resume_hint")
+    if not hint_body:
+        test("wave16 breadcrumb consumption: _load_goal_resume_hint found", False, "function not found")
+        return
+    test(
+        "_load_goal_resume_hint does NOT delete the breadcrumb (read-only consumption)",
+        ".unlink(" not in hint_body and "os.remove(" not in hint_body,
+        "breadcrumb must not be removed by _load_goal_resume_hint — it is read-only",
+    )
+    if not RULES_RS_185.exists():
+        return
+    rs_content = RULES_RS_185.read_text(encoding="utf-8")
+    rs_hint_body = _extract_function_body(rs_content, "fn load_goal_resume_hint", ("\nfn ", "\npub ", "\nimpl "))
+    if not rs_hint_body:
+        test("wave16 breadcrumb consumption: Rust load_goal_resume_hint found", False, "fn not found")
+        return
+    test(
+        "Rust load_goal_resume_hint does NOT delete the breadcrumb (read-only consumption)",
+        "remove(" not in rs_hint_body and "unlink(" not in rs_hint_body,
+        "Rust breadcrumb must not be removed by load_goal_resume_hint",
+    )
+
+
+test_briefing_py_has_resume_hint()
+test_auto_briefing_py_has_resume_hint()
+test_rules_rs_has_native_resume_hint()
+test_wave16_python_native_naming_parity()
+test_wave16_breadcrumb_consumption_contract()
 
 
 # ── Summary ──────────────────────────────────────────────────────────────────

@@ -335,7 +335,7 @@ test("SessionEndRule events", "sessionEnd" in rule.events)
 print("\n🔚 Section 3b: SessionEndRule — goal pause + breadcrumb")
 
 import rules.session_lifecycle as _sl_mod2
-from rules.session_lifecycle import _pause_active_goal, _PAUSE_STATES, _BREADCRUMB_FILENAME
+from rules.session_lifecycle import _BREADCRUMB_FILENAME, _PAUSE_STATES, _pause_active_goal
 
 _rule_se = SessionEndRule()
 
@@ -375,6 +375,7 @@ def _make_fake_tentacle(tmp_dir: Path, initial_status: str, title: str = "Test G
         @staticmethod
         def _goal_write(td, state):
             import os as _os
+
             tmp_p = goal_path.with_suffix(".json.tmp")
             tmp_p.write_text(json.dumps(state, indent=2), encoding="utf-8")
             _os.replace(tmp_p, goal_path)
@@ -686,8 +687,8 @@ test(
 print("\n🐙 Section 5: Tentacle rule helpers")
 
 import rules.tentacle as _rt_mod
-from rules.tentacle import _prune_ttl, _get_entries_for_repo
 from rules.subagent_guard import _roots_match
+from rules.tentacle import _get_entries_for_repo, _prune_ttl
 
 # 5a. _prune_ttl keeps recent entries
 now = time.time()
@@ -745,7 +746,7 @@ test("tentacle-suggest in postToolUse rules", "tentacle-suggest" in post_names)
 
 print("\n🛠️  Section 6: common.py helpers")
 
-from rules.common import is_session_path, get_module, is_source_path, CODE_EXTENSIONS
+from rules.common import CODE_EXTENSIONS, get_module, is_session_path, is_source_path
 
 # 6a. is_session_path recognises session-state paths
 _sess_root = str(Path.home() / ".copilot" / "session-state")
@@ -783,19 +784,19 @@ print("\n🔬 Section 7: VerificationGateRule")
 
 import rules.verification_gate as _vg_mod
 from rules.verification_gate import (
-    VerificationGateRule,
-    SURFACE_PY,
-    SURFACE_UI,
     EV_PY_TESTS,
+    EV_UI_BUILD,
     EV_UI_FORMAT,
     EV_UI_LINT,
     EV_UI_TYPECHECK,
-    EV_UI_BUILD,
-    _surfaces_from_path,
+    SURFACE_PY,
+    SURFACE_UI,
+    VerificationGateRule,
     _evidence_from_command,
-    _looks_successful,
     _is_closeout,
+    _looks_successful,
     _read_ledger,
+    _surfaces_from_path,
     _write_ledger,
 )
 
@@ -1060,7 +1061,282 @@ try:
 finally:
     pass
 
-# ── 7i. postToolUse bash writes mark surfaces dirty ───────────────────
+# ══════════════════════════════════════════════════════════════════════
+#  Section 8: AutoBriefingRule — goal resume banner (_load_goal_resume_hint)
+#  Tests for issue #185: paused-goal resume hint injected at sessionStart
+# ══════════════════════════════════════════════════════════════════════
+
+print("\n⏸  Section 8: AutoBriefingRule — goal resume banner")
+
+from rules.briefing import _format_pause_reason, _load_goal_resume_hint  # type: ignore[import]
+
+# ── 8a. _format_pause_reason ──────────────────────────────────────────
+
+test("session_end prefix → 'session end'", _format_pause_reason("session_end:normal") == "session end")
+test("bare session_end → 'session end'", _format_pause_reason("session_end") == "session end")
+test("compaction prefix → 'context compaction'", _format_pause_reason("compaction:ctx") == "context compaction")
+test("quota prefix → 'quota limit'", _format_pause_reason("quota:low") == "quota limit")
+test("unknown reason → 'paused'", _format_pause_reason("something_weird") == "paused")
+test("empty string → 'paused'", _format_pause_reason("") == "paused")
+
+# ── 8b. breadcrumb absent → None ──────────────────────────────────────
+
+_tmp_bc = Path(tempfile.mkdtemp(prefix="sk_test_bc_"))
+try:
+    result = _load_goal_resume_hint(_tmp_bc)
+    test("breadcrumb absent → None", result is None)
+finally:
+    shutil.rmtree(_tmp_bc, ignore_errors=True)
+
+# ── 8c. paused goal + fresh breadcrumb → banner lines ─────────────────
+
+_tmp_bc2 = Path(tempfile.mkdtemp(prefix="sk_test_bc2_"))
+try:
+    _octogent2 = _tmp_bc2 / ".octogent"
+    _octogent2.mkdir()
+    _goal_json2 = _octogent2 / "goal.json"
+    _goal_json2.write_text(json.dumps({"status": "paused", "title": "My Goal", "goal_id": "g1"}), encoding="utf-8")
+    _bc_file2 = _octogent2 / "goal-resume-breadcrumb.json"
+    _bc_file2.write_text(
+        json.dumps(
+            {
+                "goal_id": "g1",
+                "goal_title": "My Goal",
+                "goal_path": str(_goal_json2),
+                "pause_reason": "session_end:normal",
+                "resume_command": "sk tentacle goal resume",
+                "paused_at": "2026-01-01T00:00:00Z",
+                "previous_status": "active",
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _load_goal_resume_hint(_tmp_bc2)
+    test("paused goal → returns list", isinstance(result, list))
+    if isinstance(result, list):
+        combined = "\n".join(result)
+        test("paused goal → banner has goal title", "My Goal" in combined)
+        test("paused goal → banner has resume command", "sk tentacle goal resume" in combined)
+        test("paused goal → banner has reason label", "session end" in combined)
+        test("paused goal → first line has 'Paused goal'", "Paused goal" in result[0])
+finally:
+    shutil.rmtree(_tmp_bc2, ignore_errors=True)
+
+# ── 8d. goal already resumed (status != paused) → None (suppressed) ───
+
+_tmp_bc3 = Path(tempfile.mkdtemp(prefix="sk_test_bc3_"))
+try:
+    _octogent3 = _tmp_bc3 / ".octogent"
+    _octogent3.mkdir()
+    _goal_json3 = _octogent3 / "goal.json"
+    _goal_json3.write_text(json.dumps({"status": "active", "title": "Resumed Goal", "goal_id": "g2"}), encoding="utf-8")
+    _bc_file3 = _octogent3 / "goal-resume-breadcrumb.json"
+    _bc_file3.write_text(
+        json.dumps(
+            {
+                "goal_id": "g2",
+                "goal_title": "Resumed Goal",
+                "goal_path": str(_goal_json3),
+                "pause_reason": "session_end:normal",
+                "resume_command": "sk tentacle goal resume",
+                "paused_at": "2026-01-01T00:00:00Z",
+                "previous_status": "active",
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _load_goal_resume_hint(_tmp_bc3)
+    test("already-resumed goal → suppressed (None)", result is None)
+finally:
+    shutil.rmtree(_tmp_bc3, ignore_errors=True)
+
+# ── 8e. goal.json absent → fail-open (banner still shown) ─────────────
+
+_tmp_bc4 = Path(tempfile.mkdtemp(prefix="sk_test_bc4_"))
+try:
+    _octogent4 = _tmp_bc4 / ".octogent"
+    _octogent4.mkdir()
+    _ghost_goal = _octogent4 / "ghost-goal.json"  # does NOT exist
+    _bc_file4 = _octogent4 / "goal-resume-breadcrumb.json"
+    _bc_file4.write_text(
+        json.dumps(
+            {
+                "goal_id": "g3",
+                "goal_title": "Ghost Goal",
+                "goal_path": str(_ghost_goal),
+                "pause_reason": "session_end:crash",
+                "resume_command": "sk tentacle goal resume",
+                "paused_at": "2026-01-01T00:00:00Z",
+                "previous_status": "active",
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _load_goal_resume_hint(_tmp_bc4)
+    test("goal.json absent → fail-open shows banner", isinstance(result, list) and len(result) > 0)
+finally:
+    shutil.rmtree(_tmp_bc4, ignore_errors=True)
+
+# ── 8f. completed goal → suppressed ───────────────────────────────────
+
+_tmp_bc5 = Path(tempfile.mkdtemp(prefix="sk_test_bc5_"))
+try:
+    _octogent5 = _tmp_bc5 / ".octogent"
+    _octogent5.mkdir()
+    _goal_json5 = _octogent5 / "goal.json"
+    _goal_json5.write_text(json.dumps({"status": "completed", "title": "Done Goal", "goal_id": "g4"}), encoding="utf-8")
+    _bc_file5 = _octogent5 / "goal-resume-breadcrumb.json"
+    _bc_file5.write_text(
+        json.dumps(
+            {
+                "goal_id": "g4",
+                "goal_title": "Done Goal",
+                "goal_path": str(_goal_json5),
+                "pause_reason": "session_end:normal",
+                "resume_command": "sk tentacle goal resume",
+                "paused_at": "2026-01-01T00:00:00Z",
+                "previous_status": "active",
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _load_goal_resume_hint(_tmp_bc5)
+    test("completed goal → suppressed (None)", result is None)
+finally:
+    shutil.rmtree(_tmp_bc5, ignore_errors=True)
+
+# ── 8g. whitespace-only goal_title → falls back to goal_id ────────────
+# Regression for parity fix: whitespace-only title must yield goal_id,
+# not "(untitled goal)", keeping Python and Rust semantics aligned.
+
+_tmp_bc6 = Path(tempfile.mkdtemp(prefix="sk_test_bc6_"))
+try:
+    _octogent6 = _tmp_bc6 / ".octogent"
+    _octogent6.mkdir()
+    _goal_json6 = _octogent6 / "goal.json"
+    _goal_json6.write_text(json.dumps({"status": "paused", "goal_id": "ws-fallback-id"}), encoding="utf-8")
+    _bc_file6 = _octogent6 / "goal-resume-breadcrumb.json"
+    _bc_file6.write_text(
+        json.dumps(
+            {
+                "goal_id": "ws-fallback-id",
+                "goal_title": "   ",  # whitespace-only — must be treated as absent
+                "goal_path": str(_goal_json6),
+                "pause_reason": "session_end:normal",
+                "resume_command": "sk tentacle goal resume",
+                "paused_at": "2026-01-01T00:00:00Z",
+                "previous_status": "active",
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _load_goal_resume_hint(_tmp_bc6)
+    test("whitespace-only title → returns list (goal still shown)", isinstance(result, list))
+    if isinstance(result, list):
+        combined = "\n".join(result)
+        test(
+            "whitespace-only title → falls back to goal_id in banner",
+            "ws-fallback-id" in combined,
+        )
+        test(
+            "whitespace-only title → does NOT show '(untitled goal)'",
+            "(untitled goal)" not in combined,
+        )
+finally:
+    shutil.rmtree(_tmp_bc6, ignore_errors=True)
+
+# ── 8h. valid non-object breadcrumb JSON → None (Rust/Python parity guard) ──
+# Regression for review finding: valid non-object JSON such as [], 42, or "x"
+# must not produce a spurious banner; Python already fail-opens here because
+# bc.get() raises AttributeError on non-dict and the outer except swallows it.
+
+for _non_obj_tag, _non_obj_payload in [("array", "[]"), ("number", "42"), ("string", '"x"')]:
+    _tmp_non_obj = Path(tempfile.mkdtemp(prefix=f"sk_test_nonobj_{_non_obj_tag}_"))
+    try:
+        _octogent_non_obj = _tmp_non_obj / ".octogent"
+        _octogent_non_obj.mkdir()
+        (_octogent_non_obj / "goal-resume-breadcrumb.json").write_text(_non_obj_payload, encoding="utf-8")
+        result = _load_goal_resume_hint(_tmp_non_obj)
+        test(f"non-object breadcrumb ({_non_obj_tag}) → None", result is None)
+    finally:
+        shutil.rmtree(_tmp_non_obj, ignore_errors=True)
+
+# ── 8i. non-object goal.json → fail-open (banner still shown) ────────────
+# Regression: when goal.json exists but contains valid non-object JSON
+# ([], 42, "running"), the staleness check must not suppress the banner.
+# Python already fail-opens here (state.get() raises on non-dict → outer
+# except swallows it); this confirms that parity holds after the Rust fix.
+
+for _goal_tag, _goal_payload in [("array", "[]"), ("number", "42"), ("string", '"running"')]:
+    _tmp_go = Path(tempfile.mkdtemp(prefix=f"sk_test_goalobj_{_goal_tag}_"))
+    try:
+        _octogent_go = _tmp_go / ".octogent"
+        _octogent_go.mkdir()
+        _goal_json_go = _octogent_go / "goal.json"
+        _goal_json_go.write_text(_goal_payload, encoding="utf-8")
+        _bc_go = _octogent_go / "goal-resume-breadcrumb.json"
+        _bc_go.write_text(
+            json.dumps(
+                {
+                    "goal_id": "g-go",
+                    "goal_title": "Goal With Bad Status File",
+                    "goal_path": str(_goal_json_go),
+                    "pause_reason": "session_end:normal",
+                    "resume_command": "sk tentacle goal resume",
+                    "paused_at": "2026-01-01T00:00:00Z",
+                    "previous_status": "active",
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = _load_goal_resume_hint(_tmp_go)
+        test(
+            f"non-object goal.json ({_goal_tag}) → fail-open shows banner",
+            isinstance(result, list) and len(result) > 0,
+        )
+    finally:
+        shutil.rmtree(_tmp_go, ignore_errors=True)
+
+# ── 8j. non-string pause_reason → falls back to generic 'paused' label ───
+# Regression: malformed pause_reason (int, list, None) must not drop the
+# banner; Python must normalize to "" before formatting, matching Rust's
+# .as_str().unwrap_or("") which also coerces non-string JSON values.
+
+_tmp_bcj = Path(tempfile.mkdtemp(prefix="sk_test_bcj_"))
+try:
+    _octogentj = _tmp_bcj / ".octogent"
+    _octogentj.mkdir()
+    _goal_jsonj = _octogentj / "goal.json"
+    _goal_jsonj.write_text(json.dumps({"status": "paused", "goal_id": "gj"}), encoding="utf-8")
+    _bc_filej = _octogentj / "goal-resume-breadcrumb.json"
+    for _pr_val, _pr_label in [(42, "int"), (["x"], "list"), (None, "null")]:
+        _bc_filej.write_text(
+            json.dumps(
+                {
+                    "goal_id": "gj",
+                    "goal_title": "Goal With Bad Reason",
+                    "goal_path": str(_goal_jsonj),
+                    "pause_reason": _pr_val,
+                    "resume_command": "sk tentacle goal resume",
+                    "paused_at": "2026-01-01T00:00:00Z",
+                    "previous_status": "active",
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = _load_goal_resume_hint(_tmp_bcj)
+        test(
+            f"non-string pause_reason ({_pr_label}) → banner still shown",
+            isinstance(result, list) and len(result) > 0,
+        )
+        if isinstance(result, list):
+            combined = "\n".join(result)
+            test(
+                f"non-string pause_reason ({_pr_label}) → falls back to 'paused' label",
+                "paused" in combined,
+            )
+finally:
+    shutil.rmtree(_tmp_bcj, ignore_errors=True)
 
 try:
     _fake_ledger.unlink(missing_ok=True)

@@ -126,6 +126,81 @@ except ImportError:
 MARKER = MARKERS_DIR / "briefing-done"
 BRIEFING_SCRIPT = TOOLS_DIR / "briefing.py"
 
+# Goal resume breadcrumb helpers (issue #185)
+_BREADCRUMB_FILENAME = "goal-resume-breadcrumb.json"
+_PAUSE_REASON_LABELS = {
+    "session_end": "session end",
+    "compaction": "context compaction",
+    "quota": "quota limit",
+}
+
+
+def _format_pause_reason(raw: str) -> str:
+    """Return a short human-readable label for a raw pause_reason string."""
+    prefix = raw.split(":")[0].strip() if raw else ""
+    return _PAUSE_REASON_LABELS.get(prefix, "paused")
+
+
+def _load_goal_resume_hint(project_root: "Path | None" = None) -> "list[str] | None":
+    """Read the paused-goal breadcrumb and return concise banner lines.
+
+    Returns None (fail-open) when:
+      - breadcrumb file is absent,
+      - the goal is no longer in 'paused' state (stale / already resumed),
+      - any error occurs (fail-open).
+
+    The banner is intended to appear BEFORE the normal briefing header so the
+    operator sees the resume hint immediately at session start.
+
+    Future-compatible: ``pause_reason`` prefixes "compaction" and "quota" are
+    mapped to short labels even though those pause paths are not yet implemented.
+    """
+    try:
+        if project_root is None:
+            project_root = Path.cwd()
+
+        bc_path = project_root / ".octogent" / _BREADCRUMB_FILENAME
+        if not bc_path.is_file():
+            return None
+
+        bc = json.loads(bc_path.read_text(encoding="utf-8"))
+        # Trim each field independently so whitespace-only goal_title falls
+        # back to goal_id before the final "(untitled goal)" sentinel.
+        goal_title = (bc.get("goal_title") or "").strip() or (bc.get("goal_id") or "").strip() or "(untitled goal)"
+        resume_cmd = bc.get("resume_command") or "sk tentacle goal resume"
+
+        # Staleness check: if goal.json status is no longer 'paused', suppress.
+        goal_json_str = bc.get("goal_path") or ""
+        goal_json_path: Path
+        if goal_json_str:
+            goal_json_path = Path(goal_json_str)
+        else:
+            goal_json_path = project_root / ".octogent" / "goal.json"
+
+        if goal_json_path.is_file():
+            try:
+                state = json.loads(goal_json_path.read_text(encoding="utf-8"))
+                if state.get("status") != "paused":
+                    return None  # goal resumed or in terminal state — suppress
+            except Exception:
+                pass  # can't read → show banner (fail-open)
+
+        pause_reason_raw = bc.get("pause_reason", "")
+        # Normalize to str so non-string values (int, list, None) fall back to
+        # the generic "paused" label instead of raising AttributeError and
+        # dropping the banner via the outer fail-open catch.  Mirrors Rust's
+        # .as_str().unwrap_or("") which also coerces non-string JSON values.
+        pause_reason = pause_reason_raw if isinstance(pause_reason_raw, str) else ""
+        reason_label = _format_pause_reason(pause_reason)
+        sep = "  " + "\u2500" * 33
+        return [
+            f"\n  \u23f8  Paused goal: {goal_title}  ({reason_label})",
+            f"  \u25b6  Run: {resume_cmd}",
+            sep,
+        ]
+    except Exception:
+        return None  # always fail-open
+
 
 class AutoBriefingRule(Rule):
     """Run briefing.py at session start and create HMAC-signed marker."""
@@ -195,6 +270,7 @@ class AutoBriefingRule(Rule):
             return None
 
         project = ""
+        project_root: Path | None = None
         try:
             result = subprocess.run(
                 ["git", "rev-parse", "--show-toplevel"],
@@ -203,13 +279,21 @@ class AutoBriefingRule(Rule):
                 timeout=5,
             )
             if result.returncode == 0:
-                project = Path(result.stdout.strip()).name
+                project_root = Path(result.stdout.strip())
+                project = project_root.name
         except Exception:
             pass
         if not project:
             project = Path.cwd().name
 
-        lines = [
+        lines: list[str] = []
+
+        # PREPEND: paused-goal resume hint BEFORE the main briefing header.
+        resume_hint = _load_goal_resume_hint(project_root)
+        if resume_hint:
+            lines.extend(resume_hint)
+
+        lines += [
             f"\n  \U0001f4cb Session briefing for: {project}",
             "  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
         ]
