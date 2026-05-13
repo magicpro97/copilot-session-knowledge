@@ -6231,7 +6231,10 @@ mod tests {
         .unwrap();
 
         let result = load_goal_resume_hint(Some(&tmp));
-        assert!(result.is_some(), "expected banner for paused goal with whitespace title");
+        assert!(
+            result.is_some(),
+            "expected banner for paused goal with whitespace title"
+        );
         let combined = result.unwrap().join("\n");
         assert!(
             combined.contains("ws-goal-id"),
@@ -6274,7 +6277,11 @@ mod tests {
     #[test]
     fn auto_briefing_resume_hint_fail_open_for_non_object_goal_json() {
         use std::fs;
-        for (tag, payload) in &[("array", "[]"), ("number", "42"), ("string", r#""running""#)] {
+        for (tag, payload) in &[
+            ("array", "[]"),
+            ("number", "42"),
+            ("string", r#""running""#),
+        ] {
             let tmp = resume_test_dir(&format!("goal_nonobj_{}", tag));
             let octogent = tmp.join(".octogent");
             let _ = fs::create_dir_all(&octogent);
@@ -6328,7 +6335,10 @@ mod tests {
             // Build breadcrumb JSON with a non-string pause_reason
             let bc_json = format!(
                 r#"{{"goal_id":"gpr","goal_title":"Reason Test Goal","goal_path":"{goal_path}","pause_reason":{pr},"resume_command":"sk tentacle goal resume","paused_at":"2026-01-01T00:00:00Z","previous_status":"active"}}"#,
-                goal_path = octogent.join("goal.json").to_string_lossy().replace('\\', "\\\\"),
+                goal_path = octogent
+                    .join("goal.json")
+                    .to_string_lossy()
+                    .replace('\\', "\\\\"),
                 pr = pr_val,
             );
             fs::write(octogent.join(BREADCRUMB_FILENAME), &bc_json).unwrap();
@@ -6353,7 +6363,10 @@ mod tests {
         assert_eq!(format_pause_reason("session_end:normal"), "session end");
         assert_eq!(format_pause_reason("session_end:"), "session end");
         assert_eq!(format_pause_reason("session_end"), "session end");
-        assert_eq!(format_pause_reason("compaction:quota_triggered"), "context compaction");
+        assert_eq!(
+            format_pause_reason("compaction:quota_triggered"),
+            "context compaction"
+        );
         assert_eq!(format_pause_reason("quota:low_context"), "quota limit");
         assert_eq!(format_pause_reason("unknown_reason"), "paused");
         assert_eq!(format_pause_reason(""), "paused");
