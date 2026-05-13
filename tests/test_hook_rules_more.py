@@ -1338,6 +1338,197 @@ try:
 finally:
     shutil.rmtree(_tmp_bcj, ignore_errors=True)
 
+# ── 8k. non-string resume_command → falls back to default ─────────────
+# Regression for issue #185 review: non-string JSON values for resume_command
+# (int, list, null, object) must not produce a spurious or empty run command;
+# the default "sk tentacle goal resume" must appear in the banner.
+
+_tmp_bck = Path(tempfile.mkdtemp(prefix="sk_test_bck_"))
+try:
+    _octogentk = _tmp_bck / ".octogent"
+    _octogentk.mkdir()
+    _goal_jsonk = _octogentk / "goal.json"
+    _goal_jsonk.write_text(json.dumps({"status": "paused", "goal_id": "gk"}), encoding="utf-8")
+    _bc_filek = _octogentk / "goal-resume-breadcrumb.json"
+    for _rc_val, _rc_label in [
+        (42, "int"),
+        (["sk", "tentacle"], "list"),
+        (None, "null"),
+        ({"cmd": "x"}, "object"),
+    ]:
+        _bc_filek.write_text(
+            json.dumps(
+                {
+                    "goal_id": "gk",
+                    "goal_title": "Goal With Bad RC",
+                    "goal_path": str(_goal_jsonk),
+                    "pause_reason": "session_end",
+                    "resume_command": _rc_val,
+                    "paused_at": "2026-01-01T00:00:00Z",
+                    "previous_status": "active",
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = _load_goal_resume_hint(_tmp_bck)
+        test(
+            f"non-string resume_command ({_rc_label}) → banner still shown",
+            isinstance(result, list) and len(result) > 0,
+        )
+        if isinstance(result, list):
+            combined = "\n".join(result)
+            test(
+                f"non-string resume_command ({_rc_label}) → falls back to default",
+                "sk tentacle goal resume" in combined,
+            )
+finally:
+    shutil.rmtree(_tmp_bck, ignore_errors=True)
+
+# ── 8l. whitespace-only resume_command → falls back to default ─────────
+# Regression: a resume_command string that is entirely whitespace must be
+# treated as blank and fall back to "sk tentacle goal resume", matching
+# Rust's .map(str::trim).filter(|s| !s.is_empty()).unwrap_or(default).
+
+_tmp_bcl = Path(tempfile.mkdtemp(prefix="sk_test_bcl_"))
+try:
+    _octogentl = _tmp_bcl / ".octogent"
+    _octogentl.mkdir()
+    _goal_jsonl = _octogentl / "goal.json"
+    _goal_jsonl.write_text(json.dumps({"status": "paused", "goal_id": "gl"}), encoding="utf-8")
+    _bc_filel = _octogentl / "goal-resume-breadcrumb.json"
+    for _ws_val, _ws_label in [("   ", "spaces"), ("\t", "tab"), ("\n", "newline"), ("  \t  ", "mixed")]:
+        _bc_filel.write_text(
+            json.dumps(
+                {
+                    "goal_id": "gl",
+                    "goal_title": "Goal With WS RC",
+                    "goal_path": str(_goal_jsonl),
+                    "pause_reason": "session_end",
+                    "resume_command": _ws_val,
+                    "paused_at": "2026-01-01T00:00:00Z",
+                    "previous_status": "active",
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = _load_goal_resume_hint(_tmp_bcl)
+        test(
+            f"whitespace resume_command ({_ws_label!r}) → banner still shown",
+            isinstance(result, list) and len(result) > 0,
+        )
+        if isinstance(result, list):
+            combined = "\n".join(result)
+            test(
+                f"whitespace resume_command ({_ws_label!r}) → falls back to default",
+                "sk tentacle goal resume" in combined,
+            )
+finally:
+    shutil.rmtree(_tmp_bcl, ignore_errors=True)
+
+# ── 8m. non-string goal_title / goal_id → banner not suppressed ──────────
+# Regression for issue #185 review: non-string JSON values for goal_title and
+# goal_id (int, list, dict) must not raise AttributeError and suppress the
+# banner.  Python now guards with isinstance(v, str) before .strip(), matching
+# Rust's .and_then(|v| v.as_str()) which silently skips non-string JSON values.
+
+_tmp_bcm = Path(tempfile.mkdtemp(prefix="sk_test_bcm_"))
+try:
+    _octogentm = _tmp_bcm / ".octogent"
+    _octogentm.mkdir()
+    _goal_jsonm = _octogentm / "goal.json"
+    _goal_jsonm.write_text(json.dumps({"status": "paused"}), encoding="utf-8")
+    _bc_filem = _octogentm / "goal-resume-breadcrumb.json"
+
+    # Case 1: non-string goal_title with valid string goal_id → banner shows goal_id
+    _bc_filem.write_text(
+        json.dumps(
+            {
+                "goal_id": "fallback-id",
+                "goal_title": 42,
+                "goal_path": str(_goal_jsonm),
+                "pause_reason": "session_end",
+                "resume_command": "sk tentacle goal resume",
+                "paused_at": "2026-01-01T00:00:00Z",
+                "previous_status": "active",
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _load_goal_resume_hint(_tmp_bcm)
+    test("non-string goal_title (int) → banner still shown", isinstance(result, list) and len(result) > 0)
+    if isinstance(result, list):
+        combined = "\n".join(result)
+        test("non-string goal_title (int) → falls back to goal_id", "fallback-id" in combined)
+        test("non-string goal_title (int) → does not show '(untitled goal)'", "(untitled goal)" not in combined)
+
+    # Case 2: non-string goal_title AND non-string goal_id → banner shows "(untitled goal)"
+    _bc_filem.write_text(
+        json.dumps(
+            {
+                "goal_id": {"bad": True},
+                "goal_title": ["not", "a", "string"],
+                "goal_path": str(_goal_jsonm),
+                "pause_reason": "session_end",
+                "resume_command": "sk tentacle goal resume",
+                "paused_at": "2026-01-01T00:00:00Z",
+                "previous_status": "active",
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _load_goal_resume_hint(_tmp_bcm)
+    test(
+        "non-string goal_title + non-string goal_id → banner still shown",
+        isinstance(result, list) and len(result) > 0,
+    )
+    if isinstance(result, list):
+        combined = "\n".join(result)
+        test(
+            "non-string goal_title + non-string goal_id → falls back to '(untitled goal)'",
+            "(untitled goal)" in combined,
+        )
+finally:
+    shutil.rmtree(_tmp_bcm, ignore_errors=True)
+
+# ── 8n. non-string goal_path → falls back to default goal.json ───────────
+# Regression for issue #185 review: a non-string goal_path (list, int, dict)
+# must not raise TypeError inside Path() and suppress the banner.  Python now
+# guards with isinstance(v, str), falling back to the default .octogent/goal.json
+# path, matching Rust's .and_then(|v| v.as_str()).unwrap_or_else(|| default).
+
+_tmp_bcn = Path(tempfile.mkdtemp(prefix="sk_test_bcn_"))
+try:
+    _octogentn = _tmp_bcn / ".octogent"
+    _octogentn.mkdir()
+    # Provide a paused goal.json at the default fallback path so the staleness
+    # check passes and the banner is shown (not suppressed).
+    _default_goal_jsonn = _octogentn / "goal.json"
+    _default_goal_jsonn.write_text(json.dumps({"status": "paused"}), encoding="utf-8")
+    _bc_filen = _octogentn / "goal-resume-breadcrumb.json"
+
+    for _gp_val, _gp_label in [(["not-a-string"], "list"), (42, "int"), ({"p": "x"}, "object")]:
+        _bc_filen.write_text(
+            json.dumps(
+                {
+                    "goal_id": "gn",
+                    "goal_title": "Goal With Bad Path",
+                    "goal_path": _gp_val,
+                    "pause_reason": "session_end",
+                    "resume_command": "sk tentacle goal resume",
+                    "paused_at": "2026-01-01T00:00:00Z",
+                    "previous_status": "active",
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = _load_goal_resume_hint(_tmp_bcn)
+        test(
+            f"non-string goal_path ({_gp_label}) → banner shown via default goal.json fallback",
+            isinstance(result, list) and len(result) > 0,
+        )
+finally:
+    shutil.rmtree(_tmp_bcn, ignore_errors=True)
+
 try:
     _fake_ledger.unlink(missing_ok=True)
     with patch.object(_vg_mod, "LEDGER_FILE", _fake_ledger), patch.object(_vg_mod, "MARKERS_DIR", _tmp_vg):

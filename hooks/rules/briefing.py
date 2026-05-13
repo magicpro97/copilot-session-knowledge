@@ -144,10 +144,14 @@ def _format_pause_reason(raw: str) -> str:
 def _load_goal_resume_hint(project_root: "Path | None" = None) -> "list[str] | None":
     """Read the paused-goal breadcrumb and return concise banner lines.
 
-    Returns None (fail-open) when:
-      - breadcrumb file is absent,
-      - the goal is no longer in 'paused' state (stale / already resumed),
-      - any error occurs (fail-open).
+    Returns None (suppresses the banner) when:
+      - the breadcrumb file is absent,
+      - the goal is no longer in 'paused' state (stale / already resumed), or
+      - breadcrumb read / parse / type errors occur (outer except swallows them
+        and treats the file as absent).
+
+    Shows the banner (fail-open) when ``goal.json`` cannot be read or parsed —
+    the staleness check is skipped so the operator still sees the resume hint.
 
     The banner is intended to appear BEFORE the normal briefing header so the
     operator sees the resume hint immediately at session start.
@@ -164,13 +168,23 @@ def _load_goal_resume_hint(project_root: "Path | None" = None) -> "list[str] | N
             return None
 
         bc = json.loads(bc_path.read_text(encoding="utf-8"))
-        # Trim each field independently so whitespace-only goal_title falls
-        # back to goal_id before the final "(untitled goal)" sentinel.
-        goal_title = (bc.get("goal_title") or "").strip() or (bc.get("goal_id") or "").strip() or "(untitled goal)"
-        resume_cmd = bc.get("resume_command") or "sk tentacle goal resume"
+        # Guard each field with isinstance so non-string truthy values (int,
+        # list, dict) fall back safely instead of raising AttributeError and
+        # letting the outer except suppress the banner.  Mirrors Rust's
+        # .and_then(|v| v.as_str()) which silently skips non-string JSON values.
+        _gt_raw = bc.get("goal_title")
+        _gi_raw = bc.get("goal_id")
+        goal_title = (
+            (_gt_raw.strip() if isinstance(_gt_raw, str) else "")
+            or (_gi_raw.strip() if isinstance(_gi_raw, str) else "")
+            or "(untitled goal)"
+        )
+        _rc_raw = bc.get("resume_command")
+        resume_cmd = (_rc_raw.strip() if isinstance(_rc_raw, str) else "") or "sk tentacle goal resume"
 
         # Staleness check: if goal.json status is no longer 'paused', suppress.
-        goal_json_str = bc.get("goal_path") or ""
+        _gp_raw = bc.get("goal_path")
+        goal_json_str = _gp_raw if isinstance(_gp_raw, str) else ""
         goal_json_path: Path
         if goal_json_str:
             goal_json_path = Path(goal_json_str)

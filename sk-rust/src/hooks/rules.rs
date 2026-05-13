@@ -378,8 +378,13 @@ fn format_pause_reason(raw: &str) -> &'static str {
 /// Read `.octogent/goal-resume-breadcrumb.json` relative to `project_root`
 /// and return a short banner if the goal is still paused.
 ///
-/// Returns `None` (fail-open) when the breadcrumb is absent, the goal is
-/// already resumed / in a terminal state, or any error occurs.
+/// Returns `None` (suppresses the banner) when:
+///   - the breadcrumb file is absent,
+///   - the goal is already resumed / in a terminal state, or
+///   - breadcrumb read / parse / type errors occur (treated as absent).
+///
+/// Shows the banner (fail-open) when `goal.json` cannot be read or parsed —
+/// the staleness check is skipped so the operator still sees the resume hint.
 ///
 /// Mirrors `hooks/rules/briefing.py::_load_goal_resume_hint()`.
 fn load_goal_resume_hint(project_root: Option<&Path>) -> Option<Vec<String>> {
@@ -423,6 +428,7 @@ fn load_goal_resume_hint(project_root: Option<&Path>) -> Option<Vec<String>> {
     let resume_cmd = bc
         .get("resume_command")
         .and_then(|v| v.as_str())
+        .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or("sk tentacle goal resume");
 
@@ -6352,6 +6358,91 @@ mod tests {
             assert!(
                 combined.contains("paused"),
                 "non-string pause_reason ({tag:?}) must fall back to 'paused' label; got: {combined:?}"
+            );
+            let _ = fs::remove_dir_all(&tmp);
+        }
+    }
+
+    /// Non-string resume_command in breadcrumb → falls back to default "sk tentacle goal resume".
+    /// Regression for issue #185 review: non-string values (int, array, null, object) must not
+    /// produce a spurious or empty resume command; the default must be shown in the banner.
+    #[test]
+    fn auto_briefing_resume_hint_non_string_resume_command_falls_back_to_default() {
+        use std::fs;
+        for (tag, rc_val) in &[
+            ("number", "42"),
+            ("array", r#"["sk","tentacle"]"#),
+            ("null", "null"),
+            ("object", r#"{"cmd":"x"}"#),
+        ] {
+            let tmp = resume_test_dir(&format!("resume_cmd_nonstr_{}", tag));
+            let octogent = tmp.join(".octogent");
+            let _ = fs::create_dir_all(&octogent);
+            fs::write(
+                octogent.join("goal.json"),
+                r#"{"status": "paused", "goal_id": "grc"}"#,
+            )
+            .unwrap();
+            let bc_json = format!(
+                r#"{{"goal_id":"grc","goal_title":"RC Test","goal_path":"{goal_path}","pause_reason":"session_end","resume_command":{rc},"paused_at":"2026-01-01T00:00:00Z","previous_status":"active"}}"#,
+                goal_path = octogent
+                    .join("goal.json")
+                    .to_string_lossy()
+                    .replace('\\', "\\\\"),
+                rc = rc_val,
+            );
+            fs::write(octogent.join(BREADCRUMB_FILENAME), &bc_json).unwrap();
+            let result = load_goal_resume_hint(Some(&tmp));
+            assert!(
+                result.is_some(),
+                "non-string resume_command ({tag:?}) must still show banner; got: {result:?}"
+            );
+            let combined = result.unwrap().join("\n");
+            assert!(
+                combined.contains("sk tentacle goal resume"),
+                "non-string resume_command ({tag:?}) must fall back to default; got: {combined:?}"
+            );
+            let _ = fs::remove_dir_all(&tmp);
+        }
+    }
+
+    /// Whitespace-only resume_command → falls back to default "sk tentacle goal resume".
+    /// Regression for issue #185 review: a resume_command that is all whitespace must be
+    /// treated as absent and the default command shown, matching Python's .strip() or "".
+    #[test]
+    fn auto_briefing_resume_hint_whitespace_resume_command_falls_back_to_default() {
+        use std::fs;
+        for (tag, rc_val) in &[
+            ("spaces", "\"   \""),
+            ("tab", "\"\\t\""),
+            ("newline", "\"\\n\""),
+        ] {
+            let tmp = resume_test_dir(&format!("resume_cmd_ws_{}", tag));
+            let octogent = tmp.join(".octogent");
+            let _ = fs::create_dir_all(&octogent);
+            fs::write(
+                octogent.join("goal.json"),
+                r#"{"status": "paused", "goal_id": "gws"}"#,
+            )
+            .unwrap();
+            let bc_json = format!(
+                r#"{{"goal_id":"gws","goal_title":"WS RC Test","goal_path":"{goal_path}","pause_reason":"session_end","resume_command":{rc},"paused_at":"2026-01-01T00:00:00Z","previous_status":"active"}}"#,
+                goal_path = octogent
+                    .join("goal.json")
+                    .to_string_lossy()
+                    .replace('\\', "\\\\"),
+                rc = rc_val,
+            );
+            fs::write(octogent.join(BREADCRUMB_FILENAME), &bc_json).unwrap();
+            let result = load_goal_resume_hint(Some(&tmp));
+            assert!(
+                result.is_some(),
+                "whitespace resume_command ({tag:?}) must still show banner; got: {result:?}"
+            );
+            let combined = result.unwrap().join("\n");
+            assert!(
+                combined.contains("sk tentacle goal resume"),
+                "whitespace resume_command ({tag:?}) must fall back to default; got: {combined:?}"
             );
             let _ = fs::remove_dir_all(&tmp);
         }
