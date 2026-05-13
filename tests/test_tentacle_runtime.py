@@ -7355,6 +7355,39 @@ class TestCmdCompleteQuotaPersistence(unittest.TestCase):
         self.assertEqual(meta.get("quota_reason"), "rate_limit")
 
 
+class TestWriteDispatchQuotaBlockedFailOpen(unittest.TestCase):
+    """Regression: _write_dispatch_quota_blocked must fail-open even on corrupted meta.json."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "dispatch_quota_blocked"
+        self.base.mkdir(parents=True, exist_ok=True)
+        make_tentacle("quota-dispatch-worker", self.base)
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    def test_corrupted_meta_json_does_not_raise(self):
+        """Corrupted meta.json must not propagate json.JSONDecodeError — helper fails open."""
+        meta_path = self.base / "quota-dispatch-worker" / "meta.json"
+        meta_path.write_text("{not valid json!!!", encoding="utf-8")
+        # Must not raise:
+        with patch("builtins.print"):
+            T._write_dispatch_quota_blocked("quota-dispatch-worker", self.base, "rate_limit")
+        # handoff.md should still be written with the BLOCKED entry
+        handoff = (self.base / "quota-dispatch-worker" / "handoff.md").read_text(encoding="utf-8")
+        self.assertIn("BLOCKED", handoff)
+        self.assertIn("rate_limit", handoff)
+
+    def test_valid_meta_json_is_updated(self):
+        """Valid meta.json must be updated with status=completed and BLOCKED fields."""
+        with patch("builtins.print"):
+            T._write_dispatch_quota_blocked("quota-dispatch-worker", self.base, "daily_quota")
+        meta = json.loads((self.base / "quota-dispatch-worker" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta["status"], "completed")
+        self.assertEqual(meta["terminal_status"], "BLOCKED")
+        self.assertEqual(meta["quota_reason"], "daily_quota")
+
+
 class TestCmdHandoffAutoDetect(unittest.TestCase):
     """Tests that cmd_handoff auto-detects quota signal from message text when BLOCKED."""
 

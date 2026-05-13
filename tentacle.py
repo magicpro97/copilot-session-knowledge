@@ -2190,7 +2190,7 @@ def _write_dispatch_quota_blocked(
         meta.pop("retry_hint", None)
         meta["completed_at"] = datetime.now(timezone.utc).isoformat()
         meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
-    except OSError:
+    except (OSError, ValueError):
         pass
 
     _append_quota_retry_entry(tentacle_name, tentacles, quota_reason, None)
