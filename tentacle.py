@@ -2137,9 +2137,6 @@ def _remove_quota_retry_entry(tentacle_name: str, tentacles: Path) -> bool:
         return False
 
 
-
-
-
 def _positive_int_arg(value: str) -> int:
     """Argparse type that accepts only positive integers."""
     try:
