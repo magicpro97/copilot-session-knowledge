@@ -353,15 +353,143 @@ fn load_memory_md(cwd: Option<&Path>) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Goal resume breadcrumb helpers (issue #185)
+// ---------------------------------------------------------------------------
+
+const BREADCRUMB_FILENAME: &str = "goal-resume-breadcrumb.json";
+
+/// Map a raw ``pause_reason`` string to a short human-readable label.
+///
+/// The prefix before `:` is extracted and matched so that "session_end:normal"
+/// yields "session end".  Unknown prefixes fall back to "paused".
+///
+/// Future-compatible: "compaction" and "quota" prefixes are recognised even
+/// though those pause paths are not yet implemented (issues #182 / #187).
+fn format_pause_reason(raw: &str) -> &'static str {
+    let prefix = raw.split(':').next().unwrap_or("").trim();
+    match prefix {
+        "session_end" => "session end",
+        "compaction" => "context compaction",
+        "quota" => "quota limit",
+        _ => "paused",
+    }
+}
+
+/// Read `.octogent/goal-resume-breadcrumb.json` relative to `project_root`
+/// and return a short banner if the goal is still paused.
+///
+/// Returns `None` (suppresses the banner) when:
+///   - the breadcrumb file is absent,
+///   - the goal is already resumed / in a terminal state, or
+///   - breadcrumb read / parse / type errors occur (treated as absent).
+///
+/// Shows the banner (fail-open) when `goal.json` cannot be read or parsed —
+/// the staleness check is skipped so the operator still sees the resume hint.
+///
+/// Mirrors `hooks/rules/briefing.py::_load_goal_resume_hint()`.
+fn load_goal_resume_hint(project_root: Option<&Path>) -> Option<Vec<String>> {
+    let root = match project_root {
+        Some(p) => p.to_path_buf(),
+        None => std::env::current_dir().ok()?,
+    };
+
+    let bc_path = root.join(".octogent").join(BREADCRUMB_FILENAME);
+    if !bc_path.is_file() {
+        return None;
+    }
+
+    let bc_text = fs::read_to_string(&bc_path).ok()?;
+    let bc: Value = serde_json::from_str(&bc_text).ok()?;
+
+    // Guard: valid but non-object JSON (e.g. [], 42, "x") must not produce a
+    // spurious banner.  Mirrors Python's AttributeError path where bc.get()
+    // raises on a non-dict and the outer except swallows it.
+    if !bc.is_object() {
+        return None;
+    }
+
+    // Trim each field independently so a whitespace-only goal_title falls
+    // back to goal_id before the final "(untitled goal)" sentinel, mirroring
+    // hooks/rules/briefing.py::_load_goal_resume_hint().
+    let goal_title = {
+        let trimmed_title = bc
+            .get("goal_title")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
+        let trimmed_id = bc
+            .get("goal_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
+        trimmed_title.or(trimmed_id).unwrap_or("(untitled goal)")
+    };
+
+    let resume_cmd = bc
+        .get("resume_command")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("sk tentacle goal resume");
+
+    // Staleness check: if goal.json status is no longer "paused", suppress.
+    let goal_json_path = bc
+        .get("goal_path")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join(".octogent").join("goal.json"));
+
+    if goal_json_path.is_file() {
+        if let Ok(goal_text) = fs::read_to_string(&goal_json_path) {
+            if let Ok(goal_state) = serde_json::from_str::<Value>(&goal_text) {
+                // Only suppress when goal.json parses as a JSON *object* and
+                // its "status" is not "paused".  Non-object JSON ([], 42, "x")
+                // must not trigger suppression — fall through and show the banner,
+                // matching Python's AttributeError fail-open path where
+                // state.get("status") raises on a non-dict and the except swallows it.
+                if goal_state.is_object()
+                    && goal_state
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        != "paused"
+                {
+                    return None; // goal resumed or in terminal state — suppress
+                }
+            }
+        }
+        // can't read goal.json → fail-open (show banner)
+    }
+
+    let pause_reason = bc
+        .get("pause_reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let reason_label = format_pause_reason(pause_reason);
+    let sep = format!("  {}", "\u{2500}".repeat(33));
+
+    Some(vec![
+        format!("\n  \u{23f8}  Paused goal: {goal_title}  ({reason_label})"),
+        format!("  \u{25b6}  Run: {resume_cmd}"),
+        sep,
+    ])
+}
+
+// ---------------------------------------------------------------------------
 // AutoBriefingRule
 // ---------------------------------------------------------------------------
 
 /// Run `briefing.py` at session start, prepend `MEMORY.md`, and sign HMAC
-/// markers (wave9, extended in wave10 with issue #161 MEMORY.md injection).
+/// markers (wave9, extended in wave10 with issue #161 MEMORY.md injection,
+/// wave16 with issue #185 paused-goal resume banner).
 ///
 /// Ports `hooks/rules/briefing.py::AutoBriefingRule`.
 ///
 /// What this rule does:
+///   0. If `.octogent/goal-resume-breadcrumb.json` is present and the goal
+///      is still paused, emits a concise resume-hint banner BEFORE all other
+///      output (issue #185).
 ///   1. Reads `COPILOT_AGENT_SESSION_ID` to identify the current session.
 ///   2. Cleans up stale session-specific markers (own session: deleted and
 ///      re-signed below; orphaned `briefing-done*` markers older than 2h:
@@ -381,6 +509,7 @@ fn load_memory_md(cwd: Option<&Path>) -> Option<String> {
 ///   - Marker signing error → silently skipped.
 ///   - Filesystem errors during cleanup → silently swallowed.
 ///   - MEMORY.md absent, stale, or disabled → silently skipped (no-op).
+///   - Breadcrumb absent, stale, or unreadable → silently skipped (no-op).
 ///
 /// Informational only; never produces `permissionDecision`.
 pub struct AutoBriefingRule;
@@ -452,8 +581,8 @@ impl HookRule for AutoBriefingRule {
             return None; // fail-open: briefing.py absent
         }
 
-        // --- Determine project name (mirrors Python _get_project()) ---
-        let project = Command::new("git")
+        // --- Determine project root and name (mirrors Python _get_project()) ---
+        let git_root_opt: Option<PathBuf> = Command::new("git")
             .args(["rev-parse", "--show-toplevel"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -461,15 +590,20 @@ impl HookRule for AutoBriefingRule {
             .ok()
             .and_then(|o| {
                 if o.status.success() {
-                    String::from_utf8(o.stdout).ok().and_then(|s| {
-                        PathBuf::from(s.trim())
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .map(|n| n.to_string())
-                    })
+                    String::from_utf8(o.stdout)
+                        .ok()
+                        .map(|s| PathBuf::from(s.trim()))
                 } else {
                     None
                 }
+            });
+
+        let project = git_root_opt
+            .as_ref()
+            .and_then(|root| {
+                root.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.to_string())
             })
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| {
@@ -483,10 +617,15 @@ impl HookRule for AutoBriefingRule {
                     .unwrap_or_default()
             });
 
-        let mut lines = vec![
-            format!("\n  \u{1f4cb} Session briefing for: {project}"),
-            "  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}".to_string(),
-        ];
+        let mut lines: Vec<String> = Vec::new();
+
+        // --- Goal resume banner (issue #185): prepend BEFORE briefing header ---
+        if let Some(hint) = load_goal_resume_hint(git_root_opt.as_deref()) {
+            lines.extend(hint);
+        }
+
+        lines.push(format!("\n  \u{1f4cb} Session briefing for: {project}"));
+        lines.push("  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}".to_string());
 
         // --- MEMORY.md injection (issue #161): prepend promoted knowledge ---
         if let Some(mem) = load_memory_md(None) {
@@ -5862,6 +6001,467 @@ mod tests {
     }
 
     // --- IntegrityRule ---
+
+    // --- load_goal_resume_hint helper tests (issue #185 native parity) ---
+    //
+    // Each test creates a *unique* temp directory using the process ID and an
+    // atomic counter to avoid races when the test binary runs concurrently with
+    // itself (e.g. parallel CI shards) and to stay clean even if a test panics
+    // before reaching its cleanup call.
+
+    /// Returns a unique temp dir path: `<temp>/<prefix>_<pid>_<n>`.
+    /// The directory is NOT created here; callers use create_dir_all.
+    fn resume_test_dir(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let n = CTR.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("sk_resume_{}_{}_{}", tag, std::process::id(), n))
+    }
+
+    /// Graceful no-op: breadcrumb absent → returns None.
+    #[test]
+    fn auto_briefing_resume_hint_none_when_breadcrumb_absent() {
+        let tmp = resume_test_dir("absent");
+        let _ = std::fs::create_dir_all(&tmp);
+        // No breadcrumb written — just ensure the dir exists with no .octogent child.
+        let result = load_goal_resume_hint(Some(&tmp));
+        assert!(
+            result.is_none(),
+            "load_goal_resume_hint must return None when breadcrumb is absent"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Paused goal + valid breadcrumb → banner lines with goal title and resume command.
+    #[test]
+    fn auto_briefing_resume_hint_shows_banner_when_paused() {
+        use std::fs;
+        let tmp = resume_test_dir("paused");
+        let octogent = tmp.join(".octogent");
+        let _ = fs::create_dir_all(&octogent);
+
+        // Write a paused goal.json
+        fs::write(
+            octogent.join("goal.json"),
+            r#"{"status": "paused", "title": "My Test Goal", "goal_id": "g1"}"#,
+        )
+        .unwrap();
+
+        // Write a breadcrumb
+        let bc_path = octogent.join(BREADCRUMB_FILENAME);
+        fs::write(
+            &bc_path,
+            serde_json::json!({
+                "goal_id": "g1",
+                "goal_title": "My Test Goal",
+                "goal_path": octogent.join("goal.json").to_string_lossy().to_string(),
+                "pause_reason": "session_end:normal",
+                "resume_command": "sk tentacle goal resume",
+                "paused_at": "2026-01-01T00:00:00Z",
+                "previous_status": "active"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let result = load_goal_resume_hint(Some(&tmp));
+        assert!(result.is_some(), "expected banner lines for paused goal");
+        let lines = result.unwrap();
+        let combined = lines.join("\n");
+        assert!(
+            combined.contains("My Test Goal"),
+            "banner must include goal title; got: {combined:?}"
+        );
+        assert!(
+            combined.contains("sk tentacle goal resume"),
+            "banner must include exact resume command; got: {combined:?}"
+        );
+        assert!(
+            combined.contains("session end"),
+            "banner must map session_end reason; got: {combined:?}"
+        );
+        assert!(
+            lines[0].contains("Paused goal"),
+            "first line must lead with 'Paused goal'; got: {:?}",
+            lines[0]
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Stale breadcrumb (goal already resumed) → None (suppressed).
+    #[test]
+    fn auto_briefing_resume_hint_suppressed_when_goal_resumed() {
+        use std::fs;
+        let tmp = resume_test_dir("stale");
+        let octogent = tmp.join(".octogent");
+        let _ = fs::create_dir_all(&octogent);
+
+        // goal.json status is now "active" (already resumed)
+        fs::write(
+            octogent.join("goal.json"),
+            r#"{"status": "active", "title": "Resumed Goal", "goal_id": "g2"}"#,
+        )
+        .unwrap();
+
+        // Write a breadcrumb that refers to this goal
+        let bc_path = octogent.join(BREADCRUMB_FILENAME);
+        fs::write(
+            &bc_path,
+            serde_json::json!({
+                "goal_id": "g2",
+                "goal_title": "Resumed Goal",
+                "goal_path": octogent.join("goal.json").to_string_lossy().to_string(),
+                "pause_reason": "session_end:normal",
+                "resume_command": "sk tentacle goal resume",
+                "paused_at": "2026-01-01T00:00:00Z",
+                "previous_status": "active"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let result = load_goal_resume_hint(Some(&tmp));
+        assert!(
+            result.is_none(),
+            "load_goal_resume_hint must suppress banner when goal is no longer paused"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Stale breadcrumb (goal completed) → None (suppressed).
+    #[test]
+    fn auto_briefing_resume_hint_suppressed_when_goal_completed() {
+        use std::fs;
+        let tmp = resume_test_dir("completed");
+        let octogent = tmp.join(".octogent");
+        let _ = fs::create_dir_all(&octogent);
+
+        fs::write(
+            octogent.join("goal.json"),
+            r#"{"status": "completed", "title": "Done Goal", "goal_id": "g3"}"#,
+        )
+        .unwrap();
+
+        let bc_path = octogent.join(BREADCRUMB_FILENAME);
+        fs::write(
+            &bc_path,
+            serde_json::json!({
+                "goal_id": "g3",
+                "goal_title": "Done Goal",
+                "goal_path": octogent.join("goal.json").to_string_lossy().to_string(),
+                "pause_reason": "session_end:normal",
+                "resume_command": "sk tentacle goal resume",
+                "paused_at": "2026-01-01T00:00:00Z",
+                "previous_status": "active"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let result = load_goal_resume_hint(Some(&tmp));
+        assert!(
+            result.is_none(),
+            "load_goal_resume_hint must suppress banner when goal is completed"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Breadcrumb present but goal.json absent → fail-open (banner still shown).
+    #[test]
+    fn auto_briefing_resume_hint_fail_open_when_goal_json_absent() {
+        use std::fs;
+        let tmp = resume_test_dir("no_goal_json");
+        let octogent = tmp.join(".octogent");
+        let _ = fs::create_dir_all(&octogent);
+
+        // No goal.json — breadcrumb points to a non-existent path
+        let goal_json_path = octogent.join("goal.json");
+        // Ensure it does not exist (it won't in a fresh unique dir)
+        let _ = fs::remove_file(&goal_json_path);
+
+        let bc_path = octogent.join(BREADCRUMB_FILENAME);
+        fs::write(
+            &bc_path,
+            serde_json::json!({
+                "goal_id": "g4",
+                "goal_title": "Orphaned Goal",
+                "goal_path": goal_json_path.to_string_lossy().to_string(),
+                "pause_reason": "session_end:crash",
+                "resume_command": "sk tentacle goal resume",
+                "paused_at": "2026-01-01T00:00:00Z",
+                "previous_status": "active"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        // Must fail-open: if goal.json is absent we cannot confirm resumption,
+        // so the banner should still appear.
+        let result = load_goal_resume_hint(Some(&tmp));
+        assert!(
+            result.is_some(),
+            "load_goal_resume_hint must show banner when goal.json is absent (fail-open)"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Whitespace-only goal_title must fall back to trimmed goal_id, not "(untitled goal)".
+    /// This is the regression case for the parity fix: Python and Rust must agree.
+    #[test]
+    fn auto_briefing_resume_hint_whitespace_title_falls_back_to_goal_id() {
+        use std::fs;
+        let tmp = resume_test_dir("ws_title");
+        let octogent = tmp.join(".octogent");
+        let _ = fs::create_dir_all(&octogent);
+
+        fs::write(
+            octogent.join("goal.json"),
+            r#"{"status": "paused", "goal_id": "ws-goal-id"}"#,
+        )
+        .unwrap();
+
+        let bc_path = octogent.join(BREADCRUMB_FILENAME);
+        fs::write(
+            &bc_path,
+            serde_json::json!({
+                "goal_id": "ws-goal-id",
+                "goal_title": "   ",   // whitespace-only — should be treated as absent
+                "goal_path": octogent.join("goal.json").to_string_lossy().to_string(),
+                "pause_reason": "session_end:normal",
+                "resume_command": "sk tentacle goal resume",
+                "paused_at": "2026-01-01T00:00:00Z",
+                "previous_status": "active"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let result = load_goal_resume_hint(Some(&tmp));
+        assert!(
+            result.is_some(),
+            "expected banner for paused goal with whitespace title"
+        );
+        let combined = result.unwrap().join("\n");
+        assert!(
+            combined.contains("ws-goal-id"),
+            "banner must fall back to goal_id when goal_title is whitespace-only; got: {combined:?}"
+        );
+        assert!(
+            !combined.contains("(untitled goal)"),
+            "banner must NOT show '(untitled goal)' when goal_id is available; got: {combined:?}"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Valid non-object breadcrumb JSON (array, number, string) must return None.
+    /// Regression for review finding: serde_json::from_str succeeds for any valid
+    /// JSON value, not just objects; the loader must guard with is_object() so
+    /// native behaviour matches Python's AttributeError fail-open path.
+    #[test]
+    fn auto_briefing_resume_hint_none_for_non_object_breadcrumb() {
+        use std::fs;
+        for (tag, payload) in &[("array", "[]"), ("number", "42"), ("string", r#""x""#)] {
+            let tmp = resume_test_dir(&format!("non_obj_{}", tag));
+            let octogent = tmp.join(".octogent");
+            let _ = fs::create_dir_all(&octogent);
+            let bc_path = octogent.join(BREADCRUMB_FILENAME);
+            fs::write(&bc_path, payload).unwrap();
+            let result = load_goal_resume_hint(Some(&tmp));
+            assert!(
+                result.is_none(),
+                "non-object breadcrumb JSON ({tag:?}) must return None; got: {result:?}"
+            );
+            let _ = fs::remove_dir_all(&tmp);
+        }
+    }
+
+    /// Non-object goal.json ([], 42, "running") → fail-open: banner still shown.
+    /// Regression for issue #185 staleness-check parity gap: when goal.json exists
+    /// but contains valid non-object JSON, the native loader must NOT suppress the
+    /// banner (previously unwrap_or("") != "paused" triggered suppression).
+    /// Must match Python's fail-open path where state.get() raises on non-dict.
+    #[test]
+    fn auto_briefing_resume_hint_fail_open_for_non_object_goal_json() {
+        use std::fs;
+        for (tag, payload) in &[
+            ("array", "[]"),
+            ("number", "42"),
+            ("string", r#""running""#),
+        ] {
+            let tmp = resume_test_dir(&format!("goal_nonobj_{}", tag));
+            let octogent = tmp.join(".octogent");
+            let _ = fs::create_dir_all(&octogent);
+
+            // Write non-object goal.json
+            fs::write(octogent.join("goal.json"), payload).unwrap();
+
+            let bc_path = octogent.join(BREADCRUMB_FILENAME);
+            fs::write(
+                &bc_path,
+                serde_json::json!({
+                    "goal_id": "g-nonobj",
+                    "goal_title": "Goal With Non-Object Status File",
+                    "goal_path": octogent.join("goal.json").to_string_lossy().to_string(),
+                    "pause_reason": "session_end:normal",
+                    "resume_command": "sk tentacle goal resume",
+                    "paused_at": "2026-01-01T00:00:00Z",
+                    "previous_status": "active"
+                })
+                .to_string(),
+            )
+            .unwrap();
+
+            let result = load_goal_resume_hint(Some(&tmp));
+            assert!(
+                result.is_some(),
+                "non-object goal.json ({tag:?}) must show banner (fail-open); got: {result:?}"
+            );
+            let _ = fs::remove_dir_all(&tmp);
+        }
+    }
+
+    /// Non-string pause_reason in breadcrumb → banner shown with generic "paused" label.
+    /// Regression for issue #185 parity: Rust's .as_str().unwrap_or("") already
+    /// coerces non-string values to ""; this test documents and locks that behaviour.
+    #[test]
+    fn auto_briefing_resume_hint_non_string_pause_reason_falls_back_to_paused() {
+        use std::fs;
+        // pause_reason values that are valid JSON but not strings
+        for (tag, pr_val) in &[("number", "42"), ("array", r#"["x"]"#), ("null", "null")] {
+            let tmp = resume_test_dir(&format!("pause_reason_nonstr_{}", tag));
+            let octogent = tmp.join(".octogent");
+            let _ = fs::create_dir_all(&octogent);
+
+            fs::write(
+                octogent.join("goal.json"),
+                r#"{"status": "paused", "goal_id": "gpr"}"#,
+            )
+            .unwrap();
+
+            // Build breadcrumb JSON with a non-string pause_reason
+            let bc_json = format!(
+                r#"{{"goal_id":"gpr","goal_title":"Reason Test Goal","goal_path":"{goal_path}","pause_reason":{pr},"resume_command":"sk tentacle goal resume","paused_at":"2026-01-01T00:00:00Z","previous_status":"active"}}"#,
+                goal_path = octogent
+                    .join("goal.json")
+                    .to_string_lossy()
+                    .replace('\\', "\\\\"),
+                pr = pr_val,
+            );
+            fs::write(octogent.join(BREADCRUMB_FILENAME), &bc_json).unwrap();
+
+            let result = load_goal_resume_hint(Some(&tmp));
+            assert!(
+                result.is_some(),
+                "non-string pause_reason ({tag:?}) must show banner; got: {result:?}"
+            );
+            let combined = result.unwrap().join("\n");
+            assert!(
+                combined.contains("paused"),
+                "non-string pause_reason ({tag:?}) must fall back to 'paused' label; got: {combined:?}"
+            );
+            let _ = fs::remove_dir_all(&tmp);
+        }
+    }
+
+    /// Non-string resume_command in breadcrumb → falls back to default "sk tentacle goal resume".
+    /// Regression for issue #185 review: non-string values (int, array, null, object) must not
+    /// produce a spurious or empty resume command; the default must be shown in the banner.
+    #[test]
+    fn auto_briefing_resume_hint_non_string_resume_command_falls_back_to_default() {
+        use std::fs;
+        for (tag, rc_val) in &[
+            ("number", "42"),
+            ("array", r#"["sk","tentacle"]"#),
+            ("null", "null"),
+            ("object", r#"{"cmd":"x"}"#),
+        ] {
+            let tmp = resume_test_dir(&format!("resume_cmd_nonstr_{}", tag));
+            let octogent = tmp.join(".octogent");
+            let _ = fs::create_dir_all(&octogent);
+            fs::write(
+                octogent.join("goal.json"),
+                r#"{"status": "paused", "goal_id": "grc"}"#,
+            )
+            .unwrap();
+            let bc_json = format!(
+                r#"{{"goal_id":"grc","goal_title":"RC Test","goal_path":"{goal_path}","pause_reason":"session_end","resume_command":{rc},"paused_at":"2026-01-01T00:00:00Z","previous_status":"active"}}"#,
+                goal_path = octogent
+                    .join("goal.json")
+                    .to_string_lossy()
+                    .replace('\\', "\\\\"),
+                rc = rc_val,
+            );
+            fs::write(octogent.join(BREADCRUMB_FILENAME), &bc_json).unwrap();
+            let result = load_goal_resume_hint(Some(&tmp));
+            assert!(
+                result.is_some(),
+                "non-string resume_command ({tag:?}) must still show banner; got: {result:?}"
+            );
+            let combined = result.unwrap().join("\n");
+            assert!(
+                combined.contains("sk tentacle goal resume"),
+                "non-string resume_command ({tag:?}) must fall back to default; got: {combined:?}"
+            );
+            let _ = fs::remove_dir_all(&tmp);
+        }
+    }
+
+    /// Whitespace-only resume_command → falls back to default "sk tentacle goal resume".
+    /// Regression for issue #185 review: a resume_command that is all whitespace must be
+    /// treated as absent and the default command shown, matching Python's .strip() or "".
+    #[test]
+    fn auto_briefing_resume_hint_whitespace_resume_command_falls_back_to_default() {
+        use std::fs;
+        for (tag, rc_val) in &[
+            ("spaces", "\"   \""),
+            ("tab", "\"\\t\""),
+            ("newline", "\"\\n\""),
+        ] {
+            let tmp = resume_test_dir(&format!("resume_cmd_ws_{}", tag));
+            let octogent = tmp.join(".octogent");
+            let _ = fs::create_dir_all(&octogent);
+            fs::write(
+                octogent.join("goal.json"),
+                r#"{"status": "paused", "goal_id": "gws"}"#,
+            )
+            .unwrap();
+            let bc_json = format!(
+                r#"{{"goal_id":"gws","goal_title":"WS RC Test","goal_path":"{goal_path}","pause_reason":"session_end","resume_command":{rc},"paused_at":"2026-01-01T00:00:00Z","previous_status":"active"}}"#,
+                goal_path = octogent
+                    .join("goal.json")
+                    .to_string_lossy()
+                    .replace('\\', "\\\\"),
+                rc = rc_val,
+            );
+            fs::write(octogent.join(BREADCRUMB_FILENAME), &bc_json).unwrap();
+            let result = load_goal_resume_hint(Some(&tmp));
+            assert!(
+                result.is_some(),
+                "whitespace resume_command ({tag:?}) must still show banner; got: {result:?}"
+            );
+            let combined = result.unwrap().join("\n");
+            assert!(
+                combined.contains("sk tentacle goal resume"),
+                "whitespace resume_command ({tag:?}) must fall back to default; got: {combined:?}"
+            );
+            let _ = fs::remove_dir_all(&tmp);
+        }
+    }
+
+    /// format_pause_reason maps known and unknown prefixes correctly.
+    #[test]
+    fn auto_briefing_format_pause_reason_known_and_unknown() {
+        assert_eq!(format_pause_reason("session_end:normal"), "session end");
+        assert_eq!(format_pause_reason("session_end:"), "session end");
+        assert_eq!(format_pause_reason("session_end"), "session end");
+        assert_eq!(
+            format_pause_reason("compaction:quota_triggered"),
+            "context compaction"
+        );
+        assert_eq!(format_pause_reason("quota:low_context"), "quota limit");
+        assert_eq!(format_pause_reason("unknown_reason"), "paused");
+        assert_eq!(format_pause_reason(""), "paused");
+    }
 
     #[test]
     fn integrity_rule_fires_only_on_session_start() {
