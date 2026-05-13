@@ -21,84 +21,7 @@ sk browse --port 8080 --token TOKEN      # → browse.py
 sk benchmark record                      # → benchmark.py
 sk retro                                 # → retro.py
 sk heal                                  # → copilot-cli-healer.py
-sk export-buglog                         # → buglog-export.py  (Markdown to stdout)
-sk export-buglog --format json           # → buglog-export.py  (JSON to stdout)
-sk export-buglog --output BUGLOG.md      # → buglog-export.py  (write Markdown to file)
-sk buglog                                # → buglog-export.py  (alias for export-buglog)
-sk buglog --format json                  # → buglog-export.py  (JSON to stdout)
-sk buglog --output BUGLOG.md             # → buglog-export.py  (write Markdown to file)
 ```
-
-### `sk export-buglog` — BUGLOG export
-
-Export mistake-category knowledge entries as a deterministic, git-friendly document.
-Useful for committing a `BUGLOG.md` to a repo or piping to downstream tools.
-`sk buglog` is an alias for `sk export-buglog` (backward-compatible).
-
-```bash
-sk export-buglog                                 # Markdown to stdout
-sk export-buglog --format json                   # JSON to stdout
-sk export-buglog --output BUGLOG.md              # Write Markdown to BUGLOG.md
-sk export-buglog --output bugs.json --format json # Write JSON to file
-sk export-buglog --limit 50                      # Cap at 50 entries (default: 200, must be ≥ 1)
-sk export-buglog --tags docker,ci                # Filter by tag (exact token match, comma-separated)
-sk export-buglog --min-confidence 0.7            # High-quality entries only (range: 0.0–1.0)
-sk buglog                                        # Markdown to stdout (alias)
-sk buglog --format json                          # JSON to stdout (alias)
-sk buglog --output BUGLOG.md                     # Write Markdown to BUGLOG.md (alias)
-sk buglog --output bugs.json --format json       # Write JSON to file (alias)
-sk buglog --limit 50                             # Cap at 50 entries (default: 200, must be ≥ 1)
-sk buglog --tags docker,ci                       # Filter by tag (exact token match, comma-separated)
-sk buglog --min-confidence 0.7                   # High-quality entries only (range: 0.0–1.0)
-```
-
-**`--tags` semantics:** each token in the comma-separated list is matched against the entry's
-tag tokens exactly (whole-token, case-insensitive). A query of `--tags doc` will **not** match
-entries tagged `docker`; use `--tags docker` for that. Trailing commas and empty tokens are ignored.
-
-**`--limit`:** must be a positive integer (≥ 1). Applied after tag filtering so `--tags + --limit`
-always returns the top-N *matching* entries. Errors with exit code 2 if ≤ 0.
-
-**`--min-confidence`:** float in [0.0, 1.0]. Errors with exit code 2 if out of range.
-
-JSON envelope:
-```json
-{"generated_at": "2024-01-01T00:00:00Z", "entry_count": 5, "entries": [...]}
-```
-
-Ordering is deterministic: `confidence DESC, id ASC` — stable for git diffs.
-Markdown output omits a run-timestamp so repeated exports on unchanged data produce identical output.
-
-### `sk dream` — dream-score ranking and MEMORY.md promotion surface
-
-Computes a weighted dream-score for each knowledge entry using recall telemetry
-(`entry_recall_stats`) and concept tags (`entry_concept_tags`). Scores are
-persisted in `entry_dream_scores` (local-only, never synced). On non-dry-run
-runs, gate-passing entries are also written to a promoted-memory Markdown
-surface (`MEMORY.md` by default), grouped by entry type and sorted by dream
-score descending.
-
-```bash
-sk dream                    # Score all entries, persist, show top 20, write MEMORY.md
-sk dream --dry-run          # List top candidates without persisting or writing MEMORY.md
-sk dream --dry-run --top 10 --json          # Top-10 as JSON (no persist, no MEMORY.md)
-sk dream --min-score 0.5 --min-recall 1     # Relaxed gate thresholds
-sk dream --w-frequency 0.3 --w-relevance 0.4 \
-         --w-diversity 0.1 --w-recency 0.1 \
-         --w-consolidation 0.05 --w-conceptual 0.05  # Custom weights
-sk dream --db /path/to/knowledge.db         # Custom DB path
-sk dream --memory-output /path/to/MEMORY.md # Custom MEMORY.md output path
-```
-
-Gate (default): `score >= 0.75 AND recall_count >= 3 AND unique_queries >= 2`.
-
-**MEMORY.md surface:** `MEMORY.md` is fully overwritten on every non-dry-run
-(idempotent). Entries are grouped by category (e.g. `## Pattern`, `## Mistake`)
-and sorted by dream score descending within each group. Use `--memory-output`
-to write to a custom path. The file is never written in `--dry-run` mode.
-
-See [docs/concepts/dreaming.md](concepts/dreaming.md) for the full formula, signal
-normalization, and MEMORY.md promotion contract.
 
 ### `sk index` — knowledge index lifecycle
 
@@ -111,11 +34,6 @@ sk index health      # knowledge-health.py     — health dashboard + recall tel
 sk index embed       # embed.py / native Rust  — configure/run semantic embeddings
                      #   native (default build): --build, --test, --rebuild-tfidf, --setup, --status, --providers, --search
                      #   Python fallback: embed.py (if native-embed feature unavailable)
-sk index tag         # tag-entries.py          — batch concept-tag extraction for entries
-                     #   --all          re-tag all entries (replace stale auto tags)
-                     #   --dry-run      preview without writing
-                     #   --limit N      process at most N entries
-                     #   --stats        show concept tag coverage statistics
 ```
 
 ### `sk sync` — cross-machine sync
@@ -130,55 +48,6 @@ sk sync status --health-check                        # sync-status.py --health-c
 sk sync gateway --host 127.0.0.1 --port 8765         # sync-gateway.py (reference/mock)
 sk sync merge --source /path/to/other.db             # sync-knowledge.py
 ```
-
-#### Dream scheduler config
-
-The sync daemon runs periodic **dream sweeps** (calling `dream.py`) on a configurable interval
-via the `DreamingScheduler` class (issue #162).  Sweeps score knowledge entries and promote
-high-signal entries to `MEMORY.md`.
-
-```bash
-python sync-config.py --dream-status                    # show current dream scheduler config
-python sync-config.py --dream-interval-hours 12         # set sweep interval to 12 h (default: 24)
-python sync-config.py --dream-disable                   # pause scheduled sweeps
-python sync-config.py --dream-enable                    # resume scheduled sweeps
-python sync-config.py --dream-min-score 0.8             # gate: min dream score (default: 0.75)
-python sync-config.py --dream-min-recall-count 5        # gate: min recall count (default: 3)
-python sync-config.py --dream-min-unique-queries 3      # gate: min unique queries (default: 2)
-python sync-config.py --dream-memory-path /path/MEMORY.md  # promoted-memory output path (default: MEMORY.md)
-python sync-config.py --status                          # includes dream config in the output
-```
-
-**Manual trigger:** drop a `dream-trigger.json` marker in `~/.copilot/markers/` and the
-daemon will run a sweep immediately — the sleep loop wakes early on this marker,
-so there is no full-interval wait.  **Note:** the manual trigger is suppressed when
-`dream_enabled=false`; the marker is consumed but no sweep fires.
-
-```bash
-echo '{}' > ~/.copilot/markers/dream-trigger.json  # trigger one sweep immediately
-```
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `dream_enabled` | bool | `true` | Enable/disable scheduled sweeps |
-| `dream_interval_hours` | float | `24` | Hours between sweeps (**must be > 0**) |
-| `dream_min_score` | float | `0.75` | Gate: minimum dream score |
-| `dream_min_recall_count` | int | `3` | Gate: minimum recall count |
-| `dream_min_unique_queries` | int | `2` | Gate: minimum unique queries |
-| `dream_memory_path` | str | `MEMORY.md` | Output path for promoted-memory surface |
-
-**Operator notes:**
-- `last_dream_run` is persisted in `.sync-daemon-state.json` (never synced remotely).
-- A sweep that fails is logged (including promoted-entry count on success) but does **not** update `last_dream_run`, so it retries on the next cycle.
-- Disabling sweeps (`--dream-disable`) does not clear `last_dream_run`; re-enabling resumes from where the scheduler left off.
-- **Manual trigger markers are suppressed when sweeps are disabled**: the marker is consumed (removed) but no sweep fires.
-- `dream_interval_hours` must be **greater than 0**; the CLI exits 1 on zero or negative values.  A pre-existing config with `0` is normalized to `24` on load.
-- **Config changes take effect without restarting the daemon** — the running daemon re-reads `sync-config.json` at the start of every loop cycle.
-- Each successful sweep logs: `[sync] dream sweep OK | promoted=N min_score=0.75 interval_hours=24`
-- **`--once` mode**: scheduled-due sweeps do **not** fire in one-shot runs.  Only an
-  explicit `dream-trigger.json` manual marker causes a sweep in `--once` mode.  This
-  preserves fast one-shot exit semantics (`run_sweep` has a 300 s subprocess timeout
-  that would otherwise block a fresh-install `--once` run for up to 5 minutes).
 
 ### `sk checkpoint` — session checkpoints
 
@@ -223,7 +92,7 @@ sk scout status                     # scout-status.py
 
 | Event | Native behavior |
 |-------|----------------|
-| `sessionStart` | `AutoBriefingRule` (spawns `briefing.py`, 10s timeout, signs HMAC markers, injects MEMORY.md) + `IntegrityRule` (SHA256 manifest) |
+| `sessionStart` | `AutoBriefingRule` (spawns `briefing.py`, 10s timeout, signs HMAC markers) + `IntegrityRule` (SHA256 manifest) |
 | `sessionEnd` | `SessionEndRule` (marker cleanup + `session.log`) + `RecurrenceDetectorRule` |
 | `preToolUse` | All deny-capable rules active: `subagent-git-guard`, `block-edit-dist`, `block-unsafe-html`, `pnpm-lockfile-guard`, `read-before-edit`, `VerificationGatePreRule`, `EnforceBriefingRule`, `EnforceLearnRule`, `TentacleEnforceRule`, `SyntaxGateRule` |
 | `postToolUse` | All 7 rules: `TrackEditsRule`, `LearnReminderRule`, `TestReminderRule`, `NextjsTypecheckReminderRule`, `VerificationGatePostRule`, `ReadBeforeEditRule`, `TentacleSuggestRule` |
@@ -235,71 +104,13 @@ sk scout status                     # scout-status.py
 > Full rule inventory, HMAC details, and platform event notes: **[docs/HOOKS.md](HOOKS.md)**
 
 ```bash
-sk hooks run sessionStart           # AutoBriefingRule + IntegrityRule (+ MEMORY.md injection)
+sk hooks run sessionStart           # AutoBriefingRule + IntegrityRule
 sk hooks run preToolUse             # all deny rules (Rust binary); hook_runner.py (Python shim)
 sk hooks run postToolUse            # all 7 postToolUse rules
 sk hooks run sessionEnd             # SessionEndRule + RecurrenceDetectorRule
 sk hooks run agentStop              # marker-cleanup
 sk hooks run subagentStop           # marker-cleanup
 sk hooks run errorOccurred          # native FTS5; query-session.py fallback if DB unavailable
-```
-
-#### MEMORY.md injection at `sessionStart`
-
-When `MEMORY.md` exists in the project root (written by `sk dream`), its promoted-knowledge
-content is automatically **prepended** to every `sessionStart` auto-briefing so the AI sees the
-highest-value knowledge entries before other briefing output.
-
-**Both runtime paths inject MEMORY.md:**
-- **Rust-binary installs** (`sk hooks run sessionStart`): native `AutoBriefingRule` in
-  `sk-rust/src/hooks/rules.rs` handles injection directly.
-- **Python `sk.py` shim / non-binary installs**: `hook_runner.py` delegates to
-  `hooks/rules/briefing.py::AutoBriefingRule`.
-
-**Guards — injection is skipped (graceful no-op) when:**
-
-| Guard | Behaviour |
-|-------|-----------|
-| `memory_inject_enabled` explicitly set to `false` in `~/.copilot/hooks-config.json` | Explicit opt-out; injection is **on by default** |
-| File is older than max-age | Default max age: 1 day |
-| File does not exist | Always silently skipped |
-| Effective content is empty | Silently skipped |
-
-**Token budget:** content is truncated to an approximate token budget (default 500 tokens,
-estimated at 4 chars/token).  Truncated content ends with `… (truncated to token budget)`.
-
-**Config keys (`~/.copilot/hooks-config.json`):**
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `memory_inject_enabled` | bool | `true` | Set to `false` to disable injection entirely |
-| `memory_inject_max_age_days` | number | `1` | Max MEMORY.md age in days (e.g. `0.5` = 12 h) |
-| `memory_inject_max_tokens` | int | `500` | Approximate token cap for injected content |
-
-**Example `~/.copilot/hooks-config.json`:**
-
-```json
-{
-  "memory_inject_enabled": true,
-  "memory_inject_max_age_days": 1,
-  "memory_inject_max_tokens": 500
-}
-```
-
-**Example — disable injection:**
-
-```bash
-# Add to ~/.copilot/hooks-config.json:
-# { "memory_inject_enabled": false }
-```
-
-**Example — keep injection fresh (12-hour max age):**
-
-```json
-{
-  "memory_inject_enabled": true,
-  "memory_inject_max_age_days": 0.5
-}
 ```
 
 The managed `hooks.json` prefers `sk hooks run <event>` when `sk` is in PATH. Bash falls back to `python3 hook_runner.py`; PowerShell falls back to `python hook_runner.py`. Install the launcher first: `python install.py --install-sk`.
@@ -662,10 +473,8 @@ python3 ~/.copilot/tools/tentacle.py status                # dashboard: all tent
 
 # 6. Sub-agent: cross-review then write structured handoff when done
 #    Re-read every changed file, then write handoff with --status and --changed-file receipts
-#    Use --bridge to link this tentacle's outcome to a goal success criterion (repeatable)
 python3 ~/.copilot/tools/tentacle.py handoff api-export "Completed API export. OpenAPI schema written." \
-  --status DONE --changed-file src/api/schema.py --changed-file src/api/auth.py \
-  --bridge sc-1 --learn
+  --status DONE --changed-file src/api/schema.py --changed-file src/api/auth.py --learn
 
 # 7. Orchestrator: verify results and close
 python3 ~/.copilot/tools/tentacle.py complete api-export   # marks done, auto-learns from handoff
@@ -769,15 +578,6 @@ sk tentacle goal init --title "Implement auth" [--desc "..."] [--force] \
   [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]
 # fallback: python3 ~/.copilot/tools/tentacle.py goal init --title "Implement auth"
 
-# Create a goal with optional initial success criteria (alias for goal init + criteria add)
-sk tentacle goal create --title "Implement auth" [--desc "..."] [--force] \
-  [--max-iterations N] [--max-tentacles N] [--timeout MINUTES] \
-  [--criterion '{"description":"tests pass","verification_command":"pytest"}'] \
-  [--criterion '{"id":"sc-docs","description":"docs build","verification_command":"mkdocs build"}']
-# fallback: python3 ~/.copilot/tools/tentacle.py goal create --title "Implement auth" --criterion '...'
-# --criterion is repeatable; each value must be a JSON object with optional keys:
-#   id, description, verification_command
-
 # Check current goal text, or dry-run a proposed title/description before init
 sk tentacle goal validate [--title "Implement auth"] [--desc "..."] [--format text|json]
 # fallback: python3 ~/.copilot/tools/tentacle.py goal validate --title "Implement auth"
@@ -785,25 +585,18 @@ sk tentacle goal validate [--title "Implement auth"] [--desc "..."] [--format te
 # Show current goal state (linked tentacles, gates, budget, criteria)
 sk tentacle goal status [--format text|json]
 
-# Generate a concurrency-limited dispatch plan for the current iteration
-sk tentacle goal dispatch [--concurrency N] [--agent-type general-purpose] \
-  [--model claude-sonnet-4.6] [--briefing] [--worktree] [--format text|json]
-
-# Link a tentacle to the goal for tracking
+# Link a completed tentacle to the goal for tracking
 sk tentacle goal link <tentacle-name>
 
 # Evaluate after each Verify phase — advance iteration or change status
-sk tentacle goal eval [--decision continue|pause|complete|abandon] [--notes "..."]
+sk tentacle goal eval [--decision continue|pause|complete|abandon] [--notes "..."] \
+  [--force-over-budget]
 
 # Resume a paused or abandoned goal
 sk tentacle goal resume [--reset-failed] [--from-iteration N]
 
 # Summarize iteration state and advise on the next step
 sk tentacle goal next-iter
-
-# Render continuation context for the current iteration (inject into next wave)
-sk tentacle goal context [--format text|json] [--write] [--max-handoffs N]
-# fallback: python3 ~/.copilot/tools/tentacle.py goal context
 ```
 
 `goal.json` keeps a backward-compatible flat `tentacles` list and a structured `iterations`
@@ -833,33 +626,6 @@ returns the same `iterations` object. Use that JSON when you need to answer ques
 Goal updates now use `.octogent/goal.json.lock` for exclusive writes. The CLI waits up to
 30 seconds for that lock and uses PID-aware stale-lock cleanup before retrying.
 
-### Dependency-aware goal dispatch
-
-`goal dispatch` reads the tentacles linked to the current iteration, checks each tentacle's
-pending todos, and prints the exact `sk tentacle dispatch ...` commands that are ready to run
-now. Use it when you want a clear dispatch wave instead of guessing which tentacles can start.
-
-```bash
-# Create tentacles with explicit dependencies for the current goal wave
-sk tentacle create prep-db --desc "Prepare migration plan"
-sk tentacle create apply-db --desc "Apply migration safely" --depends-on prep-db
-
-# Ask the goal loop which tentacles are ready right now
-sk tentacle goal dispatch --concurrency 2 --briefing --worktree
-# fallback: python3 ~/.copilot/tools/tentacle.py goal dispatch --concurrency 2 --briefing --worktree
-```
-
-Dispatch rules:
-
-- Tentacles with satisfied dependencies and pending todos are selected up to `--concurrency`.
-- Tentacles waiting on dependencies, already active, or out of pending todos are deferred with a reason.
-- Tentacles blocked by failed dependencies stay visible in the plan, but they do not keep `goal eval` stuck forever.
-- Tentacle dependencies are stored in `meta.json` as `todo_deps` and can be set at create time with `--depends-on a,b,c`.
-
-`goal eval --decision continue|complete` now refuses to move forward until every tentacle in the
-current iteration has either written a terminal handoff or reached a completed state. That keeps
-the goal loop honest: dispatch first, wait for tentacles to resolve, then evaluate.
-
 ### Goal text budget
 
 `goal validate` checks the combined length of the goal title and description. If the total is
@@ -869,7 +635,7 @@ same check, so over-limit goals are rejected before they become active.
 
 ### Resume with state reset
 
-`goal resume` re-activates a paused, abandoned, `needs-human`, or `budget_limited` goal. Two optional flags let
+`goal resume` re-activates a paused, abandoned, or `needs-human` goal. Two optional flags let
 operators reset tentacle state at the same time:
 
 ```bash
@@ -908,41 +674,11 @@ Both flags can be used together in one command. In all cases:
 sk tentacle goal criteria add --desc "All 186 tests pass" --id sc-1 \
   [--verify-cmd "python3 run_all_tests.py"]
 
-# Run verify commands for all criteria (or one by --id) and record pass/fail + evidence
+# Run verify commands for all criteria (or one by --id) and record pass/fail
 sk tentacle goal criteria check [--id sc-1] [--timeout 60]
-
-# Single-pass alias: run all criteria verification once (alias for goal criteria check)
-sk tentacle goal verify [--id sc-1] [--timeout 60]
-# fallback: python3 ~/.copilot/tools/tentacle.py goal verify
 
 # List all criteria and their current status
 sk tentacle goal criteria list
-
-# Show which criteria are covered by completed tentacles (via --bridge links)
-sk tentacle goal coverage [--format text|json]
-# fallback: python3 ~/.copilot/tools/tentacle.py goal coverage
-```
-
-`goal coverage` reads `bridge_links` from each completed tentacle's `meta.json` and prints a
-per-criterion row showing which tentacles linked to it. Uncovered criteria and orphan bridge
-IDs (criterion IDs that appear in bridge links but are not in `goal.json`) are flagged at the
-end. Use this after `goal eval` to verify that all criteria are accounted for before closing.
-
-After `goal verify` (or `goal criteria check`) runs, each criterion in `goal.json` is updated
-with `status` (`verified` or `failed`), a timestamp (`verified_at` / `failed_at`), and the
-`evidence` field containing the first 500 characters of the command's combined stdout+stderr output.
-
-`goal.json` criterion schema (each entry in `success_criteria`):
-
-```json
-{
-  "id": "sc-1",
-  "description": "All 186 tests pass",
-  "verification_command": "python3 run_all_tests.py",
-  "status": "verified",
-  "verified_at": "2026-05-11T10:00:00+00:00",
-  "evidence": "186 passed in 7.55s\n"
-}
 ```
 
 ### Gates
@@ -965,8 +701,6 @@ sk tentacle goal gate approve G1 [--reason "QA signed off on 2025-05-11"]
 # fallback: python3 ~/.copilot/tools/tentacle.py goal gate approve G1 --reason "..."
 
 # 2b. Reject — marks the gate rejected, sets goal status to awaiting-gate
-#     (if goal is budget_limited, status stays budget_limited — adjust limits with
-#      `goal budget` if needed, then run `goal resume` first)
 sk tentacle goal gate reject G1 --reason "QA found regressions in auth flow"
 # fallback: python3 ~/.copilot/tools/tentacle.py goal gate reject G1 --reason "..."
 # Note: --reason is required for reject.
@@ -1015,36 +749,32 @@ sk tentacle goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINU
   [--format text|json]
 ```
 
-**Enforced budget limits** — when an operator runs `goal eval --decision continue` and the
-goal is already over any budget limit, the eval is blocked: the goal transitions to
-`budget_limited` status and the reason is persisted in `goal.json`. Further `eval` commands
-are rejected until the goal is resumed. To continue past the original limit:
+### Budget override (`--force-over-budget`)
+
+When `goal eval --decision continue` detects that the goal has exceeded its configured
+iteration, tentacle, or timeout budget, it escalates the goal status to `needs-human` and
+prints advisory next steps. The explicit override path is:
 
 ```bash
-# 1. Increase the limit
-sk tentacle goal budget --max-iterations 5
-# 2. Resume the goal (clears budget_limited status and reason)
-sk tentacle goal resume
-# 3. Continue the goal loop normally
+# 1. Extend the budget first (preferred path — avoids the needs-human status)
+sk tentacle goal budget --max-iterations <new-n>
+# then retry eval normally:
 sk tentacle goal eval --decision continue
+
+# 2. Or bypass the budget guard intentionally (use with care)
+sk tentacle goal resume                                      # clear needs-human status
+sk tentacle goal eval --decision continue --force-over-budget
+# fallback: python3 ~/.copilot/tools/tentacle.py goal eval --decision continue --force-over-budget
 ```
 
-`goal status` shows the `budget_limited` status and reason:
+`--force-over-budget` suppresses the `needs-human` escalation and advances the iteration
+counter even when a budget limit is exceeded. It prints a warning line showing which budget
+dimension was overrun. Use it only when you have deliberately decided to continue past the
+original budget estimate — not as a routine workaround.
 
-```
-Status:    budget_limited
-Budget:
-  Iterations: 4/3 ⚠️  OVER BUDGET
-
-🚫 Budget limit reached: iteration 4 exceeds max_iterations=3
-   Stopped at: 2026-05-11T10:00:00
-   To continue: adjust limits with `goal budget` (e.g. --max-iterations N, --max-tentacles N, or --timeout MINUTES) then `goal resume`.
-```
-
-Note: While a goal is **active** and merely over budget, only `--decision continue` triggers the
-`budget_limited` transition — `pause`, `complete`, and `abandon` are not blocked at that point.
-Once the status is already `budget_limited`, **all** eval decisions are blocked until `goal
-resume` clears the status.
+**Two-step requirement:** if the goal is already in `needs-human` status, run `goal resume`
+first to re-activate it before calling `eval --force-over-budget`. Attempting `goal eval`
+while the goal is in `needs-human` status exits with an error.
 
 ### Verify-loop
 
@@ -1076,67 +806,17 @@ are printed: inspect failing criteria (`goal criteria list`), review history (`g
 json`), fix the underlying issues manually or with targeted tentacles, then run `goal resume` to
 re-activate the goal before re-running `goal verify-loop`.
 
-`goal verify-loop` will not run — and `--escalate` will not overwrite — a goal whose status is
-already `budget_limited`, `needs-human`, `completed`, or `abandoned`.  Run `goal resume` first
-to re-activate the goal before re-running `goal verify-loop`.
-
-### Goal continuation context
-
-`goal context` renders a compact markdown summary of the current goal iteration — suitable
-for injection into the next agent wave so it can resume with full situational awareness.
-
-```bash
-# Print continuation context to stdout (default: text/markdown)
-sk tentacle goal context
-# fallback: python3 ~/.copilot/tools/tentacle.py goal context
-
-# Machine-readable JSON output (includes budget, remaining_criteria, prior_handoffs)
-sk tentacle goal context --format json
-
-# Write artifact to .octogent/goal-context.md (also printed to stdout)
-sk tentacle goal context --write
-
-# Limit prior handoff summaries included (default: 5)
-sk tentacle goal context --max-handoffs 3
-```
-
-The rendered context contains: **objective**, **iteration** (current/max), **budget** (iterations/tentacles/time remaining), **progress** (N/total criteria verified), **remaining criteria** (ID + description), and **prior handoff summaries** (last N entries from linked tentacles).
-
-`--format json` returns a structured object with these top-level keys:
-`title`, `iteration`, `criteria_verified`, `criteria_total`, `budget`, `remaining_criteria`, `prior_handoffs`.
-
-**Auto-generation** — the artifact is written automatically (without `--write`) by two commands:
-
-- `goal eval --decision continue` — updates `.octogent/goal-context.md` after advancing the iteration, so the next wave can read it without a manual step.
-- `goal resume` — updates `.octogent/goal-context.md` when re-activating a paused, abandoned, or `needs-human` goal.
-
-**Bundle injection** — when `tentacle bundle` (or `tentacle dispatch`) materializes a runtime
-bundle for a tentacle that is linked to the current goal, the goal continuation context is
-automatically included in the bundle as `goal-context.md`. Sub-agents should read this file
-(if present) to understand the overarching objective, remaining criteria, and recent handoff
-history before editing any code. See [Architecture — Tentacle Bundle Artifacts](ARCHITECTURE.md#bundle-artifacts) for the
-contract details.
-
 ### Typical orchestrator cycle
 
 ```
-goal create --title "..." [--criterion JSON] ... → goal dispatch → handoffs collected
-  → goal verify / goal gate pass → goal eval --decision continue
+goal init → (dispatch wave of tentacles) → handoffs collected
+  → goal gate pass / goal criteria check → goal eval --decision continue
   → (new wave if goal unmet) → goal eval --decision complete → git commit + close
-
-Bridge-link path:
-  handoff <name> "..." --status DONE --bridge sc-1  (sub-agent links to a criterion)
-  → goal coverage  (orchestrator checks which criteria are covered and flags gaps)
 
 Human gate path:
   goal gate add G1 → (human reviews) → goal gate approve/reject G1
   → if rejected: fix issues, goal gate approve G1, then retry goal eval
   → if awaiting-gate and resolved: goal resume, then retry goal eval
-
-Budget-limited path:
-  goal eval --decision continue (while over budget) → status = budget_limited
-  → goal budget [--max-iterations N] [--max-tentacles N] [--timeout MINUTES] (adjust the exceeded limit)
-  → goal resume → goal eval --decision continue (continues loop)
 ```
 
 Record goal-eval evidence with:

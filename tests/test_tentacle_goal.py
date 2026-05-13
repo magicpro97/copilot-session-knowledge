@@ -24,7 +24,7 @@ import types
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 # ---------------------------------------------------------------------------
 # Path setup
@@ -309,7 +309,6 @@ class TestGoalCriteriaRunOne(unittest.TestCase):
         self.assertNotEqual(code, 0)
 
     def test_timeout_returns_minus_one(self):
-        mock_proc = MagicMock()
         import subprocess
 
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 1)):
@@ -2987,7 +2986,6 @@ class TestGoalEvalBudgetEscalation(unittest.TestCase):
         args = _fake_args(goal_action="eval", decision="continue", notes="", force_over_budget=False)
         with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
             T._cmd_goal_eval(args, self.tentacles)
-        combined = "\n".join(captured)
         # Locate the advisory lines for force-over-budget and complete.
         force_line = next((l for l in captured if "force-over-budget" in l), None)
         complete_line = next((l for l in captured if "--decision complete" in l and "resume" in l), None)
@@ -3018,8 +3016,6 @@ class TestGoalEvalBudgetEscalation(unittest.TestCase):
 
     def test_budget_text_lines_show_remaining_for_timeout(self):
         """_goal_budget_text_lines shows remaining minutes when under timeout budget."""
-        from unittest.mock import MagicMock  # noqa: F401
-
         bs = {
             "max_iterations": None,
             "current_iteration": 1,
