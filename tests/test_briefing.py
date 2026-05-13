@@ -24,6 +24,7 @@ import importlib.util
 import os
 import sqlite3
 import sys
+import tempfile
 import textwrap
 from pathlib import Path
 
@@ -309,8 +310,6 @@ test("zero half_life returns 1.0", _b._recency_decay(_old_30, half_life_days=0.0
 
 print("\n⚙️  _get_briefing_half_life  (issue #89)")
 
-REPO = Path(__file__).parent.parent
-
 
 def _make_cfg_db(path, half_life=None):
     """Create a minimal DB with optional wakeup_config entry."""
@@ -466,13 +465,8 @@ def _ins(db, title, content, category, confidence, intensity, last_seen):
     return eid
 
 
-import importlib.util as _ilu
-
-_rnk_db_path = REPO / "_test_briefing_ranking.db"
-try:
-    _rnk_db_path.unlink(missing_ok=True)
-except Exception:
-    pass
+_rnk_tmpdir = tempfile.TemporaryDirectory()
+_rnk_db_path = Path(_rnk_tmpdir.name) / "ranking.db"
 
 _rdb = _make_ranking_db(_rnk_db_path)
 _now2 = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
@@ -533,23 +527,26 @@ test("wakeup_config half-life=7 returned correctly",
      _hl_from_cfg == 7.0, f"got {_hl_from_cfg}")
 
 try:
-    _rnk_db_path.unlink(missing_ok=True)
+    _rnk_tmpdir.cleanup()
 except Exception:
     pass
 
 
-# ── 14. generate_briefing merged rerank path — semantic-intensity regression ──
+# ── 14. generate_briefing merged rerank path — mocked FTS+semantic ordering ──
 #
-# Regression for issue #89 blocker: search_semantic used to omit `intensity`
-# from its SELECT, causing semantic-only hits to be silently scored using the
-# confidence fallback in _recency_composite_score instead of their real intensity.
+# Verifies the _recency_composite_score contract in generate_briefing's merged
+# rerank step using fully-mocked search functions (both FTS and semantic are
+# replaced by return_value mocks — no real DB query or vector lookup occurs).
 #
-# The scenario uses SAME-RECENCY entries so that ordering depends purely on
-# intensity.  The FTS entry has intensity=0.75 and the semantic entry has
-# real intensity=0.85.  When intensity is carried correctly the semantic entry
-# wins (0.85 > 0.75).  When intensity is missing the confidence fallback kicks in
-# (confidence=0.65 < FTS 0.75) — the ordering FLIPS and the test fails.  That
-# means this test will catch a regression if search_semantic drops intensity.
+# The scenario uses SAME-RECENCY entries so ordering depends purely on intensity:
+#   FTS entry (intensity=0.75) vs semantic entry (intensity=0.85 or missing).
+# When intensity is present the semantic entry wins (0.85 > 0.75).
+# When intensity is absent the confidence fallback (0.65) < FTS intensity (0.75)
+# — the ordering FLIPS, confirming that _recency_composite_score uses the field
+# correctly.
+#
+# Note: this section does NOT prove that the real search_semantic() SELECT
+# carries intensity from the DB — that guarantee is provided by Section 15.
 
 print("\n🔗 generate_briefing merged rerank — semantic-intensity regression  (issue #89)")
 
