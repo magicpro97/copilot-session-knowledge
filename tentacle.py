@@ -3169,8 +3169,12 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
                     for line in _goal_budget_text_lines(bs, show_unset=False):
                         print(f"   {line}")
                     print("\n   Advisory next steps (run `goal resume` before any `goal eval`):")
-                    print("   1. Extend budget: `goal budget --max-iterations <n>` / `--max-tentacles <n>` / `--timeout <n>`")
-                    print("   2. Force continue with override: `goal resume` then `goal eval --decision continue --force-over-budget`")
+                    print(
+                        "   1. Extend budget: `goal budget --max-iterations <n>` / `--max-tentacles <n>` / `--timeout <n>`"
+                    )
+                    print(
+                        "   2. Force continue with override: `goal resume` then `goal eval --decision continue --force-over-budget`"
+                    )
                     print("   3. Complete if goal is done: `goal resume` then `goal eval --decision complete`")
                     print("   4. Resume after budget update: `goal resume` then `goal eval --decision continue`")
                     return
