@@ -6348,13 +6348,11 @@ class TestQuotaRetryQueue(unittest.TestCase):
         self.assertIn("blocked_at", queue[0])
 
     def test_append_multiple_entries(self):
-        T._append_quota_retry_entry(self.tentacles.parent.parent, self.tentacles, "rate_limit", None)
-        T._append_quota_retry_entry(self.tentacles.parent.parent, self.tentacles, "daily_quota", "tomorrow")
-        # Use direct call instead
         T._append_quota_retry_entry("worker-a", self.tentacles, "rate_limit", None)
         T._append_quota_retry_entry("worker-b", self.tentacles, "daily_quota", "tomorrow")
         state = T._goal_load(self.tentacles)
         queue = state.get("quota_retry_queue", [])
+        self.assertEqual(len(queue), 2)
         names = [e["tentacle"] for e in queue]
         self.assertIn("worker-a", names)
         self.assertIn("worker-b", names)

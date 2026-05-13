@@ -5413,9 +5413,6 @@ def cmd_complete(args):
     terminal_status = None
     changed_files: list[str] = []
     bridge_links: list[str] = []
-    # 2a. Extract structured handoff fields (terminal_status, changed_files, quota metadata)
-    terminal_status = None
-    changed_files: list[str] = []
     quota_reason: str | None = None
     retry_hint: str | None = None
     if handoff_path.exists():
