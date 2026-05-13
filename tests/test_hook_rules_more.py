@@ -353,7 +353,7 @@ def _make_fake_tentacle(tmp_dir: Path, initial_status: str, title: str = "Test G
     tentacles_dir = octogent / "tentacles"
     tentacles_dir.mkdir(parents=True, exist_ok=True)
     goal_path = octogent / "goal.json"
-    initial_state = {"title": title, "status": initial_status, "id": "test-goal-1"}
+    initial_state = {"title": title, "status": initial_status, "goal_id": "test-goal-1"}
     goal_path.write_text(json.dumps(initial_state, indent=2), encoding="utf-8")
 
     class FakeTentacle:
@@ -408,10 +408,11 @@ try:
     test("active goal → breadcrumb file written", bc_path.exists())
     if bc_path.exists():
         bc = json.loads(bc_path.read_text(encoding="utf-8"))
-        test("breadcrumb has goal_id", "goal_id" in bc and bc["goal_id"])
+        test("breadcrumb has goal_id", "goal_id" in bc and bc["goal_id"] == "test-goal-1")
+        test("breadcrumb has goal_title", "goal_title" in bc and bc.get("goal_title") == "My Active Goal")
         test("breadcrumb has goal_path", "goal_path" in bc)
         test("breadcrumb has pause_reason", "session_end" in bc.get("pause_reason", ""))
-        test("breadcrumb has resume_command", "tentacle.py goal resume" in bc.get("resume_command", ""))
+        test("breadcrumb has resume_command", bc.get("resume_command") == "sk tentacle goal resume")
         test("breadcrumb has paused_at", "paused_at" in bc)
         test("breadcrumb previous_status is active", bc.get("previous_status") == _GOAL_ACTIVE)
 finally:
@@ -541,7 +542,7 @@ try:
     tentacles9.mkdir(parents=True, exist_ok=True)
     goal_path9 = octogent9 / "goal.json"
     # Write a valid active goal so exists() check passes at the outer level.
-    original_content = json.dumps({"title": "TOCTOU Goal", "status": "active", "id": "toctou-1"}, indent=2)
+    original_content = json.dumps({"title": "TOCTOU Goal", "status": "active", "goal_id": "toctou-1"}, indent=2)
     goal_path9.write_text(original_content, encoding="utf-8")
 
     write_call_args: list = []

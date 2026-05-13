@@ -129,7 +129,8 @@ def _pause_active_goal(reason: str) -> None:
                 raise _GoalAbsent()
             prev = state.get("status", "")
             captured["prev_status"] = prev
-            captured["title"] = state.get("title") or state.get("id") or ""
+            captured["goal_id"] = state.get("goal_id") or ""
+            captured["title"] = state.get("title") or ""
             if prev in _PAUSE_STATES:
                 state["status"] = "paused"
                 state["paused_at"] = paused_at
@@ -146,10 +147,11 @@ def _pause_active_goal(reason: str) -> None:
 
         breadcrumb_path = goal_path.parent / _BREADCRUMB_FILENAME
         breadcrumb = {
-            "goal_id": captured.get("title") or str(goal_path),
+            "goal_id": captured.get("goal_id") or "",
+            "goal_title": captured.get("title") or "",
             "goal_path": str(goal_path),
             "pause_reason": f"session_end:{reason}",
-            "resume_command": "python ~/.copilot/tools/tentacle.py goal resume",
+            "resume_command": "sk tentacle goal resume",
             "paused_at": paused_at,
             "previous_status": captured["prev_status"],
         }
@@ -159,6 +161,17 @@ def _pause_active_goal(reason: str) -> None:
 
 
 class SessionEndRule(Rule):
+    """Rule that runs on sessionEnd to clean up markers, log the session close,
+    and pause any in-flight goal loop.
+
+    Responsibilities:
+    - Delete session-scoped marker files for the ending session.
+    - Append an entry to the session log.
+    - Pause an active/awaiting-gate goal (via _pause_active_goal) and write a
+      goal-resume-breadcrumb.json alongside goal.json so the next session can
+      quickly identify and resume the interrupted work.
+    """
+
     name = "session-end"
     events = ["sessionEnd"]
 

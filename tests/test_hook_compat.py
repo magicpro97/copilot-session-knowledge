@@ -2210,8 +2210,8 @@ def test_session_lifecycle_has_goal_pause():
     )
     test(
         "session_lifecycle.py writes resume_command in breadcrumb",
-        "resume_command" in content and "tentacle.py goal resume" in content,
-        "breadcrumb must include resume_command pointing to tentacle.py goal resume",
+        "resume_command" in content and "sk tentacle goal resume" in content,
+        "breadcrumb must include resume_command pointing to sk tentacle goal resume",
     )
 
 

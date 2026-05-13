@@ -76,7 +76,8 @@ def _pause_active_goal(reason: str) -> None:
                 raise _GoalAbsent()
             prev = state.get("status", "")
             captured["prev_status"] = prev
-            captured["title"] = state.get("title") or state.get("id") or ""
+            captured["goal_id"] = state.get("goal_id") or ""
+            captured["title"] = state.get("title") or ""
             if prev in _PAUSE_STATES:
                 state["status"] = "paused"
                 state["paused_at"] = paused_at
@@ -93,10 +94,11 @@ def _pause_active_goal(reason: str) -> None:
 
         breadcrumb_path = goal_path.parent / _BREADCRUMB_FILENAME
         breadcrumb = {
-            "goal_id": captured.get("title") or str(goal_path),
+            "goal_id": captured.get("goal_id") or "",
+            "goal_title": captured.get("title") or "",
             "goal_path": str(goal_path),
             "pause_reason": f"session_end:{reason}",
-            "resume_command": "python ~/.copilot/tools/tentacle.py goal resume",
+            "resume_command": "sk tentacle goal resume",
             "paused_at": paused_at,
             "previous_status": captured["prev_status"],
         }
