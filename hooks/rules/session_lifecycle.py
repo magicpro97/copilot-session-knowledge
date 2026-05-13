@@ -1,8 +1,10 @@
 """Session lifecycle rules."""
 
+import json as _json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import Rule
@@ -34,6 +36,22 @@ _ID_KEYS = {
     "agent_id",
 }
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+# Goal statuses that are in-flight and should be paused on session end.
+_PAUSE_STATES: frozenset[str] = frozenset({"active", "awaiting-gate"})
+
+# Filename written alongside goal.json as a resume hint.
+_BREADCRUMB_FILENAME = "goal-resume-breadcrumb.json"
+
+
+class _GoalAbsent(Exception):
+    """Raised inside _mutate to abort _goal_transact when goal is absent or malformed.
+
+    TOCTOU guard: goal_path.exists() may pass before _goal_transact acquires the
+    lock, but if the file disappears or becomes malformed in that window,
+    _goal_load returns {}.  Raising this exception from _mutate prevents
+    _goal_write from recreating goal.json with an empty/skeletal state.
+    """
 
 
 def _extract_stop_hints(payload):
@@ -75,8 +93,84 @@ def _iter_active_entries(marker_data):
     return normalized
 
 
+def _pause_active_goal(reason: str) -> None:
+    """Pause an in-flight goal on session end and write a resume breadcrumb.
+
+    Fail-open: any error, missing tentacles_dir, lock timeout, missing
+    goal.json, or a goal that is already in a terminal state → silent no-op.
+
+    Terminal states that are preserved unchanged:
+        completed, abandoned, paused, needs-human
+    In-flight states that trigger a pause:
+        active, awaiting-gate
+    """
+    if _tentacle_mod is None:
+        return
+    try:
+        tentacles = _tentacle_mod.get_tentacles_dir()
+    except BaseException:
+        # get_tentacles_dir() may call sys.exit(1) when not in a git repo.
+        # Catch SystemExit (BaseException) to stay fail-open.
+        return
+    try:
+        goal_path = _tentacle_mod._goal_path(tentacles)
+        if not goal_path.exists():
+            return
+
+        paused_at = datetime.now(timezone.utc).isoformat()
+        captured: dict = {}
+
+        def _mutate(state: dict) -> None:
+            # TOCTOU guard: _goal_load returns {} when goal.json disappeared or
+            # became malformed between our exists() check and the transaction.
+            # Raise _GoalAbsent so _goal_transact propagates the exception
+            # without calling _goal_write, preventing goal.json recreation.
+            if not state:
+                raise _GoalAbsent()
+            prev = state.get("status", "")
+            captured["prev_status"] = prev
+            captured["goal_id"] = state.get("goal_id") or ""
+            captured["title"] = state.get("title") or ""
+            if prev in _PAUSE_STATES:
+                state["status"] = "paused"
+                state["paused_at"] = paused_at
+                state["pause_reason"] = f"session_end:{reason}"
+                state["updated_at"] = paused_at
+
+        try:
+            _tentacle_mod._goal_transact(tentacles, _mutate)
+        except _GoalAbsent:
+            return  # goal absent/malformed inside transaction — no-op, fail-open
+
+        if captured.get("prev_status") not in _PAUSE_STATES:
+            return  # terminal or absent goal — no breadcrumb needed
+
+        breadcrumb_path = goal_path.parent / _BREADCRUMB_FILENAME
+        breadcrumb = {
+            "goal_id": captured.get("goal_id") or "",
+            "goal_title": captured.get("title") or "",
+            "goal_path": str(goal_path),
+            "pause_reason": f"session_end:{reason}",
+            "resume_command": "sk tentacle goal resume",
+            "paused_at": paused_at,
+            "previous_status": captured["prev_status"],
+        }
+        breadcrumb_path.write_text(_json.dumps(breadcrumb, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass  # fail-open: never let goal-pause crash the session-end hook
+
+
 class SessionEndRule(Rule):
-    """Clean up markers on session end."""
+    """Rule that runs on sessionEnd to clean up markers, log the session close,
+    and pause any in-flight goal loop.
+
+    Responsibilities:
+    - Delete session-scoped marker files for the ending session.
+    - Append an entry to the session log.
+    - Pause an active/awaiting-gate goal (via _pause_active_goal) and write a
+      goal-resume-breadcrumb.json alongside goal.json so the next session can
+      quickly identify and resume the interrupted work.
+    """
 
     name = "session-end"
     events = ["sessionEnd"]
@@ -109,6 +203,9 @@ class SessionEndRule(Rule):
                 fh.write(f"Session ended ({session_id[:8]}): {reason}\n")
         except Exception:
             pass
+
+        # Pause any in-flight goal and write a resume breadcrumb.
+        _pause_active_goal(reason)
 
         return None
 

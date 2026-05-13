@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 if os.name == "nt":
@@ -24,6 +25,86 @@ if os.name == "nt":
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 _env_state = os.environ.get("COPILOT_SESSION_STATE")
 SESSION_STATE = Path(_env_state) if _env_state else Path.home() / ".copilot" / "session-state"
+
+_TOOLS_DIR = Path(__file__).resolve().parent.parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+try:
+    import tentacle as _tentacle_mod  # type: ignore
+except Exception:
+    _tentacle_mod = None
+
+_PAUSE_STATES: frozenset[str] = frozenset({"active", "awaiting-gate"})
+_BREADCRUMB_FILENAME = "goal-resume-breadcrumb.json"
+
+
+class _GoalAbsent(Exception):
+    """Raised inside _mutate to abort _goal_transact when goal is absent or malformed.
+
+    TOCTOU guard: goal_path.exists() may pass before _goal_transact acquires the
+    lock, but if the file disappears or becomes malformed in that window,
+    _goal_load returns {}.  Raising this exception from _mutate prevents
+    _goal_write from recreating goal.json with an empty/skeletal state.
+    """
+
+
+def _pause_active_goal(reason: str) -> None:
+    """Pause an in-flight goal on session end and write a resume breadcrumb.
+
+    Fail-open: any error, missing goal.json, lock timeout, or terminal state → no-op.
+    """
+    if _tentacle_mod is None:
+        return
+    try:
+        tentacles = _tentacle_mod.get_tentacles_dir()
+    except BaseException:
+        return
+    try:
+        goal_path = _tentacle_mod._goal_path(tentacles)
+        if not goal_path.exists():
+            return
+
+        paused_at = datetime.now(timezone.utc).isoformat()
+        captured: dict = {}
+
+        def _mutate(state: dict) -> None:
+            # TOCTOU guard: _goal_load returns {} when goal.json disappeared or
+            # became malformed between our exists() check and the transaction.
+            # Raise _GoalAbsent so _goal_transact propagates the exception
+            # without calling _goal_write, preventing goal.json recreation.
+            if not state:
+                raise _GoalAbsent()
+            prev = state.get("status", "")
+            captured["prev_status"] = prev
+            captured["goal_id"] = state.get("goal_id") or ""
+            captured["title"] = state.get("title") or ""
+            if prev in _PAUSE_STATES:
+                state["status"] = "paused"
+                state["paused_at"] = paused_at
+                state["pause_reason"] = f"session_end:{reason}"
+                state["updated_at"] = paused_at
+
+        try:
+            _tentacle_mod._goal_transact(tentacles, _mutate)
+        except _GoalAbsent:
+            return  # goal absent/malformed inside transaction — no-op, fail-open
+
+        if captured.get("prev_status") not in _PAUSE_STATES:
+            return
+
+        breadcrumb_path = goal_path.parent / _BREADCRUMB_FILENAME
+        breadcrumb = {
+            "goal_id": captured.get("goal_id") or "",
+            "goal_title": captured.get("title") or "",
+            "goal_path": str(goal_path),
+            "pause_reason": f"session_end:{reason}",
+            "resume_command": "sk tentacle goal resume",
+            "paused_at": paused_at,
+            "previous_status": captured["prev_status"],
+        }
+        breadcrumb_path.write_text(json.dumps(breadcrumb, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _has_checkpoints(session_id: str) -> bool:
@@ -68,6 +149,9 @@ def main():
             fh.write(f"Session ended: {reason}\n")
     except Exception:
         pass
+
+    # Pause any in-flight goal and write a resume breadcrumb.
+    _pause_active_goal(reason)
 
     # Opt-in checkpoint reminder: log a hint if no checkpoints were saved.
     # Activated by setting COPILOT_CHECKPOINT_REMIND=1 in the environment.
