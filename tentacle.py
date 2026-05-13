@@ -2538,20 +2538,33 @@ def _goal_budget_text_lines(bs: dict, *, show_unset: bool) -> list[str]:
 
     if bs["max_iterations"] is not None:
         remaining = max(0, bs["max_iterations"] - bs["current_iteration"])
-        over_str = " ⚠️  OVER BUDGET" if bs["over_iterations"] else f" ({remaining} remaining)"
+        if bs["over_iterations"]:
+            over_by = bs["current_iteration"] - bs["max_iterations"]
+            over_str = f" ⚠️  OVER BUDGET (over by {over_by}; extend: `goal budget --max-iterations <n>`)"
+        else:
+            over_str = f" ({remaining} remaining)"
         lines.append(f"Iterations: {bs['current_iteration']}/{bs['max_iterations']}{over_str}")
     elif show_unset:
         lines.append(f"Iterations: {bs['current_iteration']} (no limit set)")
 
     if bs["max_tentacles"] is not None:
-        over_str = " ⚠️  OVER BUDGET" if bs["over_tentacles"] else ""
+        if bs["over_tentacles"]:
+            over_by = bs["tentacle_count"] - bs["max_tentacles"]
+            over_str = f" ⚠️  OVER BUDGET (over by {over_by}; extend: `goal budget --max-tentacles <n>`)"
+        else:
+            over_str = ""
         lines.append(f"Tentacles:  {bs['tentacle_count']}/{bs['max_tentacles']}{over_str}")
     elif show_unset:
         lines.append(f"Tentacles:  {bs['tentacle_count']} (no limit set)")
 
     if bs["timeout_minutes"] is not None:
         if bs["elapsed_minutes"] is not None:
-            over_str = " ⚠️  OVER TIME" if bs["over_timeout"] else ""
+            if bs["over_timeout"]:
+                over_by = round(bs["elapsed_minutes"] - bs["timeout_minutes"], 1)
+                over_str = f" ⚠️  OVER TIME (over by {over_by}m; extend: `goal budget --timeout <n>`)"
+            else:
+                remaining_m = round(bs["timeout_minutes"] - bs["elapsed_minutes"], 1)
+                over_str = f" ({remaining_m}m remaining)"
             lines.append(f"Elapsed:    {bs['elapsed_minutes']}m / {bs['timeout_minutes']}m{over_str}")
         else:
             lines.append(f"Timeout:    {bs['timeout_minutes']}m")
@@ -3127,6 +3140,50 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
             )
             sys.exit(1)
 
+        # Budget check runs before blocking-tentacles so an over-budget goal escalates
+        # to needs-human immediately without confusing "awaiting handoff" noise.
+        if decision == "continue":
+            bs = _goal_budget_status(state)
+            force_over_budget = getattr(args, "force_over_budget", False)
+            if bs["over_budget"]:
+                if not force_over_budget:
+                    # Escalate to needs-human with a dimension-specific reason.
+                    # Inline the mutation here because we already hold _goal_lock and
+                    # calling _escalate_goal_to_needs_human (which uses _goal_transact)
+                    # would deadlock on the non-reentrant threading.Lock.
+                    dims = []
+                    if bs["over_iterations"]:
+                        dims.append("iterations")
+                    if bs["over_tentacles"]:
+                        dims.append("tentacles")
+                    if bs["over_timeout"]:
+                        dims.append("timeout")
+                    reason = "over_budget:" + ",".join(dims)
+                    state["status"] = GOAL_STATUS_NEEDS_HUMAN
+                    state["needs_human_at"] = datetime.now(timezone.utc).isoformat()
+                    state["needs_human_reason"] = reason
+                    state["needs_human_failing_criteria"] = []
+                    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    _goal_write(tentacles, state)
+                    print(f"\n🚨 Goal escalated to '{GOAL_STATUS_NEEDS_HUMAN}' (reason: {reason})")
+                    for line in _goal_budget_text_lines(bs, show_unset=False):
+                        print(f"   {line}")
+                    print("\n   Advisory next steps (run `goal resume` before any `goal eval`):")
+                    print("   1. Extend budget: `goal budget --max-iterations <n>` / `--max-tentacles <n>` / `--timeout <n>`")
+                    print("   2. Force continue with override: `goal resume` then `goal eval --decision continue --force-over-budget`")
+                    print("   3. Complete if goal is done: `goal resume` then `goal eval --decision complete`")
+                    print("   4. Resume after budget update: `goal resume` then `goal eval --decision continue`")
+                    return
+                else:
+                    print("⚠️  WARNING: Goal is over budget (--force-over-budget active; proceeding anyway).")
+                    for line in _goal_budget_text_lines(bs, show_unset=False):
+                        print(f"   {line}")
+            elif bs["max_iterations"] is not None and current_iter >= bs["max_iterations"]:
+                print(
+                    f"⚠️  NOTE: This is the last budgeted iteration "
+                    f"({current_iter}/{bs['max_iterations']}). Consider `--decision complete`."
+                )
+
         if decision in {"continue", "complete"}:
             blocking_tentacles = [
                 entry
@@ -3214,52 +3271,6 @@ def _cmd_goal_eval(args, tentacles: Path) -> None:
                 for c in unverified:
                     print(f"   [{c.get('id', '?')}] {c.get('description', '')[:70]}")
                 print("   Use `goal criteria check` to verify, or proceed anyway.")
-
-        if decision == "continue":
-            bs = _goal_budget_status(state)
-            if bs["over_budget"]:
-                # Build a human-readable reason explaining which limit was breached.
-                reason_parts: list[str] = []
-                if bs["over_iterations"]:
-                    reason_parts.append(f"iteration {current_iter} exceeds max_iterations={bs['max_iterations']}")
-                if bs["over_tentacles"]:
-                    reason_parts.append(
-                        f"tentacle count {bs['tentacle_count']} exceeds max_tentacles={bs['max_tentacles']}"
-                    )
-                if bs["over_timeout"]:
-                    reason_parts.append(
-                        f"elapsed {bs['elapsed_minutes']}m exceeds timeout_minutes={bs['timeout_minutes']}"
-                    )
-                budget_limited_reason = "; ".join(reason_parts) or "budget exceeded"
-
-                eval_entry_budget: dict = {
-                    "iteration": current_iter,
-                    "decision": decision,
-                    "notes": notes,
-                    "evaluated_at": datetime.now(timezone.utc).isoformat(),
-                    "blocked_by_budget": True,
-                    "budget_limited_reason": budget_limited_reason,
-                }
-                history_budget: list = state.setdefault("eval_history", [])
-                history_budget.append(eval_entry_budget)
-                state["status"] = GOAL_STATUS_BUDGET_LIMITED
-                state["budget_limited_reason"] = budget_limited_reason
-                state["budget_limited_at"] = datetime.now(timezone.utc).isoformat()
-                state["updated_at"] = datetime.now(timezone.utc).isoformat()
-                _goal_write(tentacles, state)
-                print(f"🚫 Goal budget exceeded — status set to '{GOAL_STATUS_BUDGET_LIMITED}'.")
-                print(f"   Reason: {budget_limited_reason}")
-                print(
-                    "   To continue past budget, first adjust limits with `goal budget`"
-                    " (e.g. --max-iterations N, --max-tentacles N, or --timeout MINUTES)"
-                    " then resume with `goal resume`."
-                )
-                return
-            elif bs["max_iterations"] is not None and current_iter >= bs["max_iterations"]:
-                print(
-                    f"⚠️  NOTE: This is the last budgeted iteration "
-                    f"({current_iter}/{bs['max_iterations']}). Consider `--decision complete`."
-                )
 
         if current_status == GOAL_STATUS_AWAITING_GATE and decision in {"pause", "abandon"}:
             state.pop("awaiting_gate_id", None)
@@ -6509,6 +6520,13 @@ def main():
         help="Evaluation decision (default: continue)",
     )
     p_goal_eval.add_argument("--notes", default="", help="Optional notes for this evaluation")
+    p_goal_eval.add_argument(
+        "--force-over-budget",
+        dest="force_over_budget",
+        action="store_true",
+        default=False,
+        help="Continue eval even when goal is over budget (bypasses needs-human escalation; use intentionally)",
+    )
 
     # goal resume
     p_goal_resume = p_goal_sub.add_parser("resume", help="Resume a paused/abandoned goal (set status=active)")

@@ -2535,27 +2535,27 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
         bs = T._goal_budget_status(state)
         self.assertTrue(bs["over_iterations"])
 
-        # Second continue eval should be blocked — goal transitions to budget_limited
+        # Second continue eval should be blocked — goal transitions to needs-human
         args2 = _fake_args(goal_action="eval", decision="continue", notes="trying to continue over budget")
         with patch("builtins.print"):
             T._cmd_goal_eval(args2, self.tentacles)
         state = T._goal_load(self.tentacles)
-        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
-        self.assertIn("budget_limited_reason", state)
-        self.assertIn("budget_limited_at", state)
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
+        self.assertIn("needs_human_reason", state)
+        self.assertIn("needs_human_at", state)
 
     def test_budget_limited_blocks_further_eval(self):
-        """eval on a budget_limited goal should error."""
+        """eval on a needs-human (over-budget) goal should error."""
         _init_goal(self.tentacles, title="Budget Limited", max_iterations=1)
         # Advance to iter 2 (over budget)
         args = _fake_args(goal_action="eval", decision="continue", notes="")
         with patch("builtins.print"):
             T._cmd_goal_eval(args, self.tentacles)
-        # Trigger budget_limited
+        # Trigger needs-human escalation
         with patch("builtins.print"):
             T._cmd_goal_eval(args, self.tentacles)
         state = T._goal_load(self.tentacles)
-        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
 
         # Further eval must fail
         args3 = _fake_args(goal_action="eval", decision="complete", notes="")
@@ -2564,7 +2564,7 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
                 T._cmd_goal_eval(args3, self.tentacles)
 
     def test_budget_limited_eval_guidance_mentions_budget_and_resume(self):
-        """Blocked eval with continue on budget_limited must mention goal budget and goal resume."""
+        """Blocked eval on needs-human (over-budget) goal must mention goal resume and needs-human."""
         _init_goal(self.tentacles, title="Budget Guidance Eval", max_iterations=1)
         args_cont = _fake_args(goal_action="eval", decision="continue", notes="")
         with patch("builtins.print"):
@@ -2572,22 +2572,22 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
         with patch("builtins.print"):
             T._cmd_goal_eval(args_cont, self.tentacles)
         state = T._goal_load(self.tentacles)
-        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
 
         import io
 
-        # continue decision still requires goal budget + goal resume
+        # Any eval decision on a needs-human goal fails with a goal-resume mention
         err_buf = io.StringIO()
         with self.assertRaises(SystemExit) as cm:
             with patch("sys.stderr", err_buf):
                 T._cmd_goal_eval(args_cont, self.tentacles)
         self.assertEqual(cm.exception.code, 1)
         err = err_buf.getvalue()
-        self.assertIn("goal budget", err)
+        self.assertIn("needs-human", err)
         self.assertIn("goal resume", err)
 
     def test_budget_limited_eval_non_continue_guidance_only_requires_resume(self):
-        """Blocked eval with non-continue decision on budget_limited must only require goal resume (no goal budget)."""
+        """Blocked eval with non-continue decision on needs-human goal must only require goal resume (no goal budget)."""
         import io
 
         for decision in ("abandon", "complete", "pause"):
@@ -2599,7 +2599,7 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
                 with patch("builtins.print"):
                     T._cmd_goal_eval(args_cont, self.tentacles)
                 state = T._goal_load(self.tentacles)
-                self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+                self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
 
                 args_nc = _fake_args(goal_action="eval", decision=decision, notes="")
                 err_buf = io.StringIO()
@@ -2614,7 +2614,7 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
                 )
 
     def test_budget_limited_dispatch_guidance_mentions_budget_and_resume(self):
-        """Blocked dispatch on budget_limited must mention goal budget and goal resume."""
+        """Blocked dispatch on needs-human (over-budget) goal must mention goal resume."""
         _init_goal(self.tentacles, title="Budget Guidance Dispatch", max_iterations=1)
         args_cont = _fake_args(goal_action="eval", decision="continue", notes="")
         with patch("builtins.print"):
@@ -2622,7 +2622,7 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
         with patch("builtins.print"):
             T._cmd_goal_eval(args_cont, self.tentacles)
         state = T._goal_load(self.tentacles)
-        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
 
         import io
 
@@ -2632,31 +2632,30 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
             with patch("sys.stderr", err_buf):
                 T._cmd_goal_dispatch(args_dispatch, self.tentacles)
         err = err_buf.getvalue()
-        self.assertIn("goal budget", err)
         self.assertIn("goal resume", err)
 
     def test_budget_limited_resume_clears_reason(self):
-        """goal resume on budget_limited clears budget_limited_reason and restores active."""
+        """goal resume on needs-human (over-budget) clears needs_human fields and restores active."""
         _init_goal(self.tentacles, title="Budget Resume", max_iterations=1)
-        # Advance to iter 2 over budget, then trigger budget_limited
+        # Advance to iter 2 over budget, then trigger needs-human escalation
         args_cont = _fake_args(goal_action="eval", decision="continue", notes="")
         with patch("builtins.print"):
             T._cmd_goal_eval(args_cont, self.tentacles)
         with patch("builtins.print"):
             T._cmd_goal_eval(args_cont, self.tentacles)
         state = T._goal_load(self.tentacles)
-        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
 
         args_resume = _fake_args(goal_action="resume", reset_failed=False, from_iteration=None)
         with patch("builtins.print"):
             T._cmd_goal_resume(args_resume, self.tentacles)
         state = T._goal_load(self.tentacles)
         self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
-        self.assertNotIn("budget_limited_reason", state)
-        self.assertNotIn("budget_limited_at", state)
+        self.assertNotIn("needs_human_reason", state)
+        self.assertNotIn("needs_human_at", state)
 
     def test_budget_limited_status_shows_reason(self):
-        """goal status shows budget_limited_reason when status is budget_limited."""
+        """goal status shows needs-human and over-budget info when escalated by budget overrun."""
         _init_goal(self.tentacles, title="Budget Status Show", max_iterations=1)
         args_cont = _fake_args(goal_action="eval", decision="continue", notes="")
         with patch("builtins.print"):
@@ -2664,15 +2663,15 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
         with patch("builtins.print"):
             T._cmd_goal_eval(args_cont, self.tentacles)
         state = T._goal_load(self.tentacles)
-        self.assertEqual(state["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
 
         captured = []
         args_status = _fake_args(goal_action="status", format="text")
         with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
             T._cmd_goal_status(args_status, self.tentacles)
         combined = "\n".join(captured)
-        self.assertIn("budget_limited", combined)
-        self.assertIn("Budget limit reached", combined)
+        self.assertIn("needs-human", combined)
+        self.assertIn("OVER BUDGET", combined)
 
     def test_budget_non_continue_decisions_not_blocked_by_budget(self):
         """pause/complete/abandon decisions are NOT blocked when over budget."""
@@ -2764,6 +2763,320 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
         self.assertIn("Elapsed:", combined)
         self.assertIn("OVER BUDGET", combined)
         self.assertIn("OVER TIME", combined)
+
+
+
+# ---------------------------------------------------------------------------
+# Tests for budget overrun escalation in _cmd_goal_eval (issue #186)
+# ---------------------------------------------------------------------------
+
+
+class TestGoalEvalBudgetEscalation(unittest.TestCase):
+    """Regression coverage for issue #186: budget overrun during goal eval → needs-human.
+
+    Tests cover:
+    - iteration overrun → escalates to needs-human with "over_budget:iterations" reason
+    - tentacle-count overrun → escalates with "over_budget:tentacles" reason
+    - timeout overrun → escalates with "over_budget:timeout" reason
+    - --force-over-budget bypasses escalation and continues
+    - multiple dimensions all appear in the reason string
+    - in-budget eval is not affected
+    - non-continue decisions (complete, pause) are not affected by budget escalation
+    - escalated goal cannot eval until resumed
+    - resume clears the budget escalation metadata
+    """
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "eval_budget_escalation"
+        _rmtree(self.base)
+        _, self.tentacles = _make_octogent(self.base)
+
+    def tearDown(self):
+        _rmtree(self.base)
+
+    def _run_eval(self, decision="continue", notes="", force_over_budget=False):
+        args = _fake_args(
+            goal_action="eval",
+            decision=decision,
+            notes=notes,
+            force_over_budget=force_over_budget,
+        )
+        with patch("builtins.print"):
+            T._cmd_goal_eval(args, self.tentacles)
+        return T._goal_load(self.tentacles)
+
+    def _run_resume(self):
+        args = _fake_args(goal_action="resume", reset_failed=False, from_iteration=None)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        return T._goal_load(self.tentacles)
+
+    # ------------------------------------------------------------------
+    # Dimension-specific escalation tests
+    # ------------------------------------------------------------------
+
+    def test_eval_continue_over_iterations_escalates_needs_human(self):
+        """continue while over iterations budget → needs-human with iterations reason."""
+        _init_goal(self.tentacles, title="Iter Overrun", max_iterations=1)
+        # Iter 1 → not over budget (1 ≤ 1); advances to iter 2.
+        self._run_eval("continue")
+        # Iter 2 → over budget (2 > 1); should escalate.
+        state = self._run_eval("continue")
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
+        self.assertEqual(state["needs_human_reason"], "over_budget:iterations")
+        self.assertIn("needs_human_at", state)
+        self.assertEqual(state["needs_human_failing_criteria"], [])
+
+    def test_eval_continue_over_tentacles_escalates_needs_human(self):
+        """continue while over tentacle-count budget → needs-human with tentacles reason."""
+        _init_goal(self.tentacles, title="Tentacle Overrun", max_tentacles=1)
+        # Inject 2 tentacles to exceed max_tentacles=1.
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["t1", "t2"]
+        T._goal_write(self.tentacles, state)
+        state = self._run_eval("continue")
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
+        self.assertEqual(state["needs_human_reason"], "over_budget:tentacles")
+        self.assertIn("needs_human_at", state)
+
+    def test_eval_continue_over_timeout_escalates_needs_human(self):
+        """continue while over timeout budget → needs-human with timeout reason."""
+        _init_goal(self.tentacles, title="Timeout Overrun", timeout=1)
+        # Set created_at to 2 minutes ago so elapsed > timeout.
+        state = T._goal_load(self.tentacles)
+        state["created_at"] = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        T._goal_write(self.tentacles, state)
+        state = self._run_eval("continue")
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
+        self.assertEqual(state["needs_human_reason"], "over_budget:timeout")
+        self.assertIn("needs_human_at", state)
+
+    def test_eval_continue_over_multiple_dimensions_all_in_reason(self):
+        """continue over both iterations and tentacles → reason lists both dimensions."""
+        _init_goal(self.tentacles, title="Multi Overrun", max_iterations=1, max_tentacles=1)
+        # Advance to iter 2 (over iterations).
+        self._run_eval("continue")
+        # Resume so we can try again; inject over-tentacles state.
+        self._run_resume()
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["t1", "t2"]  # over tentacles too
+        T._goal_write(self.tentacles, state)
+        # Advance to iter 3 — both dims over budget.
+        state = self._run_eval("continue")
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
+        reason = state["needs_human_reason"]
+        self.assertIn("iterations", reason)
+        self.assertIn("tentacles", reason)
+        self.assertTrue(reason.startswith("over_budget:"))
+
+    # ------------------------------------------------------------------
+    # Override path tests
+    # ------------------------------------------------------------------
+
+    def test_eval_continue_force_over_budget_bypasses_escalation(self):
+        """--force-over-budget continues iteration advancement even when over budget."""
+        _init_goal(self.tentacles, title="Force Override", max_iterations=1)
+        # Advance to iter 2 (over budget).
+        self._run_eval("continue")
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(T._goal_current_iteration(state), 2)  # confirm over budget
+        # Force continue should advance to iter 3, not escalate.
+        state = self._run_eval("continue", force_over_budget=True)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertEqual(T._goal_current_iteration(state), 3)
+        self.assertNotIn("needs_human_reason", state)
+
+    def test_eval_continue_force_over_budget_tentacles_bypasses_escalation(self):
+        """--force-over-budget works for tentacle-count overrun too."""
+        _init_goal(self.tentacles, title="Force Tentacles", max_tentacles=1)
+        # Create resolved tentacles so they don't block eval; inject into flat list
+        # to drive tentacle_count above max_tentacles=1.
+        _make_tentacle("t1", self.tentacles, status="completed", terminal_status="DONE")
+        _make_tentacle("t2", self.tentacles, status="completed", terminal_status="DONE")
+        state = T._goal_load(self.tentacles)
+        state["tentacles"] = ["t1", "t2"]
+        T._goal_write(self.tentacles, state)
+        state = self._run_eval("continue", force_over_budget=True)
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertNotIn("needs_human_reason", state)
+
+    # ------------------------------------------------------------------
+    # In-budget and non-continue paths remain unaffected
+    # ------------------------------------------------------------------
+
+    def test_eval_continue_in_budget_unaffected(self):
+        """continue within budget advances iteration normally without escalation."""
+        _init_goal(self.tentacles, title="In Budget", max_iterations=5)
+        state = self._run_eval("continue")
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertEqual(T._goal_current_iteration(state), 2)
+        self.assertNotIn("needs_human_reason", state)
+
+    def test_eval_complete_over_budget_not_blocked(self):
+        """--decision complete is never blocked by budget (budget check is continue-only)."""
+        _init_goal(self.tentacles, title="Complete Over", max_iterations=1)
+        # Advance to iter 2 (over budget).
+        self._run_eval("continue")
+        # Complete decision skips budget escalation path.
+        state = self._run_eval("complete")
+        self.assertEqual(state["status"], T.GOAL_STATUS_COMPLETED)
+
+    def test_eval_pause_over_budget_not_blocked(self):
+        """--decision pause is not affected by budget escalation."""
+        _init_goal(self.tentacles, title="Pause Over", max_iterations=1)
+        # Advance to iter 2 (over budget).
+        self._run_eval("continue")
+        state = self._run_eval("pause")
+        self.assertEqual(state["status"], T.GOAL_STATUS_PAUSED)
+
+    # ------------------------------------------------------------------
+    # Lifecycle integration tests
+    # ------------------------------------------------------------------
+
+    def test_budget_escalated_goal_cannot_eval_until_resumed(self):
+        """A needs-human goal from budget escalation blocks further eval."""
+        _init_goal(self.tentacles, title="Block Eval", max_iterations=1)
+        self._run_eval("continue")
+        self._run_eval("continue")  # escalates
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
+        # Attempting another eval must exit with error.
+        args = _fake_args(goal_action="eval", decision="continue", notes="", force_over_budget=False)
+        with patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                T._cmd_goal_eval(args, self.tentacles)
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_budget_escalation_cleared_on_resume(self):
+        """Resume after budget escalation clears needs_human_* metadata."""
+        _init_goal(self.tentacles, title="Clear On Resume", max_iterations=1)
+        self._run_eval("continue")
+        self._run_eval("continue")  # escalates to needs-human
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state["status"], T.GOAL_STATUS_NEEDS_HUMAN)
+        self.assertIn("needs_human_reason", state)
+        # Resume clears escalation metadata.
+        state = self._run_resume()
+        self.assertEqual(state["status"], T.GOAL_STATUS_ACTIVE)
+        self.assertNotIn("needs_human_reason", state)
+        self.assertNotIn("needs_human_failing_criteria", state)
+        self.assertNotIn("needs_human_at", state)
+
+    def test_budget_escalation_reason_identifies_dimension_iterations(self):
+        """The stored reason must name the failing dimension for operator triage."""
+        _init_goal(self.tentacles, title="Reason Check", max_iterations=1)
+        self._run_eval("continue")
+        state = self._run_eval("continue")
+        reason = state.get("needs_human_reason", "")
+        # Must start with 'over_budget:' and name the dimension.
+        self.assertTrue(reason.startswith("over_budget:"), f"Unexpected reason: {reason}")
+        self.assertIn("iterations", reason, f"Dimension missing in reason: {reason}")
+
+    def test_budget_escalation_advisory_requires_resume_before_force_over_budget(self):
+        """Advisory for force-over-budget path must include 'goal resume' before 'goal eval'.
+
+        Regression for the publish blocker: when the goal is escalated to needs-human,
+        any subsequent 'goal eval' is blocked by the status guard.  The advisory must
+        instruct operators to run 'goal resume' first, otherwise steps 2 and 3 in the
+        printed guidance will immediately fail with SystemExit(1).
+        """
+        _init_goal(self.tentacles, title="Advisory Regression", max_iterations=1)
+        self._run_eval("continue")  # advance to iter 2 (now over budget)
+        # Capture advisory output from the escalating eval.
+        captured = []
+        args = _fake_args(goal_action="eval", decision="continue", notes="", force_over_budget=False)
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_eval(args, self.tentacles)
+        combined = "\n".join(captured)
+        # Locate the advisory lines for force-over-budget and complete.
+        force_line = next((l for l in captured if "force-over-budget" in l), None)
+        complete_line = next((l for l in captured if "--decision complete" in l and "resume" in l), None)
+        self.assertIsNotNone(force_line, "Advisory must mention --force-over-budget")
+        self.assertIn("goal resume", force_line,
+                      "Advisory step for force-over-budget must include 'goal resume' before 'goal eval'")
+        self.assertIsNotNone(complete_line,
+                             "Advisory must include a 'goal resume' then 'goal eval --decision complete' step")
+
+    def test_budget_escalation_advisory_requires_resume_before_complete(self):
+        """Advisory for the 'complete' path must include 'goal resume' before 'goal eval'.
+
+        Verify that the printed step for completing the goal after escalation
+        references 'goal resume' so operators cannot follow the advisory and
+        immediately hit the status guard.
+        """
+        _init_goal(self.tentacles, title="Advisory Complete Regression", max_iterations=1)
+        self._run_eval("continue")  # advance to iter 2 (now over budget)
+        captured = []
+        args = _fake_args(goal_action="eval", decision="continue", notes="", force_over_budget=False)
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_eval(args, self.tentacles)
+        # Every advisory line that mentions 'goal eval' must also mention 'goal resume'.
+        for line in captured:
+            if "goal eval" in line:
+                self.assertIn("goal resume", line,
+                              f"Advisory line mentions 'goal eval' without prior 'goal resume': {line!r}")
+
+    def test_budget_text_lines_show_remaining_for_timeout(self):
+        """_goal_budget_text_lines shows remaining minutes when under timeout budget."""
+        from unittest.mock import MagicMock  # noqa: F401
+
+        bs = {
+            "max_iterations": None,
+            "current_iteration": 1,
+            "over_iterations": False,
+            "max_tentacles": None,
+            "tentacle_count": 0,
+            "over_tentacles": False,
+            "timeout_minutes": 60,
+            "elapsed_minutes": 40.0,
+            "over_timeout": False,
+            "over_budget": False,
+            "budget_status": "active",
+        }
+        lines = T._goal_budget_text_lines(bs, show_unset=False)
+        combined = "\n".join(lines)
+        self.assertIn("remaining", combined)
+        self.assertIn("20.0m", combined)  # 60 - 40 = 20 remaining
+
+    def test_budget_text_lines_show_over_time_with_extend_hint(self):
+        """_goal_budget_text_lines shows over-time message with actionable extend command."""
+        bs = {
+            "max_iterations": None,
+            "current_iteration": 1,
+            "over_iterations": False,
+            "max_tentacles": None,
+            "tentacle_count": 0,
+            "over_tentacles": False,
+            "timeout_minutes": 60,
+            "elapsed_minutes": 75.0,
+            "over_timeout": True,
+            "over_budget": True,
+            "budget_status": "active",
+        }
+        lines = T._goal_budget_text_lines(bs, show_unset=False)
+        combined = "\n".join(lines)
+        self.assertIn("OVER TIME", combined)
+        self.assertIn("goal budget --timeout", combined)
+
+    def test_budget_text_lines_show_over_iterations_with_extend_hint(self):
+        """_goal_budget_text_lines shows over-iterations message with actionable extend command."""
+        bs = {
+            "max_iterations": 3,
+            "current_iteration": 5,
+            "over_iterations": True,
+            "max_tentacles": None,
+            "tentacle_count": 0,
+            "over_tentacles": False,
+            "timeout_minutes": None,
+            "elapsed_minutes": None,
+            "over_timeout": False,
+            "over_budget": True,
+            "budget_status": "active",
+        }
+        lines = T._goal_budget_text_lines(bs, show_unset=False)
+        combined = "\n".join(lines)
+        self.assertIn("OVER BUDGET", combined)
+        self.assertIn("goal budget --max-iterations", combined)
 
 
 # ---------------------------------------------------------------------------
