@@ -66,6 +66,18 @@
 ///     ≥3 files across ≥2 modules.  Read-only (`TrackEditsRule` remains the writer).
 ///     Informational-only.  Fail-open.  Handles both legacy flat-path and new
 ///     JSON-dict marker formats.
+///   - `AutoBugDetectorRule` — postToolUse edit/create (wave13, issue #86):
+///     detects five bug-fix pattern categories (error-handling, null-safety,
+///     guard-clause, async-fix, type-fix) from diff payloads.  On edit:
+///     all five categories active.  On create: null-safety (0.62) and
+///     async-fix (0.62) are enabled; the others remain excluded (0.0).
+///     Calls ``learn.py --mistake`` via subprocess using a 5-minute bucketed
+///     title so repeated detections increment ``occurrence_count`` rather than
+///     being silently dropped.  Writes the ``learn-done`` marker once after
+///     one or more successful learn calls in the same evaluation.  Error-handling old-code check mirrors Python
+///     specificity: only ``raise *Error`` (not bare ``raise``) suppresses new
+///     exception-handling detections.  Informational-only.  Fail-open.
+///     No regex dependency.
 ///   - `SessionEndRule` — sessionEnd: per-session marker cleanup + session.log
 ///     entry.  Ports `hooks/rules/session_lifecycle.py::SessionEndRule`.
 ///     Uses `COPILOT_AGENT_SESSION_ID` env var to scope cleanup to the current
@@ -1022,6 +1034,40 @@ const TRACK_CODE_EXTENSIONS: &[&str] = &[
 /// Mirrors Python `is_session_path(path)` in `hooks/rules/common.py`.
 fn is_track_session_path(path: &str) -> bool {
     path.contains("session-state") || path.contains(".copilot/session-state")
+}
+
+/// Return `true` when `path` should be skipped by `AutoBugDetectorRule`.
+///
+/// Mirrors Python `is_session_path(path)` semantics more precisely than the
+/// broad `is_track_session_path` helper, which matches any path whose name
+/// contains the substring `session-state`.  That is too wide for this rule:
+/// legitimate project files like `src/session-state-manager.py`,
+/// `docs/session-state.md`, or `tests/test_session_state.py` would be
+/// wrongly skipped.
+///
+/// This function only matches:
+///   - Paths containing the literal segment `".copilot/session-state"` (Unix/cross-platform)
+///   - Paths containing the literal segment `".copilot\session-state"` (Windows backslash form)
+///   - Absolute paths whose prefix matches `<HOME>/.copilot/session-state` (or the Windows
+///     backslash equivalent), mirroring Python's `Path(path).resolve().startswith(session_dir)`.
+fn is_auto_bug_session_path(path: &str) -> bool {
+    // Literal segment checks — mirrors Python's `".copilot/session-state" in path` fallback.
+    if path.contains(".copilot/session-state") || path.contains(".copilot\\session-state") {
+        return true;
+    }
+    // Absolute home-relative prefix check — mirrors Python's `Path(path).resolve().startswith(...)`.
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let home_str = home.to_string_lossy();
+        // Unix / macOS: /home/user/.copilot/session-state/...
+        if path.starts_with(format!("{}/.copilot/session-state", home_str).as_str()) {
+            return true;
+        }
+        // Windows: C:\Users\user\.copilot\session-state\...
+        if path.starts_with(format!("{}\\.copilot\\session-state", home_str).as_str()) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Return `true` if `path` has a code extension (case-insensitive).
@@ -3434,6 +3480,713 @@ impl HookRule for VerificationGatePreRule {
 }
 
 // ---------------------------------------------------------------------------
+// AutoBugDetectorRule
+// ---------------------------------------------------------------------------
+
+/// Detect bug-fix patterns in edit/create payloads and record them via
+/// a ``learn.py --mistake`` subprocess call (issue #86, wave13).
+///
+/// Ports ``hooks/rules/auto_bug_detector.py::AutoBugDetectorRule``.
+///
+/// Five detection categories:
+///   - ``error-handling``  — ``try``/``except``, ``.catch()``, ``raise *Error`` added
+///   - ``null-safety``     — ``None``/``null`` guard, ``?.``, ``??``, ``.unwrap_or`` added
+///   - ``guard-clause``    — early-return guard pattern added at function entry
+///   - ``async-fix``       — ``await`` or ``async def/function`` added where absent
+///   - ``type-fix``        — Python type annotation added (edit-only; excluded on create)
+///
+/// Create-path support (conservative):
+///   ``null-safety`` (0.62) and ``async-fix`` (0.62) are enabled on ``create``
+///   payloads because their patterns are specific enough to indicate intentional
+///   safety additions in a brand-new file.  All other categories are excluded
+///   on ``create`` (error-handling, guard-clause, type-fix remain at 0.0).
+///
+/// 5-minute occurrence semantics:
+///   Same file + same category within the same 5-minute bucket share a
+///   bucketed title.  ``learn.py`` deduplicates on ``(category, title)`` and
+///   increments ``occurrence_count`` on repeat calls — counts accumulate
+///   rather than being silently dropped.
+///
+/// learn-done marker:
+///   After a successful ``learn.py`` subprocess call the ``markers/learn-done``
+///   HMAC-signed marker is written so that the enforce-learn gate counts the
+///   auto-detection as a learn event.
+///
+/// Informational-only.  Fail-open at every step.
+pub struct AutoBugDetectorRule;
+
+fn auto_bug_bucket_id() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs()
+        / 300
+}
+
+/// Returns `true` when `text` contains a token-level error-handling indicator.
+///
+/// Matches:
+///   - ``try:`` / ``try{`` / ``try {`` — word-boundary-safe; does NOT match
+///     inside longer words such as ``retry:`` or ``country{``
+///     (mirrors Python ``\btry\s*[:{]``)
+///   - ``except <identifier>`` — word-boundary-safe; does NOT match inside ``noexcept``
+///   - ``.catch(``
+///   - ``raise <Word>Error`` — per-line token check, not file-wide substring
+///   - ``throw new <Word>Error`` — per-line token check, not file-wide substring
+///
+/// A stray ``Error`` in a comment, docstring, or variable name anywhere in
+/// the file does NOT match — it must appear as the suffix of the raised/thrown
+/// identifier on that specific line.
+///
+/// This intentionally does NOT match bare ``raise StopIteration`` so that old
+/// code with non-Error raises does not suppress detection of newly added
+/// ``try/except`` blocks (mirrors Python ``\braise\s+\w+Error\b``).
+fn auto_bug_trimmed_code_part(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('#') || trimmed.starts_with("//") || trimmed.starts_with('*') {
+        return "";
+    }
+    let mut code_part = trimmed;
+    if let Some(p) = code_part.find('#') {
+        code_part = &code_part[..p];
+    }
+    if let Some(p) = code_part.find("//") {
+        code_part = &code_part[..p];
+    }
+    code_part.trim_end()
+}
+
+fn auto_bug_line_has_try_indicator(code_part: &str) -> bool {
+    let bytes = code_part.as_bytes();
+    let needle = b"try";
+    let needle_len = needle.len();
+    let mut start = 0;
+    while start + needle_len <= bytes.len() {
+        if let Some(rel) = bytes[start..].windows(needle_len).position(|w| w == needle) {
+            let abs = start + rel;
+            let preceded_by_word = abs > 0
+                && bytes
+                    .get(abs - 1)
+                    .map(|&b| b.is_ascii_alphanumeric() || b == b'_')
+                    .unwrap_or(false);
+            if !preceded_by_word {
+                let rest = &bytes[abs + needle_len..];
+                let mut i = 0;
+                while i < rest.len() && rest[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                if i < rest.len() && (rest[i] == b':' || rest[i] == b'{') {
+                    return true;
+                }
+            }
+            start = abs + 1;
+        } else {
+            break;
+        }
+    }
+    false
+}
+
+fn auto_bug_line_has_except_indicator(code_part: &str) -> bool {
+    let bytes = code_part.as_bytes();
+    let needle = b"except ";
+    let needle_len = needle.len();
+    let mut start = 0;
+    while start + needle_len <= bytes.len() {
+        if let Some(rel) = bytes[start..].windows(needle_len).position(|w| w == needle) {
+            let abs = start + rel;
+            let preceded_by_word = abs > 0
+                && bytes
+                    .get(abs - 1)
+                    .map(|&b| b.is_ascii_alphanumeric() || b == b'_')
+                    .unwrap_or(false);
+            if !preceded_by_word {
+                return true;
+            }
+            start = abs + 1;
+        } else {
+            break;
+        }
+    }
+    false
+}
+
+fn auto_bug_has_error_indicator(text: &str) -> bool {
+    // Scan each line individually so comment-only lines and inline trailing comments
+    // (e.g. `// throw new TypeError`) do not spuriously count as real error handling.
+    for line in text.lines() {
+        let code_part = auto_bug_trimmed_code_part(line);
+        if code_part.is_empty() {
+            continue;
+        }
+        if auto_bug_line_has_try_indicator(code_part)
+            || auto_bug_line_has_except_indicator(code_part)
+            || code_part.contains(".catch(")
+        {
+            return true;
+        }
+        // `raise SomeError` / `raise SomeError(...)`
+        if let Some(after) = code_part.strip_prefix("raise ") {
+            let word_end = after
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(after.len());
+            let word = &after[..word_end];
+            if !word.is_empty() && word.ends_with("Error") {
+                return true;
+            }
+        }
+        // `throw new TypeError(...)` / `throw new SomeError`
+        if let Some(idx) = code_part.find("throw new ") {
+            let after = &code_part[idx + "throw new ".len()..];
+            let word_end = after
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(after.len());
+            let word = &after[..word_end];
+            if !word.is_empty() && word.ends_with("Error") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Returns `true` when `text` contains a null-safety indicator.
+///
+/// For `is None` / `is not None` and `== null` / `!= null` / `=== null` /
+/// `!== null`: the pattern **must** appear inside a conditional `if` statement —
+/// i.e., the trimmed line must start with `"if "` or `"if("`.
+/// Raw non-conditional forms such as:
+///   - `assert x is None`
+///   - `return x is None`
+///   - `x = result is None`
+///   - `x == null` (bare comparison)
+///   - `assert x == null`
+///   - `return x == null`
+///   - comments or docstrings containing these forms
+///
+/// are **not** counted, mirroring Python's structured-form requirement.
+///
+/// Line-level indicators (`?.`, `??`, `.unwrap_or(`, `.ok_or(`) do not
+/// require an `if` prefix, but they are still checked on the comment-stripped
+/// code portion of each line so comment-only occurrences do not fire.
+fn auto_bug_has_null_safety_indicator(text: &str) -> bool {
+    // Null-safety indicators are checked per non-comment line so comment-only
+    // occurrences do NOT fire.
+    const SIMPLE: &[&str] = &[".unwrap_or(", ".ok_or(", "?.", "??"];
+    // `is None` / `is not None` and `== null` / `!= null` / `=== null` / `!== null`
+    // all require a leading `if` on the same trimmed line, mirroring Python's
+    // structured-form requirement so bare boolean expressions, assertions,
+    // assignments, and comments do not spuriously detect.
+    const NULL_CMP: &[&str] = &["== null", "=== null", "!= null", "!== null"];
+    for line in text.lines() {
+        let code_part = auto_bug_trimmed_code_part(line);
+        if code_part.is_empty() {
+            continue;
+        }
+        if SIMPLE.iter().any(|indicator| code_part.contains(indicator)) {
+            return true;
+        }
+        let structured_part = code_part;
+        let is_if_line = structured_part.starts_with("if ") || structured_part.starts_with("if(");
+        if is_if_line {
+            // `is None` / `is not None`
+            if structured_part.contains("is None") || structured_part.contains("is not None") {
+                return true;
+            }
+            // null-equality comparisons
+            for indicator in NULL_CMP {
+                if structured_part.contains(indicator) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Returns `true` when `text` contains a guard-clause pattern matching Python's
+/// adjacency requirement:
+///   - ``if not <identifier-or-dot-path>:`` — tightened to Python's ``if\s+not\s+\w[\w.]*\s*[:\n]``;
+///     parenthesized/function-call forms like ``if not isinstance(x, T):`` or
+///     ``if not (a and b):`` are intentionally excluded.
+///   - ``if <cond>:`` immediately followed on the next line by ``return`` (adjacency required)
+///
+/// Mirrors Python regex: ``if\s+[^\n:]+:\s*\n\s+return\b | if\s+not\s+\w[\w.]*\s*[:\n]``
+fn auto_bug_has_guard_clause(text: &str) -> bool {
+    // Line-by-line scan for `if not <identifier-or-dot-path>:`.
+    // Mirrors Python's `if\s+not\s+\w[\w.]*\s*[:\n]` alternative.
+    // Parenthesized or function-call forms (`if not isinstance(...)` / `if not (...)`)
+    // do NOT match because the identifier immediately followed by `(` is not followed by `:`.
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some(after_not) = trimmed.strip_prefix("if not ") {
+            let rest = after_not.trim_start();
+            // Must begin with a word character (letter / digit / underscore).
+            if rest.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+                // Advance past the identifier/dot-path (word chars and dots only).
+                let ident_end = rest
+                    .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
+                    .unwrap_or(rest.len());
+                if ident_end > 0 {
+                    // After the identifier, must see `:` (optionally preceded by spaces)
+                    // or nothing else on the line — mirrors `[:\n]` in Python regex.
+                    let after_ident = rest[ident_end..].trim_start();
+                    if after_ident.starts_with(':') || after_ident.is_empty() {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    // Adjacency check: `if ...:` must be immediately followed by a line starting
+    // with `return`.  Disjoint `if ...:` + later `return` elsewhere does NOT match.
+    let lines: Vec<&str> = text.lines().collect();
+    for i in 0..lines.len().saturating_sub(1) {
+        let trimmed = lines[i].trim_start();
+        if trimmed.starts_with("if ") && trimmed.ends_with(':') {
+            let next_trimmed = lines[i + 1].trim_start();
+            if next_trimmed.starts_with("return") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Returns `true` when `text` contains a Python type annotation in a real
+/// annotation context.
+///
+/// Rules (mirroring Python's updated type-fix regex):
+/// - Comment-only lines (trimmed start = `#` or `//`) are skipped.
+/// - The `: type` indicator must NOT be immediately preceded by a quote
+///   character (`'` or `"`) on the same line, which would indicate a
+///   string-keyed dict literal like ``{'items': list}``.
+/// - ``: None`` is excluded from the indicator list because it is too
+///   ambiguous — it appears in config/YAML-like ``key: None`` patterns
+///   and is rarely a real Python type annotation (return types use
+///   ``-> None`` not ``: None``).
+fn auto_bug_has_type_annotation(text: &str) -> bool {
+    // Python type annotation keywords (excludes `None` — too ambiguous).
+    const TOKENS: &[&str] = &[
+        "int",
+        "str",
+        "float",
+        "bool",
+        "bytes",
+        "list",
+        "dict",
+        "set",
+        "tuple",
+        "Optional[",
+        "Union[",
+        "List[",
+        "Dict[",
+        "Tuple[",
+        "Any",
+    ];
+    for line in text.lines() {
+        let code_part = auto_bug_trimmed_code_part(line);
+        if code_part.is_empty() {
+            continue;
+        }
+        let mut search_start = 0;
+        while search_start < code_part.len() {
+            let Some(rel_pos) = code_part[search_start..].find(':') else {
+                break;
+            };
+            let colon_pos = search_start + rel_pos;
+            let before = code_part[..colon_pos].trim_end();
+            if !before.ends_with('\'') && !before.ends_with('"') {
+                let after_colon = code_part[colon_pos + 1..].trim_start();
+                for token in TOKENS {
+                    if let Some(after_token) = after_colon.strip_prefix(token) {
+                        let has_word_boundary = after_token.is_empty()
+                            || after_token.starts_with(|c: char| !c.is_alphanumeric() && c != '_');
+                        if has_word_boundary {
+                            return true;
+                        }
+                    }
+                }
+            }
+            search_start = colon_pos + 1;
+        }
+    }
+    false
+}
+
+/// Check whether ``new_str`` introduces a pattern that was absent in ``old_str``.
+///
+/// Returns a vec of ``(category, confidence)`` pairs for every category
+/// where the new code adds a recognisable bug-fix indicator.
+///
+/// Uses simple ``contains()`` matching to avoid the optional ``regex`` crate
+/// dependency (mirrors the comment for ``command_is_git_commit_or_push``).
+fn auto_bug_detect_edit(old_str: &str, new_str: &str) -> Vec<(&'static str, f64)> {
+    // Helper: returns true when `haystack` contains any of the listed needles.
+    fn has_any(haystack: &str, needles: &[&str]) -> bool {
+        needles.iter().any(|n| haystack.contains(n))
+    }
+
+    let mut detections = Vec::new();
+
+    // --- error-handling (confidence 0.85) ---
+    // Uses token-level matching via auto_bug_has_error_indicator to avoid
+    // false matches from stray "Error" in comments/docstrings/variables.
+    {
+        let new_has = auto_bug_has_error_indicator(new_str);
+        let old_has = auto_bug_has_error_indicator(old_str);
+        if new_has && !old_has {
+            detections.push(("error-handling", 0.85_f64));
+        }
+    }
+
+    // --- null-safety (confidence 0.78) ---
+    // Uses auto_bug_has_null_safety_indicator which requires `if ... is None` /
+    // `if ... is not None` structured forms.  Bare non-conditional uses such as
+    // `assert x is None`, `return x is None`, assignments, and comments do NOT
+    // trigger this category, mirroring Python's structured-form requirement.
+    {
+        if auto_bug_has_null_safety_indicator(new_str)
+            && !auto_bug_has_null_safety_indicator(old_str)
+        {
+            detections.push(("null-safety", 0.78_f64));
+        }
+    }
+
+    // --- guard-clause (confidence 0.73) ---
+    // Uses auto_bug_has_guard_clause which requires strict adjacency:
+    // `if ...:` must be immediately followed by a `return` line (mirrors Python).
+    // Disjoint `if ...:` + later `return` elsewhere does NOT match.
+    {
+        if auto_bug_has_guard_clause(new_str) && !auto_bug_has_guard_clause(old_str) {
+            detections.push(("guard-clause", 0.73_f64));
+        }
+    }
+
+    // --- async-fix (confidence 0.78) ---
+    {
+        let indicators: &[&str] = &["await ", "async def ", "async function "];
+        if has_any(new_str, indicators) && !has_any(old_str, indicators) {
+            detections.push(("async-fix", 0.78_f64));
+        }
+    }
+
+    // --- type-fix (confidence 0.65) ---
+    // Uses auto_bug_has_type_annotation which requires real annotation context:
+    // - skips comment-only lines
+    // - excludes `: type` when preceded by a quote (string-keyed dict literals)
+    // - excludes `: None` (too ambiguous; config/YAML key-value pairs also match)
+    {
+        if auto_bug_has_type_annotation(new_str) && !auto_bug_has_type_annotation(old_str) {
+            detections.push(("type-fix", 0.65_f64));
+        }
+    }
+
+    detections
+}
+
+/// Detect bug-fix patterns in a create payload.
+///
+/// More conservative than ``auto_bug_detect_edit`` because there is no
+/// ``old_str`` reference.  Only categories with patterns specific enough to
+/// be credible as intentional safety additions in a brand-new file are
+/// enabled:
+///
+/// - ``null-safety`` (0.62) — None/null guards and optional-chaining are
+///   specific enough to indicate defensive null handling was the intent.
+/// - ``async-fix`` (0.62) — async/await in a new file credibly indicates
+///   an async handler or wrapper created to address a missing-await bug.
+///
+/// All other categories remain disabled (0.0) to avoid spurious detections.
+fn auto_bug_detect_create(file_text: &str) -> Vec<(&'static str, f64)> {
+    fn has_any(haystack: &str, needles: &[&str]) -> bool {
+        needles.iter().any(|n| haystack.contains(n))
+    }
+
+    let mut detections = Vec::new();
+
+    // --- null-safety (confidence 0.62) ---
+    // Uses the same structured-form helper as the edit path.  `is None` / `is not None`
+    // must appear inside an `if` statement; other patterns retain substring checks.
+    {
+        if auto_bug_has_null_safety_indicator(file_text) {
+            detections.push(("null-safety", 0.62_f64));
+        }
+    }
+
+    // --- async-fix (confidence 0.62) ---
+    {
+        let indicators: &[&str] = &["await ", "async def ", "async function "];
+        if has_any(file_text, indicators) {
+            detections.push(("async-fix", 0.62_f64));
+        }
+    }
+
+    detections
+}
+
+fn auto_bug_filter_detections_for_path(path: &str, detections: &mut Vec<(&'static str, f64)>) {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+    if matches!(ext.as_deref(), Some("yaml") | Some("yml")) {
+        detections.retain(|(category, _)| *category != "type-fix");
+    }
+}
+
+/// Call ``learn.py --mistake`` via subprocess for a detected bug-fix pattern.
+///
+/// Returns ``true`` when the subprocess exits 0.  All errors are silently
+/// swallowed (fail-open).
+fn auto_bug_call_learn(file_path: &str, category: &str, confidence: f64, bucket: u64) -> bool {
+    use crate::config::{python_exe, resolve_tools_dir};
+
+    let tools_dir = resolve_tools_dir();
+    let learn_py = tools_dir.join("learn.py");
+    if !learn_py.exists() {
+        return false;
+    }
+
+    let filename = Path::new(file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(file_path);
+
+    let title = format!("[auto-detect] {category}: {filename} (bucket {bucket})");
+    let description = format!(
+        "Auto-detected {category} pattern in {file_path}. \
+         Confidence: {confidence:.2}. \
+         5-minute detection bucket: {bucket}."
+    );
+    let confidence_str = format!("{confidence:.2}");
+    let tags = format!("auto-detect,{category}");
+
+    let python = python_exe();
+    // Use spawn() + bounded poll instead of blocking .status() so a hung
+    // learn.py process cannot freeze postToolUse indefinitely.
+    // Mirrors Python `_call_learn` semantics: 10-second timeout, kill on
+    // deadline, wait for cleanup, return false on timeout or process error
+    // (fail-open behaviour preserved).
+    let mut child = match Command::new(python)
+        .arg(&learn_py)
+        .arg("--mistake")
+        .arg(&title)
+        .arg(&description)
+        .arg("--confidence")
+        .arg(&confidence_str)
+        .arg("--tags")
+        .arg(&tags)
+        .arg("--wing")
+        .arg("shared")
+        .arg("--room")
+        .arg("hook-rules")
+        .arg("--skip-gate")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return false, // fail-open: Python unavailable
+    };
+
+    // Poll with a 10-second deadline (same as Python subprocess timeout=10).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    // Timed out: kill, reap, return false (fail-open).
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return false, // fail-open: unexpected OS error
+        }
+    }
+}
+
+/// Write the ``markers/learn-done`` HMAC-signed marker.
+fn auto_bug_write_learn_done() {
+    let marker_path = markers_dir().join("learn-done");
+    let _ = marker_auth::sign_marker(&marker_path, "learn-done");
+}
+
+impl HookRule for AutoBugDetectorRule {
+    fn name(&self) -> &'static str {
+        "auto-bug-detector"
+    }
+
+    fn events(&self) -> &'static [&'static str] {
+        &["postToolUse"]
+    }
+
+    fn tools(&self) -> &'static [&'static str] {
+        &["edit", "create"]
+    }
+
+    fn evaluate(&self, _event: &str, data: &Value) -> Option<Value> {
+        let tool_name = data.get("toolName").and_then(|v| v.as_str()).unwrap_or("");
+        let tool_args = data.get("toolArgs").and_then(|v| v.as_object())?;
+
+        match tool_name {
+            "edit" => {
+                let path = tool_args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                let old_str = tool_args
+                    .get("old_str")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let new_str = tool_args
+                    .get("new_str")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                // Skip session-state paths — mirrors Python `is_session_path(path)` guard.
+                // Uses is_auto_bug_session_path (not is_track_session_path) to avoid
+                // falsely skipping legitimate project files like src/session-state-manager.py.
+                // Also skip non-code files (e.g. README.md) using the same code-extension
+                // allowlist as EnforceLearnRule — mirrors Python `CODE_EXTENSIONS` gate.
+                if path.is_empty()
+                    || new_str.is_empty()
+                    || is_auto_bug_session_path(path)
+                    || !has_code_extension(path)
+                {
+                    return None;
+                }
+
+                let mut detections = auto_bug_detect_edit(old_str, new_str);
+                auto_bug_filter_detections_for_path(path, &mut detections);
+                if detections.is_empty() {
+                    return None;
+                }
+
+                let bucket = auto_bug_bucket_id();
+                let path_owned = path.to_string();
+
+                // Launch all learn subprocess calls concurrently so multiple
+                // detected categories do not stack latency linearly.
+                let handles: Vec<std::thread::JoinHandle<Option<String>>> = detections
+                    .iter()
+                    .map(|(category, confidence)| {
+                        let p = path_owned.clone();
+                        let cat = category.to_string();
+                        let conf = *confidence;
+                        std::thread::spawn(move || -> Option<String> {
+                            if auto_bug_call_learn(&p, &cat, conf, bucket) {
+                                let filename = Path::new(&p)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .map(|s| s.to_owned())
+                                    .unwrap_or_else(|| p.clone());
+                                let pct = (conf * 100.0).round() as u32;
+                                Some(format!(
+                                    "  \u{1f41b} Auto-detected {cat} in {filename} (confidence: {pct}%)"
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect();
+
+                let mut messages = Vec::new();
+                let mut any_ok = false;
+                for handle in handles {
+                    if let Ok(Some(msg)) = handle.join() {
+                        messages.push(msg);
+                        any_ok = true;
+                    }
+                }
+                if any_ok {
+                    auto_bug_write_learn_done(); // Write once after all concurrent calls
+                }
+
+                if messages.is_empty() {
+                    return None;
+                }
+                let body = messages.join("\n");
+                Some(info(&format!("\n  \u{1f50d} Auto bug detector:\n{body}\n")))
+            }
+            "create" => {
+                let path = tool_args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                let file_text = tool_args
+                    .get("file_text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                // Skip session-state paths — mirrors Python `is_session_path(path)` guard.
+                // Uses is_auto_bug_session_path (not is_track_session_path) to avoid
+                // falsely skipping legitimate project files like src/session-state-manager.py.
+                // Also skip non-code files (e.g. README.md) — mirrors Python `CODE_EXTENSIONS` gate.
+                if path.is_empty()
+                    || file_text.is_empty()
+                    || is_auto_bug_session_path(path)
+                    || !has_code_extension(path)
+                {
+                    return None;
+                }
+
+                let mut detections = auto_bug_detect_create(file_text);
+                auto_bug_filter_detections_for_path(path, &mut detections);
+                if detections.is_empty() {
+                    return None;
+                }
+
+                let bucket = auto_bug_bucket_id();
+                let path_owned = path.to_string();
+
+                // Launch all learn subprocess calls concurrently.
+                let handles: Vec<std::thread::JoinHandle<Option<String>>> = detections
+                    .iter()
+                    .map(|(category, confidence)| {
+                        let p = path_owned.clone();
+                        let cat = category.to_string();
+                        let conf = *confidence;
+                        std::thread::spawn(move || -> Option<String> {
+                            if auto_bug_call_learn(&p, &cat, conf, bucket) {
+                                let filename = Path::new(&p)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .map(|s| s.to_owned())
+                                    .unwrap_or_else(|| p.clone());
+                                let pct = (conf * 100.0).round() as u32;
+                                Some(format!(
+                                    "  \u{1f41b} Auto-detected {cat} in {filename} (confidence: {pct}%)"
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect();
+
+                let mut messages = Vec::new();
+                let mut any_ok = false;
+                for handle in handles {
+                    if let Ok(Some(msg)) = handle.join() {
+                        messages.push(msg);
+                        any_ok = true;
+                    }
+                }
+                if any_ok {
+                    auto_bug_write_learn_done(); // Write once after all concurrent calls
+                }
+
+                if messages.is_empty() {
+                    return None;
+                }
+                let body = messages.join("\n");
+                Some(info(&format!("\n  \u{1f50d} Auto bug detector:\n{body}\n")))
+            }
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TentacleSuggestRule
 // ---------------------------------------------------------------------------
 
@@ -4214,6 +4967,7 @@ pub fn all_rules() -> Vec<Box<dyn HookRule>> {
         Box::new(TrackEditsRule),
         Box::new(LearnReminderRule),
         Box::new(TestReminderRule),
+        Box::new(AutoBugDetectorRule), // wave13: issue #86 bug-fix pattern detector
         Box::new(NextjsTypecheckReminderRule),
         Box::new(VerificationGatePostRule),
         Box::new(TentacleSuggestRule), // wave8: read-only tentacle suggestion
@@ -8937,6 +9691,1116 @@ EOF"#;
         assert!(
             sgg.unwrap() < sg.unwrap() && sg.unwrap() < bed.unwrap(),
             "syntax-gate must be registered after subagent-git-guard and before block-edit-dist"
+        );
+    }
+
+    // --- wave13: AutoBugDetectorRule ---
+
+    #[test]
+    fn auto_bug_detector_fires_on_posttooluse_only() {
+        let rule = AutoBugDetectorRule;
+        assert!(rule.events().contains(&"postToolUse"));
+        assert!(!rule.events().contains(&"preToolUse"));
+        assert!(!rule.events().contains(&"sessionStart"));
+    }
+
+    #[test]
+    fn auto_bug_detector_covers_edit_and_create() {
+        let rule = AutoBugDetectorRule;
+        assert!(rule.tools().contains(&"edit"));
+        assert!(rule.tools().contains(&"create"));
+        assert!(!rule.tools().contains(&"bash"));
+    }
+
+    #[test]
+    fn all_rules_includes_auto_bug_detector() {
+        let rules = all_rules();
+        assert!(
+            rules.iter().any(|r| r.name() == "auto-bug-detector"),
+            "all_rules must include auto-bug-detector (wave13 issue #86)"
+        );
+    }
+
+    #[test]
+    fn all_rules_auto_bug_detector_after_test_reminder() {
+        let rules = all_rules();
+        let abd = rules.iter().position(|r| r.name() == "auto-bug-detector");
+        let tr = rules.iter().position(|r| r.name() == "test-reminder");
+        assert!(
+            abd.is_some() && tr.is_some(),
+            "both auto-bug-detector and test-reminder must be registered"
+        );
+        assert!(
+            tr.unwrap() < abd.unwrap(),
+            "auto-bug-detector must come after test-reminder (mirrors Python registry order)"
+        );
+    }
+
+    #[test]
+    fn all_rules_auto_bug_detector_before_tentacle_suggest() {
+        let rules = all_rules();
+        let abd = rules.iter().position(|r| r.name() == "auto-bug-detector");
+        let ts = rules.iter().position(|r| r.name() == "tentacle-suggest");
+        assert!(
+            abd.is_some() && ts.is_some(),
+            "both auto-bug-detector and tentacle-suggest must be registered"
+        );
+        assert!(
+            abd.unwrap() < ts.unwrap(),
+            "auto-bug-detector must come before tentacle-suggest (mirrors Python registry order)"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_error_handling() {
+        // Adding try/except in new_str (absent in old_str) → error-handling
+        let detections = auto_bug_detect_edit(
+            "x = risky()",
+            "try:\n    x = risky()\nexcept ValueError:\n    pass",
+        );
+        assert!(
+            detections.iter().any(|(cat, _)| *cat == "error-handling"),
+            "try/except added → error-handling detected"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_error_handling_already_present() {
+        // Both old and new have try/except → no new detection
+        let old = "try:\n    x = a()\nexcept ValueError:\n    pass";
+        let new = "try:\n    x = a()\n    y = b()\nexcept ValueError:\n    pass";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "error-handling"),
+            "error-handling already present in old → no detection"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_inline_comment_throw_new_error_no_detect() {
+        let detections = auto_bug_detect_edit(
+            "function foo() { return 1; }",
+            "function foo() { return 1; } // throw new TypeError if invalid",
+        );
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "error-handling"),
+            "inline comment `throw new TypeError` must NOT trigger error-handling"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_inline_comment_catch_no_detect() {
+        let detections = auto_bug_detect_edit(
+            "function foo() { return fetch(url); }",
+            "function foo() { return fetch(url); } // always use .catch() for errors",
+        );
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "error-handling"),
+            "inline comment `.catch()` must NOT trigger error-handling"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_null_safety() {
+        let detections = auto_bug_detect_edit(
+            "return obj.value",
+            "if obj is None:\n    return None\nreturn obj.value",
+        );
+        assert!(
+            detections.iter().any(|(cat, _)| *cat == "null-safety"),
+            "is None guard added → null-safety detected"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_async_fix() {
+        let detections = auto_bug_detect_edit(
+            "def fetch():\n    return requests.get(url)",
+            "async def fetch():\n    return await session.get(url)",
+        );
+        assert!(
+            detections.iter().any(|(cat, _)| *cat == "async-fix"),
+            "async def + await added → async-fix detected"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_type_fix() {
+        let detections = auto_bug_detect_edit(
+            "def greet(name):\n    return name",
+            "def greet(name: str) -> str:\n    return name",
+        );
+        assert!(
+            detections.iter().any(|(cat, _)| *cat == "type-fix"),
+            "type annotation added → type-fix detected"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_type_fix_compact_annotation() {
+        let detections = auto_bug_detect_edit(
+            "def greet(name):\n    return name",
+            "def greet(name:str)->str:\n    return name",
+        );
+        assert!(
+            detections.iter().any(|(cat, _)| *cat == "type-fix"),
+            "compact `name:str` annotation must still detect as type-fix"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_empty_inputs() {
+        // Empty old and new → no detections
+        let detections = auto_bug_detect_edit("", "");
+        assert!(detections.is_empty(), "empty inputs → no detections");
+    }
+
+    #[test]
+    fn auto_bug_detector_rule_no_new_str() {
+        let rule = AutoBugDetectorRule;
+        // Missing new_str → None (fail-open)
+        let data = json!({
+            "toolName": "edit",
+            "toolArgs": {"path": "src/main.py", "old_str": "x = 1"}
+        });
+        let result = rule.evaluate("postToolUse", &data);
+        assert!(result.is_none(), "missing new_str → None");
+    }
+
+    #[test]
+    fn auto_bug_detector_rule_no_path() {
+        let rule = AutoBugDetectorRule;
+        let data = json!({
+            "toolName": "edit",
+            "toolArgs": {"old_str": "x", "new_str": "try:\n    x()\nexcept ValueError:\n    pass"}
+        });
+        let result = rule.evaluate("postToolUse", &data);
+        assert!(result.is_none(), "missing path → None (fail-open)");
+    }
+
+    #[test]
+    fn auto_bug_detector_rule_non_dict_toolargs() {
+        let rule = AutoBugDetectorRule;
+        let data = json!({
+            "toolName": "edit",
+            "toolArgs": null
+        });
+        let result = rule.evaluate("postToolUse", &data);
+        assert!(result.is_none(), "null toolArgs → None (fail-open)");
+    }
+
+    #[test]
+    fn auto_bug_detector_rule_create_error_handling_none() {
+        // create: error-handling has create_conf 0.0 → still returns None
+        let rule = AutoBugDetectorRule;
+        let data = json!({
+            "toolName": "create",
+            "toolArgs": {
+                "path": "src/foo.py",
+                "file_text": "try:\n    x()\nexcept ValueError:\n    pass\n"
+            }
+        });
+        let result = rule.evaluate("postToolUse", &data);
+        assert!(
+            result.is_none(),
+            "create with try/except → None (error-handling create_conf=0.0)"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_create_null_safety() {
+        // create: null-safety enabled at 0.62
+        let detections = auto_bug_detect_create(
+            "def get(obj):\n    if obj is None:\n        return None\n    return obj.value\n",
+        );
+        assert!(
+            detections
+                .iter()
+                .any(|(cat, conf)| *cat == "null-safety" && *conf >= 0.62),
+            "null guard in create file_text → null-safety detected (create_conf=0.62)"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_create_async_fix() {
+        // create: async-fix enabled at 0.62
+        let detections = auto_bug_detect_create("async def handle():\n    return await fetch()\n");
+        assert!(
+            detections
+                .iter()
+                .any(|(cat, conf)| *cat == "async-fix" && *conf >= 0.62),
+            "async def + await in create file_text → async-fix detected (create_conf=0.62)"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_create_type_fix_excluded() {
+        // type-fix stays excluded on create
+        let detections = auto_bug_detect_create("def greet(name: str) -> str:\n    return name\n");
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "type-fix"),
+            "type annotation in create file_text → no type-fix detection (excluded)"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_raise_stop_iteration_no_suppress() {
+        // Regression for Rust parity bug: old code has `raise StopIteration` (not an Error)
+        // and new code adds `try/except ValueError`.  Python detects this; Rust must too.
+        let old = "def next_val(it):\n    raise StopIteration\n";
+        let new = "def next_val(it):\n    raise StopIteration\n    try:\n        return next(it)\n    except ValueError:\n        return None\n";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            detections.iter().any(|(cat, _)| *cat == "error-handling"),
+            "old code has raise StopIteration (non-Error) + new adds try/except → \
+             error-handling detected (parity with Python)"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_no_false_positive_no_change() {
+        // Identical old and new → no detections (nothing was added)
+        let src = "def foo():\n    return bar()";
+        let detections = auto_bug_detect_edit(src, src);
+        assert!(detections.is_empty(), "identical old/new → no detections");
+    }
+
+    // --- Blocker 1 regressions: session-state path skip ---
+
+    #[test]
+    fn auto_bug_detector_edit_skips_session_state_path() {
+        // edit on a session-state file must return None even if the diff has a detectable pattern.
+        let rule = AutoBugDetectorRule;
+        let data = json!({
+            "toolName": "edit",
+            "toolArgs": {
+                "path": ".copilot/session-state/abc-123/plan.md",
+                "old_str": "x = 1",
+                "new_str": "try:\n    x()\nexcept ValueError:\n    pass"
+            }
+        });
+        assert!(
+            rule.evaluate("postToolUse", &data).is_none(),
+            "edit on session-state path must be skipped (mirrors Python is_session_path guard)"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detector_create_skips_session_state_path() {
+        // create on a session-state file must return None even with null-safety patterns.
+        let rule = AutoBugDetectorRule;
+        let data = json!({
+            "toolName": "create",
+            "toolArgs": {
+                "path": "C:\\Users\\user\\.copilot\\session-state\\abc\\notes.md",
+                "file_text": "if obj is None:\n    return None\nasync def handle():\n    pass"
+            }
+        });
+        assert!(
+            rule.evaluate("postToolUse", &data).is_none(),
+            "create on session-state path must be skipped (mirrors Python is_session_path guard)"
+        );
+    }
+
+    // --- Blocker 2 regressions: guard-clause adjacency ---
+
+    #[test]
+    fn auto_bug_detect_edit_guard_clause_disjoint_no_detect() {
+        // Negative regression: disjoint `if ...:` body (not `return`) + later `return`
+        // must NOT be detected as a guard-clause addition.
+        let old = "def process(data):\n    return data";
+        let new = "def process(data):\n    if result.is_valid:\n        do_something()\n    return result";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "guard-clause"),
+            "disjoint if-colon + later return must NOT be a guard-clause detection"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_guard_clause_adjacent_detects() {
+        // Positive regression: `if <cond>:\n    return` adjacency still detects.
+        let old = "def validate(val):\n    process(val)";
+        let new = "def validate(val):\n    if val is None:\n        return None\n    process(val)";
+        let detections = auto_bug_detect_edit(old, new);
+        // "is None" also triggers null-safety; guard-clause must detect via adjacency.
+        assert!(
+            detections.iter().any(|(cat, _)| *cat == "guard-clause"),
+            "adjacent if-colon + return must still be detected as guard-clause"
+        );
+    }
+
+    // --- Blocker 3 regressions: error-handling token-level matching ---
+
+    #[test]
+    fn auto_bug_detect_edit_stray_error_in_comment_no_suppress() {
+        // Negative regression for old-code check:
+        // old code has `raise StopIteration` + a comment containing "Error".
+        // That stray "Error" must NOT suppress detection of a newly added try/except.
+        let old = "# Error handling is not implemented here\ndef gen():\n    raise StopIteration\n";
+        let new = "# Error handling is not implemented here\ndef gen():\n    raise StopIteration\n    try:\n        return next(it)\n    except ValueError:\n        return None\n";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            detections.iter().any(|(cat, _)| *cat == "error-handling"),
+            "stray 'Error' in comment + raise StopIteration must NOT suppress new try/except detection"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_stray_error_in_new_code_no_spurious() {
+        // Negative regression for new-code check:
+        // new code has bare `raise StopIteration` + a stray "Error" in a comment.
+        // That must NOT count as new error-handling by itself.
+        let old = "def gen():\n    yield 1\n";
+        let new = "def gen():\n    # Error: this generator stops early\n    raise StopIteration\n";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "error-handling"),
+            "bare raise StopIteration + stray 'Error' comment must NOT be detected as error-handling"
+        );
+    }
+
+    // --- Blocker 6 regressions: is_auto_bug_session_path narrower than is_track_session_path ---
+
+    #[test]
+    fn is_auto_bug_session_path_skips_copilot_session_state_segment() {
+        // Paths with `.copilot/session-state` must be skipped.
+        assert!(is_auto_bug_session_path(
+            ".copilot/session-state/abc/plan.md"
+        ));
+        assert!(is_auto_bug_session_path(
+            "/home/user/.copilot/session-state/abc-123/checkpoints/01.md"
+        ));
+    }
+
+    #[test]
+    fn is_auto_bug_session_path_does_not_skip_project_session_state_filename() {
+        // Legitimate project files whose names merely contain "session-state" must NOT be skipped.
+        assert!(
+            !is_auto_bug_session_path("src/session-state-manager.py"),
+            "src/session-state-manager.py must NOT be skipped by is_auto_bug_session_path"
+        );
+        assert!(
+            !is_auto_bug_session_path("docs/session-state.md"),
+            "docs/session-state.md must NOT be skipped by is_auto_bug_session_path"
+        );
+        assert!(
+            !is_auto_bug_session_path("tests/test_session_state.py"),
+            "tests/test_session_state.py must NOT be skipped by is_auto_bug_session_path"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detector_edit_does_not_skip_project_session_state_file() {
+        // AutoBugDetectorRule must NOT skip a legitimate project file whose name contains
+        // "session-state" but is not under .copilot/session-state/.
+        // Note: the rule calls learn.py which may fail in test, but the point is evaluate()
+        // must not return None from the session-path guard for this path.
+        // We verify by checking that the path guard doesn't short-circuit:
+        // is_auto_bug_session_path("src/session-state-manager.py") must be false.
+        assert!(
+            !is_auto_bug_session_path("src/session-state-manager.py"),
+            "AutoBugDetectorRule must not skip src/session-state-manager.py \
+             (is_auto_bug_session_path should return false for ordinary project paths)"
+        );
+    }
+
+    // --- Blocker 7 regressions: `if not` guard-clause identifier check ---
+
+    #[test]
+    fn auto_bug_has_guard_clause_if_not_bare_identifier_detects() {
+        // Positive: `if not foo:` → guard-clause (bare identifier).
+        assert!(
+            auto_bug_has_guard_clause("if not foo:\n    return None\n"),
+            "if not foo: must be detected as guard-clause"
+        );
+    }
+
+    #[test]
+    fn auto_bug_has_guard_clause_if_not_dot_path_detects() {
+        // Positive: `if not obj.value:` → guard-clause (dot-path identifier).
+        assert!(
+            auto_bug_has_guard_clause("if not obj.value:\n    return\n"),
+            "if not obj.value: must be detected as guard-clause"
+        );
+    }
+
+    #[test]
+    fn auto_bug_has_guard_clause_if_not_isinstance_no_detect() {
+        // Negative: `if not isinstance(x, T):` must NOT be detected.
+        // `isinstance` is a function call, not a bare identifier/dot-path.
+        assert!(
+            !auto_bug_has_guard_clause(
+                "def process(x, T):\n    if not isinstance(x, T):\n        do_something()\n    return result\n"
+            ),
+            "if not isinstance(x, T): without adjacent return must NOT be detected as guard-clause"
+        );
+    }
+
+    #[test]
+    fn auto_bug_has_guard_clause_if_not_paren_expr_no_detect() {
+        // Negative: `if not (a and b):` must NOT be detected (parenthesized expression).
+        assert!(
+            !auto_bug_has_guard_clause(
+                "def check(a, b):\n    if not (a and b):\n        do_something()\n    return True\n"
+            ),
+            "if not (a and b): without adjacent return must NOT be detected as guard-clause"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_guard_clause_if_not_isinstance_no_detect() {
+        // End-to-end negative regression through auto_bug_detect_edit:
+        // adding `if not isinstance(x, T):` (without adjacent return) must NOT detect.
+        let old = "def process(data):\n    return data";
+        let new = "def process(data, T):\n    if not isinstance(data, T):\n        raise TypeError()\n    return data";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "guard-clause"),
+            "if not isinstance(x, T): with non-return body must NOT be detected as guard-clause"
+        );
+    }
+
+    // --- Blocker 8 regressions: `except` word-boundary / noexcept ---
+
+    #[test]
+    fn auto_bug_has_error_indicator_noexcept_no_detect() {
+        // `noexcept` in C++ code must NOT be treated as an error-handling indicator.
+        assert!(
+            !auto_bug_has_error_indicator("void foo() noexcept { return; }"),
+            "noexcept must NOT be detected as an error-handling indicator"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_noexcept_no_detect() {
+        // End-to-end: adding `noexcept` to a function signature must NOT trigger error-handling.
+        let old = "void foo() { return; }";
+        let new = "void foo() noexcept { return; }";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "error-handling"),
+            "adding noexcept to a function must NOT be detected as error-handling"
+        );
+    }
+
+    #[test]
+    fn auto_bug_has_error_indicator_real_except_still_detects() {
+        // `except ValueError:` at line-start must still be detected (word boundary check
+        // only excludes the case where "except" is preceded by a word character).
+        assert!(
+            auto_bug_has_error_indicator("try:\n    x()\nexcept ValueError:\n    pass"),
+            "standalone except ValueError must still be detected as error-handling"
+        );
+    }
+
+    // --- Blocker 9 regressions: null-safety structured-form requirement ---
+
+    #[test]
+    fn auto_bug_null_safety_assert_is_none_no_detect() {
+        // `assert x is None` must NOT be treated as a null-safety indicator —
+        // only structured `if ... is None` forms count.
+        assert!(
+            !auto_bug_has_null_safety_indicator("assert x is None"),
+            "assert x is None must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_return_is_none_no_detect() {
+        // `return x is None` must NOT be treated as a null-safety indicator.
+        assert!(
+            !auto_bug_has_null_safety_indicator("return x is None"),
+            "return x is None must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_assignment_is_none_no_detect() {
+        // `x = result is None` must NOT be treated as a null-safety indicator.
+        assert!(
+            !auto_bug_has_null_safety_indicator("x = result is None"),
+            "assignment `x = result is None` must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_comment_is_none_no_detect() {
+        // A comment mentioning `is None` must NOT fire.
+        assert!(
+            !auto_bug_has_null_safety_indicator("# check if x is None before processing"),
+            "comment containing `is None` must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_if_is_none_detects() {
+        // `if x is None:` IS the structured form — must still detect.
+        assert!(
+            auto_bug_has_null_safety_indicator("if x is None:\n    return"),
+            "if x is None: must be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_null_safety_non_if_no_detect() {
+        // End-to-end: editing a file that adds `return x is None` must NOT trigger
+        // null-safety because it is not a conditional guard form.
+        let old = "def is_missing(x):\n    return False";
+        let new = "def is_missing(x):\n    return x is None";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "null-safety"),
+            "adding `return x is None` must NOT trigger null-safety detection"
+        );
+    }
+
+    // --- Blocker 10 regressions: `try {` JS/TS-style error-handling ---
+
+    #[test]
+    fn auto_bug_has_error_indicator_try_brace_space_detects() {
+        // JS/TS `try { ... } catch (e) { ... }` must be detected as error-handling.
+        assert!(
+            auto_bug_has_error_indicator("try {\n  x();\n} catch (e) {\n  console.error(e);\n}"),
+            "try {{}} catch style must be detected as error-handling"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_try_brace_js_detects() {
+        // End-to-end: adding a JS/TS `try { ... } catch (e) { ... }` block must
+        // trigger the error-handling category.
+        let old = "function call() { return fetch(url); }";
+        let new = "function call() {\n  try {\n    return fetch(url);\n  } catch (e) {\n    return null;\n  }\n}";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            detections.iter().any(|(cat, _)| *cat == "error-handling"),
+            "adding JS/TS try {{}} catch => error-handling detected"
+        );
+    }
+
+    // --- Blocker 18 regressions: null-comparison `== null` must require `if` prefix ---
+
+    #[test]
+    fn auto_bug_null_safety_eq_null_bare_no_detect() {
+        // Bare `x == null` (not in an `if`) must NOT detect as null-safety.
+        assert!(
+            !auto_bug_has_null_safety_indicator("x == null"),
+            "bare `x == null` must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_assert_eq_null_no_detect() {
+        // `assert x == null` must NOT detect as null-safety.
+        assert!(
+            !auto_bug_has_null_safety_indicator("assert x == null"),
+            "`assert x == null` must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_return_eq_null_no_detect() {
+        // `return x == null` must NOT detect as null-safety.
+        assert!(
+            !auto_bug_has_null_safety_indicator("return x == null"),
+            "`return x == null` must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_neq_null_bare_no_detect() {
+        // Bare `x != null` (not in an `if`) must NOT detect as null-safety.
+        assert!(
+            !auto_bug_has_null_safety_indicator("x != null"),
+            "bare `x != null` must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_strict_eq_null_bare_no_detect() {
+        // Bare `x === null` must NOT detect as null-safety.
+        assert!(
+            !auto_bug_has_null_safety_indicator("x === null"),
+            "bare `x === null` must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_strict_neq_null_bare_no_detect() {
+        // Bare `x !== null` must NOT detect as null-safety.
+        assert!(
+            !auto_bug_has_null_safety_indicator("x !== null"),
+            "bare `x !== null` must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_if_eq_null_detects() {
+        // `if value == null` must be detected (positive regression).
+        assert!(
+            auto_bug_has_null_safety_indicator("if value == null:\n    return"),
+            "`if value == null` must be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_if_neq_null_detects() {
+        // `if value != null` must be detected.
+        assert!(
+            auto_bug_has_null_safety_indicator("if value != null:\n    handle()"),
+            "`if value != null` must be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_if_strict_eq_null_detects() {
+        // `if value === null` (JS/TS) must be detected.
+        assert!(
+            auto_bug_has_null_safety_indicator("if (value === null) {"),
+            "`if (value === null)` must be detected as null-safety"
+        );
+    }
+
+    // --- Blocker 19 regressions: `try` word boundary ---
+
+    #[test]
+    fn auto_bug_has_error_indicator_retry_no_detect() {
+        // `retry:` contains `try:` as a substring but must NOT match.
+        assert!(
+            !auto_bug_has_error_indicator("retry:\n  x()"),
+            "`retry:` must NOT be detected as error-handling"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_retry_no_detect() {
+        // End-to-end: adding `retry:` must NOT trigger error-handling.
+        let old = "x = 1";
+        let new = "retry:\n  x = call()";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "error-handling"),
+            "adding `retry:` must NOT be detected as error-handling"
+        );
+    }
+
+    #[test]
+    fn auto_bug_has_error_indicator_try_colon_detects() {
+        // Standalone `try:` must still be detected after word-boundary fix.
+        assert!(
+            auto_bug_has_error_indicator("try:\n    x()\nexcept ValueError:\n    pass"),
+            "`try:` must still be detected as error-handling"
+        );
+    }
+
+    #[test]
+    fn auto_bug_has_error_indicator_try_brace_compact_detects() {
+        // `try{` (compact, no space) must still be detected.
+        assert!(
+            auto_bug_has_error_indicator("try{\n  x();\n} catch(e) {}"),
+            "`try{{` must still be detected as error-handling"
+        );
+    }
+
+    // --- Blocker 21 regressions: `??` comment-only line must NOT detect ---
+
+    #[test]
+    fn auto_bug_null_safety_comment_double_question_mark_no_detect() {
+        // `# Is this correct?? might be wrong` — comment-only line containing `??`
+        // must NOT be treated as null-safety.
+        assert!(
+            !auto_bug_has_null_safety_indicator("# Is this correct?? might be wrong"),
+            "comment-only `??` must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_comment_double_question_mark_no_detect() {
+        // End-to-end: adding `??` only in a comment must NOT trigger null-safety.
+        let old = "return obj.value";
+        let new = "# Is this correct?? might be wrong\nreturn obj.value";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "null-safety"),
+            "adding `??` only in a comment must NOT trigger null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_code_double_question_mark_detects() {
+        // `??` in real code (not a comment) must still be detected.
+        assert!(
+            auto_bug_has_null_safety_indicator("const x = foo ?? bar;"),
+            "`??` in real code must be detected as null-safety"
+        );
+    }
+
+    // --- Blocker 22 regressions: type-fix dict literals / config must NOT detect ---
+
+    #[test]
+    fn auto_bug_type_fix_dict_string_key_list_no_detect() {
+        // `{'items': list, 'data': dict}` — string-keyed dict literal must NOT
+        // trigger type-fix because `: list` / `: dict` follow a quote character.
+        assert!(
+            !auto_bug_has_type_annotation("schema = {'items': list, 'data': dict}"),
+            "string-keyed dict literal must NOT be detected as type annotation"
+        );
+    }
+
+    #[test]
+    fn auto_bug_type_fix_spaced_dict_string_key_list_no_detect() {
+        assert!(
+            !auto_bug_has_type_annotation("schema = {'items' : list, 'data' : dict}"),
+            "spaced string-keyed dict literal must NOT be detected as type annotation"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_type_fix_dict_literal_no_detect() {
+        // End-to-end: adding a dict literal with string keys must NOT trigger type-fix.
+        let old = "schema = {}";
+        let new = "schema = {'items': list, 'data': dict}";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "type-fix"),
+            "adding dict literal {{'items': list}} must NOT trigger type-fix"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_type_fix_spaced_dict_literal_no_detect() {
+        let old = "schema = {}";
+        let new = "schema = {'items' : list, 'data' : dict}";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "type-fix"),
+            "adding spaced dict literal {{'items' : list}} must NOT trigger type-fix"
+        );
+    }
+
+    #[test]
+    fn auto_bug_type_fix_return_type_none_no_detect() {
+        // `return_type: None` — config-like key-value with `None` must NOT trigger
+        // type-fix because `None` is excluded from the indicator list (too ambiguous).
+        assert!(
+            !auto_bug_has_type_annotation("return_type: None"),
+            "`return_type: None` must NOT be detected as type annotation"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_return_type_none_no_detect() {
+        // End-to-end: adding `return_type: None` must NOT trigger type-fix.
+        let old = "cfg = {}";
+        let new = "return_type: None";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "type-fix"),
+            "adding `return_type: None` must NOT trigger type-fix"
+        );
+    }
+
+    #[test]
+    fn auto_bug_type_fix_func_annotation_detects() {
+        // `def greet(name: str) -> str:` — real function annotation must still detect.
+        assert!(
+            auto_bug_has_type_annotation("def greet(name: str) -> str:\n    return name"),
+            "function parameter annotation must be detected as type annotation"
+        );
+    }
+
+    // ── Blocker 1: inline trailing comment `??` / `?.` regressions ──
+
+    #[test]
+    fn auto_bug_null_safety_inline_trailing_comment_double_question_no_detect() {
+        // `x = foo  # is this right?? maybe` — `??` is in a trailing Python comment,
+        // not in the code portion.  Must NOT fire as a null-safety indicator.
+        assert!(
+            !auto_bug_has_null_safety_indicator("x = foo  # is this right?? maybe"),
+            "`??` only in trailing `#` comment must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_inline_trailing_js_comment_optional_chain_no_detect() {
+        // `const x = getData(); // no ?. used here` — `?.` is in a trailing `//` comment.
+        // Must NOT fire as a null-safety indicator.
+        assert!(
+            !auto_bug_has_null_safety_indicator("const x = getData(); // no ?. used here"),
+            "`?.` only in trailing `//` comment must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_code_before_comment_double_question_detects() {
+        // `const x = foo ?? bar;  # assign` — `??` is in the code part (before `#`).
+        // Must still detect.
+        assert!(
+            auto_bug_has_null_safety_indicator("const x = foo ?? bar;  # assign with fallback"),
+            "`??` in code part before trailing `#` comment must still detect"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_code_before_js_comment_optional_chain_detects() {
+        // `const v = obj?.value;  // safe` — `?.` is before `//` comment.
+        // Must still detect.
+        assert!(
+            auto_bug_has_null_safety_indicator("const v = obj?.value;  // safe access"),
+            "`?.` in code part before trailing `//` comment must still detect"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_comment_unwrap_or_no_detect() {
+        assert!(
+            !auto_bug_has_null_safety_indicator("# prefer value.unwrap_or(default)"),
+            "comment-only `.unwrap_or(` must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_comment_ok_or_no_detect() {
+        assert!(
+            !auto_bug_has_null_safety_indicator("// prefer result.ok_or(err)"),
+            "comment-only `.ok_or(` must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_code_unwrap_or_detects() {
+        assert!(
+            auto_bug_has_null_safety_indicator("return value.unwrap_or(default)"),
+            "code-side `.unwrap_or(` must still detect as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_code_ok_or_detects() {
+        assert!(
+            auto_bug_has_null_safety_indicator("return result.ok_or(err)"),
+            "code-side `.ok_or(` must still detect as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_if_line_trailing_comment_is_none_no_detect() {
+        assert!(
+            !auto_bug_has_null_safety_indicator("if condition:  # check if x is None later"),
+            "`is None` only in trailing `#` comment on an if-line must NOT detect"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_if_line_trailing_comment_null_cmp_no_detect() {
+        assert!(
+            !auto_bug_has_null_safety_indicator("if (ready) { // compare == null later"),
+            "`== null` only in trailing `//` comment on an if-line must NOT detect"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_inline_comment_nullish_no_detect() {
+        // End-to-end: only adding `??` inside a trailing JS comment must NOT detect.
+        let old = "const x = getData();";
+        let new = "const x = getData(); // no ?. used here";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "null-safety"),
+            "adding `?.` only inside trailing `//` comment must NOT trigger null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_old_if_comment_is_none_does_not_suppress_real_guard() {
+        let old = "if condition:  # check if x is None later\n    return condition\n";
+        let new = "if value is None:\n    return None\n";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            detections.iter().any(|(cat, _)| *cat == "null-safety"),
+            "old trailing-comment `is None` must NOT suppress a real new null guard"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_old_if_comment_null_cmp_does_not_suppress_real_guard() {
+        let old = "if (ready) { // compare == null later\n  return ready;\n}\n";
+        let new = "if (value == null) {\n  return fallback;\n}\n";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            detections.iter().any(|(cat, _)| *cat == "null-safety"),
+            "old trailing-comment `== null` must NOT suppress a real new null guard"
+        );
+    }
+
+    // ── Blocker 2: Rust type-annotation word-boundary regressions ──
+
+    #[test]
+    fn auto_bug_type_fix_yaml_type_string_no_detect() {
+        // `type: string` — YAML/OpenAPI style value where `string` starts with `str`.
+        // Must NOT trigger type-fix because there is no word boundary after `: str`.
+        assert!(
+            !auto_bug_has_type_annotation("  type: string"),
+            "`type: string` (YAML value) must NOT be detected as type annotation"
+        );
+    }
+
+    #[test]
+    fn auto_bug_type_fix_yaml_type_boolean_no_detect() {
+        // `type: boolean` — `bool` is a prefix of `boolean`.
+        assert!(
+            !auto_bug_has_type_annotation("  type: boolean"),
+            "`type: boolean` (YAML value) must NOT be detected as type annotation"
+        );
+    }
+
+    #[test]
+    fn auto_bug_type_fix_yaml_type_integer_no_detect() {
+        // `type: integer` — `int` is a prefix of `integer`.
+        assert!(
+            !auto_bug_has_type_annotation("  type: integer"),
+            "`type: integer` (YAML value) must NOT be detected as type annotation"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_yaml_type_string_no_detect() {
+        // End-to-end: adding YAML `type: string` must NOT trigger type-fix.
+        let old = "fields: {}";
+        let new = "fields:\n  type: string\n  required: true\n";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "type-fix"),
+            "adding YAML `type: string` must NOT trigger type-fix"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_yaml_type_boolean_no_detect() {
+        let old = "fields: {}";
+        let new = "fields:\n  type: boolean\n";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "type-fix"),
+            "adding YAML `type: boolean` must NOT trigger type-fix"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_yaml_type_integer_no_detect() {
+        let old = "fields: {}";
+        let new = "fields:\n  type: integer\n";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "type-fix"),
+            "adding YAML `type: integer` must NOT trigger type-fix"
+        );
+    }
+
+    #[test]
+    fn auto_bug_type_fix_real_str_annotation_still_detects() {
+        // `name: str` (real Python annotation) must still detect after the boundary fix.
+        assert!(
+            auto_bug_has_type_annotation("def foo(name: str) -> None:\n    pass"),
+            "`name: str` (real annotation) must still be detected as type annotation"
+        );
+    }
+
+    #[test]
+    fn auto_bug_type_fix_real_compact_annotation_still_detects() {
+        assert!(
+            auto_bug_has_type_annotation("def foo(name:str)->None:\n    pass"),
+            "`name:str` (real annotation without spaces) must still be detected"
+        );
+    }
+
+    // ── Blocker 3: code-extension gate regressions ──
+
+    #[test]
+    fn auto_bug_detector_edit_skips_readme_md() {
+        // README.md is not a code file — must be skipped even when `??` is present.
+        let rule = AutoBugDetectorRule;
+        let data = serde_json::json!({
+            "toolName": "edit",
+            "toolArgs": {
+                "path": "README.md",
+                "old_str": "What?? maybe later",
+                "new_str": "const x = foo ?? bar;"
+            }
+        });
+        assert!(
+            rule.evaluate("postToolUse", &data).is_none(),
+            "edit on README.md must be skipped (not a code file)"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detector_edit_skips_type_fix_on_yaml() {
+        let rule = AutoBugDetectorRule;
+        let data = serde_json::json!({
+            "toolName": "edit",
+            "toolArgs": {
+                "path": "workflow.yaml",
+                "old_str": "jobs: {}\n",
+                "new_str": "jobs:\n  timeout: int\n"
+            }
+        });
+        assert!(
+            rule.evaluate("postToolUse", &data).is_none(),
+            "type-fix must be suppressed for .yaml edits"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detector_edit_skips_type_fix_on_yml() {
+        let rule = AutoBugDetectorRule;
+        let data = serde_json::json!({
+            "toolName": "edit",
+            "toolArgs": {
+                "path": "workflow.yml",
+                "old_str": "jobs: {}\n",
+                "new_str": "jobs:\n  enabled: bool\n"
+            }
+        });
+        assert!(
+            rule.evaluate("postToolUse", &data).is_none(),
+            "type-fix must be suppressed for .yml edits"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detector_create_skips_markdown_file() {
+        // docs/notes.md is not a code file — must be skipped even with null guards.
+        let rule = AutoBugDetectorRule;
+        let data = serde_json::json!({
+            "toolName": "create",
+            "toolArgs": {
+                "path": "docs/notes.md",
+                "file_text": "if obj is None:\n    return None\n"
+            }
+        });
+        assert!(
+            rule.evaluate("postToolUse", &data).is_none(),
+            "create on docs/notes.md must be skipped (not a code file)"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detector_edit_allows_py_code_file() {
+        // src/utils.py IS a code file — the session-state check passes.
+        // We only verify the path/extension gate here (no subprocess spawned).
+        // The rule will return None only if no patterns are detected;
+        // verify that it does NOT return None due to path gating.
+        // Use a pattern that always detects: add `?. ` to a ts-style expression.
+        // (In unit-test context, learn.py won't be called so this is safe.)
+        assert!(
+            has_code_extension("src/utils.py"),
+            "src/utils.py must pass the code-extension gate"
+        );
+        assert!(
+            !is_auto_bug_session_path("src/utils.py"),
+            "src/utils.py must not be flagged as session-state"
         );
     }
 }

@@ -31,6 +31,7 @@ hooks/
     pnpm_lockfile_guard.py # Blocks commit without pnpm-lock.yaml when package.json staged
     block_unsafe_html.py  # Blocks dangerouslySetInnerHTML without sanitization
     nextjs_typecheck.py   # Reminds to run pnpm typecheck after TS edits
+    auto_bug_detector.py  # Detects bug-fix patterns (issue #86); logs via learn.py
   references/
     docs-reminder.py      # Hook template: remind to update docs after edits
 ```
@@ -50,7 +51,7 @@ active enforcement runs through `hook_runner.py`.
 | `sessionStart` | Auto-briefing + integrity check |
 | `sessionEnd` | Marker cleanup |
 | `preToolUse` | Briefing/learn/tentacle/syntax/dist/lockfile/XSS guards |
-| `postToolUse` | Edit tracking + learn/test/tentacle + Next.js typecheck reminders |
+| `postToolUse` | Edit tracking + learn/test/bug-detector/tentacle + Next.js typecheck reminders |
 | `agentStop` | Best-effort dispatched-subagent marker cleanup |
 | `subagentStop` | Best-effort dispatched-subagent marker cleanup |
 | `errorOccurred` | KB error search |

@@ -19,6 +19,7 @@ class Rule:
 
 def get_rules_for_event(event):
     """Import and return rules matching the given event type."""
+    from .auto_bug_detector import AutoBugDetectorRule
     from .block_edit_dist import BlockEditDistRule
     from .block_unsafe_html import BlockUnsafeHtmlRule
     from .briefing import AutoBriefingRule, EnforceBriefingRule
@@ -59,6 +60,7 @@ def get_rules_for_event(event):
         TrackEditsRule(),
         LearnReminderRule(),
         TestReminderRule(),
+        AutoBugDetectorRule(),  # Issue #86: five-category bug-fix pattern detector
         TentacleSuggestRule(),
         NextjsTypecheckRule(),
         ReadBeforeEditRule(),  # also postToolUse for tracking views
