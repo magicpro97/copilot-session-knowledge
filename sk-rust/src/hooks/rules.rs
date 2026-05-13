@@ -73,8 +73,8 @@
 ///     async-fix (0.62) are enabled; the others remain excluded (0.0).
 ///     Calls ``learn.py --mistake`` via subprocess using a 5-minute bucketed
 ///     title so repeated detections increment ``occurrence_count`` rather than
-///     being silently dropped.  Writes the ``learn-done`` marker after each
-///     successful learn call.  Error-handling old-code check mirrors Python
+///     being silently dropped.  Writes the ``learn-done`` marker once after
+///     one or more successful learn calls in the same evaluation.  Error-handling old-code check mirrors Python
 ///     specificity: only ``raise *Error`` (not bare ``raise``) suppresses new
 ///     exception-handling detections.  Informational-only.  Fail-open.
 ///     No regex dependency.
@@ -3666,18 +3666,13 @@ fn auto_bug_has_error_indicator(text: &str) -> bool {
 ///
 /// are **not** counted, mirroring Python's structured-form requirement.
 ///
-/// Whole-text indicators (`?.`, `??`, `.unwrap_or(`, `.ok_or(`) do not
-/// require an `if` prefix because they are structurally unambiguous.
+/// Line-level indicators (`?.`, `??`, `.unwrap_or(`, `.ok_or(`) do not
+/// require an `if` prefix, but they are still checked on the comment-stripped
+/// code portion of each line so comment-only occurrences do not fire.
 fn auto_bug_has_null_safety_indicator(text: &str) -> bool {
-    // Whole-text indicators that are precise enough on their own (no `if` prefix needed).
-    const SIMPLE: &[&str] = &[".unwrap_or(", ".ok_or("];
-    for indicator in SIMPLE {
-        if text.contains(indicator) {
-            return true;
-        }
-    }
-    // `?.` (optional-chaining) and `??` (nullish-coalescing) are checked
-    // per non-comment line so that comment-only occurrences do NOT fire.
+    // Null-safety indicators are checked per non-comment line so comment-only
+    // occurrences do NOT fire.
+    const SIMPLE: &[&str] = &[".unwrap_or(", ".ok_or(", "?.", "??"];
     // `is None` / `is not None` and `== null` / `!= null` / `=== null` / `!== null`
     // all require a leading `if` on the same trimmed line, mirroring Python's
     // structured-form requirement so bare boolean expressions, assertions,
@@ -3688,8 +3683,7 @@ fn auto_bug_has_null_safety_indicator(text: &str) -> bool {
         if code_part.is_empty() {
             continue;
         }
-        // Optional-chaining and nullish-coalescing on code portion only.
-        if code_part.contains("?.") || code_part.contains("??") {
+        if SIMPLE.iter().any(|indicator| code_part.contains(indicator)) {
             return true;
         }
         let structured_part = code_part;
@@ -3801,7 +3795,7 @@ fn auto_bug_has_type_annotation(text: &str) -> bool {
                 break;
             };
             let colon_pos = search_start + rel_pos;
-            let before = &code_part[..colon_pos];
+            let before = code_part[..colon_pos].trim_end();
             if !before.ends_with('\'') && !before.ends_with('"') {
                 let after_colon = code_part[colon_pos + 1..].trim_start();
                 for token in TOKENS {
@@ -10455,6 +10449,14 @@ EOF"#;
     }
 
     #[test]
+    fn auto_bug_type_fix_spaced_dict_string_key_list_no_detect() {
+        assert!(
+            !auto_bug_has_type_annotation("schema = {'items' : list, 'data' : dict}"),
+            "spaced string-keyed dict literal must NOT be detected as type annotation"
+        );
+    }
+
+    #[test]
     fn auto_bug_detect_edit_type_fix_dict_literal_no_detect() {
         // End-to-end: adding a dict literal with string keys must NOT trigger type-fix.
         let old = "schema = {}";
@@ -10463,6 +10465,17 @@ EOF"#;
         assert!(
             !detections.iter().any(|(cat, _)| *cat == "type-fix"),
             "adding dict literal {{'items': list}} must NOT trigger type-fix"
+        );
+    }
+
+    #[test]
+    fn auto_bug_detect_edit_type_fix_spaced_dict_literal_no_detect() {
+        let old = "schema = {}";
+        let new = "schema = {'items' : list, 'data' : dict}";
+        let detections = auto_bug_detect_edit(old, new);
+        assert!(
+            !detections.iter().any(|(cat, _)| *cat == "type-fix"),
+            "adding spaced dict literal {{'items' : list}} must NOT trigger type-fix"
         );
     }
 
@@ -10536,6 +10549,38 @@ EOF"#;
         assert!(
             auto_bug_has_null_safety_indicator("const v = obj?.value;  // safe access"),
             "`?.` in code part before trailing `//` comment must still detect"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_comment_unwrap_or_no_detect() {
+        assert!(
+            !auto_bug_has_null_safety_indicator("# prefer value.unwrap_or(default)"),
+            "comment-only `.unwrap_or(` must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_comment_ok_or_no_detect() {
+        assert!(
+            !auto_bug_has_null_safety_indicator("// prefer result.ok_or(err)"),
+            "comment-only `.ok_or(` must NOT be detected as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_code_unwrap_or_detects() {
+        assert!(
+            auto_bug_has_null_safety_indicator("return value.unwrap_or(default)"),
+            "code-side `.unwrap_or(` must still detect as null-safety"
+        );
+    }
+
+    #[test]
+    fn auto_bug_null_safety_code_ok_or_detects() {
+        assert!(
+            auto_bug_has_null_safety_indicator("return result.ok_or(err)"),
+            "code-side `.ok_or(` must still detect as null-safety"
         );
     }
 

@@ -83,6 +83,24 @@ _ERROR_INDICATOR_RE = re.compile(
     r"|\bthrow\s+new\s+\w*Error\b"
 )
 
+_TYPE_ANNOTATION_TOKENS = (
+    "int",
+    "str",
+    "float",
+    "bool",
+    "bytes",
+    "list",
+    "dict",
+    "set",
+    "tuple",
+    "Optional[",
+    "Union[",
+    "List[",
+    "Dict[",
+    "Tuple[",
+    "Any",
+)
+
 
 # ---------------------------------------------------------------------------
 # Bucket helper
@@ -137,25 +155,21 @@ def _has_null_safety_indicator(text: str) -> bool:
     """Return True if *text* contains a null-safety pattern in a real guard context.
 
     Rules:
-    - ``.unwrap_or(`` and ``.ok_or(`` are accepted anywhere (Rust-specific; precise).
-    - ``?.`` (optional-chaining) and ``??`` (nullish-coalescing) are checked
-      **per non-comment line** so that comment-only occurrences do NOT fire.
+    - ``.unwrap_or(``, ``.ok_or(``, ``?.``, and ``??`` are checked on the
+      comment-stripped code portion of each line so comment-only occurrences do
+      NOT fire.
     - ``is None``, ``is not None``, ``== null``, ``!= null``, ``=== null``,
       ``!== null`` all require a leading ``if`` on the trimmed line — mirrors
       Rust's ``auto_bug_has_null_safety_indicator`` structured-form requirement.
     """
-    # Whole-text indicators specific enough on their own.
-    for indicator in (".unwrap_or(", ".ok_or("):
-        if indicator in text:
-            return True
-    # Per-line scan for `?.`, `??`, and structured `if` null-comparisons.
+    # Per-line scan for null-safety indicators and structured `if` null-comparisons.
     null_cmp = ("== null", "=== null", "!= null", "!== null")
     for line in text.splitlines():
         code_part = _trimmed_code_part(line)
         if not code_part:
             continue
-        # Optional-chaining and nullish-coalescing on code portion only.
-        if "?." in code_part or "??" in code_part:
+        # Simple null-safety indicators on code portion only.
+        if ".unwrap_or(" in code_part or ".ok_or(" in code_part or "?." in code_part or "??" in code_part:
             return True
         # Structured `if` forms also need comment stripping so trailing comments
         # like `if ready:  # check if x is None` do not spuriously count.
@@ -165,6 +179,29 @@ def _has_null_safety_indicator(text: str) -> bool:
             for cmp in null_cmp:
                 if cmp in code_part:
                     return True
+    return False
+
+
+def _has_type_annotation(text: str) -> bool:
+    """Return True if *text* contains a type annotation in real code context."""
+    for line in text.splitlines():
+        code_part = _trimmed_code_part(line)
+        if not code_part:
+            continue
+        search_start = 0
+        while True:
+            colon_pos = code_part.find(":", search_start)
+            if colon_pos < 0:
+                break
+            before = code_part[:colon_pos].rstrip()
+            if not before.endswith(("'", '"')):
+                after_colon = code_part[colon_pos + 1 :].lstrip()
+                for token in _TYPE_ANNOTATION_TOKENS:
+                    if after_colon.startswith(token):
+                        after_token = after_colon[len(token) :]
+                        if not after_token or (not after_token[0].isalnum() and after_token[0] != "_"):
+                            return True
+            search_start = colon_pos + 1
     return False
 
 
@@ -215,21 +252,11 @@ _CATEGORY_PATTERNS = [
     },
     {
         "category": "type-fix",
-        # Matches Python-style type annotations in real annotation contexts.
-        # `(?<!['\"])` prevents matching dict literals where the key is a string
-        # (e.g. `'items': list`).  `None` is omitted because `: None` is too
-        # ambiguous — it appears in config/YAML key-value pairs and is rarely
-        # a real Python type annotation (return types use `-> None` instead).
-        "new_pat": re.compile(
-            r"(?<!['\"]):\s*(?:int|str|float|bool|bytes|list|dict|set|tuple"
-            r"|Optional\s*\[|Union\s*\[|List\s*\[|Dict\s*\[|Tuple\s*\["
-            r"|Any)\b"
-        ),
-        "old_antipat": re.compile(
-            r"(?<!['\"]):\s*(?:int|str|float|bool|bytes|list|dict|set|tuple"
-            r"|Optional\s*\[|Union\s*\[|List\s*\[|Dict\s*\[|Tuple\s*\["
-            r"|Any)\b"
-        ),
+        # Uses per-line parsing so we can:
+        # - skip comment-only / inline-comment occurrences,
+        # - treat compact annotations like `name:str` as valid,
+        # - ignore string-keyed dict literals even when whitespace appears before `:`.
+        "check_fn": _has_type_annotation,
         "confidence": 0.65,
         "create_conf": 0.0,  # excluded per design: proactive typing vs. bug fix
     },
@@ -455,8 +482,7 @@ class AutoBugDetectorRule(Rule):
         for (category, confidence), ok in zip(detections, results, strict=True):
             if ok:
                 messages.append(
-                    f"  \U0001f41b Auto-detected {category} in {Path(file_path).name} "
-                    f"(confidence: {confidence:.0%})"
+                    f"  \U0001f41b Auto-detected {category} in {Path(file_path).name} (confidence: {confidence:.0%})"
                 )
         if messages:
             _write_learn_done_marker()  # Write once if any detection succeeded

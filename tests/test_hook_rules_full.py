@@ -51,62 +51,89 @@ from rules.block_edit_dist import BlockEditDistRule
 rule = BlockEditDistRule()
 
 # 1a. edit targeting browse-ui/dist/ → deny
-result = rule.evaluate("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {"path": "browse-ui/dist/index.js", "old_str": "x", "new_str": "y"},
-})
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {"path": "browse-ui/dist/index.js", "old_str": "x", "new_str": "y"},
+    },
+)
 test("edit browse-ui/dist/index.js → deny", result is not None)
-test("edit browse-ui/dist/ → deny has permissionDecision", isinstance(result, dict) and result.get("permissionDecision") == "deny")
+test(
+    "edit browse-ui/dist/ → deny has permissionDecision",
+    isinstance(result, dict) and result.get("permissionDecision") == "deny",
+)
 test("deny message mentions pnpm build", "pnpm build" in (result or {}).get("permissionDecisionReason", ""))
 
 # 1b. create targeting browse-ui/dist/ → deny
-result = rule.evaluate("preToolUse", {
-    "toolName": "create",
-    "toolArgs": {"path": "browse-ui/dist/chunk.js", "file_text": "var x = 1;"},
-})
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "create",
+        "toolArgs": {"path": "browse-ui/dist/chunk.js", "file_text": "var x = 1;"},
+    },
+)
 test("create browse-ui/dist/chunk.js → deny", result is not None and result.get("permissionDecision") == "deny")
 
 # 1c. edit targeting browse-ui/dist/ via absolute path
 abs_dist = str(Path.home() / ".copilot" / "tools" / "browse-ui" / "dist" / "app.js")
-result = rule.evaluate("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {"path": abs_dist, "old_str": "a", "new_str": "b"},
-})
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {"path": abs_dist, "old_str": "a", "new_str": "b"},
+    },
+)
 test("Absolute dist path → deny", result is not None and result.get("permissionDecision") == "deny")
 
 # 1d. edit targeting browse-ui/src/ → allow
-result = rule.evaluate("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {"path": "browse-ui/src/components/Button.tsx", "old_str": "x", "new_str": "y"},
-})
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {"path": "browse-ui/src/components/Button.tsx", "old_str": "x", "new_str": "y"},
+    },
+)
 test("edit browse-ui/src/ → allow", result is None)
 
 # 1e. edit targeting any other path → allow
-result = rule.evaluate("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {"path": "src/main.py", "old_str": "x", "new_str": "y"},
-})
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {"path": "src/main.py", "old_str": "x", "new_str": "y"},
+    },
+)
 test("edit src/main.py → allow", result is None)
 
 # 1f. path with /browse-ui/dist/ substring anywhere → deny
-result = rule.evaluate("preToolUse", {
-    "toolName": "create",
-    "toolArgs": {"path": "/some/deep/browse-ui/dist/bundle.js", "file_text": ""},
-})
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "create",
+        "toolArgs": {"path": "/some/deep/browse-ui/dist/bundle.js", "file_text": ""},
+    },
+)
 test("/…/browse-ui/dist/ substring → deny", result is not None and result.get("permissionDecision") == "deny")
 
 # 1g. Missing path → allow (no crash)
-result = rule.evaluate("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {},
-})
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {},
+    },
+)
 test("Missing path → allow (no crash)", result is None)
 
 # 1h. Non-dict toolArgs → allow
-result = rule.evaluate("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": None,
-})
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": None,
+    },
+)
 test("Non-dict toolArgs → allow", result is None)
 
 # 1i. Rule metadata
@@ -126,92 +153,129 @@ from rules.block_unsafe_html import BlockUnsafeHtmlRule
 rule = BlockUnsafeHtmlRule()
 
 # 2a. dangerouslySetInnerHTML without sanitize in .tsx → deny
-result = rule.evaluate("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {
-        "path": "browse-ui/src/Foo.tsx",
-        "new_str": 'return <div dangerouslySetInnerHTML={{ __html: userContent }} />;',
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {
+            "path": "browse-ui/src/Foo.tsx",
+            "new_str": "return <div dangerouslySetInnerHTML={{ __html: userContent }} />;",
+        },
     },
-})
+)
 test("dangerouslySetInnerHTML without sanitize → deny", result is not None)
 test("XSS deny has permissionDecision=deny", isinstance(result, dict) and result.get("permissionDecision") == "deny")
-test("XSS deny message mentions DOMPurify or sanitize", "sanitize" in (result or {}).get("permissionDecisionReason", "").lower() or "DOMPurify" in (result or {}).get("permissionDecisionReason", ""))
+test(
+    "XSS deny message mentions DOMPurify or sanitize",
+    "sanitize" in (result or {}).get("permissionDecisionReason", "").lower()
+    or "DOMPurify" in (result or {}).get("permissionDecisionReason", ""),
+)
 
 # 2b. dangerouslySetInnerHTML WITH DOMPurify.sanitize → allow
-result = rule.evaluate("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {
-        "path": "browse-ui/src/Bar.tsx",
-        "new_str": 'return <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(userContent) }} />;',
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {
+            "path": "browse-ui/src/Bar.tsx",
+            "new_str": "return <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(userContent) }} />;",
+        },
     },
-})
+)
 test("dangerouslySetInnerHTML + DOMPurify.sanitize → allow", result is None)
 
 # 2c. dangerouslySetInnerHTML WITH sanitize() call → allow
-result = rule.evaluate("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {
-        "path": "Comp.tsx",
-        "new_str": 'const clean = sanitize(raw); return <div dangerouslySetInnerHTML={{ __html: clean }} />;',
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {
+            "path": "Comp.tsx",
+            "new_str": "const clean = sanitize(raw); return <div dangerouslySetInnerHTML={{ __html: clean }} />;",
+        },
     },
-})
+)
 test("dangerouslySetInnerHTML + sanitize() → allow", result is None)
 
 # 2d. dangerouslySetInnerHTML WITH rehype-sanitize → allow
-result = rule.evaluate("preToolUse", {
-    "toolName": "create",
-    "toolArgs": {
-        "path": "browse-ui/src/Blog.tsx",
-        "file_text": "// using rehype-sanitize\nreturn <div dangerouslySetInnerHTML={{ __html: html }} />;",
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "create",
+        "toolArgs": {
+            "path": "browse-ui/src/Blog.tsx",
+            "file_text": "// using rehype-sanitize\nreturn <div dangerouslySetInnerHTML={{ __html: html }} />;",
+        },
     },
-})
+)
 test("dangerouslySetInnerHTML + rehype-sanitize → allow", result is None)
 
 # 2e. Non-JS/TS file (e.g., .py) with dangerouslySetInnerHTML → allow (not checked)
-result = rule.evaluate("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {
-        "path": "notes.py",
-        "new_str": "# comment: dangerouslySetInnerHTML is an XSS risk",
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {
+            "path": "notes.py",
+            "new_str": "# comment: dangerouslySetInnerHTML is an XSS risk",
+        },
     },
-})
+)
 test("dangerouslySetInnerHTML in .py → allow (not JS)", result is None)
 
 # 2f. .jsx file with dangerouslySetInnerHTML (unsanitized) → deny
-result = rule.evaluate("preToolUse", {
-    "toolName": "create",
-    "toolArgs": {
-        "path": "client/Component.jsx",
-        "file_text": "<div dangerouslySetInnerHTML={{__html: raw}} />",
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "create",
+        "toolArgs": {
+            "path": "client/Component.jsx",
+            "file_text": "<div dangerouslySetInnerHTML={{__html: raw}} />",
+        },
     },
-})
-test("dangerouslySetInnerHTML in .jsx without sanitize → deny", result is not None and result.get("permissionDecision") == "deny")
+)
+test(
+    "dangerouslySetInnerHTML in .jsx without sanitize → deny",
+    result is not None and result.get("permissionDecision") == "deny",
+)
 
 # 2g. .js file → deny
-result = rule.evaluate("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {
-        "path": "app.js",
-        "new_str": "el.dangerouslySetInnerHTML = { __html: userInput };",
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {
+            "path": "app.js",
+            "new_str": "el.dangerouslySetInnerHTML = { __html: userInput };",
+        },
     },
-})
-test("dangerouslySetInnerHTML in .js without sanitize → deny", result is not None and result.get("permissionDecision") == "deny")
+)
+test(
+    "dangerouslySetInnerHTML in .js without sanitize → deny",
+    result is not None and result.get("permissionDecision") == "deny",
+)
 
 # 2h. No dangerous content → allow
-result = rule.evaluate("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {
-        "path": "browse-ui/src/Safe.tsx",
-        "new_str": "return <div>{children}</div>;",
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {
+            "path": "browse-ui/src/Safe.tsx",
+            "new_str": "return <div>{children}</div>;",
+        },
     },
-})
+)
 test("No dangerouslySetInnerHTML → allow", result is None)
 
 # 2i. Empty new_str → allow
-result = rule.evaluate("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {"path": "app.tsx", "new_str": ""},
-})
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {"path": "app.tsx", "new_str": ""},
+    },
+)
 test("Empty new_str → allow", result is None)
 
 # 2j. Missing toolArgs → allow
@@ -245,62 +309,89 @@ def _make_git_result(lines):
 
 # 3a. git commit with package.json staged but no lockfile → deny
 with patch.object(_pnpm_mod.subprocess, "run", return_value=_make_git_result(["browse-ui/package.json"])):
-    result = rule.evaluate("preToolUse", {
-        "toolName": "bash",
-        "toolArgs": {"command": "git commit -m 'update deps'"},
-    })
+    result = rule.evaluate(
+        "preToolUse",
+        {
+            "toolName": "bash",
+            "toolArgs": {"command": "git commit -m 'update deps'"},
+        },
+    )
 test("package.json staged without lockfile → deny", result is not None and result.get("permissionDecision") == "deny")
 test("deny message mentions pnpm install", "pnpm install" in (result or {}).get("permissionDecisionReason", ""))
 test("deny message mentions pnpm-lock.yaml", "pnpm-lock.yaml" in (result or {}).get("permissionDecisionReason", ""))
 
 # 3b. git commit with both package.json and lockfile staged → allow
-with patch.object(_pnpm_mod.subprocess, "run", return_value=_make_git_result([
-    "browse-ui/package.json",
-    "browse-ui/pnpm-lock.yaml",
-])):
-    result = rule.evaluate("preToolUse", {
-        "toolName": "bash",
-        "toolArgs": {"command": "git commit -m 'update deps'"},
-    })
+with patch.object(
+    _pnpm_mod.subprocess,
+    "run",
+    return_value=_make_git_result(
+        [
+            "browse-ui/package.json",
+            "browse-ui/pnpm-lock.yaml",
+        ]
+    ),
+):
+    result = rule.evaluate(
+        "preToolUse",
+        {
+            "toolName": "bash",
+            "toolArgs": {"command": "git commit -m 'update deps'"},
+        },
+    )
 test("Both package.json and lockfile staged → allow", result is None)
 
 # 3c. git commit with lockfile only → allow (no package.json)
 with patch.object(_pnpm_mod.subprocess, "run", return_value=_make_git_result(["browse-ui/pnpm-lock.yaml"])):
-    result = rule.evaluate("preToolUse", {
-        "toolName": "bash",
-        "toolArgs": {"command": "git commit -m 'lock only'"},
-    })
+    result = rule.evaluate(
+        "preToolUse",
+        {
+            "toolName": "bash",
+            "toolArgs": {"command": "git commit -m 'lock only'"},
+        },
+    )
 test("Only lockfile staged (no package.json) → allow", result is None)
 
 # 3d. Non-git-commit bash command → allow (no git call needed)
-result = rule.evaluate("preToolUse", {
-    "toolName": "bash",
-    "toolArgs": {"command": "ls -la"},
-})
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "bash",
+        "toolArgs": {"command": "ls -la"},
+    },
+)
 test("Non-commit command → allow (no subprocess call)", result is None)
 
 # 3e. git commit with no staged files → allow
 with patch.object(_pnpm_mod.subprocess, "run", return_value=_make_git_result([])):
-    result = rule.evaluate("preToolUse", {
-        "toolName": "bash",
-        "toolArgs": {"command": "git commit -m 'empty'"},
-    })
+    result = rule.evaluate(
+        "preToolUse",
+        {
+            "toolName": "bash",
+            "toolArgs": {"command": "git commit -m 'empty'"},
+        },
+    )
 test("No staged files → allow", result is None)
 
 # 3f. Subprocess exception → fail-open (allow)
 with patch.object(_pnpm_mod.subprocess, "run", side_effect=OSError("git not found")):
-    result = rule.evaluate("preToolUse", {
-        "toolName": "bash",
-        "toolArgs": {"command": "git commit -m 'test'"},
-    })
+    result = rule.evaluate(
+        "preToolUse",
+        {
+            "toolName": "bash",
+            "toolArgs": {"command": "git commit -m 'test'"},
+        },
+    )
 test("Subprocess failure → fail-open (allow)", result is None)
 
 # 3g. git commit --amend also matches
 with patch.object(_pnpm_mod.subprocess, "run", return_value=_make_git_result(["browse-ui/package.json"])):
-    result = rule.evaluate("preToolUse", {
-        "toolName": "bash",
-        "toolArgs": {"command": "git commit --amend --no-edit"},
-    })
+    result = rule.evaluate(
+        "preToolUse",
+        {
+            "toolName": "bash",
+            "toolArgs": {"command": "git commit --amend --no-edit"},
+        },
+    )
 test("git commit --amend triggers guard", result is not None and result.get("permissionDecision") == "deny")
 
 # 3h. Rule metadata
@@ -326,111 +417,166 @@ _tmp_marker = _tmp_marker_dir / "dispatched-subagent-active"
 try:
     # 4a. No marker → git commit allowed
     with patch.object(_sg_mod, "SUBAGENT_MARKER", _tmp_marker):
-        result = rule.evaluate("preToolUse", {
-            "toolName": "bash",
-            "toolArgs": {"command": "git commit -m 'feat: add feature'"},
-        })
+        result = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "bash",
+                "toolArgs": {"command": "git commit -m 'feat: add feature'"},
+            },
+        )
     test("No marker → git commit allowed", result is None)
 
     # 4b. Fresh marker with active tentacle → git commit blocked
-    _marker_payload = json.dumps({
-        "ts": int(time.time()),
-        "active_tentacles": ["my-tentacle"],
-    })
+    _marker_payload = json.dumps(
+        {
+            "ts": int(time.time()),
+            "active_tentacles": ["my-tentacle"],
+        }
+    )
     _tmp_marker.write_text(_marker_payload, encoding="utf-8")
-    with patch.object(_sg_mod, "SUBAGENT_MARKER", _tmp_marker), \
-         patch.object(_sg_mod, "verify_marker", return_value=True), \
-         patch.object(_sg_mod, "_get_current_git_root", return_value=None):
-        result = rule.evaluate("preToolUse", {
-            "toolName": "bash",
-            "toolArgs": {"command": "git commit -m 'sneaky commit'"},
-        })
-    test("Fresh marker + active tentacle → git commit blocked", result is not None and result.get("permissionDecision") == "deny")
+    with (
+        patch.object(_sg_mod, "SUBAGENT_MARKER", _tmp_marker),
+        patch.object(_sg_mod, "verify_marker", return_value=True),
+        patch.object(_sg_mod, "_get_current_git_root", return_value=None),
+    ):
+        result = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "bash",
+                "toolArgs": {"command": "git commit -m 'sneaky commit'"},
+            },
+        )
+    test(
+        "Fresh marker + active tentacle → git commit blocked",
+        result is not None and result.get("permissionDecision") == "deny",
+    )
     test("Blocked message mentions SUBAGENT MODE", "SUBAGENT" in (result or {}).get("permissionDecisionReason", ""))
 
     # 4c. Fresh marker → git push also blocked
-    with patch.object(_sg_mod, "SUBAGENT_MARKER", _tmp_marker), \
-         patch.object(_sg_mod, "verify_marker", return_value=True), \
-         patch.object(_sg_mod, "_get_current_git_root", return_value=None):
-        result = rule.evaluate("preToolUse", {
-            "toolName": "bash",
-            "toolArgs": {"command": "git push origin main"},
-        })
+    with (
+        patch.object(_sg_mod, "SUBAGENT_MARKER", _tmp_marker),
+        patch.object(_sg_mod, "verify_marker", return_value=True),
+        patch.object(_sg_mod, "_get_current_git_root", return_value=None),
+    ):
+        result = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "bash",
+                "toolArgs": {"command": "git push origin main"},
+            },
+        )
     test("Fresh marker + git push → blocked", result is not None and result.get("permissionDecision") == "deny")
 
     # 4d. Non-git command → allowed regardless of marker
-    with patch.object(_sg_mod, "SUBAGENT_MARKER", _tmp_marker), \
-         patch.object(_sg_mod, "verify_marker", return_value=True), \
-         patch.object(_sg_mod, "_get_current_git_root", return_value=None):
-        result = rule.evaluate("preToolUse", {
-            "toolName": "bash",
-            "toolArgs": {"command": "python3 test_security.py"},
-        })
+    with (
+        patch.object(_sg_mod, "SUBAGENT_MARKER", _tmp_marker),
+        patch.object(_sg_mod, "verify_marker", return_value=True),
+        patch.object(_sg_mod, "_get_current_git_root", return_value=None),
+    ):
+        result = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "bash",
+                "toolArgs": {"command": "python3 test_security.py"},
+            },
+        )
     test("Non-git command always passes through", result is None)
 
     # 4e. Expired marker → fail-open (allowed)
-    _expired_payload = json.dumps({
-        "ts": int(time.time()) - 20000,  # 5.5 hours ago (beyond 4h TTL)
-        "active_tentacles": ["old-tentacle"],
-    })
+    _expired_payload = json.dumps(
+        {
+            "ts": int(time.time()) - 20000,  # 5.5 hours ago (beyond 4h TTL)
+            "active_tentacles": ["old-tentacle"],
+        }
+    )
     _tmp_marker.write_text(_expired_payload, encoding="utf-8")
-    with patch.object(_sg_mod, "SUBAGENT_MARKER", _tmp_marker), \
-         patch.object(_sg_mod, "verify_marker", return_value=True), \
-         patch.object(_sg_mod, "_get_current_git_root", return_value=None):
-        result = rule.evaluate("preToolUse", {
-            "toolName": "bash",
-            "toolArgs": {"command": "git commit -m 'after expiry'"},
-        })
+    with (
+        patch.object(_sg_mod, "SUBAGENT_MARKER", _tmp_marker),
+        patch.object(_sg_mod, "verify_marker", return_value=True),
+        patch.object(_sg_mod, "_get_current_git_root", return_value=None),
+    ):
+        result = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "bash",
+                "toolArgs": {"command": "git commit -m 'after expiry'"},
+            },
+        )
     test("Expired marker → fail-open (allowed)", result is None)
 
     # 4f. Zombie marker (empty active_tentacles) → allowed
-    _zombie_payload = json.dumps({
-        "ts": int(time.time()),
-        "active_tentacles": [],
-    })
+    _zombie_payload = json.dumps(
+        {
+            "ts": int(time.time()),
+            "active_tentacles": [],
+        }
+    )
     _tmp_marker.write_text(_zombie_payload, encoding="utf-8")
-    with patch.object(_sg_mod, "SUBAGENT_MARKER", _tmp_marker), \
-         patch.object(_sg_mod, "verify_marker", return_value=True), \
-         patch.object(_sg_mod, "_get_current_git_root", return_value=None):
-        result = rule.evaluate("preToolUse", {
-            "toolName": "bash",
-            "toolArgs": {"command": "git commit -m 'cleanup'"},
-        })
+    with (
+        patch.object(_sg_mod, "SUBAGENT_MARKER", _tmp_marker),
+        patch.object(_sg_mod, "verify_marker", return_value=True),
+        patch.object(_sg_mod, "_get_current_git_root", return_value=None),
+    ):
+        result = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "bash",
+                "toolArgs": {"command": "git commit -m 'cleanup'"},
+            },
+        )
     test("Zombie marker (empty active_tentacles) → allowed", result is None)
 
     # 4g. Marker present but HMAC invalid → fail-open (allowed)
-    _good_payload = json.dumps({
-        "ts": int(time.time()),
-        "active_tentacles": ["legit"],
-    })
+    _good_payload = json.dumps(
+        {
+            "ts": int(time.time()),
+            "active_tentacles": ["legit"],
+        }
+    )
     _tmp_marker.write_text(_good_payload, encoding="utf-8")
-    with patch.object(_sg_mod, "SUBAGENT_MARKER", _tmp_marker), \
-         patch.object(_sg_mod, "verify_marker", return_value=False):
-        result = rule.evaluate("preToolUse", {
-            "toolName": "bash",
-            "toolArgs": {"command": "git commit -m 'unverified'"},
-        })
+    with (
+        patch.object(_sg_mod, "SUBAGENT_MARKER", _tmp_marker),
+        patch.object(_sg_mod, "verify_marker", return_value=False),
+    ):
+        result = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "bash",
+                "toolArgs": {"command": "git commit -m 'unverified'"},
+            },
+        )
     test("HMAC invalid → fail-open (allowed)", result is None)
 
     # 4h. Marker with dict-format entries and tentacle name
-    _dict_payload = json.dumps({
-        "ts": int(time.time()),
-        "active_tentacles": [{"name": "my-tentacle", "ts": int(time.time()), "git_root": None}],
-    })
+    _dict_payload = json.dumps(
+        {
+            "ts": int(time.time()),
+            "active_tentacles": [{"name": "my-tentacle", "ts": int(time.time()), "git_root": None}],
+        }
+    )
     _tmp_marker.write_text(_dict_payload, encoding="utf-8")
-    with patch.object(_sg_mod, "SUBAGENT_MARKER", _tmp_marker), \
-         patch.object(_sg_mod, "verify_marker", return_value=True), \
-         patch.object(_sg_mod, "_get_current_git_root", return_value=None):
-        result = rule.evaluate("preToolUse", {
-            "toolName": "bash",
-            "toolArgs": {"command": "git commit -m 'blocked again'"},
-        })
-    test("Dict-format active_tentacles → git commit blocked", result is not None and result.get("permissionDecision") == "deny")
+    with (
+        patch.object(_sg_mod, "SUBAGENT_MARKER", _tmp_marker),
+        patch.object(_sg_mod, "verify_marker", return_value=True),
+        patch.object(_sg_mod, "_get_current_git_root", return_value=None),
+    ):
+        result = rule.evaluate(
+            "preToolUse",
+            {
+                "toolName": "bash",
+                "toolArgs": {"command": "git commit -m 'blocked again'"},
+            },
+        )
+    test(
+        "Dict-format active_tentacles → git commit blocked",
+        result is not None and result.get("permissionDecision") == "deny",
+    )
     deny_msg = (result or {}).get("permissionDecisionReason", "")
     test("Deny message mentions tentacle name 'my-tentacle'", "my-tentacle" in deny_msg)
 
 finally:
     import shutil
+
     shutil.rmtree(_tmp_marker_dir, ignore_errors=True)
 
 # 4i. Rule metadata
@@ -450,32 +596,48 @@ from rules.syntax_gate import SyntaxGateRule
 rule = SyntaxGateRule()
 
 # 5a. create with valid Python → allow
-result = rule.evaluate("preToolUse", {
-    "toolName": "create",
-    "toolArgs": {"path": "new_module.py", "file_text": "def hello():\n    return 'world'\n"},
-})
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "create",
+        "toolArgs": {"path": "new_module.py", "file_text": "def hello():\n    return 'world'\n"},
+    },
+)
 test("create valid Python → allow", result is None)
 
 # 5b. create with invalid Python (SyntaxError) → deny
-result = rule.evaluate("preToolUse", {
-    "toolName": "create",
-    "toolArgs": {"path": "bad.py", "file_text": "def foo(\n    broken code here !!!@#\n"},
-})
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "create",
+        "toolArgs": {"path": "bad.py", "file_text": "def foo(\n    broken code here !!!@#\n"},
+    },
+)
 test("create invalid Python → deny", result is not None and result.get("permissionDecision") == "deny")
-test("deny message mentions SyntaxError", "Syntax" in (result or {}).get("permissionDecisionReason", "") or "syntax" in (result or {}).get("permissionDecisionReason", "").lower())
+test(
+    "deny message mentions SyntaxError",
+    "Syntax" in (result or {}).get("permissionDecisionReason", "")
+    or "syntax" in (result or {}).get("permissionDecisionReason", "").lower(),
+)
 
 # 5c. create with non-Python file → always allow
-result = rule.evaluate("preToolUse", {
-    "toolName": "create",
-    "toolArgs": {"path": "style.css", "file_text": "THIS IS NOT VALID CSS !@#$"},
-})
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "create",
+        "toolArgs": {"path": "style.css", "file_text": "THIS IS NOT VALID CSS !@#$"},
+    },
+)
 test("create non-.py file → allow (no check)", result is None)
 
 # 5d. create with missing file_text → allow
-result = rule.evaluate("preToolUse", {
-    "toolName": "create",
-    "toolArgs": {"path": "empty.py"},
-})
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "create",
+        "toolArgs": {"path": "empty.py"},
+    },
+)
 test("create .py without file_text → allow", result is None)
 
 # 5e. edit with old_str not found in file → allow (let edit tool raise)
@@ -483,34 +645,46 @@ with tempfile.NamedTemporaryFile(suffix=".py", mode="w", encoding="utf-8", delet
     f.write("x = 1\ny = 2\n")
     tmp_py = f.name
 try:
-    result = rule.evaluate("preToolUse", {
-        "toolName": "edit",
-        "toolArgs": {"path": tmp_py, "old_str": "z = 999", "new_str": "z = 0"},
-    })
+    result = rule.evaluate(
+        "preToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {"path": tmp_py, "old_str": "z = 999", "new_str": "z = 0"},
+        },
+    )
     test("edit with non-existent old_str → allow (let edit tool fail)", result is None)
 
     # 5f. edit producing valid replacement → allow
-    result = rule.evaluate("preToolUse", {
-        "toolName": "edit",
-        "toolArgs": {"path": tmp_py, "old_str": "x = 1", "new_str": "x = 42"},
-    })
+    result = rule.evaluate(
+        "preToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {"path": tmp_py, "old_str": "x = 1", "new_str": "x = 42"},
+        },
+    )
     test("edit producing valid Python → allow", result is None)
 
     # 5g. edit producing syntax error → deny
-    result = rule.evaluate("preToolUse", {
-        "toolName": "edit",
-        "toolArgs": {"path": tmp_py, "old_str": "x = 1", "new_str": "def broken(\n"},
-    })
+    result = rule.evaluate(
+        "preToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {"path": tmp_py, "old_str": "x = 1", "new_str": "def broken(\n"},
+        },
+    )
     test("edit producing SyntaxError → deny", result is not None and result.get("permissionDecision") == "deny")
 
 finally:
     os.unlink(tmp_py)
 
 # 5h. edit on non-existent file → allow (let edit tool raise)
-result = rule.evaluate("preToolUse", {
-    "toolName": "edit",
-    "toolArgs": {"path": "/no/such/file.py", "old_str": "x", "new_str": "y"},
-})
+result = rule.evaluate(
+    "preToolUse",
+    {
+        "toolName": "edit",
+        "toolArgs": {"path": "/no/such/file.py", "old_str": "x", "new_str": "y"},
+    },
+)
 test("edit non-existent file → allow", result is None)
 
 # 5i. Non-dict toolArgs → allow
@@ -694,6 +868,15 @@ test(
     not any(c == "type-fix" for c, _ in cats),
 )
 
+cats = _detect_categories_edit(
+    "schema = {}",
+    "schema = {'items' : list, 'data' : dict}",
+)
+test(
+    "edit: spaced dict literal string keys → no type-fix detection",
+    not any(c == "type-fix" for c, _ in cats),
+)
+
 # config-like `key: None` → no type-fix detection (blocker 22 regression)
 cats = _detect_categories_edit(
     "cfg = {}",
@@ -739,16 +922,18 @@ test(
 
 # --- Rule.evaluate: edit with error-handling pattern (learn.py mocked) ---
 # Mock _call_learn to return True without actually calling learn.py
-with patch.object(_abd_mod, "_call_learn", return_value=True), \
-     patch.object(_abd_mod, "_write_learn_done_marker"):
-    result = rule.evaluate("postToolUse", {
-        "toolName": "edit",
-        "toolArgs": {
-            "path": "src/utils.py",
-            "old_str": "x = risky()",
-            "new_str": "try:\n    x = risky()\nexcept ValueError:\n    pass",
+with patch.object(_abd_mod, "_call_learn", return_value=True), patch.object(_abd_mod, "_write_learn_done_marker"):
+    result = rule.evaluate(
+        "postToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {
+                "path": "src/utils.py",
+                "old_str": "x = risky()",
+                "new_str": "try:\n    x = risky()\nexcept ValueError:\n    pass",
+            },
         },
-    })
+    )
 test(
     "evaluate edit error-handling → non-None info result",
     result is not None and "message" in result,
@@ -760,69 +945,85 @@ test(
 
 # --- Rule.evaluate: no detection → None ---
 with patch.object(_abd_mod, "_call_learn", return_value=True):
-    result = rule.evaluate("postToolUse", {
-        "toolName": "edit",
-        "toolArgs": {
-            "path": "src/utils.py",
-            "old_str": "def foo():\n    return 1",
-            "new_str": "def foo():\n    return 2",
+    result = rule.evaluate(
+        "postToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {
+                "path": "src/utils.py",
+                "old_str": "def foo():\n    return 1",
+                "new_str": "def foo():\n    return 2",
+            },
         },
-    })
+    )
 test("evaluate edit no pattern → None", result is None)
 
 # --- Rule.evaluate: create with error-handling → None (create_conf still 0.0) ---
 with patch.object(_abd_mod, "_call_learn", return_value=True):
-    result = rule.evaluate("postToolUse", {
-        "toolName": "create",
-        "toolArgs": {
-            "path": "src/new_file.py",
-            "file_text": "try:\n    x()\nexcept ValueError:\n    pass\n",
+    result = rule.evaluate(
+        "postToolUse",
+        {
+            "toolName": "create",
+            "toolArgs": {
+                "path": "src/new_file.py",
+                "file_text": "try:\n    x()\nexcept ValueError:\n    pass\n",
+            },
         },
-    })
+    )
 test("evaluate create error-handling → None (create_conf=0.0)", result is None)
 
 # --- Rule.evaluate: create with null-safety → detects (create_conf=0.62) ---
-with patch.object(_abd_mod, "_call_learn", return_value=True), \
-     patch.object(_abd_mod, "_write_learn_done_marker"):
-    result = rule.evaluate("postToolUse", {
-        "toolName": "create",
-        "toolArgs": {
-            "path": "src/guard.py",
-            "file_text": "def get(obj):\n    if obj is None:\n        return None\n    return obj.value\n",
+with patch.object(_abd_mod, "_call_learn", return_value=True), patch.object(_abd_mod, "_write_learn_done_marker"):
+    result = rule.evaluate(
+        "postToolUse",
+        {
+            "toolName": "create",
+            "toolArgs": {
+                "path": "src/guard.py",
+                "file_text": "def get(obj):\n    if obj is None:\n        return None\n    return obj.value\n",
+            },
         },
-    })
+    )
 test("evaluate create null-safety → non-None (create_conf=0.62)", result is not None)
 
 # --- Rule.evaluate: create with async-fix → detects (create_conf=0.62) ---
-with patch.object(_abd_mod, "_call_learn", return_value=True), \
-     patch.object(_abd_mod, "_write_learn_done_marker"):
-    result = rule.evaluate("postToolUse", {
-        "toolName": "create",
-        "toolArgs": {
-            "path": "src/handler.py",
-            "file_text": "async def handle():\n    return await fetch()\n",
+with patch.object(_abd_mod, "_call_learn", return_value=True), patch.object(_abd_mod, "_write_learn_done_marker"):
+    result = rule.evaluate(
+        "postToolUse",
+        {
+            "toolName": "create",
+            "toolArgs": {
+                "path": "src/handler.py",
+                "file_text": "async def handle():\n    return await fetch()\n",
+            },
         },
-    })
+    )
 test("evaluate create async-fix → non-None (create_conf=0.62)", result is not None)
 
 # --- Rule.evaluate: session-state path → skipped ---
 with patch.object(_abd_mod, "_call_learn", return_value=True):
-    result = rule.evaluate("postToolUse", {
-        "toolName": "edit",
-        "toolArgs": {
-            "path": str(Path.home() / ".copilot" / "session-state" / "plan.md"),
-            "old_str": "x",
-            "new_str": "try:\n    x()\nexcept ValueError:\n    pass",
+    result = rule.evaluate(
+        "postToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {
+                "path": str(Path.home() / ".copilot" / "session-state" / "plan.md"),
+                "old_str": "x",
+                "new_str": "try:\n    x()\nexcept ValueError:\n    pass",
+            },
         },
-    })
+    )
 test("evaluate session-state path → skipped (None)", result is None)
 
 # --- Rule.evaluate: missing path → None ---
 with patch.object(_abd_mod, "_call_learn", return_value=True):
-    result = rule.evaluate("postToolUse", {
-        "toolName": "edit",
-        "toolArgs": {"old_str": "x", "new_str": "try:\n    x()\nexcept ValueError:\n    pass"},
-    })
+    result = rule.evaluate(
+        "postToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {"old_str": "x", "new_str": "try:\n    x()\nexcept ValueError:\n    pass"},
+        },
+    )
 test("evaluate missing path → None", result is None)
 
 # --- Rule.evaluate: non-dict toolArgs → None ---
@@ -840,22 +1041,29 @@ test("_bucket_id stable within same second", t1 == t2)
 # --- Blocker 23: learn-done marker written once, not per detection (concurrent) ---
 _write_marker_call_count = 0
 
+
 def _counting_marker():
     global _write_marker_call_count
     _write_marker_call_count += 1
 
+
 _write_marker_call_count = 0
-with patch.object(_abd_mod, "_call_learn", return_value=True), \
-     patch.object(_abd_mod, "_write_learn_done_marker", side_effect=_counting_marker):
-    rule.evaluate("postToolUse", {
-        "toolName": "edit",
-        "toolArgs": {
-            "path": "src/both.py",
-            # Edit adds both error-handling AND type annotation → 2 detections
-            "old_str": "def greet(name):\n    return name",
-            "new_str": "def greet(name: str) -> str:\n    try:\n        return name\n    except ValueError:\n        pass",
+with (
+    patch.object(_abd_mod, "_call_learn", return_value=True),
+    patch.object(_abd_mod, "_write_learn_done_marker", side_effect=_counting_marker),
+):
+    rule.evaluate(
+        "postToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {
+                "path": "src/both.py",
+                # Edit adds both error-handling AND type annotation → 2 detections
+                "old_str": "def greet(name):\n    return name",
+                "new_str": "def greet(name: str) -> str:\n    try:\n        return name\n    except ValueError:\n        pass",
+            },
         },
-    })
+    )
 test(
     "learn-done marker written once (not per detection) for 2 concurrent detections",
     _write_marker_call_count <= 1,
@@ -901,6 +1109,26 @@ test(
 test(
     "?. in code part (before // comment) → null-safety detected",
     _has_null_safety_indicator("const v = obj?.value;  // safe access"),
+)
+
+test(
+    ".unwrap_or() only in comment → no null-safety detection",
+    not _has_null_safety_indicator("# prefer value.unwrap_or(default)"),
+)
+
+test(
+    ".ok_or() only in comment → no null-safety detection",
+    not _has_null_safety_indicator("// prefer result.ok_or(err)"),
+)
+
+test(
+    ".unwrap_or() in code → null-safety detected",
+    _has_null_safety_indicator("return value.unwrap_or(default)"),
+)
+
+test(
+    ".ok_or() in code → null-safety detected",
+    _has_null_safety_indicator("return result.ok_or(err)"),
 )
 
 test(
@@ -961,77 +1189,91 @@ test(
 # --- Blocker 3: code-extension gate ---
 # README.md (non-code) must be skipped by edit handler
 with patch.object(_abd_mod, "_call_learn", return_value=True):
-    result = rule.evaluate("postToolUse", {
-        "toolName": "edit",
-        "toolArgs": {
-            "path": "README.md",
-            "old_str": "What?? maybe later",
-            "new_str": "const x = foo ?? bar;",
+    result = rule.evaluate(
+        "postToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {
+                "path": "README.md",
+                "old_str": "What?? maybe later",
+                "new_str": "const x = foo ?? bar;",
+            },
         },
-    })
+    )
 test("evaluate edit on README.md → skipped (None)", result is None)
 
 # YAML files stay eligible for other categories, but type-fix is suppressed there
 with patch.object(_abd_mod, "_call_learn", return_value=True):
-    result = rule.evaluate("postToolUse", {
-        "toolName": "edit",
-        "toolArgs": {
-            "path": "workflow.yaml",
-            "old_str": "jobs: {}\n",
-            "new_str": "jobs:\n  timeout: int\n",
+    result = rule.evaluate(
+        "postToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {
+                "path": "workflow.yaml",
+                "old_str": "jobs: {}\n",
+                "new_str": "jobs:\n  timeout: int\n",
+            },
         },
-    })
+    )
 test("evaluate edit on .yaml short type value → skipped (type-fix suppressed)", result is None)
 
 with patch.object(_abd_mod, "_call_learn", return_value=True):
-    result = rule.evaluate("postToolUse", {
-        "toolName": "edit",
-        "toolArgs": {
-            "path": "workflow.yml",
-            "old_str": "jobs: {}\n",
-            "new_str": "jobs:\n  enabled: bool\n",
+    result = rule.evaluate(
+        "postToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {
+                "path": "workflow.yml",
+                "old_str": "jobs: {}\n",
+                "new_str": "jobs:\n  enabled: bool\n",
+            },
         },
-    })
+    )
 test("evaluate edit on .yml short type value → skipped (type-fix suppressed)", result is None)
 
 # .md create must be skipped
 with patch.object(_abd_mod, "_call_learn", return_value=True):
-    result = rule.evaluate("postToolUse", {
-        "toolName": "create",
-        "toolArgs": {
-            "path": "docs/notes.md",
-            "file_text": "if obj is None:\n    return None\n",
+    result = rule.evaluate(
+        "postToolUse",
+        {
+            "toolName": "create",
+            "toolArgs": {
+                "path": "docs/notes.md",
+                "file_text": "if obj is None:\n    return None\n",
+            },
         },
-    })
+    )
 test("evaluate create on .md file → skipped (None)", result is None)
 
 # .py file (code) must still be processed
-with patch.object(_abd_mod, "_call_learn", return_value=True), \
-     patch.object(_abd_mod, "_write_learn_done_marker"):
-    result = rule.evaluate("postToolUse", {
-        "toolName": "edit",
-        "toolArgs": {
-            "path": "src/utils.py",
-            "old_str": "return obj.value",
-            "new_str": "if obj is None:\n    return None\nreturn obj.value",
+with patch.object(_abd_mod, "_call_learn", return_value=True), patch.object(_abd_mod, "_write_learn_done_marker"):
+    result = rule.evaluate(
+        "postToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {
+                "path": "src/utils.py",
+                "old_str": "return obj.value",
+                "new_str": "if obj is None:\n    return None\nreturn obj.value",
+            },
         },
-    })
+    )
 test("evaluate edit on .py file (code) → still detected (not None)", result is not None)
 
 # .ts file (code) must still be processed
-with patch.object(_abd_mod, "_call_learn", return_value=True), \
-     patch.object(_abd_mod, "_write_learn_done_marker"):
-    result = rule.evaluate("postToolUse", {
-        "toolName": "edit",
-        "toolArgs": {
-            "path": "src/app.ts",
-            "old_str": "const v = obj.value;",
-            "new_str": "const v = obj?.value;",
+with patch.object(_abd_mod, "_call_learn", return_value=True), patch.object(_abd_mod, "_write_learn_done_marker"):
+    result = rule.evaluate(
+        "postToolUse",
+        {
+            "toolName": "edit",
+            "toolArgs": {
+                "path": "src/app.ts",
+                "old_str": "const v = obj.value;",
+                "new_str": "const v = obj?.value;",
+            },
         },
-    })
+    )
 test("evaluate edit on .ts file (code) → still detected (not None)", result is not None)
-
-
 
 
 print(f"\n{'=' * 60}")
