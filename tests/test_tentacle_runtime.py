@@ -6833,16 +6833,13 @@ class TestBridgeLinkRuntimeFlow(unittest.TestCase):
         """cmd_complete must parse Bridge: lines and store bridge_links in meta.json."""
         self._make_worker("brt-complete")
         (self.tentacles / "brt-complete" / "handoff.md").write_text(
-            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nDone.\n"
-            "STATUS: DONE\nBridge: sc-1\nBridge: sc-2\n",
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nDone.\nSTATUS: DONE\nBridge: sc-1\nBridge: sc-2\n",
             encoding="utf-8",
         )
 
         self._complete("brt-complete")
 
-        meta = json.loads(
-            (self.tentacles / "brt-complete" / "meta.json").read_text(encoding="utf-8")
-        )
+        meta = json.loads((self.tentacles / "brt-complete" / "meta.json").read_text(encoding="utf-8"))
         self.assertIn("bridge_links", meta)
         self.assertIn("sc-1", meta["bridge_links"])
         self.assertIn("sc-2", meta["bridge_links"])
@@ -6857,9 +6854,7 @@ class TestBridgeLinkRuntimeFlow(unittest.TestCase):
 
         self._complete("brt-no-bridge")
 
-        meta = json.loads(
-            (self.tentacles / "brt-no-bridge" / "meta.json").read_text(encoding="utf-8")
-        )
+        meta = json.loads((self.tentacles / "brt-no-bridge" / "meta.json").read_text(encoding="utf-8"))
         self.assertNotIn("bridge_links", meta)
 
     def test_goal_coverage_shows_covered_criterion_after_handoff_and_complete(self):
@@ -6949,9 +6944,7 @@ class TestBridgeLinkRuntimeFlow(unittest.TestCase):
 
         self._complete("brt-dedup")
 
-        meta = json.loads(
-            (self.tentacles / "brt-dedup" / "meta.json").read_text(encoding="utf-8")
-        )
+        meta = json.loads((self.tentacles / "brt-dedup" / "meta.json").read_text(encoding="utf-8"))
         bridge_links = meta.get("bridge_links", [])
         # sc-1 must appear exactly once (deduplicated)
         self.assertEqual(bridge_links.count("sc-1"), 1)
@@ -6971,6 +6964,647 @@ class TestBridgeLinkRuntimeFlow(unittest.TestCase):
         self.assertIn("sc-1", output)
         self.assertIn("sc-2", output)
         self.assertIn("brt-text-worker", output)
+
+
+# ---------------------------------------------------------------------------
+# Tests for quota/rate-limit signal classification (#187)
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyQuotaSignal(unittest.TestCase):
+    """Unit tests for _classify_quota_signal."""
+
+    def test_returns_none_for_empty_text(self):
+        self.assertIsNone(T._classify_quota_signal(""))
+
+    def test_returns_none_for_normal_output(self):
+        self.assertIsNone(T._classify_quota_signal("Task completed successfully. All tests pass."))
+
+    def test_detects_rate_limit(self):
+        self.assertEqual(T._classify_quota_signal("Error: rate limit exceeded"), "rate_limit")
+
+    def test_detects_429(self):
+        self.assertEqual(T._classify_quota_signal("HTTP 429 Too Many Requests"), "rate_limit")
+
+    def test_detects_quota_exceeded(self):
+        self.assertEqual(T._classify_quota_signal("API quota exceeded for this billing period"), "quota_exceeded")
+
+    def test_detects_resource_exhausted(self):
+        self.assertEqual(T._classify_quota_signal("RESOURCE_EXHAUSTED: quota reached"), "quota_exceeded")
+
+    def test_detects_daily_quota(self):
+        self.assertEqual(T._classify_quota_signal("Daily quota limit reached"), "daily_quota")
+
+    def test_detects_monthly_quota(self):
+        self.assertEqual(T._classify_quota_signal("Monthly quota exceeded"), "monthly_quota")
+
+    def test_detects_token_quota(self):
+        self.assertEqual(T._classify_quota_signal("Token quota exceeded for your plan"), "token_quota")
+
+    def test_case_insensitive(self):
+        self.assertEqual(T._classify_quota_signal("RATE LIMIT HIT"), "rate_limit")
+
+    def test_returns_none_for_none_input(self):
+        self.assertIsNone(T._classify_quota_signal(None))
+
+
+# ---------------------------------------------------------------------------
+# Tests for handoff quota metadata parsing (#187)
+# ---------------------------------------------------------------------------
+
+
+class TestParseHandoffQuotaMetadata(unittest.TestCase):
+    """Unit tests for _parse_handoff_quota_metadata."""
+
+    def test_returns_none_tuple_for_empty_content(self):
+        reason, hint = T._parse_handoff_quota_metadata("")
+        self.assertIsNone(reason)
+        self.assertIsNone(hint)
+
+    def test_returns_none_tuple_for_content_without_quota_lines(self):
+        content = "# Handoff Notes\n\n## [2026-05-01 12:00 UTC]\n\nDone.\nSTATUS: DONE\n"
+        reason, hint = T._parse_handoff_quota_metadata(content)
+        self.assertIsNone(reason)
+        self.assertIsNone(hint)
+
+    def test_parses_quota_reason(self):
+        content = (
+            "# Handoff Notes\n\n## [2026-05-01 12:00 UTC]\n\nBlocked.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\n"
+        )
+        reason, hint = T._parse_handoff_quota_metadata(content)
+        self.assertEqual(reason, "rate_limit")
+        self.assertIsNone(hint)
+
+    def test_parses_quota_reason_and_retry_hint(self):
+        content = (
+            "# Handoff Notes\n\n## [2026-05-01 12:00 UTC]\n\nBlocked.\n"
+            "STATUS: BLOCKED\nQUOTA_REASON: daily_quota\nRETRY_HINT: 2026-05-02T00:00:00Z\n"
+        )
+        reason, hint = T._parse_handoff_quota_metadata(content)
+        self.assertEqual(reason, "daily_quota")
+        self.assertEqual(hint, "2026-05-02T00:00:00Z")
+
+    def test_latest_section_wins(self):
+        content = (
+            "# Handoff Notes\n\n## [2026-05-01 12:00 UTC]\n\nFirst.\nQUOTA_REASON: quota_exceeded\n"
+            "\n## [2026-05-02 08:00 UTC]\n\nSecond.\nQUOTA_REASON: rate_limit\n"
+        )
+        reason, hint = T._parse_handoff_quota_metadata(content)
+        self.assertEqual(reason, "rate_limit")
+
+    def test_retry_hint_without_reason_is_captured(self):
+        content = "# Handoff Notes\n\n## [2026-05-01 12:00 UTC]\n\nHint only.\nRETRY_HINT: 2026-05-03T00:00:00Z\n"
+        reason, hint = T._parse_handoff_quota_metadata(content)
+        self.assertIsNone(reason)
+        self.assertEqual(hint, "2026-05-03T00:00:00Z")
+
+    def test_stale_quota_does_not_bleed_into_newer_done_section(self):
+        """Older BLOCKED+quota section must not bleed quota into a newer DONE section."""
+        content = (
+            "# Handoff Notes\n\n"
+            "## [2026-05-01 12:00 UTC]\n\n"
+            "Blocked by rate limit.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\nRETRY_HINT: tomorrow\n"
+            "\n## [2026-05-02 09:00 UTC]\n\n"
+            "Completed successfully.\nSTATUS: DONE\n"
+        )
+        reason, hint = T._parse_handoff_quota_metadata(content)
+        self.assertIsNone(reason)
+        self.assertIsNone(hint)
+
+    def test_stale_quota_does_not_bleed_into_newer_generic_blocked_section(self):
+        """Older quota-blocked section must not bleed into a newer generic BLOCKED section."""
+        content = (
+            "# Handoff Notes\n\n"
+            "## [2026-05-01 12:00 UTC]\n\n"
+            "Quota hit.\nSTATUS: BLOCKED\nQUOTA_REASON: daily_quota\nRETRY_HINT: 2026-05-03\n"
+            "\n## [2026-05-02 08:00 UTC]\n\n"
+            "Scope ambiguous.\nSTATUS: BLOCKED\n"
+        )
+        reason, hint = T._parse_handoff_quota_metadata(content)
+        self.assertIsNone(reason)
+        self.assertIsNone(hint)
+
+    def test_quota_anchored_to_status_winning_section(self):
+        """Bug #187 status-anchor fix: quota must come from the section that wins the status parse.
+
+        Scenario: older BLOCKED+quota section, newer status-free progress note.
+        _parse_handoff_status returns BLOCKED (from section 1).
+        _parse_handoff_quota_metadata must also use section 1, not section 2.
+        """
+        content = (
+            "# Handoff Notes\n\n"
+            "## [2026-05-01 12:00 UTC]\n\n"
+            "Blocked by rate limit.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\nRETRY_HINT: 2026-05-14T00:00:00Z\n"
+            "\n## [2026-05-02 10:00 UTC]\n\n"
+            "Progress update — still waiting for quota reset.\n"
+        )
+        reason, hint = T._parse_handoff_quota_metadata(content)
+        self.assertEqual(reason, "rate_limit")
+        self.assertEqual(hint, "2026-05-14T00:00:00Z")
+
+    def test_invalid_status_in_newer_section_does_not_anchor_quota(self):
+        """Bug #187 allowlist-anchor fix: a newer section with an invalid STATUS:
+        must not displace the quota from an older allowlisted BLOCKED section.
+
+        Scenario: older section has STATUS: BLOCKED + quota metadata;
+        newer section has STATUS: STALE_STATUS_NOT_IN_ALLOWLIST (not allowlisted).
+        _parse_handoff_status must return BLOCKED; quota must come from the BLOCKED section.
+        """
+        content = (
+            "# Handoff Notes\n\n"
+            "## [2026-05-13 10:00 UTC]\n\n"
+            "Blocked by rate limit.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\nRETRY_HINT: 2026-05-14\n"
+            "\n## [2026-05-13 11:00 UTC]\n\n"
+            "Still waiting.\nSTATUS: STALE_STATUS_NOT_IN_ALLOWLIST\n"
+        )
+        # _parse_handoff_status must skip the invalid section and return BLOCKED
+        self.assertEqual(T._parse_handoff_status(content), "BLOCKED")
+        # _parse_handoff_quota_metadata must anchor to the same BLOCKED section
+        reason, hint = T._parse_handoff_quota_metadata(content)
+        self.assertEqual(reason, "rate_limit")
+        self.assertEqual(hint, "2026-05-14")
+
+    def test_all_invalid_statuses_fall_back_to_legacy_quota_parsing(self):
+        """When every section has an invalid STATUS:, quota falls back to
+        the most-recent non-empty section (legacy free-form compat).
+        """
+        content = (
+            "# Handoff Notes\n\n"
+            "## [2026-05-13 10:00 UTC]\n\n"
+            "QUOTA_REASON: rate_limit\nRETRY_HINT: 2026-05-14\nSTATUS: NOT_VALID\n"
+            "\n## [2026-05-13 11:00 UTC]\n\n"
+            "Still waiting.\nSTATUS: ALSO_INVALID\n"
+        )
+        # Both statuses invalid → _parse_handoff_status returns None
+        self.assertIsNone(T._parse_handoff_status(content))
+        # Quota falls back to most-recent non-empty section (no quota fields there)
+        reason, hint = T._parse_handoff_quota_metadata(content)
+        self.assertIsNone(reason)
+        self.assertIsNone(hint)
+
+
+class TestCmdHandoffQuotaMetadata(unittest.TestCase):
+    """Tests that cmd_handoff writes QUOTA_REASON and RETRY_HINT into handoff.md."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "handoff_quota"
+        self.base.mkdir(parents=True, exist_ok=True)
+        make_tentacle("quota-worker", self.base)
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    def test_handoff_writes_quota_reason(self):
+        args = fake_args(
+            name="quota-worker",
+            message="Rate limited by model provider.",
+            status="BLOCKED",
+            changed_file=[],
+            quota_reason="rate_limit",
+            retry_hint=None,
+            learn=False,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_handoff(args)
+        handoff = (self.base / "quota-worker" / "handoff.md").read_text(encoding="utf-8")
+        self.assertIn("QUOTA_REASON: rate_limit", handoff)
+
+    def test_handoff_writes_retry_hint(self):
+        args = fake_args(
+            name="quota-worker",
+            message="Daily quota reached.",
+            status="BLOCKED",
+            changed_file=[],
+            quota_reason="daily_quota",
+            retry_hint="2026-05-14T00:00:00Z",
+            learn=False,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_handoff(args)
+        handoff = (self.base / "quota-worker" / "handoff.md").read_text(encoding="utf-8")
+        self.assertIn("QUOTA_REASON: daily_quota", handoff)
+        self.assertIn("RETRY_HINT: 2026-05-14T00:00:00Z", handoff)
+
+    def test_handoff_no_quota_fields_when_not_provided(self):
+        args = fake_args(
+            name="quota-worker",
+            message="Done.",
+            status="DONE",
+            changed_file=["src/foo.py"],
+            quota_reason=None,
+            retry_hint=None,
+            learn=False,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_handoff(args)
+        handoff = (self.base / "quota-worker" / "handoff.md").read_text(encoding="utf-8")
+        self.assertNotIn("QUOTA_REASON", handoff)
+        self.assertNotIn("RETRY_HINT", handoff)
+
+    def test_triage_output_includes_quota_reason(self):
+        args = fake_args(
+            name="quota-worker",
+            message="Blocked by quota.",
+            status="BLOCKED",
+            changed_file=[],
+            quota_reason="monthly_quota",
+            retry_hint="next month",
+            learn=False,
+        )
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_handoff(args)
+        combined = "\n".join(captured)
+        self.assertIn("TRIAGE", combined)
+        self.assertIn("monthly_quota", combined)
+
+
+# ---------------------------------------------------------------------------
+# Tests for cmd_complete quota metadata persistence (#187)
+# ---------------------------------------------------------------------------
+
+
+class TestCmdCompleteQuotaPersistence(unittest.TestCase):
+    """Tests that cmd_complete persists quota_reason and retry_hint into meta.json."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "complete_quota"
+        self.base.mkdir(parents=True, exist_ok=True)
+        make_tentacle("quota-complete-test", self.base)
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    def _write_handoff(self, name: str, status: str, quota_reason: str = "", retry_hint: str = "") -> None:
+        handoff_path = self.base / name / "handoff.md"
+        content = f"# Handoff Notes\n\n## [2026-05-01 12:00 UTC]\n\nMessage.\nSTATUS: {status}\n"
+        if quota_reason:
+            content += f"QUOTA_REASON: {quota_reason}\n"
+        if retry_hint:
+            content += f"RETRY_HINT: {retry_hint}\n"
+        handoff_path.write_text(content, encoding="utf-8")
+
+    def test_complete_persists_quota_reason_to_meta(self):
+        self._write_handoff("quota-complete-test", "BLOCKED", "rate_limit", "2026-05-14T00:00:00Z")
+        args = fake_args(name="quota-complete-test", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+        meta = json.loads((self.base / "quota-complete-test" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta.get("quota_reason"), "rate_limit")
+        self.assertEqual(meta.get("retry_hint"), "2026-05-14T00:00:00Z")
+
+    def test_complete_no_quota_fields_for_done_handoff(self):
+        self._write_handoff("quota-complete-test", "DONE")
+        args = fake_args(name="quota-complete-test", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+        meta = json.loads((self.base / "quota-complete-test" / "meta.json").read_text(encoding="utf-8"))
+        self.assertNotIn("quota_reason", meta)
+        self.assertNotIn("retry_hint", meta)
+
+    def test_complete_without_handoff_is_backward_compatible(self):
+        """Completing a tentacle with no handoff must not fail or set quota fields."""
+        args = fake_args(name="quota-complete-test", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+        meta = json.loads((self.base / "quota-complete-test" / "meta.json").read_text(encoding="utf-8"))
+        self.assertNotIn("quota_reason", meta)
+        self.assertNotIn("retry_hint", meta)
+        self.assertEqual(meta["status"], "completed")
+
+    def test_complete_stale_quota_not_persisted_when_newer_section_is_done(self):
+        """Multi-section handoff: older BLOCKED+quota, newer DONE → no quota in meta.json."""
+        handoff_path = self.base / "quota-complete-test" / "handoff.md"
+        content = (
+            "# Handoff Notes\n\n"
+            "## [2026-05-01 12:00 UTC]\n\n"
+            "Blocked by rate limit.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\nRETRY_HINT: tomorrow\n"
+            "\n## [2026-05-02 09:00 UTC]\n\n"
+            "Completed successfully.\nSTATUS: DONE\n"
+        )
+        handoff_path.write_text(content, encoding="utf-8")
+        args = fake_args(name="quota-complete-test", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+        meta = json.loads((self.base / "quota-complete-test" / "meta.json").read_text(encoding="utf-8"))
+        self.assertNotIn("quota_reason", meta)
+        self.assertNotIn("retry_hint", meta)
+        self.assertEqual(meta.get("terminal_status"), "DONE")
+
+    def test_two_step_recompletion_clears_stale_quota_from_meta(self):
+        """Two-step recompletion: BLOCKED+quota first, then DONE → stale quota must be cleared."""
+        # Step 1: complete as BLOCKED with quota_reason
+        self._write_handoff("quota-complete-test", "BLOCKED", "rate_limit", "2026-05-14T00:00:00Z")
+        args = fake_args(name="quota-complete-test", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+        meta = json.loads((self.base / "quota-complete-test" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta.get("quota_reason"), "rate_limit")  # sanity-check written
+
+        # Step 2: agent retries and completes as DONE — append a new DONE handoff section
+        handoff_path = self.base / "quota-complete-test" / "handoff.md"
+        existing = handoff_path.read_text(encoding="utf-8")
+        handoff_path.write_text(
+            existing + "\n## [2026-05-02 09:00 UTC]\n\nResolved.\nSTATUS: DONE\n",
+            encoding="utf-8",
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+        meta = json.loads((self.base / "quota-complete-test" / "meta.json").read_text(encoding="utf-8"))
+        self.assertNotIn("quota_reason", meta)
+        self.assertNotIn("retry_hint", meta)
+        self.assertEqual(meta.get("terminal_status"), "DONE")
+
+    def test_reblock_without_hint_clears_stale_hint_in_meta(self):
+        """Re-blocking without a new retry_hint must clear the old hint from meta.json.
+
+        Sequence (reproduces after_blocked_without_hint bug):
+        1. BLOCKED with hint      → meta has retry_hint = "2026-05-14T00:00:00Z"
+        2. BLOCKED without hint   → meta retry_hint must be absent (not stale)
+        """
+        # Step 1: complete as BLOCKED with a retry_hint
+        self._write_handoff("quota-complete-test", "BLOCKED", "rate_limit", "2026-05-14T00:00:00Z")
+        args = fake_args(name="quota-complete-test", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+        meta = json.loads((self.base / "quota-complete-test" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            meta.get("retry_hint"), "2026-05-14T00:00:00Z", "after_blocked_with_hint: sanity-check hint written"
+        )
+
+        # Step 2: re-block the same tentacle, no retry_hint this time
+        self._write_handoff("quota-complete-test", "BLOCKED", "rate_limit")  # no retry_hint
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+        meta = json.loads((self.base / "quota-complete-test" / "meta.json").read_text(encoding="utf-8"))
+        self.assertNotIn(
+            "retry_hint", meta, "after_blocked_without_hint: stale hint must be cleared when re-blocking without hint"
+        )
+        self.assertEqual(meta.get("quota_reason"), "rate_limit")
+
+
+class TestWriteDispatchQuotaBlockedFailOpen(unittest.TestCase):
+    """Regression: _write_dispatch_quota_blocked must fail-open even on corrupted meta.json."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "dispatch_quota_blocked"
+        self.base.mkdir(parents=True, exist_ok=True)
+        make_tentacle("quota-dispatch-worker", self.base)
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    def test_corrupted_meta_json_does_not_raise(self):
+        """Corrupted meta.json must not propagate json.JSONDecodeError — helper fails open."""
+        meta_path = self.base / "quota-dispatch-worker" / "meta.json"
+        meta_path.write_text("{not valid json!!!", encoding="utf-8")
+        # Must not raise:
+        with patch("builtins.print"):
+            T._write_dispatch_quota_blocked("quota-dispatch-worker", self.base, "rate_limit")
+        # handoff.md should still be written with the BLOCKED entry
+        handoff = (self.base / "quota-dispatch-worker" / "handoff.md").read_text(encoding="utf-8")
+        self.assertIn("BLOCKED", handoff)
+        self.assertIn("rate_limit", handoff)
+
+    def test_valid_meta_json_is_updated(self):
+        """Valid meta.json must be updated with status=completed and BLOCKED fields."""
+        with patch("builtins.print"):
+            T._write_dispatch_quota_blocked("quota-dispatch-worker", self.base, "daily_quota")
+        meta = json.loads((self.base / "quota-dispatch-worker" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta["status"], "completed")
+        self.assertEqual(meta["terminal_status"], "BLOCKED")
+        self.assertEqual(meta["quota_reason"], "daily_quota")
+
+
+class TestCmdHandoffAutoDetect(unittest.TestCase):
+    """Tests that cmd_handoff auto-detects quota signal from message text when BLOCKED."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "handoff_autodetect"
+        self.base.mkdir(parents=True, exist_ok=True)
+        make_tentacle("autodetect-worker", self.base)
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    def test_auto_detects_rate_limit_from_blocked_message(self):
+        """BLOCKED handoff with quota-like message and no --quota-reason → auto-detected QUOTA_REASON."""
+        args = fake_args(
+            name="autodetect-worker",
+            message="Error: rate limit exceeded. Please retry later.",
+            status="BLOCKED",
+            changed_file=[],
+            quota_reason=None,
+            retry_hint=None,
+            learn=False,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_handoff(args)
+        handoff = (self.base / "autodetect-worker" / "handoff.md").read_text(encoding="utf-8")
+        self.assertIn("QUOTA_REASON: rate_limit", handoff)
+
+    def test_explicit_quota_reason_wins_over_auto_detect(self):
+        """Explicit --quota-reason must take precedence over auto-detection."""
+        args = fake_args(
+            name="autodetect-worker",
+            message="Daily quota limit reached.",
+            status="BLOCKED",
+            changed_file=[],
+            quota_reason="token_quota",  # explicit overrides auto
+            retry_hint=None,
+            learn=False,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_handoff(args)
+        handoff = (self.base / "autodetect-worker" / "handoff.md").read_text(encoding="utf-8")
+        self.assertIn("QUOTA_REASON: token_quota", handoff)
+        self.assertNotIn("QUOTA_REASON: daily_quota", handoff)
+
+    def test_no_auto_detect_for_non_blocked_status(self):
+        """Quota signal auto-detection only fires for BLOCKED; DONE with quota-like text must not emit QUOTA_REASON."""
+        args = fake_args(
+            name="autodetect-worker",
+            message="Rate limit exceeded during run, but we handled it and completed.",
+            status="DONE",
+            changed_file=[],
+            quota_reason=None,
+            retry_hint=None,
+            learn=False,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_handoff(args)
+        handoff = (self.base / "autodetect-worker" / "handoff.md").read_text(encoding="utf-8")
+        self.assertNotIn("QUOTA_REASON", handoff)
+
+    def test_no_auto_detect_for_non_quota_blocked_message(self):
+        """BLOCKED handoff with non-quota message must not emit QUOTA_REASON."""
+        args = fake_args(
+            name="autodetect-worker",
+            message="Blocked waiting for external dependency to respond.",
+            status="BLOCKED",
+            changed_file=[],
+            quota_reason=None,
+            retry_hint=None,
+            learn=False,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_handoff(args)
+        handoff = (self.base / "autodetect-worker" / "handoff.md").read_text(encoding="utf-8")
+        self.assertNotIn("QUOTA_REASON", handoff)
+
+    def test_auto_detects_quota_exceeded_from_blocked_message(self):
+        """BLOCKED message containing 'quota exceeded' → auto-detected as quota_exceeded."""
+        args = fake_args(
+            name="autodetect-worker",
+            message="API quota exceeded for this billing period.",
+            status="BLOCKED",
+            changed_file=[],
+            quota_reason=None,
+            retry_hint=None,
+            learn=False,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_handoff(args)
+        handoff = (self.base / "autodetect-worker" / "handoff.md").read_text(encoding="utf-8")
+        self.assertIn("QUOTA_REASON: quota_exceeded", handoff)
+
+
+# ---------------------------------------------------------------------------
+# Tests for browse-route stale quota metadata guard (#187)
+# ---------------------------------------------------------------------------
+
+
+class TestBrowseRouteStaleMeta(unittest.TestCase):
+    """Tests that _read_tentacles in browse/routes/tentacles.py does not expose
+    stale quota fields for non-BLOCKED tentacles."""
+
+    def setUp(self):
+        import importlib
+
+        import browse.routes.tentacles as brt
+
+        self._brt = brt
+        self.base = SCRATCH_DIR / "browse_route_quota"
+        self.base.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    def _make_tentacle_dir(self, name: str, meta_extra: dict | None = None) -> Path:
+        d = self.base / name
+        d.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "name": name,
+            "status": "completed",
+            "created_at": "2026-05-01T00:00:00+00:00",
+            "description": f"Test {name}",
+            "scope": [],
+        }
+        if meta_extra:
+            meta.update(meta_extra)
+        (d / "meta.json").write_text(__import__("json").dumps(meta, indent=2) + "\n", encoding="utf-8")
+        return d
+
+    def test_stale_quota_not_exposed_for_done_tentacle(self):
+        """A DONE tentacle with stale quota_reason/retry_hint in meta.json must not expose them."""
+        self._make_tentacle_dir(
+            "stale-done-worker",
+            meta_extra={
+                "terminal_status": "DONE",
+                "quota_reason": "rate_limit",
+                "retry_hint": "tomorrow",
+            },
+        )
+        with patch.object(self._brt, "_OCTOGENT_DIR", self.base):
+            tentacles = self._brt._read_tentacles()
+        entries = [t for t in tentacles if t["name"] == "stale-done-worker"]
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertNotIn("quota_reason", entry)
+        self.assertNotIn("retry_hint", entry)
+
+    def test_quota_exposed_for_blocked_tentacle(self):
+        """A BLOCKED tentacle with quota_reason in meta.json must have quota fields exposed."""
+        self._make_tentacle_dir(
+            "blocked-quota-worker",
+            meta_extra={
+                "terminal_status": "BLOCKED",
+                "quota_reason": "daily_quota",
+                "retry_hint": "2026-06-01",
+            },
+        )
+        with patch.object(self._brt, "_OCTOGENT_DIR", self.base):
+            tentacles = self._brt._read_tentacles()
+        entries = [t for t in tentacles if t["name"] == "blocked-quota-worker"]
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(entry.get("quota_reason"), "daily_quota")
+        self.assertEqual(entry.get("retry_hint"), "2026-06-01")
+
+    def test_non_blocked_with_handoff_quota_not_exposed(self):
+        """A DONE tentacle whose handoff.md has an old QUOTA_REASON must not expose it."""
+        t_dir = self._make_tentacle_dir(
+            "done-with-old-handoff",
+            meta_extra={"terminal_status": "DONE"},
+        )
+        # Handoff has an old BLOCKED+quota section and a newer DONE section
+        handoff_content = (
+            "# Handoff Notes\n\n"
+            "## [2026-05-01 12:00 UTC]\n\nBlocked.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\n"
+            "\n## [2026-05-02 09:00 UTC]\n\nDone.\nSTATUS: DONE\n"
+        )
+        (t_dir / "handoff.md").write_text(handoff_content, encoding="utf-8")
+        with patch.object(self._brt, "_OCTOGENT_DIR", self.base):
+            tentacles = self._brt._read_tentacles()
+        entries = [t for t in tentacles if t["name"] == "done-with-old-handoff"]
+        self.assertEqual(len(entries), 1)
+        self.assertNotIn("quota_reason", entries[0])
+
+    def test_quota_anchored_to_status_winning_section_browse(self):
+        """Bug #187 status-anchor fix for browse route: quota must come from the
+        section that wins the status parse, not the latest non-empty section.
+
+        Scenario: older BLOCKED+quota section, newer status-free progress note.
+        The browse route must still surface quota_reason and retry_hint because
+        the status-winning section is the BLOCKED+quota one.
+        """
+        t_dir = self._make_tentacle_dir(
+            "blocked-with-progress-note",
+            meta_extra={"terminal_status": ""},  # force handoff-parse fallback
+        )
+        handoff_content = (
+            "# Handoff Notes\n\n"
+            "## [2026-05-01 12:00 UTC]\n\n"
+            "Blocked by rate limit.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\nRETRY_HINT: 2026-05-14T00:00:00Z\n"
+            "\n## [2026-05-02 10:00 UTC]\n\n"
+            "Progress update — still waiting for quota reset.\n"
+        )
+        (t_dir / "handoff.md").write_text(handoff_content, encoding="utf-8")
+        with patch.object(self._brt, "_OCTOGENT_DIR", self.base):
+            tentacles = self._brt._read_tentacles()
+        entries = [t for t in tentacles if t["name"] == "blocked-with-progress-note"]
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(entry.get("terminal_status"), "BLOCKED")
+        self.assertEqual(entry.get("quota_reason"), "rate_limit")
+        self.assertEqual(entry.get("retry_hint"), "2026-05-14T00:00:00Z")
 
 
 if __name__ == "__main__":

@@ -46,6 +46,24 @@ def _marker_age_hours(marker_path: Path) -> float | None:
         return None
 
 
+def _find_allowlisted_status_section(sections: list) -> "str | None":
+    """Return the most-recent section whose STATUS: value is in _HANDOFF_STATUS_ALLOWLIST.
+
+    Shared helper used by both ``_parse_handoff_status`` and
+    ``_parse_handoff_quota_metadata`` so the two parsers always anchor to the
+    same section and cannot diverge when a later section carries an invalid
+    STATUS: value.
+
+    Returns None when no allowlisted section exists (backward-compat: legacy
+    free-form handoffs with no STATUS: line at all).
+    """
+    for section in reversed(sections):
+        m = re.search(r"^STATUS:\s*(\S+)", section, flags=re.MULTILINE)
+        if m and m.group(1) in _HANDOFF_STATUS_ALLOWLIST:
+            return section
+    return None
+
+
 def _parse_handoff_status(handoff_path: Path) -> str:
     try:
         if not handoff_path.is_file():
@@ -54,13 +72,46 @@ def _parse_handoff_status(handoff_path: Path) -> str:
     except Exception:
         return ""
     sections = re.split(r"^## \[", handoff_content, flags=re.MULTILINE)
-    for section in reversed(sections):
-        m = re.search(r"^STATUS:\s*(\S+)", section, flags=re.MULTILINE)
-        if m:
-            status = m.group(1)
-            if status in _HANDOFF_STATUS_ALLOWLIST:
-                return status
-    return ""
+    section = _find_allowlisted_status_section(sections)
+    if section is None:
+        return ""
+    m = re.search(r"^STATUS:\s*(\S+)", section, flags=re.MULTILINE)
+    return m.group(1) if m else ""
+
+
+def _parse_handoff_quota_metadata(handoff_path: Path) -> tuple:
+    """Return ``(quota_reason, retry_hint)`` from the same handoff section that wins
+    the status parse (most-recent section with a ``STATUS:`` line).
+
+    Anchoring quota to the status-winning section ensures status and quota metadata
+    always refer to the same handoff entry.  A status-free progress note appended
+    after a BLOCKED+quota section therefore cannot silently clear the quota fields.
+
+    Falls back to the most-recent non-empty section for legacy free-form handoffs.
+    Returns ``("", "")`` when absent (backward compatible).
+    """
+    try:
+        if not handoff_path.is_file():
+            return "", ""
+        content = handoff_path.read_text(encoding="utf-8")
+    except Exception:
+        return "", ""
+    sections = re.split(r"^## \[", content, flags=re.MULTILINE)
+    # Anchor to the same allowlisted section that wins the status parse (bug #187 fix).
+    target = _find_allowlisted_status_section(sections)
+    # Backward-compat fallback: legacy free-form handoffs with no valid STATUS: line.
+    if target is None:
+        target = next((s for s in reversed(sections) if s.strip()), None)
+    if target is None:
+        return "", ""
+    reason_m = re.search(r"^QUOTA_REASON:\s*(.+)", target, flags=re.MULTILINE)
+    hint_m = re.search(r"^RETRY_HINT:\s*(.+)", target, flags=re.MULTILINE)
+    if reason_m or hint_m:
+        return (
+            reason_m.group(1).strip() if reason_m else "",
+            hint_m.group(1).strip() if hint_m else "",
+        )
+    return "", ""
 
 
 def _read_tentacles() -> list[dict]:
@@ -142,6 +193,20 @@ def _read_tentacles() -> list[dict]:
             if not terminal_status and has_handoff:
                 terminal_status = _parse_handoff_status(handoff_path)
 
+            # Quota metadata: prefer meta.json (written by cmd_complete), fall back
+            # to live handoff parse for tentacles not yet completed.
+            # Guard: never surface quota metadata for non-BLOCKED tentacles even if
+            # stale keys exist on disk from an earlier BLOCKED completion.
+            quota_reason = ""
+            retry_hint = ""
+            if terminal_status == "BLOCKED":
+                quota_reason = str(meta.get("quota_reason") or "").strip()
+                retry_hint = str(meta.get("retry_hint") or "").strip()
+                if not quota_reason and has_handoff:
+                    _hq_reason, _hq_hint = _parse_handoff_quota_metadata(handoff_path)
+                    quota_reason = _hq_reason
+                    retry_hint = _hq_hint or retry_hint
+
             tentacle_entry: dict = {
                 "name": str(meta.get("name", "")),
                 "tentacle_id": str(meta.get("tentacle_id", "") or ""),
@@ -155,6 +220,10 @@ def _read_tentacles() -> list[dict]:
                 "has_handoff": has_handoff,
                 "terminal_status": terminal_status,
             }
+            if quota_reason:
+                tentacle_entry["quota_reason"] = quota_reason
+            if retry_hint:
+                tentacle_entry["retry_hint"] = retry_hint
             # Goal-aware optional fields (written by goal-core when tentacle is linked to a goal)
             if meta.get("goal_id"):
                 tentacle_entry["goal_id"] = str(meta["goal_id"])

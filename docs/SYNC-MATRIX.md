@@ -16,8 +16,15 @@
 | Skill or agent change | `docs/SKILLS.md` | — | skill catalog / `lint-skills.py` |
 | Sync config / runtime change | `docs/SKILLS.md` sync section | `learn.py decision` entry | `sync-status.py` output |
 | Tentacle complete | tentacle `handoff.md` | `tentacle.py complete` (auto-learns) | `tentacle.py status` |
+| **Tentacle handoff contract change** | `docs/ARCHITECTURE.md` + `docs/USAGE.md` | `learn.py pattern` entry | `browse/routes/tentacles.py` (mirror new fields) |
 | Test-only change | — | — | — |
 | Doc-only change | — | — | — |
+
+> **Handoff field parity note (#187):** new metadata fields in the `handoff.md` format
+> (`QUOTA_REASON:`, `RETRY_HINT:`) must be mirrored in both `tentacle.py` (parser +
+> `cmd_complete` + `cmd_handoff`) **and** `browse/routes/tentacles.py` (`_parse_handoff_quota_metadata`
+> + `_read_tentacles`).  When adding new structured handoff fields in future, update
+> both surfaces or the browse API will silently miss them.
 
 ---
 
@@ -28,7 +35,7 @@ Run through this before calling `task_complete`:
 ```
 1. Docs         — did behavior change? update docs/ accordingly
 2. Memory       — record mistakes / patterns: sk learn
-3. Handoff      — if inside a tentacle: sk tentacle handoff <name> "<summary>" --status <STATUS> [--changed-file <path>] --learn
+3. Handoff      — if inside a tentacle: sk tentacle handoff <name> "<summary>" --status <STATUS> [--changed-file <path>] [--quota-reason <reason>] [--retry-hint <hint>] --learn
 4. Tests        — run tests for any changed Python files
 5. Sync          — if sync config or runtime changed: sk sync status --health-check
 ```

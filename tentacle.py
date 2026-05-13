@@ -2068,9 +2068,133 @@ def _goal_update(tentacles_dir: Path, **fields) -> dict:
     return _goal_transact(tentacles_dir, _apply)
 
 
-# ---------------------------------------------------------------------------
-# Goal loop helper functions
-# ---------------------------------------------------------------------------
+def _append_quota_retry_entry(
+    tentacle_name: str,
+    tentacles: Path,
+    quota_reason: str,
+    retry_hint: "str | None",
+) -> bool:
+    """Upsert a quota-blocked entry into ``goal.json["quota_retry_queue"]``.
+
+    Replaces any existing entry for the same tentacle name so re-blocking the
+    same tentacle never produces duplicate queue entries.  When no goal.json
+    exists the upsert is a no-op (fail-open) so non-goal workflows are unaffected.
+
+    Returns True when an entry was written, False when goal.json is absent.
+    """
+    gp = _goal_path(tentacles)
+    if not gp.exists():
+        return False
+
+    entry = {
+        "tentacle": tentacle_name,
+        "quota_reason": quota_reason,
+        "retry_hint": retry_hint,
+        "blocked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    def _apply(state: dict) -> None:
+        queue: list = state.get("quota_retry_queue") or []
+        if not isinstance(queue, list):
+            queue = []
+        # Upsert: remove any stale entry for this tentacle before appending.
+        # Guard against malformed/non-dict legacy entries.
+        queue = [e for e in queue if isinstance(e, dict) and e.get("tentacle") != tentacle_name]
+        queue.append(entry)
+        state["quota_retry_queue"] = queue
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    try:
+        _goal_transact(tentacles, _apply)
+        return True
+    except Exception:
+        return False
+
+
+def _remove_quota_retry_entry(tentacle_name: str, tentacles: Path) -> bool:
+    """Remove a tentacle from ``goal.json["quota_retry_queue"]`` on recovery.
+
+    Called when a tentacle completes with a non-BLOCKED terminal status so the
+    queue reflects only tentacles that are still pending retry.  Fail-open: if
+    goal.json is absent or the entry is not present, returns False silently.
+
+    Returns True when an entry was found and removed, False when the entry was
+    absent or goal.json does not exist.
+    """
+    gp = _goal_path(tentacles)
+    if not gp.exists():
+        return False
+
+    removed: list[bool] = [False]
+
+    def _apply(state: dict) -> None:
+        queue: list = state.get("quota_retry_queue") or []
+        if not isinstance(queue, list):
+            return
+        # Guard against malformed/non-dict legacy entries.
+        updated = [e for e in queue if not (isinstance(e, dict) and e.get("tentacle") == tentacle_name)]
+        if len(updated) < len(queue):
+            removed[0] = True
+            state["quota_retry_queue"] = updated
+            state["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    try:
+        _goal_transact(tentacles, _apply)
+        return removed[0]
+    except Exception:
+        return False
+
+
+def _write_dispatch_quota_blocked(
+    tentacle_name: str,
+    tentacles: Path,
+    quota_reason: str,
+) -> None:
+    """Write a synthetic BLOCKED handoff when the dispatch launcher exits with a quota signal.
+
+    Called by ``_goal_loop_dispatch_and_wait`` when the dispatch subprocess exits
+    with a non-zero code and its stderr contains a recognised quota/rate-limit
+    pattern.  Writes handoff.md, updates meta.json, and enqueues the tentacle in
+    ``goal.json["quota_retry_queue"]`` so the goal loop treats the tentacle as
+    resolved-error (BLOCKED) immediately rather than waiting for poll_timeout.
+    """
+    tentacle_dir = tentacles / tentacle_name
+    if not tentacle_dir.exists():
+        return
+
+    handoff_path = tentacle_dir / "handoff.md"
+    meta_path = tentacle_dir / "meta.json"
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    handoff_entry = (
+        f"\n## [{timestamp}]\n\n"
+        f"Dispatch launcher exited with quota/rate-limit signal (auto-detected).\n"
+        f"STATUS: BLOCKED\n"
+        f"QUOTA_REASON: {quota_reason}\n"
+    )
+    try:
+        with file_locked(handoff_path):
+            if handoff_path.exists():
+                existing = handoff_path.read_text(encoding="utf-8")
+                handoff_path.write_text(existing + handoff_entry, encoding="utf-8")
+            else:
+                handoff_path.write_text(f"# Handoff Notes\n{handoff_entry}", encoding="utf-8")
+    except OSError:
+        pass
+
+    try:
+        meta: dict = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+        meta["status"] = "completed"
+        meta["terminal_status"] = "BLOCKED"
+        meta["quota_reason"] = quota_reason
+        meta.pop("retry_hint", None)
+        meta["completed_at"] = datetime.now(timezone.utc).isoformat()
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+
+    _append_quota_retry_entry(tentacle_name, tentacles, quota_reason, None)
+    print(f"   \U0001f6a6 Dispatch quota-blocked: '{tentacle_name}' → BLOCKED ({quota_reason})")
 
 
 def _positive_int_arg(value: str) -> int:
@@ -2447,20 +2571,54 @@ def _goal_loop_dispatch_and_wait(
             dispatched_names.add(entry["name"])
             batch_dispatched.add(entry["name"])
             if _dispatch_fn is not None:
-                _dispatch_fn(cmd_str, entry["name"])
+                # Injection path (tests).  If the callable returns a non-empty
+                # string, treat it as stderr output for quota classification.
+                quota_output = _dispatch_fn(cmd_str, entry["name"])
+                if quota_output:
+                    quota_reason = _classify_quota_signal(str(quota_output))
+                    if quota_reason:
+                        _write_dispatch_quota_blocked(entry["name"], tentacles, quota_reason)
             else:
+                # Real subprocess path: write stderr to a bounded log file in
+                # the tentacle directory so we can classify quota signals without
+                # loading large agent output into memory (no capture_output, no PIPE).
+                returncode = 0
+                stderr_sample = ""
+                stderr_log = tentacles / entry["name"] / "_dispatch_err.log"
                 try:
-                    subprocess.run(
-                        argv,
-                        check=False,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=30,
-                    )
+                    with stderr_log.open("wb") as _flog:
+                        result = subprocess.run(
+                            argv,
+                            check=False,
+                            stdout=subprocess.DEVNULL,
+                            stderr=_flog,
+                            timeout=30,
+                        )
+                    returncode = result.returncode
+                    # Read at most 4 KiB for quota classification, then remove.
+                    try:
+                        stderr_sample = stderr_log.read_bytes()[:4096].decode("utf-8", errors="replace")
+                        stderr_log.unlink()
+                    except OSError:
+                        pass
                 except subprocess.TimeoutExpired:
                     print(f"   \u26a0\ufe0f  Dispatch timed out for '{entry['name']}'")
+                    try:
+                        stderr_log.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 except Exception as exc:
                     print(f"   \u26a0\ufe0f  Dispatch subprocess failed for '{entry['name']}': {exc}")
+                    returncode = -1
+                    try:
+                        stderr_log.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                # Classify stderr for quota signal on non-zero exit only.
+                if returncode != 0 and stderr_sample:
+                    quota_reason = _classify_quota_signal(stderr_sample)
+                    if quota_reason:
+                        _write_dispatch_quota_blocked(entry["name"], tentacles, quota_reason)
 
         remaining_ready = plan["ready_total"] - len(plan["selected"])
         if remaining_ready > 0:
@@ -3412,11 +3570,27 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
                 t_meta["status"] = "idle"
                 t_meta.pop("terminal_status", None)
                 t_meta.pop("completed_at", None)
+                # Clear stale quota metadata when resetting so re-dispatched
+                # tentacles don't carry old quota_reason/retry_hint forward.
+                t_meta.pop("quota_reason", None)
+                t_meta.pop("retry_hint", None)
                 pending_meta_writes.append((meta_path, t_meta))
                 if needs_rewind:
                     rewound_names.add(name)
                 if needs_reset_failed:
                     reset_failed_names.add(name)
+
+        # Remove reset tentacles from quota_retry_queue so next-iter is accurate.
+        # This covers both --reset-failed and --from-iteration rewinds.
+        all_reset_names = rewound_names | reset_failed_names
+        if all_reset_names:
+            existing_queue: list = state.get("quota_retry_queue") or []
+            if isinstance(existing_queue, list) and existing_queue:
+                updated_queue = [
+                    e for e in existing_queue if isinstance(e, dict) and e.get("tentacle") not in all_reset_names
+                ]
+                if len(updated_queue) != len(existing_queue):
+                    state["quota_retry_queue"] = updated_queue
 
         if from_iteration is not None:
             state["iteration"] = from_iteration
@@ -3872,9 +4046,10 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
     if bs["over_budget"] and state.get("status") != GOAL_STATUS_BUDGET_LIMITED:
         print("⚠️  WARNING: Goal is over budget.")
 
-    # Categorise tentacles by iteration and status.
+    # Categorise tentacles by iteration and status, with quota-blocked sub-lane.
     done_names: list[str] = []
     blocked_names: list[str] = []
+    quota_blocked_names: list[tuple[str, str]] = []  # (name, quota_reason)
     in_progress_names: list[str] = []
 
     for name in tentacle_names:
@@ -3889,7 +4064,11 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
         terminal = t_meta.get("terminal_status")
         t_status = t_meta.get("status", "idle")
         if terminal in {"BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"}:
-            blocked_names.append(name)
+            qr = t_meta.get("quota_reason")
+            if terminal == "BLOCKED" and qr:
+                quota_blocked_names.append((name, str(qr)))
+            else:
+                blocked_names.append(name)
         elif terminal == "DONE" or t_status == "completed":
             done_names.append(name)
         else:
@@ -3898,12 +4077,32 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
     print(f"\nIteration {current_iter} tentacles:")
     for n in done_names:
         print(f"  ✅ {n}")
+    for n, qr in quota_blocked_names:
+        rh = None
+        try:
+            t_meta = json.loads((tentacles / n / "meta.json").read_text(encoding="utf-8"))
+            rh = t_meta.get("retry_hint")
+        except Exception:
+            pass
+        hint_str = f" — retry after: {rh}" if rh else ""
+        print(f"  🚦 {n} (quota-blocked: {qr}{hint_str})")
     for n in blocked_names:
         print(f"  ⚠️  {n} (blocked/ambiguous)")
     for n in in_progress_names:
         print(f"  🔵 {n} (in progress / idle)")
-    if not (done_names or blocked_names or in_progress_names):
+    if not (done_names or quota_blocked_names or blocked_names or in_progress_names):
         print("  (no tentacles assigned to this iteration)")
+
+    # Quota retry queue summary.
+    quota_queue: list = state.get("quota_retry_queue") or []
+    # Guard against malformed/non-dict legacy entries.
+    quota_queue = [e for e in quota_queue if isinstance(e, dict)]
+    if quota_queue:
+        print(f"\n🔁 Quota retry queue: {len(quota_queue)} tentacle(s) pending retry")
+        for qe in quota_queue[-3:]:
+            rh = qe.get("retry_hint", "")
+            hint = f" — retry after: {rh}" if rh else ""
+            print(f"  • {qe.get('tentacle', '?')} [{qe.get('quota_reason', '?')}]{hint}")
 
     # Gate summary.
     gates = state.get("gates") or []
@@ -3922,6 +4121,7 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
         print(f"\nSuccess criteria: {verified}/{len(criteria)} verified")
 
     # Recommendation.
+    all_blocked_names = [n for n, _ in quota_blocked_names] + blocked_names
     print()
     goal_status = state.get("status")
     if goal_status == GOAL_STATUS_BUDGET_LIMITED:
@@ -3931,7 +4131,12 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
     elif bs["max_iterations"] is not None and current_iter >= bs["max_iterations"]:
         print(f"   This is the final budgeted iteration ({current_iter}/{bs['max_iterations']}).")
         print("   Recommendation: `goal eval --decision complete` or `--decision abandon`")
-    elif blocked_names:
+    elif quota_blocked_names:
+        print("   Some tentacles are quota-blocked. Check retry hints and re-dispatch after the quota resets.")
+        if blocked_names:
+            print("   Other tentacles are blocked/ambiguous — resolve those separately.")
+        print(f"   Then `goal eval --decision continue` to advance to iteration {current_iter + 1}.")
+    elif all_blocked_names:
         print("   Some tentacles are blocked. Resolve or create replacement tentacles.")
         print(f"   Then `goal eval --decision continue` to advance to iteration {current_iter + 1}.")
     else:
@@ -5023,6 +5228,63 @@ def cmd_todo(args):
                 print(f"  [{t['index']}] {mark} {t['text']}")
 
 
+# ---------------------------------------------------------------------------
+# Quota / rate-limit signal classification
+# ---------------------------------------------------------------------------
+
+# Minimal pattern list for classifying quota/rate-limit signals in dispatch output.
+# TODO(#183): Expand this pattern set once the fuller failure-mode matrix (#183) is
+# available.  The current list covers the most common quota/rate-limit signals only.
+_QUOTA_SIGNAL_PATTERNS: list[tuple[str, str]] = [
+    (r"(?i)rate.?limit", "rate_limit"),
+    (r"(?i)too.many.requests", "rate_limit"),
+    (r"(?i)\b429\b", "rate_limit"),
+    (r"(?i)daily.?(limit|quota)", "daily_quota"),
+    (r"(?i)monthly.?(limit|quota)", "monthly_quota"),
+    (r"(?i)token.?(limit|quota).?exceeded", "token_quota"),
+    (r"(?i)context.?window.?exceeded", "context_limit"),
+    (r"(?i)quota.?exceed", "quota_exceeded"),
+    (r"(?i)resource.?exhausted", "quota_exceeded"),
+    (r"(?i)credits?.?exhausted", "quota_exceeded"),
+]
+
+
+def _classify_quota_signal(text: str) -> "str | None":
+    """Classify dispatch output text into a machine-readable quota/rate-limit reason.
+
+    Returns a short reason string (e.g. ``"rate_limit"``, ``"quota_exceeded"``)
+    when the text matches a known quota pattern, or ``None`` when no signal is
+    detected.
+
+    TODO(#183): Pattern list is intentionally minimal pending the fuller
+    failure-mode matrix.
+    """
+    if not text:
+        return None
+    for pattern, reason in _QUOTA_SIGNAL_PATTERNS:
+        if re.search(pattern, text):
+            return reason
+    return None
+
+
+def _find_allowlisted_status_section(sections: "list[str]") -> "str | None":
+    """Return the most-recent section whose STATUS: value is in HANDOFF_STATUS_ALLOWLIST.
+
+    Shared helper used by both ``_parse_handoff_status`` and
+    ``_parse_handoff_quota_metadata`` so the two parsers always anchor to the
+    same section and cannot diverge when a later section carries an invalid
+    STATUS: value.
+
+    Returns None when no allowlisted section exists (backward-compat: legacy
+    free-form handoffs with no STATUS: line at all).
+    """
+    for section in reversed(sections):
+        m = re.search(r"^STATUS:\s*(\S+)", section, flags=re.MULTILINE)
+        if m and m.group(1) in HANDOFF_STATUS_ALLOWLIST:
+            return section
+    return None
+
+
 def _parse_handoff_status(handoff_content: str) -> "str | None":
     """Return the STATUS value from the latest handoff section that contains one.
 
@@ -5030,13 +5292,11 @@ def _parse_handoff_status(handoff_content: str) -> "str | None":
     Returns None when no STATUS: line is found (backward-compat free-form handoffs).
     """
     sections = re.split(r"^## \[", handoff_content, flags=re.MULTILINE)
-    for section in reversed(sections):
-        m = re.search(r"^STATUS:\s*(\S+)", section, flags=re.MULTILINE)
-        if m:
-            status = m.group(1)
-            if status in HANDOFF_STATUS_ALLOWLIST:
-                return status
-    return None
+    section = _find_allowlisted_status_section(sections)
+    if section is None:
+        return None
+    m = re.search(r"^STATUS:\s*(\S+)", section, flags=re.MULTILINE)
+    return m.group(1) if m else None
 
 
 def _parse_handoff_changed_files(handoff_content: str) -> "list[str]":
@@ -5071,6 +5331,39 @@ def _parse_handoff_bridge_links(handoff_content: str) -> "list[str]":
     return bridge_links
 
 
+def _parse_handoff_quota_metadata(handoff_content: str) -> "tuple[str | None, str | None]":
+    """Return ``(quota_reason, retry_hint)`` from the same handoff section that wins
+    the status parse (the most-recent section containing a ``STATUS:`` line).
+
+    Anchoring quota to the status-winning section ensures status and quota metadata
+    always refer to the same handoff entry.  A status-free progress note appended
+    after a BLOCKED+quota section therefore cannot silently clear the quota fields.
+
+    Falls back to the most-recent non-empty section for legacy free-form handoffs
+    that contain no ``STATUS:`` line at all.  Returns ``(None, None)`` when no
+    quota metadata is present (backward compatible — old BLOCKED handoffs without
+    quota lines are unaffected).
+    """
+    if not handoff_content:
+        return None, None
+    sections = re.split(r"^## \[", handoff_content, flags=re.MULTILINE)
+    # Anchor to the same allowlisted section that wins the status parse so status
+    # and quota metadata cannot come from different sections (bug #187 fix).
+    target = _find_allowlisted_status_section(sections)
+    # Backward-compat fallback: legacy free-form handoffs with no valid STATUS: line.
+    if target is None:
+        target = next((s for s in reversed(sections) if s.strip()), None)
+    if target is None:
+        return None, None
+    reason_m = re.search(r"^QUOTA_REASON:\s*(.+)", target, flags=re.MULTILINE)
+    hint_m = re.search(r"^RETRY_HINT:\s*(.+)", target, flags=re.MULTILINE)
+    if reason_m or hint_m:
+        quota_reason = reason_m.group(1).strip() if reason_m else None
+        retry_hint = hint_m.group(1).strip() if hint_m else None
+        return quota_reason, retry_hint
+    return None, None
+
+
 def cmd_handoff(args):
     """Write a handoff message for a tentacle (agent output)."""
     tentacles = get_tentacles_dir(args.session_dir)
@@ -5084,6 +5377,13 @@ def cmd_handoff(args):
     status = getattr(args, "status", None)
     changed_files: list[str] = list(getattr(args, "changed_file", None) or [])
     bridge_links: list[str] = list(getattr(args, "bridge", None) or [])
+    quota_reason: str | None = getattr(args, "quota_reason", None) or None
+    retry_hint: str | None = getattr(args, "retry_hint", None) or None
+
+    # Auto-detect quota signal from message text when BLOCKED with no explicit quota_reason.
+    # Explicit --quota-reason always wins; this only fills in when the caller omits it.
+    if status == "BLOCKED" and not quota_reason:
+        quota_reason = _classify_quota_signal(args.message)
 
     if status is not None and status not in HANDOFF_STATUS_ALLOWLIST:
         allowed = ", ".join(sorted(HANDOFF_STATUS_ALLOWLIST))
@@ -5103,6 +5403,10 @@ def cmd_handoff(args):
         entry += f"Changed: {cf}\n"
     for bl in bridge_links:
         entry += f"Bridge: {bl}\n"
+    if quota_reason:
+        entry += f"QUOTA_REASON: {quota_reason}\n"
+    if retry_hint:
+        entry += f"RETRY_HINT: {retry_hint}\n"
 
     with file_locked(handoff_path):
         if handoff_path.exists():
@@ -5134,6 +5438,8 @@ def cmd_handoff(args):
     # Triage signal for non-DONE statuses
     if status in HANDOFF_TRIAGE_STATUSES:
         print(f"⚠️  TRIAGE: terminal_status={status} — orchestrator review required")
+        if quota_reason:
+            print(f"   quota_reason={quota_reason}" + (f"  retry_hint={retry_hint}" if retry_hint else ""))
 
     # Auto-learn if --learn flag
     if args.learn:
@@ -5212,23 +5518,53 @@ def cmd_complete(args):
     if not (meta.get("verifications") or []):
         print("⚠️  No verification evidence recorded — run 'verify' or use --auto-verify before completing")
 
-    # 2a. Extract structured handoff fields (terminal_status, changed_files, bridge_links)
+    # 2a. Extract structured handoff fields (terminal_status, changed_files, bridge_links, quota metadata)
     terminal_status = None
     changed_files: list[str] = []
     bridge_links: list[str] = []
+    quota_reason: str | None = None
+    retry_hint: str | None = None
     if handoff_path.exists():
         raw_handoff = handoff_path.read_text(encoding="utf-8")
         terminal_status = _parse_handoff_status(raw_handoff)
         changed_files = _parse_handoff_changed_files(raw_handoff)
         bridge_links = _parse_handoff_bridge_links(raw_handoff)
+        quota_reason, retry_hint = _parse_handoff_quota_metadata(raw_handoff)
     if terminal_status:
         meta["terminal_status"] = terminal_status
     if changed_files:
         meta["changed_files"] = changed_files
     if bridge_links:
         meta["bridge_links"] = bridge_links
+    # Only persist quota metadata for BLOCKED terminal status; a newer DONE or
+    # generic BLOCKED section must never carry stale quota fields forward.
+    # Also clear any stale quota keys written by an earlier BLOCKED completion
+    # so re-completing as DONE does not leave stale quota metadata on disk.
+    if terminal_status == "BLOCKED" and quota_reason:
+        meta["quota_reason"] = quota_reason
+        if retry_hint:
+            meta["retry_hint"] = retry_hint
+        else:
+            # Re-blocking without a new hint: clear any stale hint from a prior run.
+            meta.pop("retry_hint", None)
+    else:
+        meta.pop("quota_reason", None)
+        meta.pop("retry_hint", None)
 
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+    # 2b. Upsert quota_retry_queue on quota-BLOCKED; remove entry on recovery.
+    if terminal_status == "BLOCKED" and quota_reason:
+        _append_quota_retry_entry(
+            tentacle_name=args.name,
+            tentacles=tentacles,
+            quota_reason=quota_reason,
+            retry_hint=retry_hint,
+        )
+    else:
+        # Non-BLOCKED (DONE, AMBIGUOUS, etc.) means the tentacle recovered;
+        # remove it from the pending-retry queue so next-iter is accurate.
+        _remove_quota_retry_entry(args.name, tentacles)
 
     # 3. Auto-learn from handoff (unless --no-learn)
     learned = 0
@@ -6176,6 +6512,23 @@ def main():
         metavar="SC_ID",
         default=[],
         help="Bridge link to a success criterion ID (repeatable); e.g. --bridge sc-1",
+    )
+    p_handoff.add_argument(
+        "--quota-reason",
+        dest="quota_reason",
+        default=None,
+        metavar="REASON",
+        help=(
+            "Machine-readable quota/rate-limit reason for BLOCKED handoffs "
+            "(e.g. rate_limit, quota_exceeded, daily_quota)"
+        ),
+    )
+    p_handoff.add_argument(
+        "--retry-hint",
+        dest="retry_hint",
+        default=None,
+        metavar="HINT",
+        help="Optional retry-after hint (ISO timestamp or human-readable) for quota-blocked handoffs",
     )
 
     # swarm

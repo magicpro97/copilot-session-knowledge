@@ -1165,8 +1165,38 @@ class TestGoalResume(unittest.TestCase):
             "success_criteria status must be preserved by --from-iteration",
         )
 
+    def test_reset_failed_removes_quota_retry_queue_entries(self):
+        """--reset-failed must remove reset tentacles from quota_retry_queue (#187)."""
+        self._link_tentacle_with_meta("q-blocked", terminal_status="BLOCKED")
+        # Manually enqueue a quota entry for that tentacle
+        T._append_quota_retry_entry("q-blocked", self.tentacles, "rate_limit", "tomorrow")
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(len(state.get("quota_retry_queue", [])), 1, "sanity: queue should have 1 entry")
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", reset_failed=True, from_iteration=None)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        state = T._goal_load(self.tentacles)
+        queue = state.get("quota_retry_queue", [])
+        names = [e.get("tentacle") for e in queue if isinstance(e, dict)]
+        self.assertNotIn("q-blocked", names, "--reset-failed must remove q-blocked from quota_retry_queue")
+
+    def test_reset_failed_clears_quota_metadata_from_meta(self):
+        """--reset-failed must clear quota_reason/retry_hint from meta.json (#187)."""
+        t_dir = self._link_tentacle_with_meta("q-meta-blocked", terminal_status="BLOCKED")
+        meta = json.loads((t_dir / "meta.json").read_text(encoding="utf-8"))
+        meta["quota_reason"] = "rate_limit"
+        meta["retry_hint"] = "tomorrow"
+        (t_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        self._pause_goal()
+        args = _fake_args(goal_action="resume", reset_failed=True, from_iteration=None)
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+        meta_after = json.loads((t_dir / "meta.json").read_text(encoding="utf-8"))
+        self.assertNotIn("quota_reason", meta_after, "--reset-failed must clear quota_reason from meta")
+        self.assertNotIn("retry_hint", meta_after, "--reset-failed must clear retry_hint from meta")
+
     def test_from_iteration_out_of_bounds_low_exits(self):
-        """--from-iteration 0 must exit with code 1 (below valid range)."""
         self._pause_goal()
         args = _fake_args(goal_action="resume", from_iteration=0, reset_failed=False)
         with patch("builtins.print"):
@@ -2764,7 +2794,6 @@ class TestGoalLifecycleEndToEnd(unittest.TestCase):
         self.assertIn("OVER TIME", combined)
 
 
-
 # ---------------------------------------------------------------------------
 # Tests for budget overrun escalation in _cmd_goal_eval (issue #186)
 # ---------------------------------------------------------------------------
@@ -2990,10 +3019,14 @@ class TestGoalEvalBudgetEscalation(unittest.TestCase):
         force_line = next((l for l in captured if "force-over-budget" in l), None)
         complete_line = next((l for l in captured if "--decision complete" in l and "resume" in l), None)
         self.assertIsNotNone(force_line, "Advisory must mention --force-over-budget")
-        self.assertIn("goal resume", force_line,
-                      "Advisory step for force-over-budget must include 'goal resume' before 'goal eval'")
-        self.assertIsNotNone(complete_line,
-                             "Advisory must include a 'goal resume' then 'goal eval --decision complete' step")
+        self.assertIn(
+            "goal resume",
+            force_line,
+            "Advisory step for force-over-budget must include 'goal resume' before 'goal eval'",
+        )
+        self.assertIsNotNone(
+            complete_line, "Advisory must include a 'goal resume' then 'goal eval --decision complete' step"
+        )
 
     def test_budget_escalation_advisory_requires_resume_before_complete(self):
         """Advisory for the 'complete' path must include 'goal resume' before 'goal eval'.
@@ -3011,8 +3044,9 @@ class TestGoalEvalBudgetEscalation(unittest.TestCase):
         # Every advisory line that mentions 'goal eval' must also mention 'goal resume'.
         for line in captured:
             if "goal eval" in line:
-                self.assertIn("goal resume", line,
-                              f"Advisory line mentions 'goal eval' without prior 'goal resume': {line!r}")
+                self.assertIn(
+                    "goal resume", line, f"Advisory line mentions 'goal eval' without prior 'goal resume': {line!r}"
+                )
 
     def test_budget_text_lines_show_remaining_for_timeout(self):
         """_goal_budget_text_lines shows remaining minutes when under timeout budget."""
@@ -6260,11 +6294,9 @@ class TestGoalLoopAutoDispatch(unittest.TestCase):
 
     def test_real_dispatch_subprocess_does_not_capture_output(self):
         """
-        The real dispatch subprocess path must NOT use capture_output=True.
-
-        Capturing large agent stdout/stderr into memory defeats the purpose of
-        fire-and-discard dispatch for large prompts.  The subprocess must redirect
-        stdout/stderr to DEVNULL (or inherit), never to PIPE.
+        The real dispatch subprocess path must NOT use capture_output=True or
+        PIPE for stdout.  stderr may be redirected to a file for bounded quota
+        classification, but must never be subprocess.PIPE (which buffers into memory).
         """
         import subprocess as _sp
 
@@ -6301,19 +6333,543 @@ class TestGoalLoopAutoDispatch(unittest.TestCase):
                 "capture_output must NOT be passed to dispatch subprocess.run — "
                 "it buffers large agent output into memory",
             )
-            # stdout/stderr must be DEVNULL (not PIPE) to avoid memory buffering.
+            # stdout must be DEVNULL to avoid memory buffering of agent output.
             if "stdout" in kwargs:
                 self.assertEqual(
                     kwargs["stdout"],
                     _sp.DEVNULL,
                     "stdout must be subprocess.DEVNULL, not PIPE",
                 )
+            # stderr must not be PIPE — it is allowed to be a file handle for
+            # bounded quota-signal classification (issue #187 fix).
             if "stderr" in kwargs:
-                self.assertEqual(
+                self.assertNotEqual(
                     kwargs["stderr"],
-                    _sp.DEVNULL,
-                    "stderr must be subprocess.DEVNULL, not PIPE",
+                    _sp.PIPE,
+                    "stderr must NOT be subprocess.PIPE — use a file handle or DEVNULL",
                 )
+
+    def test_dispatch_quota_signal_creates_blocked_handoff(self):
+        """Regression for issue #187: when dispatch subprocess exits non-zero with
+        a quota/rate-limit signal in stderr, _goal_loop_dispatch_and_wait must
+        write a synthetic BLOCKED handoff and enqueue the tentacle.
+        """
+        self._link_tentacle("quota-launcher-task")
+        _init_goal_with_queue = T._goal_load(self.tentacles)
+
+        # Simulate a quota-signal dispatch failure via the _dispatch_fn injection.
+        # Returning a non-empty string signals quota output to the caller.
+        def quota_dispatch_fn(cmd, name):
+            return "error: rate limit exceeded (429 Too Many Requests)"
+
+        with patch("builtins.print"):
+            T._goal_loop_dispatch_and_wait(
+                _fake_args(
+                    agent_type="general-purpose",
+                    model="claude-sonnet-4.6",
+                    briefing=False,
+                    bundle=True,
+                    worktree=False,
+                ),
+                T._goal_load(self.tentacles),
+                self.tentacles,
+                poll_timeout=5,
+                _dispatch_fn=quota_dispatch_fn,
+                _sleep_fn=lambda s: None,
+                _monotonic_fn=iter([0.0, 9999.0]).__next__,
+            )
+
+        # handoff.md must have been written with BLOCKED + QUOTA_REASON
+        handoff_path = self.tentacles / "quota-launcher-task" / "handoff.md"
+        self.assertTrue(handoff_path.exists(), "handoff.md must be written for quota-blocked dispatch")
+        handoff_text = handoff_path.read_text(encoding="utf-8")
+        self.assertIn("STATUS: BLOCKED", handoff_text)
+        self.assertIn("QUOTA_REASON: rate_limit", handoff_text)
+
+        # meta.json must reflect completed/BLOCKED
+        import json as _json
+
+        meta = _json.loads((self.tentacles / "quota-launcher-task" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta.get("terminal_status"), "BLOCKED")
+        self.assertEqual(meta.get("quota_reason"), "rate_limit")
+
+        # quota_retry_queue must have an entry
+        state = T._goal_load(self.tentacles)
+        queue = state.get("quota_retry_queue", [])
+        names = [e.get("tentacle") for e in queue if isinstance(e, dict)]
+        self.assertIn("quota-launcher-task", names)
+
+
+# ---------------------------------------------------------------------------
+# Tests for quota retry queue persistence (#187)
+# ---------------------------------------------------------------------------
+
+
+class TestQuotaRetryQueue(unittest.TestCase):
+    """Tests that _append_quota_retry_entry persists entries to goal.json."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "quota_retry"
+        _, self.tentacles = _make_octogent(self.base)
+        _init_goal(self.tentacles, title="Quota Goal")
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    def test_append_adds_entry_to_queue(self):
+        result = T._append_quota_retry_entry(
+            tentacle_name="test-worker",
+            tentacles=self.tentacles,
+            quota_reason="rate_limit",
+            retry_hint="2026-05-14T00:00:00Z",
+        )
+        self.assertTrue(result)
+        state = T._goal_load(self.tentacles)
+        queue = state.get("quota_retry_queue", [])
+        self.assertEqual(len(queue), 1)
+        self.assertEqual(queue[0]["tentacle"], "test-worker")
+        self.assertEqual(queue[0]["quota_reason"], "rate_limit")
+        self.assertEqual(queue[0]["retry_hint"], "2026-05-14T00:00:00Z")
+        self.assertIn("blocked_at", queue[0])
+
+    def test_append_multiple_entries(self):
+        T._append_quota_retry_entry("worker-a", self.tentacles, "rate_limit", None)
+        T._append_quota_retry_entry("worker-b", self.tentacles, "daily_quota", "tomorrow")
+        state = T._goal_load(self.tentacles)
+        queue = state.get("quota_retry_queue", [])
+        self.assertEqual(len(queue), 2)
+        names = [e["tentacle"] for e in queue]
+        self.assertIn("worker-a", names)
+        self.assertIn("worker-b", names)
+
+    def test_append_without_retry_hint_stores_none(self):
+        T._append_quota_retry_entry("worker-no-hint", self.tentacles, "quota_exceeded", None)
+        state = T._goal_load(self.tentacles)
+        queue = state.get("quota_retry_queue", [])
+        entry = next((e for e in queue if e["tentacle"] == "worker-no-hint"), None)
+        self.assertIsNotNone(entry)
+        self.assertIsNone(entry["retry_hint"])
+
+    def test_append_returns_false_when_no_goal_json(self):
+        _, empty_tentacles = _make_octogent(self.base / "sub")
+        result = T._append_quota_retry_entry("x", empty_tentacles, "rate_limit", None)
+        self.assertFalse(result)
+
+    def test_complete_blocked_with_quota_appends_to_queue(self):
+        """cmd_complete on a BLOCKED+quota_reason tentacle appends to quota_retry_queue."""
+        t_dir = _make_tentacle("quota-blocked-worker", self.tentacles, status="active")
+        handoff_content = (
+            "# Handoff Notes\n\n## [2026-05-01 12:00 UTC]\n\n"
+            "Blocked by rate limit.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\nRETRY_HINT: 2026-05-14T00:00:00Z\n"
+        )
+        (t_dir / "handoff.md").write_text(handoff_content, encoding="utf-8")
+
+        args = _fake_args(name="quota-blocked-worker", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.tentacles):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+
+        state = T._goal_load(self.tentacles)
+        queue = state.get("quota_retry_queue", [])
+        self.assertEqual(len(queue), 1)
+        self.assertEqual(queue[0]["tentacle"], "quota-blocked-worker")
+        self.assertEqual(queue[0]["quota_reason"], "rate_limit")
+        self.assertEqual(queue[0]["retry_hint"], "2026-05-14T00:00:00Z")
+
+    def test_complete_done_does_not_append_to_queue(self):
+        """cmd_complete on a DONE tentacle must not touch quota_retry_queue."""
+        t_dir = _make_tentacle("done-worker", self.tentacles, status="active")
+        handoff_content = "# Handoff Notes\n\n## [2026-05-01 12:00 UTC]\n\nDone.\nSTATUS: DONE\n"
+        (t_dir / "handoff.md").write_text(handoff_content, encoding="utf-8")
+
+        args = _fake_args(name="done-worker", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.tentacles):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state.get("quota_retry_queue", []), [])
+
+    def test_stale_quota_not_appended_when_newer_section_is_done(self):
+        """Multi-section handoff with older BLOCKED+quota and newer DONE must not enqueue quota."""
+        t_dir = _make_tentacle("stale-quota-worker", self.tentacles, status="active")
+        handoff_content = (
+            "# Handoff Notes\n\n"
+            "## [2026-05-01 12:00 UTC]\n\n"
+            "Blocked by rate limit.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\nRETRY_HINT: tomorrow\n"
+            "\n## [2026-05-02 09:00 UTC]\n\n"
+            "Completed successfully.\nSTATUS: DONE\n"
+        )
+        (t_dir / "handoff.md").write_text(handoff_content, encoding="utf-8")
+
+        args = _fake_args(name="stale-quota-worker", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.tentacles):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(state.get("quota_retry_queue", []), [])
+        meta = json.loads((t_dir / "meta.json").read_text(encoding="utf-8"))
+        self.assertNotIn("quota_reason", meta)
+        self.assertNotIn("retry_hint", meta)
+        self.assertEqual(meta.get("terminal_status"), "DONE")
+
+    def test_two_step_recompletion_clears_stale_quota_from_meta(self):
+        """Re-completion scenario: first BLOCKED+quota, then DONE — meta.json quota fields cleared."""
+        t_dir = _make_tentacle("recompletion-worker", self.tentacles, status="active")
+
+        # Step 1: complete as BLOCKED with quota metadata
+        handoff_path = t_dir / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2026-05-01 12:00 UTC]\n\n"
+            "Blocked by rate limit.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\nRETRY_HINT: tomorrow\n",
+            encoding="utf-8",
+        )
+        args = _fake_args(name="recompletion-worker", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.tentacles):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+
+        meta = json.loads((t_dir / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta.get("quota_reason"), "rate_limit")  # sanity-check
+        self.assertEqual(meta.get("terminal_status"), "BLOCKED")
+
+        # Step 2: agent retries and completes successfully as DONE
+        existing = handoff_path.read_text(encoding="utf-8")
+        handoff_path.write_text(
+            existing + "\n## [2026-05-02 09:00 UTC]\n\nCompleted successfully.\nSTATUS: DONE\n",
+            encoding="utf-8",
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.tentacles):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+
+        meta = json.loads((t_dir / "meta.json").read_text(encoding="utf-8"))
+        self.assertNotIn("quota_reason", meta)
+        self.assertNotIn("retry_hint", meta)
+        self.assertEqual(meta.get("terminal_status"), "DONE")
+
+    def test_reblock_without_hint_upserts_queue_no_duplicate(self):
+        """Re-blocking the same tentacle without a new retry_hint must not duplicate the queue entry.
+
+        Sequence (reproduces after_blocked_with_hint / after_blocked_without_hint bug):
+        1. BLOCKED with hint  → queue has 1 entry, hint = "2026-05-14T00:00:00Z"
+        2. BLOCKED without hint → queue still has 1 entry (upsert), hint = None
+        """
+        t_dir = _make_tentacle("reblock-worker", self.tentacles, status="active")
+
+        # Step 1 — first BLOCKED with a retry_hint
+        (t_dir / "handoff.md").write_text(
+            "# Handoff Notes\n\n## [2026-05-01 12:00 UTC]\n\n"
+            "Blocked.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\nRETRY_HINT: 2026-05-14T00:00:00Z\n",
+            encoding="utf-8",
+        )
+        args = _fake_args(name="reblock-worker", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.tentacles):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+
+        state = T._goal_load(self.tentacles)
+        queue = state.get("quota_retry_queue", [])
+        # after_blocked_with_hint: 1 entry, hint preserved
+        self.assertEqual(len(queue), 1, "after_blocked_with_hint: expected 1 queue entry")
+        self.assertEqual(
+            queue[0]["retry_hint"],
+            "2026-05-14T00:00:00Z",
+            "after_blocked_with_hint: hint should be 2026-05-14T00:00:00Z",
+        )
+
+        # Step 2 — re-block the same tentacle without a retry_hint
+        (t_dir / "handoff.md").write_text(
+            "# Handoff Notes\n\n## [2026-05-14 08:00 UTC]\n\n"
+            "Still blocked.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\n",
+            encoding="utf-8",
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.tentacles):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+
+        state = T._goal_load(self.tentacles)
+        queue = state.get("quota_retry_queue", [])
+        # after_blocked_without_hint: still 1 entry (upsert, not append), hint cleared
+        self.assertEqual(len(queue), 1, "after_blocked_without_hint: expected 1 queue entry (upsert)")
+        self.assertIsNone(
+            queue[0]["retry_hint"], "after_blocked_without_hint: old hint must be cleared on re-block without hint"
+        )
+
+    def test_done_completion_removes_tentacle_from_queue(self):
+        """Completing as DONE removes the tentacle from quota_retry_queue.
+
+        Sequence (reproduces after_done bug):
+        1. BLOCKED with hint  → queue has 1 entry
+        2. DONE               → queue is empty
+        """
+        t_dir = _make_tentacle("recovery-worker", self.tentacles, status="active")
+
+        # Step 1 — BLOCKED with quota
+        (t_dir / "handoff.md").write_text(
+            "# Handoff Notes\n\n## [2026-05-01 12:00 UTC]\n\n"
+            "Blocked.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\nRETRY_HINT: 2026-05-14T00:00:00Z\n",
+            encoding="utf-8",
+        )
+        args = _fake_args(name="recovery-worker", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.tentacles):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+
+        state = T._goal_load(self.tentacles)
+        self.assertEqual(len(state.get("quota_retry_queue", [])), 1)
+
+        # Step 2 — agent recovers and completes as DONE
+        existing = (t_dir / "handoff.md").read_text(encoding="utf-8")
+        (t_dir / "handoff.md").write_text(
+            existing + "\n## [2026-05-15 09:00 UTC]\n\nResolved.\nSTATUS: DONE\n",
+            encoding="utf-8",
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.tentacles):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+
+        state = T._goal_load(self.tentacles)
+        queue = state.get("quota_retry_queue", [])
+        # after_done: queue must be empty — tentacle recovered
+        self.assertEqual(len(queue), 0, "after_done: DONE completion must remove tentacle from queue")
+        names = [e.get("tentacle") for e in queue]
+        self.assertNotIn("recovery-worker", names)
+
+    def test_blocked_quota_preserved_when_later_status_free_note_appended(self):
+        """Bug #187 status-anchor fix: quota_retry_queue must be populated when the
+        latest handoff section is a status-free progress note and an older section
+        has STATUS: BLOCKED + quota metadata.
+
+        Before the fix: _parse_handoff_quota_metadata read the latest non-empty
+        section (the status-free note) and returned (None, None), so cmd_complete
+        treated the tentacle as generic-BLOCKED and did not enqueue it.
+        """
+        t_dir = _make_tentacle("status-anchor-worker", self.tentacles, status="active")
+        handoff_content = (
+            "# Handoff Notes\n\n"
+            "## [2026-05-01 12:00 UTC]\n\n"
+            "Blocked by rate limit.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\nRETRY_HINT: 2026-05-14T00:00:00Z\n"
+            "\n## [2026-05-02 10:00 UTC]\n\n"
+            "Progress update — still waiting for quota reset.\n"
+        )
+        (t_dir / "handoff.md").write_text(handoff_content, encoding="utf-8")
+        args = _fake_args(name="status-anchor-worker", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.tentacles):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+        state = T._goal_load(self.tentacles)
+        queue = state.get("quota_retry_queue", [])
+        self.assertEqual(
+            len(queue), 1, "status-anchor: BLOCKED+quota must be enqueued even with later status-free note"
+        )
+        self.assertEqual(queue[0]["tentacle"], "status-anchor-worker")
+        self.assertEqual(queue[0]["quota_reason"], "rate_limit")
+        self.assertEqual(queue[0]["retry_hint"], "2026-05-14T00:00:00Z")
+        meta = json.loads((t_dir / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta.get("quota_reason"), "rate_limit")
+        self.assertEqual(meta.get("terminal_status"), "BLOCKED")
+
+    def test_blocked_quota_preserved_when_later_section_has_invalid_status(self):
+        """Bug #187 allowlist-anchor fix: quota_retry_queue must be populated when a
+        newer handoff section carries an invalid STATUS: value (not in allowlist).
+
+        Scenario (the live repro from issue #187):
+        - older section: STATUS: BLOCKED, QUOTA_REASON: rate_limit, RETRY_HINT: 2026-05-14
+        - newer section: STATUS: STALE_STATUS_NOT_IN_ALLOWLIST
+
+        Before the fix: _parse_handoff_quota_metadata anchored to the newer section
+        (any STATUS: line sufficed) and returned (None, None) because that section
+        has no quota fields; cmd_complete treated the tentacle as generic-BLOCKED.
+        """
+        t_dir = _make_tentacle("allowlist-anchor-worker", self.tentacles, status="active")
+        handoff_content = (
+            "# Handoff Notes\n\n"
+            "## [2026-05-13 10:00 UTC]\n\n"
+            "Blocked by rate limit.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\nRETRY_HINT: 2026-05-14T00:00:00Z\n"
+            "\n## [2026-05-13 11:00 UTC]\n\n"
+            "Still waiting.\nSTATUS: STALE_STATUS_NOT_IN_ALLOWLIST\n"
+        )
+        (t_dir / "handoff.md").write_text(handoff_content, encoding="utf-8")
+        args = _fake_args(name="allowlist-anchor-worker", no_learn=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.tentacles):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+        state = T._goal_load(self.tentacles)
+        queue = state.get("quota_retry_queue", [])
+        self.assertEqual(
+            len(queue), 1, "allowlist-anchor: BLOCKED+quota must be enqueued when newer section has invalid status"
+        )
+        self.assertEqual(queue[0]["tentacle"], "allowlist-anchor-worker")
+        self.assertEqual(queue[0]["quota_reason"], "rate_limit")
+        self.assertEqual(queue[0]["retry_hint"], "2026-05-14T00:00:00Z")
+        meta = json.loads((t_dir / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta.get("quota_reason"), "rate_limit")
+        self.assertEqual(meta.get("terminal_status"), "BLOCKED")
+
+    def test_remove_returns_true_when_entry_exists(self):
+        """_remove_quota_retry_entry must return True when an entry is actually removed (#187)."""
+        T._append_quota_retry_entry("worker-to-remove", self.tentacles, "rate_limit", None)
+        result = T._remove_quota_retry_entry("worker-to-remove", self.tentacles)
+        self.assertTrue(result, "_remove_quota_retry_entry must return True when entry was removed")
+        state = T._goal_load(self.tentacles)
+        queue = state.get("quota_retry_queue", [])
+        names = [e.get("tentacle") for e in queue if isinstance(e, dict)]
+        self.assertNotIn("worker-to-remove", names)
+
+    def test_remove_returns_false_when_entry_absent(self):
+        """_remove_quota_retry_entry must return False when entry is not in the queue (#187)."""
+        result = T._remove_quota_retry_entry("not-in-queue", self.tentacles)
+        self.assertFalse(result, "_remove_quota_retry_entry must return False when entry was absent")
+
+    def test_remove_returns_false_when_no_goal_json(self):
+        """_remove_quota_retry_entry must return False when goal.json is absent."""
+        from pathlib import Path as _Path
+
+        _, empty_tentacles = _make_octogent(self.base / "no-goal")
+        result = T._remove_quota_retry_entry("x", empty_tentacles)
+        self.assertFalse(result)
+
+    def test_append_ignores_malformed_queue_entries(self):
+        """_append_quota_retry_entry must be robust against non-dict entries in the queue (#187)."""
+        # Directly inject a malformed entry (plain string) into goal.json
+        with T._goal_lock(self.tentacles):
+            state = T._goal_load(self.tentacles)
+            state["quota_retry_queue"] = ["bad-string-entry", 42, None]
+            T._goal_write(self.tentacles, state)
+        # Should not raise; malformed entries must be discarded
+        result = T._append_quota_retry_entry("clean-worker", self.tentacles, "rate_limit", None)
+        self.assertTrue(result)
+        state = T._goal_load(self.tentacles)
+        queue = state.get("quota_retry_queue", [])
+        # Only the clean dict entry should remain
+        self.assertEqual(len(queue), 1)
+        self.assertEqual(queue[0]["tentacle"], "clean-worker")
+
+    def test_remove_ignores_malformed_queue_entries(self):
+        """_remove_quota_retry_entry must handle non-dict entries without crashing (#187)."""
+        T._append_quota_retry_entry("real-worker", self.tentacles, "rate_limit", None)
+        with T._goal_lock(self.tentacles):
+            state = T._goal_load(self.tentacles)
+            queue = state.get("quota_retry_queue", [])
+            queue.insert(0, "bad-string")
+            queue.append(99)
+            state["quota_retry_queue"] = queue
+            T._goal_write(self.tentacles, state)
+        # Removing the real worker must not raise even with malformed entries present
+        result = T._remove_quota_retry_entry("real-worker", self.tentacles)
+        self.assertTrue(result, "must return True — real-worker entry was present")
+        state = T._goal_load(self.tentacles)
+        queue = state.get("quota_retry_queue", [])
+        dict_names = [e.get("tentacle") for e in queue if isinstance(e, dict)]
+        self.assertNotIn("real-worker", dict_names)
+
+
+class TestNextIterQuotaBlocked(unittest.TestCase):
+    """Tests that _cmd_goal_next_iter distinguishes quota-blocked from generic blocked."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "next_iter_quota"
+        _, self.tentacles = _make_octogent(self.base)
+        _init_goal(self.tentacles, title="Quota Next-Iter Goal")
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    def _link_tentacle(
+        self, name: str, terminal_status: str = "", quota_reason: str = "", retry_hint: str = ""
+    ) -> Path:
+        t_dir = _make_tentacle(name, self.tentacles, status="completed")
+        meta = json.loads((t_dir / "meta.json").read_text(encoding="utf-8"))
+        if terminal_status:
+            meta["terminal_status"] = terminal_status
+        if quota_reason:
+            meta["quota_reason"] = quota_reason
+        if retry_hint:
+            meta["retry_hint"] = retry_hint
+        (t_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        state = T._goal_load(self.tentacles)
+        ikey = str(state.get("iteration", 1))
+        if "iterations" not in state:
+            state["iterations"] = {}
+        if ikey not in state["iterations"]:
+            state["iterations"][ikey] = {"tentacles": []}
+        state["iterations"][ikey]["tentacles"].append(name)
+        if name not in state.get("tentacles", []):
+            state.setdefault("tentacles", []).append(name)
+        T._goal_write(self.tentacles, state)
+        return t_dir
+
+    def test_quota_blocked_renders_with_traffic_light_icon(self):
+        self._link_tentacle("q-worker", terminal_status="BLOCKED", quota_reason="rate_limit")
+        captured = []
+        args = _fake_args(goal_action="next-iter")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_next_iter(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("q-worker", combined)
+        self.assertIn("quota-blocked", combined)
+        self.assertIn("rate_limit", combined)
+
+    def test_generic_blocked_renders_without_quota_fields(self):
+        self._link_tentacle("g-worker", terminal_status="BLOCKED")
+        captured = []
+        args = _fake_args(goal_action="next-iter")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_next_iter(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("g-worker", combined)
+        self.assertIn("blocked/ambiguous", combined)
+        self.assertNotIn("quota-blocked", combined)
+
+    def test_retry_hint_shown_for_quota_blocked(self):
+        self._link_tentacle("h-worker", terminal_status="BLOCKED", quota_reason="daily_quota", retry_hint="2026-06-01")
+        captured = []
+        args = _fake_args(goal_action="next-iter")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_next_iter(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("2026-06-01", combined)
+
+    def test_recommendation_mentions_quota_when_quota_blocked(self):
+        self._link_tentacle("qrec-worker", terminal_status="BLOCKED", quota_reason="quota_exceeded")
+        captured = []
+        args = _fake_args(goal_action="next-iter")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_next_iter(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("quota", combined.lower())
+        self.assertIn("retry", combined.lower())
+
+    def test_quota_retry_queue_shown_in_next_iter(self):
+        """quota_retry_queue entries appear in next-iter output."""
+        T._append_quota_retry_entry("q-queued", self.tentacles, "rate_limit", "tomorrow")
+        captured = []
+        args = _fake_args(goal_action="next-iter")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_next_iter(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("quota retry queue", combined.lower())
+        self.assertIn("q-queued", combined)
+
+    def test_next_iter_handles_malformed_quota_queue_entries(self):
+        """_cmd_goal_next_iter must not crash when quota_retry_queue contains non-dict entries (#187)."""
+        T._append_quota_retry_entry("valid-q", self.tentacles, "rate_limit", "tomorrow")
+        with T._goal_lock(self.tentacles):
+            state = T._goal_load(self.tentacles)
+            queue = state.get("quota_retry_queue", [])
+            queue.insert(0, "bad-string")
+            queue.append(None)
+            state["quota_retry_queue"] = queue
+            T._goal_write(self.tentacles, state)
+        # Must not raise and must still show the valid entry
+        captured = []
+        args = _fake_args(goal_action="next-iter")
+        with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_next_iter(args, self.tentacles)
+        combined = "\n".join(captured)
+        self.assertIn("valid-q", combined)
 
 
 if __name__ == "__main__":
