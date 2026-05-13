@@ -699,7 +699,7 @@ sk tentacle goal resume --reset-failed   # Resets BLOCKED tentacles to idle
 sk tentacle dispatch <name>              # Re-dispatch after quota resets
 ```
 
-
+### Success criteria
 
 ```bash
 # Add a verifiable success criterion

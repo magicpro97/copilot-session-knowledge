@@ -6833,16 +6833,13 @@ class TestBridgeLinkRuntimeFlow(unittest.TestCase):
         """cmd_complete must parse Bridge: lines and store bridge_links in meta.json."""
         self._make_worker("brt-complete")
         (self.tentacles / "brt-complete" / "handoff.md").write_text(
-            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nDone.\n"
-            "STATUS: DONE\nBridge: sc-1\nBridge: sc-2\n",
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nDone.\nSTATUS: DONE\nBridge: sc-1\nBridge: sc-2\n",
             encoding="utf-8",
         )
 
         self._complete("brt-complete")
 
-        meta = json.loads(
-            (self.tentacles / "brt-complete" / "meta.json").read_text(encoding="utf-8")
-        )
+        meta = json.loads((self.tentacles / "brt-complete" / "meta.json").read_text(encoding="utf-8"))
         self.assertIn("bridge_links", meta)
         self.assertIn("sc-1", meta["bridge_links"])
         self.assertIn("sc-2", meta["bridge_links"])
@@ -6857,9 +6854,7 @@ class TestBridgeLinkRuntimeFlow(unittest.TestCase):
 
         self._complete("brt-no-bridge")
 
-        meta = json.loads(
-            (self.tentacles / "brt-no-bridge" / "meta.json").read_text(encoding="utf-8")
-        )
+        meta = json.loads((self.tentacles / "brt-no-bridge" / "meta.json").read_text(encoding="utf-8"))
         self.assertNotIn("bridge_links", meta)
 
     def test_goal_coverage_shows_covered_criterion_after_handoff_and_complete(self):
@@ -6949,9 +6944,7 @@ class TestBridgeLinkRuntimeFlow(unittest.TestCase):
 
         self._complete("brt-dedup")
 
-        meta = json.loads(
-            (self.tentacles / "brt-dedup" / "meta.json").read_text(encoding="utf-8")
-        )
+        meta = json.loads((self.tentacles / "brt-dedup" / "meta.json").read_text(encoding="utf-8"))
         bridge_links = meta.get("bridge_links", [])
         # sc-1 must appear exactly once (deduplicated)
         self.assertEqual(bridge_links.count("sc-1"), 1)
@@ -6971,8 +6964,6 @@ class TestBridgeLinkRuntimeFlow(unittest.TestCase):
         self.assertIn("sc-1", output)
         self.assertIn("sc-2", output)
         self.assertIn("brt-text-worker", output)
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -7037,7 +7028,9 @@ class TestParseHandoffQuotaMetadata(unittest.TestCase):
         self.assertIsNone(hint)
 
     def test_parses_quota_reason(self):
-        content = "# Handoff Notes\n\n## [2026-05-01 12:00 UTC]\n\nBlocked.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\n"
+        content = (
+            "# Handoff Notes\n\n## [2026-05-01 12:00 UTC]\n\nBlocked.\nSTATUS: BLOCKED\nQUOTA_REASON: rate_limit\n"
+        )
         reason, hint = T._parse_handoff_quota_metadata(content)
         self.assertEqual(reason, "rate_limit")
         self.assertIsNone(hint)
@@ -7150,6 +7143,7 @@ class TestParseHandoffQuotaMetadata(unittest.TestCase):
         self.assertIsNone(hint)
 
 
+class TestCmdHandoffQuotaMetadata(unittest.TestCase):
     """Tests that cmd_handoff writes QUOTA_REASON and RETRY_HINT into handoff.md."""
 
     def setUp(self):
@@ -7345,8 +7339,9 @@ class TestCmdCompleteQuotaPersistence(unittest.TestCase):
             with patch("builtins.print"):
                 T.cmd_complete(args)
         meta = json.loads((self.base / "quota-complete-test" / "meta.json").read_text(encoding="utf-8"))
-        self.assertEqual(meta.get("retry_hint"), "2026-05-14T00:00:00Z",
-                         "after_blocked_with_hint: sanity-check hint written")
+        self.assertEqual(
+            meta.get("retry_hint"), "2026-05-14T00:00:00Z", "after_blocked_with_hint: sanity-check hint written"
+        )
 
         # Step 2: re-block the same tentacle, no retry_hint this time
         self._write_handoff("quota-complete-test", "BLOCKED", "rate_limit")  # no retry_hint
@@ -7354,8 +7349,9 @@ class TestCmdCompleteQuotaPersistence(unittest.TestCase):
             with patch("builtins.print"):
                 T.cmd_complete(args)
         meta = json.loads((self.base / "quota-complete-test" / "meta.json").read_text(encoding="utf-8"))
-        self.assertNotIn("retry_hint", meta,
-                         "after_blocked_without_hint: stale hint must be cleared when re-blocking without hint")
+        self.assertNotIn(
+            "retry_hint", meta, "after_blocked_without_hint: stale hint must be cleared when re-blocking without hint"
+        )
         self.assertEqual(meta.get("quota_reason"), "rate_limit")
 
 
@@ -7470,6 +7466,7 @@ class TestBrowseRouteStaleMeta(unittest.TestCase):
         import importlib
 
         import browse.routes.tentacles as brt
+
         self._brt = brt
         self.base = SCRATCH_DIR / "browse_route_quota"
         self.base.mkdir(parents=True, exist_ok=True)
@@ -7489,9 +7486,7 @@ class TestBrowseRouteStaleMeta(unittest.TestCase):
         }
         if meta_extra:
             meta.update(meta_extra)
-        (d / "meta.json").write_text(
-            __import__("json").dumps(meta, indent=2) + "\n", encoding="utf-8"
-        )
+        (d / "meta.json").write_text(__import__("json").dumps(meta, indent=2) + "\n", encoding="utf-8")
         return d
 
     def test_stale_quota_not_exposed_for_done_tentacle(self):
@@ -7581,4 +7576,3 @@ class TestBrowseRouteStaleMeta(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-

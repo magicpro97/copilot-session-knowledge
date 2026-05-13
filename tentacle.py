@@ -2098,7 +2098,8 @@ def _append_quota_retry_entry(
         if not isinstance(queue, list):
             queue = []
         # Upsert: remove any stale entry for this tentacle before appending.
-        queue = [e for e in queue if e.get("tentacle") != tentacle_name]
+        # Guard against malformed/non-dict legacy entries.
+        queue = [e for e in queue if isinstance(e, dict) and e.get("tentacle") != tentacle_name]
         queue.append(entry)
         state["quota_retry_queue"] = queue
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -2116,25 +2117,84 @@ def _remove_quota_retry_entry(tentacle_name: str, tentacles: Path) -> bool:
     Called when a tentacle completes with a non-BLOCKED terminal status so the
     queue reflects only tentacles that are still pending retry.  Fail-open: if
     goal.json is absent or the entry is not present, returns False silently.
+
+    Returns True when an entry was found and removed, False when the entry was
+    absent or goal.json does not exist.
     """
     gp = _goal_path(tentacles)
     if not gp.exists():
         return False
 
+    removed: list[bool] = [False]
+
     def _apply(state: dict) -> None:
         queue: list = state.get("quota_retry_queue") or []
         if not isinstance(queue, list):
             return
-        updated = [e for e in queue if e.get("tentacle") != tentacle_name]
-        if len(updated) != len(queue):
+        # Guard against malformed/non-dict legacy entries.
+        updated = [e for e in queue if not (isinstance(e, dict) and e.get("tentacle") == tentacle_name)]
+        if len(updated) < len(queue):
+            removed[0] = True
             state["quota_retry_queue"] = updated
             state["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     try:
         _goal_transact(tentacles, _apply)
-        return True
+        return removed[0]
     except Exception:
         return False
+
+
+def _write_dispatch_quota_blocked(
+    tentacle_name: str,
+    tentacles: Path,
+    quota_reason: str,
+) -> None:
+    """Write a synthetic BLOCKED handoff when the dispatch launcher exits with a quota signal.
+
+    Called by ``_goal_loop_dispatch_and_wait`` when the dispatch subprocess exits
+    with a non-zero code and its stderr contains a recognised quota/rate-limit
+    pattern.  Writes handoff.md, updates meta.json, and enqueues the tentacle in
+    ``goal.json["quota_retry_queue"]`` so the goal loop treats the tentacle as
+    resolved-error (BLOCKED) immediately rather than waiting for poll_timeout.
+    """
+    tentacle_dir = tentacles / tentacle_name
+    if not tentacle_dir.exists():
+        return
+
+    handoff_path = tentacle_dir / "handoff.md"
+    meta_path = tentacle_dir / "meta.json"
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    handoff_entry = (
+        f"\n## [{timestamp}]\n\n"
+        f"Dispatch launcher exited with quota/rate-limit signal (auto-detected).\n"
+        f"STATUS: BLOCKED\n"
+        f"QUOTA_REASON: {quota_reason}\n"
+    )
+    try:
+        with file_locked(handoff_path):
+            if handoff_path.exists():
+                existing = handoff_path.read_text(encoding="utf-8")
+                handoff_path.write_text(existing + handoff_entry, encoding="utf-8")
+            else:
+                handoff_path.write_text(f"# Handoff Notes\n{handoff_entry}", encoding="utf-8")
+    except OSError:
+        pass
+
+    try:
+        meta: dict = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+        meta["status"] = "completed"
+        meta["terminal_status"] = "BLOCKED"
+        meta["quota_reason"] = quota_reason
+        meta.pop("retry_hint", None)
+        meta["completed_at"] = datetime.now(timezone.utc).isoformat()
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+    _append_quota_retry_entry(tentacle_name, tentacles, quota_reason, None)
+    print(f"   \U0001f6a6 Dispatch quota-blocked: '{tentacle_name}' → BLOCKED ({quota_reason})")
 
 
 def _positive_int_arg(value: str) -> int:
@@ -2511,20 +2571,54 @@ def _goal_loop_dispatch_and_wait(
             dispatched_names.add(entry["name"])
             batch_dispatched.add(entry["name"])
             if _dispatch_fn is not None:
-                _dispatch_fn(cmd_str, entry["name"])
+                # Injection path (tests).  If the callable returns a non-empty
+                # string, treat it as stderr output for quota classification.
+                quota_output = _dispatch_fn(cmd_str, entry["name"])
+                if quota_output:
+                    quota_reason = _classify_quota_signal(str(quota_output))
+                    if quota_reason:
+                        _write_dispatch_quota_blocked(entry["name"], tentacles, quota_reason)
             else:
+                # Real subprocess path: write stderr to a bounded log file in
+                # the tentacle directory so we can classify quota signals without
+                # loading large agent output into memory (no capture_output, no PIPE).
+                returncode = 0
+                stderr_sample = ""
+                stderr_log = tentacles / entry["name"] / "_dispatch_err.log"
                 try:
-                    subprocess.run(
-                        argv,
-                        check=False,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=30,
-                    )
+                    with stderr_log.open("wb") as _flog:
+                        result = subprocess.run(
+                            argv,
+                            check=False,
+                            stdout=subprocess.DEVNULL,
+                            stderr=_flog,
+                            timeout=30,
+                        )
+                    returncode = result.returncode
+                    # Read at most 4 KiB for quota classification, then remove.
+                    try:
+                        stderr_sample = stderr_log.read_bytes()[:4096].decode("utf-8", errors="replace")
+                        stderr_log.unlink()
+                    except OSError:
+                        pass
                 except subprocess.TimeoutExpired:
                     print(f"   \u26a0\ufe0f  Dispatch timed out for '{entry['name']}'")
+                    try:
+                        stderr_log.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 except Exception as exc:
                     print(f"   \u26a0\ufe0f  Dispatch subprocess failed for '{entry['name']}': {exc}")
+                    returncode = -1
+                    try:
+                        stderr_log.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                # Classify stderr for quota signal on non-zero exit only.
+                if returncode != 0 and stderr_sample:
+                    quota_reason = _classify_quota_signal(stderr_sample)
+                    if quota_reason:
+                        _write_dispatch_quota_blocked(entry["name"], tentacles, quota_reason)
 
         remaining_ready = plan["ready_total"] - len(plan["selected"])
         if remaining_ready > 0:
@@ -3476,11 +3570,27 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
                 t_meta["status"] = "idle"
                 t_meta.pop("terminal_status", None)
                 t_meta.pop("completed_at", None)
+                # Clear stale quota metadata when resetting so re-dispatched
+                # tentacles don't carry old quota_reason/retry_hint forward.
+                t_meta.pop("quota_reason", None)
+                t_meta.pop("retry_hint", None)
                 pending_meta_writes.append((meta_path, t_meta))
                 if needs_rewind:
                     rewound_names.add(name)
                 if needs_reset_failed:
                     reset_failed_names.add(name)
+
+        # Remove reset tentacles from quota_retry_queue so next-iter is accurate.
+        # This covers both --reset-failed and --from-iteration rewinds.
+        all_reset_names = rewound_names | reset_failed_names
+        if all_reset_names:
+            existing_queue: list = state.get("quota_retry_queue") or []
+            if isinstance(existing_queue, list) and existing_queue:
+                updated_queue = [
+                    e for e in existing_queue if isinstance(e, dict) and e.get("tentacle") not in all_reset_names
+                ]
+                if len(updated_queue) != len(existing_queue):
+                    state["quota_retry_queue"] = updated_queue
 
         if from_iteration is not None:
             state["iteration"] = from_iteration
@@ -3985,6 +4095,8 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
 
     # Quota retry queue summary.
     quota_queue: list = state.get("quota_retry_queue") or []
+    # Guard against malformed/non-dict legacy entries.
+    quota_queue = [e for e in quota_queue if isinstance(e, dict)]
     if quota_queue:
         print(f"\n🔁 Quota retry queue: {len(quota_queue)} tentacle(s) pending retry")
         for qe in quota_queue[-3:]:
