@@ -2173,6 +2173,126 @@ test_hook_runner_still_exists_for_python_shim()
 test_rules_rs_documents_syntax_gate_and_native_flip()
 
 
+# ── sessionEnd goal-pause: managed/native boundary (issue #184) ──────────────
+
+print("\n── sessionEnd goal-pause: managed/native boundary (#184) ────────────────")
+
+SESSION_LIFECYCLE = REPO / "hooks" / "rules" / "session_lifecycle.py"
+SESSION_END_PY = REPO / "hooks" / "session-end.py"
+RULES_RS = REPO / "sk-rust" / "src" / "hooks" / "rules.rs"
+
+
+def test_session_lifecycle_has_goal_pause():
+    """session_lifecycle.py must implement _pause_active_goal."""
+    if not SESSION_LIFECYCLE.exists():
+        test("hooks/rules/session_lifecycle.py exists", False, str(SESSION_LIFECYCLE))
+        return
+    content = SESSION_LIFECYCLE.read_text(encoding="utf-8")
+    test(
+        "session_lifecycle.py defines _pause_active_goal",
+        "_pause_active_goal" in content,
+        "session_lifecycle.py must define _pause_active_goal for issue #184",
+    )
+    test(
+        "session_lifecycle.py defines _PAUSE_STATES",
+        "_PAUSE_STATES" in content,
+        "session_lifecycle.py must define _PAUSE_STATES frozenset",
+    )
+    test(
+        "session_lifecycle.py defines _BREADCRUMB_FILENAME",
+        "_BREADCRUMB_FILENAME" in content,
+        "session_lifecycle.py must define _BREADCRUMB_FILENAME constant",
+    )
+    test(
+        "session_lifecycle.py calls _goal_transact for goal pause",
+        "_goal_transact" in content,
+        "session_lifecycle.py must use _goal_transact for atomic goal pause",
+    )
+    test(
+        "session_lifecycle.py writes resume_command in breadcrumb",
+        "resume_command" in content and "tentacle.py goal resume" in content,
+        "breadcrumb must include resume_command pointing to tentacle.py goal resume",
+    )
+
+
+def test_session_end_py_has_goal_pause():
+    """Legacy hooks/session-end.py must also implement goal pause."""
+    if not SESSION_END_PY.exists():
+        test("hooks/session-end.py exists", False, str(SESSION_END_PY))
+        return
+    content = SESSION_END_PY.read_text(encoding="utf-8")
+    test(
+        "session-end.py defines _pause_active_goal",
+        "_pause_active_goal" in content,
+        "session-end.py (legacy path) must also implement _pause_active_goal",
+    )
+    test(
+        "session-end.py imports tentacle module",
+        "import tentacle as _tentacle_mod" in content,
+        "session-end.py must import tentacle module for goal helpers",
+    )
+    test(
+        "session-end.py calls _pause_active_goal in main",
+        "_pause_active_goal(reason)" in content,
+        "session-end.py main() must call _pause_active_goal(reason)",
+    )
+
+
+def test_rules_rs_documents_goal_pause_boundary():
+    """rules.rs must document that goal pause is Python-only (issue #184)."""
+    if not RULES_RS.exists():
+        test("sk-rust/src/hooks/rules.rs exists", False, str(RULES_RS))
+        return
+    content = RULES_RS.read_text(encoding="utf-8")
+    test(
+        "rules.rs documents goal pause as Python-only (#184)",
+        "184" in content or ("goal pause" in content.lower() and "python" in content.lower()),
+        "rules.rs SessionEndRule must document that goal pause is Python-only",
+    )
+    test(
+        "rules.rs notes routing boundary for native-binary installs",
+        "native" in content and "goal" in content and "python" in content.lower(),
+        "rules.rs must note the native/Python boundary for sessionEnd goal-pause",
+    )
+    test(
+        "rules.rs SessionEndRule still in NATIVE_EVENTS (sessionEnd routing unchanged)",
+        "sessionEnd" in content,
+        "rules.rs must still handle sessionEnd natively",
+    )
+
+
+def test_goal_pause_preserves_terminal_states():
+    """Structural test: _PAUSE_STATES must not include terminal states."""
+    sys.path.insert(0, str(REPO / "hooks"))
+    try:
+        from rules.session_lifecycle import _PAUSE_STATES
+        terminal = {"completed", "abandoned", "paused", "needs-human"}
+        overlap = _PAUSE_STATES & terminal
+        test(
+            "_PAUSE_STATES does not include terminal states",
+            len(overlap) == 0,
+            f"_PAUSE_STATES overlaps with terminal states: {overlap}",
+        )
+        test(
+            "_PAUSE_STATES includes active",
+            "active" in _PAUSE_STATES,
+            "_PAUSE_STATES must include 'active'",
+        )
+        test(
+            "_PAUSE_STATES includes awaiting-gate",
+            "awaiting-gate" in _PAUSE_STATES,
+            "_PAUSE_STATES must include 'awaiting-gate'",
+        )
+    except ImportError as e:
+        test("_PAUSE_STATES importable from session_lifecycle", False, str(e))
+
+
+test_session_lifecycle_has_goal_pause()
+test_session_end_py_has_goal_pause()
+test_rules_rs_documents_goal_pause_boundary()
+test_goal_pause_preserves_terminal_states()
+
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 print(f"\n{'=' * 50}")

@@ -2095,6 +2095,22 @@ impl HookRule for VerificationGatePostRule {
 ///     and HMAC-signed knowledge-health counters.
 ///   - Checkpoint reminder: reads `COPILOT_CHECKPOINT_REMIND` env var and
 ///     emits a reminder — low value to port alone.
+///   - Goal pause + resume breadcrumb (issue #184): reads `goal.json` via
+///     `_goal_transact`, transitions `active`/`awaiting-gate` goals to
+///     `paused`, and writes `.octogent/goal-resume-breadcrumb.json`.
+///     Porting this to Rust would require reimplementing the full tentacle.py
+///     goal-lock discipline and file-format contract, which creates a
+///     dual-writer drift risk.  The behavior is therefore intentionally kept
+///     in the Python layer (`hooks/rules/session_lifecycle.py::SessionEndRule`
+///     and `hooks/session-end.py`).
+///
+///     **Routing boundary for default Rust-binary installs:** `sessionEnd` is
+///     in `NATIVE_EVENTS`, so the native Rust rule runs for managed events.
+///     The Python `session_lifecycle.py::SessionEndRule` runs separately only
+///     when the Python `sk.py` shim calls `hook_runner.py`.  Operators using
+///     a pure native binary (no Python shim) do not get goal-pause
+///     automatically; they can run `python ~/.copilot/tools/tentacle.py goal
+///     resume` manually after a session restart to reactivate a paused goal.
 pub struct SessionEndRule;
 
 /// The set of marker filenames that are permanent and must never be deleted

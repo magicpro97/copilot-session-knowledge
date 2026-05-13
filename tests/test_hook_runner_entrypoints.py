@@ -365,6 +365,12 @@ r = _run("sessionEnd", {"reason": "unexpected_disconnect"})
 test("sessionEnd with unexpected_disconnect → no crash", r.returncode == 0,
      f"rc={r.returncode} stderr={r.stderr[:200]}")
 
+# 8c. sessionEnd with no goal.json present → no crash (fail-open path)
+#     Even though there is no active goal, the hook must exit 0.
+r = _run("sessionEnd", {"reason": "no_active_goal"})
+test("sessionEnd with no active goal → no crash (exit 0)", r.returncode == 0,
+     f"rc={r.returncode} stderr={r.stderr[:200]}")
+
 
 # ══════════════════════════════════════════════════════════════════════
 #  Section 9: Multiple rules in sequence (no interference)

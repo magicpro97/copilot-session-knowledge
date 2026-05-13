@@ -329,7 +329,274 @@ test("SessionEndRule events", "sessionEnd" in rule.events)
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  Section 4: SubagentStopRule
+#  Section 3b: SessionEndRule — goal pause + breadcrumb
+# ══════════════════════════════════════════════════════════════════════
+
+print("\n🔚 Section 3b: SessionEndRule — goal pause + breadcrumb")
+
+import rules.session_lifecycle as _sl_mod2
+from rules.session_lifecycle import _pause_active_goal, _PAUSE_STATES, _BREADCRUMB_FILENAME
+
+_rule_se = SessionEndRule()
+
+# Helpers to build an in-memory mock for _tentacle_mod
+_GOAL_ACTIVE = "active"
+_GOAL_AWAITING = "awaiting-gate"
+_GOAL_PAUSED = "paused"
+_GOAL_COMPLETED = "completed"
+_GOAL_ABANDONED = "abandoned"
+
+
+def _make_fake_tentacle(tmp_dir: Path, initial_status: str, title: str = "Test Goal"):
+    """Return a minimal _tentacle_mod-like mock backed by a real tmp directory."""
+    octogent = tmp_dir / ".octogent"
+    tentacles_dir = octogent / "tentacles"
+    tentacles_dir.mkdir(parents=True, exist_ok=True)
+    goal_path = octogent / "goal.json"
+    initial_state = {"title": title, "status": initial_status, "id": "test-goal-1"}
+    goal_path.write_text(json.dumps(initial_state, indent=2), encoding="utf-8")
+
+    class FakeTentacle:
+        @staticmethod
+        def get_tentacles_dir(*_, **__):
+            return tentacles_dir
+
+        @staticmethod
+        def _goal_path(td):
+            return octogent / "goal.json"
+
+        @staticmethod
+        def _goal_load(td):
+            try:
+                return json.loads(goal_path.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+
+        @staticmethod
+        def _goal_write(td, state):
+            import os as _os
+            tmp_p = goal_path.with_suffix(".json.tmp")
+            tmp_p.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            _os.replace(tmp_p, goal_path)
+
+        @staticmethod
+        def _goal_transact(td, mutate_fn):
+            state = FakeTentacle._goal_load(td)
+            mutate_fn(state)
+            FakeTentacle._goal_write(td, state)
+            return state
+
+    return FakeTentacle(), goal_path, octogent
+
+
+# 3b-1: active goal → paused + breadcrumb written
+_tmp_3b = Path(tempfile.mkdtemp(prefix="test-se-goal-"))
+try:
+    fake_mod, gp, octogent = _make_fake_tentacle(_tmp_3b, _GOAL_ACTIVE, "My Active Goal")
+    with patch.object(_sl_mod2, "_tentacle_mod", fake_mod):
+        _pause_active_goal("user_exit")
+
+    paused_state = json.loads(gp.read_text(encoding="utf-8"))
+    test("active goal → status becomes paused", paused_state.get("status") == _GOAL_PAUSED)
+    test("active goal → paused_at written", "paused_at" in paused_state)
+    test(
+        "active goal → pause_reason contains session_end",
+        "session_end" in paused_state.get("pause_reason", ""),
+    )
+
+    bc_path = octogent / _BREADCRUMB_FILENAME
+    test("active goal → breadcrumb file written", bc_path.exists())
+    if bc_path.exists():
+        bc = json.loads(bc_path.read_text(encoding="utf-8"))
+        test("breadcrumb has goal_id", "goal_id" in bc and bc["goal_id"])
+        test("breadcrumb has goal_path", "goal_path" in bc)
+        test("breadcrumb has pause_reason", "session_end" in bc.get("pause_reason", ""))
+        test("breadcrumb has resume_command", "tentacle.py goal resume" in bc.get("resume_command", ""))
+        test("breadcrumb has paused_at", "paused_at" in bc)
+        test("breadcrumb previous_status is active", bc.get("previous_status") == _GOAL_ACTIVE)
+finally:
+    shutil.rmtree(_tmp_3b, ignore_errors=True)
+
+# 3b-2: awaiting-gate goal → paused + breadcrumb written
+_tmp_3b2 = Path(tempfile.mkdtemp(prefix="test-se-goal-ag-"))
+try:
+    fake_mod, gp, octogent = _make_fake_tentacle(_tmp_3b2, _GOAL_AWAITING, "Awaiting Gate")
+    with patch.object(_sl_mod2, "_tentacle_mod", fake_mod):
+        _pause_active_goal("normal_exit")
+
+    paused_state = json.loads(gp.read_text(encoding="utf-8"))
+    test("awaiting-gate goal → status becomes paused", paused_state.get("status") == _GOAL_PAUSED)
+
+    bc_path = octogent / _BREADCRUMB_FILENAME
+    test("awaiting-gate goal → breadcrumb written", bc_path.exists())
+    if bc_path.exists():
+        bc = json.loads(bc_path.read_text(encoding="utf-8"))
+        test(
+            "awaiting-gate breadcrumb previous_status is awaiting-gate",
+            bc.get("previous_status") == _GOAL_AWAITING,
+        )
+finally:
+    shutil.rmtree(_tmp_3b2, ignore_errors=True)
+
+# 3b-3: terminal state (completed) → preserved, no breadcrumb
+_tmp_3b3 = Path(tempfile.mkdtemp(prefix="test-se-goal-comp-"))
+try:
+    fake_mod, gp, octogent = _make_fake_tentacle(_tmp_3b3, _GOAL_COMPLETED)
+    with patch.object(_sl_mod2, "_tentacle_mod", fake_mod):
+        _pause_active_goal("user_exit")
+
+    state = json.loads(gp.read_text(encoding="utf-8"))
+    test("completed goal → status unchanged", state.get("status") == _GOAL_COMPLETED)
+    bc_path = octogent / _BREADCRUMB_FILENAME
+    test("completed goal → no breadcrumb written", not bc_path.exists())
+finally:
+    shutil.rmtree(_tmp_3b3, ignore_errors=True)
+
+# 3b-4: terminal state (abandoned) → preserved, no breadcrumb
+_tmp_3b4 = Path(tempfile.mkdtemp(prefix="test-se-goal-aband-"))
+try:
+    fake_mod, gp, octogent = _make_fake_tentacle(_tmp_3b4, _GOAL_ABANDONED)
+    with patch.object(_sl_mod2, "_tentacle_mod", fake_mod):
+        _pause_active_goal("user_exit")
+
+    state = json.loads(gp.read_text(encoding="utf-8"))
+    test("abandoned goal → status unchanged", state.get("status") == _GOAL_ABANDONED)
+    bc_path = octogent / _BREADCRUMB_FILENAME
+    test("abandoned goal → no breadcrumb written", not bc_path.exists())
+finally:
+    shutil.rmtree(_tmp_3b4, ignore_errors=True)
+
+# 3b-5: already-paused goal → preserved, no new breadcrumb
+_tmp_3b5 = Path(tempfile.mkdtemp(prefix="test-se-goal-paused-"))
+try:
+    fake_mod, gp, octogent = _make_fake_tentacle(_tmp_3b5, _GOAL_PAUSED)
+    with patch.object(_sl_mod2, "_tentacle_mod", fake_mod):
+        _pause_active_goal("user_exit")
+
+    state = json.loads(gp.read_text(encoding="utf-8"))
+    test("paused goal → status unchanged (already paused)", state.get("status") == _GOAL_PAUSED)
+    bc_path = octogent / _BREADCRUMB_FILENAME
+    test("paused goal → no redundant breadcrumb", not bc_path.exists())
+finally:
+    shutil.rmtree(_tmp_3b5, ignore_errors=True)
+
+# 3b-6: no goal.json → fail-open (no crash)
+_tmp_3b6 = Path(tempfile.mkdtemp(prefix="test-se-goal-none-"))
+try:
+    octogent6 = _tmp_3b6 / ".octogent"
+    tentacles6 = octogent6 / "tentacles"
+    tentacles6.mkdir(parents=True, exist_ok=True)
+
+    class _FakeNoGoal:
+        @staticmethod
+        def get_tentacles_dir(*_, **__):
+            return tentacles6
+
+        @staticmethod
+        def _goal_path(td):
+            return octogent6 / "goal.json"  # does not exist
+
+    try:
+        with patch.object(_sl_mod2, "_tentacle_mod", _FakeNoGoal()):
+            _pause_active_goal("user_exit")
+        test("no goal.json → fail-open (no crash)", True)
+    except Exception as exc:
+        test("no goal.json → fail-open (no crash)", False, str(exc))
+finally:
+    shutil.rmtree(_tmp_3b6, ignore_errors=True)
+
+# 3b-7: _tentacle_mod is None → fail-open
+try:
+    with patch.object(_sl_mod2, "_tentacle_mod", None):
+        _pause_active_goal("user_exit")
+    test("_tentacle_mod=None → fail-open (no crash)", True)
+except Exception as exc:
+    test("_tentacle_mod=None → fail-open (no crash)", False, str(exc))
+
+# 3b-8: SessionEndRule.evaluate with active goal → pauses goal
+_tmp_3b8 = Path(tempfile.mkdtemp(prefix="test-se-rule-active-"))
+try:
+    fake_mod8, gp8, octogent8 = _make_fake_tentacle(_tmp_3b8, _GOAL_ACTIVE, "Rule Goal")
+    _tmp_markers8 = Path(tempfile.mkdtemp(prefix="test-se-markers8-"))
+    with (
+        patch.object(_sl_mod2, "_tentacle_mod", fake_mod8),
+        patch.object(_sl_mod2, "MARKERS_DIR", _tmp_markers8),
+        patch.dict(os.environ, {"COPILOT_AGENT_SESSION_ID": "testse8"}),
+    ):
+        result8 = _rule_se.evaluate("sessionEnd", {"reason": "normal_exit"})
+
+    test("SessionEndRule.evaluate with active goal → returns None", result8 is None)
+    state8 = json.loads(gp8.read_text(encoding="utf-8"))
+    test("SessionEndRule.evaluate → active goal paused", state8.get("status") == _GOAL_PAUSED)
+finally:
+    shutil.rmtree(_tmp_3b8, ignore_errors=True)
+    shutil.rmtree(_tmp_markers8, ignore_errors=True)
+
+# 3b-9: TOCTOU — exists() passes but _goal_load returns {} inside transaction
+#        Fix: _mutate raises _GoalAbsent → _goal_write never called → no corrupt state
+_tmp_3b9 = Path(tempfile.mkdtemp(prefix="test-se-goal-toctou-"))
+try:
+    octogent9 = _tmp_3b9 / ".octogent"
+    tentacles9 = octogent9 / "tentacles"
+    tentacles9.mkdir(parents=True, exist_ok=True)
+    goal_path9 = octogent9 / "goal.json"
+    # Write a valid active goal so exists() check passes at the outer level.
+    original_content = json.dumps({"title": "TOCTOU Goal", "status": "active", "id": "toctou-1"}, indent=2)
+    goal_path9.write_text(original_content, encoding="utf-8")
+
+    write_call_args: list = []
+
+    class _FakeToctou9:
+        """Simulates the TOCTOU window: goal_path().exists() is True, but
+        _goal_transact sees {} because the file was deleted (or went malformed)
+        between the outer exists() check and the lock acquisition."""
+
+        @staticmethod
+        def get_tentacles_dir(*_, **__):
+            return tentacles9
+
+        @staticmethod
+        def _goal_path(td):
+            return goal_path9
+
+        @staticmethod
+        def _goal_transact(td, mutate_fn):
+            # Simulate _goal_load returning {} as if the file vanished.
+            empty_state: dict = {}
+            mutate_fn(empty_state)  # expect _GoalAbsent to propagate here
+            # If we reach this point, mutate_fn did NOT raise — record the write.
+            write_call_args.append(dict(empty_state))
+            goal_path9.write_text(json.dumps(empty_state, indent=2), encoding="utf-8")
+            return empty_state
+
+    try:
+        with patch.object(_sl_mod2, "_tentacle_mod", _FakeToctou9()):
+            _pause_active_goal("user_exit")
+        test("TOCTOU: empty state inside transaction → no crash (fail-open)", True)
+    except Exception as exc:
+        test("TOCTOU: empty state inside transaction → no crash (fail-open)", False, str(exc))
+
+    # _goal_write must NOT have been called (write_call_args stays empty because
+    # _GoalAbsent propagated out of _goal_transact before the write line).
+    test(
+        "TOCTOU: empty state inside transaction → _goal_write not reached",
+        len(write_call_args) == 0,
+        f"write was called with: {write_call_args}",
+    )
+
+    # goal.json must not have been overwritten with empty or skeletal content.
+    current_content = goal_path9.read_text(encoding="utf-8")
+    test(
+        "TOCTOU: goal.json not overwritten with empty state",
+        current_content == original_content,
+        f"content changed to: {current_content[:120]}",
+    )
+
+    # No breadcrumb should be written.
+    bc_path9 = octogent9 / _BREADCRUMB_FILENAME
+    test("TOCTOU: no breadcrumb written when goal absent inside transaction", not bc_path9.exists())
+finally:
+    shutil.rmtree(_tmp_3b9, ignore_errors=True)
 # ══════════════════════════════════════════════════════════════════════
 
 print("\n🛑 Section 4: SubagentStopRule")
