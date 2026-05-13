@@ -29,6 +29,7 @@ Use --wakeup for ultra-compact AI wake-up context (~170 tokens).
 Use --full for complete content with tags, confidence scores, and full text.
 """
 
+import datetime
 import hashlib
 import json
 import math
@@ -1066,6 +1067,64 @@ def _intensity_order_expr(alias: str = "ke") -> str:
     return f"COALESCE({alias}.intensity, 0.5) DESC, {alias}.confidence DESC, rank"
 
 
+def _recency_decay(last_seen_str: str | None, half_life_days: float = 30.0) -> float:
+    """Exponential decay weight for an entry's age.
+
+    Returns a value in (0, 1]: 1.0 for a just-created entry, approaching 0 for
+    a very old one.  An entry exactly ``half_life_days`` old scores 0.5.
+    Returns 1.0 (fail-open) when the timestamp is absent or unparseable.
+    """
+    if not last_seen_str or half_life_days <= 0:
+        return 1.0
+    try:
+        ts_str = str(last_seen_str)[:19].replace("T", " ")
+        ts = datetime.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+        now_utc = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        age_days = max(0.0, (now_utc - ts).total_seconds() / 86400.0)
+        return 0.5 ** (age_days / half_life_days)
+    except Exception:
+        return 1.0
+
+
+def _get_briefing_half_life(db: sqlite3.Connection) -> float:
+    """Return the configured recency half-life in days.
+
+    Reads ``briefing_recency_half_life`` from the ``wakeup_config`` table.
+    Falls back to 30.0 days when the key is absent or the table does not exist.
+    """
+    try:
+        row = db.execute("SELECT value FROM wakeup_config WHERE key='briefing_recency_half_life'").fetchone()
+        if row and row[0]:
+            v = float(row[0])
+            return v if v > 0 else 30.0
+    except Exception:
+        pass
+    return 30.0
+
+
+def _recency_composite_score(entry: dict, half_life_days: float) -> float:
+    """Composite ranking score = intensity * recency_decay.
+
+    Preserves the #88 intensity-first contract: for entries with equal age,
+    the higher-intensity entry always scores higher.  Recency decay then
+    boosts genuinely fresh entries relative to equally-intense stale ones.
+    When intensity is absent (pre-v21 DB rows), falls back to the entry's
+    confidence value so the existing confidence-based ordering is preserved.
+    Defaults to 0.5 only when both intensity and confidence are absent.
+    """
+    intensity_raw = entry.get("intensity")
+    if intensity_raw is not None:
+        intensity = float(intensity_raw)
+    else:
+        # Pre-v21 rows have no intensity column; use confidence to preserve
+        # the existing confidence-based ordering instead of collapsing all
+        # no-intensity rows to the same constant.
+        confidence_raw = entry.get("confidence")
+        intensity = float(confidence_raw) if confidence_raw is not None else 0.5
+    decay = _recency_decay(entry.get("last_seen"), half_life_days)
+    return intensity * decay
+
+
 def search_knowledge_entries(
     db: sqlite3.Connection, query: str, category: str, limit: int = 3, min_confidence: float = 0.0
 ) -> list[dict]:
@@ -1075,6 +1134,8 @@ def search_knowledge_entries(
 
     has_intensity = _ke_has_intensity(db)
     order_by = _intensity_order_expr("ke") if has_intensity else "ke.confidence DESC, rank"
+    # Extra columns fetched so Python-level recency composite scoring has intensity + age.
+    _rec_cols = ", COALESCE(ke.intensity, 0.5) as intensity, ke.last_seen" if has_intensity else ", ke.last_seen"
 
     results = []
     try:
@@ -1088,7 +1149,7 @@ def search_knowledge_entries(
                    d.doc_type as source_doc_type,
                    d.title as source_doc_title,
                    d.file_path as source_doc_file_path,
-                   d.seq as source_doc_seq
+                   d.seq as source_doc_seq{_rec_cols}
             FROM ke_fts fts
             JOIN knowledge_entries ke ON fts.rowid = ke.id
             LEFT JOIN documents d ON ke.document_id = d.id
@@ -1106,7 +1167,7 @@ def search_knowledge_entries(
             rows = db.execute(
                 f"""
                 SELECT ke.id, ke.title, ke.content, ke.tags,
-                       ke.confidence, ke.session_id, ke.occurrence_count
+                       ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
                 WHERE ke_fts MATCH ?
@@ -1135,7 +1196,7 @@ def search_knowledge_entries(
                        d.doc_type as source_doc_type,
                        d.title as source_doc_title,
                        d.file_path as source_doc_file_path,
-                       d.seq as source_doc_seq
+                       d.seq as source_doc_seq{_rec_cols}
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
                 LEFT JOIN documents d ON ke.document_id = d.id
@@ -1153,7 +1214,7 @@ def search_knowledge_entries(
                 rows = db.execute(
                     f"""
                     SELECT ke.id, ke.title, ke.content, ke.tags,
-                           ke.confidence, ke.session_id, ke.occurrence_count
+                           ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}
                     FROM ke_fts fts
                     JOIN knowledge_entries ke ON fts.rowid = ke.id
                     WHERE ke_fts MATCH ?
@@ -1203,13 +1264,17 @@ def search_semantic(
         if query_vector:
             vec_results = vector_search(db, query_vector, source_type="knowledge", limit=limit * 3)
             results = []
+            # Fetch intensity so _recency_composite_score honours the #88 contract for
+            # semantic-only hits; guard against pre-v21 DBs that lack the column.
+            _has_intensity = _ke_has_intensity(db)
+            _intensity_col = ", COALESCE(intensity, 0.5) as intensity" if _has_intensity else ""
             for st, sid, score in vec_results:
                 if score < 0.3:
                     continue
                 row = db.execute(
-                    """
+                    f"""
                     SELECT id, title, content, tags, confidence,
-                           session_id, occurrence_count, category
+                           session_id, occurrence_count, category, last_seen{_intensity_col}
                     FROM knowledge_entries WHERE id = ? AND category = ?
                     AND confidence >= ?
                 """,
@@ -1498,14 +1563,18 @@ def generate_briefing(
     db = get_db()
     rewritten_query = _rewrite_query_local(query)
     active_mode, categories, per_cat_limit = _mode_category_config(limit, mode, query, infer_auto=infer_auto_mode)
+    half_life = _get_briefing_half_life(db)
 
     briefing_data = {}
     global_seen_titles = set()  # Cross-category dedup
 
     for cat in categories:
-        # Combine FTS5 + semantic results, deduplicate
+        # Combine FTS5 + semantic results, deduplicate.
+        # Fetch a wider candidate pool so recency weighting can surface better
+        # recent entries that would otherwise be hidden by the SQL LIMIT.
         cat_limit = per_cat_limit.get(cat, limit)
-        fts_results = search_knowledge_entries(db, rewritten_query, cat, cat_limit, min_confidence=min_confidence)
+        fetch_limit = max(cat_limit * 2, cat_limit + 6)
+        fts_results = search_knowledge_entries(db, rewritten_query, cat, fetch_limit, min_confidence=min_confidence)
         sem_results = search_semantic(db, query, cat, cat_limit, min_confidence=min_confidence)
 
         merged = []
@@ -1515,6 +1584,9 @@ def generate_briefing(
                 global_seen_titles.add(title)
                 merged.append(r)
 
+        # Rerank by composite recency score before truncating so that a recent
+        # entry can always surface ahead of an equally-intense stale one.
+        merged.sort(key=lambda e: _recency_composite_score(e, half_life), reverse=True)
         briefing_data[cat] = merged[:cat_limit]
 
     # Past related work
