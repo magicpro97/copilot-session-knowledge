@@ -153,15 +153,12 @@ def _pause_active_goal(reason: str) -> None:
             "paused_at": paused_at,
             "previous_status": captured["prev_status"],
         }
-        breadcrumb_path.write_text(
-            _json.dumps(breadcrumb, indent=2) + "\n", encoding="utf-8"
-        )
+        breadcrumb_path.write_text(_json.dumps(breadcrumb, indent=2) + "\n", encoding="utf-8")
     except Exception:
         pass  # fail-open: never let goal-pause crash the session-end hook
 
 
 class SessionEndRule(Rule):
-
     name = "session-end"
     events = ["sessionEnd"]
 

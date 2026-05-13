@@ -100,9 +100,7 @@ def _pause_active_goal(reason: str) -> None:
             "paused_at": paused_at,
             "previous_status": captured["prev_status"],
         }
-        breadcrumb_path.write_text(
-            json.dumps(breadcrumb, indent=2) + "\n", encoding="utf-8"
-        )
+        breadcrumb_path.write_text(json.dumps(breadcrumb, indent=2) + "\n", encoding="utf-8")
     except Exception:
         pass
 
