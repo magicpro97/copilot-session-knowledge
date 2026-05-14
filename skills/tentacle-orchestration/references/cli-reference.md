@@ -37,6 +37,7 @@ sk tentacle goal status [--format text|json]
 sk tentacle goal link <name>
 sk tentacle goal eval [--decision continue|pause|complete|abandon] [--notes "<notes>"]
 sk tentacle goal resume
+sk tentacle goal resilience-status [--format text|json]
 
 # Generate bundle-first dispatch prompt for an agent
 sk tentacle swarm <name> --agent-type <type> --model <model> --briefing
@@ -83,6 +84,27 @@ Lifecycle: `goal init → create/link → todo add → swarm/dispatch (bundle-fi
 | `TOO_BIG` | Scope too large for a single tentacle | ⚠️ Triage signal printed |
 | `AMBIGUOUS` | Spec or requirements unclear | ⚠️ Triage signal printed |
 | `REGRESSED` | Change introduced a regression | ⚠️ Triage signal printed |
+
+### goal resilience-status
+
+Operator dashboard that classifies health, surfaces budget pressure, and lists blocking issues.
+
+| Health | Condition |
+|--------|-----------|
+| `healthy` | Active, no budget pressure, no blocking gates, no failed criteria |
+| `at-risk` | Budget approaching limit (≤1 iter remaining, ≥80 % timeout, ≤2 tentacles left), pending/rejected gates, failed criteria, or `paused` for a non-quota reason |
+| `needs-action` | `needs-human`, `awaiting-gate`, or `abandoned` status; over budget; or `paused` with quota / rate-limit / blocked-retry signals (or non-empty `retry_queue`) |
+
+```bash
+# Text dashboard (human-readable)
+sk tentacle goal resilience-status
+
+# Stable JSON output (machine-consumable; future fields default to null)
+sk tentacle goal resilience-status --format json
+```
+
+JSON top-level keys: `goal_id`, `title`, `status`, `health`, `iteration`, `budget`, `gates`, `criteria`,
+`needs_human_reason`, `awaiting_gate_id`, `awaiting_gate_reason`, `snapshot_state`, `pause_metadata`, `retry_queue`.
 
 ### Handoff examples
 

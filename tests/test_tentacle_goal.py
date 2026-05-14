@@ -5643,7 +5643,6 @@ class TestGoalLoop(unittest.TestCase):
 
     def tearDown(self):
         _rmtree(SCRATCH_DIR)
-
     # -- helpers --
 
     def _add_passing_criterion(self, cid: str = "sc-pass") -> None:
@@ -6870,6 +6869,425 @@ class TestNextIterQuotaBlocked(unittest.TestCase):
             T._cmd_goal_next_iter(args, self.tentacles)
         combined = "\n".join(captured)
         self.assertIn("valid-q", combined)
+
+
+# ---------------------------------------------------------------------------
+# Tests for _goal_resilience_health and _cmd_goal_resilience_status
+# ---------------------------------------------------------------------------
+# Tests for _goal_resilience_health and _cmd_goal_resilience_status
+# ---------------------------------------------------------------------------
+
+
+class TestGoalResilienceHealth(unittest.TestCase):
+    """Unit tests for _goal_resilience_health classification logic."""
+
+    def _bs(self, **overrides) -> dict:
+        base = {
+            "over_budget": False,
+            "over_iterations": False,
+            "over_tentacles": False,
+            "over_timeout": False,
+            "current_iteration": 1,
+            "max_iterations": None,
+            "tentacle_count": 0,
+            "max_tentacles": None,
+            "elapsed_minutes": None,
+            "timeout_minutes": None,
+        }
+        base.update(overrides)
+        return base
+
+    def _state(self, status: str = T.GOAL_STATUS_ACTIVE, **extra) -> dict:
+        base: dict = {"status": status, "gates": [], "success_criteria": []}
+        base.update(extra)
+        return base
+
+    def test_active_no_pressure_is_healthy(self):
+        s = self._state()
+        bs = self._bs()
+        self.assertEqual(T._goal_resilience_health(s, bs), "healthy")
+
+    def test_needs_human_is_needs_action(self):
+        s = self._state(status=T.GOAL_STATUS_NEEDS_HUMAN)
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "needs-action")
+
+    def test_awaiting_gate_is_needs_action(self):
+        s = self._state(status=T.GOAL_STATUS_AWAITING_GATE)
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "needs-action")
+
+    def test_abandoned_is_needs_action(self):
+        s = self._state(status=T.GOAL_STATUS_ABANDONED)
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "needs-action")
+
+    def test_over_budget_is_needs_action(self):
+        s = self._state()
+        bs = self._bs(over_budget=True, over_iterations=True, current_iteration=4, max_iterations=3)
+        self.assertEqual(T._goal_resilience_health(s, bs), "needs-action")
+
+    def test_blocking_gate_is_at_risk(self):
+        s = self._state(gates=[{"id": "G1", "status": "pending"}])
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "at-risk")
+
+    def test_rejected_gate_is_at_risk(self):
+        s = self._state(gates=[{"id": "G1", "status": "rejected"}])
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "at-risk")
+
+    def test_all_gates_passed_is_healthy(self):
+        s = self._state(gates=[{"id": "G1", "status": "passed"}, {"id": "G2", "status": "passed"}])
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "healthy")
+
+    def test_failed_criterion_is_at_risk(self):
+        s = self._state(success_criteria=[{"id": 1, "status": "failed"}])
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "at-risk")
+
+    def test_verified_criteria_is_healthy(self):
+        s = self._state(success_criteria=[{"id": 1, "status": "verified"}])
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "healthy")
+
+    def test_soft_pressure_last_iteration_is_at_risk(self):
+        s = self._state()
+        bs = self._bs(current_iteration=2, max_iterations=3)
+        # remaining = 3 - 2 = 1, triggers at-risk
+        self.assertEqual(T._goal_resilience_health(s, bs), "at-risk")
+
+    def test_soft_pressure_exactly_two_remaining_is_healthy(self):
+        s = self._state()
+        bs = self._bs(current_iteration=1, max_iterations=3)
+        # remaining = 3 - 1 = 2, does NOT trigger at-risk
+        self.assertEqual(T._goal_resilience_health(s, bs), "healthy")
+
+    def test_soft_timeout_pressure_at_80pct_is_at_risk(self):
+        s = self._state()
+        bs = self._bs(elapsed_minutes=80.0, timeout_minutes=100)
+        self.assertEqual(T._goal_resilience_health(s, bs), "at-risk")
+
+    def test_soft_timeout_below_80pct_is_healthy(self):
+        s = self._state()
+        bs = self._bs(elapsed_minutes=70.0, timeout_minutes=100)
+        self.assertEqual(T._goal_resilience_health(s, bs), "healthy")
+
+    def test_soft_tentacle_pressure_two_or_fewer_remaining_is_at_risk(self):
+        s = self._state()
+        bs = self._bs(tentacle_count=8, max_tentacles=10)
+        # remaining = 10 - 8 = 2
+        self.assertEqual(T._goal_resilience_health(s, bs), "at-risk")
+
+    def test_soft_tentacle_three_remaining_is_healthy(self):
+        s = self._state()
+        bs = self._bs(tentacle_count=7, max_tentacles=10)
+        # remaining = 10 - 7 = 3
+        self.assertEqual(T._goal_resilience_health(s, bs), "healthy")
+
+    def test_completed_goal_is_healthy(self):
+        # completed is not in the needs-action or at-risk logic
+        s = self._state(status=T.GOAL_STATUS_COMPLETED)
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "healthy")
+
+    def test_completed_over_budget_is_healthy(self):
+        # Reproduced defect: status=completed + over_budget=True must NOT produce needs-action.
+        # A finished goal should not demand operator action just because it ran over budget.
+        s = self._state(status=T.GOAL_STATUS_COMPLETED)
+        bs = self._bs(
+            over_budget=True,
+            over_iterations=True,
+            current_iteration=4,
+            max_iterations=2,
+        )
+        self.assertEqual(T._goal_resilience_health(s, bs), "healthy")
+
+    def test_paused_no_signals_is_at_risk(self):
+        s = self._state(status=T.GOAL_STATUS_PAUSED)
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "at-risk")
+
+    def test_paused_quota_reason_is_needs_action(self):
+        s = self._state(status=T.GOAL_STATUS_PAUSED, pause_metadata={"reason": "quota"})
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "needs-action")
+
+    def test_paused_rate_limit_reason_is_needs_action(self):
+        s = self._state(status=T.GOAL_STATUS_PAUSED, pause_metadata={"reason": "rate-limit"})
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "needs-action")
+
+    def test_paused_blocked_reason_is_needs_action(self):
+        s = self._state(status=T.GOAL_STATUS_PAUSED, pause_metadata={"reason": "blocked"})
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "needs-action")
+
+    def test_paused_with_retry_queue_is_needs_action(self):
+        s = self._state(
+            status=T.GOAL_STATUS_PAUSED,
+            retry_queue=[{"tentacle_name": "t-demo", "reason": "quota"}],
+        )
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "needs-action")
+
+    def test_paused_empty_retry_queue_is_at_risk(self):
+        s = self._state(status=T.GOAL_STATUS_PAUSED, retry_queue=[])
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "at-risk")
+
+    def test_paused_unrelated_reason_is_at_risk(self):
+        s = self._state(status=T.GOAL_STATUS_PAUSED, pause_metadata={"reason": "manual"})
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "at-risk")
+
+    def test_paused_memory_limit_reason_is_at_risk(self):
+        # Reproduced defect: "memory limit exceeded" contains the word "limit" which was
+        # previously in _QUOTA_KEYWORDS, causing a false-positive needs-action.
+        # Non-quota "limit" phrases should classify as at-risk, not needs-action.
+        s = self._state(
+            status=T.GOAL_STATUS_PAUSED,
+            pause_metadata={"reason": "memory limit exceeded", "source": "test-proof"},
+        )
+        self.assertEqual(T._goal_resilience_health(s, self._bs()), "at-risk")
+
+
+class TestCmdGoalResilienceStatus(unittest.TestCase):
+    """Integration-style tests for _cmd_goal_resilience_status text and JSON output."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "resilience_status"
+        _, self.tentacles = _make_octogent(self.base)
+        _init_goal(self.tentacles, title="Health Test Goal")
+
+    def tearDown(self):
+        _rmtree(SCRATCH_DIR)
+
+    # --- helpers ---
+
+    def _run_text(self, **state_overrides) -> str:
+        if state_overrides:
+            state = T._goal_load(self.tentacles)
+            state.update(state_overrides)
+            T._goal_write(self.tentacles, state)
+        captured: list[str] = []
+        with patch("builtins.print", side_effect=lambda *a, **k: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_resilience_status(_fake_args(goal_action="resilience-status", format="text"), self.tentacles)
+        return "\n".join(captured)
+
+    def _run_json(self, **state_overrides) -> dict:
+        if state_overrides:
+            state = T._goal_load(self.tentacles)
+            state.update(state_overrides)
+            T._goal_write(self.tentacles, state)
+        captured: list[str] = []
+        with patch("builtins.print", side_effect=lambda *a, **k: captured.append(" ".join(str(x) for x in a))):
+            T._cmd_goal_resilience_status(_fake_args(goal_action="resilience-status", format="json"), self.tentacles)
+        return json.loads("\n".join(captured))
+
+    # --- no goal ---
+
+    def test_no_goal_prints_info_message(self):
+        _, empty_tentacles = _make_octogent(SCRATCH_DIR / "empty_rs")
+        captured: list[str] = []
+        with patch("builtins.print", side_effect=lambda *a, **k: captured.append(str(a[0]))):
+            T._cmd_goal_resilience_status(
+                _fake_args(goal_action="resilience-status", format="text"), empty_tentacles
+            )
+        self.assertTrue(any("No active goal" in line for line in captured))
+
+    # --- text output: healthy state ---
+
+    def test_healthy_state_text_contains_healthy(self):
+        out = self._run_text()
+        self.assertIn("HEALTHY", out.upper())
+
+    def test_healthy_state_text_contains_goal_title(self):
+        out = self._run_text()
+        self.assertIn("Health Test Goal", out)
+
+    def test_healthy_no_limits_shows_no_limits_set(self):
+        out = self._run_text()
+        self.assertIn("no limits set", out)
+
+    def test_healthy_text_shows_no_gates_defined(self):
+        out = self._run_text()
+        self.assertIn("none defined", out)
+
+    # --- text output: at-risk state ---
+
+    def test_at_risk_due_to_blocking_gate(self):
+        out = self._run_text(gates=[{"id": "G1", "description": "merge freeze", "status": "pending"}])
+        self.assertIn("AT-RISK", out.upper())
+        self.assertIn("blocking", out)
+        self.assertIn("G1", out)
+
+    def test_at_risk_due_to_failed_criterion(self):
+        out = self._run_text(success_criteria=[{"id": 1, "description": "tests pass", "status": "failed"}])
+        self.assertIn("AT-RISK", out.upper())
+        self.assertIn("1 failed", out)
+
+    # --- text output: needs-action state ---
+
+    def test_needs_action_needs_human_shows_reason(self):
+        out = self._run_text(
+            status=T.GOAL_STATUS_NEEDS_HUMAN,
+            needs_human_reason="quota exceeded",
+        )
+        self.assertIn("NEEDS-ACTION", out.upper())
+        self.assertIn("quota exceeded", out)
+
+    def test_needs_action_awaiting_gate_shows_gate_id(self):
+        out = self._run_text(
+            status=T.GOAL_STATUS_AWAITING_GATE,
+            awaiting_gate_id="SECURITY",
+            awaiting_gate_reason="Security review required",
+        )
+        self.assertIn("NEEDS-ACTION", out.upper())
+        self.assertIn("SECURITY", out)
+
+    def test_over_budget_shows_over_budget_warning(self):
+        old_created = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+        out = self._run_text(
+            created_at=old_created,
+            budget={"max_iterations": 2, "max_tentacles": 3, "timeout_minutes": 60, "status": "active"},
+            iteration=4,
+        )
+        self.assertIn("NEEDS-ACTION", out.upper())
+        self.assertIn("OVER BUDGET", out.upper())
+
+    # --- JSON output schema ---
+
+    def test_json_output_has_required_top_level_keys(self):
+        result = self._run_json()
+        for key in ("goal_id", "title", "status", "health", "iteration", "budget", "gates", "criteria"):
+            self.assertIn(key, result, f"Missing key: {key}")
+
+    def test_json_output_budget_has_expected_keys(self):
+        result = self._run_json()
+        for key in (
+            "over_budget",
+            "over_iterations",
+            "over_tentacles",
+            "over_timeout",
+            "current_iteration",
+            "max_iterations",
+            "tentacle_count",
+            "max_tentacles",
+            "elapsed_minutes",
+            "timeout_minutes",
+        ):
+            self.assertIn(key, result["budget"], f"Missing budget key: {key}")
+
+    def test_json_output_gates_has_expected_keys(self):
+        result = self._run_json()
+        for key in ("total", "blocking", "blocking_ids"):
+            self.assertIn(key, result["gates"], f"Missing gates key: {key}")
+
+    def test_json_output_criteria_has_expected_keys(self):
+        result = self._run_json()
+        for key in ("total", "verified", "failed", "pending"):
+            self.assertIn(key, result["criteria"], f"Missing criteria key: {key}")
+
+    def test_json_resilience_fields_null_when_absent(self):
+        result = self._run_json()
+        self.assertIsNone(result.get("snapshot_state"))
+        self.assertIsNone(result.get("pause_metadata"))
+        self.assertIsNone(result.get("retry_queue"))
+        self.assertIsNone(result.get("needs_human_reason"))
+        self.assertIsNone(result.get("awaiting_gate_id"))
+        self.assertIsNone(result.get("awaiting_gate_reason"))
+
+    def test_json_future_fields_surfaced_when_present(self):
+        result = self._run_json(
+            snapshot_state="ready",
+            pause_metadata={"reason": "quota"},
+            retry_queue=[{"id": "t1"}],
+        )
+        self.assertEqual(result["snapshot_state"], "ready")
+        self.assertEqual(result["pause_metadata"], {"reason": "quota"})
+        self.assertEqual(result["retry_queue"], [{"id": "t1"}])
+
+    def test_json_at_risk_blocking_gates_listed(self):
+        result = self._run_json(gates=[{"id": "G1", "description": "review", "status": "pending"}])
+        self.assertEqual(result["health"], "at-risk")
+        self.assertEqual(result["gates"]["blocking"], 1)
+        self.assertIn("G1", result["gates"]["blocking_ids"])
+
+    def test_json_healthy_no_pressure(self):
+        result = self._run_json()
+        self.assertEqual(result["health"], "healthy")
+        self.assertFalse(result["budget"]["over_budget"])
+        self.assertEqual(result["gates"]["blocking"], 0)
+        self.assertEqual(result["criteria"]["total"], 0)
+
+    def test_json_criteria_counts_are_correct(self):
+        result = self._run_json(
+            success_criteria=[
+                {"id": 1, "status": "verified"},
+                {"id": 2, "status": "failed"},
+                {"id": 3, "status": "unverified"},
+            ]
+        )
+        self.assertEqual(result["criteria"]["total"], 3)
+        self.assertEqual(result["criteria"]["verified"], 1)
+        self.assertEqual(result["criteria"]["failed"], 1)
+        self.assertEqual(result["criteria"]["pending"], 1)
+
+    def test_json_needs_human_reason_surfaced(self):
+        result = self._run_json(
+            status=T.GOAL_STATUS_NEEDS_HUMAN,
+            needs_human_reason="stall detected",
+        )
+        self.assertEqual(result["health"], "needs-action")
+        self.assertEqual(result["needs_human_reason"], "stall detected")
+
+    # --- optional future fields in text mode ---
+
+    def test_text_snapshot_state_shown_when_present(self):
+        out = self._run_text(snapshot_state="pending-compact")
+        self.assertIn("pending-compact", out)
+
+    def test_text_retry_queue_shown_when_present(self):
+        out = self._run_text(retry_queue=[{"id": "t1"}, {"id": "t2"}])
+        self.assertIn("Retry queue: 2", out)
+
+    def test_text_pause_metadata_shown_when_present(self):
+        # When pause_metadata is present on a non-paused goal, reason value must be shown.
+        out = self._run_text(pause_metadata={"reason": "rate-limit"})
+        self.assertIn("rate-limit", out)
+
+    # --- paused / quota classification (issue #190 contract) ---
+
+    def test_paused_with_quota_signal_health_is_needs_action(self):
+        out = self._run_text(
+            status=T.GOAL_STATUS_PAUSED,
+            pause_metadata={"reason": "quota", "source": "test-proof"},
+        )
+        self.assertIn("NEEDS-ACTION", out.upper())
+
+    def test_paused_with_retry_queue_health_is_needs_action(self):
+        out = self._run_text(
+            status=T.GOAL_STATUS_PAUSED,
+            retry_queue=[{"tentacle_name": "t-demo", "reason": "quota", "next_retry_after": "2026-05-14T01:00:00Z"}],
+        )
+        self.assertIn("NEEDS-ACTION", out.upper())
+
+    def test_paused_without_quota_signals_health_is_at_risk(self):
+        out = self._run_text(status=T.GOAL_STATUS_PAUSED)
+        self.assertIn("AT-RISK", out.upper())
+        self.assertNotIn("NEEDS-ACTION", out.upper())
+
+    def test_paused_text_surfaces_pause_reason_value(self):
+        out = self._run_text(
+            status=T.GOAL_STATUS_PAUSED,
+            pause_metadata={"reason": "quota", "source": "test-proof"},
+        )
+        self.assertIn("quota", out)
+
+    def test_json_paused_quota_is_needs_action(self):
+        """Orchestrator runtime proof contract: paused + quota → health == needs-action."""
+        result = self._run_json(
+            status=T.GOAL_STATUS_PAUSED,
+            pause_metadata={"reason": "quota", "source": "test-proof"},
+            retry_queue=[{"tentacle_name": "t-demo", "reason": "quota", "next_retry_after": "2026-05-14T01:00:00Z"}],
+            snapshot_state="captured",
+        )
+        self.assertEqual(result["status"], "paused")
+        self.assertEqual(result["health"], "needs-action")
+        self.assertEqual(result["pause_metadata"], {"reason": "quota", "source": "test-proof"})
+        self.assertEqual(len(result["retry_queue"]), 1)
+        self.assertEqual(result["snapshot_state"], "captured")
+
+    def test_json_paused_no_quota_is_at_risk(self):
+        result = self._run_json(status=T.GOAL_STATUS_PAUSED)
+        self.assertEqual(result["status"], "paused")
+        self.assertEqual(result["health"], "at-risk")
 
 
 if __name__ == "__main__":

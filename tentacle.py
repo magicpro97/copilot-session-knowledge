@@ -4884,8 +4884,213 @@ def _cmd_goal_loop(
         print(f"   ▶  Advancing to iteration {current_iter + 1}...")
 
 
+def _goal_resilience_health(state: dict, bs: dict) -> str:
+    """Classify goal resilience health as 'healthy', 'at-risk', or 'needs-action'.
+
+    needs-action: goal is in a blocked/terminal state, over budget, or paused by
+                  quota / rate-limit / blocked-retry signals.
+    at-risk:      budget pressure, pending/rejected gates, failed criteria, or paused
+                  for any other reason.
+    healthy:      active with no pressure signals.
+    """
+    status = state.get("status", "unknown")
+
+    # Completed goals are healthy regardless of budget history — the goal finished.
+    if status == GOAL_STATUS_COMPLETED:
+        return "healthy"
+
+    if status in (GOAL_STATUS_NEEDS_HUMAN, GOAL_STATUS_AWAITING_GATE, GOAL_STATUS_ABANDONED):
+        return "needs-action"
+    if bs.get("over_budget"):
+        return "needs-action"
+
+    # Paused goals are never healthy.  Quota / rate-limit / blocked-retry signals escalate
+    # to needs-action; any other pause reason is at-risk (progress has stopped).
+    # "limit" is intentionally excluded from keywords — it is too generic (e.g. "memory
+    # limit exceeded") and would create false-positive needs-action for non-quota pauses.
+    # The keyword "rate" already covers "rate-limit" and "rate limit exceeded".
+    if status == GOAL_STATUS_PAUSED:
+        _QUOTA_KEYWORDS = {"quota", "rate", "blocked"}
+        pause_metadata = state.get("pause_metadata")
+        retry_queue = state.get("retry_queue")
+        pause_reason = ""
+        if isinstance(pause_metadata, dict):
+            pause_reason = str(pause_metadata.get("reason", "")).lower()
+        has_quota_signal = any(kw in pause_reason for kw in _QUOTA_KEYWORDS)
+        has_retry_queue = bool(retry_queue)
+        if has_quota_signal or has_retry_queue:
+            return "needs-action"
+        return "at-risk"
+
+    blocking_gates = _goal_gates_blocking(state)
+    if blocking_gates:
+        return "at-risk"
+
+    criteria = state.get("success_criteria") or []
+    if any(c.get("status") == "failed" for c in criteria):
+        return "at-risk"
+
+    # Soft budget pressure: ≤1 iteration remaining or ≥80 % of timeout elapsed.
+    if bs.get("max_iterations") is not None:
+        if (bs["max_iterations"] - bs["current_iteration"]) <= 1:
+            return "at-risk"
+    if bs.get("timeout_minutes") and bs.get("elapsed_minutes") is not None:
+        if bs["elapsed_minutes"] / bs["timeout_minutes"] >= 0.8:
+            return "at-risk"
+    if bs.get("max_tentacles") is not None:
+        if (bs["max_tentacles"] - bs["tentacle_count"]) <= 2:
+            return "at-risk"
+
+    return "healthy"
+
+
+def _cmd_goal_resilience_status(args, tentacles: Path) -> None:
+    """Show a focused resilience/health dashboard for the current goal."""
+    state = _goal_load(tentacles)
+    if not state:
+        print("ℹ️  No active goal found. Run `tentacle.py goal init` to create one.")
+        return
+
+    fmt = getattr(args, "format", "text")
+    bs = _goal_budget_status(state)
+    health = _goal_resilience_health(state, bs)
+
+    gates = state.get("gates") or []
+    blocking_gates = _goal_gates_blocking(state)
+    criteria = state.get("success_criteria") or []
+    verified_criteria = [c for c in criteria if c.get("status") == "verified"]
+    failed_criteria = [c for c in criteria if c.get("status") == "failed"]
+
+    # Optional/future resilience fields — degrade gracefully when absent.
+    snapshot_state = state.get("snapshot_state")
+    pause_metadata = state.get("pause_metadata")
+    retry_queue = state.get("retry_queue")
+
+    if fmt == "json":
+        output = {
+            "goal_id": state.get("goal_id"),
+            "title": state.get("title", "(untitled)"),
+            "status": state.get("status", "unknown"),
+            "health": health,
+            "iteration": state.get("iteration", 1),
+            "budget": {
+                "over_budget": bs.get("over_budget", False),
+                "over_iterations": bs.get("over_iterations", False),
+                "over_tentacles": bs.get("over_tentacles", False),
+                "over_timeout": bs.get("over_timeout", False),
+                "current_iteration": bs.get("current_iteration"),
+                "max_iterations": bs.get("max_iterations"),
+                "tentacle_count": bs.get("tentacle_count"),
+                "max_tentacles": bs.get("max_tentacles"),
+                "elapsed_minutes": bs.get("elapsed_minutes"),
+                "timeout_minutes": bs.get("timeout_minutes"),
+            },
+            "gates": {
+                "total": len(gates),
+                "blocking": len(blocking_gates),
+                "blocking_ids": [g.get("id") for g in blocking_gates],
+            },
+            "criteria": {
+                "total": len(criteria),
+                "verified": len(verified_criteria),
+                "failed": len(failed_criteria),
+                "pending": len(criteria) - len(verified_criteria) - len(failed_criteria),
+            },
+            "needs_human_reason": state.get("needs_human_reason"),
+            "awaiting_gate_id": state.get("awaiting_gate_id"),
+            "awaiting_gate_reason": state.get("awaiting_gate_reason"),
+            "snapshot_state": snapshot_state,
+            "pause_metadata": pause_metadata,
+            "retry_queue": retry_queue,
+        }
+        print(json.dumps(output, indent=2))
+        return
+
+    # Text output
+    health_icon = {"healthy": "✅", "at-risk": "⚠️ ", "needs-action": "🚨"}.get(health, "❓")
+    goal_status = state.get("status", "unknown")
+    print(
+        f"{health_icon} Resilience: {health.upper()}"
+        f"  |  Goal: {state.get('title', '(untitled)')}"
+        f"  |  Status: {goal_status}"
+    )
+
+    # Budget pressure
+    if bs.get("over_budget"):
+        flags: list[str] = []
+        if bs.get("over_iterations"):
+            flags.append(f"iterations {bs['current_iteration']}/{bs['max_iterations']}")
+        if bs.get("over_tentacles"):
+            flags.append(f"tentacles {bs['tentacle_count']}/{bs['max_tentacles']}")
+        if bs.get("over_timeout"):
+            flags.append(f"time {bs['elapsed_minutes']}m/{bs['timeout_minutes']}m")
+        print(f"  ⚠️  OVER BUDGET: {', '.join(flags)}")
+    elif any(bs.get(k) is not None for k in ("max_iterations", "max_tentacles", "timeout_minutes")):
+        parts: list[str] = []
+        if bs.get("max_iterations") is not None:
+            parts.append(f"iter {bs['current_iteration']}/{bs['max_iterations']}")
+        if bs.get("max_tentacles") is not None:
+            parts.append(f"tentacles {bs['tentacle_count']}/{bs['max_tentacles']}")
+        if bs.get("timeout_minutes") is not None and bs.get("elapsed_minutes") is not None:
+            parts.append(f"time {bs['elapsed_minutes']}m/{bs['timeout_minutes']}m")
+        if parts:
+            print(f"  Budget: {', '.join(parts)}")
+    else:
+        print("  Budget: no limits set")
+
+    # Gates
+    if blocking_gates:
+        print(f"  Gates: {len(blocking_gates)} blocking (of {len(gates)} total)")
+        for g in blocking_gates[:3]:
+            print(f"    ⛔ [{g.get('id', '?')}] {g.get('description', '')[:60]}")
+        if len(blocking_gates) > 3:
+            print(f"    ... and {len(blocking_gates) - 3} more")
+    elif gates:
+        print(f"  Gates: all {len(gates)} passed")
+    else:
+        print("  Gates: none defined")
+
+    # Criteria
+    if criteria:
+        print(f"  Criteria: {len(verified_criteria)}/{len(criteria)} verified, {len(failed_criteria)} failed")
+    else:
+        print("  Criteria: none defined")
+
+    # Status-specific context
+    if goal_status == GOAL_STATUS_NEEDS_HUMAN:
+        reason = state.get("needs_human_reason", "(no reason recorded)")
+        print(f"  🚨 Needs human: {reason}")
+    if goal_status == GOAL_STATUS_AWAITING_GATE:
+        gate_id = state.get("awaiting_gate_id", "?")
+        gate_reason = state.get("awaiting_gate_reason", "")
+        print(f"  ⛔ Awaiting gate: [{gate_id}]")
+        if gate_reason:
+            print(f"     {gate_reason}")
+    if goal_status == GOAL_STATUS_PAUSED:
+        pm_reason = pause_metadata.get("reason") if isinstance(pause_metadata, dict) else None
+        if pm_reason:
+            print(f"  ⏸ Paused: {pm_reason}")
+        else:
+            print("  ⏸ Paused: (no reason recorded)")
+
+    # Optional future fields — show only when present
+    if snapshot_state is not None:
+        print(f"  Snapshot: {snapshot_state}")
+    if pause_metadata is not None and goal_status != GOAL_STATUS_PAUSED:
+        # For non-paused goals, surface pause_metadata if somehow present
+        pm_reason = pause_metadata.get("reason") if isinstance(pause_metadata, dict) else None
+        if pm_reason:
+            print(f"  Pause reason: {pm_reason}")
+        else:
+            print("  Pause metadata: available")
+    if retry_queue is not None:
+        q_len = len(retry_queue) if isinstance(retry_queue, list) else "?"
+        print(f"  Retry queue: {q_len} item(s)")
+
+
+
 def cmd_goal(args):
-    """Dispatch goal sub-commands: init / create / validate / status / dispatch / link / eval / resume / criteria / gate / budget / next-iter / verify / verify-loop / coverage / loop."""
+    """Dispatch goal sub-commands: init / create / validate / status / dispatch / link / eval / resume / criteria / gate / budget / next-iter / verify / verify-loop / coverage / loop / resilience-status."""
     tentacles = get_tentacles_dir(args.session_dir)
     sub = args.goal_action
 
@@ -4924,6 +5129,8 @@ def cmd_goal(args):
             _cmd_goal_coverage(args, tentacles)
         elif sub == "loop":
             _cmd_goal_loop(args, tentacles)
+        elif sub == "resilience-status":
+            _cmd_goal_resilience_status(args, tentacles)
         else:
             print(f"ERROR: Unknown goal action '{sub}'", file=sys.stderr)
             sys.exit(1)
@@ -7134,6 +7341,13 @@ def main():
             "Marks goal budget_limited if this expires (default: 300)."
         ),
     )
+    # goal resilience-status
+    p_goal_resilience = p_goal_sub.add_parser(
+        "resilience-status",
+        help="Show a focused resilience/health dashboard: health classification, budget pressure, gates, criteria",
+    )
+    p_goal_resilience.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
+
 
     args = parser.parse_args()
 

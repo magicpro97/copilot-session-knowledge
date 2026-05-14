@@ -838,6 +838,70 @@ are printed: inspect failing criteria (`goal criteria list`), review history (`g
 json`), fix the underlying issues manually or with targeted tentacles, then run `goal resume` to
 re-activate the goal before re-running `goal verify-loop`.
 
+### Resilience status
+
+`goal resilience-status` provides a focused operator dashboard that classifies goal health,
+surfaces budget pressure, blocking gates, and failed criteria at a glance.
+
+Health classifications:
+- **healthy** — goal is active with no budget pressure, blocking gates, or failed criteria.
+- **at-risk** — budget pressure is developing (≤1 iteration remaining, ≥80 % of timeout elapsed,
+  ≤2 tentacles remaining), blocking gates are pending or rejected, criteria have failed, or goal is `paused`
+  for a non-quota reason.
+- **needs-action** — goal is blocked (`needs-human`, `awaiting-gate`, or `abandoned`), has exceeded
+  a budget limit, or is `paused` with quota / rate-limit / blocked-retry signals (including a
+  non-empty `retry_queue`).
+
+```bash
+# Text dashboard (default)
+sk tentacle goal resilience-status
+# fallback: python3 ~/.copilot/tools/tentacle.py goal resilience-status
+
+# Machine-consumable JSON output (stable schema)
+sk tentacle goal resilience-status --format json
+```
+
+Example text output:
+
+```
+✅ Resilience: HEALTHY  |  Goal: My Feature  |  Status: active
+  Budget: iter 2/10, tentacles 3/20
+  Gates: all 2 passed
+  Criteria: 3/5 verified, 0 failed
+```
+
+JSON schema (all top-level keys are always present; future resilience fields default to `null`):
+
+```json
+{
+  "goal_id": "<uuid>",
+  "title": "...",
+  "status": "active",
+  "health": "healthy",
+  "iteration": 2,
+  "budget": {
+    "over_budget": false,
+    "over_iterations": false,
+    "over_tentacles": false,
+    "over_timeout": false,
+    "current_iteration": 2,
+    "max_iterations": 10,
+    "tentacle_count": 3,
+    "max_tentacles": 20,
+    "elapsed_minutes": 45.2,
+    "timeout_minutes": 120
+  },
+  "gates": { "total": 2, "blocking": 0, "blocking_ids": [] },
+  "criteria": { "total": 5, "verified": 3, "failed": 0, "pending": 2 },
+  "needs_human_reason": null,
+  "awaiting_gate_id": null,
+  "awaiting_gate_reason": null,
+  "snapshot_state": null,
+  "pause_metadata": null,
+  "retry_queue": null
+}
+```
+
 ### Typical orchestrator cycle
 
 ```
