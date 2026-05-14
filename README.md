@@ -314,26 +314,7 @@ To rebuild the primary UI after editing `browse-ui/src/`, run `cd browse-ui && p
 
 #### Legacy UI (v1, deprecated but still supported)
 
-The classic Python-rendered HTML routes remain available for backward compatibility while v2 is the default path.
-
-| # | Route | Description |
-|---|-------|-------------|
-| F1 | `/` | Home — recent sessions list with quick-search bar |
-| F2 | `/sessions` | Sessions — FTS5-powered session browser with pagination |
-| F3 | `/session/<id>` | Session detail — knowledge entries, tool calls, file diffs |
-| F4 | *(all pages)* | Command palette — `Ctrl+K` (ninja-keys) for keyboard navigation |
-| F5 | `/graph` | Knowledge graph — interactive Cytoscape.js entity graph |
-| F6 | `/diff` | Checkpoint diff — side-by-side diff between two checkpoints |
-| F7 | `/search` | Search — FTS5 full-text search across knowledge + sessions |
-| F9 | `/dashboard` | Dashboard — aggregate stats, session health, red-flag sessions, weekly mistakes trend, top error-prone modules |
-| F10 | `/embeddings` | Embeddings — 2-D PCA scatterplot of knowledge-entry vectors |
-| F11 | `/live` | Live feed — real-time SSE stream of new knowledge events |
-| F13 | `/session/<id>/mindmap` | Mind map — D3.js radial mind-map of session knowledge |
-| F15 | `/eval` | Eval/Feedback — thumbs-up/down rating for knowledge entries |
-| — | `/compare?a=&b=` | Compare — side-by-side diff of two sessions |
-| — | `/session/<id>.md` | Export — plain-text markdown dump of a session for copy/paste |
-
-> F8 (dark mode) is baked into the base template via `prefers-color-scheme` + localStorage toggle and is not a separate route.
+Classic Python-rendered routes (F1–F15 including `/`, `/sessions`, `/graph`, `/search`, `/dashboard`, `/embeddings`, `/live`, `/eval`, `/compare`, `/session/<id>.md`, and mindmap; F8 dark mode via `prefers-color-scheme`) remain available for backward compatibility. See [docs/USAGE.md](docs/USAGE.md) for the full route listing.
 
 ### Profile Lifecycle
 
@@ -561,23 +542,12 @@ See [`tests/README.md`](tests/README.md) for the path-convention details.
 
 ## FAQ
 
-**Q: Does it work with Claude Code?**
-A: Yes. `claude-adapter.py` parses Claude Code JSONL sessions into the common format.
-
-**Q: Do I need an API key?**
-A: No. API keys are optional — only needed for semantic search via embedding providers (OpenAI, Fireworks, OpenRouter). Without it, FTS5 keyword search and TF-IDF fallback work offline.
-
-**Q: Where is the data stored?**
-A: `~/.copilot/session-state/knowledge.db` — a single SQLite file with FTS5 indexes.
-
-**Q: Does it work on Windows?**
-A: Yes. All scripts include Windows encoding fixes. Use `python` instead of `python3`. See [Installation](#windows-powershell). POSIX-style home paths from Git Bash (`/c/Users/...`), WSL (`/mnt/c/...`), and Cygwin (`/cygdrive/c/...`) are automatically normalised to native Windows paths for marker lookups.
-
-**Q: How do I update?**
-A: `sk update --force` or `git pull` (post-merge hook handles the rest).
-
-**Q: Will hooks crash my AI agent?**
-A: No. The unified hook runner uses fail-open architecture — if any rule crashes, it logs the error and allows the action to proceed.
+**Q: Does it work with Claude Code?** A: Yes. `claude-adapter.py` parses Claude Code JSONL sessions into the common format.
+**Q: Do I need an API key?** A: No — FTS5 keyword search and TF-IDF fallback work offline. Keys are optional for semantic search (OpenAI, Fireworks, OpenRouter).
+**Q: Where is the data stored?** A: `~/.copilot/session-state/knowledge.db` — a single SQLite file with FTS5 indexes.
+**Q: Does it work on Windows?** A: Yes. All scripts include Windows encoding fixes. Use `python` instead of `python3`. POSIX-style home paths (Git Bash, WSL, Cygwin) are auto-normalised to native Windows paths.
+**Q: How do I update?** A: `sk update --force` or `git pull` (post-merge hook handles the rest).
+**Q: Will hooks crash my AI agent?** A: No. The unified hook runner uses fail-open architecture — if any rule crashes, it logs the error and allows the action to proceed.
 
 ## Troubleshooting
 
