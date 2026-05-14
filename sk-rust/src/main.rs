@@ -136,6 +136,12 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Suggest new skills from knowledge DB patterns (suggestion-only)
+    #[command(name = "skill-suggest")]
+    SkillSuggest {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 // Map a grouped namespace command (e.g. "index build") to a Python script name.
@@ -265,6 +271,7 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some(Commands::SkillSuggest { args }) => run_fallback("skill-suggest.py", &args),
     };
 
     if cli.time {

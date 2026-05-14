@@ -21,7 +21,36 @@ sk browse --port 8080 --token TOKEN      # → browse.py
 sk benchmark record                      # → benchmark.py
 sk retro                                 # → retro.py
 sk heal                                  # → copilot-cli-healer.py
+sk skill-suggest                         # → skill-suggest.py
+sk skill-suggest --min-occurrences 3 --format json
 ```
+
+### `sk skill-suggest` — knowledge-to-skill pipeline
+
+Mine the session knowledge DB for repeating patterns and propose new skill candidates.
+**Conservative / suggestion-only surface** — never creates or deploys skills automatically.
+
+```bash
+sk skill-suggest                                  # text output, default threshold (3)
+sk skill-suggest --min-occurrences 3              # minimum occurrence count for a topic
+sk skill-suggest --format json                    # JSON output for scripting
+sk skill-suggest --min-occurrences 3 --format json
+sk skill-suggest --db ~/.copilot/session-state/knowledge.db
+sk skill-suggest --skills-dir ./skills --limit 5  # cap at 5 suggestions
+```
+
+Each suggestion includes:
+- Candidate skill name (slug derived from topic_key or tag cluster)
+- Occurrence score and entry count
+- Overlap check against existing skills in `skills/`
+- A ready-to-use SKILL.md draft that passes `validate-skill.py`
+
+To validate a generated draft:
+```bash
+python validate-skill.py path/to/SKILL.md
+```
+
+> Direct-script form: `python skill-suggest.py [args...]`
 
 ### `sk index` — knowledge index lifecycle
 

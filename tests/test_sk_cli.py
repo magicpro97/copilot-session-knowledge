@@ -166,6 +166,28 @@ class TestSkDirectCommands(unittest.TestCase):
     def test_anatomy_repo(self):
         self._assert_routes("anatomy", "anatomy-map.py", ["--repo", "/some/path"])
 
+    def test_skill_suggest(self):
+        self._assert_routes("skill-suggest", "skill-suggest.py")
+
+    def test_skill_suggest_json(self):
+        self._assert_routes("skill-suggest", "skill-suggest.py", ["--format", "json"])
+
+    def test_skill_suggest_min_occurrences(self):
+        self._assert_routes("skill-suggest", "skill-suggest.py", ["--min-occurrences", "3"])
+
+    def test_skill_suggest_json_with_min_occurrences(self):
+        self._assert_routes(
+            "skill-suggest", "skill-suggest.py",
+            ["--min-occurrences", "3", "--format", "json"],
+        )
+
+    def test_skill_suggest_script_exists(self):
+        """skill-suggest.py must exist in the tools directory."""
+        self.assertTrue(
+            (TOOLS_DIR / "skill-suggest.py").exists(),
+            "skill-suggest.py not found — sk skill-suggest would break",
+        )
+
 
 class TestSkHooksCompat(unittest.TestCase):
     def test_hooks_run_drops_run_subcommand(self):
