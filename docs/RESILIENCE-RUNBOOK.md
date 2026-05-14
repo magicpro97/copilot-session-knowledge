@@ -25,7 +25,7 @@
 
 | Item | Survives compaction / session end? | Notes |
 |------|------------------------------------|-------|
-| `goal.json` on disk | ✅ Yes | File persists; status unchanged |
+| `goal.json` on disk | ✅ Yes | File persists; `active`/`awaiting-gate` status transitions to `paused` on session end |
 | Per-attempt criteria results in `goal.json` | ✅ Yes | Written atomically at each run |
 | Goal lock file (`.octogent/goal.json.lock`) | ✅ Auto-recovers | Dead-PID detection → auto-cleared |
 | In-context working memory | ❌ No | Lost on compaction or session end |
