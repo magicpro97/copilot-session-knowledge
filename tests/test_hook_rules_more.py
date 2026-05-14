@@ -2107,6 +2107,72 @@ test("8o: skill-nudge registered exactly once in postToolUse", len(post_sn) == 1
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  Section 8p: persisted-fired fast path — no mutation after first fire
+# ══════════════════════════════════════════════════════════════════════
+
+print("\n💡 Section 8p: SkillNudgeRule fast-path (no mutation after fired)")
+
+import json as _json_8p
+
+_tmp_8p = Path(tempfile.mkdtemp(prefix="test-skill-nudge-fp-"))
+try:
+    # Pre-seed a session-state file with skill_nudge_fired=True so the fast-path
+    # check should trigger on the very first call.
+    _fired_session_id = "sn-fp-already-fired"
+    # sanitize_session_id applied to "sn-fp-already-fired" keeps it unchanged
+    # (only alphanumerics, hyphens — all safe in filenames).
+    _state_path = _tmp_8p / f"session-state-{_fired_session_id}"
+    _state_path.write_text(
+        _json_8p.dumps(
+            {"skill_nudge_fired": True, "skill_nudge_tool_count": 5},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    _sn_rule_fp = SkillNudgeRule()
+    _update_mock = MagicMock(return_value=(True, True))
+    _data_fp = {"toolName": "bash", "sessionId": _fired_session_id, "toolArgs": {"command": "ls"}}
+
+    # Patch MARKERS_DIR on the shared common module so that load_session_state
+    # inside skill_nudge._run resolves files under _tmp_8p.
+    # Patch update_session_state on _sn_mod (where it was imported) so calls
+    # from _run() hit the mock instead of the real function.
+    with (
+        patch.object(_common_mod, "MARKERS_DIR", _tmp_8p),
+        patch.dict(
+            os.environ,
+            {"COPILOT_AGENT_SESSION_ID": _fired_session_id, "SKILL_NUDGE_THRESHOLD": "5"},
+        ),
+        patch.object(_sn_mod, "update_session_state", _update_mock),
+    ):
+        results_fp = [
+            _sn_rule_fp.evaluate("postToolUse", _data_fp) for _ in range(5)
+        ]
+
+    test(
+        "8p: fast path — all results None for pre-fired session",
+        all(r is None for r in results_fp),
+    )
+    test(
+        "8p: fast path — update_session_state NOT called for already-fired session",
+        _update_mock.call_count == 0,
+        f"called {_update_mock.call_count} time(s)",
+    )
+
+    # Verify the state file was not mutated (count stays at 5).
+    reloaded_state = _json_8p.loads(_state_path.read_text(encoding="utf-8"))
+    test(
+        "8p: fast path — skill_nudge_tool_count not incremented after fast-path return",
+        reloaded_state.get("skill_nudge_tool_count") == 5,
+        f"count was {reloaded_state.get('skill_nudge_tool_count')}",
+    )
+
+finally:
+    shutil.rmtree(_tmp_8p, ignore_errors=True)
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  Summary
 # ══════════════════════════════════════════════════════════════════════
 

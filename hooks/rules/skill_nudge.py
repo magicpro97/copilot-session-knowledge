@@ -21,7 +21,7 @@ if os.name == "nt":
             _s.reconfigure(encoding="utf-8", errors="replace")
 
 from . import Rule
-from .common import info, update_session_state
+from .common import info, load_session_state, update_session_state
 
 DEFAULT_THRESHOLD = 5
 
@@ -53,6 +53,16 @@ class SkillNudgeRule(Rule):
 
     def _run(self, data: dict):
         threshold = _parse_threshold()
+
+        # Fast path: if the nudge is already persisted as fired for this session,
+        # return early without taking the lock or mutating state.  This avoids the
+        # full update_session_state() round-trip on every subsequent postToolUse
+        # once the one-shot has already been emitted.
+        # Safety: if load_session_state raises it propagates to evaluate()'s
+        # except-block and the call fails-open (returns None).
+        if load_session_state(data).get("skill_nudge_fired"):
+            return None
+
         result_holder = [None]
 
         def _updater(state, under_lock):
