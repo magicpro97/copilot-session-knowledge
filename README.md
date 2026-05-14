@@ -17,6 +17,7 @@
 - [Architecture](#architecture)
 - [Auto-Update](#auto-update)
 - [Skills & Hooks](#skills--hooks)
+- [Resilience & Paused-Goal Recovery](#resilience--paused-goal-recovery)
 - [Trend Scout](#trend-scout)
 - [Security](#security)
 - [Testing](#testing)
@@ -33,6 +34,7 @@
 [Skills](docs/SKILLS.md) ·
 [Telemetry & Contracts](docs/TELEMETRY.md) ·
 [Operator Playbook](docs/OPERATOR-PLAYBOOK.md) ·
+[Resilience Runbook](docs/RESILIENCE-RUNBOOK.md) ·
 [Connectivity Troubleshooting](docs/CONNECTIVITY-TROUBLESHOOTING.md)
 
 ## Why?
@@ -312,26 +314,7 @@ To rebuild the primary UI after editing `browse-ui/src/`, run `cd browse-ui && p
 
 #### Legacy UI (v1, deprecated but still supported)
 
-The classic Python-rendered HTML routes remain available for backward compatibility while v2 is the default path.
-
-| # | Route | Description |
-|---|-------|-------------|
-| F1 | `/` | Home — recent sessions list with quick-search bar |
-| F2 | `/sessions` | Sessions — FTS5-powered session browser with pagination |
-| F3 | `/session/<id>` | Session detail — knowledge entries, tool calls, file diffs |
-| F4 | *(all pages)* | Command palette — `Ctrl+K` (ninja-keys) for keyboard navigation |
-| F5 | `/graph` | Knowledge graph — interactive Cytoscape.js entity graph |
-| F6 | `/diff` | Checkpoint diff — side-by-side diff between two checkpoints |
-| F7 | `/search` | Search — FTS5 full-text search across knowledge + sessions |
-| F9 | `/dashboard` | Dashboard — aggregate stats, session health, red-flag sessions, weekly mistakes trend, top error-prone modules |
-| F10 | `/embeddings` | Embeddings — 2-D PCA scatterplot of knowledge-entry vectors |
-| F11 | `/live` | Live feed — real-time SSE stream of new knowledge events |
-| F13 | `/session/<id>/mindmap` | Mind map — D3.js radial mind-map of session knowledge |
-| F15 | `/eval` | Eval/Feedback — thumbs-up/down rating for knowledge entries |
-| — | `/compare?a=&b=` | Compare — side-by-side diff of two sessions |
-| — | `/session/<id>.md` | Export — plain-text markdown dump of a session for copy/paste |
-
-> F8 (dark mode) is baked into the base template via `prefers-color-scheme` + localStorage toggle and is not a separate route.
+Classic Python-rendered routes (F1–F15 including `/`, `/sessions`, `/graph`, `/search`, `/dashboard`, `/embeddings`, `/live`, `/eval`, `/compare`, `/session/<id>.md`, and mindmap; F8 dark mode via `prefers-color-scheme`) remain available for backward compatibility. See [docs/USAGE.md](docs/USAGE.md) for the full route listing.
 
 ### Profile Lifecycle
 
@@ -474,6 +457,31 @@ Excessive context load in Copilot sessions comes primarily from **duplicate skil
 
 📖 **Skills reference:** [docs/SKILLS.md](docs/SKILLS.md) · **Hooks reference:** [docs/HOOKS.md](docs/HOOKS.md)
 
+## Resilience & Paused-Goal Recovery
+
+When the session-end hook detects an active or awaiting-gate goal, it writes a pause breadcrumb to `.octogent/goal-resume-breadcrumb.json`. At the next session start, **both** the Python (`hook_runner.py`) and native Rust (`sk hooks run sessionStart`) paths prepend a resume banner before the normal briefing output (the banner shows the stored pause-reason label; currently only session end writes the breadcrumb — `context compaction` and `quota limit` are recognized future-compatible labels, not yet active breadcrumb writers):
+
+```
+⏸  Paused goal: <goal title>  (session end | context compaction | quota limit)
+▶  Run: sk tentacle goal resume
+```
+
+### Quick Recovery Sequence
+
+```bash
+# 1. Re-activate the paused goal (paused → active)
+sk tentacle goal resume
+
+# 2. Check the compact resilience dashboard
+sk tentacle goal resilience-status
+
+# 3. Re-dispatch tentacle waves for remaining work, or re-run the verify-loop
+sk tentacle goal verify-loop [--escalate]
+```
+
+> 📖 **Detailed recovery flows** (compaction, interruption, awaiting-gate, quota/rate-limit):
+> **[docs/RESILIENCE-RUNBOOK.md](docs/RESILIENCE-RUNBOOK.md)**
+
 ## Trend Scout
 
 `trend-scout.py` discovers relevant GitHub repositories via the **GitHub Search API** using a **multi-lane discovery** architecture and creates or updates structured issues in the target repo for review. Each lane is an independent search channel with its own keyword set, topic filters, language constraint, and `min_stars` threshold — allowing the pipeline to surface both language-specific repos and language-agnostic adjacent projects in parallel.
@@ -534,23 +542,12 @@ See [`tests/README.md`](tests/README.md) for the path-convention details.
 
 ## FAQ
 
-**Q: Does it work with Claude Code?**
-A: Yes. `claude-adapter.py` parses Claude Code JSONL sessions into the common format.
-
-**Q: Do I need an API key?**
-A: No. API keys are optional — only needed for semantic search via embedding providers (OpenAI, Fireworks, OpenRouter). Without it, FTS5 keyword search and TF-IDF fallback work offline.
-
-**Q: Where is the data stored?**
-A: `~/.copilot/session-state/knowledge.db` — a single SQLite file with FTS5 indexes.
-
-**Q: Does it work on Windows?**
-A: Yes. All scripts include Windows encoding fixes. Use `python` instead of `python3`. See [Installation](#windows-powershell). POSIX-style home paths from Git Bash (`/c/Users/...`), WSL (`/mnt/c/...`), and Cygwin (`/cygdrive/c/...`) are automatically normalised to native Windows paths for marker lookups.
-
-**Q: How do I update?**
-A: `sk update --force` or `git pull` (post-merge hook handles the rest).
-
-**Q: Will hooks crash my AI agent?**
-A: No. The unified hook runner uses fail-open architecture — if any rule crashes, it logs the error and allows the action to proceed.
+**Q: Does it work with Claude Code?** A: Yes. `claude-adapter.py` parses Claude Code JSONL sessions into the common format.
+**Q: Do I need an API key?** A: No — FTS5 keyword search and TF-IDF fallback work offline. Keys are optional for semantic search (OpenAI, Fireworks, OpenRouter).
+**Q: Where is the data stored?** A: `~/.copilot/session-state/knowledge.db` — a single SQLite file with FTS5 indexes.
+**Q: Does it work on Windows?** A: Yes. All scripts include Windows encoding fixes. Use `python` instead of `python3`. POSIX-style home paths (Git Bash, WSL, Cygwin) are auto-normalised to native Windows paths.
+**Q: How do I update?** A: `sk update --force` or `git pull` (post-merge hook handles the rest).
+**Q: Will hooks crash my AI agent?** A: No. The unified hook runner uses fail-open architecture — if any rule crashes, it logs the error and allows the action to proceed.
 
 ## Troubleshooting
 

@@ -26,6 +26,15 @@
 
 **Goal-loop (orchestrators only)** — after all tentacle handoffs pass verification gates, evaluate whether the overarching goal is met. If unmet, loop back to Phase 1 (new tentacles for remaining gaps). Only commit and close when success criteria are verifiably satisfied. Sub-agents report via handoff and stop; orchestrators own continuation. Use `sk tentacle goal criteria check` to verify success criteria and `sk tentacle goal eval --decision continue|complete` to advance the loop. For automated retries with stall detection, use `sk tentacle goal verify-loop [--escalate]`; on `needs-human` escalation, fix the issues and run `sk tentacle goal resume` to continue. Record gate evidence with `sk tentacle goal gate pass <id> --reason "..."` and iteration verification with `sk tentacle verify <name> "<check-command>" --label "goal-eval"`.
 
+**Paused-goal recovery** — when the session-end hook detects an active or awaiting-gate goal, it writes a breadcrumb to `.octogent/goal-resume-breadcrumb.json`. Both the Python (`hook_runner.py`) and native Rust (`sk hooks run sessionStart`) paths prepend a resume banner before the next session's briefing (the banner shows the stored pause-reason label; currently only session end writes the breadcrumb — `context compaction` and `quota limit` are recognized future-compatible labels, not yet active breadcrumb writers):
+
+```
+⏸  Paused goal: <goal title>  (session end | context compaction | quota limit)
+▶  Run: sk tentacle goal resume
+```
+
+Recovery sequence: **(1)** `sk tentacle goal resume` — re-activates the goal; **(2)** `sk tentacle goal resilience-status` — compact health view; **(3)** see **[docs/RESILIENCE-RUNBOOK.md](docs/RESILIENCE-RUNBOOK.md)** for detailed flows (compaction, interruption, awaiting-gate, quota/rate-limit).
+
 See [docs/AGENT-RULES.md](docs/AGENT-RULES.md) for the complete rule text, goal-loop pattern, and hook-enforcement table.
 
 ## Architecture Key Facts

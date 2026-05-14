@@ -204,6 +204,21 @@ goal init -> goal dispatch -> wait for handoffs -> Verify gates -> goal criteria
 
 This is the **loop-until-verified** semantic applied at the orchestrator level. At the task level, Karpathy Guideline 4 applies the same principle: define success criteria, loop until verified.
 
+**Paused-goal recovery** — when the session-end hook detects an active or awaiting-gate goal, it writes a pause breadcrumb to `.octogent/goal-resume-breadcrumb.json`. Both the Python (`hook_runner.py`) and native Rust (`sk hooks run sessionStart`) paths prepend a resume banner before the next session's briefing output (the banner shows the stored pause-reason label; currently only session end writes the breadcrumb — `context compaction` and `quota limit` are recognized future-compatible labels, not yet active breadcrumb writers):
+
+```
+⏸  Paused goal: <goal title>  (session end | context compaction | quota limit)
+▶  Run: sk tentacle goal resume
+```
+
+Recovery sequence:
+1. `sk tentacle goal resume` — re-activates the goal (paused → active)
+2. `sk tentacle goal resilience-status` — compact health view with per-tentacle state
+3. Re-dispatch tentacle waves for remaining work, or re-run `sk tentacle goal verify-loop [--escalate]`
+
+> 📖 **Detailed recovery flows** (compaction, interruption, awaiting-gate, quota/rate-limit):
+> **[docs/RESILIENCE-RUNBOOK.md](RESILIENCE-RUNBOOK.md)**
+
 ---
 
 ## Hook Enforcement
