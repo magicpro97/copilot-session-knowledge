@@ -389,6 +389,70 @@ class TestDetectProjectRoot(unittest.TestCase):
                     detected = self.mod._detect_project_root(start=isolated)
             self.assertEqual(detected, Path(fake_root).resolve())
 
+    def test_home_copilot_not_treated_as_project_root(self):
+        """
+        Regression: global ~/.copilot must NOT cause the home directory to be
+        detected as a project root when running from a subdirectory of home.
+
+        PR #205 review thread: https://github.com/magicpro97/copilot-session-knowledge/pull/205#discussion_r3243436861
+        """
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td) / "home"
+            fake_home.mkdir()
+            # Only fake_home/.copilot "exists" (simulates global ~/.copilot)
+            fake_home_copilot = (fake_home / ".copilot").resolve()
+            subdir = fake_home / "work" / "myproject"
+            subdir.mkdir(parents=True)
+
+            orig_is_dir = Path.is_dir
+            def _fake_is_dir(self_path):
+                if self_path.name == ".copilot":
+                    return self_path.resolve() == fake_home_copilot
+                return orig_is_dir(self_path)
+
+            with patch("pathlib.Path.home", return_value=fake_home.resolve()):
+                with patch.object(Path, "is_dir", _fake_is_dir):
+                    with patch.object(self.mod.subprocess, "run") as mock_run:
+                        mock_run.return_value = MagicMock(returncode=1, stdout="")
+                        detected = self.mod._detect_project_root(start=subdir)
+            self.assertIsNone(
+                detected,
+                f"home dir should NOT be detected as project root, got: {detected}",
+            )
+
+    def test_project_copilot_under_home_is_detected(self):
+        """
+        A real project-local .copilot/ that lives *inside* the home directory
+        (e.g. ~/work/myrepo/.copilot/) must still be detected correctly.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td) / "home"
+            fake_home.mkdir()
+            fake_home_copilot = (fake_home / ".copilot").resolve()
+            project = fake_home / "work" / "myrepo"
+            project.mkdir(parents=True)
+            project_copilot = (project / ".copilot").resolve()
+            subdir = project / "src"
+            subdir.mkdir()
+
+            orig_is_dir = Path.is_dir
+            def _fake_is_dir(self_path):
+                if self_path.name == ".copilot":
+                    # Both global and project-local exist; only project-local should win
+                    return self_path.resolve() in (fake_home_copilot, project_copilot)
+                return orig_is_dir(self_path)
+
+            with patch("pathlib.Path.home", return_value=fake_home.resolve()):
+                with patch.object(Path, "is_dir", _fake_is_dir):
+                    with patch.object(self.mod.subprocess, "run") as mock_run:
+                        mock_run.return_value = MagicMock(returncode=1, stdout="")
+                        detected = self.mod._detect_project_root(start=subdir)
+            self.assertEqual(
+                detected,
+                project.resolve(),
+                f"project-local .copilot should be detected, got: {detected}",
+            )
+
 
 class TestMainDispatch(unittest.TestCase):
     """Test main() dispatches add/remove/list correctly."""

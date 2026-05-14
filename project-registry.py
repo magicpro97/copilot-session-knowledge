@@ -100,16 +100,23 @@ def _detect_project_root(start: Path | None = None) -> Path | None:
     """
     Detect the project root by:
     1. Walking up from *start* (or cwd) looking for a ``.copilot/`` directory.
+       The global ``~/.copilot/`` directory is intentionally excluded so that
+       running from anywhere inside the home directory does not incorrectly
+       register the home directory itself as a project root.
     2. Falling back to ``git rev-parse --show-toplevel``.
 
     Returns an absolute Path, or None if detection fails.
     """
     cwd = (start or Path.cwd()).resolve()
+    # Resolve once so the comparison is always against a canonical absolute path.
+    global_copilot = Path.home().resolve() / ".copilot"
 
     # Walk up looking for .copilot/
     probe = cwd
     for _ in range(32):  # safety cap
-        if (probe / ".copilot").is_dir():
+        candidate = probe / ".copilot"
+        # Skip the global ~/.copilot — it is not a project-local marker.
+        if candidate.is_dir() and candidate.resolve() != global_copilot:
             return probe
         parent = probe.parent
         if parent == probe:
