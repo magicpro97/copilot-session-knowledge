@@ -288,6 +288,8 @@ sk tentacle complete <name> --auto-verify "python3 test_fixes.py"
 
 > Full tentacle workflow: **[docs/USAGE.md](USAGE.md#tentacle-orchestration)**
 
+> **Resilience and recovery** (compaction, interruption, quota/rate-limit): **[docs/RESILIENCE-RUNBOOK.md](RESILIENCE-RUNBOOK.md)**
+
 ---
 
 ## Browse UI — Operator Diagnostics Settings Page
