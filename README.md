@@ -17,6 +17,7 @@
 - [Architecture](#architecture)
 - [Auto-Update](#auto-update)
 - [Skills & Hooks](#skills--hooks)
+- [Resilience & Paused-Goal Recovery](#resilience--paused-goal-recovery)
 - [Trend Scout](#trend-scout)
 - [Security](#security)
 - [Testing](#testing)
@@ -33,6 +34,7 @@
 [Skills](docs/SKILLS.md) ·
 [Telemetry & Contracts](docs/TELEMETRY.md) ·
 [Operator Playbook](docs/OPERATOR-PLAYBOOK.md) ·
+[Resilience Runbook](docs/RESILIENCE-RUNBOOK.md) ·
 [Connectivity Troubleshooting](docs/CONNECTIVITY-TROUBLESHOOTING.md)
 
 ## Why?
@@ -473,6 +475,31 @@ Excessive context load in Copilot sessions comes primarily from **duplicate skil
 - **Propagation discipline**: when a skill or instruction is promoted to global scope (`~/.copilot/skills/`, `~/.github/instructions/`), remove the project-local copy to prevent duplication. Audit by manually comparing `~/.copilot/skills/` against `.github/skills/` in each project and removing any skill that exists at both levels. (`hooks/lint-skills.py --all` validates schema — it does not detect cross-scope duplicates.)
 
 📖 **Skills reference:** [docs/SKILLS.md](docs/SKILLS.md) · **Hooks reference:** [docs/HOOKS.md](docs/HOOKS.md)
+
+## Resilience & Paused-Goal Recovery
+
+When the session-end hook detects an active or awaiting-gate goal, it writes a pause breadcrumb to `.octogent/goal-resume-breadcrumb.json`. At the next session start, **both** the Python (`hook_runner.py`) and native Rust (`sk hooks run sessionStart`) paths prepend a resume banner before the normal briefing output (the banner shows the stored pause-reason label; currently only session end writes the breadcrumb — `context compaction` and `quota limit` are recognized future-compatible labels, not yet active breadcrumb writers):
+
+```
+⏸  Paused goal: <goal title>  (session end | context compaction | quota limit)
+▶  Run: sk tentacle goal resume
+```
+
+### Quick Recovery Sequence
+
+```bash
+# 1. Re-activate the paused goal (paused → active)
+sk tentacle goal resume
+
+# 2. Check the compact resilience dashboard
+sk tentacle goal resilience-status
+
+# 3. Re-dispatch tentacle waves for remaining work, or re-run the verify-loop
+sk tentacle goal verify-loop [--escalate]
+```
+
+> 📖 **Detailed recovery flows** (compaction, interruption, awaiting-gate, quota/rate-limit):
+> **[docs/RESILIENCE-RUNBOOK.md](docs/RESILIENCE-RUNBOOK.md)**
 
 ## Trend Scout
 

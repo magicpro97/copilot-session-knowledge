@@ -30,8 +30,8 @@
 | Goal lock file (`.octogent/goal.json.lock`) | ✅ Auto-recovers | Dead-PID detection → auto-cleared |
 | In-context working memory | ❌ No | Lost on compaction or session end |
 | Dispatch markers (stale after kill) | ❌ Possibly stale | FM-2/FM-4: must clean up manually |
-| Auto-pause breadcrumb | ❌ Not yet written | #184 will add this; not available today |
-| Auto-resume hint on session start | ❌ Not yet shown | #185 will add this; not available today |
+| Auto-pause breadcrumb | ✅ Written on session end | `.octogent/goal-resume-breadcrumb.json`; goal status set to `paused` (#184) |
+| Auto-resume hint on session start | ✅ Shown at session start | `auto-briefing` hook reads breadcrumb and prints resume banner (#185) |
 
 **Key implication:** after any interruption, always start recovery by reading `goal.json` directly — it is the single source of truth.
 
@@ -135,24 +135,27 @@ sk tentacle goal resume
 
 ## 3. Session Interruption Recovery
 
-**Research finding (#183):** no compaction-specific hook fires. The session-end hook does **not** pause the goal or write a breadcrumb today (gap tracked in #184). Use the procedures below.
+**Research finding (#183):** no compaction-specific hook fires. The session-end hook writes a pause breadcrumb (`.octogent/goal-resume-breadcrumb.json`) and sets the goal to `paused`; the `auto-briefing` rule shows a resume banner on the next session start (#184/#185). Use the procedures below for manual recovery when the breadcrumb is absent or additional intervention is needed.
 
 ### 3.1 Failure Mode Quick Reference
 
 | FM | Trigger | Goal state after | Retryable | Recovery section |
 |----|---------|-----------------|-----------|-----------------|
-| FM-1 | Clean session end (ctrl+D / timeout) | `active` (unchanged) | N/A | [§3.2](#32-clean-session-end-fm-1) |
+| FM-1 | Clean session end (ctrl+D / timeout) | `paused` (breadcrumb written by session-end hook #184) | N/A | [§3.2](#32-clean-session-end-fm-1) |
 | FM-2 | Abrupt process kill (SIGKILL / OOM) | `active`; dispatch marker may be stale | Yes | [§3.3](#33-abrupt-kill-fm-2) |
 | FM-3 | Ctrl+C in running process | `active`; last per-attempt write survives | Yes | [§3.4](#34-ctrlc-fm-3) |
 | FM-4 | Network failure mid-dispatch | `active`; tentacle stuck waiting | Yes | [§3.5](#35-network-failure-fm-4) |
 
 ### 3.2 Clean Session End (FM-1)
 
-Goal remains `active`; nothing is lost from `goal.json`.
+The session-end hook writes `.octogent/goal-resume-breadcrumb.json` and sets goal status to `paused`. On the next session start, the `auto-briefing` rule prints a resume banner. Run `sk tentacle goal resume` to re-activate.
 
 ```bash
-# Start a new session, then:
-sk tentacle goal status           # Confirm status = active
+# Start a new session — auto-briefing prints the resume banner automatically.
+# Then:
+sk tentacle goal resume            # Re-activate paused goal
+
+sk tentacle goal resilience-status # Compact health view (per-tentacle state)
 
 # Identify what was in-flight
 sk tentacle status                # Show tentacle states
@@ -380,9 +383,5 @@ The following gaps are tracked in the implementation backlog and are **not yet a
 
 | Gap | Issue | Expected behavior (when implemented) |
 |-----|-------|--------------------------------------|
-| Auto-pause on session end + breadcrumb | #184 | `session-end` hook writes `paused-goal-breadcrumb.json` and sets goal status to `paused` |
-| Session-start resume hint | #185 | `auto-briefing.py` reads breadcrumb and prints resume banner with command |
 | Structured budget escalation | #186 | `goal eval --decision continue` escalates to `needs-human` when over budget, with `--force-over-budget` override |
 | Quota/rate-limit BLOCKED handoff + retry queue | #187 | `tentacle handoff --status BLOCKED` with quota signals adds to `.octogent/retry-queue.json`; `goal eval` surfaces retry-blocked tentacles separately |
-
-<!-- TODO: future dashboard: sk tentacle goal resilience-status (not yet implemented) -->
