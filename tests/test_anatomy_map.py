@@ -69,6 +69,47 @@ class TestStaticDescriptions(unittest.TestCase):
         desc = am._static_desc("requirements.txt")
         self.assertIsNotNone(desc)
 
+    def test_no_duplicate_keys(self):
+        """_STATIC_DESCRIPTIONS source literal must not contain duplicate literal keys.
+
+        Live-dict inspection cannot catch this because Python deduplicates dict
+        keys at construction time.  This test parses anatomy-map.py with ``ast``
+        and inspects the literal key nodes *before* deduplication occurs.
+        """
+        import ast
+
+        source = ANATOMY_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        literal_keys = None
+        for node in ast.walk(tree):
+            # Handle both 'x = {...}' (Assign) and 'x: T = {...}' (AnnAssign)
+            if isinstance(node, ast.AnnAssign):
+                target, value = node.target, node.value
+            elif isinstance(node, ast.Assign):
+                target = node.targets[0] if node.targets else None
+                value = node.value
+            else:
+                continue
+            if (
+                isinstance(target, ast.Name)
+                and target.id == "_STATIC_DESCRIPTIONS"
+                and isinstance(value, ast.Dict)
+            ):
+                literal_keys = [
+                    k.value
+                    for k in value.keys
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str)
+                ]
+                break
+
+        self.assertIsNotNone(
+            literal_keys,
+            "_STATIC_DESCRIPTIONS dict literal not found in anatomy-map.py",
+        )
+        dups = [k for k in set(literal_keys) if literal_keys.count(k) > 1]
+        self.assertEqual(dups, [], f"Duplicate literal keys in _STATIC_DESCRIPTIONS: {dups}")
+
     def test_unknown_file_returns_none(self):
         desc = am._static_desc("very_unique_file_xyz.py")
         self.assertIsNone(desc)
@@ -153,6 +194,56 @@ class TestLeadingDocstring(unittest.TestCase):
 
     def test_shebang_skipped(self):
         content = "#!/usr/bin/env python3\n"
+        desc = am._leading_docstring(content)
+        self.assertIsNone(desc)
+
+    def test_docstring_after_shebang_and_encoding(self):
+        """Triple-quote docstring preceded only by shebang + encoding comment is leading."""
+        content = '#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\n"""Module after preamble."""\nimport os'
+        desc = am._leading_docstring(content)
+        self.assertIsNotNone(desc)
+        self.assertIn("Module", desc)
+
+    def test_inline_triple_quote_not_mistaken_for_docstring(self):
+        # Regression: loose fallback joined.find() could misclassify x = """value"""
+        # when code (imports/assignments) precedes the triple-quote.
+        content = 'import os\n\nx = """this is not a module docstring"""\n'
+        desc = am._leading_docstring(content)
+        # The triple-quote is inside an assignment, not a module docstring.
+        self.assertIsNone(desc)
+
+    def test_function_docstring_not_mistaken_for_module(self):
+        # A docstring inside a function must not be returned as the module description.
+        content = 'import sys\n\ndef foo():\n    """Function docstring that looks like a module doc."""\n    pass\n'
+        desc = am._leading_docstring(content)
+        self.assertIsNone(desc)
+
+    # --- Regression tests for reproduced comment-preamble bugs ---
+
+    def test_docstring_after_noqa_comment(self):
+        """# noqa before a real module docstring must yield the docstring, not None."""
+        content = '# noqa\n"""Module docstring that follows a noqa line."""\nimport os'
+        desc = am._leading_docstring(content)
+        self.assertIsNotNone(desc, "# noqa preamble blocked docstring extraction")
+        self.assertIn("Module docstring", desc)
+
+    def test_docstring_after_author_comment(self):
+        """# Author: ... before a real module docstring must yield the docstring."""
+        content = '# Author: Jane Doe\n"""Module docstring that follows author comment."""\nimport os'
+        desc = am._leading_docstring(content)
+        self.assertIsNotNone(desc, "# Author comment preamble blocked docstring extraction")
+        self.assertIn("Module docstring", desc)
+
+    def test_docstring_after_copyright_comment(self):
+        """# Copyright ... before a real module docstring must yield the docstring, not None."""
+        content = '# Copyright 2026\n"""Module docstring that follows copyright comment."""\nimport os'
+        desc = am._leading_docstring(content)
+        self.assertIsNotNone(desc, "# Copyright preamble blocked docstring extraction")
+        self.assertIn("Module docstring", desc)
+
+    def test_real_code_before_triple_quote_still_blocks(self):
+        """import statement before triple-quote must still prevent docstring extraction."""
+        content = 'import os\n"""This looks like a docstring but is not leading."""\n'
         desc = am._leading_docstring(content)
         self.assertIsNone(desc)
 
@@ -284,7 +375,22 @@ class TestDbPersistence(unittest.TestCase):
         self.assertEqual(count, 3)
 
 
-class TestFindGitRoot(unittest.TestCase):
+    def test_persist_repo_root_stored_as_posix(self):
+        """repo_root must be stored as forward-slash POSIX path (Windows normalization fix)."""
+        am._ensure_table(self.db)
+        # Simulate a resolved Windows path
+        repo_root = Path("C:/Users/test/myrepo") if os.name == "nt" else Path("/home/user/myrepo")
+        annotations = [("src/main.py", "Entry point.", 5, 1000.0)]
+        am.persist_annotations(self.db, repo_root, annotations)
+        row = self.db.execute("SELECT repo_root FROM file_annotations").fetchone()
+        self.assertIsNotNone(row)
+        stored = row[0]
+        # Must use forward slashes (POSIX), not backslashes
+        self.assertNotIn("\\", stored, f"repo_root stored with backslash: {stored!r}")
+        self.assertEqual(stored, repo_root.as_posix())
+
+
+
     def test_finds_root_for_this_repo(self):
         root = am.find_git_root(REPO)
         self.assertIsNotNone(root)

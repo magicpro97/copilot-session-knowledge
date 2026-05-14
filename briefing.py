@@ -1400,6 +1400,27 @@ def load_codebase_map_files() -> set:
     return set()
 
 
+def _current_repo_root() -> str:
+    """Return the git repo root of the current working directory.
+
+    Fail-open: returns '' when git is unavailable, cwd is not a repo, or any
+    error occurs.  The caller (generate_briefing) passes this value as the
+    *repo_root* filter to query_file_annotations so that multi-repo knowledge
+    bases don't cross-contaminate each other's file annotations.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            raw = result.stdout.strip()
+            return Path(raw).resolve().as_posix()
+    except Exception:
+        pass
+    return ""
+
+
 def query_file_annotations(
     db: sqlite3.Connection,
     query: str = "",
@@ -1659,8 +1680,9 @@ def generate_briefing(
     # Blast radius analysis
     blast = blast_radius(db, rewritten_query)
 
-    # File annotations (fail-open when table absent)
-    file_annotations = query_file_annotations(db, query=rewritten_query, limit=6)
+    # File annotations (fail-open when table absent; scoped to current repo)
+    _repo_root = _current_repo_root()
+    file_annotations = query_file_annotations(db, query=rewritten_query, repo_root=_repo_root, limit=6)
 
     # Pack-only machine surface extras
     task_matches = []

@@ -50,7 +50,7 @@ _STATIC_DESCRIPTIONS: dict[str, str] = {
     # Build / package
     "package.json": "Node.js package manifest (dependencies, scripts, metadata).",
     "package-lock.json": "Node.js dependency lock file.",
-    "pyproject.toml": "Python project metadata and build configuration.",
+    "pyproject.toml": "Python project metadata, build configuration, and tool settings (PEP 518/621).",
     "setup.py": "Python package installation script.",
     "setup.cfg": "Python package configuration.",
     "requirements.txt": "Python runtime dependencies.",
@@ -80,7 +80,6 @@ _STATIC_DESCRIPTIONS: dict[str, str] = {
     "eslint.config.js": "ESLint linting configuration.",
     ".eslintrc.json": "ESLint linting rules.",
     ".prettierrc": "Prettier code formatter settings.",
-    "pyproject.toml": "Python project configuration (PEP 518).",
     "ruff.toml": "Ruff linter configuration.",
     ".firebaserc": "Firebase project aliases.",
     "firebase.json": "Firebase hosting and service configuration.",
@@ -184,30 +183,43 @@ def _leading_docstring(content: str) -> str | None:
     lines = content.splitlines()[:40]
     joined = "\n".join(lines)
 
-    # Python triple-quoted docstring at module level
-    _py_triple = re.compile(r'^["\']"""\s*(.*?)\s*["\']"""|^\'\'\'(.*?)\'\'\'', re.DOTALL)
-    m = _py_triple.search(joined)
+    # Python triple-quoted docstring starting at position 0 (must be truly leading).
+    # The previous pattern '^["\']"""...' was broken — it required a spurious quote
+    # character before the triple-quote, so it never matched a real """docstring""".
+    _py_triple = re.compile(r'^"""(.*?)"""|^\'\'\'(.*?)\'\'\'', re.DOTALL)
+    m = _py_triple.match(joined)  # match() anchors at position 0, not .search()
     if m:
         raw = (m.group(1) or m.group(2) or "").strip()
         first_line = raw.splitlines()[0].strip() if raw else ""
         if first_line and len(first_line) > 5:
             return first_line[:200]
 
-    # Triple-quote spanning multiple lines: """...""" with content on next line
+    # Triple-quote possibly after a shebang / encoding-declaration preamble only.
+    # Guard: the text before the opening """ must consist solely of shebang (#!)
+    # or encoding/modeline comments — otherwise the triple-quote is not a module
+    # docstring and we must not return it (e.g. x = """value""" inside a function).
     triple_start = joined.find('"""')
     if triple_start != -1:
-        triple_end = joined.find('"""', triple_start + 3)
-        if triple_end != -1:
-            inner = joined[triple_start + 3: triple_end].strip()
-            first_line = inner.splitlines()[0].strip() if inner else ""
-            if first_line and len(first_line) > 5:
-                return first_line[:200]
+        preamble = joined[:triple_start]
+        preamble_lines = [l.strip() for l in preamble.splitlines() if l.strip()]
+        # Any line that starts with '#' is a valid comment-only preamble.
+        # Real code lines (imports, assignments, defs, class, etc.) don't start
+        # with '#', so they still block extraction as intended.
+        is_leading_preamble = all(l.startswith("#") for l in preamble_lines)
+        if is_leading_preamble:
+            triple_end = joined.find('"""', triple_start + 3)
+            if triple_end != -1:
+                inner = joined[triple_start + 3: triple_end].strip()
+                first_line = inner.splitlines()[0].strip() if inner else ""
+                if first_line and len(first_line) > 5:
+                    return first_line[:200]
 
     # C-style block comment: /* ... */
     m = re.search(r'/\*+\s*(.*?)\s*\*+/', joined, re.DOTALL)
     if m:
         raw = m.group(1).strip()
-        first_line = raw.splitlines()[0].lstrip("*").strip()
+        _raw_lines = raw.splitlines()
+        first_line = _raw_lines[0].lstrip("*").strip() if _raw_lines else ""
         if first_line and len(first_line) > 5:
             return first_line[:200]
 
@@ -356,7 +368,7 @@ def persist_annotations(
 ) -> int:
     """Upsert annotation rows into file_annotations. Returns count written."""
     _ensure_table(db)
-    repo_str = str(repo_root)
+    repo_str = repo_root.as_posix()
     written = 0
     for rel_path, description, est_tokens, file_mtime in annotations:
         # Only update if mtime changed (avoid unnecessary writes)
