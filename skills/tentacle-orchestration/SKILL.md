@@ -1,6 +1,6 @@
 ---
 name: tentacle-orchestration
-description: Break complex tasks into scoped parallel work units for multi-agent execution. Use when a task spans multiple modules or layers (API + DB + UI). Each tentacle runs strict-tdd-workflow internally. Not for simple single-module tasks — use strict-tdd-workflow directly instead. Trigger words — "orchestrate", "multi-agent", "parallel agents", "tentacle", "swarm", or any task touching 3+ files across different modules.
+description: Break complex tasks into scoped parallel work units for multi-agent execution. Always use task-step-generator first as a reviewed planning scaffold, then adapt the reviewed steps into tentacles. Use when a task spans multiple modules or layers, needs agent delegation, or the user says "orchestrate", "multi-agent", "parallel agents", "tentacle", or "swarm". Each implementation/fix tentacle runs strict-tdd-workflow internally.
 ---
 
 # Tentacle Orchestration
@@ -9,7 +9,20 @@ Break a complex task into scoped work units ("tentacles"), enrich each with cont
 
 Adapted from the [OctoGent](https://github.com/hesamsheikh/octogent) tentacle pattern.
 
-> **Relationship with strict-tdd-workflow**: Tentacle is the **orchestrator** (splits work), strict-tdd is the **executor** (runs inside each tentacle). For single-module tasks, skip tentacle and use strict-tdd directly.
+> **Relationship with strict-tdd-workflow**: Tentacle is the **orchestrator** (splits work), strict-tdd is the **executor** (runs inside each implementation/fix tentacle). For single-module tasks, skip tentacle and use strict-tdd directly.
+>
+> **Relationship with task-step-generator**: `task-step-generator` is the **planning scaffold**. Run it before creating tentacles, then review and edit the generated steps. Do not copy generated steps blindly.
+
+## Planning Discipline
+
+Use this sequence before creating any tentacle:
+
+1. Generate a step file with `task-step-generator` (`.github/steps/<task-slug>.md` when the project uses `.github/`, otherwise `STEPS.md` or the path requested by the user).
+2. Review the generated step file with `references/decomposition-review.md`.
+3. Record what was accepted, edited, and rejected before dispatching agents.
+4. Convert only the reviewed steps into non-overlapping tentacles and atomic todos.
+
+Why: decomposition and checklists reduce avoidable cognitive load, but generated plans can anchor on the first plausible split. Treat the step file as a draft planning artifact, not as authority.
 
 ## When to use
 
@@ -98,6 +111,8 @@ sk install --install-git-hooks
 - ❌ Skipping `--briefing` on create → past mistakes not injected into CONTEXT.md
 - ❌ Skipping `complete` before `delete` → learnings from handoff.md lost permanently
 - ❌ Overlapping tentacle scopes → agents overwrite each other's work
+- ❌ Creating tentacles directly from intuition without a generated-and-reviewed step file
+- ❌ Copying `task-step-generator` output blindly without checking dependencies, ownership, work-in-progress limits, evidence, and agent fit
 - ❌ Skipping the runtime bundle on multi-agent work → agents lose file-backed context and `recall-pack.json`
 - ❌ Using `--briefing --output json --no-bundle` → briefing cannot be represented without the bundle
 - ❌ Sub-agent commits or pushes → blocked by git hooks when installed (and risky regardless: corrupts orchestrator's merge/verify flow)
@@ -159,15 +174,48 @@ For the full process, see `references/spec-clarification.md`.
 
 **Gate**: Planning on an unclear spec produces incorrect decomposition, wasted agent work, and rework. Never proceed to Phase 1 until the spec is CLEAN and reader-tested.
 
-### Phase 1: Plan (Steps 1–4)
+### Phase 1: Plan
 
 Use the CLEAN spec and its Impact Analysis / Risk Assessment to inform decomposition.
 
-#### Step 1: Decompose the task into modules
+#### Plan A: Generate a step file
+
+Use `task-step-generator` before creating tentacles:
+
+```text
+Generate a step file for this task. Include CLARIFY, RED evidence/test strategy for implementation or fixes, BUILD, TEST, REVIEW, LOOP-EVAL when iteration is likely, and COMMIT/CLOSE.
+```
+
+The output may say the task is too large for a single step file. That is acceptable: use the step file as a top-level scaffold, then split reviewed steps into tentacles.
+
+#### Plan B: Review and edit the generated steps
+
+Apply `references/decomposition-review.md`. At minimum, verify:
+
+- acceptance signal is observable,
+- RED evidence/test strategy exists before implementation,
+- dependencies are ordered before parallel work,
+- steps are small enough to review in one context,
+- only independent work is parallelized,
+- each evidence-producing step names logs/screenshots/hashes or equivalent artifacts,
+- each step maps to the correct agent type/model available in the project.
+
+Do not proceed until the reviewed plan clearly states accepted, edited, and rejected steps.
+
+#### Plan C: Decompose the reviewed task into modules
 
 Read the task description and identify independent code regions. Each region becomes one tentacle.
 
-#### Step 2: Create tentacles
+Each code tentacle must declare:
+
+- source step file and accepted/edited/rejected step numbers,
+- dependency order,
+- test/evidence owner,
+- implementation owner,
+- acceptance signal,
+- verification/evidence paths.
+
+#### Plan D: Create tentacles
 
 ```bash
 sk tentacle create <module-name> \
@@ -179,7 +227,7 @@ sk tentacle create <module-name> \
 
 The `--briefing` flag injects past mistakes and patterns from session-knowledge into CONTEXT.md — use it every time.
 
-#### Step 3: Add todos
+#### Plan E: Add todos
 
 ```bash
 sk tentacle todo <name> add "<specific, atomic task>"
@@ -188,9 +236,10 @@ sk tentacle todo <name> add "<specific, atomic task>"
 
 Each todo should be one deliverable — testable, reviewable, and completable in isolation.
 
-#### Step 4: Enrich CONTEXT.md
+#### Plan F: Enrich CONTEXT.md
 
 Read reference files with `view`, then edit CONTEXT.md to add:
+- **Step-plan review**: source step file, accepted/edited/rejected steps, dependency order, and evidence contract
 - **What exists**: describe the current code in the scope area
 - **Key files**: full paths to reference files the agent needs
 - **Constraints**: rules specific to this code region
@@ -221,6 +270,8 @@ you combine `--output json --briefing`, keep the default bundle enabled so JSON 
 surface `bundle_path`.
 
 Use the output as the prompt for `task()`. Launch independent tentacles in parallel.
+
+Every implementation or bug-fix tentacle must execute the strict-TDD loop internally: define or reproduce the failing evidence first, make the smallest change, then prove the same criterion turns green. Research-only, documentation-only, and review-only tentacles still need explicit evidence gates, but they do not fabricate code tests just to satisfy the pattern.
 
 #### Step 6: Monitor progress
 

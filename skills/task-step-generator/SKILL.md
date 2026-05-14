@@ -3,8 +3,9 @@ name: task-step-generator
 description: >
   Generate a structured STEPS.md file that breaks a specific task into concrete, ordered
   steps grounded in the project's phased workflow. Use when a task is too complex for a
-  single prompt but too small for full tentacle orchestration — e.g., a single-module
-  feature, a multi-stage bug fix, or a scripted migration. Trigger phrases: "create step
+  single prompt, when tentacle-orchestration needs a reviewed planning scaffold before
+  dispatch, or for single-module features, multi-stage bug fixes, and scripted migrations.
+  Trigger phrases: "create step
   file", "generate steps", "make a task plan", "write out the steps", "break this into
   steps", "step-by-step plan", "task steps", "execution plan".
 ---
@@ -14,17 +15,20 @@ description: >
 Generate a `STEPS.md` file that breaks a specific task into concrete, ordered steps an
 agent can follow without re-reading the full specification. Steps are grounded in the
 project's existing phases (from `WORKFLOW.md` or the standard phased lifecycle) and
-scoped to complete in a single agent session.
+are normally scoped to complete in a single agent session. When invoked by
+`tentacle-orchestration`, the step file is a top-level scaffold that must be reviewed
+and split into scoped tentacles before dispatch.
 
 ## When to Use
 
 - Task is too complex to fit in one prompt response but touches only 1–3 files or modules
+- Tentacle orchestration needs a first-pass step plan to review before creating parallel work units
 - You want a traceable, reviewable execution plan before starting implementation
 - A task has non-obvious ordering constraints (e.g., schema migration before code change)
 - User says "create step file", "break this into steps", "make a task plan"
 
 **Not for:**
-- Tasks spanning 3+ independent modules → use `tentacle-orchestration` to decompose first
+- Tasks spanning 3+ independent modules as the final execution plan → use `tentacle-orchestration` to review this scaffold and split it into tentacles
 - Project-level process templates → use `workflow-creator` to generate `WORKFLOW.md`
 - Pure research or exploration tasks (no implementation deliverable)
 
@@ -128,7 +132,7 @@ See `references/step-file-template.md` for the full annotated template.
 | Mixing phases (build + test in one step) | Gate is ambiguous; errors mix together |
 | Vague actions ("verify it works") | Not actionable; agent guesses |
 | No ordering constraints | Agent skips steps that depend on earlier output |
-| Generating for 3+ independent modules | Step file becomes too large; use tentacle instead |
+| Treating a 3+ module scaffold as final | Step file becomes too large; review it, then split into tentacles |
 
 <example>
 **Task:** Add a `created_at` timestamp column to the `orders` table and expose it in the API response.

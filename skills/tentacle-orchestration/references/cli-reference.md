@@ -4,6 +4,13 @@ All commands use `sk tentacle` (fallback: `python3 ~/.copilot/tools/tentacle.py`
 
 ## Lifecycle Commands
 
+Before lifecycle commands, generate and review a task step file with `task-step-generator`:
+
+```text
+Use task-step-generator to write a project-local step file, then review it with `references/decomposition-review.md`.
+Do not create tentacles until accepted/edited/rejected steps, dependencies, and evidence gates are explicit.
+```
+
 ```bash
 # Create a tentacle (--briefing injects past knowledge into CONTEXT.md)
 sk tentacle create <name> --scope "<paths>" --desc "<desc>" --briefing
@@ -135,6 +142,12 @@ sk tentacle handoff my-feature "Updated config docs" --learn
 ## Scope
 - `<file-pattern-1>`
 - `<file-pattern-2>`
+
+## Step-plan review
+- Source step file: `<path>`
+- Accepted/edited/rejected steps: <summary>
+- Dependency order: <what this tentacle waits for>
+- Evidence contract: <logs/screenshots/traces/hashes or equivalent artifacts>
 
 ## What exists
 <!-- Read existing code and summarize -->
