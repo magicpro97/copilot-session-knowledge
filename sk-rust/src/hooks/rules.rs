@@ -469,11 +469,42 @@ fn load_goal_resume_hint(project_root: Option<&Path>) -> Option<Vec<String>> {
     let reason_label = format_pause_reason(pause_reason);
     let sep = format!("  {}", "\u{2500}".repeat(33));
 
-    Some(vec![
+    let mut lines = vec![
         format!("\n  \u{23f8}  Paused goal: {goal_title}  ({reason_label})"),
         format!("  \u{25b6}  Run: {resume_cmd}"),
-        sep,
-    ])
+    ];
+
+    // Optional one-line budget detail from issue #182 structured snapshot.
+    // Backward-compatible: old breadcrumbs without budget_snapshot skip this.
+    if let Some(snap) = bc.get("budget_snapshot").and_then(|v| v.as_object()) {
+        let ci = snap
+            .get("current_iteration")
+            .and_then(|v| v.as_i64())
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        let iter_str = if let Some(mi) = snap.get("max_iterations").and_then(|v| v.as_i64()) {
+            format!("{}/{}", ci, mi)
+        } else {
+            ci
+        };
+        let tc = snap
+            .get("tentacle_count")
+            .and_then(|v| v.as_i64())
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        let tent_str = if let Some(mt) = snap.get("max_tentacles").and_then(|v| v.as_i64()) {
+            format!("{}/{}", tc, mt)
+        } else {
+            tc
+        };
+        lines.push(format!(
+            "  \u{2139}  Budget: iter {}, tentacles {}",
+            iter_str, tent_str
+        ));
+    }
+
+    lines.push(sep);
+    Some(lines)
 }
 
 // ---------------------------------------------------------------------------
@@ -6446,6 +6477,114 @@ mod tests {
             );
             let _ = fs::remove_dir_all(&tmp);
         }
+    }
+
+    /// Breadcrumb with budget_snapshot → banner includes a budget detail line
+    /// (issue #182 native parity: mirrors Python _load_goal_resume_hint reader).
+    #[test]
+    fn auto_briefing_resume_hint_shows_budget_snapshot_line() {
+        use std::fs;
+        let tmp = resume_test_dir("budget_snap");
+        let octogent = tmp.join(".octogent");
+        let _ = fs::create_dir_all(&octogent);
+
+        fs::write(
+            octogent.join("goal.json"),
+            r#"{"status": "paused", "goal_id": "bs-goal"}"#,
+        )
+        .unwrap();
+
+        let bc_path = octogent.join(BREADCRUMB_FILENAME);
+        fs::write(
+            &bc_path,
+            serde_json::json!({
+                "goal_id": "bs-goal",
+                "goal_title": "Budget Snapshot Goal",
+                "goal_path": octogent.join("goal.json").to_string_lossy().to_string(),
+                "pause_reason": "session_end:normal",
+                "resume_command": "sk tentacle goal resume",
+                "paused_at": "2026-01-01T00:00:00Z",
+                "previous_status": "active",
+                "goal_status_at_pause": "paused",
+                "budget_snapshot": {
+                    "current_iteration": 6,
+                    "max_iterations": 30,
+                    "tentacle_count": 38,
+                    "max_tentacles": 100
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let result = load_goal_resume_hint(Some(&tmp));
+        assert!(
+            result.is_some(),
+            "expected banner for paused goal with budget_snapshot"
+        );
+        let lines = result.unwrap();
+        let combined = lines.join("\n");
+        assert!(
+            combined.contains("Budget:"),
+            "banner must include a 'Budget:' detail line; got: {combined:?}"
+        );
+        assert!(
+            combined.contains("6/30"),
+            "banner must show current_iteration/max_iterations; got: {combined:?}"
+        );
+        assert!(
+            combined.contains("38/100"),
+            "banner must show tentacle_count/max_tentacles; got: {combined:?}"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Old breadcrumb without budget_snapshot → banner still shown, no Budget: line
+    /// (issue #182 backward-compat: old breadcrumbs must not crash the reader).
+    #[test]
+    fn auto_briefing_resume_hint_no_budget_line_for_old_breadcrumb() {
+        use std::fs;
+        let tmp = resume_test_dir("no_budget_snap");
+        let octogent = tmp.join(".octogent");
+        let _ = fs::create_dir_all(&octogent);
+
+        fs::write(
+            octogent.join("goal.json"),
+            r#"{"status": "paused", "goal_id": "old-bc"}"#,
+        )
+        .unwrap();
+
+        let bc_path = octogent.join(BREADCRUMB_FILENAME);
+        fs::write(
+            &bc_path,
+            serde_json::json!({
+                "goal_id": "old-bc",
+                "goal_title": "Old Breadcrumb Goal",
+                "goal_path": octogent.join("goal.json").to_string_lossy().to_string(),
+                "pause_reason": "session_end:normal",
+                "resume_command": "sk tentacle goal resume",
+                "paused_at": "2026-01-01T00:00:00Z",
+                "previous_status": "active"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let result = load_goal_resume_hint(Some(&tmp));
+        assert!(
+            result.is_some(),
+            "old breadcrumb must still show banner (backward compat); got: {result:?}"
+        );
+        let combined = result.unwrap().join("\n");
+        assert!(
+            combined.contains("Old Breadcrumb Goal"),
+            "banner must include goal title; got: {combined:?}"
+        );
+        assert!(
+            !combined.contains("Budget:"),
+            "old breadcrumb must NOT show Budget: line; got: {combined:?}"
+        );
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     /// format_pause_reason maps known and unknown prefixes correctly.

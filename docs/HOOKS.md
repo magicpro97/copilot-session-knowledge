@@ -237,6 +237,11 @@ As of wave9, **`sessionStart`** is also routed natively:
      resume` banner.  Staleness check: if `goal.json` status ≠ `"paused"`, banner is
      suppressed.  Fail-open: goal.json absent or unreadable → banner shown.  Breadcrumb
      absent or unreadable → no banner.
+     **wave20 (#182):** breadcrumb enriched with a structured `budget_snapshot` object
+     (fields: `current_iteration`, `tentacle_count`, and whichever of `max_iterations`,
+     `max_tentacles`, `timeout_minutes` were set on the goal's budget).  Iteration lives
+     inside `budget_snapshot.current_iteration`; there is no separate flat `iteration` field.
+     (Backward-compatible — existing readers that ignore unknown fields are unaffected.)
   3. `IntegrityRule` — reads `~/.copilot/hooks/integrity-manifest.json`; refreshes the
      manifest when hook files have changed since the last check; emits a verified or
      refresh notice.  Informational only — never blocks.  Fail-open on missing manifest

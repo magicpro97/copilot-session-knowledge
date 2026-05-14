@@ -341,6 +341,36 @@ def _enforce_stable_id_uniqueness(db: sqlite3.Connection):
         db.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table}(stable_id)")
 
 
+def _repair_legacy_priority_collision(db: sqlite3.Connection):
+    legacy_row = db.execute("SELECT 1 FROM schema_version WHERE version=22 AND name='file_annotations'").fetchone()
+    if not legacy_row:
+        return False, False
+
+    ke_cols = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    repaired = False
+    if "priority" not in ke_cols:
+        for repair_sql in (
+            "ALTER TABLE knowledge_entries ADD COLUMN priority TEXT DEFAULT 'P2'",
+            "CREATE INDEX IF NOT EXISTS idx_ke_priority ON knowledge_entries(priority)",
+        ):
+            try:
+                db.execute(repair_sql)
+            except sqlite3.OperationalError as e:
+                if "duplicate" in str(e).lower() or "already exists" in str(e).lower():
+                    pass
+                else:
+                    raise
+        repaired = True
+
+    renamed = (
+        db.execute("UPDATE schema_version SET name='priority' WHERE version=22 AND name='file_annotations'").rowcount
+        > 0
+    )
+    if repaired or renamed:
+        db.commit()
+    return repaired, renamed
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.argv.append(os.path.expanduser("~/.copilot/session-state/knowledge.db"))
@@ -781,10 +811,21 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_ke_intensity ON knowledge_entries(intensity DESC)",
             ],
         ),
-        # v22: issue #83 — Per-file anatomy index (local_only; never synced).
-        # Keyed by (repo_root, file_path); file_mtime enables incremental updates.
+        # v22: issue #121 — Priority classification (P0-P3).
+        # P0 = critical (highest priority), P1 = high, P2 = normal (default), P3 = low.
+        # briefing.py surfaces higher-priority entries first within each category.
         (
             22,
+            "priority",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN priority TEXT DEFAULT 'P2'",
+                "CREATE INDEX IF NOT EXISTS idx_ke_priority ON knowledge_entries(priority)",
+            ],
+        ),
+        # v23: issue #83 — Per-file anatomy index (local_only; never synced).
+        # Keyed by (repo_root, file_path); file_mtime enables incremental updates.
+        (
+            23,
             "file_annotations",
             [
                 """CREATE TABLE IF NOT EXISTS file_annotations (
@@ -820,6 +861,14 @@ if __name__ == "__main__":
             print(f"  [migrate] v{ver}: {name}")
         except Exception as e:
             print(f"  [migrate] v{ver} {name}: {e}", file=sys.stderr)
+    try:
+        repaired_priority, renamed_priority = _repair_legacy_priority_collision(db)
+        if repaired_priority:
+            print("  [migrate] collision-repair: priority column added to knowledge_entries (legacy v22 overlap)")
+        if renamed_priority:
+            print("  [migrate] collision-repair: schema_version v22 renamed to 'priority'")
+    except Exception as e:
+        print(f"  [migrate] collision-repair: {e}", file=sys.stderr)
     try:
         _backfill_stable_ids(db)
         _seed_sync_table_policies(db)
