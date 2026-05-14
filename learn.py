@@ -19,7 +19,7 @@ Usage:
     python learn.py --mistake "Title" "Description" --confidence 0.8
     python learn.py --mistake "Title" "Description" --wing backend --room dynamodb
     python learn.py --mistake "Title" "Description" --priority P0
-    python learn.py --pattern "Title" "Description" --priority P1 --fact "batch limit is 25"
+    python learn.py --pattern "Title" "Description" --priority P1 --fact "batch limit is 25" --fact "GSI eventual"
     python learn.py --mistake "Title" "Description" --task "memory-surface" --file "briefing.py" --file "learn.py"
     python learn.py --pattern "Title" "Description" --code-location "path/to/file.py:50-75"
 

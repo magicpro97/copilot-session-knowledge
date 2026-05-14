@@ -2771,6 +2771,7 @@ print("\n🏷️  Priority Classification Tests (#121)")
 
 import tempfile as _tempfile
 
+
 # Helpers: build an isolated in-memory DB with the priority column
 def _make_priority_db(with_priority_col: bool = True) -> sqlite3.Connection:
     db = sqlite3.connect(":memory:")
@@ -2814,9 +2815,60 @@ def _make_priority_db(with_priority_col: bool = True) -> sqlite3.Connection:
     return db
 
 
-def _insert_ke(db: sqlite3.Connection, title: str, category: str = "mistake",
-               confidence: float = 0.7, priority: str = "", intensity: float = 0.5,
-               last_seen: str = "2024-01-01T00:00:00") -> int:
+def _seed_priority_db_file(db_path: Path, with_priority_col: bool = True) -> None:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(str(db_path))
+    try:
+        db.executescript("""
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL DEFAULT 'test-session',
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                tags TEXT DEFAULT '',
+                confidence REAL DEFAULT 0.7,
+                occurrence_count INTEGER DEFAULT 1,
+                first_seen TEXT DEFAULT '2024-01-01T00:00:00',
+                last_seen TEXT DEFAULT '2024-01-01T00:00:00',
+                wing TEXT DEFAULT '',
+                room TEXT DEFAULT '',
+                facts TEXT DEFAULT '[]',
+                est_tokens INTEGER DEFAULT 0,
+                task_id TEXT DEFAULT '',
+                affected_files TEXT DEFAULT '[]',
+                source_file TEXT DEFAULT '',
+                start_line INTEGER DEFAULT 0,
+                end_line INTEGER DEFAULT 0,
+                code_language TEXT DEFAULT '',
+                code_snippet TEXT DEFAULT '',
+                stable_id TEXT,
+                valence TEXT DEFAULT '',
+                intensity REAL DEFAULT 0.5
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
+                title, content, tags, category, wing, room, facts
+            );
+        """)
+        if with_priority_col:
+            try:
+                db.execute("ALTER TABLE knowledge_entries ADD COLUMN priority TEXT DEFAULT 'P2'")
+            except sqlite3.OperationalError:
+                pass
+        db.commit()
+    finally:
+        db.close()
+
+
+def _insert_ke(
+    db: sqlite3.Connection,
+    title: str,
+    category: str = "mistake",
+    confidence: float = 0.7,
+    priority: str = "",
+    intensity: float = 0.5,
+    last_seen: str = "2024-01-01T00:00:00",
+) -> int:
     row_id = db.execute(
         "INSERT INTO knowledge_entries (category, title, content, confidence, intensity, last_seen) VALUES (?,?,?,?,?,?)",
         (category, title, f"content of {title}", confidence, intensity, last_seen),
@@ -2834,13 +2886,58 @@ def _insert_ke(db: sqlite3.Connection, title: str, category: str = "mistake",
     return row_id
 
 
-# P121-1: learn.py CLI validates --priority accepts P0..P3
-_p121_valid_priorities = ["P0", "P1", "P2", "P3"]
-_p121_invalid_priorities = ["p0", "P4", "HIGH", "critical", ""]
-for _p in _p121_valid_priorities:
-    test(f"P121-1: --priority {_p} is in valid set", _p in _p121_valid_priorities)
-for _p in _p121_invalid_priorities:
-    test(f"P121-1: --priority {_p!r} is not in valid set", _p not in _p121_valid_priorities)
+# P121-1: learn.py CLI validates --priority through the real subprocess path
+try:
+    with tempfile.TemporaryDirectory(prefix="learn-priority-cli-") as _p121_tmp:
+        _p121_home = Path(_p121_tmp)
+        _p121_env = os.environ.copy()
+        _p121_env["HOME"] = str(_p121_home)
+        _p121_env["USERPROFILE"] = str(_p121_home)
+        _seed_priority_db_file(_p121_home / ".copilot" / "session-state" / "knowledge.db", with_priority_col=True)
+
+        _p121_valid = subprocess.run(
+            [
+                sys.executable,
+                str(REPO / "learn.py"),
+                "--tool",
+                "Priority CLI valid",
+                "Valid priority should persist through the real CLI path",
+                "--priority",
+                "P0",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            env=_p121_env,
+        )
+        _p121_valid_json = json.loads(_p121_valid.stdout or "{}") if _p121_valid.returncode == 0 else {}
+        test(
+            "P121-1a: CLI accepts valid --priority P0",
+            _p121_valid.returncode == 0 and _p121_valid_json.get("priority") == "P0",
+            f"code={_p121_valid.returncode} stdout={_p121_valid.stdout!r} stderr={_p121_valid.stderr!r}",
+        )
+
+        _p121_invalid = subprocess.run(
+            [
+                sys.executable,
+                str(REPO / "learn.py"),
+                "--tool",
+                "Priority CLI invalid",
+                "Invalid priority should be rejected through the real CLI path",
+                "--priority",
+                "P4",
+            ],
+            capture_output=True,
+            text=True,
+            env=_p121_env,
+        )
+        test(
+            "P121-1b: CLI rejects invalid --priority P4",
+            _p121_invalid.returncode != 0 and "--priority must be one of: P0, P1, P2, P3" in _p121_invalid.stderr,
+            f"code={_p121_invalid.returncode} stdout={_p121_invalid.stdout!r} stderr={_p121_invalid.stderr!r}",
+        )
+except Exception as _e:
+    test("P121-1: learn.py CLI priority validation", False, str(_e))
 
 # P121-2: migrate.py v22 migration exists and adds priority column
 try:
@@ -2876,14 +2973,10 @@ except Exception as _e:
 try:
     _p3_db = _make_priority_db(with_priority_col=True)
     _p3_entry_id = _insert_ke(_p3_db, "Critical auth bug", priority="P0")
-    _p3_row = _p3_db.execute(
-        "SELECT priority FROM knowledge_entries WHERE id = ?", (_p3_entry_id,)
-    ).fetchone()
+    _p3_row = _p3_db.execute("SELECT priority FROM knowledge_entries WHERE id = ?", (_p3_entry_id,)).fetchone()
     test("P121-3a: P0 stored in DB", _p3_row is not None and _p3_row[0] == "P0", str(_p3_row))
     _p3_entry_id2 = _insert_ke(_p3_db, "Low-pri note", priority="P3")
-    _p3_row2 = _p3_db.execute(
-        "SELECT priority FROM knowledge_entries WHERE id = ?", (_p3_entry_id2,)
-    ).fetchone()
+    _p3_row2 = _p3_db.execute("SELECT priority FROM knowledge_entries WHERE id = ?", (_p3_entry_id2,)).fetchone()
     test("P121-3b: P3 stored in DB", _p3_row2 is not None and _p3_row2[0] == "P3")
     # Default P2 for entry without explicit priority
     _p3_entry_id3 = _insert_ke(_p3_db, "Normal priority entry")
@@ -2901,6 +2994,7 @@ except Exception as _e:
 # It has been removed to eliminate the drift hazard; these tests protect the coherence contract.
 try:
     import importlib as _imp
+
     _brf = _imp.import_module("briefing")
     # Each tier's minimum score must exceed the next tier's maximum (no overlap possible).
     _p4_hl = 365.0  # generous half-life so decay ≈ 1.0 for a fresh entry
@@ -2910,14 +3004,22 @@ try:
     _p4_p2_max = _brf._recency_composite_score({"priority": "P2", "intensity": 1.0}, _p4_hl)
     _p4_p2_min = _brf._recency_composite_score({"priority": "P2", "intensity": 0.0}, _p4_hl)
     _p4_p3_max = _brf._recency_composite_score({"priority": "P3", "intensity": 1.0}, _p4_hl)
-    test("P121-4a: P0 zero-intensity outranks P1 max-intensity (tier gap holds)",
-         _p4_p0_min > _p4_p1_max, f"P0_min={_p4_p0_min:.3f} P1_max={_p4_p1_max:.3f}")
-    test("P121-4b: P1 zero-intensity outranks P2 max-intensity",
-         _p4_p1_min > _p4_p2_max, f"P1_min={_p4_p1_min:.3f} P2_max={_p4_p2_max:.3f}")
-    test("P121-4c: P2 zero-intensity outranks P3 max-intensity",
-         _p4_p2_min > _p4_p3_max, f"P2_min={_p4_p2_min:.3f} P3_max={_p4_p3_max:.3f}")
-    test("P121-4d: _priority_to_int removed (no dead-code drift hazard)",
-         not hasattr(_brf, "_priority_to_int"))
+    test(
+        "P121-4a: P0 zero-intensity outranks P1 max-intensity (tier gap holds)",
+        _p4_p0_min > _p4_p1_max,
+        f"P0_min={_p4_p0_min:.3f} P1_max={_p4_p1_max:.3f}",
+    )
+    test(
+        "P121-4b: P1 zero-intensity outranks P2 max-intensity",
+        _p4_p1_min > _p4_p2_max,
+        f"P1_min={_p4_p1_min:.3f} P2_max={_p4_p2_max:.3f}",
+    )
+    test(
+        "P121-4c: P2 zero-intensity outranks P3 max-intensity",
+        _p4_p2_min > _p4_p3_max,
+        f"P2_min={_p4_p2_min:.3f} P3_max={_p4_p3_max:.3f}",
+    )
+    test("P121-4d: _priority_to_int removed (no dead-code drift hazard)", not hasattr(_brf, "_priority_to_int"))
 except Exception as _e:
     test("P121-4: _recency_composite_score priority base coherence", False, str(_e))
 
@@ -2936,7 +3038,12 @@ except Exception as _e:
 try:
     _now = "2024-06-01T00:00:00"
     _e_p0 = {"priority": "P0", "intensity": 0.5, "confidence": 0.7, "last_seen": _now}
-    _e_p1 = {"priority": "P1", "intensity": 0.9, "confidence": 0.9, "last_seen": _now}  # higher intensity but lower priority
+    _e_p1 = {
+        "priority": "P1",
+        "intensity": 0.9,
+        "confidence": 0.9,
+        "last_seen": _now,
+    }  # higher intensity but lower priority
     _e_p2 = {"priority": "P2", "intensity": 0.5, "confidence": 0.7, "last_seen": _now}
     _e_p3 = {"priority": "P3", "intensity": 0.5, "confidence": 0.7, "last_seen": _now}
     _e_none = {"intensity": 0.5, "confidence": 0.7, "last_seen": _now}  # no priority key = P2
@@ -2949,8 +3056,11 @@ try:
     test("P121-6a: P0 outranks P1 even with lower intensity", _s_p0 > _s_p1, f"P0={_s_p0:.4f} P1={_s_p1:.4f}")
     test("P121-6b: P1 outranks P2", _s_p1 > _s_p2, f"P1={_s_p1:.4f} P2={_s_p2:.4f}")
     test("P121-6c: P2 outranks P3", _s_p2 > _s_p3, f"P2={_s_p2:.4f} P3={_s_p3:.4f}")
-    test("P121-6d: no-priority entry scores same as P2 entry", abs(_s_none - _s_p2) < 1e-9,
-         f"none={_s_none:.4f} P2={_s_p2:.4f}")
+    test(
+        "P121-6d: no-priority entry scores same as P2 entry",
+        abs(_s_none - _s_p2) < 1e-9,
+        f"none={_s_none:.4f} P2={_s_p2:.4f}",
+    )
 except Exception as _e:
     test("P121-6: _recency_composite_score priority ordering", False, str(_e))
 
@@ -3062,17 +3172,42 @@ try:
 
     # 3 P2 FTS entries saturate cat_limit=3; without rerank the P0 semantic hit is dropped.
     _p11_fts_entries = [
-        {"id": 100, "title": "FTS entry A", "priority": "P2", "intensity": 1.0, "confidence": 0.9,
-         "last_seen": "2025-01-01T00:00:00", "category": "mistake"},
-        {"id": 101, "title": "FTS entry B", "priority": "P2", "intensity": 1.0, "confidence": 0.9,
-         "last_seen": "2025-01-01T00:00:00", "category": "mistake"},
-        {"id": 102, "title": "FTS entry C", "priority": "P2", "intensity": 1.0, "confidence": 0.9,
-         "last_seen": "2025-01-01T00:00:00", "category": "mistake"},
+        {
+            "id": 100,
+            "title": "FTS entry A",
+            "priority": "P2",
+            "intensity": 1.0,
+            "confidence": 0.9,
+            "last_seen": "2025-01-01T00:00:00",
+            "category": "mistake",
+        },
+        {
+            "id": 101,
+            "title": "FTS entry B",
+            "priority": "P2",
+            "intensity": 1.0,
+            "confidence": 0.9,
+            "last_seen": "2025-01-01T00:00:00",
+            "category": "mistake",
+        },
+        {
+            "id": 102,
+            "title": "FTS entry C",
+            "priority": "P2",
+            "intensity": 1.0,
+            "confidence": 0.9,
+            "last_seen": "2025-01-01T00:00:00",
+            "category": "mistake",
+        },
     ]
     _p11_sem_entry = {
-        "id": 200, "title": "SEMANTIC P0 critical entry", "priority": "P0",
-        "intensity": 0.1, "confidence": 0.6,
-        "last_seen": "2020-01-01T00:00:00", "category": "mistake",
+        "id": 200,
+        "title": "SEMANTIC P0 critical entry",
+        "priority": "P0",
+        "intensity": 0.1,
+        "confidence": 0.6,
+        "last_seen": "2020-01-01T00:00:00",
+        "category": "mistake",
     }
 
     _orig_ske_p11 = _brf.search_knowledge_entries
@@ -3099,9 +3234,7 @@ try:
     try:
         # limit=3 so cat_limit=3 for "mistake"; mode="auto" with infer_auto_mode=False
         # means we get the default category set; P0 sem entry must surface despite 3 P2 FTS hits.
-        _p11_output = _brf.generate_subagent_context(
-            "auth bug", limit=3, infer_auto_mode=False
-        )
+        _p11_output = _brf.generate_subagent_context("auth bug", limit=3, infer_auto_mode=False)
     finally:
         _brf.search_knowledge_entries = _orig_ske_p11
         _brf.search_semantic = _orig_ss_p11
@@ -3139,18 +3272,30 @@ try:
         if cat != "mistake":
             return []
         _p2_pool = [
-            {"id": 300 + i, "title": f"SEM P2 slot {i}", "priority": "P2",
-             "intensity": 1.0, "confidence": 0.9,
-             "last_seen": "2025-01-01T00:00:00", "category": "mistake"}
+            {
+                "id": 300 + i,
+                "title": f"SEM P2 slot {i}",
+                "priority": "P2",
+                "intensity": 1.0,
+                "confidence": 0.9,
+                "last_seen": "2025-01-01T00:00:00",
+                "category": "mistake",
+            }
             for i in range(_p12_cat_limit)
         ]
         if limit >= _p12_fetch_limit:
             # Widened call: reveal the P0 entry that would be beyond raw cat_limit
-            return _p2_pool + [{
-                "id": 399, "title": "OVERFETCH P0 critical hit", "priority": "P0",
-                "intensity": 0.01, "confidence": 0.6,
-                "last_seen": "2020-01-01T00:00:00", "category": "mistake",
-            }]
+            return _p2_pool + [
+                {
+                    "id": 399,
+                    "title": "OVERFETCH P0 critical hit",
+                    "priority": "P0",
+                    "intensity": 0.01,
+                    "confidence": 0.6,
+                    "last_seen": "2020-01-01T00:00:00",
+                    "category": "mistake",
+                }
+            ]
         return _p2_pool  # narrow call: P0 entry invisible to outer rerank
 
     def _fake_ske_p12(db, query, cat, limit, min_confidence=0.0):
@@ -3168,9 +3313,7 @@ try:
     _brf._get_briefing_half_life = lambda db: 30.0
 
     try:
-        _p12_ctx_out = _brf.generate_subagent_context(
-            "auth bug", limit=_p12_cat_limit, infer_auto_mode=False
-        )
+        _p12_ctx_out = _brf.generate_subagent_context("auth bug", limit=_p12_cat_limit, infer_auto_mode=False)
         _p12_bf_out = _brf.generate_briefing(
             "auth bug", limit=_p12_cat_limit, infer_auto_mode=False, min_confidence=0.0
         )
