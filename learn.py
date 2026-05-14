@@ -18,7 +18,8 @@ Usage:
     python learn.py --mistake "Title" "Description" --session abc123
     python learn.py --mistake "Title" "Description" --confidence 0.8
     python learn.py --mistake "Title" "Description" --wing backend --room dynamodb
-    python learn.py --pattern "Title" "Description" --fact "batch limit is 25" --fact "GSI eventual"
+    python learn.py --mistake "Title" "Description" --priority P0
+    python learn.py --pattern "Title" "Description" --priority P1 --fact "batch limit is 25"
     python learn.py --mistake "Title" "Description" --task "memory-surface" --file "briefing.py" --file "learn.py"
     python learn.py --pattern "Title" "Description" --code-location "path/to/file.py:50-75"
 
@@ -671,6 +672,7 @@ def add_entry(
     fix_steps: str = "",
     valence: str = "",
     intensity: float = None,
+    priority: str = "",
 ) -> int:
     """Add a knowledge entry to the database. Returns entry ID.
 
@@ -695,6 +697,7 @@ def add_entry(
     has_topic_key_column = "topic_key" in ke_columns
     has_error_lifecycle_columns = all(c in ke_columns for c in ("error_type", "root_cause", "severity", "fix_steps"))
     has_valence_intensity_columns = all(c in ke_columns for c in ("valence", "intensity"))
+    has_priority_column = "priority" in ke_columns
     if code_location_set and not has_code_location_columns:
         print(
             "  [warn] DB schema missing code-location columns; run migrate.py to persist snippets",
@@ -838,6 +841,9 @@ def add_entry(
                 " intensity = CASE WHEN ? IS NOT NULL THEN ? ELSE intensity END,"
             )
             update_params.extend([valence or "", valence or "", intensity, intensity])
+        if has_priority_column and priority:
+            update_sql += " priority = CASE WHEN ? != '' THEN ? ELSE priority END,"
+            update_params.extend([priority, priority])
         update_sql += " est_tokens = ? WHERE id = ?"
         update_params.extend([est_tokens, existing["id"]])
         db.execute(update_sql, update_params)
@@ -1009,6 +1015,12 @@ def add_entry(
             db.execute(
                 "UPDATE knowledge_entries SET valence = ?, intensity = ? WHERE id = ?",
                 (valence or "", _intensity, entry_id),
+            )
+        # Set priority column if available
+        if has_priority_column and priority:
+            db.execute(
+                "UPDATE knowledge_entries SET priority = ? WHERE id = ?",
+                (priority, entry_id),
             )
         if has_stable_id_column:
             inserted_stable_id = db.execute(
@@ -1458,6 +1470,7 @@ def main():
     fix_steps = ""
     valence = ""
     intensity = None
+    priority = ""
 
     if "--tags" in args:
         idx = args.index("--tags")
@@ -1542,6 +1555,18 @@ def main():
             )
             sys.exit(1)
 
+    if "--priority" in args:
+        idx = args.index("--priority")
+        raw_priority = args[idx + 1] if idx + 1 < len(args) else ""
+        _valid_priorities = ("P0", "P1", "P2", "P3")
+        if raw_priority not in _valid_priorities:
+            print(
+                f"Error: --priority must be one of: P0, P1, P2, P3 (got {raw_priority!r})",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        priority = raw_priority
+
     # Collect all --fact and --file values (repeatable flags)
     for i, a in enumerate(args):
         if a == "--fact" and i + 1 < len(args):
@@ -1575,6 +1600,7 @@ def main():
             "--fix-step",
             "--valence",
             "--intensity",
+            "--priority",
             "--cerebrum-output",
             "--cerebrum-sections",
         ):
@@ -1650,6 +1676,7 @@ def main():
         fix_steps=fix_steps,
         valence=valence,
         intensity=intensity,
+        priority=priority,
     )
 
     if json_mode:
@@ -1661,16 +1688,18 @@ def main():
         # Guard against pre-v21 DBs that lack valence/intensity columns.
         _json_cols = {r[1] for r in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
         _has_vi = all(c in _json_cols for c in ("valence", "intensity"))
+        _has_priority_col = "priority" in _json_cols
         _vi_select = (
             ",\n                   COALESCE(valence, '') AS valence,"
             "\n                   COALESCE(intensity, 0.5) AS intensity"
             if _has_vi
             else ""
         )
+        _priority_select = ",\n                   COALESCE(priority, 'P2') AS priority" if _has_priority_col else ""
         row = db.execute(
             f"""
             SELECT id, category, title, confidence, session_id, task_id,
-                   affected_files, facts, occurrence_count, last_seen{_vi_select}
+                   affected_files, facts, occurrence_count, last_seen{_vi_select}{_priority_select}
             FROM knowledge_entries WHERE id = ?
         """,
             (entry_id,),
@@ -1703,6 +1732,11 @@ def main():
                 try:
                     out_dict["valence"] = row["valence"]
                     out_dict["intensity"] = row["intensity"]
+                except (IndexError, KeyError):
+                    pass
+            if _has_priority_col:
+                try:
+                    out_dict["priority"] = row["priority"]
                 except (IndexError, KeyError):
                     pass
             print(json.dumps(out_dict, indent=2, ensure_ascii=False))

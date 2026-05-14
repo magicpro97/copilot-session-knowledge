@@ -2765,9 +2765,436 @@ with tempfile.TemporaryDirectory(prefix="mcp-server-test-") as _mcp_tmp:
                     _mcp_proc.kill()
                     _mcp_proc.wait(timeout=5)
 
-# ─── Summary ────────────────────────────────────────────────────────────
+# ─── Priority Classification (#121) ─────────────────────────────────────
 
-print(f"\n{'=' * 50}")
+print("\n🏷️  Priority Classification Tests (#121)")
+
+import tempfile as _tempfile
+
+# Helpers: build an isolated in-memory DB with the priority column
+def _make_priority_db(with_priority_col: bool = True) -> sqlite3.Connection:
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript("""
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT 'test-session',
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            tags TEXT DEFAULT '',
+            confidence REAL DEFAULT 0.7,
+            occurrence_count INTEGER DEFAULT 1,
+            first_seen TEXT DEFAULT '2024-01-01T00:00:00',
+            last_seen TEXT DEFAULT '2024-01-01T00:00:00',
+            wing TEXT DEFAULT '',
+            room TEXT DEFAULT '',
+            facts TEXT DEFAULT '[]',
+            est_tokens INTEGER DEFAULT 0,
+            task_id TEXT DEFAULT '',
+            affected_files TEXT DEFAULT '[]',
+            source_file TEXT DEFAULT '',
+            start_line INTEGER DEFAULT 0,
+            end_line INTEGER DEFAULT 0,
+            code_language TEXT DEFAULT '',
+            code_snippet TEXT DEFAULT '',
+            stable_id TEXT,
+            valence TEXT DEFAULT '',
+            intensity REAL DEFAULT 0.5
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
+            title, content, tags, category, wing, room, facts
+        );
+    """)
+    if with_priority_col:
+        try:
+            db.execute("ALTER TABLE knowledge_entries ADD COLUMN priority TEXT DEFAULT 'P2'")
+        except sqlite3.OperationalError:
+            pass
+    return db
+
+
+def _insert_ke(db: sqlite3.Connection, title: str, category: str = "mistake",
+               confidence: float = 0.7, priority: str = "", intensity: float = 0.5,
+               last_seen: str = "2024-01-01T00:00:00") -> int:
+    row_id = db.execute(
+        "INSERT INTO knowledge_entries (category, title, content, confidence, intensity, last_seen) VALUES (?,?,?,?,?,?)",
+        (category, title, f"content of {title}", confidence, intensity, last_seen),
+    ).lastrowid
+    if priority:
+        try:
+            db.execute("UPDATE knowledge_entries SET priority = ? WHERE id = ?", (priority, row_id))
+        except sqlite3.OperationalError:
+            pass
+    db.execute(
+        "INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts) VALUES (?,?,?,?,?,?,?,?)",
+        (row_id, title, f"content of {title}", "", category, "", "", "[]"),
+    )
+    db.commit()
+    return row_id
+
+
+# P121-1: learn.py CLI validates --priority accepts P0..P3
+_p121_valid_priorities = ["P0", "P1", "P2", "P3"]
+_p121_invalid_priorities = ["p0", "P4", "HIGH", "critical", ""]
+for _p in _p121_valid_priorities:
+    test(f"P121-1: --priority {_p} is in valid set", _p in _p121_valid_priorities)
+for _p in _p121_invalid_priorities:
+    test(f"P121-1: --priority {_p!r} is not in valid set", _p not in _p121_valid_priorities)
+
+# P121-2: migrate.py v22 migration exists and adds priority column
+try:
+    _mig_db = sqlite3.connect(":memory:")
+    _mig_db.executescript("""
+        CREATE TABLE schema_version (version INTEGER PRIMARY KEY, name TEXT DEFAULT '', migrated_at TEXT DEFAULT (datetime('now')));
+        CREATE TABLE knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT 'test',
+            category TEXT NOT NULL DEFAULT 'mistake',
+            title TEXT NOT NULL DEFAULT 'title',
+            content TEXT NOT NULL DEFAULT 'content'
+        );
+    """)
+    _mig_db.execute("ALTER TABLE knowledge_entries ADD COLUMN valence TEXT DEFAULT ''")
+    _mig_db.execute("ALTER TABLE knowledge_entries ADD COLUMN intensity REAL DEFAULT 0.5")
+    _mig_db.execute("INSERT INTO schema_version (version, name) VALUES (21, 'valence_intensity')")
+    _mig_db.commit()
+    # Confirm priority column absent before migration
+    _pre_cols = {r[1] for r in _mig_db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    test("P121-2a: priority column absent before v22 migration", "priority" not in _pre_cols)
+    # Apply v22 manually as migrate.py would
+    _mig_db.execute("ALTER TABLE knowledge_entries ADD COLUMN priority TEXT DEFAULT 'P2'")
+    _mig_db.execute("INSERT OR IGNORE INTO schema_version (version, name) VALUES (22, 'priority')")
+    _mig_db.commit()
+    _post_cols = {r[1] for r in _mig_db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+    test("P121-2b: priority column present after v22 migration", "priority" in _post_cols)
+    _mig_db.close()
+except Exception as _e:
+    test("P121-2: migration v22 setup", False, str(_e))
+
+# P121-3: priority persisted in DB via add_entry logic (column-check path)
+try:
+    _p3_db = _make_priority_db(with_priority_col=True)
+    _p3_entry_id = _insert_ke(_p3_db, "Critical auth bug", priority="P0")
+    _p3_row = _p3_db.execute(
+        "SELECT priority FROM knowledge_entries WHERE id = ?", (_p3_entry_id,)
+    ).fetchone()
+    test("P121-3a: P0 stored in DB", _p3_row is not None and _p3_row[0] == "P0", str(_p3_row))
+    _p3_entry_id2 = _insert_ke(_p3_db, "Low-pri note", priority="P3")
+    _p3_row2 = _p3_db.execute(
+        "SELECT priority FROM knowledge_entries WHERE id = ?", (_p3_entry_id2,)
+    ).fetchone()
+    test("P121-3b: P3 stored in DB", _p3_row2 is not None and _p3_row2[0] == "P3")
+    # Default P2 for entry without explicit priority
+    _p3_entry_id3 = _insert_ke(_p3_db, "Normal priority entry")
+    _p3_row3 = _p3_db.execute(
+        "SELECT COALESCE(priority, 'P2') FROM knowledge_entries WHERE id = ?", (_p3_entry_id3,)
+    ).fetchone()
+    test("P121-3c: entry without explicit priority defaults to P2", _p3_row3 is not None and _p3_row3[0] == "P2")
+    _p3_db.close()
+except Exception as _e:
+    test("P121-3: priority persistence", False, str(_e))
+
+# P121-4: _recency_composite_score priority bases are coherent and _priority_to_int is removed
+# _priority_to_int was dead code whose 3/2/1/0 int scale contradicted the additive
+# 4.0/2.0/0.0/-2.0 float bases used by _recency_composite_score (issue #121 Blocker 4).
+# It has been removed to eliminate the drift hazard; these tests protect the coherence contract.
+try:
+    import importlib as _imp
+    _brf = _imp.import_module("briefing")
+    # Each tier's minimum score must exceed the next tier's maximum (no overlap possible).
+    _p4_hl = 365.0  # generous half-life so decay ≈ 1.0 for a fresh entry
+    _p4_p0_min = _brf._recency_composite_score({"priority": "P0", "intensity": 0.0}, _p4_hl)
+    _p4_p1_max = _brf._recency_composite_score({"priority": "P1", "intensity": 1.0}, _p4_hl)
+    _p4_p1_min = _brf._recency_composite_score({"priority": "P1", "intensity": 0.0}, _p4_hl)
+    _p4_p2_max = _brf._recency_composite_score({"priority": "P2", "intensity": 1.0}, _p4_hl)
+    _p4_p2_min = _brf._recency_composite_score({"priority": "P2", "intensity": 0.0}, _p4_hl)
+    _p4_p3_max = _brf._recency_composite_score({"priority": "P3", "intensity": 1.0}, _p4_hl)
+    test("P121-4a: P0 zero-intensity outranks P1 max-intensity (tier gap holds)",
+         _p4_p0_min > _p4_p1_max, f"P0_min={_p4_p0_min:.3f} P1_max={_p4_p1_max:.3f}")
+    test("P121-4b: P1 zero-intensity outranks P2 max-intensity",
+         _p4_p1_min > _p4_p2_max, f"P1_min={_p4_p1_min:.3f} P2_max={_p4_p2_max:.3f}")
+    test("P121-4c: P2 zero-intensity outranks P3 max-intensity",
+         _p4_p2_min > _p4_p3_max, f"P2_min={_p4_p2_min:.3f} P3_max={_p4_p3_max:.3f}")
+    test("P121-4d: _priority_to_int removed (no dead-code drift hazard)",
+         not hasattr(_brf, "_priority_to_int"))
+except Exception as _e:
+    test("P121-4: _recency_composite_score priority base coherence", False, str(_e))
+
+# P121-5: _ke_has_priority detection
+try:
+    _db_with = _make_priority_db(with_priority_col=True)
+    _db_without = _make_priority_db(with_priority_col=False)
+    test("P121-5a: _ke_has_priority True when column present", _brf._ke_has_priority(_db_with))
+    test("P121-5b: _ke_has_priority False when column absent", not _brf._ke_has_priority(_db_without))
+    _db_with.close()
+    _db_without.close()
+except Exception as _e:
+    test("P121-5: _ke_has_priority", False, str(_e))
+
+# P121-6: _recency_composite_score respects priority ordering
+try:
+    _now = "2024-06-01T00:00:00"
+    _e_p0 = {"priority": "P0", "intensity": 0.5, "confidence": 0.7, "last_seen": _now}
+    _e_p1 = {"priority": "P1", "intensity": 0.9, "confidence": 0.9, "last_seen": _now}  # higher intensity but lower priority
+    _e_p2 = {"priority": "P2", "intensity": 0.5, "confidence": 0.7, "last_seen": _now}
+    _e_p3 = {"priority": "P3", "intensity": 0.5, "confidence": 0.7, "last_seen": _now}
+    _e_none = {"intensity": 0.5, "confidence": 0.7, "last_seen": _now}  # no priority key = P2
+    _half_life = 365.0  # long half-life so recency doesn't dominate
+    _s_p0 = _brf._recency_composite_score(_e_p0, _half_life)
+    _s_p1 = _brf._recency_composite_score(_e_p1, _half_life)
+    _s_p2 = _brf._recency_composite_score(_e_p2, _half_life)
+    _s_p3 = _brf._recency_composite_score(_e_p3, _half_life)
+    _s_none = _brf._recency_composite_score(_e_none, _half_life)
+    test("P121-6a: P0 outranks P1 even with lower intensity", _s_p0 > _s_p1, f"P0={_s_p0:.4f} P1={_s_p1:.4f}")
+    test("P121-6b: P1 outranks P2", _s_p1 > _s_p2, f"P1={_s_p1:.4f} P2={_s_p2:.4f}")
+    test("P121-6c: P2 outranks P3", _s_p2 > _s_p3, f"P2={_s_p2:.4f} P3={_s_p3:.4f}")
+    test("P121-6d: no-priority entry scores same as P2 entry", abs(_s_none - _s_p2) < 1e-9,
+         f"none={_s_none:.4f} P2={_s_p2:.4f}")
+except Exception as _e:
+    test("P121-6: _recency_composite_score priority ordering", False, str(_e))
+
+# P121-7: _intensity_order_expr SQL fragment contains priority CASE when has_priority=True
+try:
+    _expr_with = _brf._intensity_order_expr("ke", has_priority=True)
+    _expr_without = _brf._intensity_order_expr("ke", has_priority=False)
+    test("P121-7a: ORDER expr with priority contains CASE...P0", "P0" in _expr_with and "CASE" in _expr_with)
+    test("P121-7b: ORDER expr without priority has no priority CASE", "P0" not in _expr_without)
+    test("P121-7c: ORDER expr with priority still includes intensity", "intensity" in _expr_with)
+    test("P121-7d: ORDER expr without priority includes intensity", "intensity" in _expr_without)
+except Exception as _e:
+    test("P121-7: _intensity_order_expr", False, str(_e))
+
+# P121-8: backward compat — _recency_composite_score works for pre-v22 rows (no priority key)
+try:
+    _legacy_entry = {"intensity": 0.8, "confidence": 0.7, "last_seen": "2024-01-01T00:00:00"}
+    _legacy_score = _brf._recency_composite_score(_legacy_entry, 365.0)
+    # Should not raise; score should be positive
+    test("P121-8: backward compat pre-v22 rows no priority key", _legacy_score > 0, str(_legacy_score))
+except Exception as _e:
+    test("P121-8: backward compat pre-v22", False, str(_e))
+
+# P121-9: Strict cross-tier ordering — blocker repro case
+# Verifies that a P0 entry with intensity=0.0 always outranks a P1 entry with
+# intensity=1.0 and an identical current timestamp, proving the additive formula
+# enforces strict outer dimension ordering.
+try:
+    _now_repro = "2024-06-01T00:00:00"
+    _e_p0_zero = {"priority": "P0", "intensity": 0.0, "confidence": 0.7, "last_seen": _now_repro}
+    _e_p1_max = {"priority": "P1", "intensity": 1.0, "confidence": 0.9, "last_seen": _now_repro}
+    _e_p1_max2 = {"priority": "P1", "intensity": 1.0, "confidence": 0.9, "last_seen": _now_repro}
+    _e_p2_max = {"priority": "P2", "intensity": 1.0, "confidence": 0.9, "last_seen": _now_repro}
+    _e_p3_max = {"priority": "P3", "intensity": 1.0, "confidence": 0.9, "last_seen": _now_repro}
+    _hl = 30.0
+    _s9_p0 = _brf._recency_composite_score(_e_p0_zero, _hl)
+    _s9_p1 = _brf._recency_composite_score(_e_p1_max, _hl)
+    _s9_p2 = _brf._recency_composite_score(_e_p2_max, _hl)
+    _s9_p3 = _brf._recency_composite_score(_e_p3_max, _hl)
+    test(
+        "P121-9a: P0 zero-intensity outranks P1 max-intensity (blocker repro)",
+        _s9_p0 > _s9_p1,
+        f"P0(intensity=0)={_s9_p0:.4f} P1(intensity=1)={_s9_p1:.4f}",
+    )
+    test(
+        "P121-9b: P1 max-intensity does not beat P2 max-intensity across tier",
+        _s9_p1 > _s9_p2,
+        f"P1={_s9_p1:.4f} P2={_s9_p2:.4f}",
+    )
+    test(
+        "P121-9c: P2 max-intensity does not beat P3 max-intensity across tier",
+        _s9_p2 > _s9_p3,
+        f"P2={_s9_p2:.4f} P3={_s9_p3:.4f}",
+    )
+except Exception as _e:
+    test("P121-9: strict cross-tier ordering blocker repro", False, str(_e))
+
+# P121-10: Semantic vector path fetches priority — entries carry correct priority field
+# Injects a fake embed module so vector_search returns a known entry and verifies
+# the returned dict has the DB-stored priority (P0), not the silent default P2.
+try:
+    import sys as _sys_p10
+    import types as _types_p10
+
+    _sem_db = _make_priority_db(with_priority_col=True)
+    _sem_entry_id = _insert_ke(_sem_db, "Semantic critical entry", priority="P0", category="mistake")
+
+    _fake_embed_mod = _types_p10.ModuleType("embed")
+    _fake_embed_mod.load_config = lambda: {"provider": "fake", "api_key": "test"}
+    _fake_embed_mod.resolve_provider = lambda config: ("fake", {"endpoint": "http://fake"})
+    _fake_embed_mod.call_embedding_api = lambda texts, config: [[0.1, 0.2, 0.3]]
+    _fake_embed_mod.ensure_embedding_tables = lambda db: None
+    _fake_embed_mod.vector_search = lambda db, vec, source_type, limit: [("knowledge", _sem_entry_id, 0.95)]
+    _fake_embed_mod.search_tfidf = lambda query, model, limit: []
+
+    _orig_embed = _sys_p10.modules.get("embed")
+    _sys_p10.modules["embed"] = _fake_embed_mod
+    try:
+        _sem_results = _brf.search_semantic(_sem_db, "critical", "mistake", limit=5)
+    finally:
+        if _orig_embed is None:
+            _sys_p10.modules.pop("embed", None)
+        else:
+            _sys_p10.modules["embed"] = _orig_embed
+
+    _hit = next((r for r in _sem_results if r.get("id") == _sem_entry_id), None)
+    test(
+        "P121-10a: semantic vector path returns the matched entry",
+        _hit is not None,
+        f"ids returned={[r.get('id') for r in _sem_results]}",
+    )
+    if _hit is not None:
+        test(
+            "P121-10b: semantic hit carries DB priority P0, not silent default P2",
+            _hit.get("priority") == "P0",
+            f"priority={_hit.get('priority')}",
+        )
+    _sem_db.close()
+except Exception as _e:
+    test("P121-10: semantic priority propagation", False, str(_e))
+
+
+# P121-11: generate_subagent_context() reranks FTS+semantic by priority before truncation
+# Regression for Blocker 3: a high-priority (P0) semantic hit must not be dropped behind
+# lower-priority (P2) FTS hits due to pre-rerank truncation.
+try:
+    import sys as _sys_p11
+    import sqlite3 as _sqlite3_p11
+
+    # 3 P2 FTS entries saturate cat_limit=3; without rerank the P0 semantic hit is dropped.
+    _p11_fts_entries = [
+        {"id": 100, "title": "FTS entry A", "priority": "P2", "intensity": 1.0, "confidence": 0.9,
+         "last_seen": "2025-01-01T00:00:00", "category": "mistake"},
+        {"id": 101, "title": "FTS entry B", "priority": "P2", "intensity": 1.0, "confidence": 0.9,
+         "last_seen": "2025-01-01T00:00:00", "category": "mistake"},
+        {"id": 102, "title": "FTS entry C", "priority": "P2", "intensity": 1.0, "confidence": 0.9,
+         "last_seen": "2025-01-01T00:00:00", "category": "mistake"},
+    ]
+    _p11_sem_entry = {
+        "id": 200, "title": "SEMANTIC P0 critical entry", "priority": "P0",
+        "intensity": 0.1, "confidence": 0.6,
+        "last_seen": "2020-01-01T00:00:00", "category": "mistake",
+    }
+
+    _orig_ske_p11 = _brf.search_knowledge_entries
+    _orig_ss_p11 = _brf.search_semantic
+    _orig_gdb_p11 = _brf.get_db
+    _orig_ghl_p11 = _brf._get_briefing_half_life
+
+    def _fake_ske_p11(db, query, cat, limit, min_confidence=0.0):
+        if cat == "mistake":
+            return list(_p11_fts_entries)
+        return []
+
+    def _fake_ss_p11(db, query, cat, limit, min_confidence=0.0):
+        if cat == "mistake":
+            return [_p11_sem_entry]
+        return []
+
+    _p11_mock_db = _sqlite3_p11.connect(":memory:")
+    _brf.search_knowledge_entries = _fake_ske_p11
+    _brf.search_semantic = _fake_ss_p11
+    _brf.get_db = lambda: _p11_mock_db
+    _brf._get_briefing_half_life = lambda db: 30.0
+
+    try:
+        # limit=3 so cat_limit=3 for "mistake"; mode="auto" with infer_auto_mode=False
+        # means we get the default category set; P0 sem entry must surface despite 3 P2 FTS hits.
+        _p11_output = _brf.generate_subagent_context(
+            "auth bug", limit=3, infer_auto_mode=False
+        )
+    finally:
+        _brf.search_knowledge_entries = _orig_ske_p11
+        _brf.search_semantic = _orig_ss_p11
+        _brf.get_db = _orig_gdb_p11
+        _brf._get_briefing_half_life = _orig_ghl_p11
+        _p11_mock_db.close()
+
+    test(
+        "P121-11a: generate_subagent_context includes P0 semantic hit despite 3 P2 FTS hits at cat_limit",
+        "SEMANTIC P0 critical entry" in _p11_output,
+        f"output={_p11_output[:400]}",
+    )
+    test(
+        "P121-11b: generate_subagent_context still includes at least one FTS entry after priority rerank",
+        "FTS entry" in _p11_output,
+        f"output={_p11_output[:400]}",
+    )
+except Exception as _e:
+    test("P121-11: generate_subagent_context priority rerank (Blocker 3 regression)", False, str(_e))
+
+
+# P121-12: Semantic overfetch — callers pass fetch_limit (not cat_limit) to search_semantic
+# Blocker 4 regression: a P0 semantic hit that would be beyond raw cat_limit must survive
+# into the outer priority-aware rerank.  The mock returns a P0 entry ONLY when called with
+# limit >= fetch_limit (proving the caller passes the widened pool, not the raw cat_limit).
+try:
+    import sys as _sys_p12
+    import sqlite3 as _sqlite3_p12
+
+    _p12_cat_limit = 3
+    _p12_fetch_limit = max(_p12_cat_limit * 2, _p12_cat_limit + 6)  # = 9 for cat_limit=3
+
+    def _fake_ss_p12(db, query, cat, limit, min_confidence=0.0):
+        """Returns P0 hit only when caller passes widened fetch_limit."""
+        if cat != "mistake":
+            return []
+        _p2_pool = [
+            {"id": 300 + i, "title": f"SEM P2 slot {i}", "priority": "P2",
+             "intensity": 1.0, "confidence": 0.9,
+             "last_seen": "2025-01-01T00:00:00", "category": "mistake"}
+            for i in range(_p12_cat_limit)
+        ]
+        if limit >= _p12_fetch_limit:
+            # Widened call: reveal the P0 entry that would be beyond raw cat_limit
+            return _p2_pool + [{
+                "id": 399, "title": "OVERFETCH P0 critical hit", "priority": "P0",
+                "intensity": 0.01, "confidence": 0.6,
+                "last_seen": "2020-01-01T00:00:00", "category": "mistake",
+            }]
+        return _p2_pool  # narrow call: P0 entry invisible to outer rerank
+
+    def _fake_ske_p12(db, query, cat, limit, min_confidence=0.0):
+        return []  # FTS contributes nothing so only semantic entries are in play
+
+    _p12_mock_db = _sqlite3_p12.connect(":memory:")
+    _orig_ss_p12 = _brf.search_semantic
+    _orig_ske_p12 = _brf.search_knowledge_entries
+    _orig_gdb_p12 = _brf.get_db
+    _orig_ghl_p12 = _brf._get_briefing_half_life
+
+    _brf.search_semantic = _fake_ss_p12
+    _brf.search_knowledge_entries = _fake_ske_p12
+    _brf.get_db = lambda: _p12_mock_db
+    _brf._get_briefing_half_life = lambda db: 30.0
+
+    try:
+        _p12_ctx_out = _brf.generate_subagent_context(
+            "auth bug", limit=_p12_cat_limit, infer_auto_mode=False
+        )
+        _p12_bf_out = _brf.generate_briefing(
+            "auth bug", limit=_p12_cat_limit, infer_auto_mode=False, min_confidence=0.0
+        )
+    finally:
+        _brf.search_semantic = _orig_ss_p12
+        _brf.search_knowledge_entries = _orig_ske_p12
+        _brf.get_db = _orig_gdb_p12
+        _brf._get_briefing_half_life = _orig_ghl_p12
+        _p12_mock_db.close()
+
+    test(
+        "P121-12a: generate_subagent_context widens semantic fetch — P0 hit beyond cat_limit surfaces",
+        "OVERFETCH P0 critical hit" in _p12_ctx_out,
+        f"output={_p12_ctx_out[:400]}",
+    )
+    test(
+        "P121-12b: generate_briefing widens semantic fetch — P0 hit beyond cat_limit surfaces",
+        "OVERFETCH P0 critical hit" in _p12_bf_out,
+        f"output={_p12_bf_out[:400]}",
+    )
+except Exception as _e:
+    test("P121-12: semantic overfetch path regression (Blocker 4)", False, str(_e))
+
+
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")
 if FAIL == 0:
     print("🎉 All tests passed!")

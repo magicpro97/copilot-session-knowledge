@@ -780,6 +780,17 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_ke_intensity ON knowledge_entries(intensity DESC)",
             ],
         ),
+        # v22: issue #121 — Priority classification (P0-P3).
+        # P0 = critical (highest priority), P1 = high, P2 = normal (default), P3 = low.
+        # briefing.py surfaces higher-priority entries first within each category.
+        (
+            22,
+            "priority",
+            [
+                "ALTER TABLE knowledge_entries ADD COLUMN priority TEXT DEFAULT 'P2'",
+                "CREATE INDEX IF NOT EXISTS idx_ke_priority ON knowledge_entries(priority)",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:
