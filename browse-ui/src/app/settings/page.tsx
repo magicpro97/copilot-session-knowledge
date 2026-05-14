@@ -102,8 +102,8 @@ export default function SettingsPage() {
             <p className="text-sm font-medium">Palette</p>
             <PaletteToggle />
             <p className="text-muted-foreground text-xs">
-              Contrast (default) uses APCA-tuned off-white surfaces. Classic restores the
-              pre-May-2026 pure-white palette. Both keep popovers and dropdowns opaque. Stored as{" "}
+              Warm (default) uses warm-neutral surfaces with a coral accent. Classic restores the
+              cool APCA-tuned indigo palette. Both keep popovers and dropdowns opaque. Stored as{" "}
               <code className="bg-muted rounded px-1 py-0.5 font-mono text-[11px]">
                 browse-palette
               </code>
