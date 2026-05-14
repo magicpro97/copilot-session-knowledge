@@ -1066,7 +1066,6 @@ def _ke_has_priority(db: sqlite3.Connection) -> bool:
         return False
 
 
-
 def _intensity_order_expr(alias: str = "ke", has_priority: bool = False) -> str:
     """SQL ORDER BY expression that ranks entries by priority then intensity.
 
