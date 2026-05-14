@@ -186,11 +186,23 @@ def _load_goal_resume_hint(project_root: "Path | None" = None) -> "list[str] | N
         pause_reason = pause_reason_raw if isinstance(pause_reason_raw, str) else ""
         reason_label = _format_pause_reason(pause_reason)
         sep = "  " + "\u2500" * 33
-        return [
+        lines = [
             f"\n  \u23f8  Paused goal: {goal_title}  ({reason_label})",
             f"  \u25b6  Run: {resume_cmd}",
-            sep,
         ]
+        # Optional one-line budget detail from issue #182 structured snapshot.
+        # Backward-compatible: old breadcrumbs without budget_snapshot skip this.
+        _bs_raw = bc.get("budget_snapshot")
+        if isinstance(_bs_raw, dict):
+            ci = _bs_raw.get("current_iteration")
+            mi = _bs_raw.get("max_iterations")
+            tc = _bs_raw.get("tentacle_count")
+            mt = _bs_raw.get("max_tentacles")
+            iter_str = (f"{ci}/{mi}" if mi is not None else str(ci)) if ci is not None else "?"
+            tent_str = (f"{tc}/{mt}" if mt is not None else str(tc)) if tc is not None else "?"
+            lines.append(f"  \u2139  Budget: iter {iter_str}, tentacles {tent_str}")
+        lines.append(sep)
+        return lines
     except Exception:
         return None  # always fail-open
 
