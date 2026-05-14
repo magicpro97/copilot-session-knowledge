@@ -6518,7 +6518,10 @@ mod tests {
         .unwrap();
 
         let result = load_goal_resume_hint(Some(&tmp));
-        assert!(result.is_some(), "expected banner for paused goal with budget_snapshot");
+        assert!(
+            result.is_some(),
+            "expected banner for paused goal with budget_snapshot"
+        );
         let lines = result.unwrap();
         let combined = lines.join("\n");
         assert!(
