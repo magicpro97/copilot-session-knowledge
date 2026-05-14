@@ -390,6 +390,7 @@ class TestDbPersistence(unittest.TestCase):
         self.assertNotIn("\\", stored, f"repo_root stored with backslash: {stored!r}")
         self.assertEqual(stored, repo_root.as_posix())
 
+
 class TestFindGitRoot(unittest.TestCase):
     def test_finds_root_for_this_repo(self):
         root = am.find_git_root(REPO)

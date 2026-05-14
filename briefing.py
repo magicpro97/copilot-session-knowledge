@@ -1896,7 +1896,9 @@ def _format_default(
     return "\n".join(lines)
 
 
-def _format_markdown(query: str, data: dict, past_work: list, categories: dict, blast: list = None, file_annotations: list | None = None) -> str:
+def _format_markdown(
+    query: str, data: dict, past_work: list, categories: dict, blast: list = None, file_annotations: list | None = None
+) -> str:
     """Format briefing as Markdown."""
     lines = []
     lines.append("# 📋 Pre-Task Briefing")
