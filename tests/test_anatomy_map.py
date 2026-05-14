@@ -111,6 +111,22 @@ class TestStaticDescriptions(unittest.TestCase):
         desc = am._static_desc("docs/README.md")
         self.assertIsNotNone(desc)
 
+    def test_directory_prefix_matches_true_descendant(self):
+        # .github/workflows/ci.yml should match .github/workflows prefix rule
+        desc = am._static_desc(".github/workflows/ci.yml")
+        self.assertIsNotNone(desc)
+        self.assertIn("workflow", desc.lower())
+
+    def test_directory_prefix_does_not_match_prefix_collision(self):
+        # .github/workflows-archive/foo.yml must NOT match .github/workflows rule
+        desc = am._static_desc(".github/workflows-archive/foo.yml")
+        self.assertIsNone(desc)
+
+    def test_directory_prefix_does_not_match_sibling_file(self):
+        # .github/workflows.yml must NOT match .github/workflows rule
+        desc = am._static_desc(".github/workflows.yml")
+        self.assertIsNone(desc)
+
 
 class TestJsonDesc(unittest.TestCase):
     def test_extracts_description_field(self):
@@ -374,10 +390,11 @@ class TestDbPersistence(unittest.TestCase):
         self.assertNotIn("\\", stored, f"repo_root stored with backslash: {stored!r}")
         self.assertEqual(stored, repo_root.as_posix())
 
+class TestFindGitRoot(unittest.TestCase):
     def test_finds_root_for_this_repo(self):
         root = am.find_git_root(REPO)
         self.assertIsNotNone(root)
-        self.assertTrue((root / ".git").exists() or root is not None)
+        self.assertTrue((root / ".git").exists())
 
     def test_returns_none_outside_repo(self):
         with tempfile.TemporaryDirectory() as td:

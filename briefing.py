@@ -1793,7 +1793,7 @@ def generate_briefing(
         elif fmt == "compact":
             output = _format_compact(query, briefing_data, past_work, categories, blast, file_annotations)
         elif full:
-            output = _format_markdown(query, briefing_data, past_work, categories, blast)
+            output = _format_markdown(query, briefing_data, past_work, categories, blast, file_annotations)
         else:
             output = _format_default(query, briefing_data, past_work, categories, blast, file_annotations)
 
@@ -1896,7 +1896,7 @@ def _format_default(
     return "\n".join(lines)
 
 
-def _format_markdown(query: str, data: dict, past_work: list, categories: dict, blast: list = None) -> str:
+def _format_markdown(query: str, data: dict, past_work: list, categories: dict, blast: list = None, file_annotations: list | None = None) -> str:
     """Format briefing as Markdown."""
     lines = []
     lines.append("# 📋 Pre-Task Briefing")
@@ -1964,6 +1964,17 @@ def _format_markdown(query: str, data: dict, past_work: list, categories: dict, 
                 f"| {file_label} | {b['risk_emoji']} {b['risk_level']} "
                 f"| {b['mistakes']} | {b['patterns']} | {b['decisions']} |"
             )
+        lines.append("")
+
+    if file_annotations:
+        lines.append("## 📁 Relevant Files")
+        lines.append("")
+        for ann in file_annotations[:6]:
+            fp = ann.get("file_path", "")
+            desc = ann.get("description", "")
+            tok = ann.get("est_tokens", 0)
+            tok_str = f" ~{tok}tok" if tok else ""
+            lines.append(f"- `{fp}`{tok_str}: {desc}")
         lines.append("")
 
     lines.append("---")

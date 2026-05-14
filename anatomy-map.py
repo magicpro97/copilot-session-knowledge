@@ -147,7 +147,9 @@ def _static_desc(rel_path: str) -> str | None:
     # Parent directory matches (e.g., .github/workflows/*)
     for prefix, desc in _STATIC_DESCRIPTIONS.items():
         if prefix.endswith("/") or "/" in prefix:
-            if rel_path.startswith(prefix) or rel_path.replace("\\", "/").startswith(prefix):
+            normalized = rel_path.replace("\\", "/")
+            # Only match exact directory path or true descendant (not prefix collisions)
+            if normalized == prefix or normalized.startswith(prefix.rstrip("/") + "/"):
                 return desc
     return None
 
@@ -432,6 +434,7 @@ def run_anatomy(
     limit: int | None = None,
 ) -> int:
     """Run the anatomy scan. Returns 0 on success, 1 on fatal error."""
+    repo_root = repo_root.resolve()
     files = ls_files(repo_root)
     if not files:
         print(f"Warning: no tracked files found in {repo_root}", file=sys.stderr)
@@ -461,9 +464,7 @@ def run_anatomy(
         return 0
 
     effective_db = db_path or DEFAULT_DB_PATH
-    if not effective_db.parent.exists():
-        print(f"Error: DB directory does not exist: {effective_db.parent}", file=sys.stderr)
-        return 1
+    effective_db.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         db = sqlite3.connect(str(effective_db))
