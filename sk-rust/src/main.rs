@@ -254,9 +254,7 @@ fn main() -> ExitCode {
                 None | Some("-h") | Some("--help") => {
                     run_fallback("project-registry.py", &["--help".to_string()])
                 }
-                Some(s) if VALID_SUBS.contains(&s) => {
-                    run_fallback("project-registry.py", &args)
-                }
+                Some(s) if VALID_SUBS.contains(&s) => run_fallback("project-registry.py", &args),
                 Some(bad) => {
                     eprintln!(
                         "sk project: unknown subcommand '{}'. Choose from: {}",
