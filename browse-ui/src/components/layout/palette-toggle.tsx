@@ -7,7 +7,7 @@ import { usePalette, type Palette } from "@/hooks/use-palette";
 import { cn } from "@/lib/utils";
 
 const OPTIONS: ReadonlyArray<{ value: Palette; label: string; icon: typeof PaletteIcon }> = [
-  { value: "contrast", label: "Contrast", icon: Sparkles },
+  { value: "contrast", label: "Warm", icon: Sparkles },
   { value: "classic", label: "Classic", icon: PaletteIcon },
 ];
 

@@ -1,52 +1,53 @@
 # 03 — Visual Design System & Data Visualization Spec
 
-> **Project:** Hindsight Browse UI (Next.js 15 + shadcn/ui + Tailwind v4)
+> **Project:** Hindsight Browse UI (Next.js 16 + shadcn/ui + Tailwind v4)
 > **Design references:** Linear, Vercel Dashboard, GitHub Primer, Datasette
-> **Status:** Design spec — no code
+> **Status:** Living spec — kept in sync with `browse-ui/src/app/globals.css`
 
 ---
 
 ## 1. Color System
 
+> **Default palette (issue #82):** Warm coral (`#E56A4A` brand, `#FDFAF6` light bg, `#1a1917` dark bg).
+> **Legacy / classic palette:** Cool indigo (`#5E6AD2` brand) — opt-in via `.palette-classic` on `<html>`, persisted as `browse-palette=classic` in `localStorage`.
+> The shadcn/ui CSS variable mapping below describes the **warm default**. Classic overrides follow in §1.9.
+
 ### 1.1 Brand Primary
 
-**Choice: `#5E6AD2` (Linear Indigo)**
+**Default (warm): `#E56A4A` (Warm Coral)**
 
-| Criterion | `#5E6AD2` Linear Indigo | `#0969DA` GitHub Blue |
-|-----------|------------------------|----------------------|
-| Distinctiveness | Immediately separable from source-brand colors (Copilot blue, Claude orange) | Collides with Copilot's blue badge — creates identity confusion |
-| Semantic load | Neutral — not associated with success/info semantics | Blue = "info" in most systems; double duty weakens signaling |
-| Dark-mode luminance | Perceptually brighter at low lightness without neon blowout | Needs significant hue-shift in dark to stay readable |
-| Personality | Signals "analytical tool" — aligns with a knowledge-mining product | Signals "social platform" |
-
-**Verdict:** `#5E6AD2` avoids collision with per-source brand colors *and* with semantic `--info` blue. It reads as "product chrome" rather than data.
+Warm coral separates cleanly from Copilot blue, Claude orange (different hue family), and Gemini teal. At lightness 44% (light) / 45% (dark) it delivers WCAG AA ≥4.5:1 with white text.
 
 ```
---primary:            hsl(235, 56%, 60%)   /* #5E6AD2 */
---primary-hover:      hsl(235, 56%, 52%)   /* #4F5ABF */
---primary-foreground: hsl(0, 0%, 100%)     /* #FFFFFF */
+--primary (light): hsl(12, 75%, 44%)   /* warm coral, WCAG AA ≥4.5:1 with white */
+--primary (dark):  hsl(12, 80%, 45%)   /* adjusted for dark bg, WCAG AA ≥4.5:1 with white */
+--primary-foreground: hsl(0, 0%, 100%) /* #FFFFFF */
+```
+
+**Classic opt-in: `#5E6AD2` (Linear Indigo)**
+
+Restored when `.palette-classic` is active. Historically chosen for its neutral analytical personality and separation from per-source brand colors.
+
+```
+--primary (classic light): hsl(235, 56%, 60%)  /* #5E6AD2 */
+--primary (classic dark):  hsl(235, 56%, 56%)  /* darkened for WCAG AA */
 ```
 
 ### 1.2 Neutral Scale
 
-All neutrals are desaturated cool-gray (2% saturation toward blue) to complement the indigo primary. Values tuned so adjacent stops differ by ≥ 1.5:1 APCA contrast (useful for layered surfaces).
+**Default (warm):** Neutrals carry a slight warm tint (hue ≈ 20–38°) to complement the coral primary.
 
-| Stop | Light mode (HEX) | HSL | Dark mode (HEX) | HSL |
-|------|-------------------|-----|------------------|-----|
-| 50 | `#FAFBFC` | 210 20% 99% | `#0D1117` | 215 22% 7% |
-| 100 | `#F3F5F7` | 210 16% 96% | `#151B23` | 215 20% 11% |
-| 150 | `#EAEEF2` | 212 18% 93% | `#1C2128` | 215 18% 13% |
-| 200 | `#D8DEE4` | 212 16% 87% | `#21262D` | 215 14% 15% |
-| 300 | `#C1C8CF` | 210 11% 78% | `#2D333B` | 215 11% 20% |
-| 400 | `#A0A8B0` | 210 8% 66% | `#3D444D` | 215 8% 27% |
-| 500 | `#7D8590` | 212 7% 53% | `#545D68` | 212 9% 37% |
-| 600 | `#656D76` | 212 7% 43% | `#6E7681` | 212 7% 47% |
-| 700 | `#4E5761` | 212 10% 34% | `#8B949E` | 210 7% 58% |
-| 800 | `#343B44` | 213 12% 24% | `#B1BAC4` | 210 12% 73% |
-| 900 | `#1F2328` | 215 14% 14% | `#D0D7DE` | 210 16% 85% |
-| 950 | `#0D1117` | 215 22% 7% | `#F0F3F6` | 210 25% 95% |
+| Stop | Light (HEX approx) | HSL | Dark (HEX approx) | HSL |
+|------|--------------------|----|-------------------|----|
+| bg | `#FDFAF6` | 38 52% 97% | `#1a1917` | 30 5% 10% |
+| card | — | 38 40% 98% | — | 30 6% 15% |
+| secondary | — | 38 30% 92% | — | 30 6% 18% |
+| muted | — | 38 25% 90% | — | 30 6% 18% |
+| border | — | 38 25% 87% | — | 30 6% 22% |
+| foreground | `#28201A` | 20 14% 16% | — | 30 15% 88% |
+| muted-fg | — | 20 10% 45% | — | 30 8% 62% |
 
-> **Note:** Dark mode neutrals are *not* simply inverted. The 50→200 range in dark stays tighter (7%→15% lightness) to create subtle surface layering without blowing out the background.
+> **Classic neutrals** are cool-gray (hue ≈ 210–215°). See §1.9.
 
 ### 1.3 Semantic Colors
 
@@ -68,110 +69,130 @@ WCAG AA proofs (fg on bg):
 | Danger fg on bg | 5.5:1 | 5.0:1 | ✅ AA |
 | Info fg on bg | 5.4:1 | 5.8:1 | ✅ AA |
 
-### 1.4 Surface Tokens
+### 1.4 Surface Tokens (warm default)
 
 | Token | Light | Dark | Usage |
 |-------|-------|------|-------|
-| `--bg` | `#FFFFFF` | `#0D1117` | Page background |
-| `--bg-subtle` | `#FAFBFC` | `#0D1117` | Alternate row, secondary surface |
-| `--bg-muted` | `#EAEEF2` | `#21262D` | Code blocks, disabled inputs |
-| `--bg-elevated` | `#FFFFFF` | `#161B22` | Cards, popovers (layered above bg) |
-| `--bg-hover` | `#E6EBF1` | `#2A3038` | Interactive row/item hover |
-| `--bg-active` | `#DDE3EA` | `#313840` | Pressed / active state |
+| `--background` | warm off-white `38 52% 97%` | warm dark `30 5% 10%` | Page background |
+| `--card` | `38 40% 98%` | `30 6% 15%` | Card surfaces |
+| `--secondary` | `38 30% 92%` | `30 6% 18%` | Secondary surfaces, select triggers |
+| `--muted` | `38 25% 90%` | `30 6% 18%` | Muted / disabled surfaces |
+| `--popover` | `38 40% 98%` | `30 6% 16%` | Dropdown / dialog / sheet background |
 
-Contrast notes:
-- `--bg-elevated` on `--bg`: Light 1:1 (same), Dark 1.5:1 — elevation conveyed via shadow, not color alone.
-- `--bg-hover` on `--bg`: Light 1.2:1, Dark 1.4:1 — perceivable shift without color dependency (backed by cursor change).
+### 1.5 Foreground Tokens (warm default)
 
-### 1.5 Foreground Tokens
-
-| Token | Light | Dark | Contrast on --bg | Usage |
-|-------|-------|------|-------------------|-------|
-| `--fg` | `#1F2328` | `#E6EDF3` | 15.4:1 / 14.8:1 | Primary text |
-| `--fg-muted` | `#656D76` | `#9198A1` | 4.8:1 / 5.2:1 | Secondary text, labels |
-| `--fg-subtle` | `#7D8590` | `#7D8590` | 3.7:1 / 3.4:1 | Placeholder, disabled (AA-large only) |
-| `--fg-on-accent` | `#FFFFFF` | `#FFFFFF` | 4.5:1 on #5E6AD2 | Text on primary buttons |
+| Token | Light | Dark | Contrast on bg | Usage |
+|-------|-------|------|----------------|-------|
+| `--foreground` | `20 14% 16%` | `30 15% 88%` | >12:1 | Primary text |
+| `--muted-foreground` | `20 10% 45%` | `30 8% 62%` | ≥4.5:1 | Secondary text, labels |
+| `--primary-foreground` | `0 0% 100%` | `0 0% 100%` | ≥4.5:1 on primary | Text on primary buttons |
 
 ### 1.6 Border Tokens
 
 | Token | Light | Dark | Usage |
 |-------|-------|------|-------|
-| `--border` | `#D0D7DE` | `#30363D` | Default dividers, card borders |
-| `--border-subtle` | `#E8ECF0` | `#21262D` | Inner separators (table cells) |
-| `--border-strong` | `#AFB8C1` | `#484F58` | Emphasized borders (focused inputs, column headers) |
+| `--border` | `38 25% 87%` | `30 6% 22%` | Default dividers, card borders |
+| `--input` | `38 25% 87%` | `30 6% 22%` | Input borders |
 
-### 1.7 Accent Tokens
+### 1.7 Accent / Ring Tokens (warm default)
 
 | Token | Light | Dark | Usage |
 |-------|-------|------|-------|
-| `--accent` | `#5E6AD2` | `#7B86E2` | Links, active tab indicator, focus ring |
-| `--accent-fg` | `#FFFFFF` | `#FFFFFF` | Text on accent bg (buttons) |
-| `--accent-hover` | `#4F5ABF` | `#6B77D9` | Hover state for accent elements |
+| `--accent` | `12 75% 44%` | `12 80% 45%` | Accent surfaces, hover states |
+| `--ring` | `12 75% 18%` | `12 80% 78%` | Focus ring — **decoupled from primary** for WCAG 1.4.11 |
 
-### 1.8 Mapping to shadcn CSS Variables
+> **Ring decoupling:** Ring tokens are intentionally separate from primary. Light ring must be dark enough that `ring/50` over the page background achieves ≥3:1 (WCAG 1.4.11). Dark ring must be bright enough that `ring/50` over the dark background achieves ≥3:1. Both are guarded by direct contrast computation in `contrast-system.test.tsx`.
 
-shadcn/ui expects HSL values without `hsl()` wrapper. Below is the full mapping:
+### 1.8 Mapping to shadcn CSS Variables (warm default)
+
+shadcn/ui expects HSL values without `hsl()` wrapper. Canonical source: `browse-ui/src/app/globals.css`.
 
 ```css
-/* Light theme (:root) */
+/* Default warm palette (:root) */
 :root {
-  --background:           210 20% 99%;        /* --bg-subtle */
-  --foreground:           215 14% 14%;        /* --fg */
-  --card:                 0 0% 100%;          /* --bg-elevated */
-  --card-foreground:      215 14% 14%;
-  --popover:              0 0% 100%;
-  --popover-foreground:   215 14% 14%;
-  --primary:              235 56% 60%;        /* #5E6AD2 */
+  --background:           38 52% 97%;   /* warm off-white ≈ #FDFAF6 */
+  --foreground:           20 14% 16%;
+  --card:                 38 40% 98%;
+  --card-foreground:      20 14% 16%;
+  --popover:              38 40% 98%;
+  --popover-foreground:   20 14% 16%;
+  --primary:              12 75% 44%;   /* coral — WCAG AA ≥4.5:1 with white */
   --primary-foreground:   0 0% 100%;
-  --secondary:            210 16% 96%;        /* neutral-100 */
-  --secondary-foreground: 215 14% 14%;
-  --muted:                212 18% 93%;        /* neutral-150 */
-  --muted-foreground:     212 7% 43%;         /* neutral-600 */
-  --accent:               235 56% 60%;        /* same as primary */
+  --secondary:            38 30% 92%;
+  --secondary-foreground: 20 14% 16%;
+  --muted:                38 25% 90%;
+  --muted-foreground:     20 10% 45%;
+  --accent:               12 75% 44%;
   --accent-foreground:    0 0% 100%;
-  --destructive:          358 75% 47%;        /* danger */
+  --destructive:          358 75% 47%;
   --destructive-foreground: 0 0% 100%;
-  --border:               210 16% 87%;        /* neutral-200 */
-  --input:                210 16% 87%;
-  --ring:                 235 56% 60%;        /* focus ring = primary */
-  --radius:               0.375rem;           /* 6px = md */
-  --chart-1:              235 56% 60%;        /* primary */
-  --chart-2:              152 56% 48%;        /* teal */
-  --chart-3:              33 90% 58%;         /* amber */
-  --chart-4:              280 60% 60%;        /* purple */
-  --chart-5:              12 80% 60%;         /* coral */
+  --border:               38 25% 87%;
+  --input:                38 25% 87%;
+  --ring:                 12 75% 18%;   /* dark coral — decoupled from primary for WCAG 1.4.11 */
+  --radius:               0.375rem;
+  --chart-1:              12 75% 59%;   /* warm coral */
+  --chart-2:              152 56% 48%;  /* teal */
+  --chart-3:              33 90% 58%;   /* amber */
+  --chart-4:              280 60% 60%;  /* purple */
+  --chart-5:              38 85% 55%;   /* warm yellow */
 }
 
-<!-- FIXED in cross-review pass: BLOCKER-2 — changed [data-theme="dark"] → .dark to match next-themes attribute="class" -->
-/* Dark theme (.dark class on <html>, set by next-themes with attribute="class") */
+/* Dark warm palette (.dark class on <html>, set by next-themes attribute="class") */
 .dark {
-  --background:           215 22% 7%;
-  --foreground:           210 25% 93%;
-  --card:                 215 20% 11%;
-  --card-foreground:      210 25% 93%;
-  --popover:              215 20% 11%;
-  --popover-foreground:   210 25% 93%;
-  --primary:              235 56% 69%;        /* #7B86E2 */
+  --background:           30 5% 10%;    /* warm dark ≈ #1a1917 */
+  --foreground:           30 15% 88%;
+  --card:                 30 6% 15%;
+  --card-foreground:      30 15% 88%;
+  --popover:              30 6% 16%;
+  --popover-foreground:   30 15% 88%;
+  --primary:              12 80% 45%;   /* coral dark-mode — WCAG AA ≥4.5:1 with white */
   --primary-foreground:   0 0% 100%;
-  --secondary:            215 14% 15%;
-  --secondary-foreground: 210 25% 93%;
-  --muted:                215 14% 15%;
-  --muted-foreground:     212 7% 47%;
-  --accent:               235 56% 69%;
+  --secondary:            30 6% 18%;
+  --secondary-foreground: 30 15% 88%;
+  --muted:                30 6% 18%;
+  --muted-foreground:     30 8% 62%;    /* raised for WCAG AA on dark card surfaces */
+  --accent:               12 80% 45%;
   --accent-foreground:    0 0% 100%;
   --destructive:          358 78% 63%;
   --destructive-foreground: 0 0% 100%;
-  --border:               215 11% 20%;
-  --input:                215 11% 20%;
-  --ring:                 235 56% 69%;
+  --border:               30 6% 22%;
+  --input:                30 6% 22%;
+  --ring:                 12 80% 78%;   /* decoupled from primary — bright for WCAG 1.4.11 ≥3:1 */
   --radius:               0.375rem;
-  --chart-1:              235 56% 69%;
+  --chart-1:              12 78% 66%;
   --chart-2:              152 50% 50%;
   --chart-3:              38 85% 55%;
   --chart-4:              280 55% 65%;
-  --chart-5:              12 75% 65%;
+  --chart-5:              33 80% 60%;
 }
 ```
+
+### 1.9 Classic Palette Opt-in (`.palette-classic`)
+
+Activated by adding `.palette-classic` to `<html>` via the palette toggle. Persisted as `browse-palette=classic` in `localStorage`. Restores the original cool/APCA-tuned indigo design language.
+
+```css
+/* Classic light — scoped :not(.dark) to prevent bleeding into dark mode */
+:root:not(.dark).palette-classic {
+  --background:           210 20% 97%;
+  --primary:              235 56% 60%;  /* #5E6AD2 Linear Indigo */
+  --ring:                 235 56% 25%;  /* dark indigo — decoupled for WCAG 1.4.11 */
+  --chart-1:              235 56% 60%;  /* indigo replaces warm coral */
+  /* ... full token set in globals.css */
+}
+
+/* Classic dark */
+.dark.palette-classic {
+  --background:           215 22% 7%;
+  --primary:              235 56% 56%;  /* darkened from 69% for WCAG AA */
+  --muted-foreground:     212 7% 60%;   /* raised from 47% for WCAG AA */
+  --ring:                 235 56% 80%;  /* decoupled from primary for WCAG 1.4.11 */
+  --chart-1:              235 56% 69%;  /* indigo replaces warm coral */
+  /* ... full token set in globals.css */
+}
+```
+
+> **Specificity discipline:** Classic light overrides use `:root:not(.dark).palette-classic` (specificity 0,2,0) so they do not outrank `.dark` (0,1,0) when both classes are present, preventing warm light surfaces from bleeding into dark mode.
 
 ---
 
