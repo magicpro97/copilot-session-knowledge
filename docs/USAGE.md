@@ -960,7 +960,7 @@ JSON schema (all top-level keys are always present; future resilience fields def
 ```
 goal init → (dispatch wave of tentacles) → handoffs collected
   → goal gate pass / goal criteria check → goal eval --decision continue
-  → (new wave if goal unmet) → goal eval --decision complete → git commit + close
+  → (new wave if goal unmet) → goal eval --decision complete → sk tentacle pr
 
 Human gate path:
   goal gate add G1 → (human reviews) → goal gate approve/reject G1
@@ -974,6 +974,67 @@ Record goal-eval evidence with:
 sk tentacle verify <name> "<check-command>" --label "goal-eval"
 # fallback: python3 ~/.copilot/tools/tentacle.py verify <name> "<check-command>" --label "goal-eval"
 ```
+
+---
+
+## Automated PR Creation — `sk tentacle pr`
+
+After `goal eval --decision complete`, run `sk tentacle pr` to automate the full
+git add → commit → push → `gh pr create` pipeline.
+
+**Requires:** goal status must be `completed`. The command exits non-zero if the goal
+is still `active`, `paused`, `abandoned`, or not initialized.
+
+```bash
+# Basic usage (auto-generates commit message, PR title, and PR body)
+sk tentacle pr
+# fallback: python3 ~/.copilot/tools/tentacle.py pr
+
+# Override PR title and base branch
+sk tentacle pr --title "feat: Add export API" --base main
+
+# Close a linked issue automatically (adds "Closes #114" to PR body)
+sk tentacle pr --issue 114
+
+# Dry-run: print commit message and PR body without running git or gh
+sk tentacle pr --dry-run
+
+# Full options
+sk tentacle pr \
+  --title "feat(export): Add billing export" \
+  --base main \
+  --commit-msg "feat(export): Implement billing export endpoint" \
+  --issue 114 \
+  --label "feature" \
+  --reviewer octocat \
+  --repo owner/repo \
+  --dry-run
+```
+
+### What it does
+
+1. **Validates goal state** — exits 1 if goal status is not `completed`.
+2. **Collects tentacle data** — reads `handoff.md` and `meta.json` for every tentacle
+   linked to the goal.
+3. **Generates a conventional commit message** — format: `feat(<scope>): <title>`.
+   Scope is derived from `goal_id` or the first linked tentacle name.
+4. **Generates a structured PR body** with six sections:
+   - **What / Why / How** — goal title, description, and per-tentacle implementation summaries.
+   - **Changes** — table of every file changed (from `Changed:` lines in handoffs).
+   - **Decision Points** — all `eval_history` entries with decision, date, and criteria/gate counts.
+   - **Unresolved Blockers** — tentacles with `BLOCKED`, `AMBIGUOUS`, `TOO_BIG`, or `REGRESSED` status.
+   - **Test Results** — verification records from `meta.json` (pass/fail icon, duration).
+   - **Closing keyword** — `Closes #<issue>` when `--issue` is provided.
+5. **Runs git add -A → git commit → git push** (sets `--set-upstream origin <branch>` when no remote tracking branch is configured).
+6. **Runs `gh pr create`** non-interactively with the generated title, body, and base branch.
+
+### Safety notes
+
+- `--dry-run` prints the commit message and PR body without touching git or gh.
+- The command uses `subprocess.run` with explicit argument lists — no shell injection.
+- Works on Windows and Unix.
+- If `git push` fails (e.g. no remote configured), the command exits with the git exit code.
+- If `gh` is not installed or not authenticated, `gh pr create` will fail with a clear error.
 
 ---
 
