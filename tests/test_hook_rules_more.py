@@ -1972,6 +1972,141 @@ test("verification-gate registered exactly once in each event", len(pre_vg) == 1
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  Section 8: SkillNudgeRule (Issue #116)
+# ══════════════════════════════════════════════════════════════════════
+
+print("\n💡 Section 8: SkillNudgeRule")
+
+import rules.common as _common_mod
+import rules.skill_nudge as _sn_mod
+from rules.skill_nudge import SkillNudgeRule
+
+_sn_rule = SkillNudgeRule()
+
+# Use a temp dir so state files never pollute real ~/.copilot/markers.
+_tmp_sn = Path(tempfile.mkdtemp(prefix="test-skill-nudge-"))
+
+
+def _fire_n(n, session_id, threshold):
+    """Simulate n postToolUse events for the given session and return the last result."""
+    result = None
+    env = {
+        "COPILOT_AGENT_SESSION_ID": session_id,
+        "SKILL_NUDGE_THRESHOLD": str(threshold),
+    }
+    with (
+        patch.object(_common_mod, "MARKERS_DIR", _tmp_sn),
+        patch.dict(os.environ, env),
+    ):
+        for _ in range(n):
+            result = _sn_rule.evaluate(
+                "postToolUse",
+                {"toolName": "bash", "sessionId": session_id, "toolArgs": {"command": "ls"}},
+            )
+    return result
+
+
+try:
+    # 8a. Below threshold → no nudge
+    result = _fire_n(4, session_id="sn-below", threshold=5)
+    test("8a: 4 calls below threshold(5) → no nudge", result is None)
+
+    # 8b. Exactly at threshold → fires once
+    result = _fire_n(5, session_id="sn-exact", threshold=5)
+    test("8b: 5th call hits threshold → nudge fires", result is not None)
+    test("8b: nudge is an info dict (has 'message' key)", isinstance(result, dict) and "message" in result)
+    msg = (result or {}).get("message", "")
+    test("8b: nudge message mentions 'skill'", "skill" in msg.lower())
+    test("8b: nudge message mentions 'npx skills'", "npx skills" in msg)
+    test("8b: nudge message mentions 'npx skills init'", "npx skills init" in msg)
+    test("8b: nudge message does not reference invalid slash command", "/skill skill-creator" not in msg)
+    test("8b: nudge message mentions SKILL_NUDGE_THRESHOLD", "SKILL_NUDGE_THRESHOLD" in msg)
+
+    # 8c. One-shot: 10 more events in the same session after threshold → no re-fire
+    results_after = []
+    env_c = {"COPILOT_AGENT_SESSION_ID": "sn-exact", "SKILL_NUDGE_THRESHOLD": "5"}
+    with (
+        patch.object(_common_mod, "MARKERS_DIR", _tmp_sn),
+        patch.dict(os.environ, env_c),
+    ):
+        for _ in range(10):
+            r = _sn_rule.evaluate(
+                "postToolUse",
+                {"toolName": "bash", "sessionId": "sn-exact", "toolArgs": {"command": "ls"}},
+            )
+            results_after.append(r)
+    test("8c: no re-fire on subsequent calls (one-shot per session)", all(r is None for r in results_after))
+
+    # 8d. Different session → fires independently (fresh count)
+    result = _fire_n(5, session_id="sn-different-session", threshold=5)
+    test("8d: different session fires independently", result is not None)
+
+    # 8e. Custom threshold (3): fires on 3rd call
+    result = _fire_n(3, session_id="sn-custom-thresh", threshold=3)
+    test("8e: custom threshold(3) fires on 3rd call", result is not None)
+
+    # 8f. Custom threshold (3): 2 calls do not fire
+    result = _fire_n(2, session_id="sn-custom-no-fire", threshold=3)
+    test("8f: 2 calls with threshold(3) → no nudge", result is None)
+
+    # 8g. Invalid threshold env var → falls back to default (5)
+    with patch.dict(os.environ, {"SKILL_NUDGE_THRESHOLD": "not-a-number"}):
+        t = _sn_mod._parse_threshold()
+    test("8g: invalid SKILL_NUDGE_THRESHOLD string → fallback to 5", t == _sn_mod.DEFAULT_THRESHOLD)
+
+    # 8h. Zero threshold → falls back to default
+    with patch.dict(os.environ, {"SKILL_NUDGE_THRESHOLD": "0"}):
+        t = _sn_mod._parse_threshold()
+    test("8h: zero SKILL_NUDGE_THRESHOLD → fallback to 5", t == _sn_mod.DEFAULT_THRESHOLD)
+
+    # 8i. Negative threshold → falls back to default
+    with patch.dict(os.environ, {"SKILL_NUDGE_THRESHOLD": "-3"}):
+        t = _sn_mod._parse_threshold()
+    test("8i: negative SKILL_NUDGE_THRESHOLD → fallback to 5", t == _sn_mod.DEFAULT_THRESHOLD)
+
+    # 8j. Empty threshold env var → falls back to default
+    with patch.dict(os.environ, {"SKILL_NUDGE_THRESHOLD": ""}):
+        t = _sn_mod._parse_threshold()
+    test("8j: empty SKILL_NUDGE_THRESHOLD → fallback to 5", t == _sn_mod.DEFAULT_THRESHOLD)
+
+    # 8k. DEFAULT_THRESHOLD constant is 5
+    test("8k: DEFAULT_THRESHOLD == 5", _sn_mod.DEFAULT_THRESHOLD == 5)
+
+    # 8l. Rule is informational only: evaluate never returns a deny dict
+    deny_keys = {"permissionDecision", "decision"}
+    for _ in range(6):
+        r = _fire_n(1, session_id="sn-deny-check", threshold=5)
+        if r is not None:
+            test("8l: result has no deny key", not any(k in r for k in deny_keys))
+            break
+    else:
+        test("8l: no deny dict emitted (rule is info-only)", True)
+
+    # 8m. Fail-open: exception inside updater does not propagate
+    try:
+        with patch.object(_sn_mod, "_parse_threshold", side_effect=RuntimeError("boom")):
+            result = _sn_rule.evaluate("postToolUse", {"toolName": "bash", "sessionId": "sn-boom"})
+        test("8m: exception in rule → fail-open (returns None)", result is None)
+    except Exception as exc:
+        test("8m: exception in rule → fail-open (no propagation)", False, str(exc))
+
+    # 8n. Rule metadata
+    test("8n: SkillNudgeRule.name == 'skill-nudge'", _sn_rule.name == "skill-nudge")
+    test("8n: postToolUse in SkillNudgeRule.events", "postToolUse" in _sn_rule.events)
+    test("8n: SkillNudgeRule.tools is empty (matches all tools)", _sn_rule.tools == [])
+
+finally:
+    shutil.rmtree(_tmp_sn, ignore_errors=True)
+
+# 8o. Registry: skill-nudge appears in postToolUse event list
+from rules import get_rules_for_event as _get_rules_sn
+
+post_sn = [r for r in _get_rules_sn("postToolUse") if r.name == "skill-nudge"]
+test("8o: skill-nudge registered in postToolUse", len(post_sn) >= 1)
+test("8o: skill-nudge registered exactly once in postToolUse", len(post_sn) == 1)
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  Summary
 # ══════════════════════════════════════════════════════════════════════
 
