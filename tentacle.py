@@ -4899,7 +4899,7 @@ def _goal_resilience_health(state: dict, bs: dict) -> str:
     if status == GOAL_STATUS_COMPLETED:
         return "healthy"
 
-    if status in (GOAL_STATUS_NEEDS_HUMAN, GOAL_STATUS_AWAITING_GATE, GOAL_STATUS_ABANDONED):
+    if status in (GOAL_STATUS_NEEDS_HUMAN, GOAL_STATUS_AWAITING_GATE, GOAL_STATUS_ABANDONED, GOAL_STATUS_BUDGET_LIMITED):
         return "needs-action"
     if bs.get("over_budget"):
         return "needs-action"
@@ -4912,7 +4912,8 @@ def _goal_resilience_health(state: dict, bs: dict) -> str:
     if status == GOAL_STATUS_PAUSED:
         _QUOTA_KEYWORDS = {"quota", "rate", "blocked"}
         pause_metadata = state.get("pause_metadata")
-        retry_queue = state.get("retry_queue")
+        # Prefer quota_retry_queue (production writers) with retry_queue as compat fallback.
+        retry_queue = state.get("quota_retry_queue") or state.get("retry_queue")
         pause_reason = ""
         if isinstance(pause_metadata, dict):
             pause_reason = str(pause_metadata.get("reason", "")).lower()
@@ -4964,7 +4965,9 @@ def _cmd_goal_resilience_status(args, tentacles: Path) -> None:
     # Optional/future resilience fields — degrade gracefully when absent.
     snapshot_state = state.get("snapshot_state")
     pause_metadata = state.get("pause_metadata")
-    retry_queue = state.get("retry_queue")
+    # Prefer quota_retry_queue (production writers) with retry_queue as compat fallback.
+    # The stable JSON output field name remains "retry_queue".
+    retry_queue = state.get("quota_retry_queue") or state.get("retry_queue")
 
     if fmt == "json":
         output = {

@@ -7036,6 +7036,38 @@ class TestGoalResilienceHealth(unittest.TestCase):
         )
         self.assertEqual(T._goal_resilience_health(s, self._bs()), "at-risk")
 
+    # --- reproduced post-rebase bugs (issue #190) ---
+
+    def test_budget_limited_is_needs_action(self):
+        """Reproduced bug: status=budget_limited must classify as needs-action, not healthy."""
+        s = self._state(
+            status=T.GOAL_STATUS_BUDGET_LIMITED,
+            budget_limited_reason="loop max_steps reached",
+        )
+        self.assertEqual(
+            T._goal_resilience_health(s, self._bs()),
+            "needs-action",
+            "budget_limited requires operator action and must not appear healthy",
+        )
+
+    def test_budget_limited_with_no_budget_pressure_is_still_needs_action(self):
+        """budget_limited status must produce needs-action even when no budget fields are set."""
+        s = self._state(status=T.GOAL_STATUS_BUDGET_LIMITED)
+        bs = self._bs()  # no budget limits set, over_budget=False
+        self.assertEqual(T._goal_resilience_health(s, bs), "needs-action")
+
+    def test_paused_quota_retry_queue_key_is_needs_action(self):
+        """Reproduced bug: production writes to quota_retry_queue; health must use that key."""
+        s = self._state(
+            status=T.GOAL_STATUS_PAUSED,
+            quota_retry_queue=[{"tentacle": "t-demo", "reason": "quota"}],
+        )
+        self.assertEqual(
+            T._goal_resilience_health(s, self._bs()),
+            "needs-action",
+            "quota_retry_queue entries must trigger needs-action",
+        )
+
 
 class TestCmdGoalResilienceStatus(unittest.TestCase):
     """Integration-style tests for _cmd_goal_resilience_status text and JSON output."""
@@ -7288,6 +7320,50 @@ class TestCmdGoalResilienceStatus(unittest.TestCase):
         result = self._run_json(status=T.GOAL_STATUS_PAUSED)
         self.assertEqual(result["status"], "paused")
         self.assertEqual(result["health"], "at-risk")
+
+    # --- reproduced post-rebase bugs (issue #190) ---
+
+    def test_json_budget_limited_health_is_needs_action(self):
+        """Reproduced bug: status=budget_limited must produce health=needs-action, not healthy."""
+        result = self._run_json(
+            status=T.GOAL_STATUS_BUDGET_LIMITED,
+            budget_limited_reason="loop max_steps reached",
+        )
+        self.assertEqual(result["status"], T.GOAL_STATUS_BUDGET_LIMITED)
+        self.assertEqual(
+            result["health"],
+            "needs-action",
+            "budget_limited must not appear healthy in JSON output",
+        )
+
+    def test_json_quota_retry_queue_surfaced_as_retry_queue(self):
+        """Reproduced bug: production path stores quota_retry_queue; JSON must surface it as retry_queue."""
+        queue = [{"tentacle": "t-demo", "reason": "quota", "next_retry_after": "2026-05-14T01:00:00Z"}]
+        result = self._run_json(
+            status=T.GOAL_STATUS_PAUSED,
+            pause_metadata={"reason": "quota"},
+            quota_retry_queue=queue,
+        )
+        self.assertEqual(result["health"], "needs-action")
+        self.assertIsNotNone(result.get("retry_queue"), "retry_queue must be surfaced when quota_retry_queue is present")
+        self.assertEqual(len(result["retry_queue"]), 1, "all queue entries must appear under retry_queue")
+
+    def test_text_budget_limited_shows_needs_action(self):
+        """Text output must show NEEDS-ACTION for budget_limited goals."""
+        out = self._run_text(
+            status=T.GOAL_STATUS_BUDGET_LIMITED,
+            budget_limited_reason="loop max_steps reached",
+        )
+        self.assertIn("NEEDS-ACTION", out.upper())
+
+    def test_text_quota_retry_queue_shown(self):
+        """Text output must show retry queue entries stored under quota_retry_queue."""
+        out = self._run_text(
+            status=T.GOAL_STATUS_PAUSED,
+            pause_metadata={"reason": "quota"},
+            quota_retry_queue=[{"tentacle": "t1"}, {"tentacle": "t2"}],
+        )
+        self.assertIn("Retry queue: 2", out)
 
 
 if __name__ == "__main__":

@@ -848,9 +848,9 @@ Health classifications:
 - **at-risk** — budget pressure is developing (≤1 iteration remaining, ≥80 % of timeout elapsed,
   ≤2 tentacles remaining), blocking gates are pending or rejected, criteria have failed, or goal is `paused`
   for a non-quota reason.
-- **needs-action** — goal is blocked (`needs-human`, `awaiting-gate`, or `abandoned`), has exceeded
+- **needs-action** — goal is blocked (`needs-human`, `awaiting-gate`, `abandoned`, or `budget_limited`), has exceeded
   a budget limit, or is `paused` with quota / rate-limit / blocked-retry signals (including a
-  non-empty `retry_queue`).
+  non-empty `retry_queue` — persisted under `quota_retry_queue` by production writers).
 
 ```bash
 # Text dashboard (default)

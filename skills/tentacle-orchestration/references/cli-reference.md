@@ -93,7 +93,7 @@ Operator dashboard that classifies health, surfaces budget pressure, and lists b
 |--------|-----------|
 | `healthy` | Active, no budget pressure, no blocking gates, no failed criteria |
 | `at-risk` | Budget approaching limit (≤1 iter remaining, ≥80 % timeout, ≤2 tentacles left), pending/rejected gates, failed criteria, or `paused` for a non-quota reason |
-| `needs-action` | `needs-human`, `awaiting-gate`, or `abandoned` status; over budget; or `paused` with quota / rate-limit / blocked-retry signals (or non-empty `retry_queue`) |
+| `needs-action` | `needs-human`, `awaiting-gate`, `abandoned`, or `budget_limited` status; over budget; or `paused` with quota / rate-limit / blocked-retry signals (or non-empty `retry_queue` — persisted as `quota_retry_queue` by production writers) |
 
 ```bash
 # Text dashboard (human-readable)
