@@ -435,6 +435,148 @@ audit_verified = skill_metrics_verified._runtime_audit(status_verified)
 test("audit ok", audit_verified["ok"] is True, str(audit_verified))
 
 # ---------------------------------------------------------------------------
+print("\n📊 skill-metrics.py — patch_history / skill_patch_history table")
+
+patch_db_path = ARTIFACT_DIR / "patch-skill-metrics.db"
+
+db_patch = sqlite3.connect(str(patch_db_path))
+db_patch.executescript(
+    """
+    CREATE TABLE IF NOT EXISTS tentacle_outcomes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tentacle_name TEXT NOT NULL,
+        tentacle_id TEXT,
+        git_root TEXT,
+        description TEXT,
+        outcome_status TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        worktree_used INTEGER NOT NULL DEFAULT 0,
+        worktree_path TEXT,
+        verification_total INTEGER NOT NULL DEFAULT 0,
+        verification_passed INTEGER NOT NULL DEFAULT 0,
+        verification_failed INTEGER NOT NULL DEFAULT 0,
+        todo_total INTEGER NOT NULL DEFAULT 0,
+        todo_done INTEGER NOT NULL DEFAULT 0,
+        learned INTEGER NOT NULL DEFAULT 0,
+        duration_seconds REAL,
+        summary TEXT
+    );
+    CREATE TABLE IF NOT EXISTS tentacle_outcome_skills (
+        outcome_id INTEGER NOT NULL,
+        skill_name TEXT NOT NULL,
+        PRIMARY KEY (outcome_id, skill_name)
+    );
+    CREATE TABLE IF NOT EXISTS tentacle_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        outcome_id INTEGER,
+        tentacle_name TEXT NOT NULL,
+        tentacle_id TEXT,
+        label TEXT NOT NULL,
+        command TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        exit_code INTEGER NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT NOT NULL,
+        duration_seconds REAL NOT NULL,
+        log_path TEXT
+    );
+    CREATE TABLE IF NOT EXISTS skill_patch_history (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        skill_path           TEXT NOT NULL,
+        patched_at           TEXT NOT NULL,
+        old_text             TEXT NOT NULL,
+        new_text             TEXT NOT NULL,
+        occurrences_replaced INTEGER NOT NULL DEFAULT 0,
+        replace_all          INTEGER NOT NULL DEFAULT 0,
+        dry_run              INTEGER NOT NULL DEFAULT 0,
+        validation_passed    INTEGER,
+        validation_errors    INTEGER NOT NULL DEFAULT 0,
+        validation_warnings  INTEGER NOT NULL DEFAULT 0
+    );
+    """
+)
+# Insert two patch history rows
+db_patch.execute(
+    "INSERT INTO skill_patch_history "
+    "(skill_path, patched_at, old_text, new_text, occurrences_replaced, "
+    "replace_all, dry_run, validation_passed, validation_errors, validation_warnings) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ("/skills/test-skill/SKILL.md", "2026-05-01T00:00:00+00:00",
+     "old text", "new text", 1, 0, 0, 1, 0, 0),
+)
+db_patch.execute(
+    "INSERT INTO skill_patch_history "
+    "(skill_path, patched_at, old_text, new_text, occurrences_replaced, "
+    "replace_all, dry_run, validation_passed, validation_errors, validation_warnings) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ("/skills/other-skill/SKILL.md", "2026-05-02T00:00:00+00:00",
+     "another old", "another new", 3, 1, 0, 1, 0, 2),
+)
+db_patch.commit()
+db_patch.close()
+
+skill_metrics_patch = load_module("skill_metrics_patch", "skill-metrics.py")
+skill_metrics_patch.METRICS_DB_PATH = patch_db_path
+status_patch = skill_metrics_patch.collect_status()
+
+test(
+    "patch-history: total_patches == 2",
+    status_patch.get("total_patches") == 2,
+    f"got {status_patch.get('total_patches')}",
+)
+test(
+    "patch-history: patch_history list has 2 entries",
+    len(status_patch.get("patch_history", [])) == 2,
+    f"got {len(status_patch.get('patch_history', []))}",
+)
+test(
+    "patch-history: first entry has skill_path",
+    "skill_path" in (status_patch.get("patch_history") or [{}])[0],
+)
+test(
+    "patch-history: first entry has patched_at",
+    "patched_at" in (status_patch.get("patch_history") or [{}])[0],
+)
+test(
+    "patch-history: first entry has occurrences_replaced",
+    "occurrences_replaced" in (status_patch.get("patch_history") or [{}])[0],
+)
+test(
+    "patch-history: first entry replace_all is True",
+    (status_patch.get("patch_history") or [{}])[0].get("replace_all") is True,
+)
+
+# Verify format_status includes patch history section
+formatted_patch = skill_metrics_patch.format_status(status_patch)
+test(
+    "patch-history: format_status includes patch history heading",
+    "patch" in formatted_patch.lower(),
+    formatted_patch,
+)
+
+# Verify collect_status on a DB without skill_patch_history table still works
+db_no_patch_path = ARTIFACT_DIR / "no-patch-skill-metrics.db"
+_make_metrics_db(db_no_patch_path, with_data=True)
+skill_metrics_no_patch = load_module("skill_metrics_no_patch", "skill-metrics.py")
+skill_metrics_no_patch.METRICS_DB_PATH = db_no_patch_path
+status_no_patch = skill_metrics_no_patch.collect_status()
+test(
+    "no-patch-table: total_patches defaults to 0",
+    status_no_patch.get("total_patches", 0) == 0,
+    f"got {status_no_patch.get('total_patches')}",
+)
+test(
+    "no-patch-table: patch_history defaults to empty list",
+    status_no_patch.get("patch_history", []) == [],
+    f"got {status_no_patch.get('patch_history')}",
+)
+test(
+    "no-patch-table: collect_status still has total_outcomes",
+    status_no_patch.get("total_outcomes", 0) > 0,
+    f"got {status_no_patch.get('total_outcomes')}",
+)
+
+# ---------------------------------------------------------------------------
 print("\n" + "=" * 72)
 print(f"PASS: {PASS}")
 print(f"FAIL: {FAIL}")

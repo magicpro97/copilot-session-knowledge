@@ -142,6 +142,12 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Apply a targeted patch to a SKILL.md file
+    #[command(name = "skill-patch")]
+    SkillPatch {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 // Map a grouped namespace command (e.g. "index build") to a Python script name.
@@ -272,6 +278,7 @@ fn main() -> ExitCode {
             }
         }
         Some(Commands::SkillSuggest { args }) => run_fallback("skill-suggest.py", &args),
+        Some(Commands::SkillPatch { args }) => run_fallback("skill-patch.py", &args),
     };
 
     if cli.time {
