@@ -79,6 +79,7 @@ recovery hints. None of these scripts are candidates for deletion as a consequen
 | `migrate.py` | Versioned schema migrations via `schema_version` table |
 | `install.py` | Deploy skills/hooks; inject global AI instructions |
 | `setup-project.py` | Full project onboarding: skills + hooks + WORKFLOW.md |
+| `project-registry.py` | `sk project add/remove/list` — manage the persistent project registry (`tools-managed-projects.json`) |
 | `host_manifest.py` | Single source of truth for supported hosts + their filesystem paths |
 | `index-status.py` | Row counts, FTS integrity, event-offset coverage |
 | `knowledge-health.py` | Knowledge base health + recall telemetry |
@@ -319,6 +320,33 @@ These conventions apply to all scripts in this repo. Follow them in every change
 - `briefing.py --pack` → `entries.<category>[]`
 - `snippet_freshness` values: `fresh | drifted | missing | unknown`
 - `related_entry_ids` — JSON ints, confidence-ranked, capped to top 3
+
+### Project Registry (`tools-managed-projects.json`)
+
+The file `~/.copilot/session-state/tools-managed-projects.json` is the persistent registry of
+projects managed by session-knowledge tools. It is written by `install.py`, `setup-project.py`,
+and `project-registry.py`.
+
+**Schema — backward-compatible mixed format:**
+
+```json
+{
+  "projects": [
+    "/legacy/string/path",
+    {"name": "myproject", "path": "/richer/dict/path", "created_at": "2025-01-01T00:00:00+00:00"}
+  ]
+}
+```
+
+- **Legacy string entries** (`install.py`, `setup-project.py`): plain path strings. Written by
+  existing scripts; always preserved on any write.
+- **Rich dict entries** (`project-registry.py`): `{name, path, created_at}`. Written by
+  `sk project add`. Both formats co-exist in the same file.
+
+All readers (`_load_project_registry()` in `install.py`, `setup-project.py`, and
+`auto-update-tools.py`) extract the path string from either format.
+
+`project-registry.py` is the CLI owner of this file: `sk project add|remove|list`.
 
 ### DB Migrations
 

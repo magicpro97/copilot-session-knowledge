@@ -159,6 +159,59 @@ test("first project still present", resolved_key in registered3)
 _install.REGISTRY_PATH = original_registry
 
 
+# ── 3b. _register_project + _load_project_registry — richer schema compat ────
+
+print("\n📌 _register_project / _load_project_registry — richer schema compat")
+
+_install.REGISTRY_PATH = SCRATCH / "reg-rich-compat.json"
+if _install.REGISTRY_PATH.exists():
+    _install.REGISTRY_PATH.unlink()
+
+import json as _json
+
+# Pre-populate with a dict entry (as written by project-registry.py)
+rich_path = str((SCRATCH / "rich-proj").resolve())
+rich_entry = {"name": "rich-proj", "path": rich_path, "created_at": "2025-01-01T00:00:00+00:00"}
+_install.REGISTRY_PATH.write_text(_json.dumps({"projects": [rich_entry]}), encoding="utf-8")
+
+# _load_project_registry must return the path from the dict entry
+loaded_paths = _install._load_project_registry()
+test("load handles dict entry — path extracted", rich_path in loaded_paths)
+
+# _register_project must not add a duplicate when the path already exists as a dict entry
+_rich_proj = SCRATCH / "rich-proj"
+_rich_proj.mkdir(exist_ok=True)
+_install._register_project(_rich_proj)
+reload_paths = _install._load_project_registry()
+test("register does not duplicate dict-only entry", reload_paths.count(rich_path) == 1)
+
+# _register_project must preserve the original dict entry (not overwrite with string only)
+raw_after = _json.loads(_install.REGISTRY_PATH.read_text(encoding="utf-8"))["projects"]
+test("dict entry preserved after no-op register_project", any(isinstance(e, dict) for e in raw_after))
+
+# Mixed mode: pre-populate with both a string entry and a dict entry
+str_path = "/legacy/string/path"
+_install.REGISTRY_PATH.write_text(
+    _json.dumps({"projects": [str_path, rich_entry]}),
+    encoding="utf-8",
+)
+mixed_paths = _install._load_project_registry()
+test("load mixed registry returns string path", str_path in mixed_paths)
+test("load mixed registry returns dict path", rich_path in mixed_paths)
+
+# Register a new project into a mixed registry — both existing entries preserved
+new_proj = SCRATCH / "new-proj"
+new_proj.mkdir(exist_ok=True)
+_install._register_project(new_proj)
+final_raw = _json.loads(_install.REGISTRY_PATH.read_text(encoding="utf-8"))["projects"]
+final_paths_extracted = [e if isinstance(e, str) else e.get("path", "") for e in final_raw]
+test("mixed: string entry preserved after register new project", str_path in final_paths_extracted)
+test("mixed: dict entry preserved after register new project", rich_path in final_paths_extracted)
+test("mixed: new project added as string", str(new_proj.resolve()) in final_paths_extracted)
+
+_install.REGISTRY_PATH = original_registry
+
+
 # ── 4. _count_scripts ────────────────────────────────────────────────────────
 
 print("\n🔢 _count_scripts")

@@ -312,11 +312,22 @@ def _load_project_registry() -> list[Path]:
     Written by setup-project.py on each successful (non-dry-run) deployment so
     that deploy_skills() can propagate vendored-skill updates to every managed
     project even when called from the tools repo or a non-project context.
+
+    Handles both the legacy plain-string format and the richer dict format written
+    by project-registry.py (``{"name": ..., "path": ..., "created_at": ...}``).
     """
     try:
         if REGISTRY_PATH.exists():
             data = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
-            return [Path(p) for p in data.get("projects", []) if isinstance(p, str)]
+            paths: list[Path] = []
+            for entry in data.get("projects", []):
+                if isinstance(entry, str):
+                    paths.append(Path(entry))
+                elif isinstance(entry, dict):
+                    p = entry.get("path", "")
+                    if isinstance(p, str) and p:
+                        paths.append(Path(p))
+            return paths
     except Exception:
         pass
     return []

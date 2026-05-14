@@ -275,7 +275,73 @@ class TestSkGroupedCommands(unittest.TestCase):
         self._assert_group_routes("scout", "status", "scout-status.py")
 
 
+class TestSkProjectNamespace(unittest.TestCase):
+    """Verify that sk project add/remove/list route to project-registry.py."""
+
+    def _assert_project_routes(self, sub: str, extra: list[str] | None = None):
+        """sk project <sub> [extra] must call _run('project-registry.py', [sub] + extra)."""
+        extra = extra or []
+        expected_args = [sub] + extra
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["project", sub] + extra)
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("project-registry.py", expected_args)
+
+    def test_project_add(self):
+        self._assert_project_routes("add")
+
+    def test_project_add_with_path(self):
+        self._assert_project_routes("add", ["/some/project/path"])
+
+    def test_project_add_quiet(self):
+        self._assert_project_routes("add", ["/path", "--quiet"])
+
+    def test_project_remove(self):
+        self._assert_project_routes("remove")
+
+    def test_project_remove_with_path(self):
+        self._assert_project_routes("remove", ["/some/path"])
+
+    def test_project_list(self):
+        self._assert_project_routes("list")
+
+    def test_project_list_json(self):
+        self._assert_project_routes("list", ["--json"])
+
+    def test_project_unknown_sub_returns_2(self):
+        with patch("builtins.print"):
+            rc = sk.main(["project", "switch"])
+        self.assertEqual(rc, 2)
+
+    def test_project_help_flag(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["project", "--help"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("project-registry.py", ["--help"])
+
+    def test_project_no_args_shows_help(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["project"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("project-registry.py", ["--help"])
+
+    def test_project_registry_script_exists(self):
+        """project-registry.py must exist in the tools directory."""
+        self.assertTrue(
+            (TOOLS_DIR / "project-registry.py").exists(),
+            "project-registry.py not found — sk project would break",
+        )
+
+    def test_project_in_help_output(self):
+        with patch("builtins.print") as mock_print:
+            sk.main(["--help"])
+        output = " ".join(str(c) for call in mock_print.call_args_list for c in call[0])
+        self.assertIn("project", output)
+
+
 class TestSkErrorCases(unittest.TestCase):
+    """Generic CLI error and edge-case routing tests."""
+
     def test_unknown_command_returns_2(self):
         with patch("builtins.print"):
             rc = sk.main(["nonexistent-command"])

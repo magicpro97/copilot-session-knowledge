@@ -131,6 +131,11 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Manage the project registry (add / remove / list)
+    Project {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 // Map a grouped namespace command (e.g. "index build") to a Python script name.
@@ -237,6 +242,31 @@ fn main() -> ExitCode {
         }
         Some(Commands::Hooks { args }) => commands::hooks::run_hooks_command(&args),
         Some(Commands::Watch { args }) => commands::watch::run_watch_command(&args),
+        Some(Commands::Project { args }) => {
+            // Validate subcommand before forwarding to project-registry.py so
+            // that bad subcommands fail fast with a consistent message even if
+            // the Python script is missing or not invocable — matching the
+            // behaviour of the Python sk.py _run_project() dispatcher.
+            const VALID_SUBS: &[&str] = &["add", "remove", "list"];
+            let sub = args.first().map(|s| s.as_str());
+            match sub {
+                // No subcommand or explicit help flag → show help
+                None | Some("-h") | Some("--help") => {
+                    run_fallback("project-registry.py", &["--help".to_string()])
+                }
+                Some(s) if VALID_SUBS.contains(&s) => {
+                    run_fallback("project-registry.py", &args)
+                }
+                Some(bad) => {
+                    eprintln!(
+                        "sk project: unknown subcommand '{}'. Choose from: {}",
+                        bad,
+                        VALID_SUBS.join(", ")
+                    );
+                    ExitCode::from(2)
+                }
+            }
+        }
     };
 
     if cli.time {

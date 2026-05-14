@@ -32,6 +32,7 @@ Usage:
     sk profile build|import|export [<args>...]
     sk context project|map [<args>...]
     sk scout  run|config|status [<args>...]
+    sk project add|remove|list [<args>...]
 
     sk --help     Show this help
     sk --version  Show version
@@ -114,6 +115,11 @@ _GROUPS: dict[str, dict[str, str]] = {
         "run": "trend-scout.py",
         "config": "scout-config.py",
         "status": "scout-status.py",
+    },
+    "project": {
+        "add": "project-registry.py",
+        "remove": "project-registry.py",
+        "list": "project-registry.py",
     },
 }
 
@@ -204,6 +210,27 @@ def _run_hooks(extra_args: list[str]) -> int:
     return _run(str(Path("hooks") / "hook_runner.py"), extra_args)
 
 
+def _run_project(extra_args: list[str]) -> int:
+    """Dispatch ``sk project ...`` to project-registry.py.
+
+    Unlike other grouped namespace commands, all ``project`` subcommands
+    (add / remove / list) share a single script that uses argparse internally.
+    The subcommand must therefore be forwarded as the first positional argument.
+    """
+    if not extra_args or extra_args[0] in ("-h", "--help"):
+        return _run("project-registry.py", ["--help"])
+    sub = extra_args[0]
+    if sub not in _GROUPS["project"]:
+        subs = list(_GROUPS["project"].keys())
+        print(
+            f"sk project: unknown subcommand '{sub}'. Choose from: {', '.join(subs)}",
+            file=sys.stderr,
+        )
+        return 2
+    # Forward ALL args including the subcommand to project-registry.py
+    return _run("project-registry.py", extra_args)
+
+
 def _print_help() -> None:
     direct_list = "  " + "\n  ".join(f"sk {cmd:<12} → {script}" for cmd, script in _DIRECT.items())
     print(
@@ -234,6 +261,8 @@ def main(argv: list[str] | None = None) -> int:
     # Direct command?
     if cmd == "hooks":
         return _run_hooks(rest)
+    if cmd == "project":
+        return _run_project(rest)
     if cmd in _DIRECT:
         return _run(_DIRECT[cmd], rest)
 

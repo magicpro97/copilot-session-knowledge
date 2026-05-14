@@ -84,6 +84,30 @@ sk scout config                     # scout-config.py
 sk scout status                     # scout-status.py
 ```
 
+### `sk project` — project registry
+
+Manage the persistent registry of projects that have had session-knowledge deployed.
+
+```bash
+sk project add                      # register cwd (auto-detects .copilot/ or git root)
+sk project add /path/to/project     # register explicit path
+sk project remove                   # unregister cwd
+sk project remove /path/to/project  # unregister explicit path
+sk project list                     # show all registered projects
+sk project list --json              # JSON output
+```
+
+**Auto-detect order:** walks up ancestor directories looking for `.copilot/`; falls back to
+`git rev-parse --show-toplevel` when no `.copilot/` directory is found.
+
+**Registry file:** `~/.copilot/session-state/tools-managed-projects.json`
+
+**Schema:** new writes use `{"name": ..., "path": ..., "created_at": ...}` (richer format).
+Existing plain-string entries from `install.py` / `setup-project.py` continue to work
+unchanged alongside richer entries in the same file.
+
+> Direct-script form: `python project-registry.py add|remove|list [args...]`
+
 ### `sk hooks` — hook runner
 
 `sk hooks` is available in both the Rust binary and the Python `sk.py` compatibility shim.
