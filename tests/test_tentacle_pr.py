@@ -182,6 +182,30 @@ class TestGenerateCommitMessage(unittest.TestCase):
         msg = T._pr_generate_commit_message("Add feature", "my-scope", [])
         self.assertRegex(msg, r"^feat\([^)]+\): .+")
 
+    def test_uuid_goal_id_falls_back_to_tentacle_name(self):
+        """UUID-shaped goal_ids must NOT become commit scopes; use tentacle name instead.
+
+        Regression for: goal_id="603ba4ad-04fe-400e-88e7-c0f975a399fd" was used
+        verbatim as the conventional commit scope, producing an unreadable message.
+        """
+        uuid_id = "603ba4ad-04fe-400e-88e7-c0f975a399fd"
+        msg = T._pr_generate_commit_message(
+            "Implement feature", uuid_id, ["wave27-some-feature"]
+        )
+        # The scope must NOT contain opaque UUID hex fragments
+        self.assertNotIn("603ba4ad", msg)
+        # Should fall back to tentacle-name-derived scope
+        self.assertIn("some-feature", msg)
+        # Must still be valid conventional commit format
+        self.assertRegex(msg, r"^feat\([^)]+\): .+")
+
+    def test_uuid_goal_id_no_tentacles_uses_default(self):
+        """UUID goal_id with empty tentacle list falls back to 'tentacle' scope."""
+        uuid_id = "603ba4ad-04fe-400e-88e7-c0f975a399fd"
+        msg = T._pr_generate_commit_message("Implement feature", uuid_id, [])
+        self.assertNotIn("603ba4ad", msg)
+        self.assertIn("feat(tentacle):", msg)
+
 
 # ---------------------------------------------------------------------------
 # Unit tests: _pr_collect_handoffs
@@ -298,6 +322,29 @@ class TestCollectVerifications(unittest.TestCase):
         labels = [r["label"] for r in results]
         self.assertIn("check-1", labels)
         self.assertIn("check-2", labels)
+
+    def test_null_label_and_command_fields(self):
+        """Explicit JSON nulls in label/command/duration must not crash.
+
+        Regression for: v.get("label", v.get("command", "?"))[:60] raises
+        TypeError when label is explicitly null (None[:60] fails).
+        """
+        verifs = [{"label": None, "command": None, "exit_code": 0, "duration_seconds": None}]
+        _make_tentacle("t-null", self.tentacles, verifications=verifs)
+        results = T._pr_collect_verifications(self.tentacles, ["t-null"])
+        self.assertEqual(len(results), 1)
+        r = results[0]
+        self.assertIsInstance(r["label"], str)
+        self.assertIsInstance(r["command"], str)
+        self.assertEqual(r["duration_seconds"], 0.0)
+
+    def test_null_label_uses_command_fallback(self):
+        """When label is null but command is present, command is used as the label."""
+        verifs = [{"label": None, "command": "python test.py", "exit_code": 0, "duration_seconds": 1.0}]
+        _make_tentacle("t-null-label", self.tentacles, verifications=verifs)
+        results = T._pr_collect_verifications(self.tentacles, ["t-null-label"])
+        self.assertEqual(len(results), 1)
+        self.assertIn("python test.py", results[0]["label"])
 
 
 # ---------------------------------------------------------------------------
@@ -661,6 +708,75 @@ class TestCmdPrIssueRefNormalization(unittest.TestCase):
         output = self._run_pr_capture(url)
         self.assertIn(f"Closes {url}", output)
         self.assertNotIn(f"Closes #{url}", output)
+
+    def test_http_url_ref_unchanged(self):
+        """Plain http:// issue URLs must not be prefixed with '#'."""
+        url = "http://github.com/owner/repo/issues/114"
+        output = self._run_pr_capture(url)
+        self.assertIn(f"Closes {url}", output)
+        self.assertNotIn(f"Closes #{url}", output)
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: detached HEAD push guard
+# ---------------------------------------------------------------------------
+
+
+class TestDetachedHeadGuard(unittest.TestCase):
+    """cmd_pr must fail clearly when the working tree is in detached HEAD state.
+
+    Regression for: git push --set-upstream origin HEAD was attempted silently
+    instead of failing with a clear error.
+    """
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "detached_head"
+        _rmtree(self.base)
+        self.octogent, self.tentacles = _make_env(self.base)
+        _init_goal(self.tentacles, "Detached HEAD test", force=True)
+        _set_goal_completed(self.tentacles)
+
+    def tearDown(self):
+        _rmtree(self.base)
+
+    def test_detached_head_exits_with_error(self):
+        """cmd_pr must sys.exit(1) and print an error when HEAD is detached."""
+        env_patch = patch.dict(os.environ, {"TENTACLE_SESSION_DIR": str(self.tentacles)})
+        args = _fake_args(
+            dry_run=False,
+            title=None,
+            base="main",
+            commit_msg=None,
+            issue=None,
+            label=[],
+            reviewer=None,
+            repo=None,
+        )
+
+        call_count = [0]
+
+        def _fake_subprocess(cmd, cwd=None, timeout=30):
+            call_count[0] += 1
+            cmd_str = " ".join(cmd)
+            if "add" in cmd_str and "-A" in cmd_str:
+                return (0, "", "")
+            if "commit" in cmd_str:
+                return (0, "[branch abc1234] test commit", "")
+            if "--abbrev-ref" in cmd_str and "@{u}" not in cmd_str:
+                # Simulate detached HEAD: rev-parse --abbrev-ref HEAD → "HEAD"
+                return (0, "HEAD\n", "")
+            return (0, "", "")
+
+        stderr_lines: list[str] = []
+
+        with env_patch:
+            with patch.object(T, "_pr_run_subprocess_safe", side_effect=_fake_subprocess):
+                with patch("sys.stderr") as mock_stderr:
+                    mock_stderr.write = lambda s: stderr_lines.append(s)
+                    with self.assertRaises(SystemExit) as ctx:
+                        with patch("builtins.print"):
+                            T.cmd_pr(args)
+        self.assertEqual(ctx.exception.code, 1)
 
 
 # ---------------------------------------------------------------------------

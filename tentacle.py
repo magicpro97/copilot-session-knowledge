@@ -6687,13 +6687,16 @@ def _pr_collect_verifications(tentacles_dir: Path, tentacle_names: list[str]) ->
         for v in meta.get("verifications") or []:
             if not isinstance(v, dict):
                 continue
+            label_raw = v.get("label") or v.get("command") or "?"
+            cmd_raw = v.get("command") or "?"
+            dur_raw = v.get("duration_seconds")
             results.append(
                 {
                     "tentacle": name,
-                    "label": v.get("label", v.get("command", "?"))[:60],
-                    "exit_code": v.get("exit_code", -1),
-                    "command": v.get("command", "?")[:80],
-                    "duration_seconds": v.get("duration_seconds", 0.0),
+                    "label": str(label_raw)[:60],
+                    "exit_code": v.get("exit_code") if v.get("exit_code") is not None else -1,
+                    "command": str(cmd_raw)[:80],
+                    "duration_seconds": float(dur_raw) if dur_raw is not None else 0.0,
                 }
             )
     return results
@@ -6706,9 +6709,17 @@ def _pr_generate_commit_message(goal_title: str, goal_id: str | None, tentacle_n
 
     The scope is derived from the goal title or goal_id.
     The summary is the goal title lowercased and normalized.
+    UUID-shaped goal_ids are opaque and unreadable as commit scopes; when
+    goal_id matches the standard 8-4-4-4-12 UUID format the tentacle-name
+    fallback path is used instead.
     """
-    # Derive conventional commit scope from goal_id or tentacle name prefix
-    if goal_id:
+    _UUID_RE = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        re.IGNORECASE,
+    )
+    # Derive conventional commit scope from goal_id or tentacle name prefix.
+    # Skip UUID-shaped goal_ids — they are opaque identifiers, not human labels.
+    if goal_id and not _UUID_RE.match(goal_id):
         scope = goal_id[:30].lower().replace(" ", "-")
     elif tentacle_names:
         # Use a common prefix of the tentacle names as scope
@@ -6959,9 +6970,7 @@ def cmd_pr(args) -> None:
     work_dir = str(git_root) if git_root else None
 
     # ── Generate commit message ───────────────────────────────────────────────
-    commit_msg = getattr(args, "commit_msg", None) or _pr_generate_commit_message(
-        goal_title, goal_id, tentacle_names
-    )
+    commit_msg = getattr(args, "commit_msg", None) or _pr_generate_commit_message(goal_title, goal_id, tentacle_names)
 
     # ── Generate PR body ──────────────────────────────────────────────────────
     issue_ref: str | None = getattr(args, "issue", None)
@@ -6971,6 +6980,7 @@ def cmd_pr(args) -> None:
         issue_ref
         and not issue_ref.startswith("#")
         and not issue_ref.startswith("https://")
+        and not issue_ref.startswith("http://")
         and "#" not in issue_ref
     ):
         issue_ref = f"#{issue_ref}"
@@ -7029,6 +7039,20 @@ def cmd_pr(args) -> None:
 
     # ── git push ──────────────────────────────────────────────────────────────
     print("▶  git push")
+    # Detect detached HEAD before attempting to push — a detached HEAD has no
+    # branch name and git push would fail with a confusing error.
+    rc_head, head_ref, _ = _pr_run_subprocess_safe(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=work_dir,
+        timeout=15,
+    )
+    if rc_head == 0 and head_ref.strip() == "HEAD":
+        print(
+            "ERROR: repository is in detached HEAD state. Checkout a named branch before running `sk tentacle pr`.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     push_cmd = ["git", "push"]
     # Add --set-upstream if no upstream is configured (best-effort check)
     rc_check, tracking, _ = _pr_run_subprocess_safe(
@@ -7037,13 +7061,8 @@ def cmd_pr(args) -> None:
         timeout=15,
     )
     if rc_check != 0:
-        # No upstream: push with --set-upstream to origin HEAD
-        rc_branch, branch_name, _ = _pr_run_subprocess_safe(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=work_dir,
-            timeout=15,
-        )
-        branch = branch_name.strip() if rc_branch == 0 else "HEAD"
+        # No upstream: push with --set-upstream to origin <branch>
+        branch = head_ref.strip() if rc_head == 0 else "HEAD"
         push_cmd = ["git", "push", "--set-upstream", "origin", branch]
 
     rc, out, err = _pr_run_subprocess_safe(push_cmd, cwd=work_dir, timeout=60)

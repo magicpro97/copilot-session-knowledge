@@ -32,6 +32,7 @@ KNOWLEDGE.md
 # Local tentacle / multi-agent orchestration artifacts
 .octogent/
 .*-test-artifacts/
+_test_tentacle_pr_scratch/
 
 # browse-ui Node.js artifacts
 browse-ui/node_modules/
