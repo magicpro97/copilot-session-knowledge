@@ -1411,7 +1411,9 @@ def _current_repo_root() -> str:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0:
             raw = result.stdout.strip()
@@ -1809,7 +1811,9 @@ def generate_briefing(
     return output
 
 
-def _format_default(query: str, data: dict, past_work: list, categories: dict, blast: list = None, file_annotations: list | None = None) -> str:
+def _format_default(
+    query: str, data: dict, past_work: list, categories: dict, blast: list = None, file_annotations: list | None = None
+) -> str:
     """Compact default format: titles + 1-line summaries (~500 tokens)."""
     lines = []
     lines.append(f"📋 Briefing: {query}")
@@ -2034,7 +2038,9 @@ def _word_trim(s: str, limit: int = 80) -> str:
     return s
 
 
-def _format_compact(query: str, data: dict, past_work: list, categories: dict, blast: list = None, file_annotations: list | None = None) -> str:
+def _format_compact(
+    query: str, data: dict, past_work: list, categories: dict, blast: list = None, file_annotations: list | None = None
+) -> str:
     """Compact format optimized for AI agent context injection.
 
     Minimal-first ordering: mistakes → blast_radius → patterns/decisions/tools → past_work → file_index.

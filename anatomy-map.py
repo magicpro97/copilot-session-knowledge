@@ -131,6 +131,7 @@ _EXT_DESCRIPTIONS: dict[str, str] = {
 # Heuristic description extractor
 # ---------------------------------------------------------------------------
 
+
 def _tok(chars: int) -> int:
     """Estimate tokens: ceil(chars / 3.75)."""
     if chars <= 0:
@@ -209,13 +210,13 @@ def _leading_docstring(content: str) -> str | None:
         if is_leading_preamble:
             triple_end = joined.find('"""', triple_start + 3)
             if triple_end != -1:
-                inner = joined[triple_start + 3: triple_end].strip()
+                inner = joined[triple_start + 3 : triple_end].strip()
                 first_line = inner.splitlines()[0].strip() if inner else ""
                 if first_line and len(first_line) > 5:
                     return first_line[:200]
 
     # C-style block comment: /* ... */
-    m = re.search(r'/\*+\s*(.*?)\s*\*+/', joined, re.DOTALL)
+    m = re.search(r"/\*+\s*(.*?)\s*\*+/", joined, re.DOTALL)
     if m:
         raw = m.group(1).strip()
         _raw_lines = raw.splitlines()
@@ -271,8 +272,24 @@ def describe_file(repo_root: Path, rel_path: str) -> tuple[str, int]:
 
     # 4. Leading docstring / header comment
     text_exts = {
-        ".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".go", ".java", ".kt",
-        ".swift", ".rb", ".sh", ".bash", ".ps1", ".sql", ".toml", ".yaml", ".yml",
+        ".py",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".rs",
+        ".go",
+        ".java",
+        ".kt",
+        ".swift",
+        ".rb",
+        ".sh",
+        ".bash",
+        ".ps1",
+        ".sql",
+        ".toml",
+        ".yaml",
+        ".yml",
     }
     if suffix in text_exts and content:
         ddesc = _leading_docstring(content)
@@ -295,6 +312,7 @@ def describe_file(repo_root: Path, rel_path: str) -> tuple[str, int]:
 # File enumeration
 # ---------------------------------------------------------------------------
 
+
 def find_git_root(start: Path | None = None) -> Path | None:
     """Walk up from *start* (defaults to cwd) to find the git repo root."""
     current = (start or Path.cwd()).resolve()
@@ -305,7 +323,10 @@ def find_git_root(start: Path | None = None) -> Path | None:
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5, cwd=str(current),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(current),
         )
         if r.returncode == 0:
             return Path(r.stdout.strip())
@@ -319,7 +340,9 @@ def ls_files(repo_root: Path, timeout: int = 10) -> list[str]:
     try:
         result = subprocess.run(
             ["git", "ls-files"],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
             cwd=str(repo_root),
         )
         if result.returncode != 0:
@@ -332,6 +355,7 @@ def ls_files(repo_root: Path, timeout: int = 10) -> list[str]:
 # ---------------------------------------------------------------------------
 # DB persistence
 # ---------------------------------------------------------------------------
+
 
 def _ensure_table(db: sqlite3.Connection) -> None:
     """Create file_annotations table if absent (idempotent)."""
@@ -398,6 +422,7 @@ def persist_annotations(
 # ---------------------------------------------------------------------------
 # Main entry
 # ---------------------------------------------------------------------------
+
 
 def run_anatomy(
     repo_root: Path,

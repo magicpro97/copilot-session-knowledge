@@ -91,16 +91,8 @@ class TestStaticDescriptions(unittest.TestCase):
                 value = node.value
             else:
                 continue
-            if (
-                isinstance(target, ast.Name)
-                and target.id == "_STATIC_DESCRIPTIONS"
-                and isinstance(value, ast.Dict)
-            ):
-                literal_keys = [
-                    k.value
-                    for k in value.keys
-                    if isinstance(k, ast.Constant) and isinstance(k.value, str)
-                ]
+            if isinstance(target, ast.Name) and target.id == "_STATIC_DESCRIPTIONS" and isinstance(value, ast.Dict):
+                literal_keys = [k.value for k in value.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)]
                 break
 
         self.assertIsNotNone(
@@ -316,17 +308,13 @@ class TestDbPersistence(unittest.TestCase):
 
     def test_ensure_table_creates_table(self):
         am._ensure_table(self.db)
-        row = self.db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_annotations'"
-        ).fetchone()
+        row = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_annotations'").fetchone()
         self.assertIsNotNone(row)
 
     def test_ensure_table_idempotent(self):
         am._ensure_table(self.db)
         am._ensure_table(self.db)  # should not raise
-        row = self.db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_annotations'"
-        ).fetchone()
+        row = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_annotations'").fetchone()
         self.assertIsNotNone(row)
 
     def test_persist_writes_rows(self):
@@ -356,9 +344,7 @@ class TestDbPersistence(unittest.TestCase):
         annotations2 = [("src/main.py", "Updated description.", 6, 2000.0)]
         written = am.persist_annotations(self.db, repo_root, annotations2)
         self.assertEqual(written, 1)
-        row = self.db.execute(
-            "SELECT description FROM file_annotations WHERE file_path='src/main.py'"
-        ).fetchone()
+        row = self.db.execute("SELECT description FROM file_annotations WHERE file_path='src/main.py'").fetchone()
         self.assertEqual(row[0], "Updated description.")
 
     def test_persist_multiple_files(self):
@@ -374,7 +360,6 @@ class TestDbPersistence(unittest.TestCase):
         count = self.db.execute("SELECT COUNT(*) FROM file_annotations").fetchone()[0]
         self.assertEqual(count, 3)
 
-
     def test_persist_repo_root_stored_as_posix(self):
         """repo_root must be stored as forward-slash POSIX path (Windows normalization fix)."""
         am._ensure_table(self.db)
@@ -388,8 +373,6 @@ class TestDbPersistence(unittest.TestCase):
         # Must use forward slashes (POSIX), not backslashes
         self.assertNotIn("\\", stored, f"repo_root stored with backslash: {stored!r}")
         self.assertEqual(stored, repo_root.as_posix())
-
-
 
     def test_finds_root_for_this_repo(self):
         root = am.find_git_root(REPO)
