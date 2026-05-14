@@ -4899,7 +4899,12 @@ def _goal_resilience_health(state: dict, bs: dict) -> str:
     if status == GOAL_STATUS_COMPLETED:
         return "healthy"
 
-    if status in (GOAL_STATUS_NEEDS_HUMAN, GOAL_STATUS_AWAITING_GATE, GOAL_STATUS_ABANDONED, GOAL_STATUS_BUDGET_LIMITED):
+    if status in (
+        GOAL_STATUS_NEEDS_HUMAN,
+        GOAL_STATUS_AWAITING_GATE,
+        GOAL_STATUS_ABANDONED,
+        GOAL_STATUS_BUDGET_LIMITED,
+    ):
         return "needs-action"
     if bs.get("over_budget"):
         return "needs-action"
@@ -5089,7 +5094,6 @@ def _cmd_goal_resilience_status(args, tentacles: Path) -> None:
     if retry_queue is not None:
         q_len = len(retry_queue) if isinstance(retry_queue, list) else "?"
         print(f"  Retry queue: {q_len} item(s)")
-
 
 
 def cmd_goal(args):
@@ -7350,7 +7354,6 @@ def main():
         help="Show a focused resilience/health dashboard: health classification, budget pressure, gates, criteria",
     )
     p_goal_resilience.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
-
 
     args = parser.parse_args()
 
