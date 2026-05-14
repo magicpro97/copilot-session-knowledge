@@ -34,6 +34,7 @@ def get_rules_for_event(event):
     from .read_tracker import ReadTrackerRule
     from .recurrence_detector import RecurrenceDetectorRule
     from .session_lifecycle import SessionEndRule, SubagentStopRule
+    from .skill_nudge import SkillNudgeRule
     from .subagent_guard import SubagentGitGuardRule
     from .syntax_gate import SyntaxGateRule
     from .tentacle import TentacleEnforceRule, TentacleSuggestRule
@@ -64,6 +65,7 @@ def get_rules_for_event(event):
         TentacleSuggestRule(),
         NextjsTypecheckRule(),
         ReadBeforeEditRule(),  # also postToolUse for tracking views
+        SkillNudgeRule(),  # Issue #116: skill-creation nudge after threshold tool calls
         TokenTrackerRule(),  # Issue #84: token usage tracking (postToolUse)
         # VerificationGateRule also handles postToolUse (already registered above)
         # errorOccurred
