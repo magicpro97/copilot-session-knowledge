@@ -117,11 +117,18 @@ After `git pull`, auto-update analyzes `git diff` to run only what changed:
 > **Project discovery (registry-backed):** `deploy_skills()` finds which projects to update via
 > `~/.copilot/session-state/tools-managed-projects.json`. A project is added to this registry
 > whenever `setup-project.py` **or** `install.py --deploy-skill` performs a real deployment in
-> that project. Projects that were set up by other means (manual file copies, etc.) and have never
-> been run through either of those commands are not auto-updated from the tools-repo context; in
-> that case, run `install.py --deploy-skill` once from inside the project to register it.
+> that project. Projects can also be added manually via `sk project add [path]` without requiring
+> a full skill deployment.  Projects that were set up by other means (manual file copies, etc.) and
+> have never been registered are not auto-updated from the tools-repo context; in that case, run
+> `install.py --deploy-skill` or `sk project add` once from inside the project to register it.
 > As a fallback, `deploy_skills()` also checks the current git root (handles ad-hoc installs run
 > directly from the target project).
+>
+> **Registry schema:** the registry file supports a backward-compatible mixed format where
+> plain-string path entries (written by `install.py` / `setup-project.py`) co-exist with richer
+> dict entries (`{"name": ..., "path": ..., "created_at": ...}`) written by `sk project add`.
+> All readers in `auto-update-tools.py`, `install.py`, and `setup-project.py` handle both formats.
+>
 >
 > **Hook templates:** Files in `hooks/references/` are classified under the `hooks` category
 > but auto-update intentionally does **not** deploy them — they are manually copied at project

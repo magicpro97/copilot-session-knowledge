@@ -122,26 +122,61 @@ REGISTRY_PATH = Path.home() / ".copilot" / "session-state" / "tools-managed-proj
 
 
 def _load_project_registry() -> list[str]:
-    """Return the list of registered project root paths (strings)."""
+    """Return the list of registered project root paths (strings).
+
+    Handles both the legacy plain-string format and the richer dict format
+    written by project-registry.py (``{"name": ..., "path": ..., "created_at": ...}``).
+    Only the path string is extracted; callers receive a flat list of strings.
+    """
     try:
         if REGISTRY_PATH.exists():
             data = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
-            return [p for p in data.get("projects", []) if isinstance(p, str)]
+            paths: list[str] = []
+            for entry in data.get("projects", []):
+                if isinstance(entry, str):
+                    paths.append(entry)
+                elif isinstance(entry, dict):
+                    p = entry.get("path", "")
+                    if isinstance(p, str) and p:
+                        paths.append(p)
+            return paths
     except Exception:
         pass
     return []
 
 
 def _register_project(project_root: Path) -> None:
-    """Add *project_root* to the persistent registry (idempotent, silent on error)."""
+    """Add *project_root* to the persistent registry (idempotent, silent on error).
+
+    Reads the full raw registry (which may contain richer dict entries written by
+    project-registry.py) and appends a plain string entry when the path is new.
+    Existing entries of either format are preserved unchanged.
+    """
     try:
-        projects = _load_project_registry()
         key = str(project_root.resolve())
-        if key not in projects:
-            projects.append(key)
+        try:
+            raw: list = (
+                json.loads(REGISTRY_PATH.read_text(encoding="utf-8")).get("projects", [])
+                if REGISTRY_PATH.exists()
+                else []
+            )
+        except Exception:
+            raw = []
+
+        existing_paths: set[str] = set()
+        for entry in raw:
+            if isinstance(entry, str):
+                existing_paths.add(entry)
+            elif isinstance(entry, dict):
+                p = entry.get("path", "")
+                if p:
+                    existing_paths.add(p)
+
+        if key not in existing_paths:
+            raw.append(key)
             REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
             # P1-7: atomic write prevents registry truncation on concurrent access
-            _atomic_write_text(REGISTRY_PATH, json.dumps({"projects": projects}, indent=2))
+            _atomic_write_text(REGISTRY_PATH, json.dumps({"projects": raw}, indent=2))
     except Exception:
         pass
 
