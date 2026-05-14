@@ -3337,6 +3337,70 @@ try:
 except Exception as _e:
     test("P121-12: semantic overfetch path regression (Blocker 4)", False, str(_e))
 
+# -- v22/v23 collision-repair: run the real migrate.py path against a legacy DB --
+try:
+    with tempfile.TemporaryDirectory(prefix="migration-collision-") as _cr_tmp:
+        _cr_db_path = Path(_cr_tmp) / "knowledge.db"
+        _cr_db = sqlite3.connect(str(_cr_db_path))
+        _cr_db.executescript("""
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                migrated_at TEXT DEFAULT (datetime('now')),
+                name TEXT DEFAULT ''
+            );
+            CREATE TABLE knowledge_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stable_id TEXT DEFAULT '',
+                title TEXT NOT NULL,
+                content TEXT DEFAULT '',
+                category TEXT DEFAULT 'pattern',
+                tags TEXT DEFAULT '[]',
+                wing TEXT DEFAULT '',
+                room TEXT DEFAULT '',
+                facts TEXT DEFAULT '[]',
+                est_tokens INTEGER DEFAULT 0,
+                valence TEXT DEFAULT '',
+                intensity REAL DEFAULT 0.5
+            );
+            INSERT INTO schema_version (version, name) VALUES (22, 'file_annotations');
+        """)
+        _cr_db.commit()
+        _cr_db.close()
+
+        _cr_result = subprocess.run(
+            [sys.executable, str(REPO / "migrate.py"), str(_cr_db_path)],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO),
+            encoding="utf-8",
+            errors="replace",
+        )
+
+        _cr_check = sqlite3.connect(str(_cr_db_path))
+        _cr_cols_after = {row[1] for row in _cr_check.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        _cr_versions_after = _cr_check.execute("SELECT version, name FROM schema_version ORDER BY version").fetchall()
+        _cr_check.close()
+
+        test(
+            "CR-01: real migrate.py repair adds priority to legacy v22 collision DB",
+            _cr_result.returncode == 0
+            and "priority" in _cr_cols_after
+            and "collision-repair: priority column added" in _cr_result.stdout,
+            (
+                f"code={_cr_result.returncode} columns={sorted(_cr_cols_after)} "
+                f"stdout={_cr_result.stdout[-300:]} stderr={_cr_result.stderr[-300:]}"
+            ),
+        )
+        test(
+            "CR-02: real migrate.py repair renames v22 to priority and keeps v23 file_annotations",
+            (22, "priority") in _cr_versions_after
+            and (23, "file_annotations") in _cr_versions_after
+            and (22, "file_annotations") not in _cr_versions_after,
+            f"versions={_cr_versions_after}",
+        )
+except Exception as _e:
+    test("CR-01: v22/v23 collision-repair regression", False, str(_e))
+
 
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")
 if FAIL == 0:

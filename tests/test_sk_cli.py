@@ -157,6 +157,15 @@ class TestSkDirectCommands(unittest.TestCase):
     def test_dream_top_n(self):
         self._assert_routes("dream", "dream.py", ["--top", "10"])
 
+    def test_anatomy(self):
+        self._assert_routes("anatomy", "anatomy-map.py")
+
+    def test_anatomy_stdout(self):
+        self._assert_routes("anatomy", "anatomy-map.py", ["--stdout"])
+
+    def test_anatomy_repo(self):
+        self._assert_routes("anatomy", "anatomy-map.py", ["--repo", "/some/path"])
+
 
 class TestSkHooksCompat(unittest.TestCase):
     def test_hooks_run_drops_run_subcommand(self):

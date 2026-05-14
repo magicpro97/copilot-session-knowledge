@@ -23,6 +23,7 @@ Usage:
     sk export-cerebrum [<args>...] Run export-cerebrum.py
     sk cerebrum [<args>...]       Run export-cerebrum.py (alias for export-cerebrum)
     sk dream    [<args>...]       Run dream.py
+    sk anatomy  [<args>...]       Run anatomy-map.py
     sk hooks    run|list|<event>  Run hooks/hook_runner.py
 
     sk index  build|extract|migrate|status|health|embed|tag [<args>...]
@@ -74,6 +75,7 @@ _DIRECT: dict[str, str] = {
     "export-cerebrum": "export-cerebrum.py",
     "cerebrum": "export-cerebrum.py",  # alias for export-cerebrum (short form)
     "dream": "dream.py",
+    "anatomy": "anatomy-map.py",
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}
