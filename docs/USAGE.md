@@ -23,6 +23,8 @@ sk retro                                 # → retro.py
 sk heal                                  # → copilot-cli-healer.py
 sk skill-suggest                         # → skill-suggest.py
 sk skill-suggest --min-occurrences 3 --format json
+sk skill-patch path/to/SKILL.md --old "old text" --new "new text"  # → skill-patch.py
+sk skill-patch path/to/SKILL.md --old "old text" --new "new text" --replace-all
 ```
 
 ### `sk skill-suggest` — knowledge-to-skill pipeline
@@ -51,6 +53,56 @@ python validate-skill.py path/to/SKILL.md
 ```
 
 > Direct-script form: `python skill-suggest.py [args...]`
+
+### `sk skill-patch` — targeted SKILL.md patch
+
+Apply a focused, fuzzy-whitespace-tolerant replacement to a SKILL.md without
+rewriting the whole file.  Writes atomically, re-validates, and logs the patch
+history to `skill-metrics.db`.
+
+```bash
+# Replace first occurrence
+sk skill-patch path/to/SKILL.md --old "old text" --new "new text"
+
+# Replace all occurrences
+sk skill-patch path/to/SKILL.md --old "old text" --new "new text" --replace-all
+
+# Preview without writing (dry-run shows a unified diff)
+sk skill-patch path/to/SKILL.md --old "old text" --new "new text" --dry-run
+
+# Skip post-patch validation
+sk skill-patch path/to/SKILL.md --old "old text" --new "new text" --no-validate
+
+# Skip metrics logging
+sk skill-patch path/to/SKILL.md --old "old text" --new "new text" --no-metrics
+
+# Override metrics DB path
+sk skill-patch path/to/SKILL.md --old "old text" --new "new text" \
+    --metrics-db /path/to/custom/skill-metrics.db
+
+# Pass a skill directory (SKILL.md resolved automatically)
+sk skill-patch skills/my-skill/ --old "old text" --new "new text"
+```
+
+**Fuzzy matching:** whitespace differences (extra spaces, tabs, different
+indentation) between `--old` and the file are ignored during search.  The
+replacement preserves the original indentation of the matched region.
+
+**Atomic write:** the file is first written to a sibling tempfile, then
+renamed with `os.replace`, so a crash during write never leaves a partial file.
+
+**Validation:** after writing, `validate-skill.py` is invoked.  Exit code 1 is
+returned if the patched skill has errors.
+
+**Metrics:** each non-dry-run patch is appended to `skill_patch_history` in
+`~/.copilot/session-state/skill-metrics.db`.  View history with:
+
+```bash
+sk skill-suggest          # note: skill-metrics visible via skill-metrics.py
+python skill-metrics.py   # shows patch_history section when records exist
+```
+
+> Direct-script form: `python skill-patch.py path/to/SKILL.md --old "..." --new "..." [opts]`
 
 ### `sk index` — knowledge index lifecycle
 

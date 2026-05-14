@@ -188,6 +188,34 @@ class TestSkDirectCommands(unittest.TestCase):
             "skill-suggest.py not found — sk skill-suggest would break",
         )
 
+    def test_skill_patch(self):
+        self._assert_routes("skill-patch", "skill-patch.py")
+
+    def test_skill_patch_with_flags(self):
+        self._assert_routes(
+            "skill-patch", "skill-patch.py",
+            ["path/to/SKILL.md", "--old", "old text", "--new", "new text"],
+        )
+
+    def test_skill_patch_replace_all(self):
+        self._assert_routes(
+            "skill-patch", "skill-patch.py",
+            ["path/to/SKILL.md", "--old", "old", "--new", "new", "--replace-all"],
+        )
+
+    def test_skill_patch_dry_run(self):
+        self._assert_routes(
+            "skill-patch", "skill-patch.py",
+            ["path/to/SKILL.md", "--old", "old", "--new", "new", "--dry-run"],
+        )
+
+    def test_skill_patch_script_exists(self):
+        """skill-patch.py must exist in the tools directory."""
+        self.assertTrue(
+            (TOOLS_DIR / "skill-patch.py").exists(),
+            "skill-patch.py not found — sk skill-patch would break",
+        )
+
 
 class TestSkHooksCompat(unittest.TestCase):
     def test_hooks_run_drops_run_subcommand(self):

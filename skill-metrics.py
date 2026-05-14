@@ -67,6 +67,8 @@ def collect_status(db_path: Path = None) -> dict:
         "verifications_failed": 0,
         "skill_usage": [],
         "recent_outcomes": [],
+        "patch_history": [],
+        "total_patches": 0,
     }
 
     db = _open_db(db_path)
@@ -139,6 +141,31 @@ def collect_status(db_path: Path = None) -> dict:
             out["verifications_failed"] = db.execute(
                 "SELECT COUNT(*) FROM tentacle_verifications WHERE exit_code!=0"
             ).fetchone()[0]
+
+        if _table_exists(db, "skill_patch_history"):
+            out["total_patches"] = db.execute(
+                "SELECT COUNT(*) FROM skill_patch_history"
+            ).fetchone()[0]
+            rows = db.execute(
+                "SELECT id, skill_path, patched_at, occurrences_replaced, "
+                "replace_all, dry_run, validation_passed, "
+                "validation_errors, validation_warnings "
+                "FROM skill_patch_history ORDER BY id DESC LIMIT 10"
+            ).fetchall()
+            out["patch_history"] = [
+                {
+                    "id": r["id"],
+                    "skill_path": r["skill_path"],
+                    "patched_at": r["patched_at"],
+                    "occurrences_replaced": r["occurrences_replaced"],
+                    "replace_all": bool(r["replace_all"]),
+                    "dry_run": bool(r["dry_run"]),
+                    "validation_passed": None if r["validation_passed"] is None else bool(r["validation_passed"]),
+                    "validation_errors": r["validation_errors"],
+                    "validation_warnings": r["validation_warnings"],
+                }
+                for r in rows
+            ]
     finally:
         db.close()
 
@@ -226,6 +253,17 @@ def format_status(status: dict) -> str:
             lines.append(
                 f"  [{r['outcome_status']:<8}] {r['tentacle_name']:<30}"
                 f"  verify={vpass}✓/{vfail}✗  {r['recorded_at']}"
+            )
+    total_patches = status.get("total_patches", 0)
+    patch_history = status.get("patch_history", [])
+    if total_patches or patch_history:
+        lines.append("")
+        lines.append(f"Skill patch history ({total_patches} total)")
+        for p in patch_history[:5]:
+            vmark = "✓" if p.get("validation_passed") else ("?" if p.get("validation_passed") is None else "✗")
+            lines.append(
+                f"  {p['patched_at']}  {Path(p['skill_path']).name:<30}"
+                f"  n={p['occurrences_replaced']}  valid={vmark}"
             )
     return "\n".join(lines)
 
