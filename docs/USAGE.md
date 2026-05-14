@@ -25,6 +25,9 @@ sk skill-suggest                         # → skill-suggest.py
 sk skill-suggest --min-occurrences 3 --format json
 sk skill-patch path/to/SKILL.md --old "old text" --new "new text"  # → skill-patch.py
 sk skill-patch path/to/SKILL.md --old "old text" --new "new text" --replace-all
+sk audit-hooks                               # → audit-hooks.py
+sk audit-hooks --json
+sk audit-hooks --days 7
 ```
 
 ### `sk skill-suggest` — knowledge-to-skill pipeline
@@ -103,6 +106,37 @@ python skill-metrics.py   # shows patch_history section when records exist
 ```
 
 > Direct-script form: `python skill-patch.py path/to/SKILL.md --old "..." --new "..." [opts]`
+
+### `sk audit-hooks` — hook effectiveness audit
+
+Parses `~/.copilot/markers/audit.jsonl` (written by `hooks/hook_runner.py` and
+the native Rust hook runner) and reports per-hook effectiveness metrics plus a
+time-based trend analysis.
+
+**Classification:**
+- `useful-block` — `decision == "deny"`: a real enforcement action
+- `false-positive` — `decision == "deny-dry"`: dry-run / test noise (hook fired
+  but did not actually block)
+
+```bash
+sk audit-hooks                        # full text report
+sk audit-hooks --json                 # JSON output for scripting
+sk audit-hooks --days 7               # restrict to last 7 days
+sk audit-hooks --top 20               # show top-20 rules in per-hook table
+sk audit-hooks --audit-file /path/to/audit.jsonl  # override log path
+```
+
+**Per-hook metrics reported:**
+- `fire_count` / `fire_rate_pct` — how often each rule fires relative to total entries
+- `block_count` — useful-block count (real `deny` decisions)
+- `fp_count` — false-positive count (`deny-dry` decisions)
+- `block_rate_pct` — block_count / fire_count
+- `useful_block_rate` — block_count / (block_count + fp_count)
+
+**Trend analysis:** entries are bucketed by calendar day (UTC), reporting total
+firings, deny count, dry-deny count, and deny rate per day.
+
+> Direct-script form: `python audit-hooks.py [--json] [--days N] [--top N]`
 
 ### `sk index` — knowledge index lifecycle
 

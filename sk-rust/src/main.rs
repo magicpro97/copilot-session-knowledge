@@ -148,6 +148,12 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Audit hook effectiveness from audit.jsonl
+    #[command(name = "audit-hooks")]
+    AuditHooks {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 // Map a grouped namespace command (e.g. "index build") to a Python script name.
@@ -279,6 +285,7 @@ fn main() -> ExitCode {
         }
         Some(Commands::SkillSuggest { args }) => run_fallback("skill-suggest.py", &args),
         Some(Commands::SkillPatch { args }) => run_fallback("skill-patch.py", &args),
+        Some(Commands::AuditHooks { args }) => run_fallback("audit-hooks.py", &args),
     };
 
     if cli.time {
