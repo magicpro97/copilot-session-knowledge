@@ -29,6 +29,7 @@ except ImportError:
 TOOLS_DIR = Path(__file__).resolve().parent.parent
 BRIEFING = TOOLS_DIR / "briefing.py"
 CODEBASE_MAP = TOOLS_DIR / "codebase-map.py"
+ANATOMY_MAP = TOOLS_DIR / "anatomy-map.py"
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 MARKER = MARKERS_DIR / "briefing-done"
 
@@ -214,6 +215,25 @@ def _try_refresh_codebase_map():
         pass
 
 
+def _try_refresh_anatomy():
+    """Refresh file_annotations table via anatomy-map.py.
+
+    Completely silent on failure — anatomy data is supplemental.
+    Skipped when anatomy-map.py is absent or the cwd is not a git repo.
+    """
+    if not ANATOMY_MAP.is_file():
+        return
+    try:
+        subprocess.run(
+            [sys.executable, str(ANATOMY_MAP)],
+            timeout=10,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
+
 def main():
     # Clean up stale markers from previous sessions (crash recovery)
     if MARKERS_DIR.is_dir():
@@ -227,6 +247,9 @@ def main():
 
     # Regenerate codebase map independently — attempted regardless of briefing.py
     _try_refresh_codebase_map()
+
+    # Refresh anatomy annotations — completely silent on failure
+    _try_refresh_anatomy()
 
     if not BRIEFING.is_file():
         return

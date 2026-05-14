@@ -1400,6 +1400,70 @@ def load_codebase_map_files() -> set:
     return set()
 
 
+def query_file_annotations(
+    db: sqlite3.Connection,
+    query: str = "",
+    repo_root: str = "",
+    limit: int = 8,
+) -> list[dict]:
+    """Return relevant file annotations from the file_annotations table.
+
+    Fails open: returns [] when the table does not exist or any error occurs.
+    When *query* is provided, matches file_path or description by substring.
+    When *repo_root* is provided, filters to that repository root.
+    """
+    try:
+        rows = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_annotations'").fetchone()
+        if not rows:
+            return []
+
+        params: list = []
+        conditions: list[str] = []
+
+        if repo_root:
+            conditions.append("repo_root = ?")
+            params.append(repo_root)
+
+        if query:
+            conditions.append("(file_path LIKE ? OR description LIKE ?)")
+            like = f"%{query[:100]}%"
+            params.extend([like, like])
+
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        params.append(limit)
+
+        db_rows = db.execute(
+            f"""
+            SELECT file_path, description, est_tokens
+            FROM file_annotations
+            {where}
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [{"file_path": r[0], "description": r[1], "est_tokens": r[2]} for r in db_rows]
+    except Exception:
+        return []  # always fail-open
+
+
+def _format_file_annotations_block(annotations: list[dict], max_entries: int = 6) -> str:
+    """Render a compact file-annotations block for briefing output.
+
+    Returns an empty string when annotations is empty.
+    """
+    if not annotations:
+        return ""
+    lines = ["🗂 File Index (top files)"]
+    for ann in annotations[:max_entries]:
+        fp = ann.get("file_path", "")
+        desc = ann.get("description", "")
+        tok = ann.get("est_tokens", 0)
+        tok_str = f" ~{tok}tok" if tok else ""
+        lines.append(f"  `{fp}`{tok_str} — {desc}")
+    return "\n".join(lines)
+
+
 def blast_radius(db: sqlite3.Connection, query: str) -> list[dict]:
     """Analyze blast radius: find files mentioned in task and their risk from knowledge DB.
 
@@ -1595,6 +1659,9 @@ def generate_briefing(
     # Blast radius analysis
     blast = blast_radius(db, rewritten_query)
 
+    # File annotations (fail-open when table absent)
+    file_annotations = query_file_annotations(db, query=rewritten_query, limit=6)
+
     # Pack-only machine surface extras
     task_matches = []
     file_matches = []
@@ -1700,11 +1767,11 @@ def generate_briefing(
             }
             output = json.dumps(pack, indent=2, ensure_ascii=False)
         elif fmt == "compact":
-            output = _format_compact(query, briefing_data, past_work, categories, blast)
+            output = _format_compact(query, briefing_data, past_work, categories, blast, file_annotations)
         elif full:
             output = _format_markdown(query, briefing_data, past_work, categories, blast)
         else:
-            output = _format_default(query, briefing_data, past_work, categories, blast)
+            output = _format_default(query, briefing_data, past_work, categories, blast, file_annotations)
 
     if with_meta:
         return output, {
@@ -1720,7 +1787,7 @@ def generate_briefing(
     return output
 
 
-def _format_default(query: str, data: dict, past_work: list, categories: dict, blast: list = None) -> str:
+def _format_default(query: str, data: dict, past_work: list, categories: dict, blast: list = None, file_annotations: list | None = None) -> str:
     """Compact default format: titles + 1-line summaries (~500 tokens)."""
     lines = []
     lines.append(f"📋 Briefing: {query}")
@@ -1788,6 +1855,12 @@ def _format_default(query: str, data: dict, past_work: list, categories: dict, b
                 title = title[:77] + "..."
             lines.append(f"  [{w.get('doc_type', '?')}] {title} (session {sid})")
         lines.append("")
+
+    if file_annotations:
+        fa_block = _format_file_annotations_block(file_annotations)
+        if fa_block:
+            lines.append(fa_block)
+            lines.append("")
 
     total = sum(len(v) for v in data.values()) + len(past_work)
     lines.append(
@@ -1939,10 +2012,10 @@ def _word_trim(s: str, limit: int = 80) -> str:
     return s
 
 
-def _format_compact(query: str, data: dict, past_work: list, categories: dict, blast: list = None) -> str:
+def _format_compact(query: str, data: dict, past_work: list, categories: dict, blast: list = None, file_annotations: list | None = None) -> str:
     """Compact format optimized for AI agent context injection.
 
-    Minimal-first ordering: mistakes → blast_radius → patterns/decisions/tools → past_work.
+    Minimal-first ordering: mistakes → blast_radius → patterns/decisions/tools → past_work → file_index.
     Mistakes and blast radius appear first so the most actionable risk context
     is visible in the smallest token budget.
     """
@@ -2028,6 +2101,17 @@ def _format_compact(query: str, data: dict, past_work: list, categories: dict, b
             sid = w.get("session_id", "?")[:8]
             lines.append(f"- [{w.get('doc_type', '?')}] {w.get('title', '?')} (session {sid})")
         lines.append("</past_work>\n")
+
+    # 5. File index — supplemental, minimal token cost
+    if file_annotations:
+        lines.append("<file_index>")
+        for ann in file_annotations[:6]:
+            fp = ann.get("file_path", "")
+            desc = ann.get("description", "")
+            tok = ann.get("est_tokens", 0)
+            tok_str = f" ~{tok}tok" if tok else ""
+            lines.append(f"- {fp}{tok_str}: {desc}")
+        lines.append("</file_index>\n")
 
     lines.append("</briefing>")
     return "\n".join(lines)

@@ -159,6 +159,7 @@ def _seed_sync_table_policies(db: sqlite3.Connection):
         ("tfidf_model", "local_only", ""),
         ("entry_concept_tags", "local_only", ""),
         ("entry_dream_scores", "local_only", ""),
+        ("file_annotations", "local_only", ""),
     ]
     db.executemany(
         """
@@ -778,6 +779,25 @@ if __name__ == "__main__":
                 "ALTER TABLE knowledge_entries ADD COLUMN valence TEXT DEFAULT ''",
                 "ALTER TABLE knowledge_entries ADD COLUMN intensity REAL DEFAULT 0.5",
                 "CREATE INDEX IF NOT EXISTS idx_ke_intensity ON knowledge_entries(intensity DESC)",
+            ],
+        ),
+        # v22: issue #83 — Per-file anatomy index (local_only; never synced).
+        # Keyed by (repo_root, file_path); file_mtime enables incremental updates.
+        (
+            22,
+            "file_annotations",
+            [
+                """CREATE TABLE IF NOT EXISTS file_annotations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    repo_root TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    est_tokens INTEGER NOT NULL DEFAULT 0,
+                    file_mtime REAL NOT NULL DEFAULT 0.0,
+                    updated_at TEXT DEFAULT (datetime('now')),
+                    UNIQUE(repo_root, file_path)
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_fa_repo_root ON file_annotations(repo_root)",
             ],
         ),
     ]
