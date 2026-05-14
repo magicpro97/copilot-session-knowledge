@@ -599,6 +599,188 @@ try:
     test("TOCTOU: no breadcrumb written when goal absent inside transaction", not bc_path9.exists())
 finally:
     shutil.rmtree(_tmp_3b9, ignore_errors=True)
+
+# ══════════════════════════════════════════════════════════════════════
+#  Section 3c: _build_budget_snapshot + enriched breadcrumb fields (#182)
+# ══════════════════════════════════════════════════════════════════════
+
+print("\n📊 Section 3c: enriched breadcrumb snapshot fields (issue #182)")
+
+from rules.session_lifecycle import _build_budget_snapshot
+
+# 3c-1: snapshot with full budget — has all fields
+snap1 = _build_budget_snapshot(
+    {"max_iterations": 30, "max_tentacles": 100, "timeout_minutes": 480},
+    current_iteration=6,
+    tentacle_count=38,
+)
+test("budget_snapshot is a dict", isinstance(snap1, dict))
+test("budget_snapshot has current_iteration=6", snap1.get("current_iteration") == 6)
+test("budget_snapshot has max_iterations=30", snap1.get("max_iterations") == 30)
+test("budget_snapshot has tentacle_count=38", snap1.get("tentacle_count") == 38)
+test("budget_snapshot has max_tentacles=100", snap1.get("max_tentacles") == 100)
+test("budget_snapshot has timeout_minutes=480", snap1.get("timeout_minutes") == 480)
+
+# 3c-2: snapshot with no limits — omits limit keys
+snap2 = _build_budget_snapshot({}, current_iteration=3, tentacle_count=5)
+test("snapshot no-limits has current_iteration=3", snap2.get("current_iteration") == 3)
+test("snapshot no-limits has tentacle_count=5", snap2.get("tentacle_count") == 5)
+test("snapshot no-limits omits max_iterations", "max_iterations" not in snap2)
+test("snapshot no-limits omits max_tentacles", "max_tentacles" not in snap2)
+test("snapshot no-limits omits timeout_minutes", "timeout_minutes" not in snap2)
+
+# 3c-3: enriched breadcrumb fields written for active goal
+_tmp_3c3 = Path(tempfile.mkdtemp(prefix="test-se-enriched-"))
+try:
+    goal_state_rich = {
+        "title": "Enriched Goal",
+        "status": "active",
+        "goal_id": "rich-goal-1",
+        "iteration": 4,
+        "budget": {"max_iterations": 10, "max_tentacles": 50, "timeout_minutes": 120},
+        "tentacles": ["t1", "t2", "t3"],
+    }
+    octogent_rich = _tmp_3c3 / ".octogent"
+    tentacles_rich = octogent_rich / "tentacles"
+    tentacles_rich.mkdir(parents=True, exist_ok=True)
+    goal_path_rich = octogent_rich / "goal.json"
+    goal_path_rich.write_text(json.dumps(goal_state_rich, indent=2), encoding="utf-8")
+
+    class FakeTentacleRich:
+        @staticmethod
+        def get_tentacles_dir(*_, **__):
+            return tentacles_rich
+
+        @staticmethod
+        def _goal_path(td):
+            return goal_path_rich
+
+        @staticmethod
+        def _goal_load(td):
+            try:
+                return json.loads(goal_path_rich.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+
+        @staticmethod
+        def _goal_write(td, state):
+            import os as _os
+
+            tmp_p = goal_path_rich.with_suffix(".json.tmp")
+            tmp_p.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            _os.replace(tmp_p, goal_path_rich)
+
+        @staticmethod
+        def _goal_transact(td, mutate_fn):
+            state = FakeTentacleRich._goal_load(td)
+            mutate_fn(state)
+            FakeTentacleRich._goal_write(td, state)
+            return state
+
+    with patch.object(_sl_mod2, "_tentacle_mod", FakeTentacleRich()):
+        _pause_active_goal("user_exit")
+
+    bc_rich = octogent_rich / _BREADCRUMB_FILENAME
+    test("enriched: breadcrumb file written", bc_rich.exists())
+    if bc_rich.exists():
+        bc = json.loads(bc_rich.read_text(encoding="utf-8"))
+        # Core fields still present (backward compat)
+        test("enriched: goal_id present", bc.get("goal_id") == "rich-goal-1")
+        test("enriched: goal_title present", bc.get("goal_title") == "Enriched Goal")
+        test("enriched: pause_reason present", "session_end" in bc.get("pause_reason", ""))
+        test("enriched: previous_status present", bc.get("previous_status") == "active")
+        # New structured snapshot (issue #182) — dict, not string
+        test("enriched: budget_snapshot is a dict", isinstance(bc.get("budget_snapshot"), dict))
+        bsnap = bc.get("budget_snapshot", {})
+        test("enriched: budget_snapshot.current_iteration == 4", bsnap.get("current_iteration") == 4)
+        test("enriched: budget_snapshot.max_iterations == 10", bsnap.get("max_iterations") == 10)
+        test("enriched: budget_snapshot.tentacle_count == 3", bsnap.get("tentacle_count") == 3)
+        test("enriched: budget_snapshot.max_tentacles == 50", bsnap.get("max_tentacles") == 50)
+        test("enriched: budget_snapshot.timeout_minutes == 120", bsnap.get("timeout_minutes") == 120)
+        # goal_status_at_pause was removed (dead field — hardcoded to "paused", no reader consumed it)
+        test("enriched: no dead 'goal_status_at_pause' field", "goal_status_at_pause" not in bc)
+        # Confirm old misleading 'status' field is gone
+        test("enriched: no misleading 'status' field", "status" not in bc)
+        # Confirm old lossy string 'budget_summary' field is gone
+        test("enriched: no lossy 'budget_summary' string field", "budget_summary" not in bc)
+finally:
+    shutil.rmtree(_tmp_3c3, ignore_errors=True)
+
+# 3c-4: backward compatibility — old breadcrumb without new fields
+#        _load_goal_resume_hint must still produce a banner (no crash, no suppression)
+print("\n🔄 Section 3c-4: backward compat — old breadcrumb without new fields")
+
+import rules.briefing as _br_mod
+from rules.briefing import _load_goal_resume_hint
+
+_tmp_3c4 = Path(tempfile.mkdtemp(prefix="test-bc-compat-"))
+try:
+    octogent_compat = _tmp_3c4 / ".octogent"
+    octogent_compat.mkdir(parents=True, exist_ok=True)
+    # Old-style breadcrumb — missing budget_snapshot (pre-wave20)
+    old_breadcrumb = {
+        "goal_id": "old-goal",
+        "goal_title": "Old Style Goal",
+        "goal_path": str(octogent_compat / "goal.json"),
+        "pause_reason": "session_end:normal",
+        "resume_command": "sk tentacle goal resume",
+        "paused_at": "2024-01-01T00:00:00+00:00",
+        "previous_status": "active",
+    }
+    (octogent_compat / _BREADCRUMB_FILENAME).write_text(json.dumps(old_breadcrumb), encoding="utf-8")
+    # goal.json in 'paused' state so staleness check passes
+    (octogent_compat / "goal.json").write_text(
+        json.dumps({"status": "paused", "title": "Old Style Goal"}), encoding="utf-8"
+    )
+
+    hint = _load_goal_resume_hint(_tmp_3c4)
+    test("old breadcrumb: banner not suppressed (fail-open compat)", hint is not None)
+    if hint:
+        banner_text = " ".join(hint)
+        test("old breadcrumb: banner mentions goal title", "Old Style Goal" in banner_text)
+        test("old breadcrumb: banner mentions resume command", "sk tentacle goal resume" in banner_text)
+        test("old breadcrumb: no budget line when snapshot absent", not any("Budget:" in l for l in hint))
+finally:
+    shutil.rmtree(_tmp_3c4, ignore_errors=True)
+
+# 3c-5: reader surfaces budget line when budget_snapshot present
+print("\n💡 Section 3c-5: reader surfaces budget detail when budget_snapshot present")
+
+_tmp_3c5 = Path(tempfile.mkdtemp(prefix="test-bc-budget-"))
+try:
+    octogent_3c5 = _tmp_3c5 / ".octogent"
+    octogent_3c5.mkdir(parents=True, exist_ok=True)
+    new_breadcrumb = {
+        "goal_id": "snap-goal",
+        "goal_title": "Snapshot Goal",
+        "goal_path": str(octogent_3c5 / "goal.json"),
+        "pause_reason": "session_end:normal",
+        "resume_command": "sk tentacle goal resume",
+        "paused_at": "2024-01-01T00:00:00+00:00",
+        "previous_status": "active",
+        "goal_status_at_pause": "paused",
+        "budget_snapshot": {
+            "current_iteration": 6,
+            "max_iterations": 30,
+            "tentacle_count": 38,
+            "max_tentacles": 100,
+        },
+    }
+    (octogent_3c5 / _BREADCRUMB_FILENAME).write_text(json.dumps(new_breadcrumb), encoding="utf-8")
+    (octogent_3c5 / "goal.json").write_text(
+        json.dumps({"status": "paused", "title": "Snapshot Goal"}), encoding="utf-8"
+    )
+
+    hint5 = _load_goal_resume_hint(_tmp_3c5)
+    test("snapshot breadcrumb: banner returned", hint5 is not None)
+    if hint5:
+        combined5 = "\n".join(hint5)
+        test("snapshot breadcrumb: budget line present", "Budget:" in combined5)
+        test("snapshot breadcrumb: iter 6/30 in budget line", "6/30" in combined5)
+        test("snapshot breadcrumb: tentacles 38/100 in budget line", "38/100" in combined5)
+finally:
+    shutil.rmtree(_tmp_3c5, ignore_errors=True)
+
 # ══════════════════════════════════════════════════════════════════════
 
 print("\n🛑 Section 4: SubagentStopRule")

@@ -44,6 +44,31 @@ _PAUSE_STATES: frozenset[str] = frozenset({"active", "awaiting-gate"})
 _BREADCRUMB_FILENAME = "goal-resume-breadcrumb.json"
 
 
+def _build_budget_snapshot(budget: dict, current_iteration: int, tentacle_count: int) -> dict:
+    """Return a structured budget snapshot dict for the resume breadcrumb.
+
+    Mirrors the fields produced by tentacle.py::_goal_budget_status() but is
+    computed inline so session_lifecycle.py stays a standalone script with no
+    cross-script imports.  Only the numeric fields needed for the resume banner
+    are included; over_budget flags are intentionally omitted (they are
+    point-in-time and stale by the time the operator reads the breadcrumb).
+    """
+    snap: dict = {
+        "current_iteration": current_iteration,
+        "tentacle_count": tentacle_count,
+    }
+    max_iters = budget.get("max_iterations")
+    if max_iters is not None:
+        snap["max_iterations"] = max_iters
+    max_tent = budget.get("max_tentacles")
+    if max_tent is not None:
+        snap["max_tentacles"] = max_tent
+    timeout = budget.get("timeout_minutes")
+    if timeout is not None:
+        snap["timeout_minutes"] = timeout
+    return snap
+
+
 class _GoalAbsent(Exception):
     """Raised inside _mutate to abort _goal_transact when goal is absent or malformed.
 
@@ -131,6 +156,10 @@ def _pause_active_goal(reason: str) -> None:
             captured["prev_status"] = prev
             captured["goal_id"] = state.get("goal_id") or ""
             captured["title"] = state.get("title") or ""
+            # Capture snapshot fields for breadcrumb enrichment (issue #182)
+            captured["iteration"] = state.get("iteration") or 1
+            captured["budget"] = dict(state.get("budget") or {})
+            captured["tentacle_count"] = len(state.get("tentacles") or [])
             if prev in _PAUSE_STATES:
                 state["status"] = "paused"
                 state["paused_at"] = paused_at
@@ -145,6 +174,11 @@ def _pause_active_goal(reason: str) -> None:
         if captured.get("prev_status") not in _PAUSE_STATES:
             return  # terminal or absent goal — no breadcrumb needed
 
+        budget_snapshot = _build_budget_snapshot(
+            captured.get("budget") or {},
+            captured.get("iteration", 1),
+            captured.get("tentacle_count", 0),
+        )
         breadcrumb_path = goal_path.parent / _BREADCRUMB_FILENAME
         breadcrumb = {
             "goal_id": captured.get("goal_id") or "",
@@ -154,6 +188,9 @@ def _pause_active_goal(reason: str) -> None:
             "resume_command": "sk tentacle goal resume",
             "paused_at": paused_at,
             "previous_status": captured["prev_status"],
+            # Structured budget snapshot for resume banner (issue #182).
+            # Iteration is nested inside budget_snapshot.current_iteration.
+            "budget_snapshot": budget_snapshot,
         }
         breadcrumb_path.write_text(_json.dumps(breadcrumb, indent=2) + "\n", encoding="utf-8")
     except Exception:
