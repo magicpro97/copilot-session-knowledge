@@ -158,8 +158,10 @@ def _pause_active_goal(reason: str) -> None:
             captured["title"] = state.get("title") or ""
             # Capture snapshot fields for breadcrumb enrichment (issue #182)
             captured["iteration"] = state.get("iteration") or 1
-            captured["budget"] = dict(state.get("budget") or {})
-            captured["tentacle_count"] = len(state.get("tentacles") or [])
+            raw_budget = state.get("budget")
+            captured["budget"] = dict(raw_budget) if isinstance(raw_budget, dict) else {}
+            raw_tentacles = state.get("tentacles")
+            captured["tentacle_count"] = len(raw_tentacles) if isinstance(raw_tentacles, list) else 0
             if prev in _PAUSE_STATES:
                 state["status"] = "paused"
                 state["paused_at"] = paused_at

@@ -706,6 +706,71 @@ try:
 finally:
     shutil.rmtree(_tmp_3c3, ignore_errors=True)
 
+# 3c-4: malformed budget/tentacles metadata stays fail-open
+_tmp_3c4_bad = Path(tempfile.mkdtemp(prefix="test-se-enriched-malformed-"))
+try:
+    goal_state_bad = {
+        "title": "Malformed Snapshot Goal",
+        "status": "active",
+        "goal_id": "bad-goal-1",
+        "iteration": 2,
+        "budget": ["not", "a", "dict"],
+        "tentacles": 7,
+    }
+    octogent_bad = _tmp_3c4_bad / ".octogent"
+    tentacles_bad = octogent_bad / "tentacles"
+    tentacles_bad.mkdir(parents=True, exist_ok=True)
+    goal_path_bad = octogent_bad / "goal.json"
+    goal_path_bad.write_text(json.dumps(goal_state_bad, indent=2), encoding="utf-8")
+
+    class FakeTentacleBad:
+        @staticmethod
+        def get_tentacles_dir(*_, **__):
+            return tentacles_bad
+
+        @staticmethod
+        def _goal_path(td):
+            return goal_path_bad
+
+        @staticmethod
+        def _goal_load(td):
+            try:
+                return json.loads(goal_path_bad.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+
+        @staticmethod
+        def _goal_write(td, state):
+            import os as _os
+
+            tmp_p = goal_path_bad.with_suffix(".json.tmp")
+            tmp_p.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            _os.replace(tmp_p, goal_path_bad)
+
+        @staticmethod
+        def _goal_transact(td, mutate_fn):
+            state = FakeTentacleBad._goal_load(td)
+            mutate_fn(state)
+            FakeTentacleBad._goal_write(td, state)
+            return state
+
+    with patch.object(_sl_mod2, "_tentacle_mod", FakeTentacleBad()):
+        _pause_active_goal("user_exit")
+
+    paused_state_bad = json.loads(goal_path_bad.read_text(encoding="utf-8"))
+    test("malformed metadata: goal still pauses", paused_state_bad.get("status") == "paused")
+    bc_bad = octogent_bad / _BREADCRUMB_FILENAME
+    test("malformed metadata: breadcrumb still written", bc_bad.exists())
+    if bc_bad.exists():
+        bc = json.loads(bc_bad.read_text(encoding="utf-8"))
+        bsnap = bc.get("budget_snapshot", {})
+        test("malformed metadata: budget_snapshot still present", isinstance(bsnap, dict))
+        test("malformed metadata: current_iteration preserved", bsnap.get("current_iteration") == 2)
+        test("malformed metadata: non-dict budget falls back to no max_iterations", "max_iterations" not in bsnap)
+        test("malformed metadata: non-list tentacles fall back to count 0", bsnap.get("tentacle_count") == 0)
+finally:
+    shutil.rmtree(_tmp_3c4_bad, ignore_errors=True)
+
 # 3c-4: backward compatibility — old breadcrumb without new fields
 #        _load_goal_resume_hint must still produce a banner (no crash, no suppression)
 print("\n🔄 Section 3c-4: backward compat — old breadcrumb without new fields")

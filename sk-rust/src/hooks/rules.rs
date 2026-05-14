@@ -6584,6 +6584,7 @@ mod tests {
             !combined.contains("Budget:"),
             "old breadcrumb must NOT show Budget: line; got: {combined:?}"
         );
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     /// format_pause_reason maps known and unknown prefixes correctly.
