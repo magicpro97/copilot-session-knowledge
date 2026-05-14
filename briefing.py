@@ -1057,13 +1057,28 @@ def _ke_has_intensity(db: sqlite3.Connection) -> bool:
         return False
 
 
-def _intensity_order_expr(alias: str = "ke") -> str:
-    """SQL ORDER BY expression that ranks high-intensity entries first.
+def _ke_has_priority(db: sqlite3.Connection) -> bool:
+    """Return True if knowledge_entries has the priority column (v22 migration applied)."""
+    try:
+        cols = {row[1] for row in db.execute("PRAGMA table_info(knowledge_entries)").fetchall()}
+        return "priority" in cols
+    except Exception:
+        return False
 
-    Intensity is the primary sort key so that a high-intensity lower-confidence
-    entry always outranks a lower-intensity higher-confidence entry.
-    Confidence and FTS rank are secondary tiebreakers only.
+
+def _intensity_order_expr(alias: str = "ke", has_priority: bool = False) -> str:
+    """SQL ORDER BY expression that ranks entries by priority then intensity.
+
+    When priority column is present (v22+), priority is the primary sort key.
+    Intensity is secondary so a high-intensity entry outranks lower-intensity ones
+    within the same priority bucket.  Confidence and FTS rank are final tiebreakers.
     """
+    if has_priority:
+        priority_expr = (
+            f"CASE COALESCE({alias}.priority, 'P2') "
+            "WHEN 'P0' THEN 3 WHEN 'P1' THEN 2 WHEN 'P2' THEN 1 WHEN 'P3' THEN 0 ELSE 1 END DESC"
+        )
+        return f"{priority_expr}, COALESCE({alias}.intensity, 0.5) DESC, {alias}.confidence DESC, rank"
     return f"COALESCE({alias}.intensity, 0.5) DESC, {alias}.confidence DESC, rank"
 
 
@@ -1103,15 +1118,29 @@ def _get_briefing_half_life(db: sqlite3.Connection) -> float:
 
 
 def _recency_composite_score(entry: dict, half_life_days: float) -> float:
-    """Composite ranking score = intensity * recency_decay.
+    """Composite ranking score = priority_base + intensity * recency_decay.
 
-    Preserves the #88 intensity-first contract: for entries with equal age,
-    the higher-intensity entry always scores higher.  Recency decay then
-    boosts genuinely fresh entries relative to equally-intense stale ones.
-    When intensity is absent (pre-v21 DB rows), falls back to the entry's
-    confidence value so the existing confidence-based ordering is preserved.
-    Defaults to 0.5 only when both intensity and confidence are absent.
+    Priority is the strict outer dimension (issue #121): P0 entries always rank
+    above P1, which always ranks above P2, etc., regardless of age or intensity.
+
+    Additive formula guarantees strict cross-tier ordering:
+      score = priority_base + (intensity * recency_decay)
+    Priority bases: P0=4.0, P1=2.0, P2=0.0, P3=-2.0.
+    The tier gap (2.0) exceeds the maximum within-tier contribution (intensity *
+    decay ≤ 1.0 * 1.0 = 1.0), so P(n) always outscores P(n+1) regardless of
+    intensity or age: P0 min (4.0) > P1 max (3.0) > P2 max (1.0) > P3 max (-1.0).
+
+    Within the same priority bucket, the #88 intensity-first contract is preserved.
+    Recency decay further boosts genuinely fresh entries over equally-intense stale ones.
+    When intensity is absent (pre-v21 DB rows), falls back to the entry's confidence.
+    When priority is absent (pre-v22 DB rows), defaults to P2 base (0.0).
     """
+    # Priority base: P0=4.0, P1=2.0, P2=0.0, P3=-2.0.
+    # Tier gap of 2.0 exceeds max(intensity * decay) = 1.0, guaranteeing strict ordering.
+    priority_bases = {"P0": 4.0, "P1": 2.0, "P2": 0.0, "P3": -2.0}
+    priority_raw = entry.get("priority")
+    priority_base = priority_bases.get(priority_raw or "P2", 0.0)
+
     intensity_raw = entry.get("intensity")
     if intensity_raw is not None:
         intensity = float(intensity_raw)
@@ -1122,7 +1151,7 @@ def _recency_composite_score(entry: dict, half_life_days: float) -> float:
         confidence_raw = entry.get("confidence")
         intensity = float(confidence_raw) if confidence_raw is not None else 0.5
     decay = _recency_decay(entry.get("last_seen"), half_life_days)
-    return intensity * decay
+    return priority_base + intensity * decay
 
 
 def search_knowledge_entries(
@@ -1133,9 +1162,11 @@ def search_knowledge_entries(
     effective_confidence = max(0.0, min(1.0, min_confidence + confidence_delta))
 
     has_intensity = _ke_has_intensity(db)
-    order_by = _intensity_order_expr("ke") if has_intensity else "ke.confidence DESC, rank"
-    # Extra columns fetched so Python-level recency composite scoring has intensity + age.
+    has_priority = _ke_has_priority(db)
+    order_by = _intensity_order_expr("ke", has_priority) if has_intensity else "ke.confidence DESC, rank"
+    # Extra columns fetched so Python-level recency composite scoring has priority + intensity + age.
     _rec_cols = ", COALESCE(ke.intensity, 0.5) as intensity, ke.last_seen" if has_intensity else ", ke.last_seen"
+    _priority_col = ", COALESCE(ke.priority, 'P2') as priority" if has_priority else ""
 
     results = []
     try:
@@ -1149,7 +1180,7 @@ def search_knowledge_entries(
                    d.doc_type as source_doc_type,
                    d.title as source_doc_title,
                    d.file_path as source_doc_file_path,
-                   d.seq as source_doc_seq{_rec_cols}
+                   d.seq as source_doc_seq{_rec_cols}{_priority_col}
             FROM ke_fts fts
             JOIN knowledge_entries ke ON fts.rowid = ke.id
             LEFT JOIN documents d ON ke.document_id = d.id
@@ -1167,7 +1198,7 @@ def search_knowledge_entries(
             rows = db.execute(
                 f"""
                 SELECT ke.id, ke.title, ke.content, ke.tags,
-                       ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}
+                       ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
                 WHERE ke_fts MATCH ?
@@ -1196,7 +1227,7 @@ def search_knowledge_entries(
                        d.doc_type as source_doc_type,
                        d.title as source_doc_title,
                        d.file_path as source_doc_file_path,
-                       d.seq as source_doc_seq{_rec_cols}
+                       d.seq as source_doc_seq{_rec_cols}{_priority_col}
                 FROM ke_fts fts
                 JOIN knowledge_entries ke ON fts.rowid = ke.id
                 LEFT JOIN documents d ON ke.document_id = d.id
@@ -1214,7 +1245,7 @@ def search_knowledge_entries(
                 rows = db.execute(
                     f"""
                     SELECT ke.id, ke.title, ke.content, ke.tags,
-                           ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}
+                           ke.confidence, ke.session_id, ke.occurrence_count{_rec_cols}{_priority_col}
                     FROM ke_fts fts
                     JOIN knowledge_entries ke ON fts.rowid = ke.id
                     WHERE ke_fts MATCH ?
@@ -1264,17 +1295,20 @@ def search_semantic(
         if query_vector:
             vec_results = vector_search(db, query_vector, source_type="knowledge", limit=limit * 3)
             results = []
-            # Fetch intensity so _recency_composite_score honours the #88 contract for
-            # semantic-only hits; guard against pre-v21 DBs that lack the column.
+            # Fetch intensity and priority so _recency_composite_score honours the
+            # #88 intensity-first and #121 priority-outer contracts for semantic hits.
+            # Guard against pre-v21 / pre-v22 DBs that lack these columns.
             _has_intensity = _ke_has_intensity(db)
+            _has_priority = _ke_has_priority(db)
             _intensity_col = ", COALESCE(intensity, 0.5) as intensity" if _has_intensity else ""
+            _priority_col = ", COALESCE(priority, 'P2') as priority" if _has_priority else ""
             for st, sid, score in vec_results:
                 if score < 0.3:
                     continue
                 row = db.execute(
                     f"""
                     SELECT id, title, content, tags, confidence,
-                           session_id, occurrence_count, category, last_seen{_intensity_col}
+                           session_id, occurrence_count, category, last_seen{_intensity_col}{_priority_col}
                     FROM knowledge_entries WHERE id = ? AND category = ?
                     AND confidence >= ?
                 """,
@@ -1518,12 +1552,18 @@ def generate_subagent_context(
     rewritten_query = _rewrite_query_local(query)
     _, categories, per_cat_limit = _mode_category_config(limit, mode, query, infer_auto=infer_auto_mode)
     labels = {"mistake": "AVOID", "pattern": "USE", "decision": "NOTE", "tool": "CONFIG"}
+    half_life = _get_briefing_half_life(db)
 
     for cat in categories:
         label = labels.get(cat, cat.upper())
         cat_limit = per_cat_limit.get(cat, limit)
-        fts = search_knowledge_entries(db, rewritten_query, cat, cat_limit, min_confidence=min_confidence)
-        sem = search_semantic(db, query, cat, cat_limit, min_confidence=min_confidence)
+        # Overfetch FTS so reranking has a wider candidate pool; truncation
+        # happens after priority-aware rerank, not before (issue #121 Blocker 3).
+        fetch_limit = max(cat_limit * 2, cat_limit + 6)
+        fts = search_knowledge_entries(db, rewritten_query, cat, fetch_limit, min_confidence=min_confidence)
+        # Widen semantic fetch to match FTS so outer priority-aware rerank sees the
+        # full candidate pool before truncation (issue #121 Blocker 4).
+        sem = search_semantic(db, query, cat, fetch_limit, min_confidence=min_confidence)
         # Merge and dedup by id
         seen = set()
         entries = []
@@ -1532,6 +1572,10 @@ def generate_subagent_context(
             if eid not in seen:
                 seen.add(eid)
                 entries.append(e)
+
+        # Rerank by composite recency+priority score so high-priority semantic
+        # hits are not dropped behind lower-priority FTS hits (issue #121 Blocker 3).
+        entries.sort(key=lambda e: _recency_composite_score(e, half_life), reverse=True)
 
         for e in entries[:cat_limit]:
             if isinstance(e, (list, tuple)):
@@ -1575,7 +1619,9 @@ def generate_briefing(
         cat_limit = per_cat_limit.get(cat, limit)
         fetch_limit = max(cat_limit * 2, cat_limit + 6)
         fts_results = search_knowledge_entries(db, rewritten_query, cat, fetch_limit, min_confidence=min_confidence)
-        sem_results = search_semantic(db, query, cat, cat_limit, min_confidence=min_confidence)
+        # Widen semantic fetch symmetrically so the outer priority rerank has the same
+        # wide candidate pool for semantic hits as it does for FTS hits (issue #121 Blocker 4).
+        sem_results = search_semantic(db, query, cat, fetch_limit, min_confidence=min_confidence)
 
         merged = []
         for r in fts_results + sem_results:
