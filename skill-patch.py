@@ -176,6 +176,28 @@ def atomic_write(path: Path, content: str) -> None:
         raise
 
 
+def _write_to_temp(target_path: Path, content: str) -> Path:
+    """Write *content* to a sibling temp file and return its path.
+
+    The caller is responsible for either committing (os.replace) or
+    discarding (unlink) the temp file — the original *target_path* is
+    never touched by this function.
+    """
+    dir_ = target_path.parent
+    fd, tmp_str = tempfile.mkstemp(prefix=".skill-patch-", suffix=".tmp", dir=dir_)
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return tmp_path
+
+
 # ---------------------------------------------------------------------------
 # Post-patch validation
 # ---------------------------------------------------------------------------
@@ -201,9 +223,6 @@ def run_validation(skill_path: Path) -> tuple[bool, int, int]:
             errors="replace",
         )
         output = result.stdout + result.stderr
-        # Count error/warning markers in validate-skill.py's output
-        errors = len(re.findall(r"^  •", output, re.MULTILINE))
-        warnings = len(re.findall(r"^  •", output, re.MULTILINE))
         # Verdict: exit 0 = pass (including warnings), exit 1 = fail
         passed = result.returncode == 0
         # Re-parse: validate-skill outputs "❌ ERRORS (N):" and "⚠️  WARNINGS (N):"
@@ -381,9 +400,10 @@ def main(argv: list[str] | None = None) -> int:
             print("(no textual diff detected)")
         return 0
 
-    # Atomic write
+    # Write patched content to a sibling temp file first.
+    # The original file is NOT modified until validation has passed.
     try:
-        atomic_write(skill_path, patched)
+        tmp_path = _write_to_temp(skill_path, patched)
     except OSError as exc:
         print(f"skill-patch: error: could not write {skill_path}: {exc}", file=sys.stderr)
         return 1
@@ -392,22 +412,39 @@ def main(argv: list[str] | None = None) -> int:
     if diff_text:
         print(diff_text, end="")
 
-    # Validation
+    # Validation (runs against the temp file before committing to the final path)
     validation_passed: bool | None = None
     n_errors = 0
     n_warnings = 0
 
     if not args.no_validate:
-        validation_passed, n_errors, n_warnings = run_validation(skill_path)
+        validation_passed, n_errors, n_warnings = run_validation(tmp_path)
         if not validation_passed:
+            # Discard the temp file — the original is still intact on disk
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
             print(
                 f"skill-patch: validation FAILED — {n_errors} error(s), {n_warnings} warning(s)",
                 file=sys.stderr,
             )
+            return 1
         elif n_warnings:
             print(f"skill-patch: validation OK — {n_warnings} warning(s)")
         else:
             print("skill-patch: validation passed ✓")
+
+    # Commit: atomically replace the original with the validated (or --no-validate) patch
+    try:
+        os.replace(tmp_path, skill_path)
+    except OSError as exc:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        print(f"skill-patch: error: could not commit {skill_path}: {exc}", file=sys.stderr)
+        return 1
 
     # Metrics
     metrics_db: Path | None = None
@@ -428,10 +465,6 @@ def main(argv: list[str] | None = None) -> int:
             db_path=metrics_db,
         )
 
-    # Use returncode as source of truth: any non-zero exit from validate-skill
-    # is a failure even when the error-count regex does not match the output.
-    if validation_passed is False:
-        return 1
     return 0
 
 

@@ -407,6 +407,32 @@ class TestMain(unittest.TestCase):
     def test_main_script_exists(self):
         self.assertTrue(SKILL_PATCH_PATH.exists(), "skill-patch.py not found in tools dir")
 
+    def test_validation_failure_preserves_original_file(self):
+        """Regression #122 follow-up: when validation fails, the original SKILL.md
+        must not be modified — the invalid patched content must never be left on disk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = Path(tmp) / "SKILL.md"
+            self._write_skill(skill)
+            original = skill.read_text(encoding="utf-8")
+            with patch.object(sp, "run_validation", return_value=(False, 1, 0)):
+                rc = sp.main([str(skill), "--old", "Step one",
+                              "--new", "INVALID REPLACEMENT", "--no-metrics"])
+            self.assertEqual(rc, 1)
+            # Original file must be completely unchanged
+            self.assertEqual(skill.read_text(encoding="utf-8"), original)
+
+    def test_no_temp_files_left_on_validation_failure(self):
+        """Regression #122 follow-up: no .skill-patch-*.tmp files must remain after
+        a validation failure."""
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = Path(tmp) / "SKILL.md"
+            self._write_skill(skill)
+            with patch.object(sp, "run_validation", return_value=(False, 1, 0)):
+                sp.main([str(skill), "--old", "Step one",
+                         "--new", "INVALID REPLACEMENT", "--no-metrics"])
+            tmp_files = list(Path(tmp).glob(".skill-patch-*"))
+            self.assertEqual(len(tmp_files), 0)
+
     def test_validation_nonzero_returncode_returns_1_even_when_no_regex_match(self):
         """Regression #122: validate-skill nonzero exit must return 1 even if error-count
         regex does not match output (returncode is the source of truth, not the regex)."""
