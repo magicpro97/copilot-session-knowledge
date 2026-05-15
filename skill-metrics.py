@@ -42,9 +42,7 @@ def _open_db(db_path: Path):
 
 
 def _table_exists(db, name: str) -> bool:
-    row = db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-    ).fetchone()
+    row = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
     return row is not None
 
 
@@ -87,9 +85,7 @@ def collect_status(db_path: Path = None) -> dict:
         out["tables_missing"] = sorted(_EXPECTED_TABLES - present)
 
         if "tentacle_outcomes" in present:
-            out["total_outcomes"] = db.execute(
-                "SELECT COUNT(*) FROM tentacle_outcomes"
-            ).fetchone()[0]
+            out["total_outcomes"] = db.execute("SELECT COUNT(*) FROM tentacle_outcomes").fetchone()[0]
             out["outcomes_complete"] = db.execute(
                 "SELECT COUNT(*) FROM tentacle_outcomes WHERE outcome_status='completed'"
             ).fetchone()[0]
@@ -129,14 +125,10 @@ def collect_status(db_path: Path = None) -> dict:
                 "SELECT skill_name, COUNT(*) AS uses "
                 "FROM tentacle_outcome_skills GROUP BY skill_name ORDER BY uses DESC"
             ).fetchall()
-            out["skill_usage"] = [
-                {"skill": r["skill_name"], "uses": r["uses"]} for r in skill_rows
-            ]
+            out["skill_usage"] = [{"skill": r["skill_name"], "uses": r["uses"]} for r in skill_rows]
 
         if "tentacle_verifications" in present:
-            out["total_verifications"] = db.execute(
-                "SELECT COUNT(*) FROM tentacle_verifications"
-            ).fetchone()[0]
+            out["total_verifications"] = db.execute("SELECT COUNT(*) FROM tentacle_verifications").fetchone()[0]
             out["verifications_passed"] = db.execute(
                 "SELECT COUNT(*) FROM tentacle_verifications WHERE exit_code=0"
             ).fetchone()[0]
@@ -145,9 +137,7 @@ def collect_status(db_path: Path = None) -> dict:
             ).fetchone()[0]
 
         if _table_exists(db, "skill_usage_events"):
-            out["total_skill_events"] = db.execute(
-                "SELECT COUNT(*) FROM skill_usage_events"
-            ).fetchone()[0]
+            out["total_skill_events"] = db.execute("SELECT COUNT(*) FROM skill_usage_events").fetchone()[0]
             event_rows = db.execute(
                 "SELECT skill_name, event, COUNT(*) AS count "
                 "FROM skill_usage_events "
@@ -155,14 +145,11 @@ def collect_status(db_path: Path = None) -> dict:
                 "ORDER BY skill_name, event"
             ).fetchall()
             out["event_skill_usage"] = [
-                {"skill": r["skill_name"], "event": r["event"], "count": r["count"]}
-                for r in event_rows
+                {"skill": r["skill_name"], "event": r["event"], "count": r["count"]} for r in event_rows
             ]
 
         if _table_exists(db, "skill_patch_history"):
-            out["total_patches"] = db.execute(
-                "SELECT COUNT(*) FROM skill_patch_history"
-            ).fetchone()[0]
+            out["total_patches"] = db.execute("SELECT COUNT(*) FROM skill_patch_history").fetchone()[0]
             rows = db.execute(
                 "SELECT id, skill_path, patched_at, occurrences_replaced, "
                 "replace_all, dry_run, validation_passed, "
@@ -273,9 +260,7 @@ def format_status(status: dict) -> str:
             triggered = evts.get("triggered", 0)
             loaded = evts.get("loaded", 0)
             skipped = evts.get("skipped", 0)
-            lines.append(
-                f"  {skill_name:<30} triggered={triggered} loaded={loaded} skipped={skipped}"
-            )
+            lines.append(f"  {skill_name:<30} triggered={triggered} loaded={loaded} skipped={skipped}")
     recent = status.get("recent_outcomes", [])
     if recent:
         lines.append("")
@@ -284,8 +269,7 @@ def format_status(status: dict) -> str:
             vpass = r.get("verification_passed", 0)
             vfail = r.get("verification_failed", 0)
             lines.append(
-                f"  [{r['outcome_status']:<8}] {r['tentacle_name']:<30}"
-                f"  verify={vpass}✓/{vfail}✗  {r['recorded_at']}"
+                f"  [{r['outcome_status']:<8}] {r['tentacle_name']:<30}  verify={vpass}✓/{vfail}✗  {r['recorded_at']}"
             )
     total_patches = status.get("total_patches", 0)
     patch_history = status.get("patch_history", [])
@@ -295,8 +279,7 @@ def format_status(status: dict) -> str:
         for p in patch_history[:5]:
             vmark = "✓" if p.get("validation_passed") else ("?" if p.get("validation_passed") is None else "✗")
             lines.append(
-                f"  {p['patched_at']}  {Path(p['skill_path']).name:<30}"
-                f"  n={p['occurrences_replaced']}  valid={vmark}"
+                f"  {p['patched_at']}  {Path(p['skill_path']).name:<30}  n={p['occurrences_replaced']}  valid={vmark}"
             )
     return "\n".join(lines)
 

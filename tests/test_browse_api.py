@@ -764,10 +764,7 @@ def run_all_tests() -> int:
             encoding="utf-8",
         )
         (_demo / "handoff.md").write_text(
-            "# Handoff Notes\n\n"
-            "## [2026-05-02 00:00 UTC]\n\n"
-            "Waiting on orchestrator review.\n"
-            "STATUS: BLOCKED\n",
+            "# Handoff Notes\n\n## [2026-05-02 00:00 UTC]\n\nWaiting on orchestrator review.\nSTATUS: BLOCKED\n",
             encoding="utf-8",
         )
         db = _make_test_db()
@@ -1069,8 +1066,9 @@ def run_all_tests() -> int:
 
     # ── T24a: /api/scout/research-pack — missing file → available=false ───────
     print("\n-- T24a: /api/scout/research-pack missing file")
-    import browse.routes.scout as _scout_mod
     import pathlib as _pathlib
+
+    import browse.routes.scout as _scout_mod
 
     db = _make_test_db()
     server, host, port = _start_server(db)
@@ -1296,7 +1294,11 @@ def run_all_tests() -> int:
         test("T25: total matches len(skills)", data.get("total") == len(data.get("skills", [])))
         test("T25: has sources object", isinstance(data.get("sources"), dict))
         test("T25: sources.global is string", isinstance((data.get("sources") or {}).get("global"), str))
-        test("T25: sources.project is string or null", (data.get("sources") or {}).get("project") is None or isinstance((data.get("sources") or {}).get("project"), str))
+        test(
+            "T25: sources.project is string or null",
+            (data.get("sources") or {}).get("project") is None
+            or isinstance((data.get("sources") or {}).get("project"), str),
+        )
         test("T25: has runtime object", isinstance(data.get("runtime"), dict))
         test("T25: runtime.generated_at is string", isinstance((data.get("runtime") or {}).get("generated_at"), str))
         # Each skill entry must have required fields

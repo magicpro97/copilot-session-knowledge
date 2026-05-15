@@ -4,10 +4,14 @@ Each invocation of the ``skill`` tool is recorded in the ``skill_usage_events``
 table of skill-metrics.db with the skill name, event type, session ID, and
 timestamp.
 
-Events recorded per skill tool invocation:
+Two events per invocation:
   - ``triggered``: always, when the skill tool postToolUse fires
-  - ``loaded``:    when toolResult looks non-empty / successful
-  - ``skipped``:   when toolResult is empty or contains skip/error markers
+  - ``loaded``:    when toolResult is absent, empty, or exit code is 0
+                   (fail-open default — many skills return concise instructions
+                   rather than verbose confirmation text)
+  - ``skipped``:   when toolResult contains a non-zero exit code, or short
+                   output (< 200 chars) matching a skill-loader-specific
+                   skip/failure phrase (see _SKIP_MARKERS)
 
 Fail-open: any exception is swallowed; the hook never blocks tool use.
 """
@@ -62,21 +66,23 @@ CREATE INDEX IF NOT EXISTS idx_sue_session    ON skill_usage_events (session_id)
 #   • bare "unable to load" → "unable to load module", "Unable to load {filename}"
 #   • bare "could not load" → "could not load config", "could not load shared library"
 #   • bare "could not be loaded" → "module could not be loaded", "config could not be loaded"
-_SKIP_MARKERS = frozenset({
-    "skill skipped",           # "skill skipped by loader"           (bare "skipped" excluded)
-    "skill was skipped",       # "skill was skipped"                 (bare "skipped" excluded)
-    "skill skipping",          # "skill skipping: no match"          (bare "skipping" excluded)
-    "skipping skill",          # "skipping skill: frontend-dev"      (bare "skipping" excluded)
-    "skill not found",         # "skill not found"                   (bare "not found" excluded)
-    "skill unavailable",       # "skill unavailable for session"     (bare "unavailable" excluded)
-    "skill_skip",              # exact identifier used by some loader outputs
-    "cannot load skill",       # "cannot load skill: frontend-dev"   (bare "cannot load" excluded)
-    "unable to load skill",    # "unable to load skill: frontend-dev"(bare "unable to load" excluded)
-    "could not load skill",    # "could not load skill: codereview"  (bare "could not load" excluded)
-    "skill could not be loaded", # "skill could not be loaded"       (bare "could not be loaded" excluded)
-    "no skill matched",        # specific loader no-match message
-    "no skill found",          # specific loader no-match message
-})
+_SKIP_MARKERS = frozenset(
+    {
+        "skill skipped",  # "skill skipped by loader"           (bare "skipped" excluded)
+        "skill was skipped",  # "skill was skipped"                 (bare "skipped" excluded)
+        "skill skipping",  # "skill skipping: no match"          (bare "skipping" excluded)
+        "skipping skill",  # "skipping skill: frontend-dev"      (bare "skipping" excluded)
+        "skill not found",  # "skill not found"                   (bare "not found" excluded)
+        "skill unavailable",  # "skill unavailable for session"     (bare "unavailable" excluded)
+        "skill_skip",  # exact identifier used by some loader outputs
+        "cannot load skill",  # "cannot load skill: frontend-dev"   (bare "cannot load" excluded)
+        "unable to load skill",  # "unable to load skill: frontend-dev"(bare "unable to load" excluded)
+        "could not load skill",  # "could not load skill: codereview"  (bare "could not load" excluded)
+        "skill could not be loaded",  # "skill could not be loaded"       (bare "could not be loaded" excluded)
+        "no skill matched",  # specific loader no-match message
+        "no skill found",  # specific loader no-match message
+    }
+)
 
 
 def _detect_secondary_event(tool_result) -> str:
@@ -128,9 +134,7 @@ def record_events(
             ensure_table(db)
             for event in events:
                 db.execute(
-                    "INSERT INTO skill_usage_events "
-                    "(skill_name, event, session_id, timestamp) "
-                    "VALUES (?, ?, ?, ?)",
+                    "INSERT INTO skill_usage_events (skill_name, event, session_id, timestamp) VALUES (?, ?, ?, ?)",
                     (skill_name, event, session_id, timestamp),
                 )
             db.commit()
@@ -166,7 +170,5 @@ class SkillUsageRule(Rule):
         secondary = _detect_secondary_event(tool_result)
 
         # Always record ``triggered`` + one of ``loaded`` / ``skipped``.
-        record_events(
-            skill_name, ["triggered", secondary], session_id, timestamp
-        )
+        record_events(skill_name, ["triggered", secondary], session_id, timestamp)
         return None  # informational — no user-visible message

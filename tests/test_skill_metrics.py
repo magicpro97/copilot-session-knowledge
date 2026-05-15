@@ -107,12 +107,9 @@ def _make_metrics_db(db_path: Path, *, with_data: bool = False) -> None:
             "(tentacle_name, tentacle_id, outcome_status, recorded_at, "
             "verification_passed, verification_failed, todo_done, todo_total, summary) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("test-tentacle", "uuid-1", "completed", "2026-04-28T00:00:00+00:00",
-             2, 0, 3, 3, "All done"),
+            ("test-tentacle", "uuid-1", "completed", "2026-04-28T00:00:00+00:00", 2, 0, 3, 3, "All done"),
         )
-        db.execute(
-            "INSERT INTO tentacle_outcome_skills (outcome_id, skill_name) VALUES (1, 'karpathy-guidelines')"
-        )
+        db.execute("INSERT INTO tentacle_outcome_skills (outcome_id, skill_name) VALUES (1, 'karpathy-guidelines')")
         db.execute(
             "INSERT INTO tentacle_verifications "
             "(outcome_id, tentacle_name, tentacle_id, label, command, cwd, "
@@ -163,9 +160,10 @@ status_pop = skill_metrics.collect_status()
 test("populated: total_outcomes == 1", status_pop["total_outcomes"] == 1)
 test("populated: outcomes_complete == 1", status_pop["outcomes_complete"] == 1)
 test("populated: outcomes_with_skills == 1", status_pop["outcomes_with_skills"] == 1)
-test("populated: skill_usage has karpathy-guidelines", any(
-    e["skill"] == "karpathy-guidelines" for e in status_pop["skill_usage"]
-))
+test(
+    "populated: skill_usage has karpathy-guidelines",
+    any(e["skill"] == "karpathy-guidelines" for e in status_pop["skill_usage"]),
+)
 test("populated: total_verifications == 1", status_pop["total_verifications"] == 1)
 test("populated: verifications_passed == 1", status_pop["verifications_passed"] == 1)
 test("populated: recent_outcomes non-empty", len(status_pop["recent_outcomes"]) > 0)
@@ -188,19 +186,21 @@ fake_octogent = ARTIFACT_DIR / ".octogent" / "tentacles"
 fake_tent_dir = fake_octogent / "my-tentacle"
 fake_tent_dir.mkdir(parents=True, exist_ok=True)
 (fake_tent_dir / "meta.json").write_text(
-    json.dumps({
-        "name": "my-tentacle",
-        "tentacle_id": "abc-123",
-        "status": "idle",
-        "description": "Test tentacle",
-        "created_at": "2026-04-28T00:00:00+00:00",
-        "scope": ["foo.py"],
-        "worktree": {"prepared": True, "path": "/fake/worktree/path"},
-        "verifications": [
-            {"label": "tests", "exit_code": 0},
-            {"label": "lint", "exit_code": 1},
-        ],
-    }),
+    json.dumps(
+        {
+            "name": "my-tentacle",
+            "tentacle_id": "abc-123",
+            "status": "idle",
+            "description": "Test tentacle",
+            "created_at": "2026-04-28T00:00:00+00:00",
+            "scope": ["foo.py"],
+            "worktree": {"prepared": True, "path": "/fake/worktree/path"},
+            "verifications": [
+                {"label": "tests", "exit_code": 0},
+                {"label": "lint", "exit_code": 1},
+            ],
+        }
+    ),
     encoding="utf-8",
 )
 tentacle_status.OCTOGENT_DIR = fake_octogent
@@ -208,17 +208,19 @@ tentacle_status.OCTOGENT_DIR = fake_octogent
 # Build a fake marker
 fake_marker = ARTIFACT_DIR / "dispatched-subagent-active"
 fake_marker.write_text(
-    json.dumps({
-        "name": "dispatched-subagent-active",
-        "ts": "1234567890",
-        "active_tentacles": [
-            {"name": "my-tentacle", "ts": "1234567890", "git_root": "/repo", "tentacle_id": "abc-123"}
-        ],
-        "dispatch_mode": "prompt",
-        "written_at": "2026-04-28T00:00:00+00:00",
-        "ttl_seconds": 14400,
-        "sig": "abc123",
-    }),
+    json.dumps(
+        {
+            "name": "dispatched-subagent-active",
+            "ts": "1234567890",
+            "active_tentacles": [
+                {"name": "my-tentacle", "ts": "1234567890", "git_root": "/repo", "tentacle_id": "abc-123"}
+            ],
+            "dispatch_mode": "prompt",
+            "written_at": "2026-04-28T00:00:00+00:00",
+            "ttl_seconds": 14400,
+            "sig": "abc123",
+        }
+    ),
     encoding="utf-8",
 )
 tentacle_status.MARKER_PATH = fake_marker
@@ -230,14 +232,19 @@ test("tentacle-status: sig_present True", ts_status["marker"]["sig_present"] is 
 test("tentacle-status: active_tentacles count == 1", len(ts_status["marker"]["active_tentacles"]) == 1)
 test("tentacle-status: total_tentacles == 1", ts_status["summary"]["total_tentacles"] == 1)
 test("tentacle-status: marker_active == 1", ts_status["summary"]["marker_active"] == 1)
-test("tentacle-status: with_worktree derived from nested worktree meta",
-     ts_status["summary"]["with_worktree"] == 1)
-test("tentacle-status: verification_total derived from verifications list",
-     ts_status["tentacles"][0]["verification_total"] == 2)
-test("tentacle-status: verification_passed derived from verifications list",
-     ts_status["tentacles"][0]["verification_passed"] == 1)
-test("tentacle-status: verification_failed derived from verifications list",
-     ts_status["tentacles"][0]["verification_failed"] == 1)
+test("tentacle-status: with_worktree derived from nested worktree meta", ts_status["summary"]["with_worktree"] == 1)
+test(
+    "tentacle-status: verification_total derived from verifications list",
+    ts_status["tentacles"][0]["verification_total"] == 2,
+)
+test(
+    "tentacle-status: verification_passed derived from verifications list",
+    ts_status["tentacles"][0]["verification_passed"] == 1,
+)
+test(
+    "tentacle-status: verification_failed derived from verifications list",
+    ts_status["tentacles"][0]["verification_failed"] == 1,
+)
 
 health = tentacle_status.runtime_health(ts_status)
 test("tentacle-status: health ok with valid setup", health["ok"] is True)
@@ -501,16 +508,14 @@ db_patch.execute(
     "(skill_path, patched_at, old_text, new_text, occurrences_replaced, "
     "replace_all, dry_run, validation_passed, validation_errors, validation_warnings) "
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    ("/skills/test-skill/SKILL.md", "2026-05-01T00:00:00+00:00",
-     "old text", "new text", 1, 0, 0, 1, 0, 0),
+    ("/skills/test-skill/SKILL.md", "2026-05-01T00:00:00+00:00", "old text", "new text", 1, 0, 0, 1, 0, 0),
 )
 db_patch.execute(
     "INSERT INTO skill_patch_history "
     "(skill_path, patched_at, old_text, new_text, occurrences_replaced, "
     "replace_all, dry_run, validation_passed, validation_errors, validation_warnings) "
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    ("/skills/other-skill/SKILL.md", "2026-05-02T00:00:00+00:00",
-     "another old", "another new", 3, 1, 0, 1, 0, 2),
+    ("/skills/other-skill/SKILL.md", "2026-05-02T00:00:00+00:00", "another old", "another new", 3, 1, 0, 1, 0, 2),
 )
 db_patch.commit()
 db_patch.close()

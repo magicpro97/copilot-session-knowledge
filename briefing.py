@@ -1694,26 +1694,34 @@ def _collect_skill_usage_for_briefing(db_path: Path = None) -> list:
         db = sqlite3.connect(str(db_path))
         db.row_factory = sqlite3.Row
         try:
-            row = db.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='skill_usage_events'"
-            ).fetchone()
+            row = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='skill_usage_events'").fetchone()
             if not row:
                 return []
             rows = db.execute(
-                "SELECT skill_name, event, COUNT(*) AS count "
+                "SELECT skill_name, "
+                "SUM(CASE WHEN event='triggered' THEN 1 ELSE 0 END) AS triggered, "
+                "SUM(CASE WHEN event='loaded'    THEN 1 ELSE 0 END) AS loaded, "
+                "SUM(CASE WHEN event='skipped'   THEN 1 ELSE 0 END) AS skipped, "
+                "CASE WHEN SUM(CASE WHEN event='triggered' THEN 1 ELSE 0 END) > 0 "
+                "     THEN CAST(SUM(CASE WHEN event='loaded' THEN 1 ELSE 0 END) AS REAL) "
+                "          / SUM(CASE WHEN event='triggered' THEN 1 ELSE 0 END) "
+                "     ELSE 0.0 END AS load_rate "
                 "FROM skill_usage_events "
-                "GROUP BY skill_name, event "
-                "ORDER BY COUNT(*) DESC, skill_name"
+                "GROUP BY skill_name "
+                "ORDER BY load_rate DESC, triggered DESC"
             ).fetchall()
         finally:
             db.close()
         by_skill: dict = {}
         for r in rows:
             skill = r["skill_name"]
-            by_skill.setdefault(skill, {"skill_name": skill, "triggered": 0, "loaded": 0, "skipped": 0})
-            evt = r["event"]
-            if evt in ("triggered", "loaded", "skipped"):
-                by_skill[skill][evt] = int(r["count"])
+            by_skill[skill] = {
+                "skill_name": skill,
+                "triggered": int(r["triggered"]),
+                "loaded": int(r["loaded"]),
+                "skipped": int(r["skipped"]),
+                "load_rate": float(r["load_rate"]),
+            }
         return list(by_skill.values())
     except Exception:
         return []
@@ -1722,25 +1730,36 @@ def _collect_skill_usage_for_briefing(db_path: Path = None) -> list:
 def _format_skill_usage_section(entries: list) -> str:
     """Return a compact skill usage section for briefing output.
 
+    Shows top skills (highest load rate) and, when available, highlights the
+    bottom skills (lowest load rate) so the operator can spot underperforming
+    skills.  ``entries`` must be pre-sorted by ``load_rate DESC`` (as returned
+    by ``_collect_skill_usage_for_briefing``).
+
     Returns an empty string when entries is empty.
     """
     if not entries:
         return ""
-    lines = ["📦 Skill Usage (recent sessions)"]
-    for entry in entries[:8]:
+    lines = ["📦 Skill Usage (top/bottom by load rate)"]
+    top = entries[:4]
+    # Bottom-2: only include when there are enough distinct skills to avoid
+    # duplicating entries already shown in the top block.
+    bottom = [e for e in entries[4:][-2:]] if len(entries) > 4 else []
+    for entry in top:
         name = entry.get("skill_name", "?")
         triggered = entry.get("triggered", 0)
         loaded = entry.get("loaded", 0)
-        skipped = entry.get("skipped", 0)
-        parts = []
-        if loaded:
-            parts.append(f"{loaded} loaded")
-        if triggered and triggered != loaded:
-            parts.append(f"{triggered} triggered")
-        if skipped:
-            parts.append(f"{skipped} skipped")
-        detail = ", ".join(parts) if parts else "0 events"
-        lines.append(f"  {name:<32} {detail}")
+        load_rate = entry.get("load_rate", 0.0)
+        rate_pct = f"{load_rate:.0%}"
+        lines.append(f"  {name:<30} {rate_pct:>5} load  ({loaded}/{triggered} triggered)")
+    if bottom:
+        lines.append("  ↓ lowest load rate:")
+        for entry in bottom:
+            name = entry.get("skill_name", "?")
+            triggered = entry.get("triggered", 0)
+            loaded = entry.get("loaded", 0)
+            load_rate = entry.get("load_rate", 0.0)
+            rate_pct = f"{load_rate:.0%}"
+            lines.append(f"  {name:<30} {rate_pct:>5} load  ({loaded}/{triggered} triggered)")
     return "\n".join(lines)
 
 

@@ -139,31 +139,36 @@ def _query_skill_usage(conn: sqlite3.Connection) -> list[dict]:
 
 
 def _query_event_skill_usage(conn: sqlite3.Connection) -> list[dict]:
-    """Query event-level skill usage from the ``skill_usage_events`` table."""
+    """Query event-level skill usage from the ``skill_usage_events`` table.
+
+    Aggregates triggered/loaded/skipped counts per skill entirely in SQL so
+    that no skills are silently dropped by a pre-aggregation row limit.
+    """
     results = []
     try:
         if not _table_exists(conn, "skill_usage_events"):
             return results
         rows = conn.execute(
             """
-            SELECT skill_name, event, COUNT(*) AS count
+            SELECT skill_name,
+                   SUM(CASE WHEN event='triggered' THEN 1 ELSE 0 END) AS triggered,
+                   SUM(CASE WHEN event='loaded'    THEN 1 ELSE 0 END) AS loaded,
+                   SUM(CASE WHEN event='skipped'   THEN 1 ELSE 0 END) AS skipped
             FROM skill_usage_events
-            GROUP BY skill_name, event
-            ORDER BY skill_name, event
+            GROUP BY skill_name
+            ORDER BY (triggered + loaded + skipped) DESC
             LIMIT 200
             """
         ).fetchall()
-        by_skill: dict = {}
         for row in rows:
-            skill = str(row["skill_name"] or "")
-            by_skill.setdefault(
-                skill,
-                {"skill_name": skill, "triggered": 0, "loaded": 0, "skipped": 0},
+            results.append(
+                {
+                    "skill_name": str(row["skill_name"] or ""),
+                    "triggered": int(row["triggered"] or 0),
+                    "loaded": int(row["loaded"] or 0),
+                    "skipped": int(row["skipped"] or 0),
+                }
             )
-            evt = str(row["event"] or "")
-            if evt in ("triggered", "loaded", "skipped"):
-                by_skill[skill][evt] = int(row["count"])
-        results = sorted(by_skill.values(), key=lambda e: -(e["triggered"] + e["loaded"] + e["skipped"]))
     except Exception:
         pass
     return results

@@ -5123,6 +5123,164 @@ impl HookRule for TentacleEnforceRule {
 }
 
 // ---------------------------------------------------------------------------
+// SkillUsageRule (wave28, issue #119)
+// ---------------------------------------------------------------------------
+
+/// Records event-level skill usage (triggered / loaded / skipped) on
+/// ``postToolUse`` for the ``skill`` tool.
+///
+/// Two events per invocation:
+///   - ``triggered`` — always recorded.
+///   - ``loaded`` or ``skipped`` — determined by ``toolResult``:
+///     - absent / null / empty string → ``loaded`` (fail-open default)
+///     - dict with ``exitCode``/``exit_code``:
+///       - 0 → ``loaded``
+///       - non-zero → ``skipped``
+///     - dict without exit code, or plain string:
+///       short output (< 200 bytes) containing a skill-loader-specific
+///       skip phrase → ``skipped``; everything else → ``loaded``
+///
+/// Mirrors ``hooks/rules/skill_usage.py::SkillUsageRule``.
+/// Fail-open: any DB or filesystem error is silently discarded.
+pub struct SkillUsageRule;
+
+impl SkillUsageRule {
+    fn skill_metrics_db_path() -> PathBuf {
+        resolve_home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".copilot")
+            .join("session-state")
+            .join("skill-metrics.db")
+    }
+
+    fn detect_secondary_event(data: &Value) -> &'static str {
+        let tool_result = data.get("toolResult");
+        match tool_result {
+            None | Some(Value::Null) => return "loaded",
+            Some(Value::String(s)) if s.is_empty() => return "loaded",
+            _ => {}
+        }
+        // Check exitCode / exit_code (exitCode takes precedence).
+        if let Some(obj) = tool_result.and_then(|v| v.as_object()) {
+            let exit_code = obj
+                .get("exitCode")
+                .or_else(|| obj.get("exit_code"))
+                .and_then(|v| v.as_i64());
+            if let Some(code) = exit_code {
+                return if code == 0 { "loaded" } else { "skipped" };
+            }
+            // No numeric exit code — check output text.
+            let output = obj
+                .get("output")
+                .or_else(|| obj.get("stdout"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            return Self::classify_output(output);
+        }
+        // Plain string toolResult.
+        if let Some(Value::String(s)) = tool_result {
+            return Self::classify_output(s.as_str());
+        }
+        "loaded"
+    }
+
+    fn classify_output(output: &str) -> &'static str {
+        if output.len() >= 200 {
+            return "loaded";
+        }
+        let lower = output.to_lowercase();
+        const SKIP_MARKERS: &[&str] = &[
+            "skill skipped",
+            "skill was skipped",
+            "skill skipping",
+            "skipping skill",
+            "skill not found",
+            "skill unavailable",
+            "skill_skip",
+            "cannot load skill",
+            "unable to load skill",
+            "could not load skill",
+            "skill could not be loaded",
+            "no skill matched",
+            "no skill found",
+        ];
+        if SKIP_MARKERS.iter().any(|&m| lower.contains(m)) {
+            "skipped"
+        } else {
+            "loaded"
+        }
+    }
+
+    fn record_events(skill_name: &str, events: &[&str], session_id: &str, db_path: &Path) {
+        // Fail-open: any error is silently discarded (telemetry must not block).
+        let _ = (|| -> rusqlite::Result<()> {
+            if let Some(parent) = db_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let conn = rusqlite::Connection::open(db_path)?;
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS skill_usage_events (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    skill_name TEXT NOT NULL,
+                    event      TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    timestamp  TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_sue_skill_name ON skill_usage_events (skill_name);
+                CREATE INDEX IF NOT EXISTS idx_sue_event      ON skill_usage_events (event);
+                CREATE INDEX IF NOT EXISTS idx_sue_session    ON skill_usage_events (session_id);",
+            )?;
+            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            for event in events {
+                conn.execute(
+                    "INSERT INTO skill_usage_events \
+                     (skill_name, event, session_id, timestamp) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![skill_name, event, session_id, now],
+                )?;
+            }
+            Ok(())
+        })();
+    }
+}
+
+impl HookRule for SkillUsageRule {
+    fn name(&self) -> &'static str {
+        "skill-usage"
+    }
+
+    fn events(&self) -> &'static [&'static str] {
+        &["postToolUse"]
+    }
+
+    fn tools(&self) -> &'static [&'static str] {
+        &["skill"]
+    }
+
+    fn evaluate(&self, _event: &str, data: &Value) -> Option<Value> {
+        let skill_name = data
+            .get("toolInput")
+            .or_else(|| data.get("toolArgs"))
+            .and_then(|v| v.get("skill"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())?;
+
+        let session_id = data
+            .get("sessionId")
+            .or_else(|| data.get("session_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        let secondary = Self::detect_secondary_event(data);
+        let db_path = Self::skill_metrics_db_path();
+        Self::record_events(skill_name, &["triggered", secondary], session_id, &db_path);
+
+        None // informational — no user-visible message
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -5156,6 +5314,7 @@ pub fn all_rules() -> Vec<Box<dyn HookRule>> {
         Box::new(AutoBugDetectorRule), // wave13: issue #86 bug-fix pattern detector
         Box::new(NextjsTypecheckReminderRule),
         Box::new(VerificationGatePostRule),
+        Box::new(SkillUsageRule), // wave28: issue #119 event-level skill usage tracking
         Box::new(TentacleSuggestRule), // wave8: read-only tentacle suggestion
         // sessionEnd (lifecycle + marker cleanup + recurrence detection)
         Box::new(SessionEndRule),
@@ -11557,5 +11716,151 @@ EOF"#;
             !is_auto_bug_session_path("src/utils.py"),
             "src/utils.py must not be flagged as session-state"
         );
+    }
+
+    // ── SkillUsageRule ────────────────────────────────────────────────────────
+
+    #[test]
+    fn skill_usage_rule_name_and_events() {
+        let rule = SkillUsageRule;
+        assert_eq!(rule.name(), "skill-usage");
+        assert!(rule.events().contains(&"postToolUse"));
+        assert!(!rule.events().contains(&"preToolUse"));
+    }
+
+    #[test]
+    fn skill_usage_rule_only_fires_for_skill_tool() {
+        let rule = SkillUsageRule;
+        assert_eq!(rule.tools(), &["skill"]);
+        assert!(!rule.tools().is_empty());
+    }
+
+    #[test]
+    fn skill_usage_rule_in_all_rules() {
+        let names: Vec<&str> = all_rules().iter().map(|r| r.name()).collect();
+        assert!(
+            names.contains(&"skill-usage"),
+            "skill-usage must be in all_rules(); got: {names:?}"
+        );
+    }
+
+    #[test]
+    fn skill_usage_all_rules_is_post_tool_use() {
+        let rules = all_rules();
+        let su = rules.iter().find(|r| r.name() == "skill-usage").unwrap();
+        assert!(
+            su.events().contains(&"postToolUse"),
+            "skill-usage must be registered for postToolUse"
+        );
+    }
+
+    #[test]
+    fn skill_usage_detect_absent_tool_result_is_loaded() {
+        let data = json!({"toolName": "skill"});
+        assert_eq!(SkillUsageRule::detect_secondary_event(&data), "loaded");
+    }
+
+    #[test]
+    fn skill_usage_detect_empty_string_is_loaded() {
+        let data = json!({"toolName": "skill", "toolResult": ""});
+        assert_eq!(SkillUsageRule::detect_secondary_event(&data), "loaded");
+    }
+
+    #[test]
+    fn skill_usage_detect_exit_code_zero_is_loaded() {
+        let data = json!({"toolResult": {"exitCode": 0, "output": "skill skipped"}});
+        assert_eq!(
+            SkillUsageRule::detect_secondary_event(&data),
+            "loaded",
+            "exitCode=0 must always yield loaded even with skip markers"
+        );
+    }
+
+    #[test]
+    fn skill_usage_detect_exit_code_nonzero_is_skipped() {
+        let data = json!({"toolResult": {"exitCode": 1, "output": ""}});
+        assert_eq!(SkillUsageRule::detect_secondary_event(&data), "skipped");
+    }
+
+    #[test]
+    fn skill_usage_detect_exit_code_key_precedence() {
+        // exitCode takes precedence over exit_code when both present.
+        let data = json!({"toolResult": {"exitCode": 0, "exit_code": 1}});
+        assert_eq!(
+            SkillUsageRule::detect_secondary_event(&data),
+            "loaded",
+            "exitCode=0 must win over exit_code=1"
+        );
+    }
+
+    #[test]
+    fn skill_usage_detect_skip_marker_short_output() {
+        let data = json!({"toolResult": "skill not found"});
+        assert_eq!(SkillUsageRule::detect_secondary_event(&data), "skipped");
+    }
+
+    #[test]
+    fn skill_usage_detect_long_output_is_loaded() {
+        let long = "x".repeat(300);
+        let data = json!({"toolResult": long});
+        assert_eq!(SkillUsageRule::detect_secondary_event(&data), "loaded");
+    }
+
+    #[test]
+    fn skill_usage_detect_generic_error_prose_is_loaded() {
+        // Generic error text in non-skip context must not be misclassified.
+        for prose in &[
+            "Use error handling patterns",
+            "Task failed gracefully",
+            "cannot load config",
+            "unable to load module",
+        ] {
+            let data = json!({"toolResult": prose});
+            assert_eq!(
+                SkillUsageRule::detect_secondary_event(&data),
+                "loaded",
+                "generic prose {prose:?} must not be classified as skipped"
+            );
+        }
+    }
+
+    #[test]
+    fn skill_usage_evaluate_returns_none_on_success() {
+        let rule = SkillUsageRule;
+        // Even with a valid payload the rule returns None (informational only).
+        let data = json!({
+            "toolName": "skill",
+            "toolInput": {"skill": "karpathy-guidelines"},
+            "toolResult": "x".repeat(300),
+            "sessionId": "test-sess-001",
+        });
+        // The rule may attempt to write to the real DB; fail-open means it
+        // returns None regardless of whether the write succeeds.
+        assert!(
+            rule.evaluate("postToolUse", &data).is_none(),
+            "evaluate must return None (informational)"
+        );
+    }
+
+    #[test]
+    fn skill_usage_evaluate_missing_skill_name_returns_none() {
+        let rule = SkillUsageRule;
+        let data = json!({
+            "toolName": "skill",
+            "toolInput": {},
+            "toolResult": "",
+            "sessionId": "test-sess-002",
+        });
+        // Missing skill name → early return None (no DB write attempted).
+        assert!(rule.evaluate("postToolUse", &data).is_none());
+    }
+
+    #[test]
+    fn skill_usage_record_events_is_fail_open() {
+        // record_events to an unwritable path must not panic.
+        // Use a path with a null byte which is invalid on all platforms.
+        let bad_path = std::path::Path::new("\x00invalid\x00db.db");
+        SkillUsageRule::record_events("test-skill", &["triggered", "loaded"], "sess", bad_path);
+        // No panic = pass.
     }
 }
