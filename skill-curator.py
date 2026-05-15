@@ -125,9 +125,9 @@ def _last_used(db, skill_name: str) -> datetime | None:
 
 
 def classify(last_used_dt: datetime | None, now: datetime, stale_days: int, archive_days: int) -> str:
-    """Return 'active', 'stale', or 'archived_candidate'."""
+    """Return 'active', 'stale', 'archived_candidate', or 'never_used'."""
     if last_used_dt is None:
-        # Never recorded — treat as archived candidate
+        # Never recorded — treat as never_used
         return "never_used"
     delta = now - last_used_dt
     days = delta.total_seconds() / 86400
@@ -184,16 +184,25 @@ def _timestamp_str() -> str:
 
 
 def _backup_skill(skills_dir: Path, skill_name: str, dry_run: bool) -> Path:
-    """Write a backup copy of skill_name to skills/.archive/.<skill_name>.bak.<ts>/.
+    """Write a backup copy of skill_name to skills/.archive/.<skill_name>.bak.<ts>[.<n>]/.
 
+    A counter suffix (<n>) is appended when the timestamp-only name is already taken,
+    making the backup name deterministically unique even for same-second calls.
     Always happens BEFORE any destructive move.  In dry-run mode, returns the
     would-be backup path without writing.
     """
     archive_dir = skills_dir / ARCHIVE_DIR_NAME
-    backup_name = f".{skill_name}.bak.{_timestamp_str()}"
-    backup_path = archive_dir / backup_name
+    ts = _timestamp_str()
+    base_name = f".{skill_name}.bak.{ts}"
+    backup_name = base_name
     if not dry_run:
         archive_dir.mkdir(parents=True, exist_ok=True)
+        counter = 0
+        while (archive_dir / backup_name).exists():
+            counter += 1
+            backup_name = f"{base_name}.{counter}"
+    backup_path = archive_dir / backup_name
+    if not dry_run:
         shutil.copytree(str(skills_dir / skill_name), str(backup_path))
     return backup_path
 
@@ -225,13 +234,15 @@ def _archive_skill(skills_dir: Path, skill_name: str, dry_run: bool) -> tuple[Pa
 def _restore_skill(skills_dir: Path, skill_name: str, dry_run: bool) -> Path:
     """Move an archived skill back to skills/<skill_name>/.
 
-    Returns the restored path.  Raises RuntimeError if source absent.
+    Returns the restored path.  Raises RuntimeError if source absent or
+    (in non-dry-run only) if the destination already exists.
+    Destination collision is not checked in dry-run mode because no writes occur.
     """
     archive_path = skills_dir / ARCHIVE_DIR_NAME / skill_name
     if not archive_path.exists():
         raise RuntimeError(f"archived skill '{skill_name}' not found at {archive_path}")
     dest = skills_dir / skill_name
-    if dest.exists():
+    if not dry_run and dest.exists():
         raise RuntimeError(f"destination '{dest}' already exists — cannot restore")
     if not dry_run:
         shutil.move(str(archive_path), str(dest))
@@ -421,7 +432,7 @@ def cmd_unpin(args, _db, _now: datetime) -> int:
             else:
                 print(f"'{skill_name}' was not pinned.")
         return 0
-    except Exception as exc:
+    except RuntimeError as exc:
         if args.json:
             print(json.dumps({"error": str(exc)}))
         else:

@@ -801,5 +801,120 @@ class TestTimezoneNaiveDatetimes(unittest.TestCase):
         self.assertIn(status, ("active", "stale", "archived_candidate"))
 
 
+
+# ---------------------------------------------------------------------------
+# Regression: same-second backup collision (PR review finding #2)
+# ---------------------------------------------------------------------------
+
+
+class TestBackupSameSecondCollision(unittest.TestCase):
+    """Prove _backup_skill() produces unique names even when called twice within the same second."""
+
+    def setUp(self):
+        self.tmp = _make_temp_skills(["my-skill"])
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_same_second_backup_names_are_unique(self):
+        """Two _backup_skill() calls with the same timestamp must not collide."""
+        with patch.object(curator, "_timestamp_str", return_value="20260515T120000Z"):
+            backup1 = curator._backup_skill(self.tmp, "my-skill", dry_run=False)
+            backup2 = curator._backup_skill(self.tmp, "my-skill", dry_run=False)
+        self.assertNotEqual(backup1, backup2, "backup paths must be unique even for same-second calls")
+        self.assertTrue(backup1.exists(), "first backup must be written")
+        self.assertTrue(backup2.exists(), "second backup must be written")
+
+    def test_same_second_counter_suffix_increments(self):
+        """Counter suffix must be appended as .1, .2, … when base name is taken."""
+        with patch.object(curator, "_timestamp_str", return_value="20260515T120000Z"):
+            backup1 = curator._backup_skill(self.tmp, "my-skill", dry_run=False)
+            backup2 = curator._backup_skill(self.tmp, "my-skill", dry_run=False)
+        self.assertTrue(
+            backup2.name.endswith(".1"),
+            f"second backup name should end with '.1', got {backup2.name!r}",
+        )
+
+    def test_dry_run_same_second_returns_same_path(self):
+        """dry_run path is computed without creating dirs, so no counter needed."""
+        with patch.object(curator, "_timestamp_str", return_value="20260515T120000Z"):
+            backup1 = curator._backup_skill(self.tmp, "my-skill", dry_run=True)
+            backup2 = curator._backup_skill(self.tmp, "my-skill", dry_run=True)
+        # Both are non-existent (dry_run); names will match but that's fine — no writes
+        self.assertFalse(backup1.exists(), "dry_run must not write backup")
+        self.assertFalse(backup2.exists(), "dry_run must not write backup")
+
+
+# ---------------------------------------------------------------------------
+# Regression: restore dry_run destination conflict (PR review finding #4)
+# ---------------------------------------------------------------------------
+
+
+class TestRestoreDryRunDestinationConflict(unittest.TestCase):
+    """Prove _restore_skill() dry_run skips destination-exists check."""
+
+    def setUp(self):
+        self.tmp = _make_temp_skills(["live-skill"])
+        # Create archived skill AND a live directory with the same name
+        archive_dir = self.tmp / ".archive" / "conflict-skill"
+        archive_dir.mkdir(parents=True)
+        (archive_dir / "SKILL.md").write_text("# archived\n", encoding="utf-8")
+        live_dir = self.tmp / "conflict-skill"
+        live_dir.mkdir()
+        (live_dir / "SKILL.md").write_text("# live\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_restore_dry_run_ignores_destination_conflict(self):
+        """restore --dry-run must succeed (exit 0) even when destination already exists."""
+        with patch("builtins.print"):
+            rc = curator.main(
+                ["--skills-dir", str(self.tmp), "--dry-run", "restore", "conflict-skill"]
+            )
+        self.assertEqual(rc, 0, "restore --dry-run should succeed even when destination exists")
+
+    def test_restore_dry_run_zero_writes_with_destination_conflict(self):
+        """restore --dry-run must not move or modify any files when destination exists."""
+        archive_before = (self.tmp / ".archive" / "conflict-skill").exists()
+        live_before_content = (self.tmp / "conflict-skill" / "SKILL.md").read_text()
+        with patch("builtins.print"):
+            curator.main(
+                ["--skills-dir", str(self.tmp), "--dry-run", "restore", "conflict-skill"]
+            )
+        # Archive source must still be present
+        self.assertTrue(
+            (self.tmp / ".archive" / "conflict-skill").exists(),
+            "dry_run must not move archived skill",
+        )
+        # Live destination must be unchanged
+        self.assertEqual(
+            (self.tmp / "conflict-skill" / "SKILL.md").read_text(),
+            live_before_content,
+            "dry_run must not modify existing destination",
+        )
+
+    def test_restore_non_dry_run_still_raises_on_destination_conflict(self):
+        """restore (non-dry-run) must raise RuntimeError when destination exists."""
+        with patch("builtins.print"), patch("sys.stderr"):
+            rc = curator.main(
+                ["--skills-dir", str(self.tmp), "restore", "conflict-skill"]
+            )
+        self.assertEqual(rc, 1, "restore must fail when destination exists (non-dry-run)")
+        # Archive must remain
+        self.assertTrue(
+            (self.tmp / ".archive" / "conflict-skill").exists(),
+            "archive must remain after failed restore",
+        )
+
+    def test_restore_dry_run_missing_archive_still_errors(self):
+        """restore --dry-run must still return 1 when the archive doesn't exist."""
+        with patch("builtins.print"), patch("sys.stderr"):
+            rc = curator.main(
+                ["--skills-dir", str(self.tmp), "--dry-run", "restore", "nonexistent-skill"]
+            )
+        self.assertEqual(rc, 1, "restore --dry-run must fail when archive is missing")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
