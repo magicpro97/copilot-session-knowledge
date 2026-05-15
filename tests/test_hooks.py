@@ -5010,6 +5010,284 @@ except Exception as _e26:
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  Section 27 — SkillUsageRule
+# ═══════════════════════════════════════════════════════════════════
+try:
+    import sqlite3 as _s27
+    import sys as _sys27
+    import tempfile as _tempfile27
+
+    # Use package-based import so relative imports in skill_usage.py work
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    from hooks.rules import skill_usage as _su27
+
+    # Use a fresh temp DB
+    _db27 = pathlib.Path(_tempfile27.mkdtemp()) / "skill_usage_test.db"
+    _su27.METRICS_DB_PATH = _db27
+
+    # 27-a: ensure_table creates the table
+    _conn27 = _s27.connect(str(_db27))
+    _su27.ensure_table(_conn27)
+    _conn27.commit()
+    _tbl27 = _conn27.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='skill_usage_events'"
+    ).fetchone()
+    _conn27.close()
+    test("27-a: ensure_table creates skill_usage_events", _tbl27 is not None)
+
+    # 27-b: record_events writes triggered + loaded
+    _rule27 = _su27.SkillUsageRule()
+    _ts27 = "2026-01-01T00:00:00Z"
+    _su27.record_events("karpathy-guidelines", ["triggered", "loaded"], "sess-001", _ts27, db_path=_db27)
+    _conn27b = _s27.connect(str(_db27))
+    _conn27b.row_factory = _s27.Row
+    _rows27 = _conn27b.execute("SELECT event FROM skill_usage_events ORDER BY id").fetchall()
+    _conn27b.close()
+    test("27-b: record_events writes triggered row", any(r["event"] == "triggered" for r in _rows27))
+    test("27-b: record_events writes secondary event row", any(r["event"] == "loaded" for r in _rows27))
+
+    # 27-c: rule dispatches on postToolUse for 'skill' tool
+    _db27c = pathlib.Path(_tempfile27.mkdtemp()) / "skill_usage_test_c.db"
+    _su27.METRICS_DB_PATH = _db27c
+    _data27c = {
+        "event": "postToolUse",
+        "toolName": "skill",
+        "toolInput": {"skill": "frontend-dev"},
+        "toolResult": "x" * 300,  # long = loaded
+        "sessionId": "sess-abc",
+    }
+    _result27c = _rule27.evaluate("postToolUse", _data27c)
+    test("27-c: rule returns None (fail-open)", _result27c is None)
+    _conn27c = _s27.connect(str(_db27c))
+    _conn27c.row_factory = _s27.Row
+    _rows27c = _conn27c.execute("SELECT skill_name, event FROM skill_usage_events").fetchall()
+    _conn27c.close()
+    test("27-c: rule writes triggered", any(r["event"] == "triggered" and r["skill_name"] == "frontend-dev" for r in _rows27c))
+    test("27-c: rule writes loaded", any(r["event"] == "loaded" and r["skill_name"] == "frontend-dev" for r in _rows27c))
+
+    # 27-d: detect_secondary_event returns 'skipped' for skip markers in short output
+    _skip_outputs = [
+        "Skill skipping: no matching handler",  # matches "skill skipping" compound
+        "skill not found",                       # matches "skill not found"
+        "SKILL_SKIP",                            # matches "skill_skip" (lowercased)
+        "Error: skill unavailable",              # matches "skill unavailable"
+    ]
+    for _skip_out in _skip_outputs:
+        _evt = _su27._detect_secondary_event(_skip_out)
+        test(f"27-d: detect_secondary_event({_skip_out[:30]!r}) → skipped", _evt == "skipped", f"got {_evt!r}")
+
+    # 27-d2: long output → loaded
+    _evt27d2 = _su27._detect_secondary_event("x" * 300)
+    test("27-d2: detect_secondary_event long output → loaded", _evt27d2 == "loaded", f"got {_evt27d2!r}")
+
+    # 27-d3: empty result → loaded (fail-open)
+    _evt27d3 = _su27._detect_secondary_event("")
+    test("27-d3: detect_secondary_event empty → loaded", _evt27d3 == "loaded", f"got {_evt27d3!r}")
+
+    # 27-e: missing skill name in toolInput → no DB write
+    _db27e = pathlib.Path(_tempfile27.mkdtemp()) / "skill_usage_test_e.db"
+    _su27.METRICS_DB_PATH = _db27e
+    _rule27.evaluate("postToolUse", {"event": "postToolUse", "toolName": "skill", "toolInput": {}, "toolResult": "", "sessionId": "sess-xyz"})
+    test("27-e: no DB created when skill name missing", not _db27e.exists())
+
+    # 27-f: fail-open — bad DB path → no exception
+    _su27.METRICS_DB_PATH = pathlib.Path("/nonexistent/path/to/db.db")
+    _result27f = _rule27.evaluate("postToolUse", {
+        "event": "postToolUse",
+        "toolName": "skill",
+        "toolInput": {"skill": "some-skill"},
+        "toolResult": "x" * 300,
+        "sessionId": "sess-fail",
+    })
+    test("27-f: fail-open on bad DB path → returns None", _result27f is None)
+
+    # 27-g: exitCode=0 regression — must not be misclassified as 'skipped'
+    # even when short output contains skip markers (the exitCode=0 or exit_code
+    # bug would have returned the exit_code fallback and fallen through to text).
+    _skip_result_dict = {"exitCode": 0, "output": "skipped: skill not found"}
+    _evt27g = _su27._detect_secondary_event(_skip_result_dict)
+    test("27-g: exitCode=0 with skip markers in output → loaded (regression)", _evt27g == "loaded", f"got {_evt27g!r}")
+
+    # 27-h: exitCode=0 via alternate exit_code key → loaded
+    _alt_key_dict = {"exit_code": 0, "output": "no skill unavailable"}
+    _evt27h = _su27._detect_secondary_event(_alt_key_dict)
+    test("27-h: exit_code=0 (alternate key) with skip markers → loaded", _evt27h == "loaded", f"got {_evt27h!r}")
+
+    # 27-i: exitCode wins over exit_code when both present; exitCode=0 → loaded
+    _both_dict = {"exitCode": 0, "exit_code": 1, "output": "skip"}
+    _evt27i = _su27._detect_secondary_event(_both_dict)
+    test("27-i: exitCode=0 wins over exit_code=1 → loaded", _evt27i == "loaded", f"got {_evt27i!r}")
+
+    # 27-j: exitCode non-zero → skipped (existing behaviour unchanged)
+    _nonzero_dict = {"exitCode": 1, "output": ""}
+    _evt27j = _su27._detect_secondary_event(_nonzero_dict)
+    test("27-j: exitCode=1 → skipped", _evt27j == "skipped", f"got {_evt27j!r}")
+
+    # 27-k: False-positive regression — short loaded prose containing "error"
+    # must NOT be classified as skipped.
+    _false_pos_error = [
+        "Use error handling patterns",
+        "Implement error recovery",
+        "Catch and log errors",
+        "error handling best practices",
+    ]
+    for _fp in _false_pos_error:
+        _fp_evt = _su27._detect_secondary_event(_fp)
+        test(f"27-k: loaded prose with 'error' ({_fp[:35]!r}) → loaded", _fp_evt == "loaded", f"got {_fp_evt!r}")
+
+    # 27-l: False-positive regression — short loaded prose containing "failed"
+    # must NOT be classified as skipped.
+    _false_pos_failed = [
+        "Task failed gracefully",
+        "if the request failed",
+        "retry failed requests",
+    ]
+    for _fp in _false_pos_failed:
+        _fp_evt = _su27._detect_secondary_event(_fp)
+        test(f"27-l: loaded prose with 'failed' ({_fp[:35]!r}) → loaded", _fp_evt == "loaded", f"got {_fp_evt!r}")
+
+    # 27-m: Confirm real skip messages still classify correctly using the
+    # compound-phrase markers that replaced the old broad single keywords.
+    _real_skip_narrow = [
+        "Skill unavailable",                      # matches "skill unavailable"
+        "cannot load skill",                      # matches "cannot load skill"
+        "skill could not be loaded",              # matches "could not be loaded"
+        "no skill matched",                       # matches "no skill matched"
+        "unable to load skill: frontend-dev",     # matches "unable to load skill"
+        "could not load skill: codereview",       # matches "could not load skill"
+        "no skill found for request",             # matches "no skill found"
+        "SKILL_SKIP",                             # matches "skill_skip" (lowercased)
+    ]
+    for _rs in _real_skip_narrow:
+        _rs_evt = _su27._detect_secondary_event(_rs)
+        test(f"27-m: real skip via compound phrase ({_rs[:40]!r}) → skipped", _rs_evt == "skipped", f"got {_rs_evt!r}")
+
+    # 27-n: False-positive regression — prose containing single generic words
+    # that were formerly in _SKIP_MARKERS must NOT classify as skipped.
+    # These mirror the exact examples from the issue #119 publish blocker.
+    _false_pos_generic = [
+        "you cannot call this tool twice",      # bare "cannot" (no "cannot load")
+        "No skill is needed for simple queries", # "no skill" (no "no skill matched/found")
+        "Skip initialisation on first run",      # bare "skip" (not "skipped")
+        "cannot parse the request",              # bare "cannot" in different context
+        "unable to connect to server",           # bare "unable" (no "unable to load")
+        "task could not complete",               # bare "could not" (no compound form)
+        "no skill required here",                # "no skill" variant not in markers
+    ]
+    for _fp in _false_pos_generic:
+        _fp_evt = _su27._detect_secondary_event(_fp)
+        test(f"27-n: generic prose ({_fp[:45]!r}) → loaded", _fp_evt == "loaded", f"got {_fp_evt!r}")
+
+    # 27-o: False-positive regression — bare "skipped" and "not found" in
+    # non-skill-loader prose must NOT classify as skipped.
+    # Mirrors the two remaining publish-blocker examples from issue #119 review.
+    _false_pos_skip_notfound = [
+        "Tests skipped",                 # bare "skipped" in test output
+        "Build step skipped (cached)",   # bare "skipped" in build-log prose
+        "Some items were skipped",       # bare "skipped" in generic prose
+        "Route not found",               # bare "not found" in HTTP prose
+        "Key not found in config",       # bare "not found" in config prose
+        "resource not found",            # bare "not found" in generic prose
+    ]
+    for _fp in _false_pos_skip_notfound:
+        _fp_evt = _su27._detect_secondary_event(_fp)
+        test(f"27-o: skipped/not-found prose ({_fp[:45]!r}) → loaded", _fp_evt == "loaded", f"got {_fp_evt!r}")
+
+    # 27-o (positive): narrow skill-loader compound phrases still classify as skipped.
+    _narrow_skip_positive = [
+        "skill skipped by loader",         # matches "skill skipped"
+        "skill was skipped during init",   # matches "skill was skipped"
+        "skill not found in registry",     # matches "skill not found"
+    ]
+    for _rs in _narrow_skip_positive:
+        _rs_evt = _su27._detect_secondary_event(_rs)
+        test(f"27-o+: narrow loader phrase ({_rs[:45]!r}) → skipped", _rs_evt == "skipped", f"got {_rs_evt!r}")
+
+    # 27-p: False-positive regression — bare "skipping" and "unavailable" in
+    # non-skill-loader prose must NOT classify as skipped.
+    # Mirrors the two remaining publish-blocker examples from issue #119 review.
+    _false_pos_skipping_unavailable = [
+        "Skipping optional dependencies",  # bare "skipping" in build/install prose
+        "Skipping validation",             # bare "skipping" at sentence start
+        "The service is unavailable",      # bare "unavailable" in HTTP status prose
+        "currently unavailable",           # bare "unavailable" as status phrase
+    ]
+    for _fp in _false_pos_skipping_unavailable:
+        _fp_evt = _su27._detect_secondary_event(_fp)
+        test(f"27-p: skipping/unavailable prose ({_fp[:45]!r}) → loaded", _fp_evt == "loaded", f"got {_fp_evt!r}")
+
+    # 27-p (positive): compound skill-loader phrases for skipping/unavailable
+    # still classify as skipped after the narrowing.
+    _narrow_skipping_unavailable_positive = [
+        "Skill skipping: dependency not found",   # matches "skill skipping"
+        "skipping skill: frontend-dev",            # matches "skipping skill"
+        "skill unavailable for this session",      # matches "skill unavailable"
+        "Skill unavailable",                       # matches "skill unavailable"
+    ]
+    for _rs in _narrow_skipping_unavailable_positive:
+        _rs_evt = _su27._detect_secondary_event(_rs)
+        test(f"27-p+: narrow skipping/unavailable phrase ({_rs[:45]!r}) → skipped", _rs_evt == "skipped", f"got {_rs_evt!r}")
+
+    # 27-q: False-positive regression — non-skill load failures must NOT classify
+    # as skipped.  "cannot load", "unable to load", "could not load" alone are too
+    # broad: they match config, user-profile, module, image, and shared-library
+    # load errors that have nothing to do with the skill loader.
+    _false_pos_load_failures = [
+        "cannot load config",                    # config file load failure
+        "cannot load the configuration",         # variant
+        "unable to load user profile",           # user profile load failure
+        "unable to load module",                 # Python module load failure
+        "could not load shared library",         # native library load failure
+        "could not load image",                  # image asset load failure
+        "Unable to load settings.json",          # mcp-server.py style message
+        "Could not load config from remote",     # trend-scout.py style message
+    ]
+    for _fp in _false_pos_load_failures:
+        _fp_evt = _su27._detect_secondary_event(_fp)
+        test(f"27-q: non-skill load failure ({_fp[:50]!r}) → loaded", _fp_evt == "loaded", f"got {_fp_evt!r}")
+
+    # 27-q (positive): skill-specific load failure phrases still classify as skipped
+    # after narrowing to "cannot/unable/could-not load skill".
+    _narrow_load_positive = [
+        "cannot load skill: frontend-dev",       # matches "cannot load skill"
+        "unable to load skill frontend-dev",     # matches "unable to load skill"
+        "could not load skill: codereview",      # matches "could not load skill"
+    ]
+    for _rs in _narrow_load_positive:
+        _rs_evt = _su27._detect_secondary_event(_rs)
+        test(f"27-q+: skill load failure ({_rs[:50]!r}) → skipped", _rs_evt == "skipped", f"got {_rs_evt!r}")
+
+    # 27-r: False-positive regression — passive "could not be loaded" without
+    # "skill" qualifier must NOT classify non-skill load failures as skipped.
+    # e.g. "module could not be loaded", "config could not be loaded",
+    # "plugin could not be loaded", "library libfoo.so could not be loaded".
+    _false_pos_passive_load = [
+        "module could not be loaded",            # Python module load failure
+        "config could not be loaded",            # config file load failure
+        "plugin could not be loaded",            # plugin load failure
+        "library libfoo.so could not be loaded", # native library load failure
+        "The resource could not be loaded",      # generic HTTP/asset message
+    ]
+    for _fp in _false_pos_passive_load:
+        _fp_evt = _su27._detect_secondary_event(_fp)
+        test(f"27-r: passive non-skill load ({_fp[:55]!r}) → loaded", _fp_evt == "loaded", f"got {_fp_evt!r}")
+
+    # 27-r (positive): the skill-qualified passive phrase still classifies as skipped.
+    _narrow_passive_positive = [
+        "skill could not be loaded",             # matches "skill could not be loaded"
+        "Skill could not be loaded: frontend-dev", # same marker, mixed-case
+    ]
+    for _rs in _narrow_passive_positive:
+        _rs_evt = _su27._detect_secondary_event(_rs)
+        test(f"27-r+: skill passive load ({_rs[:55]!r}) → skipped", _rs_evt == "skipped", f"got {_rs_evt!r}")
+
+    test("Section 27 SkillUsageRule tests ran without exception", True)
+except Exception as _e27:
+    test("Section 27 SkillUsageRule tests ran without exception", False, str(_e27))
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  Results
 # ═══════════════════════════════════════════════════════════════════
 

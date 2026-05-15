@@ -1680,6 +1680,70 @@ def generate_subagent_context(
     return "\n".join(lines)
 
 
+def _collect_skill_usage_for_briefing(db_path: Path = None) -> list:
+    """Read event-level skill usage from skill-metrics.db.
+
+    Returns a list of dicts, one per skill, with triggered/loaded/skipped counts.
+    Returns an empty list when the DB or table is absent (fail-open).
+    """
+    if db_path is None:
+        db_path = Path.home() / ".copilot" / "session-state" / "skill-metrics.db"
+    try:
+        if not db_path.exists():
+            return []
+        db = sqlite3.connect(str(db_path))
+        db.row_factory = sqlite3.Row
+        try:
+            row = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='skill_usage_events'"
+            ).fetchone()
+            if not row:
+                return []
+            rows = db.execute(
+                "SELECT skill_name, event, COUNT(*) AS count "
+                "FROM skill_usage_events "
+                "GROUP BY skill_name, event "
+                "ORDER BY COUNT(*) DESC, skill_name"
+            ).fetchall()
+        finally:
+            db.close()
+        by_skill: dict = {}
+        for r in rows:
+            skill = r["skill_name"]
+            by_skill.setdefault(skill, {"skill_name": skill, "triggered": 0, "loaded": 0, "skipped": 0})
+            evt = r["event"]
+            if evt in ("triggered", "loaded", "skipped"):
+                by_skill[skill][evt] = int(r["count"])
+        return list(by_skill.values())
+    except Exception:
+        return []
+
+
+def _format_skill_usage_section(entries: list) -> str:
+    """Return a compact skill usage section for briefing output.
+
+    Returns an empty string when entries is empty.
+    """
+    if not entries:
+        return ""
+    lines = ["📦 Skill Usage (recent sessions)"]
+    for entry in entries[:8]:
+        name = entry.get("skill_name", "?")
+        triggered = entry.get("triggered", 0)
+        loaded = entry.get("loaded", 0)
+        skipped = entry.get("skipped", 0)
+        parts = []
+        if loaded:
+            parts.append(f"{loaded} loaded")
+        if triggered and triggered != loaded:
+            parts.append(f"{triggered} triggered")
+        if skipped:
+            parts.append(f"{skipped} skipped")
+        detail = ", ".join(parts) if parts else "0 events"
+        lines.append(f"  {name:<32} {detail}")
+    return "\n".join(lines)
+
+
 def generate_briefing(
     query: str,
     limit: int = 3,
@@ -1842,6 +1906,16 @@ def generate_briefing(
             output = _format_markdown(query, briefing_data, past_work, categories, blast, file_annotations)
         else:
             output = _format_default(query, briefing_data, past_work, categories, blast, file_annotations)
+
+    # Append event-level skill usage section (non-pack formats only; fail-open).
+    if fmt not in ("json", "pack"):
+        try:
+            _skill_entries = _collect_skill_usage_for_briefing()
+            _skill_section = _format_skill_usage_section(_skill_entries)
+            if _skill_section:
+                output = output + "\n\n" + _skill_section
+        except Exception:
+            pass
 
     if with_meta:
         return output, {

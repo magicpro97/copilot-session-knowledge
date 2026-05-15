@@ -863,6 +863,7 @@ def run_all_tests() -> int:
         test("T20: summary has total_outcomes", isinstance(data.get("summary", {}).get("total_outcomes"), int))
         test("T20: has recent_outcomes list", isinstance(data.get("recent_outcomes"), list))
         test("T20: has skill_usage list", isinstance(data.get("skill_usage"), list))
+        test("T20: has event_skill_usage list", isinstance(data.get("event_skill_usage"), list))
         test("T20: has audit object", isinstance(data.get("audit"), dict))
         test("T20: has operator_actions", isinstance(data.get("operator_actions"), list))
         test("T20: has runtime object", isinstance(data.get("runtime"), dict))

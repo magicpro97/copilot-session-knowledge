@@ -753,6 +753,116 @@ finally:
         pass
 
 
+# ── Skill usage briefing helpers ─────────────────────────────────────────────
+try:
+    import sqlite3 as _sqb
+
+    _collect_skill = getattr(_b, "_collect_skill_usage_for_briefing", None)
+    _format_skill = getattr(_b, "_format_skill_usage_section", None)
+
+    test("briefing has _collect_skill_usage_for_briefing", _collect_skill is not None)
+    test("briefing has _format_skill_usage_section", _format_skill is not None)
+
+    if _collect_skill and _format_skill:
+        import tempfile as _tmp_sb
+
+        _sb_tmpdir = _tmp_sb.mkdtemp()
+
+        # non-existent DB → empty list (fail-open)
+        _nonexistent = Path(_sb_tmpdir) / "nonexistent-skill-metrics.db"
+        _result_empty = _collect_skill(db_path=_nonexistent)
+        test(
+            "skill-briefing: non-existent DB returns empty list",
+            isinstance(_result_empty, list) and len(_result_empty) == 0,
+        )
+
+        # DB without the table → empty list (fail-open)
+        _no_tbl_db = Path(_sb_tmpdir) / "no-skill-tbl.db"
+        _conn_no_tbl = _sqb.connect(str(_no_tbl_db))
+        _conn_no_tbl.close()
+        _result_no_tbl = _collect_skill(db_path=_no_tbl_db)
+        test(
+            "skill-briefing: DB without skill_usage_events returns empty list",
+            isinstance(_result_no_tbl, list) and len(_result_no_tbl) == 0,
+        )
+
+        # DB with skill_usage_events → returns structured entries
+        _skill_db = Path(_sb_tmpdir) / "skill-usage-briefing.db"
+        _conn_sk = _sqb.connect(str(_skill_db))
+        _conn_sk.executescript(
+            """
+            CREATE TABLE skill_usage_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_name TEXT NOT NULL,
+                event      TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                timestamp  TEXT NOT NULL
+            );
+            """
+        )
+        for _skill, _evt in [
+            ("karpathy-guidelines", "triggered"),
+            ("karpathy-guidelines", "loaded"),
+            ("karpathy-guidelines", "triggered"),
+            ("karpathy-guidelines", "loaded"),
+            ("frontend-dev", "triggered"),
+            ("frontend-dev", "skipped"),
+        ]:
+            _conn_sk.execute(
+                "INSERT INTO skill_usage_events (skill_name, event, session_id, timestamp) VALUES (?, ?, ?, ?)",
+                (_skill, _evt, "sess-001", "2026-05-14T00:00:00Z"),
+            )
+        _conn_sk.commit()
+        _conn_sk.close()
+
+        _entries = _collect_skill(db_path=_skill_db)
+        test(
+            "skill-briefing: populated DB returns list of dicts",
+            isinstance(_entries, list) and len(_entries) > 0,
+            str(_entries),
+        )
+        _kg = next((e for e in _entries if e.get("skill_name") == "karpathy-guidelines"), None)
+        test(
+            "skill-briefing: karpathy-guidelines triggered==2",
+            _kg is not None and _kg.get("triggered") == 2,
+            str(_kg),
+        )
+        test(
+            "skill-briefing: karpathy-guidelines loaded==2",
+            _kg is not None and _kg.get("loaded") == 2,
+            str(_kg),
+        )
+        _fd = next((e for e in _entries if e.get("skill_name") == "frontend-dev"), None)
+        test(
+            "skill-briefing: frontend-dev skipped==1",
+            _fd is not None and _fd.get("skipped") == 1,
+            str(_fd),
+        )
+
+        # _format_skill_usage_section([]) → empty string
+        test(
+            "skill-briefing: format empty entries → empty string",
+            _format_skill([]) == "",
+        )
+
+        # _format_skill_usage_section with data → non-empty string containing skill names
+        _section = _format_skill(_entries)
+        test(
+            "skill-briefing: format with entries → non-empty string",
+            isinstance(_section, str) and len(_section) > 0,
+            _section[:200],
+        )
+        test(
+            "skill-briefing: format includes karpathy-guidelines",
+            "karpathy" in _section,
+            _section[:200],
+        )
+
+    test("skill-briefing tests ran without exception", True)
+except Exception as _e_sk:
+    test("skill-briefing tests ran without exception", False, str(_e_sk))
+
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 print(f"\n{'='*50}")

@@ -138,6 +138,37 @@ def _query_skill_usage(conn: sqlite3.Connection) -> list[dict]:
     return skills
 
 
+def _query_event_skill_usage(conn: sqlite3.Connection) -> list[dict]:
+    """Query event-level skill usage from the ``skill_usage_events`` table."""
+    results = []
+    try:
+        if not _table_exists(conn, "skill_usage_events"):
+            return results
+        rows = conn.execute(
+            """
+            SELECT skill_name, event, COUNT(*) AS count
+            FROM skill_usage_events
+            GROUP BY skill_name, event
+            ORDER BY skill_name, event
+            LIMIT 200
+            """
+        ).fetchall()
+        by_skill: dict = {}
+        for row in rows:
+            skill = str(row["skill_name"] or "")
+            by_skill.setdefault(
+                skill,
+                {"skill_name": skill, "triggered": 0, "loaded": 0, "skipped": 0},
+            )
+            evt = str(row["event"] or "")
+            if evt in ("triggered", "loaded", "skipped"):
+                by_skill[skill][evt] = int(row["count"])
+        results = sorted(by_skill.values(), key=lambda e: -(e["triggered"] + e["loaded"] + e["skipped"]))
+    except Exception:
+        pass
+    return results
+
+
 @route("/api/skills/metrics", methods=["GET"])
 def handle_skills_metrics(db, params, token, nonce) -> tuple:
     del db, params, token, nonce
@@ -149,6 +180,7 @@ def handle_skills_metrics(db, params, token, nonce) -> tuple:
     outcomes_table_exists = _table_exists(conn, "tentacle_outcomes") if conn else False
     skills_table_exists = _table_exists(conn, "tentacle_outcome_skills") if conn else False
     verif_table_exists = _table_exists(conn, "tentacle_verifications") if conn else False
+    events_table_exists = _table_exists(conn, "skill_usage_events") if conn else False
 
     summary = (
         _query_summary(conn)
@@ -163,6 +195,7 @@ def handle_skills_metrics(db, params, token, nonce) -> tuple:
     )
     recent_outcomes = _query_recent_outcomes(conn) if conn and outcomes_table_exists else []
     skill_usage = _query_skill_usage(conn) if conn and skills_table_exists else []
+    event_skill_usage = _query_event_skill_usage(conn) if conn else []
 
     if conn:
         try:
@@ -234,10 +267,12 @@ def handle_skills_metrics(db, params, token, nonce) -> tuple:
             "tentacle_outcomes": outcomes_table_exists,
             "tentacle_outcome_skills": skills_table_exists,
             "tentacle_verifications": verif_table_exists,
+            "skill_usage_events": events_table_exists,
         },
         "summary": summary,
         "recent_outcomes": recent_outcomes,
         "skill_usage": skill_usage,
+        "event_skill_usage": event_skill_usage,
         "audit": {
             "summary": {
                 "ok": warning_count == 0,

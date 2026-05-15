@@ -577,6 +577,132 @@ test(
 )
 
 # ---------------------------------------------------------------------------
+print("\n📊 skill-metrics.py — event-level skill_usage_events table")
+
+event_db_path = ARTIFACT_DIR / "event-skill-metrics.db"
+db_event = sqlite3.connect(str(event_db_path))
+db_event.executescript(
+    """
+    CREATE TABLE IF NOT EXISTS tentacle_outcomes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tentacle_name TEXT NOT NULL,
+        tentacle_id TEXT,
+        outcome_status TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        worktree_used INTEGER NOT NULL DEFAULT 0,
+        verification_total INTEGER NOT NULL DEFAULT 0,
+        verification_passed INTEGER NOT NULL DEFAULT 0,
+        verification_failed INTEGER NOT NULL DEFAULT 0,
+        todo_total INTEGER NOT NULL DEFAULT 0,
+        todo_done INTEGER NOT NULL DEFAULT 0,
+        learned INTEGER NOT NULL DEFAULT 0,
+        duration_seconds REAL,
+        summary TEXT
+    );
+    CREATE TABLE IF NOT EXISTS tentacle_outcome_skills (
+        outcome_id INTEGER NOT NULL,
+        skill_name TEXT NOT NULL,
+        PRIMARY KEY (outcome_id, skill_name)
+    );
+    CREATE TABLE IF NOT EXISTS tentacle_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        outcome_id INTEGER,
+        tentacle_name TEXT NOT NULL,
+        tentacle_id TEXT,
+        label TEXT NOT NULL,
+        command TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        exit_code INTEGER NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT NOT NULL,
+        duration_seconds REAL NOT NULL,
+        log_path TEXT
+    );
+    CREATE TABLE IF NOT EXISTS skill_usage_events (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        skill_name TEXT NOT NULL,
+        event      TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        timestamp  TEXT NOT NULL
+    );
+    """
+)
+# Insert event rows for two skills
+for skill, evt in [
+    ("karpathy-guidelines", "triggered"),
+    ("karpathy-guidelines", "loaded"),
+    ("karpathy-guidelines", "triggered"),
+    ("karpathy-guidelines", "loaded"),
+    ("frontend-dev", "triggered"),
+    ("frontend-dev", "skipped"),
+]:
+    db_event.execute(
+        "INSERT INTO skill_usage_events (skill_name, event, session_id, timestamp) VALUES (?, ?, ?, ?)",
+        (skill, evt, "sess-test-1", "2026-05-14T00:00:00Z"),
+    )
+db_event.commit()
+db_event.close()
+
+skill_metrics_event = load_module("skill_metrics_event", "skill-metrics.py")
+skill_metrics_event.METRICS_DB_PATH = event_db_path
+status_event = skill_metrics_event.collect_status()
+
+test(
+    "event-table: event_skill_usage is a list",
+    isinstance(status_event.get("event_skill_usage"), list),
+)
+test(
+    "event-table: total_skill_events == 6",
+    status_event.get("total_skill_events") == 6,
+    f"got {status_event.get('total_skill_events')}",
+)
+test(
+    "event-table: karpathy-guidelines triggered==2",
+    any(
+        e["skill"] == "karpathy-guidelines" and e["event"] == "triggered" and e["count"] == 2
+        for e in status_event.get("event_skill_usage", [])
+    ),
+    str([e for e in status_event.get("event_skill_usage", [])]),
+)
+test(
+    "event-table: frontend-dev skipped==1",
+    any(
+        e["skill"] == "frontend-dev" and e["event"] == "skipped" and e["count"] == 1
+        for e in status_event.get("event_skill_usage", [])
+    ),
+    str([e for e in status_event.get("event_skill_usage", [])]),
+)
+
+formatted_event = skill_metrics_event.format_status(status_event)
+test(
+    "event-table: format_status includes 'Event-level' section",
+    "Event-level" in formatted_event or "event" in formatted_event.lower(),
+    formatted_event[:300],
+)
+test(
+    "event-table: format_status includes karpathy-guidelines in event section",
+    "karpathy-guidelines" in formatted_event,
+    formatted_event[:500],
+)
+
+# Collect_status on DB without skill_usage_events still works
+no_event_db = ARTIFACT_DIR / "no-event-skill-metrics.db"
+_make_metrics_db(no_event_db, with_data=True)
+skill_metrics_no_event = load_module("skill_metrics_no_event", "skill-metrics.py")
+skill_metrics_no_event.METRICS_DB_PATH = no_event_db
+status_no_event = skill_metrics_no_event.collect_status()
+test(
+    "no-event-table: event_skill_usage defaults to empty list",
+    status_no_event.get("event_skill_usage", []) == [],
+    f"got {status_no_event.get('event_skill_usage')}",
+)
+test(
+    "no-event-table: total_skill_events defaults to 0",
+    status_no_event.get("total_skill_events", 0) == 0,
+    f"got {status_no_event.get('total_skill_events')}",
+)
+
+# ---------------------------------------------------------------------------
 print("\n" + "=" * 72)
 print(f"PASS: {PASS}")
 print(f"FAIL: {FAIL}")

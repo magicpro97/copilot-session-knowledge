@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Event-level skill usage tracking (#119):**
+  - `hooks/rules/skill_usage.py`: New `SkillUsageRule` (postToolUse, `skill` tool only) — records `triggered`, `loaded`, or `skipped` events in `skill_usage_events` table of `skill-metrics.db`. Exit code 0 always yields `loaded`; non-zero yields `skipped`; absent exit code falls back to short-output skip-marker heuristic. Fail-open; never blocks tool use.
+  - `hooks/rules/__init__.py`: `SkillUsageRule` registered in the postToolUse rule list.
+  - `skill-metrics.py`: Event-level skill usage is included in the default output and `--json` status surface (`total_skill_events`, per-skill triggered/loaded/skipped counts and load rate); no separate `--events` flag is needed.
+  - `briefing.py`: New skill usage section surfaces top/bottom skills by load rate from `skill_usage_events` when the table exists (incremental; existing briefing sections unchanged).
+  - `browse/routes/skills.py`: `event_skill_usage` data (per-skill triggered/loaded/skipped counts) is returned inline inside the existing `/api/skills/metrics` response; there is no separate `/api/skills/usage-events` route.
+  - `docs/HOOKS.md`: `skill-usage` rule added to the registered-rules table.
+
 - **Quota-blocked handoff metadata and retry queue (#187):**
   - `tentacle.py`: `_classify_quota_signal(text)` — classifies raw dispatch output into a machine-readable `quota_reason` token (`rate_limit`, `quota_exceeded`, `daily_quota`, `monthly_quota`, `token_quota`, `context_limit`). Pattern list is intentionally minimal pending `#183`.
   - `tentacle.py handoff` gains `--quota-reason <reason>` and `--retry-hint <hint>` optional flags for `BLOCKED` handoffs. These serialize as `QUOTA_REASON:` / `RETRY_HINT:` lines in `handoff.md`.

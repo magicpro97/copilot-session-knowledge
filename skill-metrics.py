@@ -66,6 +66,8 @@ def collect_status(db_path: Path = None) -> dict:
         "verifications_passed": 0,
         "verifications_failed": 0,
         "skill_usage": [],
+        "event_skill_usage": [],
+        "total_skill_events": 0,
         "recent_outcomes": [],
         "patch_history": [],
         "total_patches": 0,
@@ -141,6 +143,21 @@ def collect_status(db_path: Path = None) -> dict:
             out["verifications_failed"] = db.execute(
                 "SELECT COUNT(*) FROM tentacle_verifications WHERE exit_code!=0"
             ).fetchone()[0]
+
+        if _table_exists(db, "skill_usage_events"):
+            out["total_skill_events"] = db.execute(
+                "SELECT COUNT(*) FROM skill_usage_events"
+            ).fetchone()[0]
+            event_rows = db.execute(
+                "SELECT skill_name, event, COUNT(*) AS count "
+                "FROM skill_usage_events "
+                "GROUP BY skill_name, event "
+                "ORDER BY skill_name, event"
+            ).fetchall()
+            out["event_skill_usage"] = [
+                {"skill": r["skill_name"], "event": r["event"], "count": r["count"]}
+                for r in event_rows
+            ]
 
         if _table_exists(db, "skill_patch_history"):
             out["total_patches"] = db.execute(
@@ -240,9 +257,25 @@ def format_status(status: dict) -> str:
     skill_usage = status.get("skill_usage", [])
     if skill_usage:
         lines.append("")
-        lines.append("Per-skill usage")
+        lines.append("Per-skill usage (tentacle outcomes)")
         for entry in skill_usage[:10]:
             lines.append(f"  {entry['skill']:<30} {entry['uses']} use(s)")
+    event_skill_usage = status.get("event_skill_usage", [])
+    total_skill_events = status.get("total_skill_events", 0)
+    if event_skill_usage or total_skill_events:
+        lines.append("")
+        lines.append(f"Event-level skill usage ({total_skill_events} total events)")
+        # Group by skill_name for compact display
+        _by_skill: dict = {}
+        for entry in event_skill_usage:
+            _by_skill.setdefault(entry["skill"], {})[entry["event"]] = entry["count"]
+        for skill_name, evts in sorted(_by_skill.items())[:10]:
+            triggered = evts.get("triggered", 0)
+            loaded = evts.get("loaded", 0)
+            skipped = evts.get("skipped", 0)
+            lines.append(
+                f"  {skill_name:<30} triggered={triggered} loaded={loaded} skipped={skipped}"
+            )
     recent = status.get("recent_outcomes", [])
     if recent:
         lines.append("")
