@@ -22,11 +22,13 @@ Usage:
     python briefing.py --titles-only --limit 20           # More entries in titles mode
     python briefing.py "task desc" --budget 3000           # Cap output to 3000 chars (frozen snapshot)
     python briefing.py --task "memory-surface"              # Task-scoped recall for a task ID
+    python briefing.py "project" --budget 2000 --session-start  # sessionStart: Level 0 skill index + briefing
 
 Default output is compact (~500 tokens): titles + 1-line summaries with entry IDs.
 Use --titles-only for ultra-compact index (~10 tokens/entry). Then --detail <id> for full.
 Use --wakeup for ultra-compact AI wake-up context (~170 tokens).
 Use --full for complete content with tags, confidence scores, and full text.
+Use --session-start (hook callers only) to prepend the Level 0 installed-skill index.
 """
 
 import datetime
@@ -127,6 +129,108 @@ MODE_PROFILES = {
         "weights": {"mistake": 1.3, "pattern": 1.4, "decision": 0.9, "tool": 1.1},
     },
 }
+
+# ── Level 0 skill index constants (issue #118) ───────────────────────────────
+# Total maximum description characters displayed in the skill index.
+# When the source description exceeds this, it is truncated to the first 57
+# characters followed by the three-character ASCII suffix "..." (total = 60).
+_SKILL_DESC_MAX = 60
+
+
+def _parse_skill_frontmatter(text: str) -> dict:
+    """Parse YAML-ish frontmatter from a SKILL.md file using stdlib only.
+
+    Extracts ``name`` and ``description`` from the first ``---``-delimited block.
+    Handles folded YAML scalars (``description: >`` with indented continuation
+    lines) without PyYAML.
+
+    Returns a dict with keys ``name`` and ``description`` (may be empty strings
+    on parse failure).  Never raises.
+    """
+    try:
+        lines = text.replace("\r\n", "\n").split("\n")
+        if not lines or lines[0].strip() != "---":
+            return {"name": "", "description": ""}
+        end = -1
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                end = i
+                break
+        if end == -1:
+            return {"name": "", "description": ""}
+        fm_lines = lines[1:end]
+        name = ""
+        description = ""
+        i = 0
+        while i < len(fm_lines):
+            line = fm_lines[i]
+            stripped = line.strip()
+            if stripped.startswith("name:"):
+                name = stripped[len("name:") :].strip().strip('"').strip("'")
+            elif stripped.startswith("description:"):
+                rest = stripped[len("description:") :].strip()
+                if rest in (">", "|", ">-", "|-", ">+", "|+"):
+                    # Folded/literal block scalar — collect indented continuation lines.
+                    desc_parts = []
+                    i += 1
+                    while i < len(fm_lines):
+                        next_line = fm_lines[i]
+                        if next_line and (next_line[0] in (" ", "\t")):
+                            desc_parts.append(next_line.strip())
+                        elif next_line.strip() == "":
+                            desc_parts.append("")
+                        else:
+                            i -= 1
+                            break
+                        i += 1
+                    description = " ".join(p for p in desc_parts if p)
+                else:
+                    description = rest.strip('"').strip("'")
+            i += 1
+        return {"name": name, "description": description}
+    except Exception:
+        return {"name": "", "description": ""}
+
+
+def _generate_skill_index(skills_dir: "Path | None" = None) -> str:
+    """Scan skills/*/SKILL.md and produce a Level 0 compact index string.
+
+    Only called when ``--session-start`` is explicitly passed to ``briefing.py``
+    (issue #118).  Returns an empty string when the skills directory is absent,
+    has no readable SKILL.md files, or any error occurs (fail-open).
+
+    Each entry is formatted as ``  <name> — <description>`` where description
+    longer than ``_SKILL_DESC_MAX`` characters is truncated to 57 chars + ``"..."``
+    (total ``_SKILL_DESC_MAX`` = 60 displayed characters).
+    """
+    try:
+        base = skills_dir if skills_dir is not None else TOOLS_DIR / "skills"
+        if not base.is_dir():
+            return ""
+        entries = []
+        for skill_path in sorted(base.glob("*/SKILL.md")):
+            try:
+                text = skill_path.read_text(encoding="utf-8", errors="replace")
+                meta = _parse_skill_frontmatter(text)
+                skill_name = meta.get("name", "") or skill_path.parent.name
+                desc = (meta.get("description", "") or "").strip()
+                if len(desc) > _SKILL_DESC_MAX:
+                    desc = desc[:57] + "..."
+                entries.append((skill_name, desc))
+            except Exception:
+                continue  # fail-open per skill
+        if not entries:
+            return ""
+        lines = [f"\U0001f4e6 Skills ({len(entries)} available):"]
+        for skill_name, desc in entries:
+            if desc:
+                lines.append(f"  {skill_name} \u2014 {desc}")
+            else:
+                lines.append(f"  {skill_name}")
+        lines.append("  " + "\u2500" * 33)
+        return "\n".join(lines)
+    except Exception:
+        return ""  # always fail-open
 
 
 def get_db() -> sqlite3.Connection:
@@ -2878,6 +2982,20 @@ def generate_task_briefing(task_id: str, limit: int = 30, fmt: str = "text", wit
 
 def main():
     args = sys.argv[1:]
+
+    # ── Level 0 skill index (issue #118): detect --session-start early ──────
+    # Strip the flag so it is never treated as a query term by later argument
+    # parsing.  Print the skill index immediately — before any early-return paths
+    # and before DB access that may sys.exit — so callers that capture stdout
+    # still receive the index even when the knowledge DB is absent.
+    session_start_mode = "--session-start" in args
+    if session_start_mode:
+        args = [a for a in args if a != "--session-start"]
+        _skill_idx = _generate_skill_index()
+        if _skill_idx:
+            print(_skill_idx)
+            sys.stdout.flush()  # ensure skill index is visible before any timeout
+    # ── end Level 0 ──────────────────────────────────────────────────────────
 
     if not args or "--help" in args or "-h" in args:
         print(__doc__)

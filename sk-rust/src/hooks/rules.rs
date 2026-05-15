@@ -679,7 +679,7 @@ impl HookRule for AutoBriefingRule {
         match Command::new(python)
             .arg(&briefing_script)
             .arg(&project)
-            .args(["--budget", "2000"])
+            .args(["--budget", "2000", "--session-start"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -712,9 +712,18 @@ impl HookRule for AutoBriefingRule {
                     }
                 }
                 if timed_out {
-                    // Reap the reader thread (pipe is closed after kill+wait).
+                    // Reap the reader thread (pipe is closed after kill+wait),
+                    // then preserve any partial output already collected before
+                    // the timeout — e.g. the Level 0 skill index emitted by
+                    // --session-start mode before the knowledge DB work begins.
                     if let Some(handle) = reader_thread {
-                        let _ = handle.join();
+                        if let Ok(bytes) = handle.join() {
+                            let partial = String::from_utf8_lossy(&bytes);
+                            let partial_out = partial.trim_end().to_string();
+                            if !partial_out.is_empty() {
+                                lines.push(partial_out);
+                            }
+                        }
                     }
                     lines.push("  \u{23f1} Briefing timed out (10s)".to_string());
                 } else if let Some(handle) = reader_thread {

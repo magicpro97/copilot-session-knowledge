@@ -902,6 +902,135 @@ except Exception as _e_sk:
     test("skill-briefing tests ran without exception", False, str(_e_sk))
 
 
+# ── 16. Level 0 skill index (issue #118) ────────────────────────────────────
+
+print("\n📦 Level 0 skill index (issue #118)")
+
+import shutil as _shutil
+
+# 16a. _parse_skill_frontmatter — folded description
+_fm_folded = "---\nname: test-skill\ndescription: >\n  This is a long description that spans multiple\n  lines and should be joined together.\n---\n# Body\n"
+_meta_f = _b._parse_skill_frontmatter(_fm_folded)
+test("16a: _parse_skill_frontmatter extracts name from folded fm", _meta_f.get("name") == "test-skill")
+test("16a: _parse_skill_frontmatter joins folded description", "long description" in _meta_f.get("description", ""))
+test("16a: _parse_skill_frontmatter folded desc has no embedded newline", "\n" not in _meta_f.get("description", ""))
+
+# 16b. _parse_skill_frontmatter — inline description
+_fm_inline = "---\nname: another-skill\ndescription: Short inline description.\n---\n"
+_meta_i = _b._parse_skill_frontmatter(_fm_inline)
+test("16b: _parse_skill_frontmatter extracts inline description", _meta_i.get("description") == "Short inline description.")
+
+# 16c. _parse_skill_frontmatter — missing frontmatter returns empty
+_meta_no = _b._parse_skill_frontmatter("# No frontmatter\nJust body content")
+test("16c: _parse_skill_frontmatter missing frontmatter → empty name", _meta_no.get("name") == "")
+test("16c: _parse_skill_frontmatter missing frontmatter → empty description", _meta_no.get("description") == "")
+
+# 16d. _generate_skill_index with a temp skills directory
+_skill_tmp = Path(tempfile.mkdtemp(prefix="test-skills-"))
+try:
+    _sa = _skill_tmp / "skill-a"
+    _sa.mkdir()
+    (_sa / "SKILL.md").write_text(
+        "---\nname: skill-a\ndescription: Short description here.\n---\n# Body\n",
+        encoding="utf-8",
+    )
+    _sb = _skill_tmp / "skill-b"
+    _sb.mkdir()
+    _long_d = "A" * 80
+    (_sb / "SKILL.md").write_text(
+        f"---\nname: skill-b\ndescription: {_long_d}\n---\n",
+        encoding="utf-8",
+    )
+    _idx = _b._generate_skill_index(_skill_tmp)
+    test("16d: _generate_skill_index non-empty for populated dir", bool(_idx))
+    test("16d: _generate_skill_index includes skill-a", "skill-a" in _idx)
+    test("16d: _generate_skill_index includes skill-b", "skill-b" in _idx)
+    # Description for skill-b must be truncated to 57 chars + "..." (total 60)
+    _sb_line = next((l for l in _idx.splitlines() if "skill-b" in l), "")
+    _sb_desc_part = _sb_line.split("\u2014", 1)[-1].strip() if "\u2014" in _sb_line else ""
+    test(
+        "16d: _generate_skill_index truncates long description to 57 chars + '...' (total 60)",
+        _sb_desc_part.endswith("...") and len(_sb_desc_part) == _b._SKILL_DESC_MAX,
+        f"got: {_sb_desc_part!r}",
+    )
+finally:
+    _shutil.rmtree(str(_skill_tmp), ignore_errors=True)
+
+# 16e. _generate_skill_index with empty dir returns ""
+_empty_tmp = Path(tempfile.mkdtemp(prefix="test-skills-empty-"))
+try:
+    test("16e: _generate_skill_index empty dir → empty string", _b._generate_skill_index(_empty_tmp) == "")
+finally:
+    _shutil.rmtree(str(_empty_tmp), ignore_errors=True)
+
+# 16f. _generate_skill_index with nonexistent dir returns ""
+_missing = Path(tempfile.mkdtemp(prefix="test-")) / "nonexistent-skills"
+test("16f: _generate_skill_index missing dir → empty string", _b._generate_skill_index(_missing) == "")
+
+# 16g. Constants exist
+test("16g: briefing.py exposes _SKILL_DESC_MAX", hasattr(_b, "_SKILL_DESC_MAX"))
+test("16g: briefing.py _SKILL_DESC_MAX == 60", _b._SKILL_DESC_MAX == 60)
+test("16g: briefing.py exposes _generate_skill_index", hasattr(_b, "_generate_skill_index"))
+test("16g: briefing.py exposes _parse_skill_frontmatter", hasattr(_b, "_parse_skill_frontmatter"))
+
+# 16h. --session-start flag is handled in main() source
+_br_src_118 = (REPO / "briefing.py").read_text(encoding="utf-8")
+test("16h: briefing.py source handles --session-start", "--session-start" in _br_src_118)
+test("16h: briefing.py strips --session-start before query assembly", "session_start_mode" in _br_src_118)
+
+# 16i. Subprocess: --session-start triggers skill index; normal invocation does not
+# Use an isolated HOME/USERPROFILE so the child never finds the live knowledge DB.
+# This makes the subprocess deterministic: it exits quickly with rc=1 (DB absent)
+# but still emits the skill index before attempting DB access.
+import subprocess as _sp118
+
+_proc_tmp = Path(tempfile.mkdtemp(prefix="test-skills-proc-"))
+try:
+    # Build an isolated env: copy the current env but redirect home dirs so the
+    # knowledge DB is absent; the skill index is printed before any DB access.
+    _isolated_env = os.environ.copy()
+    _isolated_env["HOME"] = str(_proc_tmp)
+    _isolated_env["USERPROFILE"] = str(_proc_tmp)
+
+    _briefing_py = REPO / "briefing.py"
+    # Run with --session-start in the isolated env; the child will fail to open
+    # the knowledge DB (rc=1, stderr has "not found") but must still emit the
+    # skill index on stdout before reaching the DB.
+    _r_session = _sp118.run(
+        [sys.executable, str(_briefing_py), "test-project", "--budget", "100", "--session-start"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        cwd=str(REPO),
+        env=_isolated_env,
+    )
+    test(
+        "16i: briefing.py --session-start emits Skills block",
+        "\U0001f4e6 Skills" in _r_session.stdout or "Skills" in _r_session.stdout,
+        f"rc={_r_session.returncode} stdout={_r_session.stdout[:300]} stderr={_r_session.stderr[:200]}",
+    )
+    # Normal invocation (no --session-start, no DB) must NOT emit skill index
+    _r_normal = _sp118.run(
+        [sys.executable, str(_briefing_py), "--wakeup"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        cwd=str(REPO),
+        env=_isolated_env,
+    )
+    test(
+        "16i: briefing.py normal invocation has no skill index",
+        "\U0001f4e6 Skills" not in _r_normal.stdout,
+        f"rc={_r_normal.returncode} stdout={_r_normal.stdout[:300]}",
+    )
+finally:
+    _shutil.rmtree(str(_proc_tmp), ignore_errors=True)
+
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 print(f"\n{'=' * 50}")

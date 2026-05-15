@@ -29,7 +29,7 @@ hooks/
 
 | Rule | Event | Description |
 |------|-------|-------------|
-| `auto-briefing` | sessionStart | Auto-runs briefing.py + refreshes codebase-map.py, creates HMAC-signed marker; also surfaces paused-goal resume banner from `.octogent/goal-resume-breadcrumb.json` when a goal was paused at last session end (issue #185) |
+| `auto-briefing` | sessionStart | Auto-runs briefing.py (with `--session-start` flag) + refreshes codebase-map.py, creates HMAC-signed marker; also surfaces paused-goal resume banner from `.octogent/goal-resume-breadcrumb.json` when a goal was paused at last session end (issue #185). The `--session-start` flag causes briefing.py to prepend a **Level 0 skill index** — a compact list of installed `skills/*/SKILL.md` entries with 60-char truncated descriptions — before the normal knowledge briefing (issue #118). |
 | `integrity` | sessionStart | Verifies hook files via SHA256 manifest |
 | `session-end` | sessionEnd | Cleans up marker files, writes session.log entry, opt-in checkpoint reminder (`COPILOT_CHECKPOINT_REMIND=1`) |
 | `recurrence-detector` | sessionEnd | Detects briefed mistakes that recurred in the same session; increments `recurrence_after_briefing` counter |

@@ -337,7 +337,7 @@ class AutoBriefingRule(Rule):
         # Run briefing subprocess, capturing output so it follows MEMORY.md in the message
         try:
             briefing_proc = subprocess.run(
-                [sys.executable, str(BRIEFING_SCRIPT), project, "--budget", "2000"],
+                [sys.executable, str(BRIEFING_SCRIPT), project, "--budget", "2000", "--session-start"],
                 timeout=10,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -347,7 +347,17 @@ class AutoBriefingRule(Rule):
             )
             if briefing_proc.stdout.strip():
                 lines.append(briefing_proc.stdout.rstrip())
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
+            # Preserve any partial stdout already produced before the timeout
+            # (e.g., the Level 0 skill index emitted by --session-start mode).
+            _partial = (exc.stdout or "").rstrip() if isinstance(getattr(exc, "stdout", None), str) else ""
+            if not _partial and isinstance(getattr(exc, "stdout", None), bytes):
+                try:
+                    _partial = exc.stdout.decode("utf-8", errors="replace").rstrip()
+                except Exception:
+                    _partial = ""
+            if _partial:
+                lines.append(_partial)
             lines.append("  \u23f1 Briefing timed out (10s)")
         except Exception:
             pass

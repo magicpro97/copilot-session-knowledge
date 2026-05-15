@@ -18,6 +18,39 @@ This repo contains both **Skills** (SKILL.md) and **Agent templates** (.agent.md
 
 **Key rule:** Skills use `allowed-tools` (optional string). Agents use `tools` (YAML list). Don't mix them.
 
+## Progressive Skill Loading (issue #118)
+
+At `sessionStart`, the `auto-briefing` hook passes `--session-start` to `briefing.py`, which prepends a **Level 0 skill index** to the normal knowledge briefing output. This gives the agent a compact, token-efficient overview of all installed skills immediately when a new session opens.
+
+### Loading levels
+
+| Level | What | When triggered |
+|-------|------|----------------|
+| **L0 — Index** | Compact list: skill name + description (max 60 chars: first 57 + `"..."` when truncated), one line per skill | Automatically at every `sessionStart` via `briefing.py --session-start` |
+| **L1 — Full SKILL.md** | Complete `SKILL.md` content with usage instructions | Platform-native: loaded by AI on demand when skill is invoked |
+| **L2 — References** | `references/` context files alongside the skill | Platform-native: loaded on demand for deep context |
+
+### L0 index format
+
+```
+📦 Skills installed (15 total)
+  agent-creator — Generate project-specific .agent.md files from curated tem...
+  code-reviewer — Skeptical, high signal-to-noise code review that surfaces o...
+  ...
+```
+
+- Source: `skills/*/SKILL.md` YAML frontmatter (stdlib-only parsing)
+- Description: first 57 characters, followed by `"..."` if truncated (total max 60 chars)
+- **Fail-open**: missing `skills/` dir, unreadable files, or parse errors → empty/silent
+- **No leakage**: skill index is only emitted when `--session-start` is explicitly passed; normal `sk briefing` and `sk query` paths are unaffected
+
+### Implementation
+
+- `briefing.py`: `_parse_skill_frontmatter()`, `_generate_skill_index()`, `--session-start` flag
+- `hooks/rules/briefing.py`: `AutoBriefingRule` adds `"--session-start"` to subprocess args
+- `hooks/auto-briefing.py`: legacy path adds `"--session-start"` to subprocess args
+- `sk-rust/src/hooks/rules.rs`: Rust `AutoBriefingRule` adds `"--session-start"` to command
+
 ## Available Skills
 
 | Skill | Purpose |

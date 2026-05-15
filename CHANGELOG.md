@@ -16,6 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `browse/routes/skills.py`: `event_skill_usage` data (per-skill triggered/loaded/skipped counts) is returned inline inside the existing `/api/skills/metrics` response; there is no separate `/api/skills/usage-events` route.
   - `docs/HOOKS.md`: `skill-usage` rule added to the registered-rules table.
 
+- **Level 0 progressive skill loading at sessionStart (#118):**
+  - `briefing.py`: `--session-start` flag causes a compact skill index to be printed to stdout *before* any knowledge-DB access. Index is generated from `skills/*/SKILL.md` YAML frontmatter (stdlib-only parsing); descriptions longer than 60 chars are truncated to the first 57 characters followed by `"..."` (total 60 chars). Fail-open: missing skills dir, unreadable files, or parse errors produce empty output silently. No leakage into normal `sk briefing` / `sk query` paths.
+  - `briefing.py`: `_parse_skill_frontmatter()` — pure-stdlib YAML frontmatter parser; handles folded/literal block scalars (`>`, `|`, `>-`, `|-`, `>+`, `|+`).
+  - `briefing.py`: `_generate_skill_index()` — discovers `skills/*/SKILL.md`, builds formatted index block, wraps entire body in try/except for fail-open contract.
+  - `hooks/rules/briefing.py`: `AutoBriefingRule` now passes `--session-start` to the `briefing.py` subprocess on `sessionStart`.
+  - `hooks/auto-briefing.py`: legacy sessionStart path now passes `--session-start` to the `briefing.py` subprocess.
+  - `sk-rust/src/hooks/rules.rs`: Rust `AutoBriefingRule::evaluate()` now chains `--session-start` with `--budget 2000` in the subprocess args.
+  - `tests/test_briefing.py`: Section 16 — regression tests for `_parse_skill_frontmatter`, `_generate_skill_index`, constants, no-leakage, and subprocess behavior (tests 16a–16i).
+  - `tests/test_hooks.py`: Sections 27–29 — Section 27 covers SkillUsageRule (#119); Section 28 covers `--session-start` wiring in all three caller paths and skill index emission (#118); Section 29 covers SK_TOOLS_DIR existence guard (#118 follow-up).
+  - `sk-rust/tests/integration_test.rs`: `auto_briefing_passes_session_start_flag` integration test — uses a stub `briefing.py` to verify `--session-start` reaches the subprocess.
+  - `docs/HOOKS.md`: Updated `auto-briefing` rule description to document `--session-start` flag and Level 0 skill index.
+  - `docs/SKILLS.md`: New *Progressive Skill Loading* section describing L0/L1/L2 loading levels, index format, fail-open contract, and implementation surface.
+
 - **Quota-blocked handoff metadata and retry queue (#187):**
   - `tentacle.py`: `_classify_quota_signal(text)` — classifies raw dispatch output into a machine-readable `quota_reason` token (`rate_limit`, `quota_exceeded`, `daily_quota`, `monthly_quota`, `token_quota`, `context_limit`). Pattern list is intentionally minimal pending `#183`.
   - `tentacle.py handoff` gains `--quota-reason <reason>` and `--retry-hint <hint>` optional flags for `BLOCKED` handoffs. These serialize as `QUOTA_REASON:` / `RETRY_HINT:` lines in `handoff.md`.
