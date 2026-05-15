@@ -241,6 +241,46 @@ class TestSkDirectCommands(unittest.TestCase):
             "audit-hooks.py not found — sk audit-hooks would break",
         )
 
+    def test_improvement_signals(self):
+        self._assert_routes("improvement-signals", "improvement-signals.py")
+
+    def test_improvement_signals_record(self):
+        self._assert_routes(
+            "improvement-signals", "improvement-signals.py",
+            ["record", "--query", "some query", "--type", "missed_match"],
+        )
+
+    def test_improvement_signals_list(self):
+        self._assert_routes(
+            "improvement-signals", "improvement-signals.py",
+            ["list", "--format", "json"],
+        )
+
+    def test_improvement_signals_consume(self):
+        self._assert_routes(
+            "improvement-signals", "improvement-signals.py",
+            ["consume", "--id", "1"],
+        )
+
+    def test_improvement_signals_consume_all(self):
+        self._assert_routes(
+            "improvement-signals", "improvement-signals.py",
+            ["consume", "--all"],
+        )
+
+    def test_improvement_signals_stats(self):
+        self._assert_routes(
+            "improvement-signals", "improvement-signals.py",
+            ["stats", "--format", "json"],
+        )
+
+    def test_improvement_signals_script_exists(self):
+        """improvement-signals.py must exist in the tools directory."""
+        self.assertTrue(
+            (TOOLS_DIR / "improvement-signals.py").exists(),
+            "improvement-signals.py not found — sk improvement-signals would break",
+        )
+
 
 class TestSkHooksCompat(unittest.TestCase):
     def test_hooks_run_drops_run_subcommand(self):

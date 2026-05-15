@@ -29,6 +29,10 @@ sk audit-hooks                               # → audit-hooks.py
 sk audit-hooks --json
 sk audit-hooks --days 7
 sk audit-hooks --hooks-dir /path/to/hooks    # override hook inventory directory
+sk improvement-signals record --query "docker run fails" --type missed_match  # → improvement-signals.py
+sk improvement-signals list
+sk improvement-signals consume --id 3
+sk improvement-signals stats --format json
 ```
 
 ### `sk skill-suggest` — knowledge-to-skill pipeline
@@ -57,6 +61,53 @@ python validate-skill.py path/to/SKILL.md
 ```
 
 > Direct-script form: `python skill-suggest.py [args...]`
+
+### `sk improvement-signals` — explicit session-linked improvement signal tracking
+
+Record user-reported improvement signals (missed skill matches, wrong skills, outdated skills)
+in the session knowledge DB. Unconsumed signals feed into `sk skill-suggest` to influence
+candidate generation without any automatic background inference.
+
+**Signal types:**
+- `missed_match` — a query returned no useful result; a new skill may be needed
+- `wrong_skill` — the wrong skill was triggered; use `--skill` to name it
+- `outdated_skill` — an existing skill is stale; use `--skill` to name it
+
+```bash
+# Record a signal
+sk improvement-signals record --query "docker run fails with permission error" --type missed_match
+sk improvement-signals record --query "wrong skill fired for API design" --type wrong_skill --skill my-api-skill
+sk improvement-signals record --query "outdated react patterns" --type outdated_skill --skill react-dev
+
+# List unconsumed signals (default)
+sk improvement-signals list
+sk improvement-signals list --format json
+sk improvement-signals list --type missed_match
+sk improvement-signals list --limit 20
+
+# List consumed signals
+sk improvement-signals list --consumed
+
+# Mark signal(s) as consumed (stops them surfacing in skill-suggest)
+sk improvement-signals consume --id 3
+sk improvement-signals consume --all
+sk improvement-signals consume --all --type missed_match
+
+# View statistics
+sk improvement-signals stats
+sk improvement-signals stats --format json
+```
+
+**Integration with `sk skill-suggest`:**
+Unconsumed signals with a `mentioned_skill` automatically boost or create skill candidates
+in `skill-suggest` output. Once acted on (skill created, patched, or reviewed), mark the
+signal consumed so it stops surfacing:
+
+```bash
+sk improvement-signals consume --id <ID>
+```
+
+> Direct-script form: `python improvement-signals.py [args...]`
 
 ### `sk skill-patch` — targeted SKILL.md patch
 

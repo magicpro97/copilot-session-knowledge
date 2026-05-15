@@ -8,7 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **Event-level skill usage tracking (#119):**
+- **Explicit improvement signal tracking (#126):**
+  - `migrate.py` v24: new `improvement_signals` table in the session knowledge DB — stores explicit user-reported `missed_match`, `wrong_skill`, and `outdated_skill` signals linked to session IDs, with `consumed` tracking and indexes on `consumed`, `signal_type`, `created_at`, and `mentioned_skill`.
+  - `improvement-signals.py`: new standalone stdlib-only script exposing `record`, `list`, `consume`, and `stats` subcommands. Supports `--format json` throughout. Fail-open on missing DB. Creates the table itself if migration has not yet run.
+  - `sk.py`: `improvement-signals` added to `_DIRECT` command map → `improvement-signals.py`.
+  - `skill-suggest.py`: new `_load_improvement_signals()` and `_signals_to_candidates()` functions. `suggest()` now merges unconsumed signal-derived candidates with knowledge-derived candidates (boost existing or append new). Consumed rows never surface. Fail-open: behavior is identical to pre-signal when the table is absent. New `improvement_signal_count` field in the result dict.
+  - `tests/test_improvement_signals.py`: new test file covering table creation, all signal types, consumed filtering, list/consume/stats, and CLI dispatch.
+  - `tests/test_skill_suggest.py`: `TestSignalIntegration` class added — covers fail-open (no table, missing DB), signal-derived candidate appearance, consumed exclusion, score boosting of existing candidates, patch_guidance for wrong/outdated signals, and `improvement_signal_count` key presence.
+  - `tests/test_sk_cli.py`: `improvement-signals` direct command routing tests added.
+  - `docs/USAGE.md`: `sk improvement-signals` section documenting signal types, record/list/consume/stats usage, and skill-suggest integration.
+
+
   - `hooks/rules/skill_usage.py`: New `SkillUsageRule` (postToolUse, `skill` tool only) — records `triggered`, `loaded`, or `skipped` events in `skill_usage_events` table of `skill-metrics.db`. Exit code 0 always yields `loaded`; non-zero yields `skipped`; absent exit code falls back to short-output skip-marker heuristic. Fail-open; never blocks tool use.
   - `hooks/rules/__init__.py`: `SkillUsageRule` registered in the postToolUse rule list.
   - `skill-metrics.py`: Event-level skill usage is included in the default output and `--json` status surface (`total_skill_events` plus per-skill triggered/loaded/skipped counts); no separate `--events` flag is needed.

@@ -261,6 +261,138 @@ def _table_exists(db: sqlite3.Connection, name: str) -> bool:
     return row is not None
 
 
+# Signal-type score weights for boosting improvement-signal-derived candidates.
+_SIGNAL_TYPE_WEIGHT: dict[str, float] = {
+    "missed_match": 2.0,    # Strong: no skill existed — high priority to create one
+    "wrong_skill": 1.5,     # Medium: wrong skill fired — patch candidate
+    "outdated_skill": 1.5,  # Medium: skill is stale — update candidate
+}
+
+
+def _load_improvement_signals(db_path: Path, limit: int = 100) -> list[dict]:
+    """Load unconsumed improvement signals from the knowledge DB.
+
+    Returns an empty list if the table does not exist or the DB is unavailable.
+    Fail-open: any exception yields an empty list.
+    """
+    db = _open_db_readonly(db_path)
+    if db is None:
+        return []
+    try:
+        if not _table_exists(db, "improvement_signals"):
+            return []
+        rows = db.execute(
+            """
+            SELECT id, session_id, query, signal_type, mentioned_skill, created_at
+            FROM improvement_signals
+            WHERE consumed = 0
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _signals_to_candidates(signals: list[dict]) -> list[dict]:
+    """Convert unconsumed improvement signals into skill candidates.
+
+    Only signals with a non-empty `mentioned_skill` produce named candidates.
+    Signals without a `mentioned_skill` are grouped by slugified query text as
+    a lower-priority fallback.
+
+    Returns a list of candidate dicts compatible with mine_patterns() output.
+    """
+    # --- Group by mentioned_skill slug first ---
+    named: dict[str, list[dict]] = {}
+    unnamed: dict[str, list[dict]] = {}
+
+    for sig in signals:
+        ms = (sig.get("mentioned_skill") or "").strip()
+        if ms:
+            key = _slugify(ms)
+            if key and key != "unnamed-skill":
+                named.setdefault(key, []).append(sig)
+                continue
+        # fallback: group by query slug
+        qk = _slugify(sig.get("query") or "")
+        if qk and qk != "unnamed-skill":
+            unnamed.setdefault(qk, []).append(sig)
+
+    candidates: list[dict] = []
+
+    for slug, sigs in named.items():
+        signal_types = list({s["signal_type"] for s in sigs})
+        weight = max(_SIGNAL_TYPE_WEIGHT.get(st, 1.0) for st in signal_types)
+        score = len(sigs) * weight
+
+        rep = sigs[0]
+        rep_title = (rep.get("mentioned_skill") or "").strip() or slug
+        patch_note = ""
+        if any(st in ("wrong_skill", "outdated_skill") for st in signal_types):
+            patch_note = f"Signal suggests skill '{rep_title}' may need updating."
+
+        candidates.append(
+            {
+                "candidate_name": slug,
+                "source_cluster": rep.get("mentioned_skill") or slug,
+                "cluster_type": "improvement_signal",
+                "score": round(score, 2),
+                "total_occurrences": len(sigs),
+                "entry_count": len(sigs),
+                "avg_confidence": 1.0,
+                "category": "pattern",
+                "top_tags": signal_types,
+                "representative_title": rep_title,
+                "sample_entries": [
+                    {"title": s.get("query", ""), "content": s.get("query", ""), "tags": s["signal_type"]}
+                    for s in sigs[:3]
+                ],
+                "signal_count": len(sigs),
+                "signal_types": signal_types,
+                "patch_guidance": patch_note,
+            }
+        )
+
+    for slug, sigs in unnamed.items():
+        signal_types = list({s["signal_type"] for s in sigs})
+        weight = max(_SIGNAL_TYPE_WEIGHT.get(st, 1.0) for st in signal_types) * 0.5  # lower weight, no named skill
+        score = len(sigs) * weight
+
+        rep = sigs[0]
+        rep_query = (rep.get("query") or "").strip() or slug
+        candidates.append(
+            {
+                "candidate_name": slug,
+                "source_cluster": rep_query,
+                "cluster_type": "improvement_signal_query",
+                "score": round(score, 2),
+                "total_occurrences": len(sigs),
+                "entry_count": len(sigs),
+                "avg_confidence": 0.7,
+                "category": "pattern",
+                "top_tags": signal_types,
+                "representative_title": rep_query,
+                "sample_entries": [
+                    {"title": s.get("query", ""), "content": s.get("query", ""), "tags": s["signal_type"]}
+                    for s in sigs[:3]
+                ],
+                "signal_count": len(sigs),
+                "signal_types": signal_types,
+                "patch_guidance": "",
+            }
+        )
+
+    return candidates
+
+
 def mine_patterns(
     db_path: Path,
     min_occurrences: int = 3,
@@ -477,6 +609,14 @@ def suggest(
 
     Returns a result dict suitable for JSON serialisation.
     Does NOT write any files or modify any state.
+
+    Signal integration (fail-open):
+    - Loads unconsumed improvement_signals rows if the table exists.
+    - Signal-derived candidates are merged with knowledge-derived candidates.
+    - If a signal candidate name already exists from knowledge mining, its score
+      is boosted rather than duplicated.
+    - If the improvement_signals table is absent the output is identical to
+      the pre-signal behavior.
     """
     if db_path is None:
         db_path = DB_PATH
@@ -489,6 +629,43 @@ def suggest(
     existing_skill_names = [s["name"] for s in existing_skills]
 
     raw_candidates = mine_patterns(db_path, min_occurrences=min_occurrences, limit=limit * 2)
+
+    # Load and merge unconsumed improvement signals (fail-open).
+    try:
+        raw_signals = _load_improvement_signals(db_path, limit=200)
+        signal_candidates = _signals_to_candidates(raw_signals)
+        signal_count = len(raw_signals)
+    except Exception:
+        raw_signals = []
+        signal_candidates = []
+        signal_count = 0
+
+    # Build a lookup from name → index for knowledge candidates.
+    name_to_idx: dict[str, int] = {}
+    for i, c in enumerate(raw_candidates):
+        name_to_idx[c["candidate_name"]] = i
+
+    # Merge: boost existing candidate or append new signal candidate.
+    for sc in signal_candidates:
+        name = sc["candidate_name"]
+        if name in name_to_idx:
+            # Boost existing knowledge candidate's score.
+            existing = raw_candidates[name_to_idx[name]]
+            existing["score"] = round(existing["score"] + sc["score"], 2)
+            existing.setdefault("signal_count", 0)
+            existing["signal_count"] = existing.get("signal_count", 0) + sc.get("signal_count", 0)
+            existing.setdefault("signal_types", [])
+            for st in sc.get("signal_types", []):
+                if st not in existing["signal_types"]:
+                    existing["signal_types"].append(st)
+            if sc.get("patch_guidance"):
+                existing["patch_guidance"] = sc["patch_guidance"]
+        else:
+            raw_candidates.append(sc)
+            name_to_idx[name] = len(raw_candidates) - 1
+
+    # Sort merged list by score descending.
+    raw_candidates.sort(key=lambda c: -c["score"])
 
     suggestions: list[dict] = []
     seen_names: set[str] = set()
@@ -507,20 +684,26 @@ def suggest(
             sample_entries=cand["sample_entries"],
         )
 
-        suggestions.append(
-            {
-                "candidate_name": name,
-                "source_cluster": cand["source_cluster"],
-                "cluster_type": cand["cluster_type"],
-                "score": cand["score"],
-                "total_occurrences": cand["total_occurrences"],
-                "entry_count": cand["entry_count"],
-                "avg_confidence": cand["avg_confidence"],
-                "top_tags": cand["top_tags"],
-                "overlap_with_existing": overlaps,
-                "skill_draft": draft,
-            }
-        )
+        sug_entry = {
+            "candidate_name": name,
+            "source_cluster": cand["source_cluster"],
+            "cluster_type": cand["cluster_type"],
+            "score": cand["score"],
+            "total_occurrences": cand["total_occurrences"],
+            "entry_count": cand["entry_count"],
+            "avg_confidence": cand["avg_confidence"],
+            "top_tags": cand["top_tags"],
+            "overlap_with_existing": overlaps,
+            "skill_draft": draft,
+        }
+        if "signal_count" in cand:
+            sug_entry["signal_count"] = cand["signal_count"]
+        if "signal_types" in cand:
+            sug_entry["signal_types"] = cand["signal_types"]
+        if cand.get("patch_guidance"):
+            sug_entry["patch_guidance"] = cand["patch_guidance"]
+
+        suggestions.append(sug_entry)
 
         if len(suggestions) >= limit:
             break
@@ -533,6 +716,7 @@ def suggest(
         "skills_dir": str(skills_dir),
         "existing_skills_checked": existing_skill_names,
         "suggestion_count": len(suggestions),
+        "improvement_signal_count": signal_count,
         "suggestions": suggestions,
     }
 
@@ -543,6 +727,8 @@ def _print_text(result: dict) -> None:
     print(f"   DB: {result['db_path']} (exists: {result['db_exists']})")
     print(f"   Min occurrences: {result['min_occurrences']}")
     print(f"   Existing skills checked: {len(result['existing_skills_checked'])}")
+    if result.get("improvement_signal_count", 0):
+        print(f"   Improvement signals (unconsumed): {result['improvement_signal_count']}")
     print(f"   Suggestions found: {result['suggestion_count']}")
     print()
 
@@ -564,6 +750,10 @@ def _print_text(result: dict) -> None:
         print(f"  Source: {sug['source_cluster']} ({sug['cluster_type']})")
         if sug["top_tags"]:
             print(f"  Tags: {', '.join(sug['top_tags'][:5])}")
+        if sug.get("signal_count"):
+            print(f"  \U0001f4e1 Improvement signals: {sug['signal_count']} ({', '.join(sug.get('signal_types', []))})")
+        if sug.get("patch_guidance"):
+            print(f"  \U0001f527 {sug['patch_guidance']}")
         if overlaps:
             print(f"  \u26a0\ufe0f  Overlap with existing skills: {', '.join(overlaps)}")
         else:

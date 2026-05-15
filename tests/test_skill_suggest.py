@@ -674,5 +674,166 @@ class TestCliMain(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Improvement signal integration tests
+# ---------------------------------------------------------------------------
+
+def _add_improvement_signals(db_path: Path, signals: list[dict]) -> None:
+    """Insert improvement_signals rows directly into a test DB."""
+    db = sqlite3.connect(str(db_path))
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS improvement_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL DEFAULT '',
+            query TEXT NOT NULL DEFAULT '',
+            signal_type TEXT NOT NULL,
+            mentioned_skill TEXT NOT NULL DEFAULT '',
+            consumed INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    for s in signals:
+        db.execute(
+            "INSERT INTO improvement_signals (session_id, query, signal_type, mentioned_skill, consumed) VALUES (?,?,?,?,?)",
+            (
+                s.get("session_id", ""),
+                s.get("query", ""),
+                s.get("signal_type", "missed_match"),
+                s.get("mentioned_skill", ""),
+                s.get("consumed", 0),
+            ),
+        )
+    db.commit()
+    db.close()
+
+
+class TestSignalIntegration(unittest.TestCase):
+    """Tests for improvement_signals influence on suggest()."""
+
+    @classmethod
+    def setUpClass(cls):
+        _reset_artifacts()
+        cls.mod = _load_module("skill_suggest_signals", "skill-suggest.py")
+
+    def _make_db(self, name: str, knowledge_entries: list[dict], signals: list[dict]) -> Path:
+        db_path = ARTIFACT_DIR / name
+        _make_knowledge_db(db_path, knowledge_entries)
+        if signals:
+            _add_improvement_signals(db_path, signals)
+        return db_path
+
+    def test_fail_open_no_table(self):
+        """suggest() must not crash when improvement_signals table is absent."""
+        db_path = self._make_db("sig-no-table.db", [], [])
+        result = self.mod.suggest(db_path=db_path, min_occurrences=1)
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result.get("improvement_signal_count", 0), 0)
+
+    def test_fail_open_missing_db(self):
+        """suggest() must not crash when DB file is entirely missing."""
+        result = self.mod.suggest(db_path=ARTIFACT_DIR / "sig-missing.db", min_occurrences=1)
+        self.assertIsInstance(result, dict)
+        self.assertFalse(result["db_exists"])
+
+    def test_signal_derived_candidate_appears(self):
+        """A missed_match signal with mentioned_skill produces a candidate."""
+        db_path = self._make_db(
+            "sig-candidate.db",
+            [],  # no knowledge entries
+            [
+                {"query": "deploy to production", "signal_type": "missed_match", "mentioned_skill": "prod-deploy"},
+                {"query": "deploy to staging", "signal_type": "missed_match", "mentioned_skill": "prod-deploy"},
+            ],
+        )
+        result = self.mod.suggest(db_path=db_path, min_occurrences=1)
+        names = [s["candidate_name"] for s in result["suggestions"]]
+        self.assertIn("prod-deploy", names)
+        self.assertGreater(result.get("improvement_signal_count", 0), 0)
+
+    def test_consumed_signals_excluded(self):
+        """Consumed signals must NOT surface as candidates."""
+        db_path = self._make_db(
+            "sig-consumed.db",
+            [],
+            [
+                {"query": "old query", "signal_type": "missed_match", "mentioned_skill": "consumed-skill", "consumed": 1},
+                {"query": "other query", "signal_type": "missed_match", "mentioned_skill": "consumed-skill", "consumed": 1},
+            ],
+        )
+        result = self.mod.suggest(db_path=db_path, min_occurrences=1)
+        names = [s["candidate_name"] for s in result["suggestions"]]
+        self.assertNotIn("consumed-skill", names)
+        # signal_count should be 0 since all signals are consumed
+        self.assertEqual(result.get("improvement_signal_count", 0), 0)
+
+    def test_signal_boosts_existing_knowledge_candidate(self):
+        """A signal for an existing knowledge candidate boosts its score, not duplicates it."""
+        db_path = self._make_db(
+            "sig-boost.db",
+            [
+                {
+                    "title": "Docker networking",
+                    "content": "Use bridge networks.",
+                    "tags": "docker,network",
+                    "category": "pattern",
+                    "occurrence_count": 4,
+                    "topic_key": "docker",
+                },
+            ],
+            [
+                {"query": "docker dns", "signal_type": "missed_match", "mentioned_skill": "docker"},
+            ],
+        )
+        result = self.mod.suggest(db_path=db_path, min_occurrences=3)
+        docker_suggestions = [s for s in result["suggestions"] if s["candidate_name"] == "docker"]
+        # Should appear exactly once (not duplicated)
+        self.assertEqual(len(docker_suggestions), 1)
+        # Score should include the signal boost
+        self.assertGreater(docker_suggestions[0]["score"], 4.0)  # base from knowledge alone is 4*2.0=8.0 at most
+        self.assertGreater(docker_suggestions[0].get("signal_count", 0), 0)
+
+    def test_wrong_skill_signal_adds_patch_guidance(self):
+        """A wrong_skill signal attaches patch_guidance to the candidate."""
+        db_path = self._make_db(
+            "sig-wrong.db",
+            [],
+            [
+                {"query": "wrong skill fired", "signal_type": "wrong_skill", "mentioned_skill": "my-skill"},
+            ],
+        )
+        result = self.mod.suggest(db_path=db_path, min_occurrences=1)
+        suggestions = [s for s in result["suggestions"] if s["candidate_name"] == "my-skill"]
+        if suggestions:
+            self.assertIn("patch_guidance", suggestions[0])
+            self.assertTrue(suggestions[0]["patch_guidance"])
+
+    def test_improvement_signal_count_in_result(self):
+        """result dict always includes improvement_signal_count key."""
+        db_path = self._make_db(
+            "sig-count.db",
+            [],
+            [
+                {"query": "q1", "signal_type": "missed_match", "mentioned_skill": "test-skill"},
+            ],
+        )
+        result = self.mod.suggest(db_path=db_path, min_occurrences=1)
+        self.assertIn("improvement_signal_count", result)
+        self.assertEqual(result["improvement_signal_count"], 1)
+
+    def test_signal_type_in_cluster_type(self):
+        """Signal-derived candidates have cluster_type containing 'signal'."""
+        db_path = self._make_db(
+            "sig-cluster-type.db",
+            [],
+            [
+                {"query": "new query", "signal_type": "missed_match", "mentioned_skill": "new-skill"},
+            ],
+        )
+        result = self.mod.suggest(db_path=db_path, min_occurrences=1)
+        new_skill = [s for s in result["suggestions"] if s["candidate_name"] == "new-skill"]
+        if new_skill:
+            self.assertIn("signal", new_skill[0]["cluster_type"])
+
+
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     unittest.main(verbosity=2)

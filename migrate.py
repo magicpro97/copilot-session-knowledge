@@ -841,6 +841,28 @@ if __name__ == "__main__":
                 "CREATE INDEX IF NOT EXISTS idx_fa_repo_root ON file_annotations(repo_root)",
             ],
         ),
+        # v24: issue #126 — Explicit improvement signal tracking.
+        # Records user-reported missed_match / wrong_skill / outdated_skill signals
+        # linked to session IDs, consumable by skill-suggest for candidate boosting.
+        (
+            24,
+            "improvement_signals",
+            [
+                """CREATE TABLE IF NOT EXISTS improvement_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    query TEXT NOT NULL DEFAULT '',
+                    signal_type TEXT NOT NULL CHECK(signal_type IN ('missed_match', 'wrong_skill', 'outdated_skill')),
+                    mentioned_skill TEXT NOT NULL DEFAULT '',
+                    consumed INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )""",
+                "CREATE INDEX IF NOT EXISTS idx_is_consumed ON improvement_signals(consumed)",
+                "CREATE INDEX IF NOT EXISTS idx_is_signal_type ON improvement_signals(signal_type)",
+                "CREATE INDEX IF NOT EXISTS idx_is_created ON improvement_signals(created_at)",
+                "CREATE INDEX IF NOT EXISTS idx_is_mentioned_skill ON improvement_signals(mentioned_skill)",
+            ],
+        ),
     ]
     applied = 0
     for ver, name, stmts in MIGRATIONS:
