@@ -26,6 +26,7 @@ Usage:
     sk anatomy      [<args>...]       Run anatomy-map.py
     sk skill-suggest [<args>...]      Run skill-suggest.py
     sk skill-patch  [<args>...]       Run skill-patch.py
+    sk skill-curator [<args>...]      Run skill-curator.py
     sk hooks        run|list|<event>  Run hooks/hook_runner.py
     sk audit-hooks  [<args>...]       Run audit-hooks.py
     sk improvement-signals [<args>...] Run improvement-signals.py
@@ -83,6 +84,7 @@ _DIRECT: dict[str, str] = {
     "anatomy": "anatomy-map.py",
     "skill-suggest": "skill-suggest.py",
     "skill-patch": "skill-patch.py",
+    "skill-curator": "skill-curator.py",
     "audit-hooks": "audit-hooks.py",
     "improvement-signals": "improvement-signals.py",
 }
