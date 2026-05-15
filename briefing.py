@@ -290,7 +290,9 @@ def _compute_dynamic_budget(explicit_budget: int, available_tokens: int = 0) -> 
     if explicit_budget > 0:
         return explicit_budget
     if available_tokens > 0:
-        return min(2000, int(available_tokens * 0.05))
+        # max(1, ...) ensures budget stays active (>0) even for very small contexts
+        # where int(available_tokens * 0.05) would round to 0 (i.e., available_tokens < 20).
+        return max(1, min(2000, int(available_tokens * 0.05)))
     return 0
 
 
@@ -3092,10 +3094,14 @@ def main():
                     break
             # Final fallback: line-boundary truncation for text only (never JSON).
             if len(output) > budget and task_fmt != "json":
-                output = output[:budget].rsplit("\n", 1)[0]
-                output += f"\n[BUDGET {budget} chars / ~{task_budget_tokens} tok — injected ~{task_injected_tokens} tok → hard-truncated to fit]"
+                footer = f"\n[BUDGET {budget} chars / ~{task_budget_tokens} tok — injected ~{task_injected_tokens} tok → hard-truncated to fit]"
+                avail = budget - len(footer)
+                body = output[:max(0, avail)].rsplit("\n", 1)[0] if avail > 0 else ""
+                output = (body + footer)[:budget]
             elif task_fmt != "json" and task_injected_tokens > task_budget_tokens:
-                output += f"\n[BUDGET ~{task_budget_tokens} tok — reduced from ~{task_injected_tokens} tok via entry reduction]"
+                footer = f"\n[BUDGET ~{task_budget_tokens} tok — reduced from ~{task_injected_tokens} tok via entry reduction]"
+                if len(output) + len(footer) <= budget:
+                    output += footer
         if task_fmt == "json" and isinstance(task_meta, dict):
             _record_recall_event(
                 event_kind="recall",
@@ -3280,11 +3286,15 @@ def main():
         # JSON and subagent-context (XML-like) output are not truncated — that
         # would corrupt their structure.  Those formats must fit within budget
         # via the progressive-limit loop above.
-        if len(output) > budget and fmt not in ("json", "pack"):
-            output = output[:budget].rsplit("\n", 1)[0]
-            output += f"\n[BUDGET {budget} chars / ~{budget_tokens} tok — injected ~{injected_tokens} tok → hard-truncated to fit]"
-        elif fmt not in ("json", "pack") and injected_tokens > budget_tokens:
-            output += f"\n[BUDGET ~{budget_tokens} tok — reduced from ~{injected_tokens} tok via entry reduction]"
+        if len(output) > budget and fmt not in ("json", "pack") and not subagent_mode:
+            footer = f"\n[BUDGET {budget} chars / ~{budget_tokens} tok — injected ~{injected_tokens} tok → hard-truncated to fit]"
+            avail = budget - len(footer)
+            body = output[:max(0, avail)].rsplit("\n", 1)[0] if avail > 0 else ""
+            output = (body + footer)[:budget]
+        elif fmt not in ("json", "pack") and not subagent_mode and injected_tokens > budget_tokens:
+            footer = f"\n[BUDGET ~{budget_tokens} tok — reduced from ~{injected_tokens} tok via entry reduction]"
+            if len(output) + len(footer) <= budget:
+                output += footer
 
     if (not subagent_mode) and isinstance(output_meta, dict):
         _record_recall_event(

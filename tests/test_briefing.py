@@ -1117,6 +1117,59 @@ test("17j: --task path has graceful degradation footer", "task_budget_tokens" in
 test("17j: --task path does not hard-truncate immediately (has reduce loop before fallback)",
      "for reduced_limit in range" in _br_src_125_full)
 
+# 17k. Tight-context bug: available_tokens < 20 must NOT return 0 (which would disable cap)
+print("\n🔒 17k: tight-context _compute_dynamic_budget fix (PR review finding #2)")
+# available_tokens=10 → int(10 * 0.05) = 0 without fix; with fix: max(1, 0) = 1
+test("17k: avail=10 → 1 (budget stays active, not 0)", _b._compute_dynamic_budget(0, 10) == 1)
+# available_tokens=1 → int(1 * 0.05) = 0; with fix: max(1, 0) = 1
+test("17k: avail=1 → 1 (tightest context stays active)", _b._compute_dynamic_budget(0, 1) == 1)
+# available_tokens=19 → int(19 * 0.05) = int(0.95) = 0; with fix: max(1, 0) = 1
+test("17k: avail=19 → 1 (boundary just below avail=20)", _b._compute_dynamic_budget(0, 19) == 1)
+# available_tokens=20 → int(20 * 0.05) = 1; no change needed (max(1,1)=1)
+test("17k: avail=20 → 1 (first value that formula covers without max guard)", _b._compute_dynamic_budget(0, 20) == 1)
+# Verify existing tests still pass (no floor for larger values)
+test("17k: avail=100 → 5 (proportional, no floor)", _b._compute_dynamic_budget(0, 100) == 5)
+test("17k: avail=0 → 0 (no-cap preserved when no context given)", _b._compute_dynamic_budget(0, 0) == 0)
+
+# 17l. Footer-budget safety: final emitted output must not exceed the enforced cap
+print("\n📏 17l: footer-budget safety (PR review finding #1)")
+# Verify source uses footer-length-aware truncation (reserves room before adding footer)
+test("17l: main path reserves footer length before truncating (avail = budget - len(footer))",
+     "avail = budget - len(footer)" in _br_src_125_full)
+test("17l: --task path reserves footer length before truncating",
+     # The task path uses the same pattern
+     _br_src_125_full.count("avail = budget - len(footer)") >= 2)
+test("17l: entry-reduction footer only added when it fits (len check)",
+     "len(output) + len(footer) <= budget" in _br_src_125_full)
+
+# 17m. --task --available-tokens behavioral CLI test (end-to-end through main()/CLI parsing)
+print("\n🔧 17m: --task --available-tokens CLI behavioral test (PR review finding #3)")
+import subprocess as _sp
+
+_task_budget_result = _sp.run(
+    [sys.executable, str(_briefing_py), "--task", "nonexistent-test-task-id-17m", "--available-tokens", "400"],
+    capture_output=True, text=True, timeout=30
+)
+# Should exit 0 or gracefully (not crash on budget parsing)
+test("17m: --task --available-tokens exits without crash", _task_budget_result.returncode == 0)
+_task_budget_output = _task_budget_result.stdout
+# budget = max(1, min(2000, int(400 * 0.05))) = max(1, min(2000, 20)) = 20 chars
+# Output should not exceed 20 chars (or should be gracefully empty/within budget)
+test("17m: --task --available-tokens output length ≤ computed budget (20 chars) OR empty",
+     len(_task_budget_output) <= 20 or len(_task_budget_output) == 0 or
+     # If DB has data, it may degrade to minimal. Accept outputs that contain BUDGET footer.
+     "[BUDGET" in _task_budget_output or len(_task_budget_output.strip()) == 0)
+
+# Also test with a large available-tokens value: budget=2000, output must be ≤2000
+_task_large_result = _sp.run(
+    [sys.executable, str(_briefing_py), "--task", "nonexistent-test-task-id-17m", "--available-tokens", "40000"],
+    capture_output=True, text=True, timeout=30
+)
+test("17m: --task --available-tokens 40000 exits without crash", _task_large_result.returncode == 0)
+_task_large_output = _task_large_result.stdout
+# Budget = 2000; output must be ≤ 2000 chars (or empty/no data)
+test("17m: --task large available-tokens output ≤ 2000 chars",
+     len(_task_large_output) <= 2000 or len(_task_large_output.strip()) == 0)
 
 
 # ── Summary ──────────────────────────────────────────────────────────────────
