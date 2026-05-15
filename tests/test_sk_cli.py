@@ -216,6 +216,31 @@ class TestSkDirectCommands(unittest.TestCase):
             "skill-patch.py not found — sk skill-patch would break",
         )
 
+    def test_audit_hooks(self):
+        self._assert_routes("audit-hooks", "audit-hooks.py")
+
+    def test_audit_hooks_json(self):
+        self._assert_routes("audit-hooks", "audit-hooks.py", ["--json"])
+
+    def test_audit_hooks_days(self):
+        self._assert_routes("audit-hooks", "audit-hooks.py", ["--days", "7"])
+
+    def test_audit_hooks_top(self):
+        self._assert_routes("audit-hooks", "audit-hooks.py", ["--top", "20"])
+
+    def test_audit_hooks_combined_flags(self):
+        self._assert_routes(
+            "audit-hooks", "audit-hooks.py",
+            ["--json", "--days", "14", "--top", "10"],
+        )
+
+    def test_audit_hooks_script_exists(self):
+        """audit-hooks.py must exist in the tools directory."""
+        self.assertTrue(
+            (TOOLS_DIR / "audit-hooks.py").exists(),
+            "audit-hooks.py not found — sk audit-hooks would break",
+        )
+
 
 class TestSkHooksCompat(unittest.TestCase):
     def test_hooks_run_drops_run_subcommand(self):

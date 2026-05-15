@@ -27,6 +27,7 @@ Usage:
     sk skill-suggest [<args>...]      Run skill-suggest.py
     sk skill-patch  [<args>...]       Run skill-patch.py
     sk hooks        run|list|<event>  Run hooks/hook_runner.py
+    sk audit-hooks  [<args>...]       Run audit-hooks.py
 
     sk index  build|extract|migrate|status|health|embed|tag [<args>...]
     sk sync   run|config|status|gateway|merge [<args>...]
@@ -81,6 +82,7 @@ _DIRECT: dict[str, str] = {
     "anatomy": "anatomy-map.py",
     "skill-suggest": "skill-suggest.py",
     "skill-patch": "skill-patch.py",
+    "audit-hooks": "audit-hooks.py",
 }
 
 # Grouped namespace commands: group → {subcommand: script_name}
