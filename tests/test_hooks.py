@@ -5370,8 +5370,270 @@ except Exception as _e27:
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Results
+#  Section 28: sessionStart Level 0 skill-index signal (issue #118)
 # ═══════════════════════════════════════════════════════════════════
+
+print("\n📦 Section 28: sessionStart Level 0 skill-index signal (issue #118)")
+
+# 27a. hooks/rules/briefing.py AutoBriefingRule passes --session-start to briefing.py
+_ab_rule_src = (REPO / "hooks" / "rules" / "briefing.py").read_text(encoding="utf-8")
+test(
+    "27a: AutoBriefingRule subprocess call includes --session-start flag",
+    "--session-start" in _ab_rule_src,
+    "AutoBriefingRule must pass --session-start to briefing.py at sessionStart",
+)
+
+# 27b. hooks/auto-briefing.py passes --session-start to briefing.py
+_auto_br_src = (REPO / "hooks" / "auto-briefing.py").read_text(encoding="utf-8")
+test(
+    "27b: hooks/auto-briefing.py subprocess call includes --session-start flag",
+    "--session-start" in _auto_br_src,
+    "auto-briefing.py must pass --session-start to briefing.py at sessionStart",
+)
+
+# 27c. briefing.py handles --session-start without crashing (subprocess test)
+# Use an isolated HOME/USERPROFILE so the child finds no knowledge DB and exits
+# quickly with rc=1, but must still emit the skill index before any DB access.
+_briefing_py_27 = REPO / "briefing.py"
+_td27c = Path(tempfile.mkdtemp(prefix="test-27c-"))
+try:
+    _isolated_env27c = os.environ.copy()
+    _isolated_env27c["HOME"] = str(_td27c)
+    _isolated_env27c["USERPROFILE"] = str(_td27c)
+    _r27 = subprocess.run(
+        [sys.executable, str(_briefing_py_27), "test-project", "--budget", "100", "--session-start"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        cwd=str(REPO),
+        env=_isolated_env27c,
+    )
+finally:
+    shutil.rmtree(str(_td27c), ignore_errors=True)
+test(
+    "27c: briefing.py --session-start exits without unexpected crash",
+    _r27.returncode in (0, 1),  # 0=ok, 1=no DB (expected in test env)
+    f"exit={_r27.returncode} stderr={_r27.stderr[:100]}",
+)
+test(
+    "27c: briefing.py --session-start emits skill index block",
+    "\U0001f4e6 Skills" in _r27.stdout,
+    f"stdout={_r27.stdout[:300]}",
+)
+
+# 27d. No skill index leakage in normal (non-sessionStart) auto-briefing path
+# source-level: verify skill index is only generated when session_start_mode is True
+_br_src_27 = _briefing_py_27.read_text(encoding="utf-8")
+test(
+    "27d: briefing.py skill index gated by session_start_mode flag",
+    "session_start_mode" in _br_src_27 and "_generate_skill_index" in _br_src_27,
+    "briefing.py must gate _generate_skill_index() on session_start_mode",
+)
+
+# 27e. Rust AutoBriefingRule source passes --session-start
+_rust_rules_src = (REPO / "sk-rust" / "src" / "hooks" / "rules.rs").read_text(encoding="utf-8")
+test(
+    "27e: sk-rust AutoBriefingRule source passes --session-start to briefing.py",
+    "--session-start" in _rust_rules_src,
+    "AutoBriefingRule in rules.rs must include --session-start in subprocess args",
+)
+
+# 27f. briefing.py flushes stdout immediately after printing skill index (source check)
+_br_src_27f = (REPO / "briefing.py").read_text(encoding="utf-8")
+_flush_after_idx = _br_src_27f.find("sys.stdout.flush()")
+_skill_print_idx = _br_src_27f.find("print(_skill_idx)")
+test(
+    "27f: briefing.py flushes stdout after printing skill index",
+    "sys.stdout.flush()" in _br_src_27f and _flush_after_idx > _skill_print_idx,
+    "briefing.py must call sys.stdout.flush() after print(_skill_idx)",
+)
+
+# 27g. hooks/rules/briefing.py AutoBriefingRule preserves partial stdout on timeout
+_py_hook_src_27g = (REPO / "hooks" / "rules" / "briefing.py").read_text(encoding="utf-8")
+test(
+    "27g: Python AutoBriefingRule catches TimeoutExpired and preserves exc.stdout",
+    "TimeoutExpired as" in _py_hook_src_27g and "exc.stdout" in _py_hook_src_27g,
+    "hooks/rules/briefing.py must catch TimeoutExpired as exc and use exc.stdout",
+)
+test(
+    "27g: Python AutoBriefingRule appends partial output BEFORE timeout notice",
+    _py_hook_src_27g.index("lines.append(_partial)") < _py_hook_src_27g.index("timed out (10s)")
+    if "_partial" in _py_hook_src_27g and "timed out (10s)" in _py_hook_src_27g
+    else False,
+    "hooks/rules/briefing.py must emit partial output before the timeout notice",
+)
+
+# 27g. Functional: AutoBriefingRule timeout preserves partial output
+# Use unittest.mock to simulate TimeoutExpired with partial stdout already captured
+# (mirrors what subprocess.run does: kill + drain + attach to exc.stdout).
+_td27g = Path(tempfile.mkdtemp(prefix="test-27g-"))
+_markers27g = _td27g / ".copilot" / "markers"
+_markers27g.mkdir(parents=True, exist_ok=True)
+
+# A dummy briefing.py that EXISTS on disk (the path-check in evaluate() must pass).
+_dummy_exists27g = _td27g / "briefing.py"
+_dummy_exists27g.write_text("# placeholder\n", encoding="utf-8")
+
+try:
+    from unittest.mock import patch as _mock_patch27g
+    sys.path.insert(0, str(REPO / "hooks"))
+    import rules.briefing as _rb27g
+    from rules.briefing import AutoBriefingRule as _ABR27g
+
+    _rule27g = _ABR27g()
+    _orig_bs27g = _rb27g.BRIEFING_SCRIPT
+    _orig_mdir27g = _rb27g.MARKERS_DIR
+    _orig_sm27g = _rb27g.sign_marker
+    _orig_lmm27g = _rb27g._load_memory_md
+
+    _rb27g.BRIEFING_SCRIPT = _dummy_exists27g
+    _rb27g.MARKERS_DIR = _markers27g
+    _rb27g.sign_marker = lambda p, n: None
+    _rb27g._load_memory_md = lambda **kw: None
+
+    # Simulate a TimeoutExpired with the skill index already in exc.stdout.
+    # This mirrors the real behavior: subprocess.run kills the slow child, drains
+    # the pipe, attaches drained bytes to exc.stdout, then re-raises.
+    _sim_stdout27g = "\U0001f4e6 Skills (1 installed)\n"
+    _te27g = subprocess.TimeoutExpired(cmd=["briefing.py"], timeout=10, output=_sim_stdout27g)
+
+    def _mock_run27g(*a, **kw):
+        # Pass through fast commands (git, etc.); simulate timeout for briefing.py.
+        args = a[0] if a else kw.get("args", [])
+        if isinstance(args, list) and len(args) >= 2 and str(args[-1]).endswith("briefing.py") or \
+           (isinstance(args, list) and "--session-start" in args):
+            raise _te27g
+        return subprocess.run.__wrapped__(*a, **kw) if hasattr(subprocess.run, "__wrapped__") else _orig_sp_run27g(*a, **kw)
+
+    _orig_sp_run27g = _rb27g.subprocess.run
+
+    try:
+        with _mock_patch27g.object(_rb27g.subprocess, "run", side_effect=lambda *a, **kw: (
+            (_ for _ in ()).throw(_te27g)
+            if (a and isinstance(a[0], list) and any("briefing.py" in str(x) or x == "--session-start" for x in a[0]))
+            else _orig_sp_run27g(*a, **kw)
+        )):
+            _result27g = _rule27g.evaluate("sessionStart", {})
+    except Exception:
+        # mock.patch.object doesn't work as context manager for side_effect on non-method
+        # Fall back: directly replace subprocess.run on the module
+        _rb27g.subprocess.run = _mock_run27g
+        try:
+            _result27g = _rule27g.evaluate("sessionStart", {})
+        finally:
+            _rb27g.subprocess.run = _orig_sp_run27g
+
+    _msg27g = _result27g.get("message", "") if isinstance(_result27g, dict) else ""
+    test(
+        "27g: AutoBriefingRule timeout preserves partial skill-index output",
+        "\U0001f4e6 Skills" in _msg27g,
+        f"message={_msg27g[:300]!r}",
+    )
+    test(
+        "27g: AutoBriefingRule timeout notice still present",
+        "timed out" in _msg27g,
+        f"message={_msg27g[:300]!r}",
+    )
+    test(
+        "27g: AutoBriefingRule skill index appears before timeout notice",
+        _msg27g.index("\U0001f4e6 Skills") < _msg27g.index("timed out")
+        if "\U0001f4e6 Skills" in _msg27g and "timed out" in _msg27g
+        else False,
+        f"message={_msg27g[:300]!r}",
+    )
+except Exception as _e27g:
+    test("27g: AutoBriefingRule timeout preserves partial output (setup failed)", False, str(_e27g))
+    test("27g: AutoBriefingRule timeout notice still present (setup failed)", False, str(_e27g))
+    test("27g: AutoBriefingRule skill index appears before timeout notice (setup failed)", False, str(_e27g))
+finally:
+    if "_rb27g" in dir() and "_orig_bs27g" in dir():
+        _rb27g.BRIEFING_SCRIPT = _orig_bs27g
+        _rb27g.MARKERS_DIR = _orig_mdir27g
+        _rb27g.sign_marker = _orig_sm27g
+        _rb27g._load_memory_md = _orig_lmm27g
+    shutil.rmtree(str(_td27g), ignore_errors=True)
+
+# 27h. Rust AutoBriefingRule source: on timeout, joins reader thread and appends partial bytes
+_rust_rules_src_27h = (REPO / "sk-rust" / "src" / "hooks" / "rules.rs").read_text(encoding="utf-8")
+test(
+    "27h: Rust AutoBriefingRule joins reader thread on timeout and appends partial output",
+    "timed_out" in _rust_rules_src_27h and "handle.join()" in _rust_rules_src_27h
+    and "partial_out" in _rust_rules_src_27h
+    and _rust_rules_src_27h.index("partial_out") < _rust_rules_src_27h.index("Briefing timed out"),
+    "sk-rust AutoBriefingRule must join reader thread and append partial output before timeout notice",
+)
+
+
+
+
+# ── Section 29: SK_TOOLS_DIR parity guard (issue #118 follow-up) ──
+print("\n── Section 29: SK_TOOLS_DIR existence guard (parity with Rust) ──")
+
+import importlib
+import types as _types
+
+def _reload_common_with_env(env_overrides: dict):
+    """Import hooks.rules.common with a patched environment and return TOOLS_DIR."""
+    import sys as _sys
+    _saved = os.environ.copy()
+    for k, v in env_overrides.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+    # Force re-execution of module-level code by reloading
+    mod_name = "hooks.rules.common"
+    if mod_name in _sys.modules:
+        del _sys.modules[mod_name]
+    import importlib as _il
+    try:
+        mod = _il.import_module(mod_name)
+        return mod.TOOLS_DIR
+    finally:
+        os.environ.clear()
+        os.environ.update(_saved)
+        if mod_name in _sys.modules:
+            del _sys.modules[mod_name]
+
+try:
+    import tempfile, pathlib
+
+    # 28a: SK_TOOLS_DIR unset → default path
+    _td28_result = _reload_common_with_env({"SK_TOOLS_DIR": None})
+    test(
+        "28a: SK_TOOLS_DIR unset → default ~/.copilot/tools",
+        _td28_result == pathlib.Path.home() / ".copilot" / "tools",
+        f"got {_td28_result!r}",
+    )
+
+    # 28b: SK_TOOLS_DIR set to a NON-EXISTENT path → fall back to default
+    _fake_path = str(pathlib.Path.home() / ".copilot" / "nonexistent_sk_tools_28b_test")
+    _td28_result2 = _reload_common_with_env({"SK_TOOLS_DIR": _fake_path})
+    test(
+        "28b: SK_TOOLS_DIR points to non-existent dir → fallback to default",
+        _td28_result2 == pathlib.Path.home() / ".copilot" / "tools",
+        f"got {_td28_result2!r} for env={_fake_path!r}",
+    )
+
+    # 28c: SK_TOOLS_DIR set to an EXISTING directory → use override
+    _tmpdir28 = tempfile.mkdtemp()
+    try:
+        _td28_result3 = _reload_common_with_env({"SK_TOOLS_DIR": _tmpdir28})
+        test(
+            "28c: SK_TOOLS_DIR points to existing dir → use override",
+            _td28_result3 == pathlib.Path(_tmpdir28),
+            f"got {_td28_result3!r} for env={_tmpdir28!r}",
+        )
+    finally:
+        import shutil as _sh28
+        _sh28.rmtree(_tmpdir28, ignore_errors=True)
+
+except Exception as _e28:
+    test("28a: SK_TOOLS_DIR unset → default (setup failed)", False, str(_e28))
+    test("28b: SK_TOOLS_DIR non-existent → fallback (setup failed)", False, str(_e28))
+    test("28c: SK_TOOLS_DIR existing → override (setup failed)", False, str(_e28))
 
 print(f"\n{'=' * 50}")
 print(f"Results: {PASS} passed, {FAIL} failed out of {PASS + FAIL}")

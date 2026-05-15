@@ -1364,6 +1364,40 @@ fn hooks_run_session_start_never_denies() {
     let _ = fs::remove_dir_all(&tmp);
 }
 
+/// `AutoBriefingRule` must pass `--session-start` to the `briefing.py` subprocess.
+///
+/// Creates a minimal `briefing.py` stub that echoes its arguments to stdout.
+/// Verifies that `sk hooks run sessionStart` includes `--session-start` in
+/// the subprocess invocation (issue #118).
+#[test]
+fn auto_briefing_passes_session_start_flag() {
+    use std::fs;
+
+    let tmp = std::env::temp_dir().join("sk_hooks_session_start_flag_test");
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).unwrap();
+
+    // Write a stub briefing.py that prints its argv to stdout so we can verify
+    // the caller passed --session-start.
+    let stub = "import sys\nprint('ARGS:' + ' '.join(sys.argv[1:]))\n";
+    fs::write(tmp.join("briefing.py"), stub).unwrap();
+
+    let mut cmd = assert_cmd::Command::cargo_bin("sk").unwrap();
+    cmd.args(["hooks", "run", "sessionStart"])
+        .env("SK_TOOLS_DIR", &tmp)
+        .write_stdin(r#"{}"#);
+
+    let output = cmd.assert().success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+
+    assert!(
+        stdout.contains("--session-start"),
+        "AutoBriefingRule must pass --session-start to briefing.py; got:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&tmp);
+}
+
 /// `sk hooks run sessionEnd` with no session ID must be fail-open (RecurrenceDetectorRule).
 ///
 /// When COPILOT_SESSION_ID is absent and the DB is absent, RecurrenceDetectorRule

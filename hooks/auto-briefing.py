@@ -307,7 +307,7 @@ def main():
 
     try:
         subprocess.run(
-            [sys.executable, str(BRIEFING), project, "--budget", "500"],
+            [sys.executable, str(BRIEFING), project, "--budget", "500", "--session-start"],
             timeout=10,
             stderr=subprocess.DEVNULL,
             encoding="utf-8",

@@ -3,11 +3,16 @@
 Single source of truth for constants, path helpers, and result constructors.
 """
 
+import os
 import re
 from pathlib import Path
 
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
-TOOLS_DIR = Path.home() / ".copilot" / "tools"
+# SK_TOOLS_DIR env var mirrors the Rust resolve_tools_dir() override used in tests
+# and developer worktrees.  Only accepted when the path exists (parity with Rust);
+# otherwise falls back to the standard installed-tools path.
+_sk_tools_override = Path(os.environ["SK_TOOLS_DIR"]) if os.environ.get("SK_TOOLS_DIR") else None
+TOOLS_DIR = _sk_tools_override if (_sk_tools_override is not None and _sk_tools_override.is_dir()) else Path.home() / ".copilot" / "tools"
 
 SAFE_PATH_PREFIXES = ("/tmp/", "/var/", "/dev/", "/proc/")
 
