@@ -205,15 +205,15 @@ print("\n🔐 Section 2: Marker Auth")
 
 sys.path.insert(0, str(REPO / "hooks"))
 from marker_auth import (
-    sign_marker,
-    verify_marker,
-    sign_counter,
-    verify_counter,
-    sign_list_marker,
-    verify_list_marker,
-    is_secret_access,
-    check_tamper_marker,
     _read_secret,
+    check_tamper_marker,
+    is_secret_access,
+    sign_counter,
+    sign_list_marker,
+    sign_marker,
+    verify_counter,
+    verify_list_marker,
+    verify_marker,
 )
 
 # Use temp dir for test markers
@@ -313,11 +313,11 @@ print("\n🛠️  Section 3: Rule Utilities (common.py)")
 
 sys.path.insert(0, str(REPO / "hooks"))
 from rules.common import (
-    is_source_path,
-    get_module,
     bash_writes_source_files,
     deny,
+    get_module,
     info,
+    is_source_path,
 )
 
 # 3a. is_source_path
@@ -367,7 +367,7 @@ test("info() has message", i["message"] == "test message")
 
 print("\n📋 Section 4: Rule Registration")
 
-from rules import get_rules_for_event, Rule
+from rules import Rule, get_rules_for_event
 
 session_start_rules = get_rules_for_event("sessionStart")
 pre_tool_rules = get_rules_for_event("preToolUse")
@@ -712,8 +712,10 @@ test(
 # Validate the deny message can be exercised without crashing — instantiate and run
 try:
     sys.path.insert(0, str(REPO / "hooks"))
+    import pathlib
+    import tempfile
+
     from rules.tentacle import TentacleEnforceRule  # noqa: E402
-    import tempfile, pathlib
 
     rule = TentacleEnforceRule()
 
@@ -830,8 +832,8 @@ test(
 
 try:
     sys.path.insert(0, str(REPO / "hooks"))
-    from rules.tentacle import TentacleSuggestRule  # noqa: E402
     import rules.tentacle as _rt2
+    from rules.tentacle import TentacleSuggestRule  # noqa: E402
 
     suggest_rule = TentacleSuggestRule()
 
@@ -905,8 +907,8 @@ if "tentacle-enforce" in _pre12_names and "subagent-git-guard" in _pre12_names:
 # 12b–12g: SubagentGitGuardRule unit tests
 try:
     sys.path.insert(0, str(REPO / "hooks"))
-    from rules.subagent_guard import SubagentGitGuardRule
     import rules.subagent_guard as _sg
+    from rules.subagent_guard import SubagentGitGuardRule
 
     _orig_sg_fresh = _sg._marker_is_fresh
     rule_sg = SubagentGitGuardRule()
@@ -1163,9 +1165,7 @@ _precommit_src = (REPO / "hooks" / "pre-commit").read_text(encoding="utf-8")
 test("pre-commit calls check_subagent_marker.py", "check_subagent_marker.py" in _precommit_src)
 test(
     "pre-commit uses Path.home()/.copilot/tools for guard path",
-    "TOOLS_DIR = Path.home()" in _precommit_src
-    and '".copilot"' in _precommit_src
-    and '"tools"' in _precommit_src,
+    "TOOLS_DIR = Path.home()" in _precommit_src and '".copilot"' in _precommit_src and '"tools"' in _precommit_src,
 )
 _guard_block = _precommit_src.split("check_subagent_marker.py")[0].split("SUBAGENT_CHECK")[-1]
 test("pre-commit guard block does NOT use dirname resolution", "$(dirname" not in _guard_block)
@@ -2086,8 +2086,9 @@ print("\n── Section 15: Phase-5 per-tentacle tentacle_id field ──")
 
 # 15a. _any_entry_relevant: entry with extra "tentacle_id" field → still True (same repo)
 try:
-    import rules.subagent_guard as _sg15
     import importlib.util as _ilu15
+
+    import rules.subagent_guard as _sg15
 
     _csm_spec15 = _ilu15.spec_from_file_location("csm15", _csm_path)
     _csm15 = _ilu15.module_from_spec(_csm_spec15)
@@ -2330,7 +2331,7 @@ try:
     test(
         "15f: SubagentGitGuardRule multi-tentacle_id same-repo → deny",
         result15f is not None,
-        f"Got None (allowed) — should have been denied",
+        "Got None (allowed) — should have been denied",
     )
     if result15f is not None:
         msg15f = result15f.get("permissionDecisionReason", "") if isinstance(result15f, dict) else str(result15f)
@@ -2444,8 +2445,9 @@ print("\n── Section 16: Mixed-format marker bypass regression ──")
 
 # 16a. _any_entry_relevant: string entry first in mixed list → True (conservative)
 try:
-    import rules.subagent_guard as _sg16
     import importlib.util as _ilu16
+
+    import rules.subagent_guard as _sg16
 
     _csm_spec16 = _ilu16.spec_from_file_location("csm16", _csm_path)
     _csm16 = _ilu16.module_from_spec(_csm_spec16)
@@ -2666,9 +2668,7 @@ test(
 _pc_src17 = (REPO / "hooks" / "pre-commit").read_text(encoding="utf-8")
 _pp_src17 = (REPO / "hooks" / "pre-push").read_text(encoding="utf-8")
 test("17b: pre-commit has Python 3 env shebang", _pc_src17.startswith("#!/usr/bin/env python3\n"))
-test(
-    "17b2: pre-commit uses sys.executable for guard", "sys.executable" in _pc_src17 and "SUBAGENT_CHECK" in _pc_src17
-)
+test("17b2: pre-commit uses sys.executable for guard", "sys.executable" in _pc_src17 and "SUBAGENT_CHECK" in _pc_src17)
 test("17b3: pre-push has Python 3 env shebang", _pp_src17.startswith("#!/usr/bin/env python3\n"))
 test("17b4: pre-push uses sys.executable for guard", "sys.executable" in _pp_src17 and "SUBAGENT_CHECK" in _pp_src17)
 test("17b5: pre-commit has no shell interpreter probe", "command -v" not in _pc_src17 and "PYTHON_BIN" not in _pc_src17)
@@ -2916,7 +2916,9 @@ for f in sorted(py_files):
 
 print("\n📝 Section 18: Markdown / Session-State Scope Regression")
 
-from rules.common import CODE_EXTENSIONS as _ce18, SOURCE_EXTENSIONS as _se18, is_session_path as _isp18
+from rules.common import CODE_EXTENSIONS as _ce18
+from rules.common import SOURCE_EXTENSIONS as _se18
+from rules.common import is_session_path as _isp18
 
 # 18a. .md must NOT be in CODE_EXTENSIONS
 test(
@@ -2953,8 +2955,8 @@ test("is_session_path: relative session-state path → True", _isp18(".copilot/s
 
 # 18f. EnforceLearnRule does not count a markdown edit
 try:
-    from rules.learn_gate import EnforceLearnRule as _elr18
     import rules.learn_gate as _lg18
+    from rules.learn_gate import EnforceLearnRule as _elr18
 
     _orig_vc18 = _lg18.verify_counter
     _orig_sc18 = _lg18.sign_counter
@@ -3032,8 +3034,8 @@ except Exception as e:
 
 # 18g. TentacleSuggestRule does not track markdown paths in the signed marker
 try:
-    from rules.tentacle import TentacleSuggestRule as _tsr18
     import rules.tentacle as _rt18
+    from rules.tentacle import TentacleSuggestRule as _tsr18
 
     _orig_vlist18 = _rt18.verify_list_marker
     _orig_slist18 = _rt18.sign_list_marker
@@ -3100,8 +3102,8 @@ except Exception as e:
 
 # 18h. TrackEditsRule (edit_tracker) does not count markdown files
 try:
-    from rules.edit_tracker import TrackEditsRule as _ter18
     import rules.edit_tracker as _et18
+    from rules.edit_tracker import TrackEditsRule as _ter18
 
     _orig_vc_et18 = _et18.verify_counter
     _orig_sc_et18 = _et18.sign_counter
@@ -3231,7 +3233,9 @@ try:
 
     # Directly exercise _should_count by calling _increment_counter after confirming suffix match
     _el_counter18[0] = 0
-    import json as _json18, io as _io18, unittest.mock as _mock18
+    import io as _io18
+    import json as _json18
+    import unittest.mock as _mock18
 
     for _shell_ext18 in (".sh", ".bat", ".ps1"):
         _el_counter18[0] = 0
@@ -3304,8 +3308,10 @@ except Exception as _e18k:
 
 print("\n📝 Section 19: Hook False-Positive Regression (FP-1/FP-2/FP-3)")
 
-from rules.common import is_source_path as _isp19, bash_writes_source_files as _bwsf19
 from pathlib import Path as _Path19
+
+from rules.common import bash_writes_source_files as _bwsf19
+from rules.common import is_source_path as _isp19
 
 _ss_md19 = str(_Path19.home() / ".copilot" / "session-state" / "abc" / "research" / "notes.md")
 _ss_py19 = str(_Path19.home() / ".copilot" / "session-state" / "abc" / "out.py")
@@ -3377,8 +3383,8 @@ test(
 
 # 19d. FP-1: TentacleEnforceRule must return None for edit/create to session-state
 try:
-    from rules.tentacle import TentacleEnforceRule as _TER19
     import rules.tentacle as _rt19
+    from rules.tentacle import TentacleEnforceRule as _TER19
 
     _orig_vlist19 = _rt19.verify_list_marker
     _orig_vm19 = _rt19.verify_marker
@@ -3600,7 +3606,8 @@ finally:
 
 print("\n📝 Section 20: Quoted redirect target detection")
 
-from rules.common import bash_writes_source_files as _bwsf20, _strip_shell_quotes
+from rules.common import _strip_shell_quotes
+from rules.common import bash_writes_source_files as _bwsf20
 
 # 20a. _strip_shell_quotes helper
 test("_strip_shell_quotes: double-quoted", _strip_shell_quotes('"src/main.py"') == "src/main.py")
@@ -3766,10 +3773,11 @@ finally:
 print("\n── Section 17: Tentacle edits marker repo-scope isolation ──")
 
 try:
-    import rules.tentacle as _rt17
-    from rules.tentacle import _read_edits, _write_edits, _prune_ttl, _get_entries_for_repo
     import json as _json17
     import time as _time17
+
+    import rules.tentacle as _rt17
+    from rules.tentacle import _get_entries_for_repo, _prune_ttl, _read_edits, _write_edits
 
     _now17 = _time17.time()
 
@@ -4096,8 +4104,8 @@ except Exception as _e18:
 
 print("\n── Section 22: _any_entry_relevant TTL boundary conditions ──")
 
-import time as _t22
 import importlib.util as _ilu22
+import time as _t22
 
 _MARKER_TTL_22 = 14400  # 4 hours — mirror of hook constants
 
@@ -4157,7 +4165,9 @@ try:
     )
 
     # 22g. All expired → False
-    _e22_g_list = [{"name": f"t{i}", "ts": str(int(_now22) - _MARKER_TTL_22 - i * 10), "git_root": None} for i in range(3)]
+    _e22_g_list = [
+        {"name": f"t{i}", "ts": str(int(_now22) - _MARKER_TTL_22 - i * 10), "git_root": None} for i in range(3)
+    ]
     test(
         "22g: sg._any_entry_relevant all-expired → False",
         not _sg22._any_entry_relevant(_e22_g_list, None, _now22),
@@ -4313,7 +4323,10 @@ try:
     test("24f: read tool with secret content → allow (not edit/create)", not _is_denied(_read))
 
     # 24g. Longer camelCase identifiers in Markdown prose are allowed
-    _md = _run_sd_hook(_SD_HOOK, "The function `checkAndSendAmbulanceApproachNotification` handles SQS polling.\nSee also `metricApproximateNumberOfMessagesVisible` for queue depth.")
+    _md = _run_sd_hook(
+        _SD_HOOK,
+        "The function `checkAndSendAmbulanceApproachNotification` handles SQS polling.\nSee also `metricApproximateNumberOfMessagesVisible` for queue depth.",
+    )
     test("24g: Markdown prose with camelCase identifiers → allow", not _is_denied(_md))
 
     # 24h. AWS access key prefix pattern still works (separate from secret key).
@@ -4323,22 +4336,31 @@ try:
     test("24h: AWS access key ID format (AKIA...) → deny", _is_denied(_akid))
 
     # 24i. Both template copies must be identical (sync check)
-    test("24i: hooks/references and skills/hook-creator/references copies are identical",
-         _SD_HOOK.read_text(encoding="utf-8") == _SD_HOOK_SKILL.read_text(encoding="utf-8"))
+    test(
+        "24i: hooks/references and skills/hook-creator/references copies are identical",
+        _SD_HOOK.read_text(encoding="utf-8") == _SD_HOOK_SKILL.read_text(encoding="utf-8"),
+    )
 
     # 24j. Template contains the contextual AWS Secret Key check pattern
-    test("24j: template AWS Secret Key pattern present in hook file",
-         "(AWS_SECRET_ACCESS_KEY|aws_secret_access_key|secretAccessKey" in _SD_HOOK.read_text(encoding="utf-8"))
+    test(
+        "24j: template AWS Secret Key pattern present in hook file",
+        "(AWS_SECRET_ACCESS_KEY|aws_secret_access_key|secretAccessKey" in _SD_HOOK.read_text(encoding="utf-8"),
+    )
 
     # 24k. Raw length-only pattern must NOT appear in either template (regression guard)
     _hook_text = _SD_HOOK.read_text(encoding="utf-8")
     _skill_text = _SD_HOOK_SKILL.read_text(encoding="utf-8")
     import re as _re24
-    _raw40 = _re24.compile(r'\[0-9a-zA-Z/\+\]\{40\}')
-    test("24k: raw length-only [0-9a-zA-Z/+]{40} not in hooks/references template (issue #20 guard)",
-         not _raw40.search(_hook_text))
-    test("24k2: raw length-only [0-9a-zA-Z/+]{40} not in skills template (issue #20 guard)",
-         not _raw40.search(_skill_text))
+
+    _raw40 = _re24.compile(r"\[0-9a-zA-Z/\+\]\{40\}")
+    test(
+        "24k: raw length-only [0-9a-zA-Z/+]{40} not in hooks/references template (issue #20 guard)",
+        not _raw40.search(_hook_text),
+    )
+    test(
+        "24k2: raw length-only [0-9a-zA-Z/+]{40} not in skills template (issue #20 guard)",
+        not _raw40.search(_skill_text),
+    )
 
     test("Section 24 secret-detector false-positive regression ran without exception", True)
 except Exception as _e24:
@@ -4354,14 +4376,16 @@ print("\n\U0001f4cc Section 25: MEMORY.md injection into sessionStart")
 
 try:
     import importlib as _il25
-    import sys as _sys25
     import os as _os25
+    import sys as _sys25
     import time as _time25
 
     # Import the briefing rule module
     sys.path.insert(0, str(REPO / "hooks"))
     import rules.briefing as _rb25
-    from rules.briefing import _load_memory_md as _lmm25, _DEFAULT_MAX_AGE_DAYS as _DMA25, _DEFAULT_TOKEN_BUDGET as _DTB25
+    from rules.briefing import _DEFAULT_MAX_AGE_DAYS as _DMA25
+    from rules.briefing import _DEFAULT_TOKEN_BUDGET as _DTB25
+    from rules.briefing import _load_memory_md as _lmm25
 
     _td25 = Path(tempfile.mkdtemp(prefix="test-25-"))
 
@@ -4405,10 +4429,16 @@ try:
         _content25d = "# Promoted Memory\n\n## Pattern\nUse parameterised SQL."
         _mem25d.write_text(_content25d, encoding="utf-8")
         _r25d = _lmm25(cwd=_td25d)
-        test("25d: fresh MEMORY.md → returns content", _r25d is not None and "Promoted Memory" in _r25d,
-             f"got: {_r25d!r}")
-        test("25d: returned content contains entry text", _r25d is not None and "parameterised SQL" in _r25d,
-             f"got: {_r25d!r}")
+        test(
+            "25d: fresh MEMORY.md → returns content",
+            _r25d is not None and "Promoted Memory" in _r25d,
+            f"got: {_r25d!r}",
+        )
+        test(
+            "25d: returned content contains entry text",
+            _r25d is not None and "parameterised SQL" in _r25d,
+            f"got: {_r25d!r}",
+        )
     finally:
         _rb25._load_hooks_config = _orig_cfg25d
         shutil.rmtree(str(_td25d), ignore_errors=True)
@@ -4423,10 +4453,16 @@ try:
         _big_content25e = "A" * 200
         _mem25e.write_text(_big_content25e, encoding="utf-8")
         _r25e = _lmm25(cwd=_td25e, token_budget=5)
-        test("25e: token_budget=5 → content truncated", _r25e is not None and len(_r25e) < len(_big_content25e),
-             f"length: {len(_r25e) if _r25e else 0}")
-        test("25e: truncated content includes ellipsis marker", _r25e is not None and "truncated" in _r25e.lower(),
-             f"got: {_r25e!r}")
+        test(
+            "25e: token_budget=5 → content truncated",
+            _r25e is not None and len(_r25e) < len(_big_content25e),
+            f"length: {len(_r25e) if _r25e else 0}",
+        )
+        test(
+            "25e: truncated content includes ellipsis marker",
+            _r25e is not None and "truncated" in _r25e.lower(),
+            f"got: {_r25e!r}",
+        )
     finally:
         _rb25._load_hooks_config = _orig_cfg25e
         shutil.rmtree(str(_td25e), ignore_errors=True)
@@ -4437,14 +4473,13 @@ try:
     _markers25f.mkdir(parents=True, exist_ok=True)
     # Dummy briefing script that emits a distinguishable marker so we can verify order
     _dummy_briefing25f = _td25f / "briefing.py"
-    _dummy_briefing25f.write_text(
-        'import sys\nprint("BRIEFING_OUTPUT_SENTINEL")\n', encoding="utf-8"
-    )
+    _dummy_briefing25f.write_text('import sys\nprint("BRIEFING_OUTPUT_SENTINEL")\n', encoding="utf-8")
     try:
         _mem25f = _td25f / "MEMORY.md"
         _mem25f.write_text("# Promoted Memory\n\n## Pattern\nAlways use atomic locks.", encoding="utf-8")
 
         from rules.briefing import AutoBriefingRule as _ABR25
+
         _rule25f = _ABR25()
 
         # Patch _load_memory_md to load from our temp dir
@@ -4463,18 +4498,25 @@ try:
         _result25f = _rule25f.evaluate("sessionStart", {})
         _msg25f = _result25f.get("message", "") if isinstance(_result25f, dict) else ""
 
-        test("25f: AutoBriefingRule returns info() dict", isinstance(_result25f, dict) and "message" in _result25f,
-             f"got: {_result25f!r}")
-        test("25f: returned message contains MEMORY.md content", "atomic locks" in _msg25f,
-             f"message: {_msg25f[:300]!r}")
-        test("25f: returned message contains MEMORY.md header marker", "MEMORY" in _msg25f,
-             f"message: {_msg25f[:200]!r}")
+        test(
+            "25f: AutoBriefingRule returns info() dict",
+            isinstance(_result25f, dict) and "message" in _result25f,
+            f"got: {_result25f!r}",
+        )
+        test(
+            "25f: returned message contains MEMORY.md content", "atomic locks" in _msg25f, f"message: {_msg25f[:300]!r}"
+        )
+        test(
+            "25f: returned message contains MEMORY.md header marker", "MEMORY" in _msg25f, f"message: {_msg25f[:200]!r}"
+        )
         # Ordering: MEMORY.md content must come BEFORE briefing output (true prepend)
         _idx_memory = _msg25f.find("atomic locks")
         _idx_briefing = _msg25f.find("BRIEFING_OUTPUT_SENTINEL")
-        test("25f: MEMORY.md content precedes briefing output (true prepend)",
-             _idx_memory != -1 and _idx_briefing != -1 and _idx_memory < _idx_briefing,
-             f"memory@{_idx_memory} briefing@{_idx_briefing} msg={_msg25f[:400]!r}")
+        test(
+            "25f: MEMORY.md content precedes briefing output (true prepend)",
+            _idx_memory != -1 and _idx_briefing != -1 and _idx_memory < _idx_briefing,
+            f"memory@{_idx_memory} briefing@{_idx_briefing} msg={_msg25f[:400]!r}",
+        )
 
     finally:
         _rb25._load_memory_md = _orig_lmm25f
@@ -4489,6 +4531,7 @@ try:
     _markers25g.mkdir(parents=True, exist_ok=True)
     try:
         from rules.briefing import AutoBriefingRule as _ABR25g
+
         _rule25g = _ABR25g()
 
         _orig_lmm25g = _rb25._load_memory_md
@@ -4503,8 +4546,11 @@ try:
         _result25g = _rule25g.evaluate("sessionStart", {})
         _msg25g = _result25g.get("message", "") if isinstance(_result25g, dict) else ""
 
-        test("25g: no MEMORY.md → message has no MEMORY injection", "MEMORY.md" not in _msg25g,
-             f"message: {_msg25g[:200]!r}")
+        test(
+            "25g: no MEMORY.md → message has no MEMORY injection",
+            "MEMORY.md" not in _msg25g,
+            f"message: {_msg25g[:200]!r}",
+        )
 
     finally:
         _rb25._load_memory_md = _orig_lmm25g
@@ -4514,10 +4560,8 @@ try:
         shutil.rmtree(str(_td25g), ignore_errors=True)
 
     # ── 25h. Default constants have expected values ────────────────────
-    test("25h: default max_age_days == 1", _DMA25 == 1,
-         f"got: {_DMA25}")
-    test("25h: default token_budget == 500", _DTB25 == 500,
-         f"got: {_DTB25}")
+    test("25h: default max_age_days == 1", _DMA25 == 1, f"got: {_DMA25}")
+    test("25h: default token_budget == 500", _DTB25 == 500, f"got: {_DTB25}")
 
     # ── 25i. memory_inject_max_tokens config key controls budget ──────
     _td25i = Path(tempfile.mkdtemp(prefix="test-25i-"))
@@ -4527,12 +4571,16 @@ try:
         _rb25._load_hooks_config = lambda: {"memory_inject_enabled": True, "memory_inject_max_tokens": 5}
         (_td25i / "MEMORY.md").write_text("A" * 200, encoding="utf-8")
         _r25i = _lmm25(cwd=_td25i)
-        test("25i: memory_inject_max_tokens=5 via config → content truncated",
-             _r25i is not None and len(_r25i) < 200,
-             f"got length: {len(_r25i) if _r25i else 0}")
-        test("25i: truncated content includes ellipsis marker",
-             _r25i is not None and "truncated" in _r25i.lower(),
-             f"got: {_r25i!r}")
+        test(
+            "25i: memory_inject_max_tokens=5 via config → content truncated",
+            _r25i is not None and len(_r25i) < 200,
+            f"got length: {len(_r25i) if _r25i else 0}",
+        )
+        test(
+            "25i: truncated content includes ellipsis marker",
+            _r25i is not None and "truncated" in _r25i.lower(),
+            f"got: {_r25i!r}",
+        )
     finally:
         _rb25._load_hooks_config = _orig_cfg25i
         shutil.rmtree(str(_td25i), ignore_errors=True)
@@ -4549,9 +4597,7 @@ try:
         _old_j = _time25.time() - 60
         os.utime(str(_mem25j), (_old_j, _old_j))
         _r25j = _lmm25(cwd=_td25j)
-        test("25j: memory_inject_max_age_days=0.0001 → stale file → None",
-             _r25j is None,
-             f"got: {_r25j!r}")
+        test("25j: memory_inject_max_age_days=0.0001 → stale file → None", _r25j is None, f"got: {_r25j!r}")
     finally:
         _rb25._load_hooks_config = _orig_cfg25j
         shutil.rmtree(str(_td25j), ignore_errors=True)
@@ -4562,8 +4608,6 @@ try:
     test("Section 25 MEMORY.md injection tests ran without exception", True)
 except Exception as _e25:
     test("Section 25 MEMORY.md injection tests ran without exception", False, str(_e25))
-
-
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -4584,11 +4628,13 @@ try:
         """Return a TestReminderRule instance with patched update_session_state for file-count I/O."""
         _et26.FILE_EDIT_THRESHOLD = threshold
         _state = {"file_edit_counts": dict(counts_store)}
+
         def _fake_uss(updater, data=None, **kwargs):
             updater(_state)
             counts_store.clear()
             counts_store.update(_state.get("file_edit_counts", {}))
             return (True, True)
+
         _et26.update_session_state = _fake_uss
         return _TRR26()
 
@@ -4692,10 +4738,16 @@ try:
         "postToolUse",
         {"toolName": "create", "input": {"filePath": "src/baz.ts"}},
     )
-    test("26e: two different files, each once → no warning", _r26e1 is None and _r26e2 is None,
-         f"Got: {_r26e1!r}, {_r26e2!r}")
-    test("26e: each file has count 1", _store26e.get("src/bar.ts") == 1 and _store26e.get("src/baz.ts") == 1,
-         f"Store: {_store26e}")
+    test(
+        "26e: two different files, each once → no warning",
+        _r26e1 is None and _r26e2 is None,
+        f"Got: {_r26e1!r}, {_r26e2!r}",
+    )
+    test(
+        "26e: each file has count 1",
+        _store26e.get("src/bar.ts") == 1 and _store26e.get("src/baz.ts") == 1,
+        f"Store: {_store26e}",
+    )
 
     # ── 26f: custom threshold via FILE_EDIT_THRESHOLD ─────────────
     _store26f = {}
@@ -4726,6 +4778,7 @@ try:
     _store26g = {}
     _rule26g = _make_rule26(_store26g)
     import platform as _plat26
+
     _ss_path26 = str(Path.home() / ".copilot" / "session-state" / "abc" / "notes.py")
     # Intentionally set the py counter to threshold-1 (2) so that a broken
     # session-state guard in the .py test-reminder branch would call
@@ -4779,6 +4832,7 @@ try:
     # The real routing function for shared session state uses get_session_marker_suffix(data),
     # which sanitizes and embeds the sessionId in the filename.
     from rules.common import get_session_state_path as _gsp26i
+
     _path26i = _gsp26i(data={"sessionId": "test-session-id-999"})
     test(
         "26i: session-state path contains sanitized sessionId from data payload",
@@ -4922,6 +4976,7 @@ try:
         def _uss(updater, data=None, **kwargs):
             updater(state_dict)
             return (True, True)
+
         return _uss
 
     _et26.update_session_state = _make_uss26n(_state_n_A)
@@ -4945,6 +5000,7 @@ try:
 
     # Part 3: get_session_state_path correctly routes by data['sessionId'].
     from rules.common import get_session_state_path as _gsp26n
+
     _path_n_sid = _gsp26n(data={"sessionId": "payload-sid-777"})
     test(
         "26n: get_session_state_path uses data['sessionId'] for session scoping",
@@ -5007,6 +5063,310 @@ try:
     test("Section 26 per-file edit alert tests ran without exception", True)
 except Exception as _e26:
     test("Section 26 per-file edit alert tests ran without exception", False, str(_e26))
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Section 27 — SkillUsageRule
+# ═══════════════════════════════════════════════════════════════════
+try:
+    import sqlite3 as _s27
+    import sys as _sys27
+    import tempfile as _tempfile27
+
+    # Use package-based import so relative imports in skill_usage.py work
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    from hooks.rules import skill_usage as _su27
+
+    # Use a fresh temp DB
+    _db27 = pathlib.Path(_tempfile27.mkdtemp()) / "skill_usage_test.db"
+    _su27.METRICS_DB_PATH = _db27
+
+    # 27-a: ensure_table creates the table
+    _conn27 = _s27.connect(str(_db27))
+    _su27.ensure_table(_conn27)
+    _conn27.commit()
+    _tbl27 = _conn27.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='skill_usage_events'"
+    ).fetchone()
+    _conn27.close()
+    test("27-a: ensure_table creates skill_usage_events", _tbl27 is not None)
+
+    # 27-b: record_events writes triggered + loaded
+    _rule27 = _su27.SkillUsageRule()
+    _ts27 = "2026-01-01T00:00:00Z"
+    _su27.record_events("karpathy-guidelines", ["triggered", "loaded"], "sess-001", _ts27, db_path=_db27)
+    _conn27b = _s27.connect(str(_db27))
+    _conn27b.row_factory = _s27.Row
+    _rows27 = _conn27b.execute("SELECT event FROM skill_usage_events ORDER BY id").fetchall()
+    _conn27b.close()
+    test("27-b: record_events writes triggered row", any(r["event"] == "triggered" for r in _rows27))
+    test("27-b: record_events writes secondary event row", any(r["event"] == "loaded" for r in _rows27))
+
+    # 27-c: rule dispatches on postToolUse for 'skill' tool
+    _db27c = pathlib.Path(_tempfile27.mkdtemp()) / "skill_usage_test_c.db"
+    _su27.METRICS_DB_PATH = _db27c
+    _data27c = {
+        "event": "postToolUse",
+        "toolName": "skill",
+        "toolInput": {"skill": "frontend-dev"},
+        "toolResult": "x" * 300,  # long = loaded
+        "sessionId": "sess-abc",
+    }
+    _result27c = _rule27.evaluate("postToolUse", _data27c)
+    test("27-c: rule returns None (fail-open)", _result27c is None)
+    _conn27c = _s27.connect(str(_db27c))
+    _conn27c.row_factory = _s27.Row
+    _rows27c = _conn27c.execute("SELECT skill_name, event FROM skill_usage_events").fetchall()
+    _conn27c.close()
+    test(
+        "27-c: rule writes triggered",
+        any(r["event"] == "triggered" and r["skill_name"] == "frontend-dev" for r in _rows27c),
+    )
+    test(
+        "27-c: rule writes loaded", any(r["event"] == "loaded" and r["skill_name"] == "frontend-dev" for r in _rows27c)
+    )
+
+    # 27-d: detect_secondary_event returns 'skipped' for skip markers in short output
+    _skip_outputs = [
+        "Skill skipping: no matching handler",  # matches "skill skipping" compound
+        "skill not found",  # matches "skill not found"
+        "SKILL_SKIP",  # matches "skill_skip" (lowercased)
+        "Error: skill unavailable",  # matches "skill unavailable"
+    ]
+    for _skip_out in _skip_outputs:
+        _evt = _su27._detect_secondary_event(_skip_out)
+        test(f"27-d: detect_secondary_event({_skip_out[:30]!r}) → skipped", _evt == "skipped", f"got {_evt!r}")
+
+    # 27-d2: long output → loaded
+    _evt27d2 = _su27._detect_secondary_event("x" * 300)
+    test("27-d2: detect_secondary_event long output → loaded", _evt27d2 == "loaded", f"got {_evt27d2!r}")
+
+    # 27-d3: empty result → loaded (fail-open)
+    _evt27d3 = _su27._detect_secondary_event("")
+    test("27-d3: detect_secondary_event empty → loaded", _evt27d3 == "loaded", f"got {_evt27d3!r}")
+
+    # 27-e: missing skill name in toolInput → no DB write
+    _db27e = pathlib.Path(_tempfile27.mkdtemp()) / "skill_usage_test_e.db"
+    _su27.METRICS_DB_PATH = _db27e
+    _rule27.evaluate(
+        "postToolUse",
+        {"event": "postToolUse", "toolName": "skill", "toolInput": {}, "toolResult": "", "sessionId": "sess-xyz"},
+    )
+    test("27-e: no DB created when skill name missing", not _db27e.exists())
+
+    # 27-f: fail-open — DB write error → no exception propagated
+    # Patch record_events to always raise so the test is deterministic on all
+    # platforms (avoids reliance on whether /nonexistent resolves to a writable
+    # path on the current OS / environment).
+    _orig_record_27f = _su27.record_events
+
+    def _raising_record_27f(*_a, **_kw):
+        raise OSError("simulated DB write failure")
+
+    _su27.record_events = _raising_record_27f
+    try:
+        _result27f = _rule27.evaluate(
+            "postToolUse",
+            {
+                "event": "postToolUse",
+                "toolName": "skill",
+                "toolInput": {"skill": "some-skill"},
+                "toolResult": "x" * 300,
+                "sessionId": "sess-fail",
+            },
+        )
+        test("27-f: fail-open on DB error → returns None", _result27f is None)
+    finally:
+        _su27.record_events = _orig_record_27f
+
+    # 27-g: exitCode=0 regression — must not be misclassified as 'skipped'
+    # even when short output contains skip markers (the exitCode=0 or exit_code
+    # bug would have returned the exit_code fallback and fallen through to text).
+    _skip_result_dict = {"exitCode": 0, "output": "skipped: skill not found"}
+    _evt27g = _su27._detect_secondary_event(_skip_result_dict)
+    test("27-g: exitCode=0 with skip markers in output → loaded (regression)", _evt27g == "loaded", f"got {_evt27g!r}")
+
+    # 27-h: exitCode=0 via alternate exit_code key → loaded
+    _alt_key_dict = {"exit_code": 0, "output": "no skill unavailable"}
+    _evt27h = _su27._detect_secondary_event(_alt_key_dict)
+    test("27-h: exit_code=0 (alternate key) with skip markers → loaded", _evt27h == "loaded", f"got {_evt27h!r}")
+
+    # 27-i: exitCode wins over exit_code when both present; exitCode=0 → loaded
+    _both_dict = {"exitCode": 0, "exit_code": 1, "output": "skip"}
+    _evt27i = _su27._detect_secondary_event(_both_dict)
+    test("27-i: exitCode=0 wins over exit_code=1 → loaded", _evt27i == "loaded", f"got {_evt27i!r}")
+
+    # 27-j: exitCode non-zero → skipped (existing behaviour unchanged)
+    _nonzero_dict = {"exitCode": 1, "output": ""}
+    _evt27j = _su27._detect_secondary_event(_nonzero_dict)
+    test("27-j: exitCode=1 → skipped", _evt27j == "skipped", f"got {_evt27j!r}")
+
+    # 27-k: False-positive regression — short loaded prose containing "error"
+    # must NOT be classified as skipped.
+    _false_pos_error = [
+        "Use error handling patterns",
+        "Implement error recovery",
+        "Catch and log errors",
+        "error handling best practices",
+    ]
+    for _fp in _false_pos_error:
+        _fp_evt = _su27._detect_secondary_event(_fp)
+        test(f"27-k: loaded prose with 'error' ({_fp[:35]!r}) → loaded", _fp_evt == "loaded", f"got {_fp_evt!r}")
+
+    # 27-l: False-positive regression — short loaded prose containing "failed"
+    # must NOT be classified as skipped.
+    _false_pos_failed = [
+        "Task failed gracefully",
+        "if the request failed",
+        "retry failed requests",
+    ]
+    for _fp in _false_pos_failed:
+        _fp_evt = _su27._detect_secondary_event(_fp)
+        test(f"27-l: loaded prose with 'failed' ({_fp[:35]!r}) → loaded", _fp_evt == "loaded", f"got {_fp_evt!r}")
+
+    # 27-m: Confirm real skip messages still classify correctly using the
+    # compound-phrase markers that replaced the old broad single keywords.
+    _real_skip_narrow = [
+        "Skill unavailable",  # matches "skill unavailable"
+        "cannot load skill",  # matches "cannot load skill"
+        "skill could not be loaded",  # matches "could not be loaded"
+        "no skill matched",  # matches "no skill matched"
+        "unable to load skill: frontend-dev",  # matches "unable to load skill"
+        "could not load skill: codereview",  # matches "could not load skill"
+        "no skill found for request",  # matches "no skill found"
+        "SKILL_SKIP",  # matches "skill_skip" (lowercased)
+    ]
+    for _rs in _real_skip_narrow:
+        _rs_evt = _su27._detect_secondary_event(_rs)
+        test(f"27-m: real skip via compound phrase ({_rs[:40]!r}) → skipped", _rs_evt == "skipped", f"got {_rs_evt!r}")
+
+    # 27-n: False-positive regression — prose containing single generic words
+    # that were formerly in _SKIP_MARKERS must NOT classify as skipped.
+    # These mirror the exact examples from the issue #119 publish blocker.
+    _false_pos_generic = [
+        "you cannot call this tool twice",  # bare "cannot" (no "cannot load")
+        "No skill is needed for simple queries",  # "no skill" (no "no skill matched/found")
+        "Skip initialisation on first run",  # bare "skip" (not "skipped")
+        "cannot parse the request",  # bare "cannot" in different context
+        "unable to connect to server",  # bare "unable" (no "unable to load")
+        "task could not complete",  # bare "could not" (no compound form)
+        "no skill required here",  # "no skill" variant not in markers
+    ]
+    for _fp in _false_pos_generic:
+        _fp_evt = _su27._detect_secondary_event(_fp)
+        test(f"27-n: generic prose ({_fp[:45]!r}) → loaded", _fp_evt == "loaded", f"got {_fp_evt!r}")
+
+    # 27-o: False-positive regression — bare "skipped" and "not found" in
+    # non-skill-loader prose must NOT classify as skipped.
+    # Mirrors the two remaining publish-blocker examples from issue #119 review.
+    _false_pos_skip_notfound = [
+        "Tests skipped",  # bare "skipped" in test output
+        "Build step skipped (cached)",  # bare "skipped" in build-log prose
+        "Some items were skipped",  # bare "skipped" in generic prose
+        "Route not found",  # bare "not found" in HTTP prose
+        "Key not found in config",  # bare "not found" in config prose
+        "resource not found",  # bare "not found" in generic prose
+    ]
+    for _fp in _false_pos_skip_notfound:
+        _fp_evt = _su27._detect_secondary_event(_fp)
+        test(f"27-o: skipped/not-found prose ({_fp[:45]!r}) → loaded", _fp_evt == "loaded", f"got {_fp_evt!r}")
+
+    # 27-o (positive): narrow skill-loader compound phrases still classify as skipped.
+    _narrow_skip_positive = [
+        "skill skipped by loader",  # matches "skill skipped"
+        "skill was skipped during init",  # matches "skill was skipped"
+        "skill not found in registry",  # matches "skill not found"
+    ]
+    for _rs in _narrow_skip_positive:
+        _rs_evt = _su27._detect_secondary_event(_rs)
+        test(f"27-o+: narrow loader phrase ({_rs[:45]!r}) → skipped", _rs_evt == "skipped", f"got {_rs_evt!r}")
+
+    # 27-p: False-positive regression — bare "skipping" and "unavailable" in
+    # non-skill-loader prose must NOT classify as skipped.
+    # Mirrors the two remaining publish-blocker examples from issue #119 review.
+    _false_pos_skipping_unavailable = [
+        "Skipping optional dependencies",  # bare "skipping" in build/install prose
+        "Skipping validation",  # bare "skipping" at sentence start
+        "The service is unavailable",  # bare "unavailable" in HTTP status prose
+        "currently unavailable",  # bare "unavailable" as status phrase
+    ]
+    for _fp in _false_pos_skipping_unavailable:
+        _fp_evt = _su27._detect_secondary_event(_fp)
+        test(f"27-p: skipping/unavailable prose ({_fp[:45]!r}) → loaded", _fp_evt == "loaded", f"got {_fp_evt!r}")
+
+    # 27-p (positive): compound skill-loader phrases for skipping/unavailable
+    # still classify as skipped after the narrowing.
+    _narrow_skipping_unavailable_positive = [
+        "Skill skipping: dependency not found",  # matches "skill skipping"
+        "skipping skill: frontend-dev",  # matches "skipping skill"
+        "skill unavailable for this session",  # matches "skill unavailable"
+        "Skill unavailable",  # matches "skill unavailable"
+    ]
+    for _rs in _narrow_skipping_unavailable_positive:
+        _rs_evt = _su27._detect_secondary_event(_rs)
+        test(
+            f"27-p+: narrow skipping/unavailable phrase ({_rs[:45]!r}) → skipped",
+            _rs_evt == "skipped",
+            f"got {_rs_evt!r}",
+        )
+
+    # 27-q: False-positive regression — non-skill load failures must NOT classify
+    # as skipped.  "cannot load", "unable to load", "could not load" alone are too
+    # broad: they match config, user-profile, module, image, and shared-library
+    # load errors that have nothing to do with the skill loader.
+    _false_pos_load_failures = [
+        "cannot load config",  # config file load failure
+        "cannot load the configuration",  # variant
+        "unable to load user profile",  # user profile load failure
+        "unable to load module",  # Python module load failure
+        "could not load shared library",  # native library load failure
+        "could not load image",  # image asset load failure
+        "Unable to load settings.json",  # mcp-server.py style message
+        "Could not load config from remote",  # trend-scout.py style message
+    ]
+    for _fp in _false_pos_load_failures:
+        _fp_evt = _su27._detect_secondary_event(_fp)
+        test(f"27-q: non-skill load failure ({_fp[:50]!r}) → loaded", _fp_evt == "loaded", f"got {_fp_evt!r}")
+
+    # 27-q (positive): skill-specific load failure phrases still classify as skipped
+    # after narrowing to "cannot/unable/could-not load skill".
+    _narrow_load_positive = [
+        "cannot load skill: frontend-dev",  # matches "cannot load skill"
+        "unable to load skill frontend-dev",  # matches "unable to load skill"
+        "could not load skill: codereview",  # matches "could not load skill"
+    ]
+    for _rs in _narrow_load_positive:
+        _rs_evt = _su27._detect_secondary_event(_rs)
+        test(f"27-q+: skill load failure ({_rs[:50]!r}) → skipped", _rs_evt == "skipped", f"got {_rs_evt!r}")
+
+    # 27-r: False-positive regression — passive "could not be loaded" without
+    # "skill" qualifier must NOT classify non-skill load failures as skipped.
+    # e.g. "module could not be loaded", "config could not be loaded",
+    # "plugin could not be loaded", "library libfoo.so could not be loaded".
+    _false_pos_passive_load = [
+        "module could not be loaded",  # Python module load failure
+        "config could not be loaded",  # config file load failure
+        "plugin could not be loaded",  # plugin load failure
+        "library libfoo.so could not be loaded",  # native library load failure
+        "The resource could not be loaded",  # generic HTTP/asset message
+    ]
+    for _fp in _false_pos_passive_load:
+        _fp_evt = _su27._detect_secondary_event(_fp)
+        test(f"27-r: passive non-skill load ({_fp[:55]!r}) → loaded", _fp_evt == "loaded", f"got {_fp_evt!r}")
+
+    # 27-r (positive): the skill-qualified passive phrase still classifies as skipped.
+    _narrow_passive_positive = [
+        "skill could not be loaded",  # matches "skill could not be loaded"
+        "Skill could not be loaded: frontend-dev",  # same marker, mixed-case
+    ]
+    for _rs in _narrow_passive_positive:
+        _rs_evt = _su27._detect_secondary_event(_rs)
+        test(f"27-r+: skill passive load ({_rs[:55]!r}) → skipped", _rs_evt == "skipped", f"got {_rs_evt!r}")
+
+    test("Section 27 SkillUsageRule tests ran without exception", True)
+except Exception as _e27:
+    test("Section 27 SkillUsageRule tests ran without exception", False, str(_e27))
 
 
 # ═══════════════════════════════════════════════════════════════════

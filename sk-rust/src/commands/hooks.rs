@@ -18,11 +18,13 @@
 ///     KB search (wave4); no HMAC involved.
 ///   - `sessionStart`: `AutoBriefingRule` spawns `briefing.py` and signs HMAC
 ///     markers; `IntegrityRule` checks the SHA256 manifest (wave9).
-///   - `postToolUse`: all seven informational rules fully ported natively
+///   - `postToolUse`: all eight informational rules fully ported natively
 ///     (`TrackEditsRule`, `LearnReminderRule`, `TestReminderRule`,
 ///     `NextjsTypecheckReminderRule`, `VerificationGatePostRule`,
 ///     `ReadBeforeEditRule`, `TentacleSuggestRule`); `sync_markers.rs`
 ///     writes `sync-nudge.json` after rule dispatch (wave10).
+///     `SkillUsageRule` added in wave28 (issue #119) — records triggered /
+///     loaded / skipped events to `skill-metrics.db` for the `skill` tool.
 ///   - `preToolUse`: all enforcement rules now ported natively (wave13):
 ///     `EnforceBriefingRule`, `EnforceLearnRule`, `TentacleEnforceRule`,
 ///     `SubagentGitGuardRule`, `SyntaxGateRule`, `BlockEditDistRule`,

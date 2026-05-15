@@ -1680,6 +1680,89 @@ def generate_subagent_context(
     return "\n".join(lines)
 
 
+def _collect_skill_usage_for_briefing(db_path: Path = None) -> list:
+    """Read event-level skill usage from skill-metrics.db.
+
+    Returns a list of dicts, one per skill, with triggered/loaded/skipped counts.
+    Returns an empty list when the DB or table is absent (fail-open).
+    """
+    if db_path is None:
+        db_path = Path.home() / ".copilot" / "session-state" / "skill-metrics.db"
+    try:
+        if not db_path.exists():
+            return []
+        db = sqlite3.connect(str(db_path))
+        db.row_factory = sqlite3.Row
+        try:
+            row = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='skill_usage_events'").fetchone()
+            if not row:
+                return []
+            rows = db.execute(
+                "SELECT skill_name, "
+                "SUM(CASE WHEN event='triggered' THEN 1 ELSE 0 END) AS triggered, "
+                "SUM(CASE WHEN event='loaded'    THEN 1 ELSE 0 END) AS loaded, "
+                "SUM(CASE WHEN event='skipped'   THEN 1 ELSE 0 END) AS skipped, "
+                "CASE WHEN SUM(CASE WHEN event='triggered' THEN 1 ELSE 0 END) > 0 "
+                "     THEN CAST(SUM(CASE WHEN event='loaded' THEN 1 ELSE 0 END) AS REAL) "
+                "          / SUM(CASE WHEN event='triggered' THEN 1 ELSE 0 END) "
+                "     ELSE 0.0 END AS load_rate "
+                "FROM skill_usage_events "
+                "GROUP BY skill_name "
+                "ORDER BY load_rate DESC, triggered DESC"
+            ).fetchall()
+        finally:
+            db.close()
+        by_skill: dict = {}
+        for r in rows:
+            skill = r["skill_name"]
+            by_skill[skill] = {
+                "skill_name": skill,
+                "triggered": int(r["triggered"]),
+                "loaded": int(r["loaded"]),
+                "skipped": int(r["skipped"]),
+                "load_rate": float(r["load_rate"]),
+            }
+        return list(by_skill.values())
+    except Exception:
+        return []
+
+
+def _format_skill_usage_section(entries: list) -> str:
+    """Return a compact skill usage section for briefing output.
+
+    Shows top skills (highest load rate) and, when available, highlights the
+    bottom skills (lowest load rate) so the operator can spot underperforming
+    skills.  ``entries`` must be pre-sorted by ``load_rate DESC`` (as returned
+    by ``_collect_skill_usage_for_briefing``).
+
+    Returns an empty string when entries is empty.
+    """
+    if not entries:
+        return ""
+    lines = ["📦 Skill Usage (top/bottom by load rate)"]
+    top = entries[:4]
+    # Bottom-2: only include when there are enough distinct skills to avoid
+    # duplicating entries already shown in the top block.
+    bottom = [e for e in entries[4:][-2:]] if len(entries) > 4 else []
+    for entry in top:
+        name = entry.get("skill_name", "?")
+        triggered = entry.get("triggered", 0)
+        loaded = entry.get("loaded", 0)
+        load_rate = entry.get("load_rate", 0.0)
+        rate_pct = f"{load_rate:.0%}"
+        lines.append(f"  {name:<30} {rate_pct:>5} load  ({loaded}/{triggered} triggered)")
+    if bottom:
+        lines.append("  ↓ lowest load rate:")
+        for entry in bottom:
+            name = entry.get("skill_name", "?")
+            triggered = entry.get("triggered", 0)
+            loaded = entry.get("loaded", 0)
+            load_rate = entry.get("load_rate", 0.0)
+            rate_pct = f"{load_rate:.0%}"
+            lines.append(f"  {name:<30} {rate_pct:>5} load  ({loaded}/{triggered} triggered)")
+    return "\n".join(lines)
+
+
 def generate_briefing(
     query: str,
     limit: int = 3,
@@ -1842,6 +1925,16 @@ def generate_briefing(
             output = _format_markdown(query, briefing_data, past_work, categories, blast, file_annotations)
         else:
             output = _format_default(query, briefing_data, past_work, categories, blast, file_annotations)
+
+    # Append event-level skill usage section (non-pack formats only; fail-open).
+    if fmt not in ("json", "pack"):
+        try:
+            _skill_entries = _collect_skill_usage_for_briefing()
+            _skill_section = _format_skill_usage_section(_skill_entries)
+            if _skill_section:
+                output = output + "\n\n" + _skill_section
+        except Exception:
+            pass
 
     if with_meta:
         return output, {

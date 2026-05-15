@@ -267,20 +267,17 @@ _now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 # Fresh entry (just created) → decay close to 1.0
 _fresh_ts = _now.strftime("%Y-%m-%d %H:%M:%S")
 _fresh_score = _b._recency_decay(_fresh_ts, half_life_days=30.0)
-test("fresh entry decay is close to 1.0", 0.99 <= _fresh_score <= 1.0,
-     f"got {_fresh_score}")
+test("fresh entry decay is close to 1.0", 0.99 <= _fresh_score <= 1.0, f"got {_fresh_score}")
 
 # Entry exactly 30 days old → decay == 0.5 (by definition of half-life)
 _old_30 = (_now - datetime.timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
 _score_30 = _b._recency_decay(_old_30, half_life_days=30.0)
-test("30-day-old entry decays to 0.5", abs(_score_30 - 0.5) < 0.01,
-     f"got {_score_30:.4f}")
+test("30-day-old entry decays to 0.5", abs(_score_30 - 0.5) < 0.01, f"got {_score_30:.4f}")
 
 # Entry 60 days old → decay == 0.25 (two half-lives)
 _old_60 = (_now - datetime.timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
 _score_60 = _b._recency_decay(_old_60, half_life_days=30.0)
-test("60-day-old entry decays to ~0.25", abs(_score_60 - 0.25) < 0.02,
-     f"got {_score_60:.4f}")
+test("60-day-old entry decays to ~0.25", abs(_score_60 - 0.25) < 0.02, f"got {_score_60:.4f}")
 
 # None last_seen → fail-open returns 1.0
 test("None last_seen returns 1.0", _b._recency_decay(None, 30.0) == 1.0)
@@ -294,13 +291,15 @@ test("garbage last_seen returns 1.0", _b._recency_decay("not-a-date", 30.0) == 1
 # T-separated ISO format also accepted
 _iso_ts = (_now - datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S")
 _iso_score = _b._recency_decay(_iso_ts, half_life_days=30.0)
-test("ISO T-separated format accepted", abs(_iso_score - 0.5) < 0.01,
-     f"got {_iso_score:.4f}")
+test("ISO T-separated format accepted", abs(_iso_score - 0.5) < 0.01, f"got {_iso_score:.4f}")
 
 # Shorter half-life → faster decay
 _score_short = _b._recency_decay(_old_30, half_life_days=15.0)
-test("shorter half-life gives lower score for same age", _score_short < _score_30,
-     f"hl15={_score_short:.4f} vs hl30={_score_30:.4f}")
+test(
+    "shorter half-life gives lower score for same age",
+    _score_short < _score_30,
+    f"hl15={_score_short:.4f} vs hl30={_score_30:.4f}",
+)
 
 # half_life_days <= 0 → returns 1.0 (guard)
 test("zero half_life returns 1.0", _b._recency_decay(_old_30, half_life_days=0.0) == 1.0)
@@ -314,9 +313,7 @@ print("\n⚙️  _get_briefing_half_life  (issue #89)")
 def _make_cfg_db(path, half_life=None):
     """Create a minimal DB with optional wakeup_config entry."""
     db = sqlite3.connect(str(path))
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS wakeup_config (key TEXT PRIMARY KEY, value TEXT)"
-    )
+    db.execute("CREATE TABLE IF NOT EXISTS wakeup_config (key TEXT PRIMARY KEY, value TEXT)")
     if half_life is not None:
         db.execute(
             "INSERT OR REPLACE INTO wakeup_config (key, value) VALUES (?, ?)",
@@ -328,26 +325,22 @@ def _make_cfg_db(path, half_life=None):
 
 # Default when key is absent
 _hl_db_default = _make_cfg_db(":memory:")
-test("default half-life is 30.0 when key absent",
-     _b._get_briefing_half_life(_hl_db_default) == 30.0)
+test("default half-life is 30.0 when key absent", _b._get_briefing_half_life(_hl_db_default) == 30.0)
 _hl_db_default.close()
 
 # Custom value read correctly
 _hl_db_custom = _make_cfg_db(":memory:", half_life=60.0)
-test("custom half-life read from wakeup_config",
-     _b._get_briefing_half_life(_hl_db_custom) == 60.0)
+test("custom half-life read from wakeup_config", _b._get_briefing_half_life(_hl_db_custom) == 60.0)
 _hl_db_custom.close()
 
 # Value 0 → falls back to 30.0
 _hl_db_zero = _make_cfg_db(":memory:", half_life=0)
-test("half-life=0 in config returns default 30.0",
-     _b._get_briefing_half_life(_hl_db_zero) == 30.0)
+test("half-life=0 in config returns default 30.0", _b._get_briefing_half_life(_hl_db_zero) == 30.0)
 _hl_db_zero.close()
 
 # No wakeup_config table → fails open to 30.0
 _hl_db_no_tbl = sqlite3.connect(":memory:")
-test("missing wakeup_config table returns default 30.0",
-     _b._get_briefing_half_life(_hl_db_no_tbl) == 30.0)
+test("missing wakeup_config table returns default 30.0", _b._get_briefing_half_life(_hl_db_no_tbl) == 30.0)
 _hl_db_no_tbl.close()
 
 
@@ -361,45 +354,58 @@ _old_30_str = (_now - datetime.timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
 # High-intensity fresh entry beats low-intensity fresh entry (preserves #88)
 _fresh_hi = {"intensity": 0.9, "last_seen": _now_str}
 _fresh_lo = {"intensity": 0.3, "last_seen": _now_str}
-test("#88 contract: high-intensity fresh beats low-intensity fresh",
-     _b._recency_composite_score(_fresh_hi, 30.0) > _b._recency_composite_score(_fresh_lo, 30.0))
+test(
+    "#88 contract: high-intensity fresh beats low-intensity fresh",
+    _b._recency_composite_score(_fresh_hi, 30.0) > _b._recency_composite_score(_fresh_lo, 30.0),
+)
 
 # Counterexample preserved: intensity=0.6 beats intensity=0.4 for same age
 _ce_a = {"intensity": 0.6, "last_seen": _now_str}
 _ce_b = {"intensity": 0.4, "last_seen": _now_str}
-test("#88 counterexample: intensity=0.6 > intensity=0.4 same age",
-     _b._recency_composite_score(_ce_a, 30.0) > _b._recency_composite_score(_ce_b, 30.0))
+test(
+    "#88 counterexample: intensity=0.6 > intensity=0.4 same age",
+    _b._recency_composite_score(_ce_a, 30.0) > _b._recency_composite_score(_ce_b, 30.0),
+)
 
 # Recency effect: recent low-intensity can beat old high-intensity
 _stale_hi = {"intensity": 0.8, "last_seen": _old_30_str}
 _recent_lo = {"intensity": 0.6, "last_seen": _now_str}
 # stale_hi score = 0.8 * 0.5 = 0.40; recent_lo score = 0.6 * ~1.0 = ~0.60
-test("recency: recent low-intensity can beat stale high-intensity",
-     _b._recency_composite_score(_recent_lo, 30.0) > _b._recency_composite_score(_stale_hi, 30.0))
+test(
+    "recency: recent low-intensity can beat stale high-intensity",
+    _b._recency_composite_score(_recent_lo, 30.0) > _b._recency_composite_score(_stale_hi, 30.0),
+)
 
 # Missing intensity and no confidence → defaults to 0.5
 _no_intensity = {"last_seen": _now_str}
 _score_ni = _b._recency_composite_score(_no_intensity, 30.0)
-test("missing intensity (no confidence) defaults to 0.5 in composite score",
-     abs(_score_ni - 0.5) < 0.01, f"got {_score_ni:.4f}")
+test(
+    "missing intensity (no confidence) defaults to 0.5 in composite score",
+    abs(_score_ni - 0.5) < 0.01,
+    f"got {_score_ni:.4f}",
+)
 
 # Missing intensity but confidence present → confidence used as fallback (pre-v21 ordering)
 _no_intensity_with_conf = {"confidence": 0.8, "last_seen": _now_str}
 _score_ni_conf = _b._recency_composite_score(_no_intensity_with_conf, 30.0)
-test("missing intensity: confidence used as fallback when present",
-     abs(_score_ni_conf - 0.8) < 0.01, f"got {_score_ni_conf:.4f}")
+test(
+    "missing intensity: confidence used as fallback when present",
+    abs(_score_ni_conf - 0.8) < 0.01,
+    f"got {_score_ni_conf:.4f}",
+)
 
 # Two pre-v21 rows (no intensity): higher confidence should rank higher
 _pre21_hi = {"confidence": 0.85, "last_seen": _now_str}
 _pre21_lo = {"confidence": 0.55, "last_seen": _now_str}
-test("pre-v21 rows: higher confidence ranks higher (ordering preserved)",
-     _b._recency_composite_score(_pre21_hi, 30.0) > _b._recency_composite_score(_pre21_lo, 30.0))
+test(
+    "pre-v21 rows: higher confidence ranks higher (ordering preserved)",
+    _b._recency_composite_score(_pre21_hi, 30.0) > _b._recency_composite_score(_pre21_lo, 30.0),
+)
 
 # Missing last_seen → decay=1.0, so composite = intensity * 1.0
 _no_date = {"intensity": 0.7}
 _score_nd = _b._recency_composite_score(_no_date, 30.0)
-test("missing last_seen treated as fresh (decay=1.0)",
-     abs(_score_nd - 0.7) < 0.01, f"got {_score_nd:.4f}")
+test("missing last_seen treated as fresh (decay=1.0)", abs(_score_nd - 0.7) < 0.01, f"got {_score_nd:.4f}")
 
 
 # ── 13. End-to-end ranking with wakeup_config half-life  ─────────────────────
@@ -411,7 +417,8 @@ def _make_ranking_db(path):
     """Create a test DB with intensity, valence, last_seen, wakeup_config."""
     db = sqlite3.connect(str(path))
     db.row_factory = sqlite3.Row
-    db.executescript(textwrap.dedent("""
+    db.executescript(
+        textwrap.dedent("""
         CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, name TEXT DEFAULT '');
         CREATE TABLE IF NOT EXISTS knowledge_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -441,7 +448,8 @@ def _make_ranking_db(path):
             tokenize='porter unicode61 remove_diacritics 2'
         );
         CREATE TABLE IF NOT EXISTS wakeup_config (key TEXT PRIMARY KEY, value TEXT);
-    """))
+    """)
+    )
     return db
 
 
@@ -480,7 +488,8 @@ _ins(_rdb, "recent moderate intensity mistake", "fresh bug recent issue", "mista
 _rdb.close()
 
 # Use search_knowledge_entries with this DB directly
-import sqlite3 as _sq
+import sqlite3 as _sq  # noqa: I001
+
 _test_conn = _sq.connect(str(_rnk_db_path))
 _test_conn.row_factory = _sq.Row
 _entries = _b.search_knowledge_entries(_test_conn, "bug issue", "mistake", limit=5)
@@ -488,32 +497,40 @@ _test_conn.close()
 
 # Verify both entries are returned
 _titles = [e.get("title", "") for e in _entries]
-test("ranking test: both entries returned",
-     len(_entries) >= 2,
-     f"got {len(_entries)} entries: {_titles}")
+test("ranking test: both entries returned", len(_entries) >= 2, f"got {len(_entries)} entries: {_titles}")
 
 # Verify last_seen is present in results
-test("last_seen present in FTS results", all("last_seen" in e for e in _entries),
-     f"missing in: {[e.get('title') for e in _entries if 'last_seen' not in e]}")
+test(
+    "last_seen present in FTS results",
+    all("last_seen" in e for e in _entries),
+    f"missing in: {[e.get('title') for e in _entries if 'last_seen' not in e]}",
+)
 
 # Verify intensity is present in results (from COALESCE select)
-test("intensity present in FTS results", all("intensity" in e for e in _entries),
-     f"missing in: {[e.get('title') for e in _entries if 'intensity' not in e]}")
+test(
+    "intensity present in FTS results",
+    all("intensity" in e for e in _entries),
+    f"missing in: {[e.get('title') for e in _entries if 'intensity' not in e]}",
+)
 
 # With default half-life 30 days: stale_hi score = 0.8 * 0.5^2 = 0.2, fresh_lo = 0.6 * ~1 = ~0.6
 # fresh entry should rank first after recency reranking
 if len(_entries) >= 2:
     _sorted = sorted(_entries, key=lambda e: _b._recency_composite_score(e, 30.0), reverse=True)
-    test("recency rerank: recent moderate-intensity ranks above stale high-intensity",
-         _sorted[0].get("title", "").startswith("recent"),
-         f"top title: {_sorted[0].get('title')}")
+    test(
+        "recency rerank: recent moderate-intensity ranks above stale high-intensity",
+        _sorted[0].get("title", "").startswith("recent"),
+        f"top title: {_sorted[0].get('title')}",
+    )
 
 # With very long half-life (365 days): recency barely matters, intensity wins
 if len(_entries) >= 2:
     _sorted_hl = sorted(_entries, key=lambda e: _b._recency_composite_score(e, 365.0), reverse=True)
-    test("very long half-life: high-intensity still wins (intensity-first preserved)",
-         _sorted_hl[0].get("title", "").startswith("stale"),
-         f"top title: {_sorted_hl[0].get('title')}")
+    test(
+        "very long half-life: high-intensity still wins (intensity-first preserved)",
+        _sorted_hl[0].get("title", "").startswith("stale"),
+        f"top title: {_sorted_hl[0].get('title')}",
+    )
 
 # Custom half-life via wakeup_config
 _cfg_conn = _sq.connect(str(_rnk_db_path))
@@ -523,8 +540,7 @@ _cfg_conn.execute("INSERT OR REPLACE INTO wakeup_config (key, value) VALUES ('br
 _cfg_conn.commit()
 _hl_from_cfg = _b._get_briefing_half_life(_cfg_conn)
 _cfg_conn.close()
-test("wakeup_config half-life=7 returned correctly",
-     _hl_from_cfg == 7.0, f"got {_hl_from_cfg}")
+test("wakeup_config half-life=7 returned correctly", _hl_from_cfg == 7.0, f"got {_hl_from_cfg}")
 
 try:
     _rnk_tmpdir.cleanup()
@@ -562,33 +578,48 @@ _gb_fresh = _gb_now.strftime("%Y-%m-%d %H:%M:%S")
 #   sem BUG    : intensity missing, conf=0.65 → composite ≈ 0.65  (loses — ordering FLIPS)
 
 _gb_fts_same_recency = {
-    "id": 10, "title": "gb fts same recency", "content": "c",
-    "category": "mistake", "confidence": 0.8,
-    "intensity": 0.75, "last_seen": _gb_fresh,
+    "id": 10,
+    "title": "gb fts same recency",
+    "content": "c",
+    "category": "mistake",
+    "confidence": 0.8,
+    "intensity": 0.75,
+    "last_seen": _gb_fresh,
 }
 # post-fix semantic result: intensity present (real value 0.85 > FTS 0.75 → wins)
 _gb_sem_fresh_fix = {
-    "id": 20, "title": "gb sem fresh fix", "content": "c",
-    "category": "mistake", "confidence": 0.7,
-    "intensity": 0.85, "last_seen": _gb_fresh,
+    "id": 20,
+    "title": "gb sem fresh fix",
+    "content": "c",
+    "category": "mistake",
+    "confidence": 0.7,
+    "intensity": 0.85,
+    "last_seen": _gb_fresh,
 }
 # pre-fix (bug) semantic result: intensity absent (confidence fallback 0.65 < FTS 0.75 → loses)
 _gb_sem_fresh_bug = {
-    "id": 20, "title": "gb sem fresh fix", "content": "c",
-    "category": "mistake", "confidence": 0.65,
-    "last_seen": _gb_fresh,           # no 'intensity' key — the old bug
+    "id": 20,
+    "title": "gb sem fresh fix",
+    "content": "c",
+    "category": "mistake",
+    "confidence": 0.65,
+    "last_seen": _gb_fresh,  # no 'intensity' key — the old bug
 }
 
 # Verify pre-conditions: the ordering must flip between fix and bug.
-_score_fts_same   = _b._recency_composite_score(_gb_fts_same_recency, 30.0)
-_score_sem_fix    = _b._recency_composite_score(_gb_sem_fresh_fix, 30.0)
-_score_sem_bug    = _b._recency_composite_score(_gb_sem_fresh_bug, 30.0)
-test("pre-conditions: fix sem score > FTS score (semantic wins when intensity present)",
-     _score_sem_fix > _score_fts_same,
-     f"sem_fix={_score_sem_fix:.3f} fts={_score_fts_same:.3f}")
-test("pre-conditions: bug sem score < FTS score (semantic loses — confidence fallback 0.65 < FTS 0.75)",
-     _score_sem_bug < _score_fts_same,
-     f"sem_bug={_score_sem_bug:.3f} fts={_score_fts_same:.3f}")
+_score_fts_same = _b._recency_composite_score(_gb_fts_same_recency, 30.0)
+_score_sem_fix = _b._recency_composite_score(_gb_sem_fresh_fix, 30.0)
+_score_sem_bug = _b._recency_composite_score(_gb_sem_fresh_bug, 30.0)
+test(
+    "pre-conditions: fix sem score > FTS score (semantic wins when intensity present)",
+    _score_sem_fix > _score_fts_same,
+    f"sem_fix={_score_sem_fix:.3f} fts={_score_fts_same:.3f}",
+)
+test(
+    "pre-conditions: bug sem score < FTS score (semantic loses — confidence fallback 0.65 < FTS 0.75)",
+    _score_sem_bug < _score_fts_same,
+    f"sem_bug={_score_sem_bug:.3f} fts={_score_fts_same:.3f}",
+)
 
 
 def _fresh_gb_db():
@@ -604,37 +635,42 @@ def _fresh_gb_db():
 
 def _run_gb_with_mocks(fts_entries, sem_entries):
     """Call generate_briefing with mocked FTS+semantic and return parsed JSON."""
-    with _mock.patch.object(_b, "get_db", side_effect=_fresh_gb_db), \
-         _mock.patch.object(_b, "search_knowledge_entries",
-                            return_value=fts_entries), \
-         _mock.patch.object(_b, "search_semantic",
-                            return_value=sem_entries), \
-         _mock.patch.object(_b, "search_past_work", return_value=[]), \
-         _mock.patch.object(_b, "blast_radius", return_value=[]), \
-         _mock.patch.object(_b, "_upsert_entry_recall_stats", return_value=None), \
-         _mock.patch.object(_b, "_detect_session_id", return_value=""):
+    with (
+        _mock.patch.object(_b, "get_db", side_effect=_fresh_gb_db),
+        _mock.patch.object(_b, "search_knowledge_entries", return_value=fts_entries),
+        _mock.patch.object(_b, "search_semantic", return_value=sem_entries),
+        _mock.patch.object(_b, "search_past_work", return_value=[]),
+        _mock.patch.object(_b, "blast_radius", return_value=[]),
+        _mock.patch.object(_b, "_upsert_entry_recall_stats", return_value=None),
+        _mock.patch.object(_b, "_detect_session_id", return_value=""),
+    ):
         return _b.generate_briefing(
-            "test query", limit=2, fmt="json", min_confidence=0.0,
-            mode="mistake", infer_auto_mode=False,
+            "test query",
+            limit=2,
+            fmt="json",
+            min_confidence=0.0,
+            mode="mistake",
+            infer_auto_mode=False,
         )
 
 
-import json as _json
+import json as _json  # noqa: I001
+
 
 def _parse_entries(out):
     data = _json.loads(out)
-    return (
-        data.get("sections", {}).get("mistake", {}).get("entries", [])
-        or data.get("entries", {}).get("mistake", [])
-    )
+    return data.get("sections", {}).get("mistake", {}).get("entries", []) or data.get("entries", {}).get("mistake", [])
+
 
 # ── Fix scenario: semantic entry carries its real intensity (0.6 > 0.55) → wins ──
 try:
     _gb_out_fix = _run_gb_with_mocks([_gb_fts_same_recency], [_gb_sem_fresh_fix])
     _gb_titles_fix = [e.get("title", "") for e in _parse_entries(_gb_out_fix)]
-    test("generate_briefing fix-path: semantic entry ranks first when intensity is present",
-         bool(_gb_titles_fix) and _gb_titles_fix[0] == "gb sem fresh fix",
-         f"order={_gb_titles_fix}")
+    test(
+        "generate_briefing fix-path: semantic entry ranks first when intensity is present",
+        bool(_gb_titles_fix) and _gb_titles_fix[0] == "gb sem fresh fix",
+        f"order={_gb_titles_fix}",
+    )
 except Exception as _e:
     test("generate_briefing fix-path: ran without exception", False, str(_e))
 
@@ -645,9 +681,11 @@ try:
     _gb_out_bug = _run_gb_with_mocks([_gb_fts_same_recency], [_gb_sem_fresh_bug])
     _gb_titles_bug = [e.get("title", "") for e in _parse_entries(_gb_out_bug)]
     # With missing intensity the confidence fallback (0.65) < FTS intensity (0.75) → FTS ranks first, sem second.
-    test("generate_briefing bug-path: ordering flips — FTS ranks first when semantic intensity is missing",
-         bool(_gb_titles_bug) and _gb_titles_bug[0] == "gb fts same recency",
-         f"order={_gb_titles_bug}")
+    test(
+        "generate_briefing bug-path: ordering flips — FTS ranks first when semantic intensity is missing",
+        bool(_gb_titles_bug) and _gb_titles_bug[0] == "gb fts same recency",
+        f"order={_gb_titles_bug}",
+    )
 except Exception as _e:
     test("generate_briefing bug-path: ran without exception", False, str(_e))
 
@@ -717,9 +755,7 @@ def _build_mock_embed_module(entry_id_to_return: int):
     _mod.ensure_embedding_tables = lambda db: None
     _mod.resolve_provider = lambda config: ("openai", {"api_key": "test", "model": "ada"})
     _mod.call_embedding_api = lambda texts, pc: [[0.1, 0.9] for _ in texts]
-    _mod.vector_search = (
-        lambda db, qv, source_type, limit: [("knowledge", entry_id_to_return, 0.95)]
-    )
+    _mod.vector_search = lambda db, qv, source_type, limit: [("knowledge", entry_id_to_return, 0.95)]
     _mod.search_tfidf = lambda q, model, limit: []
     return _mod
 
@@ -729,17 +765,20 @@ sys.modules["embed"] = _build_mock_embed_module(_sem_entry_id)
 
 try:
     _sem_results = _b.search_semantic(_sem_db, "test query", "mistake", limit=5)
-    test("search_semantic: returns at least one result via real vector path",
-         len(_sem_results) >= 1, f"got {len(_sem_results)} results")
+    test(
+        "search_semantic: returns at least one result via real vector path",
+        len(_sem_results) >= 1,
+        f"got {len(_sem_results)} results",
+    )
     if _sem_results:
         _sr = _sem_results[0]
-        test("search_semantic: result has intensity field from DB",
-             "intensity" in _sr, f"keys: {list(_sr.keys())}")
-        test("search_semantic: intensity value matches stored DB value (0.85)",
-             abs(float(_sr.get("intensity", -1)) - 0.85) < 0.01,
-             f"got intensity={_sr.get('intensity')}")
-        test("search_semantic: result has last_seen field",
-             "last_seen" in _sr, f"keys: {list(_sr.keys())}")
+        test("search_semantic: result has intensity field from DB", "intensity" in _sr, f"keys: {list(_sr.keys())}")
+        test(
+            "search_semantic: intensity value matches stored DB value (0.85)",
+            abs(float(_sr.get("intensity", -1)) - 0.85) < 0.01,
+            f"got intensity={_sr.get('intensity')}",
+        )
+        test("search_semantic: result has last_seen field", "last_seen" in _sr, f"keys: {list(_sr.keys())}")
 except Exception as _e:
     test("search_semantic real path: ran without exception", False, str(_e))
 finally:
@@ -753,9 +792,119 @@ finally:
         pass
 
 
+# ── Skill usage briefing helpers ─────────────────────────────────────────────
+try:
+    import sqlite3 as _sqb
+
+    _collect_skill = getattr(_b, "_collect_skill_usage_for_briefing", None)
+    _format_skill = getattr(_b, "_format_skill_usage_section", None)
+
+    test("briefing has _collect_skill_usage_for_briefing", _collect_skill is not None)
+    test("briefing has _format_skill_usage_section", _format_skill is not None)
+
+    if _collect_skill and _format_skill:
+        import tempfile as _tmp_sb
+
+        _sb_tmpdir = _tmp_sb.mkdtemp()
+
+        # non-existent DB → empty list (fail-open)
+        _nonexistent = Path(_sb_tmpdir) / "nonexistent-skill-metrics.db"
+        _result_empty = _collect_skill(db_path=_nonexistent)
+        test(
+            "skill-briefing: non-existent DB returns empty list",
+            isinstance(_result_empty, list) and len(_result_empty) == 0,
+        )
+
+        # DB without the table → empty list (fail-open)
+        _no_tbl_db = Path(_sb_tmpdir) / "no-skill-tbl.db"
+        _conn_no_tbl = _sqb.connect(str(_no_tbl_db))
+        _conn_no_tbl.close()
+        _result_no_tbl = _collect_skill(db_path=_no_tbl_db)
+        test(
+            "skill-briefing: DB without skill_usage_events returns empty list",
+            isinstance(_result_no_tbl, list) and len(_result_no_tbl) == 0,
+        )
+
+        # DB with skill_usage_events → returns structured entries
+        _skill_db = Path(_sb_tmpdir) / "skill-usage-briefing.db"
+        _conn_sk = _sqb.connect(str(_skill_db))
+        _conn_sk.executescript(
+            """
+            CREATE TABLE skill_usage_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_name TEXT NOT NULL,
+                event      TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                timestamp  TEXT NOT NULL
+            );
+            """
+        )
+        for _skill, _evt in [
+            ("karpathy-guidelines", "triggered"),
+            ("karpathy-guidelines", "loaded"),
+            ("karpathy-guidelines", "triggered"),
+            ("karpathy-guidelines", "loaded"),
+            ("frontend-dev", "triggered"),
+            ("frontend-dev", "skipped"),
+        ]:
+            _conn_sk.execute(
+                "INSERT INTO skill_usage_events (skill_name, event, session_id, timestamp) VALUES (?, ?, ?, ?)",
+                (_skill, _evt, "sess-001", "2026-05-14T00:00:00Z"),
+            )
+        _conn_sk.commit()
+        _conn_sk.close()
+
+        _entries = _collect_skill(db_path=_skill_db)
+        test(
+            "skill-briefing: populated DB returns list of dicts",
+            isinstance(_entries, list) and len(_entries) > 0,
+            str(_entries),
+        )
+        _kg = next((e for e in _entries if e.get("skill_name") == "karpathy-guidelines"), None)
+        test(
+            "skill-briefing: karpathy-guidelines triggered==2",
+            _kg is not None and _kg.get("triggered") == 2,
+            str(_kg),
+        )
+        test(
+            "skill-briefing: karpathy-guidelines loaded==2",
+            _kg is not None and _kg.get("loaded") == 2,
+            str(_kg),
+        )
+        _fd = next((e for e in _entries if e.get("skill_name") == "frontend-dev"), None)
+        test(
+            "skill-briefing: frontend-dev skipped==1",
+            _fd is not None and _fd.get("skipped") == 1,
+            str(_fd),
+        )
+
+        # _format_skill_usage_section([]) → empty string
+        test(
+            "skill-briefing: format empty entries → empty string",
+            _format_skill([]) == "",
+        )
+
+        # _format_skill_usage_section with data → non-empty string containing skill names
+        _section = _format_skill(_entries)
+        test(
+            "skill-briefing: format with entries → non-empty string",
+            isinstance(_section, str) and len(_section) > 0,
+            _section[:200],
+        )
+        test(
+            "skill-briefing: format includes karpathy-guidelines",
+            "karpathy" in _section,
+            _section[:200],
+        )
+
+    test("skill-briefing tests ran without exception", True)
+except Exception as _e_sk:
+    test("skill-briefing tests ran without exception", False, str(_e_sk))
+
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
-print(f"\n{'='*50}")
+print(f"\n{'=' * 50}")
 print(f"Results: {PASS} passed, {FAIL} failed")
 
 sys.exit(1 if FAIL else 0)

@@ -107,12 +107,9 @@ def _make_metrics_db(db_path: Path, *, with_data: bool = False) -> None:
             "(tentacle_name, tentacle_id, outcome_status, recorded_at, "
             "verification_passed, verification_failed, todo_done, todo_total, summary) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("test-tentacle", "uuid-1", "completed", "2026-04-28T00:00:00+00:00",
-             2, 0, 3, 3, "All done"),
+            ("test-tentacle", "uuid-1", "completed", "2026-04-28T00:00:00+00:00", 2, 0, 3, 3, "All done"),
         )
-        db.execute(
-            "INSERT INTO tentacle_outcome_skills (outcome_id, skill_name) VALUES (1, 'karpathy-guidelines')"
-        )
+        db.execute("INSERT INTO tentacle_outcome_skills (outcome_id, skill_name) VALUES (1, 'karpathy-guidelines')")
         db.execute(
             "INSERT INTO tentacle_verifications "
             "(outcome_id, tentacle_name, tentacle_id, label, command, cwd, "
@@ -163,9 +160,10 @@ status_pop = skill_metrics.collect_status()
 test("populated: total_outcomes == 1", status_pop["total_outcomes"] == 1)
 test("populated: outcomes_complete == 1", status_pop["outcomes_complete"] == 1)
 test("populated: outcomes_with_skills == 1", status_pop["outcomes_with_skills"] == 1)
-test("populated: skill_usage has karpathy-guidelines", any(
-    e["skill"] == "karpathy-guidelines" for e in status_pop["skill_usage"]
-))
+test(
+    "populated: skill_usage has karpathy-guidelines",
+    any(e["skill"] == "karpathy-guidelines" for e in status_pop["skill_usage"]),
+)
 test("populated: total_verifications == 1", status_pop["total_verifications"] == 1)
 test("populated: verifications_passed == 1", status_pop["verifications_passed"] == 1)
 test("populated: recent_outcomes non-empty", len(status_pop["recent_outcomes"]) > 0)
@@ -188,19 +186,21 @@ fake_octogent = ARTIFACT_DIR / ".octogent" / "tentacles"
 fake_tent_dir = fake_octogent / "my-tentacle"
 fake_tent_dir.mkdir(parents=True, exist_ok=True)
 (fake_tent_dir / "meta.json").write_text(
-    json.dumps({
-        "name": "my-tentacle",
-        "tentacle_id": "abc-123",
-        "status": "idle",
-        "description": "Test tentacle",
-        "created_at": "2026-04-28T00:00:00+00:00",
-        "scope": ["foo.py"],
-        "worktree": {"prepared": True, "path": "/fake/worktree/path"},
-        "verifications": [
-            {"label": "tests", "exit_code": 0},
-            {"label": "lint", "exit_code": 1},
-        ],
-    }),
+    json.dumps(
+        {
+            "name": "my-tentacle",
+            "tentacle_id": "abc-123",
+            "status": "idle",
+            "description": "Test tentacle",
+            "created_at": "2026-04-28T00:00:00+00:00",
+            "scope": ["foo.py"],
+            "worktree": {"prepared": True, "path": "/fake/worktree/path"},
+            "verifications": [
+                {"label": "tests", "exit_code": 0},
+                {"label": "lint", "exit_code": 1},
+            ],
+        }
+    ),
     encoding="utf-8",
 )
 tentacle_status.OCTOGENT_DIR = fake_octogent
@@ -208,17 +208,19 @@ tentacle_status.OCTOGENT_DIR = fake_octogent
 # Build a fake marker
 fake_marker = ARTIFACT_DIR / "dispatched-subagent-active"
 fake_marker.write_text(
-    json.dumps({
-        "name": "dispatched-subagent-active",
-        "ts": "1234567890",
-        "active_tentacles": [
-            {"name": "my-tentacle", "ts": "1234567890", "git_root": "/repo", "tentacle_id": "abc-123"}
-        ],
-        "dispatch_mode": "prompt",
-        "written_at": "2026-04-28T00:00:00+00:00",
-        "ttl_seconds": 14400,
-        "sig": "abc123",
-    }),
+    json.dumps(
+        {
+            "name": "dispatched-subagent-active",
+            "ts": "1234567890",
+            "active_tentacles": [
+                {"name": "my-tentacle", "ts": "1234567890", "git_root": "/repo", "tentacle_id": "abc-123"}
+            ],
+            "dispatch_mode": "prompt",
+            "written_at": "2026-04-28T00:00:00+00:00",
+            "ttl_seconds": 14400,
+            "sig": "abc123",
+        }
+    ),
     encoding="utf-8",
 )
 tentacle_status.MARKER_PATH = fake_marker
@@ -230,14 +232,19 @@ test("tentacle-status: sig_present True", ts_status["marker"]["sig_present"] is 
 test("tentacle-status: active_tentacles count == 1", len(ts_status["marker"]["active_tentacles"]) == 1)
 test("tentacle-status: total_tentacles == 1", ts_status["summary"]["total_tentacles"] == 1)
 test("tentacle-status: marker_active == 1", ts_status["summary"]["marker_active"] == 1)
-test("tentacle-status: with_worktree derived from nested worktree meta",
-     ts_status["summary"]["with_worktree"] == 1)
-test("tentacle-status: verification_total derived from verifications list",
-     ts_status["tentacles"][0]["verification_total"] == 2)
-test("tentacle-status: verification_passed derived from verifications list",
-     ts_status["tentacles"][0]["verification_passed"] == 1)
-test("tentacle-status: verification_failed derived from verifications list",
-     ts_status["tentacles"][0]["verification_failed"] == 1)
+test("tentacle-status: with_worktree derived from nested worktree meta", ts_status["summary"]["with_worktree"] == 1)
+test(
+    "tentacle-status: verification_total derived from verifications list",
+    ts_status["tentacles"][0]["verification_total"] == 2,
+)
+test(
+    "tentacle-status: verification_passed derived from verifications list",
+    ts_status["tentacles"][0]["verification_passed"] == 1,
+)
+test(
+    "tentacle-status: verification_failed derived from verifications list",
+    ts_status["tentacles"][0]["verification_failed"] == 1,
+)
 
 health = tentacle_status.runtime_health(ts_status)
 test("tentacle-status: health ok with valid setup", health["ok"] is True)
@@ -501,16 +508,14 @@ db_patch.execute(
     "(skill_path, patched_at, old_text, new_text, occurrences_replaced, "
     "replace_all, dry_run, validation_passed, validation_errors, validation_warnings) "
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    ("/skills/test-skill/SKILL.md", "2026-05-01T00:00:00+00:00",
-     "old text", "new text", 1, 0, 0, 1, 0, 0),
+    ("/skills/test-skill/SKILL.md", "2026-05-01T00:00:00+00:00", "old text", "new text", 1, 0, 0, 1, 0, 0),
 )
 db_patch.execute(
     "INSERT INTO skill_patch_history "
     "(skill_path, patched_at, old_text, new_text, occurrences_replaced, "
     "replace_all, dry_run, validation_passed, validation_errors, validation_warnings) "
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    ("/skills/other-skill/SKILL.md", "2026-05-02T00:00:00+00:00",
-     "another old", "another new", 3, 1, 0, 1, 0, 2),
+    ("/skills/other-skill/SKILL.md", "2026-05-02T00:00:00+00:00", "another old", "another new", 3, 1, 0, 1, 0, 2),
 )
 db_patch.commit()
 db_patch.close()
@@ -574,6 +579,132 @@ test(
     "no-patch-table: collect_status still has total_outcomes",
     status_no_patch.get("total_outcomes", 0) > 0,
     f"got {status_no_patch.get('total_outcomes')}",
+)
+
+# ---------------------------------------------------------------------------
+print("\n📊 skill-metrics.py — event-level skill_usage_events table")
+
+event_db_path = ARTIFACT_DIR / "event-skill-metrics.db"
+db_event = sqlite3.connect(str(event_db_path))
+db_event.executescript(
+    """
+    CREATE TABLE IF NOT EXISTS tentacle_outcomes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tentacle_name TEXT NOT NULL,
+        tentacle_id TEXT,
+        outcome_status TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        worktree_used INTEGER NOT NULL DEFAULT 0,
+        verification_total INTEGER NOT NULL DEFAULT 0,
+        verification_passed INTEGER NOT NULL DEFAULT 0,
+        verification_failed INTEGER NOT NULL DEFAULT 0,
+        todo_total INTEGER NOT NULL DEFAULT 0,
+        todo_done INTEGER NOT NULL DEFAULT 0,
+        learned INTEGER NOT NULL DEFAULT 0,
+        duration_seconds REAL,
+        summary TEXT
+    );
+    CREATE TABLE IF NOT EXISTS tentacle_outcome_skills (
+        outcome_id INTEGER NOT NULL,
+        skill_name TEXT NOT NULL,
+        PRIMARY KEY (outcome_id, skill_name)
+    );
+    CREATE TABLE IF NOT EXISTS tentacle_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        outcome_id INTEGER,
+        tentacle_name TEXT NOT NULL,
+        tentacle_id TEXT,
+        label TEXT NOT NULL,
+        command TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        exit_code INTEGER NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT NOT NULL,
+        duration_seconds REAL NOT NULL,
+        log_path TEXT
+    );
+    CREATE TABLE IF NOT EXISTS skill_usage_events (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        skill_name TEXT NOT NULL,
+        event      TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        timestamp  TEXT NOT NULL
+    );
+    """
+)
+# Insert event rows for two skills
+for skill, evt in [
+    ("karpathy-guidelines", "triggered"),
+    ("karpathy-guidelines", "loaded"),
+    ("karpathy-guidelines", "triggered"),
+    ("karpathy-guidelines", "loaded"),
+    ("frontend-dev", "triggered"),
+    ("frontend-dev", "skipped"),
+]:
+    db_event.execute(
+        "INSERT INTO skill_usage_events (skill_name, event, session_id, timestamp) VALUES (?, ?, ?, ?)",
+        (skill, evt, "sess-test-1", "2026-05-14T00:00:00Z"),
+    )
+db_event.commit()
+db_event.close()
+
+skill_metrics_event = load_module("skill_metrics_event", "skill-metrics.py")
+skill_metrics_event.METRICS_DB_PATH = event_db_path
+status_event = skill_metrics_event.collect_status()
+
+test(
+    "event-table: event_skill_usage is a list",
+    isinstance(status_event.get("event_skill_usage"), list),
+)
+test(
+    "event-table: total_skill_events == 6",
+    status_event.get("total_skill_events") == 6,
+    f"got {status_event.get('total_skill_events')}",
+)
+test(
+    "event-table: karpathy-guidelines triggered==2",
+    any(
+        e["skill"] == "karpathy-guidelines" and e["event"] == "triggered" and e["count"] == 2
+        for e in status_event.get("event_skill_usage", [])
+    ),
+    str([e for e in status_event.get("event_skill_usage", [])]),
+)
+test(
+    "event-table: frontend-dev skipped==1",
+    any(
+        e["skill"] == "frontend-dev" and e["event"] == "skipped" and e["count"] == 1
+        for e in status_event.get("event_skill_usage", [])
+    ),
+    str([e for e in status_event.get("event_skill_usage", [])]),
+)
+
+formatted_event = skill_metrics_event.format_status(status_event)
+test(
+    "event-table: format_status includes 'Event-level' section",
+    "Event-level" in formatted_event or "event" in formatted_event.lower(),
+    formatted_event[:300],
+)
+test(
+    "event-table: format_status includes karpathy-guidelines in event section",
+    "karpathy-guidelines" in formatted_event,
+    formatted_event[:500],
+)
+
+# Collect_status on DB without skill_usage_events still works
+no_event_db = ARTIFACT_DIR / "no-event-skill-metrics.db"
+_make_metrics_db(no_event_db, with_data=True)
+skill_metrics_no_event = load_module("skill_metrics_no_event", "skill-metrics.py")
+skill_metrics_no_event.METRICS_DB_PATH = no_event_db
+status_no_event = skill_metrics_no_event.collect_status()
+test(
+    "no-event-table: event_skill_usage defaults to empty list",
+    status_no_event.get("event_skill_usage", []) == [],
+    f"got {status_no_event.get('event_skill_usage')}",
+)
+test(
+    "no-event-table: total_skill_events defaults to 0",
+    status_no_event.get("total_skill_events", 0) == 0,
+    f"got {status_no_event.get('total_skill_events')}",
 )
 
 # ---------------------------------------------------------------------------
