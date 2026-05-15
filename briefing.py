@@ -3083,7 +3083,9 @@ def main():
             # Mirrors the main-path degradation strategy so --task is not a second-class path.
             for reduced_limit in range(max(1, limit - 1), 0, -1):
                 if task_fmt == "json":
-                    output, task_meta = generate_task_briefing(task_id, limit=reduced_limit, fmt=task_fmt, with_meta=True)
+                    output, task_meta = generate_task_briefing(
+                        task_id, limit=reduced_limit, fmt=task_fmt, with_meta=True
+                    )
                 else:
                     output = generate_task_briefing(task_id, limit=reduced_limit, fmt=task_fmt)
                 if len(output) <= budget:
@@ -3174,7 +3176,14 @@ def main():
         # position, so query terms matching those values are preserved.
         consumed_value_indices = set()
         for i, a in enumerate(args):
-            if a in ("--format", "--limit", "--min-confidence", "--budget", "--mode", "--available-tokens") and i + 1 < len(args):
+            if a in (
+                "--format",
+                "--limit",
+                "--min-confidence",
+                "--budget",
+                "--mode",
+                "--available-tokens",
+            ) and i + 1 < len(args):
                 consumed_value_indices.add(i + 1)
         query_parts = [
             a
