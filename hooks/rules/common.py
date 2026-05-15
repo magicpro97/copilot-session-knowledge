@@ -12,7 +12,11 @@ MARKERS_DIR = Path.home() / ".copilot" / "markers"
 # and developer worktrees.  Only accepted when the path exists (parity with Rust);
 # otherwise falls back to the standard installed-tools path.
 _sk_tools_override = Path(os.environ["SK_TOOLS_DIR"]) if os.environ.get("SK_TOOLS_DIR") else None
-TOOLS_DIR = _sk_tools_override if (_sk_tools_override is not None and _sk_tools_override.is_dir()) else Path.home() / ".copilot" / "tools"
+TOOLS_DIR = (
+    _sk_tools_override
+    if (_sk_tools_override is not None and _sk_tools_override.is_dir())
+    else Path.home() / ".copilot" / "tools"
+)
 
 SAFE_PATH_PREFIXES = ("/tmp/", "/var/", "/dev/", "/proc/")
 

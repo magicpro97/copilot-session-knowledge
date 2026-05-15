@@ -166,9 +166,9 @@ def _parse_skill_frontmatter(text: str) -> dict:
             line = fm_lines[i]
             stripped = line.strip()
             if stripped.startswith("name:"):
-                name = stripped[len("name:"):].strip().strip('"').strip("'")
+                name = stripped[len("name:") :].strip().strip('"').strip("'")
             elif stripped.startswith("description:"):
-                rest = stripped[len("description:"):].strip()
+                rest = stripped[len("description:") :].strip()
                 if rest in (">", "|", ">-", "|-", ">+", "|+"):
                     # Folded/literal block scalar — collect indented continuation lines.
                     desc_parts = []
