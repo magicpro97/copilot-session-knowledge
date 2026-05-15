@@ -5683,8 +5683,368 @@ class TestHandoffContract(unittest.TestCase):
             ["src/partial.py", "src/shared.py", "src/final.py"],
         )
 
+    # -- Rich 8-section helpers --
 
-# ---------------------------------------------------------------------------
+    def test_parse_bullet_list_empty(self):
+        self.assertEqual(T._parse_bullet_list(""), [])
+        self.assertEqual(T._parse_bullet_list("None"), [])
+
+    def test_parse_bullet_list_basic(self):
+        text = "- item one\n- item two\n* item three\n"
+        self.assertEqual(T._parse_bullet_list(text), ["item one", "item two", "item three"])
+
+    def test_parse_files_read_no_range(self):
+        text = "- src/foo.py\n- tests/bar.py\n"
+        result = T._parse_files_read(text)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0], {"path": "src/foo.py", "lines": None})
+        self.assertEqual(result[1], {"path": "tests/bar.py", "lines": None})
+
+    def test_parse_files_read_with_range(self):
+        text = "- src/foo.py (lines 1-50)\n- tests/bar.py (line 42)\n"
+        result = T._parse_files_read(text)
+        self.assertEqual(result[0], {"path": "src/foo.py", "lines": "1-50"})
+        self.assertEqual(result[1], {"path": "tests/bar.py", "lines": "42"})
+
+    def test_parse_files_read_mixed(self):
+        text = "- src/foo.py (lines 1-100)\n- src/bar.py\n"
+        result = T._parse_files_read(text)
+        self.assertEqual(result[0]["lines"], "1-100")
+        self.assertIsNone(result[1]["lines"])
+
+    def test_parse_rich_handoff_sections_returns_empty_for_legacy(self):
+        """Legacy handoff without ### sections returns {}."""
+        content = "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nAll done.\nSTATUS: DONE\n"
+        result = T._parse_rich_handoff_sections(content)
+        self.assertEqual(result, {})
+
+    def test_parse_rich_handoff_sections_basic(self):
+        content = (
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\n"
+            "### SUMMARY\nAll good.\n\n"
+            "### DECISION POINTS\n- Used X\n\n"
+            "### UNRESOLVED BLOCKERS\nNone\n\n"
+            "### FILES READ\n- src/foo.py (lines 1-10)\n\n"
+            "### FILES MODIFIED\n- src/bar.py\n\n"
+            "### NEXT AGENT INSTRUCTIONS\nRun tests.\n\n"
+            "### OUTPUT\nOutput text here.\n\n"
+            "STATUS: DONE\n"
+        )
+        result = T._parse_rich_handoff_sections(content)
+        self.assertEqual(result["summary"], "All good.")
+        self.assertEqual(result["decision_points"], ["Used X"])
+        self.assertEqual(result["unresolved_blockers"], [])
+        self.assertEqual(result["files_read"], [{"path": "src/foo.py", "lines": "1-10"}])
+        self.assertEqual(result["files_modified"], ["src/bar.py"])
+        self.assertEqual(result["next_agent_instructions"], "Run tests.")
+        self.assertEqual(result["output"], "Output text here.")
+
+    def test_parse_rich_handoff_sections_uses_most_recent_section(self):
+        """When multiple entries exist the most-recent entry's rich sections win."""
+        content = (
+            "# Handoff Notes\n\n## [2024-01-01 11:00 UTC]\n\n"
+            "### SUMMARY\nOld summary.\n\n"
+            "STATUS: BLOCKED\n"
+            "\n## [2024-01-01 12:00 UTC]\n\n"
+            "### SUMMARY\nNew summary.\n\n"
+            "STATUS: DONE\n"
+        )
+        result = T._parse_rich_handoff_sections(content)
+        self.assertEqual(result["summary"], "New summary.")
+
+    def test_parse_rich_handoff_sections_legacy_entry_followed_by_rich(self):
+        """Legacy entry then rich entry → only rich entry's sections returned."""
+        content = (
+            "# Handoff Notes\n\n## [2024-01-01 11:00 UTC]\n\nLegacy prose.\nSTATUS: BLOCKED\n"
+            "\n## [2024-01-01 12:00 UTC]\n\n### SUMMARY\nDone now.\n\nSTATUS: DONE\n"
+        )
+        result = T._parse_rich_handoff_sections(content)
+        self.assertEqual(result["summary"], "Done now.")
+
+    def test_parse_rich_handoff_sections_stale_cleared_by_legacy_latest(self):
+        """Regression: rich older entry + legacy latest entry must return {} (not stale data)."""
+        content = (
+            "# Handoff Notes\n\n## [2024-01-01 11:00 UTC]\n\n"
+            "### SUMMARY\nOld rich summary.\n\n"
+            "### DECISION POINTS\n- Old decision\n\n"
+            "STATUS: BLOCKED\n"
+            "\n## [2024-01-01 12:00 UTC]\n\nNew legacy prose only.\nSTATUS: DONE\n"
+        )
+        result = T._parse_rich_handoff_sections(content)
+        self.assertEqual(result, {}, "Latest legacy entry must clear stale rich sections")
+
+    def test_parse_rich_handoff_sections_preserves_status_like_lines_inside_sections(self):
+        content = (
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\n"
+            "### SUMMARY\nAll good.\n\n"
+            "### DECISION POINTS\n- Used X\n\n"
+            "### UNRESOLVED BLOCKERS\nNone\n\n"
+            "### FILES READ\n- src/foo.py (lines 1-10)\n\n"
+            "### FILES MODIFIED\n- src/bar.py\n\n"
+            "### NEXT AGENT INSTRUCTIONS\nRun tests.\n\nChanged: approach to use Y instead.\nThen deploy.\n\n"
+            "### OUTPUT\nExit code: 0\n\nSTATUS: 4 tests passed\nAll green.\n\n"
+            "STATUS: DONE\nChanged: src/bar.py\n"
+        )
+        result = T._parse_rich_handoff_sections(content)
+        self.assertEqual(
+            result["next_agent_instructions"],
+            "Run tests.\n\nChanged: approach to use Y instead.\nThen deploy.",
+        )
+        self.assertEqual(result["output"], "Exit code: 0\n\nSTATUS: 4 tests passed\nAll green.")
+
+    # -- cmd_handoff with rich sections --
+
+    def test_handoff_rich_sections_written_to_file(self):
+        make_tentacle("ho-rich-write", self.base)
+        args = fake_args(
+            name="ho-rich-write",
+            message="All done",
+            status="DONE",
+            changed_file=["src/a.py"],
+            learn=False,
+            summary="Rich summary",
+            decision=["Chose X"],
+            blocker=["Waiting on Y"],
+            file_read=["src/a.py (lines 1-20)"],
+            next_instructions="Run tests next.",
+            output_text="Tests passed.",
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-rich-write")
+        self.assertIn("### SUMMARY", content)
+        self.assertIn("Rich summary", content)
+        self.assertIn("### DECISION POINTS", content)
+        self.assertIn("- Chose X", content)
+        self.assertIn("### UNRESOLVED BLOCKERS", content)
+        self.assertIn("- Waiting on Y", content)
+        self.assertIn("### FILES READ", content)
+        self.assertIn("- src/a.py (lines 1-20)", content)
+        self.assertIn("### FILES MODIFIED", content)
+        self.assertIn("- src/a.py", content)
+        self.assertIn("### NEXT AGENT INSTRUCTIONS", content)
+        self.assertIn("Run tests next.", content)
+        self.assertIn("### OUTPUT", content)
+        self.assertIn("Tests passed.", content)
+        self.assertIn("### STATUS", content)
+        self.assertIn("DONE", content)
+        # Legacy lines must still be present for backward compat
+        self.assertIn("STATUS: DONE", content)
+        self.assertIn("Changed: src/a.py", content)
+
+    def test_handoff_rich_summary_round_trips_without_message_bleed(self):
+        """When --summary is supplied, the positional message must not be parsed into SUMMARY."""
+        make_tentacle("ho-rich-summary-roundtrip", self.base)
+        args = fake_args(
+            name="ho-rich-summary-roundtrip",
+            message="Original message preamble",
+            status="DONE",
+            changed_file=["src/a.py"],
+            learn=False,
+            summary="Structured summary",
+            decision=["Chose X"],
+            blocker=[],
+            file_read=["src/a.py (lines 1-20)"],
+            next_instructions="None",
+            output_text="Tests passed.",
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-rich-summary-roundtrip")
+        parsed = T._parse_rich_handoff_sections(content)
+        self.assertEqual(parsed["summary"], "Structured summary")
+
+    def test_handoff_rich_summary_literal_none_is_preserved(self):
+        """SUMMARY is required, so a literal 'None' summary stays as text."""
+        make_tentacle("ho-rich-summary-literal-none", self.base)
+        args = fake_args(
+            name="ho-rich-summary-literal-none",
+            message="Original message preamble",
+            status="DONE",
+            changed_file=["src/a.py"],
+            learn=False,
+            summary="None",
+            decision=["Chose X"],
+            blocker=[],
+            file_read=["src/a.py (lines 1-20)"],
+            next_instructions="None",
+            output_text="Tests passed.",
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-rich-summary-literal-none")
+        parsed = T._parse_rich_handoff_sections(content)
+        self.assertEqual(parsed["summary"], "None")
+
+    def test_handoff_rich_optional_text_sections_round_trip_to_none(self):
+        """Omitted optional text sections must parse as None, not the literal string 'None'."""
+        make_tentacle("ho-rich-optional-none", self.base)
+        args = fake_args(
+            name="ho-rich-optional-none",
+            message="Base message",
+            status=None,
+            changed_file=[],
+            learn=False,
+            summary=None,
+            decision=["Chose X"],
+            blocker=[],
+            file_read=[],
+            next_instructions=None,
+            output_text=None,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-rich-optional-none")
+        parsed = T._parse_rich_handoff_sections(content)
+        self.assertIsNone(parsed["status"])
+        self.assertIsNone(parsed["next_agent_instructions"])
+        self.assertIsNone(parsed["output"])
+
+    def test_handoff_without_rich_args_writes_legacy_format(self):
+        """Omitting all rich args produces legacy format (no ### sections)."""
+        make_tentacle("ho-legacy-no-rich", self.base)
+        args = self._handoff_args("ho-legacy-no-rich", "Just a message", status="DONE", changed_file=["src/x.py"])
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-legacy-no-rich")
+        self.assertNotIn("### SUMMARY", content)
+        self.assertIn("Just a message", content)
+        self.assertIn("STATUS: DONE", content)
+        self.assertIn("Changed: src/x.py", content)
+
+    # -- cmd_complete persists rich sections into meta.json --
+
+    def test_complete_persists_rich_sections_to_meta(self):
+        make_tentacle("ho-complete-rich", self.base)
+        handoff_path = self.base / "ho-complete-rich" / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\n"
+            "### SUMMARY\nAll done.\n\n"
+            "### DECISION POINTS\n- Used X\n\n"
+            "### FILES READ\n- src/foo.py (lines 1-50)\n\n"
+            "### FILES MODIFIED\n- src/bar.py\n\n"
+            "### UNRESOLVED BLOCKERS\nNone\n\n"
+            "### NEXT AGENT INSTRUCTIONS\nNone\n\n"
+            "### OUTPUT\nPassed.\n\n"
+            "STATUS: DONE\nChanged: src/bar.py\n",
+            encoding="utf-8",
+        )
+        args = self._complete_args("ho-complete-rich")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_complete(args)
+        meta = self._read_meta("ho-complete-rich")
+        self.assertIn("handoff_sections", meta)
+        hs = meta["handoff_sections"]
+        self.assertEqual(hs["summary"], "All done.")
+        self.assertEqual(hs["decision_points"], ["Used X"])
+        self.assertEqual(hs["files_read"], [{"path": "src/foo.py", "lines": "1-50"}])
+        self.assertEqual(hs["files_modified"], ["src/bar.py"])
+        self.assertEqual(hs["output"], "Passed.")
+
+    def test_complete_merges_files_modified_into_changed_files(self):
+        """FILES MODIFIED paths not already in Changed: lines are merged into changed_files."""
+        make_tentacle("ho-merge-fm", self.base)
+        handoff_path = self.base / "ho-merge-fm" / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\n"
+            "### SUMMARY\nDone.\n\n"
+            "### FILES MODIFIED\n- src/extra.py\n- src/shared.py\n\n"
+            "STATUS: DONE\nChanged: src/shared.py\n",
+            encoding="utf-8",
+        )
+        args = self._complete_args("ho-merge-fm")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_complete(args)
+        meta = self._read_meta("ho-merge-fm")
+        changed = meta.get("changed_files", [])
+        self.assertIn("src/shared.py", changed)
+        self.assertIn("src/extra.py", changed)
+
+    def test_complete_legacy_handoff_no_rich_sections_no_handoff_sections_key(self):
+        """Legacy handoff without ### sections must not write handoff_sections to meta."""
+        make_tentacle("ho-complete-legacy-rich", self.base)
+        handoff_path = self.base / "ho-complete-legacy-rich" / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nAll done.\nSTATUS: DONE\n",
+            encoding="utf-8",
+        )
+        args = self._complete_args("ho-complete-legacy-rich")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_complete(args)
+        meta = self._read_meta("ho-complete-legacy-rich")
+        self.assertNotIn("handoff_sections", meta)
+        # Terminal status still extracted
+        self.assertEqual(meta.get("terminal_status"), "DONE")
+
+    def test_complete_rich_sections_do_not_break_terminal_status(self):
+        """Rich-section handoff must still populate terminal_status in meta."""
+        make_tentacle("ho-rich-status", self.base)
+        handoff_path = self.base / "ho-rich-status" / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\n### SUMMARY\nDone.\n\nSTATUS: DONE\n",
+            encoding="utf-8",
+        )
+        args = self._complete_args("ho-rich-status")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_complete(args)
+        meta = self._read_meta("ho-rich-status")
+        self.assertEqual(meta.get("terminal_status"), "DONE")
+        self.assertIn("handoff_sections", meta)
+
+    def test_parse_rich_handoff_sections_status_field(self):
+        """### STATUS section value is returned in handoff_sections['status']."""
+        content = (
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\n"
+            "### SUMMARY\nAll good.\n\n"
+            "### STATUS\nDONE\n\n"
+            "STATUS: DONE\n"
+        )
+        result = T._parse_rich_handoff_sections(content)
+        self.assertEqual(result["status"], "DONE")
+        self.assertEqual(result["summary"], "All good.")
+
+    def test_complete_persists_handoff_sections_with_status(self):
+        """handoff_sections in meta.json must include 'status' when ### STATUS is present."""
+        make_tentacle("ho-complete-with-status", self.base)
+        handoff_path = self.base / "ho-complete-with-status" / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\n"
+            "### SUMMARY\nAll done.\n\n"
+            "### STATUS\nDONE\n\n"
+            "### FILES MODIFIED\n- src/foo.py\n\n"
+            "STATUS: DONE\nChanged: src/foo.py\n",
+            encoding="utf-8",
+        )
+        args = self._complete_args("ho-complete-with-status")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_complete(args)
+        meta = self._read_meta("ho-complete-with-status")
+        self.assertIn("handoff_sections", meta)
+        hs = meta["handoff_sections"]
+        self.assertEqual(hs["status"], "DONE")
+        self.assertEqual(hs["summary"], "All done.")
+
+    def test_complete_stale_rich_cleared_when_latest_entry_is_legacy(self):
+        """Regression: if earlier entry is rich but latest is legacy, handoff_sections is absent."""
+        make_tentacle("ho-stale-rich", self.base)
+        handoff_path = self.base / "ho-stale-rich" / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2024-01-01 11:00 UTC]\n\n"
+            "### SUMMARY\nOld rich entry.\n\n"
+            "STATUS: BLOCKED\n"
+            "\n## [2024-01-01 12:00 UTC]\n\nNew legacy entry.\nSTATUS: DONE\n",
+            encoding="utf-8",
+        )
+        args = self._complete_args("ho-stale-rich")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_complete(args)
+        meta = self._read_meta("ho-stale-rich")
+        # Stale rich sections from older entry must NOT appear
+        self.assertNotIn("handoff_sections", meta)
+        # But legacy terminal_status from latest entry must still work
+        self.assertEqual(meta.get("terminal_status"), "DONE")
+
+
 # Concurrent marker stress tests — verify file_locked prevents data loss
 # ---------------------------------------------------------------------------
 

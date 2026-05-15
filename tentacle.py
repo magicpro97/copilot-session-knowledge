@@ -5579,6 +5579,137 @@ def _parse_handoff_quota_metadata(handoff_content: str) -> "tuple[str | None, st
     return None, None
 
 
+def _parse_bullet_list(text: str) -> "list[str]":
+    """Extract items from a bullet list (lines starting with ``-`` or ``*``).
+
+    Returns an empty list for empty/None text or non-list content.
+    """
+    items = []
+    for line in (text or "").splitlines():
+        m = re.match(r"^\s*[-*]\s+(.+)", line)
+        if m:
+            items.append(m.group(1).strip())
+    return items
+
+
+def _parse_files_read(text: str) -> "list[dict]":
+    """Parse ``FILES READ`` section content into path + optional line-range dicts.
+
+    Accepted entry formats::
+
+        - path/to/file.py (lines 1-50)
+        - path/to/file.py (line 42)
+        - path/to/file.py
+
+    Returns a list of ``{"path": str, "lines": str | None}`` dicts.
+    """
+    entries: list[dict] = []
+    for line in (text or "").splitlines():
+        m = re.match(r"^\s*[-*]\s+(.+)", line)
+        if not m:
+            continue
+        item = m.group(1).strip()
+        range_m = re.match(r"^(.+?)\s+\(lines?\s+([0-9]+-[0-9]+|[0-9]+)\)\s*$", item, re.IGNORECASE)
+        if range_m:
+            entries.append({"path": range_m.group(1).strip(), "lines": range_m.group(2).strip()})
+        else:
+            entries.append({"path": item, "lines": None})
+    return entries
+
+
+def _strip_trailing_legacy_receipts(text: str) -> str:
+    """Remove the appended legacy receipt block from the end of the last rich section.
+
+    Rich handoffs append the backward-compatible ``STATUS:``, ``Changed:``,
+    ``Bridge:``, ``QUOTA_REASON:``, and ``RETRY_HINT:`` lines *after* all rich
+    sections, separated from the final section body by a blank line. Only that
+    trailing receipt block should be removed; section content that merely
+    contains lookalike lines must be preserved.
+    """
+    if not text:
+        return text
+    allowlisted_statuses = "|".join(re.escape(status) for status in sorted(HANDOFF_STATUS_ALLOWLIST))
+    receipt_line = (
+        rf"(?:STATUS:\s*(?:{allowlisted_statuses})"
+        r"|Changed:\s*.+"
+        r"|Bridge:\s*.+"
+        r"|QUOTA_REASON:\s*.+"
+        r"|RETRY_HINT:\s*.+)"
+    )
+    match = re.search(
+        rf"\n\n(?=(?:{receipt_line})(?:\n(?:{receipt_line}))*\s*\Z)",
+        text,
+    )
+    if match:
+        return text[: match.start()]
+    return text
+
+
+def _rich_optional_text(value: str | None) -> str | None:
+    """Normalize absent rich text sections to ``None``.
+
+    The writer uses the literal text ``None`` as a human-readable placeholder for
+    omitted optional rich text sections. Machine readers should see those as
+    missing values rather than the string ``"None"``.
+    """
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped or stripped == "None":
+        return None
+    return stripped
+
+
+def _parse_rich_handoff_sections(handoff_content: str) -> dict:
+    """Parse rich 8-section handoff data from the most-recent handoff entry.
+
+    Looks for ``### SECTION NAME`` markers within the most-recent timestamp
+    section (``## [...]``).  Returns a dict with parsed rich section data, or
+    an empty dict when the handoff is a legacy free-form / STATUS+Changed-only
+    entry (backward-compatible: never raises).
+
+    Returned keys (all optional / None / [] when absent):
+    ``summary``, ``decision_points``, ``unresolved_blockers``, ``files_read``,
+    ``files_modified``, ``next_agent_instructions``, ``output``.
+    """
+    if not handoff_content:
+        return {}
+    raw_sections = re.split(r"^## \[", handoff_content, flags=re.MULTILINE)
+    # Inspect ONLY the latest entry.  If the latest entry has no rich ### markers
+    # return {} immediately — this prevents stale rich sections from an older entry
+    # bleeding into meta when the most-recent handoff is a legacy free-form entry.
+    if len(raw_sections) < 2:
+        return {}
+    target = raw_sections[-1]
+    if not re.search(r"^### ", target, flags=re.MULTILINE):
+        return {}
+
+    # Split on ### headers → alternating [pre, name, content, name, content, ...]
+    parts = re.split(r"^### (.+)$", target, flags=re.MULTILINE)
+    rich: dict = {}
+    i = 1
+    while i < len(parts) - 1:
+        section_name = parts[i].strip()
+        section_body = parts[i + 1]
+        if i + 1 == len(parts) - 1:
+            section_body = _strip_trailing_legacy_receipts(section_body)
+        rich[section_name] = section_body.strip()
+        i += 2
+
+    return {
+        # SUMMARY is required for rich handoffs, so preserve literal text such
+        # as "None" instead of treating it like an omitted optional section.
+        "summary": rich.get("SUMMARY") or None,
+        "status": _rich_optional_text(rich.get("STATUS")),
+        "decision_points": _parse_bullet_list(rich.get("DECISION POINTS", "")),
+        "unresolved_blockers": _parse_bullet_list(rich.get("UNRESOLVED BLOCKERS", "")),
+        "files_read": _parse_files_read(rich.get("FILES READ", "")),
+        "files_modified": _parse_bullet_list(rich.get("FILES MODIFIED", "")),
+        "next_agent_instructions": _rich_optional_text(rich.get("NEXT AGENT INSTRUCTIONS")),
+        "output": _rich_optional_text(rich.get("OUTPUT")),
+    }
+
+
 def cmd_handoff(args):
     """Write a handoff message for a tentacle (agent output)."""
     tentacles = get_tentacles_dir(args.session_dir)
@@ -5608,10 +5739,90 @@ def cmd_handoff(args):
         )
         sys.exit(1)
 
+    # Collect optional rich-section args (all are None/[] when omitted).
+    rich_summary: str | None = getattr(args, "summary", None) or None
+    rich_decisions: list[str] = list(getattr(args, "decision", None) or [])
+    rich_blockers: list[str] = list(getattr(args, "blocker", None) or [])
+    rich_files_read: list[str] = list(getattr(args, "file_read", None) or [])
+    rich_next_instructions: str | None = getattr(args, "next_instructions", None) or None
+    rich_output: str | None = getattr(args, "output_text", None) or None
+
+    # FILES MODIFIED rich section mirrors the legacy changed_file receipts so
+    # both the new parser and the legacy Changed: parser see the same paths.
+    rich_files_modified: list[str] = list(changed_files)
+
+    # Rich sections are written only when at least one explicitly new rich arg
+    # is provided.  Presence of --changed-file alone keeps the legacy format.
+    use_rich_sections = any(
+        [
+            rich_summary,
+            rich_decisions,
+            rich_blockers,
+            rich_files_read,
+            rich_next_instructions,
+            rich_output,
+        ]
+    )
+
     handoff_path = tentacle_dir / "handoff.md"
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    entry = f"\n## [{timestamp}]\n\n{args.message}\n"
+    if use_rich_sections:
+        # Build the rich 8-section body.
+        body = f"\n## [{timestamp}]\n"
+
+        # Include bare message as a true preamble only when --summary overrides it.
+        # It must stay outside the SUMMARY section so parsing the section returns the
+        # explicit summary text rather than "summary + message" concatenated together.
+        if rich_summary:
+            body += f"\n{args.message}\n"
+
+        # SUMMARY section (falls back to args.message when --summary not given).
+        summary_text = rich_summary or args.message
+        body += f"\n### SUMMARY\n{summary_text}\n"
+
+        body += "\n### DECISION POINTS\n"
+        if rich_decisions:
+            for d in rich_decisions:
+                body += f"- {d}\n"
+        else:
+            body += "None\n"
+
+        body += "\n### UNRESOLVED BLOCKERS\n"
+        if rich_blockers:
+            for b in rich_blockers:
+                body += f"- {b}\n"
+        else:
+            body += "None\n"
+
+        body += "\n### FILES READ\n"
+        if rich_files_read:
+            for fr in rich_files_read:
+                body += f"- {fr}\n"
+        else:
+            body += "None\n"
+
+        body += "\n### FILES MODIFIED\n"
+        if rich_files_modified:
+            for fm in rich_files_modified:
+                body += f"- {fm}\n"
+        else:
+            body += "None\n"
+
+        body += "\n### NEXT AGENT INSTRUCTIONS\n"
+        body += (rich_next_instructions or "None") + "\n"
+
+        body += "\n### OUTPUT\n"
+        body += (rich_output or "None") + "\n"
+
+        body += "\n### STATUS\n"
+        body += (status or "None") + "\n"
+
+        entry = body + "\n"
+    else:
+        entry = f"\n## [{timestamp}]\n\n{args.message}\n"
+
+    # Always append legacy structured lines for backward-compatible parsing.
     if status:
         entry += f"STATUS: {status}\n"
     for cf in changed_files:
@@ -5745,6 +5956,17 @@ def cmd_complete(args):
         changed_files = _parse_handoff_changed_files(raw_handoff)
         bridge_links = _parse_handoff_bridge_links(raw_handoff)
         quota_reason, retry_hint = _parse_handoff_quota_metadata(raw_handoff)
+        # Parse rich 8-section data and merge FILES MODIFIED into changed_files.
+        rich_sections = _parse_rich_handoff_sections(raw_handoff)
+        if rich_sections:
+            for fm_path in rich_sections.get("files_modified") or []:
+                if fm_path and fm_path not in changed_files:
+                    changed_files.append(fm_path)
+            meta["handoff_sections"] = rich_sections
+        elif "handoff_sections" in meta:
+            meta.pop("handoff_sections", None)
+    else:
+        rich_sections = {}
     if terminal_status:
         meta["terminal_status"] = terminal_status
     if changed_files:
@@ -7228,6 +7450,54 @@ def main():
         default=None,
         metavar="HINT",
         help="Optional retry-after hint (ISO timestamp or human-readable) for quota-blocked handoffs",
+    )
+    # Rich 8-section handoff args
+    p_handoff.add_argument(
+        "--summary",
+        dest="summary",
+        default=None,
+        metavar="TEXT",
+        help="Rich SUMMARY section (overrides message as section body; message still echoed as preamble)",
+    )
+    p_handoff.add_argument(
+        "--decision",
+        action="append",
+        dest="decision",
+        metavar="TEXT",
+        default=[],
+        help="DECISION POINTS bullet item (repeatable)",
+    )
+    p_handoff.add_argument(
+        "--blocker",
+        action="append",
+        dest="blocker",
+        metavar="TEXT",
+        default=[],
+        help="UNRESOLVED BLOCKERS bullet item (repeatable)",
+    )
+    p_handoff.add_argument(
+        "--file-read",
+        action="append",
+        dest="file_read",
+        metavar="PATH_OR_RANGE",
+        default=[],
+        help=(
+            "FILES READ entry (repeatable); path or 'path (lines L1-L2)'; e.g. --file-read 'src/foo.py (lines 1-50)'"
+        ),
+    )
+    p_handoff.add_argument(
+        "--next-instructions",
+        dest="next_instructions",
+        default=None,
+        metavar="TEXT",
+        help="NEXT AGENT INSTRUCTIONS section content",
+    )
+    p_handoff.add_argument(
+        "--output-text",
+        dest="output_text",
+        default=None,
+        metavar="TEXT",
+        help="OUTPUT section content",
     )
 
     # swarm
