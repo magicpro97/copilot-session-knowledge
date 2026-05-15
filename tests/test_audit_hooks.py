@@ -201,8 +201,8 @@ class TestClassify(unittest.TestCase):
     def test_deny_is_useful_block(self):
         self.assertEqual(ah._classify("deny"), "useful-block")
 
-    def test_deny_dry_is_false_positive(self):
-        self.assertEqual(ah._classify("deny-dry"), "false-positive")
+    def test_deny_dry_is_dry_run_noise(self):
+        self.assertEqual(ah._classify("deny-dry"), "dry-run-noise")
 
     def test_allow_is_other(self):
         self.assertEqual(ah._classify("allow"), "other")
@@ -243,9 +243,9 @@ class TestGlobalSummary(unittest.TestCase):
         s = ah._global_summary(entries)
         self.assertEqual(s["total_entries"], 10)
         self.assertEqual(s["useful_block_count"], 3)
-        self.assertEqual(s["false_positive_count"], 1)
+        self.assertEqual(s["dry_run_count"], 1)
         self.assertAlmostEqual(s["deny_rate_pct"], 30.0)
-        self.assertAlmostEqual(s["fp_rate_pct"], 10.0)
+        self.assertAlmostEqual(s["dry_run_rate_pct"], 10.0)
         # useful_block_rate = 3 / (3+1) * 100 = 75.0
         self.assertAlmostEqual(s["useful_block_rate"], 75.0)
 
@@ -253,9 +253,9 @@ class TestGlobalSummary(unittest.TestCase):
         entries = [_make_entry("deny")] * 4
         s = ah._global_summary(entries)
         self.assertEqual(s["useful_block_count"], 4)
-        self.assertEqual(s["false_positive_count"], 0)
+        self.assertEqual(s["dry_run_count"], 0)
         self.assertEqual(s["deny_rate_pct"], 100.0)
-        # no FPs so useful_block_rate = 100%
+        # no dry-run so useful_block_rate = 100%
         self.assertAlmostEqual(s["useful_block_rate"], 100.0)
 
 
@@ -281,7 +281,7 @@ class TestPerHookMetrics(unittest.TestCase):
         self.assertEqual(row["rule"], "rule-a")
         self.assertEqual(row["fire_count"], 10)
         self.assertEqual(row["block_count"], 2)
-        self.assertEqual(row["fp_count"], 1)
+        self.assertEqual(row["dry_run_count"], 1)
         self.assertAlmostEqual(row["block_rate_pct"], 20.0)
         # useful_block_rate = 2/(2+1)*100 = 66.7
         self.assertAlmostEqual(row["useful_block_rate"], 66.7, places=0)
@@ -423,9 +423,11 @@ class TestMain(unittest.TestCase):
             sys.stdout = old_stdout
         payload = json.loads(captured.getvalue())
         s = payload["summary"]
-        for key in ("total_entries", "useful_block_count", "false_positive_count",
-                    "deny_rate_pct", "fp_rate_pct", "useful_block_rate"):
+        for key in ("total_entries", "useful_block_count", "dry_run_count",
+                    "deny_rate_pct", "dry_run_rate_pct", "useful_block_rate"):
             self.assertIn(key, s, f"Missing key in summary: {key}")
+        # never_fired must be present in JSON output
+        self.assertIn("never_fired", payload)
 
     def test_days_filter_works(self):
         import io
@@ -465,6 +467,252 @@ class TestMain(unittest.TestCase):
     def test_missing_file_json_flag_returns_1(self):
         rc = ah.main(["--audit-file", str(Path(self._tmpdir) / "nope.jsonl"), "--json"])
         self.assertEqual(rc, 1)
+
+
+# ---------------------------------------------------------------------------
+# _load_hook_inventory / _never_fired_hooks
+# ---------------------------------------------------------------------------
+
+
+class TestHookInventory(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self._tmpdir = tempfile.mkdtemp(prefix="ah-inv-test-")
+        self._hooks_dir = Path(self._tmpdir) / "hooks"
+        self._rules_dir = self._hooks_dir / "rules"
+        self._rules_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _write_rule(self, filename: str, names: list[str]) -> None:
+        lines = []
+        for n in names:
+            lines.append(f'class SomeRule:\n    name = "{n}"\n    events = []\n')
+        (self._rules_dir / filename).write_text("\n".join(lines), encoding="utf-8")
+
+    def test_empty_rules_dir_returns_empty(self):
+        result = ah._load_hook_inventory(self._hooks_dir)
+        self.assertEqual(result, [])
+
+    def test_missing_hooks_dir_returns_none(self):
+        result = ah._load_hook_inventory(Path(self._tmpdir) / "nonexistent")
+        self.assertIsNone(result)
+
+    def test_single_rule_file(self):
+        self._write_rule("my_rule.py", ["my-rule"])
+        result = ah._load_hook_inventory(self._hooks_dir)
+        self.assertIn("my-rule", result)
+
+    def test_multiple_rules_across_files(self):
+        self._write_rule("rule_a.py", ["rule-alpha"])
+        self._write_rule("rule_b.py", ["rule-beta", "rule-gamma"])
+        result = ah._load_hook_inventory(self._hooks_dir)
+        self.assertIn("rule-alpha", result)
+        self.assertIn("rule-beta", result)
+        self.assertIn("rule-gamma", result)
+        self.assertEqual(len(result), 3)
+
+    def test_init_py_is_skipped(self):
+        # __init__.py has a base class name = "" that must not appear
+        (self._rules_dir / "__init__.py").write_text(
+            'class Rule:\n    name = ""\n    events = []\n', encoding="utf-8"
+        )
+        self._write_rule("real_rule.py", ["real-rule"])
+        result = ah._load_hook_inventory(self._hooks_dir)
+        self.assertNotIn("", result)
+        self.assertIn("real-rule", result)
+
+    def test_deduplicated(self):
+        # Same name in two files → appears once
+        self._write_rule("rule_a.py", ["shared-name"])
+        self._write_rule("rule_b.py", ["shared-name"])
+        result = ah._load_hook_inventory(self._hooks_dir)
+        self.assertEqual(result.count("shared-name"), 1)
+
+    def test_never_fired_empty_entries(self):
+        inventory = ["rule-a", "rule-b"]
+        result = ah._never_fired_hooks([], inventory)
+        self.assertEqual(result, ["rule-a", "rule-b"])
+
+    def test_never_fired_all_seen(self):
+        entries = [_make_entry("allow", rule="rule-a"), _make_entry("deny", rule="rule-b")]
+        result = ah._never_fired_hooks(entries, ["rule-a", "rule-b"])
+        self.assertEqual(result, [])
+
+    def test_never_fired_partial_overlap(self):
+        entries = [_make_entry("allow", rule="rule-a")]
+        result = ah._never_fired_hooks(entries, ["rule-a", "rule-b", "rule-c"])
+        self.assertNotIn("rule-a", result)
+        self.assertIn("rule-b", result)
+        self.assertIn("rule-c", result)
+
+    def test_never_fired_empty_inventory(self):
+        entries = [_make_entry("deny", rule="rule-a")]
+        result = ah._never_fired_hooks(entries, [])
+        self.assertEqual(result, [])
+
+    def test_load_real_hooks_dir(self):
+        """Smoke test: load inventory from the actual hooks/rules dir if available."""
+        real_hooks = TOOLS_DIR / "hooks"
+        if not (real_hooks / "rules").is_dir():
+            self.skipTest("hooks/rules not present")
+        result = ah._load_hook_inventory(real_hooks)
+        # Spot-check: core rules that exist in every install
+        core_rules = {"enforce-briefing", "enforce-learn", "syntax-gate", "subagent-git-guard"}
+        found = set(result) & core_rules
+        self.assertTrue(
+            len(found) > 0,
+            f"Expected at least one core rule in inventory, got: {result}",
+        )
+
+    def test_never_fired_in_json_output(self):
+        """main() must include never_fired in JSON output when hooks-dir is given."""
+        import io, tempfile, shutil
+        tmpdir = Path(tempfile.mkdtemp(prefix="ah-nf-json-"))
+        try:
+            audit = tmpdir / "audit.jsonl"
+            hooks = tmpdir / "hooks"
+            rules = hooks / "rules"
+            rules.mkdir(parents=True)
+            (rules / "a_rule.py").write_text(
+                'class ARule:\n    name = "a-rule"\n    events = []\n', encoding="utf-8"
+            )
+            (rules / "b_rule.py").write_text(
+                'class BRule:\n    name = "b-rule"\n    events = []\n', encoding="utf-8"
+            )
+            _write_jsonl(audit, [_make_entry("deny", rule="a-rule")])
+            captured = io.StringIO()
+            old_stdout = sys.stdout
+            sys.stdout = captured
+            try:
+                rc = ah.main([
+                    "--audit-file", str(audit),
+                    "--hooks-dir", str(hooks),
+                    "--json",
+                ])
+            finally:
+                sys.stdout = old_stdout
+            self.assertEqual(rc, 0)
+            payload = json.loads(captured.getvalue())
+            self.assertIn("never_fired", payload)
+            self.assertIn("b-rule", payload["never_fired"])
+            self.assertNotIn("a-rule", payload["never_fired"])
+        finally:
+            shutil.rmtree(str(tmpdir), ignore_errors=True)
+
+    def test_json_never_fired_null_when_inventory_missing(self):
+        """JSON never_fired must be null (not []) when hooks-dir is absent."""
+        import io, tempfile, shutil
+        tmpdir = Path(tempfile.mkdtemp(prefix="ah-nf-null-"))
+        try:
+            audit = tmpdir / "audit.jsonl"
+            _write_jsonl(audit, [_make_entry("deny", rule="some-rule")])
+            missing_hooks = tmpdir / "no-such-hooks"
+            captured = io.StringIO()
+            old_stdout = sys.stdout
+            sys.stdout = captured
+            try:
+                rc = ah.main([
+                    "--audit-file", str(audit),
+                    "--hooks-dir", str(missing_hooks),
+                    "--json",
+                ])
+            finally:
+                sys.stdout = old_stdout
+            self.assertEqual(rc, 0)
+            payload = json.loads(captured.getvalue())
+            self.assertIn("never_fired", payload)
+            # Must be null (None in Python), NOT an empty list — inventory was unavailable
+            self.assertIsNone(
+                payload["never_fired"],
+                "never_fired should be null when inventory dir is missing, not []",
+            )
+        finally:
+            shutil.rmtree(str(tmpdir), ignore_errors=True)
+
+    def test_json_never_fired_empty_list_when_all_hooks_fired(self):
+        """JSON never_fired must be [] (not null) when inventory loaded and all hooks fired."""
+        import io, tempfile, shutil
+        tmpdir = Path(tempfile.mkdtemp(prefix="ah-nf-empty-"))
+        try:
+            audit = tmpdir / "audit.jsonl"
+            hooks = tmpdir / "hooks"
+            rules = hooks / "rules"
+            rules.mkdir(parents=True)
+            (rules / "only_rule.py").write_text(
+                'class OnlyRule:\n    name = "only-rule"\n    events = []\n', encoding="utf-8"
+            )
+            # The one registered rule fires → never_fired should be [], not null
+            _write_jsonl(audit, [_make_entry("deny", rule="only-rule")])
+            captured = io.StringIO()
+            old_stdout = sys.stdout
+            sys.stdout = captured
+            try:
+                rc = ah.main([
+                    "--audit-file", str(audit),
+                    "--hooks-dir", str(hooks),
+                    "--json",
+                ])
+            finally:
+                sys.stdout = old_stdout
+            self.assertEqual(rc, 0)
+            payload = json.loads(captured.getvalue())
+            self.assertIn("never_fired", payload)
+            # Must be [] (inventory loaded, all hooks fired), NOT null
+            self.assertIsNotNone(
+                payload["never_fired"],
+                "never_fired should be [] when inventory loaded and all hooks fired, not null",
+            )
+            self.assertEqual(
+                payload["never_fired"], [],
+                "never_fired should be empty list when all registered hooks fired",
+            )
+        finally:
+            shutil.rmtree(str(tmpdir), ignore_errors=True)
+
+    def test_json_never_fired_null_when_zero_names_discovered(self):
+        """JSON never_fired must be null when hooks-dir exists but static regex finds no names.
+
+        This covers the case where rules dir is present but all names are dynamic
+        (e.g. ``name = f.name``) — the regex returns [] which is indistinguishable
+        from "all hooks fired", so we must emit null to avoid misleading automation.
+        """
+        import io, tempfile, shutil
+        tmpdir = Path(tempfile.mkdtemp(prefix="ah-nf-zero-"))
+        try:
+            audit = tmpdir / "audit.jsonl"
+            hooks = tmpdir / "hooks"
+            rules = hooks / "rules"
+            rules.mkdir(parents=True)
+            # Write a rule file that uses a dynamic name — the static regex won't match it
+            (rules / "dynamic_rule.py").write_text(
+                'class DynRule:\n    name = some_variable\n    events = []\n', encoding="utf-8"
+            )
+            _write_jsonl(audit, [_make_entry("deny", rule="dynamic-rule")])
+            captured = io.StringIO()
+            old_stdout = sys.stdout
+            sys.stdout = captured
+            try:
+                rc = ah.main([
+                    "--audit-file", str(audit),
+                    "--hooks-dir", str(hooks),
+                    "--json",
+                ])
+            finally:
+                sys.stdout = old_stdout
+            self.assertEqual(rc, 0)
+            payload = json.loads(captured.getvalue())
+            self.assertIn("never_fired", payload)
+            # inventory returned [] (dir exists, zero names matched) →
+            # never_fired must be null so automation doesn't misread it as "all fired"
+            self.assertIsNone(
+                payload["never_fired"],
+                "never_fired should be null when zero names were discovered by the static regex",
+            )
+        finally:
+            shutil.rmtree(str(tmpdir), ignore_errors=True)
 
 
 if __name__ == "__main__":

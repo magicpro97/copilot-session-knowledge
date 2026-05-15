@@ -28,6 +28,7 @@ sk skill-patch path/to/SKILL.md --old "old text" --new "new text" --replace-all
 sk audit-hooks                               # → audit-hooks.py
 sk audit-hooks --json
 sk audit-hooks --days 7
+sk audit-hooks --hooks-dir /path/to/hooks    # override hook inventory directory
 ```
 
 ### `sk skill-suggest` — knowledge-to-skill pipeline
@@ -115,8 +116,10 @@ time-based trend analysis.
 
 **Classification:**
 - `useful-block` — `decision == "deny"`: a real enforcement action
-- `false-positive` — `decision == "deny-dry"`: dry-run / test noise (hook fired
-  but did not actually block)
+- `dry-run-noise` — `decision == "deny-dry"`: hook fired in dry-run/test mode
+  (`HOOK_DRY_RUN=1`); the hook logic triggered but the action was not actually
+  blocked.  This is **not** a false positive — it is test-mode noise tracked
+  separately.
 
 ```bash
 sk audit-hooks                        # full text report
@@ -124,19 +127,29 @@ sk audit-hooks --json                 # JSON output for scripting
 sk audit-hooks --days 7               # restrict to last 7 days
 sk audit-hooks --top 20               # show top-20 rules in per-hook table
 sk audit-hooks --audit-file /path/to/audit.jsonl  # override log path
+sk audit-hooks --hooks-dir /path/to/hooks         # override hooks directory
 ```
 
 **Per-hook metrics reported:**
 - `fire_count` / `fire_rate_pct` — how often each rule fires relative to total entries
 - `block_count` — useful-block count (real `deny` decisions)
-- `fp_count` — false-positive count (`deny-dry` decisions)
+- `dry_run_count` — dry-run-noise count (`deny-dry` decisions; test-mode only)
 - `block_rate_pct` — block_count / fire_count
-- `useful_block_rate` — block_count / (block_count + fp_count)
+- `useful_block_rate` — block_count / (block_count + dry_run_count)
+
+**Never-fired hooks:** the tool scans the registered hook rule inventory
+(`hooks/rules/*.py`) and reports rules with zero audit entries in the analysis
+window.  These are surfaced as simplification candidates per issue #127.
+
+JSON `never_fired` field semantics (important for automation):
+- `null`  — inventory unavailable (hooks dir missing or unreadable); treat as *unknown*, not "all hooks fired"
+- `[]`    — inventory loaded and every registered hook has audit entries in the window
+- `[…]`  — inventory loaded; listed rules have zero entries in the analysis window
 
 **Trend analysis:** entries are bucketed by calendar day (UTC), reporting total
 firings, deny count, dry-deny count, and deny rate per day.
 
-> Direct-script form: `python audit-hooks.py [--json] [--days N] [--top N]`
+> Direct-script form: `python audit-hooks.py [--json] [--days N] [--top N] [--hooks-dir DIR]`
 
 ### `sk index` — knowledge index lifecycle
 

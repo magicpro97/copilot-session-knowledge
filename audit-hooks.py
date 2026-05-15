@@ -8,26 +8,36 @@ time-based trend analysis.
 
 Classification rules
 --------------------
-useful-block  : decision == "deny"    — a real enforcement action
-false-positive: decision == "deny-dry" — dry-run / test noise (hook fired but
-                                         did not actually block)
+useful-block  : decision == "deny"     — a real enforcement action
+dry-run-noise : decision == "deny-dry" — hook fired in dry-run/test mode
+                                         (HOOK_DRY_RUN=1); the hook logic
+                                         triggered correctly but the action was
+                                         not actually blocked.  This is NOT a
+                                         false positive — it is test-mode noise
+                                         that should be tracked separately.
 
 Metrics reported per hook rule
 -------------------------------
 - fire_count        : total entries for this rule
 - fire_rate_pct     : fire_count / total entries × 100
 - block_count       : useful-block count (decision=="deny")
-- fp_count          : false-positive count (decision=="deny-dry")
+- dry_run_count     : dry-run-noise count (decision=="deny-dry")
 - block_rate_pct    : block_count / fire_count × 100
-- useful_block_rate : block_count / (block_count + fp_count) × 100 (or n/a)
+- useful_block_rate : block_count / (block_count + dry_run_count) × 100 (or n/a)
 
 Trend analysis
 --------------
 Entries are bucketed by calendar day.  For each day the report shows:
 - total hook firings
 - deny count (useful-blocks)
-- deny-dry count (false-positives)
+- deny-dry count (dry-run noise)
 - daily deny rate
+
+Never-fired hooks
+-----------------
+The tool scans the registered hook rule inventory (hooks/rules/*.py) and
+compares against rules seen in the audit log.  Rules with zero audit entries in
+the analysis window are reported as simplification candidates per issue #127.
 
 Usage
 -----
@@ -36,6 +46,7 @@ Usage
     python3 audit-hooks.py --days N                # limit to last N days (default all)
     python3 audit-hooks.py --audit-file /path/...  # override audit.jsonl path
     python3 audit-hooks.py --top N                 # show top-N rules (default 15)
+    python3 audit-hooks.py --hooks-dir /path/hooks # override hooks directory
 
 Exit codes
 ----------
@@ -47,6 +58,7 @@ Exit codes
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from collections import defaultdict, deque
@@ -61,6 +73,8 @@ if os.name == "nt":
 
 MARKERS_DIR = Path.home() / ".copilot" / "markers"
 DEFAULT_AUDIT_JSONL = MARKERS_DIR / "audit.jsonl"
+# Default hooks directory relative to this script's location
+DEFAULT_HOOKS_DIR = Path(__file__).resolve().parent / "hooks"
 
 # Safety cap on lines read from audit.jsonl (matches retro.py convention)
 _AUDIT_MAX_LINES = 5_000
@@ -122,7 +136,7 @@ def _classify(decision: str) -> str:
     if decision == "deny":
         return "useful-block"
     if decision == "deny-dry":
-        return "false-positive"
+        return "dry-run-noise"
     return "other"
 
 
@@ -136,7 +150,7 @@ def _per_hook_metrics(entries: list[dict], top_n: int = 15) -> list[dict]:
     rule_stats: dict[str, dict] = defaultdict(lambda: {
         "fire_count": 0,
         "useful_block": 0,
-        "false_positive": 0,
+        "dry_run": 0,
         "allow": 0,
         "other": 0,
     })
@@ -150,8 +164,8 @@ def _per_hook_metrics(entries: list[dict], top_n: int = 15) -> list[dict]:
         classification = _classify(decision)
         if classification == "useful-block":
             stats["useful_block"] += 1
-        elif classification == "false-positive":
-            stats["false_positive"] += 1
+        elif classification == "dry-run-noise":
+            stats["dry_run"] += 1
         elif decision == "allow":
             stats["allow"] += 1
         else:
@@ -161,17 +175,17 @@ def _per_hook_metrics(entries: list[dict], top_n: int = 15) -> list[dict]:
     for rule, st in rule_stats.items():
         fc = st["fire_count"]
         ub = st["useful_block"]
-        fp = st["false_positive"]
+        dr = st["dry_run"]
         fire_rate = round(fc / total * 100, 1) if total > 0 else 0.0
         block_rate = round(ub / fc * 100, 1) if fc > 0 else 0.0
-        ub_denom = ub + fp
+        ub_denom = ub + dr
         useful_block_rate: float | None = round(ub / ub_denom * 100, 1) if ub_denom > 0 else None
         rows.append({
             "rule": rule,
             "fire_count": fc,
             "fire_rate_pct": fire_rate,
             "block_count": ub,
-            "fp_count": fp,
+            "dry_run_count": dr,
             "allow_count": st["allow"],
             "block_rate_pct": block_rate,
             "useful_block_rate": useful_block_rate,
@@ -189,16 +203,16 @@ def _global_summary(entries: list[dict]) -> dict:
         by_decision[e.get("decision", "")] += 1
 
     useful_blocks = by_decision.get("deny", 0)
-    false_positives = by_decision.get("deny-dry", 0)
-    ub_denom = useful_blocks + false_positives
+    dry_run = by_decision.get("deny-dry", 0)
+    ub_denom = useful_blocks + dry_run
 
     return {
         "total_entries": total,
         "decisions": dict(by_decision),
         "useful_block_count": useful_blocks,
-        "false_positive_count": false_positives,
+        "dry_run_count": dry_run,
         "deny_rate_pct": round(useful_blocks / total * 100, 1) if total > 0 else 0.0,
-        "fp_rate_pct": round(false_positives / total * 100, 1) if total > 0 else 0.0,
+        "dry_run_rate_pct": round(dry_run / total * 100, 1) if total > 0 else 0.0,
         "useful_block_rate": round(useful_blocks / ub_denom * 100, 1) if ub_denom > 0 else None,
     }
 
@@ -241,11 +255,72 @@ def _trend_analysis(entries: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Hook inventory — never-fired detection
+# ---------------------------------------------------------------------------
+
+# Matches class-level `    name = "rule-name"` in hook rule source files.
+# Uses 4-space indent to distinguish class attributes from local variables.
+_RULE_NAME_RE = re.compile(r'^    name\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
+def _load_hook_inventory(hooks_dir: Path) -> list[str] | None:
+    """Scan hooks/rules/*.py for registered rule names (class-level name attrs).
+
+    Returns a deduplicated list of rule name strings found across all
+    non-__init__ rule files.  Ignores dynamic names (e.g. ``name = f.name``).
+
+    Return values:
+    - ``None``       — inventory unavailable (rules directory absent or unreadable)
+    - ``[]``         — inventory attempted but no static rule names matched (e.g.
+                       all files use dynamic names or unsupported format).  Callers
+                       computing ``never_fired`` must treat this as "unknown" (same
+                       as ``None``) — an empty list is indistinguishable from "all
+                       hooks fired" without at least one discovered name to compare.
+    - ``[name, …]``  — at least one rule name found; callers can safely compute
+                       the never-fired set and emit ``[]`` when all names are seen.
+
+    Callers must distinguish ``None``/``[]`` (scan not useful) from ``[name, …]``
+    (scan found names).  Treating both as "empty" silently hides inventory
+    failures from automation.
+    """
+    rules_dir = hooks_dir / "rules"
+    if not rules_dir.is_dir():
+        return None
+    names: list[str] = []
+    seen: set[str] = set()
+    for py_file in sorted(rules_dir.glob("*.py")):
+        if py_file.name == "__init__.py":
+            continue
+        try:
+            content = py_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in _RULE_NAME_RE.finditer(content):
+            name_val = match.group(1)
+            if name_val and name_val not in seen:
+                seen.add(name_val)
+                names.append(name_val)
+    return names
+
+
+def _never_fired_hooks(entries: list[dict], inventory: list[str]) -> list[str]:
+    """Return inventory rule names that have zero audit entries in *entries*.
+
+    These are simplification candidates: registered rules that produced no
+    audit log entries in the analysis window (or ever, if no ``--days`` filter
+    is applied).
+    """
+    seen_rules: set[str] = {e.get("rule") or "(no-rule)" for e in entries}
+    return [name for name in inventory if name not in seen_rules]
+
+
+# ---------------------------------------------------------------------------
 # Output formatters
 # ---------------------------------------------------------------------------
 
 
-def _render_text(summary: dict, per_hook: list[dict], trend: list[dict]) -> None:
+def _render_text(summary: dict, per_hook: list[dict], trend: list[dict],
+                 never_fired: list[str] | None = None) -> None:
     """Print a human-readable audit report to stdout."""
     print("=" * 66)
     print("  sk audit-hooks — Hook Effectiveness Audit")
@@ -258,7 +333,7 @@ def _render_text(summary: dict, per_hook: list[dict], trend: list[dict]) -> None
         print("  (no audit entries found)")
         return
     print(f"  Useful blocks     : {summary['useful_block_count']}  ({summary['deny_rate_pct']:.1f}%)")
-    print(f"  False positives   : {summary['false_positive_count']}  ({summary['fp_rate_pct']:.1f}%)")
+    print(f"  Dry-run noise     : {summary['dry_run_count']}  ({summary['dry_run_rate_pct']:.1f}%)")
     ub_rate = summary["useful_block_rate"]
     ub_label = f"{ub_rate:.1f}%" if ub_rate is not None else "n/a"
     print(f"  Useful-block rate : {ub_label}  (deny / (deny + deny-dry))")
@@ -269,16 +344,16 @@ def _render_text(summary: dict, per_hook: list[dict], trend: list[dict]) -> None
 
     if per_hook:
         print("\n── Per-Hook Effectiveness ──────────────────────────────────────")
-        hdr = f"  {'Rule':<38} {'Fires':>6} {'Rate%':>6} {'Blocks':>7} {'FPs':>5} {'Blk%':>6} {'UB-rate':>8}"
+        hdr = f"  {'Rule':<38} {'Fires':>6} {'Rate%':>6} {'Blocks':>7} {'DryRun':>7} {'Blk%':>6} {'UB-rate':>8}"
         print(hdr)
-        print("  " + "-" * 64)
+        print("  " + "-" * 66)
         for row in per_hook:
             ubr = f"{row['useful_block_rate']:.1f}%" if row["useful_block_rate"] is not None else "n/a"
             rule_trunc = row["rule"][:37]
             print(
                 f"  {rule_trunc:<38} {row['fire_count']:>6} "
                 f"{row['fire_rate_pct']:>5.1f}% {row['block_count']:>7} "
-                f"{row['fp_count']:>5} {row['block_rate_pct']:>5.1f}% {ubr:>8}"
+                f"{row['dry_run_count']:>7} {row['block_rate_pct']:>5.1f}% {ubr:>8}"
             )
 
     if trend:
@@ -291,15 +366,35 @@ def _render_text(summary: dict, per_hook: list[dict], trend: list[dict]) -> None
                 f"  {row['date']:<12} {row['total']:>7} {row['deny']:>6} "
                 f"{row['deny_dry']:>8} {row['allow']:>7} {row['deny_rate_pct']:>9.1f}%"
             )
+
+    if never_fired is not None:
+        print("\n── Never-Fired Hooks (simplification candidates) ───────────────")
+        if never_fired:
+            for name in never_fired:
+                print(f"  {name}")
+        else:
+            print("  (all registered hooks have audit entries — none to report)")
     print()
 
 
-def _render_json(summary: dict, per_hook: list[dict], trend: list[dict]) -> None:
-    """Print JSON payload to stdout."""
+def _render_json(summary: dict, per_hook: list[dict], trend: list[dict],
+                 never_fired: list[str] | None = None) -> None:
+    """Print JSON payload to stdout.
+
+    ``never_fired`` encoding:
+    - ``null``   — inventory unavailable: hooks dir missing/unreadable, OR the
+                   static regex found zero rule names (e.g. all dynamic names).
+                   Automation must treat this as "unknown", not "all hooks fired".
+    - ``[]``     — inventory loaded with ≥1 discovered name and every registered
+                   hook has audit entries in the analysis window
+    - ``[…]``    — inventory loaded with ≥1 discovered name; listed rules have
+                   zero entries in the window (simplification candidates)
+    """
     payload = {
         "summary": summary,
         "per_hook": per_hook,
         "trend": trend,
+        "never_fired": never_fired,
     }
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
@@ -330,6 +425,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--top", type=int, default=15, metavar="N",
         help="Show top-N rules in per-hook table (default 15)",
     )
+    parser.add_argument(
+        "--hooks-dir", type=Path, default=DEFAULT_HOOKS_DIR, metavar="DIR",
+        help="Override hooks directory for never-fired inventory scan (default: hooks/ sibling)",
+    )
     return parser.parse_args(argv)
 
 
@@ -349,10 +448,20 @@ def main(argv: list[str] | None = None) -> int:
     per_hook = _per_hook_metrics(entries, top_n=args.top)
     trend = _trend_analysis(entries)
 
+    inventory = _load_hook_inventory(args.hooks_dir)
+    # inventory is None  → hooks dir absent; never_fired = None (unknown)
+    # inventory is []    → dir exists but zero static names discovered (e.g.
+    #                       dynamic-only or unsupported format); never_fired = None
+    #                       (cannot distinguish from "all hooks fired" — treat as
+    #                       unknown so automation does not misread [] as success)
+    # inventory is [...] → dir exists, ≥1 name found; compute missing set
+    #                       (result may be [] meaning all fired, or [name, …])
+    never_fired = _never_fired_hooks(entries, inventory) if inventory else None
+
     if args.json_out:
-        _render_json(summary, per_hook, trend)
+        _render_json(summary, per_hook, trend, never_fired)
     else:
-        _render_text(summary, per_hook, trend)
+        _render_text(summary, per_hook, trend, never_fired)
 
     return 0
 
