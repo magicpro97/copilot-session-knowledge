@@ -3096,7 +3096,7 @@ def main():
             if len(output) > budget and task_fmt != "json":
                 footer = f"\n[BUDGET {budget} chars / ~{task_budget_tokens} tok — injected ~{task_injected_tokens} tok → hard-truncated to fit]"
                 avail = budget - len(footer)
-                body = output[:max(0, avail)].rsplit("\n", 1)[0] if avail > 0 else ""
+                body = output[: max(0, avail)].rsplit("\n", 1)[0] if avail > 0 else ""
                 output = (body + footer)[:budget]
             elif task_fmt != "json" and task_injected_tokens > task_budget_tokens:
                 footer = f"\n[BUDGET ~{task_budget_tokens} tok — reduced from ~{task_injected_tokens} tok via entry reduction]"
@@ -3289,7 +3289,7 @@ def main():
         if len(output) > budget and fmt not in ("json", "pack") and not subagent_mode:
             footer = f"\n[BUDGET {budget} chars / ~{budget_tokens} tok — injected ~{injected_tokens} tok → hard-truncated to fit]"
             avail = budget - len(footer)
-            body = output[:max(0, avail)].rsplit("\n", 1)[0] if avail > 0 else ""
+            body = output[: max(0, avail)].rsplit("\n", 1)[0] if avail > 0 else ""
             output = (body + footer)[:budget]
         elif fmt not in ("json", "pack") and not subagent_mode and injected_tokens > budget_tokens:
             footer = f"\n[BUDGET ~{budget_tokens} tok — reduced from ~{injected_tokens} tok via entry reduction]"
