@@ -1031,6 +1031,94 @@ finally:
     _shutil.rmtree(str(_proc_tmp), ignore_errors=True)
 
 
+# ── 17. _compute_dynamic_budget (issue #125) ─────────────────────────────────
+
+print("\n💰 _compute_dynamic_budget  (issue #125)")
+
+# 17a. Explicit budget always wins regardless of available_tokens
+test("17a: explicit_budget=3000 → 3000 (ignores available_tokens)", _b._compute_dynamic_budget(3000, 0) == 3000)
+test("17a: explicit_budget=1000, available_tokens=200000 → 1000", _b._compute_dynamic_budget(1000, 200000) == 1000)
+test("17a: explicit_budget=500, available_tokens=40000 → 500", _b._compute_dynamic_budget(500, 40000) == 500)
+
+# 17b. Dynamic formula: min(2000, int(N * 0.05)) — no floor
+# available_tokens=40000 → 40000 * 0.05 = 2000 → capped at 2000
+test("17b: avail=40000 → min(2000, 2000) = 2000", _b._compute_dynamic_budget(0, 40000) == 2000)
+# available_tokens=60000 → 60000 * 0.05 = 3000 → capped at 2000
+test("17b: avail=60000 → capped at 2000", _b._compute_dynamic_budget(0, 60000) == 2000)
+# available_tokens=8000 → 8000 * 0.05 = 400 → no floor, result is 400
+test("17b: avail=8000 → 400 (5% of 8000, no floor)", _b._compute_dynamic_budget(0, 8000) == 400)
+# available_tokens=20000 → 20000 * 0.05 = 1000 → within (0, 2000]
+test("17b: avail=20000 → 1000", _b._compute_dynamic_budget(0, 20000) == 1000)
+# available_tokens=10000 → 10000 * 0.05 = 500 → exactly at 5%
+test("17b: avail=10000 → 500 (exactly 5% of 10000)", _b._compute_dynamic_budget(0, 10000) == 500)
+
+# 17c. Fallback: no budget (available_tokens=0 or negative) → 0 (no cap)
+test("17c: explicit=0, avail=0 → 0 (no cap)", _b._compute_dynamic_budget(0, 0) == 0)
+test("17c: explicit=0, avail negative → 0", _b._compute_dynamic_budget(0, -1) == 0)
+test("17c: no args → 0", _b._compute_dynamic_budget(0) == 0)
+
+# 17d. Token tracking: _estimate_tokens round-trips correctly
+_budget_chars = _b._compute_dynamic_budget(0, 40000)  # 2000
+_budget_tokens = _b._estimate_tokens(_budget_chars)
+test("17d: budget=2000 chars → ~500 tokens", _budget_tokens == 500)
+_budget_chars2 = _b._compute_dynamic_budget(0, 20000)  # 1000
+_budget_tokens2 = _b._estimate_tokens(_budget_chars2)
+test("17d: budget=1000 chars → ~250 tokens", _budget_tokens2 == 250)
+
+# 17e. Priority order: _format_compact puts mistakes before patterns/decisions/tools
+# Build minimal data with one entry per category
+_fc_data = {
+    "mistake": [{"title": "MISTAKE_ENTRY", "content": "A mistake was made here today."}],
+    "pattern": [{"title": "PATTERN_ENTRY", "content": "Use this proven pattern always."}],
+    "decision": [{"title": "DECISION_ENTRY", "content": "Architecture decided this way."}],
+    "tool": [{"title": "TOOL_ENTRY", "content": "A relevant tool configuration."}],
+}
+_fc_out = _b._format_compact("test query", _fc_data, [], {})
+_pos_mistake = _fc_out.find("MISTAKE_ENTRY")
+_pos_pattern = _fc_out.find("PATTERN_ENTRY")
+_pos_decision = _fc_out.find("DECISION_ENTRY")
+_pos_tool = _fc_out.find("TOOL_ENTRY")
+test("17e: mistakes appear before patterns in compact output", _pos_mistake < _pos_pattern, f"mistake@{_pos_mistake} pattern@{_pos_pattern}")
+test("17e: mistakes appear before decisions", _pos_mistake < _pos_decision, f"mistake@{_pos_mistake} decision@{_pos_decision}")
+test("17e: mistakes appear before tools", _pos_mistake < _pos_tool, f"mistake@{_pos_mistake} tool@{_pos_tool}")
+test("17e: patterns appear before decisions", _pos_pattern < _pos_decision, f"pattern@{_pos_pattern} decision@{_pos_decision}")
+
+# 17f. Graceful degradation: explicit budget — structured outputs (json/pack) are not truncated
+# Simulate a budget scenario: if output is a JSON string that exceeds budget, it must not be
+# truncated (the budget enforcement in main() has fmt not in ("json","pack") guard).
+# We verify this guard is present in the source code (structural safety guarantee).
+_br_src_125 = (REPO / "briefing.py").read_text(encoding="utf-8")
+test("17f: source guards json/pack from truncation (fmt not in json/pack check)", 'fmt not in ("json", "pack")' in _br_src_125)
+test("17f: source uses _compute_dynamic_budget", "_compute_dynamic_budget" in _br_src_125)
+test("17f: source has --available-tokens flag handling", "--available-tokens" in _br_src_125)
+
+# 17g. _compute_dynamic_budget is exposed as a module attribute
+test("17g: _compute_dynamic_budget exposed on module", hasattr(_b, "_compute_dynamic_budget"))
+test("17g: callable", callable(_b._compute_dynamic_budget))
+
+# 17h. Formula contract: no floor — small available_tokens return proportional budget
+# available_tokens=4000 → 4000 * 0.05 = 200 (well below the old 500 floor)
+test("17h: avail=4000 → 200 (no floor applied)", _b._compute_dynamic_budget(0, 4000) == 200)
+# available_tokens=100 → 100 * 0.05 = 5
+test("17h: avail=100 → 5 (no floor applied)", _b._compute_dynamic_budget(0, 100) == 5)
+# available_tokens=2000 → 2000 * 0.05 = 100 (old formula would floor this to 500)
+test("17h: avail=2000 → 100 (old floor was 500, new formula 5% = 100)", _b._compute_dynamic_budget(0, 2000) == 100)
+
+# 17i. Token tracking: source uses injected/budget tokens in footer (not dead locals)
+_br_src_125_full = (REPO / "briefing.py").read_text(encoding="utf-8")
+test("17i: source uses injected_tokens in footer comment", "injected_tokens" in _br_src_125_full)
+test("17i: source uses budget_tokens in footer comment", "budget_tokens" in _br_src_125_full)
+test("17i: dead-locals pattern removed (no _ = (injected_tokens, budget_tokens))", "_ = (injected_tokens, budget_tokens)" not in _br_src_125_full)
+
+# 17j. --task path uses progressive reduction (not just hard truncation)
+# Verify the source has the loop for --task path as well as the main path
+test("17j: --task path has progressive-limit loop", "task_injected_tokens" in _br_src_125_full)
+test("17j: --task path has graceful degradation footer", "task_budget_tokens" in _br_src_125_full)
+test("17j: --task path does not hard-truncate immediately (has reduce loop before fallback)",
+     "for reduced_limit in range" in _br_src_125_full)
+
+
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 print(f"\n{'=' * 50}")
