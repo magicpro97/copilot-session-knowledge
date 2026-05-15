@@ -1031,6 +1031,198 @@ finally:
     _shutil.rmtree(str(_proc_tmp), ignore_errors=True)
 
 
+# ── 17. _compute_dynamic_budget (issue #125) ─────────────────────────────────
+
+print("\n💰 _compute_dynamic_budget  (issue #125)")
+
+# 17a. Explicit budget always wins regardless of available_tokens
+test("17a: explicit_budget=3000 → 3000 (ignores available_tokens)", _b._compute_dynamic_budget(3000, 0) == 3000)
+test("17a: explicit_budget=1000, available_tokens=200000 → 1000", _b._compute_dynamic_budget(1000, 200000) == 1000)
+test("17a: explicit_budget=500, available_tokens=40000 → 500", _b._compute_dynamic_budget(500, 40000) == 500)
+
+# 17b. Dynamic formula: min(2000, int(N * 0.05)) — no floor
+# available_tokens=40000 → 40000 * 0.05 = 2000 → capped at 2000
+test("17b: avail=40000 → min(2000, 2000) = 2000", _b._compute_dynamic_budget(0, 40000) == 2000)
+# available_tokens=60000 → 60000 * 0.05 = 3000 → capped at 2000
+test("17b: avail=60000 → capped at 2000", _b._compute_dynamic_budget(0, 60000) == 2000)
+# available_tokens=8000 → 8000 * 0.05 = 400 → no floor, result is 400
+test("17b: avail=8000 → 400 (5% of 8000, no floor)", _b._compute_dynamic_budget(0, 8000) == 400)
+# available_tokens=20000 → 20000 * 0.05 = 1000 → within (0, 2000]
+test("17b: avail=20000 → 1000", _b._compute_dynamic_budget(0, 20000) == 1000)
+# available_tokens=10000 → 10000 * 0.05 = 500 → exactly at 5%
+test("17b: avail=10000 → 500 (exactly 5% of 10000)", _b._compute_dynamic_budget(0, 10000) == 500)
+
+# 17c. Fallback: no budget (available_tokens=0 or negative) → 0 (no cap)
+test("17c: explicit=0, avail=0 → 0 (no cap)", _b._compute_dynamic_budget(0, 0) == 0)
+test("17c: explicit=0, avail negative → 0", _b._compute_dynamic_budget(0, -1) == 0)
+test("17c: no args → 0", _b._compute_dynamic_budget(0) == 0)
+
+# 17d. Token tracking: _estimate_tokens round-trips correctly
+_budget_chars = _b._compute_dynamic_budget(0, 40000)  # 2000
+_budget_tokens = _b._estimate_tokens(_budget_chars)
+test("17d: budget=2000 chars → ~500 tokens", _budget_tokens == 500)
+_budget_chars2 = _b._compute_dynamic_budget(0, 20000)  # 1000
+_budget_tokens2 = _b._estimate_tokens(_budget_chars2)
+test("17d: budget=1000 chars → ~250 tokens", _budget_tokens2 == 250)
+
+# 17e. Priority order: _format_compact puts mistakes before patterns/decisions/tools
+# Build minimal data with one entry per category
+_fc_data = {
+    "mistake": [{"title": "MISTAKE_ENTRY", "content": "A mistake was made here today."}],
+    "pattern": [{"title": "PATTERN_ENTRY", "content": "Use this proven pattern always."}],
+    "decision": [{"title": "DECISION_ENTRY", "content": "Architecture decided this way."}],
+    "tool": [{"title": "TOOL_ENTRY", "content": "A relevant tool configuration."}],
+}
+_fc_out = _b._format_compact("test query", _fc_data, [], {})
+_pos_mistake = _fc_out.find("MISTAKE_ENTRY")
+_pos_pattern = _fc_out.find("PATTERN_ENTRY")
+_pos_decision = _fc_out.find("DECISION_ENTRY")
+_pos_tool = _fc_out.find("TOOL_ENTRY")
+test("17e: mistakes appear before patterns in compact output", _pos_mistake < _pos_pattern, f"mistake@{_pos_mistake} pattern@{_pos_pattern}")
+test("17e: mistakes appear before decisions", _pos_mistake < _pos_decision, f"mistake@{_pos_mistake} decision@{_pos_decision}")
+test("17e: mistakes appear before tools", _pos_mistake < _pos_tool, f"mistake@{_pos_mistake} tool@{_pos_tool}")
+test("17e: patterns appear before decisions", _pos_pattern < _pos_decision, f"pattern@{_pos_pattern} decision@{_pos_decision}")
+
+# 17f. Graceful degradation: explicit budget — structured outputs (json/pack) are not truncated
+# Simulate a budget scenario: if output is a JSON string that exceeds budget, it must not be
+# truncated (the budget enforcement in main() has fmt not in ("json","pack") guard).
+# We verify this guard is present in the source code (structural safety guarantee).
+_br_src_125 = (REPO / "briefing.py").read_text(encoding="utf-8")
+test("17f: source guards json/pack from truncation (fmt not in json/pack check)", 'fmt not in ("json", "pack")' in _br_src_125)
+test("17f: source uses _compute_dynamic_budget", "_compute_dynamic_budget" in _br_src_125)
+test("17f: source has --available-tokens flag handling", "--available-tokens" in _br_src_125)
+
+# 17g. _compute_dynamic_budget is exposed as a module attribute
+test("17g: _compute_dynamic_budget exposed on module", hasattr(_b, "_compute_dynamic_budget"))
+test("17g: callable", callable(_b._compute_dynamic_budget))
+
+# 17h. Formula contract: no floor — small available_tokens return proportional budget
+# available_tokens=4000 → 4000 * 0.05 = 200 (well below the old 500 floor)
+test("17h: avail=4000 → 200 (no floor applied)", _b._compute_dynamic_budget(0, 4000) == 200)
+# available_tokens=100 → 100 * 0.05 = 5
+test("17h: avail=100 → 5 (no floor applied)", _b._compute_dynamic_budget(0, 100) == 5)
+# available_tokens=2000 → 2000 * 0.05 = 100 (old formula would floor this to 500)
+test("17h: avail=2000 → 100 (old floor was 500, new formula 5% = 100)", _b._compute_dynamic_budget(0, 2000) == 100)
+
+# 17i. Token tracking: source uses injected/budget tokens in footer (not dead locals)
+_br_src_125_full = (REPO / "briefing.py").read_text(encoding="utf-8")
+test("17i: source uses injected_tokens in footer comment", "injected_tokens" in _br_src_125_full)
+test("17i: source uses budget_tokens in footer comment", "budget_tokens" in _br_src_125_full)
+test("17i: dead-locals pattern removed (no _ = (injected_tokens, budget_tokens))", "_ = (injected_tokens, budget_tokens)" not in _br_src_125_full)
+
+# 17j. --task path uses progressive reduction (not just hard truncation)
+# Verify the source has the loop for --task path as well as the main path
+test("17j: --task path has progressive-limit loop", "task_injected_tokens" in _br_src_125_full)
+test("17j: --task path has graceful degradation footer", "task_budget_tokens" in _br_src_125_full)
+test("17j: --task path does not hard-truncate immediately (has reduce loop before fallback)",
+     "for reduced_limit in range" in _br_src_125_full)
+
+# 17k. Tight-context bug: available_tokens < 20 must NOT return 0 (which would disable cap)
+print("\n🔒 17k: tight-context _compute_dynamic_budget fix (PR review finding #2)")
+# available_tokens=10 → int(10 * 0.05) = 0 without fix; with fix: max(1, 0) = 1
+test("17k: avail=10 → 1 (budget stays active, not 0)", _b._compute_dynamic_budget(0, 10) == 1)
+# available_tokens=1 → int(1 * 0.05) = 0; with fix: max(1, 0) = 1
+test("17k: avail=1 → 1 (tightest context stays active)", _b._compute_dynamic_budget(0, 1) == 1)
+# available_tokens=19 → int(19 * 0.05) = int(0.95) = 0; with fix: max(1, 0) = 1
+test("17k: avail=19 → 1 (boundary just below avail=20)", _b._compute_dynamic_budget(0, 19) == 1)
+# available_tokens=20 → int(20 * 0.05) = 1; no change needed (max(1,1)=1)
+test("17k: avail=20 → 1 (first value that formula covers without max guard)", _b._compute_dynamic_budget(0, 20) == 1)
+# Verify existing tests still pass (no floor for larger values)
+test("17k: avail=100 → 5 (proportional, no floor)", _b._compute_dynamic_budget(0, 100) == 5)
+test("17k: avail=0 → 0 (no-cap preserved when no context given)", _b._compute_dynamic_budget(0, 0) == 0)
+
+# 17l. Footer-budget safety: final emitted output must not exceed the enforced cap
+print("\n📏 17l: footer-budget safety (PR review finding #1)")
+# Verify source uses footer-length-aware truncation (reserves room before adding footer)
+test("17l: main path reserves footer length before truncating (avail = budget - len(footer))",
+     "avail = budget - len(footer)" in _br_src_125_full)
+test("17l: --task path reserves footer length before truncating",
+     # The task path uses the same pattern
+     _br_src_125_full.count("avail = budget - len(footer)") >= 2)
+test("17l: entry-reduction footer only added when it fits (len check)",
+     "len(output) + len(footer) <= budget" in _br_src_125_full)
+
+# 17m. --task --available-tokens behavioral CLI test (end-to-end through main()/CLI parsing)
+# Root cause of CI-only failure: get_db() calls sys.exit(1) when knowledge.db is absent,
+# so the subprocess exited 1 on Linux CI (no live DB) but 0 locally (live DB present).
+# Fix: use an isolated temp HOME with a minimal fixture DB so the subprocess is deterministic
+# on any machine regardless of ambient ~/.copilot/session-state/knowledge.db presence.
+print("\n🔧 17m: --task --available-tokens CLI behavioral test (PR review finding #3)")
+import subprocess as _sp
+
+_17m_home = Path(tempfile.mkdtemp(prefix="test-17m-"))
+try:
+    # Build minimal fixture DB: knowledge_entries + documents (empty tables).
+    # This satisfies get_db() and generate_task_briefing() without any real data.
+    # ke_fts (FTS5) is optional — OperationalError is caught in briefing.py.
+    _17m_db_dir = _17m_home / ".copilot" / "session-state"
+    _17m_db_dir.mkdir(parents=True, exist_ok=True)
+    _17m_conn = sqlite3.connect(str(_17m_db_dir / "knowledge.db"))
+    _17m_conn.execute(
+        "CREATE TABLE knowledge_entries ("
+        "id INTEGER PRIMARY KEY, category TEXT, title TEXT, content TEXT,"
+        " confidence REAL, affected_files TEXT, tags TEXT, occurrence_count INTEGER,"
+        " task_id TEXT, document_id INTEGER, source_section TEXT,"
+        " source_file TEXT, start_line INTEGER, end_line INTEGER,"
+        " code_language TEXT, code_snippet TEXT)"
+    )
+    _17m_conn.execute(
+        "CREATE TABLE documents ("
+        "id INTEGER PRIMARY KEY, doc_type TEXT, title TEXT, file_path TEXT, seq INTEGER)"
+    )
+    _17m_conn.commit()
+    _17m_conn.close()
+
+    _17m_env = os.environ.copy()
+    _17m_env["HOME"] = str(_17m_home)
+    _17m_env["USERPROFILE"] = str(_17m_home)
+
+    # Tight budget: available_tokens=400 → budget = max(1, min(2000, int(400*0.05))) = 20 chars
+    _task_budget_result = _sp.run(
+        [sys.executable, str(_briefing_py), "--task", "nonexistent-test-task-id-17m",
+         "--available-tokens", "400"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=30, cwd=str(REPO), env=_17m_env,
+    )
+    test(
+        "17m: --task --available-tokens exits 0 (fixture DB present, deterministic on CI)",
+        _task_budget_result.returncode == 0,
+        f"rc={_task_budget_result.returncode} stderr={_task_budget_result.stderr[:300]}",
+    )
+    _task_budget_output = _task_budget_result.stdout
+    # With empty DB: no entries → output is empty or a "no entries" notice.
+    # Budget is 20 chars; any output must respect that cap or be empty.
+    test(
+        "17m: --task --available-tokens output ≤ 20 chars OR empty (budget enforced)",
+        len(_task_budget_output.strip()) == 0
+        or len(_task_budget_output) <= 20
+        or "[BUDGET" in _task_budget_output,
+        f"len={len(_task_budget_output)} out={_task_budget_output[:100]}",
+    )
+
+    # Large budget: available_tokens=40000 → budget = min(2000, 2000) = 2000 chars
+    _task_large_result = _sp.run(
+        [sys.executable, str(_briefing_py), "--task", "nonexistent-test-task-id-17m",
+         "--available-tokens", "40000"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=30, cwd=str(REPO), env=_17m_env,
+    )
+    test(
+        "17m: --task --available-tokens 40000 exits 0",
+        _task_large_result.returncode == 0,
+        f"rc={_task_large_result.returncode} stderr={_task_large_result.stderr[:300]}",
+    )
+    _task_large_output = _task_large_result.stdout
+    # Budget = 2000 chars; output must be ≤ 2000 or empty (no data in fixture DB)
+    test(
+        "17m: --task large available-tokens output ≤ 2000 chars",
+        len(_task_large_output.strip()) == 0 or len(_task_large_output) <= 2000,
+        f"len={len(_task_large_output)} out={_task_large_output[:100]}",
+    )
+finally:
+    _shutil.rmtree(str(_17m_home), ignore_errors=True)
+
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 print(f"\n{'=' * 50}")

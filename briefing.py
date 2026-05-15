@@ -20,15 +20,19 @@ Usage:
     python briefing.py --wing backend                     # Filter by wing
     python briefing.py --titles-only                      # Progressive disclosure layer 1 (~10 tok/entry)
     python briefing.py --titles-only --limit 20           # More entries in titles mode
-    python briefing.py "task desc" --budget 3000           # Cap output to 3000 chars (frozen snapshot)
+    python briefing.py "task desc" --budget 3000           # Cap output to 3000 chars (explicit override)
     python briefing.py --task "memory-surface"              # Task-scoped recall for a task ID
     python briefing.py "project" --budget 2000 --session-start  # sessionStart: Level 0 skill index + briefing
+    python briefing.py "task" --available-tokens 40000     # Dynamic budget: 5% of context (≤2000 chars)
 
 Default output is compact (~500 tokens): titles + 1-line summaries with entry IDs.
 Use --titles-only for ultra-compact index (~10 tokens/entry). Then --detail <id> for full.
 Use --wakeup for ultra-compact AI wake-up context (~170 tokens).
 Use --full for complete content with tags, confidence scores, and full text.
 Use --session-start (hook callers only) to prepend the Level 0 installed-skill index.
+Use --available-tokens N to let briefing compute an effective budget dynamically from
+context pressure (5% of N, capped at 2000 chars/~500 tokens) so output adapts to
+context pressure automatically. Explicit --budget always takes precedence over --available-tokens.
 """
 
 import datetime
@@ -267,6 +271,29 @@ def _detect_session_id() -> str:
 
 def _estimate_tokens(output_chars: int) -> int:
     return int(math.ceil(output_chars / 4)) if output_chars > 0 else 0
+
+
+def _compute_dynamic_budget(explicit_budget: int, available_tokens: int = 0) -> int:
+    """Compute effective char-budget for briefing output (issue #125).
+
+    Priority order:
+      1. If ``explicit_budget > 0``, return it unchanged (caller override wins).
+      2. If ``available_tokens > 0``, derive: min(2000, int(available_tokens * 0.05)).
+         This reserves at most 5% of the estimated context window for briefing output,
+         capped at 2000 chars (~500 tokens). No floor is applied — very small contexts
+         receive proportionally small budgets.
+      3. Otherwise return 0 (no budget cap — existing behaviour preserved).
+
+    ``available_tokens`` is accepted from the caller via ``--available-tokens N``; briefing
+    does not probe the context window itself, keeping the function deterministic and testable.
+    """
+    if explicit_budget > 0:
+        return explicit_budget
+    if available_tokens > 0:
+        # max(1, ...) ensures budget stays active (>0) even for very small contexts
+        # where int(available_tokens * 0.05) would round to 0 (i.e., available_tokens < 20).
+        return max(1, min(2000, int(available_tokens * 0.05)))
+    return 0
 
 
 def _record_recall_event(
@@ -3029,21 +3056,52 @@ def main():
             idx2 = args.index("--limit")
             limit = int(args[idx2 + 1]) if idx2 + 1 < len(args) else 30
         task_fmt = "json" if "--json" in args else "text"
-        budget = 0
+        task_explicit_budget = 0
         if "--budget" in args:
             idx3 = args.index("--budget")
             try:
-                budget = int(args[idx3 + 1]) if idx3 + 1 < len(args) else 3000
+                task_explicit_budget = int(args[idx3 + 1]) if idx3 + 1 < len(args) else 3000
             except ValueError:
-                budget = 3000
+                task_explicit_budget = 3000
+        task_avail_tokens = 0
+        if "--available-tokens" in args:
+            idx4 = args.index("--available-tokens")
+            if idx4 + 1 < len(args) and not args[idx4 + 1].startswith("--"):
+                try:
+                    task_avail_tokens = int(args[idx4 + 1])
+                except ValueError:
+                    task_avail_tokens = 0
+        budget = _compute_dynamic_budget(task_explicit_budget, task_avail_tokens)
         task_meta = None
         if task_fmt == "json":
             output, task_meta = generate_task_briefing(task_id, limit=limit, fmt=task_fmt, with_meta=True)
         else:
             output = generate_task_briefing(task_id, limit=limit, fmt=task_fmt)
-        if budget > 0 and len(output) > budget and task_fmt != "json":
-            output = output[:budget].rsplit("\n", 1)[0]
-            output += f"\n[BUDGET {budget} chars — showing highest-confidence entries only]"
+        if budget > 0 and len(output) > budget:
+            # Token tracking: measure initial injected size before reduction.
+            task_injected_tokens = _estimate_tokens(len(output))
+            task_budget_tokens = _estimate_tokens(budget)
+            # Progressive limit reduction: keep complete entries, highest-confidence first.
+            # Mirrors the main-path degradation strategy so --task is not a second-class path.
+            for reduced_limit in range(max(1, limit - 1), 0, -1):
+                if task_fmt == "json":
+                    output, task_meta = generate_task_briefing(
+                        task_id, limit=reduced_limit, fmt=task_fmt, with_meta=True
+                    )
+                else:
+                    output = generate_task_briefing(task_id, limit=reduced_limit, fmt=task_fmt)
+                if len(output) <= budget:
+                    break
+            # Final fallback: line-boundary truncation for text only (never JSON).
+            if len(output) > budget and task_fmt != "json":
+                footer = f"\n[BUDGET {budget} chars / ~{task_budget_tokens} tok — injected ~{task_injected_tokens} tok → hard-truncated to fit]"
+                avail = budget - len(footer)
+                body = output[: max(0, avail)].rsplit("\n", 1)[0] if avail > 0 else ""
+                output = (body + footer)[:budget]
+            elif task_fmt != "json" and task_injected_tokens > task_budget_tokens:
+                footer = f"\n[BUDGET ~{task_budget_tokens} tok — reduced from ~{task_injected_tokens} tok via entry reduction]"
+                if len(output) + len(footer) <= budget:
+                    output += footer
         if task_fmt == "json" and isinstance(task_meta, dict):
             _record_recall_event(
                 event_kind="recall",
@@ -3120,11 +3178,18 @@ def main():
         query = auto_detect_context()
         print(f"[briefing] auto-detected: {query}", file=sys.stderr)
     else:
-        # Filter out values that follow flags (including --budget) by argument
+        # Filter out values that follow flags (including --budget, --available-tokens) by argument
         # position, so query terms matching those values are preserved.
         consumed_value_indices = set()
         for i, a in enumerate(args):
-            if a in ("--format", "--limit", "--min-confidence", "--budget", "--mode") and i + 1 < len(args):
+            if a in (
+                "--format",
+                "--limit",
+                "--min-confidence",
+                "--budget",
+                "--mode",
+                "--available-tokens",
+            ) and i + 1 < len(args):
                 consumed_value_indices.add(i + 1)
         query_parts = [
             a
@@ -3139,18 +3204,29 @@ def main():
         print("Error: Provide a task description or use --auto")
         return
 
-    # Memory budget: cap output to N chars (Hermes frozen snapshot pattern)
-    # Budget-aware: reduce limit progressively to fit, rather than dumb truncation
-    budget = 0
+    # Memory budget: cap output to N chars (issue #125 dynamic-budget path).
+    # --budget N overrides everything (explicit caller cap).
+    # --available-tokens N enables dynamic sizing: min(2000, N * 0.05).
+    # No flags → budget=0 (no cap, existing behaviour preserved).
+    explicit_budget = 0
     if "--budget" in args:
         idx = args.index("--budget")
         if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
             try:
-                budget = int(args[idx + 1])
+                explicit_budget = int(args[idx + 1])
             except ValueError:
-                budget = 3000  # default on non-numeric value
+                explicit_budget = 3000  # default on non-numeric value
         else:
-            budget = 3000
+            explicit_budget = 3000
+    available_tokens = 0
+    if "--available-tokens" in args:
+        idx = args.index("--available-tokens")
+        if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+            try:
+                available_tokens = int(args[idx + 1])
+            except ValueError:
+                available_tokens = 0
+    budget = _compute_dynamic_budget(explicit_budget, available_tokens)
 
     if subagent_mode:
         infer_auto_mode = mode_explicit
@@ -3172,6 +3248,14 @@ def main():
         )
 
     if budget > 0 and len(output) > budget:
+        # Token tracking (issue #125): measure injected size before committing output.
+        # _estimate_tokens converts chars to approximate token count (ceil(chars/4)).
+        # Priority order for degradation: mistakes + blast_radius (highest) stay visible
+        # longest; patterns/decisions/tools degrade next; past_work/file_index last.
+        # This ordering is already encoded in _format_compact and generate_briefing's
+        # category ordering — progressive limit reduction respects it automatically.
+        injected_tokens = _estimate_tokens(len(output))
+        budget_tokens = _estimate_tokens(budget)
         # Smart budget: re-generate with progressively fewer entries until it fits.
         # This ensures we keep COMPLETE entries (not half-cut ones) and the most
         # relevant entries are preserved (search is ordered by confidence + relevance).
@@ -3202,9 +3286,15 @@ def main():
         # JSON and subagent-context (XML-like) output are not truncated — that
         # would corrupt their structure.  Those formats must fit within budget
         # via the progressive-limit loop above.
-        if len(output) > budget and fmt not in ("json", "pack"):
-            output = output[:budget].rsplit("\n", 1)[0]
-            output += f"\n[BUDGET {budget} chars — showing highest-confidence entries only]"
+        if len(output) > budget and fmt not in ("json", "pack") and not subagent_mode:
+            footer = f"\n[BUDGET {budget} chars / ~{budget_tokens} tok — injected ~{injected_tokens} tok → hard-truncated to fit]"
+            avail = budget - len(footer)
+            body = output[: max(0, avail)].rsplit("\n", 1)[0] if avail > 0 else ""
+            output = (body + footer)[:budget]
+        elif fmt not in ("json", "pack") and not subagent_mode and injected_tokens > budget_tokens:
+            footer = f"\n[BUDGET ~{budget_tokens} tok — reduced from ~{injected_tokens} tok via entry reduction]"
+            if len(output) + len(footer) <= budget:
+                output += footer
 
     if (not subagent_mode) and isinstance(output_meta, dict):
         _record_recall_event(

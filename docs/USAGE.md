@@ -419,7 +419,7 @@ brief --task "memory-surface" --json # Includes source_document + code-location/
 brief "fix Docker" --json            # JSON output for programmatic use
 ```
 
-Token-distillation flags: `--compact` produces an XML compact block; `--budget N` hard-caps output to N characters (frozen snapshot, highest-confidence entries first); `--titles-only` gives ~10 tok/entry for progressive disclosure.
+Token-distillation flags: `--compact` produces an XML compact block; `--budget N` hard-caps output to N characters (explicit override, highest-confidence entries first); `--available-tokens N` enables dynamic budget sizing — N is a token count; for positive N briefing derives a char budget of `max(1, min(2000, int(N * 0.05)))` chars (~5% of available tokens, capped at 2000 chars/~500 tokens) so output adapts to context pressure automatically; N=0 disables the dynamic cap; `--titles-only` gives ~10 tok/entry for progressive disclosure.  `--budget` always takes precedence over `--available-tokens`.
 
 For tentacle delegation, prefer `tentacle.py ... --briefing`: it injects bounded `[KNOWLEDGE EVIDENCE]` from task-scoped JSON recall first, then `--pack` fallback when task recall is empty. Bullets stay unchanged; runtime may add one optional bounded `From:` provenance line. Keep `--for-subagent` for manual compatibility and ad hoc prompts.
 
