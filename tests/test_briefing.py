@@ -1143,33 +1143,84 @@ test("17l: entry-reduction footer only added when it fits (len check)",
      "len(output) + len(footer) <= budget" in _br_src_125_full)
 
 # 17m. --task --available-tokens behavioral CLI test (end-to-end through main()/CLI parsing)
+# Root cause of CI-only failure: get_db() calls sys.exit(1) when knowledge.db is absent,
+# so the subprocess exited 1 on Linux CI (no live DB) but 0 locally (live DB present).
+# Fix: use an isolated temp HOME with a minimal fixture DB so the subprocess is deterministic
+# on any machine regardless of ambient ~/.copilot/session-state/knowledge.db presence.
 print("\n🔧 17m: --task --available-tokens CLI behavioral test (PR review finding #3)")
 import subprocess as _sp
 
-_task_budget_result = _sp.run(
-    [sys.executable, str(_briefing_py), "--task", "nonexistent-test-task-id-17m", "--available-tokens", "400"],
-    capture_output=True, text=True, timeout=30
-)
-# Should exit 0 or gracefully (not crash on budget parsing)
-test("17m: --task --available-tokens exits without crash", _task_budget_result.returncode == 0)
-_task_budget_output = _task_budget_result.stdout
-# budget = max(1, min(2000, int(400 * 0.05))) = max(1, min(2000, 20)) = 20 chars
-# Output should not exceed 20 chars (or should be gracefully empty/within budget)
-test("17m: --task --available-tokens output length ≤ computed budget (20 chars) OR empty",
-     len(_task_budget_output) <= 20 or len(_task_budget_output) == 0 or
-     # If DB has data, it may degrade to minimal. Accept outputs that contain BUDGET footer.
-     "[BUDGET" in _task_budget_output or len(_task_budget_output.strip()) == 0)
+_17m_home = Path(tempfile.mkdtemp(prefix="test-17m-"))
+try:
+    # Build minimal fixture DB: knowledge_entries + documents (empty tables).
+    # This satisfies get_db() and generate_task_briefing() without any real data.
+    # ke_fts (FTS5) is optional — OperationalError is caught in briefing.py.
+    _17m_db_dir = _17m_home / ".copilot" / "session-state"
+    _17m_db_dir.mkdir(parents=True, exist_ok=True)
+    _17m_conn = sqlite3.connect(str(_17m_db_dir / "knowledge.db"))
+    _17m_conn.execute(
+        "CREATE TABLE knowledge_entries ("
+        "id INTEGER PRIMARY KEY, category TEXT, title TEXT, content TEXT,"
+        " confidence REAL, affected_files TEXT, tags TEXT, occurrence_count INTEGER,"
+        " task_id TEXT, document_id INTEGER, source_section TEXT,"
+        " source_file TEXT, start_line INTEGER, end_line INTEGER,"
+        " code_language TEXT, code_snippet TEXT)"
+    )
+    _17m_conn.execute(
+        "CREATE TABLE documents ("
+        "id INTEGER PRIMARY KEY, doc_type TEXT, title TEXT, file_path TEXT, seq INTEGER)"
+    )
+    _17m_conn.commit()
+    _17m_conn.close()
 
-# Also test with a large available-tokens value: budget=2000, output must be ≤2000
-_task_large_result = _sp.run(
-    [sys.executable, str(_briefing_py), "--task", "nonexistent-test-task-id-17m", "--available-tokens", "40000"],
-    capture_output=True, text=True, timeout=30
-)
-test("17m: --task --available-tokens 40000 exits without crash", _task_large_result.returncode == 0)
-_task_large_output = _task_large_result.stdout
-# Budget = 2000; output must be ≤ 2000 chars (or empty/no data)
-test("17m: --task large available-tokens output ≤ 2000 chars",
-     len(_task_large_output) <= 2000 or len(_task_large_output.strip()) == 0)
+    _17m_env = os.environ.copy()
+    _17m_env["HOME"] = str(_17m_home)
+    _17m_env["USERPROFILE"] = str(_17m_home)
+
+    # Tight budget: available_tokens=400 → budget = max(1, min(2000, int(400*0.05))) = 20 chars
+    _task_budget_result = _sp.run(
+        [sys.executable, str(_briefing_py), "--task", "nonexistent-test-task-id-17m",
+         "--available-tokens", "400"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=30, cwd=str(REPO), env=_17m_env,
+    )
+    test(
+        "17m: --task --available-tokens exits 0 (fixture DB present, deterministic on CI)",
+        _task_budget_result.returncode == 0,
+        f"rc={_task_budget_result.returncode} stderr={_task_budget_result.stderr[:300]}",
+    )
+    _task_budget_output = _task_budget_result.stdout
+    # With empty DB: no entries → output is empty or a "no entries" notice.
+    # Budget is 20 chars; any output must respect that cap or be empty.
+    test(
+        "17m: --task --available-tokens output ≤ 20 chars OR empty (budget enforced)",
+        len(_task_budget_output.strip()) == 0
+        or len(_task_budget_output) <= 20
+        or "[BUDGET" in _task_budget_output,
+        f"len={len(_task_budget_output)} out={_task_budget_output[:100]}",
+    )
+
+    # Large budget: available_tokens=40000 → budget = min(2000, 2000) = 2000 chars
+    _task_large_result = _sp.run(
+        [sys.executable, str(_briefing_py), "--task", "nonexistent-test-task-id-17m",
+         "--available-tokens", "40000"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=30, cwd=str(REPO), env=_17m_env,
+    )
+    test(
+        "17m: --task --available-tokens 40000 exits 0",
+        _task_large_result.returncode == 0,
+        f"rc={_task_large_result.returncode} stderr={_task_large_result.stderr[:300]}",
+    )
+    _task_large_output = _task_large_result.stdout
+    # Budget = 2000 chars; output must be ≤ 2000 or empty (no data in fixture DB)
+    test(
+        "17m: --task large available-tokens output ≤ 2000 chars",
+        len(_task_large_output.strip()) == 0 or len(_task_large_output) <= 2000,
+        f"len={len(_task_large_output)} out={_task_large_output[:100]}",
+    )
+finally:
+    _shutil.rmtree(str(_17m_home), ignore_errors=True)
 
 
 # ── Summary ──────────────────────────────────────────────────────────────────
