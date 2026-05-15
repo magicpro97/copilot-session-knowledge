@@ -25,6 +25,11 @@ sk skill-suggest                         # → skill-suggest.py
 sk skill-suggest --min-occurrences 3 --format json
 sk skill-patch path/to/SKILL.md --old "old text" --new "new text"  # → skill-patch.py
 sk skill-patch path/to/SKILL.md --old "old text" --new "new text" --replace-all
+sk skill-curator list                        # → skill-curator.py list
+sk skill-curator archive --dry-run           # archive stale skills (preview)
+sk skill-curator pin <skill>                 # pin a skill (prevent archiving)
+sk skill-curator unpin <skill>               # unpin a skill
+sk skill-curator restore <skill>             # restore an archived skill
 sk audit-hooks                               # → audit-hooks.py
 sk audit-hooks --json
 sk audit-hooks --days 7
@@ -158,6 +163,57 @@ python skill-metrics.py   # shows patch_history section when records exist
 ```
 
 > Direct-script form: `python skill-patch.py path/to/SKILL.md --old "..." --new "..." [opts]`
+
+### `sk skill-curator` — skill lifecycle manager
+
+Manages the lifecycle of installed Agent Skills: classify by usage recency, pin
+important skills, archive stale ones (with backup), and restore archived skills.
+Usage data is read from `skill-metrics.db` (`skill_usage_events` table).
+
+**States:**
+- `active` — used within the last `--stale-days` days (default 30)
+- `stale` — unused for `--stale-days`..`--archive-days` (default 30–90 days)
+- `archived` — moved to `skills/.archive/<name>/`; a backup is written first
+
+**Pinning:** a pinned skill is never archived.  Pin marker: `<skills>/<name>/.pinned`.
+
+```bash
+# List all skills with their current status
+sk skill-curator list
+sk skill-curator list --json                   # machine-readable JSON
+
+# Archive stale/archived-candidate skills
+sk skill-curator archive                       # execute archiving
+sk skill-curator archive --dry-run             # preview only; zero writes
+sk skill-curator archive --stale-days 14       # override stale threshold
+sk skill-curator archive --archive-days 60     # override archive threshold
+sk skill-curator archive --dry-run --json      # JSON preview
+
+# Pin / unpin a skill (prevents archiving)
+sk skill-curator pin   my-skill
+sk skill-curator unpin my-skill
+
+# Restore an archived skill
+sk skill-curator restore my-skill
+sk skill-curator restore my-skill --dry-run    # preview restore; zero writes
+```
+
+**Global flags** (apply to all subcommands):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--skills-dir PATH` | `./skills` | Override skills directory |
+| `--db PATH` | `~/.copilot/session-state/skill-metrics.db` | Override metrics DB path |
+| `--stale-days N` | 30 | Inactivity days before a skill is stale |
+| `--archive-days N` | 90 | Inactivity days before a skill is an archive candidate |
+| `--dry-run` | off | Show what would happen; perform **zero** writes |
+| `--json` | off | Emit machine-readable JSON output |
+
+**Backup layout:** before any archive move, a backup is written to
+`skills/.archive/.<name>.bak.<YYYYMMDDTHHMMSSz>/`.  The archive move is
+aborted if `skills/.archive/<name>` already exists (collision guard).
+
+> Direct-script form: `python skill-curator.py [list|archive|pin|unpin|restore] [args...]`
 
 ### `sk audit-hooks` — hook effectiveness audit
 
