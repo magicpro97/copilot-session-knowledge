@@ -34,6 +34,7 @@ Usage:
     sk skill-suggest [<args>...]      Run skill-suggest.py
     sk skill-patch  [<args>...]       Run skill-patch.py
     sk skill-curator [<args>...]      Run skill-curator.py
+    sk skill catalog|add|remove [<args>...]  Run skill-catalog.py
     sk hooks        run|list|<event>  Run hooks/hook_runner.py
     sk audit-hooks  [<args>...]       Run audit-hooks.py
     sk audit-instructions [<args>...] Run audit-instructions.py
@@ -152,6 +153,11 @@ _GROUPS: dict[str, dict[str, str]] = {
         "add": "project-registry.py",
         "remove": "project-registry.py",
         "list": "project-registry.py",
+    },
+    "skill": {
+        "catalog": "skill-catalog.py",
+        "add": "skill-catalog.py",
+        "remove": "skill-catalog.py",
     },
 }
 
@@ -278,6 +284,29 @@ def _run_constitution(extra_args: list[str]) -> int:
     return _run("constitution.py", extra_args)
 
 
+def _run_skill(extra_args: list[str]) -> int:
+    """Dispatch ``sk skill ...`` to skill-catalog.py.
+
+    All subcommands (catalog / add / remove) are forwarded as the first positional
+    argument so skill-catalog.py's argparse sub-parser can route them correctly.
+    """
+    if not extra_args or extra_args[0] in ("-h", "--help"):
+        subs = list(_GROUPS["skill"].keys())
+        print(f"sk skill: available subcommands: {', '.join(subs)}")
+        print(f"Usage: sk skill <{'|'.join(subs)}> [args...]")
+        return 0
+    sub = extra_args[0]
+    if sub not in _GROUPS["skill"]:
+        subs = list(_GROUPS["skill"].keys())
+        print(
+            f"sk skill: unknown subcommand '{sub}'. Choose from: {', '.join(subs)}",
+            file=sys.stderr,
+        )
+        return 2
+    # Forward ALL args including the subcommand to skill-catalog.py
+    return _run("skill-catalog.py", extra_args)
+
+
 def _run_spec_phase(phase: str, extra_args: list[str]) -> int:
     """Dispatch ``sk plan`` / ``sk tasks`` through specify.py."""
     return _run("specify.py", [phase] + extra_args)
@@ -317,6 +346,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_project(rest)
     if cmd == "constitution":
         return _run_constitution(rest)
+    if cmd == "skill":
+        return _run_skill(rest)
     if cmd in {"plan", "tasks"}:
         return _run_spec_phase(cmd, rest)
     if cmd == "doctor":

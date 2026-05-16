@@ -206,6 +206,7 @@ TOOL_FILES = [
     "sync-gateway.py",
     "generate-summary.py",
     "sk.py",
+    "skill-catalog.py",
     "install.py",
 ]
 
@@ -214,6 +215,10 @@ SUPPORT_FILES = [
     "KNOWLEDGE.md",
     "embedding-config.json",
     "pyproject.toml",
+]
+
+SUPPORT_DIRS = [
+    "skills",
 ]
 
 # Managed sk launcher directory (cross-platform: ~/.copilot/bin/)
@@ -249,6 +254,51 @@ def _count_scripts(d: Path) -> int:
     if not d.is_dir():
         return 0
     return sum(1 for f in d.iterdir() if f.suffix == ".py")
+
+
+def _support_dir_files(base_dir: Path) -> list[Path]:
+    """Return managed files under support directories."""
+    files: list[Path] = []
+    for rel_dir in SUPPORT_DIRS:
+        root = base_dir / rel_dir
+        if not root.is_dir():
+            continue
+        files.extend(sorted(p for p in root.rglob("*") if p.is_file()))
+    return files
+
+
+def _prune_empty_dir(root: Path) -> None:
+    """Remove an empty directory tree from the bottom up."""
+    if not root.is_dir():
+        return
+    for child in sorted((p for p in root.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+        try:
+            child.rmdir()
+        except OSError:
+            pass
+    try:
+        root.rmdir()
+    except OSError:
+        pass
+
+
+def _replace_support_dir(src_dir: Path, dst_dir: Path) -> None:
+    """Refresh a bundled support directory via staged same-volume renames."""
+    staging_dir = dst_dir.with_name(dst_dir.name + ".new")
+    backup_dir = dst_dir.with_name(dst_dir.name + ".old")
+    shutil.rmtree(staging_dir, ignore_errors=True)
+    shutil.rmtree(backup_dir, ignore_errors=True)
+    shutil.copytree(str(src_dir), str(staging_dir))
+    try:
+        if dst_dir.exists():
+            os.replace(str(dst_dir), str(backup_dir))
+        os.replace(str(staging_dir), str(dst_dir))
+    except Exception:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        if backup_dir.exists() and not dst_dir.exists():
+            os.replace(str(backup_dir), str(dst_dir))
+        raise
+    shutil.rmtree(backup_dir, ignore_errors=True)
 
 
 MANAGED_MANIFEST_VERSION = "1.0.0"
@@ -1444,6 +1494,7 @@ def uninstall() -> int:
         p = TOOLS_DIR / f
         if p.is_file():
             managed_files.append(p)
+    managed_files.extend(_support_dir_files(TOOLS_DIR))
 
     removable, preserved_modified, preserved_untracked = _partition_manifest_removals(managed_files)
     runtime_removable: list[Path] = []
@@ -1523,6 +1574,8 @@ def uninstall() -> int:
 
     if removable:
         _forget_managed_paths(removable)
+    for rel_dir in SUPPORT_DIRS:
+        _prune_empty_dir(TOOLS_DIR / rel_dir)
 
     if TOOLS_DIR.is_dir():
         remaining = list(TOOLS_DIR.iterdir())
@@ -1569,10 +1622,22 @@ def install():
                 shutil.copy2(str(src), str(dst))
                 managed_paths.append(dst)
                 copied += 1
+        copied_support_dirs = 0
+        for rel_dir in SUPPORT_DIRS:
+            src_dir = source_dir / rel_dir
+            dst_dir = TOOLS_DIR / rel_dir
+            if not src_dir.is_dir():
+                continue
+            _replace_support_dir(src_dir, dst_dir)
+            copied_support_dirs += 1
         print(f"  {OK} Copied {copied} files")
+        if copied_support_dirs:
+            noun = "directory" if copied_support_dirs == 1 else "directories"
+            print(f"  {OK} Copied {copied_support_dirs} support {noun}")
     else:
         managed_paths.extend([TOOLS_DIR / f for f in TOOL_FILES + SUPPORT_FILES if (TOOLS_DIR / f).is_file()])
         print(f"  {OK} Scripts already in place")
+    managed_paths.extend(_support_dir_files(TOOLS_DIR))
 
     print("\n  Building knowledge index...")
     if SESSION_STATE.is_dir():
