@@ -43,6 +43,7 @@ browse-ui/tsconfig.tsbuildinfo
 browse-ui/.env.local
 browse-ui/.env*.local
 browse-ui/.turbo/
+remote-terminal/node_modules/
 
 publish.ps1
 
