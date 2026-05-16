@@ -19,9 +19,21 @@ const DEFAULT_HOST = "0.0.0.0";
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
 const DEFAULT_TERM = "xterm-256color";
+const DEFAULT_TUNNEL_RETRY_BASE_MS = 1000;
+const DEFAULT_TUNNEL_RETRY_MAX_MS = 30000;
+const DEFAULT_TUNNEL_VERIFY_ATTEMPTS = 12;
+const DEFAULT_TUNNEL_VERIFY_DELAY_MS = 5000;
 const PUBLIC_DIR = path.join(__dirname, "public");
 const XTERM_DIR = path.dirname(require.resolve("@xterm/xterm/package.json"));
 const XTERM_ADDON_DIR = path.dirname(require.resolve("@xterm/addon-fit/package.json"));
+const TUNNEL_STATES = Object.freeze({
+  STOPPED: "STOPPED",
+  PREPARING: "PREPARING",
+  CONNECTING: "CONNECTING",
+  TUNNELING: "TUNNELING",
+  VERIFYING: "VERIFYING",
+  READY: "READY",
+});
 
 function parseBoolean(value) {
   if (value === undefined || value === null) {
@@ -130,38 +142,153 @@ function renderQrCode(url, { label, logger, qrWriter }) {
   });
 }
 
-function createTunnel(localTarget, token, { logger, qrWriter, setPublicUrl, setTunnelError, tunnelFactory }) {
+function createNoopSpinner() {
+  return {
+    isSpinning: false,
+    text: "",
+    start(text) {
+      this.isSpinning = true;
+      if (text) {
+        this.text = text;
+      }
+      return this;
+    },
+    stop() {
+      this.isSpinning = false;
+      return this;
+    },
+    succeed(text) {
+      this.isSpinning = false;
+      if (text) {
+        this.text = text;
+      }
+      return this;
+    },
+    warn(text) {
+      this.isSpinning = false;
+      if (text) {
+        this.text = text;
+      }
+      return this;
+    },
+    fail(text) {
+      this.isSpinning = false;
+      if (text) {
+        this.text = text;
+      }
+      return this;
+    },
+  };
+}
+
+async function createSpinner(spinnerFactory) {
+  if (spinnerFactory) {
+    return spinnerFactory();
+  }
+
+  const { default: ora } = await import("ora");
+  return ora({
+    discardStdin: false,
+    text: `[${TUNNEL_STATES.STOPPED}] Tunnel idle`,
+  });
+}
+
+function formatRetryDelay(delayMs) {
+  if (delayMs >= 1000) {
+    const seconds = delayMs / 1000;
+    return Number.isInteger(seconds) ? `${seconds}s` : `${seconds.toFixed(1)}s`;
+  }
+
+  return `${delayMs}ms`;
+}
+
+function sleep(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function defaultVerifyTunnel(publicAccessUrl, options = {}) {
+  const attempts = options.attempts ?? DEFAULT_TUNNEL_VERIFY_ATTEMPTS;
+  const delayMs = options.delayMs ?? DEFAULT_TUNNEL_VERIFY_DELAY_MS;
+  const healthUrl = new URL("health", stripTokenFromUrl(publicAccessUrl)).toString();
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (options.onProgress) {
+      options.onProgress(attempt, attempts, healthUrl);
+    }
+
+    try {
+      const response = await fetch(healthUrl, { method: "GET" });
+      if (!response.ok) {
+        throw new Error(`health check returned HTTP ${response.status}`);
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        await sleep(delayMs);
+      }
+    }
+  }
+
+  throw lastError || new Error("Tunnel verification failed");
+}
+
+function createTunnel(
+  localTarget,
+  token,
+  { logger, qrWriter, setPublicUrl, setTunnelError, tunnelFactory, onConnected, onTunneling, onReadyRequested, onFailure },
+) {
   const tunnel = tunnelFactory(localTarget);
-  let published = false;
+  let connected = false;
+  let publicAccessUrl = null;
+  let failed = false;
+
+  function fail(message) {
+    if (failed) {
+      return;
+    }
+
+    failed = true;
+    setPublicUrl(null);
+    setTunnelError(message);
+    onFailure(message);
+  }
 
   tunnel.once("url", (url) => {
-    published = true;
     setTunnelError(null);
-    const publicUrl = buildAccessUrl(url, token);
-    setPublicUrl(publicUrl);
-    renderQrCode(publicUrl, {
+    publicAccessUrl = buildAccessUrl(url, token);
+    setPublicUrl(publicAccessUrl);
+    renderQrCode(publicAccessUrl, {
       label: "Quick tunnel QR",
       logger,
       qrWriter,
     });
+    onTunneling(publicAccessUrl);
+    if (connected) {
+      onReadyRequested(publicAccessUrl);
+    }
+  });
+
+  tunnel.once("connected", (connection) => {
+    connected = true;
+    onConnected(connection);
+    if (publicAccessUrl) {
+      onReadyRequested(publicAccessUrl);
+    }
+  });
+
+  tunnel.once("disconnected", (connection) => {
+    const location = connection && connection.location ? connection.location : "unknown";
+    fail(`cloudflared disconnected (${location})`);
   });
 
   tunnel.once("error", (error) => {
-    setPublicUrl(null);
-    setTunnelError(error.message);
-    logger(`Cloudflare Quick Tunnel failed: ${error.message}`);
+    fail(error.message);
   });
 
   tunnel.once("exit", (code, signal) => {
-    setPublicUrl(null);
-    if (!published) {
-      setTunnelError(`cloudflared exited before publishing a URL (code=${code ?? "null"}, signal=${signal ?? "none"})`);
-      logger(
-        `Cloudflare Quick Tunnel exited before publishing a URL (code=${code ?? "null"}, signal=${signal ?? "none"}).`,
-      );
-    } else {
-      setTunnelError(`cloudflared exited (code=${code ?? "null"}, signal=${signal ?? "none"})`);
-    }
+    fail(`cloudflared exited (code=${code ?? "null"}, signal=${signal ?? "none"})`);
   });
 
   return tunnel;
@@ -210,6 +337,11 @@ async function startRemoteTerminal(options = {}) {
   const tunnelEnabled = options.disableTunnel
     ? false
     : !parseBoolean(process.env.REMOTE_TERMINAL_DISABLE_TUNNEL);
+  const verifyTunnel = options.verifyTunnel || defaultVerifyTunnel;
+  const retryBaseMs = options.retryBaseMs ?? DEFAULT_TUNNEL_RETRY_BASE_MS;
+  const retryMaxMs = options.retryMaxMs ?? DEFAULT_TUNNEL_RETRY_MAX_MS;
+  const verifyAttempts = options.verifyAttempts ?? DEFAULT_TUNNEL_VERIFY_ATTEMPTS;
+  const verifyDelayMs = options.verifyDelayMs ?? DEFAULT_TUNNEL_VERIFY_DELAY_MS;
 
   const app = express();
   app.disable("x-powered-by");
@@ -221,6 +353,13 @@ async function startRemoteTerminal(options = {}) {
   let shellRunning = true;
   let shellExit = null;
   let tunnelError = null;
+  let tunnelState = TUNNEL_STATES.STOPPED;
+  let tunnelAttempt = 0;
+  let tunnelRetryDelayMs = null;
+  let retryTimer = null;
+  let verificationInFlight = false;
+  let pendingVerification = null;
+  let stopping = false;
   const closed = new Promise((resolve) => {
     closedResolve = resolve;
   });
@@ -242,6 +381,7 @@ async function startRemoteTerminal(options = {}) {
   const io = new Server(server, {
     serveClient: true,
   });
+  const spinner = tunnelEnabled ? await createSpinner(options.spinnerFactory) : createNoopSpinner();
 
   function setPublicUrl(url) {
     publicUrl = url;
@@ -251,14 +391,178 @@ async function startRemoteTerminal(options = {}) {
     tunnelError = message;
   }
 
+  function updateSpinner(text, terminalAction) {
+    if (!spinner) {
+      return;
+    }
+
+    if (terminalAction === "succeed" && typeof spinner.succeed === "function") {
+      if (!spinner.isSpinning && typeof spinner.start === "function") {
+        spinner.start(text);
+      }
+      spinner.succeed(text);
+      return;
+    }
+
+    if (terminalAction === "warn" && typeof spinner.warn === "function") {
+      if (!spinner.isSpinning && typeof spinner.start === "function") {
+        spinner.start(text);
+      }
+      spinner.warn(text);
+      return;
+    }
+
+    if (!spinner.isSpinning && typeof spinner.start === "function") {
+      spinner.start(text);
+      return;
+    }
+
+    spinner.text = text;
+  }
+
+  function setTunnelState(nextState, detail, terminalAction = null) {
+    tunnelState = nextState;
+    const text = `[${nextState}] ${detail}`;
+    logger(text);
+    updateSpinner(text, terminalAction);
+  }
+
+  function clearRetryTimer() {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    tunnelRetryDelayMs = null;
+  }
+
+  async function scheduleRetry(message) {
+    if (stopping || !tunnelEnabled) {
+      return;
+    }
+
+    clearRetryTimer();
+    pendingVerification = null;
+
+    if (tunnel) {
+      tunnel.stop();
+      tunnel = null;
+    }
+
+    const delayMs = Math.min(retryMaxMs, retryBaseMs * 2 ** Math.max(0, tunnelAttempt - 1));
+    tunnelRetryDelayMs = delayMs;
+    setTunnelState(TUNNEL_STATES.STOPPED, `${message}; retrying in ${formatRetryDelay(delayMs)}`, "warn");
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      tunnelRetryDelayMs = null;
+      void connectTunnel();
+    }, delayMs);
+  }
+
+  async function verifyAndMarkReady(publicAccessUrl, attemptNumber) {
+    if (stopping || publicAccessUrl !== publicUrl || attemptNumber !== tunnelAttempt) {
+      return;
+    }
+
+    if (verificationInFlight) {
+      pendingVerification = { publicAccessUrl, attemptNumber };
+      return;
+    }
+
+    verificationInFlight = true;
+    pendingVerification = null;
+    try {
+      await verifyTunnel(publicAccessUrl, {
+        attempts: verifyAttempts,
+        delayMs: verifyDelayMs,
+        onProgress: (attempt, total) => {
+          setTunnelState(TUNNEL_STATES.VERIFYING, `Verifying public URL (${attempt}/${total})`);
+        },
+      });
+
+      if (stopping || publicAccessUrl !== publicUrl || attemptNumber !== tunnelAttempt) {
+        return;
+      }
+
+      clearRetryTimer();
+      tunnelAttempt = 0;
+      setTunnelError(null);
+      setTunnelState(TUNNEL_STATES.READY, `Public URL ready: ${stripTokenFromUrl(publicAccessUrl)}`, "succeed");
+    } catch (error) {
+      if (stopping || publicAccessUrl !== publicUrl || attemptNumber !== tunnelAttempt) {
+        return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      await scheduleRetry(`Tunnel verification failed: ${message}`);
+    } finally {
+      verificationInFlight = false;
+      const nextVerification = pendingVerification;
+      pendingVerification = null;
+      if (
+        !stopping &&
+        nextVerification &&
+        nextVerification.publicAccessUrl === publicUrl &&
+        nextVerification.attemptNumber === tunnelAttempt
+      ) {
+        void verifyAndMarkReady(nextVerification.publicAccessUrl, nextVerification.attemptNumber);
+      }
+    }
+  }
+
+  async function connectTunnel() {
+    if (stopping || !tunnelEnabled) {
+      return;
+    }
+
+    clearRetryTimer();
+    tunnelAttempt += 1;
+    const attemptNumber = tunnelAttempt;
+    const attemptLabel = `attempt ${tunnelAttempt}`;
+
+    try {
+      setTunnelState(TUNNEL_STATES.PREPARING, `Preparing Cloudflare Quick Tunnel (${attemptLabel})`);
+      if (!options.tunnelFactory) {
+        await ensureCloudflaredBinary(logger);
+      }
+
+      setTunnelState(TUNNEL_STATES.CONNECTING, `Starting Cloudflare Quick Tunnel (${attemptLabel})`);
+      tunnel = createTunnel(`http://127.0.0.1:${activePort}`, token, {
+        logger,
+        qrWriter,
+        setPublicUrl,
+        setTunnelError,
+        tunnelFactory: options.tunnelFactory || ((target) => Tunnel.quick(target)),
+        onConnected: (connection) => {
+          const location = connection && connection.location ? connection.location : "unknown";
+          setTunnelState(TUNNEL_STATES.TUNNELING, `Tunnel connected via ${location}`);
+        },
+        onTunneling: (publicAccessUrl) => {
+          setTunnelState(TUNNEL_STATES.TUNNELING, `Public URL issued: ${stripTokenFromUrl(publicAccessUrl)}`);
+        },
+        onReadyRequested: (publicAccessUrl) => {
+          void verifyAndMarkReady(publicAccessUrl, attemptNumber);
+        },
+        onFailure: (message) => {
+          void scheduleRetry(message);
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setTunnelError(message);
+      await scheduleRetry(`Cloudflare Quick Tunnel unavailable: ${message}`);
+    }
+  }
+
   async function stop() {
     if (stopPromise) {
       return stopPromise;
     }
 
     stopPromise = (async () => {
+      stopping = true;
+      clearRetryTimer();
       if (tunnel) {
         tunnel.stop();
+        tunnel = null;
       }
 
       if (shellRunning) {
@@ -270,6 +574,10 @@ async function startRemoteTerminal(options = {}) {
         new Promise((resolve) => io.close(() => resolve())),
         new Promise((resolve) => server.close(() => resolve())),
       ]);
+
+      if (spinner && typeof spinner.stop === "function") {
+        spinner.stop();
+      }
 
       closedResolve();
     })();
@@ -283,6 +591,9 @@ async function startRemoteTerminal(options = {}) {
       port: server.address().port,
       localOrigin: stripTokenFromUrl(buildAccessUrl(`http://${accessHost}:${server.address().port}/`, token)),
       publicOrigin: stripTokenFromUrl(publicUrl),
+      tunnelState,
+      tunnelAttempt,
+      tunnelRetryDelayMs,
       tunnelError,
       shell: shell.command,
       shellArgs: shell.args,
@@ -385,22 +696,7 @@ async function startRemoteTerminal(options = {}) {
   });
 
   if (tunnelEnabled) {
-    try {
-      if (!options.tunnelFactory) {
-        await ensureCloudflaredBinary(logger);
-      }
-      logger(`Starting Cloudflare Quick Tunnel for http://127.0.0.1:${activePort} ...`);
-      tunnel = createTunnel(`http://127.0.0.1:${activePort}`, token, {
-        logger,
-        qrWriter,
-        setPublicUrl,
-        setTunnelError,
-        tunnelFactory: options.tunnelFactory || ((target) => Tunnel.quick(target)),
-      });
-    } catch (error) {
-      tunnelError = error instanceof Error ? error.message : String(error);
-      logger(`Cloudflare Quick Tunnel unavailable: ${tunnelError}`);
-    }
+    await connectTunnel();
   }
 
   return {
@@ -411,6 +707,12 @@ async function startRemoteTerminal(options = {}) {
     localUrl,
     get publicUrl() {
       return publicUrl;
+    },
+    get tunnelState() {
+      return tunnelState;
+    },
+    get tunnelRetryDelayMs() {
+      return tunnelRetryDelayMs;
     },
     lastResize,
     closed,
@@ -435,7 +737,14 @@ async function main() {
 
 module.exports = {
   DEFAULT_PORT,
+  DEFAULT_TUNNEL_RETRY_BASE_MS,
+  DEFAULT_TUNNEL_RETRY_MAX_MS,
+  DEFAULT_TUNNEL_VERIFY_ATTEMPTS,
+  DEFAULT_TUNNEL_VERIFY_DELAY_MS,
+  TUNNEL_STATES,
   buildAccessUrl,
+  defaultVerifyTunnel,
+  formatRetryDelay,
   isValidToken,
   pickAccessHost,
   resolvePort,
