@@ -1465,12 +1465,19 @@ def _run_and_record_verification(
     cmd: str,
     label: str,
     timeout: int = 120,
+    severity: str = "HIGH",
+    source: str = "verify",
 ) -> tuple[int, dict]:
     """Run a shell command and append the result to meta["verifications"].
 
     Determines the working directory from the tentacle's worktree or git root.
     Writes a log file under tentacle_dir/verification/.
     Updates meta in-place and writes meta_path.
+
+    *severity* controls how cmd_complete handles a failing record:
+    CRITICAL/HIGH block completion; MEDIUM/LOW produce warnings only.
+    Defaults to HIGH for backward compatibility.
+    *source* distinguishes regular verify evidence from auto-verify evidence.
 
     Returns (exit_code, verif_record). Does NOT call sys.exit — callers decide.
     """
@@ -1517,11 +1524,17 @@ def _run_and_record_verification(
 
     log_path.write_text(output, encoding="utf-8")
 
+    severity_norm = str(severity or "HIGH").upper()
+    if severity_norm not in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}:
+        severity_norm = "HIGH"
+
     verif_record = {
         "label": label,
         "command": cmd,
         "cwd": cwd,
         "exit_code": exit_code,
+        "severity": severity_norm,
+        "source": str(source or "verify"),
         "started_at": started_at,
         "finished_at": finished_at,
         "duration_seconds": duration,
@@ -1534,6 +1547,32 @@ def _run_and_record_verification(
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
     return exit_code, verif_record
+
+
+def _is_legacy_auto_verify_match(record: dict, current_auto_verify_record: dict | None) -> bool:
+    """Best-effort match for pre-severity auto-verify records during a successful rerun.
+
+    Older records created before explicit source/severity fields are ambiguous when
+    they use the default label derived from the command text. To preserve fail-open
+    semantics without silently overriding unrelated failing evidence, treat only the
+    current invocation's successfully rerun same-command legacy records as auto-verify
+    evidence. A failing current auto-verify rerun does not suppress legacy records.
+    """
+    if not isinstance(current_auto_verify_record, dict):
+        return False
+    if current_auto_verify_record.get("exit_code") != 0:
+        return False
+
+    cmd_norm = str(current_auto_verify_record.get("command") or "").strip()
+    if not cmd_norm:
+        return False
+    if record.get("source") or record.get("severity"):
+        return False
+    if str(record.get("command") or "").strip() != cmd_norm:
+        return False
+
+    label = str(record.get("label") or "").strip()
+    return not label or label == cmd_norm[:40].strip()
 
 
 def cmd_verify(args) -> None:
@@ -1551,6 +1590,7 @@ def cmd_verify(args) -> None:
     cmd = getattr(args, "verify_command", None) or getattr(args, "command", "")
     label = args.label if getattr(args, "label", None) else cmd[:40].strip()
     timeout = getattr(args, "timeout", 120) or 120
+    severity = str(getattr(args, "severity", "HIGH") or "HIGH").upper()
 
     exit_code, verif_record = _run_and_record_verification(
         tentacle_dir=tentacle_dir,
@@ -1559,10 +1599,13 @@ def cmd_verify(args) -> None:
         cmd=cmd,
         label=label,
         timeout=timeout,
+        severity=severity,
     )
 
     icon = "✅" if exit_code == 0 else "❌"
-    print(f"{icon} verify [{label}]: exit={exit_code} ({verif_record['duration_seconds']:.1f}s)")
+    print(
+        f"{icon} verify [{label}] [{verif_record['severity']}]: exit={exit_code} ({verif_record['duration_seconds']:.1f}s)"
+    )
     print(f"   cwd: {verif_record['cwd']}")
     print(f"   log: {verif_record['log_path']}")
 
@@ -5896,6 +5939,7 @@ def cmd_complete(args):
     strict_verify = getattr(args, "strict_verify", False)
     auto_verify_cmd = getattr(args, "auto_verify", None)
     auto_verify_failed = False
+    current_auto_verify_record = None
     if auto_verify_cmd:
         meta_pre = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
         label = auto_verify_cmd[:40].strip()
@@ -5908,7 +5952,10 @@ def cmd_complete(args):
             cmd=auto_verify_cmd,
             label=label,
             timeout=timeout,
+            severity="MEDIUM",
+            source="auto_verify",
         )
+        current_auto_verify_record = av_rec
         icon = "✅" if av_exit == 0 else "❌"
         print(f"{icon} auto-verify exit={av_exit} ({av_rec['duration_seconds']:.1f}s)")
         if av_exit != 0:
@@ -5937,12 +5984,47 @@ def cmd_complete(args):
 
     # 2. Update status
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-    meta["status"] = "completed"
-    meta["completed_at"] = datetime.now(timezone.utc).isoformat()
 
     # 2a. Warn if no verification evidence (fail-open: warn only, never block)
     if not (meta.get("verifications") or []):
         print("⚠️  No verification evidence recorded — run 'verify' or use --auto-verify before completing")
+
+    # 2b. Gate on failing CRITICAL/HIGH verification entries; MEDIUM/LOW are warnings only.
+    _BLOCKING_SEVERITIES = {"CRITICAL", "HIGH"}
+    blocking_failures = []
+    warning_failures = []
+    legacy_auto_verify_matches = []
+    for v in meta.get("verifications") or []:
+        if v.get("exit_code", 0) != 0:
+            if v.get("source") == "auto_verify":
+                continue
+            if _is_legacy_auto_verify_match(v, current_auto_verify_record):
+                legacy_auto_verify_matches.append(v)
+                continue
+            sev = str(v.get("severity", "HIGH") or "HIGH").upper()
+            if sev not in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}:
+                sev = "HIGH"
+            if sev in _BLOCKING_SEVERITIES:
+                blocking_failures.append(v)
+            else:
+                warning_failures.append(v)
+    if legacy_auto_verify_matches:
+        print(
+            "⚠️  Treating legacy verification record(s) matching the current successful "
+            "--auto-verify command as auto-verify evidence for backward compatibility"
+        )
+    for v in warning_failures:
+        sev = str(v.get("severity", "")).upper() or "UNKNOWN"
+        print(f"⚠️  [{sev}] verify failed [{v.get('label', '?')}]: exit={v.get('exit_code')} (warning only)")
+    if blocking_failures:
+        for v in blocking_failures:
+            sev = str(v.get("severity", "HIGH")).upper()
+            print(f"❌ [{sev}] verify failed [{v.get('label', '?')}]: exit={v.get('exit_code')} — BLOCKING")
+        print(f"❌ {len(blocking_failures)} CRITICAL/HIGH verification failure(s) — aborting completion")
+        sys.exit(1)
+
+    meta["status"] = "completed"
+    meta["completed_at"] = datetime.now(timezone.utc).isoformat()
 
     # 2a. Extract structured handoff fields (terminal_status, changed_files, bridge_links, quota metadata)
     terminal_status = None
@@ -7700,6 +7782,15 @@ def main():
         type=int,
         default=120,
         help="Command timeout in seconds (default: 120)",
+    )
+    p_verify.add_argument(
+        "--severity",
+        choices=["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+        default="HIGH",
+        help=(
+            "Severity classification for this verification record (default: HIGH). "
+            "CRITICAL/HIGH failures block cmd_complete; MEDIUM/LOW produce warnings only."
+        ),
     )
 
     # goal subcommand

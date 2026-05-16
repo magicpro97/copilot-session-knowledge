@@ -5018,6 +5018,54 @@ class TestVerifyCommand(unittest.TestCase):
         self.assertTrue((self.tentacle_dir / "verification").exists())
         self.assertTrue(any("verify [cli-dispatch]" in line for line in captured))
 
+    def test_verify_default_severity_is_high(self):
+        """When no --severity is given, the record stores severity=HIGH."""
+        args = self._args("echo default-sev", label="default-sev")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_verify(args)
+        meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
+        verif = meta["verifications"][-1]
+        self.assertEqual(verif["severity"], "HIGH")
+
+    def test_verify_explicit_severity_stored_in_record(self):
+        """Explicit --severity value is stored verbatim (uppercased) in the record."""
+        for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+            args = fake_args(name="vtest", command=f"echo sev-{sev}", label=f"sev-{sev}", timeout=30, severity=sev)
+            with patch.object(T, "get_tentacles_dir", return_value=self.base):
+                with patch("builtins.print"):
+                    T.cmd_verify(args)
+            meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
+            verif = meta["verifications"][-1]
+            self.assertEqual(verif["severity"], sev, f"Expected severity={sev}")
+
+    def test_verify_severity_in_output(self):
+        """cmd_verify output includes the severity bracket."""
+        captured = []
+        args = fake_args(name="vtest", command="echo sev-out", label="sev-out", timeout=30, severity="CRITICAL")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_verify(args)
+        self.assertTrue(any("[CRITICAL]" in line for line in captured))
+
+    def test_run_and_record_verification_stores_severity(self):
+        """_run_and_record_verification stores the severity field in the record."""
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["verifications"] = []
+
+        _, record = T._run_and_record_verification(
+            tentacle_dir=self.tentacle_dir,
+            meta=meta,
+            meta_path=meta_path,
+            cmd="echo sev-helper",
+            label="sev-helper",
+            timeout=30,
+            severity="MEDIUM",
+        )
+        self.assertEqual(record["severity"], "MEDIUM")
+        self.assertEqual(meta["verifications"][-1]["severity"], "MEDIUM")
+
 
 class TestCompleteOutcomePersistence(unittest.TestCase):
     """cmd_complete writes durable outcome rows to skill-metrics.db."""
@@ -6597,6 +6645,8 @@ class TestCmdCompleteVerification(unittest.TestCase):
         auto_verifs = [v for v in verifications if "echo hello_verify" in v.get("command", "")]
         self.assertEqual(len(auto_verifs), 1)
         self.assertEqual(auto_verifs[0]["exit_code"], 0)
+        self.assertEqual(auto_verifs[0]["source"], "auto_verify")
+        self.assertEqual(auto_verifs[0]["severity"], "MEDIUM")
 
     def test_complete_auto_verify_failing_command_is_fail_open(self):
         """--auto-verify with a failing command warns but still completes (fail-open)."""
@@ -6621,6 +6671,8 @@ class TestCmdCompleteVerification(unittest.TestCase):
         output = out.getvalue()
         # Fail-open: should warn about failed auto-verify
         self.assertIn("auto-verify failed", output)
+        # The completion severity gate must not emit a second warning for the same auto-verify record.
+        self.assertNotIn("[MEDIUM] verify failed", output)
 
         # Status must still be completed
         meta = json.loads((self.tentacle_dir / "meta.json").read_text(encoding="utf-8"))
@@ -6719,10 +6771,208 @@ class TestCmdCompleteVerification(unittest.TestCase):
         # Still appended to meta
         self.assertEqual(len(meta["verifications"]), 1)
 
+    def _make_failing_verif(self, severity: str) -> dict:
+        """Return a verification record fixture with a nonzero exit and given severity."""
+        return {
+            "label": f"fail-{severity.lower()}",
+            "command": "false",
+            "cwd": "/repo",
+            "exit_code": 1,
+            "severity": severity,
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": "2026-01-01T00:00:01+00:00",
+            "duration_seconds": 1.0,
+            "log_path": str(self.tentacle_dir / "verification" / f"fake-{severity.lower()}.log"),
+        }
 
-# ---------------------------------------------------------------------------
-# Goal-loop runtime-style verification flow
-# ---------------------------------------------------------------------------
+    def _make_passing_verif(self) -> dict:
+        """Return a passing verification record fixture."""
+        return {
+            "label": "passing",
+            "command": "true",
+            "cwd": "/repo",
+            "exit_code": 0,
+            "severity": "HIGH",
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": "2026-01-01T00:00:01+00:00",
+            "duration_seconds": 1.0,
+            "log_path": str(self.tentacle_dir / "verification" / "fake-pass.log"),
+        }
+
+    def test_complete_blocks_on_failing_critical_verification(self):
+        """cmd_complete exits nonzero when a CRITICAL verification has failed."""
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["verifications"] = [self._make_failing_verif("CRITICAL")]
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        import io
+        from contextlib import redirect_stdout
+
+        out = io.StringIO()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_clear_dispatched_subagent_marker"):
+                with patch.object(T, "_persist_outcome_metrics", return_value=True):
+                    with self.assertRaises(SystemExit) as cm:
+                        with redirect_stdout(out):
+                            T.cmd_complete(
+                                fake_args(name="verify-test", no_learn=True, auto_verify=None, auto_verify_timeout=120)
+                            )
+        self.assertNotEqual(cm.exception.code, 0)
+        self.assertIn("[CRITICAL]", out.getvalue())
+        self.assertIn("BLOCKING", out.getvalue())
+
+    def test_complete_blocks_on_failing_high_verification(self):
+        """cmd_complete exits nonzero when a HIGH verification has failed."""
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["verifications"] = [self._make_failing_verif("HIGH")]
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        import io
+        from contextlib import redirect_stdout
+
+        out = io.StringIO()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_clear_dispatched_subagent_marker"):
+                with patch.object(T, "_persist_outcome_metrics", return_value=True):
+                    with self.assertRaises(SystemExit) as cm:
+                        with redirect_stdout(out):
+                            T.cmd_complete(
+                                fake_args(name="verify-test", no_learn=True, auto_verify=None, auto_verify_timeout=120)
+                            )
+        self.assertNotEqual(cm.exception.code, 0)
+        self.assertIn("[HIGH]", out.getvalue())
+
+    def test_complete_warns_not_blocks_on_failing_medium_verification(self):
+        """cmd_complete completes (does not block) when only a MEDIUM verification has failed."""
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["verifications"] = [self._make_failing_verif("MEDIUM")]
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        import io
+        from contextlib import redirect_stdout
+
+        out = io.StringIO()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_clear_dispatched_subagent_marker"):
+                with patch.object(T, "_persist_outcome_metrics", return_value=True):
+                    with redirect_stdout(out):
+                        T.cmd_complete(
+                            fake_args(name="verify-test", no_learn=True, auto_verify=None, auto_verify_timeout=120)
+                        )
+
+        output = out.getvalue()
+        self.assertIn("[MEDIUM]", output)
+        self.assertIn("warning only", output)
+        meta2 = json.loads(meta_path.read_text(encoding="utf-8"))
+        self.assertEqual(meta2["status"], "completed")
+
+    def test_complete_warns_not_blocks_on_failing_low_verification(self):
+        """cmd_complete completes (does not block) when only a LOW verification has failed."""
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["verifications"] = [self._make_failing_verif("LOW")]
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        import io
+        from contextlib import redirect_stdout
+
+        out = io.StringIO()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_clear_dispatched_subagent_marker"):
+                with patch.object(T, "_persist_outcome_metrics", return_value=True):
+                    with redirect_stdout(out):
+                        T.cmd_complete(
+                            fake_args(name="verify-test", no_learn=True, auto_verify=None, auto_verify_timeout=120)
+                        )
+
+        output = out.getvalue()
+        self.assertIn("[LOW]", output)
+        self.assertIn("warning only", output)
+        meta2 = json.loads(meta_path.read_text(encoding="utf-8"))
+        self.assertEqual(meta2["status"], "completed")
+
+    def test_complete_not_blocked_when_all_verifications_pass(self):
+        """cmd_complete does not block when all verification entries have exit_code=0."""
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["verifications"] = [self._make_passing_verif()]
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        output = self._run_complete()
+        meta2 = json.loads(meta_path.read_text(encoding="utf-8"))
+        self.assertEqual(meta2["status"], "completed")
+        self.assertNotIn("BLOCKING", output)
+
+    def test_complete_backward_compat_missing_severity_treated_as_high(self):
+        """Records written before severity support (no severity key) block completion on failure."""
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        # Old record with no severity field
+        meta["verifications"] = [
+            {
+                "label": "legacy-fail",
+                "command": "false",
+                "cwd": "/repo",
+                "exit_code": 1,
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "finished_at": "2026-01-01T00:00:01+00:00",
+                "duration_seconds": 1.0,
+                "log_path": str(self.tentacle_dir / "verification" / "legacy.log"),
+            }
+        ]
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        import io
+        from contextlib import redirect_stdout
+
+        out = io.StringIO()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_clear_dispatched_subagent_marker"):
+                with patch.object(T, "_persist_outcome_metrics", return_value=True):
+                    with self.assertRaises(SystemExit) as cm:
+                        with redirect_stdout(out):
+                            T.cmd_complete(
+                                fake_args(name="verify-test", no_learn=True, auto_verify=None, auto_verify_timeout=120)
+                            )
+        # Legacy failing record (no severity) defaults to HIGH → blocks
+        self.assertNotEqual(cm.exception.code, 0)
+
+    def test_complete_backward_compat_matching_legacy_auto_verify_record_stays_fail_open(self):
+        """Legacy auto-verify records matching the current command are retrofitted and stay non-blocking."""
+        meta_path = self.tentacle_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        marker = self.tentacle_dir / "auto-verify-pass.txt"
+        legacy_cmd = (
+            f"{sys.executable} -c \"import pathlib,sys; sys.exit(0 if pathlib.Path(r'{marker}').exists() else 1)\""
+        )
+        meta["verifications"] = [
+            {
+                "label": legacy_cmd[:40].strip(),
+                "command": legacy_cmd,
+                "cwd": "/repo",
+                "exit_code": 1,
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "finished_at": "2026-01-01T00:00:01+00:00",
+                "duration_seconds": 1.0,
+                "log_path": str(self.tentacle_dir / "verification" / "legacy-auto.log"),
+            }
+        ]
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        marker.write_text("ok", encoding="utf-8")
+
+        output = self._run_complete({"auto_verify": legacy_cmd, "auto_verify_timeout": 30})
+        self.assertNotIn("BLOCKING", output)
+        self.assertIn("Treating legacy verification record", output)
+
+        meta2 = json.loads(meta_path.read_text(encoding="utf-8"))
+        self.assertEqual(meta2["status"], "completed")
+        matching = [v for v in meta2.get("verifications", []) if v.get("command") == legacy_cmd]
+        self.assertGreaterEqual(len(matching), 2)
+        self.assertTrue(any(v.get("source") == "auto_verify" for v in matching))
+        self.assertTrue(any(not v.get("source") for v in matching))
 
 
 def _make_octogent_in(base: Path) -> tuple[Path, Path]:
