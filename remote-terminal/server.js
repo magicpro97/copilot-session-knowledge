@@ -23,6 +23,9 @@ const DEFAULT_TUNNEL_RETRY_BASE_MS = 1000;
 const DEFAULT_TUNNEL_RETRY_MAX_MS = 30000;
 const DEFAULT_TUNNEL_VERIFY_ATTEMPTS = 12;
 const DEFAULT_TUNNEL_VERIFY_DELAY_MS = 5000;
+const DEFAULT_AUTH_TOKEN_TTL_MS = 30 * 60 * 1000;
+const DEFAULT_AUTH_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const DEFAULT_AUTH_RATE_LIMIT_MAX_ATTEMPTS = 5;
 const PUBLIC_DIR = path.join(__dirname, "public");
 const XTERM_DIR = path.dirname(require.resolve("@xterm/xterm/package.json"));
 const XTERM_ADDON_DIR = path.dirname(require.resolve("@xterm/addon-fit/package.json"));
@@ -116,8 +119,14 @@ function resolveShell(command, args) {
   };
 }
 
-function createToken(explicitToken) {
-  return explicitToken || process.env.REMOTE_TERMINAL_TOKEN || crypto.randomBytes(24).toString("hex");
+function createAccessToken(explicitToken, options = {}) {
+  const configuredToken = explicitToken || process.env.REMOTE_TERMINAL_TOKEN || null;
+  const now = options.now || Date.now;
+  return {
+    value: configuredToken || crypto.randomBytes(24).toString("hex"),
+    persistent: Boolean(configuredToken),
+    expiresAt: configuredToken ? null : now() + (options.tokenTtlMs ?? DEFAULT_AUTH_TOKEN_TTL_MS),
+  };
 }
 
 function isValidToken(expectedToken, candidate) {
@@ -128,6 +137,116 @@ function isValidToken(expectedToken, candidate) {
   const expected = Buffer.from(expectedToken);
   const actual = Buffer.from(candidate);
   return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}
+
+function isTokenExpired(accessToken, now = Date.now) {
+  return accessToken.expiresAt !== null && now() >= accessToken.expiresAt;
+}
+
+function validateAccessToken(accessToken, candidate, now = Date.now) {
+  if (isTokenExpired(accessToken, now)) {
+    return {
+      ok: false,
+      message: "access token expired",
+      reason: "expired",
+    };
+  }
+
+  return isValidToken(accessToken.value, candidate)
+    ? { ok: true }
+    : {
+        ok: false,
+        message: "missing or invalid token",
+        reason: "invalid",
+      };
+}
+
+function isLoopbackAddress(address) {
+  return ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(address);
+}
+
+function firstHeaderValue(value) {
+  if (Array.isArray(value)) {
+    return firstHeaderValue(value[0]);
+  }
+
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function getForwardedClientId(headers = {}) {
+  const cfConnectingIp = firstHeaderValue(headers["cf-connecting-ip"]);
+  if (cfConnectingIp) {
+    return cfConnectingIp;
+  }
+
+  const xForwardedFor = firstHeaderValue(headers["x-forwarded-for"]);
+  if (!xForwardedFor) {
+    return null;
+  }
+
+  const [firstClient] = xForwardedFor.split(",");
+  const clientId = firstClient ? firstClient.trim() : "";
+  return clientId || null;
+}
+
+function createAuthRateLimiter(options = {}) {
+  const maxAttempts = options.maxAttempts ?? DEFAULT_AUTH_RATE_LIMIT_MAX_ATTEMPTS;
+  const windowMs = options.windowMs ?? DEFAULT_AUTH_RATE_LIMIT_WINDOW_MS;
+  const now = options.now || Date.now;
+  const attemptsByClient = new Map();
+
+  function getClientId(rawClientId) {
+    return rawClientId || "unknown";
+  }
+
+  function pruneExpiredEntries(currentTime) {
+    for (const [clientId, entry] of attemptsByClient.entries()) {
+      if (currentTime >= entry.resetAt) {
+        attemptsByClient.delete(clientId);
+      }
+    }
+  }
+
+  function getEntry(clientId) {
+    const entry = attemptsByClient.get(clientId);
+    return entry || null;
+  }
+
+  return {
+    check(rawClientId) {
+      const clientId = getClientId(rawClientId);
+      const currentTime = now();
+      pruneExpiredEntries(currentTime);
+      const entry = getEntry(clientId);
+      if (!entry || entry.count < maxAttempts) {
+        return {
+          limited: false,
+          retryAfterMs: 0,
+        };
+      }
+
+      return {
+        limited: true,
+        retryAfterMs: Math.max(0, entry.resetAt - currentTime),
+      };
+    },
+    recordFailure(rawClientId) {
+      const clientId = getClientId(rawClientId);
+      const currentTime = now();
+      pruneExpiredEntries(currentTime);
+      const existing = getEntry(clientId);
+      const entry = existing || {
+        count: 0,
+        resetAt: currentTime + windowMs,
+      };
+      entry.count += 1;
+      attemptsByClient.set(clientId, entry);
+      return entry.count;
+    },
+    reset(rawClientId) {
+      attemptsByClient.delete(getClientId(rawClientId));
+    },
+  };
 }
 
 function renderQrCode(url, { label, logger, qrWriter }) {
@@ -326,7 +445,12 @@ async function startRemoteTerminal(options = {}) {
   const host = options.host || process.env.REMOTE_TERMINAL_HOST || DEFAULT_HOST;
   const accessHost = pickAccessHost(options.accessHost || process.env.REMOTE_TERMINAL_ACCESS_HOST);
   const port = resolvePort(options.port);
-  const token = createToken(options.token);
+  const now = options.now || Date.now;
+  const accessToken = createAccessToken(options.token, {
+    now,
+    tokenTtlMs: options.tokenTtlMs,
+  });
+  const token = accessToken.value;
   const shell = resolveShell(options.shellCommand, options.shellArgs);
   const cwd = options.cwd || process.cwd();
   const env = {
@@ -342,6 +466,13 @@ async function startRemoteTerminal(options = {}) {
   const retryMaxMs = options.retryMaxMs ?? DEFAULT_TUNNEL_RETRY_MAX_MS;
   const verifyAttempts = options.verifyAttempts ?? DEFAULT_TUNNEL_VERIFY_ATTEMPTS;
   const verifyDelayMs = options.verifyDelayMs ?? DEFAULT_TUNNEL_VERIFY_DELAY_MS;
+  const authRateLimitWindowMs = options.authRateLimitWindowMs ?? DEFAULT_AUTH_RATE_LIMIT_WINDOW_MS;
+  const authRateLimitMaxAttempts = options.authRateLimitMaxAttempts ?? DEFAULT_AUTH_RATE_LIMIT_MAX_ATTEMPTS;
+  const authRateLimiter = createAuthRateLimiter({
+    maxAttempts: authRateLimitMaxAttempts,
+    now,
+    windowMs: authRateLimitWindowMs,
+  });
 
   const app = express();
   app.disable("x-powered-by");
@@ -433,6 +564,68 @@ async function startRemoteTerminal(options = {}) {
       retryTimer = null;
     }
     tunnelRetryDelayMs = null;
+  }
+
+  function getRequestClientId(req) {
+    const directAddress = req.socket && req.socket.remoteAddress;
+    if (isLoopbackAddress(directAddress)) {
+      const forwardedClientId = getForwardedClientId(req.headers);
+      if (forwardedClientId) {
+        return forwardedClientId;
+      }
+    }
+
+    return req.ip || directAddress || "unknown";
+  }
+
+  function getSocketClientId(socket) {
+    const directAddress =
+      (socket.request && socket.request.socket && socket.request.socket.remoteAddress) || socket.handshake.address;
+    if (isLoopbackAddress(directAddress)) {
+      const forwardedClientId = getForwardedClientId(socket.handshake.headers);
+      if (forwardedClientId) {
+        return forwardedClientId;
+      }
+    }
+
+    return socket.handshake.address || directAddress || "unknown";
+  }
+
+  function authenticateClient(clientId, candidateToken) {
+    const rateLimitState = authRateLimiter.check(clientId);
+    if (rateLimitState.limited) {
+      return {
+        ok: false,
+        message: "too many auth attempts",
+        retryAfterMs: rateLimitState.retryAfterMs,
+        status: 429,
+      };
+    }
+
+    const validation = validateAccessToken(accessToken, candidateToken, now);
+    if (!validation.ok) {
+      if (validation.reason === "invalid") {
+        authRateLimiter.recordFailure(clientId);
+      }
+      return {
+        ok: false,
+        message: validation.message,
+        status: 401,
+      };
+    }
+
+    authRateLimiter.reset(clientId);
+    return {
+      ok: true,
+    };
+  }
+
+  function sendAuthFailure(res, authResult) {
+    if (authResult.retryAfterMs) {
+      res.set("Retry-After", String(Math.max(1, Math.ceil(authResult.retryAfterMs / 1000))));
+    }
+
+    res.status(authResult.status).type("text/plain").send(authResult.message);
   }
 
   async function scheduleRetry(message) {
@@ -600,12 +793,18 @@ async function startRemoteTerminal(options = {}) {
       shellExit,
       lastResize,
       tunnelEnabled,
+      persistentToken: accessToken.persistent,
+      tokenExpiresAt: accessToken.expiresAt === null ? null : new Date(accessToken.expiresAt).toISOString(),
+      authRateLimitMaxAttempts,
+      authRateLimitWindowMs,
     });
   });
 
   app.get("/", (req, res) => {
-    if (!isValidToken(token, req.query.token)) {
-      res.status(401).type("text/plain").send("missing or invalid token");
+    const providedToken = Array.isArray(req.query.token) ? req.query.token[0] : req.query.token;
+    const authResult = authenticateClient(getRequestClientId(req), providedToken);
+    if (!authResult.ok) {
+      sendAuthFailure(res, authResult);
       return;
     }
 
@@ -634,8 +833,19 @@ async function startRemoteTerminal(options = {}) {
 
   io.use((socket, next) => {
     const providedToken = socket.handshake.auth.token || socket.handshake.query.token;
-    if (!isValidToken(token, Array.isArray(providedToken) ? providedToken[0] : providedToken)) {
-      next(new Error("unauthorized"));
+    const authResult = authenticateClient(getSocketClientId(socket), Array.isArray(providedToken) ? providedToken[0] : providedToken);
+    if (!authResult.ok) {
+      const error = new Error(
+        authResult.status === 401 && authResult.message === "missing or invalid token"
+          ? "unauthorized"
+          : authResult.message,
+      );
+      if (authResult.retryAfterMs) {
+        error.data = {
+          retryAfterMs: authResult.retryAfterMs,
+        };
+      }
+      next(error);
       return;
     }
 
@@ -689,6 +899,11 @@ async function startRemoteTerminal(options = {}) {
   const localUrl = buildAccessUrl(`http://${accessHost}:${activePort}/`, token);
   logger(`Remote terminal listening on http://${host}:${activePort}`);
   logger(`Shell: ${shell.command}${shell.args.length ? ` ${shell.args.join(" ")}` : ""}`);
+  if (accessToken.persistent) {
+    logger("Auth: persistent trusted-device token enabled");
+  } else {
+    logger(`Auth: one-time QR token expires at ${new Date(accessToken.expiresAt).toISOString()}`);
+  }
   renderQrCode(localUrl, {
     label: "Local access QR",
     logger,
@@ -707,6 +922,12 @@ async function startRemoteTerminal(options = {}) {
     localUrl,
     get publicUrl() {
       return publicUrl;
+    },
+    get persistentToken() {
+      return accessToken.persistent;
+    },
+    get tokenExpiresAt() {
+      return accessToken.expiresAt;
     },
     get tunnelState() {
       return tunnelState;
@@ -736,6 +957,9 @@ async function main() {
 }
 
 module.exports = {
+  DEFAULT_AUTH_RATE_LIMIT_MAX_ATTEMPTS,
+  DEFAULT_AUTH_RATE_LIMIT_WINDOW_MS,
+  DEFAULT_AUTH_TOKEN_TTL_MS,
   DEFAULT_PORT,
   DEFAULT_TUNNEL_RETRY_BASE_MS,
   DEFAULT_TUNNEL_RETRY_MAX_MS,

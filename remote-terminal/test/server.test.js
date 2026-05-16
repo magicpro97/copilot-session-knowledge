@@ -8,6 +8,8 @@ const test = require("node:test");
 const { io } = require("socket.io-client");
 
 const {
+  DEFAULT_AUTH_RATE_LIMIT_MAX_ATTEMPTS,
+  DEFAULT_AUTH_TOKEN_TTL_MS,
   DEFAULT_PORT,
   TUNNEL_STATES,
   buildAccessUrl,
@@ -139,6 +141,170 @@ test("invalid socket auth is rejected", async (t) => {
 
   const [error] = await once(socket, "connect_error");
   assert.match(error.message, /unauthorized/);
+});
+
+test("generated QR tokens expire for new page and socket auth", async (t) => {
+  let nowValue = 1000;
+  const remoteTerminal = await startRemoteTerminal({
+    accessHost: "127.0.0.1",
+    disableTunnel: true,
+    logger: () => {},
+    now: () => nowValue,
+    port: 0,
+    tokenTtlMs: 200,
+  });
+  t.after(async () => {
+    await remoteTerminal.stop();
+  });
+
+  const validPage = await fetch(remoteTerminal.localUrl);
+  assert.equal(validPage.status, 200);
+
+  nowValue += 201;
+
+  const expiredPage = await fetch(remoteTerminal.localUrl);
+  assert.equal(expiredPage.status, 401);
+  assert.match(await expiredPage.text(), /expired/);
+
+  const socket = io(`http://127.0.0.1:${remoteTerminal.port}`, {
+    auth: { token: remoteTerminal.token },
+    reconnection: false,
+    transports: ["websocket"],
+  });
+  t.after(() => socket.close());
+
+  const [error] = await once(socket, "connect_error");
+  assert.match(error.message, /expired/);
+
+  const health = await fetch(`http://127.0.0.1:${remoteTerminal.port}/health`);
+  const payload = await health.json();
+  assert.equal(payload.persistentToken, false);
+  assert.equal(payload.tokenExpiresAt, new Date(remoteTerminal.tokenExpiresAt).toISOString());
+});
+
+test("expired tokens do not consume the auth rate-limit budget", async (t) => {
+  let nowValue = 1500;
+  const remoteTerminal = await startRemoteTerminal({
+    accessHost: "127.0.0.1",
+    authRateLimitMaxAttempts: 2,
+    authRateLimitWindowMs: 1000,
+    disableTunnel: true,
+    logger: () => {},
+    now: () => nowValue,
+    port: 0,
+    tokenTtlMs: 200,
+  });
+  t.after(async () => {
+    await remoteTerminal.stop();
+  });
+
+  nowValue += 201;
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const expiredPage = await fetch(remoteTerminal.localUrl);
+    assert.equal(expiredPage.status, 401);
+    assert.match(await expiredPage.text(), /expired/);
+  }
+});
+
+test("trusted-device tokens stay valid beyond the one-time QR TTL", async (t) => {
+  let nowValue = 2000;
+  const remoteTerminal = await startRemoteTerminal({
+    accessHost: "127.0.0.1",
+    disableTunnel: true,
+    logger: () => {},
+    now: () => nowValue,
+    port: 0,
+    token: "issue78-trusted-device-token",
+    tokenTtlMs: 200,
+  });
+  t.after(async () => {
+    await remoteTerminal.stop();
+  });
+
+  nowValue += 1000;
+
+  const allowed = await fetch(remoteTerminal.localUrl);
+  assert.equal(allowed.status, 200);
+  assert.equal(remoteTerminal.persistentToken, true);
+  assert.equal(remoteTerminal.tokenExpiresAt, null);
+
+  const health = await fetch(`http://127.0.0.1:${remoteTerminal.port}/health`);
+  const payload = await health.json();
+  assert.equal(payload.persistentToken, true);
+  assert.equal(payload.tokenExpiresAt, null);
+});
+
+test("invalid auth attempts are rate limited per client", async (t) => {
+  const authRateLimitWindowMs = 1000;
+  let nowValue = 3000;
+  const remoteTerminal = await startRemoteTerminal({
+    accessHost: "127.0.0.1",
+    authRateLimitMaxAttempts: DEFAULT_AUTH_RATE_LIMIT_MAX_ATTEMPTS,
+    authRateLimitWindowMs,
+    disableTunnel: true,
+    logger: () => {},
+    now: () => nowValue,
+    port: 0,
+    token: "issue78-rate-limit-token",
+    tokenTtlMs: DEFAULT_AUTH_TOKEN_TTL_MS,
+  });
+  t.after(async () => {
+    await remoteTerminal.stop();
+  });
+
+  for (let attempt = 0; attempt < DEFAULT_AUTH_RATE_LIMIT_MAX_ATTEMPTS; attempt += 1) {
+    const response = await fetch(`http://127.0.0.1:${remoteTerminal.port}/?token=wrong-token`);
+    assert.equal(response.status, 401);
+  }
+
+  const limited = await fetch(`http://127.0.0.1:${remoteTerminal.port}/?token=wrong-token`);
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("retry-after"), String(Math.ceil(authRateLimitWindowMs / 1000)));
+  assert.match(await limited.text(), /too many auth attempts/);
+
+  nowValue += authRateLimitWindowMs + 1;
+
+  const recovered = await fetch(remoteTerminal.localUrl);
+  assert.equal(recovered.status, 200);
+});
+
+test("forwarded tunnel client IPs keep auth rate limiting scoped per client", async (t) => {
+  const authRateLimitWindowMs = 1000;
+  let nowValue = 4000;
+  const remoteTerminal = await startRemoteTerminal({
+    accessHost: "127.0.0.1",
+    authRateLimitMaxAttempts: DEFAULT_AUTH_RATE_LIMIT_MAX_ATTEMPTS,
+    authRateLimitWindowMs,
+    disableTunnel: true,
+    logger: () => {},
+    now: () => nowValue,
+    port: 0,
+    token: "issue78-forwarded-ip-token",
+  });
+  t.after(async () => {
+    await remoteTerminal.stop();
+  });
+
+  const blockedHeaders = { "CF-Connecting-IP": "198.51.100.10" };
+  const allowedHeaders = { "CF-Connecting-IP": "198.51.100.11" };
+
+  for (let attempt = 0; attempt < DEFAULT_AUTH_RATE_LIMIT_MAX_ATTEMPTS; attempt += 1) {
+    const response = await fetch(`http://127.0.0.1:${remoteTerminal.port}/?token=wrong-token`, {
+      headers: blockedHeaders,
+    });
+    assert.equal(response.status, 401);
+  }
+
+  const blockedClient = await fetch(`http://127.0.0.1:${remoteTerminal.port}/?token=wrong-token`, {
+    headers: blockedHeaders,
+  });
+  assert.equal(blockedClient.status, 429);
+
+  const differentForwardedClient = await fetch(`http://127.0.0.1:${remoteTerminal.port}/?token=wrong-token`, {
+    headers: allowedHeaders,
+  });
+  assert.equal(differentForwardedClient.status, 401);
 });
 
 test("pty output streams through Socket.IO and resize reaches the PTY", async (t) => {
