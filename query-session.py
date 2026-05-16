@@ -61,7 +61,7 @@ if os.name == "nt":
         pass
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
-DB_PATH = SESSION_STATE / "knowledge.db"
+DB_PATH = Path(os.environ.get("SK_DB_PATH", str(SESSION_STATE / "knowledge.db"))).expanduser()
 
 
 def _safe_int_list(values) -> list[int]:

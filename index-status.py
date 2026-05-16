@@ -28,7 +28,7 @@ if os.name == "nt":
         pass
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
-DB_PATH = SESSION_STATE / "knowledge.db"
+DB_PATH = Path(os.environ.get("SK_DB_PATH", str(SESSION_STATE / "knowledge.db"))).expanduser()
 STATUS_JSON_PATH = SESSION_STATE / "index-status.json"
 
 
@@ -54,9 +54,7 @@ def collect_status(db: sqlite3.Connection) -> dict:
     sessions_total = _safe_count(db, "SELECT COUNT(*) FROM sessions")
 
     # Phase 2: sessions with FTS complete (fts_indexed_at IS NOT NULL)
-    sessions_fts_done = _safe_count(
-        db, "SELECT COUNT(*) FROM sessions WHERE fts_indexed_at IS NOT NULL"
-    )
+    sessions_fts_done = _safe_count(db, "SELECT COUNT(*) FROM sessions WHERE fts_indexed_at IS NOT NULL")
 
     # event_offsets rows
     event_offsets_rows = _safe_count(db, "SELECT COUNT(*) FROM event_offsets")
@@ -67,18 +65,14 @@ def collect_status(db: sqlite3.Connection) -> dict:
     # last_indexed_at: most recent indexed_at_r from sessions (REAL timestamp)
     last_indexed_at = None
     try:
-        row = db.execute(
-            "SELECT MAX(indexed_at_r) FROM sessions WHERE indexed_at_r IS NOT NULL"
-        ).fetchone()
+        row = db.execute("SELECT MAX(indexed_at_r) FROM sessions WHERE indexed_at_r IS NOT NULL").fetchone()
         if row and row[0]:
             ts = float(row[0])
             last_indexed_at = datetime.fromtimestamp(ts).isoformat()
     except (sqlite3.OperationalError, TypeError, ValueError):
         # Fallback to text indexed_at column
         try:
-            row = db.execute(
-                "SELECT MAX(indexed_at) FROM sessions WHERE indexed_at IS NOT NULL"
-            ).fetchone()
+            row = db.execute("SELECT MAX(indexed_at) FROM sessions WHERE indexed_at IS NOT NULL").fetchone()
             last_indexed_at = row[0] if row else None
         except sqlite3.OperationalError:
             pass
@@ -113,7 +107,7 @@ def print_human(status: dict) -> None:
     if status["last_indexed_at"]:
         print(f"  Last indexed    : {status['last_indexed_at']}")
     else:
-        print(f"  Last indexed    : (never)")
+        print("  Last indexed    : (never)")
     db_kb = status["db_size_bytes"] / 1024
     print(f"  DB size         : {db_kb:.1f} KB")
     print("=" * 52)

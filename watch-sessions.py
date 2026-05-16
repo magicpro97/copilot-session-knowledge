@@ -17,26 +17,28 @@ Usage:
 Cross-platform: Windows, macOS, Linux. Pure Python stdlib.
 """
 
-import os
-import re
-import sys
-import time
-import signal
 import atexit
 import hashlib
+import os
+import re
+import signal
 import sqlite3
-from pathlib import Path
+import sys
+import time
 from datetime import datetime
+from pathlib import Path
 
 # Host metadata is centralised in host_manifest.py — import canonical constants.
 # Do NOT add new hosts here; update host_manifest.py through the review process.
 from host_manifest import (  # noqa: E402
-    SESSION_STATE,
     CLAUDE_PROJECTS,
+    SESSION_STATE,
+)
+from host_manifest import (
     HOST_SESSION_ROOTS as KNOWN_HOSTS,
 )
 
-DB_PATH = SESSION_STATE / "knowledge.db"
+DB_PATH = Path(os.environ.get("SK_DB_PATH", str(SESSION_STATE / "knowledge.db"))).expanduser()
 TOOLS_DIR = Path(__file__).parent
 STATE_FILE = SESSION_STATE / ".watch-state.json"
 LOCK_FILE = SESSION_STATE / ".watcher.lock"
@@ -46,7 +48,7 @@ DEFAULT_INTERVAL = 60  # seconds
 
 # Matches canonical UUID format (8-4-4-4-12 hex digits)
 _UUID_RE = re.compile(
-    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
 
@@ -73,10 +75,9 @@ def _is_pid_running(pid: int) -> bool:
     """Check if a process with the given PID is still running."""
     if os.name == "nt":
         import ctypes
+
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        handle = ctypes.windll.kernel32.OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION, False, pid
-        )
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if handle:
             ctypes.windll.kernel32.CloseHandle(handle)
             return True
@@ -181,9 +182,7 @@ def _content_hash(path: Path) -> str:
         return ""
 
 
-def _extract_session_ids_from_paths(
-    paths: list, host_roots: list
-) -> list:
+def _extract_session_ids_from_paths(paths: list, host_roots: list) -> list:
     """Extract session IDs (UUIDs) from changed file paths.
 
     Supports two layouts:
@@ -220,6 +219,7 @@ def _extract_session_ids_from_paths(
 def load_state() -> dict:
     """Load previous watch state."""
     import json
+
     if STATE_FILE.exists():
         try:
             return json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -230,7 +230,9 @@ def load_state() -> dict:
 
 def save_state(state: dict):
     """Save current watch state (atomic write — P0-10)."""
-    import json, os
+    import json
+    import os
+
     tmp = STATE_FILE.with_suffix(".tmp")
     try:
         tmp.write_text(json.dumps(state, default=str), encoding="utf-8")
@@ -245,6 +247,7 @@ def save_state(state: dict):
 def run_indexer(incremental: bool = True):
     """Run the build-session-index.py script."""
     import subprocess
+
     indexer = TOOLS_DIR / "build-session-index.py"
     if not indexer.exists():
         print(f"[watch] Error: indexer not found at {indexer}")
@@ -255,10 +258,7 @@ def run_indexer(incremental: bool = True):
         args.append("--incremental")
 
     try:
-        result = subprocess.run(
-            args, capture_output=True, text=True, timeout=120,
-            encoding="utf-8", errors="replace"
-        )
+        result = subprocess.run(args, capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace")
         if result.returncode == 0:
             # Only show output if something was indexed
             for line in result.stdout.splitlines():
@@ -282,6 +282,7 @@ def run_extractor(changed_files: list | None = None, session_ids: list | None = 
     Falls back to full extraction when session_ids is empty or not provided.
     """
     import subprocess
+
     extractor = TOOLS_DIR / "extract-knowledge.py"
     if not extractor.exists():
         return True  # Optional — skip if not installed
@@ -298,11 +299,7 @@ def run_extractor(changed_files: list | None = None, session_ids: list | None = 
         args += ["--sessions", ",".join(session_ids)]
 
     try:
-        result = subprocess.run(
-            args,
-            capture_output=True, text=True, timeout=120,
-            encoding="utf-8", errors="replace"
-        )
+        result = subprocess.run(args, capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace")
         if result.returncode == 0:
             for line in result.stdout.splitlines():
                 if "extracted" in line.lower():
@@ -316,8 +313,7 @@ def run_extractor(changed_files: list | None = None, session_ids: list | None = 
         return False
 
 
-def check_and_index(prev_sigs: dict, watch_dirs: list[Path],
-                    changed_only: bool = False) -> dict:
+def check_and_index(prev_sigs: dict, watch_dirs: list[Path], changed_only: bool = False) -> dict:
     """Compare current files with previous state, index if changed.
 
     Uses hybrid mtime+size fast-path followed by content-hash verification.
@@ -336,9 +332,9 @@ def check_and_index(prev_sigs: dict, watch_dirs: list[Path],
 
     # Files whose mtime or size changed — candidates for content check
     mtime_changed = {
-        f for f in current_mtime_sigs
-        if f in prev_sigs
-        and (current_mtime_sigs[f][0], current_mtime_sigs[f][1]) != (prev_sigs[f][0], prev_sigs[f][1])
+        f
+        for f in current_mtime_sigs
+        if f in prev_sigs and (current_mtime_sigs[f][0], current_mtime_sigs[f][1]) != (prev_sigs[f][0], prev_sigs[f][1])
     }
 
     # Build enriched sigs {fp: [mtime, size, hash]} and resolve true changes
@@ -381,9 +377,7 @@ def check_and_index(prev_sigs: dict, watch_dirs: list[Path],
         # Derive session IDs from changed paths so extraction is scoped to only the
         # sessions that actually changed.  Falls back to full extraction when the path
         # layout is unrecognised (empty list → no --sessions flag).
-        changed_session_ids = _extract_session_ids_from_paths(
-            all_changed, [root for _, root in KNOWN_HOSTS]
-        )
+        changed_session_ids = _extract_session_ids_from_paths(all_changed, [root for _, root in KNOWN_HOSTS])
         run_extractor(
             changed_files=all_changed if changed_only else None,
             session_ids=changed_session_ids or None,
@@ -398,8 +392,10 @@ def print_install_hint():
     pythonw = Path(sys.executable).parent / "pythonw.exe"
     if os.name == "nt":
         print("# Windows — Task Scheduler (hidden background, no terminal):")
-        print(f'schtasks /create /tn "CopilotSessionWatcher" '
-              f'/tr "\\"{pythonw}\\" \\"{script}\\" --service" /sc onlogon /f')
+        print(
+            f'schtasks /create /tn "CopilotSessionWatcher" '
+            f'/tr "\\"{pythonw}\\" \\"{script}\\" --service" /sc onlogon /f'
+        )
         print()
         print("# Start now:")
         print('schtasks /run /tn "CopilotSessionWatcher"')
@@ -414,7 +410,7 @@ def print_install_hint():
         print(f"@reboot python3 {script}")
         print()
         print("# Or create a systemd user service:")
-        print(f"# ~/.config/systemd/user/copilot-watcher.service")
+        print("# ~/.config/systemd/user/copilot-watcher.service")
         print("[Unit]")
         print("Description=Copilot Session Watcher")
         print("[Service]")
@@ -439,17 +435,14 @@ def _adaptive_poll_interval(file_signatures: dict) -> int:
         return 300  # idle tier — no files known
 
     # file_signatures values are [mtime, size, hash] or (mtime, size)
-    most_recent = max(
-        (v[0] if isinstance(v, (list, tuple)) else 0.0)
-        for v in file_signatures.values()
-    )
+    most_recent = max((v[0] if isinstance(v, (list, tuple)) else 0.0) for v in file_signatures.values())
     age = now - most_recent
 
-    if age <= 120:     # 2 minutes
+    if age <= 120:  # 2 minutes
         return 5
-    if age <= 3600:    # 1 hour
+    if age <= 3600:  # 1 hour
         return 30
-    return 300         # idle
+    return 300  # idle
 
 
 def main():
@@ -540,10 +533,12 @@ def main():
 
     # Graceful shutdown
     running = True
+
     def handle_signal(sig, frame):
         nonlocal running
         running = False
         print("\n[watch] Stopping...")
+
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
