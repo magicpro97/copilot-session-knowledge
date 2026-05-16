@@ -15,7 +15,7 @@ _NO_DESTRUCTIVE_GIT = (
     re.compile(r"\bgit\s+clean\b[^\n]*(?:-fd|-df|-xdf|-xfd)\b"),
 )
 _NO_FORCE_PUSH = (
-    re.compile(r"\bgit\s+push\b[^\n]*\s--force\b"),
+    re.compile(r"\bgit\s+push\b[^\n]*\s--force(?:\s|$)"),
     re.compile(r"\bgit\s+push\b[^\n]*\s-f(?:\s|$)"),
 )
 
