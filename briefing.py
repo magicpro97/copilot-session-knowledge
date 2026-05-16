@@ -60,6 +60,8 @@ TOOLS_DIR = Path(__file__).parent
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
 _CLARIFY_STORE_PATH = SESSION_STATE / "clarifications.json"
+_CONSTITUTION_RELATIVE_PATH = Path(".copilot") / "constitution.md"
+_CONSTITUTION_RULE_RE = re.compile(r"\s*\[rule:[a-z0-9-]+\]\s*", re.IGNORECASE)
 
 # Read-side filter: suppress Wave-style progress/status-note entries that were
 # mistakenly stored as knowledge (WaveN verification, rust-wave tentacle reports).
@@ -1008,6 +1010,79 @@ def _serialize_clarification(entry: dict | None) -> dict | None:
         ],
         "taxonomy_categories": list(entry.get("taxonomy_categories", [])),
         "created_at": entry.get("created_at", ""),
+    }
+
+
+def _strip_constitution_rule_tags(text: str) -> str:
+    cleaned = _CONSTITUTION_RULE_RE.sub("", str(text or ""))
+    return re.sub(r"\s{2,}", " ", cleaned).strip()
+
+
+def _load_constitution(repo_root: str = "") -> dict | None:
+    root = Path(repo_root).resolve() if repo_root else _current_repo_root()
+    constitution_path = root / _CONSTITUTION_RELATIVE_PATH
+    if not constitution_path.is_file():
+        return None
+    sections = {
+        "Principles": [],
+        "Quality Gates": [],
+        "Governance": [],
+        "Changelog": [],
+    }
+    current_section = None
+    title = "Project Constitution"
+    version = ""
+    last_amended = ""
+    try:
+        for raw_line in (
+            constitution_path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        ):
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("# ") and title == "Project Constitution":
+                title = stripped[2:].strip() or title
+                continue
+            lowered = stripped.lower()
+            if lowered.startswith("version:"):
+                version = stripped.split(":", 1)[1].strip()
+                continue
+            if lowered.startswith("last amended:"):
+                last_amended = stripped.split(":", 1)[1].strip()
+                continue
+            if stripped.startswith("## "):
+                section_name = stripped[3:].strip()
+                current_section = section_name if section_name in sections else None
+                continue
+            if current_section and stripped.startswith("- "):
+                sections[current_section].append(stripped[2:].strip())
+    except OSError:
+        return None
+
+    return {
+        "path": str(constitution_path),
+        "title": title,
+        "version": version,
+        "last_amended": last_amended,
+        "principles": sections["Principles"],
+        "quality_gates": sections["Quality Gates"],
+        "governance": sections["Governance"],
+        "changelog": sections["Changelog"],
+    }
+
+
+def _serialize_constitution(entry: dict | None) -> dict | None:
+    if not entry:
+        return None
+    return {
+        "path": entry.get("path", ""),
+        "title": entry.get("title", ""),
+        "version": entry.get("version", ""),
+        "last_amended": entry.get("last_amended", ""),
+        "principles": [_strip_constitution_rule_tags(item) for item in entry.get("principles", [])[:5]],
+        "quality_gates": [_strip_constitution_rule_tags(item) for item in entry.get("quality_gates", [])[:5]],
+        "governance": [_strip_constitution_rule_tags(item) for item in entry.get("governance", [])[:5]],
+        "changelog": list(entry.get("changelog", [])[:5]),
     }
 
 
@@ -2040,6 +2115,7 @@ def generate_briefing(
     # File annotations (fail-open when table absent; scoped to current repo)
     _repo_root = _current_repo_root()
     file_annotations = query_file_annotations(db, query=rewritten_query, repo_root=_repo_root, limit=6)
+    constitution_entry = _load_constitution(_repo_root)
     clarify_entry = _load_matching_clarification(query, repo_root=_repo_root)
 
     # Pack-only machine surface extras
@@ -2079,7 +2155,7 @@ def generate_briefing(
     db.close()
 
     # Check if we have anything
-    total_entries = sum(len(v) for v in briefing_data.values()) + len(past_work)
+    total_entries = sum(len(v) for v in briefing_data.values()) + len(past_work) + (1 if constitution_entry else 0)
     output = ""
     if total_entries == 0:
         if fmt == "json":
@@ -2088,6 +2164,7 @@ def generate_briefing(
                     "query": query,
                     "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                     "sections": {},
+                    "constitution": _serialize_constitution(constitution_entry),
                     "clarify": _serialize_clarification(clarify_entry),
                     "message": "No relevant past experience found.",
                 },
@@ -2104,29 +2181,51 @@ def generate_briefing(
                 "file_matches": file_matches,
                 "past_work": [],
                 "next_open": next_open,
+                "constitution": _serialize_constitution(constitution_entry),
                 "clarify": _serialize_clarification(clarify_entry),
             }
             output = json.dumps(pack, indent=2, ensure_ascii=False)
         else:
-            if clarify_entry:
+            if constitution_entry or clarify_entry:
                 if fmt == "compact":
                     output = _format_compact(
-                        query, briefing_data, past_work, categories, blast, file_annotations, clarify_entry
+                        query,
+                        briefing_data,
+                        past_work,
+                        categories,
+                        blast,
+                        file_annotations,
+                        constitution_entry,
+                        clarify_entry,
                     )
                 elif full:
                     output = _format_markdown(
-                        query, briefing_data, past_work, categories, blast, file_annotations, clarify_entry
+                        query,
+                        briefing_data,
+                        past_work,
+                        categories,
+                        blast,
+                        file_annotations,
+                        constitution_entry,
+                        clarify_entry,
                     )
                 else:
                     output = _format_default(
-                        query, briefing_data, past_work, categories, blast, file_annotations, clarify_entry
+                        query,
+                        briefing_data,
+                        past_work,
+                        categories,
+                        blast,
+                        file_annotations,
+                        constitution_entry,
+                        clarify_entry,
                     )
             else:
                 output = f"No relevant past experience found for: {query}\n"
     else:
         # Format output
         if fmt == "json":
-            output = _format_json(query, briefing_data, past_work, categories, blast, clarify_entry)
+            output = _format_json(query, briefing_data, past_work, categories, blast, constitution_entry, clarify_entry)
         elif fmt == "pack":
             pack_entries = {
                 k: [_serialize_pack_entry(e) for e in briefing_data.get(k, [])]
@@ -2160,20 +2259,21 @@ def generate_briefing(
                     for w in past_work
                 ],
                 "next_open": next_open,
+                "constitution": _serialize_constitution(constitution_entry),
                 "clarify": _serialize_clarification(clarify_entry),
             }
             output = json.dumps(pack, indent=2, ensure_ascii=False)
         elif fmt == "compact":
             output = _format_compact(
-                query, briefing_data, past_work, categories, blast, file_annotations, clarify_entry
+                query, briefing_data, past_work, categories, blast, file_annotations, constitution_entry, clarify_entry
             )
         elif full:
             output = _format_markdown(
-                query, briefing_data, past_work, categories, blast, file_annotations, clarify_entry
+                query, briefing_data, past_work, categories, blast, file_annotations, constitution_entry, clarify_entry
             )
         else:
             output = _format_default(
-                query, briefing_data, past_work, categories, blast, file_annotations, clarify_entry
+                query, briefing_data, past_work, categories, blast, file_annotations, constitution_entry, clarify_entry
             )
 
     # Append event-level skill usage section (non-pack formats only; fail-open).
@@ -2207,6 +2307,7 @@ def _format_default(
     categories: dict,
     blast: list = None,
     file_annotations: list | None = None,
+    constitution_entry: dict | None = None,
     clarify_entry: dict | None = None,
 ) -> str:
     """Compact default format: titles + 1-line summaries (~500 tokens)."""
@@ -2214,6 +2315,7 @@ def _format_default(
     lines.append(f"📋 Briefing: {query}")
     lines.append("")
 
+    lines.extend(_format_constitution_default_block(constitution_entry))
     lines.extend(_format_clarification_default_block(clarify_entry))
 
     for cat, meta in categories.items():
@@ -2285,7 +2387,7 @@ def _format_default(
             lines.append(fa_block)
             lines.append("")
 
-    total = sum(len(v) for v in data.values()) + len(past_work)
+    total = sum(len(v) for v in data.values()) + len(past_work) + (1 if constitution_entry else 0)
     lines.append(
         f"({total} entries) Use --full for complete content, or query-session.py --detail <id> for specific entry"
     )
@@ -2300,6 +2402,7 @@ def _format_markdown(
     categories: dict,
     blast: list = None,
     file_annotations: list | None = None,
+    constitution_entry: dict | None = None,
     clarify_entry: dict | None = None,
 ) -> str:
     """Format briefing as Markdown."""
@@ -2312,6 +2415,7 @@ def _format_markdown(
     lines.append("---")
     lines.append("")
 
+    lines.extend(_format_constitution_markdown_block(constitution_entry))
     lines.extend(_format_clarification_markdown_block(clarify_entry))
 
     for cat, meta in categories.items():
@@ -2386,17 +2490,30 @@ def _format_markdown(
 
     lines.append("---")
     lines.append(
-        f"_Briefing from knowledge.db — {sum(len(v) for v in data.values())} entries + {len(past_work)} past work refs_"
+        f"_Briefing from knowledge.db — {sum(len(v) for v in data.values()) + (1 if constitution_entry else 0)} entries + {len(past_work)} past work refs_"
     )
 
     return "\n".join(lines)
 
 
 def _format_json(
-    query: str, data: dict, past_work: list, categories: dict, blast: list = None, clarify_entry: dict | None = None
+    query: str,
+    data: dict,
+    past_work: list,
+    categories: dict,
+    blast: list = None,
+    constitution_entry: dict | None = None,
+    clarify_entry: dict | None = None,
 ) -> str:
     """Format briefing as JSON."""
     output = {"query": query, "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "sections": {}}
+
+    constitution = _serialize_constitution(constitution_entry)
+    if constitution:
+        output["sections"]["constitution"] = {
+            "title": "Constitution",
+            "entry": constitution,
+        }
 
     clarify = _serialize_clarification(clarify_entry)
     if clarify:
@@ -2485,6 +2602,27 @@ def _format_clarification_default_block(entry: dict | None) -> list[str]:
     return lines
 
 
+def _format_constitution_default_block(entry: dict | None) -> list[str]:
+    constitution = _serialize_constitution(entry)
+    if not constitution:
+        return []
+    lines = ["🏛️ Constitution"]
+    version = constitution.get("version", "")
+    amended = constitution.get("last_amended", "")
+    meta = " | ".join(part for part in [f"Version {version}" if version else "", amended] if part)
+    if meta:
+        lines.append(f"  {meta}")
+    for principle in constitution.get("principles", [])[:3]:
+        lines.append(f"  Principle: {_word_trim(principle, 120)}")
+    for gate in constitution.get("quality_gates", [])[:2]:
+        lines.append(f"  Gate: {_word_trim(gate, 120)}")
+    governance = constitution.get("governance", [])
+    if governance:
+        lines.append(f"  Governance: {_word_trim(governance[0], 120)}")
+    lines.append("")
+    return lines
+
+
 def _format_clarification_markdown_block(entry: dict | None) -> list[str]:
     """Render a Markdown clarification block for full briefing output."""
     clarify = _serialize_clarification(entry)
@@ -2505,6 +2643,29 @@ def _format_clarification_markdown_block(entry: dict | None) -> list[str]:
     return lines
 
 
+def _format_constitution_markdown_block(entry: dict | None) -> list[str]:
+    constitution = _serialize_constitution(entry)
+    if not constitution:
+        return []
+    lines = ["## 🏛️ Constitution", ""]
+    version = constitution.get("version", "")
+    amended = constitution.get("last_amended", "")
+    if version:
+        lines.append(f"**Version:** {version}")
+    if amended:
+        lines.append(f"**Last Amended:** {amended}")
+    if version or amended:
+        lines.append("")
+    for principle in constitution.get("principles", [])[:3]:
+        lines.append(f"- **Principle:** {principle}")
+    for gate in constitution.get("quality_gates", [])[:2]:
+        lines.append(f"- **Quality Gate:** {gate}")
+    for item in constitution.get("governance", [])[:1]:
+        lines.append(f"- **Governance:** {item}")
+    lines.append("")
+    return lines
+
+
 def _format_clarification_compact_block(entry: dict | None) -> list[str]:
     """Render an XML-like compact clarification block."""
     clarify = _serialize_clarification(entry)
@@ -2522,6 +2683,23 @@ def _format_clarification_compact_block(entry: dict | None) -> list[str]:
     return lines
 
 
+def _format_constitution_compact_block(entry: dict | None) -> list[str]:
+    constitution = _serialize_constitution(entry)
+    if not constitution:
+        return []
+    version = _xml_escape(constitution.get("version", ""))
+    amended = _xml_escape(constitution.get("last_amended", ""))
+    lines = [f'<constitution version="{version}" amended="{amended}">']
+    for principle in constitution.get("principles", [])[:3]:
+        lines.append(f"  <principle>{_xml_escape(_word_trim(principle, 120))}</principle>")
+    for gate in constitution.get("quality_gates", [])[:2]:
+        lines.append(f"  <gate>{_xml_escape(_word_trim(gate, 120))}</gate>")
+    for item in constitution.get("governance", [])[:1]:
+        lines.append(f"  <governance>{_xml_escape(_word_trim(item, 120))}</governance>")
+    lines.append("</constitution>")
+    return lines
+
+
 def _format_compact(
     query: str,
     data: dict,
@@ -2529,6 +2707,7 @@ def _format_compact(
     categories: dict,
     blast: list = None,
     file_annotations: list | None = None,
+    constitution_entry: dict | None = None,
     clarify_entry: dict | None = None,
 ) -> str:
     """Compact format optimized for AI agent context injection.
@@ -2540,6 +2719,7 @@ def _format_compact(
     lines = []
     safe_query = query[:100].replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
     lines.append(f'<briefing task="{safe_query}">\n')
+    lines.extend(_format_constitution_compact_block(constitution_entry))
     lines.extend(_format_clarification_compact_block(clarify_entry))
 
     def _cat_block(cat: str) -> None:
