@@ -14,6 +14,7 @@ hooks/
     __init__.py           # Rule registry
     common.py             # Shared utilities (get_module, deny, info, etc.)
     briefing.py           # Auto-briefing + enforce-briefing
+    constitution_gate.py  # Constitution-aware command enforcement
     learn_gate.py         # Enforce learn.py before commit/task_complete
     learn_reminder.py     # Remind to record learnings
     read_tracker.py       # Warn on repeated view reads via shared session state
@@ -38,6 +39,7 @@ hooks/
 | `enforce-learn` | preToolUse | Blocks git commit AND task_complete without learn.py |
 | `tentacle-enforce` | preToolUse | Blocks (deny) edits once ≥3 files across ≥2 modules are reached without tentacle setup. **Session-state paths** (`~/.copilot/session-state/`) are always exempt — `/research` outputs and other session artifacts are never blocked. **Bash redirects** are only flagged when the destination is a real source file; redirects to `.txt`, `.log`, `/dev/null`, or session-state paths are allowed. The deny message contains convention-level guidance: if you are the **orchestrator**, follow the runtime-bundle workflow — `tentacle.py create <name> --scope "<paths>" --desc "<desc>" --briefing` → `tentacle.py todo <name> add "<task>"` → `tentacle.py swarm <name> --agent-type general-purpose --model claude-sonnet-4.6 --briefing` (bundle is default); if you are a **dispatched sub-agent**, read the bundle manifest first, stay within your declared scope, write any scope gaps to `handoff.md`, and by convention avoid `git commit`/`git push`. |
 | `subagent-git-guard` | preToolUse | **Defense-in-depth**: blocks `git commit`/`git push` bash commands when the `dispatched-subagent-active` marker is fresh. This is a secondary surface — **not** the primary enforcement path (see §Dispatched-Subagent Git Guard below). Whether `preToolUse` fires inside a delegated subagent context is not guaranteed by the platform. |
+| `constitution-gate` | preToolUse | Reads project-local `.copilot/constitution.md` rule tags and blocks matching violations for declared constitution principles. Current built-in rule tags: `no-destructive-git` (blocks `git reset --hard`, `git checkout --`, and destructive `git clean` variants) and `no-force-push` (blocks `git push --force` / `-f`, but allows `--force-with-lease`). |
 | `syntax-gate` | preToolUse | Blocks `edit`/`create` payloads that introduce Python syntax errors — applies the proposed change in memory and runs `py_compile`; fail-open on non-`.py` paths and missing files. Catches errors before they land on disk. |
 | `read-before-edit` | preToolUse + postToolUse | Tracks viewed files (postToolUse on `view`), warns on `edit`/`create` of files not yet read in session (fail-open). |
 | `read-tracker` | preToolUse | Warns on repeated `view` reads of the same file in a session, using shared per-session state populated by `token-tracker`; configurable ignores via `READ_TRACKER_IGNORE_SUFFIXES`; never blocks. |
