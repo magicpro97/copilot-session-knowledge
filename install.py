@@ -208,6 +208,7 @@ TOOL_FILES = [
     "events.py",
     "sk.py",
     "skill-catalog.py",
+    "preset-manager.py",
     "install.py",
 ]
 

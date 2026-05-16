@@ -1,0 +1,7 @@
+{
+    "name": "lean",
+    "description": "Lean defaults: concise workflow notes, minimal hooks, and a commit gate.",
+    "hooks": ["dangerous-blocker.py", "secret-detector.py", "commit-gate.py"],
+    "workflow_phases": ["CLARIFY", "BUILD", "TEST", "COMMIT"],
+    "workflow_notes": "Lean workflow: keep briefings concise, keep skill output terse, and ship only after the commit gate passes.",
+}

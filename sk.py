@@ -44,6 +44,7 @@ Usage:
     sk sync   run|config|status|gateway|merge [<args>...]
     sk checkpoint save|restore|diff [<args>...]
     sk profile build|import|export [<args>...]
+    sk preset  add|remove|list [<args>...]
     sk context project|map|upsert|remove [<args>...]
     sk scout  run|config|status [<args>...]
     sk project add|remove|list [<args>...]
@@ -138,6 +139,11 @@ _GROUPS: dict[str, dict[str, str]] = {
         "build": "profile-builder.py",
         "import": "profile-import.py",
         "export": "profile-export.py",
+    },
+    "preset": {
+        "add": "preset-manager.py",
+        "remove": "preset-manager.py",
+        "list": "preset-manager.py",
     },
     "context": {
         "project": "project-context.py",

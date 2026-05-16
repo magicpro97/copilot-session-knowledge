@@ -8,6 +8,7 @@ Run: python3 test_project_context.py
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -35,9 +36,7 @@ def test(name: str, condition: bool, detail: str = "") -> None:
 
 # ─── Load module under test ───────────────────────────────────────────────────
 
-spec = importlib.util.spec_from_file_location(
-    "project_context", REPO / "project-context.py"
-)
+spec = importlib.util.spec_from_file_location("project_context", REPO / "project-context.py")
 pc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pc)
 
@@ -206,7 +205,9 @@ print("\n🖥  CLI --stdout")
 
 result = subprocess.run(
     [sys.executable, str(REPO / "project-context.py"), "--stdout", "--repo", str(REPO)],
-    capture_output=True, text=True, timeout=15,
+    capture_output=True,
+    text=True,
+    timeout=15,
 )
 test("--stdout exits 0", result.returncode == 0, result.stderr[:200])
 test("--stdout produces markdown header", "# Project Context" in result.stdout)
@@ -219,7 +220,9 @@ print("\n📋 CLI --list-profiles")
 
 result = subprocess.run(
     [sys.executable, str(REPO / "project-context.py"), "--list-profiles"],
-    capture_output=True, text=True, timeout=10,
+    capture_output=True,
+    text=True,
+    timeout=10,
 )
 test("--list-profiles exits 0", result.returncode == 0, result.stderr[:200])
 test("--list-profiles shows 'python'", "python" in result.stdout)
@@ -231,18 +234,20 @@ test("--list-profiles shows 'default'", "default" in result.stdout)
 print("\n🔧 CLI --profile")
 
 result = subprocess.run(
-    [sys.executable, str(REPO / "project-context.py"), "--stdout",
-     "--repo", str(REPO), "--profile", "mobile"],
-    capture_output=True, text=True, timeout=15,
+    [sys.executable, str(REPO / "project-context.py"), "--stdout", "--repo", str(REPO), "--profile", "mobile"],
+    capture_output=True,
+    text=True,
+    timeout=15,
 )
 test("--profile mobile exits 0", result.returncode == 0, result.stderr[:200])
 test("--profile mobile shows mobile phases", "QA" in result.stdout)
 test("--profile shows 'forced'", "forced" in result.stdout)
 
 result_bad = subprocess.run(
-    [sys.executable, str(REPO / "project-context.py"), "--stdout",
-     "--repo", str(REPO), "--profile", "nonexistent_xyz"],
-    capture_output=True, text=True, timeout=10,
+    [sys.executable, str(REPO / "project-context.py"), "--stdout", "--repo", str(REPO), "--profile", "nonexistent_xyz"],
+    capture_output=True,
+    text=True,
+    timeout=10,
 )
 test("--profile nonexistent exits non-zero", result_bad.returncode != 0)
 
@@ -254,9 +259,10 @@ print("\n💾 CLI --output")
 out_path = REPO / "_test_project_context_output.md"
 try:
     result = subprocess.run(
-        [sys.executable, str(REPO / "project-context.py"),
-         "--output", str(out_path), "--repo", str(REPO)],
-        capture_output=True, text=True, timeout=15,
+        [sys.executable, str(REPO / "project-context.py"), "--output", str(out_path), "--repo", str(REPO)],
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
     test("--output exits 0", result.returncode == 0, result.stderr[:200])
     test("output file was created", out_path.exists())
@@ -274,19 +280,133 @@ finally:
 print("\n🔍 CLI --no-write")
 
 result = subprocess.run(
-    [sys.executable, str(REPO / "project-context.py"), "--no-write",
-     "--repo", str(REPO), "--output", str(REPO / "_would_write.md")],
-    capture_output=True, text=True, timeout=10,
+    [
+        sys.executable,
+        str(REPO / "project-context.py"),
+        "--no-write",
+        "--repo",
+        str(REPO),
+        "--output",
+        str(REPO / "_would_write.md"),
+    ],
+    capture_output=True,
+    text=True,
+    timeout=10,
 )
 test("--no-write exits 0", result.returncode == 0, result.stderr[:200])
 test("--no-write prints 'Would write'", "Would write" in result.stdout)
 test("--no-write does not create file", not (REPO / "_would_write.md").exists())
 
 
+# ─── Layered preset resolution ────────────────────────────────────────────────
+
+print("\n🧩 layered preset resolution")
+
+layer_scratch = REPO / ".test-scratch" / "project-context-layers"
+layer_home = layer_scratch / "copilot-home"
+user_templates = layer_home / "templates"
+layer_project = layer_scratch / "project"
+project_presets = layer_project / ".copilot" / "presets"
+project_overrides = layer_project / ".copilot" / "overrides"
+
+shutil.rmtree(layer_scratch, ignore_errors=True)
+user_templates.mkdir(parents=True, exist_ok=True)
+project_presets.mkdir(parents=True, exist_ok=True)
+project_overrides.mkdir(parents=True, exist_ok=True)
+
+(user_templates / "python.json").write_text(
+    json.dumps(
+        {
+            "overrides": {
+                "workflow_notes": {
+                    "strategy": "wrap",
+                    "value": "USER<" + pc.CORE_TEMPLATE_TOKEN + ">",
+                },
+                "hooks": {
+                    "strategy": "append",
+                    "value": ["docs-reminder.py"],
+                },
+            }
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+(project_presets / "python.json").write_text(
+    json.dumps(
+        {
+            "overrides": {
+                "hooks": {
+                    "strategy": "prepend",
+                    "value": ["build-reminder.py"],
+                }
+            }
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+(project_overrides / "python.json").write_text(
+    json.dumps(
+        {
+            "overrides": {
+                "workflow_notes": {
+                    "strategy": "wrap",
+                    "value": "PROJECT[" + pc.CORE_TEMPLATE_TOKEN + "]",
+                },
+                "workflow_phases": {
+                    "strategy": "append",
+                    "value": ["REVIEW"],
+                },
+            }
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+(user_templates / "team.json").write_text(
+    json.dumps(
+        {
+            "name": "team",
+            "description": "Team-specific profile",
+            "hooks": ["dangerous-blocker.py"],
+            "workflow_phases": ["CLARIFY", "BUILD", "TEST", "COMMIT"],
+            "workflow_notes": "Team defaults",
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+
+original_user_templates_dir = pc.USER_TEMPLATES_DIR
+pc.USER_TEMPLATES_DIR = user_templates
+try:
+    layered_python = pc.load_preset("python", layer_project)
+    expected_notes = f"PROJECT[USER<{python_preset.get('workflow_notes', '')}>]"
+    test("project preset prepends hooks", layered_python.get("hooks", [None])[0] == "build-reminder.py")
+    test("user template appends hooks", layered_python.get("hooks", [])[-1] == "docs-reminder.py")
+    test("project override appends phases", layered_python.get("workflow_phases", [])[-1] == "REVIEW")
+    test("wrap composes both layers once", layered_python.get("workflow_notes") == expected_notes)
+    test(
+        "wrap does not recurse",
+        layered_python.get("workflow_notes", "").count("PROJECT[") == 1
+        and layered_python.get("workflow_notes", "").count("USER<") == 1,
+        layered_python.get("workflow_notes", ""),
+    )
+    test("list_profiles includes user-only layered profile", "team" in pc.list_profiles(layer_project))
+finally:
+    pc.USER_TEMPLATES_DIR = original_user_templates_dir
+    shutil.rmtree(layer_scratch, ignore_errors=True)
+
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
 total = PASS + FAIL
-print(f"\n{'='*50}")
+print(f"\n{'=' * 50}")
 print(f"Results: {PASS}/{total} passed", end="")
 if FAIL:
     print(f"  ❌ {FAIL} failed")
