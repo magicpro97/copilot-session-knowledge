@@ -44,7 +44,7 @@ def _emit_knowledge_event_fail_open(event_type: str, data: dict) -> None:
         events_script = Path(__file__).with_name("events.py")
         if not events_script.is_file():
             return
-        subprocess.run(
+        subprocess.call(
             [
                 sys.executable,
                 str(events_script),
@@ -53,10 +53,8 @@ def _emit_knowledge_event_fail_open(event_type: str, data: dict) -> None:
                 "--data",
                 json.dumps(data, ensure_ascii=False),
             ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=5,
         )
     except Exception:
