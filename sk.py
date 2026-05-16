@@ -30,6 +30,7 @@ Usage:
     sk skill-curator [<args>...]      Run skill-curator.py
     sk hooks        run|list|<event>  Run hooks/hook_runner.py
     sk audit-hooks  [<args>...]       Run audit-hooks.py
+    sk audit-instructions [<args>...] Run audit-instructions.py
     sk improvement-signals [<args>...] Run improvement-signals.py
 
     sk index  build|extract|migrate|status|health|embed|tag [<args>...]
@@ -88,6 +89,7 @@ _DIRECT: dict[str, str] = {
     "skill-patch": "skill-patch.py",
     "skill-curator": "skill-curator.py",
     "audit-hooks": "audit-hooks.py",
+    "audit-instructions": "audit-instructions.py",
     "improvement-signals": "improvement-signals.py",
 }
 
