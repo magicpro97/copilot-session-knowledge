@@ -17,6 +17,7 @@ Usage:
     sk benchmark [<args>...]      Run benchmark.py
     sk retro    [<args>...]       Run retro.py
     sk heal     [<args>...]       Run copilot-cli-healer.py
+    sk doctor   [<args>...]       Run install.py --doctor
     sk watch    [<args>...]       Run watch-sessions.py
     sk export-buglog [<args>...]  Run buglog-export.py
     sk buglog   [<args>...]       Run buglog-export.py (alias for export-buglog)
@@ -75,6 +76,7 @@ _DIRECT: dict[str, str] = {
     "benchmark": "benchmark.py",
     "retro": "retro.py",
     "heal": "copilot-cli-healer.py",
+    "doctor": "install.py",
     "watch": "watch-sessions.py",
     "export-buglog": "buglog-export.py",
     "buglog": "buglog-export.py",  # alias for export-buglog (backward compat)
@@ -273,6 +275,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_hooks(rest)
     if cmd == "project":
         return _run_project(rest)
+    if cmd == "doctor":
+        return _run("install.py", ["--doctor"] + rest)
     if cmd in _DIRECT:
         return _run(_DIRECT[cmd], rest)
 
