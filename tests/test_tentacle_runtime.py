@@ -15,6 +15,7 @@ Does NOT write to /tmp — uses a subdirectory of the tools dir instead.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -1322,6 +1323,7 @@ class TestBuildRuntimeBundle(unittest.TestCase):
             "session-metadata.md",
             "recall-pack.json",
             "manifest.json",
+            "context-packet.md",
         ):
             self.assertTrue((bundle_dir / fname).exists(), f"Missing: {fname}")
 
@@ -1338,7 +1340,7 @@ class TestBuildRuntimeBundle(unittest.TestCase):
         d = self._make()
         bundle_dir = T._build_runtime_bundle(d, "test-bundle")
         data = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
-        for key in ("briefing", "instructions", "skills", "session_metadata", "recall_pack"):
+        for key in ("briefing", "instructions", "skills", "session_metadata", "recall_pack", "context_packet"):
             self.assertIn(key, data["artifacts"], f"Missing artifact key: {key}")
 
     # ── briefing content ─────────────────────────────────────────────────────
@@ -1538,6 +1540,196 @@ class TestBuildRuntimeBundle(unittest.TestCase):
         T._build_runtime_bundle(d, "test-bundle", recall_pack_data=pack2, recall_source_mode="task_json")
         raw = json.loads((d / "bundle" / "recall-pack.json").read_text(encoding="utf-8"))
         self.assertEqual(raw["tagged_entries"][0]["title"], "second")
+
+    # ── context packet artifact ───────────────────────────────────────────────
+
+    def test_context_packet_file_always_created(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        self.assertTrue((bundle_dir / "context-packet.md").exists())
+
+    def test_context_packet_manifest_key_present(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertIn("context_packet", manifest["artifacts"])
+        self.assertTrue(manifest["artifacts"]["context_packet"]["populated"])
+
+    def test_context_packet_contains_tentacle_name(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        self.assertIn("test-bundle", content)
+
+    def test_context_packet_contains_scope_from_meta(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        self.assertIn("src/foo.py", content)
+
+    def test_context_packet_contains_task_description(self):
+        d = self._make(desc="Do the special thing")
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        self.assertIn("Do the special thing", content)
+
+    def test_context_packet_uses_context_md_content_as_task_description(self):
+        d = self._make(desc="Short meta desc")
+        custom_context = "# Custom Context\n\nDetailed task content from CONTEXT.md.\n"
+        (d / "CONTEXT.md").write_text(custom_context, encoding="utf-8")
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        self.assertIn("Detailed task content from CONTEXT.md.", content)
+
+    def test_context_packet_contains_iteration_from_meta(self):
+        d = self._make()
+        meta_path = d / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["goal_iteration"] = 7
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        self.assertIn("- **Iteration:** 7", content)
+
+    def test_context_packet_goal_context_none_when_absent(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle", goal_context_text="")
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        self.assertIn("None", content)
+
+    def test_context_packet_goal_context_injected_when_present(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(
+            d, "test-bundle", goal_context_text="## Goal Continuation Context\nObjective: ship it"
+        )
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        self.assertIn("ship it", content)
+
+    def test_context_packet_manifest_has_goal_context_flag_true(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle", goal_context_text="Some goal text")
+        manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertTrue(manifest["artifacts"]["context_packet"]["has_goal_context"])
+
+    def test_context_packet_manifest_has_goal_context_flag_false_when_absent(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertFalse(manifest["artifacts"]["context_packet"]["has_goal_context"])
+
+    def test_context_packet_prior_handoffs_included(self):
+        d = self._make()
+        prior = [{"tentacle": "prev-tentacle", "iteration": 1, "summary": "Did great things"}]
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle", prior_handoffs=prior)
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        self.assertIn("prev-tentacle", content)
+        self.assertIn("Did great things", content)
+
+    def test_context_packet_manifest_has_prior_handoffs_flag_true(self):
+        d = self._make()
+        prior = [{"tentacle": "x", "iteration": 1, "summary": "ok"}]
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle", prior_handoffs=prior)
+        manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertTrue(manifest["artifacts"]["context_packet"]["has_prior_handoffs"])
+
+    def test_context_packet_manifest_has_prior_handoffs_flag_false_when_absent(self):
+        d = self._make()
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertFalse(manifest["artifacts"]["context_packet"]["has_prior_handoffs"])
+
+    def test_context_packet_blocker_context_none_for_done_status(self):
+        d = self._make()
+        meta_path = d / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["terminal_status"] = "DONE"
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        match = re.search(r"## Blocker Context\s*(.+?)\s*\Z", content, flags=re.S)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1).strip(), "None")
+
+    def test_context_packet_blocker_context_contains_handoff_for_blocked_status(self):
+        d = self._make()
+        meta_path = d / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["terminal_status"] = "BLOCKED"
+        meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        (d / "handoff.md").write_text("STATUS: BLOCKED\n\nCannot proceed without X\n", encoding="utf-8")
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        match = re.search(r"## Blocker Context\s*(.+?)\s*\Z", content, flags=re.S)
+        self.assertIsNotNone(match)
+        self.assertIn("Cannot proceed without X", match.group(1))
+
+    def test_context_packet_project_template_override_used_when_present(self):
+        d = self._make()
+        fake_root = self.base / "proj_tpl_repo"
+        fake_root.mkdir(parents=True, exist_ok=True)
+        github_dir = fake_root / ".github"
+        github_dir.mkdir(parents=True, exist_ok=True)
+        custom_tpl = "## CUSTOM HEADER\n\nTentacle: {{tentacle_name}}\nTask: {{task_description}}\n"
+        (github_dir / "context-packet-template.md").write_text(custom_tpl, encoding="utf-8")
+        with patch.object(T, "find_git_root", return_value=fake_root):
+            bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        self.assertIn("CUSTOM HEADER", content)
+        self.assertIn("test-bundle", content)
+
+    def test_context_packet_falls_back_to_default_template_when_no_project_override(self):
+        d = self._make()
+        with patch.object(T, "find_git_root", return_value=None):
+            bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        # Default template includes standard sections
+        self.assertIn("Task Description", content)
+        self.assertIn("Goal Context", content)
+        self.assertIn("Blocker Context", content)
+
+    def test_context_packet_summarizes_instruction_sources(self):
+        d = self._make()
+        fake_root = self.base / "proj_conventions_repo"
+        github_dir = fake_root / ".github"
+        github_dir.mkdir(parents=True, exist_ok=True)
+        (github_dir / "copilot-instructions.md").write_text("# Project rules\n", encoding="utf-8")
+        with patch.object(T, "find_git_root", return_value=fake_root):
+            bundle_dir = T._build_runtime_bundle(d, "test-bundle")
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        self.assertIn(".github/copilot-instructions.md", content)
+        self.assertIn("bundle/instructions.md", content)
+
+    def test_context_packet_summarizes_recall_pack(self):
+        d = self._make()
+        pack = {"tagged_entries": [{"id": 1, "category": "pattern", "title": "Use packet"}], "related_entries": []}
+        bundle_dir = T._build_runtime_bundle(d, "test-bundle", recall_pack_data=pack, recall_source_mode="task_json")
+        content = (bundle_dir / "context-packet.md").read_text(encoding="utf-8")
+        self.assertIn("Source mode: task_json", content)
+        self.assertIn("Tagged entries: 1", content)
+
+
+class TestRenderDispatchContext(unittest.TestCase):
+    """Tests for _render_dispatch_context updated to reference context-packet.md."""
+
+    def test_no_bundle_returns_raw_context(self):
+        result = T._render_dispatch_context("my context", {}, None)
+        self.assertEqual(result, "my context")
+
+    def test_with_bundle_references_context_packet_first(self):
+        bundle_dir = Path("/some/bundle/path")
+        result = T._render_dispatch_context("ctx", {}, bundle_dir)
+        self.assertIn("context-packet.md", result)
+        lines = result.splitlines()
+        # context-packet.md should come before manifest.json in the read-first list
+        packet_idx = next(i for i, l in enumerate(lines) if "context-packet.md" in l)
+        manifest_idx = next(i for i, l in enumerate(lines) if "manifest.json" in l)
+        self.assertLess(packet_idx, manifest_idx)
+
+    def test_with_bundle_still_lean(self):
+        bundle_dir = Path("/some/bundle")
+        result = T._render_dispatch_context("large " * 500, {"scope": ["a.py"]}, bundle_dir)
+        self.assertIn("Runtime bundle is authoritative", result)
+        self.assertLess(len(result), 2000)
 
 
 class TestCmdBundle(unittest.TestCase):
@@ -1753,7 +1945,9 @@ class TestSwarmBundleFlag(unittest.TestCase):
         idx = output.find("{")
         data, _ = decoder.raw_decode(output, idx)
         self.assertIn("bundle_path", data)
+        self.assertIn("context_packet_path", data)
         self.assertTrue(Path(data["bundle_path"]).exists())
+        self.assertTrue(Path(data["context_packet_path"]).exists())
 
     def test_swarm_bundle_creates_bundle_dir(self):
         d = make_tentacle("sw-test2", self.base)
@@ -1853,7 +2047,9 @@ class TestSwarmBundleFlag(unittest.TestCase):
         idx = out.find("{")
         data, _ = decoder.raw_decode(out, idx)
         self.assertIn("bundle_path", data)
+        self.assertIn("context_packet_path", data)
         self.assertIn("context_bundle", data["execution_guidance"])
+        self.assertIn("context-packet.md", data["execution_guidance"]["context_bundle"])
         recall = json.loads((d / "bundle" / "recall-pack.json").read_text(encoding="utf-8"))
         self.assertEqual(recall["source_mode"], "task_json")
         self.assertEqual(recall["tagged_entries"][0]["title"], "Use runtime bundle")

@@ -661,10 +661,11 @@ def _render_dispatch_context(context: str, meta: dict, bundle_dir: Path | None) 
     return textwrap.dedent(f"""\
         Runtime bundle is authoritative; inline context is intentionally minimal.
         Read first:
-        1. `{bundle_dir}/manifest.json`
-        2. `{bundle_dir}/session-metadata.md`
-        3. `{bundle_dir}/recall-pack.json`
-        4. `{bundle_dir}/instructions.md` and relevant source files
+        1. `{bundle_dir}/context-packet.md`  ← unified context packet
+        2. `{bundle_dir}/manifest.json`
+        3. `{bundle_dir}/session-metadata.md`
+        4. `{bundle_dir}/recall-pack.json`
+        5. `{bundle_dir}/instructions.md` and relevant source files
 
         Scope: {_scope_summary(meta)}
         Context excerpt: {_context_excerpt(context)}
@@ -1065,6 +1066,205 @@ def _get_marker_state() -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Context packet helpers
+# ---------------------------------------------------------------------------
+
+_DEFAULT_CONTEXT_PACKET_TEMPLATE = """\
+# Context Packet: {{tentacle_name}}
+
+## Tentacle / Scope / Iteration Header
+
+- **Tentacle:** {{tentacle_name}}
+- **Scope:** {{scope}}
+- **Iteration:** {{iteration}}
+- **Status:** {{status}}
+
+## Task Description
+
+{{task_description}}
+
+## Goal Context
+
+{{goal_context}}
+
+## Previous Handoffs
+
+{{previous_handoffs}}
+
+## Project Conventions
+
+{{project_conventions}}
+
+## Recall Pack
+
+{{recall_pack}}
+
+## Blocker Context
+
+{{blocker_context}}
+"""
+
+
+def _apply_context_packet_template(template: str, subs: dict) -> str:
+    """Replace {{key}} markers in *template* with values from *subs*.
+
+    Unknown keys are left as-is so custom templates with extra markers do not
+    crash.  Uses a regex replace to avoid conflicts with Python f-string braces
+    that might appear in literal template content.
+    """
+
+    def _replacer(m: re.Match) -> str:
+        return subs.get(m.group(1), m.group(0))
+
+    return re.sub(r"\{\{(\w+)\}\}", _replacer, template)
+
+
+def _load_context_packet_template(git_root: "Path | None") -> str:
+    """Load the project-level context-packet template if present.
+
+    Looks for ``.github/context-packet-template.md`` under *git_root*.
+    Falls back to ``_DEFAULT_CONTEXT_PACKET_TEMPLATE`` when the file is
+    absent or unreadable.
+    """
+    if git_root:
+        override = git_root / ".github" / "context-packet-template.md"
+        if override.is_file():
+            try:
+                return override.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
+    return _DEFAULT_CONTEXT_PACKET_TEMPLATE
+
+
+def _blocker_context_from_meta(meta: dict, tentacle_dir: Path) -> str:
+    """Return substantive blocker context when the latest handoff is non-DONE terminal.
+
+    Returns a stable ``None`` placeholder otherwise so the packet is
+    deterministic regardless of run order.
+    """
+    terminal_status = meta.get("terminal_status")
+    if terminal_status not in HANDOFF_TRIAGE_STATUSES:
+        return "None"
+    handoff_path = tentacle_dir / "handoff.md"
+    if not handoff_path.is_file():
+        return f"STATUS: {terminal_status} (see handoff.md — file not present)"
+    try:
+        text = handoff_path.read_text(encoding="utf-8", errors="replace").strip()
+        return text[:600] if len(text) > 600 else text
+    except OSError:
+        return f"STATUS: {terminal_status} (handoff.md unreadable)"
+
+
+def _project_conventions_summary(instr_paths: "list[str]") -> str:
+    """Summarize available instruction sources for the context packet."""
+    if not instr_paths:
+        return "No project instruction files detected.\nSee `bundle/briefing.md` for session-knowledge guidance."
+    shown = instr_paths[:6]
+    lines = [f"- Sources: {', '.join(shown)}"]
+    if len(instr_paths) > len(shown):
+        lines.append(f"- Additional instruction files: {len(instr_paths) - len(shown)}")
+    lines.append("- Full excerpts: `bundle/instructions.md`")
+    lines.append("- Session knowledge: `bundle/briefing.md`")
+    return "\n".join(lines)
+
+
+def _recall_pack_summary(recall_pack_data: "dict | None", recall_source_mode: str | None) -> str:
+    """Summarize the machine-readable recall pack for the context packet."""
+    if not recall_pack_data:
+        return "None — no recall pack data available."
+
+    lines: list[str] = []
+    if recall_source_mode:
+        lines.append(f"- Source mode: {recall_source_mode}")
+
+    tagged = recall_pack_data.get("tagged_entries")
+    if isinstance(tagged, list) and tagged:
+        lines.append(f"- Tagged entries: {len(tagged)}")
+
+    related = recall_pack_data.get("related_entries")
+    if isinstance(related, list) and related:
+        lines.append(f"- Related entries: {len(related)}")
+
+    entries = recall_pack_data.get("entries")
+    if isinstance(entries, dict):
+        populated = []
+        for key, value in entries.items():
+            if isinstance(value, list) and value:
+                populated.append(f"{key}={len(value)}")
+        if populated:
+            lines.append(f"- Entry buckets: {', '.join(populated[:6])}")
+
+    file_matches = recall_pack_data.get("file_matches")
+    if isinstance(file_matches, list) and file_matches:
+        lines.append(f"- File matches: {len(file_matches)}")
+
+    lines.append("- Full payload: `bundle/recall-pack.json`")
+    return "\n".join(lines)
+
+
+def _build_context_packet(
+    name: str,
+    meta: dict,
+    tentacle_dir: Path,
+    context_text: str,
+    goal_context_text: str,
+    prior_handoffs: "list[dict]",
+    recall_pack_data: "dict | None",
+    recall_source_mode: str | None,
+    instr_paths: "list[str]",
+    git_root: "Path | None",
+) -> str:
+    """Render the context-packet.md content for a tentacle bundle.
+
+    Uses the project-level template when present
+    (``.github/context-packet-template.md``), falling back to the built-in
+    default.  All substitution keys use ``{{variable_name}}`` markers so they
+    do not clash with Python f-string syntax.
+    """
+    template = _load_context_packet_template(git_root)
+
+    # ── substitutions ────────────────────────────────────────────────────────
+    scope_str = _scope_summary(meta)
+    task_desc = context_text.strip() or meta.get("description") or "See bundle/session-metadata.md"
+    iteration_str = str(meta.get("goal_iteration") or meta.get("iteration") or "None")
+    status_str = meta.get("status") or "unknown"
+
+    if goal_context_text:
+        goal_section = goal_context_text.strip()
+    else:
+        goal_section = "None — tentacle is not linked to an active goal."
+
+    if prior_handoffs:
+        ph_lines: list[str] = []
+        for entry in prior_handoffs:
+            header = f"[iter-{entry['iteration']} / {entry['tentacle']}]"
+            first_line = entry["summary"].split("\n")[0][:160]
+            ph_lines.append(f"- {header} {first_line}")
+        prev_handoffs_section = "\n".join(ph_lines)
+    else:
+        prev_handoffs_section = "None — first iteration or no prior handoffs recorded."
+
+    project_conventions = _project_conventions_summary(instr_paths)
+    recall_pack_section = _recall_pack_summary(recall_pack_data, recall_source_mode)
+    blocker_section = _blocker_context_from_meta(meta, tentacle_dir)
+
+    subs = {
+        "tentacle_name": name,
+        "scope": scope_str,
+        "iteration": iteration_str,
+        "task_description": task_desc,
+        "status": status_str,
+        "goal_context": goal_section,
+        "previous_handoffs": prev_handoffs_section,
+        "project_conventions": project_conventions,
+        "recall_pack": recall_pack_section,
+        "blocker_context": blocker_section,
+    }
+
+    return _apply_context_packet_template(template, subs)
+
+
 def _build_runtime_bundle(
     tentacle_dir: Path,
     name: str,
@@ -1074,6 +1274,8 @@ def _build_runtime_bundle(
     recall_pack_data: dict | None = None,
     recall_source_mode: str | None = None,
     goal_context_text: str = "",
+    context_packet_goal_context_text: str | None = None,
+    prior_handoffs: "list[dict] | None" = None,
 ) -> Path:
     """Materialize a per-run context bundle under the tentacle workspace.
 
@@ -1190,26 +1392,33 @@ def _build_runtime_bundle(
     todo_path = tentacle_dir / "todo.md"
     handoff_path = tentacle_dir / "handoff.md"
 
+    # Load meta once for reuse in the context packet step below.
+    _bundle_meta: dict = {}
     if meta_path.exists():
         try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta_lines.append("## Tentacle Meta\n")
-            meta_lines.append(f"- Name: {meta.get('name', name)}")
-            # Surface the actual directory slug for collision-renamed tentacles so
-            # readers know which directory to look in when name != dir_name.
-            dir_name = meta.get("dir_name")
-            if dir_name:
-                meta_lines.append(f"- Slug: {dir_name}")
-            meta_lines.append(f"- Status: {meta.get('status', 'unknown')}")
-            meta_lines.append(f"- Description: {meta.get('description', '')}")
-            meta_lines.append(f"- Created: {meta.get('created_at', '')}")
-            meta_lines.append("")
+            _bundle_meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
 
+    if _bundle_meta:
+        meta = _bundle_meta
+        meta_lines.append("## Tentacle Meta\n")
+        meta_lines.append(f"- Name: {meta.get('name', name)}")
+        # Surface the actual directory slug for collision-renamed tentacles so
+        # readers know which directory to look in when name != dir_name.
+        dir_name = meta.get("dir_name")
+        if dir_name:
+            meta_lines.append(f"- Slug: {dir_name}")
+        meta_lines.append(f"- Status: {meta.get('status', 'unknown')}")
+        meta_lines.append(f"- Description: {meta.get('description', '')}")
+        meta_lines.append(f"- Created: {meta.get('created_at', '')}")
+        meta_lines.append("")
+
+    context_text = ""
     if context_path.exists():
+        context_text = context_path.read_text(encoding="utf-8", errors="replace")
         meta_lines.append("## Context\n")
-        meta_lines.append(context_path.read_text(encoding="utf-8", errors="replace"))
+        meta_lines.append(context_text)
         meta_lines.append("")
 
     if todo_path.exists():
@@ -1256,7 +1465,32 @@ def _build_runtime_bundle(
             "populated": True,
         }
 
-    # ── 7. Manifest ───────────────────────────────────────────────────────────
+    # ── 7. Context packet (unified agent briefing) ────────────────────────────
+    cp_prior_handoffs: list[dict] = list(prior_handoffs or [])
+    cp_goal_context_text = (
+        context_packet_goal_context_text if context_packet_goal_context_text is not None else goal_context_text
+    )
+    cp_packet = _build_context_packet(
+        name=name,
+        meta=_bundle_meta,
+        tentacle_dir=tentacle_dir,
+        context_text=context_text,
+        goal_context_text=cp_goal_context_text,
+        prior_handoffs=cp_prior_handoffs,
+        recall_pack_data=recall_pack_data,
+        recall_source_mode=recall_source_mode,
+        instr_paths=instr_paths,
+        git_root=git_root,
+    )
+    (bundle_dir / "context-packet.md").write_text(cp_packet, encoding="utf-8")
+    manifest["artifacts"]["context_packet"] = {
+        "file": "context-packet.md",
+        "populated": True,
+        "has_prior_handoffs": bool(cp_prior_handoffs),
+        "has_goal_context": bool(goal_context_text),
+    }
+
+    # ── 8. Manifest ───────────────────────────────────────────────────────────
     if worktree_path:
         manifest["worktree_path"] = worktree_path
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -4238,18 +4472,25 @@ def _goal_collect_prior_handoffs(state: dict, tentacles: Path, max_handoffs: int
     return summaries[:cap]
 
 
-def _goal_render_continuation_context(state: dict, tentacles: Path, max_handoffs: int = 5) -> str:
+def _goal_render_continuation_context(
+    state: dict,
+    tentacles: Path,
+    max_handoffs: int = 5,
+    include_prior_handoffs: bool = True,
+) -> str:
     """Render a compact goal continuation context block suitable for injection.
 
     Returns a markdown string with objective, iteration, budget, progress,
-    remaining criteria, and prior handoff summaries.
+    remaining criteria, and optionally prior handoff summaries.
     """
     bs = _goal_budget_status(state)
     current_iter = _goal_current_iteration(state)
     criteria: list = state.get("success_criteria") or []
     verified_count = sum(1 for c in criteria if c.get("status") == "verified")
     remaining = [c for c in criteria if c.get("status") != "verified"]
-    prior_handoffs = _goal_collect_prior_handoffs(state, tentacles, max_handoffs=max_handoffs)
+    prior_handoffs = (
+        _goal_collect_prior_handoffs(state, tentacles, max_handoffs=max_handoffs) if include_prior_handoffs else []
+    )
 
     lines: list[str] = ["## Goal Continuation Context"]
     lines.append(f"**Objective:** {state.get('title', '(untitled)')}")
@@ -4276,13 +4517,13 @@ def _goal_render_continuation_context(state: dict, tentacles: Path, max_handoffs
     else:
         lines.append("**Remaining criteria:** (none — all verified or no criteria defined)")
 
-    if prior_handoffs:
+    if include_prior_handoffs and prior_handoffs:
         lines.append(f"**Prior handoff summaries (last {len(prior_handoffs)}):**")
         for entry in prior_handoffs:
             header = f"[iter-{entry['iteration']} / {entry['tentacle']}]"
             summary_first_line = entry["summary"].split("\n")[0][:120]
             lines.append(f"- {header} {summary_first_line}")
-    else:
+    elif include_prior_handoffs:
         lines.append("**Prior handoff summaries:** (none — first iteration or no handoffs written)")
 
     return "\n".join(lines) + "\n"
@@ -6403,6 +6644,22 @@ def cmd_swarm(args):
         else:
             b_recall, b_recall_mode = _fetch_recall_pack_json(args.name, fallback_query=b_fallback)
             b_briefing = _render_recall_payload(args.name, b_recall, b_recall_mode)
+        # Gather goal context if this tentacle is linked to an active goal
+        swarm_goal_context_text = ""
+        swarm_packet_goal_context_text = ""
+        swarm_prior_handoffs: list[dict] = []
+        try:
+            swarm_goal_state = _goal_load(tentacles)
+            if swarm_goal_state and args.name in (swarm_goal_state.get("tentacles") or []):
+                swarm_goal_context_text = _goal_render_continuation_context(swarm_goal_state, tentacles)
+                swarm_packet_goal_context_text = _goal_render_continuation_context(
+                    swarm_goal_state,
+                    tentacles,
+                    include_prior_handoffs=False,
+                )
+                swarm_prior_handoffs = _goal_collect_prior_handoffs(swarm_goal_state, tentacles)
+        except Exception:
+            pass
         bundle_dir = _build_runtime_bundle(
             tentacle_dir=tentacle_dir,
             name=args.name,
@@ -6411,6 +6668,9 @@ def cmd_swarm(args):
             worktree_path=wt_path_str,
             recall_pack_data=b_recall,
             recall_source_mode=b_recall_mode,
+            goal_context_text=swarm_goal_context_text,
+            context_packet_goal_context_text=swarm_packet_goal_context_text,
+            prior_handoffs=swarm_prior_handoffs,
         )
         bundle_section = (
             "\n### Bundle Path\n\n"
@@ -6554,7 +6814,7 @@ Add `--changed-file <path>` once per modified file. Omit if no files changed (e.
                 "escalation": "If scope is insufficient, stop and write a scope escalation note to handoff",
                 "context_bundle": (
                     "Runtime bundles are the default. Read bundle_path/manifest.json first, then "
-                    "session-metadata.md and recall-pack.json before editing."
+                    "context-packet.md, session-metadata.md, and recall-pack.json before editing."
                     if bundle_dir is not None
                     else "No runtime bundle was requested; rely on context_file and inline prompt."
                 ),
@@ -6563,6 +6823,7 @@ Add `--changed-file <path>` once per modified file. Omit if no files changed (e.
         }
         if bundle_dir is not None:
             dispatch["bundle_path"] = str(bundle_dir)
+            dispatch["context_packet_path"] = str(bundle_dir / "context-packet.md")
         if wt_path_str is not None:
             dispatch["worktree_path"] = wt_path_str
         print(json.dumps(dispatch, indent=2))
@@ -6729,10 +6990,18 @@ def cmd_bundle(args):
 
     # Gather goal context text if this tentacle is linked to a goal
     goal_context_text = ""
+    context_packet_goal_context_text = ""
+    bundle_prior_handoffs: list[dict] = []
     try:
         goal_state = _goal_load(tentacles)
         if goal_state and args.name in (goal_state.get("tentacles") or []):
             goal_context_text = _goal_render_continuation_context(goal_state, tentacles)
+            context_packet_goal_context_text = _goal_render_continuation_context(
+                goal_state,
+                tentacles,
+                include_prior_handoffs=False,
+            )
+            bundle_prior_handoffs = _goal_collect_prior_handoffs(goal_state, tentacles)
             if not json_output:
                 print(f"   ✅ Goal context: {len(goal_context_text)} chars")
     except Exception:
@@ -6747,6 +7016,8 @@ def cmd_bundle(args):
         recall_pack_data=recall_pack_data,
         recall_source_mode=recall_source_mode,
         goal_context_text=goal_context_text,
+        context_packet_goal_context_text=context_packet_goal_context_text,
+        prior_handoffs=bundle_prior_handoffs,
     )
 
     # Write dispatched-subagent-active marker when materializing a bundle
