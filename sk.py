@@ -48,6 +48,7 @@ Usage:
     sk preset  add|remove|list [<args>...]
     sk context project|map|upsert|remove [<args>...]
     sk scout  run|config|status [<args>...]
+    sk cron   add|remove|list|run [<args>...]
     sk project add|remove|list [<args>...]
     sk events append|status|replay|tail [<args>...]
 
@@ -172,6 +173,12 @@ _GROUPS: dict[str, dict[str, str]] = {
         "run": "trend-scout.py",
         "config": "scout-config.py",
         "status": "scout-status.py",
+    },
+    "cron": {
+        "add": "cron-tasks.py",
+        "remove": "cron-tasks.py",
+        "list": "cron-tasks.py",
+        "run": "cron-tasks.py",
     },
     "project": {
         "add": "project-registry.py",
@@ -447,6 +454,24 @@ def _run_events(extra_args: list[str]) -> int:
     return _run("events.py", extra_args)
 
 
+def _run_cron(extra_args: list[str]) -> int:
+    """Dispatch ``sk cron ...`` to cron-tasks.py."""
+    if not extra_args or extra_args[0] in ("-h", "--help"):
+        subs = list(_GROUPS["cron"].keys())
+        print(f"sk cron: available subcommands: {', '.join(subs)}")
+        print(f"Usage: sk cron <{'|'.join(subs)}> [args...]")
+        return 0
+    sub = extra_args[0]
+    if sub not in _GROUPS["cron"]:
+        subs = list(_GROUPS["cron"].keys())
+        print(
+            f"sk cron: unknown subcommand '{sub}'. Choose from: {', '.join(subs)}",
+            file=sys.stderr,
+        )
+        return 2
+    return _run("cron-tasks.py", extra_args)
+
+
 def _print_help() -> None:
     direct_list = "  " + "\n  ".join(f"sk {cmd:<12} → {script}" for cmd, script in _DIRECT.items())
     print(
@@ -483,6 +508,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_constitution(rest)
     if cmd == "skill":
         return _run_skill(rest)
+    if cmd == "cron":
+        return _run_cron(rest)
     if cmd == "events":
         return _run_events(rest)
     if cmd in {"plan", "tasks"}:

@@ -560,6 +560,41 @@ class TestSkGroupedCommands(unittest.TestCase):
         self._assert_group_routes("scout", "status", "scout-status.py")
 
 
+class TestSkCronNamespace(unittest.TestCase):
+    """Verify that sk cron subcommands route to cron-tasks.py."""
+
+    def _assert_cron_routes(self, extra: list[str], expected: list[str]):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["cron"] + extra)
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("cron-tasks.py", expected)
+
+    def test_cron_add(self):
+        self._assert_cron_routes(["add", "reflection", "--every-minutes", "60"], ["add", "reflection", "--every-minutes", "60"])
+
+    def test_cron_remove(self):
+        self._assert_cron_routes(["remove", "reflection-123"], ["remove", "reflection-123"])
+
+    def test_cron_list(self):
+        self._assert_cron_routes(["list", "--json"], ["list", "--json"])
+
+    def test_cron_run(self):
+        self._assert_cron_routes(["run", "--once"], ["run", "--once"])
+
+    def test_cron_help_flag(self):
+        with patch("builtins.print") as mock_print:
+            rc = sk.main(["cron", "--help"])
+        self.assertEqual(rc, 0)
+        output = " ".join(str(c) for call in mock_print.call_args_list for c in call[0])
+        self.assertIn("sk cron", output)
+        self.assertIn("add", output)
+
+    def test_cron_unknown_sub_returns_2(self):
+        with patch("builtins.print"):
+            rc = sk.main(["cron", "pause"])
+        self.assertEqual(rc, 2)
+
+
 class TestSkProjectNamespace(unittest.TestCase):
     """Verify that sk project add/remove/list route to project-registry.py."""
 
