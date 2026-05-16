@@ -104,9 +104,20 @@ _WORKTREE_STATE_ROOT = Path.home() / ".copilot" / "session-state" / "worktrees"
 # ---------------------------------------------------------------------------
 # Structured handoff contract constants
 # ---------------------------------------------------------------------------
-HANDOFF_STATUS_ALLOWLIST: frozenset[str] = frozenset({"DONE", "BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"})
-# Statuses that require visible orchestrator triage (all non-DONE statuses)
-HANDOFF_TRIAGE_STATUSES: frozenset[str] = frozenset({"BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"})
+SCOPE_ESCALATION_STATUS = "SCOPE_ESCALATION"
+SCOPE_REDUCTION_STATUS = "SCOPE_REDUCTION"
+HANDOFF_RECLASSIFICATION_STATUSES: frozenset[str] = frozenset({SCOPE_ESCALATION_STATUS, SCOPE_REDUCTION_STATUS})
+HANDOFF_STATUS_ALLOWLIST: frozenset[str] = frozenset(
+    {"DONE", "BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"} | HANDOFF_RECLASSIFICATION_STATUSES
+)
+# Statuses that require visible orchestrator triage / replacement work.
+HANDOFF_TRIAGE_STATUSES: frozenset[str] = frozenset(
+    {"BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED", SCOPE_ESCALATION_STATUS}
+)
+# Issue #108 heuristic owner: >4 files suggests escalation; 1-2 files suggests reduction.
+SCOPE_ESCALATION_FILE_THRESHOLD = 4
+SCOPE_REDUCTION_FILE_THRESHOLD = 2
+SCOPE_ESCALATION_SPLIT_CHILDREN = 2
 REVIEW_LOOP_CLASSIFICATIONS: frozenset[str] = frozenset(
     {"PRE_EXISTING", "FLAKY", "BUILD_ERROR", "NEW_TEST_WRONG", "REGRESSION"}
 )
@@ -2725,6 +2736,265 @@ def _review_loop_dispatch_resolver(args, resolver_name: str) -> None:
     cmd_swarm(dispatch_args)
 
 
+def _normalize_changed_file_paths(paths: "list[str] | None") -> list[str]:
+    """Return unique non-empty changed-file paths while preserving first-seen order."""
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for raw_path in paths or []:
+        if not isinstance(raw_path, str):
+            continue
+        path = raw_path.strip()
+        if path and path not in seen:
+            normalized.append(path)
+            seen.add(path)
+    return normalized
+
+
+def _scope_reclassification_suggestion(changed_files: "list[str] | None") -> "str | None":
+    """Return the issue #108 reclassification suggested by changed-file count."""
+    changed = _normalize_changed_file_paths(changed_files)
+    changed_count = len(changed)
+    if changed_count > SCOPE_ESCALATION_FILE_THRESHOLD:
+        return SCOPE_ESCALATION_STATUS
+    if 0 < changed_count <= SCOPE_REDUCTION_FILE_THRESHOLD:
+        return SCOPE_REDUCTION_STATUS
+    return None
+
+
+def _reclassification_record(meta: dict) -> "dict | None":
+    """Return the persisted reclassification record when present."""
+    record = meta.get("reclassification")
+    return record if isinstance(record, dict) else None
+
+
+def _describe_scope_reclassification(record: "dict | None") -> str:
+    """Render a compact operator-facing summary for a reclassification record."""
+    if not isinstance(record, dict):
+        return ""
+    changed_count = record.get("changed_file_count")
+    if isinstance(changed_count, int):
+        count_text = f"{changed_count} changed file(s)"
+    else:
+        count_text = "changed-file heuristic unavailable"
+    decision = str(record.get("decision") or "").strip()
+    if decision == "split_followups":
+        followups = [name for name in record.get("followup_tentacles") or [] if isinstance(name, str) and name.strip()]
+        return f"{count_text} -> split into {len(followups)} follow-up tentacle(s)"
+    if decision == "complete_early":
+        return f"{count_text} -> complete early"
+    heuristic = record.get("heuristic_suggestion")
+    if heuristic:
+        return f"{count_text} -> manual review ({heuristic} heuristic)"
+    return f"{count_text} -> manual review"
+
+
+def _scope_reclassification_next_child_name(parent_name: str, tentacles: Path) -> str:
+    """Return a unique child tentacle name for an automatic scope split."""
+    base = _tentacle_slug(parent_name)[:40].rstrip("-") or "tentacle"
+    index = 1
+    while True:
+        candidate = f"{base}-scope-split-{index}"
+        if not (tentacles / candidate).exists():
+            return candidate
+        index += 1
+
+
+def _scope_reclassification_chunks(changed_files: "list[str] | None") -> list[list[str]]:
+    """Split a large changed-file set into two smaller follow-up tentacle scopes."""
+    changed = _normalize_changed_file_paths(changed_files)
+    if not changed:
+        return []
+    chunk_size = max(1, (len(changed) + SCOPE_ESCALATION_SPLIT_CHILDREN - 1) // SCOPE_ESCALATION_SPLIT_CHILDREN)
+    return [changed[index : index + chunk_size] for index in range(0, len(changed), chunk_size)]
+
+
+def _create_scope_escalation_followup_tentacle(
+    *,
+    tentacles: Path,
+    parent_name: str,
+    parent_meta: dict,
+    chunk: list[str],
+    chunk_index: int,
+    chunk_total: int,
+    changed_file_count: int,
+) -> str:
+    """Create one follow-up tentacle for a SCOPE_ESCALATION split chunk."""
+    followup_name = _scope_reclassification_next_child_name(parent_name, tentacles)
+    followup_dir = tentacles / followup_name
+    followup_dir.mkdir(parents=True, exist_ok=False)
+
+    desc = f"Follow-up split {chunk_index}/{chunk_total} for {parent_name} after {SCOPE_ESCALATION_STATUS}"
+    context_lines = [
+        f"# {followup_name}",
+        "",
+        desc,
+        "",
+        "## Parent Tentacle",
+        "",
+        f"- `{parent_name}`",
+        f"- Reclassification status: `{SCOPE_ESCALATION_STATUS}`",
+        f"- Split chunk: `{chunk_index}/{chunk_total}`",
+        f"- Parent changed-file count: `{changed_file_count}`",
+        "",
+        "## Assigned Scope",
+        "",
+    ]
+    context_lines.extend([f"- `{path}`" for path in chunk] or ["- None recorded"])
+    context_lines.extend(
+        [
+            "",
+            "## Constraints",
+            "",
+            "- Stay inside the assigned split scope and inherited worktree.",
+            "- Use the parent handoff + context as the source of truth for why this split exists.",
+            "- Write a structured handoff with changed-file receipts before completing.",
+            "",
+            "## Key files",
+            "",
+        ]
+    )
+    context_lines.extend([f"- `{path}`" for path in chunk] or ["- Reuse the assigned split scope"])
+    context_lines.extend(["", "---", f"*Created: {datetime.now(timezone.utc).isoformat()}*"])
+    (followup_dir / "CONTEXT.md").write_text("\n".join(context_lines) + "\n", encoding="utf-8")
+
+    todos = [
+        {
+            "index": 0,
+            "done": False,
+            "text": f"Review why `{parent_name}` requested scope escalation and confirm this split scope still fits the issue.",
+            "line_number": 0,
+        },
+        {
+            "index": 1,
+            "done": False,
+            "text": "Implement the assigned split scope only, reusing the inherited worktree.",
+            "line_number": 0,
+        },
+        {
+            "index": 2,
+            "done": False,
+            "text": "Write a structured handoff with changed-file receipts and the split outcome.",
+            "line_number": 0,
+        },
+    ]
+    (followup_dir / "todo.md").write_text(render_todos(todos), encoding="utf-8")
+
+    followup_meta = {
+        "name": followup_name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "scope": list(chunk),
+        "description": desc,
+        "status": "idle",
+        "tentacle_id": str(uuid.uuid4()),
+        "skills": list(parent_meta.get("skills") or []),
+        "scope_reclassification_parent": parent_name,
+        "scope_reclassification_status": SCOPE_ESCALATION_STATUS,
+        "scope_reclassification_action": "split_followup",
+        "scope_reclassification_chunk_index": chunk_index,
+        "scope_reclassification_chunk_total": chunk_total,
+    }
+    goal_id = parent_meta.get("goal_id")
+    goal_name = parent_meta.get("goal_name")
+    iteration = parent_meta.get("goal_iteration") or parent_meta.get("iteration")
+    if goal_id:
+        followup_meta["goal_id"] = goal_id
+    if goal_name:
+        followup_meta["goal_name"] = goal_name
+    if iteration is not None:
+        followup_meta["goal_iteration"] = iteration
+        followup_meta["iteration"] = iteration
+    (followup_dir / "meta.json").write_text(json.dumps(followup_meta, indent=2) + "\n", encoding="utf-8")
+
+    worktree = parent_meta.get("worktree") or {}
+    worktree_path = str(worktree.get("path") or "").strip()
+    if worktree.get("prepared") and worktree_path and Path(worktree_path).exists():
+        inherited_state = dict(worktree)
+        inherited_state["reused"] = True
+        _update_meta_worktree(followup_dir, inherited_state)
+
+    if goal_id:
+        try:
+            goal_state = _goal_load(tentacles)
+            if goal_state and goal_state.get("goal_id") == goal_id:
+                _cmd_goal_link(argparse.Namespace(tentacle_name=followup_name), tentacles)
+        except SystemExit:
+            raise
+        except Exception:
+            pass
+
+    return followup_name
+
+
+def _apply_scope_reclassification(
+    *,
+    tentacles: Path,
+    tentacle_dir: Path,
+    meta: dict,
+    terminal_status: "str | None",
+    changed_files: list[str],
+) -> "dict | None":
+    """Persist issue #108 scope reclassification decisions and follow-up tentacles."""
+    if terminal_status not in HANDOFF_RECLASSIFICATION_STATUSES:
+        meta.pop("reclassification", None)
+        return None
+
+    changed = _normalize_changed_file_paths(changed_files)
+    heuristic = _scope_reclassification_suggestion(changed)
+    existing = _reclassification_record(meta)
+    record = {
+        "status": terminal_status,
+        "changed_file_count": len(changed),
+        "heuristic_suggestion": heuristic,
+        "heuristic_match": heuristic == terminal_status,
+        "thresholds": {
+            "escalate_over_files": SCOPE_ESCALATION_FILE_THRESHOLD,
+            "reduce_at_or_below_files": SCOPE_REDUCTION_FILE_THRESHOLD,
+        },
+        "applied_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if terminal_status == SCOPE_ESCALATION_STATUS and heuristic == SCOPE_ESCALATION_STATUS:
+        existing_followups = []
+        if existing and existing.get("status") == terminal_status:
+            existing_followups = [
+                name
+                for name in existing.get("followup_tentacles") or []
+                if isinstance(name, str) and name and (tentacles / name).exists()
+            ]
+        if existing_followups:
+            record["decision"] = "split_followups"
+            record["followup_tentacles"] = existing_followups
+            record["reused_followup_tentacles"] = True
+        else:
+            followup_tentacles = []
+            chunks = _scope_reclassification_chunks(changed)
+            for chunk_index, chunk in enumerate(chunks, start=1):
+                followup_tentacles.append(
+                    _create_scope_escalation_followup_tentacle(
+                        tentacles=tentacles,
+                        parent_name=meta.get("name") or tentacle_dir.name,
+                        parent_meta=meta,
+                        chunk=chunk,
+                        chunk_index=chunk_index,
+                        chunk_total=len(chunks),
+                        changed_file_count=len(changed),
+                    )
+                )
+            record["decision"] = "split_followups"
+            record["followup_tentacles"] = followup_tentacles
+    elif terminal_status == SCOPE_REDUCTION_STATUS and heuristic == SCOPE_REDUCTION_STATUS:
+        record["decision"] = "complete_early"
+        record["previous_scope"] = _scope_items(meta)
+        if changed:
+            record["reduced_scope"] = list(changed)
+            meta["scope"] = list(changed)
+    else:
+        record["decision"] = "manual_review"
+
+    meta["reclassification"] = record
+    return record
+
+
 def _review_loop_handle_reviewer_findings(
     *,
     args,
@@ -3795,6 +4065,7 @@ def _goal_iteration_tentacle_entries(state: dict, tentacles: Path) -> list[dict]
 
         status = meta.get("status", "idle")
         terminal = meta.get("terminal_status")
+        reclassification = _reclassification_record(meta)
         pending_todos = _tentacle_pending_todo_count(tentacles, name)
 
         if _tentacle_goal_resolved(meta):
@@ -3821,6 +4092,7 @@ def _goal_iteration_tentacle_entries(state: dict, tentacles: Path) -> list[dict]
                 "failed_dependencies": failed_deps,
                 "missing_dependencies": missing_deps,
                 "dispatch_state": dispatch_state,
+                "reclassification": reclassification,
             }
         )
     return entries
@@ -4455,7 +4727,14 @@ def _cmd_goal_status(args, tentacles: Path) -> None:
                     except Exception:
                         t_meta = {}
                     t_status = t_meta.get("status", "unknown")
-                    print(f"       - {name} [{t_status}]")
+                    label_parts = [str(t_status)]
+                    terminal_status = t_meta.get("terminal_status")
+                    if terminal_status:
+                        label_parts.append(str(terminal_status))
+                    reclass_detail = _describe_scope_reclassification(_reclassification_record(t_meta))
+                    if reclass_detail:
+                        label_parts.append(reclass_detail)
+                    print(f"       - {name} [{' / '.join(label_parts)}]")
                 else:
                     print(f"       - {name} [missing]")
     else:
@@ -4665,7 +4944,9 @@ def _cmd_goal_dispatch(args, tentacles: Path) -> None:
         for entry in plan["resolved"]:
             result = entry["terminal_status"] or "DONE"
             icon = "⚠️" if entry["dispatch_state"] == "resolved_error" else "✅"
-            print(f"  {icon} {entry['name']} — {result}")
+            detail = _describe_scope_reclassification(entry.get("reclassification"))
+            suffix = f" — {detail}" if detail else ""
+            print(f"  {icon} {entry['name']} — {result}{suffix}")
 
     print("\nEval gate:")
     if plan["eval_blocking"]:
@@ -4990,7 +5271,7 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
                     t_iter = 1
                 t_terminal = t_meta.get("terminal_status")
                 needs_rewind = from_iteration is not None and t_iter >= from_iteration
-                needs_reset_failed = reset_failed and t_terminal in {"BLOCKED", "AMBIGUOUS"}
+                needs_reset_failed = reset_failed and t_terminal in HANDOFF_TRIAGE_STATUSES
                 if not (needs_rewind or needs_reset_failed):
                     continue
                 t_meta["status"] = "idle"
@@ -5044,7 +5325,7 @@ def _cmd_goal_resume(args, tentacles: Path) -> None:
         print(f"⏪ Rewound to iteration {from_iteration} (was {current_iter}); reset {len(rewound_names)} tentacle(s).")
 
     if reset_failed:
-        print(f"🔁 Reset {len(reset_failed_names)} BLOCKED/AMBIGUOUS tentacle(s) to idle.")
+        print(f"🔁 Reset {len(reset_failed_names)} blocking tentacle(s) to idle.")
 
     print(f"🔄 Goal '{state.get('title', '?')}' resumed (was: {prev_status})")
     print(f"   Iteration: {state.get('iteration', 1)}")
@@ -5476,6 +5757,8 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
     done_names: list[str] = []
     blocked_names: list[str] = []
     quota_blocked_names: list[tuple[str, str]] = []  # (name, quota_reason)
+    scope_escalation_names: list[tuple[str, str]] = []
+    scope_reduction_names: list[tuple[str, str]] = []
     in_progress_names: list[str] = []
 
     for name in tentacle_names:
@@ -5489,7 +5772,12 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
             continue
         terminal = t_meta.get("terminal_status")
         t_status = t_meta.get("status", "idle")
-        if terminal in {"BLOCKED", "TOO_BIG", "AMBIGUOUS", "REGRESSED"}:
+        reclass_detail = _describe_scope_reclassification(_reclassification_record(t_meta))
+        if terminal == SCOPE_ESCALATION_STATUS:
+            scope_escalation_names.append((name, reclass_detail))
+        elif terminal == SCOPE_REDUCTION_STATUS:
+            scope_reduction_names.append((name, reclass_detail))
+        elif terminal in HANDOFF_TRIAGE_STATUSES:
             qr = t_meta.get("quota_reason")
             if terminal == "BLOCKED" and qr:
                 quota_blocked_names.append((name, str(qr)))
@@ -5512,11 +5800,24 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
             pass
         hint_str = f" — retry after: {rh}" if rh else ""
         print(f"  🚦 {n} (quota-blocked: {qr}{hint_str})")
+    for n, detail in scope_escalation_names:
+        suffix = f" — {detail}" if detail else ""
+        print(f"  🪜 {n} (scope escalation{suffix})")
+    for n, detail in scope_reduction_names:
+        suffix = f" — {detail}" if detail else ""
+        print(f"  ↘️  {n} (scope reduction{suffix})")
     for n in blocked_names:
         print(f"  ⚠️  {n} (blocked/ambiguous)")
     for n in in_progress_names:
         print(f"  🔵 {n} (in progress / idle)")
-    if not (done_names or quota_blocked_names or blocked_names or in_progress_names):
+    if not (
+        done_names
+        or quota_blocked_names
+        or scope_escalation_names
+        or scope_reduction_names
+        or blocked_names
+        or in_progress_names
+    ):
         print("  (no tentacles assigned to this iteration)")
 
     # Quota retry queue summary.
@@ -5561,10 +5862,22 @@ def _cmd_goal_next_iter(args, tentacles: Path) -> None:
         print("   Some tentacles are quota-blocked. Check retry hints and re-dispatch after the quota resets.")
         if blocked_names:
             print("   Other tentacles are blocked/ambiguous — resolve those separately.")
+        if scope_escalation_names:
+            print("   Scope-escalation follow-up tentacles were also created for this iteration.")
         print(f"   Then `goal eval --decision continue` to advance to iteration {current_iter + 1}.")
+    elif scope_escalation_names:
+        print(
+            "   Some tentacles requested scope escalation. Dispatch the split follow-up tentacles before `goal eval`."
+        )
+        if scope_reduction_names:
+            print("   Scope-reduction tentacles already carry complete-early decisions.")
     elif all_blocked_names:
         print("   Some tentacles are blocked. Resolve or create replacement tentacles.")
         print(f"   Then `goal eval --decision continue` to advance to iteration {current_iter + 1}.")
+    elif scope_reduction_names:
+        print(
+            "   Some tentacles completed with scope reduction. Review the complete-early decisions, then evaluate normally."
+        )
     else:
         print(f"   When ready, `goal eval --decision continue` → iteration {current_iter + 1}.")
         print("   Or `goal eval --decision complete` if success criteria are met.")
@@ -7304,11 +7617,31 @@ def cmd_handoff(args):
     except Exception:
         pass  # fail-open: skip validation if goal.json is unreadable
 
-    # Triage signal for non-DONE statuses
+    # Triage signal for blocking statuses
     if status in HANDOFF_TRIAGE_STATUSES:
         print(f"⚠️  TRIAGE: terminal_status={status} — orchestrator review required")
         if quota_reason:
             print(f"   quota_reason={quota_reason}" + (f"  retry_hint={retry_hint}" if retry_hint else ""))
+    if status in HANDOFF_RECLASSIFICATION_STATUSES:
+        changed_count = len(_normalize_changed_file_paths(changed_files))
+        heuristic = _scope_reclassification_suggestion(changed_files)
+        if status == SCOPE_ESCALATION_STATUS and heuristic == status:
+            print(
+                "🧭 RECLASSIFICATION: "
+                f"terminal_status={status} — {changed_count} changed file(s) (> {SCOPE_ESCALATION_FILE_THRESHOLD}); "
+                "split follow-up tentacles will be created on complete"
+            )
+        elif status == SCOPE_REDUCTION_STATUS and heuristic == status:
+            print(
+                "🧭 RECLASSIFICATION: "
+                f"terminal_status={status} — {changed_count} changed file(s) (<= {SCOPE_REDUCTION_FILE_THRESHOLD}); "
+                "complete-early will be applied on complete"
+            )
+        else:
+            print(
+                "🧭 RECLASSIFICATION: "
+                f"terminal_status={status} — {changed_count} changed file(s); manual review required"
+            )
 
     # Auto-learn if --learn flag
     if args.learn:
@@ -7477,6 +7810,14 @@ def cmd_complete(args):
         meta.pop("quota_reason", None)
         meta.pop("retry_hint", None)
 
+    reclassification = _apply_scope_reclassification(
+        tentacles=tentacles,
+        tentacle_dir=tentacle_dir,
+        meta=meta,
+        terminal_status=terminal_status,
+        changed_files=changed_files,
+    )
+
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
     # 2b. Upsert quota_retry_queue on quota-BLOCKED; remove entry on recovery.
@@ -7539,6 +7880,16 @@ def cmd_complete(args):
 
     # 6. Summary
     print(f"\n🏁 Tentacle '{args.name}' completed!")
+    if reclassification:
+        print(
+            "🧭 RECLASSIFICATION: "
+            f"terminal_status={terminal_status} — {_describe_scope_reclassification(reclassification)}"
+        )
+        followups = [
+            name for name in reclassification.get("followup_tentacles") or [] if isinstance(name, str) and name.strip()
+        ]
+        if followups:
+            print(f"   Follow-up tentacles: {', '.join(followups)}")
     if terminal_status in HANDOFF_TRIAGE_STATUSES:
         print(f"⚠️  TRIAGE: terminal_status={terminal_status} — orchestrator review required")
     if learned:
@@ -9599,7 +9950,7 @@ def main():
         dest="reset_failed",
         action="store_true",
         default=False,
-        help="Reset tentacles with BLOCKED or AMBIGUOUS terminal_status back to idle",
+        help="Reset tentacles with blocking terminal_status values back to idle",
     )
     p_goal_resume.add_argument(
         "--from-iteration",
