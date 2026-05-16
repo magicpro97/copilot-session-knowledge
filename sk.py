@@ -47,6 +47,7 @@ Usage:
     sk context project|map|upsert|remove [<args>...]
     sk scout  run|config|status [<args>...]
     sk project add|remove|list [<args>...]
+    sk events append|status|replay|tail [<args>...]
 
     sk --help     Show this help
     sk --version  Show version
@@ -158,6 +159,12 @@ _GROUPS: dict[str, dict[str, str]] = {
         "catalog": "skill-catalog.py",
         "add": "skill-catalog.py",
         "remove": "skill-catalog.py",
+    },
+    "events": {
+        "append": "events.py",
+        "status": "events.py",
+        "replay": "events.py",
+        "tail": "events.py",
     },
 }
 
@@ -312,6 +319,30 @@ def _run_spec_phase(phase: str, extra_args: list[str]) -> int:
     return _run("specify.py", [phase] + extra_args)
 
 
+def _run_events(extra_args: list[str]) -> int:
+    """Dispatch ``sk events ...`` to events.py.
+
+    All subcommands (append / status / replay / tail) are forwarded as the
+    first positional argument so events.py's argparse sub-parser can route
+    them correctly.
+    """
+    if not extra_args or extra_args[0] in ("-h", "--help"):
+        subs = list(_GROUPS["events"].keys())
+        print(f"sk events: available subcommands: {', '.join(subs)}")
+        print(f"Usage: sk events <{'|'.join(subs)}> [args...]")
+        return 0
+    sub = extra_args[0]
+    if sub not in _GROUPS["events"]:
+        subs = list(_GROUPS["events"].keys())
+        print(
+            f"sk events: unknown subcommand '{sub}'. Choose from: {', '.join(subs)}",
+            file=sys.stderr,
+        )
+        return 2
+    # Forward ALL args including the subcommand to events.py
+    return _run("events.py", extra_args)
+
+
 def _print_help() -> None:
     direct_list = "  " + "\n  ".join(f"sk {cmd:<12} → {script}" for cmd, script in _DIRECT.items())
     print(
@@ -348,6 +379,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_constitution(rest)
     if cmd == "skill":
         return _run_skill(rest)
+    if cmd == "events":
+        return _run_events(rest)
     if cmd in {"plan", "tasks"}:
         return _run_spec_phase(cmd, rest)
     if cmd == "doctor":

@@ -56,6 +56,29 @@ TOOLS_DIR = Path(__file__).parent
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
 
+
+def _emit_knowledge_event_fail_open(event_type: str, data: dict) -> None:
+    try:
+        events_script = Path(__file__).with_name("events.py")
+        if not events_script.is_file():
+            return
+        subprocess.call(
+            [
+                sys.executable,
+                str(events_script),
+                "append",
+                event_type,
+                "--data",
+                json.dumps(data, ensure_ascii=False),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception:
+        return
+
+
 # Wing auto-detection rules: tag patterns → wing
 _WING_RULES = [
     (
@@ -1678,6 +1701,20 @@ def main():
         intensity=intensity,
         priority=priority,
     )
+
+    if entry_id >= 0 and category == "pattern":
+        _emit_knowledge_event_fail_open(
+            "pattern_learned",
+            {
+                "entry_id": entry_id,
+                "title": title,
+                "task_id": task_id,
+                "wing": wing,
+                "room": room,
+                "priority": priority or "P2",
+                "confidence": confidence,
+            },
+        )
 
     if json_mode:
         # Machine-readable output: emit structured JSON with write result

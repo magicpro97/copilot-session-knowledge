@@ -205,6 +205,7 @@ TOOL_FILES = [
     "sync-status.py",
     "sync-gateway.py",
     "generate-summary.py",
+    "events.py",
     "sk.py",
     "skill-catalog.py",
     "install.py",

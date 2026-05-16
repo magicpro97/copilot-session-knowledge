@@ -22,6 +22,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -37,6 +38,28 @@ if os.name == "nt":
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
+
+
+def _emit_knowledge_event_fail_open(event_type: str, data: dict) -> None:
+    try:
+        events_script = Path(__file__).with_name("events.py")
+        if not events_script.is_file():
+            return
+        subprocess.call(
+            [
+                sys.executable,
+                str(events_script),
+                "append",
+                event_type,
+                "--data",
+                json.dumps(data, ensure_ascii=False),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception:
+        return
 
 
 def get_db() -> sqlite3.Connection:
@@ -168,9 +191,7 @@ def compute_health(stale_days: int = 30) -> dict:
     # Concept tag coverage (informational stat only — does NOT affect weighted score)
     concept_tagged = 0
     try:
-        has_ect = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='entry_concept_tags'"
-        ).fetchone()
+        has_ect = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='entry_concept_tags'").fetchone()
         if has_ect:
             concept_tagged = db.execute(
                 "SELECT COUNT(DISTINCT entry_id) FROM entry_concept_tags WHERE source = 'auto'"
@@ -668,9 +689,7 @@ def compute_insights(stale_days: int = 30) -> dict:
         lc_score = subscores.get("learning_curve", 0.0)
         if lc_score < 10.0 and mistakes_count >= 3:
             lc_gap = round(20.0 - lc_score, 1)
-            mp_display = (
-                mp_ratio if isinstance(mp_ratio, str) else f"{mp_ratio:.2f}"
-            )
+            mp_display = mp_ratio if isinstance(mp_ratio, str) else f"{mp_ratio:.2f}"
             alerts.append(
                 {
                     "id": "learning-curve-gap",
@@ -974,10 +993,7 @@ def format_insights_report(insights: dict) -> str:
         for g in top_gaps:
             dim_label = g["dimension"].replace("_", " ").title()
             pct_label = f"{g['pct_of_total_gap']:.0f}% of gap"
-            lines.append(
-                f"  {dim_label:25s}  {g['current']:5.1f}/{g['max']:.0f}  "
-                f"▲{g['gap']:4.1f}  ({pct_label})"
-            )
+            lines.append(f"  {dim_label:25s}  {g['current']:5.1f}/{g['max']:.0f}  ▲{g['gap']:4.1f}  ({pct_label})")
         lines.append("")
 
     actions = insights.get("recommended_actions", [])
@@ -1050,19 +1066,19 @@ def format_report(health: dict) -> str:
     bar = "█" * filled + "░" * (20 - filled)
 
     lines = [
-        f"╔══════════════════════════════════════════╗",
+        "╔══════════════════════════════════════════╗",
         f"║  {emoji} Knowledge Health: {score}/100 ({grade})",
         f"║  [{bar}]",
-        f"╚══════════════════════════════════════════╝",
+        "╚══════════════════════════════════════════╝",
         "",
-        f"📊 Overview",
+        "📊 Overview",
         f"  Total entries:     {health['total']:,}",
         f"  Sessions:          {health['sessions']:,}",
         f"  Categorized:       {health['categorized_pct']}%",
         f"  Fresh (7d):        {health['fresh_7d']} new entries",
         f"  Stale (>{health['stale_days']}d):      {health['stale_count']} ({health['stale_pct']}%)",
         "",
-        f"📈 Learning Curve",
+        "📈 Learning Curve",
         f"  Mistakes:          {health['mistakes']:,}",
         f"  Patterns:          {health['patterns']:,}",
         f"  Pattern/Mistake:   {health['mp_ratio']}x",
@@ -1071,30 +1087,30 @@ def format_report(health: dict) -> str:
     # Learning curve interpretation
     mp = health["mp_ratio"]
     if isinstance(mp, (int, float)) and mp >= 1.0:
-        lines.append(f"  → ✅ Good: learning from mistakes")
+        lines.append("  → ✅ Good: learning from mistakes")
     elif isinstance(mp, (int, float)) and mp > 0:
-        lines.append(f"  → 🟡 Room to improve: more mistakes than patterns")
+        lines.append("  → 🟡 Room to improve: more mistakes than patterns")
     else:
-        lines.append(f"  → 🔴 No patterns extracted from mistakes yet")
+        lines.append("  → 🔴 No patterns extracted from mistakes yet")
 
     lines.extend(
         [
             "",
-            f"🔗 Knowledge Graph",
+            "🔗 Knowledge Graph",
             f"  Relations:         {health['relations']:,}",
             f"  Entity relations:  {health['entity_relations']:,}",
             f"  Density:           {health['relation_density']} rel/entry",
             "",
-            f"🧠 Embeddings",
+            "🧠 Embeddings",
             f"  Embedded:          {health['embeddings']:,} / {health['total']:,} ({health['embed_pct']}%)",
             "",
-            f"🏗️ Organization",
+            "🏗️ Organization",
             f"  Wings:             {health['wings']}",
             f"  Rooms:             {health['rooms']}",
             f"  High confidence:   {health['high_confidence']:,}",
             f"  Low confidence:    {health['low_confidence']:,}",
             "",
-            f"📦 Category Breakdown",
+            "📦 Category Breakdown",
         ]
     )
 
@@ -1278,6 +1294,16 @@ def main():
         stale_days = int(args[idx + 1]) if idx + 1 < len(args) else 30
 
     health = compute_health(stale_days=stale_days)
+    if health.get("stale_count", 0) > 0:
+        _emit_knowledge_event_fail_open(
+            "knowledge_decayed",
+            {
+                "stale_count": health.get("stale_count", 0),
+                "stale_pct": health.get("stale_pct", 0.0),
+                "stale_days": stale_days,
+                "score": health.get("score", 0.0),
+            },
+        )
 
     if "--score" in args:
         print(health["score"])
