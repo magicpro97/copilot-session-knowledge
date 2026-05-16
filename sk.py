@@ -54,6 +54,7 @@ Usage:
     sk --version  Show version
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -68,6 +69,21 @@ __version__ = "1.0.0"
 
 DEFAULT_TOOLS_DIR = Path(__file__).parent.resolve()
 CHECKOUT_MARKERS = ("briefing.py", "query-session.py", "install.py")
+PROJECT_REGISTRY_PATH = Path.home() / ".copilot" / "session-state" / "tools-managed-projects.json"
+_GLOBAL_COPILOT_DIR = (Path.home() / ".copilot").resolve()
+_PROJECT_DB_SCRIPTS = {
+    "anatomy-map.py",
+    "briefing.py",
+    "build-session-index.py",
+    "embed.py",
+    "extract-knowledge.py",
+    "index-status.py",
+    "knowledge-health.py",
+    "learn.py",
+    "migrate.py",
+    "query-session.py",
+    "watch-sessions.py",
+}
 
 # ---------------------------------------------------------------------------
 # Command → script mapping
@@ -213,6 +229,87 @@ def _print_missing_script_error(tools_dir: Path, script: str, *, from_env: bool)
     print(f"sk: script not found: {script_path}", file=sys.stderr)
 
 
+def _entry_path(entry: object) -> str:
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        path = entry.get("path", "")
+        return path if isinstance(path, str) else ""
+    return ""
+
+
+def _load_registered_projects() -> list[Path]:
+    try:
+        if PROJECT_REGISTRY_PATH.exists():
+            data = json.loads(PROJECT_REGISTRY_PATH.read_text(encoding="utf-8"))
+            projects = []
+            for entry in data.get("projects", []):
+                path = _entry_path(entry)
+                if path:
+                    projects.append(Path(path).expanduser().resolve())
+            return projects
+    except Exception:
+        pass
+    return []
+
+
+def _detect_project_root(start: Path | None = None) -> Path | None:
+    cwd = (start or Path.cwd()).resolve()
+    probe = cwd
+    for _ in range(32):
+        candidate = probe / ".copilot"
+        if candidate.is_dir() and candidate.resolve() != _GLOBAL_COPILOT_DIR:
+            return probe
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    return None
+
+
+def _resolve_project_root_for_cwd(start: Path | None = None) -> Path | None:
+    cwd = (start or Path.cwd()).resolve()
+    detected = _detect_project_root(cwd)
+    if detected is not None:
+        return detected
+
+    matches = [root for root in _load_registered_projects() if cwd == root or root in cwd.parents]
+    if matches:
+        return max(matches, key=lambda root: len(root.parts))
+
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+            timeout=5,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return Path(proc.stdout.strip()).resolve()
+    except Exception:
+        pass
+    return None
+
+
+def _project_db_path(project_root: Path) -> Path:
+    return project_root / ".copilot" / "session-state" / "knowledge.db"
+
+
+def _project_env_for_script(script: str) -> dict[str, str] | None:
+    if Path(script).name not in _PROJECT_DB_SCRIPTS:
+        return None
+    project_root = _resolve_project_root_for_cwd()
+    if project_root is None:
+        return None
+    db_path = _project_db_path(project_root)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["SK_PROJECT_ROOT"] = str(project_root)
+    env["SK_DB_PATH"] = str(db_path)
+    return env
+
+
 def _run(script: str, extra_args: list[str]) -> int:
     """Delegate to a standalone script via subprocess."""
     tools_dir, from_env = _resolve_tools_dir()
@@ -221,7 +318,7 @@ def _run(script: str, extra_args: list[str]) -> int:
         _print_missing_script_error(tools_dir, script, from_env=from_env)
         return 2
     cmd = [sys.executable, str(script_path)] + extra_args
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, env=_project_env_for_script(script))
     return result.returncode
 
 

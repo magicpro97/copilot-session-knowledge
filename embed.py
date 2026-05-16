@@ -45,7 +45,7 @@ if os.name == "nt":
 # ── Paths ──────────────────────────────────────────────────────────────
 TOOLS_DIR = Path(__file__).resolve().parent
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
-DB_PATH = SESSION_STATE / "knowledge.db"
+DB_PATH = Path(os.environ.get("SK_DB_PATH", str(SESSION_STATE / "knowledge.db"))).expanduser()
 CONFIG_PATH = TOOLS_DIR / "embedding-config.json"
 
 # SSL verification — disable with --no-verify-ssl flag or COPILOT_NO_VERIFY_SSL=1

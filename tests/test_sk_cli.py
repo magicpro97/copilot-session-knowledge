@@ -14,9 +14,11 @@ Run: python3 tests/test_sk_cli.py
 """
 
 import importlib.util
+import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -705,6 +707,62 @@ class TestSkErrorCases(unittest.TestCase):
         self.assertEqual(tools_dir, Path(tmpdir).resolve())
         self.assertTrue(from_env)
 
+    def test_resolve_project_root_detects_local_copilot_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir) / "repo"
+            (project_root / ".copilot").mkdir(parents=True)
+            nested = project_root / "src" / "deep"
+            nested.mkdir(parents=True)
+            resolved = sk._resolve_project_root_for_cwd(nested)
+        self.assertEqual(resolved, project_root.resolve())
+
+    def test_resolve_project_root_falls_back_to_registry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir) / "repo"
+            nested = project_root / "src"
+            nested.mkdir(parents=True)
+            registry = Path(tmpdir) / "registry.json"
+            registry.write_text(
+                json.dumps({"projects": [str(project_root.resolve())]}),
+                encoding="utf-8",
+            )
+            with patch.object(sk, "PROJECT_REGISTRY_PATH", registry):
+                resolved = sk._resolve_project_root_for_cwd(nested)
+        self.assertEqual(resolved, project_root.resolve())
+
+    def test_run_injects_project_db_env_for_core_scripts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tools_dir = Path(tmpdir) / "tools"
+            tools_dir.mkdir()
+            (tools_dir / "briefing.py").write_text("print('ok')\n", encoding="utf-8")
+            project_root = Path(tmpdir) / "repo"
+            project_root.mkdir()
+            expected_db = project_root / ".copilot" / "session-state" / "knowledge.db"
+            with patch.object(sk, "_resolve_tools_dir", return_value=(tools_dir, False)):
+                with patch.object(sk, "_resolve_project_root_for_cwd", return_value=project_root.resolve()):
+                    with patch("subprocess.run") as mock_run:
+                        mock_run.return_value = MagicMock(returncode=0)
+                        rc = sk._run("briefing.py", ["--auto"])
+                        self.assertEqual(rc, 0)
+                        self.assertTrue(expected_db.parent.is_dir())
+                        args, kwargs = mock_run.call_args
+                        self.assertEqual(args[0], [sys.executable, str(tools_dir / "briefing.py"), "--auto"])
+                        self.assertTrue(os.path.samefile(kwargs["env"]["SK_PROJECT_ROOT"], project_root.resolve()))
+                        self.assertEqual(Path(kwargs["env"]["SK_DB_PATH"]).name, "knowledge.db")
+                        self.assertTrue(os.path.samefile(Path(kwargs["env"]["SK_DB_PATH"]).parent, expected_db.parent))
+
+    def test_run_skips_project_db_env_for_non_db_scripts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tools_dir = Path(tmpdir) / "tools"
+            tools_dir.mkdir()
+            (tools_dir / "install.py").write_text("print('ok')\n", encoding="utf-8")
+            with patch.object(sk, "_resolve_tools_dir", return_value=(tools_dir, False)):
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(returncode=0)
+                    rc = sk._run("install.py", [])
+        self.assertEqual(rc, 0)
+        self.assertIsNone(mock_run.call_args.kwargs.get("env"))
+
     def test_missing_checkout_shows_editable_install_hint(self):
         temp_dir = Path(tempfile.mkdtemp(prefix="sk-missing-tools-"))
         try:
@@ -718,6 +776,80 @@ class TestSkErrorCases(unittest.TestCase):
         output = " ".join(str(c) for call in mock_print.call_args_list for c in call[0])
         self.assertIn("pip install -e", output)
         self.assertIn("SK_TOOLS_DIR", output)
+
+
+class TestSkProjectDbRoutingSmoke(unittest.TestCase):
+    def _run_sk(self, args: list[str], cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(SK_PATH)] + args,
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+            env=env,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+    def test_fresh_project_routes_index_and_knowledge_commands_to_project_db(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            home_dir = tmp / "home"
+            project = tmp / "project"
+            home_dir.mkdir()
+            (project / ".copilot").mkdir(parents=True)
+
+            env = os.environ.copy()
+            env["USERPROFILE"] = str(home_dir)
+            env["HOME"] = str(home_dir)
+
+            add_result = self._run_sk(["project", "add", str(project)], TOOLS_DIR, env)
+            self.assertEqual(
+                add_result.returncode,
+                0,
+                f"add failed: stdout={add_result.stdout!r} stderr={add_result.stderr!r}",
+            )
+
+            migrate_result = self._run_sk(["index", "migrate"], project, env)
+            self.assertEqual(
+                migrate_result.returncode,
+                0,
+                f"migrate failed: stdout={migrate_result.stdout!r} stderr={migrate_result.stderr!r}",
+            )
+
+            learn_result = self._run_sk(
+                [
+                    "learn",
+                    "--pattern",
+                    "Issue 91 smoke",
+                    "Project-local DB write via sk dispatcher",
+                    "--wing",
+                    "shared",
+                    "--room",
+                    "smoke",
+                    "--tags",
+                    "issue-91,smoke",
+                ],
+                project,
+                env,
+            )
+            self.assertEqual(
+                learn_result.returncode,
+                0,
+                f"learn failed: stdout={learn_result.stdout!r} stderr={learn_result.stderr!r}",
+            )
+
+            patterns_result = self._run_sk(["query", "--patterns"], project, env)
+            self.assertEqual(
+                patterns_result.returncode,
+                0,
+                f"query failed: stdout={patterns_result.stdout!r} stderr={patterns_result.stderr!r}",
+            )
+            self.assertIn("Issue 91 smoke", patterns_result.stdout)
+
+            project_db = project / ".copilot" / "session-state" / "knowledge.db"
+            global_db = home_dir / ".copilot" / "session-state" / "knowledge.db"
+            self.assertTrue(project_db.exists(), f"project db missing: {project_db}")
+            self.assertFalse(global_db.exists(), f"global db should stay absent: {global_db}")
 
 
 class TestSkHybridRoutingPreconditions(unittest.TestCase):

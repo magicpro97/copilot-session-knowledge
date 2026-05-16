@@ -58,7 +58,7 @@ if os.name == "nt":
 
 TOOLS_DIR = Path(__file__).parent
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
-DB_PATH = SESSION_STATE / "knowledge.db"
+DB_PATH = Path(os.environ.get("SK_DB_PATH", str(SESSION_STATE / "knowledge.db"))).expanduser()
 _CLARIFY_STORE_PATH = SESSION_STATE / "clarifications.json"
 _CONSTITUTION_RELATIVE_PATH = Path(".copilot") / "constitution.md"
 _CONSTITUTION_RULE_RE = re.compile(r"\s*\[rule:[a-z0-9-]+\]\s*", re.IGNORECASE)

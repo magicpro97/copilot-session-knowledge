@@ -54,7 +54,7 @@ if os.name == "nt":
 
 TOOLS_DIR = Path(__file__).parent
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
-DB_PATH = SESSION_STATE / "knowledge.db"
+DB_PATH = Path(os.environ.get("SK_DB_PATH", str(SESSION_STATE / "knowledge.db"))).expanduser()
 
 
 def _emit_knowledge_event_fail_open(event_type: str, data: dict) -> None:

@@ -160,6 +160,7 @@ class TestCmdAdd(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self._td, ignore_errors=True)
 
     def test_add_new_path(self):
@@ -185,6 +186,10 @@ class TestCmdAdd(unittest.TestCase):
         self.assertIn("name", entry)
         self.assertIn("path", entry)
         self.assertIn("created_at", entry)
+        self.assertIn("session_state", entry)
+        self.assertIn("db_path", entry)
+        self.assertTrue(entry["session_state"].endswith(str(Path(".copilot") / "session-state")))
+        self.assertTrue(entry["db_path"].endswith(str(Path(".copilot") / "session-state" / "knowledge.db")))
 
     def test_add_preserves_existing_string_entries(self):
         # Pre-populate with a legacy string entry using a real path
@@ -220,6 +225,7 @@ class TestCmdRemove(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self._td, ignore_errors=True)
 
     def _populate(self, entries):
@@ -235,10 +241,12 @@ class TestCmdRemove(unittest.TestCase):
         self.assertIn(self.keep_path, paths)
 
     def test_remove_dict_entry(self):
-        self._populate([
-            {"name": "keep", "path": self.keep_path, "created_at": "2025-01-01T00:00:00+00:00"},
-            {"name": "gone", "path": self.remove_path, "created_at": "2025-01-01T00:00:00+00:00"},
-        ])
+        self._populate(
+            [
+                {"name": "keep", "path": self.keep_path, "created_at": "2025-01-01T00:00:00+00:00"},
+                {"name": "gone", "path": self.remove_path, "created_at": "2025-01-01T00:00:00+00:00"},
+            ]
+        )
         rc = self.mod.cmd_remove(self.remove_path, quiet=True)
         self.assertEqual(rc, 0)
         data = json.loads(self.reg.read_text(encoding="utf-8"))
@@ -288,7 +296,10 @@ class TestCmdList(unittest.TestCase):
         output = "".join(str(c) for call in mock_print.call_args_list for c in call[0])
         parsed = json.loads(output)
         self.assertIsInstance(parsed, list)
-        self.assertTrue(any(item.get("path") == "/path/a" for item in parsed))
+        item = next((item for item in parsed if item.get("path") == "/path/a"), None)
+        self.assertIsNotNone(item)
+        self.assertIn("session_state", item)
+        self.assertIn("db_path", item)
 
     def test_list_json_empty(self):
         self.reg.write_text(json.dumps({"projects": []}), encoding="utf-8")
@@ -362,10 +373,12 @@ class TestDetectProjectRoot(unittest.TestCase):
             isolated.mkdir()
             # Patch Path.is_dir to return False for any path ending in .copilot
             orig_is_dir = Path.is_dir
+
             def _fake_is_dir(self_path):
                 if self_path.name == ".copilot":
                     return False
                 return orig_is_dir(self_path)
+
             with patch.object(Path, "is_dir", _fake_is_dir):
                 with patch.object(self.mod.subprocess, "run") as mock_run:
                     mock_run.return_value = MagicMock(returncode=1, stdout="")
@@ -379,10 +392,12 @@ class TestDetectProjectRoot(unittest.TestCase):
             isolated.mkdir()
             fake_root = str(isolated.resolve())
             orig_is_dir = Path.is_dir
+
             def _fake_is_dir(self_path):
                 if self_path.name == ".copilot":
                     return False
                 return orig_is_dir(self_path)
+
             with patch.object(Path, "is_dir", _fake_is_dir):
                 with patch.object(self.mod.subprocess, "run") as mock_run:
                     mock_run.return_value = MagicMock(returncode=0, stdout=fake_root + "\n")
@@ -405,6 +420,7 @@ class TestDetectProjectRoot(unittest.TestCase):
             subdir.mkdir(parents=True)
 
             orig_is_dir = Path.is_dir
+
             def _fake_is_dir(self_path):
                 if self_path.name == ".copilot":
                     return self_path.resolve() == fake_home_copilot
@@ -436,6 +452,7 @@ class TestDetectProjectRoot(unittest.TestCase):
             subdir.mkdir()
 
             orig_is_dir = Path.is_dir
+
             def _fake_is_dir(self_path):
                 if self_path.name == ".copilot":
                     # Both global and project-local exist; only project-local should win
@@ -468,6 +485,7 @@ class TestMainDispatch(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self._td, ignore_errors=True)
 
     def test_add_via_main(self):
@@ -520,6 +538,7 @@ class TestBackwardCompatibility(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self._td, ignore_errors=True)
 
     def test_mixed_registry_round_trip(self):

@@ -11,7 +11,13 @@ Registry file: ~/.copilot/session-state/tools-managed-projects.json
 
 Schema (backward-compatible):
   Old entries: "/abs/path"                (plain string, written by install.py / setup-project.py)
-  New entries: {"name": "x", "path": ..., "created_at": "ISO8601"}   (written here)
+  New entries: {
+      "name": "x",
+      "path": ...,
+      "created_at": "ISO8601",
+      "session_state": ".../.copilot/session-state",
+      "db_path": ".../.copilot/session-state/knowledge.db"
+  }   (written here)
 
 Both formats co-exist.  All read paths normalize to the path string.
 """
@@ -32,9 +38,47 @@ if os.name == "nt":
 REGISTRY_PATH = Path.home() / ".copilot" / "session-state" / "tools-managed-projects.json"
 
 
+def _project_copilot_dir(project_root: Path) -> Path:
+    return project_root / ".copilot"
+
+
+def _project_session_state(project_root: Path) -> Path:
+    return _project_copilot_dir(project_root) / "session-state"
+
+
+def _project_db_path(project_root: Path) -> Path:
+    return _project_session_state(project_root) / "knowledge.db"
+
+
+def _normalize_entry(entry: object) -> dict:
+    path = _entry_path(entry)
+    created_at = entry.get("created_at") if isinstance(entry, dict) else None
+    name = entry.get("name") if isinstance(entry, dict) else None
+    session_state = entry.get("session_state") if isinstance(entry, dict) else None
+    db_path = entry.get("db_path") if isinstance(entry, dict) else None
+
+    root = Path(path) if path else None
+    if root is not None:
+        if not name:
+            name = root.name
+        if not session_state:
+            session_state = str(_project_session_state(root))
+        if not db_path:
+            db_path = str(_project_db_path(root))
+
+    return {
+        "name": name or "",
+        "path": path,
+        "created_at": created_at,
+        "session_state": session_state or "",
+        "db_path": db_path or "",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Atomic write (self-contained per architecture — no inter-script imports)
 # ---------------------------------------------------------------------------
+
 
 def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
     """Write *content* to *path* atomically via a sibling .tmp + os.replace."""
@@ -53,6 +97,7 @@ def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> Non
 # ---------------------------------------------------------------------------
 # Registry helpers — backward-compatible with string-only registries
 # ---------------------------------------------------------------------------
+
 
 def _entry_path(entry: object) -> str:
     """Return the path string from a registry entry (string or dict)."""
@@ -95,6 +140,7 @@ def _save_registry(entries: list) -> None:
 # ---------------------------------------------------------------------------
 # Auto-detection helpers
 # ---------------------------------------------------------------------------
+
 
 def _detect_project_root(start: Path | None = None) -> Path | None:
     """
@@ -146,6 +192,7 @@ def _detect_project_root(start: Path | None = None) -> Path | None:
 # Subcommand handlers
 # ---------------------------------------------------------------------------
 
+
 def cmd_add(path_arg: str | None, quiet: bool = False) -> int:
     """Register a project root in the registry."""
     if path_arg:
@@ -171,9 +218,16 @@ def cmd_add(path_arg: str | None, quiet: bool = False) -> int:
             print(f"already registered: {key}")
         return 0
 
-    name = root.name
     created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    raw.append({"name": name, "path": key, "created_at": created_at})
+    raw.append(
+        {
+            "name": root.name,
+            "path": key,
+            "created_at": created_at,
+            "session_state": str(_project_session_state(root)),
+            "db_path": str(_project_db_path(root)),
+        }
+    )
 
     try:
         _save_registry(raw)
@@ -244,31 +298,31 @@ def cmd_list(json_output: bool = False) -> int:
         return 0
 
     if json_output:
-        normalized = []
-        for entry in deduped:
-            if isinstance(entry, str):
-                normalized.append({"name": Path(entry).name, "path": entry, "created_at": None})
-            elif isinstance(entry, dict):
-                normalized.append(entry)
+        normalized = [_normalize_entry(entry) for entry in deduped]
         print(json.dumps(normalized, indent=2))
     else:
         for entry in deduped:
-            if isinstance(entry, str):
-                print(entry)
-            elif isinstance(entry, dict):
-                path = entry.get("path", "")
-                name = entry.get("name", Path(path).name if path else "")
-                added = entry.get("created_at", "")
-                if added:
-                    print(f"{path}  ({name}, added {added})")
-                else:
-                    print(f"{path}  ({name})")
+            normalized = _normalize_entry(entry)
+            path = normalized.get("path", "")
+            name = normalized.get("name", "")
+            added = normalized.get("created_at", "")
+            db_path = normalized.get("db_path", "")
+            details = [name] if name else []
+            if added:
+                details.append(f"added {added}")
+            if db_path:
+                details.append(f"db {db_path}")
+            if details:
+                print(f"{path}  ({', '.join(details)})")
+            else:
+                print(path)
     return 0
 
 
 # ---------------------------------------------------------------------------
 # Argument parsing and entry point
 # ---------------------------------------------------------------------------
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -277,7 +331,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Registry: ~/.copilot/session-state/tools-managed-projects.json\n"
-            "Auto-detect: walks up from cwd for .copilot/, then falls back to git root."
+            "Auto-detect: walks up from cwd for .copilot/, then falls back to git root.\n"
+            "Each entry also records the project-local session-state and knowledge.db paths."
         ),
     )
     sub = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")

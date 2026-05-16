@@ -33,7 +33,7 @@ if os.name == "nt":
         pass
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
-DB_PATH = SESSION_STATE / "knowledge.db"
+DB_PATH = Path(os.environ.get("SK_DB_PATH", str(SESSION_STATE / "knowledge.db"))).expanduser()
 
 CHECKPOINT_SECTIONS = ["overview", "history", "work_done", "technical_details", "important_files", "next_steps"]
 

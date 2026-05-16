@@ -371,13 +371,226 @@ def _repair_legacy_priority_collision(db: sqlite3.Connection):
     return repaired, renamed
 
 
+def _ensure_base_schema(db: sqlite3.Connection):
+    """Bootstrap the full base schema for a brand-new knowledge DB.
+
+    Fresh project-local DBs do not have an old migration history to upgrade from, so
+    they need the current base tables before the versioned ALTER/CREATE steps run.
+    Existing databases are unaffected because every statement is idempotent.
+    """
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY,
+            migrated_at TEXT DEFAULT (datetime('now')),
+            name TEXT DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            path TEXT NOT NULL,
+            summary TEXT DEFAULT '',
+            total_checkpoints INTEGER DEFAULT 0,
+            total_research INTEGER DEFAULT 0,
+            total_files INTEGER DEFAULT 0,
+            has_plan INTEGER DEFAULT 0,
+            source TEXT DEFAULT 'copilot',
+            indexed_at TEXT,
+            file_mtime REAL,
+            indexed_at_r REAL,
+            fts_indexed_at REAL,
+            event_count_estimate INTEGER DEFAULT 0,
+            file_size_bytes INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            doc_type TEXT NOT NULL,
+            seq INTEGER DEFAULT 0,
+            title TEXT NOT NULL,
+            stable_id TEXT,
+            file_path TEXT NOT NULL UNIQUE,
+            file_hash TEXT,
+            size_bytes INTEGER DEFAULT 0,
+            content_preview TEXT DEFAULT '',
+            source TEXT DEFAULT 'copilot',
+            indexed_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS sections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER NOT NULL,
+            section_name TEXT NOT NULL,
+            stable_id TEXT,
+            content TEXT NOT NULL,
+            UNIQUE(document_id, section_name)
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+            title,
+            section_name,
+            content,
+            doc_type,
+            session_id UNINDEXED,
+            document_id UNINDEXED,
+            tokenize='unicode61 remove_diacritics 2'
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
+            session_id UNINDEXED,
+            title,
+            user_messages,
+            assistant_messages,
+            tool_names,
+            tokenize='porter unicode61 remove_diacritics 2'
+        );
+        CREATE TABLE IF NOT EXISTS event_offsets (
+            session_id TEXT NOT NULL,
+            event_id INTEGER NOT NULL,
+            byte_offset INTEGER NOT NULL,
+            file_mtime REAL NOT NULL,
+            PRIMARY KEY (session_id, event_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS knowledge_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            document_id INTEGER,
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            stable_id TEXT,
+            content TEXT NOT NULL,
+            tags TEXT DEFAULT '',
+            confidence REAL DEFAULT 1.0,
+            occurrence_count INTEGER DEFAULT 1,
+            first_seen TEXT,
+            last_seen TEXT,
+            source TEXT DEFAULT 'copilot',
+            topic_key TEXT,
+            revision_count INTEGER DEFAULT 1,
+            content_hash TEXT,
+            wing TEXT DEFAULT '',
+            room TEXT DEFAULT '',
+            facts TEXT DEFAULT '[]',
+            est_tokens INTEGER DEFAULT 0,
+            task_id TEXT DEFAULT '',
+            affected_files TEXT DEFAULT '[]',
+            source_section TEXT DEFAULT '',
+            source_file TEXT DEFAULT '',
+            start_line INTEGER DEFAULT 0,
+            end_line INTEGER DEFAULT 0,
+            code_language TEXT DEFAULT '',
+            code_snippet TEXT DEFAULT '',
+            error_type TEXT DEFAULT '',
+            root_cause TEXT DEFAULT '',
+            severity TEXT DEFAULT 'medium',
+            is_resolved INTEGER DEFAULT 0,
+            fix_steps TEXT DEFAULT '',
+            prevention_hook TEXT DEFAULT '',
+            recurrence_after_briefing INTEGER DEFAULT 0,
+            valence TEXT DEFAULT '',
+            intensity REAL DEFAULT 0.5,
+            priority TEXT DEFAULT 'P2',
+            UNIQUE(category, title, session_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS knowledge_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER REFERENCES knowledge_entries(id),
+            target_id INTEGER REFERENCES knowledge_entries(id),
+            source_stable_id TEXT DEFAULT '',
+            target_stable_id TEXT DEFAULT '',
+            relation_type TEXT NOT NULL,
+            stable_id TEXT,
+            confidence REAL DEFAULT 0.8,
+            created_at TEXT,
+            UNIQUE(source_id, target_id, relation_type)
+        );
+
+        CREATE TABLE IF NOT EXISTS entity_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject TEXT NOT NULL,
+            predicate TEXT NOT NULL,
+            object TEXT NOT NULL,
+            stable_id TEXT,
+            noted_at TEXT DEFAULT (datetime('now')),
+            session_id TEXT DEFAULT '',
+            UNIQUE(subject, predicate, object)
+        );
+
+        CREATE TABLE IF NOT EXISTS search_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query TEXT,
+            result_id TEXT,
+            result_kind TEXT,
+            verdict INTEGER NOT NULL CHECK(verdict IN (-1,0,1)),
+            comment TEXT,
+            user_agent TEXT,
+            created_at TEXT NOT NULL,
+            origin_replica_id TEXT DEFAULT 'local',
+            stable_id TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS wakeup_config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS ke_fts USING fts5(
+            title,
+            content,
+            tags,
+            category,
+            wing,
+            room,
+            facts,
+            error_type,
+            root_cause,
+            tokenize='unicode61 remove_diacritics 2'
+        );
+    """)
+
+    index_statements = [
+        "CREATE INDEX IF NOT EXISTS idx_documents_session ON documents(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_documents_type ON documents(doc_type)",
+        "CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source)",
+        "CREATE INDEX IF NOT EXISTS idx_documents_stable_id ON documents(stable_id)",
+        "CREATE INDEX IF NOT EXISTS idx_sections_doc ON sections(document_id)",
+        "CREATE INDEX IF NOT EXISTS idx_sections_stable_id ON sections(stable_id)",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source)",
+        "CREATE INDEX IF NOT EXISTS idx_event_offsets_session ON event_offsets(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ke_category ON knowledge_entries(category)",
+        "CREATE INDEX IF NOT EXISTS idx_ke_session ON knowledge_entries(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ke_source ON knowledge_entries(source)",
+        "CREATE INDEX IF NOT EXISTS idx_ke_topic ON knowledge_entries(topic_key)",
+        "CREATE INDEX IF NOT EXISTS idx_ke_hash ON knowledge_entries(content_hash)",
+        "CREATE INDEX IF NOT EXISTS idx_ke_task ON knowledge_entries(task_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ke_stable_id ON knowledge_entries(stable_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ke_intensity ON knowledge_entries(intensity DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_ke_priority ON knowledge_entries(priority)",
+        "CREATE INDEX IF NOT EXISTS idx_kr_source ON knowledge_relations(source_id)",
+        "CREATE INDEX IF NOT EXISTS idx_kr_target ON knowledge_relations(target_id)",
+        "CREATE INDEX IF NOT EXISTS idx_kr_source_stable ON knowledge_relations(source_stable_id)",
+        "CREATE INDEX IF NOT EXISTS idx_kr_target_stable ON knowledge_relations(target_stable_id)",
+        "CREATE INDEX IF NOT EXISTS idx_kr_stable_id ON knowledge_relations(stable_id)",
+        "CREATE INDEX IF NOT EXISTS idx_er_subject ON entity_relations(subject)",
+        "CREATE INDEX IF NOT EXISTS idx_er_object ON entity_relations(object)",
+        "CREATE INDEX IF NOT EXISTS idx_er_stable_id ON entity_relations(stable_id)",
+        "CREATE INDEX IF NOT EXISTS idx_sf_query ON search_feedback(query)",
+        "CREATE INDEX IF NOT EXISTS idx_sf_created ON search_feedback(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_sf_stable_id ON search_feedback(stable_id)",
+        "CREATE INDEX IF NOT EXISTS idx_sf_origin_replica ON search_feedback(origin_replica_id)",
+    ]
+    for sql in index_statements:
+        try:
+            db.execute(sql)
+        except sqlite3.OperationalError:
+            pass
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        sys.argv.append(os.path.expanduser("~/.copilot/session-state/knowledge.db"))
+        sys.argv.append(os.environ.get("SK_DB_PATH") or os.path.expanduser("~/.copilot/session-state/knowledge.db"))
     db = sqlite3.connect(sys.argv[1])
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, migrated_at TEXT DEFAULT (datetime('now')))"
-    )
+    _ensure_base_schema(db)
     try:
         db.execute("ALTER TABLE schema_version ADD COLUMN name TEXT DEFAULT ''")
     except sqlite3.OperationalError:

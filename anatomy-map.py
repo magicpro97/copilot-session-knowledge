@@ -40,7 +40,7 @@ if os.name == "nt":
             _s.reconfigure(encoding="utf-8", errors="replace")
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
-DEFAULT_DB_PATH = SESSION_STATE / "knowledge.db"
+DEFAULT_DB_PATH = Path(os.environ.get("SK_DB_PATH", str(SESSION_STATE / "knowledge.db"))).expanduser()
 
 # ---------------------------------------------------------------------------
 # Static descriptions for common well-known filenames
