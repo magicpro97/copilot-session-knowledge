@@ -1,0 +1,25 @@
+{
+  "name": "remote-terminal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MVP remote terminal powered by node-pty, Socket.IO, xterm.js, and Cloudflare Quick Tunnel.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "cloudflared": "^0.7.1",
+    "express": "^4.21.2",
+    "node-pty": "^1.1.0",
+    "qrcode-terminal": "^0.12.0",
+    "socket.io": "^4.8.3"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.3"
+  }
+}
