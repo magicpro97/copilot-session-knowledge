@@ -5764,6 +5764,17 @@ def cmd_handoff(args):
         ]
     )
 
+    # Enforce mandatory FILES READ for rich-section handoffs (issue #109).
+    # Legacy handoffs (no rich args at all) remain backward-compatible.
+    if use_rich_sections and not rich_files_read:
+        print(
+            "ERROR: Rich handoff requires at least one --file-read entry. "
+            "FILES READ is mandatory for rich handoffs. "
+            "Use --file-read <path> to declare files you read.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     handoff_path = tentacle_dir / "handoff.md"
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -5963,8 +5974,15 @@ def cmd_complete(args):
                 if fm_path and fm_path not in changed_files:
                     changed_files.append(fm_path)
             meta["handoff_sections"] = rich_sections
+            # Persist a convenience top-level mirror of files_read paths for 'audit'.
+            files_read_paths = [e["path"] for e in (rich_sections.get("files_read") or []) if e.get("path")]
+            if files_read_paths:
+                meta["files_read"] = files_read_paths
+            else:
+                meta.pop("files_read", None)
         elif "handoff_sections" in meta:
             meta.pop("handoff_sections", None)
+            meta.pop("files_read", None)
     else:
         rich_sections = {}
     if terminal_status:
@@ -6056,6 +6074,74 @@ def cmd_complete(args):
         print(f"   🧠 {learned} knowledge entry saved to long-term memory")
     print(f"   💡 Run `tentacle.py delete {args.name}` to clean up when ready")
     print("   📋 Sync check: review docs/SYNC-MATRIX.md for docs/memory follow-ups")
+
+
+def cmd_audit(args):
+    """Audit a tentacle: report discrepancies between files read and files changed/scoped.
+
+    Reads meta.json and checks:
+    - Changed files (changed_files) not present in the recorded files_read list.
+    - Scoped files (scope) that were never read.
+
+    Legacy tentacles without rich handoff sections are reported as not auditable
+    (fail-open: exit 0, no crash).
+    """
+    tentacles = get_tentacles_dir(args.session_dir)
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
+
+    if not tentacle_dir.exists():
+        print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    meta_path = tentacle_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+
+    fmt = getattr(args, "format", "text")
+
+    handoff_sections = meta.get("handoff_sections")
+    if not handoff_sections:
+        if fmt == "json":
+            print(json.dumps({"auditable": False, "reason": "no rich handoff sections recorded", "warnings": []}))
+        else:
+            print(f"⚠️  '{args.name}' is not auditable yet: no rich handoff sections recorded.")
+            print("   Use --summary/--file-read on the next handoff to enable audit.")
+        return
+
+    files_read_paths: set[str] = {e["path"] for e in (handoff_sections.get("files_read") or []) if e.get("path")}
+    changed_files: list[str] = meta.get("changed_files") or []
+    scope: list[str] = meta.get("scope") or []
+
+    warnings: list[dict] = []
+
+    for cf in sorted(changed_files):
+        if cf not in files_read_paths:
+            warnings.append({"type": "changed_not_read", "file": cf, "message": f"Changed but not read: {cf}"})
+
+    for sf in sorted(scope):
+        if sf not in files_read_paths:
+            warnings.append({"type": "scope_not_read", "file": sf, "message": f"In scope but never read: {sf}"})
+
+    if fmt == "json":
+        print(
+            json.dumps(
+                {
+                    "auditable": True,
+                    "tentacle": args.name,
+                    "files_read": sorted(files_read_paths),
+                    "changed_files": sorted(changed_files),
+                    "scope": scope,
+                    "warnings": warnings,
+                },
+                indent=2,
+            )
+        )
+    else:
+        if warnings:
+            print(f"⚠️  Audit warnings for '{args.name}':")
+            for w in warnings:
+                print(f"   [{w['type']}] {w['message']}")
+        else:
+            print(f"✅ Audit clean for '{args.name}': all changed/scoped files were read.")
 
 
 def cmd_resume(args):
@@ -7690,6 +7776,19 @@ def main():
         ),
     )
 
+    # audit
+    p_audit = sub.add_parser(
+        "audit",
+        help="Audit tentacle: report changed/scoped files not present in FILES READ",
+    )
+    p_audit.add_argument("name", help="Tentacle name")
+    p_audit.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text)",
+    )
+
     # verify subcommand
     p_verify = sub.add_parser("verify", help="Run a verification command and persist results")
     p_verify.add_argument("name", help="Tentacle name")
@@ -8204,6 +8303,8 @@ def main():
         cmd_verify(args)
     elif args.command == "marker-cleanup":
         cmd_marker_cleanup(args)
+    elif args.command == "audit":
+        cmd_audit(args)
     elif args.command == "pr":
         cmd_pr(args)
     elif args.command == "goal":

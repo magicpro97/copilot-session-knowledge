@@ -5888,7 +5888,7 @@ class TestHandoffContract(unittest.TestCase):
             summary=None,
             decision=["Chose X"],
             blocker=[],
-            file_read=[],
+            file_read=["src/context.py"],  # FILES READ is mandatory for rich handoffs
             next_instructions=None,
             output_text=None,
         )
@@ -5899,6 +5899,32 @@ class TestHandoffContract(unittest.TestCase):
         self.assertIsNone(parsed["status"])
         self.assertIsNone(parsed["next_agent_instructions"])
         self.assertIsNone(parsed["output"])
+
+    def test_handoff_rich_requires_files_read(self):
+        """Rich handoff must fail when FILES READ is omitted."""
+        make_tentacle("ho-rich-needs-files-read", self.base)
+        args = fake_args(
+            name="ho-rich-needs-files-read",
+            message="Base message",
+            status="DONE",
+            changed_file=["src/a.py"],
+            learn=False,
+            summary="Structured summary",
+            decision=["Chose X"],
+            blocker=[],
+            file_read=[],
+            next_instructions=None,
+            output_text="Tests passed.",
+        )
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                with self.assertRaises(SystemExit) as ctx:
+                    T.cmd_handoff(args)
+        self.assertEqual(ctx.exception.code, 1)
+        combined = "\n".join(captured)
+        self.assertIn("--file-read", combined)
+        self.assertIn("FILES READ is mandatory", combined)
 
     def test_handoff_without_rich_args_writes_legacy_format(self):
         """Omitting all rich args produces legacy format (no ### sections)."""
@@ -7965,6 +7991,322 @@ class TestBrowseRouteStaleMeta(unittest.TestCase):
         self.assertEqual(entry.get("terminal_status"), "BLOCKED")
         self.assertEqual(entry.get("quota_reason"), "rate_limit")
         self.assertEqual(entry.get("retry_hint"), "2026-05-14T00:00:00Z")
+
+
+class TestFilesReadAudit(unittest.TestCase):
+    """Tests for mandatory FILES READ enforcement and cmd_audit discrepancy reporting.
+
+    Covers:
+      - Rich handoff without --file-read entries fails with exit 1 (mandatory)
+      - Legacy handoffs (no rich args) remain backward-compatible (no error)
+      - files_read top-level mirror persisted to meta after cmd_complete
+      - cmd_audit warns when changed files were not read
+      - cmd_audit warns when scoped files were never read
+      - cmd_audit clean output when everything is read
+      - cmd_audit on legacy tentacle (no handoff_sections) reports not auditable
+      - cmd_audit --format json produces auditable/warnings keys
+    """
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "files_read_audit"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.marker_path = self.base / "dispatched-subagent-active"
+        self._orig_path = T._DISPATCHED_MARKER_PATH
+        T._DISPATCHED_MARKER_PATH = self.marker_path
+        self._orig_markers_dir = T.MARKERS_DIR
+        T.MARKERS_DIR = self.base
+
+    def tearDown(self):
+        T._DISPATCHED_MARKER_PATH = self._orig_path
+        T.MARKERS_DIR = self._orig_markers_dir
+        _rmtree(SCRATCH_DIR)
+
+    # -- helpers --
+
+    def _make_tentacle(self, name, scope=None):
+        d = self.base / name
+        d.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "name": name,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "scope": scope or ["tentacle.py"],
+            "description": "Audit test tentacle",
+            "status": "idle",
+        }
+        (d / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        (d / "CONTEXT.md").write_text(f"# {name}\n", encoding="utf-8")
+        (d / "todo.md").write_text("# Todo\n\n- [x] Task A\n", encoding="utf-8")
+        return d
+
+    def _complete_args(self, name):
+        return fake_args(name=name, no_learn=True)
+
+    def _read_meta(self, name):
+        return json.loads((self.base / name / "meta.json").read_text(encoding="utf-8"))
+
+    def _audit_args(self, name, fmt="text"):
+        return fake_args(name=name, format=fmt)
+
+    def _write_rich_handoff(self, name, files_read, changed_files=None, status="DONE"):
+        handoff_path = self.base / name / "handoff.md"
+        body = "# Handoff Notes\n\n## [2026-01-01 12:00 UTC]\n\n"
+        body += "### SUMMARY\nDone.\n\n"
+        body += "### DECISION POINTS\nNone\n\n"
+        body += "### UNRESOLVED BLOCKERS\nNone\n\n"
+        body += "### FILES READ\n"
+        for f in files_read:
+            body += f"- {f}\n"
+        if not files_read:
+            body += "None\n"
+        body += "\n### FILES MODIFIED\n"
+        for f in changed_files or []:
+            body += f"- {f}\n"
+        if not (changed_files or []):
+            body += "None\n"
+        body += f"\n### NEXT AGENT INSTRUCTIONS\nNone\n\n### OUTPUT\nNone\n\n### STATUS\n{status}\n\n"
+        body += f"STATUS: {status}\n"
+        for f in changed_files or []:
+            body += f"Changed: {f}\n"
+        handoff_path.write_text(body, encoding="utf-8")
+
+    # -- Mandatory FILES READ enforcement --
+
+    def test_rich_handoff_without_file_read_fails(self):
+        """Rich handoff (any rich arg) with no --file-read must exit 1."""
+        self._make_tentacle("audit-no-read")
+        args = fake_args(
+            name="audit-no-read",
+            message="Done",
+            status="DONE",
+            changed_file=["tentacle.py"],
+            learn=False,
+            summary="All done",
+            decision=[],
+            blocker=[],
+            file_read=[],
+            next_instructions=None,
+            output_text=None,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                with self.assertRaises(SystemExit) as ctx:
+                    T.cmd_handoff(args)
+        self.assertNotEqual(ctx.exception.code, 0)
+
+    def test_legacy_handoff_without_rich_args_succeeds(self):
+        """Legacy handoff (no rich args) with no --file-read must not fail."""
+        self._make_tentacle("audit-legacy-no-read")
+        args = fake_args(
+            name="audit-legacy-no-read",
+            message="Done",
+            status="DONE",
+            changed_file=["tentacle.py"],
+            learn=False,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_handoff(args)  # must not raise
+        content = (self.base / "audit-legacy-no-read" / "handoff.md").read_text(encoding="utf-8")
+        self.assertIn("STATUS: DONE", content)
+        self.assertNotIn("### FILES READ", content)
+
+    def test_rich_handoff_with_file_read_succeeds(self):
+        """Rich handoff with --file-read must succeed."""
+        self._make_tentacle("audit-with-read")
+        args = fake_args(
+            name="audit-with-read",
+            message="Done",
+            status="DONE",
+            changed_file=["tentacle.py"],
+            learn=False,
+            summary=None,
+            decision=["Chose approach X"],
+            blocker=[],
+            file_read=["tentacle.py (lines 1-100)"],
+            next_instructions=None,
+            output_text=None,
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_handoff(args)  # must not raise
+        content = (self.base / "audit-with-read" / "handoff.md").read_text(encoding="utf-8")
+        self.assertIn("### FILES READ", content)
+        self.assertIn("tentacle.py", content)
+
+    # -- files_read mirror in meta --
+
+    def test_complete_persists_files_read_mirror_to_meta(self):
+        """cmd_complete must persist top-level meta['files_read'] from rich handoff FILES READ."""
+        self._make_tentacle("audit-meta-mirror")
+        self._write_rich_handoff(
+            "audit-meta-mirror",
+            files_read=["tentacle.py (lines 1-50)", "tests/test_tentacle_runtime.py"],
+            changed_files=["tentacle.py"],
+        )
+        args = self._complete_args("audit-meta-mirror")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+        meta = self._read_meta("audit-meta-mirror")
+        self.assertIn("files_read", meta)
+        files_read = meta["files_read"]
+        self.assertIn("tentacle.py", files_read)
+        self.assertIn("tests/test_tentacle_runtime.py", files_read)
+
+    def test_complete_clears_files_read_mirror_for_legacy_handoff(self):
+        """cmd_complete must NOT write files_read to meta for legacy handoffs."""
+        self._make_tentacle("audit-legacy-meta")
+        handoff_path = self.base / "audit-legacy-meta" / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2026-01-01 12:00 UTC]\n\nAll done.\nSTATUS: DONE\n",
+            encoding="utf-8",
+        )
+        args = self._complete_args("audit-legacy-meta")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(args)
+        meta = self._read_meta("audit-legacy-meta")
+        self.assertNotIn("files_read", meta)
+        self.assertNotIn("handoff_sections", meta)
+
+    # -- cmd_audit discrepancy warnings --
+
+    def test_audit_warns_changed_file_not_read(self):
+        """audit must warn when a changed file does not appear in FILES READ."""
+        self._make_tentacle("audit-changed-not-read", scope=["tentacle.py"])
+        self._write_rich_handoff(
+            "audit-changed-not-read",
+            files_read=["tentacle.py"],
+            changed_files=["tests/test_tentacle_runtime.py"],
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(fake_args(name="audit-changed-not-read", no_learn=True))
+
+        captured = []
+        args = self._audit_args("audit-changed-not-read")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_audit(args)
+        combined = "\n".join(captured)
+        self.assertIn("changed_not_read", combined)
+        self.assertIn("tests/test_tentacle_runtime.py", combined)
+
+    def test_audit_warns_scoped_file_not_read(self):
+        """audit must warn when a scoped file was never read."""
+        self._make_tentacle(
+            "audit-scope-not-read",
+            scope=["tentacle.py", "tests/test_sk_cli.py"],
+        )
+        self._write_rich_handoff(
+            "audit-scope-not-read",
+            files_read=["tentacle.py"],
+            changed_files=["tentacle.py"],
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(fake_args(name="audit-scope-not-read", no_learn=True))
+
+        captured = []
+        args = self._audit_args("audit-scope-not-read")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_audit(args)
+        combined = "\n".join(captured)
+        self.assertIn("scope_not_read", combined)
+        self.assertIn("tests/test_sk_cli.py", combined)
+
+    def test_audit_clean_when_all_files_read(self):
+        """audit must report clean when all changed and scoped files were read."""
+        self._make_tentacle("audit-clean", scope=["tentacle.py"])
+        self._write_rich_handoff(
+            "audit-clean",
+            files_read=["tentacle.py (lines 1-100)"],
+            changed_files=["tentacle.py"],
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(fake_args(name="audit-clean", no_learn=True))
+
+        captured = []
+        args = self._audit_args("audit-clean")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_audit(args)
+        combined = "\n".join(captured)
+        self.assertIn("clean", combined.lower())
+        self.assertNotIn("changed_not_read", combined)
+        self.assertNotIn("scope_not_read", combined)
+
+    def test_audit_legacy_tentacle_not_auditable(self):
+        """audit on legacy tentacle (no handoff_sections in meta) reports not auditable."""
+        self._make_tentacle("audit-legacy-only")
+        handoff_path = self.base / "audit-legacy-only" / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2026-01-01 12:00 UTC]\n\nAll done.\nSTATUS: DONE\n",
+            encoding="utf-8",
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(fake_args(name="audit-legacy-only", no_learn=True))
+
+        captured = []
+        args = self._audit_args("audit-legacy-only")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_audit(args)
+        combined = "\n".join(captured)
+        self.assertIn("not auditable", combined.lower())
+
+    def test_audit_json_format_auditable_with_warnings(self):
+        """audit --format json must emit valid JSON with auditable=True and warnings list."""
+        import json as _json
+
+        self._make_tentacle("audit-json-warn", scope=["tentacle.py"])
+        self._write_rich_handoff(
+            "audit-json-warn",
+            files_read=["tentacle.py"],
+            changed_files=["unread-file.py"],
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(fake_args(name="audit-json-warn", no_learn=True))
+
+        captured = []
+        args = self._audit_args("audit-json-warn", fmt="json")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_audit(args)
+        combined = "\n".join(captured)
+        data = _json.loads(combined)
+        self.assertTrue(data["auditable"])
+        self.assertEqual(data["tentacle"], "audit-json-warn")
+        warning_types = [w["type"] for w in data["warnings"]]
+        self.assertIn("changed_not_read", warning_types)
+
+    def test_audit_json_format_legacy_not_auditable(self):
+        """audit --format json on legacy tentacle must emit auditable=False."""
+        import json as _json
+
+        self._make_tentacle("audit-json-legacy")
+        handoff_path = self.base / "audit-json-legacy" / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2026-01-01 12:00 UTC]\n\nDone.\nSTATUS: DONE\n",
+            encoding="utf-8",
+        )
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print"):
+                T.cmd_complete(fake_args(name="audit-json-legacy", no_learn=True))
+
+        captured = []
+        args = self._audit_args("audit-json-legacy", fmt="json")
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_audit(args)
+        combined = "\n".join(captured)
+        data = _json.loads(combined)
+        self.assertFalse(data["auditable"])
+        self.assertEqual(data["warnings"], [])
 
 
 if __name__ == "__main__":
