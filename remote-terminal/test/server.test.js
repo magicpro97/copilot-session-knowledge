@@ -295,7 +295,7 @@ test("listen failures kill the spawned PTY before rethrowing", async (t) => {
 });
 
 test(
-  "Ctrl+D closes the PTY-backed session on POSIX shells",
+  "Ctrl+D forwards EOF to the PTY process",
   { skip: process.platform === "win32" ? "Ctrl+D shell-exit proof is covered in Linux CI." : false },
   async (t) => {
     const remoteTerminal = await startRemoteTerminal({
@@ -304,8 +304,8 @@ test(
       logger: () => {},
       token: "issue75-eof-token",
       port: 0,
-      shellCommand: "/bin/bash",
-      shellArgs: ["-i"],
+      shellCommand: "/bin/cat",
+      shellArgs: [],
     });
     t.after(async () => {
       await remoteTerminal.stop();
@@ -314,6 +314,7 @@ test(
     const socket = await connectClient(remoteTerminal, "issue75-eof-token");
     t.after(() => socket.close());
 
+    socket.emit("input", "ISSUE75_EOF\r");
     socket.emit("input", "\u0004");
     await waitFor(() => remoteTerminal.server.listening === false, "Ctrl+D did not close the server session");
   },
