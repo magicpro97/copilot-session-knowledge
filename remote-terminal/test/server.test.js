@@ -9,6 +9,7 @@ const { io } = require("socket.io-client");
 
 const {
   DEFAULT_PORT,
+  TUNNEL_STATES,
   buildAccessUrl,
   resolvePort,
   stripTokenFromUrl,
@@ -25,6 +26,49 @@ async function waitFor(check, message, timeout = 8000) {
   }
 
   throw new Error(message);
+}
+
+function createSpinnerRecorder(events = []) {
+  return {
+    isSpinning: false,
+    _text: "",
+    get text() {
+      return this._text;
+    },
+    set text(value) {
+      this._text = value;
+      events.push(`text:${value}`);
+    },
+    start(text) {
+      this.isSpinning = true;
+      if (text) {
+        this.text = text;
+      }
+      events.push(`start:${this.text}`);
+      return this;
+    },
+    stop() {
+      this.isSpinning = false;
+      events.push(`stop:${this.text}`);
+      return this;
+    },
+    succeed(text) {
+      this.isSpinning = false;
+      if (text) {
+        this.text = text;
+      }
+      events.push(`succeed:${this.text}`);
+      return this;
+    },
+    warn(text) {
+      this.isSpinning = false;
+      if (text) {
+        this.text = text;
+      }
+      events.push(`warn:${this.text}`);
+      return this;
+    },
+  };
 }
 
 async function connectClient(remoteTerminal, token) {
@@ -62,6 +106,7 @@ test("health endpoint is public but the terminal page stays token gated", async 
   assert.equal(payload.port, remoteTerminal.port);
   assert.equal(payload.localOrigin, stripTokenFromUrl(remoteTerminal.localUrl));
   assert.equal(payload.publicOrigin, null);
+  assert.equal(payload.tunnelState, TUNNEL_STATES.STOPPED);
   assert.equal(JSON.stringify(payload).includes("issue75-health-token"), false);
 
   const denied = await fetch(`http://127.0.0.1:${remoteTerminal.port}/`);
@@ -183,6 +228,7 @@ test("Cloudflare Quick Tunnel URLs become tokenized public access links", async 
     accessHost: "127.0.0.1",
     logger: () => {},
     qrWriter: (label, url) => qrCodes.push({ label, url }),
+    spinnerFactory: () => createSpinnerRecorder(),
     token: "issue75-tunnel-token",
     port: 0,
     tunnelFactory: () => tunnel,
@@ -207,6 +253,155 @@ test("Cloudflare Quick Tunnel URLs become tokenized public access links", async 
   assert.equal(stopCalls > 0, true);
 });
 
+test("tunnel state machine reaches READY and reports spinner progress", async (t) => {
+  const spinnerEvents = [];
+  const tunnel = new EventEmitter();
+  tunnel.stop = () => true;
+
+  const remoteTerminal = await startRemoteTerminal({
+    accessHost: "127.0.0.1",
+    logger: () => {},
+    spinnerFactory: () => createSpinnerRecorder(spinnerEvents),
+    token: "issue77-ready-token",
+    port: 0,
+    tunnelFactory: () => tunnel,
+    verifyTunnel: async (_url, options) => {
+      options.onProgress(1, 1);
+    },
+  });
+  t.after(async () => {
+    await remoteTerminal.stop();
+  });
+
+  tunnel.emit("connected", { location: "test-edge" });
+  tunnel.emit("url", "https://issue77.trycloudflare.com");
+
+  await waitFor(() => remoteTerminal.tunnelState === TUNNEL_STATES.READY, "tunnel never reached READY");
+
+  const health = await fetch(`http://127.0.0.1:${remoteTerminal.port}/health`);
+  const payload = await health.json();
+  assert.equal(payload.tunnelState, TUNNEL_STATES.READY);
+  assert.equal(payload.publicOrigin, stripTokenFromUrl(remoteTerminal.publicUrl));
+
+  const joined = spinnerEvents.join("\n");
+  assert.match(joined, /\[PREPARING\]/);
+  assert.match(joined, /\[CONNECTING\]/);
+  assert.match(joined, /\[TUNNELING\]/);
+  assert.match(joined, /\[VERIFYING\]/);
+  assert.match(joined, /\[READY\]/);
+});
+
+test("disconnects schedule an automatic tunnel retry", async (t) => {
+  const firstTunnel = new EventEmitter();
+  firstTunnel.stop = () => true;
+  const secondTunnel = new EventEmitter();
+  secondTunnel.stop = () => true;
+
+  const tunnels = [firstTunnel, secondTunnel];
+  let tunnelCalls = 0;
+
+  const remoteTerminal = await startRemoteTerminal({
+    accessHost: "127.0.0.1",
+    logger: () => {},
+    retryBaseMs: 50,
+    retryMaxMs: 50,
+    spinnerFactory: () => createSpinnerRecorder(),
+    token: "issue77-retry-token",
+    port: 0,
+    tunnelFactory: () => tunnels[tunnelCalls++],
+    verifyTunnel: async (_url, options) => {
+      options.onProgress(1, 1);
+    },
+  });
+  t.after(async () => {
+    await remoteTerminal.stop();
+  });
+
+  firstTunnel.emit("connected", { location: "retry-edge" });
+  firstTunnel.emit("url", "https://issue77-retry.trycloudflare.com");
+  await waitFor(() => remoteTerminal.tunnelState === TUNNEL_STATES.READY, "first tunnel never reached READY");
+
+  firstTunnel.emit("disconnected", { location: "retry-edge" });
+
+  const health = await fetch(`http://127.0.0.1:${remoteTerminal.port}/health`);
+  const payload = await health.json();
+  assert.equal(payload.tunnelState, TUNNEL_STATES.STOPPED);
+  assert.equal(payload.tunnelRetryDelayMs, 50);
+  assert.equal(payload.tunnelError, "cloudflared disconnected (retry-edge)");
+
+  await waitFor(() => tunnelCalls === 2, "retry did not start a new tunnel");
+});
+
+test("replacement tunnels re-queue verification without spawning extra retries", async (t) => {
+  const firstTunnel = new EventEmitter();
+  let firstStopCalls = 0;
+  firstTunnel.stop = () => {
+    firstStopCalls += 1;
+    return true;
+  };
+
+  const secondTunnel = new EventEmitter();
+  let secondStopCalls = 0;
+  secondTunnel.stop = () => {
+    secondStopCalls += 1;
+    return true;
+  };
+
+  const tunnels = [firstTunnel, secondTunnel];
+  const verifyCalls = [];
+  let tunnelCalls = 0;
+  let rejectFirstVerification;
+
+  const remoteTerminal = await startRemoteTerminal({
+    accessHost: "127.0.0.1",
+    logger: () => {},
+    retryBaseMs: 25,
+    retryMaxMs: 25,
+    spinnerFactory: () => createSpinnerRecorder(),
+    token: "issue77-overlap-token",
+    port: 0,
+    tunnelFactory: () => tunnels[tunnelCalls++],
+    verifyTunnel: async (publicAccessUrl, options) => {
+      verifyCalls.push(publicAccessUrl);
+      options.onProgress(1, 1);
+      if (verifyCalls.length === 1) {
+        await new Promise((_, reject) => {
+          rejectFirstVerification = reject;
+        });
+      }
+    },
+  });
+  t.after(async () => {
+    await remoteTerminal.stop();
+  });
+
+  firstTunnel.emit("connected", { location: "first-edge" });
+  firstTunnel.emit("url", "https://issue77-first.trycloudflare.com");
+  await waitFor(() => verifyCalls.length === 1, "first tunnel verification never started");
+
+  firstTunnel.emit("disconnected", { location: "first-edge" });
+  await waitFor(() => tunnelCalls === 2, "replacement tunnel was never started");
+
+  secondTunnel.emit("connected", { location: "second-edge" });
+  secondTunnel.emit("url", "https://issue77-second.trycloudflare.com");
+  rejectFirstVerification(new Error("stale verification failed"));
+
+  await waitFor(() => verifyCalls.length === 2, "replacement tunnel verification was not re-queued");
+  await waitFor(() => remoteTerminal.tunnelState === TUNNEL_STATES.READY, "replacement tunnel never reached READY");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  assert.equal(firstStopCalls > 0, true);
+  assert.equal(secondStopCalls, 0);
+  assert.equal(tunnelCalls, 2);
+
+  const health = await fetch(`http://127.0.0.1:${remoteTerminal.port}/health`);
+  const payload = await health.json();
+  assert.equal(payload.tunnelState, TUNNEL_STATES.READY);
+  assert.equal(payload.tunnelAttempt, 0);
+  assert.equal(payload.tunnelError, null);
+  assert.equal(payload.publicOrigin, stripTokenFromUrl(remoteTerminal.publicUrl));
+});
+
 test("async tunnel errors clear the public origin and surface in health", async (t) => {
   const tunnel = new EventEmitter();
   tunnel.stop = () => true;
@@ -214,6 +409,9 @@ test("async tunnel errors clear the public origin and surface in health", async 
   const remoteTerminal = await startRemoteTerminal({
     accessHost: "127.0.0.1",
     logger: () => {},
+    retryBaseMs: 60000,
+    retryMaxMs: 60000,
+    spinnerFactory: () => createSpinnerRecorder(),
     token: "issue75-async-tunnel-token",
     port: 0,
     tunnelFactory: () => tunnel,
@@ -231,6 +429,8 @@ test("async tunnel errors clear the public origin and surface in health", async 
   const health = await fetch(`http://127.0.0.1:${remoteTerminal.port}/health`);
   const payload = await health.json();
   assert.equal(payload.publicOrigin, null);
+  assert.equal(payload.tunnelState, TUNNEL_STATES.STOPPED);
+  assert.equal(payload.tunnelRetryDelayMs, 60000);
   assert.equal(payload.tunnelError, "async tunnel broke");
 });
 
@@ -239,6 +439,9 @@ test("tunnel bootstrap failures stay explicit without crashing the local server"
   const remoteTerminal = await startRemoteTerminal({
     accessHost: "127.0.0.1",
     logger: (message) => logs.push(message),
+    retryBaseMs: 60000,
+    retryMaxMs: 60000,
+    spinnerFactory: () => createSpinnerRecorder(),
     token: "issue75-tunnel-failure-token",
     port: 0,
     tunnelFactory: () => {
@@ -253,6 +456,8 @@ test("tunnel bootstrap failures stay explicit without crashing the local server"
   const payload = await health.json();
   assert.equal(payload.ok, true);
   assert.equal(payload.publicOrigin, null);
+  assert.equal(payload.tunnelState, TUNNEL_STATES.STOPPED);
+  assert.equal(payload.tunnelRetryDelayMs, 60000);
   assert.equal(payload.tunnelError, "fake tunnel bootstrap failure");
   assert.match(logs.join("\n"), /Cloudflare Quick Tunnel unavailable: fake tunnel bootstrap failure/);
 });

@@ -21,7 +21,17 @@ By default the server:
 1. listens on `0.0.0.0:2208`
 2. generates a random token
 3. prints a LAN QR code immediately
-4. starts a Cloudflare Quick Tunnel and prints a public QR code once the tunnel URL is ready
+4. starts a Cloudflare Quick Tunnel state machine with an `ora` progress spinner
+5. retries tunnel setup after disconnects / tunnel errors with exponential backoff
+6. prints a public QR code once the tunnel URL is verified
+
+## Tunnel states
+
+```text
+STOPPED → PREPARING → CONNECTING → TUNNELING → VERIFYING → READY
+   ↑                                                      │
+   └──────────── error / disconnect / verify fail ────────┘
+```
 
 ## Environment variables
 
@@ -39,4 +49,5 @@ By default the server:
 - Open the printed URL directly if you already have the token; the HTML page and the WebSocket both require the same token.
 - `Ctrl+C`, `Ctrl+D`, tab completion, and resize handling are delegated to the real PTY-backed shell, so shell behavior stays native instead of being emulated in JavaScript.
 - For LAN-only smoke tests, start with `REMOTE_TERMINAL_DISABLE_TUNNEL=1 npm start`.
+- `/health` exposes the tunnel state machine (`tunnelState`, `tunnelRetryDelayMs`, `tunnelError`) without leaking the access token.
 - If your local Windows environment has a custom `cmd.exe` / PATH setup that prevents npm lifecycle scripts from seeing `node`, run `npm --script-shell pwsh <command>` for local verification. That is an environment workaround, not a package requirement.
