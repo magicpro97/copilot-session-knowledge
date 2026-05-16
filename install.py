@@ -13,6 +13,7 @@ Usage:
     python install.py --install-git-hooks    # Install pre-commit/pre-push into current repo's .git/hooks/
     python install.py --lock-hooks           # Lock hooks with OS immutable flags (tamper protection)
     python install.py --unlock-hooks         # Unlock hooks for updates
+    python install.py --doctor [--manifest]  # Verify install health / manifest drift
     python install.py --test                 # Run self-test
     python install.py --uninstall            # Remove installed files
     python install.py --help                 # Show this help
@@ -31,6 +32,7 @@ Tamper Protection:
     Also generates SHA256 manifest checked by verify-integrity.py at session start.
 """
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -39,6 +41,7 @@ import sqlite3
 import subprocess
 import sys
 import textwrap
+from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
 from urllib.parse import urlparse
@@ -71,6 +74,7 @@ def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> Non
             pass
         raise
 
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -82,6 +86,7 @@ def _real_home():
     sudo_user = os.environ.get("SUDO_USER")
     if sudo_user and os.name != "nt":
         import pwd
+
         try:
             return Path(pwd.getpwnam(sudo_user).pw_dir)
         except KeyError:
@@ -92,10 +97,12 @@ def _real_home():
 # Host metadata is centralised in host_manifest.py — import canonical constants.
 # Do NOT add new hosts here; update host_manifest.py through the review process.
 from host_manifest import (  # noqa: E402
-    COPILOT_DIR,
     CLAUDE_DIR,
-    HOST_DIRS as KNOWN_HOSTS,
+    COPILOT_DIR,
     HOST_SKILL_SUBPATHS,
+)
+from host_manifest import (
+    HOST_DIRS as KNOWN_HOSTS,
 )
 
 TOOLS_DIR = COPILOT_DIR / "tools"
@@ -205,20 +212,21 @@ SUPPORT_FILES = [
 # Managed sk launcher directory (cross-platform: ~/.copilot/bin/)
 SK_LAUNCHER_DIR = HOME / ".copilot" / "bin"
 _SK_PATH_MARKER_START = "# >>> session-knowledge sk launcher >>>"
-_SK_PATH_MARKER_END   = "# <<< session-knowledge sk launcher <<<"
+_SK_PATH_MARKER_END = "# <<< session-knowledge sk launcher <<<"
 
 # ---------------------------------------------------------------------------
 # Markers
 # ---------------------------------------------------------------------------
-OK = "\u2713"   # ✓
-FAIL = "\u2717" # ✗
-INFO = "\u2139" # ℹ
+OK = "\u2713"  # ✓
+FAIL = "\u2717"  # ✗
+INFO = "\u2139"  # ℹ
 WARN = "\u26a0"  # ⚠
 
 
 # ===================================================================
 # Helpers
 # ===================================================================
+
 
 def _tilde(p: Path) -> str:
     """Show path relative to ~ for readability."""
@@ -233,6 +241,220 @@ def _count_scripts(d: Path) -> int:
     if not d.is_dir():
         return 0
     return sum(1 for f in d.iterdir() if f.suffix == ".py")
+
+
+MANAGED_MANIFEST_VERSION = "1.0.0"
+
+
+def _managed_manifest_path() -> Path:
+    """Return the general installer manifest path (~/.copilot/manifest.json)."""
+    return HOME / ".copilot" / "manifest.json"
+
+
+def _manifest_root() -> Path:
+    """Return the root directory all manifest entries are relative to."""
+    return HOME.resolve()
+
+
+def _manifest_timestamp() -> str:
+    """Return the current UTC timestamp for manifest metadata."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _empty_managed_manifest() -> dict:
+    """Return the canonical empty installer-manifest payload."""
+    return {
+        "files": {},
+        "version": MANAGED_MANIFEST_VERSION,
+        "installed_at": _manifest_timestamp(),
+    }
+
+
+def _load_managed_manifest() -> dict | None:
+    """Load ~/.copilot/manifest.json or return None when absent/invalid."""
+    manifest_path = _managed_manifest_path()
+    if not manifest_path.is_file():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    raw_files = data.get("files")
+    if not isinstance(raw_files, dict):
+        return None
+    files = {key: value for key, value in raw_files.items() if isinstance(key, str) and isinstance(value, str)}
+    version = data.get("version") if isinstance(data.get("version"), str) else MANAGED_MANIFEST_VERSION
+    installed_at = data.get("installed_at") if isinstance(data.get("installed_at"), str) else _manifest_timestamp()
+    return {
+        "files": files,
+        "version": version,
+        "installed_at": installed_at,
+    }
+
+
+def _path_has_symlink(path: Path, root: Path) -> bool:
+    """Return True when any existing component between root and path is a symlink."""
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return True
+    probe = root
+    for part in rel.parts:
+        probe = probe / part
+        if probe.exists() and probe.is_symlink():
+            return True
+    return False
+
+
+def _manifest_key_to_path(key: str) -> Path | None:
+    """Resolve a manifest key to a concrete path under HOME, rejecting unsafe keys."""
+    if not isinstance(key, str) or not key.strip():
+        return None
+    rel = Path(key)
+    if rel.is_absolute():
+        return None
+    if not rel.parts or any(part in ("", ".", "..") for part in rel.parts):
+        return None
+    root = _manifest_root()
+    candidate = root / rel
+    if _path_has_symlink(candidate, root):
+        return None
+    return candidate
+
+
+def _path_to_manifest_key(path: Path) -> str | None:
+    """Convert an on-disk file path into a safe manifest key relative to HOME."""
+    expanded = path.expanduser()
+    if expanded.exists() and expanded.is_symlink():
+        return None
+    try:
+        candidate = expanded.resolve(strict=False)
+    except OSError:
+        candidate = expanded.absolute()
+    root = _manifest_root()
+    try:
+        rel = candidate.relative_to(root)
+    except ValueError:
+        return None
+    if not rel.parts or any(part in ("", ".", "..") for part in rel.parts):
+        return None
+    if _path_has_symlink(candidate, root):
+        return None
+    return rel.as_posix()
+
+
+def _sha256_file(path: Path) -> str:
+    """Return the SHA-256 digest for a file."""
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_managed_manifest(manifest: dict) -> None:
+    """Persist the installer manifest atomically, deleting it when empty."""
+    manifest_path = _managed_manifest_path()
+    files = manifest.get("files", {})
+    if not files:
+        manifest_path.unlink(missing_ok=True)
+        return
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "files": dict(sorted(files.items())),
+        "version": MANAGED_MANIFEST_VERSION,
+        "installed_at": _manifest_timestamp(),
+    }
+    _atomic_write_text(manifest_path, json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _record_managed_paths(paths: list[Path], *, quiet: bool = False) -> int:
+    """Record manifest entries for files managed by install.py."""
+    manifest = _load_managed_manifest() or _empty_managed_manifest()
+    recorded = 0
+    for path in paths:
+        if not path.is_file():
+            continue
+        key = _path_to_manifest_key(path)
+        if key is None:
+            if not quiet:
+                print(f"  {WARN} Manifest skip (unsafe or outside HOME): {_tilde(path)}")
+            continue
+        manifest["files"][key] = _sha256_file(path)
+        recorded += 1
+    if recorded:
+        _write_managed_manifest(manifest)
+    return recorded
+
+
+def _forget_managed_paths(paths: list[Path]) -> None:
+    """Remove manifest entries for paths no longer managed."""
+    manifest = _load_managed_manifest()
+    if not manifest:
+        return
+    changed = False
+    for path in paths:
+        key = _path_to_manifest_key(path)
+        if key and key in manifest["files"]:
+            manifest["files"].pop(key, None)
+            changed = True
+    if changed:
+        _write_managed_manifest(manifest)
+
+
+def _manifest_drift_report() -> tuple[list[str], list[str], list[str], int]:
+    """Return (missing, modified, unsafe, tracked_count) for the installer manifest."""
+    manifest = _load_managed_manifest()
+    if not manifest:
+        return [], [], [], 0
+    missing: list[str] = []
+    modified: list[str] = []
+    unsafe: list[str] = []
+    for key, expected_hash in manifest.get("files", {}).items():
+        path = _manifest_key_to_path(key)
+        if path is None:
+            unsafe.append(key)
+            continue
+        if not path.exists():
+            missing.append(key)
+            continue
+        if path.is_symlink() or not path.is_file():
+            unsafe.append(key)
+            continue
+        actual_hash = _sha256_file(path)
+        if actual_hash != expected_hash:
+            modified.append(key)
+    tracked = len(manifest.get("files", {}))
+    return missing, modified, unsafe, tracked
+
+
+def _partition_manifest_removals(paths: list[Path]) -> tuple[list[Path], list[Path], list[Path]]:
+    """Split paths into (safe_to_remove, modified, untracked_or_unsafe)."""
+    manifest = _load_managed_manifest()
+    tracked = manifest.get("files", {}) if manifest else {}
+    removable: list[Path] = []
+    modified: list[Path] = []
+    untracked: list[Path] = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        key = _path_to_manifest_key(path)
+        expected = tracked.get(key, "") if key else ""
+        if not expected:
+            untracked.append(path)
+            continue
+        try:
+            actual = _sha256_file(path)
+        except OSError:
+            untracked.append(path)
+            continue
+        if actual == expected:
+            removable.append(path)
+        else:
+            modified.append(path)
+    return removable, modified, untracked
 
 
 def _file_url_to_path(url: str) -> Path | None:
@@ -305,9 +527,7 @@ def _db_counts() -> dict:
         ]:
             assert table in _ALLOWED_TABLES, f"Unexpected table: {table}"
             try:
-                result[key] = db.execute(
-                    f"SELECT COUNT(*) FROM {table}"
-                ).fetchone()[0]
+                result[key] = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             except sqlite3.OperationalError:
                 pass
         db.close()
@@ -337,6 +557,7 @@ def _watcher_running() -> bool:
             return False
         if os.name == "nt":
             import ctypes
+
             kernel32 = ctypes.windll.kernel32
             handle = kernel32.OpenProcess(0x100000, False, int(pid))
             if handle:
@@ -355,7 +576,9 @@ def _git_root() -> "Path | None":
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if r.returncode == 0:
             return Path(r.stdout.strip())
@@ -370,10 +593,7 @@ def _fts_working() -> bool:
         return False
     try:
         db = sqlite3.connect(str(DB_PATH))
-        rows = db.execute(
-            "SELECT COUNT(*) FROM knowledge_fts "
-            "WHERE knowledge_fts MATCH 'test OR error'"
-        ).fetchone()
+        rows = db.execute("SELECT COUNT(*) FROM knowledge_fts WHERE knowledge_fts MATCH 'test OR error'").fetchone()
         db.close()
         return rows[0] >= 0
     except Exception:
@@ -383,6 +603,7 @@ def _fts_working() -> bool:
 # ===================================================================
 # SK Launcher: managed cross-platform sk command
 # ===================================================================
+
 
 def _sk_launcher_script_paths() -> "list[Path]":
     """Return platform-appropriate launcher file paths under SK_LAUNCHER_DIR."""
@@ -394,15 +615,9 @@ def _sk_launcher_script_paths() -> "list[Path]":
 def _sk_launcher_content() -> str:
     """Return the launcher script body for the current platform."""
     if os.name == "nt":
-        return (
-            "@echo off\r\n"
-            'python "%USERPROFILE%\\.copilot\\tools\\sk.py" %*\r\n'
-        )
+        return '@echo off\r\npython "%USERPROFILE%\\.copilot\\tools\\sk.py" %*\r\n'
     # POSIX: sh-compatible, expands $HOME at runtime so it survives home dir changes
-    return (
-        "#!/bin/sh\n"
-        'exec python3 "$HOME/.copilot/tools/sk.py" "$@"\n'
-    )
+    return '#!/bin/sh\nexec python3 "$HOME/.copilot/tools/sk.py" "$@"\n'
 
 
 def _shell_profiles() -> "list[Path]":
@@ -429,11 +644,7 @@ def _preferred_shell_profile() -> Path:
 def _inject_launcher_path(quiet: bool = False) -> None:
     """Idempotently add ~/.copilot/bin to existing shell profiles (POSIX only)."""
     bin_str = str(SK_LAUNCHER_DIR)
-    block = (
-        f"\n{_SK_PATH_MARKER_START}\n"
-        f'export PATH="{bin_str}:$PATH"\n'
-        f"{_SK_PATH_MARKER_END}\n"
-    )
+    block = f'\n{_SK_PATH_MARKER_START}\nexport PATH="{bin_str}:$PATH"\n{_SK_PATH_MARKER_END}\n'
     profiles = [profile for profile in _shell_profiles() if profile.exists()]
     if not profiles:
         profiles = [_preferred_shell_profile()]
@@ -456,8 +667,11 @@ def _inject_launcher_path_windows(quiet: bool = False) -> None:
     bin_str = str(SK_LAUNCHER_DIR)
     try:
         import winreg
+
         key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, "Environment", 0,
+            winreg.HKEY_CURRENT_USER,
+            "Environment",
+            0,
             winreg.KEY_READ | winreg.KEY_WRITE,
         )
         try:
@@ -486,8 +700,11 @@ def _remove_launcher_path_windows(quiet: bool = False) -> bool:
     bin_str = str(SK_LAUNCHER_DIR)
     try:
         import winreg
+
         key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, "Environment", 0,
+            winreg.HKEY_CURRENT_USER,
+            "Environment",
+            0,
             winreg.KEY_READ | winreg.KEY_WRITE,
         )
         try:
@@ -496,20 +713,21 @@ def _remove_launcher_path_windows(quiet: bool = False) -> bool:
             cur_path = ""
         entries = [entry for entry in cur_path.split(";") if entry]
         launcher_key = _windows_path_entry_key(bin_str)
-        filtered = [
-            entry for entry in entries
-            if _windows_path_entry_key(entry) != launcher_key
-        ]
+        filtered = [entry for entry in entries if _windows_path_entry_key(entry) != launcher_key]
         if filtered != entries:
             winreg.SetValueEx(
-                key, "PATH", 0, winreg.REG_EXPAND_SZ, ";".join(filtered),
+                key,
+                "PATH",
+                0,
+                winreg.REG_EXPAND_SZ,
+                ";".join(filtered),
             )
             if not quiet:
-                print("  {0} Removed sk launcher dir from Windows user PATH".format(OK))
+                print(f"  {OK} Removed sk launcher dir from Windows user PATH")
             winreg.CloseKey(key)
             return True
         if not quiet:
-            print("  {0} sk launcher dir not present in Windows user PATH".format(INFO))
+            print(f"  {INFO} sk launcher dir not present in Windows user PATH")
         winreg.CloseKey(key)
     except Exception as exc:
         if not quiet:
@@ -551,6 +769,7 @@ def install_sk_launcher(quiet: bool = False) -> bool:
     else:
         _inject_launcher_path_windows(quiet=quiet)
 
+    _record_managed_paths([script for script in _sk_launcher_script_paths() if script.is_file()], quiet=quiet)
     return changed
 
 
@@ -560,18 +779,30 @@ def uninstall_sk_launcher(quiet: bool = False) -> int:
     Returns the number of items removed.
     """
     import re
-    removed = 0
 
-    for script in _sk_launcher_script_paths():
-        if script.is_file():
-            try:
-                script.unlink()
-                removed += 1
-                if not quiet:
-                    print(f"  {OK} Removed sk launcher: {_tilde(script)}")
-            except Exception as exc:
-                if not quiet:
-                    print(f"  {FAIL} Could not remove {_tilde(script)}: {exc}")
+    removed = 0
+    launcher_scripts = [script for script in _sk_launcher_script_paths() if script.is_file()]
+    safe_scripts, modified_scripts, untracked_scripts = _partition_manifest_removals(launcher_scripts)
+
+    for script in modified_scripts:
+        if not quiet:
+            print(f"  {WARN} Preserved modified sk launcher: {_tilde(script)}")
+    for script in untracked_scripts:
+        if not quiet:
+            print(f"  {WARN} Preserved untracked sk launcher (no manifest entry): {_tilde(script)}")
+
+    for script in safe_scripts:
+        try:
+            script.unlink()
+            removed += 1
+            if not quiet:
+                print(f"  {OK} Removed sk launcher: {_tilde(script)}")
+        except Exception as exc:
+            if not quiet:
+                print(f"  {FAIL} Could not remove {_tilde(script)}: {exc}")
+
+    if safe_scripts:
+        _forget_managed_paths(safe_scripts)
 
     # Remove launcher dir if now empty
     if SK_LAUNCHER_DIR.is_dir():
@@ -585,28 +816,27 @@ def uninstall_sk_launcher(quiet: bool = False) -> int:
         except Exception:
             pass
 
-    # Remove PATH injections from POSIX shell profiles
-    if os.name != "nt":
-        for profile in _shell_profiles():
-            if not profile.exists():
-                continue
-            content = profile.read_text(encoding="utf-8")
-            if _SK_PATH_MARKER_START not in content:
-                continue
-            pattern = (
-                re.escape(_SK_PATH_MARKER_START)
-                + r".*?"
-                + re.escape(_SK_PATH_MARKER_END)
-                + r"\n?"
-            )
-            new_content = re.sub(pattern, "", content, flags=re.DOTALL)
-            if new_content != content:
-                _atomic_write_text(profile, new_content)
-                removed += 1
-                if not quiet:
-                    print(f"  {OK} Removed sk PATH injection from {_tilde(profile)}")
-    elif _remove_launcher_path_windows(quiet=quiet):
-        removed += 1
+    remaining_scripts = [script for script in _sk_launcher_script_paths() if script.is_file()]
+    if not remaining_scripts:
+        # Remove PATH injections from POSIX shell profiles
+        if os.name != "nt":
+            for profile in _shell_profiles():
+                if not profile.exists():
+                    continue
+                content = profile.read_text(encoding="utf-8")
+                if _SK_PATH_MARKER_START not in content:
+                    continue
+                pattern = re.escape(_SK_PATH_MARKER_START) + r".*?" + re.escape(_SK_PATH_MARKER_END) + r"\n?"
+                new_content = re.sub(pattern, "", content, flags=re.DOTALL)
+                if new_content != content:
+                    _atomic_write_text(profile, new_content)
+                    removed += 1
+                    if not quiet:
+                        print(f"  {OK} Removed sk PATH injection from {_tilde(profile)}")
+        elif _remove_launcher_path_windows(quiet=quiet):
+            removed += 1
+    elif not quiet:
+        print(f"  {INFO} Kept launcher PATH injection because a launcher script was preserved.")
 
     return removed
 
@@ -614,6 +844,7 @@ def uninstall_sk_launcher(quiet: bool = False) -> int:
 # ===================================================================
 # 1. Detection / Status
 # ===================================================================
+
 
 def show_status() -> bool:
     """Print agent detection table. Returns True if tools are installed."""
@@ -642,15 +873,9 @@ def show_status() -> bool:
         if sessions > 0:
             print(f"  {OK} Session data: {sessions} sessions indexed")
         else:
-            n_dirs = sum(
-                1 for d in SESSION_STATE.iterdir()
-                if d.is_dir() and not d.name.startswith(".")
-            )
+            n_dirs = sum(1 for d in SESSION_STATE.iterdir() if d.is_dir() and not d.name.startswith("."))
             if n_dirs:
-                print(
-                    f"  {OK} Session data: {n_dirs} session dirs "
-                    f"(not yet indexed)"
-                )
+                print(f"  {OK} Session data: {n_dirs} session dirs (not yet indexed)")
             else:
                 print(f"  {FAIL} Session data: empty")
     else:
@@ -659,10 +884,7 @@ def show_status() -> bool:
     # Knowledge DB
     if DB_PATH.is_file():
         counts = _db_counts()
-        print(
-            f"  {OK} Knowledge DB: {counts['entries']} entries, "
-            f"{counts['relations']} relations"
-        )
+        print(f"  {OK} Knowledge DB: {counts['entries']} entries, {counts['relations']} relations")
     else:
         print(f"  {FAIL} Knowledge DB: not built")
 
@@ -735,7 +957,7 @@ MINIMAL_SKILL_MD = textwrap.dedent("""\
 def deploy_skill():
     """Deploy SKILL.md to the current project directory."""
     project_root = _git_root() or Path.cwd()
-    print(f"\nSkill Deployment")
+    print("\nSkill Deployment")
     print(f"  Project: {project_root}")
 
     # Read source skill content (priority: installed > repo template > minimal)
@@ -747,10 +969,7 @@ def deploy_skill():
         print(f"  {OK} Source: {_REPO_SKILL_MD}")
     else:
         skill_content = MINIMAL_SKILL_MD
-        print(
-            f"  {INFO} Source: generating minimal SKILL.md "
-            f"(no source template found)"
-        )
+        print(f"  {INFO} Source: generating minimal SKILL.md (no source template found)")
 
     deployed = []
 
@@ -770,9 +989,10 @@ def deploy_skill():
 
     if not deployed:
         print(f"  {FAIL} No agents detected — nothing deployed")
-        print(f"      Create ~/.copilot/ or ~/.claude/ first.")
+        print("      Create ~/.copilot/ or ~/.claude/ first.")
         return
 
+    _record_managed_paths([target for _host_name, target in deployed])
     print(f"\n  Deployed {len(deployed)} skill file(s).")
 
     # Register this project so auto-update-tools.py can propagate vendored-skill
@@ -885,7 +1105,7 @@ def deploy_hooks():
         rel = h.relative_to(hooks_dir)
         print(f"    • {rel.as_posix()}")
 
-
+    _record_managed_paths([hooks_dst])
 
 
 def deploy_instructions():
@@ -898,6 +1118,7 @@ def deploy_instructions():
     instructions_dir.mkdir(parents=True, exist_ok=True)
 
     deployed = 0
+    manifest_paths: list[Path] = []
 
     # 1. Core: copilot-instructions.md
     src = _TEMPLATES_DIR / "copilot-instructions.md"
@@ -914,10 +1135,12 @@ def deploy_instructions():
                 dst.write_text(new, encoding="utf-8")
                 print(f"  {OK} copilot-instructions.md — updated (backup: {backup.name})")
                 deployed += 1
+                manifest_paths.append(dst)
         else:
             dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
             print(f"  {OK} copilot-instructions.md — created")
             deployed += 1
+            manifest_paths.append(dst)
     else:
         print(f"  {FAIL} Template not found: {_tilde(src)}")
 
@@ -934,10 +1157,12 @@ def deploy_instructions():
                     dst_file.write_text(new, encoding="utf-8")
                     print(f"  {OK} {src_file.name} — updated")
                     deployed += 1
+                    manifest_paths.append(dst_file)
             else:
                 dst_file.write_text(src_file.read_text(encoding="utf-8"), encoding="utf-8")
                 print(f"  {OK} {src_file.name} — created")
                 deployed += 1
+                manifest_paths.append(dst_file)
 
     # 3. session-knowledge.instructions.md (from templates root)
     sk_src = _TEMPLATES_DIR / "session-knowledge.instructions.md"
@@ -950,11 +1175,14 @@ def deploy_instructions():
                 sk_dst.write_text(sk_src.read_text(encoding="utf-8"), encoding="utf-8")
                 print(f"  {OK} session-knowledge.instructions.md — updated")
                 deployed += 1
+                manifest_paths.append(sk_dst)
         else:
             sk_dst.write_text(sk_src.read_text(encoding="utf-8"), encoding="utf-8")
             print(f"  {OK} session-knowledge.instructions.md — created")
             deployed += 1
+            manifest_paths.append(sk_dst)
 
+    _record_managed_paths(manifest_paths)
     print(f"\n  Deployed {deployed} file(s) to {_tilde(github_dir)}")
 
 
@@ -983,6 +1211,7 @@ def inject_global():
         if _INJECT_MARKER_START in content:
             # Replace existing block
             import re
+
             pattern = re.escape(_INJECT_MARKER_START) + r".*?" + re.escape(_INJECT_MARKER_END)
             new_content = re.sub(pattern, GLOBAL_INJECT_BLOCK.strip(), content, flags=re.DOTALL)
             if new_content != content:
@@ -1034,6 +1263,7 @@ def inject_global():
 # 3. Self-Test
 # ===================================================================
 
+
 def run_self_test():
     """Import each tool module and verify the knowledge base."""
     print("\nSelf-Test Results:")
@@ -1054,7 +1284,7 @@ def run_self_test():
                 str(filepath),
             )
             if spec and spec.loader:
-                with open(filepath, "r", encoding="utf-8") as fh:
+                with open(filepath, encoding="utf-8") as fh:
                     compile(fh.read(), str(filepath), "exec")
                 print(f"  {OK} {filename} \u2014 importable")
                 pass_count += 1
@@ -1062,10 +1292,7 @@ def run_self_test():
                 print(f"  {FAIL} {filename} \u2014 spec creation failed")
                 fail_count += 1
         except SyntaxError as e:
-            print(
-                f"  {FAIL} {filename} \u2014 SyntaxError: "
-                f"{e.msg} (line {e.lineno})"
-            )
+            print(f"  {FAIL} {filename} \u2014 SyntaxError: {e.msg} (line {e.lineno})")
             fail_count += 1
         except Exception as e:
             print(f"  {FAIL} {filename} \u2014 {type(e).__name__}: {e}")
@@ -1113,6 +1340,7 @@ def run_self_test():
 # 4. Uninstall
 # ===================================================================
 
+
 def uninstall() -> int:
     """Remove installed tools. Preserves session-state data."""
     print("\nUninstall \u2014 Session Knowledge Tools")
@@ -1126,38 +1354,57 @@ def uninstall() -> int:
         print("  Then rerun `python install.py --uninstall` if you also want to remove this checkout.")
         return 1
 
-    removable: list[Path] = []
-
+    managed_files: list[Path] = []
     for f in TOOL_FILES + SUPPORT_FILES:
         p = TOOLS_DIR / f
         if p.is_file():
-            removable.append(p)
+            managed_files.append(p)
+
+    removable, preserved_modified, preserved_untracked = _partition_manifest_removals(managed_files)
+    runtime_removable: list[Path] = []
 
     pycache = TOOLS_DIR / "__pycache__"
     if pycache.is_dir():
-        removable.append(pycache)
+        runtime_removable.append(pycache)
 
     watch_state = SESSION_STATE / ".watch-state.json"
     if watch_state.is_file():
-        removable.append(watch_state)
+        runtime_removable.append(watch_state)
     if LOCK_FILE.is_file():
-        removable.append(LOCK_FILE)
+        runtime_removable.append(LOCK_FILE)
 
-    # Include managed sk launcher files in the listing
     launcher_scripts = [s for s in _sk_launcher_script_paths() if s.is_file()]
+    launcher_removable, launcher_modified, launcher_untracked = _partition_manifest_removals(launcher_scripts)
 
-    if not removable and not launcher_scripts:
-        print(f"\n  Nothing to remove.")
+    if not removable and not runtime_removable and not launcher_removable:
+        print("\n  Nothing to remove.")
+        if preserved_modified or preserved_untracked or launcher_modified or launcher_untracked:
+            print(f"  {WARN} Only preserved modified/untracked files remain.")
         return 0
 
-    print(f"\n  Files to remove:")
+    print("\n  Files to remove:")
     for p in removable:
         label = "dir " if p.is_dir() else ""
         print(f"    {label}{_tilde(p)}")
-    for s in launcher_scripts:
+    for p in runtime_removable:
+        label = "dir " if p.is_dir() else ""
+        print(f"    {label}{_tilde(p)}")
+    for s in launcher_removable:
         print(f"    {_tilde(s)}  (sk launcher)")
 
-    print(f"\n  Preserved (your data):")
+    preserved = preserved_modified + preserved_untracked + launcher_modified + launcher_untracked
+    if preserved:
+        print("\n  Preserved (manifest safety):")
+        for p in preserved_modified:
+            print(f"    {_tilde(p)}  (modified since install)")
+        for p in preserved_untracked:
+            print(f"    {_tilde(p)}  (no manifest entry)")
+        for p in launcher_modified:
+            print(f"    {_tilde(p)}  (modified sk launcher)")
+        for p in launcher_untracked:
+            print(f"    {_tilde(p)}  (untracked sk launcher)")
+
+    print("\n  Preserved (your data):")
     print(f"    {_tilde(SESSION_STATE)}  (session data)")
     if DB_PATH.is_file():
         print(f"    {_tilde(DB_PATH)}  (knowledge database)")
@@ -1177,7 +1424,7 @@ def uninstall() -> int:
 
     removed = 0
     had_error = False
-    for p in removable:
+    for p in removable + runtime_removable:
         try:
             if p.is_dir():
                 shutil.rmtree(str(p))
@@ -1188,6 +1435,9 @@ def uninstall() -> int:
         except Exception as e:
             print(f"  {FAIL} Could not remove {_tilde(p)}: {e}")
             had_error = True
+
+    if removable:
+        _forget_managed_paths(removable)
 
     if TOOLS_DIR.is_dir():
         remaining = list(TOOLS_DIR.iterdir())
@@ -1211,14 +1461,16 @@ def uninstall() -> int:
 # 5. Install / First-Run
 # ===================================================================
 
+
 def install():
     """Copy tools into place and build the initial index."""
-    print(f"\nInstalling Session Knowledge Tools...")
+    print("\nInstalling Session Knowledge Tools...")
     print(f"  Target: {_tilde(TOOLS_DIR)}")
 
     TOOLS_DIR.mkdir(parents=True, exist_ok=True)
     print(f"  {OK} Tools directory ready")
 
+    managed_paths: list[Path] = []
     source_dir = Path(__file__).resolve().parent
     if source_dir.resolve() != TOOLS_DIR.resolve():
         copied = 0
@@ -1227,25 +1479,36 @@ def install():
             dst = TOOLS_DIR / f
             if src.is_file():
                 shutil.copy2(str(src), str(dst))
+                managed_paths.append(dst)
                 copied += 1
         print(f"  {OK} Copied {copied} files")
     else:
+        managed_paths.extend([TOOLS_DIR / f for f in TOOL_FILES + SUPPORT_FILES if (TOOLS_DIR / f).is_file()])
         print(f"  {OK} Scripts already in place")
 
-    print(f"\n  Building knowledge index...")
+    print("\n  Building knowledge index...")
     if SESSION_STATE.is_dir():
         indexer = TOOLS_DIR / "build-session-index.py"
         if indexer.is_file():
             result = subprocess.run(
                 [sys.executable, str(indexer)],
-                capture_output=True, text=True, timeout=120,
+                capture_output=True,
+                text=True,
+                timeout=120,
             )
             if result.returncode == 0:
                 for line in result.stdout.splitlines():
                     lo = line.lower()
-                    if any(k in lo for k in [
-                        "indexed", "sessions:", "documents:", "fts", "total",
-                    ]):
+                    if any(
+                        k in lo
+                        for k in [
+                            "indexed",
+                            "sessions:",
+                            "documents:",
+                            "fts",
+                            "total",
+                        ]
+                    ):
                         print(f"    {line.strip()}")
                 print(f"  {OK} Index built")
             else:
@@ -1253,31 +1516,37 @@ def install():
 
         extractor = TOOLS_DIR / "extract-knowledge.py"
         if extractor.is_file():
-            print(f"\n  Extracting knowledge...")
+            print("\n  Extracting knowledge...")
             result = subprocess.run(
                 [sys.executable, str(extractor)],
-                capture_output=True, text=True, timeout=120,
+                capture_output=True,
+                text=True,
+                timeout=120,
             )
             if result.returncode == 0:
                 for line in result.stdout.splitlines():
                     lo = line.lower()
-                    if any(k in lo for k in [
-                        "extracted", "total", "category", "entries",
-                    ]):
+                    if any(
+                        k in lo
+                        for k in [
+                            "extracted",
+                            "total",
+                            "category",
+                            "entries",
+                        ]
+                    ):
                         print(f"    {line.strip()}")
                 print(f"  {OK} Knowledge extracted")
     else:
-        print(
-            f"  {INFO} No session-state yet \u2014 "
-            f"index will be built on first use"
-        )
+        print(f"  {INFO} No session-state yet \u2014 index will be built on first use")
 
     print(f"\n{'=' * 50}")
-    print(f"  Installation complete!")
+    print("  Installation complete!")
     print(f"{'=' * 50}")
     # Install the managed sk launcher
-    print(f"\n  Installing sk launcher...")
+    print("\n  Installing sk launcher...")
     install_sk_launcher()
+    _record_managed_paths(managed_paths)
     _show_usage_hints()
 
 
@@ -1288,17 +1557,17 @@ def _show_usage_hints():
     ws = _tilde(TOOLS_DIR / "watch-sessions.py")
     inst = _tilde(TOOLS_DIR / "install.py")
     launcher_dir = _tilde(SK_LAUNCHER_DIR)
-    print(f"\n  Quick start (after opening a new shell or 'source ~/.zshrc'):")
-    print(f"    sk briefing \"your task\"         # Context briefing (short command)")
-    print(f"    sk query \"search terms\"          # Search knowledge base")
-    print(f"    sk learn --mistake \"Title\" \"...\" # Record a mistake")
-    print(f"    sk update                         # Pull latest tools update")
+    print("\n  Quick start (after opening a new shell or 'source ~/.zshrc'):")
+    print('    sk briefing "your task"         # Context briefing (short command)')
+    print('    sk query "search terms"          # Search knowledge base')
+    print('    sk learn --mistake "Title" "..." # Record a mistake')
+    print("    sk update                         # Pull latest tools update")
     print(f"\n  Launcher location: {launcher_dir}/sk  (managed by install.py --install-sk)")
-    print(f"\n  Full path fallbacks also work:")
-    print(f"    python {qs} \"search terms\"   # Search knowledge base")
-    print(f"    python {br} \"your task\"       # Context briefing")
+    print("\n  Full path fallbacks also work:")
+    print(f'    python {qs} "search terms"   # Search knowledge base')
+    print(f'    python {br} "your task"       # Context briefing')
     print(f"    python {ws}                    # Start watcher daemon")
-    print(f"\n  Management:")
+    print("\n  Management:")
     print(f"    python {inst} --install-sk             # Refresh sk launcher")
     print(f"    python {inst} --uninstall-launcher    # Remove sk launcher only")
     print(f"    python {inst} --deploy-skill          # Add skill to project")
@@ -1308,13 +1577,64 @@ def _show_usage_hints():
     print(f"    python {inst} --install-git-hooks     # Install pre-commit/pre-push git hooks")
     print(f"    python {inst} --lock-hooks             # Lock hooks (tamper protection)")
     print(f"    python {inst} --unlock-hooks           # Unlock hooks for updates")
+    print(f"    python {inst} --doctor --manifest      # Check manifest drift")
     print(f"    python {inst} --test                  # Run self-test")
     print(f"    python {inst} --uninstall             # Remove tools")
-    print(f"\n  Sync rollout note:")
+    print("\n  Sync rollout note:")
     print("    sync-config.py --setup expects an HTTP(S) gateway URL (not raw Postgres/libSQL DSN)")
     print("    Default provider rollout recommendation: Neon (Postgres) + Railway (thin gateway host)")
-    print(f"\n  Trend Scout automation note:")
-    print("    Use trend-scout.py / trend-scout.yml for scheduled scouting; do not wire it to preToolUse/postToolUse hooks")
+    print("\n  Trend Scout automation note:")
+    print(
+        "    Use trend-scout.py / trend-scout.yml for scheduled scouting; do not wire it to preToolUse/postToolUse hooks"
+    )
+
+
+def doctor(*, manifest_only: bool = False) -> int:
+    """Verify install health; optionally limit output to manifest drift only."""
+    issues = 0
+    if not manifest_only:
+        print("\nInstall Doctor")
+        print("=" * 50)
+        if show_status():
+            print(f"  {OK} Core install looks present")
+        else:
+            issues += 1
+        print()
+
+    manifest_path = _managed_manifest_path()
+    print("Manifest Drift:")
+    if not manifest_path.exists():
+        print(f"  {WARN} No manifest found at {_tilde(manifest_path)}")
+        return issues + 1
+
+    manifest = _load_managed_manifest()
+    if manifest is None:
+        print(f"  {FAIL} Manifest is unreadable: {_tilde(manifest_path)}")
+        return issues + 1
+
+    missing, modified, unsafe, tracked = _manifest_drift_report()
+    print(f"  {OK} Manifest present: {_tilde(manifest_path)}")
+    print(f"  {OK} Tracked files: {tracked}")
+    if not missing and not modified and not unsafe:
+        print(f"  {OK} No drift detected")
+        return issues
+
+    if missing:
+        issues += len(missing)
+        print(f"  {WARN} Missing files ({len(missing)}):")
+        for key in missing:
+            print(f"    - {key}")
+    if modified:
+        issues += len(modified)
+        print(f"  {WARN} Modified files ({len(modified)}):")
+        for key in modified:
+            print(f"    - {key}")
+    if unsafe:
+        issues += len(unsafe)
+        print(f"  {FAIL} Unsafe manifest entries ({len(unsafe)}):")
+        for key in unsafe:
+            print(f"    - {key}")
+    return issues
 
 
 # ===================================================================
@@ -1324,7 +1644,7 @@ def _show_usage_hints():
 
 def lock_hooks():
     """Lock hook files with OS-level immutable flags + SHA256 manifest.
-    
+
     macOS: chflags schg (system immutable — requires sudo)
     Linux: chattr +i (needs sudo/root)
     Windows: attrib +R
@@ -1460,8 +1780,7 @@ def lock_hooks():
     elif system == "Windows":
         for f in files_to_lock:
             if f.is_file():
-                result = subprocess.run(["attrib", "+R", str(f)],
-                                       capture_output=True, text=True)
+                result = subprocess.run(["attrib", "+R", str(f)], capture_output=True, text=True)
                 if result.returncode == 0:
                     protected += 1
         print(f"\n  {OK} {protected} files set read-only (attrib +R)")
@@ -1470,7 +1789,7 @@ def lock_hooks():
     else:
         print(f"\n  {WARN} Unknown OS: {system}. Manual protection needed.")
 
-    print(f"\n  Agent CANNOT modify hook files without unlocking first.")
+    print("\n  Agent CANNOT modify hook files without unlocking first.")
 
 
 def unlock_hooks():
@@ -1537,8 +1856,7 @@ def unlock_hooks():
     elif system == "Windows":
         for f in files_to_unlock:
             if f.is_file():
-                result = subprocess.run(["attrib", "-R", str(f)],
-                                       capture_output=True, text=True)
+                result = subprocess.run(["attrib", "-R", str(f)], capture_output=True, text=True)
                 if result.returncode == 0:
                     unlocked += 1
         print(f"  {OK} {unlocked} files unlocked (attrib -R)")
@@ -1600,9 +1918,7 @@ def install_git_hooks(target_dir: "Path | None" = None) -> None:
                 skipped.append(hook_name)
                 continue
             try:
-                answer = input(
-                    f"  {WARN} {hook_name} already exists and differs. Overwrite? [y/N] "
-                ).strip().lower()
+                answer = input(f"  {WARN} {hook_name} already exists and differs. Overwrite? [y/N] ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 print(f"\n  Skipping {hook_name}.")
                 skipped.append(hook_name)
@@ -1625,7 +1941,9 @@ def install_git_hooks(target_dir: "Path | None" = None) -> None:
         try:
             r = subprocess.run(
                 ["git", "-C", str(target_dir), "config", "core.hooksPath", ".git/hooks"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if r.returncode == 0:
                 print(f"  {OK} core.hooksPath confirmed as .git/hooks")
@@ -1649,6 +1967,7 @@ def _dispatch_healer(flag: str) -> None:
         print(f"  {FAIL} copilot-cli-healer.py not found at {_tilde(healer)}")
         return
     import subprocess as _sp
+
     _sp.run([sys.executable, str(healer), flag])
 
 
@@ -1677,6 +1996,7 @@ def main():
     if "--install-binary" in args:
         extra = [a for a in args if a not in ("--install-binary",)]
         import subprocess as _sp
+
         _sp.run([sys.executable, str(_SCRIPT_DIR / "install-binary.py")] + extra)
         return
 
@@ -1719,6 +2039,10 @@ def main():
         run_self_test()
         return
 
+    if "--doctor" in args:
+        manifest_only = "--manifest" in args
+        return doctor(manifest_only=manifest_only)
+
     if "--uninstall" in args:
         return uninstall()
 
@@ -1728,7 +2052,7 @@ def main():
         print()
         install()
     else:
-        print(f"\n  Tools are installed and ready.")
+        print("\n  Tools are installed and ready.")
         _show_usage_hints()
 
 

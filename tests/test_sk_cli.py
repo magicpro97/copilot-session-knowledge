@@ -124,6 +124,18 @@ class TestSkDirectCommands(unittest.TestCase):
     def test_heal(self):
         self._assert_routes("heal", "copilot-cli-healer.py")
 
+    def test_doctor(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["doctor"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("install.py", ["--doctor"])
+
+    def test_doctor_manifest(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["doctor", "--manifest"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("install.py", ["--doctor", "--manifest"])
+
     def test_watch(self):
         self._assert_routes("watch", "watch-sessions.py")
 
@@ -177,7 +189,8 @@ class TestSkDirectCommands(unittest.TestCase):
 
     def test_skill_suggest_json_with_min_occurrences(self):
         self._assert_routes(
-            "skill-suggest", "skill-suggest.py",
+            "skill-suggest",
+            "skill-suggest.py",
             ["--min-occurrences", "3", "--format", "json"],
         )
 
@@ -193,19 +206,22 @@ class TestSkDirectCommands(unittest.TestCase):
 
     def test_skill_patch_with_flags(self):
         self._assert_routes(
-            "skill-patch", "skill-patch.py",
+            "skill-patch",
+            "skill-patch.py",
             ["path/to/SKILL.md", "--old", "old text", "--new", "new text"],
         )
 
     def test_skill_patch_replace_all(self):
         self._assert_routes(
-            "skill-patch", "skill-patch.py",
+            "skill-patch",
+            "skill-patch.py",
             ["path/to/SKILL.md", "--old", "old", "--new", "new", "--replace-all"],
         )
 
     def test_skill_patch_dry_run(self):
         self._assert_routes(
-            "skill-patch", "skill-patch.py",
+            "skill-patch",
+            "skill-patch.py",
             ["path/to/SKILL.md", "--old", "old", "--new", "new", "--dry-run"],
         )
 
@@ -230,7 +246,8 @@ class TestSkDirectCommands(unittest.TestCase):
 
     def test_audit_hooks_combined_flags(self):
         self._assert_routes(
-            "audit-hooks", "audit-hooks.py",
+            "audit-hooks",
+            "audit-hooks.py",
             ["--json", "--days", "14", "--top", "10"],
         )
 
@@ -246,31 +263,36 @@ class TestSkDirectCommands(unittest.TestCase):
 
     def test_improvement_signals_record(self):
         self._assert_routes(
-            "improvement-signals", "improvement-signals.py",
+            "improvement-signals",
+            "improvement-signals.py",
             ["record", "--query", "some query", "--type", "missed_match"],
         )
 
     def test_improvement_signals_list(self):
         self._assert_routes(
-            "improvement-signals", "improvement-signals.py",
+            "improvement-signals",
+            "improvement-signals.py",
             ["list", "--format", "json"],
         )
 
     def test_improvement_signals_consume(self):
         self._assert_routes(
-            "improvement-signals", "improvement-signals.py",
+            "improvement-signals",
+            "improvement-signals.py",
             ["consume", "--id", "1"],
         )
 
     def test_improvement_signals_consume_all(self):
         self._assert_routes(
-            "improvement-signals", "improvement-signals.py",
+            "improvement-signals",
+            "improvement-signals.py",
             ["consume", "--all"],
         )
 
     def test_improvement_signals_stats(self):
         self._assert_routes(
-            "improvement-signals", "improvement-signals.py",
+            "improvement-signals",
+            "improvement-signals.py",
             ["stats", "--format", "json"],
         )
 
@@ -296,25 +318,29 @@ class TestSkDirectCommands(unittest.TestCase):
 
     def test_skill_curator_archive_dry_run(self):
         self._assert_routes(
-            "skill-curator", "skill-curator.py",
+            "skill-curator",
+            "skill-curator.py",
             ["archive", "--dry-run"],
         )
 
     def test_skill_curator_pin(self):
         self._assert_routes(
-            "skill-curator", "skill-curator.py",
+            "skill-curator",
+            "skill-curator.py",
             ["pin", "my-skill"],
         )
 
     def test_skill_curator_unpin(self):
         self._assert_routes(
-            "skill-curator", "skill-curator.py",
+            "skill-curator",
+            "skill-curator.py",
             ["unpin", "my-skill"],
         )
 
     def test_skill_curator_restore(self):
         self._assert_routes(
-            "skill-curator", "skill-curator.py",
+            "skill-curator",
+            "skill-curator.py",
             ["restore", "my-skill"],
         )
 
@@ -323,13 +349,15 @@ class TestSkDirectCommands(unittest.TestCase):
 
     def test_skill_curator_stale_days(self):
         self._assert_routes(
-            "skill-curator", "skill-curator.py",
+            "skill-curator",
+            "skill-curator.py",
             ["--stale-days", "14"],
         )
 
     def test_skill_curator_archive_days(self):
         self._assert_routes(
-            "skill-curator", "skill-curator.py",
+            "skill-curator",
+            "skill-curator.py",
             ["--archive-days", "60"],
         )
 
@@ -1068,8 +1096,6 @@ class TestBuglogArgValidation(unittest.TestCase):
         self.assertEqual(rc, 0, "Valid --limit and --min-confidence must succeed")
 
 
-
-
 # ---------------------------------------------------------------------------
 # Runtime: prove actual skill-curator.py parser accepts --dry-run after subcommand
 # ---------------------------------------------------------------------------
@@ -1098,6 +1124,7 @@ class TestSkillCuratorParserRuntime(unittest.TestCase):
         # Build a minimal DB with a 200-day-old event for old-skill
         import sqlite3
         from datetime import datetime, timedelta, timezone
+
         db_path = Path(self.tmp) / "skill-metrics.db"
         db = sqlite3.connect(str(db_path))
         db.executescript(
@@ -1120,19 +1147,17 @@ class TestSkillCuratorParserRuntime(unittest.TestCase):
     def test_archive_dry_run_after_subcommand_exits_0(self):
         """archive --dry-run (flag AFTER subcommand) must exit 0, not 2."""
         from unittest.mock import patch
+
         with patch("builtins.print"):
-            rc = self.curator.main(
-                ["--skills-dir", self.tmp, "--db", self.db_path, "archive", "--dry-run"]
-            )
+            rc = self.curator.main(["--skills-dir", self.tmp, "--db", self.db_path, "archive", "--dry-run"])
         self.assertEqual(rc, 0, "archive --dry-run must not exit with code 2 (parser error)")
 
     def test_archive_dry_run_zero_writes(self):
         """archive --dry-run after subcommand must write nothing."""
         from unittest.mock import patch
+
         with patch("builtins.print"):
-            self.curator.main(
-                ["--skills-dir", self.tmp, "--db", self.db_path, "archive", "--dry-run"]
-            )
+            self.curator.main(["--skills-dir", self.tmp, "--db", self.db_path, "archive", "--dry-run"])
         self.assertTrue(
             (Path(self.tmp) / "old-skill").exists(),
             "archive --dry-run must not move old-skill",
@@ -1142,13 +1167,18 @@ class TestSkillCuratorParserRuntime(unittest.TestCase):
         """archive --dry-run --json (flags after subcommand) must emit parseable JSON."""
         import json
         from unittest.mock import patch
+
         captured = []
         with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(a[0])):
             rc = self.curator.main(
                 [
-                    "--skills-dir", self.tmp,
-                    "--db", self.db_path,
-                    "archive", "--dry-run", "--json",
+                    "--skills-dir",
+                    self.tmp,
+                    "--db",
+                    self.db_path,
+                    "archive",
+                    "--dry-run",
+                    "--json",
                 ]
             )
         self.assertEqual(rc, 0)
@@ -1159,11 +1189,11 @@ class TestSkillCuratorParserRuntime(unittest.TestCase):
     def test_global_dry_run_before_subcommand_still_works(self):
         """--dry-run before subcommand (legacy form) must still work."""
         from unittest.mock import patch
+
         with patch("builtins.print"):
-            rc = self.curator.main(
-                ["--skills-dir", self.tmp, "--db", self.db_path, "--dry-run", "archive"]
-            )
+            rc = self.curator.main(["--skills-dir", self.tmp, "--db", self.db_path, "--dry-run", "archive"])
         self.assertEqual(rc, 0, "--dry-run before subcommand must exit 0")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,8 +16,8 @@ Covers:
 Run: python3 tests/test_install_helpers.py
 """
 
-import importlib.util
 import builtins
+import importlib.util
 import json
 import os
 import sys
@@ -338,18 +338,24 @@ editable_source.mkdir(exist_ok=True)
 other_source = (SCRATCH / "other-source").resolve()
 other_source.mkdir(exist_ok=True)
 
-editable_direct_url = json.dumps({
-    "url": editable_source.as_uri(),
-    "dir_info": {"editable": True},
-})
-other_direct_url = json.dumps({
-    "url": other_source.as_uri(),
-    "dir_info": {"editable": True},
-})
-non_editable_direct_url = json.dumps({
-    "url": editable_source.as_uri(),
-    "dir_info": {"editable": False},
-})
+editable_direct_url = json.dumps(
+    {
+        "url": editable_source.as_uri(),
+        "dir_info": {"editable": True},
+    }
+)
+other_direct_url = json.dumps(
+    {
+        "url": other_source.as_uri(),
+        "dir_info": {"editable": True},
+    }
+)
+non_editable_direct_url = json.dumps(
+    {
+        "url": editable_source.as_uri(),
+        "dir_info": {"editable": False},
+    }
+)
 
 try:
     _install.metadata.distributions = lambda: [_FakeDist("copilot-session-knowledge", editable_direct_url)]
@@ -379,6 +385,124 @@ try:
 finally:
     builtins.input = original_input
     _install._matching_editable_install_source_dir = original_match
+
+
+# ── Managed install manifest (issue #103) ──────────────────────────────────────
+
+print("\n🧾 Managed install manifest (issue #103)")
+
+import io
+from contextlib import redirect_stdout
+
+_MANIFEST_HOME = SCRATCH / "managed-manifest-home"
+_MANIFEST_HOME.mkdir(parents=True, exist_ok=True)
+_MANIFEST_TOOLS = _MANIFEST_HOME / ".copilot" / "tools"
+_MANIFEST_SESSION_STATE = _MANIFEST_HOME / ".copilot" / "session-state"
+_MANIFEST_SRC = SCRATCH / "managed-manifest-src"
+_MANIFEST_SRC.mkdir(parents=True, exist_ok=True)
+(_MANIFEST_SRC / "install.py").write_text("# fake install source\n", encoding="utf-8")
+(_MANIFEST_SRC / "sk.py").write_text("# fake sk source\n", encoding="utf-8")
+(_MANIFEST_SRC / "README.md").write_text("readme\n", encoding="utf-8")
+
+_orig_home_manifest = _install.HOME
+_orig_tools_manifest = _install.TOOLS_DIR
+_orig_session_state_manifest = _install.SESSION_STATE
+_orig_db_manifest = _install.DB_PATH
+_orig_lock_manifest = _install.LOCK_FILE
+_orig_sk_dir_manifest = _install.SK_LAUNCHER_DIR
+_orig_file_manifest = _install.__file__
+_orig_install_launcher_manifest = _install.install_sk_launcher
+
+try:
+    _install.HOME = _MANIFEST_HOME
+    _install.TOOLS_DIR = _MANIFEST_TOOLS
+    _install.SESSION_STATE = _MANIFEST_SESSION_STATE
+    _install.DB_PATH = _MANIFEST_SESSION_STATE / "knowledge.db"
+    _install.LOCK_FILE = _MANIFEST_SESSION_STATE / ".watcher.lock"
+    _install.SK_LAUNCHER_DIR = _MANIFEST_HOME / ".copilot" / "bin"
+    _install.__file__ = str(_MANIFEST_SRC / "install.py")
+    _install.install_sk_launcher = lambda quiet=False: True
+
+    _install.install()
+
+    manifest_path = _MANIFEST_HOME / ".copilot" / "manifest.json"
+    test("install creates ~/.copilot/manifest.json", manifest_path.is_file())
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    tracked_files = manifest.get("files", {})
+    test("manifest tracks copied install.py", ".copilot/tools/install.py" in tracked_files)
+    test("manifest tracks copied sk.py", ".copilot/tools/sk.py" in tracked_files)
+    test("manifest tracks copied README.md", ".copilot/tools/README.md" in tracked_files)
+
+    # Path guards reject absolute paths and traversal.
+    abs_key = str((_MANIFEST_HOME / "absolute.txt").resolve())
+    test("manifest rejects absolute keys", _install._manifest_key_to_path(abs_key) is None)
+    test("manifest rejects .. traversal keys", _install._manifest_key_to_path("../escape.txt") is None)
+
+    # Modify one tracked file and remove another to force doctor drift.
+    (_MANIFEST_TOOLS / "sk.py").write_text("# locally modified\n", encoding="utf-8")
+    (_MANIFEST_TOOLS / "README.md").unlink()
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        doctor_issues = _install.doctor(manifest_only=True)
+    doctor_output = buf.getvalue()
+    test(
+        "doctor --manifest reports modified files",
+        "Modified files" in doctor_output and ".copilot/tools/sk.py" in doctor_output,
+    )
+    test(
+        "doctor --manifest reports missing files",
+        "Missing files" in doctor_output and ".copilot/tools/README.md" in doctor_output,
+    )
+    test("doctor --manifest returns nonzero on drift", doctor_issues >= 2)
+
+    original_manifest_input = builtins.input
+    builtins.input = lambda _prompt="": "y"
+    try:
+        uninstall_rc = _install.uninstall()
+    finally:
+        builtins.input = original_manifest_input
+
+    test("uninstall removes unchanged tracked install.py", not (_MANIFEST_TOOLS / "install.py").exists())
+    test("uninstall preserves modified tracked sk.py", (_MANIFEST_TOOLS / "sk.py").exists())
+    test("uninstall leaves removed README absent", not (_MANIFEST_TOOLS / "README.md").exists())
+    test("manifest-safe uninstall returns success", uninstall_rc == 0)
+
+    manifest_after = json.loads(manifest_path.read_text(encoding="utf-8"))
+    tracked_after = manifest_after.get("files", {})
+    test("manifest drops removed install.py entry", ".copilot/tools/install.py" not in tracked_after)
+    test("manifest keeps modified sk.py entry", ".copilot/tools/sk.py" in tracked_after)
+
+    _install._atomic_write_text(
+        manifest_path,
+        json.dumps(
+            {
+                "files": {"../escape.txt": "deadbeef"},
+                "version": "1.0.0",
+                "installed_at": "2026-05-16T00:00:00+00:00",
+            },
+            indent=2,
+        ),
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        unsafe_issues = _install.doctor(manifest_only=True)
+    unsafe_output = buf.getvalue()
+    test(
+        "doctor flags unsafe manifest entries",
+        "Unsafe manifest entries" in unsafe_output and "../escape.txt" in unsafe_output,
+    )
+    test("unsafe manifest entry counts as an issue", unsafe_issues >= 1)
+finally:
+    _install.HOME = _orig_home_manifest
+    _install.TOOLS_DIR = _orig_tools_manifest
+    _install.SESSION_STATE = _orig_session_state_manifest
+    _install.DB_PATH = _orig_db_manifest
+    _install.LOCK_FILE = _orig_lock_manifest
+    _install.SK_LAUNCHER_DIR = _orig_sk_dir_manifest
+    _install.__file__ = _orig_file_manifest
+    _install.install_sk_launcher = _orig_install_launcher_manifest
 
 
 # ── SK Launcher helpers ───────────────────────────────────────────────────────
@@ -425,10 +549,8 @@ try:
         test("install_sk_launcher creates preferred shell profile when missing", profile_path.exists())
         if profile_path.exists():
             profile_content = profile_path.read_text(encoding="utf-8")
-            test("launcher PATH marker added to shell profile",
-                 _install._SK_PATH_MARKER_START in profile_content)
-            test("launcher PATH export references SK_LAUNCHER_DIR",
-                 str(_install.SK_LAUNCHER_DIR) in profile_content)
+            test("launcher PATH marker added to shell profile", _install._SK_PATH_MARKER_START in profile_content)
+            test("launcher PATH export references SK_LAUNCHER_DIR", str(_install.SK_LAUNCHER_DIR) in profile_content)
 
     # Idempotency: second call returns False (already installed)
     result2 = _install.install_sk_launcher(quiet=True)
@@ -441,8 +563,10 @@ try:
     test("uninstall_sk_launcher removes launcher script", not still_exists)
     if profile_path.exists():
         cleaned_content = profile_path.read_text(encoding="utf-8")
-        test("uninstall_sk_launcher removes PATH marker from profile",
-             _install._SK_PATH_MARKER_START not in cleaned_content)
+        test(
+            "uninstall_sk_launcher removes PATH marker from profile",
+            _install._SK_PATH_MARKER_START not in cleaned_content,
+        )
 
     # uninstall safe when file missing (idempotent)
     try:
@@ -472,8 +596,7 @@ try:
         test("windows launcher references sk.py", "sk.py" in content_auto)
     else:
         test("posix launcher starts with shebang", content_auto.startswith("#!/"))
-        test("posix launcher passes args",
-             '"$@"' in content_auto or "$@" in content_auto)
+        test("posix launcher passes args", '"$@"' in content_auto or "$@" in content_auto)
 except Exception as _e:
     test("_sk_launcher_content raises no exception", False, str(_e))
     test("launcher content references sk.py", False, "function failed")
@@ -519,15 +642,15 @@ sys.modules["winreg"] = _FakeWinreg(
 try:
     _install._inject_launcher_path_windows(quiet=True)
     fake_winreg = sys.modules["winreg"]
-    test("windows PATH add avoids duplicate launcher entry with trailing slash",
-         fake_winreg.last_written is None)
+    test("windows PATH add avoids duplicate launcher entry with trailing slash", fake_winreg.last_written is None)
 
     removed_windows = _install._remove_launcher_path_windows(quiet=True)
-    test("windows PATH remove matches launcher entry with trailing slash",
-         removed_windows is True)
-    test("windows PATH remove preserves remaining entries",
-         fake_winreg.path_value == r"C:\Windows\System32",
-         fake_winreg.path_value)
+    test("windows PATH remove matches launcher entry with trailing slash", removed_windows is True)
+    test(
+        "windows PATH remove preserves remaining entries",
+        fake_winreg.path_value == r"C:\Windows\System32",
+        fake_winreg.path_value,
+    )
 finally:
     _install.SK_LAUNCHER_DIR = _orig_sk_dir_windows
     if _orig_winreg is None:
@@ -541,6 +664,7 @@ finally:
 print("\n🌐 Hosted-shell launcher (issue #57)")
 
 import importlib
+
 import browse as _browse
 
 # Redirect _HOSTED_LAUNCHER_DIR to scratch space
@@ -568,6 +692,7 @@ try:
         )
         if os.name != "nt":
             import stat as _stat
+
             mode = os.stat(script).st_mode
             test("POSIX launcher script is executable", bool(mode & _stat.S_IXUSR))
         else:
@@ -709,11 +834,12 @@ test(
 # _create_lnk_via_powershell raises on non-Windows (macOS/Linux env)
 if os.name != "nt":
     try:
-        _browse._create_lnk_via_powershell(
-            _browse._Path("/tmp/test.lnk"), "python.exe", "arg", "desc"
+        _browse._create_lnk_via_powershell(_browse._Path("/tmp/test.lnk"), "python.exe", "arg", "desc")
+        test(
+            "_create_lnk_via_powershell raises RuntimeError on non-Windows",
+            False,
+            "expected RuntimeError but nothing was raised",
         )
-        test("_create_lnk_via_powershell raises RuntimeError on non-Windows", False,
-             "expected RuntimeError but nothing was raised")
     except RuntimeError:
         test("_create_lnk_via_powershell raises RuntimeError on non-Windows", True)
     except Exception as _e:
@@ -794,10 +920,11 @@ test(
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 
-print(f"\n{'='*50}")
+print(f"\n{'=' * 50}")
 print(f"Results: {PASS} passed, {FAIL} failed")
 
 import shutil
+
 try:
     shutil.rmtree(SCRATCH, ignore_errors=True)
 except Exception:
