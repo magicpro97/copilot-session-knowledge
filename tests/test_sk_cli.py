@@ -500,6 +500,22 @@ class TestSkGroupedCommands(unittest.TestCase):
     def test_profile_export(self):
         self._assert_group_routes("profile", "export", "profile-export.py")
 
+    # preset group
+    def test_preset_add(self):
+        self._assert_group_routes("preset", "add", "preset-manager.py", ["lean"])
+
+    def test_preset_remove(self):
+        self._assert_group_routes("preset", "remove", "preset-manager.py", ["lean"])
+
+    def test_preset_list(self):
+        self._assert_group_routes("preset", "list", "preset-manager.py", ["--json"])
+
+    def test_preset_manager_script_exists(self):
+        self.assertTrue(
+            (TOOLS_DIR / "preset-manager.py").exists(),
+            "preset-manager.py not found - sk preset would break",
+        )
+
     # context group
     def test_context_project(self):
         self._assert_group_routes("context", "project", "project-context.py")

@@ -32,7 +32,13 @@ if os.name == "nt":
 
 TOOLS_DIR = Path(__file__).resolve().parent
 PRESETS_DIR = TOOLS_DIR / "presets"
-SESSION_STATE = Path.home() / ".copilot" / "session-state"
+COPILOT_HOME = Path(os.environ.get("COPILOT_HOME", str(Path.home() / ".copilot"))).expanduser()
+SESSION_STATE = COPILOT_HOME / "session-state"
+USER_TEMPLATES_DIR = COPILOT_HOME / "templates"
+PROJECT_PRESETS_SUBDIR = Path(".copilot") / "presets"
+PROJECT_OVERRIDES_SUBDIR = Path(".copilot") / "overrides"
+CORE_TEMPLATE_TOKEN = "{CORE_TEMPLATE}"
+_REQUIRED_PRESET_FIELDS = {"name", "description", "hooks", "workflow_phases"}
 
 # Profile detection: ordered list of (profile_name, indicator_files/dirs)
 # NOTE: build.gradle / build.gradle.kts / Podfile are intentionally absent from
@@ -49,6 +55,7 @@ _PROFILE_INDICATORS: list[tuple[str, list[str]]] = [
 
 # ─── Git helpers ─────────────────────────────────────────────────────────────
 
+
 def find_git_root(start: Path | None = None) -> Path | None:
     current = (start or Path.cwd()).resolve()
     for candidate in [current, *current.parents]:
@@ -61,7 +68,9 @@ def ls_files(repo_root: Path, timeout: int = 10) -> list[str]:
     try:
         result = subprocess.run(
             ["git", "ls-files"],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
             cwd=str(repo_root),
         )
         if result.returncode != 0:
@@ -80,7 +89,10 @@ def get_git_last_commit_date(repo_root: Path) -> str:
     try:
         r = subprocess.run(
             ["git", "log", "-1", "--format=%cI"],
-            capture_output=True, text=True, timeout=5, cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_root),
         )
         if r.returncode == 0:
             return r.stdout.strip()
@@ -94,7 +106,10 @@ def get_git_remote(repo_root: Path) -> str:
     try:
         r = subprocess.run(
             ["git", "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=5, cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_root),
         )
         if r.returncode == 0:
             return r.stdout.strip()
@@ -108,7 +123,10 @@ def get_git_branch(repo_root: Path) -> str:
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=5, cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_root),
         )
         if r.returncode == 0:
             return r.stdout.strip()
@@ -118,6 +136,7 @@ def get_git_branch(repo_root: Path) -> str:
 
 
 # ─── Profile detection ────────────────────────────────────────────────────────
+
 
 def _glob_match_any(name: str, patterns: list[str]) -> bool:
     """Simple glob: support leading '*.' suffix patterns and exact names."""
@@ -158,33 +177,117 @@ def detect_profile(repo_root: Path, files: list[str]) -> str:
     return "default"
 
 
-def load_preset(profile_name: str) -> dict:
-    """Load and return a preset JSON dict. Falls back to default on missing."""
+def _load_json_dict(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _is_full_preset(data: dict | None) -> bool:
+    return isinstance(data, dict) and _REQUIRED_PRESET_FIELDS.issubset(data)
+
+
+def _clone_json(value):
+    return json.loads(json.dumps(value))
+
+
+def _apply_template_strategy(current, spec):
+    if isinstance(spec, dict) and "strategy" in spec:
+        strategy = spec.get("strategy")
+        value = spec.get("value")
+    else:
+        strategy = "replace"
+        value = spec
+
+    if strategy == "replace":
+        return _clone_json(value)
+
+    if strategy == "prepend":
+        if isinstance(current, list) and isinstance(value, list):
+            return _clone_json(value) + _clone_json(current)
+        if isinstance(current, str) and isinstance(value, str):
+            return value + current
+        return current
+
+    if strategy == "append":
+        if isinstance(current, list) and isinstance(value, list):
+            return _clone_json(current) + _clone_json(value)
+        if isinstance(current, str) and isinstance(value, str):
+            return current + value
+        return current
+
+    if strategy == "wrap":
+        if isinstance(current, str) and isinstance(value, str):
+            return value.replace(CORE_TEMPLATE_TOKEN, current)
+        return current
+
+    return current
+
+
+def _apply_preset_layer(base: dict, layer: dict) -> dict:
+    resolved = _clone_json(base)
+    if _is_full_preset(layer):
+        resolved = _clone_json(layer)
+    overrides = layer.get("overrides")
+    if isinstance(overrides, dict):
+        for field, spec in overrides.items():
+            resolved[field] = _apply_template_strategy(resolved.get(field), spec)
+    return resolved
+
+
+def _project_layer_paths(profile_name: str, repo_root: Path | None) -> list[Path]:
+    layer_paths = [USER_TEMPLATES_DIR / f"{profile_name}.json"]
+    if repo_root is not None:
+        layer_paths.extend(
+            [
+                repo_root / PROJECT_PRESETS_SUBDIR / f"{profile_name}.json",
+                repo_root / PROJECT_OVERRIDES_SUBDIR / f"{profile_name}.json",
+            ]
+        )
+    return layer_paths
+
+
+def load_preset(profile_name: str, repo_root: Path | None = None) -> dict:
+    """Load a preset with layered project/user overrides."""
     path = PRESETS_DIR / f"{profile_name}.json"
     if not path.exists():
         path = PRESETS_DIR / "default.json"
-    if not path.exists():
-        return {
+    resolved = _load_json_dict(path)
+    if not resolved:
+        resolved = {
             "name": profile_name,
             "description": "",
             "hooks": [],
             "workflow_phases": ["CLARIFY", "BUILD", "TEST", "COMMIT"],
             "workflow_notes": "",
         }
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+
+    for layer_path in _project_layer_paths(profile_name, repo_root):
+        layer = _load_json_dict(layer_path)
+        if isinstance(layer, dict):
+            resolved = _apply_preset_layer(resolved, layer)
+
+    return resolved if isinstance(resolved, dict) else {}
 
 
-def list_profiles() -> list[str]:
-    """Return all available profile names (filenames without extension)."""
-    if not PRESETS_DIR.exists():
-        return []
-    return sorted(p.stem for p in PRESETS_DIR.glob("*.json"))
+def list_profiles(repo_root: Path | None = None) -> list[str]:
+    """Return all available profile names across core, user, and project layers."""
+    names: set[str] = set()
+    for directory in (PRESETS_DIR, USER_TEMPLATES_DIR):
+        if directory.exists():
+            names.update(p.stem for p in directory.glob("*.json"))
+    if repo_root is not None:
+        for subdir in (PROJECT_PRESETS_SUBDIR, PROJECT_OVERRIDES_SUBDIR):
+            directory = repo_root / subdir
+            if directory.exists():
+                names.update(p.stem for p in directory.glob("*.json"))
+    return sorted(names)
 
 
 # ─── File structure analysis ──────────────────────────────────────────────────
+
 
 def group_files(files: list[str]) -> dict[str, list[str]]:
     groups: dict[str, list[str]] = defaultdict(list)
@@ -208,7 +311,8 @@ def ext_summary(files: list[str], cap: int = 6) -> str:
 def find_test_files(files: list[str]) -> list[str]:
     """Return tracked test-related files (heuristic)."""
     return [
-        f for f in files
+        f
+        for f in files
         if (
             "test" in Path(f).name.lower()
             or "spec" in Path(f).name.lower()
@@ -220,16 +324,32 @@ def find_test_files(files: list[str]) -> list[str]:
 def find_config_files(files: list[str]) -> list[str]:
     """Return well-known config/entrypoint files."""
     important = {
-        "package.json", "pyproject.toml", "setup.py", "requirements.txt",
-        "Makefile", "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
-        ".github", "tsconfig.json", "build.gradle", "build.gradle.kts",
-        "Podfile", "Cargo.toml", "go.mod", "pom.xml",
-        "AGENTS.md", "WORKFLOW.md", "README.md", ".copilot",
+        "package.json",
+        "pyproject.toml",
+        "setup.py",
+        "requirements.txt",
+        "Makefile",
+        "Dockerfile",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        ".github",
+        "tsconfig.json",
+        "build.gradle",
+        "build.gradle.kts",
+        "Podfile",
+        "Cargo.toml",
+        "go.mod",
+        "pom.xml",
+        "AGENTS.md",
+        "WORKFLOW.md",
+        "README.md",
+        ".copilot",
     }
     return [f for f in files if Path(f).name in important or Path(f).parts[0] in important]
 
 
 # ─── Artifact generation ──────────────────────────────────────────────────────
+
 
 def generate_context(
     repo_root: Path,
@@ -277,8 +397,8 @@ def generate_context(
         "",
         "## Identity",
         "",
-        f"| Field | Value |",
-        f"|-------|-------|",
+        "| Field | Value |",
+        "|-------|-------|",
         f"| Repo name | `{repo_name}` |",
         f"| Root | `{repo_root}` |",
         f"| Branch | `{branch}` |" if branch else "",
@@ -399,7 +519,7 @@ def generate_context(
         "",
         "## File Structure",
         "",
-        f"Total: **{len(files)} tracked files** across **{len(groups)} top-level director{'y' if len(groups)==1 else 'ies'}**",
+        f"Total: **{len(files)} tracked files** across **{len(groups)} top-level director{'y' if len(groups) == 1 else 'ies'}**",
         "",
         "| Directory | Files | Extensions |",
         "|-----------|-------|------------|",
@@ -422,6 +542,7 @@ def generate_context(
 
 
 # ─── Session output ───────────────────────────────────────────────────────────
+
 
 def get_session_files_dir() -> Path | None:
     if not SESSION_STATE.exists():
@@ -449,32 +570,28 @@ def resolve_output_path(args_output: str | None) -> Path | None:
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Generate project-context.md — a durable project constitution artifact."
     )
-    parser.add_argument("--stdout", action="store_true",
-                        help="Print context to stdout instead of writing a file.")
-    parser.add_argument("--output", metavar="PATH",
-                        help="Write to an explicit file path.")
-    parser.add_argument("--repo", metavar="PATH",
-                        help="Repository root (defaults to git root of cwd).")
-    parser.add_argument("--profile", metavar="NAME",
-                        help="Force a specific preset profile (overrides auto-detection).")
-    parser.add_argument("--no-write", action="store_true",
-                        help="Dry-run: show the target path without writing.")
-    parser.add_argument("--list-profiles", action="store_true",
-                        help="List available profiles and exit.")
+    parser.add_argument("--stdout", action="store_true", help="Print context to stdout instead of writing a file.")
+    parser.add_argument("--output", metavar="PATH", help="Write to an explicit file path.")
+    parser.add_argument("--repo", metavar="PATH", help="Repository root (defaults to git root of cwd).")
+    parser.add_argument("--profile", metavar="NAME", help="Force a specific preset profile (overrides auto-detection).")
+    parser.add_argument("--no-write", action="store_true", help="Dry-run: show the target path without writing.")
+    parser.add_argument("--list-profiles", action="store_true", help="List available profiles and exit.")
     args = parser.parse_args()
 
     if args.list_profiles:
-        profiles = list_profiles()
+        repo_root = Path(args.repo).resolve() if args.repo else find_git_root()
+        profiles = list_profiles(repo_root)
         if not profiles:
             print("No profiles found in presets/", file=sys.stderr)
             return 1
         print("Available profiles:")
         for p in profiles:
-            preset = load_preset(p)
+            preset = load_preset(p, repo_root)
             desc = preset.get("description", "")
             print(f"  {p:<14} — {desc}")
         return 0
@@ -492,18 +609,17 @@ def main() -> int:
     forced_profile = args.profile is not None
     if forced_profile:
         profile_name = args.profile
-        available = list_profiles()
+        available = list_profiles(repo_root)
         if profile_name not in available:
             print(
-                f"Error: unknown profile '{profile_name}'. "
-                f"Available: {', '.join(available)}",
+                f"Error: unknown profile '{profile_name}'. Available: {', '.join(available)}",
                 file=sys.stderr,
             )
             return 1
     else:
         profile_name = detect_profile(repo_root, files)
 
-    preset = load_preset(profile_name)
+    preset = load_preset(profile_name, repo_root)
     content = generate_context(repo_root, files, preset, profile_name, forced_profile)
 
     if args.stdout:
@@ -513,8 +629,7 @@ def main() -> int:
     out_path = resolve_output_path(args.output)
     if out_path is None:
         print(
-            "Error: no active Copilot session found and no --output given. "
-            "Use --output PATH or --stdout.",
+            "Error: no active Copilot session found and no --output given. Use --output PATH or --stdout.",
             file=sys.stderr,
         )
         return 1

@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
 if os.name == "nt":
     for _s in (sys.stdout, sys.stderr):
         if hasattr(_s, "reconfigure"):
@@ -48,12 +49,16 @@ def test(name: str, condition: bool, detail: str = "") -> None:
         print(f"  ❌ {name}" + (f" — {detail}" if detail else ""))
 
 
-def run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+def run(*args: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """Run install-project-hooks.py with given args."""
     return subprocess.run(
         [sys.executable, str(INSTALLER), *args],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=str(cwd) if cwd else None,
+        env=env,
     )
 
 
@@ -79,6 +84,11 @@ def make_scratch_project(name: str) -> Path:
     return p
 
 
+def write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
 # ─── Setup ───────────────────────────────────────────────────────────────────
 
 SCRATCH.mkdir(parents=True, exist_ok=True)
@@ -97,42 +107,32 @@ result = run("--list-profiles")
 test("--list-profiles exits 0", result.returncode == 0, result.stderr)
 
 for profile_name in ("default", "python", "typescript", "mobile", "fullstack"):
-    test(f"  output mentions '{profile_name}'",
-         profile_name in result.stdout,
-         f"stdout={result.stdout[:200]!r}")
+    test(f"  output mentions '{profile_name}'", profile_name in result.stdout, f"stdout={result.stdout[:200]!r}")
 
 # ─── --list-hooks ────────────────────────────────────────────────────────────
 
 print("\n🪝 --list-hooks")
 result = run("--profile", "python", "--list-hooks")
 test("--list-hooks exits 0", result.returncode == 0, result.stderr)
-test("output mentions dangerous-blocker.py",
-     "dangerous-blocker.py" in result.stdout)
-test("output mentions enforce-tdd-pipeline.py",
-     "enforce-tdd-pipeline.py" in result.stdout)
+test("output mentions dangerous-blocker.py", "dangerous-blocker.py" in result.stdout)
+test("output mentions enforce-tdd-pipeline.py", "enforce-tdd-pipeline.py" in result.stdout)
 
 # ─── Invalid profile ─────────────────────────────────────────────────────────
 
 print("\n❌ Invalid Profile")
 result = run("--profile", "does-not-exist", "--project", str(SCRATCH))
-test("invalid profile exits non-zero", result.returncode != 0,
-     f"rc={result.returncode}")
-test("error message mentions available profiles",
-     "Available:" in result.stdout or "Available:" in result.stderr)
+test("invalid profile exits non-zero", result.returncode != 0, f"rc={result.returncode}")
+test("error message mentions available profiles", "Available:" in result.stdout or "Available:" in result.stderr)
 
 # ─── --dry-run does not create files ─────────────────────────────────────────
 
 print("\n🧪 Dry-Run (no file creation)")
 dry_project = make_scratch_project("dry-run-test")
-result = run("--profile", "default", "--project", str(dry_project),
-             "--workflow", "--dry-run")
+result = run("--profile", "default", "--project", str(dry_project), "--workflow", "--dry-run")
 test("--dry-run exits 0", result.returncode == 0, result.stderr)
-test("no .github/hooks/ created after dry-run",
-     not (dry_project / ".github" / "hooks").exists())
-test("no WORKFLOW.md created after dry-run",
-     not (dry_project / "WORKFLOW.md").exists())
-test("dry-run output mentions [dry-run]",
-     "[dry-run]" in result.stdout)
+test("no .github/hooks/ created after dry-run", not (dry_project / ".github" / "hooks").exists())
+test("no WORKFLOW.md created after dry-run", not (dry_project / "WORKFLOW.md").exists())
+test("dry-run output mentions [dry-run]", "[dry-run]" in result.stdout)
 
 # ─── Install default profile ─────────────────────────────────────────────────
 
@@ -154,54 +154,69 @@ if (hooks_dir / "dangerous-blocker.py").exists():
         blocker_hook,
         'powershell.exe -NoProfile -Command "git push --force-with-lease origin feature/test"',
     )
-    test("allows wrapper -NoProfile with git push --force-with-lease",
-         safe_push.returncode == 0 and "permissionDecision" not in safe_push.stdout,
-         safe_push.stdout + safe_push.stderr)
+    test(
+        "allows wrapper -NoProfile with git push --force-with-lease",
+        safe_push.returncode == 0 and "permissionDecision" not in safe_push.stdout,
+        safe_push.stdout + safe_push.stderr,
+    )
 
     force_push = run_hook(blocker_hook, "git push -f origin feature/test")
-    test("blocks git push -f",
-         force_push.returncode == 0 and "permissionDecision" in force_push.stdout,
-         force_push.stdout + force_push.stderr)
+    test(
+        "blocks git push -f",
+        force_push.returncode == 0 and "permissionDecision" in force_push.stdout,
+        force_push.stdout + force_push.stderr,
+    )
 
     long_force_push = run_hook(blocker_hook, "git push --force origin feature/test")
-    test("blocks git push --force",
-         long_force_push.returncode == 0 and "permissionDecision" in long_force_push.stdout,
-         long_force_push.stdout + long_force_push.stderr)
+    test(
+        "blocks git push --force",
+        long_force_push.returncode == 0 and "permissionDecision" in long_force_push.stdout,
+        long_force_push.stdout + long_force_push.stderr,
+    )
 
     wrapper_force_push = run_hook(
         blocker_hook,
         'powershell.exe -NoProfile -Command "git push -f origin feature/test"',
     )
-    test("blocks wrapper git push -f",
-         wrapper_force_push.returncode == 0 and "permissionDecision" in wrapper_force_push.stdout,
-         wrapper_force_push.stdout + wrapper_force_push.stderr)
+    test(
+        "blocks wrapper git push -f",
+        wrapper_force_push.returncode == 0 and "permissionDecision" in wrapper_force_push.stdout,
+        wrapper_force_push.stdout + wrapper_force_push.stderr,
+    )
 
     wrapper_long_force_last = run_hook(
         blocker_hook,
         'powershell.exe -NoProfile -Command "git push origin feature/test --force"',
     )
-    test("blocks wrapper git push --force as last arg",
-         wrapper_long_force_last.returncode == 0 and "permissionDecision" in wrapper_long_force_last.stdout,
-         wrapper_long_force_last.stdout + wrapper_long_force_last.stderr)
+    test(
+        "blocks wrapper git push --force as last arg",
+        wrapper_long_force_last.returncode == 0 and "permissionDecision" in wrapper_long_force_last.stdout,
+        wrapper_long_force_last.stdout + wrapper_long_force_last.stderr,
+    )
 
     quoted_long_force = run_hook(blocker_hook, "git push 'origin' '--force'")
-    test("blocks quoted git push --force",
-         quoted_long_force.returncode == 0 and "permissionDecision" in quoted_long_force.stdout,
-         quoted_long_force.stdout + quoted_long_force.stderr)
+    test(
+        "blocks quoted git push --force",
+        quoted_long_force.returncode == 0 and "permissionDecision" in quoted_long_force.stdout,
+        quoted_long_force.stdout + quoted_long_force.stderr,
+    )
 
     force_with_lease = run_hook(blocker_hook, "git push --force-with-lease origin feature/test")
-    test("allows git push --force-with-lease",
-         force_with_lease.returncode == 0 and "permissionDecision" not in force_with_lease.stdout,
-         force_with_lease.stdout + force_with_lease.stderr)
+    test(
+        "allows git push --force-with-lease",
+        force_with_lease.returncode == 0 and "permissionDecision" not in force_with_lease.stdout,
+        force_with_lease.stdout + force_with_lease.stderr,
+    )
 
     force_refspec = run_hook(blocker_hook, "git push origin +HEAD:feature/test")
-    test("blocks git push +refspec",
-         force_refspec.returncode == 0 and "permissionDecision" in force_refspec.stdout,
-         force_refspec.stdout + force_refspec.stderr)
+    test(
+        "blocks git push +refspec",
+        force_refspec.returncode == 0 and "permissionDecision" in force_refspec.stdout,
+        force_refspec.stdout + force_refspec.stderr,
+    )
 
 # default profile does not include tdd hook
-test("enforce-tdd-pipeline.py NOT installed (not in default)",
-     not (hooks_dir / "enforce-tdd-pipeline.py").exists())
+test("enforce-tdd-pipeline.py NOT installed (not in default)", not (hooks_dir / "enforce-tdd-pipeline.py").exists())
 
 # ─── Install python profile with --workflow ───────────────────────────────────
 
@@ -211,8 +226,14 @@ result = run("--profile", "python", "--project", str(py_project), "--workflow")
 test("install exits 0", result.returncode == 0, result.stderr)
 
 py_hooks = py_project / ".github" / "hooks"
-for hook in ("dangerous-blocker.py", "secret-detector.py", "test-reminder.py",
-             "build-reminder.py", "enforce-tdd-pipeline.py", "commit-gate.py"):
+for hook in (
+    "dangerous-blocker.py",
+    "secret-detector.py",
+    "test-reminder.py",
+    "build-reminder.py",
+    "enforce-tdd-pipeline.py",
+    "commit-gate.py",
+):
     test(f"{hook} installed", (py_hooks / hook).exists())
 
 workflow_md = py_project / "WORKFLOW.md"
@@ -229,9 +250,12 @@ if workflow_md.exists():
 print("\n🔁 Idempotency (re-run on already-installed project)")
 result2 = run("--profile", "python", "--project", str(py_project), "--workflow")
 test("second install exits 0", result2.returncode == 0, result2.stderr)
-test("second run reports no changes needed or already-up-to-date",
-     "No changes needed" in result2.stdout or "already up to date" in result2.stdout
-     or "already exists" in result2.stdout)
+test(
+    "second run reports no changes needed or already-up-to-date",
+    "No changes needed" in result2.stdout
+    or "already up to date" in result2.stdout
+    or "already exists" in result2.stdout,
+)
 
 # ─── Install mobile profile ───────────────────────────────────────────────────
 
@@ -265,19 +289,80 @@ if blocker_dst.exists():
     # Re-run WITHOUT --force — should skip the modified file.
     result2 = run("--profile", "default", "--project", str(preserve_project))
     test("re-run without --force exits 0", result2.returncode == 0, result2.stderr)
-    test("user-modified file is preserved (content unchanged)",
-         "USER CUSTOMISATION" in blocker_dst.read_text(encoding="utf-8"),
-         "file was overwritten without --force")
-    test("output warns about user-modified file",
-         "user-modified" in result2.stdout or "skipping" in result2.stdout,
-         f"stdout={result2.stdout[:300]!r}")
+    test(
+        "user-modified file is preserved (content unchanged)",
+        "USER CUSTOMISATION" in blocker_dst.read_text(encoding="utf-8"),
+        "file was overwritten without --force",
+    )
+    test(
+        "output warns about user-modified file",
+        "user-modified" in result2.stdout or "skipping" in result2.stdout,
+        f"stdout={result2.stdout[:300]!r}",
+    )
 
     # Re-run WITH --force — should overwrite the file.
     result3 = run("--profile", "default", "--project", str(preserve_project), "--force")
     test("re-run with --force exits 0", result3.returncode == 0, result3.stderr)
-    test("--force overwrites user-modified file (customisation gone)",
-         "USER CUSTOMISATION" not in blocker_dst.read_text(encoding="utf-8"),
-         "file still contains user customisation after --force")
+    test(
+        "--force overwrites user-modified file (customisation gone)",
+        "USER CUSTOMISATION" not in blocker_dst.read_text(encoding="utf-8"),
+        "file still contains user customisation after --force",
+    )
+
+# ─── Layered profile resolution ───────────────────────────────────────────────
+
+print("\n🧩 Layered Profile Resolution")
+
+layer_home = SCRATCH / "layered-home"
+layer_project = make_scratch_project("layered-profile")
+write_json(
+    layer_home / "templates" / "default.json",
+    {
+        "overrides": {
+            "hooks": {
+                "strategy": "append",
+                "value": ["docs-reminder.py"],
+            }
+        }
+    },
+)
+write_json(
+    layer_project / ".copilot" / "presets" / "default.json",
+    {
+        "overrides": {
+            "hooks": {
+                "strategy": "prepend",
+                "value": ["build-reminder.py"],
+            }
+        }
+    },
+)
+write_json(
+    layer_project / ".copilot" / "overrides" / "default.json",
+    {
+        "overrides": {
+            "hooks": {
+                "strategy": "append",
+                "value": ["commit-gate.py"],
+            }
+        }
+    },
+)
+layer_env = os.environ.copy()
+layer_env["COPILOT_HOME"] = str(layer_home)
+
+result = run("--profile", "default", "--project", str(layer_project), env=layer_env)
+test("layered install exits 0", result.returncode == 0, result.stderr)
+
+layer_hooks = layer_project / ".github" / "hooks"
+for hook_name in (
+    "build-reminder.py",
+    "dangerous-blocker.py",
+    "secret-detector.py",
+    "docs-reminder.py",
+    "commit-gate.py",
+):
+    test(f"{hook_name} installed from layered resolution", (layer_hooks / hook_name).exists())
 
 # ─── Cleanup scratch directory ────────────────────────────────────────────────
 
