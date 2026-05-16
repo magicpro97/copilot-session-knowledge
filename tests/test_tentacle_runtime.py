@@ -1860,6 +1860,120 @@ class TestCmdBundle(unittest.TestCase):
         self.assertIn("manifest.json", out)
 
 
+class TestDispatchReviewerCommand(unittest.TestCase):
+    """Tests for the fresh-context reviewer dispatch surface."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "dispatch_reviewer_tests"
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.tentacle_dir = make_tentacle("issue-107-reviewer", self.base, desc="Review the diff only")
+        self.meta_path = self.tentacle_dir / "meta.json"
+        self.worktree = self.base / "reviewer-worktree"
+        self.worktree.mkdir(parents=True, exist_ok=True)
+        meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
+        meta["worktree"] = {"prepared": True, "path": str(self.worktree), "reused": True}
+        self.meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        (self.tentacle_dir / "handoff.md").write_text(
+            "STATUS: DONE\n\nImplementation reasoning secret.\nChanged: src/foo.py\n",
+            encoding="utf-8",
+        )
+
+        self.fake_root = self.base / "fake_root"
+        step_dir = self.fake_root / ".github" / "steps"
+        step_dir.mkdir(parents=True, exist_ok=True)
+        (step_dir / "issue-107-fresh-context-review-pattern.md").write_text(
+            "# Steps\n\nSpec guidance here.\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self):
+        if SCRATCH_DIR.exists():
+            _rmtree(SCRATCH_DIR)
+
+    def _args(self, output="prompt"):
+        return fake_args(
+            name="issue-107-reviewer",
+            agent_type="code-review",
+            model="claude-sonnet-4.6",
+            output=output,
+        )
+
+    def test_dispatch_reviewer_creates_minimal_bundle_without_handoff_leakage(self):
+        captured = []
+        fake_diff = "diff --git a/src/foo.py b/src/foo.py\n+print('review me')\n"
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "find_git_root", return_value=self.fake_root):
+                with patch.object(T, "_reviewer_collect_diff", return_value=(fake_diff, str(self.worktree))):
+                    with patch(
+                        "builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))
+                    ):
+                        T.cmd_dispatch_reviewer(self._args())
+
+        bundle_dir = self.tentacle_dir / T.REVIEWER_BUNDLE_DIRNAME
+        self.assertTrue((bundle_dir / "review-context.md").exists())
+        self.assertTrue((bundle_dir / "diff.patch").exists())
+        self.assertTrue((bundle_dir / "spec.md").exists())
+        self.assertTrue((bundle_dir / T.REVIEWER_FINDINGS_FILENAME).exists())
+        self.assertFalse((bundle_dir / "session-metadata.md").exists())
+
+        review_context = (bundle_dir / "review-context.md").read_text(encoding="utf-8")
+        spec_text = (bundle_dir / "spec.md").read_text(encoding="utf-8")
+        findings_text = (bundle_dir / T.REVIEWER_FINDINGS_FILENAME).read_text(encoding="utf-8")
+        self.assertIn("Review the diff only", review_context)
+        self.assertNotIn("Implementation reasoning secret", review_context)
+        self.assertIn("Spec guidance here.", spec_text)
+        self.assertIn("SAFE_TO_MERGE: PENDING", findings_text)
+
+        meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
+        self.assertEqual(meta["reviewer"]["bundle_path"], str(bundle_dir))
+        self.assertEqual(meta["reviewer"]["findings_path"], str(bundle_dir / T.REVIEWER_FINDINGS_FILENAME))
+
+        combined = "\n".join(captured)
+        self.assertIn("SAFE_TO_MERGE: YES|NO", combined)
+        self.assertIn("### BLOCKERS", combined)
+        self.assertIn("### WARNINGS", combined)
+        self.assertIn("implementation handoffs", combined)
+
+    def test_dispatch_reviewer_json_output_contains_paths_and_contract(self):
+        fake_diff = "diff --git a/src/foo.py b/src/foo.py\n+print('review me')\n"
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "find_git_root", return_value=self.fake_root):
+                with patch.object(T, "_reviewer_collect_diff", return_value=(fake_diff, str(self.worktree))):
+                    import io
+                    from contextlib import redirect_stdout
+
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        T.cmd_dispatch_reviewer(self._args(output="json"))
+
+        data = json.loads(buf.getvalue().strip())
+        self.assertEqual(data["tentacle"], "issue-107-reviewer")
+        self.assertEqual(data["agent_type"], "code-review")
+        self.assertEqual(data["diff_source"], str(self.worktree))
+        self.assertIn("bundle_path", data)
+        self.assertIn("findings_path", data)
+        self.assertIn("SAFE_TO_MERGE: YES|NO", data["prompt"])
+        self.assertEqual(data["result_contract"]["blockers_heading"], "### BLOCKERS")
+
+    def test_dispatch_reviewer_cli_dispatch_via_main_parser(self):
+        fake_diff = "diff --git a/src/foo.py b/src/foo.py\n+print('review me')\n"
+        argv = ["tentacle.py", "dispatch-reviewer", "issue-107-reviewer", "--output", "json"]
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "find_git_root", return_value=self.fake_root):
+                with patch.object(T, "_reviewer_collect_diff", return_value=(fake_diff, str(self.worktree))):
+                    import io
+                    from contextlib import redirect_stdout
+
+                    buf = io.StringIO()
+                    with patch.object(sys, "argv", argv):
+                        with redirect_stdout(buf):
+                            T.main()
+
+        data = json.loads(buf.getvalue().strip())
+        self.assertEqual(data["tentacle"], "issue-107-reviewer")
+        self.assertEqual(data["agent_type"], "code-review")
+
+
 class TestSwarmBundleFlag(unittest.TestCase):
     """Tests for default runtime-bundle behavior in swarm/dispatch."""
 
@@ -5294,6 +5408,19 @@ class TestReviewLoopCommand(unittest.TestCase):
     def _read_meta(self):
         return json.loads(self.meta_path.read_text(encoding="utf-8"))
 
+    def _write_reviewer_findings(self, text: str):
+        bundle_dir = self.tentacle_dir / T.REVIEWER_BUNDLE_DIRNAME
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        findings_path = bundle_dir / T.REVIEWER_FINDINGS_FILENAME
+        findings_path.write_text(textwrap.dedent(text).strip() + "\n", encoding="utf-8")
+        meta = self._read_meta()
+        meta["reviewer"] = {
+            "bundle_path": str(bundle_dir),
+            "findings_path": str(findings_path),
+        }
+        self.meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        return findings_path
+
     def _args(self, verify_command=None, max_iterations=5):
         return fake_args(
             name="review-loop-test",
@@ -5394,6 +5521,74 @@ class TestReviewLoopCommand(unittest.TestCase):
         self.assertEqual(history_entry["classification"], "FLAKY")
         self.assertEqual(history_entry["outcome"], "passed")
         self.assertIn("FLAKY", output)
+
+    def test_review_loop_keeps_safe_reviewer_warnings_non_blocking(self):
+        self._write_reviewer_findings(
+            """
+            SAFE_TO_MERGE: YES
+
+            ### BLOCKERS
+            - None
+
+            ### WARNINGS
+            - Consider tightening the reviewer wording
+            """
+        )
+
+        output, _ = self._run_review_loop(self._args("echo reviewer-safe"))
+        history_entry = self._read_meta()["review_loop"]["history"][-1]
+        self.assertEqual(history_entry["classification"], "PASS")
+        self.assertTrue(history_entry["reviewer_findings"]["safe_to_merge"])
+        self.assertEqual(
+            history_entry["reviewer_findings"]["warnings"],
+            ["Consider tightening the reviewer wording"],
+        )
+        self.assertIn("REVIEWER WARNINGS", output)
+
+    def test_review_loop_turns_reviewer_blockers_into_resolver(self):
+        shared_worktree = self.base / "shared-worktree"
+        shared_worktree.mkdir()
+        meta = self._read_meta()
+        meta["worktree"] = {"prepared": True, "path": str(shared_worktree), "reused": True}
+        self.meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        self._write_reviewer_findings(
+            """
+            SAFE_TO_MERGE: NO
+
+            ### BLOCKERS
+            - Retry-budget handling can still hide a failing reviewer gate
+
+            ### WARNINGS
+            - Keep the findings file template terse
+            """
+        )
+
+        output, mock_swarm = self._run_review_loop(
+            self._args("echo reviewer-pass"),
+            expect_exit=1,
+            patch_swarm=True,
+        )
+
+        history_entry = self._read_meta()["review_loop"]["history"][-1]
+        self.assertEqual(history_entry["classification"], "REGRESSION")
+        self.assertEqual(
+            history_entry["reviewer_findings"]["blockers"],
+            ["Retry-budget handling can still hide a failing reviewer gate"],
+        )
+        resolver_name = history_entry["resolver_tentacle"]
+        resolver_dir = self.base / resolver_name
+        self.assertTrue(resolver_dir.exists())
+        resolver_context = (resolver_dir / "CONTEXT.md").read_text(encoding="utf-8")
+        resolver_meta = json.loads((resolver_dir / "meta.json").read_text(encoding="utf-8"))
+        self.assertIn("## Reviewer Blockers", resolver_context)
+        self.assertIn("Retry-budget handling can still hide a failing reviewer gate", resolver_context)
+        self.assertIn("## Reviewer Warnings", resolver_context)
+        self.assertEqual(
+            resolver_meta["reviewer_blockers"],
+            ["Retry-budget handling can still hide a failing reviewer gate"],
+        )
+        self.assertEqual(mock_swarm.call_count, 1)
+        self.assertIn("fresh-context reviewer", output)
 
     def test_review_loop_build_error_creates_resolver_tentacle_with_inherited_worktree(self):
         shared_worktree = self.base / "shared-worktree"

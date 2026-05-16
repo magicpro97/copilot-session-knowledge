@@ -21,6 +21,7 @@ Usage:
     python3 ~/.copilot/tools/tentacle.py next-step <name> [--briefing] [--no-checkpoint] [--all] [--format text|json]
     python3 ~/.copilot/tools/tentacle.py complete <name> [--no-learn]
     python3 ~/.copilot/tools/tentacle.py review-loop <name> [<verify-command>] [--max-iterations N] [--timeout SECONDS]
+    python3 ~/.copilot/tools/tentacle.py dispatch-reviewer <name> [--agent-type <type>] [--model <model>] [--output prompt|json]
     python3 ~/.copilot/tools/tentacle.py delete <name>
     python3 ~/.copilot/tools/tentacle.py goal init --title <title> [--desc <desc>] [--force] [--max-iterations N] [--max-tentacles N] [--timeout MINUTES]
     python3 ~/.copilot/tools/tentacle.py goal create --title <title> [--desc <desc>] [--force] [--max-iterations N] [--max-tentacles N] [--timeout MINUTES] [--criterion JSON] ...
@@ -49,6 +50,7 @@ Environment:
 """
 
 import argparse
+import difflib
 import hashlib
 import hmac
 import json
@@ -123,6 +125,11 @@ REVIEW_LOOP_TEST_FAILURE_PATTERNS: tuple[str, ...] = (
     r"\bassert\b",
     r"\bexpected\b",
 )
+REVIEWER_BUNDLE_DIRNAME = "reviewer-bundle"
+REVIEWER_FINDINGS_FILENAME = "reviewer-findings.md"
+REVIEWER_SAFE_TRUE: frozenset[str] = frozenset({"YES", "TRUE"})
+REVIEWER_SAFE_FALSE: frozenset[str] = frozenset({"NO", "FALSE"})
+REVIEWER_PENDING_VALUES: frozenset[str] = frozenset({"PENDING", "UNKNOWN", "TBD"})
 
 # ---------------------------------------------------------------------------
 # Goal state model constants
@@ -648,14 +655,17 @@ def _bundle_enabled(args) -> bool:
     return bool(getattr(args, "bundle", False))
 
 
-def _scope_summary(meta: dict) -> str:
+def _scope_items(meta: dict) -> list[str]:
     raw_scope = meta.get("scope") or []
     if isinstance(raw_scope, str):
-        items = [raw_scope]
+        return [raw_scope.strip()] if raw_scope.strip() else []
     elif isinstance(raw_scope, list):
-        items = [str(item) for item in raw_scope if str(item).strip()]
-    else:
-        items = []
+        return [str(item) for item in raw_scope if str(item).strip()]
+    return []
+
+
+def _scope_summary(meta: dict) -> str:
+    items = _scope_items(meta)
     return ", ".join(items[:6]) if items else "See bundle/session-metadata.md"
 
 
@@ -1517,6 +1527,347 @@ def _build_runtime_bundle(
     return bundle_dir
 
 
+def _reviewer_bundle_dir(tentacle_dir: Path) -> Path:
+    """Return the per-tentacle bundle directory used for fresh-context reviews."""
+    return tentacle_dir / REVIEWER_BUNDLE_DIRNAME
+
+
+def _reviewer_findings_path(tentacle_dir: Path, meta: dict | None = None) -> Path:
+    """Return the persisted reviewer findings path for a tentacle."""
+    reviewer_meta = meta.get("reviewer") if isinstance(meta, dict) else None
+    raw_path = str((reviewer_meta or {}).get("findings_path") or "").strip()
+    if raw_path:
+        return Path(raw_path)
+    return _reviewer_bundle_dir(tentacle_dir) / REVIEWER_FINDINGS_FILENAME
+
+
+def _reviewer_step_paths(name: str, git_root: Path | None) -> list[Path]:
+    """Discover issue/task step files that belong to this tentacle when present."""
+    if not git_root:
+        return []
+    step_dir = git_root / ".github" / "steps"
+    if not step_dir.is_dir():
+        return []
+
+    patterns: list[str] = []
+    issue_match = re.search(r"issue-(\d+)", name)
+    if issue_match:
+        patterns.append(f"issue-{issue_match.group(1)}-*.md")
+    patterns.append(f"{name}.md")
+
+    seen: set[Path] = set()
+    paths: list[Path] = []
+    for pattern in patterns:
+        for path in sorted(step_dir.glob(pattern)):
+            if path.is_file() and path not in seen:
+                seen.add(path)
+                paths.append(path)
+    return paths
+
+
+def _reviewer_render_spec_text(name: str, git_root: Path | None) -> tuple[str, list[str]]:
+    """Render issue-specific step/spec guidance for the reviewer bundle."""
+    paths = _reviewer_step_paths(name, git_root)
+    if not paths:
+        return (
+            "# Reviewer Spec Guidance\n\nNone — no issue-specific step/spec file was found under `.github/steps/`.\n",
+            [],
+        )
+
+    rendered: list[str] = ["# Reviewer Spec Guidance", ""]
+    rel_paths: list[str] = []
+    for path in paths[:3]:
+        rel = str(path.relative_to(git_root)) if git_root else path.name
+        rel_paths.append(rel)
+        rendered.append(f"## {rel}")
+        rendered.append("")
+        rendered.append(path.read_text(encoding="utf-8", errors="replace").strip() or "None")
+        rendered.append("")
+    return "\n".join(rendered).rstrip() + "\n", rel_paths
+
+
+def _reviewer_worktree_path(meta: dict) -> Path:
+    """Resolve the prepared tentacle worktree used as the reviewer diff source."""
+    worktree = meta.get("worktree") or {}
+    worktree_path = str(worktree.get("path") or "").strip()
+    if not worktree.get("prepared") or not worktree_path:
+        raise RuntimeError("dispatch-reviewer requires a prepared tentacle worktree.")
+    path = Path(worktree_path)
+    if not path.exists():
+        raise RuntimeError(f"dispatch-reviewer cannot find the prepared worktree: {worktree_path}")
+    return path
+
+
+def _reviewer_collect_untracked_patch(worktree_path: Path, scope: list[str]) -> str:
+    """Render synthetic unified diffs for untracked files in scope."""
+    cmd = ["git", "-C", str(worktree_path), "ls-files", "--others", "--exclude-standard"]
+    if scope:
+        cmd.extend(["--", *scope])
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "dispatch-reviewer could not list untracked files.")
+
+    patches: list[str] = []
+    for rel_path in [line.strip() for line in result.stdout.splitlines() if line.strip()]:
+        file_path = worktree_path / rel_path
+        if not file_path.is_file():
+            continue
+        rel_git = rel_path.replace("\\", "/")
+        content = file_path.read_text(encoding="utf-8", errors="replace")
+        diff_lines = list(
+            difflib.unified_diff(
+                [],
+                content.splitlines(),
+                fromfile="/dev/null",
+                tofile=f"b/{rel_git}",
+                lineterm="",
+            )
+        )
+        if not diff_lines:
+            diff_lines = ["--- /dev/null", f"+++ b/{rel_git}"]
+        patches.append(
+            "\n".join(
+                [
+                    f"diff --git a/{rel_git} b/{rel_git}",
+                    "new file mode 100644",
+                    *diff_lines,
+                ]
+            )
+        )
+    return "\n\n".join(patches).strip()
+
+
+def _reviewer_collect_diff(meta: dict) -> tuple[str, str]:
+    """Collect the tentacle-scoped diff shown to the fresh-context reviewer."""
+    worktree_path = _reviewer_worktree_path(meta)
+    scope = _scope_items(meta)
+    cmd = ["git", "-C", str(worktree_path), "diff", "--no-color", "--"]
+    if scope:
+        cmd.extend(scope)
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "dispatch-reviewer could not capture the scoped diff.")
+
+    diff_text = result.stdout.strip()
+    untracked_patch = _reviewer_collect_untracked_patch(worktree_path, scope)
+    if untracked_patch:
+        diff_text = f"{diff_text}\n\n{untracked_patch}".strip()
+    if not diff_text:
+        raise RuntimeError("dispatch-reviewer found no scoped diff in the prepared worktree.")
+    return diff_text.rstrip() + "\n", str(worktree_path)
+
+
+def _reviewer_findings_template() -> str:
+    """Return the template written for reviewer findings capture."""
+    return textwrap.dedent("""\
+        SAFE_TO_MERGE: PENDING
+
+        ### BLOCKERS
+        - None
+
+        ### WARNINGS
+        - None
+        """)
+
+
+def _extract_markdown_section(text: str, heading: str) -> str | None:
+    """Extract a markdown section body keyed by a ``### <heading>`` marker."""
+    pattern = re.compile(
+        rf"^###\s+{re.escape(heading)}\s*$\n(?P<body>.*?)(?=^###\s+\S|\Z)",
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    match = pattern.search(text or "")
+    if not match:
+        return None
+    return match.group("body").strip()
+
+
+def _reviewer_parse_findings(text: str) -> dict | None:
+    """Parse the structured reviewer output contract from markdown text."""
+    if not text:
+        return None
+    safe_match = re.search(r"^\s*SAFE_TO_MERGE\s*:\s*(.+?)\s*$", text, flags=re.MULTILINE)
+    if not safe_match:
+        return None
+
+    safe_value = safe_match.group(1).strip().upper()
+    if safe_value in REVIEWER_PENDING_VALUES:
+        return None
+    if safe_value not in REVIEWER_SAFE_TRUE | REVIEWER_SAFE_FALSE:
+        return None
+
+    blockers = [
+        item for item in _parse_bullet_list(_extract_markdown_section(text, "BLOCKERS") or "") if item.lower() != "none"
+    ]
+    warnings = [
+        item for item in _parse_bullet_list(_extract_markdown_section(text, "WARNINGS") or "") if item.lower() != "none"
+    ]
+    return {
+        "safe_to_merge": safe_value in REVIEWER_SAFE_TRUE and not blockers,
+        "safe_value": safe_value,
+        "blockers": blockers,
+        "warnings": warnings,
+    }
+
+
+def _reviewer_load_findings(tentacle_dir: Path, meta: dict) -> dict | None:
+    """Load reviewer findings when the structured file has been filled in."""
+    findings_path = _reviewer_findings_path(tentacle_dir, meta)
+    if not findings_path.is_file():
+        return None
+
+    findings_text = findings_path.read_text(encoding="utf-8", errors="replace")
+    parsed = _reviewer_parse_findings(findings_text)
+    if not parsed:
+        return None
+
+    reviewer_meta = meta.get("reviewer") or {}
+    bundle_path = str(reviewer_meta.get("bundle_path") or findings_path.parent)
+    parsed["findings_path"] = str(findings_path)
+    parsed["bundle_path"] = bundle_path
+    parsed["raw_text"] = findings_text
+    return parsed
+
+
+def _build_reviewer_bundle(tentacle_dir: Path, name: str, meta: dict) -> dict:
+    """Materialize the minimal bundle used for fresh-context reviewer dispatch."""
+    bundle_dir = _reviewer_bundle_dir(tentacle_dir)
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    git_root = find_git_root()
+    diff_text, diff_source = _reviewer_collect_diff(meta)
+    spec_text, spec_sources = _reviewer_render_spec_text(name, git_root)
+    scope_lines = [f"- `{path}`" for path in _scope_items(meta)] or ["- None recorded"]
+
+    context_path = tentacle_dir / "CONTEXT.md"
+    context_text = ""
+    if context_path.exists():
+        context_text = context_path.read_text(encoding="utf-8", errors="replace").strip()
+    if not context_text:
+        context_text = meta.get("description") or "No task context recorded."
+
+    review_context = (
+        textwrap.dedent(f"""\
+        # Fresh Context Review: {name}
+
+        Review only the current tentacle diff. Do **not** read implementation handoffs, prior reasoning, or plan files for this review.
+
+        ## Diff Source
+        - `{diff_source}`
+
+        ## Scope
+        {chr(10).join(scope_lines)}
+
+        ## Task Context
+        {context_text}
+
+        ## Review Output Contract
+        - `SAFE_TO_MERGE: YES|NO`
+        - `### BLOCKERS`
+        - `### WARNINGS`
+
+        ## Review-loop Integration
+        - `SAFE_TO_MERGE: YES` and no blockers => the lane may continue.
+        - `BLOCKERS` => review-loop converts them into actionable follow-up context.
+        - `WARNINGS` => preserved but non-blocking.
+        """).rstrip()
+        + "\n"
+    )
+
+    review_context_path = bundle_dir / "review-context.md"
+    review_context_path.write_text(review_context, encoding="utf-8")
+
+    diff_path = bundle_dir / "diff.patch"
+    diff_path.write_text(diff_text, encoding="utf-8")
+
+    spec_path = bundle_dir / "spec.md"
+    spec_path.write_text(spec_text, encoding="utf-8")
+
+    findings_path = bundle_dir / REVIEWER_FINDINGS_FILENAME
+    if not findings_path.exists() or not findings_path.read_text(encoding="utf-8", errors="replace").strip():
+        findings_path.write_text(_reviewer_findings_template(), encoding="utf-8")
+
+    manifest = {
+        "tentacle": name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "diff_source": diff_source,
+        "scope": _scope_items(meta),
+        "artifacts": {
+            "review_context": {"file": review_context_path.name},
+            "diff": {"file": diff_path.name, "populated": True},
+            "spec": {"file": spec_path.name, "sources": spec_sources, "populated": bool(spec_sources)},
+            "findings": {
+                "file": findings_path.name,
+                "populated": _reviewer_parse_findings(findings_path.read_text(encoding="utf-8", errors="replace"))
+                is not None,
+            },
+        },
+    }
+    manifest_path = bundle_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    return {
+        "bundle_path": str(bundle_dir),
+        "manifest_path": str(manifest_path),
+        "review_context_path": str(review_context_path),
+        "diff_path": str(diff_path),
+        "spec_path": str(spec_path),
+        "findings_path": str(findings_path),
+        "diff_source": diff_source,
+        "spec_sources": spec_sources,
+    }
+
+
+def _render_dispatch_reviewer_prompt(name: str, bundle_info: dict) -> str:
+    """Render the reviewer-specific dispatch prompt."""
+    findings_path = bundle_info["findings_path"]
+    return textwrap.dedent(f"""\
+        ## Fresh-context reviewer: {name}
+
+        Read only these files:
+        1. `{bundle_info["review_context_path"]}`
+        2. `{bundle_info["diff_path"]}`
+        3. `{bundle_info["spec_path"]}`
+        4. `{findings_path}`
+
+        Do **not** read implementation handoffs, prior reasoning, plan files, or full runtime bundles for this review.
+        Do **not** edit code. If your runtime allows file edits, update only `{findings_path}`.
+        If your runtime is read-only, return the exact structure below in chat so the orchestrator can persist it verbatim.
+
+        Return exactly this structure:
+        SAFE_TO_MERGE: YES|NO
+
+        ### BLOCKERS
+        - None
+
+        ### WARNINGS
+        - None
+
+        Review rules:
+        - Surface only genuine bugs, security issues, logic errors, or regression risks.
+        - Use `BLOCKERS` only for must-fix merge blockers.
+        - Use `WARNINGS` for non-blocking concerns.
+        - If there are no blockers, set `SAFE_TO_MERGE: YES`.
+
+        Review-loop integration:
+        - `SAFE_TO_MERGE: YES` and no blockers => the lane may continue.
+        - `BLOCKERS` => review-loop turns them into actionable follow-up context.
+        - `WARNINGS` => visible but non-blocking.
+        """).strip()
+
+
 # ---------------------------------------------------------------------------
 # Git worktree helpers
 # ---------------------------------------------------------------------------
@@ -1866,6 +2217,24 @@ def cmd_verify(args) -> None:
         sys.exit(exit_code if exit_code > 0 else 1)
 
 
+def _require_done_handoff(tentacle_dir: Path, command_name: str) -> str:
+    """Return the latest handoff content after enforcing a DONE status."""
+    handoff_path = tentacle_dir / "handoff.md"
+    if not handoff_path.exists():
+        print(f"ERROR: {command_name} requires a DONE handoff before running.", file=sys.stderr)
+        sys.exit(1)
+
+    handoff_content = handoff_path.read_text(encoding="utf-8")
+    handoff_status = _parse_handoff_status(handoff_content)
+    if handoff_status != "DONE":
+        print(
+            f"ERROR: {command_name} requires the latest handoff status to be DONE (found: {handoff_status or 'None'}).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return handoff_content
+
+
 def _review_loop_read_output(log_path: str | None) -> str:
     """Best-effort read of a verification log file."""
     if not log_path:
@@ -2045,13 +2414,14 @@ def _review_loop_create_resolver_tentacle(
     verification_command: str,
     failure_excerpt: str,
     actionable_iteration: int,
+    reviewer_findings: dict | None = None,
 ) -> str:
     """Create a follow-up blocker-resolver tentacle that inherits parent scope/worktree."""
     resolver_name = _review_loop_next_resolver_name(parent_name, tentacles)
     resolver_dir = tentacles / resolver_name
     resolver_dir.mkdir(parents=True, exist_ok=False)
 
-    parent_scope = [str(item).strip() for item in parent_meta.get("scope") or [] if str(item).strip()]
+    parent_scope = _scope_items(parent_meta)
     desc = f"Resolve {classification} from review-loop for {parent_name}"
     context_lines = [
         f"# {resolver_name}",
@@ -2074,6 +2444,12 @@ def _review_loop_create_resolver_tentacle(
     if parent_scope:
         context_lines.extend(["", "## Scope", ""])
         context_lines.extend([f"- `{path}`" for path in parent_scope])
+    if reviewer_findings and reviewer_findings.get("blockers"):
+        context_lines.extend(["", "## Reviewer Blockers", ""])
+        context_lines.extend([f"- {item}" for item in reviewer_findings["blockers"]])
+    if reviewer_findings and reviewer_findings.get("warnings"):
+        context_lines.extend(["", "## Reviewer Warnings", ""])
+        context_lines.extend([f"- {item}" for item in reviewer_findings["warnings"]])
     context_lines.extend(
         [
             "",
@@ -2136,6 +2512,11 @@ def _review_loop_create_resolver_tentacle(
         "review_loop_failure_excerpt": failure_excerpt,
         "review_loop_iteration": actionable_iteration,
     }
+    if reviewer_findings:
+        resolver_meta["reviewer_blockers"] = list(reviewer_findings.get("blockers") or [])
+        resolver_meta["reviewer_warnings"] = list(reviewer_findings.get("warnings") or [])
+        if reviewer_findings.get("findings_path"):
+            resolver_meta["reviewer_findings_path"] = reviewer_findings["findings_path"]
     goal_id = parent_meta.get("goal_id")
     iteration = parent_meta.get("goal_iteration") or parent_meta.get("iteration")
     if goal_id:
@@ -2178,6 +2559,102 @@ def _review_loop_dispatch_resolver(args, resolver_name: str) -> None:
     cmd_swarm(dispatch_args)
 
 
+def _review_loop_handle_reviewer_findings(
+    *,
+    args,
+    tentacles: Path,
+    tentacle_dir: Path,
+    meta_path: Path,
+    meta_before: dict,
+    baseline_failures: list[dict],
+    history_before: list[dict],
+    verification_command: str,
+    first_run: dict,
+    existing_actionable: int,
+    max_iterations: int,
+) -> bool:
+    """Consume fresh-context reviewer findings when a populated result is available."""
+    reviewer_findings = _reviewer_load_findings(tentacle_dir, meta_before)
+    if not reviewer_findings:
+        return False
+
+    warnings = list(reviewer_findings.get("warnings") or [])
+    blockers = list(reviewer_findings.get("blockers") or [])
+    if not blockers and reviewer_findings.get("safe_to_merge"):
+        entry = {
+            "command": verification_command,
+            "classification": "PASS",
+            "outcome": "passed",
+            "reason": "fresh-context reviewer marked the diff safe to merge",
+            "verify_runs": [first_run],
+            "history_size_before": len(history_before),
+            "reviewer_findings": reviewer_findings,
+        }
+        _review_loop_append_history(meta_path, baseline_failures=baseline_failures, entry=entry)
+        print("✅ review-loop passed verification and fresh-context review.")
+        if warnings:
+            print("\n### REVIEWER WARNINGS")
+            for item in warnings:
+                print(f"- {item}")
+        return True
+
+    actionable_iteration = existing_actionable + 1
+    failure_excerpt = (
+        "\n".join(blockers) if blockers else "Reviewer marked SAFE_TO_MERGE: NO without explicit blockers."
+    )
+    entry = {
+        "command": verification_command,
+        "classification": "REGRESSION",
+        "reason": "fresh-context reviewer reported blockers",
+        "outcome": "resolver_created",
+        "verify_runs": [first_run],
+        "changed_files": _review_loop_changed_files(tentacle_dir, meta_before),
+        "actionable_iteration": actionable_iteration,
+        "history_size_before": len(history_before),
+        "reviewer_findings": reviewer_findings,
+    }
+
+    if existing_actionable >= max_iterations:
+        unresolved_blockers = blockers or [failure_excerpt]
+        entry["outcome"] = "unresolved"
+        entry["resolver_tentacle"] = None
+        _review_loop_append_history(
+            meta_path,
+            baseline_failures=baseline_failures,
+            entry=entry,
+            unresolved_blockers=unresolved_blockers,
+        )
+        print("❌ review-loop retry budget exhausted on reviewer blockers.")
+        print("\n### UNRESOLVED BLOCKERS")
+        for blocker in unresolved_blockers:
+            print(f"- {blocker}")
+        sys.exit(1)
+
+    resolver_name = _review_loop_create_resolver_tentacle(
+        args=args,
+        tentacles=tentacles,
+        parent_name=args.name,
+        parent_dir=tentacle_dir,
+        parent_meta=meta_before,
+        classification="REGRESSION",
+        verification_command=verification_command,
+        failure_excerpt=failure_excerpt,
+        actionable_iteration=actionable_iteration,
+        reviewer_findings=reviewer_findings,
+    )
+    entry["resolver_tentacle"] = resolver_name
+    _review_loop_append_history(meta_path, baseline_failures=baseline_failures, entry=entry)
+    print("🛠️  review-loop received BLOCKERS from the fresh-context reviewer.")
+    print(f"   Resolver tentacle: {resolver_name}")
+    if warnings:
+        print("\n### REVIEWER WARNINGS")
+        for item in warnings:
+            print(f"- {item}")
+    print("")
+    _review_loop_dispatch_resolver(args, resolver_name)
+    sys.exit(1)
+
+
 def cmd_review_loop(args) -> None:
     """Run a tentacle-scoped self-healing review loop."""
     tentacles = get_tentacles_dir(args.session_dir)
@@ -2186,18 +2663,7 @@ def cmd_review_loop(args) -> None:
         print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
         sys.exit(1)
 
-    handoff_path = tentacle_dir / "handoff.md"
-    if not handoff_path.exists():
-        print("ERROR: review-loop requires a DONE handoff before running.", file=sys.stderr)
-        sys.exit(1)
-    handoff_content = handoff_path.read_text(encoding="utf-8")
-    handoff_status = _parse_handoff_status(handoff_content)
-    if handoff_status != "DONE":
-        print(
-            f"ERROR: review-loop requires the latest handoff status to be DONE (found: {handoff_status or 'None'}).",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    _require_done_handoff(tentacle_dir, "review-loop")
 
     meta_path = tentacle_dir / "meta.json"
     meta_before = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
@@ -2242,6 +2708,20 @@ def cmd_review_loop(args) -> None:
     }
 
     if first_exit == 0:
+        if _review_loop_handle_reviewer_findings(
+            args=args,
+            tentacles=tentacles,
+            tentacle_dir=tentacle_dir,
+            meta_path=meta_path,
+            meta_before=meta_before,
+            baseline_failures=baseline_failures,
+            history_before=history_before,
+            verification_command=verification_command,
+            first_run=first_run,
+            existing_actionable=existing_actionable,
+            max_iterations=max_iterations,
+        ):
+            return
         entry = {
             "command": verification_command,
             "classification": "PASS",
@@ -7331,6 +7811,86 @@ Add `--changed-file <path>` once per modified file. Omit if no files changed (e.
         print(json.dumps(dispatch, indent=2))
 
 
+def cmd_dispatch_reviewer(args) -> None:
+    """Generate a fresh-context reviewer prompt and minimal reviewer bundle."""
+    tentacles = get_tentacles_dir(args.session_dir)
+    tentacle_dir = _validate_tentacle_name(args.name, tentacles)
+    if not tentacle_dir.exists():
+        print(f"ERROR: Tentacle '{args.name}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    _require_done_handoff(tentacle_dir, "dispatch-reviewer")
+
+    meta_path = tentacle_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    try:
+        bundle_info = _build_reviewer_bundle(tentacle_dir, args.name, meta)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    reviewer_meta = {
+        **(meta.get("reviewer") or {}),
+        **bundle_info,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    meta["reviewer"] = reviewer_meta
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+    agent_type = getattr(args, "agent_type", None) or "code-review"
+    model = getattr(args, "model", None) or "claude-sonnet-4.6"
+    prompt = _render_dispatch_reviewer_prompt(args.name, bundle_info)
+
+    if getattr(args, "output", "prompt") == "json":
+        print(
+            json.dumps(
+                {
+                    "tentacle": args.name,
+                    "agent_type": agent_type,
+                    "model": model,
+                    "bundle_path": bundle_info["bundle_path"],
+                    "manifest_path": bundle_info["manifest_path"],
+                    "review_context_path": bundle_info["review_context_path"],
+                    "diff_path": bundle_info["diff_path"],
+                    "spec_path": bundle_info["spec_path"],
+                    "findings_path": bundle_info["findings_path"],
+                    "diff_source": bundle_info["diff_source"],
+                    "result_contract": {
+                        "safe_to_merge": "SAFE_TO_MERGE: YES|NO",
+                        "blockers_heading": "### BLOCKERS",
+                        "warnings_heading": "### WARNINGS",
+                    },
+                    "review_loop_integration": {
+                        "safe_result": "lane may continue",
+                        "blocker_result": "review-loop converts blockers into actionable follow-up context",
+                        "warnings": "visible but non-blocking",
+                    },
+                    "prompt": prompt,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    print(f"🧾 Fresh-context reviewer bundle: {bundle_info['bundle_path']}")
+    print(f"📝 Findings file: {bundle_info['findings_path']}")
+    print(f"🌿 Diff source: {bundle_info['diff_source']}")
+    print("")
+    print("─── REVIEWER PROMPT ───\n")
+    print(prompt)
+    print("\n─── COPILOT CLI DISPATCH ───\n")
+    print("task(")
+    print(f'    name="reviewer-{args.name}",')
+    print(f'    agent_type="{agent_type}",')
+    print(f'    model="{model}",')
+    print('    mode="background",')
+    print(f'    description="Review: {args.name}",')
+    print('    prompt="""')
+    print(prompt)
+    print('"""')
+    print(")")
+
+
 def cmd_next_step(args):
     """Show the grounded next step for a tentacle: first pending todo + checkpoint/briefing context.
 
@@ -8505,6 +9065,21 @@ def main():
         help="Prepare an isolated git worktree and surface its path in the dispatch output",
     )
 
+    # dispatch-reviewer
+    p_dispatch_reviewer = sub.add_parser(
+        "dispatch-reviewer",
+        help="Generate a fresh-context reviewer prompt from diff + task/spec context only",
+    )
+    p_dispatch_reviewer.add_argument("name", help="Tentacle name")
+    p_dispatch_reviewer.add_argument("--agent-type", default="code-review", help="Reviewer agent type")
+    p_dispatch_reviewer.add_argument("--model", default="claude-sonnet-4.6", help="Reviewer model")
+    p_dispatch_reviewer.add_argument(
+        "--output",
+        choices=["prompt", "json"],
+        default="prompt",
+        help="Output format (default: prompt)",
+    )
+
     # resume
     p_resume = sub.add_parser("resume", help="Resume a tentacle: refresh briefing, set active")
     p_resume.add_argument("name", help="Tentacle name")
@@ -9187,6 +9762,8 @@ def main():
     elif args.command == "dispatch":
         args.output = "prompt"
         cmd_swarm(args)
+    elif args.command == "dispatch-reviewer":
+        cmd_dispatch_reviewer(args)
     elif args.command == "resume":
         cmd_resume(args)
     elif args.command == "next-step":
