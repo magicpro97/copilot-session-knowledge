@@ -14,6 +14,7 @@ sk query "docker error"                  # → query-session.py
 sk learn --mistake "Title" "Description" # → learn.py
 sk tentacle create api-export --scope "src/api/*.py" --desc "Export API"  # → tentacle.py
 sk tentacle split planner --into research builder reviewer                # → tentacle.py
+sk tentacle auto add on-push --command "sk tentacle status"              # → tentacle.py
 sk install --deploy-skill                # → install.py
 sk setup --profile python                # → setup-project.py
 sk update                                # → auto-update-tools.py

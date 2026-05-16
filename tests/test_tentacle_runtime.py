@@ -1226,6 +1226,155 @@ class TestCmdSplit(unittest.TestCase):
         self.assertEqual(root_meta["status"], "completed")
 
 
+class TestTentacleAuto(unittest.TestCase):
+    def setUp(self):
+        self.base = SCRATCH_DIR / "auto"
+        self.repo = self.base / "repo"
+        (self.repo / ".git").mkdir(parents=True, exist_ok=True)
+        (self.repo / "sk.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        (self.repo / "tentacle.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+    def tearDown(self):
+        if SCRATCH_DIR.exists():
+            _rmtree(SCRATCH_DIR)
+
+    def _run_auto(self, **kwargs):
+        args = fake_args(**kwargs)
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            T.cmd_auto(args)
+
+    def test_auto_add_push_persists_config_and_workflow(self):
+        self._run_auto(
+            auto_action="add",
+            trigger="on-push",
+            command="sk tentacle status",
+            name="push-status",
+            branch=["main"],
+            cron=None,
+        )
+        config = json.loads((self.repo / ".octogent" / "automations.json").read_text(encoding="utf-8"))
+        entry = config["automations"][0]
+        self.assertEqual(entry["name"], "push-status")
+        self.assertEqual(entry["trigger"], "on-push")
+        self.assertEqual(entry["branches"], ["main"])
+        workflow = (self.repo / ".github" / "workflows" / "tentacle-automations.yml").read_text(encoding="utf-8")
+        self.assertIn("push:", workflow)
+        self.assertIn("branches:", workflow)
+        self.assertIn("main", workflow)
+        self.assertIn("python tentacle.py auto run", workflow)
+
+    def test_auto_add_schedule_persists_cron_and_workflow(self):
+        self._run_auto(
+            auto_action="add",
+            trigger="on-schedule",
+            command="python tentacle.py status",
+            name="nightly-review",
+            branch=[],
+            cron="0 5 * * *",
+        )
+        config = json.loads((self.repo / ".octogent" / "automations.json").read_text(encoding="utf-8"))
+        entry = config["automations"][0]
+        self.assertEqual(entry["trigger"], "on-schedule")
+        self.assertEqual(entry["cron"], "0 5 * * *")
+        workflow = (self.repo / ".github" / "workflows" / "tentacle-automations.yml").read_text(encoding="utf-8")
+        self.assertIn("schedule:", workflow)
+        self.assertIn("cron: '0 5 * * *'", workflow)
+
+    def test_auto_remove_deletes_generated_workflow_when_last_entry_removed(self):
+        self._run_auto(
+            auto_action="add",
+            trigger="on-push",
+            command="sk tentacle status",
+            name="push-status",
+            branch=[],
+            cron=None,
+        )
+        self._run_auto(auto_action="remove", selector="push-status")
+        config = json.loads((self.repo / ".octogent" / "automations.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["automations"], [])
+        self.assertFalse((self.repo / ".github" / "workflows" / "tentacle-automations.yml").exists())
+
+    def test_auto_remove_rejects_ambiguous_selector(self):
+        T._save_automation_config(
+            self.repo,
+            {
+                "version": 1,
+                "automations": [
+                    {"id": "a1", "name": "deadbeef", "trigger": "on-push", "command": "sk tentacle status"},
+                    {"id": "deadbeef", "name": "other", "trigger": "on-push", "command": "sk tentacle status"},
+                ],
+            },
+        )
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            with self.assertRaises(SystemExit):
+                T.cmd_auto(fake_args(auto_action="remove", selector="deadbeef"))
+
+    def test_auto_run_matches_push_branch_and_rewrites_sk_command(self):
+        T._save_automation_config(
+            self.repo,
+            {
+                "version": 1,
+                "automations": [
+                    {
+                        "id": "a1",
+                        "name": "push-status",
+                        "trigger": "on-push",
+                        "command": "sk tentacle status",
+                        "branches": ["main"],
+                        "enabled": True,
+                    }
+                ],
+            },
+        )
+        mock_result = MagicMock(returncode=0, stdout="ok\n", stderr="")
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            with patch.object(T.subprocess, "run", return_value=mock_result) as mock_run:
+                T.cmd_auto(fake_args(auto_action="run", event="push", branch="main", schedule=None, dry_run=False))
+        command = mock_run.call_args[0][0]
+        self.assertIn("sk.py", command)
+        self.assertIn("tentacle status", command)
+        self.assertEqual(mock_run.call_args.kwargs["cwd"], str(self.repo))
+        self.assertTrue(mock_run.call_args.kwargs["shell"])
+
+    def test_auto_run_matches_schedule_by_cron_text(self):
+        T._save_automation_config(
+            self.repo,
+            {
+                "version": 1,
+                "automations": [
+                    {
+                        "id": "a2",
+                        "name": "nightly-review",
+                        "trigger": "on-schedule",
+                        "command": "python tentacle.py status",
+                        "cron": "0 5 * * *",
+                        "enabled": True,
+                    }
+                ],
+            },
+        )
+        mock_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            with patch.object(T.subprocess, "run", return_value=mock_result) as mock_run:
+                T.cmd_auto(
+                    fake_args(auto_action="run", event="schedule", branch=None, schedule="0 5 * * *", dry_run=False)
+                )
+        self.assertEqual(mock_run.call_count, 1)
+
+    def test_auto_requires_repo_root_runtime_files(self):
+        (self.repo / "tentacle.py").unlink()
+        with patch.object(T, "find_git_root", return_value=self.repo):
+            with self.assertRaises(SystemExit):
+                T.cmd_auto(fake_args(auto_action="list"))
+
+    def test_auto_cli_dispatches_through_main_parser(self):
+        with patch.object(T, "cmd_auto") as mock_auto:
+            with patch.object(sys, "argv", ["tentacle.py", "auto", "list"]):
+                T.main()
+        self.assertEqual(mock_auto.call_count, 1)
+        self.assertEqual(mock_auto.call_args[0][0].auto_action, "list")
+
+
 class TestCmdNextStep(unittest.TestCase):
     """Tests for cmd_next_step: grounded next-step helper."""
 

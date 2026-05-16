@@ -9,6 +9,8 @@ Integrates with session-knowledge (briefing.py/learn.py) for long-term memory.
 Usage:
     python3 ~/.copilot/tools/tentacle.py create <name> [--scope <paths>] [--desc <desc>] [--profile <agent-profile>] [--briefing] [--goal-id <id>] [--iteration <n>]
     python3 ~/.copilot/tools/tentacle.py split <parent-name> --into <child-1> <child-2> [<child-n>...]
+    python3 ~/.copilot/tools/tentacle.py auto add on-push --command "<command>"
+    python3 ~/.copilot/tools/tentacle.py auto add on-schedule --cron "<cron>" --command "<command>"
     python3 ~/.copilot/tools/tentacle.py list
     python3 ~/.copilot/tools/tentacle.py status
     python3 ~/.copilot/tools/tentacle.py show <name>
@@ -53,6 +55,7 @@ Environment:
 import argparse
 import ast
 import difflib
+import fnmatch
 import hashlib
 import hmac
 import json
@@ -167,6 +170,16 @@ GOAL_EVAL_DECISIONS: frozenset[str] = frozenset({"continue", "pause", "complete"
 _GOAL_TEXT_SOFT_LIMIT = 3000
 _GOAL_TEXT_HARD_LIMIT = 5000
 _GOAL_TEXT_EXTERNALIZE_HINT = "Move detailed steps to .goal-spec.md and keep goal.json concise."
+AUTOMATIONS_FILENAME = "automations.json"
+AUTOMATION_WORKFLOW_FILENAME = "tentacle-automations.yml"
+AUTOMATION_TRIGGER_PUSH = "on-push"
+AUTOMATION_TRIGGER_SCHEDULE = "on-schedule"
+AUTOMATION_EVENT_MAP = {
+    "push": AUTOMATION_TRIGGER_PUSH,
+    AUTOMATION_TRIGGER_PUSH: AUTOMATION_TRIGGER_PUSH,
+    "schedule": AUTOMATION_TRIGGER_SCHEDULE,
+    AUTOMATION_TRIGGER_SCHEDULE: AUTOMATION_TRIGGER_SCHEDULE,
+}
 
 
 import threading as _threading
@@ -7478,6 +7491,392 @@ def cmd_split(args):
     print(f"🔀 Parent '{parent_name}' now tracks {len(existing_children)} child tentacle(s)")
 
 
+def _project_octogent_dir(git_root: Path) -> Path:
+    """Return the project-scoped .octogent directory for the current repo."""
+    return git_root / ".octogent"
+
+
+def _automations_path(git_root: Path) -> Path:
+    """Return the project-scoped automation config path."""
+    return _project_octogent_dir(git_root) / AUTOMATIONS_FILENAME
+
+
+def _automation_workflow_path(git_root: Path) -> Path:
+    """Return the generated GitHub Actions workflow path for tentacle automations."""
+    return git_root / ".github" / "workflows" / AUTOMATION_WORKFLOW_FILENAME
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    """Persist JSON atomically using the shared file lock + replace pattern."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with file_locked(path):
+        tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            tmp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            _retry_windows_fs(os.replace, tmp_path, path)
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _load_automation_config(git_root: Path) -> dict:
+    """Load .octogent/automations.json, validating its top-level shape."""
+    path = _automations_path(git_root)
+    if not path.exists():
+        return {"version": 1, "automations": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid automation config JSON: {path}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid automation config shape: {path}")
+    automations = data.get("automations")
+    if automations is None:
+        automations = []
+    if not isinstance(automations, list):
+        raise ValueError(f"Automation config must contain a list at automations: {path}")
+    return {
+        "version": int(data.get("version") or 1),
+        "automations": automations,
+        "updated_at": data.get("updated_at"),
+    }
+
+
+def _save_automation_config(git_root: Path, config: dict) -> None:
+    """Save automation config to the project-scoped .octogent path."""
+    payload = {
+        "version": int(config.get("version") or 1),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "automations": config.get("automations") or [],
+    }
+    _write_json_atomic(_automations_path(git_root), payload)
+
+
+def _normalize_automation_event(event_name: str) -> str:
+    """Normalize CLI or GitHub event names into the stored automation trigger names."""
+    normalized = AUTOMATION_EVENT_MAP.get((event_name or "").strip())
+    if not normalized:
+        allowed = ", ".join(sorted(AUTOMATION_EVENT_MAP))
+        raise ValueError(f"--event must be one of: {allowed}")
+    return normalized
+
+
+def _validate_cron_expression(value: str) -> str:
+    """Perform a minimal 5-field cron validation for on-schedule automations."""
+    cron = " ".join((value or "").split())
+    if len(cron.split(" ")) != 5:
+        raise ValueError("--cron must be a 5-field cron expression")
+    return cron
+
+
+def _render_automation_workflow(automations: list[dict]) -> str | None:
+    """Render the generated GitHub Actions workflow for active automations."""
+    push_entries = [
+        entry for entry in automations if entry.get("enabled", True) and entry.get("trigger") == AUTOMATION_TRIGGER_PUSH
+    ]
+    schedule_entries = [
+        entry
+        for entry in automations
+        if entry.get("enabled", True) and entry.get("trigger") == AUTOMATION_TRIGGER_SCHEDULE and entry.get("cron")
+    ]
+    if not push_entries and not schedule_entries:
+        return None
+
+    on_lines = ["on:"]
+    if push_entries:
+        push_branches: list[str] = []
+        unrestricted_push = False
+        for entry in push_entries:
+            branches = _tentacle_items(entry.get("branches"))
+            if branches:
+                for branch in branches:
+                    if branch not in push_branches:
+                        push_branches.append(branch)
+            else:
+                unrestricted_push = True
+        on_lines.append("  push:")
+        if push_branches and not unrestricted_push:
+            on_lines.append("    branches:")
+            on_lines.extend([f"      - {branch}" for branch in push_branches])
+    if schedule_entries:
+        seen_crons: list[str] = []
+        for entry in schedule_entries:
+            cron = str(entry.get("cron", "")).strip()
+            if cron and cron not in seen_crons:
+                seen_crons.append(cron)
+        if seen_crons:
+            on_lines.append("  schedule:")
+            on_lines.extend([f"    - cron: '{cron}'" for cron in seen_crons])
+
+    workflow = textwrap.dedent(
+        """\
+        name: Tentacle Automations
+
+        {on_block}
+
+        jobs:
+          tentacle-automations:
+            runs-on: ubuntu-latest
+            permissions:
+              contents: read
+            steps:
+              - uses: actions/checkout@v4
+              - uses: actions/setup-python@v5
+                with:
+                  python-version: "3.12"
+              - name: Run matching tentacle automations
+                env:
+                  GITHUB_EVENT_NAME: ${{{{ github.event_name }}}}
+                  GITHUB_REF_NAME: ${{{{ github.ref_name }}}}
+                  GITHUB_EVENT_SCHEDULE: ${{{{ github.event.schedule }}}}
+                run: |
+                  python tentacle.py auto run --event "$GITHUB_EVENT_NAME" --branch "$GITHUB_REF_NAME" --schedule "$GITHUB_EVENT_SCHEDULE"
+        """
+    ).format(on_block="\n".join(on_lines))
+    return workflow
+
+
+def _sync_automation_workflow(git_root: Path, automations: list[dict]) -> Path:
+    """Write or remove the generated workflow so GitHub Actions stays in sync."""
+    workflow_path = _automation_workflow_path(git_root)
+    workflow_content = _render_automation_workflow(automations)
+    if workflow_content is None:
+        workflow_path.unlink(missing_ok=True)
+        return workflow_path
+    workflow_path.parent.mkdir(parents=True, exist_ok=True)
+    with file_locked(workflow_path):
+        tmp_path = workflow_path.with_name(f".{workflow_path.name}.{os.getpid()}.tmp")
+        try:
+            tmp_path.write_text(workflow_content, encoding="utf-8")
+            _retry_windows_fs(os.replace, tmp_path, workflow_path)
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return workflow_path
+
+
+def _normalize_automation_shell_command(command: str, git_root: Path) -> str:
+    """Translate `sk ...` commands into `python sk.py ...` for GitHub Actions/local runs."""
+    stripped = (command or "").strip()
+    if stripped.startswith("sk ") and (git_root / "sk.py").exists():
+        suffix = stripped[2:].strip()
+        if suffix:
+            return f'"{sys.executable}" "{git_root / "sk.py"}" {suffix}'
+        return f'"{sys.executable}" "{git_root / "sk.py"}"'
+    return stripped
+
+
+def _automation_selector_namespace(automations: list[dict]) -> set[str]:
+    """Return the occupied selector namespace across automation ids and names."""
+    occupied: set[str] = set()
+    for entry in automations:
+        for key in ("id", "name"):
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip():
+                occupied.add(value.strip())
+    return occupied
+
+
+def _next_automation_id(automations: list[dict]) -> str:
+    """Allocate an id that cannot collide with any existing id or name."""
+    occupied = _automation_selector_namespace(automations)
+    for _ in range(32):
+        candidate = uuid.uuid4().hex[:8]
+        if candidate not in occupied:
+            return candidate
+    raise RuntimeError("Could not allocate a unique automation id")
+
+
+def _ensure_automation_repo_supported(git_root: Path) -> None:
+    """Restrict automation workflow generation to repos that contain the runtime entrypoints."""
+    required = [name for name in ("tentacle.py", "sk.py") if not (git_root / name).exists()]
+    if required:
+        missing = ", ".join(required)
+        raise ValueError(
+            "tentacle auto currently requires a repo checkout that contains "
+            f"{missing} at the repo root so the generated workflow can execute `python tentacle.py auto run`."
+        )
+
+
+def _automation_matches_event(entry: dict, trigger: str, branch: str | None, schedule_text: str | None) -> bool:
+    """Return True when a stored automation should fire for the current event context."""
+    if not entry.get("enabled", True):
+        return False
+    if entry.get("trigger") != trigger:
+        return False
+    if trigger == AUTOMATION_TRIGGER_PUSH:
+        branches = _tentacle_items(entry.get("branches"))
+        if not branches:
+            return True
+        if not branch:
+            return False
+        return any(fnmatch.fnmatch(branch, pattern) for pattern in branches)
+    if trigger == AUTOMATION_TRIGGER_SCHEDULE:
+        return str(entry.get("cron", "")).strip() == str(schedule_text or "").strip()
+    return False
+
+
+def cmd_auto(args):
+    """Manage event-triggered tentacle automations backed by GitHub Actions."""
+    git_root = find_git_root()
+    if git_root is None:
+        print("ERROR: tentacle auto must run from a git repository.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        _ensure_automation_repo_supported(git_root)
+        config = _load_automation_config(git_root)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+    automations = list(config.get("automations") or [])
+
+    if args.auto_action == "add":
+        trigger = args.trigger
+        if trigger == AUTOMATION_TRIGGER_SCHEDULE:
+            if not args.cron:
+                print("ERROR: on-schedule requires --cron", file=sys.stderr)
+                sys.exit(1)
+            cron = _validate_cron_expression(args.cron)
+        else:
+            if args.cron:
+                print("ERROR: --cron is only valid for on-schedule automations", file=sys.stderr)
+                sys.exit(1)
+            cron = None
+
+        branches = _tentacle_items(args.branch)
+        if trigger != AUTOMATION_TRIGGER_PUSH and branches:
+            print("ERROR: --branch is only valid for on-push automations", file=sys.stderr)
+            sys.exit(1)
+
+        name = args.name or f"{trigger}-{uuid.uuid4().hex[:8]}"
+        occupied = _automation_selector_namespace(automations)
+        if name in occupied:
+            print(f"ERROR: Automation name '{name}' collides with an existing automation id or name", file=sys.stderr)
+            sys.exit(1)
+
+        entry = {
+            "id": _next_automation_id(automations),
+            "name": name,
+            "trigger": trigger,
+            "command": args.command,
+            "enabled": True,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if branches:
+            entry["branches"] = branches
+        if cron:
+            entry["cron"] = cron
+        automations.append(entry)
+        config["automations"] = automations
+        _save_automation_config(git_root, config)
+        workflow_path = _sync_automation_workflow(git_root, automations)
+        print(f"✅ Added automation '{name}' ({trigger})")
+        print(f"   📄 Config: {_automations_path(git_root)}")
+        print(f"   ⚙️  Workflow: {workflow_path}")
+        return
+
+    if args.auto_action == "list":
+        if not automations:
+            print(
+                f'No automations configured. Add one with: tentacle.py auto add {AUTOMATION_TRIGGER_PUSH} --command "..."'
+            )
+            return
+        print(f"{'Name':<24} {'Trigger':<12} {'Details':<26} {'Command'}")
+        print("─" * 100)
+        for entry in automations:
+            if entry.get("trigger") == AUTOMATION_TRIGGER_PUSH:
+                detail = ",".join(_tentacle_items(entry.get("branches"))) or "all branches"
+            else:
+                detail = str(entry.get("cron") or "")
+            print(
+                f"{str(entry.get('name', '')):<24} {str(entry.get('trigger', '')):<12} {detail:<26} {str(entry.get('command', ''))}"
+            )
+        return
+
+    if args.auto_action == "remove":
+        selector = args.selector
+        matching_indexes = [
+            idx for idx, entry in enumerate(automations) if entry.get("id") == selector or entry.get("name") == selector
+        ]
+        if not matching_indexes:
+            print(f"ERROR: Automation '{selector}' not found", file=sys.stderr)
+            sys.exit(1)
+        if len(matching_indexes) != 1:
+            print(
+                f"ERROR: Automation selector '{selector}' is ambiguous and matches multiple entries",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        match_index = matching_indexes[0]
+        updated = automations[:match_index] + automations[match_index + 1 :]
+        config["automations"] = updated
+        _save_automation_config(git_root, config)
+        workflow_path = _sync_automation_workflow(git_root, updated)
+        print(f"🗑️  Removed automation '{selector}'")
+        print(f"   ⚙️  Workflow: {workflow_path}")
+        return
+
+    if args.auto_action == "run":
+        try:
+            trigger = _normalize_automation_event(args.event)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(1)
+        matched = [
+            entry
+            for entry in automations
+            if _automation_matches_event(entry, trigger, getattr(args, "branch", None), getattr(args, "schedule", None))
+        ]
+        if not matched:
+            print(f"ℹ️  No automations matched {trigger}")
+            return
+
+        failures = 0
+        for entry in matched:
+            command = _normalize_automation_shell_command(str(entry.get("command") or ""), git_root)
+            print(f"▶️  Running automation '{entry.get('name')}' ({trigger})")
+            print(f"   Command: {command}")
+            if getattr(args, "dry_run", False):
+                continue
+            env = os.environ.copy()
+            env["SK_AUTOMATION_EVENT"] = trigger
+            env["SK_AUTOMATION_NAME"] = str(entry.get("name") or "")
+            env["SK_AUTOMATION_ID"] = str(entry.get("id") or "")
+            if getattr(args, "branch", None):
+                env["SK_AUTOMATION_BRANCH"] = args.branch
+            if getattr(args, "schedule", None):
+                env["SK_AUTOMATION_SCHEDULE"] = args.schedule
+            result = subprocess.run(
+                command,
+                cwd=str(git_root),
+                shell=True,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            if result.stdout:
+                print(result.stdout.rstrip())
+            if result.stderr:
+                print(result.stderr.rstrip(), file=sys.stderr)
+            if result.returncode != 0:
+                failures += 1
+                print(
+                    f"❌ Automation '{entry.get('name')}' failed with exit code {result.returncode}",
+                    file=sys.stderr,
+                )
+        if failures:
+            sys.exit(1)
+        return
+
+    print(f"ERROR: Unknown auto action '{args.auto_action}'", file=sys.stderr)
+    sys.exit(1)
+
+
 def cmd_list(args):
     """List all tentacles in current session."""
     tentacles = get_tentacles_dir(args.session_dir)
@@ -9925,6 +10324,34 @@ def main():
         help="Optional description for child tentacles (default: 'Sub-tentacle of <parent>')",
     )
 
+    # auto
+    p_auto = sub.add_parser("auto", help="Manage event-triggered tentacle automations")
+    p_auto_sub = p_auto.add_subparsers(dest="auto_action", required=True)
+
+    p_auto_add = p_auto_sub.add_parser("add", help="Add a project-scoped automation")
+    p_auto_add.add_argument("trigger", choices=[AUTOMATION_TRIGGER_PUSH, AUTOMATION_TRIGGER_SCHEDULE])
+    p_auto_add.add_argument("--command", required=True, help="Command to execute when the trigger fires")
+    p_auto_add.add_argument("--name", default=None, help="Optional automation name")
+    p_auto_add.add_argument(
+        "--branch",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help="Branch filter for on-push automations (repeatable, glob-aware)",
+    )
+    p_auto_add.add_argument("--cron", default=None, help="5-field cron expression for on-schedule automations")
+
+    p_auto_sub.add_parser("list", help="List configured automations")
+
+    p_auto_remove = p_auto_sub.add_parser("remove", help="Remove an automation by id or name")
+    p_auto_remove.add_argument("selector", help="Automation id or name")
+
+    p_auto_run = p_auto_sub.add_parser("run", help="Run automations matching the supplied event context")
+    p_auto_run.add_argument("--event", required=True, help="Event name: push, schedule, on-push, or on-schedule")
+    p_auto_run.add_argument("--branch", default=None, help="Branch/ref name for push events")
+    p_auto_run.add_argument("--schedule", default=None, help="Cron text for schedule events")
+    p_auto_run.add_argument("--dry-run", action="store_true", help="Print matching commands without executing them")
+
     # status
     sub.add_parser("status", help="Dashboard status of all tentacles")
 
@@ -10792,6 +11219,8 @@ def main():
         cmd_create(args)
     elif args.command == "split":
         cmd_split(args)
+    elif args.command == "auto":
+        cmd_auto(args)
     elif args.command == "list":
         cmd_list(args)
     elif args.command == "status":
