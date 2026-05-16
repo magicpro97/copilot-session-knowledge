@@ -20,20 +20,10 @@ if os.name == "nt":
         if hasattr(_stream, "reconfigure"):
             _stream.reconfigure(encoding="utf-8", errors="replace")
 
-from host_manifest import COPILOT_DIR, HOST_INSTRUCTION_FILES  # noqa: E402
+from agent_adapters import DEFAULT_BLOCK_ID, get_adapter, validate_block_id  # noqa: E402
+from host_manifest import COPILOT_DIR  # noqa: E402
 
-DEFAULT_BLOCK_ID = "SESSION-KNOWLEDGE"
 REGISTRY_PATH = COPILOT_DIR / "session-state" / "tools-managed-projects.json"
-_AGENT_ALIASES = {
-    "copilot": "Copilot CLI",
-    "copilot-cli": "Copilot CLI",
-    "github-copilot": "Copilot CLI",
-    "claude": "Claude Code",
-    "claude-code": "Claude Code",
-    "agents": "All agents",
-    "all": "All agents",
-    "all-agents": "All agents",
-}
 
 
 def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
@@ -101,26 +91,15 @@ def _find_git_root(start: Path | None = None) -> Path:
 
 
 def _normalize_agent(agent: str) -> str:
-    key = (agent or "").strip().lower()
-    if key not in _AGENT_ALIASES:
-        allowed = ", ".join(sorted(_AGENT_ALIASES))
-        raise ValueError(f"Unknown --agent '{agent}'. Choose from: {allowed}")
-    return _AGENT_ALIASES[key]
+    return get_adapter(agent).name
 
 
 def _validate_block_id(block_id: str) -> str:
-    value = (block_id or "").strip()
-    if not value:
-        raise ValueError("--block-id must not be empty")
-    if "<!--" in value or "-->" in value or "\n" in value or "\r" in value:
-        raise ValueError("--block-id cannot contain comment delimiters or newlines")
-    return value
+    return validate_block_id(block_id)
 
 
 def _resolve_target(repo_root: Path, agent: str) -> Path:
-    host_name = _normalize_agent(agent)
-    rel = HOST_INSTRUCTION_FILES[host_name]
-    return repo_root / rel
+    return get_adapter(agent).target_path(repo_root)
 
 
 def _detect_newline(text: str) -> str:
@@ -235,13 +214,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     sub = parser.add_subparsers(dest="command", required=True)
 
     upsert = sub.add_parser("upsert", help="Create or update a managed block")
-    upsert.add_argument("--agent", required=True, help="Target agent config file (copilot, claude, agents)")
+    upsert.add_argument("--agent", required=True, help="Target adapter config file")
     upsert.add_argument("--block-id", default=DEFAULT_BLOCK_ID, help="Managed block label shown in markers")
     upsert.add_argument("--repo", type=Path, default=None, help="Project root (defaults to git root or cwd)")
     upsert.add_argument("content", help="Managed block content")
 
     remove = sub.add_parser("remove", help="Remove a managed block only")
-    remove.add_argument("--agent", required=True, help="Target agent config file (copilot, claude, agents)")
+    remove.add_argument("--agent", required=True, help="Target adapter config file")
     remove.add_argument("--block-id", default=DEFAULT_BLOCK_ID, help="Managed block label shown in markers")
     remove.add_argument("--repo", type=Path, default=None, help="Project root (defaults to git root or cwd)")
     return parser.parse_args(argv)
@@ -251,7 +230,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     try:
         repo_root = _find_git_root(args.repo) if args.repo is not None else _find_git_root()
-        target = _resolve_target(repo_root, args.agent)
+        adapter = get_adapter(args.agent)
+        target = adapter.target_path(repo_root)
         block_id = _validate_block_id(args.block_id)
     except ValueError as exc:
         print(f"context-blocks: {exc}", file=sys.stderr)
