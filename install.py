@@ -36,6 +36,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -99,6 +100,7 @@ def _real_home():
 from host_manifest import (  # noqa: E402
     CLAUDE_DIR,
     COPILOT_DIR,
+    HOST_INSTRUCTION_FILES,
     HOST_SKILL_SUBPATHS,
 )
 from host_manifest import (
@@ -192,6 +194,7 @@ TOOL_FILES = [
     "learn.py",
     "embed.py",
     "claude-adapter.py",
+    "context-blocks.py",
     "sync-knowledge.py",
     "sync-config.py",
     "sync-daemon.py",
@@ -213,6 +216,7 @@ SUPPORT_FILES = [
 SK_LAUNCHER_DIR = HOME / ".copilot" / "bin"
 _SK_PATH_MARKER_START = "# >>> session-knowledge sk launcher >>>"
 _SK_PATH_MARKER_END = "# <<< session-knowledge sk launcher <<<"
+_CONTEXT_START_RE = re.compile(r"^\s*<!--\s*(?P<block>[^\r\n<>]+?)\s+SK START\s*-->\s*$")
 
 # ---------------------------------------------------------------------------
 # Markers
@@ -455,6 +459,83 @@ def _partition_manifest_removals(paths: list[Path]) -> tuple[list[Path], list[Pa
         else:
             modified.append(path)
     return removable, modified, untracked
+
+
+def _remove_managed_context_blocks_from_text(text: str) -> tuple[str, int]:
+    """Remove all managed `<!-- ... SK START -->` blocks from text."""
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return text, 0
+    output: list[str] = []
+    removed = 0
+    idx = 0
+    while idx < len(lines):
+        match = _CONTEXT_START_RE.match(lines[idx].rstrip("\r\n"))
+        if not match:
+            output.append(lines[idx])
+            idx += 1
+            continue
+        block_id = match.group("block")
+        end_marker = f"<!-- {block_id} SK END -->"
+        end_idx = None
+        for probe in range(idx + 1, len(lines)):
+            if lines[probe].rstrip("\r\n") == end_marker:
+                end_idx = probe
+                break
+        if end_idx is None:
+            output.append(lines[idx])
+            idx += 1
+            continue
+        removed += 1
+        idx = end_idx + 1
+        if output and idx < len(lines) and not output[-1].strip() and not lines[idx].strip():
+            idx += 1
+        if not output:
+            while idx < len(lines) and not lines[idx].strip():
+                idx += 1
+    if removed and output and all(not line.strip() for line in output):
+        output = []
+    return "".join(output), removed
+
+
+def _remove_managed_context_blocks_from_file(path: Path, *, quiet: bool = False) -> bool:
+    """Strip all managed context blocks from a single instruction file."""
+    if not path.is_file():
+        return False
+    original = path.read_text(encoding="utf-8")
+    updated, removed = _remove_managed_context_blocks_from_text(original)
+    if removed <= 0 or updated == original:
+        return False
+    _atomic_write_text(path, updated)
+    if not quiet:
+        print(f"  {OK} Removed {removed} managed context block(s) from {_tilde(path)}")
+    return True
+
+
+def _managed_context_targets(project_root: Path) -> list[Path]:
+    """Return unique project instruction-file targets that may hold managed blocks."""
+    targets: list[Path] = []
+    seen: set[str] = set()
+    for rel in HOST_INSTRUCTION_FILES.values():
+        key = str(rel)
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append(project_root / rel)
+    return targets
+
+
+def _remove_registered_project_context_blocks(*, quiet: bool = False) -> int:
+    """Remove managed context blocks from every registered project instruction file."""
+    changed = 0
+    for raw_root in _load_project_registry():
+        project_root = Path(raw_root).expanduser()
+        if not project_root.is_dir():
+            continue
+        for target in _managed_context_targets(project_root):
+            if _remove_managed_context_blocks_from_file(target, quiet=quiet):
+                changed += 1
+    return changed
 
 
 def _file_url_to_path(url: str) -> Path | None:
@@ -1451,6 +1532,9 @@ def uninstall() -> int:
     # Remove managed sk launcher files and PATH injections
     launcher_removed = uninstall_sk_launcher(quiet=False)
     removed += launcher_removed
+
+    context_removed = _remove_registered_project_context_blocks(quiet=False)
+    removed += context_removed
 
     print(f"\n  Uninstall complete \u2014 removed {removed} item(s).")
     print(f"  Session data preserved at {_tilde(SESSION_STATE)}")

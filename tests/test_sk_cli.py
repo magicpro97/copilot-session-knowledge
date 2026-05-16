@@ -486,6 +486,24 @@ class TestSkGroupedCommands(unittest.TestCase):
     def test_context_map(self):
         self._assert_group_routes("context", "map", "codebase-map.py")
 
+    def test_context_upsert(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["context", "upsert", "--agent", "copilot", "managed content"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with(
+            "context-blocks.py",
+            ["upsert", "--agent", "copilot", "managed content"],
+        )
+
+    def test_context_remove(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["context", "remove", "--agent", "copilot", "--block-id", "AWS, Docker"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with(
+            "context-blocks.py",
+            ["remove", "--agent", "copilot", "--block-id", "AWS, Docker"],
+        )
+
     # scout group
     def test_scout_run(self):
         self._assert_group_routes("scout", "run", "trend-scout.py")

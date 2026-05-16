@@ -37,7 +37,7 @@ Usage:
     sk sync   run|config|status|gateway|merge [<args>...]
     sk checkpoint save|restore|diff [<args>...]
     sk profile build|import|export [<args>...]
-    sk context project|map [<args>...]
+    sk context project|map|upsert|remove [<args>...]
     sk scout  run|config|status [<args>...]
     sk project add|remove|list [<args>...]
 
@@ -124,6 +124,8 @@ _GROUPS: dict[str, dict[str, str]] = {
     "context": {
         "project": "project-context.py",
         "map": "codebase-map.py",
+        "upsert": "context-blocks.py",
+        "remove": "context-blocks.py",
     },
     "scout": {
         "run": "trend-scout.py",
@@ -298,6 +300,8 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+        if cmd == "context" and sub in ("upsert", "remove"):
+            return _run(_GROUPS[cmd][sub], [sub] + sub_rest)
         return _run(_GROUPS[cmd][sub], sub_rest)
 
     # Unknown

@@ -305,6 +305,7 @@ test("TOOL_FILES contains briefing.py", "briefing.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains watch-sessions.py", "watch-sessions.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains install.py", "install.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains sk.py", "sk.py" in _install.TOOL_FILES)
+test("TOOL_FILES contains context-blocks.py", "context-blocks.py" in _install.TOOL_FILES)
 test("SUPPORT_FILES contains pyproject.toml", "pyproject.toml" in _install.SUPPORT_FILES)
 
 # MINIMAL_SKILL_MD sanity
@@ -314,6 +315,48 @@ test("MINIMAL_SKILL_MD contains name field", "name: session-knowledge" in skill_
 test("MINIMAL_SKILL_MD contains description", "description:" in skill_md)
 test("MINIMAL_SKILL_MD contains H1 title", "# Session Knowledge" in skill_md)
 test("MINIMAL_SKILL_MD mentions briefing.py", "briefing.py" in skill_md)
+
+
+# ── 8b. Managed context cleanup helpers (issue #102) ─────────────────────────
+
+print("\n🧩 Managed context cleanup helpers")
+
+cleaned_text, removed_blocks = _install._remove_managed_context_blocks_from_text(
+    "before\n\n<!-- SESSION-KNOWLEDGE SK START -->\nmanaged content\n<!-- SESSION-KNOWLEDGE SK END -->\n\nafter\n"
+)
+test("managed context block removed from text", removed_blocks == 1)
+test("managed context cleanup preserves surrounding content", cleaned_text == "before\n\nafter\n")
+
+original_registry_context = _install.REGISTRY_PATH
+_install.REGISTRY_PATH = SCRATCH / "context-cleanup-registry.json"
+if _install.REGISTRY_PATH.exists():
+    _install.REGISTRY_PATH.unlink()
+
+context_project = SCRATCH / "context-cleanup-project"
+(context_project / ".github").mkdir(parents=True, exist_ok=True)
+copilot_instructions = context_project / ".github" / "copilot-instructions.md"
+copilot_instructions.write_text(
+    "header\n\n<!-- SESSION-KNOWLEDGE SK START -->\nmanaged content\n<!-- SESSION-KNOWLEDGE SK END -->\n\nfooter\n",
+    encoding="utf-8",
+)
+(context_project / "CLAUDE.md").write_text("claude user content\n", encoding="utf-8")
+_install._atomic_write_text(
+    _install.REGISTRY_PATH,
+    json.dumps({"projects": [str(context_project.resolve())]}, indent=2),
+)
+
+removed_files = _install._remove_registered_project_context_blocks(quiet=True)
+test("registered project cleanup removes managed context file blocks", removed_files == 1)
+test(
+    "registered project cleanup preserves non-managed file content",
+    copilot_instructions.read_text(encoding="utf-8") == "header\n\nfooter\n",
+)
+test(
+    "registered project cleanup leaves unrelated files untouched",
+    (context_project / "CLAUDE.md").read_text(encoding="utf-8") == "claude user content\n",
+)
+
+_install.REGISTRY_PATH = original_registry_context
 
 
 # ── 9. Editable install uninstall guard ───────────────────────────────────────
