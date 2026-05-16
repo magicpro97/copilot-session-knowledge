@@ -7,6 +7,11 @@ description: >
   "postToolUse", or wants automated safety rails for AI coding sessions. Also use when
   the user wants to enforce coding standards, block dangerous commands, protect secrets,
   gate commits, enforce TDD pipelines, or add any form of automated guardrails.
+handoffs:
+  - label: "Audit generated hooks"
+    skill: code-reviewer
+    prompt: "Review the generated hook scripts for safety gaps, broken assumptions, and enforcement holes."
+    send: true
 ---
 
 # Hook Creator

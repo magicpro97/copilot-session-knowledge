@@ -66,18 +66,24 @@ def _parse_skill_yml(text: str) -> dict:
       hooks:           (optional)
         before_plan: <str>
         after_implement: <str>
+      handoffs:        (optional)
+        - label: <str>
+          skill: <str>
+          prompt: <str>
+          send: <bool>
     """
-    result: dict = {}
     lines = text.splitlines()
-    i = 0
 
     def _strip_comment(s: str) -> str:
         # Remove inline YAML comments
-        in_q = False
+        in_double = False
+        in_single = False
         for idx, ch in enumerate(s):
-            if ch == '"':
-                in_q = not in_q
-            elif ch == "#" and not in_q:
+            if ch == '"' and not in_single:
+                in_double = not in_double
+            elif ch == "'" and not in_double:
+                in_single = not in_single
+            elif ch == "#" and not in_double and not in_single:
                 return s[:idx]
         return s
 
@@ -88,67 +94,102 @@ def _parse_skill_yml(text: str) -> dict:
             return s[1:-1]
         return s
 
-    while i < len(lines):
-        raw = lines[i]
-        stripped = raw.strip()
-        i += 1
+    def _parse_scalar(s: str):
+        s = _unquote(_strip_comment(s).strip())
+        low = s.lower()
+        if low == "true":
+            return True
+        if low == "false":
+            return False
+        try:
+            return int(s)
+        except ValueError:
+            return s
 
-        if not stripped or stripped.startswith("#"):
-            continue
+    def _parse_block(index: int, indent: int) -> tuple[object, int]:
+        mapping: dict[str, object] = {}
+        sequence: list[object] = []
+        mode: str | None = None
 
-        # Top-level key: value
-        if not raw.startswith(" ") and ":" in stripped:
-            key, _, val = stripped.partition(":")
+        while index < len(lines):
+            raw = lines[index]
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                index += 1
+                continue
+
+            current_indent = len(raw) - len(raw.lstrip(" "))
+            if current_indent < indent:
+                break
+            if current_indent > indent:
+                break
+
+            content = _strip_comment(raw[current_indent:]).strip()
+            if not content:
+                index += 1
+                continue
+
+            if content.startswith("- "):
+                if mode is None:
+                    mode = "sequence"
+                elif mode != "sequence":
+                    break
+
+                item_text = content[2:].strip()
+                index += 1
+
+                if not item_text:
+                    item, index = _parse_block(index, current_indent + 2)
+                    sequence.append(item)
+                    continue
+
+                if ":" in item_text:
+                    item_key, _, item_value = item_text.partition(":")
+                    item: dict[str, object] = {}
+                    item_key = item_key.strip()
+                    item_value = item_value.strip()
+                    if item_value:
+                        item[item_key] = _parse_scalar(item_value)
+                    else:
+                        child, index = _parse_block(index, current_indent + 4)
+                        item[item_key] = child
+
+                    extra, index = _parse_block(index, current_indent + 2)
+                    if isinstance(extra, dict):
+                        item.update(extra)
+                    sequence.append(item)
+                    continue
+
+                sequence.append(_parse_scalar(item_text))
+                continue
+
+            if ":" not in content:
+                index += 1
+                continue
+
+            if mode is None:
+                mode = "mapping"
+            elif mode != "mapping":
+                break
+
+            key, _, value = content.partition(":")
             key = key.strip()
-            val = _strip_comment(val).strip()
-            if val:
-                # Try int (unquoted)
-                try:
-                    result[key] = int(val)
-                except ValueError:
-                    result[key] = _unquote(val)
-            else:
-                # Block value — collect children
-                children: dict = {}
-                list_items: list = []
-                while i < len(lines):
-                    child_raw = lines[i]
-                    child_stripped = child_raw.strip()
-                    if not child_stripped or child_stripped.startswith("#"):
-                        i += 1
-                        continue
-                    indent = len(child_raw) - len(child_raw.lstrip())
-                    if indent == 0:
-                        break
-                    i += 1
-                    if child_stripped.startswith("- "):
-                        list_items.append(child_stripped[2:].strip())
-                    elif ":" in child_stripped:
-                        ck, _, cv = child_stripped.partition(":")
-                        cv = _strip_comment(cv).strip()
-                        # Sub-block (e.g. provides.commands)
-                        if not cv:
-                            sub_items: list = []
-                            while i < len(lines):
-                                sub_raw = lines[i]
-                                sub_stripped = sub_raw.strip()
-                                if not sub_stripped or sub_stripped.startswith("#"):
-                                    i += 1
-                                    continue
-                                sub_indent = len(sub_raw) - len(sub_raw.lstrip())
-                                if sub_indent <= indent:
-                                    break
-                                i += 1
-                                if sub_stripped.startswith("- "):
-                                    sub_items.append(sub_stripped[2:].strip())
-                            children[ck.strip()] = sub_items
-                        else:
-                            try:
-                                children[ck.strip()] = int(cv)
-                            except ValueError:
-                                children[ck.strip()] = _unquote(cv)
-                result[key] = children if children else (list_items if list_items else {})
-    return result
+            value = value.strip()
+            index += 1
+
+            if value:
+                mapping[key] = _parse_scalar(value)
+                continue
+
+            child, index = _parse_block(index, current_indent + 2)
+            mapping[key] = child
+
+        if mode == "sequence":
+            return sequence, index
+        return mapping, index
+
+    parsed, _ = _parse_block(0, 0)
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _validate_skill_yml(data: dict) -> list[str]:
@@ -182,6 +223,28 @@ def _validate_skill_yml(data: dict) -> list[str]:
     hooks = data.get("hooks", {})
     if hooks and not isinstance(hooks, dict):
         errors.append("'hooks' must be a mapping")
+
+    handoffs = data.get("handoffs", [])
+    if handoffs:
+        if not isinstance(handoffs, list):
+            errors.append("'handoffs' must be a list")
+        else:
+            for idx, handoff in enumerate(handoffs):
+                prefix = f"handoffs[{idx}]"
+                if not isinstance(handoff, dict):
+                    errors.append(f"{prefix} must be a mapping")
+                    continue
+
+                for field in ("label", "skill", "prompt", "send"):
+                    if field not in handoff:
+                        errors.append(f"{prefix}.{field} is required")
+
+                for field in ("label", "skill", "prompt"):
+                    if field in handoff and (not isinstance(handoff[field], str) or not handoff[field].strip()):
+                        errors.append(f"{prefix}.{field} must be a non-empty string")
+
+                if "send" in handoff and not isinstance(handoff["send"], bool):
+                    errors.append(f"{prefix}.send must be a boolean")
 
     return errors
 
@@ -273,6 +336,9 @@ def _list_official_skills() -> list[dict]:
                 data = _parse_skill_yml(skill_yml.read_text(encoding="utf-8"))
                 entry["commands"] = data.get("provides", {}).get("commands", [])
                 entry["sk_version"] = data.get("requires", {}).get("sk_version", "")
+                handoffs = data.get("handoffs", [])
+                if isinstance(handoffs, list) and handoffs:
+                    entry["handoffs"] = handoffs
             except Exception:
                 pass
         # Parse description from SKILL.md front-matter
@@ -283,6 +349,27 @@ def _list_official_skills() -> list[dict]:
                 break
         skills.append(entry)
     return skills
+
+
+def _format_handoff_brief(handoff: dict) -> str:
+    label = str(handoff.get("label") or handoff.get("skill") or "next-step")
+    skill = str(handoff.get("skill") or "unknown-skill")
+    mode = "auto" if handoff.get("send") else "suggest"
+    return f"{label} -> {skill} [{mode}]"
+
+
+def _print_handoff_suggestions(handoffs: list[dict]) -> None:
+    if not handoffs:
+        return
+    print("  Next skills:")
+    for handoff in handoffs:
+        label = str(handoff.get("label") or handoff.get("skill") or "Next step")
+        skill = str(handoff.get("skill") or "unknown-skill")
+        prompt = str(handoff.get("prompt") or "").strip()
+        mode = "auto" if handoff.get("send") else "suggest"
+        print(f"    - {label} -> {skill} ({mode})")
+        if prompt:
+            print(f"      {prompt}")
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +453,10 @@ def cmd_catalog(args: argparse.Namespace) -> int:
         cmds = ", ".join(s.get("commands", []))
         suffix = f"  [{cmds}]" if cmds else ""
         print(f"  [{marker}] {s['name']:<30} {desc[:60]}{suffix}")
+        handoffs = s.get("handoffs", [])
+        if handoffs:
+            summary = "; ".join(_format_handoff_brief(h) for h in handoffs)
+            print(f"      handoffs: {summary}")
 
     if installed:
         # Show community-installed skills not in official list
@@ -422,11 +513,15 @@ def _add_official(args: argparse.Namespace, project_root: Path, registry: dict, 
 
     # Validate skill.yml if present
     skill_yml_path = dest / "skill.yml"
+    handoffs: list[dict] = []
     if skill_yml_path.exists():
         data = _parse_skill_yml(skill_yml_path.read_text(encoding="utf-8"))
         errs = _validate_skill_yml(data)
         if errs:
             print(f"  ⚠  skill.yml validation warnings: {'; '.join(errs)}")
+        parsed_handoffs = data.get("handoffs", [])
+        if isinstance(parsed_handoffs, list):
+            handoffs = parsed_handoffs
 
     digest = _sha256_dir(dest)
     registry["skills"][name] = {
@@ -436,6 +531,7 @@ def _add_official(args: argparse.Namespace, project_root: Path, registry: dict, 
     }
     _save_registry(project_root, registry)
     print(f"  ✓ Installed '{name}' (digest: {digest[:16]}...)")
+    _print_handoff_suggestions(handoffs)
     return 0
 
 
@@ -540,6 +636,9 @@ def _add_community(args: argparse.Namespace, project_root: Path, registry: dict,
     }
     _save_registry(project_root, registry)
     print(f"  ✓ Installed community skill '{skill_name}' (digest: {digest[:16]}...)")
+    handoffs = yml_data.get("handoffs", [])
+    if isinstance(handoffs, list):
+        _print_handoff_suggestions(handoffs)
     return 0
 
 

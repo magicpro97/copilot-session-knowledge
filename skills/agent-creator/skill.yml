@@ -7,3 +7,12 @@ requires:
 hooks:
   before_plan: "review existing .agent.md files if present"
   after_implement: "validate generated .agent.md against project conventions"
+handoffs:
+  - label: "Add quality hooks"
+    skill: hook-creator
+    prompt: "Generate project-specific hooks that enforce the workflow the new agents describe."
+    send: false
+  - label: "Review generated agents"
+    skill: code-reviewer
+    prompt: "Review the generated .agent.md files for correctness gaps before the team relies on them."
+    send: false

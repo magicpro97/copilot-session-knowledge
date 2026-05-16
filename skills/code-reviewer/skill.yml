@@ -4,3 +4,8 @@ provides:
     - code-reviewer
 requires:
   sk_version: ">=1.0.0"
+handoffs:
+  - label: "Backfill missing guardrails"
+    skill: hook-creator
+    prompt: "If the review uncovered missing safety rails or workflow enforcement, generate hooks to close those gaps."
+    send: false
