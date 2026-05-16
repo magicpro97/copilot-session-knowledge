@@ -63,6 +63,31 @@ _CLARIFY_STORE_PATH = SESSION_STATE / "clarifications.json"
 _CONSTITUTION_RELATIVE_PATH = Path(".copilot") / "constitution.md"
 _CONSTITUTION_RULE_RE = re.compile(r"\s*\[rule:[a-z0-9-]+\]\s*", re.IGNORECASE)
 
+
+def _emit_knowledge_event_fail_open(event_type: str, data: dict) -> None:
+    try:
+        events_script = Path(__file__).with_name("events.py")
+        if not events_script.is_file():
+            return
+        subprocess.run(
+            [
+                sys.executable,
+                str(events_script),
+                "append",
+                event_type,
+                "--data",
+                json.dumps(data, ensure_ascii=False),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+    except Exception:
+        return
+
+
 # Read-side filter: suppress Wave-style progress/status-note entries that were
 # mistakenly stored as knowledge (WaveN verification, rust-wave tentacle reports).
 # These are project status updates, not actionable knowledge. Applied in
@@ -3502,6 +3527,16 @@ def main():
                 hit_count=task_meta.get("hit_count", 0),
                 output_chars=len(output),
             )
+        _emit_knowledge_event_fail_open(
+            "briefing_served",
+            {
+                "query": task_id,
+                "surface": task_meta.get("surface", "task") if isinstance(task_meta, dict) else "task",
+                "mode": task_meta.get("mode", "auto") if isinstance(task_meta, dict) else "auto",
+                "hit_count": task_meta.get("hit_count", 0) if isinstance(task_meta, dict) else 0,
+                "output_chars": len(output),
+            },
+        )
         print(output)
         return
 
@@ -3695,6 +3730,16 @@ def main():
             selected_entry_ids=output_meta.get("selected_entry_ids", []),
             hit_count=output_meta.get("hit_count", 0),
             output_chars=len(output),
+        )
+        _emit_knowledge_event_fail_open(
+            "briefing_served",
+            {
+                "query": output_meta.get("raw_query", query),
+                "surface": output_meta.get("surface", "standard"),
+                "mode": output_meta.get("mode", mode),
+                "hit_count": output_meta.get("hit_count", 0),
+                "output_chars": len(output),
+            },
         )
 
     print(output)

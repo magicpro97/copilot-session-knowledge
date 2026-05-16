@@ -17,13 +17,14 @@ Usage:
 Cross-platform: Windows, macOS, Linux (WSL). Pure Python stdlib.
 """
 
-import sqlite3
-import os
-import sys
-import shutil
 import json
-from pathlib import Path
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
 from datetime import datetime
+from pathlib import Path
 
 # Fix Windows console encoding
 if os.name == "nt":
@@ -36,6 +37,30 @@ if os.name == "nt":
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
 SYNC_CONFIG_PATH = Path.home() / ".copilot" / "tools" / "sync-config.json"
+
+
+def _emit_knowledge_event_fail_open(event_type: str, data: dict) -> None:
+    try:
+        events_script = Path(__file__).with_name("events.py")
+        if not events_script.is_file():
+            return
+        subprocess.run(
+            [
+                sys.executable,
+                str(events_script),
+                "append",
+                event_type,
+                "--data",
+                json.dumps(data, ensure_ascii=False),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+    except Exception:
+        return
 
 
 def ensure_sync_runtime_schema(db: sqlite3.Connection):
@@ -93,32 +118,35 @@ def ensure_sync_runtime_schema(db: sqlite3.Connection):
             stable_id_column TEXT DEFAULT ''
         );
     """)
-    db.executemany("""
+    db.executemany(
+        """
         INSERT INTO sync_table_policies (table_name, sync_scope, stable_id_column)
         VALUES (?, ?, ?)
         ON CONFLICT(table_name) DO UPDATE SET
             sync_scope = excluded.sync_scope,
             stable_id_column = excluded.stable_id_column
-    """, [
-        ("sessions", "canonical", "id"),
-        ("documents", "canonical", "stable_id"),
-        ("sections", "canonical", "stable_id"),
-        ("knowledge_entries", "canonical", "stable_id"),
-        ("knowledge_relations", "canonical", "stable_id"),
-        ("entity_relations", "canonical", "stable_id"),
-        ("search_feedback", "canonical", "stable_id"),
-        ("recall_events", "upload_only", ""),
-        ("entry_recall_stats", "upload_only", ""),
-        ("entry_recall_day_log", "upload_only", ""),
-        ("entry_recall_query_log", "upload_only", ""),
-        ("knowledge_fts", "local_only", ""),
-        ("ke_fts", "local_only", ""),
-        ("sessions_fts", "local_only", ""),
-        ("event_offsets", "local_only", ""),
-        ("embeddings", "local_only", ""),
-        ("embedding_meta", "local_only", ""),
-        ("tfidf_model", "local_only", ""),
-    ])
+    """,
+        [
+            ("sessions", "canonical", "id"),
+            ("documents", "canonical", "stable_id"),
+            ("sections", "canonical", "stable_id"),
+            ("knowledge_entries", "canonical", "stable_id"),
+            ("knowledge_relations", "canonical", "stable_id"),
+            ("entity_relations", "canonical", "stable_id"),
+            ("search_feedback", "canonical", "stable_id"),
+            ("recall_events", "upload_only", ""),
+            ("entry_recall_stats", "upload_only", ""),
+            ("entry_recall_day_log", "upload_only", ""),
+            ("entry_recall_query_log", "upload_only", ""),
+            ("knowledge_fts", "local_only", ""),
+            ("ke_fts", "local_only", ""),
+            ("sessions_fts", "local_only", ""),
+            ("event_offsets", "local_only", ""),
+            ("embeddings", "local_only", ""),
+            ("embedding_meta", "local_only", ""),
+            ("tfidf_model", "local_only", ""),
+        ],
+    )
     db.execute("""
         INSERT OR IGNORE INTO sync_state (key, value)
         VALUES ('local_replica_id', '')
@@ -184,15 +212,17 @@ def auto_detect_sources() -> list[Path]:
         # Also try to get actual WSL username
         try:
             import subprocess
-            result = subprocess.run(
-                ["wsl", "bash", "-c", "echo $HOME"],
-                capture_output=True, text=True, timeout=5
-            )
+
+            result = subprocess.run(["wsl", "bash", "-c", "echo $HOME"], capture_output=True, text=True, timeout=5)
             if result.returncode == 0:
                 wsl_home = result.stdout.strip()
                 # Validate WSL home path: must start with /home/ and contain no traversal
-                if (wsl_home.startswith("/home/") and ".." not in wsl_home
-                        and "\n" not in wsl_home and len(wsl_home) < 256):
+                if (
+                    wsl_home.startswith("/home/")
+                    and ".." not in wsl_home
+                    and "\n" not in wsl_home
+                    and len(wsl_home) < 256
+                ):
                     wsl_db = Path(r"\\wsl$\Ubuntu" + wsl_home) / ".copilot" / "session-state" / "knowledge.db"
                     candidates.append(wsl_db)
                 else:
@@ -284,8 +314,7 @@ def get_db_stats(db_path: Path) -> dict:
     return stats
 
 
-def sync_from_source(target_db: sqlite3.Connection, source_path: Path,
-                     dry_run: bool = False) -> dict:
+def sync_from_source(target_db: sqlite3.Connection, source_path: Path, dry_run: bool = False) -> dict:
     """Merge data from source knowledge.db into target.
 
     Uses ATTACH DATABASE + INSERT OR IGNORE for safe dedup merge.
@@ -296,6 +325,7 @@ def sync_from_source(target_db: sqlite3.Connection, source_path: Path,
 
     # SQLite can't ATTACH over UNC paths or network shares — copy to temp
     import tempfile
+
     temp_copy = None
     actual_path = source_path
     source_str = str(source_path)
@@ -306,7 +336,7 @@ def sync_from_source(target_db: sqlite3.Connection, source_path: Path,
         fd, tmp_name = tempfile.mkstemp(suffix=".db", prefix="sync_src_", dir=str(tmp_dir))
         os.close(fd)
         temp_copy = Path(tmp_name)
-        print(f"    Copying to temp (UNC path)...")
+        print("    Copying to temp (UNC path)...")
         shutil.copy2(source_path, temp_copy)
         actual_path = temp_copy
 
@@ -318,18 +348,17 @@ def sync_from_source(target_db: sqlite3.Connection, source_path: Path,
         target_db.execute(f"ATTACH DATABASE ? AS {source_alias}", (str(actual_path),))
 
         # Check source schema has necessary tables
-        src_tables = [r[0] for r in target_db.execute(
-            f"SELECT name FROM {source_alias}.sqlite_master WHERE type='table'"
-        ).fetchall()]
+        src_tables = [
+            r[0]
+            for r in target_db.execute(f"SELECT name FROM {source_alias}.sqlite_master WHERE type='table'").fetchall()
+        ]
 
         if "sessions" not in src_tables:
-            print(f"  Warning: source has no 'sessions' table, skipping")
+            print("  Warning: source has no 'sessions' table, skipping")
             return results
 
         # Check if source has 'source' column
-        src_cols = {c[1] for c in target_db.execute(
-            f"PRAGMA {source_alias}.table_info(sessions)"
-        ).fetchall()}
+        src_cols = {c[1] for c in target_db.execute(f"PRAGMA {source_alias}.table_info(sessions)").fetchall()}
         has_source = "source" in src_cols
 
         # 1. Sync sessions
@@ -359,9 +388,7 @@ def sync_from_source(target_db: sqlite3.Connection, source_path: Path,
 
         # 2. Sync documents (dedup by file_path UNIQUE)
         if "documents" in src_tables:
-            src_doc_cols = {c[1] for c in target_db.execute(
-                f"PRAGMA {source_alias}.table_info(documents)"
-            ).fetchall()}
+            src_doc_cols = {c[1] for c in target_db.execute(f"PRAGMA {source_alias}.table_info(documents)").fetchall()}
             has_doc_source = "source" in src_doc_cols
 
             if dry_run:
@@ -401,16 +428,22 @@ def sync_from_source(target_db: sqlite3.Connection, source_path: Path,
 
             section_count = 0
             for src_doc_id, tgt_doc_id in doc_id_map.items():
-                src_sections = target_db.execute(f"""
+                src_sections = target_db.execute(
+                    f"""
                     SELECT section_name, content FROM {source_alias}.sections
                     WHERE document_id = ?
-                """, (src_doc_id,)).fetchall()
+                """,
+                    (src_doc_id,),
+                ).fetchall()
                 for section_name, content in src_sections:
                     try:
-                        target_db.execute("""
+                        target_db.execute(
+                            """
                             INSERT OR IGNORE INTO sections (document_id, section_name, content)
                             VALUES (?, ?, ?)
-                        """, (tgt_doc_id, section_name, content))
+                        """,
+                            (tgt_doc_id, section_name, content),
+                        )
                         section_count += target_db.execute("SELECT changes()").fetchone()[0]
                     except sqlite3.IntegrityError:
                         pass
@@ -422,9 +455,9 @@ def sync_from_source(target_db: sqlite3.Connection, source_path: Path,
 
         # 4. Sync knowledge_entries (dedup by category+title+session_id UNIQUE)
         if "knowledge_entries" in src_tables:
-            src_ke_cols = {c[1] for c in target_db.execute(
-                f"PRAGMA {source_alias}.table_info(knowledge_entries)"
-            ).fetchall()}
+            src_ke_cols = {
+                c[1] for c in target_db.execute(f"PRAGMA {source_alias}.table_info(knowledge_entries)").fetchall()
+            }
             has_ke_source = "source" in src_ke_cols
 
             if dry_run:
@@ -604,9 +637,9 @@ def rebuild_fts(db: sqlite3.Connection):
 
 def show_stats():
     """Show sync info for all detectable DBs."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("  Knowledge DB Sync Info")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     # Target DB
     if DB_PATH.exists():
@@ -628,7 +661,7 @@ def show_stats():
     # Source DBs
     sources = auto_detect_sources()
     if sources:
-        print(f"\n  Detected sources:")
+        print("\n  Detected sources:")
         for s in sources:
             stats = get_db_stats(s)
             print(f"\n    {s}")
@@ -637,8 +670,8 @@ def show_stats():
             print(f"      Documents: {stats.get('documents', '?')}")
             print(f"      Knowledge: {stats.get('knowledge_entries', '?')}")
     else:
-        print(f"\n  No remote sources auto-detected.")
-        print(f"  Use --sources <path> to specify manually.")
+        print("\n  No remote sources auto-detected.")
+        print("  Use --sources <path> to specify manually.")
 
 
 def main():
@@ -667,13 +700,16 @@ def main():
         db = sqlite3.connect(str(DB_PATH))
         try:
             ensure_sync_runtime_schema(db)
-            db.execute("""
+            db.execute(
+                """
                 INSERT INTO sync_state (key, value)
                 VALUES ('last_repair_sync_at', ?)
                 ON CONFLICT(key) DO UPDATE SET
                     value = excluded.value,
                     updated_at = datetime('now')
-            """, (datetime.utcnow().replace(microsecond=0).isoformat() + "Z",))
+            """,
+                (datetime.utcnow().replace(microsecond=0).isoformat() + "Z",),
+            )
             db.commit()
             if repair_sync:
                 print("✓ sync runtime schema repaired/validated")
@@ -709,9 +745,9 @@ def main():
     # Ensure target DB exists with proper schema
     sys.path.insert(0, str(Path(__file__).parent))
     import importlib.util
+
     spec = importlib.util.spec_from_file_location(
-        "build_session_index",
-        Path(__file__).parent / "build-session-index.py"
+        "build_session_index", Path(__file__).parent / "build-session-index.py"
     )
     bsi = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bsi)
@@ -733,7 +769,9 @@ def main():
     for source in valid_sources:
         print(f"\n  Source: {source}")
         src_stats = get_db_stats(source)
-        print(f"    ({src_stats.get('sessions', '?')} sessions, {src_stats.get('knowledge_entries', '?')} knowledge entries)")
+        print(
+            f"    ({src_stats.get('sessions', '?')} sessions, {src_stats.get('knowledge_entries', '?')} knowledge entries)"
+        )
 
         results = sync_from_source(db, source, dry_run=dry_run)
         for k, v in results.items():
@@ -744,23 +782,35 @@ def main():
     if not dry_run:
         # Rebuild FTS indexes
         rebuild_fts(db)
-        db.execute("""
+        db.execute(
+            """
             INSERT INTO sync_state (key, value)
             VALUES ('last_manual_merge_at', ?)
             ON CONFLICT(key) DO UPDATE SET
                 value = excluded.value,
                 updated_at = datetime('now')
-        """, (datetime.utcnow().replace(microsecond=0).isoformat() + "Z",))
+        """,
+            (datetime.utcnow().replace(microsecond=0).isoformat() + "Z",),
+        )
         db.commit()
+        _emit_knowledge_event_fail_open(
+            "sync_pushed",
+            {
+                "source_count": len(valid_sources),
+                "sources": [str(source) for source in valid_sources],
+                "totals": total,
+                "synced_rows": sum(total.values()),
+            },
+        )
 
-    print(f"\n{'='*40}")
+    print(f"\n{'=' * 40}")
     print(f"  Total {'(would sync)' if dry_run else 'synced'}:")
     for k, v in total.items():
         if v > 0:
             print(f"    {k}: +{v}")
     if sum(total.values()) == 0:
-        print(f"    (no new data to sync)")
-    print(f"{'='*40}")
+        print("    (no new data to sync)")
+    print(f"{'=' * 40}")
 
     db.close()
 

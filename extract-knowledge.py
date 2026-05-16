@@ -22,6 +22,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -37,6 +38,30 @@ if os.name == "nt":
 
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
+
+
+def _emit_knowledge_event_fail_open(event_type: str, data: dict) -> None:
+    try:
+        events_script = Path(__file__).with_name("events.py")
+        if not events_script.is_file():
+            return
+        subprocess.run(
+            [
+                sys.executable,
+                str(events_script),
+                "append",
+                event_type,
+                "--data",
+                json.dumps(data, ensure_ascii=False),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+    except Exception:
+        return
 
 
 def _stable_sha256(*parts) -> str:
@@ -2102,6 +2127,20 @@ def main():
     extracted, skipped, deduped, relations_count = extract_from_sections(db, session_ids=session_ids)
     print(f"Extracted {extracted} entries ({skipped} duplicates skipped, {deduped} deduped by hash)")
     print(f"Extracted {relations_count} relations")
+    avg_conf_row = db.execute("SELECT AVG(confidence) FROM knowledge_entries WHERE confidence IS NOT NULL").fetchone()
+    avg_confidence = round(float(avg_conf_row[0]), 4) if avg_conf_row and avg_conf_row[0] is not None else None
+    if extracted > 0:
+        _emit_knowledge_event_fail_open(
+            "skill_extracted",
+            {
+                "extracted": extracted,
+                "skipped": skipped,
+                "deduped": deduped,
+                "relations": relations_count,
+                "session_count": len(session_ids) if session_ids else 0,
+                "confidence": avg_confidence,
+            },
+        )
 
     # Clean up stale embeddings and orphan relations
     try:

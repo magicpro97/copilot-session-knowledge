@@ -334,7 +334,9 @@ import importlib.util as _ilu
 
 
 def _load_bsi_module():
-    spec = _ilu.spec_from_file_location("build_session_index_module", Path(__file__).parent.parent / "build-session-index.py")
+    spec = _ilu.spec_from_file_location(
+        "build_session_index_module", Path(__file__).parent.parent / "build-session-index.py"
+    )
     mod = _ilu.module_from_spec(spec)
     # Temporarily set sys.argv so main() won't be triggered
     _orig_argv = sys.argv[:]
@@ -603,8 +605,7 @@ def _test_copilot_two_phase_backfills_metadata():
                 os.environ["COPILOT_SESSION_STATE"] = original
 
     row = db.execute(
-        "SELECT source, file_mtime, indexed_at_r, fts_indexed_at, event_count_estimate "
-        "FROM sessions WHERE id = ?",
+        "SELECT source, file_mtime, indexed_at_r, fts_indexed_at, event_count_estimate FROM sessions WHERE id = ?",
         (session_id,),
     ).fetchone()
     assert row is not None, "Copilot two-phase should create/update the sessions row"
@@ -640,7 +641,9 @@ import importlib.util as _ilu3
 
 
 def _load_extract_knowledge_module():
-    spec = _ilu3.spec_from_file_location("extract_knowledge_module", Path(__file__).parent.parent / "extract-knowledge.py")
+    spec = _ilu3.spec_from_file_location(
+        "extract_knowledge_module", Path(__file__).parent.parent / "extract-knowledge.py"
+    )
     mod = _ilu3.module_from_spec(spec)
     _orig_argv = sys.argv[:]
     sys.argv = ["extract-knowledge.py", "--help"]  # prevent main() side effects
@@ -1056,9 +1059,7 @@ def _test_ke_fts_incremental_sync():
         VALUES ('sess-untouched', 'pattern', 'Untouched pattern', 'original content', 1, 0.8,
                 '2024-01-01', '2024-01-01', 'pattern/untouched', 'ht0', 1, '[]', '')
     """)
-    untouched_id = db.execute(
-        "SELECT last_insert_rowid()"
-    ).fetchone()[0]
+    untouched_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
     db.execute(
         "INSERT INTO ke_fts (rowid, title, content, tags, category, wing, room, facts) "
         "VALUES (?, 'Untouched pattern', 'original content', '', 'pattern', '', '', '[]')",
@@ -1072,8 +1073,7 @@ def _test_ke_fts_incremental_sync():
         VALUES ('sess-target', 1, 'checkpoint', 'Doc', '/fake/target')
     """).lastrowid
     db.execute(
-        "INSERT INTO sections (document_id, section_name, content) "
-        "VALUES (?, 'technical_details', ?)",
+        "INSERT INTO sections (document_id, section_name, content) VALUES (?, 'technical_details', ?)",
         (doc_id, "Always use parameterized SQL queries for reliable data access."),
     )
     db.commit()
@@ -1099,17 +1099,13 @@ def _test_ke_fts_incremental_sync():
     )
 
     # ke_fts row for 'sess-target' must exist (the new entry was indexed)
-    target_ke_id = db.execute(
-        "SELECT id FROM knowledge_entries WHERE session_id = 'sess-target'"
-    ).fetchone()
+    target_ke_id = db.execute("SELECT id FROM knowledge_entries WHERE session_id = 'sess-target'").fetchone()
     assert target_ke_id is not None, "sess-target knowledge_entries row must exist after extraction"
     target_fts = db.execute(
         "SELECT COUNT(*) FROM ke_fts WHERE rowid = ?",
         (target_ke_id[0],),
     ).fetchone()[0]
-    assert target_fts == 1, (
-        f"ke_fts row for sess-target entry (rowid={target_ke_id[0]}) must be present"
-    )
+    assert target_fts == 1, f"ke_fts row for sess-target entry (rowid={target_ke_id[0]}) must be present"
 
 
 test("I16: ke_fts incremental sync only updates affected session FTS rows", _test_ke_fts_incremental_sync)
@@ -1155,7 +1151,10 @@ def _test_extract_session_ids_from_paths():
     assert result == sorted(result), f"Result must be sorted: {result}"
 
 
-test("I17: _extract_session_ids_from_paths recognises Copilot and Claude path layouts", _test_extract_session_ids_from_paths)
+test(
+    "I17: _extract_session_ids_from_paths recognises Copilot and Claude path layouts",
+    _test_extract_session_ids_from_paths,
+)
 
 
 # ──────────────────────────────────────────────
@@ -1202,9 +1201,7 @@ def _test_stable_id_topic_key_drift():
 
     # When topic_key is empty, both formulas agree — learn-path invariant preserved.
     extract_empty_tk = sha256("knowledge", session_id, category, title, "")
-    assert extract_empty_tk == learn_stable, (
-        "Empty topic_key must match learn-path formula — invariant preserved"
-    )
+    assert extract_empty_tk == learn_stable, "Empty topic_key must match learn-path formula — invariant preserved"
 
 
 test("I18: stable_id topic_key drift fix — extract-path differs from learn-path", _test_stable_id_topic_key_drift)
@@ -1240,11 +1237,10 @@ def _test_content_hash_stability():
     assert h4 != h1, "Different title must produce different content_hash"
 
     # Whitespace normalisation: extra spaces in content[:200] collapse.
-    h5 = _ek._compute_content_hash(category, title, "Always use ?  placeholders instead of string concatenation to prevent SQL injection.")
-    assert h5 == h1, (
-        "content_hash must normalise whitespace in content[:200]; "
-        f"got {h5!r} vs {h1!r}"
+    h5 = _ek._compute_content_hash(
+        category, title, "Always use ?  placeholders instead of string concatenation to prevent SQL injection."
     )
+    assert h5 == h1, f"content_hash must normalise whitespace in content[:200]; got {h5!r} vs {h1!r}"
 
 
 test("I19: content hash stability — deterministic 16-char hex, category/title-sensitive", _test_content_hash_stability)
@@ -1281,22 +1277,21 @@ def _test_watch_coexistence_python_deduplicates_native_entries():
         "This is a best practice convention to prevent injection attacks. "
         "Make sure to apply this pattern consistently across all database calls."
     )
-    db.execute("""
+    db.execute(
+        """
         INSERT INTO sections (document_id, section_name, content)
         VALUES (?, 'technical_details', ?)
-    """, (doc_id, chunk))
+    """,
+        (doc_id, chunk),
+    )
     db.commit()
 
     # First: let Python extract normally to learn what hash it would generate.
     extracted_first, *_ = _ek.extract_from_sections(db)
-    assert extracted_first > 0, (
-        f"First pass must extract at least 1 entry; got extracted={extracted_first}"
-    )
+    assert extracted_first > 0, f"First pass must extract at least 1 entry; got extracted={extracted_first}"
 
     # Verify content_hash was set on the inserted entry.
-    entry = db.execute(
-        "SELECT content_hash, topic_key, stable_id FROM knowledge_entries LIMIT 1"
-    ).fetchone()
+    entry = db.execute("SELECT content_hash, topic_key, stable_id FROM knowledge_entries LIMIT 1").fetchone()
     assert entry is not None, "Entry must exist after first extract"
     assert entry["content_hash"] is not None and len(entry["content_hash"]) == 16, (
         f"content_hash must be 16-char hex; got {entry['content_hash']!r}"
@@ -1310,8 +1305,7 @@ def _test_watch_coexistence_python_deduplicates_native_entries():
     # Python must dedup (skip) them, not insert duplicates.
     extracted_second, skipped_second, deduped_second, *_ = _ek.extract_from_sections(db)
     assert extracted_second == 0, (
-        f"Second pass (simulating post-native Python run) must extract 0 new entries; "
-        f"got {extracted_second}"
+        f"Second pass (simulating post-native Python run) must extract 0 new entries; got {extracted_second}"
     )
     assert deduped_second > 0 or skipped_second > 0, (
         "Second pass must dedup or skip all entries (content_hash guard); "
@@ -1322,8 +1316,7 @@ def _test_watch_coexistence_python_deduplicates_native_entries():
     count = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
     first_count = extracted_first  # baseline
     assert count == first_count, (
-        f"No duplicate rows must be inserted on second pass; "
-        f"expected {first_count}, got {count}"
+        f"No duplicate rows must be inserted on second pass; expected {first_count}, got {count}"
     )
 
 
@@ -1358,9 +1351,7 @@ def _test_relation_stable_id_parity():
     expected = sha256("knowledge_relation", src, tgt, rtype)
     got = _ek._knowledge_relation_stable_id(src, tgt, rtype)
     assert got == expected, f"_knowledge_relation_stable_id must match formula; got {got!r} vs {expected!r}"
-    assert len(got) == 64 and all(c in "0123456789abcdef" for c in got), (
-        f"stable_id must be 64-char hex; got {got!r}"
-    )
+    assert len(got) == 64 and all(c in "0123456789abcdef" for c in got), f"stable_id must be 64-char hex; got {got!r}"
 
     # Empty stable IDs (fallback case) — Python treats them as "".
     got_empty = _ek._knowledge_relation_stable_id("", "", "SAME_SESSION")
@@ -1396,8 +1387,18 @@ def _test_extract_relations_deterministic_types():
                 confidence, first_seen, last_seen, source, content_hash, revision_count,
                 occurrence_count, est_tokens, source_section)
                VALUES (?, ?, ?, ?, ?, ?, ?, 0.7, ?, ?, 'copilot', ?, 1, 1, 0, '')""",
-            (session_id, category, title, f"Content for {title}", tags, topic_key,
-             stable, now, now, f"hash-{title[:8]}"),
+            (
+                session_id,
+                category,
+                title,
+                f"Content for {title}",
+                tags,
+                topic_key,
+                stable,
+                now,
+                now,
+                f"hash-{title[:8]}",
+            ),
         )
         db.commit()
 
@@ -1422,9 +1423,7 @@ def _test_extract_relations_deterministic_types():
 
     types = {row[0] for row in db.execute("SELECT DISTINCT relation_type FROM knowledge_relations")}
     for rtype in ("SAME_SESSION", "SAME_TOPIC", "TAG_OVERLAP", "RESOLVED_BY"):
-        assert rtype in types, (
-            f"extract_relations must produce {rtype}; found types: {types}"
-        )
+        assert rtype in types, f"extract_relations must produce {rtype}; found types: {types}"
 
     # stable_id for every relation must be 64-char hex.
     for row in db.execute("SELECT stable_id FROM knowledge_relations"):
@@ -1474,8 +1473,7 @@ def _test_residual_only_skips_entry_extraction():
 
     count_after = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
     assert count_after == count_before, (
-        f"_run_residual_work must NOT insert new entries; "
-        f"before={count_before}, after={count_after}"
+        f"_run_residual_work must NOT insert new entries; before={count_before}, after={count_after}"
     )
 
 
@@ -1511,8 +1509,7 @@ def _test_watch_routing_boundary():
                 confidence, first_seen, last_seen, source, content_hash, revision_count,
                 occurrence_count, est_tokens, source_section)
                VALUES (?, ?, ?, ?, ?, ?, ?, 0.7, ?, ?, 'copilot', ?, 1, 1, 0, '')""",
-            (session_id, category, title, f"Content {title}", tags, topic_key,
-             stable, now, now, f"h-{title[:6]}"),
+            (session_id, category, title, f"Content {title}", tags, topic_key, stable, now, now, f"h-{title[:6]}"),
         )
         db.commit()
 
@@ -1525,8 +1522,7 @@ def _test_watch_routing_boundary():
 
     entry_count_after_relations = db.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
     assert entry_count_after_relations == 2, (
-        f"extract_relations must NOT add knowledge_entries rows; "
-        f"got {entry_count_after_relations}"
+        f"extract_relations must NOT add knowledge_entries rows; got {entry_count_after_relations}"
     )
 
     # Step 2: _run_residual_work (simulates Python --residual-only after Rust).
@@ -1540,9 +1536,7 @@ def _test_watch_routing_boundary():
 
     # RESOLVED_BY must be present (Rust extract_relations equivalent).
     types = {row[0] for row in db.execute("SELECT DISTINCT relation_type FROM knowledge_relations")}
-    assert "RESOLVED_BY" in types, (
-        f"RESOLVED_BY must be present after extract_relations; found: {types}"
-    )
+    assert "RESOLVED_BY" in types, f"RESOLVED_BY must be present after extract_relations; found: {types}"
 
 
 test(
@@ -1650,6 +1644,41 @@ test(
 test(
     "I27: _run_semantic_proximity is a public callable on extract-knowledge module",
     _test_semantic_proximity_function_exists,
+)
+
+
+def _test_main_skips_skill_extracted_event_when_no_entries() -> None:
+    """I28: main() must not emit skill_extracted when extract_from_sections returns 0."""
+    import tempfile
+
+    emitted: list[tuple[tuple, dict]] = []
+    orig_db_path = _ek.DB_PATH
+    orig_extract = _ek.extract_from_sections
+    orig_emit = _ek._emit_knowledge_event_fail_open
+    orig_show_stats = _ek.show_stats
+    orig_argv = sys.argv[:]
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "knowledge.db"
+            db_path.touch()
+            _ek.DB_PATH = db_path
+            _ek.extract_from_sections = lambda db, session_ids=None: (0, 0, 0, 0)
+            _ek._emit_knowledge_event_fail_open = lambda *args, **kwargs: emitted.append((args, kwargs))
+            _ek.show_stats = lambda db: None
+            sys.argv = ["extract-knowledge.py"]
+            _ek.main()
+    finally:
+        _ek.DB_PATH = orig_db_path
+        _ek.extract_from_sections = orig_extract
+        _ek._emit_knowledge_event_fail_open = orig_emit
+        _ek.show_stats = orig_show_stats
+        sys.argv = orig_argv
+    assert emitted == [], f"skill_extracted must not emit when extracted=0; got {emitted!r}"
+
+
+test(
+    "I28: main() skips skill_extracted emit when no new entries were extracted",
+    _test_main_skips_skill_extracted_event_when_no_entries,
 )
 
 
