@@ -6030,7 +6030,7 @@ class TestHandoffContract(unittest.TestCase):
     """Tests for optional structured handoff STATUS and Changed: receipts.
 
     Covers:
-      - Valid STATUS allowlist (DONE, BLOCKED, TOO_BIG, AMBIGUOUS, REGRESSED)
+      - Valid STATUS allowlist (DONE, BLOCKED, TOO_BIG, AMBIGUOUS, REGRESSED, scope reclassification)
       - Invalid status rejection
       - Changed: receipts written by cmd_handoff
       - cmd_complete extracts latest STATUS and all Changed: receipts into meta.json
@@ -6116,6 +6116,22 @@ class TestHandoffContract(unittest.TestCase):
             T.cmd_handoff(args)
         content = self._read_handoff("ho-regressed")
         self.assertIn("STATUS: REGRESSED", content)
+
+    def test_valid_status_scope_escalation(self):
+        make_tentacle("ho-scope-up", self.base)
+        args = self._handoff_args("ho-scope-up", "Need a split", status=T.SCOPE_ESCALATION_STATUS)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-scope-up")
+        self.assertIn(f"STATUS: {T.SCOPE_ESCALATION_STATUS}", content)
+
+    def test_valid_status_scope_reduction(self):
+        make_tentacle("ho-scope-down", self.base)
+        args = self._handoff_args("ho-scope-down", "Finish early", status=T.SCOPE_REDUCTION_STATUS)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            T.cmd_handoff(args)
+        content = self._read_handoff("ho-scope-down")
+        self.assertIn(f"STATUS: {T.SCOPE_REDUCTION_STATUS}", content)
 
     # -- Invalid status rejection --
 
@@ -6347,6 +6363,117 @@ class TestHandoffContract(unittest.TestCase):
                 T.cmd_complete(args)
         combined = "\n".join(captured)
         self.assertIn("TRIAGE", combined)
+
+    def test_reclassification_signal_on_scope_escalation(self):
+        make_tentacle("ho-reclass-up", self.base)
+        args = self._handoff_args(
+            "ho-reclass-up",
+            "Need split",
+            status=T.SCOPE_ESCALATION_STATUS,
+            changed_file=["src/a.py", "src/b.py", "src/c.py", "src/d.py", "src/e.py"],
+        )
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_handoff(args)
+        combined = "\n".join(captured)
+        self.assertIn("RECLASSIFICATION", combined)
+        self.assertIn("split follow-up tentacles", combined)
+        self.assertIn(T.SCOPE_ESCALATION_STATUS, combined)
+
+    def test_reclassification_signal_on_scope_reduction(self):
+        make_tentacle("ho-reclass-down", self.base)
+        args = self._handoff_args(
+            "ho-reclass-down",
+            "Small lane",
+            status=T.SCOPE_REDUCTION_STATUS,
+            changed_file=["src/a.py", "tests/test_a.py"],
+        )
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_handoff(args)
+        combined = "\n".join(captured)
+        self.assertIn("RECLASSIFICATION", combined)
+        self.assertIn("complete-early", combined)
+        self.assertIn(T.SCOPE_REDUCTION_STATUS, combined)
+
+    def test_complete_scope_escalation_creates_split_followups(self):
+        parent_dir = make_tentacle("ho-complete-scope-up", self.base)
+        shared_worktree = self.base / "shared-worktree"
+        shared_worktree.mkdir()
+
+        meta = self._read_meta("ho-complete-scope-up")
+        meta["worktree"] = {"prepared": True, "path": str(shared_worktree), "reused": True}
+        (parent_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        handoff_path = parent_dir / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nNeed split\n"
+            f"STATUS: {T.SCOPE_ESCALATION_STATUS}\n"
+            "Changed: src/a.py\nChanged: src/b.py\nChanged: src/c.py\nChanged: src/d.py\nChanged: src/e.py\n",
+            encoding="utf-8",
+        )
+
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_complete(self._complete_args("ho-complete-scope-up"))
+
+        meta = self._read_meta("ho-complete-scope-up")
+        record = meta.get("reclassification") or {}
+        self.assertEqual(record.get("decision"), "split_followups")
+        self.assertEqual(record.get("heuristic_suggestion"), T.SCOPE_ESCALATION_STATUS)
+        self.assertTrue(record.get("heuristic_match"))
+        followups = record.get("followup_tentacles") or []
+        self.assertEqual(len(followups), 2)
+
+        flattened_scope = []
+        for name in followups:
+            child_meta = self._read_meta(name)
+            flattened_scope.extend(child_meta.get("scope", []))
+            self.assertEqual(child_meta.get("scope_reclassification_parent"), "ho-complete-scope-up")
+            self.assertEqual(child_meta.get("scope_reclassification_status"), T.SCOPE_ESCALATION_STATUS)
+            self.assertTrue(child_meta.get("worktree", {}).get("reused"))
+            self.assertEqual(child_meta.get("worktree", {}).get("path"), str(shared_worktree))
+
+        self.assertEqual(
+            flattened_scope,
+            ["src/a.py", "src/b.py", "src/c.py", "src/d.py", "src/e.py"],
+        )
+        combined = "\n".join(captured)
+        self.assertIn("split into 2 follow-up tentacle(s)", combined)
+        self.assertIn("Follow-up tentacles:", combined)
+
+    def test_complete_scope_reduction_records_complete_early(self):
+        parent_dir = make_tentacle("ho-complete-scope-down", self.base)
+        meta = self._read_meta("ho-complete-scope-down")
+        meta["scope"] = ["src/a.py", "tests/test_a.py", "docs/readme.md"]
+        (parent_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        handoff_path = parent_dir / "handoff.md"
+        handoff_path.write_text(
+            "# Handoff Notes\n\n## [2024-01-01 12:00 UTC]\n\nSmall enough\n"
+            f"STATUS: {T.SCOPE_REDUCTION_STATUS}\n"
+            "Changed: src/a.py\nChanged: tests/test_a.py\n",
+            encoding="utf-8",
+        )
+
+        captured = []
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                T.cmd_complete(self._complete_args("ho-complete-scope-down"))
+
+        meta = self._read_meta("ho-complete-scope-down")
+        record = meta.get("reclassification") or {}
+        self.assertEqual(record.get("decision"), "complete_early")
+        self.assertEqual(record.get("heuristic_suggestion"), T.SCOPE_REDUCTION_STATUS)
+        self.assertTrue(record.get("heuristic_match"))
+        self.assertEqual(meta.get("scope"), ["src/a.py", "tests/test_a.py"])
+        self.assertEqual(meta.get("terminal_status"), T.SCOPE_REDUCTION_STATUS)
+        combined = "\n".join(captured)
+        self.assertIn("complete early", combined)
+        self.assertNotIn("TRIAGE", combined)
 
     # -- Parser helpers --
 
@@ -7739,6 +7866,16 @@ class TestGoalLoopRuntimeFlow(unittest.TestCase):
         with patch("builtins.print"):
             T._cmd_goal_link(args, self.tentacles)
 
+    def _goal_resume(self, reset_failed: bool = False, from_iteration: int | None = None) -> None:
+        args = types.SimpleNamespace(
+            session_dir=None,
+            goal_action="resume",
+            reset_failed=reset_failed,
+            from_iteration=from_iteration,
+        )
+        with patch("builtins.print"):
+            T._cmd_goal_resume(args, self.tentacles)
+
     def _gate_pass(self, gate_id: str, reason: str = "") -> None:
         args = types.SimpleNamespace(
             session_dir=None,
@@ -7896,6 +8033,72 @@ class TestGoalLoopRuntimeFlow(unittest.TestCase):
         # done-worker should have ✅ prefix
         done_lines = [l for l in text.splitlines() if "done-worker" in l]
         self.assertTrue(any("✅" in l for l in done_lines), f"done-worker not shown as ✅: {done_lines}")
+
+    def test_runtime_scope_reclassification_entries_have_distinct_dispatch_states(self):
+        _goal_init_helper(self.tentacles, title="Scope Reclass Runtime")
+        self._make_worker("scope-up")
+        self._make_worker("scope-down")
+        self._goal_link("scope-up")
+        self._goal_link("scope-down")
+
+        scope_up_meta = json.loads((self.tentacles / "scope-up" / "meta.json").read_text(encoding="utf-8"))
+        scope_up_meta["status"] = "completed"
+        scope_up_meta["terminal_status"] = T.SCOPE_ESCALATION_STATUS
+        scope_up_meta["reclassification"] = {
+            "status": T.SCOPE_ESCALATION_STATUS,
+            "decision": "split_followups",
+            "changed_file_count": 5,
+            "followup_tentacles": ["scope-up-scope-split-1", "scope-up-scope-split-2"],
+        }
+        (self.tentacles / "scope-up" / "meta.json").write_text(
+            json.dumps(scope_up_meta, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        scope_down_meta = json.loads((self.tentacles / "scope-down" / "meta.json").read_text(encoding="utf-8"))
+        scope_down_meta["status"] = "completed"
+        scope_down_meta["terminal_status"] = T.SCOPE_REDUCTION_STATUS
+        scope_down_meta["reclassification"] = {
+            "status": T.SCOPE_REDUCTION_STATUS,
+            "decision": "complete_early",
+            "changed_file_count": 2,
+        }
+        (self.tentacles / "scope-down" / "meta.json").write_text(
+            json.dumps(scope_down_meta, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        entries = T._goal_iteration_tentacle_entries(T._goal_load(self.tentacles), self.tentacles)
+        by_name = {entry["name"]: entry for entry in entries}
+        self.assertEqual(by_name["scope-up"]["dispatch_state"], "resolved_error")
+        self.assertEqual(by_name["scope-down"]["dispatch_state"], "resolved")
+
+        text = self._next_iter_text()
+        self.assertIn("scope escalation", text)
+        self.assertIn("complete early", text)
+
+    def test_runtime_goal_resume_resets_scope_escalation_but_not_scope_reduction(self):
+        _goal_init_helper(self.tentacles, title="Scope Resume Runtime")
+        self._make_worker("scope-up")
+        self._make_worker("scope-down")
+        self._goal_link("scope-up")
+        self._goal_link("scope-down")
+
+        for name, terminal in (("scope-up", T.SCOPE_ESCALATION_STATUS), ("scope-down", T.SCOPE_REDUCTION_STATUS)):
+            meta_path = self.tentacles / name / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["status"] = "completed"
+            meta["terminal_status"] = terminal
+            meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        self._goal_resume(reset_failed=True)
+
+        scope_up = json.loads((self.tentacles / "scope-up" / "meta.json").read_text(encoding="utf-8"))
+        scope_down = json.loads((self.tentacles / "scope-down" / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(scope_up["status"], "idle")
+        self.assertNotIn("terminal_status", scope_up)
+        self.assertEqual(scope_down["status"], "completed")
+        self.assertEqual(scope_down["terminal_status"], T.SCOPE_REDUCTION_STATUS)
 
     def test_runtime_full_two_iteration_complete_flow(self):
         """Full two-iteration flow: init → link → eval continue → link again → gate → complete."""
