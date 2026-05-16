@@ -59,6 +59,7 @@ if os.name == "nt":
 TOOLS_DIR = Path(__file__).parent
 SESSION_STATE = Path.home() / ".copilot" / "session-state"
 DB_PATH = SESSION_STATE / "knowledge.db"
+_CLARIFY_STORE_PATH = SESSION_STATE / "clarifications.json"
 
 # Read-side filter: suppress Wave-style progress/status-note entries that were
 # mistakenly stored as knowledge (WaveN verification, rust-wave tentacle reports).
@@ -929,6 +930,92 @@ def _normalize_feedback_query(query: str) -> str:
     return normalized[:500]
 
 
+def _clarify_query_tokens(query: str) -> set[str]:
+    """Tokenize a clarification query for approximate matching."""
+    return {
+        match.group(0).lower() for match in re.finditer(r"[A-Za-z0-9_.:/-]+", query or "") if len(match.group(0)) >= 3
+    }
+
+
+def _load_clarification_entries(path: Path | None = None) -> list[dict]:
+    """Load stored clarification results from session-state JSON."""
+    target = path or _CLARIFY_STORE_PATH
+    try:
+        if not target.exists():
+            return []
+        data = json.loads(target.read_text(encoding="utf-8"))
+        entries = data.get("entries", [])
+        return [entry for entry in entries if isinstance(entry, dict)]
+    except Exception:
+        return []
+
+
+def _clarification_match_score(query: str, repo_root: str, entry: dict) -> float:
+    """Score a stored clarification entry against the current briefing query."""
+    entry_repo_root = str(entry.get("repo_root", "") or "")
+    if repo_root and entry_repo_root and entry_repo_root != repo_root:
+        return -1.0
+
+    query_norm = _normalize_feedback_query(query)
+    entry_norm = _normalize_feedback_query(str(entry.get("normalized_query") or entry.get("raw_query") or ""))
+    if not query_norm or not entry_norm:
+        return -1.0
+    if query_norm == entry_norm:
+        return 3.0
+    if query_norm in entry_norm or entry_norm in query_norm:
+        return 2.0
+
+    query_tokens = _clarify_query_tokens(query_norm)
+    entry_tokens = set(entry.get("tokens", [])) or _clarify_query_tokens(entry_norm)
+    if not query_tokens or not entry_tokens:
+        return -1.0
+    overlap = len(query_tokens & entry_tokens)
+    if overlap <= 0:
+        return -1.0
+    return overlap / max(1, min(len(query_tokens), len(entry_tokens)))
+
+
+def _load_matching_clarification(query: str, repo_root: str = "", path: Path | None = None) -> dict | None:
+    """Return the best matching stored clarification for the current repo/query."""
+    best_entry = None
+    best_score = -1.0
+    best_created_at = ""
+    for entry in _load_clarification_entries(path):
+        score = _clarification_match_score(query, repo_root, entry)
+        created_at = str(entry.get("created_at", "") or "")
+        if score > best_score or (score == best_score and created_at > best_created_at):
+            best_entry = entry
+            best_score = score
+            best_created_at = created_at
+    return best_entry if best_score > 0 else None
+
+
+def _serialize_clarification(entry: dict | None) -> dict | None:
+    """Return the stable public shape for a stored clarification entry."""
+    if not entry:
+        return None
+    return {
+        "raw_query": entry.get("raw_query", ""),
+        "clarified_task": entry.get("clarified_task", ""),
+        "questions": [
+            {
+                "category": question.get("category", ""),
+                "question": question.get("question", ""),
+                "options": list(question.get("options", [])),
+            }
+            for question in entry.get("questions", [])[:5]
+            if isinstance(question, dict)
+        ],
+        "taxonomy_categories": list(entry.get("taxonomy_categories", [])),
+        "created_at": entry.get("created_at", ""),
+    }
+
+
+def _xml_escape(text: str) -> str:
+    """Escape a string for XML-like compact briefing output."""
+    return str(text or "").replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _compute_snippet_freshness(row: dict) -> str:
     """Read-time snippet freshness state: fresh|drifted|missing|unknown."""
     source_file = (_row_value(row, "source_file") or "").strip()
@@ -1771,6 +1858,14 @@ def generate_subagent_context(
     _, categories, per_cat_limit = _mode_category_config(limit, mode, query, infer_auto=infer_auto_mode)
     labels = {"mistake": "AVOID", "pattern": "USE", "decision": "NOTE", "tool": "CONFIG"}
     half_life = _get_briefing_half_life(db)
+    clarify_entry = _load_matching_clarification(query, repo_root=_current_repo_root())
+
+    if clarify_entry:
+        lines.append(f"  [CLARIFY] {_word_trim(clarify_entry.get('clarified_task', ''), 140)}")
+        for question in clarify_entry.get("questions", [])[:3]:
+            category = question.get("category", "?")
+            prompt = _word_trim(question.get("question", ""), 100)
+            lines.append(f"  [QUESTION] {category}: {prompt}")
 
     for cat in categories:
         label = labels.get(cat, cat.upper())
@@ -1945,6 +2040,7 @@ def generate_briefing(
     # File annotations (fail-open when table absent; scoped to current repo)
     _repo_root = _current_repo_root()
     file_annotations = query_file_annotations(db, query=rewritten_query, repo_root=_repo_root, limit=6)
+    clarify_entry = _load_matching_clarification(query, repo_root=_repo_root)
 
     # Pack-only machine surface extras
     task_matches = []
@@ -1992,6 +2088,7 @@ def generate_briefing(
                     "query": query,
                     "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                     "sections": {},
+                    "clarify": _serialize_clarification(clarify_entry),
                     "message": "No relevant past experience found.",
                 },
                 indent=2,
@@ -2007,14 +2104,29 @@ def generate_briefing(
                 "file_matches": file_matches,
                 "past_work": [],
                 "next_open": next_open,
+                "clarify": _serialize_clarification(clarify_entry),
             }
             output = json.dumps(pack, indent=2, ensure_ascii=False)
         else:
-            output = f"No relevant past experience found for: {query}\n"
+            if clarify_entry:
+                if fmt == "compact":
+                    output = _format_compact(
+                        query, briefing_data, past_work, categories, blast, file_annotations, clarify_entry
+                    )
+                elif full:
+                    output = _format_markdown(
+                        query, briefing_data, past_work, categories, blast, file_annotations, clarify_entry
+                    )
+                else:
+                    output = _format_default(
+                        query, briefing_data, past_work, categories, blast, file_annotations, clarify_entry
+                    )
+            else:
+                output = f"No relevant past experience found for: {query}\n"
     else:
         # Format output
         if fmt == "json":
-            output = _format_json(query, briefing_data, past_work, categories, blast)
+            output = _format_json(query, briefing_data, past_work, categories, blast, clarify_entry)
         elif fmt == "pack":
             pack_entries = {
                 k: [_serialize_pack_entry(e) for e in briefing_data.get(k, [])]
@@ -2048,14 +2160,21 @@ def generate_briefing(
                     for w in past_work
                 ],
                 "next_open": next_open,
+                "clarify": _serialize_clarification(clarify_entry),
             }
             output = json.dumps(pack, indent=2, ensure_ascii=False)
         elif fmt == "compact":
-            output = _format_compact(query, briefing_data, past_work, categories, blast, file_annotations)
+            output = _format_compact(
+                query, briefing_data, past_work, categories, blast, file_annotations, clarify_entry
+            )
         elif full:
-            output = _format_markdown(query, briefing_data, past_work, categories, blast, file_annotations)
+            output = _format_markdown(
+                query, briefing_data, past_work, categories, blast, file_annotations, clarify_entry
+            )
         else:
-            output = _format_default(query, briefing_data, past_work, categories, blast, file_annotations)
+            output = _format_default(
+                query, briefing_data, past_work, categories, blast, file_annotations, clarify_entry
+            )
 
     # Append event-level skill usage section (non-pack formats only; fail-open).
     if fmt not in ("json", "pack"):
@@ -2082,12 +2201,20 @@ def generate_briefing(
 
 
 def _format_default(
-    query: str, data: dict, past_work: list, categories: dict, blast: list = None, file_annotations: list | None = None
+    query: str,
+    data: dict,
+    past_work: list,
+    categories: dict,
+    blast: list = None,
+    file_annotations: list | None = None,
+    clarify_entry: dict | None = None,
 ) -> str:
     """Compact default format: titles + 1-line summaries (~500 tokens)."""
     lines = []
     lines.append(f"📋 Briefing: {query}")
     lines.append("")
+
+    lines.extend(_format_clarification_default_block(clarify_entry))
 
     for cat, meta in categories.items():
         entries = data.get(cat, [])
@@ -2167,7 +2294,13 @@ def _format_default(
 
 
 def _format_markdown(
-    query: str, data: dict, past_work: list, categories: dict, blast: list = None, file_annotations: list | None = None
+    query: str,
+    data: dict,
+    past_work: list,
+    categories: dict,
+    blast: list = None,
+    file_annotations: list | None = None,
+    clarify_entry: dict | None = None,
 ) -> str:
     """Format briefing as Markdown."""
     lines = []
@@ -2178,6 +2311,8 @@ def _format_markdown(
     lines.append("")
     lines.append("---")
     lines.append("")
+
+    lines.extend(_format_clarification_markdown_block(clarify_entry))
 
     for cat, meta in categories.items():
         entries = data.get(cat, [])
@@ -2257,9 +2392,18 @@ def _format_markdown(
     return "\n".join(lines)
 
 
-def _format_json(query: str, data: dict, past_work: list, categories: dict, blast: list = None) -> str:
+def _format_json(
+    query: str, data: dict, past_work: list, categories: dict, blast: list = None, clarify_entry: dict | None = None
+) -> str:
     """Format briefing as JSON."""
     output = {"query": query, "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "sections": {}}
+
+    clarify = _serialize_clarification(clarify_entry)
+    if clarify:
+        output["sections"]["clarify"] = {
+            "title": "Clarify Gate",
+            "entry": clarify,
+        }
 
     for cat, meta in categories.items():
         entries = data.get(cat, [])
@@ -2321,8 +2465,71 @@ def _word_trim(s: str, limit: int = 80) -> str:
     return s
 
 
+def _format_clarification_default_block(entry: dict | None) -> list[str]:
+    """Render a plain-text clarification block for briefing output."""
+    clarify = _serialize_clarification(entry)
+    if not clarify:
+        return []
+    lines = ["❓ Clarify Gate"]
+    task = _word_trim(clarify.get("clarified_task", ""), 180)
+    if task:
+        lines.append(f"  Ready brief: {task}")
+    for index, question in enumerate(clarify.get("questions", [])[:5], 1):
+        q_text = _word_trim(question.get("question", ""), 120)
+        category = question.get("category", "?")
+        lines.append(f"  {index}. [{category}] {q_text}")
+        options = " | ".join(question.get("options", [])[:4])
+        if options:
+            lines.append(f"     {options}")
+    lines.append("")
+    return lines
+
+
+def _format_clarification_markdown_block(entry: dict | None) -> list[str]:
+    """Render a Markdown clarification block for full briefing output."""
+    clarify = _serialize_clarification(entry)
+    if not clarify:
+        return []
+    lines = ["## ❓ Clarify Gate", ""]
+    task = clarify.get("clarified_task", "")
+    if task:
+        lines.append(f"**Ready brief:** {task}")
+        lines.append("")
+    for index, question in enumerate(clarify.get("questions", [])[:5], 1):
+        category = question.get("category", "?")
+        lines.append(f"{index}. **{category}** — {question.get('question', '')}")
+        options = question.get("options", [])
+        if options:
+            lines.append(f"   Options: {' | '.join(options[:4])}")
+        lines.append("")
+    return lines
+
+
+def _format_clarification_compact_block(entry: dict | None) -> list[str]:
+    """Render an XML-like compact clarification block."""
+    clarify = _serialize_clarification(entry)
+    if not clarify:
+        return []
+    lines = ["<clarify>"]
+    task = _word_trim(clarify.get("clarified_task", ""), 180)
+    if task:
+        lines.append(f"  <task>{_xml_escape(task)}</task>")
+    for question in clarify.get("questions", [])[:5]:
+        category = _xml_escape(question.get("category", "?"))
+        prompt = _xml_escape(_word_trim(question.get("question", ""), 120))
+        lines.append(f'  <question category="{category}">{prompt}</question>')
+    lines.append("</clarify>")
+    return lines
+
+
 def _format_compact(
-    query: str, data: dict, past_work: list, categories: dict, blast: list = None, file_annotations: list | None = None
+    query: str,
+    data: dict,
+    past_work: list,
+    categories: dict,
+    blast: list = None,
+    file_annotations: list | None = None,
+    clarify_entry: dict | None = None,
 ) -> str:
     """Compact format optimized for AI agent context injection.
 
@@ -2333,6 +2540,7 @@ def _format_compact(
     lines = []
     safe_query = query[:100].replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
     lines.append(f'<briefing task="{safe_query}">\n')
+    lines.extend(_format_clarification_compact_block(clarify_entry))
 
     def _cat_block(cat: str) -> None:
         """Append one XML-style category block to *lines*.

@@ -190,6 +190,7 @@ TOOL_FILES = [
     "extract-knowledge.py",
     "query-session.py",
     "briefing.py",
+    "clarify.py",
     "watch-sessions.py",
     "learn.py",
     "embed.py",
