@@ -4076,6 +4076,38 @@ class TestSameRepoMultiSession(unittest.TestCase):
         meta = json.loads((tentacles_dir / "epsilon" / "meta.json").read_text(encoding="utf-8"))
         self.assertEqual(meta["todo_deps"], ["alpha", "beta"])
 
+    def test_create_records_spec_artifacts_in_context_and_meta(self):
+        tentacles_dir = self.base / "tentacles6"
+        tentacles_dir.mkdir(parents=True, exist_ok=True)
+        repo_dir = self.base / "repo-with-specs"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        (repo_dir / ".git").mkdir()
+        bundle = repo_dir / "specs" / "demo-flow"
+        bundle.mkdir(parents=True, exist_ok=True)
+        for filename in ("spec.md", "plan.md", "tasks.md"):
+            (bundle / filename).write_text(f"# {filename}\n", encoding="utf-8")
+
+        args = fake_args(name="theta", scope="", desc="", briefing=False, skill=None)
+        with patch.object(T, "get_tentacles_dir", return_value=tentacles_dir):
+            with patch.object(T, "find_git_root", return_value=repo_dir):
+                with patch("builtins.print"):
+                    T.cmd_create(args)
+
+        context = (tentacles_dir / "theta" / "CONTEXT.md").read_text(encoding="utf-8")
+        meta = json.loads((tentacles_dir / "theta" / "meta.json").read_text(encoding="utf-8"))
+        self.assertIn("## Spec Artifacts", context)
+        self.assertIn("specs/demo-flow/spec.md", context)
+        self.assertIn("specs/demo-flow/plan.md", context)
+        self.assertIn("specs/demo-flow/tasks.md", context)
+        self.assertEqual(
+            meta["spec_artifacts"],
+            [
+                "specs/demo-flow/spec.md",
+                "specs/demo-flow/plan.md",
+                "specs/demo-flow/tasks.md",
+            ],
+        )
+
     # ── backward compat: old tentacle without tentacle_id ─────────────────────
 
     def test_old_tentacle_without_tentacle_id_write_still_works(self):

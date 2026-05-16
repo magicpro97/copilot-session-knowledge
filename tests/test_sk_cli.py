@@ -103,6 +103,21 @@ class TestSkDirectCommands(unittest.TestCase):
     def test_clarify(self):
         self._assert_routes("clarify", "clarify.py", ["implement auth flow"])
 
+    def test_specify(self):
+        self._assert_routes("specify", "specify.py", ["hosted shell bootstrap"])
+
+    def test_plan(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["plan", "hosted-shell-bootstrap", "--json"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("specify.py", ["plan", "hosted-shell-bootstrap", "--json"])
+
+    def test_tasks(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["tasks", "hosted-shell-bootstrap"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("specify.py", ["tasks", "hosted-shell-bootstrap"])
+
     def test_task(self):
         self._assert_routes("task", "task.py", ["implement auth flow", "--type", "research"])
 
@@ -630,6 +645,9 @@ class TestSkConstitutionNamespace(unittest.TestCase):
             sk.main(["--help"])
         output = " ".join(str(c) for call in mock_print.call_args_list for c in call[0])
         self.assertIn("constitution", output)
+        self.assertIn("specify", output)
+        self.assertIn("plan", output)
+        self.assertIn("tasks", output)
 
 
 class TestSkErrorCases(unittest.TestCase):
