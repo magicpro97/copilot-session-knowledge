@@ -5263,6 +5263,214 @@ class TestVerifyCommand(unittest.TestCase):
         self.assertEqual(meta["verifications"][-1]["severity"], "MEDIUM")
 
 
+class TestReviewLoopCommand(unittest.TestCase):
+    """review-loop reruns verification, classifies failures, and creates blocker resolvers."""
+
+    def setUp(self):
+        self.base = SCRATCH_DIR / "review_loop"
+        _rmtree(self.base)
+        self.base.mkdir(parents=True, exist_ok=True)
+        self.tentacle_dir = make_tentacle("review-loop-test", self.base)
+        self.meta_path = self.tentacle_dir / "meta.json"
+        self._write_done_handoff(["src/foo.py"])
+
+    def tearDown(self):
+        if SCRATCH_DIR.exists():
+            _rmtree(SCRATCH_DIR)
+
+    def _write_done_handoff(self, changed_files):
+        lines = [
+            "# Handoff Notes",
+            "",
+            "## [2026-01-01 00:00 UTC]",
+            "",
+            "Completed implementation.",
+            "STATUS: DONE",
+        ]
+        for path in changed_files:
+            lines.append(f"Changed: {path}")
+        (self.tentacle_dir / "handoff.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _read_meta(self):
+        return json.loads(self.meta_path.read_text(encoding="utf-8"))
+
+    def _args(self, verify_command=None, max_iterations=5):
+        return fake_args(
+            name="review-loop-test",
+            verify_command=verify_command,
+            max_iterations=max_iterations,
+            timeout=30,
+            agent_type="general-purpose",
+            model="claude-sonnet-4.6",
+        )
+
+    def _run_review_loop(self, args, *, expect_exit=None, patch_swarm=False):
+        import io
+        from contextlib import redirect_stdout
+
+        out = io.StringIO()
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            if patch_swarm:
+                with patch.object(T, "cmd_swarm") as mock_swarm:
+                    with redirect_stdout(out):
+                        if expect_exit is None:
+                            T.cmd_review_loop(args)
+                        else:
+                            with self.assertRaises(SystemExit) as cm:
+                                T.cmd_review_loop(args)
+                            self.assertEqual(cm.exception.code, expect_exit)
+                    return out.getvalue(), mock_swarm
+            with redirect_stdout(out):
+                if expect_exit is None:
+                    T.cmd_review_loop(args)
+                else:
+                    with self.assertRaises(SystemExit) as cm:
+                        T.cmd_review_loop(args)
+                    self.assertEqual(cm.exception.code, expect_exit)
+        return out.getvalue(), None
+
+    def test_review_loop_reuses_latest_verification_command_when_omitted(self):
+        meta = self._read_meta()
+        T._run_and_record_verification(
+            tentacle_dir=self.tentacle_dir,
+            meta=meta,
+            meta_path=self.meta_path,
+            cmd="echo seed-ok",
+            label="seed-ok",
+            timeout=30,
+        )
+
+        output, _ = self._run_review_loop(self._args())
+        history_entry = self._read_meta()["review_loop"]["history"][-1]
+        self.assertEqual(history_entry["classification"], "PASS")
+        self.assertEqual(history_entry["command"], "echo seed-ok")
+        self.assertIn("seed-ok", output)
+
+    def test_review_loop_classifies_pre_existing_failure_from_baseline(self):
+        fail_cmd = _py_inline("import sys; print('baseline failure'); sys.exit(1)")
+        meta = self._read_meta()
+        T._run_and_record_verification(
+            tentacle_dir=self.tentacle_dir,
+            meta=meta,
+            meta_path=self.meta_path,
+            cmd=fail_cmd,
+            label="baseline",
+            timeout=30,
+        )
+
+        output, _ = self._run_review_loop(self._args())
+        history_entry = self._read_meta()["review_loop"]["history"][-1]
+        self.assertEqual(history_entry["classification"], "PRE_EXISTING")
+        self.assertEqual(history_entry["outcome"], "ignored")
+        self.assertIn("PRE_EXISTING", output)
+        self.assertEqual(len([p for p in self.base.iterdir() if p.is_dir()]), 1)
+
+    def test_review_loop_classifies_flaky_failure_after_retry_passes(self):
+        marker_path = self.base / "flaky-marker.txt"
+        script_path = self.base / "flaky_once.py"
+        script_path.write_text(
+            textwrap.dedent(
+                f"""
+                from pathlib import Path
+                import sys
+
+                p = Path({json.dumps(str(marker_path))})
+                if p.exists():
+                    print("retry passed")
+                    sys.exit(0)
+
+                p.write_text("1", encoding="utf-8")
+                print("transient failure")
+                sys.exit(1)
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        cmd = f'"{sys.executable}" "{script_path}"'
+
+        output, _ = self._run_review_loop(self._args(cmd))
+        history_entry = self._read_meta()["review_loop"]["history"][-1]
+        self.assertEqual(history_entry["classification"], "FLAKY")
+        self.assertEqual(history_entry["outcome"], "passed")
+        self.assertIn("FLAKY", output)
+
+    def test_review_loop_build_error_creates_resolver_tentacle_with_inherited_worktree(self):
+        shared_worktree = self.base / "shared-worktree"
+        shared_worktree.mkdir()
+        meta = self._read_meta()
+        meta["worktree"] = {"prepared": True, "path": str(shared_worktree), "reused": True}
+        self.meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        fail_cmd = _py_inline("import sys; print('SyntaxError: bad indent'); sys.exit(1)")
+        output, mock_swarm = self._run_review_loop(self._args(fail_cmd), expect_exit=1, patch_swarm=True)
+
+        parent_meta = self._read_meta()
+        history_entry = parent_meta["review_loop"]["history"][-1]
+        self.assertEqual(history_entry["classification"], "BUILD_ERROR")
+        resolver_name = history_entry["resolver_tentacle"]
+        resolver_dir = self.base / resolver_name
+        self.assertTrue(resolver_dir.exists())
+        resolver_meta = json.loads((resolver_dir / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(resolver_meta["review_loop_parent"], "review-loop-test")
+        self.assertEqual(resolver_meta["review_loop_classification"], "BUILD_ERROR")
+        self.assertEqual(resolver_meta["worktree"]["path"], str(shared_worktree))
+        self.assertEqual(mock_swarm.call_count, 1)
+        self.assertEqual(mock_swarm.call_args[0][0].name, resolver_name)
+        self.assertIn("Resolver tentacle", output)
+
+    def test_review_loop_classifies_test_only_failure_as_new_test_wrong(self):
+        self._write_done_handoff(["tests/test_example.py"])
+        fail_cmd = _py_inline("import sys; print('AssertionError: expected 2'); sys.exit(1)")
+
+        _, mock_swarm = self._run_review_loop(self._args(fail_cmd), expect_exit=1, patch_swarm=True)
+        history_entry = self._read_meta()["review_loop"]["history"][-1]
+        self.assertEqual(history_entry["classification"], "NEW_TEST_WRONG")
+        self.assertEqual(mock_swarm.call_count, 1)
+
+    def test_review_loop_exhausts_max_iterations_and_reports_unresolved_blockers(self):
+        meta = self._read_meta()
+        meta["review_loop"] = {
+            "baseline_failures": [],
+            "history": [
+                {
+                    "classification": "REGRESSION",
+                    "outcome": "resolver_created",
+                    "recorded_at": "2026-01-01T00:00:00+00:00",
+                }
+            ],
+        }
+        self.meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+        fail_cmd = _py_inline("import sys; print('runtime broke'); sys.exit(1)")
+        output, mock_swarm = self._run_review_loop(
+            self._args(fail_cmd, max_iterations=1), expect_exit=1, patch_swarm=True
+        )
+
+        history_entry = self._read_meta()["review_loop"]["history"][-1]
+        self.assertEqual(history_entry["outcome"], "unresolved")
+        self.assertIn("UNRESOLVED BLOCKERS", output)
+        self.assertEqual(mock_swarm.call_count, 0)
+
+    def test_review_loop_cli_dispatch_via_main_parser(self):
+        captured = []
+        argv = [
+            "tentacle.py",
+            "review-loop",
+            "review-loop-test",
+            "echo cli-review-loop",
+        ]
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(sys, "argv", argv):
+                with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(" ".join(str(x) for x in a))):
+                    T.main()
+
+        history_entry = self._read_meta()["review_loop"]["history"][-1]
+        self.assertEqual(history_entry["command"], "echo cli-review-loop")
+        self.assertEqual(history_entry["classification"], "PASS")
+        self.assertTrue(any("review-loop" in line for line in captured))
+
+
 class TestCompleteOutcomePersistence(unittest.TestCase):
     """cmd_complete writes durable outcome rows to skill-metrics.db."""
 
