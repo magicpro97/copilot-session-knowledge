@@ -6,6 +6,15 @@ description: >
   the user mentions "create agents", "setup copilot agents", "generate .agent.md",
   or wants specialized AI agents for their development workflow. Also triggers when
   tentacle-creator needs default agents for a project that has none.
+handoffs:
+  - label: "Add quality hooks"
+    skill: hook-creator
+    prompt: "Generate project-specific hooks that enforce the workflow the new agents describe."
+    send: false
+  - label: "Review generated agents"
+    skill: code-reviewer
+    prompt: "Review the generated .agent.md files for correctness gaps before the team relies on them."
+    send: false
 ---
 
 # Agent Creator

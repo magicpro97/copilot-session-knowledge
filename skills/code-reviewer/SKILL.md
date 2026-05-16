@@ -6,6 +6,11 @@ description: >
   diff, or agent-produced code before merging. Trigger phrases: "review this code",
   "review my PR", "code review", "check for bugs", "security review", "audit the diff",
   "look for issues", "is this safe to merge".
+handoffs:
+  - label: "Backfill missing guardrails"
+    skill: hook-creator
+    prompt: "If the review uncovered missing safety rails or workflow enforcement, generate hooks to close those gaps."
+    send: false
 ---
 
 # Code Reviewer

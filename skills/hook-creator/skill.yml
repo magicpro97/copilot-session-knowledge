@@ -4,3 +4,8 @@ provides:
     - hook-creator
 requires:
   sk_version: ">=1.0.0"
+handoffs:
+  - label: "Audit generated hooks"
+    skill: code-reviewer
+    prompt: "Review the generated hook scripts for safety gaps, broken assumptions, and enforcement holes."
+    send: true

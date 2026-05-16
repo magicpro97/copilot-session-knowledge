@@ -248,6 +248,7 @@ SKILL_VALID_FIELDS = {
     "allowed-tools",
     "user-invocable",
     "disable-model-invocation",
+    "handoffs",
     # Cross-platform fields (Claude Code / Kiro) — not used by Copilot CLI
     # but harmless and intentional for multi-platform compatibility:
     "aliases",

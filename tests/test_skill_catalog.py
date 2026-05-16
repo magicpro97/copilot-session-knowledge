@@ -94,8 +94,17 @@ def _make_official_skills_dir(base: Path) -> Path:
             f"---\nname: {name}\ndescription: Fake skill {name}\n---\n# {name}\n",
             encoding="utf-8",
         )
+        handoffs = ""
+        if name == "alpha-skill":
+            handoffs = (
+                "handoffs:\n"
+                '  - label: "Review generated output"\n'
+                "    skill: code-reviewer\n"
+                '    prompt: "Review the generated output for correctness."\n'
+                "    send: true\n"
+            )
         (sd / "skill.yml").write_text(
-            f'schema_version: 1\nprovides:\n  commands:\n    - {name}\nrequires:\n  sk_version: ">=1.0.0"\n',
+            f'schema_version: 1\nprovides:\n  commands:\n    - {name}\nrequires:\n  sk_version: ">=1.0.0"\n{handoffs}',
             encoding="utf-8",
         )
     refs = skills / "references"
@@ -119,6 +128,15 @@ requires:
 hooks:
   before_plan: do something
   after_implement: check output
+handoffs:
+  - label: Review output
+    skill: code-reviewer
+    prompt: Review the generated output
+    send: true
+  - label: Patch skill
+    skill: skill-patch
+    prompt: Patch the generated skill after review
+    send: false
 """
 
 parsed = sc._parse_skill_yml(yml_text)
@@ -127,6 +145,24 @@ _test("provides.commands parsed", parsed.get("provides", {}).get("commands") == 
 _test("requires.sk_version parsed", parsed.get("requires", {}).get("sk_version") == ">=1.0.0")
 _test("hooks.before_plan parsed", parsed.get("hooks", {}).get("before_plan") == "do something")
 _test("hooks.after_implement parsed", parsed.get("hooks", {}).get("after_implement") == "check output")
+_test(
+    "handoffs parsed as list of mappings",
+    parsed.get("handoffs")
+    == [
+        {
+            "label": "Review output",
+            "skill": "code-reviewer",
+            "prompt": "Review the generated output",
+            "send": True,
+        },
+        {
+            "label": "Patch skill",
+            "skill": "skill-patch",
+            "prompt": "Patch the generated skill after review",
+            "send": False,
+        },
+    ],
+)
 
 # ── 2. _validate_skill_yml ────────────────────────────────────────────────
 
@@ -136,6 +172,14 @@ valid_data = {
     "schema_version": 1,
     "provides": {"commands": ["my-cmd"]},
     "requires": {"sk_version": ">=1.0.0"},
+    "handoffs": [
+        {
+            "label": "Review output",
+            "skill": "code-reviewer",
+            "prompt": "Review the generated output",
+            "send": True,
+        }
+    ],
 }
 errs = sc._validate_skill_yml(valid_data)
 _test("valid manifest → no errors", errs == [], f"errors: {errs}")
@@ -160,6 +204,28 @@ _test("empty provides.commands → error", any("commands" in e for e in errs))
 missing_sk_version = {"schema_version": 1, "provides": {"commands": ["x"]}, "requires": {}}
 errs = sc._validate_skill_yml(missing_sk_version)
 _test("missing requires.sk_version → error", any("sk_version" in e for e in errs))
+
+bad_handoffs_type = dict(valid_data)
+bad_handoffs_type["handoffs"] = {"label": "bad"}
+errs = sc._validate_skill_yml(bad_handoffs_type)
+_test("handoffs must be a list", any("'handoffs' must be a list" in e for e in errs))
+
+bad_handoff_missing_field = dict(valid_data)
+bad_handoff_missing_field["handoffs"] = [{"label": "Review output", "skill": "code-reviewer", "send": True}]
+errs = sc._validate_skill_yml(bad_handoff_missing_field)
+_test("handoff missing prompt → error", any("handoffs[0].prompt" in e for e in errs))
+
+bad_handoff_send_type = dict(valid_data)
+bad_handoff_send_type["handoffs"] = [
+    {
+        "label": "Review output",
+        "skill": "code-reviewer",
+        "prompt": "Review the generated output",
+        "send": "yes",
+    }
+]
+errs = sc._validate_skill_yml(bad_handoff_send_type)
+_test("handoff send must be boolean", any("handoffs[0].send must be a boolean" in e for e in errs))
 
 # ── 3. cmd_catalog ────────────────────────────────────────────────────────
 
@@ -186,6 +252,7 @@ try:
     _test("catalog --json contains 'alpha-skill'", "alpha-skill" in captured)
     _test("catalog --json contains 'beta-skill'", "beta-skill" in captured)
     _test("catalog --json omits non-skill references dir", "references" not in captured)
+    _test("catalog --json includes handoffs", "Review generated output" in captured and "code-reviewer" in captured)
 
     # Text output
     ns_text = argparse.Namespace(json=False)
@@ -217,14 +284,18 @@ try:
 
     ns_add = argparse.Namespace(name="alpha-skill", **{"from": None}, force=False)
     with patch.object(sc, "_find_project_root", return_value=_add_project):
-        with patch("builtins.print"):
+        with patch("builtins.print") as mock_print:
             rc = sc.cmd_add(ns_add)
+    out_add = " ".join(str(c) for call in mock_print.call_args_list for c in call[0])
 
     _test("add official skill exits 0", rc == 0)
     dest = _add_project / ".copilot" / "skills" / "alpha-skill"
     _test("skill directory created", dest.exists())
     _test("SKILL.md present", (dest / "SKILL.md").exists())
     _test("skill.yml present", (dest / "skill.yml").exists())
+    _test(
+        "add output includes handoff suggestions", "Review generated output" in out_add and "code-reviewer" in out_add
+    )
 
     reg = sc._load_registry(_add_project)
     _test("registry entry created", "alpha-skill" in reg.get("skills", {}))
