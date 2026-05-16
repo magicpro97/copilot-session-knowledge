@@ -130,6 +130,9 @@ REVIEWER_FINDINGS_FILENAME = "reviewer-findings.md"
 REVIEWER_SAFE_TRUE: frozenset[str] = frozenset({"YES", "TRUE"})
 REVIEWER_SAFE_FALSE: frozenset[str] = frozenset({"NO", "FALSE"})
 REVIEWER_PENDING_VALUES: frozenset[str] = frozenset({"PENDING", "UNKNOWN", "TBD"})
+POINTER_DISPATCH_MODE_NAME = "pointer_bundle"
+FULL_CONTEXT_DISPATCH_MODE_NAME = "full_context_inline"
+POINTER_PROMPT_REDUCTION_TARGET_PERCENT = 30.0
 
 # ---------------------------------------------------------------------------
 # Goal state model constants
@@ -699,6 +702,169 @@ def _render_dispatch_context(context: str, meta: dict, bundle_dir: Path | None) 
         Scope: {_scope_summary(meta)}
         Context excerpt: {_context_excerpt(context)}
         """).strip()
+
+
+def _render_dispatch_live_briefing_section(briefing_text: str, *, bundled: bool) -> str:
+    """Render the live-briefing section for bundled vs inline dispatch modes."""
+    if not briefing_text:
+        return ""
+    if bundled:
+        return "\n### Live Knowledge\n\nBundled in `briefing.md` and `recall-pack.json`; read those before editing.\n"
+    return f"\n{briefing_text}\n"
+
+
+def _dispatch_context_mode(bundle_dir: Path | None) -> dict:
+    """Describe the active dispatch mode in a JSON-safe structure."""
+    if bundle_dir is not None:
+        return {
+            "name": POINTER_DISPATCH_MODE_NAME,
+            "summary": "Pointer-based bundle (default)",
+            "details": (
+                "Read the Bundle Path files as authoritative context instead of duplicating the "
+                "full tentacle context inline."
+            ),
+            "fallback_flag": "--no-bundle",
+            "default": True,
+        }
+    return {
+        "name": FULL_CONTEXT_DISPATCH_MODE_NAME,
+        "summary": "Full-context inline fallback (`--no-bundle`)",
+        "details": (
+            "This run duplicates the full tentacle context inline because the pointer-based bundle was disabled."
+        ),
+        "fallback_flag": "--no-bundle",
+        "default": False,
+    }
+
+
+def _render_dispatch_mode_section(mode: dict) -> str:
+    """Render a human-readable dispatch-mode section for prompts."""
+    return textwrap.dedent(f"""\
+        ### Dispatch Mode
+
+        **{mode["summary"]}**
+        {mode["details"]}
+        """)
+
+
+def _render_swarm_prompt(
+    name: str,
+    pending: list[dict],
+    context_for_prompt: str,
+    *,
+    live_briefing_section: str = "",
+    dispatch_mode_section: str = "",
+    prompt_size_section: str = "",
+    bundle_section: str = "",
+    worktree_section: str = "",
+) -> str:
+    """Render the single-agent swarm/dispatch prompt."""
+    prompt = f"""## Tentacle: {name}
+
+### Context
+{context_for_prompt}
+{live_briefing_section}{dispatch_mode_section}{prompt_size_section}{bundle_section}{worktree_section}
+### Your Tasks (complete ALL)
+"""
+    for t in pending:
+        prompt += f"- [ ] {t['text']}\n"
+
+    prompt += f"""
+### Rules
+- Complete all tasks above
+- If a Bundle Path is present, read `manifest.json` first and use the bundle files as authoritative context
+- Stay within the scoped files only — DO NOT modify files outside your declared scope
+- **DO NOT run `git commit` or `git push`** — the orchestrator owns all git operations
+- **DO NOT widen your scope** beyond the files listed above without explicit escalation to the orchestrator
+- If a task cannot be completed within your scope, stop that task and write a scope escalation note to handoff before continuing
+
+### Cross-review (required before handoff)
+Before writing the handoff, do a self-cross-review:
+1. Re-read every file you modified and confirm correctness against the task description
+2. Verify no unintended changes outside your declared scope
+3. Confirm all todos are complete or explicitly documented as blocked/escalated
+
+### When done
+Mark each completed todo:
+  `python3 ~/.copilot/tools/tentacle.py todo "{name}" done <index>`
+
+Write a structured handoff with status and changed-file receipts:
+  `python3 ~/.copilot/tools/tentacle.py handoff "{name}" "<summary>" --status DONE --changed-file <file1> --changed-file <file2> --learn`
+
+Status values: `DONE` (all tasks complete) | `BLOCKED` (external dependency) | `TOO_BIG` (scope too wide) | `AMBIGUOUS` (spec unclear) | `REGRESSED` (tests broke)
+Add `--changed-file <path>` once per modified file. Omit if no files changed (e.g. BLOCKED with no edits).
+"""
+    return prompt
+
+
+def _dispatch_prompt_size_stats(
+    name: str,
+    pending: list[dict],
+    context: str,
+    meta: dict,
+    *,
+    bundled_live_briefing_section: str,
+    inline_live_briefing_section: str,
+    worktree_section: str,
+    bundle_dir: Path | None,
+    bundle_section: str,
+) -> dict:
+    """Compare pointer-mode prompt size against the full-context fallback."""
+    full_context_prompt = _render_swarm_prompt(
+        name,
+        pending,
+        _render_dispatch_context(context, meta, None),
+        live_briefing_section=inline_live_briefing_section,
+        worktree_section=worktree_section,
+    )
+    if bundle_dir is None:
+        return {
+            "comparison_available": False,
+            "active_prompt_chars": len(full_context_prompt),
+            "full_context_prompt_chars": len(full_context_prompt),
+            "reduction_vs_full_context_percent": 0.0,
+            "minimum_reduction_percent": POINTER_PROMPT_REDUCTION_TARGET_PERCENT,
+            "meets_minimum_reduction": None,
+        }
+
+    pointer_prompt = _render_swarm_prompt(
+        name,
+        pending,
+        _render_dispatch_context(context, meta, bundle_dir),
+        live_briefing_section=bundled_live_briefing_section,
+        bundle_section=bundle_section,
+        worktree_section=worktree_section,
+    )
+    full_chars = max(len(full_context_prompt), 1)
+    reduction = round(max(0.0, (1 - (len(pointer_prompt) / full_chars)) * 100), 1)
+    return {
+        "comparison_available": True,
+        "active_prompt_chars": len(pointer_prompt),
+        "full_context_prompt_chars": len(full_context_prompt),
+        "reduction_vs_full_context_percent": reduction,
+        "minimum_reduction_percent": POINTER_PROMPT_REDUCTION_TARGET_PERCENT,
+        "meets_minimum_reduction": reduction >= POINTER_PROMPT_REDUCTION_TARGET_PERCENT,
+    }
+
+
+def _render_dispatch_prompt_size_section(prompt_size: dict) -> str:
+    """Render prompt-size evidence for dispatch prompts."""
+    if prompt_size.get("comparison_available"):
+        meets = "YES" if prompt_size.get("meets_minimum_reduction") else "NO"
+        return textwrap.dedent(f"""\
+            ### Prompt Size
+
+            - Active prompt chars: `{prompt_size["active_prompt_chars"]}`
+            - Full-context fallback chars: `{prompt_size["full_context_prompt_chars"]}`
+            - Reduction vs full-context: `{prompt_size["reduction_vs_full_context_percent"]:.1f}%` (target: `>= {prompt_size["minimum_reduction_percent"]:.1f}%`)
+            - Meets target: `{meets}`
+            """)
+    return textwrap.dedent(f"""\
+        ### Prompt Size
+
+        - Active prompt chars: `{prompt_size["active_prompt_chars"]}`
+        - Comparison inactive: this run is the full-context inline fallback.
+        """)
 
 
 # ---------------------------------------------------------------------------
@@ -7567,7 +7733,6 @@ def cmd_swarm(args):
 
     # Live briefing injection at dispatch time
     briefing_text = ""
-    live_briefing_section = ""
     briefing_recall_data: dict = {}
     briefing_recall_mode: str | None = None
     if getattr(args, "briefing", False):
@@ -7586,16 +7751,12 @@ def cmd_swarm(args):
         else:
             briefing_text = _run_briefing_for_task(args.name, fallback_query=fallback)
         if briefing_text:
-            if bundle_enabled:
-                live_briefing_section = (
-                    "\n### Live Knowledge\n\n"
-                    "Bundled in `briefing.md` and `recall-pack.json`; read those before editing.\n"
-                )
-            else:
-                live_briefing_section = f"\n{briefing_text}\n"
             print(f"   ✅ Injected {len(briefing_text)} chars of live knowledge\n")
         else:
             print("   ℹ️  No relevant past knowledge found\n")
+    bundled_live_briefing_section = _render_dispatch_live_briefing_section(briefing_text, bundled=True)
+    inline_live_briefing_section = _render_dispatch_live_briefing_section(briefing_text, bundled=False)
+    active_live_briefing_section = bundled_live_briefing_section if bundle_enabled else inline_live_briefing_section
 
     # Bundle materialization (default for CLI swarm/dispatch; opt out with --no-bundle)
     bundle_dir: Path | None = None
@@ -7661,6 +7822,21 @@ def cmd_swarm(args):
         )
         print(f"   ✅ Bundle: {bundle_dir}\n")
 
+    dispatch_context_mode = _dispatch_context_mode(bundle_dir)
+    prompt_size = _dispatch_prompt_size_stats(
+        args.name,
+        pending,
+        context,
+        meta,
+        bundled_live_briefing_section=bundled_live_briefing_section,
+        inline_live_briefing_section=inline_live_briefing_section,
+        worktree_section=worktree_section,
+        bundle_dir=bundle_dir,
+        bundle_section=bundle_section,
+    )
+    dispatch_mode_section = _render_dispatch_mode_section(dispatch_context_mode)
+    prompt_size_section = _render_dispatch_prompt_size_section(prompt_size)
+
     # Write dispatched-subagent-active marker so local enforcement surfaces can
     # observe that a dispatch is in flight. The marker is advisory — tentacle.py
     # is not itself an enforcement layer. Cleared by cmd_complete.
@@ -7680,41 +7856,16 @@ def cmd_swarm(args):
         # Output as a single dispatch prompt with all todos
         print("─── DISPATCH PROMPT ───\n")
         context_for_prompt = _render_dispatch_context(context, meta, bundle_dir)
-        prompt = f"""## Tentacle: {args.name}
-
-### Context
-{context_for_prompt}
-{live_briefing_section}{bundle_section}{worktree_section}
-### Your Tasks (complete ALL)
-"""
-        for t in pending:
-            prompt += f"- [ ] {t['text']}\n"
-
-        prompt += f"""
-### Rules
-- Complete all tasks above
-- If a Bundle Path is present, read `manifest.json` first and use the bundle files as authoritative context
-- Stay within the scoped files only — DO NOT modify files outside your declared scope
-- **DO NOT run `git commit` or `git push`** — the orchestrator owns all git operations
-- **DO NOT widen your scope** beyond the files listed above without explicit escalation to the orchestrator
-- If a task cannot be completed within your scope, stop that task and write a scope escalation note to handoff before continuing
-
-### Cross-review (required before handoff)
-Before writing the handoff, do a self-cross-review:
-1. Re-read every file you modified and confirm correctness against the task description
-2. Verify no unintended changes outside your declared scope
-3. Confirm all todos are complete or explicitly documented as blocked/escalated
-
-### When done
-Mark each completed todo:
-  `python3 ~/.copilot/tools/tentacle.py todo "{args.name}" done <index>`
-
-Write a structured handoff with status and changed-file receipts:
-  `python3 ~/.copilot/tools/tentacle.py handoff "{args.name}" "<summary>" --status DONE --changed-file <file1> --changed-file <file2> --learn`
-
-Status values: `DONE` (all tasks complete) | `BLOCKED` (external dependency) | `TOO_BIG` (scope too wide) | `AMBIGUOUS` (spec unclear) | `REGRESSED` (tests broke)
-Add `--changed-file <path>` once per modified file. Omit if no files changed (e.g. BLOCKED with no edits).
-"""
+        prompt = _render_swarm_prompt(
+            args.name,
+            pending,
+            context_for_prompt,
+            live_briefing_section=active_live_briefing_section,
+            dispatch_mode_section=dispatch_mode_section,
+            prompt_size_section=prompt_size_section,
+            bundle_section=bundle_section,
+            worktree_section=worktree_section,
+        )
 
         print(prompt)
 
@@ -7735,6 +7886,16 @@ Add `--changed-file <path>` once per modified file. Omit if no files changed (e.
     elif args.output == "parallel":
         # Output one dispatch per todo (max parallelism)
         print("─── PARALLEL DISPATCH (one agent per todo) ───\n")
+        print(f"Dispatch Mode: {dispatch_context_mode['summary']}")
+        if prompt_size.get("comparison_available"):
+            print(
+                "Prompt Size: "
+                f"{prompt_size['active_prompt_chars']} chars vs {prompt_size['full_context_prompt_chars']} chars "
+                f"({prompt_size['reduction_vs_full_context_percent']:.1f}% smaller than full-context fallback; "
+                f"target >= {POINTER_PROMPT_REDUCTION_TARGET_PERCENT:.1f}%)\n"
+            )
+        else:
+            print(f"Prompt Size: {prompt_size['active_prompt_chars']} chars (full-context inline fallback)\n")
         for t in pending:
             print(f"# Todo [{t['index']}]: {t['text']}")
             print("task(")
@@ -7749,8 +7910,9 @@ Add `--changed-file <path>` once per modified file. Omit if no files changed (e.
             print("### Context")
             context_for_prompt = _render_dispatch_context(context, meta, bundle_dir)
             print(f"{context_for_prompt[:900]}")
-            if live_briefing_section:
-                print(live_briefing_section.strip())
+            if active_live_briefing_section:
+                print(active_live_briefing_section.strip())
+            print(dispatch_mode_section.strip())
             if bundle_section:
                 print(bundle_section.strip())
             if worktree_section:
@@ -7795,12 +7957,14 @@ Add `--changed-file <path>` once per modified file. Omit if no files changed (e.
                 "scope": "Stay within declared files — do not widen scope without escalating to the orchestrator",
                 "escalation": "If scope is insufficient, stop and write a scope escalation note to handoff",
                 "context_bundle": (
-                    "Runtime bundles are the default. Read bundle_path/manifest.json first, then "
+                    "Pointer-based bundles are the default. Read bundle_path/manifest.json first, then "
                     "context-packet.md, session-metadata.md, and recall-pack.json before editing."
                     if bundle_dir is not None
-                    else "No runtime bundle was requested; rely on context_file and inline prompt."
+                    else "Full-context inline fallback is active; rely on context_file and the inline prompt."
                 ),
             },
+            "dispatch_context_mode": dispatch_context_mode,
+            "prompt_size": prompt_size,
             "marker_state": _get_marker_state(),
         }
         if bundle_dir is not None:

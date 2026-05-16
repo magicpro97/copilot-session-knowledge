@@ -2020,6 +2020,10 @@ class TestSwarmBundleFlag(unittest.TestCase):
         idx = output.find("{")
         data, _ = decoder.raw_decode(output, idx)
         self.assertNotIn("bundle_path", data)
+        self.assertEqual(data["dispatch_context_mode"]["name"], T.FULL_CONTEXT_DISPATCH_MODE_NAME)
+        self.assertFalse(data["dispatch_context_mode"]["default"])
+        self.assertFalse(data["prompt_size"]["comparison_available"])
+        self.assertEqual(data["prompt_size"]["active_prompt_chars"], data["prompt_size"]["full_context_prompt_chars"])
 
     def test_swarm_prompt_with_bundle_keeps_inline_context_lean(self):
         d = make_tentacle("sw-lean", self.base)
@@ -2037,10 +2041,32 @@ class TestSwarmBundleFlag(unittest.TestCase):
                         T.cmd_swarm(args)
         out = buf.getvalue()
         self.assertIn("Runtime bundle is authoritative", out)
+        self.assertIn("### Dispatch Mode", out)
+        self.assertIn("Pointer-based bundle (default)", out)
+        self.assertIn("### Prompt Size", out)
+        self.assertIn("Meets target: `YES`", out)
         self.assertIn("Bundle Path", out)
         self.assertLess(out.count("UNIQUE_FULL_CONTEXT_SHOULD_STAY_IN_BUNDLE"), 15)
         bundle_metadata = (d / "bundle" / "session-metadata.md").read_text(encoding="utf-8")
         self.assertIn("UNIQUE_FULL_CONTEXT_SHOULD_STAY_IN_BUNDLE", bundle_metadata)
+
+    def test_swarm_prompt_without_bundle_uses_full_context_fallback(self):
+        d = make_tentacle("sw-inline", self.base)
+        large_context = "# sw-inline\n\n" + ("UNIQUE_FULL_CONTEXT_INLINE " * 80)
+        (d / "CONTEXT.md").write_text(large_context, encoding="utf-8")
+        args = self._swarm_args("sw-inline", output="prompt", bundle=False)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            import io
+            from contextlib import redirect_stdout
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                T.cmd_swarm(args)
+        out = buf.getvalue()
+        self.assertIn("Full-context inline fallback (`--no-bundle`)", out)
+        self.assertIn("Comparison inactive: this run is the full-context inline fallback.", out)
+        self.assertGreater(out.count("UNIQUE_FULL_CONTEXT_INLINE"), 50)
+        self.assertNotIn("### Bundle Path", out)
 
     def test_swarm_json_with_bundle_includes_bundle_path(self):
         make_tentacle("sw-test", self.base)
@@ -2062,6 +2088,34 @@ class TestSwarmBundleFlag(unittest.TestCase):
         self.assertIn("context_packet_path", data)
         self.assertTrue(Path(data["bundle_path"]).exists())
         self.assertTrue(Path(data["context_packet_path"]).exists())
+        self.assertEqual(data["dispatch_context_mode"]["name"], T.POINTER_DISPATCH_MODE_NAME)
+        self.assertTrue(data["dispatch_context_mode"]["default"])
+
+    def test_swarm_json_with_bundle_reports_pointer_prompt_reduction(self):
+        d = make_tentacle("sw-json-lean", self.base)
+        large_context = "# sw-json-lean\n\n" + ("UNIQUE_POINTER_JSON_CONTEXT " * 120)
+        (d / "CONTEXT.md").write_text(large_context, encoding="utf-8")
+        args = self._swarm_args("sw-json-lean", output="json", bundle=True)
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                    import io
+                    from contextlib import redirect_stdout
+
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        T.cmd_swarm(args)
+        output = buf.getvalue()
+        decoder = json.JSONDecoder()
+        idx = output.find("{")
+        data, _ = decoder.raw_decode(output, idx)
+        prompt_size = data["prompt_size"]
+        self.assertTrue(prompt_size["comparison_available"])
+        self.assertGreaterEqual(
+            prompt_size["reduction_vs_full_context_percent"],
+            T.POINTER_PROMPT_REDUCTION_TARGET_PERCENT,
+        )
+        self.assertTrue(prompt_size["meets_minimum_reduction"])
 
     def test_swarm_bundle_creates_bundle_dir(self):
         d = make_tentacle("sw-test2", self.base)
@@ -2167,6 +2221,23 @@ class TestSwarmBundleFlag(unittest.TestCase):
         recall = json.loads((d / "bundle" / "recall-pack.json").read_text(encoding="utf-8"))
         self.assertEqual(recall["source_mode"], "task_json")
         self.assertEqual(recall["tagged_entries"][0]["title"], "Use runtime bundle")
+
+    def test_dispatch_cli_alias_defaults_to_pointer_mode(self):
+        make_tentacle("dispatch-default", self.base)
+        argv = ["tentacle.py", "dispatch", "dispatch-default"]
+        with patch.object(T, "get_tentacles_dir", return_value=self.base):
+            with patch.object(T, "_fetch_recall_pack_json", return_value=({}, None)):
+                with patch.object(T, "_load_latest_checkpoint_context", return_value=""):
+                    import io
+                    from contextlib import redirect_stdout
+
+                    buf = io.StringIO()
+                    with patch.object(sys, "argv", argv):
+                        with redirect_stdout(buf):
+                            T.main()
+        out = buf.getvalue()
+        self.assertIn("Pointer-based bundle (default)", out)
+        self.assertIn("Bundle Path", out)
 
 
 class TestSwarmGuardrails(unittest.TestCase):
