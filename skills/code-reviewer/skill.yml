@@ -1,0 +1,6 @@
+schema_version: 1
+provides:
+  commands:
+    - code-reviewer
+requires:
+  sk_version: ">=1.0.0"

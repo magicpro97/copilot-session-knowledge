@@ -237,6 +237,24 @@ test("empty dir returns 0", _install._count_scripts(empty_dir) == 0)
 test("non-existent dir returns 0", _install._count_scripts(SCRATCH / "no-such-dir") == 0)
 
 
+# ── 4b. _replace_support_dir ─────────────────────────────────────────────────
+
+print("\n📁 _replace_support_dir")
+
+support_src = SCRATCH / "support-src" / "skills"
+support_dst = SCRATCH / "support-dst" / "skills"
+(support_src / "agent-creator").mkdir(parents=True, exist_ok=True)
+(support_dst / "stale").mkdir(parents=True, exist_ok=True)
+(support_src / "agent-creator" / "SKILL.md").write_text("# New skill\n", encoding="utf-8")
+(support_dst / "stale" / "old.txt").write_text("old", encoding="utf-8")
+
+_install._replace_support_dir(support_src, support_dst)
+test("replace_support_dir copies new support tree", (support_dst / "agent-creator" / "SKILL.md").is_file())
+test("replace_support_dir removes stale support content", not (support_dst / "stale").exists())
+test("replace_support_dir removes staging dir", not (support_dst.parent / "skills.new").exists())
+test("replace_support_dir removes backup dir", not (support_dst.parent / "skills.old").exists())
+
+
 # ── 5. _tilde ────────────────────────────────────────────────────────────────
 
 print("\n🏠 _tilde")
@@ -305,12 +323,14 @@ test("TOOL_FILES contains briefing.py", "briefing.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains watch-sessions.py", "watch-sessions.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains install.py", "install.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains sk.py", "sk.py" in _install.TOOL_FILES)
+test("TOOL_FILES contains skill-catalog.py", "skill-catalog.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains clarify.py", "clarify.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains constitution.py", "constitution.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains specify.py", "specify.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains task.py", "task.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains context-blocks.py", "context-blocks.py" in _install.TOOL_FILES)
 test("SUPPORT_FILES contains pyproject.toml", "pyproject.toml" in _install.SUPPORT_FILES)
+test("SUPPORT_DIRS contains skills", "skills" in _install.SUPPORT_DIRS)
 
 # MINIMAL_SKILL_MD sanity
 skill_md = _install.MINIMAL_SKILL_MD
