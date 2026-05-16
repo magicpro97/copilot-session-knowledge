@@ -10,6 +10,7 @@ Usage:
     sk query    [<args>...]       Run query-session.py
     sk learn    [<args>...]       Run learn.py
     sk clarify  [<args>...]       Run clarify.py
+    sk constitution init|check|amend [<args>...]  Run constitution.py
     sk task     [<args>...]       Run task.py
     sk tentacle [<args>...]       Run tentacle.py
     sk install  [<args>...]       Run install.py
@@ -119,6 +120,11 @@ _GROUPS: dict[str, dict[str, str]] = {
         "save": "checkpoint-save.py",
         "restore": "checkpoint-restore.py",
         "diff": "checkpoint-diff.py",
+    },
+    "constitution": {
+        "init": "constitution.py",
+        "check": "constitution.py",
+        "amend": "constitution.py",
     },
     "profile": {
         "build": "profile-builder.py",
@@ -251,6 +257,21 @@ def _run_project(extra_args: list[str]) -> int:
     return _run("project-registry.py", extra_args)
 
 
+def _run_constitution(extra_args: list[str]) -> int:
+    """Dispatch ``sk constitution ...`` to constitution.py."""
+    if not extra_args or extra_args[0] in ("-h", "--help"):
+        return _run("constitution.py", ["--help"])
+    sub = extra_args[0]
+    if sub not in _GROUPS["constitution"]:
+        subs = list(_GROUPS["constitution"].keys())
+        print(
+            f"sk constitution: unknown subcommand '{sub}'. Choose from: {', '.join(subs)}",
+            file=sys.stderr,
+        )
+        return 2
+    return _run("constitution.py", extra_args)
+
+
 def _print_help() -> None:
     direct_list = "  " + "\n  ".join(f"sk {cmd:<12} → {script}" for cmd, script in _DIRECT.items())
     print(
@@ -283,6 +304,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_hooks(rest)
     if cmd == "project":
         return _run_project(rest)
+    if cmd == "constitution":
+        return _run_constitution(rest)
     if cmd == "doctor":
         return _run("install.py", ["--doctor"] + rest)
     if cmd in _DIRECT:

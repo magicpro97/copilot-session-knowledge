@@ -390,6 +390,7 @@ pre_names = [r.name for r in pre_tool_rules]
 test("preToolUse has enforce-briefing", "enforce-briefing" in pre_names)
 test("preToolUse has enforce-learn", "enforce-learn" in pre_names)
 test("preToolUse has tentacle-enforce", "tentacle-enforce" in pre_names)
+test("preToolUse has constitution-gate", "constitution-gate" in pre_names)
 test("preToolUse has verification-gate", "verification-gate" in pre_names)
 
 post_names = [r.name for r in post_tool_rules]
@@ -5478,6 +5479,7 @@ _dummy_exists27g.write_text("# placeholder\n", encoding="utf-8")
 
 try:
     from unittest.mock import patch as _mock_patch27g
+
     sys.path.insert(0, str(REPO / "hooks"))
     import rules.briefing as _rb27g
     from rules.briefing import AutoBriefingRule as _ABR27g
@@ -5502,19 +5504,35 @@ try:
     def _mock_run27g(*a, **kw):
         # Pass through fast commands (git, etc.); simulate timeout for briefing.py.
         args = a[0] if a else kw.get("args", [])
-        if isinstance(args, list) and len(args) >= 2 and str(args[-1]).endswith("briefing.py") or \
-           (isinstance(args, list) and "--session-start" in args):
+        if (
+            isinstance(args, list)
+            and len(args) >= 2
+            and str(args[-1]).endswith("briefing.py")
+            or (isinstance(args, list) and "--session-start" in args)
+        ):
             raise _te27g
-        return subprocess.run.__wrapped__(*a, **kw) if hasattr(subprocess.run, "__wrapped__") else _orig_sp_run27g(*a, **kw)
+        return (
+            subprocess.run.__wrapped__(*a, **kw)
+            if hasattr(subprocess.run, "__wrapped__")
+            else _orig_sp_run27g(*a, **kw)
+        )
 
     _orig_sp_run27g = _rb27g.subprocess.run
 
     try:
-        with _mock_patch27g.object(_rb27g.subprocess, "run", side_effect=lambda *a, **kw: (
-            (_ for _ in ()).throw(_te27g)
-            if (a and isinstance(a[0], list) and any("briefing.py" in str(x) or x == "--session-start" for x in a[0]))
-            else _orig_sp_run27g(*a, **kw)
-        )):
+        with _mock_patch27g.object(
+            _rb27g.subprocess,
+            "run",
+            side_effect=lambda *a, **kw: (
+                (_ for _ in ()).throw(_te27g)
+                if (
+                    a
+                    and isinstance(a[0], list)
+                    and any("briefing.py" in str(x) or x == "--session-start" for x in a[0])
+                )
+                else _orig_sp_run27g(*a, **kw)
+            ),
+        ):
             _result27g = _rule27g.evaluate("sessionStart", {})
     except Exception:
         # mock.patch.object doesn't work as context manager for side_effect on non-method
@@ -5559,13 +5577,12 @@ finally:
 _rust_rules_src_27h = (REPO / "sk-rust" / "src" / "hooks" / "rules.rs").read_text(encoding="utf-8")
 test(
     "27h: Rust AutoBriefingRule joins reader thread on timeout and appends partial output",
-    "timed_out" in _rust_rules_src_27h and "handle.join()" in _rust_rules_src_27h
+    "timed_out" in _rust_rules_src_27h
+    and "handle.join()" in _rust_rules_src_27h
     and "partial_out" in _rust_rules_src_27h
     and _rust_rules_src_27h.index("partial_out") < _rust_rules_src_27h.index("Briefing timed out"),
     "sk-rust AutoBriefingRule must join reader thread and append partial output before timeout notice",
 )
-
-
 
 
 # ── Section 29: SK_TOOLS_DIR parity guard (issue #118 follow-up) ──
@@ -5574,9 +5591,11 @@ print("\n── Section 29: SK_TOOLS_DIR existence guard (parity with Rust) ─�
 import importlib
 import types as _types
 
+
 def _reload_common_with_env(env_overrides: dict):
     """Import hooks.rules.common with a patched environment and return TOOLS_DIR."""
     import sys as _sys
+
     _saved = os.environ.copy()
     for k, v in env_overrides.items():
         if v is None:
@@ -5588,6 +5607,7 @@ def _reload_common_with_env(env_overrides: dict):
     if mod_name in _sys.modules:
         del _sys.modules[mod_name]
     import importlib as _il
+
     try:
         mod = _il.import_module(mod_name)
         return mod.TOOLS_DIR
@@ -5597,8 +5617,10 @@ def _reload_common_with_env(env_overrides: dict):
         if mod_name in _sys.modules:
             del _sys.modules[mod_name]
 
+
 try:
-    import tempfile, pathlib
+    import pathlib
+    import tempfile
 
     # 28a: SK_TOOLS_DIR unset → default path
     _td28_result = _reload_common_with_env({"SK_TOOLS_DIR": None})
@@ -5628,6 +5650,7 @@ try:
         )
     finally:
         import shutil as _sh28
+
         _sh28.rmtree(_tmpdir28, ignore_errors=True)
 
 except Exception as _e28:

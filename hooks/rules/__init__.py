@@ -23,6 +23,7 @@ def get_rules_for_event(event):
     from .block_edit_dist import BlockEditDistRule
     from .block_unsafe_html import BlockUnsafeHtmlRule
     from .briefing import AutoBriefingRule, EnforceBriefingRule
+    from .constitution_gate import ConstitutionGateRule
     from .edit_tracker import TestReminderRule, TrackEditsRule
     from .error_kb import ErrorKBRule
     from .integrity import IntegrityRule
@@ -51,6 +52,7 @@ def get_rules_for_event(event):
         EnforceLearnRule(),
         TentacleEnforceRule(),
         SubagentGitGuardRule(),
+        ConstitutionGateRule(),
         SyntaxGateRule(),
         BlockEditDistRule(),
         PnpmLockfileGuardRule(),

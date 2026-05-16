@@ -585,6 +585,53 @@ class TestSkProjectNamespace(unittest.TestCase):
         self.assertIn("project", output)
 
 
+class TestSkConstitutionNamespace(unittest.TestCase):
+    """Verify that sk constitution init/check/amend route to constitution.py."""
+
+    def _assert_constitution_routes(self, sub: str, extra: list[str] | None = None):
+        extra = extra or []
+        expected_args = [sub] + extra
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["constitution", sub] + extra)
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("constitution.py", expected_args)
+
+    def test_constitution_init(self):
+        self._assert_constitution_routes("init")
+
+    def test_constitution_check(self):
+        self._assert_constitution_routes("check", ["--json"])
+
+    def test_constitution_amend(self):
+        self._assert_constitution_routes(
+            "amend",
+            ["--summary", "Add release approval gate", "--bump", "minor"],
+        )
+
+    def test_constitution_unknown_sub_returns_2(self):
+        with patch("builtins.print"):
+            rc = sk.main(["constitution", "publish"])
+        self.assertEqual(rc, 2)
+
+    def test_constitution_help_flag(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["constitution", "--help"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("constitution.py", ["--help"])
+
+    def test_constitution_no_args_shows_help(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["constitution"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("constitution.py", ["--help"])
+
+    def test_constitution_in_help_output(self):
+        with patch("builtins.print") as mock_print:
+            sk.main(["--help"])
+        output = " ".join(str(c) for call in mock_print.call_args_list for c in call[0])
+        self.assertIn("constitution", output)
+
+
 class TestSkErrorCases(unittest.TestCase):
     """Generic CLI error and edge-case routing tests."""
 
