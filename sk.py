@@ -18,6 +18,7 @@ Usage:
     sk tentacle [<args>...]       Run tentacle.py
     sk install  [<args>...]       Run install.py
     sk setup    [<args>...]       Run setup-project.py
+    sk init     [<args>...]       Run setup-project.py --init-mode
     sk update   [<args>...]       Run auto-update-tools.py
     sk browse   [<args>...]       Run browse.py
     sk benchmark [<args>...]      Run benchmark.py
@@ -488,6 +489,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_spec_phase(cmd, rest)
     if cmd == "doctor":
         return _run("install.py", ["--doctor"] + rest)
+    if cmd == "init":
+        return _run("setup-project.py", ["--init-mode"] + rest)
     if cmd in _DIRECT:
         return _run(_DIRECT[cmd], rest)
 

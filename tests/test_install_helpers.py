@@ -330,6 +330,7 @@ test("TOOL_FILES contains constitution.py", "constitution.py" in _install.TOOL_F
 test("TOOL_FILES contains specify.py", "specify.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains task.py", "task.py" in _install.TOOL_FILES)
 test("TOOL_FILES contains context-blocks.py", "context-blocks.py" in _install.TOOL_FILES)
+test("TOOL_FILES contains agent_adapters.py", "agent_adapters.py" in _install.TOOL_FILES)
 test("SUPPORT_FILES contains pyproject.toml", "pyproject.toml" in _install.SUPPORT_FILES)
 test("SUPPORT_DIRS contains skills", "skills" in _install.SUPPORT_DIRS)
 

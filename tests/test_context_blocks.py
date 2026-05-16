@@ -63,6 +63,9 @@ class TestHelpers(TempRepoMixin, unittest.TestCase):
     def test_normalize_agent(self):
         self.assertEqual(cb._normalize_agent("copilot"), "Copilot CLI")
         self.assertEqual(cb._normalize_agent("claude-code"), "Claude Code")
+        self.assertEqual(cb._normalize_agent("codex"), "Codex")
+        self.assertEqual(cb._normalize_agent("cursor"), "Cursor")
+        self.assertEqual(cb._normalize_agent("gemini"), "Gemini CLI")
         self.assertEqual(cb._normalize_agent("agents"), "All agents")
 
     def test_block_id_validation_rejects_marker_injection(self):
@@ -73,6 +76,12 @@ class TestHelpers(TempRepoMixin, unittest.TestCase):
         cb._register_project(self.repo_root)
         data = json.loads(self.registry_path.read_text(encoding="utf-8"))
         self.assertIn(str(self.repo_root.resolve()), data["projects"])
+
+    def test_resolve_targets_for_multi_agent_registry(self):
+        self.assertEqual(cb._resolve_target(self.repo_root, "copilot"), self.repo_root / ".github" / "copilot-instructions.md")
+        self.assertEqual(cb._resolve_target(self.repo_root, "claude"), self.repo_root / "CLAUDE.md")
+        self.assertEqual(cb._resolve_target(self.repo_root, "gemini"), self.repo_root / "GEMINI.md")
+        self.assertEqual(cb._resolve_target(self.repo_root, "cursor"), self.repo_root / "AGENTS.md")
 
 
 class TestUpsertRemove(TempRepoMixin, unittest.TestCase):

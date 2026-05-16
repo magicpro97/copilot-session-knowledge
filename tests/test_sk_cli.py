@@ -132,6 +132,12 @@ class TestSkDirectCommands(unittest.TestCase):
     def test_setup(self):
         self._assert_routes("setup", "setup-project.py")
 
+    def test_init_routes_setup_project_with_init_mode(self):
+        with patch.object(sk, "_run", return_value=0) as mock_run:
+            rc = sk.main(["init", "--agent", "claude"])
+        self.assertEqual(rc, 0)
+        mock_run.assert_called_once_with("setup-project.py", ["--init-mode", "--agent", "claude"])
+
     def test_update(self):
         self._assert_routes("update", "auto-update-tools.py")
 
