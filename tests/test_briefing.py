@@ -918,7 +918,10 @@ test("16a: _parse_skill_frontmatter folded desc has no embedded newline", "\n" n
 # 16b. _parse_skill_frontmatter — inline description
 _fm_inline = "---\nname: another-skill\ndescription: Short inline description.\n---\n"
 _meta_i = _b._parse_skill_frontmatter(_fm_inline)
-test("16b: _parse_skill_frontmatter extracts inline description", _meta_i.get("description") == "Short inline description.")
+test(
+    "16b: _parse_skill_frontmatter extracts inline description",
+    _meta_i.get("description") == "Short inline description.",
+)
 
 # 16c. _parse_skill_frontmatter — missing frontmatter returns empty
 _meta_no = _b._parse_skill_frontmatter("# No frontmatter\nJust body content")
@@ -1078,17 +1081,32 @@ _pos_mistake = _fc_out.find("MISTAKE_ENTRY")
 _pos_pattern = _fc_out.find("PATTERN_ENTRY")
 _pos_decision = _fc_out.find("DECISION_ENTRY")
 _pos_tool = _fc_out.find("TOOL_ENTRY")
-test("17e: mistakes appear before patterns in compact output", _pos_mistake < _pos_pattern, f"mistake@{_pos_mistake} pattern@{_pos_pattern}")
-test("17e: mistakes appear before decisions", _pos_mistake < _pos_decision, f"mistake@{_pos_mistake} decision@{_pos_decision}")
+test(
+    "17e: mistakes appear before patterns in compact output",
+    _pos_mistake < _pos_pattern,
+    f"mistake@{_pos_mistake} pattern@{_pos_pattern}",
+)
+test(
+    "17e: mistakes appear before decisions",
+    _pos_mistake < _pos_decision,
+    f"mistake@{_pos_mistake} decision@{_pos_decision}",
+)
 test("17e: mistakes appear before tools", _pos_mistake < _pos_tool, f"mistake@{_pos_mistake} tool@{_pos_tool}")
-test("17e: patterns appear before decisions", _pos_pattern < _pos_decision, f"pattern@{_pos_pattern} decision@{_pos_decision}")
+test(
+    "17e: patterns appear before decisions",
+    _pos_pattern < _pos_decision,
+    f"pattern@{_pos_pattern} decision@{_pos_decision}",
+)
 
 # 17f. Graceful degradation: explicit budget — structured outputs (json/pack) are not truncated
 # Simulate a budget scenario: if output is a JSON string that exceeds budget, it must not be
 # truncated (the budget enforcement in main() has fmt not in ("json","pack") guard).
 # We verify this guard is present in the source code (structural safety guarantee).
 _br_src_125 = (REPO / "briefing.py").read_text(encoding="utf-8")
-test("17f: source guards json/pack from truncation (fmt not in json/pack check)", 'fmt not in ("json", "pack")' in _br_src_125)
+test(
+    "17f: source guards json/pack from truncation (fmt not in json/pack check)",
+    'fmt not in ("json", "pack")' in _br_src_125,
+)
 test("17f: source uses _compute_dynamic_budget", "_compute_dynamic_budget" in _br_src_125)
 test("17f: source has --available-tokens flag handling", "--available-tokens" in _br_src_125)
 
@@ -1108,14 +1126,19 @@ test("17h: avail=2000 → 100 (old floor was 500, new formula 5% = 100)", _b._co
 _br_src_125_full = (REPO / "briefing.py").read_text(encoding="utf-8")
 test("17i: source uses injected_tokens in footer comment", "injected_tokens" in _br_src_125_full)
 test("17i: source uses budget_tokens in footer comment", "budget_tokens" in _br_src_125_full)
-test("17i: dead-locals pattern removed (no _ = (injected_tokens, budget_tokens))", "_ = (injected_tokens, budget_tokens)" not in _br_src_125_full)
+test(
+    "17i: dead-locals pattern removed (no _ = (injected_tokens, budget_tokens))",
+    "_ = (injected_tokens, budget_tokens)" not in _br_src_125_full,
+)
 
 # 17j. --task path uses progressive reduction (not just hard truncation)
 # Verify the source has the loop for --task path as well as the main path
 test("17j: --task path has progressive-limit loop", "task_injected_tokens" in _br_src_125_full)
 test("17j: --task path has graceful degradation footer", "task_budget_tokens" in _br_src_125_full)
-test("17j: --task path does not hard-truncate immediately (has reduce loop before fallback)",
-     "for reduced_limit in range" in _br_src_125_full)
+test(
+    "17j: --task path does not hard-truncate immediately (has reduce loop before fallback)",
+    "for reduced_limit in range" in _br_src_125_full,
+)
 
 # 17k. Tight-context bug: available_tokens < 20 must NOT return 0 (which would disable cap)
 print("\n🔒 17k: tight-context _compute_dynamic_budget fix (PR review finding #2)")
@@ -1134,13 +1157,19 @@ test("17k: avail=0 → 0 (no-cap preserved when no context given)", _b._compute_
 # 17l. Footer-budget safety: final emitted output must not exceed the enforced cap
 print("\n📏 17l: footer-budget safety (PR review finding #1)")
 # Verify source uses footer-length-aware truncation (reserves room before adding footer)
-test("17l: main path reserves footer length before truncating (avail = budget - len(footer))",
-     "avail = budget - len(footer)" in _br_src_125_full)
-test("17l: --task path reserves footer length before truncating",
-     # The task path uses the same pattern
-     _br_src_125_full.count("avail = budget - len(footer)") >= 2)
-test("17l: entry-reduction footer only added when it fits (len check)",
-     "len(output) + len(footer) <= budget" in _br_src_125_full)
+test(
+    "17l: main path reserves footer length before truncating (avail = budget - len(footer))",
+    "avail = budget - len(footer)" in _br_src_125_full,
+)
+test(
+    "17l: --task path reserves footer length before truncating",
+    # The task path uses the same pattern
+    _br_src_125_full.count("avail = budget - len(footer)") >= 2,
+)
+test(
+    "17l: entry-reduction footer only added when it fits (len check)",
+    "len(output) + len(footer) <= budget" in _br_src_125_full,
+)
 
 # 17m. --task --available-tokens behavioral CLI test (end-to-end through main()/CLI parsing)
 # Root cause of CI-only failure: get_db() calls sys.exit(1) when knowledge.db is absent,
@@ -1167,8 +1196,7 @@ try:
         " code_language TEXT, code_snippet TEXT)"
     )
     _17m_conn.execute(
-        "CREATE TABLE documents ("
-        "id INTEGER PRIMARY KEY, doc_type TEXT, title TEXT, file_path TEXT, seq INTEGER)"
+        "CREATE TABLE documents (id INTEGER PRIMARY KEY, doc_type TEXT, title TEXT, file_path TEXT, seq INTEGER)"
     )
     _17m_conn.commit()
     _17m_conn.close()
@@ -1179,10 +1207,14 @@ try:
 
     # Tight budget: available_tokens=400 → budget = max(1, min(2000, int(400*0.05))) = 20 chars
     _task_budget_result = _sp.run(
-        [sys.executable, str(_briefing_py), "--task", "nonexistent-test-task-id-17m",
-         "--available-tokens", "400"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=30, cwd=str(REPO), env=_17m_env,
+        [sys.executable, str(_briefing_py), "--task", "nonexistent-test-task-id-17m", "--available-tokens", "400"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        cwd=str(REPO),
+        env=_17m_env,
     )
     test(
         "17m: --task --available-tokens exits 0 (fixture DB present, deterministic on CI)",
@@ -1194,18 +1226,20 @@ try:
     # Budget is 20 chars; any output must respect that cap or be empty.
     test(
         "17m: --task --available-tokens output ≤ 20 chars OR empty (budget enforced)",
-        len(_task_budget_output.strip()) == 0
-        or len(_task_budget_output) <= 20
-        or "[BUDGET" in _task_budget_output,
+        len(_task_budget_output.strip()) == 0 or len(_task_budget_output) <= 20 or "[BUDGET" in _task_budget_output,
         f"len={len(_task_budget_output)} out={_task_budget_output[:100]}",
     )
 
     # Large budget: available_tokens=40000 → budget = min(2000, 2000) = 2000 chars
     _task_large_result = _sp.run(
-        [sys.executable, str(_briefing_py), "--task", "nonexistent-test-task-id-17m",
-         "--available-tokens", "40000"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=30, cwd=str(REPO), env=_17m_env,
+        [sys.executable, str(_briefing_py), "--task", "nonexistent-test-task-id-17m", "--available-tokens", "40000"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        cwd=str(REPO),
+        env=_17m_env,
     )
     test(
         "17m: --task --available-tokens 40000 exits 0",
@@ -1221,6 +1255,59 @@ try:
     )
 finally:
     _shutil.rmtree(str(_17m_home), ignore_errors=True)
+
+
+# ── 18. Clarify result matching + rendering (issue #101) ───────────────────────
+
+print("\n❓ Clarify result matching + rendering  (issue #101)")
+
+_clarify_tmpdir = tempfile.TemporaryDirectory()
+try:
+    _clarify_store = Path(_clarify_tmpdir.name) / "clarifications.json"
+    _clarify_entry = {
+        "id": "clarify-test",
+        "created_at": "2026-05-16T08:00:00Z",
+        "repo_root": "C:/repo",
+        "raw_query": "implement auth flow",
+        "normalized_query": "implement auth flow",
+        "tokens": ["implement", "auth", "flow"],
+        "clarified_task": "Implement auth flow with explicit confirmation of scope and test evidence.",
+        "taxonomy_categories": ["Functional Scope", "Testing"],
+        "questions": [
+            {
+                "category": "Functional Scope",
+                "question": "What exact functional boundary should this task cover?",
+                "options": [
+                    "A. Minimal happy-path only",
+                    "B. Full user-facing flow",
+                    "C. End-to-end plus edge cases",
+                    "Custom",
+                ],
+            }
+        ],
+    }
+    _clarify_store.write_text(_json.dumps({"entries": [_clarify_entry]}, indent=2), encoding="utf-8")
+
+    _matched = _b._load_matching_clarification("implement auth flow", repo_root="C:/repo", path=_clarify_store)
+    test(
+        "clarify loader matches exact repo/query entry",
+        isinstance(_matched, dict) and _matched.get("id") == "clarify-test",
+    )
+
+    _mismatch = _b._load_matching_clarification("implement auth flow", repo_root="C:/other", path=_clarify_store)
+    test("clarify loader rejects repo mismatch", _mismatch is None)
+
+    _default = _b._format_default("implement auth flow", {}, [], {}, clarify_entry=_matched)
+    test("default briefing includes clarify section", "Clarify Gate" in _default and "Ready brief:" in _default)
+
+    _compact = _b._format_compact("implement auth flow", {}, [], {}, clarify_entry=_matched)
+    test("compact briefing includes clarify block", "<clarify>" in _compact and "<question" in _compact)
+
+    _json_out = _b._format_json("implement auth flow", {}, [], {}, clarify_entry=_matched)
+    _json_data = _json.loads(_json_out)
+    test("json briefing includes clarify section", "clarify" in _json_data.get("sections", {}))
+finally:
+    _clarify_tmpdir.cleanup()
 
 
 # ── Summary ──────────────────────────────────────────────────────────────────
