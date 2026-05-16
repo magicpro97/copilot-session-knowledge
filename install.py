@@ -800,7 +800,7 @@ def _inject_launcher_path(quiet: bool = False) -> None:
             print(f"  {OK} Added sk launcher PATH to {_tilde(profile)}")
 
 
-def _inject_launcher_path_windows(quiet: bool = False) -> None:
+def _inject_launcher_path_windows(quiet: bool = False) -> bool:
     """Try adding ~/.copilot/bin to user PATH in Windows Registry."""
     bin_str = str(SK_LAUNCHER_DIR)
     try:
@@ -823,6 +823,8 @@ def _inject_launcher_path_windows(quiet: bool = False) -> None:
             winreg.SetValueEx(key, "PATH", 0, winreg.REG_EXPAND_SZ, new_path)
             if not quiet:
                 print(f"  {OK} Added sk launcher dir to Windows user PATH")
+            winreg.CloseKey(key)
+            return True
         else:
             if not quiet:
                 print(f"  {INFO} sk launcher dir already in Windows user PATH")
@@ -831,6 +833,7 @@ def _inject_launcher_path_windows(quiet: bool = False) -> None:
         if not quiet:
             print(f"  {WARN} Could not update Windows PATH: {exc}")
             print(f"    Add manually: {bin_str}")
+    return False
 
 
 def _remove_launcher_path_windows(quiet: bool = False) -> bool:
@@ -878,6 +881,113 @@ def _windows_path_entry_key(entry: str) -> str:
     return entry.strip().rstrip("\\/").lower()
 
 
+def _path_entry_key(entry: str, *, windows_style: bool | None = None) -> str:
+    """Normalize a PATH entry for comparison without resolving the filesystem."""
+    use_windows = os.name == "nt" if windows_style is None else windows_style
+    if use_windows:
+        return _windows_path_entry_key(entry)
+    return entry.strip().rstrip("/")
+
+
+def _path_contains_dir(path_value: str, target_dir: Path, *, delimiter: str | None = None) -> bool:
+    """Return True when *path_value* contains *target_dir* as a PATH entry."""
+    sep = delimiter if delimiter is not None else os.pathsep
+    windows_style = sep == ";" or os.name == "nt"
+    target_key = _path_entry_key(str(target_dir), windows_style=windows_style)
+    for entry in path_value.split(sep):
+        if _path_entry_key(entry, windows_style=windows_style) == target_key:
+            return True
+    return False
+
+
+def _current_path_has_launcher_dir(path_value: str | None = None, *, delimiter: str | None = None) -> bool:
+    """Return True when the current process PATH can discover the launcher dir."""
+    current_path = os.environ.get("PATH", "") if path_value is None else path_value
+    return _path_contains_dir(current_path, SK_LAUNCHER_DIR, delimiter=delimiter)
+
+
+def _windows_current_path_refresh_command() -> str:
+    """PowerShell command that makes the launcher available in the current process."""
+    return '$env:Path = "$env:USERPROFILE\\.copilot\\bin;$env:Path"'
+
+
+def _emit_windows_current_path_hint(quiet: bool = False) -> None:
+    """Tell Windows users how to refresh PATH for the already-running shell."""
+    if quiet or os.name != "nt" or _current_path_has_launcher_dir():
+        return
+    print(f"  {WARN} Current process PATH does not include {_tilde(SK_LAUNCHER_DIR)} yet.")
+    print("    For this PowerShell/Copilot session, run:")
+    print(f"    {_windows_current_path_refresh_command()}")
+    print("    New terminals pick up the user PATH after restart.")
+
+
+def _read_windows_user_path() -> tuple[str | None, str | None]:
+    """Return the Windows user PATH registry value, or an error string."""
+    if os.name != "nt":
+        return None, None
+    try:
+        import winreg
+
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ)
+        try:
+            value, _kind = winreg.QueryValueEx(key, "Path")
+        except FileNotFoundError:
+            value = ""
+        winreg.CloseKey(key)
+        return value, None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _which_command(name: str) -> str | None:
+    """Wrapper around shutil.which for testability."""
+    return shutil.which(name)
+
+
+def _is_windows_store_python_alias(path: str | None) -> bool:
+    """Return True when python3 resolves to the Microsoft Store alias path."""
+    if not path:
+        return False
+    normalized = path.replace("/", "\\").lower()
+    return "\\microsoft\\windowsapps\\python3" in normalized or "\\windowsapps\\python3" in normalized
+
+
+def _python3_alias_risk(
+    python3_path: str | None = None,
+    path_value: str | None = None,
+    *,
+    assume_windows: bool | None = None,
+) -> bool:
+    """Return True when Windows python3 likely resolves to the Store alias before the shim."""
+    is_windows = os.name == "nt" if assume_windows is None else assume_windows
+    if not is_windows:
+        return False
+    resolved = _which_command("python3") if python3_path is None else python3_path
+    if not _is_windows_store_python_alias(resolved):
+        return False
+    return not _current_path_has_launcher_dir(path_value, delimiter=";")
+
+
+def _launcher_probe() -> tuple[Path | None, bool, str]:
+    """Run the direct managed launcher with --version and report the result."""
+    scripts = [script for script in _sk_launcher_script_paths() if script.is_file()]
+    if not scripts:
+        return None, False, "launcher file not found"
+    script = scripts[0]
+    try:
+        result = subprocess.run(
+            [str(script), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        return script, False, f"{type(exc).__name__}: {exc}"
+    output = (result.stdout or result.stderr).strip().splitlines()
+    detail = output[0] if output else f"exit {result.returncode}"
+    return script, result.returncode == 0, detail
+
+
 def install_sk_launcher(quiet: bool = False) -> bool:
     """Create/update the managed sk launcher in ~/.copilot/bin/.
 
@@ -906,6 +1016,7 @@ def install_sk_launcher(quiet: bool = False) -> bool:
         _inject_launcher_path(quiet=quiet)
     else:
         _inject_launcher_path_windows(quiet=quiet)
+        _emit_windows_current_path_hint(quiet=quiet)
 
     _record_managed_paths([script for script in _sk_launcher_script_paths() if script.is_file()], quiet=quiet)
     return changed
@@ -1056,27 +1167,29 @@ MINIMAL_SKILL_MD = textwrap.dedent("""\
     ## Available Tools
 
     ```bash
-    # Search the knowledge base (Windows: python instead of python3)
-    python3 ~/.copilot/tools/query-session.py "search terms"
+    # Search the knowledge base
+    sk query "search terms"
+    # Fallbacks: macOS/Linux `python3 ~/.copilot/tools/query-session.py ...`;
+    # Windows PowerShell `python "$env:USERPROFILE\\.copilot\\tools\\query-session.py" ...`
 
     # Get a context briefing for your current task
-    python3 ~/.copilot/tools/briefing.py "task description"
+    sk briefing "task description"
 
     # Manual compatibility path for ad hoc sub-agent prompts
-    python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
+    sk briefing "task description" --for-subagent
 
     # Preferred delegated-agent path (tentacle structured evidence)
-    python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
+    sk tentacle swarm <name> --briefing
 
     # Record new learnings
-    python3 ~/.copilot/tools/learn.py --mistake "Title" "What went wrong and fix"
-    python3 ~/.copilot/tools/learn.py --pattern "Title" "What works well"
-    python3 ~/.copilot/tools/learn.py --decision "Title" "Choice and rationale"
+    sk learn --mistake "Title" "What went wrong and fix"
+    sk learn --pattern "Title" "What works well"
+    sk learn --decision "Title" "Choice and rationale"
 
     # Show past mistakes and patterns
-    python3 ~/.copilot/tools/query-session.py --mistakes
-    python3 ~/.copilot/tools/query-session.py --patterns
-    python3 ~/.copilot/tools/query-session.py --decisions
+    sk query --mistakes
+    sk query --patterns
+    sk query --decisions
     ```
 
     ## Workflow
@@ -1158,17 +1271,21 @@ Quick reference:
 
 ```bash
 # Before moderate/complex tasks — start here, escalate only if needed
-python3 ~/.copilot/tools/briefing.py --auto --compact
+sk briefing --auto --compact
+# Fallbacks: macOS/Linux `python3 ~/.copilot/tools/briefing.py --auto --compact`;
+# Windows PowerShell `python "$env:USERPROFILE\\.copilot\\tools\\briefing.py" --auto --compact`
 
 # For delegated tentacle agents — preferred structured recall path
-python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
+sk tentacle swarm <name> --briefing
+# Fallbacks: macOS/Linux `python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing`;
+# Windows PowerShell `python "$env:USERPROFILE\\.copilot\\tools\\tentacle.py" swarm <name> --briefing`
 
 # Manual compatibility for ad hoc sub-agent prompts
-python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
+sk briefing "task description" --for-subagent
 
 # After resolving a non-trivial issue — record the learning
-python3 ~/.copilot/tools/learn.py --mistake "Title" "Root cause and fix"
-python3 ~/.copilot/tools/learn.py --pattern "Title" "What works well"
+sk learn --mistake "Title" "Root cause and fix"
+sk learn --pattern "Title" "What works well"
 ```
 {_INJECT_MARKER_END}
 """)
@@ -1223,7 +1340,8 @@ def deploy_hooks():
     elif sk_shim.exists():
         print(f"  {INFO} sk shim detected ({sk_shim.name}) — hooks will prefer 'sk hooks run <event>'")
     else:
-        print(f"  {INFO} sk binary not found in {_tilde(sk_bin_dir)} — hooks fall back to python3 hook_runner.py")
+        hook_python = "python" if os.name == "nt" else "python3"
+        print(f"  {INFO} sk binary not found in {_tilde(sk_bin_dir)} — hooks fall back to {hook_python} hook_runner.py")
         print(f"  {INFO} Run 'python {_tilde(_SCRIPT_DIR / 'install.py')} --install-sk' to install the sk launcher")
 
     # Ensure markers directory exists
@@ -1755,6 +1873,7 @@ def doctor(*, manifest_only: bool = False) -> int:
             print(f"  {OK} Core install looks present")
         else:
             issues += 1
+        issues += _launcher_diagnostics()
         print()
 
     manifest_path = _managed_manifest_path()
@@ -1790,6 +1909,68 @@ def doctor(*, manifest_only: bool = False) -> int:
         print(f"  {FAIL} Unsafe manifest entries ({len(unsafe)}):")
         for key in unsafe:
             print(f"    - {key}")
+    return issues
+
+
+def _launcher_diagnostics() -> int:
+    """Print launcher/PATH diagnostics for the current process."""
+    issues = 0
+    print("\nLauncher Diagnostics:")
+
+    launcher_path, launcher_ok, launcher_detail = _launcher_probe()
+    if launcher_path is None:
+        print(f"  {FAIL} sk launcher file: not found in {_tilde(SK_LAUNCHER_DIR)}")
+        issues += 1
+    else:
+        print(f"  {OK} sk launcher file: {_tilde(launcher_path)}")
+        if launcher_ok:
+            print(f"  {OK} Direct launcher runs: {launcher_detail}")
+        else:
+            print(f"  {FAIL} Direct launcher failed: {launcher_detail}")
+            issues += 1
+
+    current_has_path = _current_path_has_launcher_dir()
+    if current_has_path:
+        print(f"  {OK} Current process PATH includes {_tilde(SK_LAUNCHER_DIR)}")
+    elif os.name == "nt":
+        print(f"  {WARN} Current process PATH is missing {_tilde(SK_LAUNCHER_DIR)}")
+        print(f"    Refresh this PowerShell/Copilot session: {_windows_current_path_refresh_command()}")
+        print("    Or restart the terminal/Copilot CLI to inherit the user PATH.")
+    else:
+        print(f"  {WARN} Current process PATH is missing {_tilde(SK_LAUNCHER_DIR)}")
+
+    sk_path = _which_command("sk")
+    if sk_path and Path(sk_path).suffix.lower() != ".py":
+        print(f"  {OK} `sk` resolves in this process: {sk_path}")
+    elif sk_path:
+        print(f"  {WARN} `sk` resolves to an unexpected Python script path: {sk_path}")
+        print("    Refresh PATH so the managed launcher or native binary wins.")
+    elif current_has_path:
+        print(f"  {FAIL} `sk` does not resolve even though {_tilde(SK_LAUNCHER_DIR)} is on PATH")
+        issues += 1
+    else:
+        print(f"  {WARN} `sk` does not resolve in this process until PATH is refreshed")
+
+    if os.name == "nt":
+        user_path, user_path_error = _read_windows_user_path()
+        if user_path_error:
+            print(f"  {WARN} Windows user PATH could not be read: {user_path_error}")
+        elif user_path is not None and _path_contains_dir(user_path, SK_LAUNCHER_DIR, delimiter=";"):
+            print(f"  {OK} Windows user PATH includes {_tilde(SK_LAUNCHER_DIR)}")
+        else:
+            print(f"  {FAIL} Windows user PATH is missing {_tilde(SK_LAUNCHER_DIR)}")
+            issues += 1
+
+        python3_path = _which_command("python3")
+        if _python3_alias_risk(python3_path=python3_path):
+            print(f"  {WARN} `python3` resolves to Windows Store alias: {python3_path}")
+            print('    On Windows, use `python "$env:USERPROFILE\\.copilot\\tools\\sk.py" ...`')
+            print("    or refresh PATH so ~/.copilot/bin/python3.cmd wins.")
+        elif python3_path:
+            print(f"  {OK} `python3` resolution is not the Windows Store alias: {python3_path}")
+        else:
+            print(f"  {INFO} `python3` is not on PATH; use `python` or `py` on Windows.")
+
     return issues
 
 

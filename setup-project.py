@@ -104,13 +104,15 @@ CLAUDE_SNIPPET = """
 
 ```bash
 # Before starting a task — get context from past sessions
-python3 ~/.copilot/tools/briefing.py --auto --compact
+sk briefing --auto --compact
+# Fallbacks: macOS/Linux `python3 ~/.copilot/tools/briefing.py --auto --compact`;
+# Windows PowerShell `python "$env:USERPROFILE\\.copilot\\tools\\briefing.py" --auto --compact`
 
 # After fixing a bug — record the mistake
-python3 ~/.copilot/tools/learn.py --mistake "Title" "What happened and fix" --tags "relevant,tags"
+sk learn --mistake "Title" "What happened and fix" --tags "relevant,tags"
 
 # After completing work — record pattern/decision
-python3 ~/.copilot/tools/learn.py --pattern "Title" "What works well" --tags "tags"
+sk learn --pattern "Title" "What works well" --tags "tags"
 ```
 """
 
@@ -193,21 +195,23 @@ AGENTS_SNIPPET = """
 
 ```bash
 # Before task — start minimal and escalate only when needed
-python3 ~/.copilot/tools/briefing.py --auto --compact
+sk briefing --auto --compact
+# Fallbacks: macOS/Linux `python3 ~/.copilot/tools/briefing.py --auto --compact`;
+# Windows PowerShell `python "$env:USERPROFILE\\.copilot\\tools\\briefing.py" --auto --compact`
 
 # Before delegating via tentacle — preferred structured recall path
-python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
+sk tentacle swarm <name> --briefing
 
 # Manual compatibility for ad hoc sub-agent prompts
-python3 ~/.copilot/tools/briefing.py "<sub-agent task>" --for-subagent
+sk briefing "<sub-agent task>" --for-subagent
 
 # During task — search for errors/topics
-python3 ~/.copilot/tools/query-session.py "<error or topic>" --verbose
+sk query "<error or topic>" --verbose
 
 # After task — record with full metadata
-python3 ~/.copilot/tools/learn.py --mistake "Title" "Description" --tags "t1,t2" --wing <wing> --room <room> --fact "key detail"
-python3 ~/.copilot/tools/learn.py --pattern "Title" "Description" --tags "t1,t2" --wing <wing> --room <room>
-python3 ~/.copilot/tools/learn.py --relate "#id1" "resolved_by" "#id2"
+sk learn --mistake "Title" "Description" --tags "t1,t2" --wing <wing> --room <room> --fact "key detail"
+sk learn --pattern "Title" "Description" --tags "t1,t2" --wing <wing> --room <room>
+sk learn --relate "#id1" "resolved_by" "#id2"
 ```
 """
 
@@ -675,8 +679,10 @@ copy to avoid duplicate always-loaded instructions and reduce context bloat.
         print(f"✅ Done! {changes} change(s) applied.")
         print()
         print("Next steps:")
-        print("  1. Run: python3 ~/.copilot/tools/build-session-index.py --all")
-        print("  2. (Optional) Configure sync gateway URL: python3 ~/.copilot/tools/sync-config.py --setup <https://gateway>")
+        print("  1. Run: sk index build --all")
+        print("     Fallbacks: macOS/Linux `python3 ~/.copilot/tools/build-session-index.py --all`;")
+        print("                Windows PowerShell `python \"$env:USERPROFILE\\.copilot\\tools\\build-session-index.py\" --all`")
+        print("  2. (Optional) Configure sync gateway URL: sk sync config --setup <https://gateway>")
         print("     Default provider rollout recommendation: Neon (Postgres) + Railway (thin gateway host).")
         print("  3. Trend Scout automation: keep trend-scout.py in scheduled/manual flow (trend-scout.yml), not preToolUse/postToolUse hooks.")
         print("  4. Customize for your project:")

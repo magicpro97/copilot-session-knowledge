@@ -12,7 +12,7 @@ description: >-
 You have access to a knowledge base built from past Copilot and Claude sessions.
 Use it to avoid repeating mistakes, reuse proven patterns, and recall past decisions.
 
-All tools are available as `sk <command>` (the preferred short form) or `python3 ~/.copilot/tools/<script>.py` (fallback when `sk` is not yet on PATH).
+All tools are available as `sk <command>` (the preferred short form). If `sk` is not yet on PATH, use `python3 ~/.copilot/tools/<script>.py` on macOS/Linux, or `python "$env:USERPROFILE\.copilot\tools\<script>.py"` in Windows PowerShell.
 
 ## When to Use
 
@@ -50,7 +50,8 @@ sk briefing --titles-only              # Index only ~10 tok/entry — progressiv
 sk briefing --titles-only "topic"      # Filtered titles
 sk briefing "task" --wing ui --room settings  # Filter by wing/room
 sk briefing "task" --min-confidence 0.7       # High-quality entries only
-# fallback: python3 ~/.copilot/tools/briefing.py <args>
+# fallback: macOS/Linux `python3 ~/.copilot/tools/briefing.py <args>`;
+# Windows PowerShell `python "$env:USERPROFILE\.copilot\tools\briefing.py" <args>`
 ```
 
 Output includes: relevant mistakes to avoid, patterns to follow, related past work.
@@ -62,7 +63,8 @@ When dispatching tentacle agents, prefer the bundle-first structured recall path
 
 ```bash
 sk tentacle swarm <name> --briefing
-# fallback: python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing
+# fallback: macOS/Linux `python3 ~/.copilot/tools/tentacle.py swarm <name> --briefing`;
+# Windows PowerShell `python "$env:USERPROFILE\.copilot\tools\tentacle.py" swarm <name> --briefing`
 ```
 
 This materializes `.octogent/tentacles/<name>/bundle/` by default, keeps the dispatch prompt
@@ -76,8 +78,8 @@ only when the first evidence bullet has related entries.
 For manual compatibility and ad hoc non-tentacle prompts, inject context directly:
 
 ```bash
-python3 ~/.copilot/tools/briefing.py "task description" --for-subagent
-# (--for-subagent is also available via: sk briefing "task description" --for-subagent)
+sk briefing "task description" --for-subagent
+# fallbacks follow the same macOS/Linux `python3 ...` and Windows PowerShell `python "$env:USERPROFILE\..."` pattern above
 ```
 
 This outputs a compact `[KNOWLEDGE CONTEXT]` block (~200 tokens) designed to be
@@ -96,7 +98,8 @@ sk query "deployment error" --semantic            # Compact semantic output
 sk query "deployment error" --semantic --verbose  # Shows feedback bias only when non-zero
 sk query "spring" --source copilot   # Filter by agent
 sk query "gradle" --type research    # Filter by doc type
-# fallback: python3 ~/.copilot/tools/query-session.py <args>
+# fallback: macOS/Linux `python3 ~/.copilot/tools/query-session.py <args>`;
+# Windows PowerShell `python "$env:USERPROFILE\.copilot\tools\query-session.py" <args>`
 ```
 
 ### 3. Drill Down (use entry IDs from search/briefing results)
@@ -105,7 +108,8 @@ sk query "gradle" --type research    # Filter by doc type
 sk query --detail <id>     # Full content of one entry
 sk query --context <id>    # Entry + same-session entries
 sk query --related <id>    # Entry + graph connections
-# fallback: python3 ~/.copilot/tools/query-session.py <flag> <id>
+# fallback: macOS/Linux `python3 ~/.copilot/tools/query-session.py <flag> <id>`;
+# Windows PowerShell `python "$env:USERPROFILE\.copilot\tools\query-session.py" <flag> <id>`
 ```
 
 `sk query --detail <id>` writes stateless `detail_open` telemetry:
@@ -173,7 +177,8 @@ sk learn --relate "ComponentX" "uses" "ThemeToken"
 sk learn --from-file notes.md    # Bulk import from markdown
 sk learn --list                   # List recent entries
 sk learn --stats                  # Knowledge base statistics
-# fallback: python3 ~/.copilot/tools/learn.py <args>
+# fallback: macOS/Linux `python3 ~/.copilot/tools/learn.py <args>`;
+# Windows PowerShell `python "$env:USERPROFILE\.copilot\tools\learn.py" <args>`
 ```
 
 ### 7. Auto-Update Tools

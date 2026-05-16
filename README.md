@@ -55,7 +55,7 @@ python3 ~/.copilot/tools/sk.py index build && python3 ~/.copilot/tools/sk.py ind
 python3 ~/.copilot/tools/sk.py briefing "your task description"
 # (fallback: python3 ~/.copilot/tools/briefing.py "your task description")
 ```
-After `install.py --test` (full install), the `sk` launcher is on your PATH automatically. On Windows without a PATH update, use `python ~/.copilot/tools/sk.py`.
+After `install.py --test` (full install), the `sk` launcher is added to your user PATH. Already-running Windows terminals may need `$env:Path = "$env:USERPROFILE\.copilot\bin;$env:Path"` or a restart before `sk` resolves; until then use `python "$env:USERPROFILE\.copilot\tools\sk.py"`.
 That's it. Your AI agent now has memory across sessions.
 
 ## Installation
@@ -86,7 +86,7 @@ python3 ~/.copilot/tools/launchd/install-launchd.py
 
 - [Method 2 — Manual Copy](docs/INSTALL.md#method-2--manual-copy)
 - [Method 3 — Windows (PowerShell)](docs/INSTALL.md#method-3--windows-powershell)
-- Windows / no-PATH fallback: `python3 ~/.copilot/tools/sk.py`
+- Windows / no-PATH fallback: `python "$env:USERPROFILE\.copilot\tools\sk.py"`
 
 📖 **Full command surface:** [docs/USAGE.md — sk unified CLI](docs/USAGE.md#sk--unified-cli)
 

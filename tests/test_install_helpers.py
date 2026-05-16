@@ -676,6 +676,12 @@ except Exception as _e:
 
 print("\n🪟 Windows launcher PATH helpers")
 
+test(
+    "windows PATH key normalizes case and trailing slashes",
+    _install._windows_path_entry_key(r"C:\Users\Tester\.copilot\bin\\")
+    == _install._windows_path_entry_key(r"c:\users\tester\.copilot\bin"),
+)
+
 
 class _FakeWinreg:
     HKEY_CURRENT_USER = object()
@@ -709,8 +715,9 @@ sys.modules["winreg"] = _FakeWinreg(
 )
 
 try:
-    _install._inject_launcher_path_windows(quiet=True)
+    duplicate_added = _install._inject_launcher_path_windows(quiet=True)
     fake_winreg = sys.modules["winreg"]
+    test("windows PATH inject returns False when entry already present", duplicate_added is False)
     test("windows PATH add avoids duplicate launcher entry with trailing slash", fake_winreg.last_written is None)
 
     removed_windows = _install._remove_launcher_path_windows(quiet=True)
@@ -720,12 +727,120 @@ try:
         fake_winreg.path_value == r"C:\Windows\System32",
         fake_winreg.path_value,
     )
+
+    sys.modules["winreg"] = _FakeWinreg(r"C:\Windows\System32")
+    added_windows = _install._inject_launcher_path_windows(quiet=True)
+    fake_winreg_added = sys.modules["winreg"]
+    test("windows PATH inject adds missing launcher entry", added_windows is True)
+    test(
+        "windows PATH inject prepends launcher entry once",
+        fake_winreg_added.path_value.startswith(str(_install.SK_LAUNCHER_DIR))
+        and fake_winreg_added.path_value.count(str(_install.SK_LAUNCHER_DIR)) == 1,
+        fake_winreg_added.path_value,
+    )
+
+    test(
+        "current PATH helper detects launcher with Windows delimiter",
+        _install._current_path_has_launcher_dir(
+            r"C:\Windows\System32;C:\USERS\TESTER\.copilot\bin\\",
+            delimiter=";",
+        ),
+    )
+
+    store_alias = r"C:\Users\tester\AppData\Local\Microsoft\WindowsApps\python3.exe"
+    real_python = r"C:\Python312\python3.exe"
+    test("python3 Store alias detected", _install._is_windows_store_python_alias(store_alias))
+    test("real python3 path is not Store alias", not _install._is_windows_store_python_alias(real_python))
+    test(
+        "python3 alias risk true when launcher dir missing",
+        _install._python3_alias_risk(
+            python3_path=store_alias,
+            path_value=r"C:\Windows\System32",
+            assume_windows=True,
+        ),
+    )
+    test(
+        "python3 alias risk false when launcher dir is already active",
+        not _install._python3_alias_risk(
+            python3_path=store_alias,
+            path_value=r"C:\Users\tester\.copilot\bin;C:\Windows\System32",
+            assume_windows=True,
+        ),
+    )
+    test(
+        "python3 alias risk false for real python3",
+        not _install._python3_alias_risk(
+            python3_path=real_python,
+            path_value=r"C:\Windows\System32",
+            assume_windows=True,
+        ),
+    )
 finally:
     _install.SK_LAUNCHER_DIR = _orig_sk_dir_windows
     if _orig_winreg is None:
         sys.modules.pop("winreg", None)
     else:
         sys.modules["winreg"] = _orig_winreg
+
+
+# ── Doctor launcher diagnostics ───────────────────────────────────────────────
+
+print("\n🩺 install doctor launcher diagnostics")
+
+_orig_show_status_doctor = _install.show_status
+_orig_manifest_path_doctor = _install._managed_manifest_path
+_orig_load_manifest_doctor = _install._load_managed_manifest
+_orig_drift_report_doctor = _install._manifest_drift_report
+_orig_probe_doctor = _install._launcher_probe
+_orig_current_path_doctor = _install._current_path_has_launcher_dir
+_orig_user_path_doctor = _install._read_windows_user_path
+_orig_which_doctor = _install._which_command
+_orig_sk_dir_doctor = _install.SK_LAUNCHER_DIR
+
+try:
+    _doctor_home = SCRATCH / "doctor-home"
+    _doctor_manifest = _doctor_home / ".copilot" / "manifest.json"
+    _doctor_manifest.parent.mkdir(parents=True, exist_ok=True)
+    _doctor_manifest.write_text(json.dumps({"files": {}, "version": "1.0.0"}), encoding="utf-8")
+    _doctor_launcher = _doctor_home / ".copilot" / "bin" / ("sk.cmd" if os.name == "nt" else "sk")
+    _doctor_launcher.parent.mkdir(parents=True, exist_ok=True)
+    _doctor_launcher.write_text("launcher", encoding="utf-8")
+
+    _install.SK_LAUNCHER_DIR = _doctor_launcher.parent
+    _install.show_status = lambda: True
+    _install._managed_manifest_path = lambda: _doctor_manifest
+    _install._load_managed_manifest = lambda: {"files": {}, "version": "1.0.0", "installed_at": "test"}
+    _install._manifest_drift_report = lambda: ([], [], [], 0)
+    _install._launcher_probe = lambda: (_doctor_launcher, True, "sk 1.0.0")
+    _install._current_path_has_launcher_dir = lambda path_value=None, delimiter=None: False
+    _install._read_windows_user_path = lambda: (str(_doctor_launcher.parent), None)
+    _install._which_command = lambda name: (
+        r"C:\Users\tester\AppData\Local\Microsoft\WindowsApps\python3.exe"
+        if name == "python3"
+        else None
+    )
+
+    _doctor_buf = io.StringIO()
+    with redirect_stdout(_doctor_buf):
+        _doctor_rc = _install.doctor()
+    _doctor_output = _doctor_buf.getvalue()
+
+    test("doctor reports current process PATH mismatch", "Current process PATH is missing" in _doctor_output)
+    if os.name == "nt":
+        test("doctor reports PowerShell refresh guidance", "$env:Path" in _doctor_output)
+        test("doctor reports Windows user PATH state", "Windows user PATH includes" in _doctor_output)
+        test("doctor reports python3 Store alias risk", "Windows Store alias" in _doctor_output)
+    test("doctor launcher diagnostics keep healthy install return code", _doctor_rc == 0)
+finally:
+    _install.show_status = _orig_show_status_doctor
+    _install._managed_manifest_path = _orig_manifest_path_doctor
+    _install._load_managed_manifest = _orig_load_manifest_doctor
+    _install._manifest_drift_report = _orig_drift_report_doctor
+    _install._launcher_probe = _orig_probe_doctor
+    _install._current_path_has_launcher_dir = _orig_current_path_doctor
+    _install._read_windows_user_path = _orig_user_path_doctor
+    _install._which_command = _orig_which_doctor
+    _install.SK_LAUNCHER_DIR = _orig_sk_dir_doctor
 
 
 # ── Hosted-shell launcher (browse --install-launcher / --uninstall-launcher) ──

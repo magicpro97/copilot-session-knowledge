@@ -35,8 +35,8 @@ python3 ~/.copilot/tools/migrate.py
 python3 ~/.copilot/tools/install.py --test
 ```
 
-After step 4, the `sk` launcher is available on your PATH. Verify with `sk --help`.
-On Windows PowerShell without a PATH update, run `python ~/.copilot/tools/sk.py` as the equivalent fallback.
+After step 4, the `sk` launcher is added to your user PATH. Verify with `sk --help`.
+On already-running Windows PowerShell sessions, refresh the current process with `$env:Path = "$env:USERPROFILE\.copilot\bin;$env:Path"` or restart the terminal/Copilot CLI. Until then, run `python "$env:USERPROFILE\.copilot\tools\sk.py"` as the equivalent fallback.
 
 ### macOS — LaunchAgent (auto-start on login)
 
@@ -138,7 +138,7 @@ sk query "docker error"
 | Day-to-day usage after standard install | `sk <command>` |
 | Passing extra flags not yet surfaced by `sk` | `python3 ~/.copilot/tools/<script>.py <flags>` |
 | CI / automation pipelines (explicit, reproducible) | Direct script invocation |
-| Windows (PowerShell, no PATH update) | `python ~/.copilot/tools/sk.py <command>` |
+| Windows (PowerShell, no PATH update) | `python "$env:USERPROFILE\.copilot\tools\sk.py" <command>` |
 | Debugging a specific script | Direct script invocation |
 
 ---
