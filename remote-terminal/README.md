@@ -2,6 +2,7 @@
 
 This package adds a token-gated browser terminal backed by:
 
+- a detached PTY daemon subprocess for crash isolation
 - `node-pty` for the PTY session
 - `Socket.IO` for bidirectional streaming
 - `xterm.js` for the browser terminal
@@ -23,7 +24,8 @@ By default the server:
 3. prints a LAN QR code immediately
 4. starts a Cloudflare Quick Tunnel state machine with an `ora` progress spinner
 5. retries tunnel setup after disconnects / tunnel errors with exponential backoff
-6. prints a public QR code once the tunnel URL is verified
+6. keeps the PTY session inside a detached daemon so active shells survive server restarts
+7. prints a public QR code once the tunnel URL is verified
 
 ## Tunnel states
 
@@ -44,6 +46,26 @@ STOPPED → PREPARING → CONNECTING → TUNNELING → VERIFYING → READY
 | `REMOTE_TERMINAL_SHELL` | Override the spawned shell executable | `powershell.exe` on Windows, `$SHELL` or `/bin/bash` elsewhere |
 | `REMOTE_TERMINAL_DISABLE_TUNNEL` | Skip Cloudflare Quick Tunnel startup | unset / `false` |
 
+## PTY daemon IPC
+
+The HTTP / Socket.IO server talks to `pty-daemon.js` over newline-delimited JSON on a local named pipe / Unix socket.
+
+### Server -> daemon
+
+| Message | Fields | Purpose |
+| --- | --- | --- |
+| `attach` | `sessionId`, `shell`, `cwd`, `env`, `cols`, `rows` | Reuse the existing PTY session or create it on first attach |
+| `input` | `sessionId`, `data` | Forward keystrokes to the PTY |
+| `resize` | `sessionId`, `cols`, `rows` | Keep the PTY geometry in sync with the browser |
+
+### Daemon -> server
+
+| Message | Fields | Purpose |
+| --- | --- | --- |
+| `attached` | `sessionId`, `reused`, `daemonPid`, `lastResize`, `shellExit` | Confirm the server is attached to the live PTY session |
+| `output` | `sessionId`, `data` | Stream PTY output back to Socket.IO clients |
+| `session_exit` | `sessionId`, `exitCode`, `signal` | Report that the shell session has exited |
+
 ## Notes
 
 - Open the printed URL directly if you already have the token; the HTML page and the WebSocket both require the same token.
@@ -51,7 +73,9 @@ STOPPED → PREPARING → CONNECTING → TUNNELING → VERIFYING → READY
 - Failed HTTP and WebSocket auth attempts are rate limited to 5 tries per 60 seconds per client IP to make token guessing noisy and self-limiting.
 - When traffic is relayed through a local `cloudflared` process, the rate limiter prefers `CF-Connecting-IP` / `X-Forwarded-For` over the loopback relay address so different remote clients do not share one auth bucket.
 - `REMOTE_TERMINAL_TOKEN` is the supported trusted-device flow for operators who want a stable QR code or a bookmarkable fixed URL.
+- The PTY daemon is a detached subprocess: restarting the HTTP / Socket.IO server reattaches to the existing shell session instead of killing it.
+- If the PTY daemon crashes, the server respawns it after 1 second and reconnects over the same local IPC endpoint.
 - `Ctrl+C`, `Ctrl+D`, tab completion, and resize handling are delegated to the real PTY-backed shell, so shell behavior stays native instead of being emulated in JavaScript.
 - For LAN-only smoke tests, start with `REMOTE_TERMINAL_DISABLE_TUNNEL=1 npm start`.
-- `/health` exposes the tunnel state machine (`tunnelState`, `tunnelRetryDelayMs`, `tunnelError`) plus auth metadata (`persistentToken`, `tokenExpiresAt`) without leaking the access token.
+- `/health` exposes the tunnel state machine (`tunnelState`, `tunnelRetryDelayMs`, `tunnelError`), daemon state (`backendMode`, `daemonConnected`, `daemonEndpoint`, `daemonPid`), and auth metadata (`persistentToken`, `tokenExpiresAt`) without leaking the access token.
 - If your local Windows environment has a custom `cmd.exe` / PATH setup that prevents npm lifecycle scripts from seeing `node`, run `npm --script-shell pwsh <command>` for local verification. That is an environment workaround, not a package requirement.

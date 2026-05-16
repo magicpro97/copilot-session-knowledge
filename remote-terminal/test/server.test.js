@@ -30,6 +30,15 @@ async function waitFor(check, message, timeout = 8000) {
   throw new Error(message);
 }
 
+function createDaemonEndpoint(label) {
+  const suffix = `${label}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  if (process.platform === "win32") {
+    return `\\\\.\\pipe\\${suffix}`;
+  }
+
+  return path.join(os.tmpdir(), `${suffix}.sock`);
+}
+
 function createSpinnerRecorder(events = []) {
   return {
     isSpinning: false,
@@ -305,6 +314,115 @@ test("forwarded tunnel client IPs keep auth rate limiting scoped per client", as
     headers: allowedHeaders,
   });
   assert.equal(differentForwardedClient.status, 401);
+});
+
+test("server restart reattaches to the same PTY daemon session", async (t) => {
+  const daemonEndpoint = createDaemonEndpoint("issue76-restart");
+  const firstServer = await startRemoteTerminal({
+    accessHost: "127.0.0.1",
+    daemonEndpoint,
+    disableTunnel: true,
+    logger: () => {},
+    port: 0,
+    terminateDaemonOnStop: false,
+    token: "issue76-restart-token",
+  });
+  t.after(async () => {
+    if (firstServer.closed) {
+      await firstServer.closed;
+    }
+  });
+
+  const firstSocket = await connectClient(firstServer, "issue76-restart-token");
+  t.after(() => firstSocket.close());
+
+  let firstOutput = "";
+  firstSocket.on("output", (chunk) => {
+    firstOutput += chunk;
+  });
+
+  const longRunningCommand =
+    process.platform === "win32"
+      ? "Start-Sleep -Seconds 2; Write-Output 'ISSUE76_RESTART_STILL_RUNNING'"
+      : "sleep 2; echo ISSUE76_RESTART_STILL_RUNNING";
+  firstSocket.emit("input", `${longRunningCommand}\r`);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+
+  const originalDaemonPid = firstServer.daemonPid;
+  const reusedPort = firstServer.port;
+  await firstServer.stop();
+
+  const restartedServer = await startRemoteTerminal({
+    accessHost: "127.0.0.1",
+    daemonEndpoint,
+    disableTunnel: true,
+    logger: () => {},
+    port: reusedPort,
+    terminateDaemonOnStop: true,
+    token: "issue76-restart-token",
+  });
+  t.after(async () => {
+    await restartedServer.stop();
+  });
+
+  assert.equal(restartedServer.daemonPid, originalDaemonPid);
+
+  const restartedSocket = await connectClient(restartedServer, "issue76-restart-token");
+  t.after(() => restartedSocket.close());
+
+  let restartedOutput = "";
+  restartedSocket.on("output", (chunk) => {
+    restartedOutput += chunk;
+  });
+
+  await waitFor(
+    () => restartedOutput.includes("ISSUE76_RESTART_STILL_RUNNING"),
+    "restarted server did not reattach to the existing PTY session",
+    7000,
+  );
+});
+
+test("PTY daemon restarts after a crash and reattaches within the configured delay", async (t) => {
+  const daemonEndpoint = createDaemonEndpoint("issue76-crash");
+  const remoteTerminal = await startRemoteTerminal({
+    accessHost: "127.0.0.1",
+    daemonEndpoint,
+    daemonRestartDelayMs: 200,
+    disableTunnel: true,
+    logger: () => {},
+    port: 0,
+    terminateDaemonOnStop: true,
+    token: "issue76-crash-token",
+  });
+  t.after(async () => {
+    await remoteTerminal.stop();
+  });
+
+  const socket = await connectClient(remoteTerminal, "issue76-crash-token");
+  t.after(() => socket.close());
+
+  let output = "";
+  socket.on("output", (chunk) => {
+    output += chunk;
+  });
+
+  const originalDaemonPid = remoteTerminal.daemonPid;
+  process.kill(originalDaemonPid);
+
+  await waitFor(
+    () => remoteTerminal.daemonConnected === true && remoteTerminal.daemonPid !== originalDaemonPid,
+    "PTY daemon did not restart after the crash",
+    5000,
+  );
+
+  const recoveryCommand =
+    process.platform === "win32" ? "Write-Output 'ISSUE76_DAEMON_RECOVERED'" : "echo ISSUE76_DAEMON_RECOVERED";
+  socket.emit("input", `${recoveryCommand}\r`);
+  await waitFor(
+    () => output.includes("ISSUE76_DAEMON_RECOVERED"),
+    "server never reattached to the restarted PTY daemon",
+    5000,
+  );
 });
 
 test("pty output streams through Socket.IO and resize reaches the PTY", async (t) => {

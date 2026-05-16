@@ -1,6 +1,9 @@
 const crypto = require("node:crypto");
+const { spawn } = require("node:child_process");
+const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const http = require("node:http");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 
@@ -26,7 +29,10 @@ const DEFAULT_TUNNEL_VERIFY_DELAY_MS = 5000;
 const DEFAULT_AUTH_TOKEN_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_AUTH_RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const DEFAULT_AUTH_RATE_LIMIT_MAX_ATTEMPTS = 5;
+const DEFAULT_DAEMON_RESTART_DELAY_MS = 1000;
+const DEFAULT_DAEMON_SESSION_ID = "default";
 const PUBLIC_DIR = path.join(__dirname, "public");
+const PTY_DAEMON_SCRIPT = path.join(__dirname, "pty-daemon.js");
 const XTERM_DIR = path.dirname(require.resolve("@xterm/xterm/package.json"));
 const XTERM_ADDON_DIR = path.dirname(require.resolve("@xterm/addon-fit/package.json"));
 const TUNNEL_STATES = Object.freeze({
@@ -325,6 +331,47 @@ function sleep(delayMs) {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
+function resolveDaemonEndpoint(cwd, port, explicitEndpoint) {
+  if (explicitEndpoint) {
+    return explicitEndpoint;
+  }
+
+  const scope = crypto.createHash("sha1").update(cwd).digest("hex").slice(0, 8);
+  const endpointName = `remote-terminal-pty-daemon-${scope}-${port}`;
+  if (process.platform === "win32") {
+    return `\\\\.\\pipe\\${endpointName}`;
+  }
+
+  return path.join(os.tmpdir(), `${endpointName}.sock`);
+}
+
+function sendJsonLine(socket, message) {
+  if (!socket.destroyed) {
+    socket.write(`${JSON.stringify(message)}\n`);
+  }
+}
+
+function bindJsonLineMessages(socket, onMessage) {
+  let buffer = "";
+  socket.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+    while (buffer.includes("\n")) {
+      const newlineIndex = buffer.indexOf("\n");
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (!line) {
+        continue;
+      }
+
+      try {
+        onMessage(JSON.parse(line));
+      } catch (_error) {
+        // Ignore malformed partial frames; recovery is driven by socket close.
+      }
+    }
+  });
+}
+
 async function defaultVerifyTunnel(publicAccessUrl, options = {}) {
   const attempts = options.attempts ?? DEFAULT_TUNNEL_VERIFY_ATTEMPTS;
   const delayMs = options.delayMs ?? DEFAULT_TUNNEL_VERIFY_DELAY_MS;
@@ -439,6 +486,316 @@ async function listen(server, port, host) {
   });
 }
 
+function createInlinePtyBackend(options = {}) {
+  const backend = new EventEmitter();
+  let shellRunning = true;
+  let shellExit = null;
+  const ptyFactory = options.ptyFactory || pty.spawn;
+  const ptyProcess = ptyFactory(options.shell.command, options.shell.args, {
+    cols: options.cols ?? DEFAULT_COLS,
+    cwd: options.cwd,
+    env: options.env,
+    name: DEFAULT_TERM,
+    rows: options.rows ?? DEFAULT_ROWS,
+  });
+
+  ptyProcess.onData((data) => {
+    backend.emit("output", data);
+  });
+
+  ptyProcess.onExit(({ exitCode, signal }) => {
+    shellRunning = false;
+    shellExit = {
+      exitCode,
+      signal,
+    };
+    backend.emit("session-exit", shellExit);
+  });
+
+  return {
+    backendMode: "inline",
+    async close() {
+      if (shellRunning) {
+        shellRunning = false;
+        ptyProcess.kill();
+      }
+    },
+    daemonConnected: null,
+    daemonEndpoint: null,
+    daemonPid: null,
+    off(eventName, listener) {
+      backend.off(eventName, listener);
+    },
+    on(eventName, listener) {
+      backend.on(eventName, listener);
+    },
+    get ptyProcess() {
+      return ptyProcess;
+    },
+    resize(cols, rows) {
+      if (shellRunning) {
+        ptyProcess.resize(cols, rows);
+      }
+    },
+    get shellExit() {
+      return shellExit;
+    },
+    get shellRunning() {
+      return shellRunning;
+    },
+    write(chunk) {
+      if (shellRunning && typeof chunk === "string") {
+        ptyProcess.write(chunk);
+      }
+    },
+  };
+}
+
+async function createDaemonPtyBackend(options = {}) {
+  const backend = new EventEmitter();
+  backend.on("error", () => {});
+  const daemonEndpoint = resolveDaemonEndpoint(options.cwd, options.port, options.daemonEndpoint);
+  const daemonRestartDelayMs = options.daemonRestartDelayMs ?? DEFAULT_DAEMON_RESTART_DELAY_MS;
+  const daemonScriptPath = options.daemonScriptPath || PTY_DAEMON_SCRIPT;
+  const sessionId = options.sessionId || DEFAULT_DAEMON_SESSION_ID;
+  const terminateDaemonOnClose = options.terminateDaemonOnClose ?? false;
+  let daemonConnected = false;
+  let daemonPid = null;
+  let socket = null;
+  let recoveryTimer = null;
+  let recovering = false;
+  let stopping = false;
+
+  function clearRecoveryTimer() {
+    if (recoveryTimer) {
+      clearTimeout(recoveryTimer);
+      recoveryTimer = null;
+    }
+  }
+
+  function openConnection() {
+    return new Promise((resolve, reject) => {
+      const connection = net.createConnection(daemonEndpoint);
+      const cleanup = () => {
+        connection.off("connect", onConnect);
+        connection.off("error", onError);
+      };
+      const onConnect = () => {
+        cleanup();
+        resolve(connection);
+      };
+      const onError = (error) => {
+        cleanup();
+        connection.destroy();
+        reject(error);
+      };
+
+      connection.once("connect", onConnect);
+      connection.once("error", onError);
+    });
+  }
+
+  function spawnDaemon() {
+    const child = spawn(process.execPath, [daemonScriptPath], {
+      detached: true,
+      env: {
+        ...process.env,
+        REMOTE_TERMINAL_DAEMON_ENDPOINT: daemonEndpoint,
+      },
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.unref();
+    daemonPid = child.pid;
+  }
+
+  async function connectAndAttach() {
+    const connection = await openConnection();
+    connection.setEncoding("utf8");
+    socket = connection;
+
+    await new Promise((resolve, reject) => {
+      let settled = false;
+
+      const settle = (callback, value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        callback(value);
+      };
+
+      bindJsonLineMessages(connection, (message) => {
+        if (message.type === "attached") {
+          daemonConnected = true;
+          daemonPid = message.daemonPid || daemonPid;
+          settle(resolve, message);
+          backend.emit("daemon-status", {
+            daemonPid,
+            state: "ready",
+          });
+          return;
+        }
+
+        if (message.type === "output") {
+          backend.emit("output", message.data);
+          return;
+        }
+
+        if (message.type === "session_exit") {
+          backend.emit("session-exit", {
+            exitCode: message.exitCode ?? null,
+            signal: message.signal ?? null,
+          });
+          return;
+        }
+
+        if (message.type === "error") {
+          backend.emit("error", new Error(message.message));
+        }
+      });
+
+      connection.on("close", () => {
+        if (socket === connection) {
+          socket = null;
+          daemonConnected = false;
+          if (!stopping) {
+            backend.emit("daemon-status", { state: "recovering" });
+            scheduleRecovery();
+          }
+        }
+        settle(reject, new Error("PTY daemon connection closed"));
+      });
+
+      connection.on("error", (error) => {
+        if (!stopping) {
+          backend.emit("error", error);
+        }
+      });
+
+      sendJsonLine(connection, {
+        cols: options.cols ?? DEFAULT_COLS,
+        cwd: options.cwd,
+        env: options.env,
+        rows: options.rows ?? DEFAULT_ROWS,
+        sessionId,
+        shell: options.shell,
+        type: "attach",
+      });
+    });
+  }
+
+  async function ensureConnection() {
+    try {
+      await connectAndAttach();
+      return;
+    } catch (_error) {
+      spawnDaemon();
+    }
+
+    let lastError = null;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        await sleep(100);
+        await connectAndAttach();
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw lastError || new Error("Unable to connect to the PTY daemon");
+  }
+
+  function scheduleRecovery() {
+    if (recovering || recoveryTimer || stopping) {
+      return;
+    }
+
+    recoveryTimer = setTimeout(async () => {
+      recoveryTimer = null;
+      recovering = true;
+      let retryRecovery = false;
+      try {
+        await ensureConnection();
+      } catch (error) {
+        backend.emit("error", error);
+        retryRecovery = !stopping;
+      } finally {
+        recovering = false;
+        if (retryRecovery) {
+          scheduleRecovery();
+        }
+      }
+    }, daemonRestartDelayMs);
+  }
+
+  await ensureConnection();
+
+  return {
+    backendMode: "daemon",
+    async close() {
+      stopping = true;
+      clearRecoveryTimer();
+      if (socket) {
+        socket.destroy();
+        socket = null;
+      }
+      daemonConnected = false;
+      if (terminateDaemonOnClose && daemonPid) {
+        try {
+          process.kill(daemonPid);
+        } catch (_error) {
+          // Process already exited.
+        }
+      }
+    },
+    get daemonConnected() {
+      return daemonConnected;
+    },
+    get daemonEndpoint() {
+      return daemonEndpoint;
+    },
+    get daemonPid() {
+      return daemonPid;
+    },
+    off(eventName, listener) {
+      backend.off(eventName, listener);
+    },
+    on(eventName, listener) {
+      backend.on(eventName, listener);
+    },
+    get ptyProcess() {
+      return null;
+    },
+    resize(cols, rows) {
+      if (socket && daemonConnected) {
+        sendJsonLine(socket, {
+          cols,
+          rows,
+          sessionId,
+          type: "resize",
+        });
+      }
+    },
+    get shellExit() {
+      return null;
+    },
+    get shellRunning() {
+      return daemonConnected;
+    },
+    write(chunk) {
+      if (socket && daemonConnected && typeof chunk === "string") {
+        sendJsonLine(socket, {
+          data: chunk,
+          sessionId,
+          type: "input",
+        });
+      }
+    },
+  };
+}
+
 async function startRemoteTerminal(options = {}) {
   const logger = options.logger || console.log;
   const qrWriter = options.qrWriter;
@@ -491,6 +848,8 @@ async function startRemoteTerminal(options = {}) {
   let verificationInFlight = false;
   let pendingVerification = null;
   let stopping = false;
+  let activePort = null;
+  let ptyBackend = null;
   const closed = new Promise((resolve) => {
     closedResolve = resolve;
   });
@@ -498,15 +857,6 @@ async function startRemoteTerminal(options = {}) {
     cols: DEFAULT_COLS,
     rows: DEFAULT_ROWS,
   };
-
-  const ptyFactory = options.ptyFactory || pty.spawn;
-  const ptyProcess = ptyFactory(shell.command, shell.args, {
-    name: DEFAULT_TERM,
-    cols: DEFAULT_COLS,
-    rows: DEFAULT_ROWS,
-    cwd,
-    env,
-  });
 
   const server = http.createServer(app);
   const io = new Server(server, {
@@ -758,9 +1108,9 @@ async function startRemoteTerminal(options = {}) {
         tunnel = null;
       }
 
-      if (shellRunning) {
+      if (ptyBackend) {
         shellRunning = false;
-        ptyProcess.kill();
+        await ptyBackend.close();
       }
 
       await Promise.allSettled([
@@ -793,6 +1143,10 @@ async function startRemoteTerminal(options = {}) {
       shellExit,
       lastResize,
       tunnelEnabled,
+      backendMode: ptyBackend ? ptyBackend.backendMode : null,
+      daemonConnected: ptyBackend ? ptyBackend.daemonConnected : null,
+      daemonEndpoint: ptyBackend ? ptyBackend.daemonEndpoint : null,
+      daemonPid: ptyBackend ? ptyBackend.daemonPid : null,
       persistentToken: accessToken.persistent,
       tokenExpiresAt: accessToken.expiresAt === null ? null : new Date(accessToken.expiresAt).toISOString(),
       authRateLimitMaxAttempts,
@@ -855,27 +1209,84 @@ async function startRemoteTerminal(options = {}) {
   io.on("connection", (socket) => {
     socket.emit("output", "");
     socket.on("input", (chunk) => {
-      if (typeof chunk === "string" && shellRunning) {
-        ptyProcess.write(chunk);
+      if (ptyBackend && typeof chunk === "string" && shellRunning) {
+        ptyBackend.write(chunk);
       }
     });
 
     socket.on("resize", (payload) => {
       const cols = Number.parseInt(String(payload?.cols), 10);
       const rows = Number.parseInt(String(payload?.rows), 10);
-      if (Number.isInteger(cols) && Number.isInteger(rows) && cols > 0 && rows > 0) {
+      if (ptyBackend && Number.isInteger(cols) && Number.isInteger(rows) && cols > 0 && rows > 0) {
         lastResize.cols = cols;
         lastResize.rows = rows;
-        ptyProcess.resize(cols, rows);
+        ptyBackend.resize(cols, rows);
       }
     });
   });
 
-  ptyProcess.onData((data) => {
+  try {
+    if (options.ptyFactory) {
+      ptyBackend = createInlinePtyBackend({
+        cols: DEFAULT_COLS,
+        cwd,
+        env,
+        ptyFactory: options.ptyFactory,
+        rows: DEFAULT_ROWS,
+        shell,
+      });
+    }
+
+    await listen(server, port, host);
+  } catch (error) {
+    if (ptyBackend) {
+      shellRunning = false;
+      await ptyBackend.close();
+    }
+    io.close();
+    throw error;
+  }
+
+  activePort = server.address().port;
+  if (!ptyBackend) {
+    try {
+      ptyBackend = await createDaemonPtyBackend({
+        cols: DEFAULT_COLS,
+        cwd,
+        daemonEndpoint: options.daemonEndpoint,
+        daemonRestartDelayMs: options.daemonRestartDelayMs,
+        daemonScriptPath: options.daemonScriptPath,
+        env,
+        port: activePort,
+        rows: DEFAULT_ROWS,
+        sessionId: options.sessionId,
+        shell,
+        terminateDaemonOnClose: options.terminateDaemonOnStop ?? options.port === 0,
+      });
+    } catch (error) {
+      io.close();
+      await new Promise((resolve) => server.close(() => resolve()));
+      throw error;
+    }
+  }
+
+  ptyBackend.on("daemon-status", (status) => {
+    if (status.state === "recovering") {
+      logger(`PTY daemon disconnected; retrying in ${formatRetryDelay(options.daemonRestartDelayMs ?? DEFAULT_DAEMON_RESTART_DELAY_MS)}`);
+      return;
+    }
+
+    if (status.state === "ready" && status.daemonPid) {
+      logger(`PTY daemon ready via ${ptyBackend.daemonEndpoint} (pid=${status.daemonPid})`);
+    }
+  });
+  ptyBackend.on("error", (error) => {
+    logger(`PTY backend error: ${error.message}`);
+  });
+  ptyBackend.on("output", (data) => {
     io.emit("output", data);
   });
-
-  ptyProcess.onExit(({ exitCode, signal }) => {
+  ptyBackend.on("session-exit", ({ exitCode, signal }) => {
     shellRunning = false;
     shellExit = {
       exitCode,
@@ -886,16 +1297,6 @@ async function startRemoteTerminal(options = {}) {
     void stop();
   });
 
-  try {
-    await listen(server, port, host);
-  } catch (error) {
-    shellRunning = false;
-    ptyProcess.kill();
-    io.close();
-    throw error;
-  }
-
-  const activePort = server.address().port;
   const localUrl = buildAccessUrl(`http://${accessHost}:${activePort}/`, token);
   logger(`Remote terminal listening on http://${host}:${activePort}`);
   logger(`Shell: ${shell.command}${shell.args.length ? ` ${shell.args.join(" ")}` : ""}`);
@@ -939,7 +1340,18 @@ async function startRemoteTerminal(options = {}) {
     closed,
     server,
     io,
-    ptyProcess,
+    get daemonConnected() {
+      return ptyBackend ? ptyBackend.daemonConnected : null;
+    },
+    get daemonEndpoint() {
+      return ptyBackend ? ptyBackend.daemonEndpoint : null;
+    },
+    get daemonPid() {
+      return ptyBackend ? ptyBackend.daemonPid : null;
+    },
+    get ptyProcess() {
+      return ptyBackend ? ptyBackend.ptyProcess : null;
+    },
     shell,
     stop,
   };
